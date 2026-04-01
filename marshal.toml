@@ -1,0 +1,31 @@
+[executor]
+model       = "RedHatAI/Devstral-Small-2507-quantized.w8a8"
+base_url    = "${EXECUTOR_BASE_URL}"
+api_key     = "${RUNPOD_API_KEY}"
+temperature = 0.2
+max_tokens  = 2048
+
+[critic]
+model       = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+base_url    = "${CRITIC_BASE_URL}"
+api_key     = "${RUNPOD_API_KEY}"
+temperature = 0.0
+max_tokens  = 1024
+json_output = true
+
+[loop]
+max_rounds        = 3
+auto_commit       = true
+auto_revert       = true
+branch_isolation  = true
+compact_after     = 2
+token_budget_warn = 0.80
+
+[session]
+db_path = ".marshal/sessions.db"
+
+[retry]
+max_attempts       = 3
+initial_backoff_ms = 1000
+backoff_factor     = 2.0
+retry_status_codes = [429, 502, 503]

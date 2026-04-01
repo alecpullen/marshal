@@ -1,0 +1,5 @@
+.marshal/
+marshal
+*.exe
+.DS_Store
+.env

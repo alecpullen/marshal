@@ -92,7 +92,7 @@ curl https://api.fireworks.ai/inference/v1/chat/completions \
 Both should return HTTP 200 with a `choices` array. 401 = wrong API key. 404 = wrong model ID or deployment not yet created. 503 = deployment is scaling up from zero — wait 30–60s and retry.
 
 
-## 1.4 Create Fireworks on-demand deployments
+## 1.4 Create Fireworks on-demand deployments (optional)
 
 Both models require on-demand deployments — they are not available on Fireworks serverless. Create them in the Fireworks dashboard before writing any Go.
 
@@ -128,7 +128,65 @@ Cost: $6.00/hr × 8 = $48/hr while active, $0 when idle. For a typical 10-minute
 >
 > After creating a deployment, run `firectl deployment list` and confirm both show `READY` state. The first scale-up from zero takes 30–60 seconds — this is normal.
 
-## 1.5 Claim the GitHub repository
+> 💡 **Alternative: Local Ollama (free, no deployments)**
+>
+> Skip Fireworks entirely and run locally with Ollama. See section 1.5 below for setup.
+
+## 1.5 Local Ollama setup (alternative to Fireworks)
+
+For local development and testing without cloud costs, use Ollama with small models that fit on a 16GB MacBook.
+
+### Install Ollama
+
+```bash
+brew install ollama
+ollama serve  # starts the API server on localhost:11434
+```
+
+### Quick setup
+
+Run the provided setup script:
+
+```bash
+./scripts/setup-ollama.sh
+```
+
+This pulls the recommended models and creates `ollama.toml`:
+
+| Model | Role | RAM Usage | Output Style |
+|-------|------|-----------|--------------|
+| `qwen2.5-coder:7b` | Executor | ~4.5GB | Direct code generation |
+| `deepseek-r1:7b` | Critic | ~4GB |  reasoning blocks + JSON verdict |
+
+Total ~8.5GB RAM usage — well within 16GB limit.
+
+### Manual model pull (if not using the script)
+
+```bash
+ollama pull qwen2.5-coder:7b
+ollama pull deepseek-r1:7b
+```
+
+### Testing the local setup
+
+```bash
+# Test both models and see  tags in action
+./scripts/test-ollama.sh
+
+# Or run the milestone 1 verification with local models
+export FIREWORKS_API_KEY=ollama  # dummy value for validation
+./scripts/setup-ollama.sh  # creates ollama.toml
+go run cmd/marshal/main.go
+```
+
+### Why this model split?
+
+- **Executor (qwen2.5-coder:7b)**: Fast code generation, good quality, deterministic output at low temperature.
+- **Critic (deepseek-r1:7b)**: Reasoning model that outputs chain-of-thought in  tags before the structured verdict. This matches the expected M2 critic format where reasoning is extracted separately from the final PASS/FAIL judgment.
+
+The `deepseek-r1` model is key for testing M2 — it naturally produces the  reasoning blocks that Marshal will parse and display in the TUI's "think panel" (Milestone 5–6).
+
+## 1.6 Claim the GitHub repository
 
 
 1. Create a new **private** repository named `marshal` on github.com
@@ -189,6 +247,9 @@ go get github.com/spf13/cobra
 
 ## 2.2 Create marshal.toml
 
+Choose **either** Fireworks (cloud) or Ollama (local) configuration:
+
+### Option A: Fireworks (cloud, higher quality)
 
 ```toml
 [executor]
@@ -226,6 +287,37 @@ max_attempts       = 3
 initial_backoff_ms = 1000
 backoff_factor     = 2.0
 retry_status_codes = [429, 502, 503]
+```
+
+### Option B: Ollama (local, free, faster iteration)
+
+Use the generated `ollama.toml` from `./scripts/setup-ollama.sh`:
+
+```toml
+[executor]
+# Qwen 2.5 Coder 7B - fast, good code quality, ~4.5GB RAM
+model       = "qwen2.5-coder:7b"
+base_url    = "http://localhost:11434/v1"
+api_key     = "ollama"  # required but ignored by Ollama
+temperature = 0.2       # low temp for consistent code
+max_tokens  = 4096
+
+[critic]
+# DeepSeek-R1 7B - reasoning model with  tags, ~4GB RAM
+# The model outputs reasoning in  tags before the verdict
+model       = "deepseek-r1:7b"
+base_url    = "http://localhost:11434/v1"
+api_key     = "ollama"
+temperature = 0.6       # higher temp for reasoning diversity
+max_tokens  = 8192      # headroom for think blocks + JSON verdict
+json_output = false     # R1 doesn't reliably follow JSON mode
+
+[loop]
+max_rounds        = 3
+auto_commit       = false   # manual review for local testing
+auto_revert       = true
+branch_isolation  = true
+compact_after     = 2
 ```
 
 
@@ -515,9 +607,13 @@ go run cmd/marshal/main.go
 ```
 
 
-> ⚠️ **Common failures**
+> ⚠️ **Common failures (Fireworks)**
 >
 > 401 = `$FIREWORKS_API_KEY` not exported in this shell — run `source ~/.zshrc`. 404 = model ID wrong or deployment not yet created — run `firectl deployment list` to confirm both deployments are in `READY` state. 503 = deployment scaling up from zero — wait 30–60s and retry; the `[retry]` config handles this automatically once the loop engine is built.
+>
+> ⚠️ **Common failures (Ollama)**
+>
+> Connection refused = Ollama server not running — run `ollama serve` in another terminal. 404 = model not pulled — run `ollama pull <model-name>`. Empty response = model is still loading — wait 10–30s for first inference on slower machines.
 
 
 ## 3.5 Commit

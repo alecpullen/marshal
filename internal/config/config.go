@@ -120,5 +120,18 @@ func (c *Config) Validate() error {
 	if c.Critic.APIKey == "" {
 		return fmt.Errorf("critic.api_key / $FIREWORKS_API_KEY is required")
 	}
+
+	// Loop validation
+	if c.Loop.MaxRounds < 1 {
+		return fmt.Errorf("loop.max_rounds must be >= 1")
+	}
+	if c.Loop.CompactAfter < 1 {
+		return fmt.Errorf("loop.compact_after must be >= 1")
+	}
+	if c.Loop.CompactAfter > c.Loop.MaxRounds {
+		return fmt.Errorf("loop.compact_after (%d) cannot exceed loop.max_rounds (%d)",
+			c.Loop.CompactAfter, c.Loop.MaxRounds)
+	}
+
 	return nil
 }

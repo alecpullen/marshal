@@ -81,7 +81,7 @@ func ParseCriticVerdict(content string) (*Verdict, error) {
 
 // Verdict represents the structured critic response
 type Verdict struct {
-	Verdict  string   `json:"verdict"`   // "PASS" or "FAIL"
+	Verdict  string   `json:"verdict"` // "PASS" or "FAIL"
 	Summary  string   `json:"summary"`
 	Issue    string   `json:"issue"`
 	Fix      string   `json:"fix"`

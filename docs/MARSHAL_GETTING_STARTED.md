@@ -690,4 +690,48 @@ The loop will:
 3. Parse critic verdict (PASS/FAIL)
 4. If FAIL → inject feedback, loop back to executor
 5. If PASS → success (M3 adds merge)
-6. If max rounds exceeded → fail (M3 adds reset)
+6. If max rounds exhausted → fail (M3 adds reset)
+
+
+## 4.2 Milestone 3 Overview
+
+Milestone 3 implements the **real git layer** — replacing the mock with actual git operations via `os/exec`.
+
+**Full implementation plan**: `.claude/plans/m3-git-layer.md`
+
+**What you get:**
+- Real branch isolation (`git checkout -b`)
+- Real diff extraction (`git diff HEAD`)
+- Commit per round (`git add -A && git commit`)
+- Merge on PASS (`git checkout main && git merge`)
+- Cleanup on failure (reset and delete branch)
+- Error handling for edge cases (dirty tree, conflicts)
+
+**Files to create:**
+```
+internal/git/
+├── git.go         # Real git implementation using os/exec
+├── git_test.go    # Tests with temp repos
+└── adapter.go     # loop.GitLayer adapter
+```
+
+**Integration:** Replace `loop.NewMockGitLayer()` with real git in `cmd/marshal/main.go`:
+```go
+gitImpl, err := git.New(repoRoot)
+gitLayer := git.NewAdapter(gitImpl)
+l := loop.New(cfg, executor, critic, gitLayer)
+```
+
+**When M3 is done:**
+```bash
+go test ./internal/git/...   # git operations tested
+go run cmd/marshal/main.go   # full loop with real git operations
+```
+
+The system will:
+1. Create isolation branch from HEAD
+2. Executor writes to actual files
+3. Commit each round with message
+4. Extract real git diff
+5. On PASS: merge branch to main, commit, done
+6. On EXHAUSTED: checkout main, delete branch, exit 1

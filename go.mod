@@ -1,4 +1,4 @@
-module github.com/alecpullen1/marshal
+module github.com/alecpullen/marshal
 
 go 1.26.1
 

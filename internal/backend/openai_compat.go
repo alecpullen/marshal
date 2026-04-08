@@ -10,10 +10,14 @@ import (
 )
 
 type OpenAICompatibleBackend struct {
-	name    string
-	baseURL string
-	apiKey  string
-	client  *http.Client
+	name        string
+	baseURL     string
+	apiKey      string
+	sessionID   string  // x-session-affinity value for Fireworks KV cache routing
+	temperature float64 // default 0.0
+	maxTokens   int     // default 1024
+	jsonOutput  bool    // default false
+	client      *http.Client
 }
 
 func NewOpenAICompatible(name, baseURL, apiKey string) *OpenAICompatibleBackend {
@@ -25,6 +29,26 @@ func NewOpenAICompatible(name, baseURL, apiKey string) *OpenAICompatibleBackend 
 	}
 }
 
+func (b *OpenAICompatibleBackend) WithTemperature(t float64) *OpenAICompatibleBackend {
+	b.temperature = t
+	return b
+}
+
+func (b *OpenAICompatibleBackend) WithMaxTokens(n int) *OpenAICompatibleBackend {
+	b.maxTokens = n
+	return b
+}
+
+func (b *OpenAICompatibleBackend) WithJSONOutput(enabled bool) *OpenAICompatibleBackend {
+	b.jsonOutput = enabled
+	return b
+}
+
+func (b *OpenAICompatibleBackend) WithSession(id string) *OpenAICompatibleBackend {
+	b.sessionID = id
+	return b
+}
+
 func (b *OpenAICompatibleBackend) Name() string { return b.name }
 
 func (b *OpenAICompatibleBackend) Complete(
@@ -32,16 +56,41 @@ func (b *OpenAICompatibleBackend) Complete(
 	model string,
 	messages []Message,
 ) (Response, error) {
-	reqBody, err := json.Marshal(struct {
-		Model     string    `json:"model"`
-		Messages  []Message `json:"messages"`
-		MaxTokens int       `json:"max_tokens"`
-	}{model, messages, 1024})
+	maxTokens := b.maxTokens
+	if maxTokens == 0 {
+		maxTokens = 1024
+	}
+
+	type requestBody struct {
+		Model          string    `json:"model"`
+		Messages       []Message `json:"messages"`
+		MaxTokens      int       `json:"max_tokens,omitempty"`
+		Temperature    float64   `json:"temperature,omitempty"`
+		ResponseFormat *struct {
+			Type string `json:"type"`
+		} `json:"response_format,omitempty"`
+	}
+
+	body := requestBody{
+		Model:     model,
+		Messages:  messages,
+		MaxTokens: maxTokens,
+	}
+	if b.temperature > 0 {
+		body.Temperature = b.temperature
+	}
+	if b.jsonOutput {
+		body.ResponseFormat = &struct {
+			Type string `json:"type"`
+		}{Type: "json_object"}
+	}
+
+	reqBody, err := json.Marshal(body)
 	if err != nil {
 		return Response{}, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(
+	httpReq, err := http.NewRequestWithContext(
 		ctx, http.MethodPost,
 		b.baseURL+"/chat/completions",
 		bytes.NewReader(reqBody),
@@ -49,10 +98,15 @@ func (b *OpenAICompatibleBackend) Complete(
 	if err != nil {
 		return Response{}, fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+b.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+b.apiKey)
+	// Session affinity routes all rounds of a session to the same Fireworks
+	// replica so the system-prompt KV cache is reused (50% cached-token pricing).
+	if b.sessionID != "" {
+		httpReq.Header.Set("x-session-affinity", b.sessionID)
+	}
 
-	resp, err := b.client.Do(req)
+	resp, err := b.client.Do(httpReq)
 	if err != nil {
 		return Response{}, fmt.Errorf("do request: %w", err)
 	}

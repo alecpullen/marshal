@@ -1,12 +1,12 @@
 # Marshal — Design Specification
 
-**Version** 0.7 — Fireworks AI provider, model upgrades, token efficiency  
+**Version** 0.8 — Confirmed model IDs and deployment configuration  
 **Date** March 2026  
 **Language** Go  
 
-> **Changes in v0.7**
+> **Changes in v0.8**
 >
-> Switched inference provider from RunPod vLLM to Fireworks AI (serverless, no cold starts, 50% cached-token pricing). Upgraded executor to Devstral Medium (61.6% SWE-Bench), critic to DeepSeek-R1-0528 (full reasoning model, system prompt support, improved JSON reliability). Added Section 4.1 Fireworks platform configuration covering session affinity, batch inference, and prompt structure rules. Added token efficiency design decisions throughout.
+> Confirmed deployment model IDs after Fireworks serverless availability check. Neither Devstral Small 2 (2512) nor DeepSeek-R1-0528 are available on Fireworks serverless; both run as Fireworks on-demand deployments. Devstral Small 2 (2512) replaces Devstral Medium — same 68.0% SWE-Bench score, smaller and cheaper GPU footprint (A100 × 1). Updated GPU requirements, hourly cost estimates, and scale-to-zero configuration. Removed references to Devstral Medium and serverless operation for these two models.
 
 
 ---
@@ -145,15 +145,17 @@ type Backend interface {
 
 ```toml
 [executor]
-# Devstral Medium — 61.6% SWE-Bench Verified, dense 123B, no expert routing
-model       = "accounts/fireworks/models/devstral-medium"
+# Devstral Small 2 (2512) — 68.0% SWE-Bench Verified, dense 24B, Apache 2.0
+# Fireworks on-demand: A100 × 1 @ $2.90/hr, scale-to-zero 5m
+model       = "accounts/fireworks/models/devstral-small-2-24b-instruct-2512"
 base_url    = "https://api.fireworks.ai/inference/v1"
 api_key     = "${FIREWORKS_API_KEY}"
 temperature = 0.2
-max_tokens  = 4096   # headroom for multi-file implementations
+max_tokens  = 4096
 
 [critic]
-# DeepSeek-R1-0528 — full reasoning model, not a distil; system prompt supported
+# DeepSeek-R1-0528 — full 671B MoE reasoning model, system prompt supported
+# Fireworks on-demand: H200 × 8 @ $48/hr active, scale-to-zero 5m
 model       = "accounts/fireworks/models/deepseek-r1-0528"
 base_url    = "https://api.fireworks.ai/inference/v1"
 api_key     = "${FIREWORKS_API_KEY}"
@@ -163,7 +165,7 @@ json_output = true
 
 # Phase 3
 [planner]
-# DeepSeek V3.2 — high code comprehension, no reasoning-token overhead
+# DeepSeek V3.2 — serverless, high code comprehension, no reasoning overhead
 model       = "accounts/fireworks/models/deepseek-v3p1"
 base_url    = "https://api.fireworks.ai/inference/v1"
 api_key     = "${FIREWORKS_API_KEY}"
@@ -171,6 +173,7 @@ temperature = 0.0
 max_tokens  = 2048
 
 [integration_critic]
+# Same deployment as critic — reuses the warm H200 × 8 replica
 model       = "accounts/fireworks/models/deepseek-r1-0528"
 base_url    = "https://api.fireworks.ai/inference/v1"
 api_key     = "${FIREWORKS_API_KEY}"
@@ -322,16 +325,18 @@ The git diff is the largest variable input. Use `git diff -U1` (one context line
 
 | Agent | Model | Rationale |
 | --- | --- | --- |
-| Executor | Devstral Medium | 61.6% SWE-Bench Verified. Dense 123B — no expert routing means complex multi-file tasks don't fragment knowledge across MoE experts. |
-| Critic | DeepSeek-R1-0528 | Full reasoning model, not a distil. 57.6% SWE-Bench, 73.3% LiveCodeBench. System prompt support. Improved JSON reliability for structured verdict output. |
-| Planner | DeepSeek V3.2 | High code comprehension for dependency graph generation. Non-reasoning model — no think-block overhead on a structured output task. |
-| Integration critic | DeepSeek-R1-0528 | Same rationale as critic. Cross-task coherence review benefits from full reasoning depth. |
-| Compactor (Phase 2) | DeepSeek V3.2 | Summarisation task. Faithful compression, no reasoning overhead needed. |
+| Executor | Devstral Small 2 (2512) | 68.0% SWE-Bench Verified. Dense 24B, Apache 2.0. Fits on A100 × 1 at $2.90/hr. Fireworks on-demand deployment. |
+| Critic | DeepSeek-R1-0528 | Full 671B MoE reasoning model. 57.6% SWE-Bench, 73.3% LiveCodeBench. System prompt supported. Better JSON reliability than original R1. Fireworks on-demand, H200 × 8 at $48/hr — scale-to-zero essential. |
+| Planner | DeepSeek V3.2 | High code comprehension for dependency graph generation. Non-reasoning — no think-block overhead on a structured output task. Fireworks serverless. |
+| Integration critic | DeepSeek-R1-0528 | Same deployment as critic. Cross-task coherence review benefits from full reasoning depth. |
+| Compactor (Phase 2) | DeepSeek V3.2 | Summarisation task. Faithful compression, no reasoning overhead needed. Fireworks serverless. |
 
 
 > 💡 **Why not use the R1-Distill-14B for the critic?**
 >
-> The distilled models are compressed proxies designed for local hosting within VRAM constraints. On hosted inference those constraints don't apply. The full R1-0528 produces significantly deeper reasoning chains before issuing a verdict, catches more issues per round, and has better structured JSON output — all directly beneficial for the critic role. Fewer FAIL-then-PASS cycles saves tokens overall despite the higher per-token cost.
+> The distilled models are compressed proxies designed for local hosting within VRAM constraints. On hosted inference those constraints don't apply. The full R1-0528 produces significantly deeper reasoning chains before issuing a verdict, catches more issues per round, and has better structured JSON output — all directly beneficial for the critic role. Fewer FAIL-then-PASS cycles saves tokens overall despite the higher per-GPU-hour cost.
+>
+> The H200 × 8 cost ($48/hr active) is only paid while Marshal is actively running a session. With scale-to-zero set to 5 minutes, a typical 10-minute coding session costs about $8 in critic GPU time — less than a coffee.
 
 
 ## 4.3 Temperature per agent
@@ -745,9 +750,9 @@ File conflict serialisation:
 | File conflict detection | `files_likely_affected` overlap → serialise conflicting tasks. |
 
 
-> 💡 **Fireworks and parallelism**
+> 💡 **Fireworks on-demand and parallelism**
 >
-> Fireworks serverless scales automatically — there is no `max_workers` setting to configure. Set `max_parallel` in `marshal.toml` to control how many concurrent executor/critic loops Marshal runs. Start with `max_parallel=1` during development. Each parallel task uses its own session affinity key so cache isolation is maintained.
+> Both executor and critic are on-demand deployments. The executor (A100 × 1) and critic (H200 × 8) each handle one request at a time per replica. Set `max_parallel=1` during development — the on-demand deployments can autoscale replicas if you need concurrency later. Each parallel task uses its own session affinity key so cache isolation is maintained.
 
 
 ## 6.5 Integration critic output
@@ -857,7 +862,7 @@ For each tier:
 
 | # | Milestone | Deliverable |
 | --- | --- | --- |
-| 1 | Scaffold + provider layer | `Backend` interface, `OpenAICompatibleBackend` with session affinity header, `marshal.toml` loading. Both Fireworks endpoints verified (executor + critic). |
+| 1 | Scaffold + provider layer | `Backend` interface, `OpenAICompatibleBackend` with session affinity header, `marshal.toml` loading. Both Fireworks on-demand deployments verified (Devstral Small 2 executor + R1-0528 critic). |
 | 2 | Agent layer + loop engine + security prompts | Executor and Critic with security standing instructions. Loop orchestrator: rounds, feedback injection, JSON verdict parsing, think-block stripping, compaction hook, token budget. Built-in skills via `--skill`. |
 | 3 | Git layer | `GitContext`: branch, diff, commit, revert. Branch isolation end-to-end. |
 | 4 | Session store + CLI | SQLite `.marshal/sessions.db`. Cobra CLI. Headless `--no-tui --json`. Exit codes. |
@@ -914,14 +919,14 @@ For each tier:
 | Skills cannot override security | `system_prompt_additions` only. Other prompt keys rejected at load time. | Non-negotiable architectural constraint. |
 | Skills travel with the project | `.marshal/skills/` is version-controlled. | Team gets same skill behaviour after `git clone`. No setup step. |
 | Community skills model | Public GitHub repo of TOML files, install via `curl`. | `curl` + filename is the simplest distribution for a text file. |
-| Inference provider | Fireworks AI serverless | No cold starts, OpenAI-compatible API, 50% cached token pricing, no GPU infrastructure to manage. |
-| Executor model | Devstral Medium | 61.6% SWE-Bench Verified. Dense architecture avoids MoE expert routing fragmentation on multi-file tasks. |
+| Inference provider | Fireworks AI on-demand | Executor on A100 × 1 ($2.90/hr), critic on H200 × 8 ($48/hr). Scale-to-zero 5m means cost is only incurred during active sessions. Planner/integration critic on serverless where available. |
+| Executor model | Devstral Small 2 (2512) | 68.0% SWE-Bench Verified. Dense 24B, Apache 2.0. Fits A100 × 1. Fireworks on-demand at $2.90/hr with scale-to-zero. |
 | Critic model | DeepSeek-R1-0528 (full) | Full reasoning model, not a distil. System prompt support. Better JSON reliability. Deeper reasoning per round catches more issues, reducing total round count. |
 | Critic temperature | 0.6 (not 0.0) | R1 series recommendation. Temperature 0.0 causes repetition in the full R1 model. |
 | Planner/compactor model | DeepSeek V3.2 | High code comprehension for structured output tasks. Non-reasoning model avoids think-block overhead where it adds no value. |
-| Session affinity header | `x-session-affinity: <session-id>` on every request | Required for Fireworks serverless to route session rounds to the same replica for KV cache reuse. |
+| Session affinity header | `x-session-affinity: <session-id>` on every request | Required for Fireworks on-demand to route session rounds to the same replica for KV cache reuse. |
 | Diff context lines | `git diff -U1` | Reduces critic input by 30–50%. Critic cares about changed lines, not surrounding context. |
-| Batch inference | Planner and integration critic use batch endpoint | 50% cost on both input and output for non-streaming calls. |
+| Batch inference | Planner and integration critic use batch endpoint | 50% cost on both input and output for non-streaming calls (serverless only). |
 
 
 ---

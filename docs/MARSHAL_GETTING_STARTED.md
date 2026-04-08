@@ -2,7 +2,7 @@
 
 **Project** Marshal  
 **Date** March 2026  
-**Prerequisite** Marshal Design Specification v0.7  
+**Prerequisite** Marshal Design Specification v0.8  
 
 
 > **How to use this guide**
@@ -62,17 +62,20 @@ export FIREWORKS_API_KEY="your_fireworks_api_key"
 curl https://api.fireworks.ai/inference/v1/models \
   -H "Authorization: Bearer $FIREWORKS_API_KEY"
 
-# Test the executor (Devstral Medium)
+# Test the executor — Devstral Small 2 (2512), on-demand deployment
+# Note: the deployment must be created first in the Fireworks dashboard
+# before this endpoint is active (see section 1.4)
 curl https://api.fireworks.ai/inference/v1/chat/completions \
   -H "Authorization: Bearer $FIREWORKS_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "accounts/fireworks/models/devstral-medium",
+    "model": "accounts/fireworks/models/devstral-small-2-24b-instruct-2512",
     "messages": [{"role":"user","content":"Reply in one word."}],
     "max_tokens": 5
   }'
 
-# Test the critic (DeepSeek-R1-0528)
+# Test the critic — DeepSeek-R1-0528, on-demand deployment
+# R1-0528 supports system prompts (the original R1 did not)
 curl https://api.fireworks.ai/inference/v1/chat/completions \
   -H "Authorization: Bearer $FIREWORKS_API_KEY" \
   -H "Content-Type: application/json" \
@@ -86,11 +89,46 @@ curl https://api.fireworks.ai/inference/v1/chat/completions \
   }'
 ```
 
+Both should return HTTP 200 with a `choices` array. 401 = wrong API key. 404 = wrong model ID or deployment not yet created. 503 = deployment is scaling up from zero — wait 30–60s and retry.
 
-Both should return HTTP 200 with a `choices` array. 401 = wrong API key. 404 = wrong model ID — check the [Fireworks model library](https://fireworks.ai/models). Unlike RunPod, there are no cold starts and no endpoint IDs to manage.
 
+## 1.4 Create Fireworks on-demand deployments
 
-## 1.4 Claim the GitHub repository
+Both models require on-demand deployments — they are not available on Fireworks serverless. Create them in the Fireworks dashboard before writing any Go.
+
+**Executor — Devstral Small 2 (2512)**
+
+```bash
+# Install firectl CLI
+brew install fireworks-ai/tap/firectl   # macOS
+# or: pip install firectl
+
+firectl deployment create \
+  accounts/fireworks/models/devstral-small-2-24b-instruct-2512 \
+  --accelerator-type NVIDIA_A100_80GB \
+  --accelerator-count 1 \
+  --scale-to-zero-window 5m
+```
+
+Cost: $2.90/hr while active, $0 when idle (scales to zero after 5 minutes of no requests).
+
+**Critic — DeepSeek-R1-0528**
+
+```bash
+firectl deployment create \
+  accounts/fireworks/models/deepseek-r1-0528 \
+  --accelerator-type NVIDIA_H200_141GB \
+  --accelerator-count 8 \
+  --scale-to-zero-window 5m
+```
+
+Cost: $6.00/hr × 8 = $48/hr while active, $0 when idle. For a typical 10-minute coding session this is about $8 in critic GPU time. The 5-minute scale-to-zero window means it spins down promptly after your last session.
+
+> ⚠️ **Verify deployment state before running Milestone 1**
+>
+> After creating a deployment, run `firectl deployment list` and confirm both show `READY` state. The first scale-up from zero takes 30–60 seconds — this is normal.
+
+## 1.5 Claim the GitHub repository
 
 
 1. Create a new **private** repository named `marshal` on github.com
@@ -154,15 +192,17 @@ go get github.com/spf13/cobra
 
 ```toml
 [executor]
-# Devstral Medium — 61.6% SWE-Bench Verified
-model       = "accounts/fireworks/models/devstral-medium"
+# Devstral Small 2 (2512) — 68.0% SWE-Bench Verified, dense 24B
+# Fireworks on-demand: A100 × 1, $2.90/hr, scale-to-zero 5m
+model       = "accounts/fireworks/models/devstral-small-2-24b-instruct-2512"
 base_url    = "https://api.fireworks.ai/inference/v1"
 api_key     = "${FIREWORKS_API_KEY}"
 temperature = 0.2
 max_tokens  = 4096
 
 [critic]
-# DeepSeek-R1-0528 — full reasoning model, system prompt supported
+# DeepSeek-R1-0528 — full 671B MoE reasoning model
+# Fireworks on-demand: H200 × 8, $48/hr active, scale-to-zero 5m
 model       = "accounts/fireworks/models/deepseek-r1-0528"
 base_url    = "https://api.fireworks.ai/inference/v1"
 api_key     = "${FIREWORKS_API_KEY}"
@@ -219,7 +259,7 @@ git push -u origin main
 # 3. Milestone 1 — Scaffold and provider layer
 
 
-By the end of this section both Fireworks endpoints will be responding through the Backend abstraction. Do not move to Milestone 2 until the verification script at the end prints success.
+By the end of this section both Fireworks on-demand deployments will be responding through the Backend abstraction. Do not move to Milestone 2 until the verification script at the end prints success.
 
 
 > **Build order**
@@ -452,6 +492,7 @@ func main() {
     ctx      := context.Background()
     msgs     := []backend.Message{{Role: "user", Content: "Reply in exactly three words."}}
 
+    // executor = Devstral Small 2 (2512) on A100 × 1
     fmt.Println("--- executor ---")
     exResp, err := executor.Complete(ctx, cfg.Executor.Model, msgs)
     if err != nil { log.Fatal("executor:", err) }
@@ -476,7 +517,7 @@ go run cmd/marshal/main.go
 
 > ⚠️ **Common failures**
 >
-> 401 = `$FIREWORKS_API_KEY` not exported in this shell — run `source ~/.zshrc`. 404 = wrong model ID string — check the [Fireworks model library](https://fireworks.ai/models) for the exact name. 429 = rate limit on free tier — wait and retry; the `[retry]` config handles this automatically once the loop engine is built.
+> 401 = `$FIREWORKS_API_KEY` not exported in this shell — run `source ~/.zshrc`. 404 = model ID wrong or deployment not yet created — run `firectl deployment list` to confirm both deployments are in `READY` state. 503 = deployment scaling up from zero — wait 30–60s and retry; the `[retry]` config handles this automatically once the loop engine is built.
 
 
 ## 3.5 Commit

@@ -26,9 +26,7 @@ gofmt -w .
 Marshal reads these from the shell — they must be exported before running:
 
 ```bash
-export RUNPOD_API_KEY="..."
-export EXECUTOR_BASE_URL="https://api.runpod.ai/v2/YOUR_EXECUTOR_ID/openai/v1"
-export CRITIC_BASE_URL="https://api.runpod.ai/v2/YOUR_CRITIC_ID/openai/v1"
+export FIREWORKS_API_KEY="..."
 ```
 
 `marshal.toml` uses `${VAR}` interpolation via `os.Expand` — missing vars log a warning and substitute as empty strings, which causes `Validate()` to fail.

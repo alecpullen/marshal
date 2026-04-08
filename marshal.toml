@@ -1,16 +1,17 @@
 [executor]
-model       = "redhatai/devstral-small-2507-quantized.w8a8"
-base_url    = "${EXECUTOR_BASE_URL}"
-api_key     = "${RUNPOD_API_KEY}"
+model       = "accounts/alecpullen/deployments/wo3c63tl"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
 temperature = 0.2
-max_tokens  = 2048
+max_tokens  = 4096
 
 [critic]
-model       = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-base_url    = "${CRITIC_BASE_URL}"
-api_key     = "${RUNPOD_API_KEY}"
-temperature = 0.0
-max_tokens  = 1024
+# DeepSeek-R1-0528 — full reasoning model, system prompt supported
+model       = "accounts/alecpullen/deployments/q9utj0dg"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
+temperature = 0.6   # R1 series: must be 0.5-0.7
+max_tokens  = 8192  # headroom for think-blocks before the verdict
 json_output = true
 
 [loop]

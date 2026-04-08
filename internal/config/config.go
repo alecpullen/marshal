@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -31,21 +33,70 @@ type Config struct {
 	Loop     LoopConfig  `toml:"loop"`
 }
 
+// loadDotEnv parses a .env file into a map. Shell env takes precedence —
+// values already set in the environment are not overwritten.
+func loadDotEnv(path string) map[string]string {
+	env := map[string]string{}
+	f, err := os.Open(path)
+	if err != nil {
+		return env // no .env file is fine
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		var key, val string
+		if rest, ok := strings.CutPrefix(line, "set "); ok {
+			// fish shell: set KEY VALUE
+			parts := strings.SplitN(strings.TrimSpace(rest), " ", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			key, val = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		} else {
+			// standard: KEY=VALUE
+			k, v, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			key, val = strings.TrimSpace(k), strings.TrimSpace(v)
+		}
+
+		// Strip optional surrounding quotes
+		if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+			val = val[1 : len(val)-1]
+		}
+		env[key] = val
+	}
+	return env
+}
+
 func Load(path string) (*Config, error) {
+	dotenv := loadDotEnv(".env")
+
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	expanded := os.Expand(string(raw), func(key string) string {
-		val := os.Getenv(key)
-		if val == "" {
-			fmt.Printf("warning: $%s is not set\n", key)
+		// Shell env takes precedence over .env
+		if val := os.Getenv(key); val != "" {
+			return val
 		}
-		return val
+		if val, ok := dotenv[key]; ok {
+			return val
+		}
+		fmt.Printf("warning: $%s is not set\n", key)
+		return ""
 	})
 	var cfg Config
 	if _, err := toml.Decode(expanded, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", expanded, err)
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return &cfg, nil
 }
@@ -58,7 +109,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("executor.base_url is required")
 	}
 	if c.Executor.APIKey == "" {
-		return fmt.Errorf("executor.api_key / $RUNPOD_API_KEY is required")
+		return fmt.Errorf("executor.api_key / $FIREWORKS_API_KEY is required")
 	}
 	if c.Critic.Model == "" {
 		return fmt.Errorf("critic.model is required")
@@ -67,7 +118,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("critic.base_url is required")
 	}
 	if c.Critic.APIKey == "" {
-		return fmt.Errorf("critic.api_key / $RUNPOD_API_KEY is required")
+		return fmt.Errorf("critic.api_key / $FIREWORKS_API_KEY is required")
 	}
 	return nil
 }

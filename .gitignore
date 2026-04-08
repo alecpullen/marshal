@@ -3,3 +3,11 @@ marshal
 *.exe
 .DS_Store
 .env
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.envrc

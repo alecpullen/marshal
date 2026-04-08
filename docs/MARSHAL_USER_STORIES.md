@@ -1,8 +1,8 @@
 # Marshal — User Stories
 
-**Version** 0.6  
+**Version** 0.7  
 **Date** March 2026  
-**Companion** Marshal Design Specification v0.7  
+**Companion** Marshal Design Specification v0.8  
 
 > **Priority key**
 >

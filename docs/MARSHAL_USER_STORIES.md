@@ -1,8 +1,8 @@
 # Marshal — User Stories
 
-**Version** 0.5  
+**Version** 0.6  
 **Date** March 2026  
-**Companion** Marshal Design Specification v0.6  
+**Companion** Marshal Design Specification v0.7  
 
 > **Priority key**
 >
@@ -854,6 +854,43 @@ As a developer writing a skill, I want to validate and scaffold skill files from
 ---
 
 
+# Epic 13 — Provider and token efficiency (Dev + Ops)
+
+### US-049
+
+**Persona** Dev  
+**Priority** must have  
+**Phase** 1
+
+As a developer, I want Marshal to use a hosted inference provider with session affinity so that prompt caching is effective across rounds and I pay 50% of the standard rate on cached input tokens.
+
+**Acceptance criteria**
+
+1. Every request to Fireworks AI includes an `x-session-affinity` header set to the current session ID.
+2. The system prompt, security standing instructions, and skill additions are identical across all rounds and appear before any dynamic content in the message array.
+3. The git diff is always the final user message — never injected into the system prompt or prepended to the task description.
+4. No timestamps, round counters, or session-variable values appear in the system prompt.
+5. `CacheHit` and `CachedTokens` are stored per model call and surfaced in the TUI and session browser.
+6. `marshal config --show-prompts` prints the assembled system prompt for each agent so cache structure can be verified.
+
+### US-050
+
+**Persona** Dev  
+**Priority** should have  
+**Phase** 1
+
+As a developer, I want the git diff sent to the critic to use minimal context lines so that the critic input token count is reduced without affecting review quality.
+
+**Acceptance criteria**
+
+1. Diffs are generated with `git diff -U1` (one context line) rather than the default three.
+2. The critic receives the same changed lines — only surrounding context lines are reduced.
+3. The context line count is not configurable in Phase 1; `-U1` is the fixed default.
+4. Diff size reduction is visible in per-round token counts in the session browser.
+
+---
+
+
 # Story Map
 
 
@@ -907,3 +944,5 @@ As a developer writing a skill, I want to validate and scaffold skill files from
 | US-046 | Skill routing per-task in a pipeline | could have | 3 |
 | US-047 | Three-tier skill resolution with marshal skills which | must have | 1 |
 | US-048 | marshal skills validate and new scaffold command | should have | 2 |
+| US-049 | Session affinity header for Fireworks KV cache reuse | must have | 1 |
+| US-050 | git diff -U1 to reduce critic input token count | should have | 1 |

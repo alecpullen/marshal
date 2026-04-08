@@ -1,12 +1,12 @@
 # Marshal — Design Specification
 
-**Version** 0.6 — Open skills system with three-tier resolution  
+**Version** 0.7 — Fireworks AI provider, model upgrades, token efficiency  
 **Date** March 2026  
 **Language** Go  
 
-> **Changes in v0.6**
+> **Changes in v0.7**
 >
-> Section 4.6 (Skills system) expanded to cover three-tier resolution (project > user-global > built-in), full skill schema with `[meta]` block, complete `marshal skills` command surface, and community skills distribution model. Updated feature roadmap and resolved design decisions.
+> Switched inference provider from RunPod vLLM to Fireworks AI (serverless, no cold starts, 50% cached-token pricing). Upgraded executor to Devstral Medium (61.6% SWE-Bench), critic to DeepSeek-R1-0528 (full reasoning model, system prompt support, improved JSON reliability). Added Section 4.1 Fireworks platform configuration covering session affinity, batch inference, and prompt structure rules. Added token efficiency design decisions throughout.
 
 
 ---
@@ -51,7 +51,7 @@ At the feature level, large tasks that span multiple files and modules require d
 | CLI framework | Cobra | Idiomatic multi-command Go CLI. |
 | Session storage | SQLite via database/sql | Per-project `.marshal/sessions.db`. Extended in Phase 3 for pipeline runs and task dependency graphs. |
 | Config format | TOML via BurntSushi/toml | Human-readable, git-committable, env var interpolation. |
-| Model client | openai-go SDK | Works against RunPod, Ollama, Anthropic, and any vLLM deployment. |
+| Model client | openai-go SDK | Works against Fireworks AI, Ollama, Together AI, and any OpenAI-compatible endpoint. |
 | Git operations | os/exec wrapping git CLI | Extended in Phase 3: concurrent isolation branches, topological merge ordering. |
 
 
@@ -145,34 +145,37 @@ type Backend interface {
 
 ```toml
 [executor]
-model       = "RedHatAI/Devstral-Small-2507-quantized.w8a8"
-base_url    = "https://api.runpod.ai/v2/ENDPOINT_ID/openai/v1"
-api_key     = "${RUNPOD_API_KEY}"
+# Devstral Medium — 61.6% SWE-Bench Verified, dense 123B, no expert routing
+model       = "accounts/fireworks/models/devstral-medium"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
 temperature = 0.2
-max_tokens  = 2048
+max_tokens  = 4096   # headroom for multi-file implementations
 
 [critic]
-model       = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-base_url    = "https://api.runpod.ai/v2/ENDPOINT_ID/openai/v1"
-api_key     = "${RUNPOD_API_KEY}"
-temperature = 0.0
-max_tokens  = 1024
+# DeepSeek-R1-0528 — full reasoning model, not a distil; system prompt supported
+model       = "accounts/fireworks/models/deepseek-r1-0528"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
+temperature = 0.6    # R1 series requires 0.5-0.7; 0.0 causes repetition
+max_tokens  = 8192   # must accommodate think-blocks before verdict
 json_output = true
 
 # Phase 3
 [planner]
-model       = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-base_url    = "https://api.runpod.ai/v2/ENDPOINT_ID/openai/v1"
-api_key     = "${RUNPOD_API_KEY}"
+# DeepSeek V3.2 — high code comprehension, no reasoning-token overhead
+model       = "accounts/fireworks/models/deepseek-v3p1"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
 temperature = 0.0
 max_tokens  = 2048
 
 [integration_critic]
-model       = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-base_url    = "https://api.runpod.ai/v2/ENDPOINT_ID/openai/v1"
-api_key     = "${RUNPOD_API_KEY}"
-temperature = 0.0
-max_tokens  = 2048
+model       = "accounts/fireworks/models/deepseek-r1-0528"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
+temperature = 0.6
+max_tokens  = 8192
 
 [loop]
 max_rounds        = 3
@@ -262,25 +265,88 @@ type Compactor interface {
 # 4. AI-Specific Features
 
 
-## 4.1 Prompt caching
+## 4.1 Inference provider — Fireworks AI
 
 
-`CacheHit` and `CachedTokens` stored per model call. Enable on RunPod with `ENABLE_PREFIX_CACHING=true`. The system prompt — identical across rounds — is the primary cache beneficiary.
+Marshal uses Fireworks AI as its default inference provider. Fireworks offers serverless endpoints with no cold starts, an OpenAI-compatible API, and 50% pricing on cached input tokens. Switching providers requires only a `marshal.toml` change — the `Backend` interface is unchanged.
 
 
-## 4.2 Temperature per agent
+### Session affinity
 
 
-| Agent | Recommended | Rationale |
+Fireworks prompt caching only works within a single replica. For serverless deployments, send a session affinity hint on every request so all rounds of a session hit the same replica and share the KV cache:
+
+
+```go
+// internal/backend/openai_compat.go — add to every request
+req.Header.Set("x-session-affinity", sessionID)
+```
+
+
+Use the Marshal session ID as the affinity key. Without this, cache hit rates on serverless are low because successive rounds may land on different replicas.
+
+
+### Prompt structure rules
+
+
+Fireworks caches exact prompt prefixes. The message array must be ordered so the maximum possible prefix is static:
+
+
+```
+Message 1 (system): base_executor_prompt
+                    + security_standing_instructions   ← identical every round
+                    + skill.system_prompt_additions    ← identical every session
+Message 2 (user):   task description                  ← identical every round
+Message 3+:         conversation history               ← grows, but prefix above is cached
+Message N (user):   git diff                           ← ALWAYS LAST — changes every round
+```
+
+
+Never place dynamic content (timestamps, round counters, diff content) before the end of the message array. A round number in the system prompt invalidates the cache on every round.
+
+
+### Batch inference
+
+
+Non-streaming calls (planner, integration critic) can use Fireworks batch inference at 50% of serverless pricing for both input and output tokens. Implement as a separate code path in the Backend — streaming calls (executor, critic) stay on the real-time endpoint.
+
+
+### Diff compression
+
+
+The git diff is the largest variable input. Use `git diff -U1` (one context line instead of three) to reduce diff size by 30–50% on typical changes with no loss of critic comprehension. The critic cares about what changed, not surrounding context lines.
+
+
+## 4.2 Model selection
+
+
+| Agent | Model | Rationale |
 | --- | --- | --- |
-| Executor | 0.1 – 0.3 | Low for correct code. Some variance for creative solutions on retry. |
-| Critic | 0.0 | Deterministic. Consistent verdicts required. |
+| Executor | Devstral Medium | 61.6% SWE-Bench Verified. Dense 123B — no expert routing means complex multi-file tasks don't fragment knowledge across MoE experts. |
+| Critic | DeepSeek-R1-0528 | Full reasoning model, not a distil. 57.6% SWE-Bench, 73.3% LiveCodeBench. System prompt support. Improved JSON reliability for structured verdict output. |
+| Planner | DeepSeek V3.2 | High code comprehension for dependency graph generation. Non-reasoning model — no think-block overhead on a structured output task. |
+| Integration critic | DeepSeek-R1-0528 | Same rationale as critic. Cross-task coherence review benefits from full reasoning depth. |
+| Compactor (Phase 2) | DeepSeek V3.2 | Summarisation task. Faithful compression, no reasoning overhead needed. |
+
+
+> 💡 **Why not use the R1-Distill-14B for the critic?**
+>
+> The distilled models are compressed proxies designed for local hosting within VRAM constraints. On hosted inference those constraints don't apply. The full R1-0528 produces significantly deeper reasoning chains before issuing a verdict, catches more issues per round, and has better structured JSON output — all directly beneficial for the critic role. Fewer FAIL-then-PASS cycles saves tokens overall despite the higher per-token cost.
+
+
+## 4.3 Temperature per agent
+
+
+| Agent | Setting | Rationale |
+| --- | --- | --- |
+| Executor | 0.2 | Low for correct structured code. Some variance for creative solutions on retry. |
+| Critic | 0.6 | R1 series requires 0.5–0.7. Setting 0.0 causes repetition and incoherent outputs in the full R1 model. |
 | Planner | 0.0 | Decomposition must be consistent and reproducible. |
-| Integration critic | 0.0 | Final review must be deterministic. |
+| Integration critic | 0.6 | Same rationale as critic. |
 | Compactor (Phase 2) | 0.0 – 0.1 | Summarisation should be faithful, not creative. |
 
 
-## 4.3 Token budget
+## 4.4 Token budget and efficiency
 
 
 | Threshold | Action |
@@ -290,7 +356,21 @@ type Compactor interface {
 | >= 95% | Request blocked. User prompted to compact or reduce scope. |
 
 
-## 4.4 Executor tool use — Phase 3 north star
+Token efficiency measures implemented in order of impact:
+
+
+| Measure | Where | Saving |
+| --- | --- | --- |
+| Session affinity header | `openai_compat.go` | 50% on cached prefix tokens (Fireworks pricing) |
+| Diff last in message array | Message builder | Maximises cached prefix length |
+| No dynamic content in system prompt | Prompt builder | Preserves cache across all rounds |
+| `git diff -U1` context lines | `git.go` | 30–50% smaller critic input |
+| Critic `max_tokens = 8192` | `marshal.toml` | Enough headroom for think-blocks without waste |
+| Batch inference for planner + integration critic | Backend | 50% on both input and output tokens |
+| Think-block stripping | Loop engine | Stored output excludes reasoning tokens |
+
+
+## 4.5 Executor tool use — Phase 3 north star
 
 
 Phases 1 and 2 operate in advisory mode. Phase 3 adds autonomous file editing via tool calls. Branch isolation is the primary safety mechanism. `Backend` will be extended with `CompleteWithTools()` additively.
@@ -509,6 +589,7 @@ final_critic_prompt =
 
 | Feature | Phase | Status |
 | --- | --- | --- |
+| Fireworks AI provider with session affinity | 1 | Planned |
 | Structured JSON critic output | 1 | Planned |
 | Diff-aware critic prompting | 1 | Planned |
 | Independent temperature per agent | 1 | Planned |
@@ -664,9 +745,9 @@ File conflict serialisation:
 | File conflict detection | `files_likely_affected` overlap → serialise conflicting tasks. |
 
 
-> ⚠️ **RunPod scaling**
+> 💡 **Fireworks and parallelism**
 >
-> Parallel execution requires `max_workers > 1` on RunPod endpoints. With `max_workers=1`, set `max_parallel=1` — sequential execution is fully correct and produces identical results.
+> Fireworks serverless scales automatically — there is no `max_workers` setting to configure. Set `max_parallel` in `marshal.toml` to control how many concurrent executor/critic loops Marshal runs. Start with `max_parallel=1` during development. Each parallel task uses its own session affinity key so cache isolation is maintained.
 
 
 ## 6.5 Integration critic output
@@ -776,7 +857,7 @@ For each tier:
 
 | # | Milestone | Deliverable |
 | --- | --- | --- |
-| 1 | Scaffold + provider layer | `Backend` interface, `OpenAICompatibleBackend`, `marshal.toml` loading. Both RunPod endpoints verified. |
+| 1 | Scaffold + provider layer | `Backend` interface, `OpenAICompatibleBackend` with session affinity header, `marshal.toml` loading. Both Fireworks endpoints verified (executor + critic). |
 | 2 | Agent layer + loop engine + security prompts | Executor and Critic with security standing instructions. Loop orchestrator: rounds, feedback injection, JSON verdict parsing, think-block stripping, compaction hook, token budget. Built-in skills via `--skill`. |
 | 3 | Git layer | `GitContext`: branch, diff, commit, revert. Branch isolation end-to-end. |
 | 4 | Session store + CLI | SQLite `.marshal/sessions.db`. Cobra CLI. Headless `--no-tui --json`. Exit codes. |
@@ -833,6 +914,14 @@ For each tier:
 | Skills cannot override security | `system_prompt_additions` only. Other prompt keys rejected at load time. | Non-negotiable architectural constraint. |
 | Skills travel with the project | `.marshal/skills/` is version-controlled. | Team gets same skill behaviour after `git clone`. No setup step. |
 | Community skills model | Public GitHub repo of TOML files, install via `curl`. | `curl` + filename is the simplest distribution for a text file. |
+| Inference provider | Fireworks AI serverless | No cold starts, OpenAI-compatible API, 50% cached token pricing, no GPU infrastructure to manage. |
+| Executor model | Devstral Medium | 61.6% SWE-Bench Verified. Dense architecture avoids MoE expert routing fragmentation on multi-file tasks. |
+| Critic model | DeepSeek-R1-0528 (full) | Full reasoning model, not a distil. System prompt support. Better JSON reliability. Deeper reasoning per round catches more issues, reducing total round count. |
+| Critic temperature | 0.6 (not 0.0) | R1 series recommendation. Temperature 0.0 causes repetition in the full R1 model. |
+| Planner/compactor model | DeepSeek V3.2 | High code comprehension for structured output tasks. Non-reasoning model avoids think-block overhead where it adds no value. |
+| Session affinity header | `x-session-affinity: <session-id>` on every request | Required for Fireworks serverless to route session rounds to the same replica for KV cache reuse. |
+| Diff context lines | `git diff -U1` | Reduces critic input by 30–50%. Critic cares about changed lines, not surrounding context. |
+| Batch inference | Planner and integration critic use batch endpoint | 50% cost on both input and output for non-streaming calls. |
 
 
 ---

@@ -2,7 +2,7 @@
 
 **Project** Marshal  
 **Date** March 2026  
-**Prerequisite** Marshal Design Specification v0.6  
+**Prerequisite** Marshal Design Specification v0.7  
 
 
 > **How to use this guide**
@@ -48,37 +48,46 @@ Open GoLand and install the Go plugin if prompted. Key settings to enable:
 > Go code is formatted by the compiler — there is no style debate. If your code looks different from what you typed, that is gofmt doing its job. Do not fight it.
 
 
-## 1.3 Verify RunPod endpoints
+## 1.3 Set up Fireworks AI
 
 
-Do this before writing any code. If an endpoint is misconfigured, find out now.
+Marshal uses Fireworks AI for inference. Sign up at [fireworks.ai](https://fireworks.ai) and get an API key — you start with $1 of free credits.
 
 
 ```bash
 # Add to ~/.zshrc
-export RUNPOD_API_KEY="your_runpod_api_key"
-export EXECUTOR_BASE_URL="https://api.runpod.ai/v2/YOUR_EXECUTOR_ID/openai/v1"
-export CRITIC_BASE_URL="https://api.runpod.ai/v2/YOUR_CRITIC_ID/openai/v1"
+export FIREWORKS_API_KEY="your_fireworks_api_key"
 
-# Test executor — should return a JSON models list
-curl $EXECUTOR_BASE_URL/models \
-  -H "Authorization: Bearer $RUNPOD_API_KEY"
+# Verify the API key works and models are listed
+curl https://api.fireworks.ai/inference/v1/models \
+  -H "Authorization: Bearer $FIREWORKS_API_KEY"
 
-# Test critic
-curl $CRITIC_BASE_URL/models \
-  -H "Authorization: Bearer $RUNPOD_API_KEY"
-
-# Test a real completion
-curl $EXECUTOR_BASE_URL/chat/completions \
-  -H "Authorization: Bearer $RUNPOD_API_KEY" \
+# Test the executor (Devstral Medium)
+curl https://api.fireworks.ai/inference/v1/chat/completions \
+  -H "Authorization: Bearer $FIREWORKS_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"RedHatAI/Devstral-Small-2507-quantized.w8a8",
-        "messages":[{"role":"user","content":"Reply in one word."}],
-        "max_tokens":5}'
+  -d '{
+    "model": "accounts/fireworks/models/devstral-medium",
+    "messages": [{"role":"user","content":"Reply in one word."}],
+    "max_tokens": 5
+  }'
+
+# Test the critic (DeepSeek-R1-0528)
+curl https://api.fireworks.ai/inference/v1/chat/completions \
+  -H "Authorization: Bearer $FIREWORKS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "accounts/fireworks/models/deepseek-r1-0528",
+    "messages": [
+      {"role":"system","content":"You are a concise assistant."},
+      {"role":"user","content":"Reply in one word."}
+    ],
+    "max_tokens": 20
+  }'
 ```
 
 
-503 = cold start, wait 30s and retry. 401 = wrong API key. 404 = wrong endpoint ID.
+Both should return HTTP 200 with a `choices` array. 401 = wrong API key. 404 = wrong model ID — check the [Fireworks model library](https://fireworks.ai/models). Unlike RunPod, there are no cold starts and no endpoint IDs to manage.
 
 
 ## 1.4 Claim the GitHub repository
@@ -145,18 +154,20 @@ go get github.com/spf13/cobra
 
 ```toml
 [executor]
-model       = "RedHatAI/Devstral-Small-2507-quantized.w8a8"
-base_url    = "${EXECUTOR_BASE_URL}"
-api_key     = "${RUNPOD_API_KEY}"
+# Devstral Medium — 61.6% SWE-Bench Verified
+model       = "accounts/fireworks/models/devstral-medium"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
 temperature = 0.2
-max_tokens  = 2048
+max_tokens  = 4096
 
 [critic]
-model       = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-base_url    = "${CRITIC_BASE_URL}"
-api_key     = "${RUNPOD_API_KEY}"
-temperature = 0.0
-max_tokens  = 1024
+# DeepSeek-R1-0528 — full reasoning model, system prompt supported
+model       = "accounts/fireworks/models/deepseek-r1-0528"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
+temperature = 0.6   # R1 series: must be 0.5-0.7
+max_tokens  = 8192  # headroom for think-blocks before the verdict
 json_output = true
 
 [loop]
@@ -208,7 +219,7 @@ git push -u origin main
 # 3. Milestone 1 — Scaffold and provider layer
 
 
-By the end of this section both RunPod endpoints will be responding through the Backend abstraction. Do not move to Milestone 2 until the verification script at the end prints success.
+By the end of this section both Fireworks endpoints will be responding through the Backend abstraction. Do not move to Milestone 2 until the verification script at the end prints success.
 
 
 > **Build order**
@@ -305,10 +316,10 @@ func Load(path string) (*Config, error) {
 func (c *Config) Validate() error {
     if c.Executor.Model == ""   { return fmt.Errorf("executor.model is required") }
     if c.Executor.BaseURL == "" { return fmt.Errorf("executor.base_url is required") }
-    if c.Executor.APIKey == ""  { return fmt.Errorf("executor.api_key / $RUNPOD_API_KEY not set") }
+    if c.Executor.APIKey == ""  { return fmt.Errorf("executor.api_key / $FIREWORKS_API_KEY not set") }
     if c.Critic.Model == ""     { return fmt.Errorf("critic.model is required") }
     if c.Critic.BaseURL == ""   { return fmt.Errorf("critic.base_url is required") }
-    if c.Critic.APIKey == ""    { return fmt.Errorf("critic.api_key / $RUNPOD_API_KEY not set") }
+    if c.Critic.APIKey == ""    { return fmt.Errorf("critic.api_key / $FIREWORKS_API_KEY not set") }
     return nil
 }
 ```
@@ -330,10 +341,11 @@ import (
 )
 
 type OpenAICompatibleBackend struct {
-    name    string
-    baseURL string
-    apiKey  string
-    client  *http.Client
+    name      string
+    baseURL   string
+    apiKey    string
+    sessionID string // x-session-affinity value for Fireworks KV cache routing
+    client    *http.Client
 }
 
 func NewOpenAICompatible(name, baseURL, apiKey string) *OpenAICompatibleBackend {
@@ -341,6 +353,11 @@ func NewOpenAICompatible(name, baseURL, apiKey string) *OpenAICompatibleBackend 
         name: name, baseURL: baseURL, apiKey: apiKey,
         client: &http.Client{},
     }
+}
+
+func (b *OpenAICompatibleBackend) WithSession(id string) *OpenAICompatibleBackend {
+    b.sessionID = id
+    return b
 }
 
 func (b *OpenAICompatibleBackend) Name() string { return b.name }
@@ -366,6 +383,11 @@ func (b *OpenAICompatibleBackend) Complete(
     }
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Authorization", "Bearer "+b.apiKey)
+    // Session affinity routes all rounds of a session to the same Fireworks
+    // replica so the system-prompt KV cache is reused (50% cached-token pricing).
+    if b.sessionID != "" {
+        req.Header.Set("x-session-affinity", b.sessionID)
+    }
 
     resp, err := b.client.Do(req)
     if err != nil {
@@ -454,7 +476,7 @@ go run cmd/marshal/main.go
 
 > ⚠️ **Common failures**
 >
-> 503 = cold start, wait 30s. 401 = `$RUNPOD_API_KEY` not exported in this shell. 404 = wrong endpoint ID in `EXECUTOR_BASE_URL` or `CRITIC_BASE_URL`. 500 with OOM = model too large for GPU tier.
+> 401 = `$FIREWORKS_API_KEY` not exported in this shell — run `source ~/.zshrc`. 404 = wrong model ID string — check the [Fireworks model library](https://fireworks.ai/models) for the exact name. 429 = rate limit on free tier — wait and retry; the `[retry]` config handles this automatically once the loop engine is built.
 
 
 ## 3.5 Commit

@@ -643,3 +643,51 @@ git push
 > **The rule**
 >
 > Do not start Milestone 2 until Milestone 1's verification prints "Milestone 1 complete." Do not start the TUI until you have a working CLI with correct output. The milestones are ordered for a reason — the temptation to jump to the TUI is real and it will slow you down.
+
+
+## 4.1 Milestone 2 Overview
+
+Milestone 2 implements the **loop engine** — the core orchestration that drives the executor-critic feedback cycle.
+
+**Full implementation plan**: `.claude/plans/m2-loop-engine.md`
+
+**What you get:**
+- Complete loop orchestration (`internal/loop/loop.go`)
+- Executor agent with security prompts and skills
+- Critic agent with JSON verdict parsing
+- Mock git layer for testing (real git in M3)
+- Skills system (`.marshal/skills/` and `~/.config/marshal/skills/`)
+- Compaction for long-running sessions
+
+**Files to create:**
+```
+internal/loop/
+├── loop.go           # Core orchestrator
+├── loop_test.go
+├── executor.go       # Code-writing agent
+├── executor_test.go
+├── critic.go         # Code-review agent
+├── critic_test.go
+├── prompts.go        # Security + base prompts
+├── skills.go         # Skills loader
+├── skills_test.go
+├── compaction.go     # History compaction
+├── compaction_test.go
+└── mock_git.go       # Mock git for M2
+```
+
+**Integration:** Replace the M1 verification script in `cmd/marshal/main.go` with actual loop usage that runs the executor → critic → feedback cycle.
+
+**When M2 is done:**
+```bash
+go test ./internal/loop/...  # all tests pass
+go run cmd/marshal/main.go   # executes full loop with real models
+```
+
+The loop will:
+1. Send task to executor → generates code
+2. Extract git diff → send to critic
+3. Parse critic verdict (PASS/FAIL)
+4. If FAIL → inject feedback, loop back to executor
+5. If PASS → success (M3 adds merge)
+6. If max rounds exceeded → fail (M3 adds reset)

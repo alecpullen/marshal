@@ -1,5 +1,5 @@
 [executor]
-model       = "RedHatAI/Devstral-Small-2507-quantized.w8a8"
+model       = "redhatai/devstral-small-2507-quantized.w8a8"
 base_url    = "${EXECUTOR_BASE_URL}"
 api_key     = "${RUNPOD_API_KEY}"
 temperature = 0.2

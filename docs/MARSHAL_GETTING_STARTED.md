@@ -1,0 +1,486 @@
+# Marshal — Getting Started
+
+**Project** Marshal  
+**Date** March 2026  
+**Prerequisite** Marshal Design Specification v0.6  
+
+
+> **How to use this guide**
+>
+> Follow sections in order. Do not skip ahead to the implementation before completing the environment setup — each section builds directly on the previous one.
+
+
+---
+
+
+# 1. Environment setup
+
+
+## 1.1 Install Go
+
+
+Download the macOS ARM64 package installer from [go.dev/dl](https://go.dev/dl). Use the official installer, not Homebrew, to avoid PATH issues.
+
+
+```bash
+# After running the installer, open a new terminal and verify
+go version
+# Expected: go version go1.22.x darwin/arm64 or later
+
+go env GOPATH
+# Expected: /Users/<you>/go
+```
+
+
+## 1.2 GoLand setup
+
+
+Open GoLand and install the Go plugin if prompted. Key settings to enable:
+
+
+- **Go → Go Modules**: enable Go modules integration
+- **Editor → Code Style → Go**: enable format on save with `gofmt`
+- **Tools → File Watchers**: add a `goimports` watcher for auto-import management
+
+
+> **gofmt is non-negotiable**
+>
+> Go code is formatted by the compiler — there is no style debate. If your code looks different from what you typed, that is gofmt doing its job. Do not fight it.
+
+
+## 1.3 Verify RunPod endpoints
+
+
+Do this before writing any code. If an endpoint is misconfigured, find out now.
+
+
+```bash
+# Add to ~/.zshrc
+export RUNPOD_API_KEY="your_runpod_api_key"
+export EXECUTOR_BASE_URL="https://api.runpod.ai/v2/YOUR_EXECUTOR_ID/openai/v1"
+export CRITIC_BASE_URL="https://api.runpod.ai/v2/YOUR_CRITIC_ID/openai/v1"
+
+# Test executor — should return a JSON models list
+curl $EXECUTOR_BASE_URL/models \
+  -H "Authorization: Bearer $RUNPOD_API_KEY"
+
+# Test critic
+curl $CRITIC_BASE_URL/models \
+  -H "Authorization: Bearer $RUNPOD_API_KEY"
+
+# Test a real completion
+curl $EXECUTOR_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $RUNPOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"RedHatAI/Devstral-Small-2507-quantized.w8a8",
+        "messages":[{"role":"user","content":"Reply in one word."}],
+        "max_tokens":5}'
+```
+
+
+503 = cold start, wait 30s and retry. 401 = wrong API key. 404 = wrong endpoint ID.
+
+
+## 1.4 Claim the GitHub repository
+
+
+1. Create a new **private** repository named `marshal` on github.com
+2. Do not initialise with a README, licence, or .gitignore
+3. Note your repo URL: `github.com/<your-username>/marshal`
+
+Do this before running `go mod init` — your module path should match the repo URL.
+
+
+---
+
+
+# 2. Project setup
+
+
+```bash
+mkdir ~/projects/marshal && cd ~/projects/marshal
+git init
+go mod init github.com/<your-username>/marshal
+
+# Directory structure from the spec
+mkdir -p cmd/marshal
+mkdir -p internal/backend
+mkdir -p internal/config
+mkdir -p internal/loop
+mkdir -p internal/git
+mkdir -p internal/store
+mkdir -p internal/tui
+mkdir -p .marshal/skills
+
+# Minimal entry point
+cat > cmd/marshal/main.go << 'EOF'
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("marshal")
+}
+EOF
+
+go run cmd/marshal/main.go
+# Expected: marshal
+```
+
+
+## 2.1 Add dependencies
+
+
+```bash
+go get github.com/BurntSushi/toml
+go get github.com/mattn/go-sqlite3   # requires Xcode CLI tools
+go get github.com/spf13/cobra
+
+# If go-sqlite3 fails: xcode-select --install, then retry
+```
+
+
+## 2.2 Create marshal.toml
+
+
+```toml
+[executor]
+model       = "RedHatAI/Devstral-Small-2507-quantized.w8a8"
+base_url    = "${EXECUTOR_BASE_URL}"
+api_key     = "${RUNPOD_API_KEY}"
+temperature = 0.2
+max_tokens  = 2048
+
+[critic]
+model       = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+base_url    = "${CRITIC_BASE_URL}"
+api_key     = "${RUNPOD_API_KEY}"
+temperature = 0.0
+max_tokens  = 1024
+json_output = true
+
+[loop]
+max_rounds        = 3
+auto_commit       = true
+auto_revert       = true
+branch_isolation  = true
+compact_after     = 2
+token_budget_warn = 0.80
+
+[session]
+db_path = ".marshal/sessions.db"
+
+[retry]
+max_attempts       = 3
+initial_backoff_ms = 1000
+backoff_factor     = 2.0
+retry_status_codes = [429, 502, 503]
+```
+
+
+## 2.3 Create .gitignore
+
+
+```gitignore
+.marshal/*.db
+marshal
+*.exe
+.DS_Store
+.env
+```
+
+
+## 2.4 Initial commit
+
+
+```bash
+git add .
+git commit -m "init: project scaffold"
+git remote add origin https://github.com/<your-username>/marshal.git
+git branch -M main
+git push -u origin main
+```
+
+
+---
+
+
+# 3. Milestone 1 — Scaffold and provider layer
+
+
+By the end of this section both RunPod endpoints will be responding through the Backend abstraction. Do not move to Milestone 2 until the verification script at the end prints success.
+
+
+> **Build order**
+>
+> Write the three files in the order shown. Each depends only on what came before it. Resist the urge to write the loop engine or TUI — those are later milestones.
+
+
+## 3.1 internal/backend/backend.go
+
+
+```go
+package backend
+
+import "context"
+
+// Message is a single turn in a conversation.
+type Message struct {
+    Role    string // "system" | "user" | "assistant"
+    Content string
+}
+
+// Response is a completed model call.
+type Response struct {
+    Content          string
+    PromptTokens     int
+    CompletionTokens int
+    CacheHit         bool
+    CachedTokens     int
+}
+
+// Backend is the interface all model providers must implement.
+type Backend interface {
+    Complete(ctx context.Context, model string, messages []Message) (Response, error)
+    Name() string
+}
+```
+
+
+## 3.2 internal/config/config.go
+
+
+```go
+package config
+
+import (
+    "fmt"
+    "os"
+    "github.com/BurntSushi/toml"
+)
+
+type AgentConfig struct {
+    Model       string  `toml:"model"`
+    BaseURL     string  `toml:"base_url"`
+    APIKey      string  `toml:"api_key"`
+    Temperature float64 `toml:"temperature"`
+    MaxTokens   int     `toml:"max_tokens"`
+    JSONOutput  bool    `toml:"json_output"`
+}
+
+type LoopConfig struct {
+    MaxRounds       int     `toml:"max_rounds"`
+    AutoCommit      bool    `toml:"auto_commit"`
+    AutoRevert      bool    `toml:"auto_revert"`
+    BranchIsolation bool    `toml:"branch_isolation"`
+    CompactAfter    int     `toml:"compact_after"`
+    TokenBudgetWarn float64 `toml:"token_budget_warn"`
+}
+
+type Config struct {
+    Executor AgentConfig `toml:"executor"`
+    Critic   AgentConfig `toml:"critic"`
+    Loop     LoopConfig  `toml:"loop"`
+}
+
+func Load(path string) (*Config, error) {
+    raw, err := os.ReadFile(path)
+    if err != nil {
+        return nil, fmt.Errorf("reading %s: %w", path, err)
+    }
+    expanded := os.Expand(string(raw), func(key string) string {
+        val := os.Getenv(key)
+        if val == "" {
+            fmt.Printf("warning: $%s is not set\n", key)
+        }
+        return val
+    })
+    var cfg Config
+    if _, err := toml.Decode(expanded, &cfg); err != nil {
+        return nil, fmt.Errorf("parsing %s: %w", path, err)
+    }
+    return &cfg, nil
+}
+
+func (c *Config) Validate() error {
+    if c.Executor.Model == ""   { return fmt.Errorf("executor.model is required") }
+    if c.Executor.BaseURL == "" { return fmt.Errorf("executor.base_url is required") }
+    if c.Executor.APIKey == ""  { return fmt.Errorf("executor.api_key / $RUNPOD_API_KEY not set") }
+    if c.Critic.Model == ""     { return fmt.Errorf("critic.model is required") }
+    if c.Critic.BaseURL == ""   { return fmt.Errorf("critic.base_url is required") }
+    if c.Critic.APIKey == ""    { return fmt.Errorf("critic.api_key / $RUNPOD_API_KEY not set") }
+    return nil
+}
+```
+
+
+## 3.3 internal/backend/openai_compat.go
+
+
+```go
+package backend
+
+import (
+    "bytes"
+    "context"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+)
+
+type OpenAICompatibleBackend struct {
+    name    string
+    baseURL string
+    apiKey  string
+    client  *http.Client
+}
+
+func NewOpenAICompatible(name, baseURL, apiKey string) *OpenAICompatibleBackend {
+    return &OpenAICompatibleBackend{
+        name: name, baseURL: baseURL, apiKey: apiKey,
+        client: &http.Client{},
+    }
+}
+
+func (b *OpenAICompatibleBackend) Name() string { return b.name }
+
+func (b *OpenAICompatibleBackend) Complete(
+    ctx context.Context, model string, messages []Message,
+) (Response, error) {
+    reqBody, err := json.Marshal(struct {
+        Model     string    `json:"model"`
+        Messages  []Message `json:"messages"`
+        MaxTokens int       `json:"max_tokens"`
+    }{model, messages, 1024})
+    if err != nil {
+        return Response{}, fmt.Errorf("marshal request: %w", err)
+    }
+    req, err := http.NewRequestWithContext(
+        ctx, http.MethodPost,
+        b.baseURL+"/chat/completions",
+        bytes.NewReader(reqBody),
+    )
+    if err != nil {
+        return Response{}, fmt.Errorf("build request: %w", err)
+    }
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+b.apiKey)
+
+    resp, err := b.client.Do(req)
+    if err != nil {
+        return Response{}, fmt.Errorf("do request: %w", err)
+    }
+    defer resp.Body.Close()
+    raw, _ := io.ReadAll(resp.Body)
+
+    if resp.StatusCode != http.StatusOK {
+        return Response{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(raw))
+    }
+
+    var result struct {
+        Choices []struct {
+            Message struct{ Content string `json:"content"` } `json:"message"`
+        } `json:"choices"`
+        Usage struct {
+            PromptTokens     int `json:"prompt_tokens"`
+            CompletionTokens int `json:"completion_tokens"`
+        } `json:"usage"`
+    }
+    if err := json.Unmarshal(raw, &result); err != nil {
+        return Response{}, fmt.Errorf("decode response: %w", err)
+    }
+    if len(result.Choices) == 0 {
+        return Response{}, fmt.Errorf("no choices in response")
+    }
+    return Response{
+        Content:          result.Choices[0].Message.Content,
+        PromptTokens:     result.Usage.PromptTokens,
+        CompletionTokens: result.Usage.CompletionTokens,
+    }, nil
+}
+```
+
+
+## 3.4 Verify Milestone 1
+
+
+Replace `cmd/marshal/main.go` with this verification script:
+
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/<your-username>/marshal/internal/backend"
+    "github.com/<your-username>/marshal/internal/config"
+)
+
+func main() {
+    cfg, err := config.Load("marshal.toml")
+    if err != nil { log.Fatal("config:", err) }
+    if err := cfg.Validate(); err != nil { log.Fatal("validate:", err) }
+
+    executor := backend.NewOpenAICompatible("executor", cfg.Executor.BaseURL, cfg.Executor.APIKey)
+    critic   := backend.NewOpenAICompatible("critic",   cfg.Critic.BaseURL,   cfg.Critic.APIKey)
+    ctx      := context.Background()
+    msgs     := []backend.Message{{Role: "user", Content: "Reply in exactly three words."}}
+
+    fmt.Println("--- executor ---")
+    exResp, err := executor.Complete(ctx, cfg.Executor.Model, msgs)
+    if err != nil { log.Fatal("executor:", err) }
+    fmt.Println("response:", exResp.Content)
+    fmt.Printf("tokens:   %d prompt + %d completion\n", exResp.PromptTokens, exResp.CompletionTokens)
+
+    fmt.Println("\n--- critic ---")
+    crResp, err := critic.Complete(ctx, cfg.Critic.Model, msgs)
+    if err != nil { log.Fatal("critic:", err) }
+    fmt.Println("response:", crResp.Content)
+    fmt.Printf("tokens:   %d prompt + %d completion\n", crResp.PromptTokens, crResp.CompletionTokens)
+
+    fmt.Println("\nMilestone 1 complete.")
+}
+```
+
+
+```bash
+go run cmd/marshal/main.go
+```
+
+
+> ⚠️ **Common failures**
+>
+> 503 = cold start, wait 30s. 401 = `$RUNPOD_API_KEY` not exported in this shell. 404 = wrong endpoint ID in `EXECUTOR_BASE_URL` or `CRITIC_BASE_URL`. 500 with OOM = model too large for GPU tier.
+
+
+## 3.5 Commit
+
+
+```bash
+git add .
+git commit -m "feat: milestone 1 — backend interface and OpenAI-compatible client"
+git push
+```
+
+
+---
+
+
+# 4. What comes next
+
+
+| Milestone | What you build | New Go concepts |
+| --- | --- | --- |
+| 2 — Loop engine | `internal/loop/loop.go`, `executor.go`, `critic.go`. Round management, feedback injection, JSON verdict parsing, think-block stripping, security prompts, skill loading. | Structs with methods. JSON unmarshaling into nested types. String parsing. |
+| 3 — Git layer | `internal/git/git.go`. Branch creation, diff extraction, commit, hard reset. | More `os/exec` patterns. Error wrapping. Subprocess state management. |
+| 4 — Session store + CLI | `internal/store/store.go` (SQLite). Cobra CLI. `marshal run`, `marshal sessions`. `--no-tui --json`. | `database/sql` query patterns. Cobra command structure. `os.Exit` with documented codes. |
+| 5 — Bubble Tea TUI | `internal/tui/`. Loop view, session browser, diff viewer. Bubble Tea Model/Update/View. | Bubble Tea architecture. Lip Gloss styling. Goroutine → channel → `tea.Msg`. |
+
+
+> **The rule**
+>
+> Do not start Milestone 2 until Milestone 1's verification prints "Milestone 1 complete." Do not start the TUI until you have a working CLI with correct output. The milestones are ordered for a reason — the temptation to jump to the TUI is real and it will slow you down.

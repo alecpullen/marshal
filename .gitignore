@@ -4,6 +4,7 @@ marshal
 .DS_Store
 .env
 .claude/
+.idea/
 
 # Python
 __pycache__/

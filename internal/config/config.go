@@ -27,10 +27,15 @@ type LoopConfig struct {
 	TokenBudgetWarn float64 `toml:"token_budget_warning"`
 }
 
+type SessionConfig struct {
+	DBPath string `toml:"db_path"`
+}
+
 type Config struct {
-	Executor AgentConfig `toml:"executor"`
-	Critic   AgentConfig `toml:"critic"`
-	Loop     LoopConfig  `toml:"loop"`
+	Executor AgentConfig   `toml:"executor"`
+	Critic   AgentConfig   `toml:"critic"`
+	Loop     LoopConfig    `toml:"loop"`
+	Session  SessionConfig `toml:"session"`
 }
 
 // loadDotEnv parses a .env file into a map. Shell env takes precedence —

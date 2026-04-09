@@ -19,6 +19,7 @@ type CompactionResult struct {
 	Summary       string
 	KeptRounds    []int
 	DroppedRounds []int
+	TokensSaved   int // Estimated token savings
 }
 
 // NewCompactor creates a new compactor.
@@ -89,4 +90,52 @@ This summary will be used as context for continuing the conversation.`, historyT
 // ShouldCompact returns true if compaction should be triggered.
 func (c *Compactor) ShouldCompact(round int, compactAfter int) bool {
 	return round >= compactAfter
+}
+
+// CompactAndDrop generates a summary and actually drops old rounds.
+// It keeps the last `keepRecent` rounds and summarizes the rest.
+func (c *Compactor) CompactAndDrop(ctx context.Context, history []Round, keepRecent int) (*CompactionResult, error) {
+	if len(history) <= keepRecent {
+		// Nothing to drop
+		kept := make([]int, len(history))
+		for i, round := range history {
+			kept[i] = round.Number
+		}
+		return &CompactionResult{
+			Summary:       "",
+			KeptRounds:    kept,
+			DroppedRounds: []int{},
+			TokensSaved:   0,
+		}, nil
+	}
+
+	// Calculate what to drop vs keep
+	dropCount := len(history) - keepRecent
+	toDrop := history[:dropCount]
+	toKeep := history[dropCount:]
+
+	// Generate summary of what we're dropping
+	result, err := c.Compact(ctx, toDrop)
+	if err != nil {
+		return nil, err
+	}
+
+	// Estimate token savings (rough approximation)
+	tokensSaved := 0
+	for _, round := range toDrop {
+		tokensSaved += round.Tokens.PromptTokens + round.Tokens.CompletionTokens
+	}
+	result.TokensSaved = tokensSaved
+
+	// Update kept/dropped lists based on actual split
+	result.DroppedRounds = make([]int, len(toDrop))
+	for i, round := range toDrop {
+		result.DroppedRounds[i] = round.Number
+	}
+	result.KeptRounds = make([]int, len(toKeep))
+	for i, round := range toKeep {
+		result.KeptRounds[i] = round.Number
+	}
+
+	return result, nil
 }

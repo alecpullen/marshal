@@ -29,11 +29,11 @@ const (
 type taskState int
 
 const (
-	taskQueued    taskState = iota
-	taskRunning             // currently executing the loop
-	taskCancelling          // cancellation requested, cleaning up
-	taskPass                // loop completed, PASS
-	taskFail                // loop completed, FAIL
+	taskQueued     taskState = iota
+	taskRunning              // currently executing the loop
+	taskCancelling           // cancellation requested, cleaning up
+	taskPass                 // loop completed, PASS
+	taskFail                 // loop completed, FAIL
 )
 
 type sidebarTask struct {
@@ -201,7 +201,7 @@ func (m SidebarModel) renderSectionHeader(label string, active bool) string {
 		titleStyle = styleSidebarTitle
 	}
 	title := titleStyle.Render(label)
-	rule  := styleSidebarRule.Render(strings.Repeat("─", sidebarWidth))
+	rule := styleSidebarRule.Render(strings.Repeat("─", sidebarWidth))
 	return title + "\n" + rule
 }
 
@@ -225,8 +225,8 @@ func (m SidebarModel) renderTasks(h int) string {
 			)
 		}
 		active := m.subFocus == subFocusTasks && i == m.taskCursor
-		dot    := m.dotForState(task.state)
-		desc   := truncate(task.description, sidebarWidth-3)
+		dot := m.dotForState(task.state)
+		desc := truncate(task.description, sidebarWidth-3)
 
 		var nameStyle lipgloss.Style
 		if active {
@@ -245,8 +245,8 @@ func (m SidebarModel) renderTasks(h int) string {
 
 	// Pad to h lines
 	blank := lipgloss.NewStyle().Width(sidebarWidth).Background(colBg).Render("")
-	all   := strings.Join(lines, "\n")
-	rows  := strings.Split(all, "\n")
+	all := strings.Join(lines, "\n")
+	rows := strings.Split(all, "\n")
 	for len(rows) < h {
 		rows = append(rows, blank)
 	}

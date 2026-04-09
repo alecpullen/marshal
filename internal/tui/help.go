@@ -66,6 +66,8 @@ func (m HelpModel) View(w, h int) string {
 				":cancel  abort running task",
 				":retry   retry last completed task",
 				":clear   clear log panel",
+				"t        toggle all reasoning blocks",
+				"T        toggle focused block's reasoning",
 			},
 		},
 		{

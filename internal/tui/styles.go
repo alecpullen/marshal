@@ -136,7 +136,7 @@ var (
 	styleLogError   = lipgloss.NewStyle().Foreground(colRd)
 	styleLogWarning = lipgloss.NewStyle().Foreground(colAm)
 
-	styleRoundSep = lipgloss.NewStyle().Foreground(colBr3)
+	styleRoundSep   = lipgloss.NewStyle().Foreground(colBr3)
 	styleRoundLabel = lipgloss.NewStyle().Foreground(colTx3)
 
 	styleThink = lipgloss.NewStyle().
@@ -199,10 +199,10 @@ var (
 			PaddingLeft(1).
 			PaddingRight(1)
 
-	styleStatusSep     = lipgloss.NewStyle().Foreground(colBr).SetString(" · ")
-	styleStatusExec    = lipgloss.NewStyle().Foreground(colBl)
-	styleStatusCritic  = lipgloss.NewStyle().Foreground(colPu)
-	styleStatusAlert   = lipgloss.NewStyle().Foreground(colAm)
+	styleStatusSep    = lipgloss.NewStyle().Foreground(colBr).SetString(" · ")
+	styleStatusExec   = lipgloss.NewStyle().Foreground(colBl)
+	styleStatusCritic = lipgloss.NewStyle().Foreground(colPu)
+	styleStatusAlert  = lipgloss.NewStyle().Foreground(colAm)
 )
 
 // ── Badge styles ──────────────────────────────────────────────────────────────

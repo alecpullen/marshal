@@ -19,13 +19,13 @@ import (
 type diffLineKind int
 
 const (
-	diffHeader  diffLineKind = iota // "diff --git a/… b/…"
-	diffFileLine                    // "--- a/…" or "+++ b/…"
-	diffHunk                        // "@@ … @@"
-	diffAdd                         // "+…"
-	diffDel                         // "-…"
-	diffContext                     // " …" (unchanged)
-	diffMsg                         // informational / error
+	diffHeader   diffLineKind = iota // "diff --git a/… b/…"
+	diffFileLine                     // "--- a/…" or "+++ b/…"
+	diffHunk                         // "@@ … @@"
+	diffAdd                          // "+…"
+	diffDel                          // "-…"
+	diffContext                      // " …" (unchanged)
+	diffMsg                          // informational / error
 )
 
 type diffLine struct {
@@ -109,7 +109,7 @@ func (m DiffModel) Update(msg tea.Msg) (DiffModel, tea.Cmd) {
 		return m, nil
 
 	case tea.WindowSizeMsg:
-		const hintH = 2 // tab strip + hint bar
+		const hintH = 2                    // tab strip + hint bar
 		m.viewport.Width = msg.Width - 4   // modal padding
 		m.viewport.Height = msg.Height - 4 // modal border+padding
 		if m.viewport.Height > hintH {
@@ -194,8 +194,8 @@ func (m DiffModel) View(w, h int) string {
 		BorderForeground(colBr3).
 		Background(colBg).
 		Padding(1, 2).
-		Width(w-4).
-		Height(h-2).
+		Width(w - 4).
+		Height(h - 2).
 		Render(content)
 }
 

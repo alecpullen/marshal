@@ -24,17 +24,18 @@ import (
 type lineKind int
 
 const (
-	lineExec    lineKind = iota // executor output, first chunk line
-	lineCritic                  // critic output, first chunk line
-	lineCont                    // continuation / code / diff
-	lineSuccess                 // starts with ✓
-	lineError                   // starts with ✗
-	lineWarning                 // warning
-	lineThink                   // R1 think-block content
-	lineQueued                  // "queued: <desc>" confirmation
-	lineRoundSep                // ── round N ──
-	lineCursor                  // blank line holding streaming cursor
-	lineSystem                  // :help output, muted italic
+	lineExec       lineKind = iota // executor output, first chunk line
+	lineCritic                     // critic output, first chunk line
+	lineCont                       // continuation / code / diff
+	lineSuccess                    // starts with ✓
+	lineError                      // starts with ✗
+	lineWarning                    // warning
+	lineThink                      // R1 think-block content
+	lineQueued                     // "queued: <desc>" confirmation
+	lineRoundSep                   // ── round N ──
+	lineCursor                     // blank line holding streaming cursor
+	lineSystem                     // :help output, muted italic
+	lineCompaction                 // compaction summary displayed
 )
 
 // LogLine is the unit the loop engine appends to the panel.
@@ -56,12 +57,14 @@ const (
 )
 
 type taskBlock struct {
-	id          string
-	description string
-	state       blockState
-	lines       []LogLine
-	sha         string    // commit SHA on pass
-	completedAt time.Time
+	id             string
+	description    string
+	state          blockState
+	lines          []LogLine
+	sha            string // commit SHA on pass
+	completedAt    time.Time
+	thinkCollapsed bool   // per-block think-block visibility
+	thinkContent   string // stored think-block content
 }
 
 // ── Main model ────────────────────────────────────────────────────────────────
@@ -76,8 +79,11 @@ type MainModel struct {
 	// Log streaming cursor (separate from textinput cursor)
 	logCursorOn bool
 
-	// Think-block visibility toggle
+	// Global think-block visibility toggle (t key)
 	thinkCollapsed bool
+
+	// Per-block think collapse states (for T key - toggle focused block)
+	focusedBlockIdx int
 
 	// Block line offsets — index of first viewport line for each block (parallel to blocks slice)
 	blockLineOffsets []int
@@ -200,6 +206,24 @@ func (m *MainModel) AppendLine(line LogLine) {
 	}
 }
 
+// SetThinkBlock sets the think-block content for the currently running block.
+func (m *MainModel) SetThinkBlock(content string) {
+	for i := len(m.blocks) - 1; i >= 0; i-- {
+		if m.blocks[i].state == blockRunning {
+			m.blocks[i].thinkContent = content
+			break
+		}
+	}
+	wasAtBottom := m.viewport.AtBottom()
+	m.rebuildContent()
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+		m.scrolledAlert = false
+	} else {
+		m.scrolledAlert = true
+	}
+}
+
 // ── Bubble Tea ────────────────────────────────────────────────────────────────
 
 // ClearLogMsg clears all task blocks from the log panel.
@@ -214,11 +238,15 @@ func (m MainModel) Update(msg tea.Msg) (MainModel, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		const headerH, statusH, promptH = 2, 2, 3
 		mainW := msg.Width - sidebarWidth - 1
-		logH  := msg.Height - headerH - statusH - promptH
-		if mainW < 0 { mainW = 0 }
-		if logH  < 0 { logH  = 0 }
+		logH := msg.Height - headerH - statusH - promptH
+		if mainW < 0 {
+			mainW = 0
+		}
+		if logH < 0 {
+			logH = 0
+		}
 		m.width = mainW
-		m.viewport.Width  = mainW
+		m.viewport.Width = mainW
 		m.viewport.Height = logH
 		m.rebuildContent()
 		m.viewport.GotoBottom()
@@ -262,11 +290,35 @@ func (m MainModel) Update(msg tea.Msg) (MainModel, tea.Cmd) {
 			m.scrolledAlert = !m.viewport.AtBottom()
 			skipInput = true
 
-		// t: toggle think-block visibility
+		// t: toggle all think-block visibility
 		case "t":
 			if !m.IsCommandMode() {
 				m.thinkCollapsed = !m.thinkCollapsed
+				// Update all blocks to match global state
+				for i := range m.blocks {
+					m.blocks[i].thinkCollapsed = m.thinkCollapsed
+				}
 				m.rebuildContent()
+				skipInput = true
+			}
+
+		// T: toggle focused block's think-block visibility
+		case "T":
+			if !m.IsCommandMode() && len(m.blocks) > 0 {
+				// Find which block is at the current viewport position
+				offset := m.viewport.YOffset
+				for i, blockOffset := range m.blockLineOffsets {
+					if i < len(m.blocks) && offset >= blockOffset {
+						m.focusedBlockIdx = i
+					} else {
+						break
+					}
+				}
+				// Toggle the focused block
+				if m.focusedBlockIdx < len(m.blocks) {
+					m.blocks[m.focusedBlockIdx].thinkCollapsed = !m.blocks[m.focusedBlockIdx].thinkCollapsed
+					m.rebuildContent()
+				}
 				skipInput = true
 			}
 
@@ -337,13 +389,13 @@ func (m MainModel) View(w, h int) string {
 	}
 
 	promptH := 3 // separator + input + hint
-	logH    := h - promptH
+	logH := h - promptH
 	if logH < 0 {
 		logH = 0
 	}
 
 	// Apply dimensions to local copy for this frame (persists via WindowSizeMsg).
-	m.viewport.Width  = w
+	m.viewport.Width = w
 	m.viewport.Height = logH
 
 	parts := []string{m.viewport.View()}
@@ -359,7 +411,7 @@ func (m MainModel) View(w, h int) string {
 
 func (m MainModel) renderPromptBar(w int) string {
 	cmdMode := m.IsCommandMode()
-	val     := m.input.Value()
+	val := m.input.Value()
 
 	// Compute inline ghost suggestion (command mode, cursor at end, unambiguous)
 	ghost := ""
@@ -376,24 +428,24 @@ func (m MainModel) renderPromptBar(w int) string {
 	var prefix string
 	if cmdMode {
 		prefix = lipgloss.NewStyle().Foreground(colAm).Render("› ")
-		m.input.TextStyle   = lipgloss.NewStyle().Foreground(colAm)
+		m.input.TextStyle = lipgloss.NewStyle().Foreground(colAm)
 		m.input.Cursor.Style = lipgloss.NewStyle().Foreground(colAm)
 	} else {
 		prefix = stylePromptPrefix.Render()
-		m.input.TextStyle   = stylePromptInput
+		m.input.TextStyle = stylePromptInput
 		m.input.Cursor.Style = lipgloss.NewStyle().Foreground(colBl)
 	}
 
 	ghostRendered := stylePromptGhost.Render(ghost)
-	prefixW       := lipgloss.Width(prefix)
-	ghostW        := lipgloss.Width(ghostRendered)
-	inputW        := w - prefixW - ghostW - 2 // 2 for bar padding
+	prefixW := lipgloss.Width(prefix)
+	ghostW := lipgloss.Width(ghostRendered)
+	inputW := w - prefixW - ghostW - 2 // 2 for bar padding
 	if inputW < 0 {
 		inputW = 0
 	}
 	m.input.Width = inputW
 
-	sep      := stylePromptSep.Render(strings.Repeat("─", w))
+	sep := stylePromptSep.Render(strings.Repeat("─", w))
 	inputLine := stylePromptBar.Width(w).Render(prefix + m.input.View() + ghostRendered)
 
 	var hint string
@@ -433,7 +485,7 @@ func blockBorderStyle(state blockState) lipgloss.Style {
 }
 
 func (m MainModel) renderBlock(b taskBlock, w int) []string {
-	lines  := []string{}
+	lines := []string{}
 	innerW := w - 4 // "║ " left + " ║" right account
 
 	bs := blockBorderStyle(b.state)
@@ -441,7 +493,7 @@ func (m MainModel) renderBlock(b taskBlock, w int) []string {
 
 	// ── Header ────────────────────────────────────────────────────────────────
 	// "╔ description ═══╗"  border chars colored by state, text always white
-	desc  := truncate(b.description, max(0, innerW-2))
+	desc := truncate(b.description, max(0, innerW-2))
 	fillW := max(0, w-len([]rune(desc))-4) // w - ╔ - space - desc - space - ╗
 	header := bs.Render("╔") +
 		ts.Render(" "+desc+" ") +
@@ -452,13 +504,29 @@ func (m MainModel) renderBlock(b taskBlock, w int) []string {
 	pipe := bs.Render("║")
 	for i, l := range b.lines {
 		rendered := m.renderLine(l, innerW)
-		isLast   := i == len(b.lines)-1
+		isLast := i == len(b.lines)-1
 		if isLast && b.state == blockRunning && m.logCursorOn {
 			rendered += styleCursor.Render("█")
 		}
 		lines = append(lines, pipe+" "+rendered)
 	}
-	if len(b.lines) == 0 {
+
+	// ── Think block (if present) ───────────────────────────────────────────────
+	if b.thinkContent != "" {
+		if b.thinkCollapsed {
+			// Collapsed indicator
+			hint := styleLogSystem.Render("‹reasoning hidden — T to show›")
+			lines = append(lines, pipe+"  "+hint)
+		} else {
+			// Render the reasoning panel
+			thinkLines := m.renderThinkBlock(b.thinkContent, innerW-2)
+			for _, tl := range thinkLines {
+				lines = append(lines, pipe+" "+tl)
+			}
+		}
+	}
+
+	if len(b.lines) == 0 && b.thinkContent == "" {
 		lines = append(lines, pipe+" ")
 	}
 
@@ -468,23 +536,74 @@ func (m MainModel) renderBlock(b taskBlock, w int) []string {
 		lines = append(lines, pipe+" ")
 
 	case blockPass:
-		badge  := styleBadgePass.Render("pass")
-		fillW  := max(0, w-lipgloss.Width(badge)-4)
-		lines  = append(lines, bs.Render("╚"+strings.Repeat("═", fillW)+" ")+badge+bs.Render(" ╝"))
+		badge := styleBadgePass.Render("pass")
+		fillW := max(0, w-lipgloss.Width(badge)-4)
+		lines = append(lines, bs.Render("╚"+strings.Repeat("═", fillW)+" ")+badge+bs.Render(" ╝"))
 
 	case blockFail:
-		badge  := styleBadgeFail.Render("fail")
-		fillW  := max(0, w-lipgloss.Width(badge)-4)
-		lines  = append(lines, bs.Render("╚"+strings.Repeat("═", fillW)+" ")+badge+bs.Render(" ╝"))
+		badge := styleBadgeFail.Render("fail")
+		fillW := max(0, w-lipgloss.Width(badge)-4)
+		lines = append(lines, bs.Render("╚"+strings.Repeat("═", fillW)+" ")+badge+bs.Render(" ╝"))
 
 	case blockQueued:
-		label  := styleQueuedLine.Render("queued")
-		fillW  := max(0, w-lipgloss.Width(label)-4)
-		lines  = append(lines, bs.Render("╚"+" ")+label+bs.Render(" "+strings.Repeat("═", fillW)+"╝"))
+		label := styleQueuedLine.Render("queued")
+		fillW := max(0, w-lipgloss.Width(label)-4)
+		lines = append(lines, bs.Render("╚"+" ")+label+bs.Render(" "+strings.Repeat("═", fillW)+"╝"))
 	}
 
 	lines = append(lines, "") // spacing between blocks
 	return lines
+}
+
+func (m MainModel) renderThinkBlock(content string, w int) []string {
+	if w < 10 {
+		w = 10
+	}
+
+	// Style for the reasoning box
+	boxStyle := lipgloss.NewStyle().
+		Foreground(colPu).
+		Background(colBg2)
+
+	contentStyle := lipgloss.NewStyle().
+		Foreground(colTx2).
+		Background(colBg2).
+		Italic(true)
+
+	// Split content into lines and wrap
+	lines := strings.Split(content, "\n")
+	var wrapped []string
+	for _, line := range lines {
+		if len(line) <= w-4 {
+			wrapped = append(wrapped, line)
+		} else {
+			// Simple wrapping
+			for len(line) > w-4 {
+				wrapped = append(wrapped, line[:w-4])
+				line = line[w-4:]
+			}
+			if line != "" {
+				wrapped = append(wrapped, line)
+			}
+		}
+	}
+
+	// Build the box
+	var result []string
+	label := " reasoning "
+	borderW := w - 2
+	topBorder := "┌" + strings.Repeat("─", borderW-len(label)) + label + "┐"
+	result = append(result, boxStyle.Render(topBorder))
+
+	for _, line := range wrapped {
+		padded := line + strings.Repeat(" ", max(0, borderW-len(line)))
+		result = append(result, boxStyle.Render("│")+contentStyle.Render(" "+padded+" "))
+	}
+
+	bottomBorder := "└" + strings.Repeat("─", borderW) + "┘"
+	result = append(result, boxStyle.Render(bottomBorder))
+
+	return result
 }
 
 func (m MainModel) renderLine(l LogLine, w int) string {
@@ -502,10 +621,10 @@ func (m MainModel) renderLine(l LogLine, w int) string {
 	case lineWarning:
 		return stylePrefixBlank.Render("") + styleLogWarning.Render(l.Content)
 	case lineThink:
-		if m.thinkCollapsed {
-			return stylePrefixBlank.Render("") + styleLogSystem.Render("‹think block hidden — t to show›")
-		}
-		return stylePrefixBlank.Render("") + styleThink.Render("think  "+l.Content)
+		// Handled in renderBlock via block.thinkContent
+		return ""
+	case lineCompaction:
+		return stylePrefixCritic.Render("compact") + styleLogDefault.Render(l.Content)
 	case lineQueued:
 		return stylePrefixBlank.Render("") + styleQueuedLine.Render(l.Content)
 	case lineSystem:
@@ -529,9 +648,9 @@ func (m MainModel) StatusSegments() []string {
 	}
 	for _, b := range m.blocks {
 		if b.state == blockRunning {
-			agent  := styleStatusExec.Render("exec")
+			agent := styleStatusExec.Render("exec")
 			branch := b.id
-			round  := fmt.Sprintf("round %d", m.currentRound(b))
+			round := fmt.Sprintf("round %d", m.currentRound(b))
 			if m.scrolledAlert {
 				return []string{round, agent, branch, styleStatusAlert.Render("↑ scrolled ●")}
 			}
@@ -541,7 +660,9 @@ func (m MainModel) StatusSegments() []string {
 	last := m.blocks[len(m.blocks)-1]
 	if last.state == blockPass {
 		sha := last.sha
-		if len(sha) > 7 { sha = sha[:7] }
+		if len(sha) > 7 {
+			sha = sha[:7]
+		}
 		return []string{styleBadgePass.Render("pass") + " · committed " + sha, last.id}
 	}
 	if last.state == blockFail {
@@ -560,6 +681,8 @@ func (m MainModel) currentRound(b taskBlock) int {
 }
 
 func max(a, b int) int {
-	if a > b { return a }
+	if a > b {
+		return a
+	}
 	return b
 }

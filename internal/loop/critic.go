@@ -36,6 +36,7 @@ type ReviewResult struct {
 	Verdict          *Verdict
 	PromptTokens     int
 	CompletionTokens int
+	RawResponse      string // Full raw response for think-block extraction
 }
 
 // NewCritic creates a new critic agent.
@@ -88,6 +89,7 @@ Provide your verdict as JSON matching the schema.`, task, diff)
 		Verdict:          verdict,
 		PromptTokens:     resp.PromptTokens,
 		CompletionTokens: resp.CompletionTokens,
+		RawResponse:      resp.Content,
 	}, nil
 }
 

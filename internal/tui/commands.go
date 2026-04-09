@@ -16,15 +16,15 @@ type cmd struct {
 }
 
 var registry = []cmd{
-	{Name: "quit",     Aliases: []string{"q"},           Help: "exit marshal"},
-	{Name: "new",      Aliases: []string{"n"},            Help: "open task composer"},
-	{Name: "diff",     Aliases: []string{"d"},            Help: "open diff viewer for last task"},
-	{Name: "config",   Aliases: []string{"cfg", "c"},     Help: "open config overlay"},
-	{Name: "clear",    Aliases: []string{"cl"},           Help: "clear the log panel"},
-	{Name: "cancel",   Aliases: []string{"x"},            Help: "cancel the running task"},
-	{Name: "retry",    Aliases: []string{"r"},            Help: "retry the last completed task"},
-	{Name: "sessions", Aliases: []string{"ls", "s"},      Help: "browse past sessions"},
-	{Name: "help",     Aliases: []string{"h", "?"},       Help: "list available commands (or press ?)"},
+	{Name: "quit", Aliases: []string{"q"}, Help: "exit marshal"},
+	{Name: "new", Aliases: []string{"n"}, Help: "open task composer"},
+	{Name: "diff", Aliases: []string{"d"}, Help: "open diff viewer for last task"},
+	{Name: "config", Aliases: []string{"cfg", "c"}, Help: "open config overlay"},
+	{Name: "clear", Aliases: []string{"cl"}, Help: "clear the log panel"},
+	{Name: "cancel", Aliases: []string{"x"}, Help: "cancel the running task"},
+	{Name: "retry", Aliases: []string{"r"}, Help: "retry the last completed task"},
+	{Name: "sessions", Aliases: []string{"ls", "s"}, Help: "browse past sessions"},
+	{Name: "help", Aliases: []string{"h", "?"}, Help: "list available commands (or press ?)"},
 }
 
 // parseCommand strips the leading ":", resolves aliases, and returns the
@@ -32,14 +32,14 @@ var registry = []cmd{
 // command token is unknown.
 func parseCommand(raw string) (name string, args []string, err error) {
 	s := strings.TrimPrefix(raw, ":")
-	s  = strings.TrimSpace(s)
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return "", nil, fmt.Errorf("empty command")
 	}
 
 	parts := strings.Fields(s)
 	token := parts[0]
-	rest  := parts[1:]
+	rest := parts[1:]
 
 	for _, c := range registry {
 		if token == c.Name {

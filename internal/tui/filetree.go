@@ -25,11 +25,11 @@ var ftSkip = map[string]bool{
 // ── Node ──────────────────────────────────────────────────────────────────────
 
 type ftNode struct {
-	name     string
-	fullPath string
-	isDir    bool
-	depth    int
-	isLast   bool     // last sibling at its level
+	name        string
+	fullPath    string
+	isDir       bool
+	depth       int
+	isLast      bool   // last sibling at its level
 	parentPipes []bool // which ancestor levels still need a vertical pipe
 }
 
@@ -213,11 +213,11 @@ func (m FileTreeModel) renderNode(n ftNode, active bool, w int) string {
 
 	full := prefix.String() + icon
 	nameW := max(0, w-len([]rune(full)))
-	text  := full + truncate(n.name, nameW)
+	text := full + truncate(n.name, nameW)
 
 	// Style the pipe/connector portion in dim colour, name in normal colour
 	pipeStyle := lipgloss.NewStyle().Foreground(colBr3).Background(colBg)
-	pipeStr   := prefix.String()
+	pipeStr := prefix.String()
 
 	switch {
 	case active:
@@ -227,9 +227,9 @@ func (m FileTreeModel) renderNode(n ftNode, active bool, w int) string {
 		return activeStyle.Render(text)
 	case n.isDir:
 		// Render pipes dim, dir name in blue
-		dirStyle  := lipgloss.NewStyle().Foreground(colBl).Background(colBg)
-		nameStr   := icon + truncate(n.name, nameW)
-		rendered  := pipeStyle.Render(pipeStr) + dirStyle.Render(nameStr)
+		dirStyle := lipgloss.NewStyle().Foreground(colBl).Background(colBg)
+		nameStr := icon + truncate(n.name, nameW)
+		rendered := pipeStyle.Render(pipeStr) + dirStyle.Render(nameStr)
 		// Pad to full width
 		renderedW := lipgloss.Width(rendered)
 		if renderedW < w {
@@ -239,8 +239,8 @@ func (m FileTreeModel) renderNode(n ftNode, active bool, w int) string {
 	default:
 		// Render pipes dim, file name muted
 		fileStyle := lipgloss.NewStyle().Foreground(colTx3).Background(colBg)
-		nameStr   := icon + truncate(n.name, nameW)
-		rendered  := pipeStyle.Render(pipeStr) + fileStyle.Render(nameStr)
+		nameStr := icon + truncate(n.name, nameW)
+		rendered := pipeStyle.Render(pipeStr) + fileStyle.Render(nameStr)
 		renderedW := lipgloss.Width(rendered)
 		if renderedW < w {
 			rendered += lipgloss.NewStyle().Background(colBg).Render(strings.Repeat(" ", w-renderedW))

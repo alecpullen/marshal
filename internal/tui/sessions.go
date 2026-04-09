@@ -126,7 +126,7 @@ func (m SessionsModel) Update(msg tea.Msg) (SessionsModel, tea.Cmd) {
 				s := m.sessions[m.cursor].session
 				return m, func() tea.Msg {
 					// Use session ID for diff lookup
-						return OpenDiffMsg{TaskID: s.ID, SHA: ""}
+					return OpenDiffMsg{TaskID: s.ID, SHA: ""}
 				}
 			}
 
@@ -223,7 +223,7 @@ func (m SessionsModel) View(w, h int) string {
 		}
 		hint = lipgloss.NewStyle().
 			Foreground(colRd).
-			Render("delete \""+task+"\"? y/n")
+			Render("delete \"" + task + "\"? y/n")
 	} else {
 		hint = stylePromptHint.Render("↵ resume · d diff · x delete · r reload · q/esc close")
 	}

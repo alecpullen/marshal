@@ -5,25 +5,25 @@ import "github.com/charmbracelet/bubbles/key"
 // KeyMap defines all key bindings for the TUI.
 type KeyMap struct {
 	// Global
-	Quit    key.Binding
-	Help    key.Binding
-	Esc     key.Binding
-	Enter   key.Binding
-	Tab     key.Binding
+	Quit  key.Binding
+	Help  key.Binding
+	Esc   key.Binding
+	Enter key.Binding
+	Tab   key.Binding
 
 	// Navigation
-	Up      key.Binding
-	Down    key.Binding
-	Left    key.Binding
-	Right   key.Binding
-	PageUp  key.Binding
+	Up       key.Binding
+	Down     key.Binding
+	Left     key.Binding
+	Right    key.Binding
+	PageUp   key.Binding
 	PageDown key.Binding
 
 	// Actions
-	Submit  key.Binding
-	Cancel  key.Binding
-	Copy    key.Binding
-	Config  key.Binding
+	Submit key.Binding
+	Cancel key.Binding
+	Copy   key.Binding
+	Config key.Binding
 
 	// Composer overlay
 	Composer key.Binding

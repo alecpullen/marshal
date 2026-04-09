@@ -47,6 +47,7 @@ type RoundRecord struct {
 	Concerns         []string
 	PromptTokens     int
 	CompletionTokens int
+	ThinkBlock       string // R1 reasoning content
 	CreatedAt        time.Time
 }
 
@@ -115,6 +116,7 @@ CREATE TABLE IF NOT EXISTS rounds (
     concerns TEXT,
     prompt_tokens INTEGER DEFAULT 0,
     completion_tokens INTEGER DEFAULT 0,
+    think_block TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES sessions(id),
     UNIQUE(session_id, round_number)
@@ -125,8 +127,22 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
 `
 
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Migration: add think_block column if it doesn't exist
+	// SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we ignore errors
+	_ = s.addThinkBlockColumn()
+
+	return nil
+}
+
+// addThinkBlockColumn adds the think_block column to existing databases.
+func (s *Store) addThinkBlockColumn() error {
+	// Try to add the column - will fail if it already exists, which we ignore
+	_, _ = s.db.Exec("ALTER TABLE rounds ADD COLUMN think_block TEXT DEFAULT ''")
+	return nil
 }
 
 // CreateSession inserts a new session into the database.
@@ -276,8 +292,8 @@ func (s *Store) CreateRound(r *RoundRecord) error {
 
 	query := `
 INSERT INTO rounds (session_id, round_number, executor_request, executor_response,
-    diff, verdict, summary, issue, fix, concerns, prompt_tokens, completion_tokens, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    diff, verdict, summary, issue, fix, concerns, prompt_tokens, completion_tokens, think_block, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 	result, err := s.db.Exec(query,
 		r.SessionID,
@@ -292,6 +308,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		string(concernsJSON),
 		r.PromptTokens,
 		r.CompletionTokens,
+		r.ThinkBlock,
 		r.CreatedAt,
 	)
 	if err != nil {
@@ -306,7 +323,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 func (s *Store) GetRounds(sessionID string) ([]RoundRecord, error) {
 	query := `
 SELECT id, session_id, round_number, executor_request, executor_response,
-    diff, verdict, summary, issue, fix, concerns, prompt_tokens, completion_tokens, created_at
+    diff, verdict, summary, issue, fix, concerns, prompt_tokens, completion_tokens, think_block, created_at
 FROM rounds
 WHERE session_id = ?
 ORDER BY round_number ASC
@@ -336,6 +353,7 @@ ORDER BY round_number ASC
 			&concernsJSON,
 			&r.PromptTokens,
 			&r.CompletionTokens,
+			&r.ThinkBlock,
 			&r.CreatedAt,
 		)
 		if err != nil {

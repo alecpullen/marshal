@@ -133,12 +133,14 @@ func (m ConfigModel) View(w, h int) string {
 	var sb strings.Builder
 
 	// Title with live connection summary
-	execStatus  := connDot(m.execConn) + lipgloss.NewStyle().Foreground(colTx3).Render(" exec")
+	execStatus := connDot(m.execConn) + lipgloss.NewStyle().Foreground(colTx3).Render(" exec")
 	criticStatus := connDot(m.criticConn) + lipgloss.NewStyle().Foreground(colTx3).Render(" critic")
-	titleLeft  := lipgloss.NewStyle().Foreground(colTx).Bold(true).Render("config")
+	titleLeft := lipgloss.NewStyle().Foreground(colTx).Bold(true).Render("config")
 	titleRight := execStatus + "  " + criticStatus
 	fillW := innerW - lipgloss.Width(titleLeft) - lipgloss.Width(titleRight)
-	if fillW < 1 { fillW = 1 }
+	if fillW < 1 {
+		fillW = 1
+	}
 	fill := strings.Repeat(" ", fillW)
 	sb.WriteString(titleLeft + fill + titleRight)
 	sb.WriteByte('\n')

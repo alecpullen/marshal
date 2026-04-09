@@ -22,11 +22,11 @@ import (
 // LoopAdapter bridges the executor-critic loop with the TUI.
 // It runs the loop in a goroutine and sends messages to the TUI program.
 type LoopAdapter struct {
-	cfg      *config.Config
-	store    *store.Store
-	program  *tea.Program
-	ctx      context.Context
-	cancel   context.CancelFunc
+	cfg     *config.Config
+	store   *store.Store
+	program *tea.Program
+	ctx     context.Context
+	cancel  context.CancelFunc
 
 	// taskQueue holds tasks waiting to be processed
 	taskQueue []queuedTask
@@ -47,10 +47,10 @@ type queuedTask struct {
 func NewLoopAdapter(cfg *config.Config, s *store.Store, initialTask string) *LoopAdapter {
 	ctx, cancel := context.WithCancel(context.Background())
 	adapter := &LoopAdapter{
-		cfg:     cfg,
-		store:   s,
-		ctx:     ctx,
-		cancel:  cancel,
+		cfg:    cfg,
+		store:  s,
+		ctx:    ctx,
+		cancel: cancel,
 	}
 
 	// Queue initial task if provided
@@ -191,6 +191,11 @@ func (a *LoopAdapter) runTask(task queuedTask) {
 			for _, line := range lines {
 				a.send(LogLineMsg{Line: LogLine{Kind: lineCont, Content: line}})
 			}
+		}
+
+		// Send think-block if present
+		if r.ThinkBlock != "" {
+			a.send(ThinkBlockMsg{Content: r.ThinkBlock})
 		}
 
 		// Send critic verdict

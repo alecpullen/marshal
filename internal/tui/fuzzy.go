@@ -23,16 +23,16 @@ type fuzzyResult struct {
 
 // FuzzyModel is the file picker overlay.
 type FuzzyModel struct {
-	query      textinput.Model
-	allFiles   []string          // indexed at init
-	results    []fuzzyResult     // filtered + scored
-	cursor     int               // selected result
-	width      int
-	height     int
-	selected   bool              // user pressed enter
-	cancelled  bool              // user pressed esc
-	selection  string            // path to pin
-	repoRoot   string            // root directory for indexing
+	query     textinput.Model
+	allFiles  []string      // indexed at init
+	results   []fuzzyResult // filtered + scored
+	cursor    int           // selected result
+	width     int
+	height    int
+	selected  bool   // user pressed enter
+	cancelled bool   // user pressed esc
+	selection string // path to pin
+	repoRoot  string // root directory for indexing
 }
 
 // fuzzyInitMsg is sent when file indexing completes.

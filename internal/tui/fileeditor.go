@@ -156,13 +156,13 @@ func (m FileEditorModel) View(w, h int) string {
 	nameStyle := lipgloss.NewStyle().Foreground(colTx).Bold(true).Background(colBg2)
 	pathStyle := lipgloss.NewStyle().Foreground(colTx3).Background(colBg2)
 
-	left  := nameStyle.Render(filename + statusStr)
+	left := nameStyle.Render(filename + statusStr)
 	right := pathStyle.Render(filepath.Dir(m.path))
 	fillW := w - lipgloss.Width(left) - lipgloss.Width(right)
 	if fillW < 1 {
 		fillW = 1
 	}
-	fill   := lipgloss.NewStyle().Foreground(colBr3).Background(colBg2).Render(strings.Repeat(" ", fillW))
+	fill := lipgloss.NewStyle().Foreground(colBr3).Background(colBg2).Render(strings.Repeat(" ", fillW))
 	header := lipgloss.NewStyle().Width(w).Background(colBg2).Render(left + fill + right)
 
 	// ── Footer / hint ─────────────────────────────────────────────────────────
@@ -175,7 +175,7 @@ func (m FileEditorModel) View(w, h int) string {
 	default:
 		hint = "  ctrl+s save · ctrl+e open in editor · esc close"
 	}
-	sep    := stylePromptSep.Render(strings.Repeat("─", w))
+	sep := stylePromptSep.Render(strings.Repeat("─", w))
 	footer := stylePromptHint.Width(w).Render(hint)
 
 	// ── Textarea ──────────────────────────────────────────────────────────────

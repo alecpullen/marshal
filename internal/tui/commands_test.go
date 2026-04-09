@@ -4,34 +4,34 @@ import "testing"
 
 func TestParseCommand(t *testing.T) {
 	tests := []struct {
-		input   string
+		input    string
 		wantName string
 		wantErr  bool
 	}{
-		{":quit",     "quit",     false},
-		{":q",        "quit",     false},
-		{":new",      "new",      false},
-		{":n",        "new",      false},
-		{":diff",     "diff",     false},
-		{":d",        "diff",     false},
-		{":config",   "config",   false},
-		{":cfg",      "config",   false},
-		{":c",        "config",   false},
-		{":clear",    "clear",    false},
-		{":cl",       "clear",    false},
-		{":cancel",   "cancel",   false},
-		{":x",        "cancel",   false},
-		{":retry",    "retry",    false},
-		{":r",        "retry",    false},
+		{":quit", "quit", false},
+		{":q", "quit", false},
+		{":new", "new", false},
+		{":n", "new", false},
+		{":diff", "diff", false},
+		{":d", "diff", false},
+		{":config", "config", false},
+		{":cfg", "config", false},
+		{":c", "config", false},
+		{":clear", "clear", false},
+		{":cl", "clear", false},
+		{":cancel", "cancel", false},
+		{":x", "cancel", false},
+		{":retry", "retry", false},
+		{":r", "retry", false},
 		{":sessions", "sessions", false},
-		{":ls",       "sessions", false},
-		{":s",        "sessions", false},
-		{":help",     "help",     false},
-		{":h",        "help",     false},
-		{":?",        "help",     false},
+		{":ls", "sessions", false},
+		{":s", "sessions", false},
+		{":help", "help", false},
+		{":h", "help", false},
+		{":?", "help", false},
 		// Unknown
-		{":unknown",  "",         true},
-		{":",         "",         true},
+		{":unknown", "", true},
+		{":", "", true},
 	}
 
 	for _, tt := range tests {
@@ -54,22 +54,22 @@ func TestParseCommand(t *testing.T) {
 
 func TestCompleteCommand(t *testing.T) {
 	tests := []struct {
-		partial      string
-		wantSuggest  string
-		wantExact    bool
+		partial     string
+		wantSuggest string
+		wantExact   bool
 	}{
-		{"qu",  "quit",     true},
-		{"q",   "quit",     true},  // only "quit" starts with q (aliases not in name completion)
-		{"he",  "help",     true},
-		{"h",   "help",     true},
-		{"di",  "diff",     true},
-		{"se",  "sessions", true},
-		{"c",   "c",        false}, // "cancel", "clear", "config" all start with c
-		{"ca",  "cancel",   true},  // only "cancel" starts with "ca"
-		{"cl",  "clear",    true},
-		{"con", "config",   true},
-		{"xyz", "",         false},
-		{"",    "",         false},
+		{"qu", "quit", true},
+		{"q", "quit", true}, // only "quit" starts with q (aliases not in name completion)
+		{"he", "help", true},
+		{"h", "help", true},
+		{"di", "diff", true},
+		{"se", "sessions", true},
+		{"c", "c", false},      // "cancel", "clear", "config" all start with c
+		{"ca", "cancel", true}, // only "cancel" starts with "ca"
+		{"cl", "clear", true},
+		{"con", "config", true},
+		{"xyz", "", false},
+		{"", "", false},
 	}
 
 	for _, tt := range tests {

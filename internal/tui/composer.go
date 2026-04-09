@@ -17,14 +17,14 @@ type ComposerModel struct {
 	textarea textarea.Model
 
 	// State
-	value      string
-	submitted  bool
-	cancelled  bool
-	width      int
-	height     int
+	value     string
+	submitted bool
+	cancelled bool
+	width     int
+	height    int
 
 	// File chips (pinned context files)
-	pinnedFiles []fileChip
+	pinnedFiles  []fileChip
 	selectedChip int // -1 = none selected
 
 	// Options

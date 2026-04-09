@@ -6,6 +6,7 @@
 package tui
 
 import (
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,16 @@ type TaskCompleteMsg struct {
 
 // LogLineMsg appends a line to the active task block.
 type LogLineMsg struct{ Line LogLine }
+
+// ThinkBlockMsg sets the think-block content for the current task block.
+type ThinkBlockMsg struct{ Content string }
+
+// CompactionMsg signals that compaction occurred.
+type CompactionMsg struct {
+	RoundsDropped int
+	TokensSaved   int
+	Summary       string
+}
 
 // OpenDiffMsg is sent to open the diff viewer for a specific task.
 type OpenDiffMsg struct {
@@ -232,7 +243,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Task lifecycle messages — update sidebar and main panel
 	case SubmitTaskMsg:
 		sidebarCmd := m.sidebar.Enqueue(msg.Task)
-		mainCmd    := m.main.Enqueue(msg.Task)
+		mainCmd := m.main.Enqueue(msg.Task)
 		cmds = append(cmds, sidebarCmd, mainCmd)
 		return m, tea.Batch(cmds...)
 
@@ -247,6 +258,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case LogLineMsg:
 		m.main.AppendLine(msg.Line)
+
+	case ThinkBlockMsg:
+		m.main.SetThinkBlock(msg.Content)
+
+	case CompactionMsg:
+		m.main.AppendLine(LogLine{
+			Kind:    lineCompaction,
+			Content: fmt.Sprintf("rounds %d-%d summarized, ~%d tok saved", 1, msg.RoundsDropped, msg.TokensSaved),
+		})
 
 	case OpenDiffMsg:
 		m.diff = newDiffModel(msg.TaskID, msg.SHA, m.repoRoot)
@@ -446,9 +466,9 @@ func (m *Model) cycleFocus() {
 }
 
 func (m Model) View() string {
-	totalH   := m.height
-	headerH  := 2 // content row + thick border below
-	statusH  := 2 // thick border above + content row
+	totalH := m.height
+	headerH := 2 // content row + thick border below
+	statusH := 2 // thick border above + content row
 	contentH := totalH - headerH - statusH
 	if contentH < 0 {
 		contentH = 0
@@ -456,7 +476,7 @@ func (m Model) View() string {
 
 	mainW := m.width - sidebarWidth - 1 // 1 for sidebar border
 
-	header  := m.renderHeader()
+	header := m.renderHeader()
 	sidebar := m.sidebar.View(contentH)
 
 	// File editor replaces the main panel (sidebar stays visible).
@@ -467,9 +487,9 @@ func (m Model) View() string {
 		mainView = m.main.View(mainW, contentH)
 	}
 
-	body   := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, mainView)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, mainView)
 	status := m.renderStatusbar()
-	base   := lipgloss.JoinVertical(lipgloss.Left, header, body, status)
+	base := lipgloss.JoinVertical(lipgloss.Left, header, body, status)
 
 	// Full-screen overlays drawn on top
 	switch m.overlay {
@@ -497,9 +517,9 @@ func (m Model) renderHeader() string {
 	if fillW < 0 {
 		fillW = 0
 	}
-	fill    := styleHeaderRule.Render(strings.Repeat("─", fillW))
+	fill := styleHeaderRule.Render(strings.Repeat("─", fillW))
 	content := styleHeader.Width(m.width).Render(title + fill + hints)
-	border  := lipgloss.NewStyle().Foreground(colBl).Background(colBg).
+	border := lipgloss.NewStyle().Foreground(colBl).Background(colBg).
 		Render(strings.Repeat("━", m.width))
 	return lipgloss.JoinVertical(lipgloss.Left, content, border)
 }
@@ -521,7 +541,7 @@ func (m Model) renderOverlay(base, top string) string {
 }
 
 func (m Model) renderStatusbar() string {
-	sep  := styleStatusSep.Render()
+	sep := styleStatusSep.Render()
 	left := strings.Join(m.activeStatusSegments(), sep)
 
 	// Connection indicators are always right-aligned in the footer.
@@ -529,15 +549,15 @@ func (m Model) renderStatusbar() string {
 		"   " +
 		connDot(m.criticConn) + lipgloss.NewStyle().Foreground(colTx3).Render(" critic  ")
 
-	leftW  := lipgloss.Width(left)
+	leftW := lipgloss.Width(left)
 	rightW := lipgloss.Width(right)
-	fillW  := m.width - leftW - rightW - 2 // 2 for left padding in styleStatusbar
+	fillW := m.width - leftW - rightW - 2 // 2 for left padding in styleStatusbar
 	if fillW < 0 {
 		fillW = 0
 	}
-	fill    := lipgloss.NewStyle().Background(colBg2).Render(strings.Repeat(" ", fillW))
+	fill := lipgloss.NewStyle().Background(colBg2).Render(strings.Repeat(" ", fillW))
 	content := styleStatusbar.Width(m.width).Render(" " + left + fill + right)
-	border  := lipgloss.NewStyle().Foreground(colBl).Background(colBg).
+	border := lipgloss.NewStyle().Foreground(colBl).Background(colBg).
 		Render(strings.Repeat("━", m.width))
 	return lipgloss.JoinVertical(lipgloss.Left, border, content)
 }

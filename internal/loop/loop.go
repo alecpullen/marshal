@@ -5,21 +5,54 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/alecpullen/marshal/internal/config"
 )
 
+// ExtractThinkBlock extracts think-block content from responses.
+// Returns the think content and the cleaned content without the think block.
+func ExtractThinkBlock(content string) (think string, cleaned string) {
+	// Match  ...  tags (multiline, non-greedy)
+	re := regexp.MustCompile(`(?s)<think>(.*?)</think>`)
+	matches := re.FindAllStringSubmatch(content, -1)
+
+	if len(matches) == 0 {
+		return "", content
+	}
+
+	var thinkParts []string
+	cleaned = content
+	for _, match := range matches {
+		if len(match) >= 2 {
+			thinkParts = append(thinkParts, strings.TrimSpace(match[1]))
+			cleaned = strings.Replace(cleaned, match[0], "", 1)
+		}
+	}
+
+	return strings.Join(thinkParts, "\n\n"), strings.TrimSpace(cleaned)
+}
+
 // Loop manages the executor-critic feedback cycle.
 type Loop struct {
-	cfg       *config.Config
-	executor  *Executor
-	critic    *Critic
-	git       GitLayer
-	compactor *Compactor
-	sessionID string
-	round     int
-	history   []Round
+	cfg               *config.Config
+	executor          *Executor
+	critic            *Critic
+	git               GitLayer
+	compactor         *Compactor
+	sessionID         string
+	round             int
+	history           []Round
+	compactionSummary string // Injected after compaction
+}
+
+// CompactionEvent is passed to callbacks when compaction occurs.
+type CompactionEvent struct {
+	RoundsDropped int
+	TokensSaved   int
+	Summary       string
 }
 
 // Round represents a single iteration of the loop.
@@ -31,6 +64,7 @@ type Round struct {
 	CriticResp   string
 	Verdict      Verdict
 	Tokens       TokenUsage
+	ThinkBlock   string // Extracted R1 think-block content (if any)
 }
 
 // Result is the final outcome of the loop.
@@ -102,7 +136,13 @@ func (l *Loop) Run(ctx context.Context, task string) (*Result, error) {
 
 		// Check if we should compact before this round
 		if !compacted && l.compactor != nil && l.round >= l.cfg.Loop.CompactAfter {
-			_, _ = l.compactor.Compact(ctx, l.history)
+			result, err := l.compactor.CompactAndDrop(ctx, l.history, 2) // keep last 2
+			if err == nil && len(result.DroppedRounds) > 0 {
+				// Actually drop rounds from history
+				l.history = l.history[len(l.history)-2:]
+				// Store summary for context injection
+				l.compactionSummary = result.Summary
+			}
 			compacted = true
 		}
 
@@ -133,9 +173,15 @@ func (l *Loop) Run(ctx context.Context, task string) (*Result, error) {
 			}, nil
 		}
 
-		// Prepare feedback for next round
-		feedback = fmt.Sprintf("Previous attempt failed:\nIssue: %s\nFix needed: %s",
-			round.Verdict.Issue, round.Verdict.Fix)
+		// Prepare feedback for next round (include compaction summary if available)
+		feedbackParts := []string{
+			fmt.Sprintf("Previous attempt failed:\nIssue: %s\nFix needed: %s",
+				round.Verdict.Issue, round.Verdict.Fix),
+		}
+		if l.compactionSummary != "" {
+			feedbackParts = append(feedbackParts, "\nContext from earlier rounds:\n"+l.compactionSummary)
+		}
+		feedback = strings.Join(feedbackParts, "\n")
 	}
 
 	// Exhausted max rounds - cleanup
@@ -204,9 +250,15 @@ func (l *Loop) RunWithCallback(ctx context.Context, task string, callback RoundC
 			}, nil
 		}
 
-		// Prepare feedback for next round
-		feedback = fmt.Sprintf("Previous attempt failed:\nIssue: %s\nFix needed: %s",
-			round.Verdict.Issue, round.Verdict.Fix)
+		// Prepare feedback for next round (include compaction summary if available)
+		feedbackParts := []string{
+			fmt.Sprintf("Previous attempt failed:\nIssue: %s\nFix needed: %s",
+				round.Verdict.Issue, round.Verdict.Fix),
+		}
+		if l.compactionSummary != "" {
+			feedbackParts = append(feedbackParts, "\nContext from earlier rounds:\n"+l.compactionSummary)
+		}
+		feedback = strings.Join(feedbackParts, "\n")
 	}
 
 	// Exhausted max rounds - cleanup
@@ -251,15 +303,30 @@ func (l *Loop) runRound(ctx context.Context, task string, priorFeedback string) 
 		return nil, fmt.Errorf("critic: %w", err)
 	}
 
+	// Extract think blocks from responses
+	execThink, execClean := ExtractThinkBlock(execResp.Content)
+	criticThink, criticClean := ExtractThinkBlock(reviewResult.RawResponse)
+
+	// Combine think blocks
+	combinedThink := ""
+	if execThink != "" {
+		combinedThink += "**Executor reasoning:**\n" + execThink + "\n\n"
+	}
+	if criticThink != "" {
+		combinedThink += "**Critic reasoning:**\n" + criticThink
+	}
+
 	return &Round{
 		Number:       l.round,
 		ExecutorReq:  execReq,
-		ExecutorResp: execResp.Content,
+		ExecutorResp: execClean,
 		Diff:         diff,
+		CriticResp:   criticClean,
 		Verdict:      *reviewResult.Verdict,
 		Tokens: TokenUsage{
 			PromptTokens:     execResp.PromptTokens + reviewResult.PromptTokens,
 			CompletionTokens: execResp.CompletionTokens + reviewResult.CompletionTokens,
 		},
+		ThinkBlock: combinedThink,
 	}, nil
 }

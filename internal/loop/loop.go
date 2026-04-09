@@ -55,6 +55,8 @@ type GitLayer interface {
 	StageAndCommit(message string) error
 	HardResetToHead() error
 	DeleteBranch(name string) error
+	CheckoutBranch(name string) error
+	MergeBranch(name string, message string) error
 }
 
 // generateSessionID creates a unique session identifier.
@@ -106,12 +108,24 @@ func (l *Loop) Run(ctx context.Context, task string) (*Result, error) {
 
 		round, err := l.runRound(ctx, task, feedback)
 		if err != nil {
+			// Cleanup on error
+			l.cleanup(branchName)
 			return nil, fmt.Errorf("round %d: %w", l.round, err)
 		}
 
 		l.history = append(l.history, *round)
 
 		if round.Verdict.IsPass() {
+			// Merge isolation branch on success
+			mergeMsg := fmt.Sprintf("Merge %s: %s", branchName, round.Verdict.Summary)
+			if err := l.git.MergeBranch(branchName, mergeMsg); err != nil {
+				// Cleanup on merge failure
+				l.cleanup(branchName)
+				return nil, fmt.Errorf("merge branch: %w", err)
+			}
+			// Delete the isolation branch after merge
+			l.git.DeleteBranch(branchName)
+
 			return &Result{
 				Status:       "SUCCESS",
 				FinalVerdict: &round.Verdict,
@@ -121,15 +135,24 @@ func (l *Loop) Run(ctx context.Context, task string) (*Result, error) {
 
 		// Prepare feedback for next round
 		feedback = fmt.Sprintf("Previous attempt failed:\nIssue: %s\nFix needed: %s",
-		round.Verdict.Issue, round.Verdict.Fix)
+			round.Verdict.Issue, round.Verdict.Fix)
 	}
 
-	// Exhausted max rounds
+	// Exhausted max rounds - cleanup
+	l.cleanup(branchName)
+
 	return &Result{
 		Status:       "EXHAUSTED",
 		FinalVerdict: &l.history[len(l.history)-1].Verdict,
 		Rounds:       l.history,
 	}, fmt.Errorf("exhausted max rounds (%d)", l.cfg.Loop.MaxRounds)
+}
+
+// cleanup switches to base branch and deletes the isolation branch.
+func (l *Loop) cleanup(branchName string) {
+	// Best effort cleanup - ignore errors
+	_ = l.git.CheckoutBranch("main") // or master - git layer will handle
+	_ = l.git.DeleteBranch(branchName)
 }
 
 // runRound executes a single round of executor → diff → critic.

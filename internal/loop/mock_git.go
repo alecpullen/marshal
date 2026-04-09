@@ -97,6 +97,26 @@ func (m *MockGitLayer) DeleteBranch(name string) error {
 	return nil
 }
 
+// CheckoutBranch simulates switching branches.
+func (m *MockGitLayer) CheckoutBranch(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	fmt.Printf("[mock git] Checkout branch: %s\n", name)
+	m.currentBranch = name
+	return nil
+}
+
+// MergeBranch simulates merging a branch.
+func (m *MockGitLayer) MergeBranch(name string, message string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	fmt.Printf("[mock git] Merge branch %s: %s\n", name, message)
+	m.currentBranch = "main"
+	return nil
+}
+
 // CurrentBranch returns the current branch name (for testing).
 func (m *MockGitLayer) CurrentBranch() string {
 	m.mu.Lock()

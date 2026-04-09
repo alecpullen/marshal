@@ -30,8 +30,15 @@ func NewExecutor(be backend.Backend, cfg config.AgentConfig, skills []Skill) *Ex
 	}
 }
 
+// ExecuteResult contains the generated code and token usage.
+type ExecuteResult struct {
+	Content          string
+	PromptTokens     int
+	CompletionTokens int
+}
+
 // Execute sends the task to the LLM and returns the generated code.
-func (e *Executor) Execute(ctx context.Context, req ExecutorRequest) (string, error) {
+func (e *Executor) Execute(ctx context.Context, req ExecutorRequest) (*ExecuteResult, error) {
 	systemPrompt := e.buildSystemPrompt()
 
 	messages := []backend.Message{
@@ -47,10 +54,14 @@ func (e *Executor) Execute(ctx context.Context, req ExecutorRequest) (string, er
 
 	resp, err := e.backend.Complete(ctx, e.cfg.Model, messages)
 	if err != nil {
-		return "", fmt.Errorf("backend complete: %w", err)
+		return nil, fmt.Errorf("backend complete: %w", err)
 	}
 
-	return resp.Content, nil
+	return &ExecuteResult{
+		Content:          resp.Content,
+		PromptTokens:     resp.PromptTokens,
+		CompletionTokens: resp.CompletionTokens,
+	}, nil
 }
 
 // buildSystemPrompt constructs the full system prompt.

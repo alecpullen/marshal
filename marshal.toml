@@ -1,26 +1,27 @@
 [executor]
-model       = "accounts/alecpullen/deployments/wo3c63tl"
-base_url    = "https://api.fireworks.ai/inference/v1"
-api_key     = "${FIREWORKS_API_KEY}"
-temperature = 0.2
+# Qwen 2.5 Coder 7B - fast, good code quality, ~4.5GB RAM
+model       = "qwen2.5-coder:7b"
+base_url    = "http://localhost:11434/v1"
+api_key     = "ollama"  # required but ignored by Ollama
+temperature = 0.2       # low temp for consistent code
 max_tokens  = 4096
 
 [critic]
-# DeepSeek-R1-0528 — full reasoning model, system prompt supported
-model       = "accounts/alecpullen/deployments/q9utj0dg"
-base_url    = "https://api.fireworks.ai/inference/v1"
-api_key     = "${FIREWORKS_API_KEY}"
-temperature = 0.6   # R1 series: must be 0.5-0.7
-max_tokens  = 8192  # headroom for think-blocks before the verdict
-json_output = true
+# DeepSeek-R1 7B - reasoning model with <think> tags, ~4GB RAM
+# The model outputs reasoning in <think>...</think> blocks before the verdict
+model       = "deepseek-r1:7b"
+base_url    = "http://localhost:11434/v1"
+api_key     = "ollama"
+temperature = 0.6       # higher temp for reasoning diversity
+max_tokens  = 8192      # headroom for think blocks + JSON verdict
+json_output = false     # R1 doesn't reliably follow JSON mode, we parse from text
 
 [loop]
 max_rounds        = 3
-auto_commit       = true
+auto_commit       = false   # manual review for local testing
 auto_revert       = true
 branch_isolation  = true
 compact_after     = 2
-token_budget_warn = 0.80
 
 [session]
 db_path = ".marshal/sessions.db"
@@ -30,3 +31,8 @@ max_attempts       = 3
 initial_backoff_ms = 1000
 backoff_factor     = 2.0
 retry_status_codes = [429, 502, 503]
+
+[ui]
+# Editor to open when pressing enter on a file in the explorer.
+# Falls back to $EDITOR, then vim.
+editor = "vim"

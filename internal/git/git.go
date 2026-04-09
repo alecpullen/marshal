@@ -316,3 +316,13 @@ func (g *Git) RepoRoot() string {
 func (g *Git) BaseBranch() string {
 	return g.baseBranch
 }
+
+// HeadSHA returns the SHA of the current HEAD commit.
+func (g *Git) HeadSHA() string {
+	cmd := exec.Command("git", "-C", g.repoRoot, "rev-parse", "HEAD")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}

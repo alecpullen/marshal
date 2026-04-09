@@ -31,11 +31,17 @@ type SessionConfig struct {
 	DBPath string `toml:"db_path"`
 }
 
+type UIConfig struct {
+	Editor string `toml:"editor"` // e.g. "vim", "nvim", "nano". Falls back to $EDITOR then vim.
+}
+
 type Config struct {
 	Executor AgentConfig   `toml:"executor"`
 	Critic   AgentConfig   `toml:"critic"`
 	Loop     LoopConfig    `toml:"loop"`
 	Session  SessionConfig `toml:"session"`
+	UI       UIConfig      `toml:"ui"`
+	RepoRoot string        // Set at runtime, not from config file
 }
 
 // loadDotEnv parses a .env file into a map. Shell env takes precedence —

@@ -10,11 +10,14 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/alecpullen/marshal/internal/backend"
 	"github.com/alecpullen/marshal/internal/config"
 	"github.com/alecpullen/marshal/internal/git"
 	"github.com/alecpullen/marshal/internal/loop"
 	"github.com/alecpullen/marshal/internal/store"
+	"github.com/alecpullen/marshal/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -55,6 +58,9 @@ func main() {
 		Use:   "marshal",
 		Short: "Marshal is a loop-first coding agent orchestrator",
 		Long:  "Marshal runs an executor-critic feedback loop with real git operations.",
+		Run: func(cmd *cobra.Command, args []string) {
+			runTask("", false)
+		},
 	}
 
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "marshal.toml", "Path to config file")
@@ -73,11 +79,19 @@ func runCmd() *cobra.Command {
 	var noTUI bool
 
 	cmd := &cobra.Command{
-		Use:   "run <task>",
+		Use:   "run [task]",
 		Short: "Run a task through the executor-critic loop",
-		Args:  cobra.MinimumNArgs(1),
+		Long:  "Run a task through the executor-critic loop. If no task is provided, launches the TUI.",
+		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			task := strings.Join(args, " ")
+			task := ""
+			if len(args) > 0 {
+				task = strings.Join(args, " ")
+			}
+			// If no task and headless mode, error
+			if task == "" && noTUI {
+				log.Fatal("task required when using --no-tui")
+			}
 			runTask(task, noTUI)
 		},
 	}
@@ -146,14 +160,96 @@ func sessionsCmd() *cobra.Command {
 }
 
 func runTask(task string, noTUI bool) {
-	startTime := time.Now()
-
+	// Load config first (needed for both TUI and headless)
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Fatal("config:", err)
 	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatal("validate:", err)
+	}
+
+	// Find git repository root
+	repoRoot, err := findGitRoot(".")
+	if err != nil {
+		log.Fatal("not a git repository:", err)
+	}
+	cfg.RepoRoot = repoRoot
+
+	// Setup store
+	dbPath := cfg.Session.DBPath
+	if dbPath == "" {
+		dbPath = filepath.Join(repoRoot, ".marshal", "sessions.db")
+	} else if !filepath.IsAbs(dbPath) {
+		dbPath = filepath.Join(repoRoot, dbPath)
+	}
+
+	s, err := store.New(dbPath)
+	if err != nil {
+		log.Fatal("store init:", err)
+	}
+	defer s.Close()
+
+	if noTUI {
+		runTaskHeadless(task, cfg, s)
+	} else {
+		runTaskTUI(task, cfg, s)
+	}
+}
+
+// resolveEditor returns the editor binary to use, in priority order:
+// 1. marshal.toml [ui].editor
+// 2. $EDITOR env var
+// 3. "vim"
+func resolveEditor(cfg *config.Config) string {
+	if cfg.UI.Editor != "" {
+		return cfg.UI.Editor
+	}
+	if e := os.Getenv("EDITOR"); e != "" {
+		return e
+	}
+	return "vim"
+}
+
+func runTaskTUI(initialTask string, cfg *config.Config, s *store.Store) {
+	// Create the TUI model
+	model := tui.New().WithRepoRoot(cfg.RepoRoot).WithEditor(resolveEditor(cfg)).WithConfig(cfg)
+
+	// If an initial task was provided via CLI, pre-populate it in the UI
+	if initialTask != "" {
+		model = model.WithInitialTask(initialTask)
+	}
+
+	// Create the loop adapter that bridges TUI messages with the loop engine
+	// Pass the initial task so it starts processing immediately
+	adapter := tui.NewLoopAdapter(cfg, s, initialTask)
+
+	// Create the program
+	p := tea.NewProgram(
+		model,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+
+	// Start the adapter in a goroutine to process loop events
+	go adapter.Run(p)
+
+	// Run the TUI
+	if _, err := p.Run(); err != nil {
+		log.Fatal("TUI error:", err)
+	}
+}
+
+func runTaskHeadless(task string, cfg *config.Config, s *store.Store) {
+	startTime := time.Now()
+
+	// Check for dirty working tree before headless execution
+	gitImpl, err := git.New(cfg.RepoRoot)
+	if err != nil {
+		log.Fatal("git init:", err)
+	}
+	if dirty, _ := gitImpl.IsWorkingTreeDirty(); dirty {
+		log.Fatal("working tree has uncommitted changes - stash or commit first")
 	}
 
 	// Setup backends
@@ -171,34 +267,10 @@ func runTask(task string, noTUI bool) {
 	if err != nil {
 		log.Fatal("skills:", err)
 	}
-	if !noTUI && !jsonOutput {
-		fmt.Printf("Loaded %d skills\n", len(skills))
-	}
 
 	// Create agents
 	executor := loop.NewExecutor(executorBE, cfg.Executor, skills)
 	critic := loop.NewCritic(criticBE, cfg.Critic)
-
-	// Find git repository root
-	repoRoot, err := findGitRoot(".")
-	if err != nil {
-		log.Fatal("not a git repository:", err)
-	}
-
-	// Create real git layer
-	gitImpl, err := git.New(repoRoot)
-	if err != nil {
-		log.Fatal("git init:", err)
-	}
-
-	// Check for dirty working tree
-	if dirty, _ := gitImpl.IsWorkingTreeDirty(); dirty {
-		log.Fatal("working tree has uncommitted changes - stash or commit first")
-	}
-
-	if !noTUI && !jsonOutput {
-		fmt.Printf("Git repo: %s (base: %s)\n", gitImpl.RepoRoot(), gitImpl.BaseBranch())
-	}
 
 	// Use adapter to implement loop.GitLayer
 	gitLayer := git.NewAdapter(gitImpl)
@@ -206,24 +278,10 @@ func runTask(task string, noTUI bool) {
 	// Create and run loop
 	l := loop.New(cfg, executor, critic, gitLayer)
 
-	// Setup store
-	dbPath := cfg.Session.DBPath
-	if dbPath == "" {
-		dbPath = filepath.Join(repoRoot, ".marshal", "sessions.db")
-	} else if !filepath.IsAbs(dbPath) {
-		dbPath = filepath.Join(repoRoot, dbPath)
-	}
-
-	s, err := store.New(dbPath)
-	if err != nil {
-		log.Fatal("store init:", err)
-	}
-	defer s.Close()
-
 	// Create session record
 	session := &store.Session{
 		ID:              generateSessionID(),
-		RepoRoot:        repoRoot,
+		RepoRoot:        cfg.RepoRoot,
 		Task:            task,
 		Status:          "RUNNING",
 		BaseBranch:      gitImpl.BaseBranch(),
@@ -234,10 +292,8 @@ func runTask(task string, noTUI bool) {
 	recorder := store.NewLoopRecorder(s, l)
 	ctx := context.Background()
 
-	if !noTUI && !jsonOutput {
-		fmt.Printf("\n=== Starting Marshal Loop ===\n")
-		fmt.Printf("Task: %s\n\n", task)
-	}
+	fmt.Printf("\n=== Starting Marshal Loop ===\n")
+	fmt.Printf("Task: %s\n\n", task)
 
 	result, err := recorder.RunWithRecording(ctx, task, session, nil)
 
@@ -245,8 +301,8 @@ func runTask(task string, noTUI bool) {
 
 	// Output results
 	if jsonOutput {
-		outputJSON(result, session.ID, task, duration, err)
-	} else if !noTUI {
+		outputJSON(result, task, duration, err)
+	} else {
 		outputText(result, duration)
 	}
 
@@ -256,12 +312,11 @@ func runTask(task string, noTUI bool) {
 	}
 }
 
-func outputJSON(result *loop.Result, sessionID, task string, duration time.Duration, runErr error) {
+func outputJSON(result *loop.Result, task string, duration time.Duration, runErr error) {
 	jr := JSONResult{
-		Status:    result.Status,
-		SessionID: sessionID,
-		Task:      task,
-		Duration:  duration.Round(time.Millisecond).String(),
+		Status:   result.Status,
+		Task:     task,
+		Duration: duration.Round(time.Millisecond).String(),
 	}
 
 	if runErr != nil {

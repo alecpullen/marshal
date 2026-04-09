@@ -31,6 +31,13 @@ func (v *Verdict) IsPass() bool {
 	return strings.ToUpper(v.Verdict) == "PASS"
 }
 
+// ReviewResult contains the verdict and token usage.
+type ReviewResult struct {
+	Verdict          *Verdict
+	PromptTokens     int
+	CompletionTokens int
+}
+
 // NewCritic creates a new critic agent.
 func NewCritic(be backend.Backend, cfg config.AgentConfig) *Critic {
 	return &Critic{
@@ -40,7 +47,7 @@ func NewCritic(be backend.Backend, cfg config.AgentConfig) *Critic {
 }
 
 // Review sends the diff to the LLM and parses the verdict.
-func (c *Critic) Review(ctx context.Context, diff string, task string) (*Verdict, error) {
+func (c *Critic) Review(ctx context.Context, diff string, task string) (*ReviewResult, error) {
 	systemPrompt := c.buildSystemPrompt()
 
 	userContent := fmt.Sprintf(`Task: %s
@@ -64,16 +71,24 @@ Provide your verdict as JSON matching the schema.`, task, diff)
 	verdict, err := ParseVerdict(resp.Content)
 	if err != nil {
 		// Return a default FAIL verdict on parse error
-		return &Verdict{
-			Verdict:  "FAIL",
-			Summary:  "Failed to parse critic response",
-			Issue:    fmt.Sprintf("Parse error: %v", err),
-			Fix:      "Ensure the critic outputs valid JSON",
-			Concerns: []string{"Original response: " + truncate(resp.Content, 200)},
+		return &ReviewResult{
+			Verdict: &Verdict{
+				Verdict:  "FAIL",
+				Summary:  "Failed to parse critic response",
+				Issue:    fmt.Sprintf("Parse error: %v", err),
+				Fix:      "Ensure the critic outputs valid JSON",
+				Concerns: []string{"Original response: " + truncate(resp.Content, 200)},
+			},
+			PromptTokens:     resp.PromptTokens,
+			CompletionTokens: resp.CompletionTokens,
 		}, nil
 	}
 
-	return verdict, nil
+	return &ReviewResult{
+		Verdict:          verdict,
+		PromptTokens:     resp.PromptTokens,
+		CompletionTokens: resp.CompletionTokens,
+	}, nil
 }
 
 // buildSystemPrompt constructs the full system prompt for the critic.

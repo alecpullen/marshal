@@ -126,6 +126,10 @@ func TestValidate_ValidConfig(t *testing.T) {
 			BaseURL: "https://api.example.com",
 			APIKey:  "critic-key",
 		},
+		Loop: LoopConfig{
+			MaxRounds:    3,
+			CompactAfter: 2,
+		},
 	}
 	err := cfg.Validate()
 	if err != nil {

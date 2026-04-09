@@ -148,6 +148,77 @@ func (l *Loop) Run(ctx context.Context, task string) (*Result, error) {
 	}, fmt.Errorf("exhausted max rounds (%d)", l.cfg.Loop.MaxRounds)
 }
 
+// RoundCallback is called after each round completes
+type RoundCallback func(round Round)
+
+// RunWithCallback executes the loop with a callback after each round completes.
+// This is useful for real-time TUI updates.
+func (l *Loop) RunWithCallback(ctx context.Context, task string, callback RoundCallback) (*Result, error) {
+	// Create isolation branch
+	branchName := fmt.Sprintf("marshal-session-%s", l.sessionID)
+	if err := l.git.CreateIsolationBranch(branchName); err != nil {
+		return nil, fmt.Errorf("create isolation branch: %w", err)
+	}
+
+	var feedback string
+	var compacted bool
+
+	for l.round < l.cfg.Loop.MaxRounds {
+		l.round++
+
+		// Check if we should compact before this round
+		if !compacted && l.compactor != nil && l.round >= l.cfg.Loop.CompactAfter {
+			_, _ = l.compactor.Compact(ctx, l.history)
+			compacted = true
+		}
+
+		round, err := l.runRound(ctx, task, feedback)
+		if err != nil {
+			// Cleanup on error
+			l.cleanup(branchName)
+			return nil, fmt.Errorf("round %d: %w", l.round, err)
+		}
+
+		l.history = append(l.history, *round)
+
+		// Call the callback with the completed round
+		if callback != nil {
+			callback(*round)
+		}
+
+		if round.Verdict.IsPass() {
+			// Merge isolation branch on success
+			mergeMsg := fmt.Sprintf("Merge %s: %s", branchName, round.Verdict.Summary)
+			if err := l.git.MergeBranch(branchName, mergeMsg); err != nil {
+				// Cleanup on merge failure
+				l.cleanup(branchName)
+				return nil, fmt.Errorf("merge branch: %w", err)
+			}
+			// Delete the isolation branch after merge
+			l.git.DeleteBranch(branchName)
+
+			return &Result{
+				Status:       "SUCCESS",
+				FinalVerdict: &round.Verdict,
+				Rounds:       l.history,
+			}, nil
+		}
+
+		// Prepare feedback for next round
+		feedback = fmt.Sprintf("Previous attempt failed:\nIssue: %s\nFix needed: %s",
+			round.Verdict.Issue, round.Verdict.Fix)
+	}
+
+	// Exhausted max rounds - cleanup
+	l.cleanup(branchName)
+
+	return &Result{
+		Status:       "EXHAUSTED",
+		FinalVerdict: &l.history[len(l.history)-1].Verdict,
+		Rounds:       l.history,
+	}, fmt.Errorf("exhausted max rounds (%d)", l.cfg.Loop.MaxRounds)
+}
+
 // cleanup switches to base branch and deletes the isolation branch.
 func (l *Loop) cleanup(branchName string) {
 	// Best effort cleanup - ignore errors
@@ -175,7 +246,7 @@ func (l *Loop) runRound(ctx context.Context, task string, priorFeedback string) 
 	}
 
 	// Critic reviews the diff
-	verdict, err := l.critic.Review(ctx, diff, task)
+	reviewResult, err := l.critic.Review(ctx, diff, task)
 	if err != nil {
 		return nil, fmt.Errorf("critic: %w", err)
 	}
@@ -183,8 +254,12 @@ func (l *Loop) runRound(ctx context.Context, task string, priorFeedback string) 
 	return &Round{
 		Number:       l.round,
 		ExecutorReq:  execReq,
-		ExecutorResp: execResp,
+		ExecutorResp: execResp.Content,
 		Diff:         diff,
-		Verdict:      *verdict,
+		Verdict:      *reviewResult.Verdict,
+		Tokens: TokenUsage{
+			PromptTokens:     execResp.PromptTokens + reviewResult.PromptTokens,
+			CompletionTokens: execResp.CompletionTokens + reviewResult.CompletionTokens,
+		},
 	}, nil
 }

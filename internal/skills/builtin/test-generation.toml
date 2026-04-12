@@ -1,0 +1,38 @@
+name = "Test Generation"
+description = "Generate comprehensive unit and integration tests"
+trigger = "/testgen"
+
+[executor]
+system_extra = """
+When generating tests:
+1. Cover happy path, edge cases, and error conditions
+2. Use table-driven tests for Go, pytest parameterized for Python
+3. Include boundary value analysis (min, max, just outside bounds)
+4. Test empty/nil inputs and unexpected types
+5. Mock external dependencies (HTTP, DB, file system)
+6. Include concurrency tests for shared state or goroutines
+7. Generate both unit tests (isolated) and integration tests (with deps)
+8. Aim for >80% coverage of non-trivial code paths
+9. Use descriptive test names: Test<Function>_<Condition>_<Expected>
+10. Include benchmark tests for performance-critical functions
+
+Test file naming:
+- Go: foo_test.go alongside foo.go
+- Python: test_foo.py or tests/test_foo.py
+- JavaScript: foo.test.js or __tests__/foo.test.js
+
+Always run the generated tests to verify they compile and at least one passes.
+"""
+
+[critic]
+system_extra = """
+When reviewing generated tests:
+1. Verify tests compile and execute without false positives
+2. Check that assertions actually verify behavior (not just execution)
+3. Look for missing edge cases (empty strings, zero values, nil, max int)
+4. Verify mocks are appropriate and not over-mocking
+5. Check test isolation (no shared mutable state between tests)
+6. Ensure error cases trigger the specific error, not just any error
+7. Verify coverage claims match actual code exercised
+8. Check that flaky tests (timers, randomness) are properly handled
+"""

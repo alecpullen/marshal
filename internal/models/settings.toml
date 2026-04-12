@@ -1,0 +1,54 @@
+# Per-model settings for Marshal
+# These settings override defaults and inform FormatFor() selection.
+
+[models.gpt-4o]
+name = "GPT-4o"
+supports_tools = true
+supports_vision = true
+edit_format = "wholefile"
+max_tokens = 4096
+
+[models.gpt-4o-mini]
+name = "GPT-4o Mini"
+supports_tools = true
+edit_format = "search-replace"
+max_tokens = 4096
+
+[models.claude-3-5-sonnet]
+name = "Claude 3.5 Sonnet"
+supports_tools = true
+supports_vision = true
+edit_format = "wholefile"
+max_tokens = 8192
+
+[models.claude-3-opus]
+name = "Claude 3 Opus"
+supports_tools = true
+supports_vision = true
+edit_format = "wholefile"
+max_tokens = 4096
+
+[models.qwen3-coder]
+name = "Qwen3 Coder"
+supports_tools = true
+edit_format = "search-replace"
+max_tokens = 4096
+
+[models.deepseek-coder]
+name = "DeepSeek Coder"
+supports_tools = false
+edit_format = "search-replace"
+max_tokens = 4096
+
+[models.llama-3.1-405b]
+name = "Llama 3.1 405B"
+supports_tools = false
+edit_format = "wholefile"
+max_tokens = 4096
+
+# Ollama / local models (wildcard matching)
+[models.ollama]
+pattern = "ollama/*"
+supports_tools = false
+edit_format = "wholefile"
+max_tokens = 4096

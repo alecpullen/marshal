@@ -1,0 +1,34 @@
+name = "Schema Migration"
+description = "Generate database schema migrations with rollback support"
+trigger = "/schema"
+
+[executor]
+system_extra = """
+When generating database schema migrations:
+1. Always create both "up" (forward) and "down" (rollback) migrations
+2. Use sequential timestamps or version numbers for ordering
+3. Include safety checks: verify table/column doesn't exist before creating
+4. For SQL migrations, wrap in transactions where dialect supports it
+5. Generate corresponding ORM/model changes in application code
+6. Include validation that schema matches expected state after migration
+
+Preferred migration formats:
+- PostgreSQL: raw SQL with DO blocks for conditional logic
+- MySQL: raw SQL with stored procedure guards for older versions
+- Go: use golang-migrate or pressly/goose compatible format
+- Python: Alembic revision scripts with upgrade()/downgrade() functions
+
+Always provide a rollback plan and estimate migration duration for large tables.
+"""
+
+[critic]
+system_extra = """
+When reviewing schema migrations:
+1. Verify both up and down migrations are present and valid
+2. Check for missing indexes on foreign keys and frequently queried columns
+3. Verify data type choices (e.g., TEXT vs VARCHAR, int size)
+4. Look for destructive operations without backup/verification steps
+5. Ensure timestamp/version ordering won't conflict with existing migrations
+6. Check transaction boundaries — DDL in transactions varies by database
+7. Verify rollback actually restores the previous state completely
+"""

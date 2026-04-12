@@ -23,13 +23,6 @@ import (
 	"github.com/alec/marshal/internal/session"
 )
 
-// executorSystemPrompt / criticSystemPrompt are loaded from the embedded base
-// markdown files. The output-format instructions are injected into the user
-// message so they can be overridden per skill in M8.
-var (
-	executorSystemPrompt = prompts.Executor
-	criticSystemPrompt   = prompts.Critic
-)
 
 // executorOutputInstructions returns format-specific instructions for the executor.
 func executorOutputInstructions(fmt config.EditFormat) string {
@@ -89,12 +82,15 @@ var ErrTaskFailed = errors.New("task failed after all rounds")
 
 // Config controls Engine behaviour.
 type Config struct {
-	MaxRounds  int
-	SessionID  string
-	GitEnabled bool               // when false all git operations are skipped
-	ChatFiles  []string           // recently referenced files for repo-map personalization
-	EditFormat config.EditFormat  // controls executor output format
-	LinterCfg  config.LinterConfig // linter commands; zero value disables linting
+	MaxRounds     int
+	CompactAfter  int                 // call compactor after this many consecutive FAIL rounds (0 = disabled)
+	SessionID     string
+	GitEnabled    bool                // when false all git operations are skipped
+	ChatFiles     []string            // recently referenced files for repo-map personalization
+	EditFormat    config.EditFormat   // controls executor output format
+	LinterCfg     config.LinterConfig // linter commands; zero value disables linting
+	ExecutorExtra string              // appended to executor system prompt (from active skill)
+	CriticExtra   string              // appended to critic system prompt (from active skill)
 }
 
 // txer abstracts the task-branch lifecycle so the engine can run with or
@@ -117,15 +113,17 @@ func (noopTx) Abandon() error        { return nil }
 
 // Engine orchestrates the executor–critic round loop for a single task.
 type Engine struct {
-	repo     *git.Repo
-	gitSess  *git.Session
-	store    *session.Store
-	reg      *backend.Registry
-	cfg      Config
-	sink     Sink
-	repoMap  string       // pre-built repo map text, injected into executor prompt
-	repoMapM *repomap.Map // cached map for file content injection
-	lint     *linter.Linter
+	repo            *git.Repo
+	gitSess         *git.Session
+	store           *session.Store
+	reg             *backend.Registry
+	cfg             Config
+	sink            Sink
+	repoMap         string       // pre-built repo map text, injected into executor prompt
+	repoMapM        *repomap.Map // cached map for file content injection
+	lint            *linter.Linter
+	execSysPrompt   string // assembled executor system prompt (base + skill extra)
+	criticSysPrompt string // assembled critic system prompt (base + skill extra)
 }
 
 // New creates an Engine. All parameters are required.
@@ -141,12 +139,14 @@ func New(
 		cfg.MaxRounds = 3
 	}
 	e := &Engine{
-		repo:    repo,
-		gitSess: gitSess,
-		store:   store,
-		reg:     reg,
-		cfg:     cfg,
-		sink:    sink,
+		repo:            repo,
+		gitSess:         gitSess,
+		store:           store,
+		reg:             reg,
+		cfg:             cfg,
+		sink:            sink,
+		execSysPrompt:   prompts.Assemble(prompts.Executor, cfg.ExecutorExtra),
+		criticSysPrompt: prompts.Assemble(prompts.Critic, cfg.CriticExtra),
 	}
 	// Build the repo map eagerly if we have a repo root. Errors are
 	// non-fatal: the executor still runs, just without symbol context.
@@ -219,9 +219,11 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		_ = tx.Abandon()
 		return err
 	}
+	compactorB, _ := e.reg.For(config.RoleCompactor) // nil ok; compaction is best-effort
 
 	// 3. Round loop.
 	var issue, fix string
+	var history []roundResult // failure history fed to the compactor
 
 	for round := 1; round <= e.cfg.MaxRounds; round++ {
 		e.sink.RoundStart(taskID, round, e.cfg.MaxRounds)
@@ -341,9 +343,27 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 			return nil
 		}
 
-		// FAIL: carry issue/fix into next round.
+		// FAIL: record this round's result and carry issue/fix forward.
 		issue = verdict.Issue
 		fix = verdict.Fix
+		history = append(history, roundResult{
+			Round: round,
+			Issue: issue,
+			Fix:   fix,
+			Diff:  diff,
+		})
+
+		// After compact_after consecutive failures, call the compactor to
+		// synthesize the history into a fresh issue/fix for the next round.
+		ca := e.cfg.CompactAfter
+		if ca > 0 && len(history) >= ca && compactorB != nil {
+			if ci, cf, cerr := e.compact(ctx, compactorB, prompt, history); cerr == nil {
+				issue, fix = ci, cf
+				history = nil // reset; compacted summary starts a new window
+			}
+			// Compaction errors are non-fatal: the executor retries with the
+			// last raw issue/fix instead.
+		}
 	}
 
 	// 4. All rounds exhausted.
@@ -404,7 +424,7 @@ func (e *Engine) buildExecutorMessages(prompt, issue, fix string, round int) []b
 	}
 
 	return []backend.Message{
-		{Role: backend.MessageRoleSystem, Content: executorSystemPrompt},
+		{Role: backend.MessageRoleSystem, Content: e.execSysPrompt},
 		{Role: backend.MessageRoleUser, Content: sb.String()},
 	}
 }
@@ -476,7 +496,7 @@ func (e *Engine) buildCriticMessages(prompt, execContent, diff string) []backend
 	sb.WriteString(criticOutputInstructions)
 
 	return []backend.Message{
-		{Role: backend.MessageRoleSystem, Content: criticSystemPrompt},
+		{Role: backend.MessageRoleSystem, Content: e.criticSysPrompt},
 		{Role: backend.MessageRoleUser, Content: sb.String()},
 	}
 }

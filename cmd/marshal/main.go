@@ -19,6 +19,7 @@ import (
 	"github.com/alec/marshal/internal/logging"
 	"github.com/alec/marshal/internal/loop"
 	"github.com/alec/marshal/internal/session"
+	"github.com/alec/marshal/internal/skills"
 	"github.com/alec/marshal/internal/ui/tui"
 	"github.com/spf13/cobra"
 )
@@ -169,7 +170,26 @@ func chatCmd(gf *globalFlags) *cobra.Command {
 				return fmt.Errorf("backend registry: %w", err)
 			}
 
-			if runErr := tui.Run(cmd.Context(), cfg, repo, gitSess, store, reg); runErr != nil {
+			// Load skills: built-ins first, then user-defined (~/.config/marshal/skills/*.toml).
+			// Missing user directory is silently ignored. User skills can override built-ins.
+			skillsReg := skills.New()
+			if err := skills.LoadBuiltins(skillsReg); err != nil {
+				return fmt.Errorf("loading built-in skills: %w", err)
+			}
+			skillsDir := ""
+			if home, err := os.UserHomeDir(); err == nil {
+				skillsDir = filepath.Join(home, ".config", "marshal", "skills")
+			}
+			userSkills, err := skills.Load(skillsDir)
+			if err != nil {
+				return fmt.Errorf("loading user skills: %w", err)
+			}
+			// Merge user skills into registry (overriding built-ins if triggers collide).
+			for _, s := range userSkills.All() {
+				_ = skillsReg.Register(s) // ignore duplicate errors
+			}
+
+			if runErr := tui.Run(cmd.Context(), cfg, repo, gitSess, store, reg, skillsReg); runErr != nil {
 				if gitSess != nil {
 					_ = gitSess.Teardown()
 				}
@@ -279,9 +299,12 @@ func runCmd(gf *globalFlags) *cobra.Command {
 			// Run the task loop.
 			eng := loop.New(
 				loop.Config{
-					MaxRounds:  cfg.Loop.MaxRounds,
-					SessionID:  sessID,
-					GitEnabled: cfg.Git.Enabled,
+					MaxRounds:    cfg.Loop.MaxRounds,
+					CompactAfter: cfg.Loop.CompactAfter,
+					SessionID:    sessID,
+					GitEnabled:   cfg.Git.Enabled,
+					LinterCfg:    cfg.Linters,
+					EditFormat:   cfg.Loop.EditFormat,
 				},
 				repo, gitSess, store, reg, sink,
 			)

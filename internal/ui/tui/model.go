@@ -11,7 +11,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/alec/marshal/internal/commands"
 	"github.com/alec/marshal/internal/loop"
+	"github.com/alec/marshal/internal/session"
+	"github.com/alec/marshal/internal/skills"
 )
 
 // progRef is a shared mutable pointer so that the model (a value type) can
@@ -28,7 +31,10 @@ type chatEntry struct {
 type model struct {
 	// Dependencies injected by run.go.
 	runGate   func(ctx context.Context, prompt string) (action, text string, err error)
-	runEngine func(ctx context.Context, prompt string, sink loop.Sink) error
+	runEngine func(ctx context.Context, prompt string, sink loop.Sink, executorExtra, criticExtra string) error
+	skillsReg *skills.Registry
+	store     *session.Store
+	sessionID string
 	pref      *progRef
 
 	ctx    context.Context
@@ -55,7 +61,10 @@ const (
 func newModel(
 	ctx context.Context,
 	runGate func(context.Context, string) (string, string, error),
-	runEngine func(context.Context, string, loop.Sink) error,
+	runEngine func(context.Context, string, loop.Sink, string, string) error,
+	skillsReg *skills.Registry,
+	store *session.Store,
+	sessionID string,
 	pref *progRef,
 ) model {
 	ctx, cancel := context.WithCancel(ctx)
@@ -74,6 +83,9 @@ func newModel(
 	return model{
 		runGate:   runGate,
 		runEngine: runEngine,
+		skillsReg: skillsReg,
+		store:     store,
+		sessionID: sessionID,
 		pref:      pref,
 		ctx:       ctx,
 		cancel:    cancel,
@@ -109,6 +121,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				prompt := strings.TrimSpace(m.input.Value())
 				if prompt != "" {
 					m.input.Reset()
+					if strings.HasPrefix(prompt, "/") {
+						next, cmd := m.handleSlash(prompt)
+						return next, cmd
+					}
 					m.input.Blur()
 					m.busy = true
 					m = m.appendEntry("user", prompt)
@@ -129,12 +145,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			// Gate failed: treat as PROCEED so the user doesn't lose their work.
 			m = m.appendEntry("system", "gate error: "+msg.Err.Error())
-			cmds = append(cmds, m.startEngine(msg.Prompt))
+			cmds = append(cmds, m.startEngine(msg.Prompt, "", ""))
 			break
 		}
 		switch msg.Action {
 		case "proceed":
-			cmds = append(cmds, m.startEngine(msg.Prompt))
+			cmds = append(cmds, m.startEngine(msg.Prompt, "", ""))
 		case "chat":
 			m = m.appendEntry("marshal", msg.Text)
 			m = m.unlock()
@@ -318,13 +334,118 @@ func (m model) callGate(prompt string) tea.Cmd {
 
 // startEngine returns a tea.Cmd that runs the executor-critic loop in a
 // goroutine and delivers TaskDoneMsg when it finishes.
-func (m model) startEngine(prompt string) tea.Cmd {
+// executorExtra and criticExtra are skill-provided system-prompt additions;
+// pass empty strings for a plain (no-skill) run.
+func (m model) startEngine(prompt, executorExtra, criticExtra string) tea.Cmd {
 	pref := m.pref
 	runEngine := m.runEngine
 	ctx := m.ctx
 	return func() tea.Msg {
 		sink := NewChanSink(pref.p)
-		err := runEngine(ctx, prompt, sink)
+		err := runEngine(ctx, prompt, sink, executorExtra, criticExtra)
 		return TaskDoneMsg{Err: err}
 	}
 }
+
+// handleSlash dispatches a "/" prefixed input to a built-in command or skill.
+func (m model) handleSlash(input string) (tea.Model, tea.Cmd) {
+	action, _ := commands.Dispatch(input, m.skillsReg)
+	switch action.Kind {
+	case commands.KindSkill:
+		m = m.appendEntry("user", input)
+		m.input.Blur()
+		m.busy = true
+		return m, m.startEngine(
+			action.Prompt,
+			action.Skill.Executor.SystemExtra,
+			action.Skill.Critic.SystemExtra,
+		)
+
+	case commands.KindBuiltin:
+		return m.handleBuiltin(action)
+
+	default: // KindUnknown
+		m = m.appendEntry("system",
+			fmt.Sprintf("unknown command %q — type /help for available commands", action.Name))
+		return m, nil
+	}
+}
+
+// handleBuiltin executes a built-in slash command.
+func (m model) handleBuiltin(a commands.Action) (tea.Model, tea.Cmd) {
+	switch a.Name {
+	case "skills":
+		m = m.appendEntry("system", m.formatSkillsList())
+	case "help":
+		m = m.appendEntry("system", helpText)
+	case "history":
+		m = m.appendEntry("system", m.formatHistory())
+	case "ship":
+		m = m.appendEntry("system", "/ship — not yet implemented (coming in M9)")
+	case "undo":
+		m = m.appendEntry("system", "/undo — not yet implemented (coming in M9)")
+	case "revert":
+		m = m.appendEntry("system", "/revert — not yet implemented (coming in M9)")
+	}
+	return m, nil
+}
+
+// formatSkillsList returns a human-readable list of loaded skills.
+func (m model) formatSkillsList() string {
+	all := m.skillsReg.All()
+	if len(all) == 0 {
+		return "No skills loaded. Place .toml files in ~/.config/marshal/skills/"
+	}
+	var sb strings.Builder
+	sb.WriteString("Available skills:\n")
+	for _, s := range all {
+		sb.WriteString(fmt.Sprintf("  %-12s %s\n", s.Trigger, s.Description))
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// formatHistory returns a human-readable task ledger for the current session.
+func (m model) formatHistory() string {
+	if m.store == nil || m.sessionID == "" {
+		return "No history available (store not initialized)."
+	}
+
+	tasks, err := m.store.TasksForSession(m.sessionID)
+	if err != nil {
+		return fmt.Sprintf("Error loading history: %v", err)
+	}
+	if len(tasks) == 0 {
+		return "No tasks in current session."
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Session %s — %d task(s):\n", m.sessionID, len(tasks)))
+	for _, t := range tasks {
+		status := t.Status
+		if status == "" {
+			status = "running"
+		}
+		summary := ""
+		if t.Summary != nil && *t.Summary != "" {
+			summary = *t.Summary
+		} else {
+			summary = t.Prompt
+			if len(summary) > 50 {
+				summary = summary[:47] + "..."
+			}
+		}
+		sb.WriteString(fmt.Sprintf("  [%s] %-12s %s\n", status, t.ID, summary))
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+const helpText = `Commands:
+  /ship           ship staged work to the target branch (M9)
+  /undo           undo the last task (M9)
+  /revert <id>    revert a specific task by ID (M9)
+  /history        show task ledger for current session
+  /skills         list available skill extensions
+  /help           show this help
+
+Skills from ~/.config/marshal/skills/*.toml are also available.
+Ctrl+C to quit.`

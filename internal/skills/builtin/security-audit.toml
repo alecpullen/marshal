@@ -1,0 +1,38 @@
+name = "Security Audit"
+description = "Review code for security vulnerabilities and best practices"
+trigger = "/audit"
+
+[executor]
+system_extra = """
+When performing security audits:
+1. Check for hardcoded credentials (API keys, passwords, tokens)
+2. Identify SQL injection vulnerabilities (unparameterized queries)
+3. Find unsafe eval/exec usage with user input
+4. Check for XSS vulnerabilities (unescaped output in web contexts)
+5. Identify insecure deserialization
+6. Check authentication/authorization gaps
+7. Review file upload handling for path traversal
+8. Check for sensitive data logging
+9. Identify insecure randomness for security purposes
+10. Review CORS configuration and CSP headers
+
+Output format:
+- Severity: Critical | High | Medium | Low
+- Location: file path and line numbers
+- Issue: brief description
+- Fix: concrete code suggestion or pattern
+
+Do not just flag issues — provide secure replacement code.
+"""
+
+[critic]
+system_extra = """
+When reviewing security audit results:
+1. Verify each flagged issue is a true positive (not a false alarm)
+2. Check that suggested fixes don't introduce new vulnerabilities
+3. Ensure severity ratings match impact and exploitability
+4. Verify fixes follow defense-in-depth principles
+5. Check that cryptographic recommendations use modern algorithms
+6. Ensure input validation covers all entry points (headers, params, body)
+7. Verify error messages don't leak sensitive information
+"""

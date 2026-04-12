@@ -16,6 +16,7 @@ import (
 	"github.com/alec/marshal/internal/loop"
 	"github.com/alec/marshal/internal/prompts"
 	"github.com/alec/marshal/internal/session"
+	"github.com/alec/marshal/internal/skills"
 )
 
 // Run starts the interactive TUI. It blocks until the user quits (Ctrl+C /
@@ -27,6 +28,7 @@ func Run(
 	gitSess *git.Session,
 	store *session.Store,
 	reg *backend.Registry,
+	skillsReg *skills.Registry,
 ) error {
 	sessID, err := insertSession(store, gitSess)
 	if err != nil {
@@ -44,12 +46,17 @@ func Run(
 		return callMarshalGate(ctx, marshalB, prompt)
 	}
 
-	runEngine := func(ctx context.Context, prompt string, sink loop.Sink) error {
+	runEngine := func(ctx context.Context, prompt string, sink loop.Sink, executorExtra, criticExtra string) error {
 		eng := loop.New(
 			loop.Config{
-				MaxRounds:  cfg.Loop.MaxRounds,
-				SessionID:  sessID,
-				GitEnabled: cfg.Git.Enabled,
+				MaxRounds:     cfg.Loop.MaxRounds,
+				CompactAfter:  cfg.Loop.CompactAfter,
+				SessionID:     sessID,
+				GitEnabled:    cfg.Git.Enabled,
+				LinterCfg:     cfg.Linters,
+				EditFormat:    cfg.Loop.EditFormat,
+				ExecutorExtra: executorExtra,
+				CriticExtra:   criticExtra,
 			},
 			repo, gitSess, store, reg, sink,
 		)
@@ -57,7 +64,7 @@ func Run(
 	}
 
 	pref := &progRef{}
-	m := newModel(ctx, runGate, runEngine, pref)
+	m := newModel(ctx, runGate, runEngine, skillsReg, store, sessID, pref)
 
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),

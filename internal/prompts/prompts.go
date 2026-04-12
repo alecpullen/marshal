@@ -14,3 +14,6 @@ var Marshal string
 
 //go:embed base/compactor.md
 var Compactor string
+
+//go:embed security/security.md
+var Security string

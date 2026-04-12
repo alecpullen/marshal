@@ -9,6 +9,7 @@ import (
 
 	"github.com/alec/marshal/internal/backend"
 	"github.com/alec/marshal/internal/config"
+	"github.com/alec/marshal/internal/git"
 	"github.com/alec/marshal/internal/logging"
 	"github.com/spf13/cobra"
 )
@@ -220,17 +221,89 @@ func debugChatCmd(gf *globalFlags) *cobra.Command {
 }
 
 func debugGitSessionCmd(gf *globalFlags) *cobra.Command {
-	var task string
+	var taskID string
+	var keepBranch bool
 
 	cmd := &cobra.Command{
 		Use:   "git-session",
-		Short: "Debug the branch session lifecycle",
+		Short: "Exercise the full session lifecycle in the current repo",
+		Long: `Creates a marshal session on the current repo, runs a task branch with a
+dummy commit, merges it to staging, then Ships to the target branch.
+Useful for verifying the git layer works correctly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return stubNotImplemented("debug git-session (M2)")
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			repo, err := git.New(cwd, git.RepoConfig{CoAuthoredBy: "debug"})
+			if err != nil {
+				return fmt.Errorf("not in a git repo: %w", err)
+			}
+
+			s := git.NewSession(repo, git.SessionOptions{KeepBranch: keepBranch})
+
+			fmt.Printf("starting session (target: %s)\n", func() string {
+				b, _ := repo.CurrentBranch()
+				return b
+			}())
+
+			if err := s.Start(); err != nil {
+				return fmt.Errorf("session start: %w", err)
+			}
+			fmt.Printf("  staging branch: %s\n", s.StagingBranch)
+			fmt.Printf("  target start SHA: %s\n", s.TargetStartSHA[:8])
+
+			// Begin task.
+			if taskID == "" {
+				taskID = "debug"
+			}
+			tx, err := s.BeginTask(taskID)
+			if err != nil {
+				return fmt.Errorf("begin task: %w", err)
+			}
+			fmt.Printf("  task branch: %s\n", tx.Branch)
+
+			// Write a dummy file and commit.
+			dummyPath := fmt.Sprintf("marshal-debug-%s.txt", taskID)
+			if err := os.WriteFile(dummyPath, []byte("marshal debug commit\n"), 0o644); err != nil {
+				return err
+			}
+			if err := tx.Commit(fmt.Sprintf("debug: add %s", dummyPath)); err != nil {
+				return fmt.Errorf("commit: %w", err)
+			}
+			diff, _ := tx.Diff()
+			fmt.Printf("  diff against staging HEAD:\n%s\n", diff)
+
+			// Merge to staging.
+			if err := tx.Merge(fmt.Sprintf("task %s: dummy commit", taskID)); err != nil {
+				return fmt.Errorf("merge: %w", err)
+			}
+			stagingSHA, _ := repo.HeadSHA()
+			fmt.Printf("  merged to staging; staging HEAD: %s\n", stagingSHA[:8])
+
+			// Ship to target.
+			newSHA, err := s.Ship(fmt.Sprintf("marshal debug: task %s", taskID))
+			if err != nil {
+				return fmt.Errorf("ship: %w", err)
+			}
+			fmt.Printf("  shipped; %s HEAD: %s\n", s.TargetBranch, newSHA[:8])
+			fmt.Printf("  new staging branch: %s\n", s.StagingBranch)
+
+			if !keepBranch {
+				if err := s.Teardown(); err != nil {
+					return fmt.Errorf("teardown: %w", err)
+				}
+				fmt.Printf("  torn down; back on %s\n", s.TargetBranch)
+			}
+
+			// Clean up the dummy file from the working tree (it was shipped).
+			_ = os.Remove(dummyPath)
+			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&task, "task", "", "Task id or name to exercise")
+	cmd.Flags().StringVar(&taskID, "task", "debug", "Task ID to use for the test branch")
+	cmd.Flags().BoolVar(&keepBranch, "keep-session-branch", false, "Keep the new staging branch after teardown")
 	return cmd
 }
 

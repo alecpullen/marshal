@@ -1,13 +1,19 @@
 package git
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 )
 
-// stagingBranchName formats the session staging branch name.
+// stagingBranchName returns a unique session staging branch name.
+// The timestamp prefix keeps branches sorted chronologically; the random
+// suffix prevents collisions when two sessions start in the same minute.
 func stagingBranchName() string {
-	return "marshal/session-" + time.Now().UTC().Format("20060102-1504")
+	var b [3]byte
+	_, _ = rand.Read(b[:])
+	return "marshal/session-" + time.Now().UTC().Format("20060102-1504") + "-" + hex.EncodeToString(b[:])
 }
 
 // taskBranchName formats the per-task isolation branch name.

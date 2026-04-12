@@ -1,0 +1,22 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - misspell
+    - godot
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment  # not worth the noise
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

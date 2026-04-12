@@ -1,0 +1,28 @@
+[model.marshal]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+
+[model.executor]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+
+[model.critic]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+
+[model.compactor]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+
+[loop]
+max_rounds    = 3
+compact_after = 2
+clarify       = "ambiguous"

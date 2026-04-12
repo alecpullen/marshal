@@ -9,6 +9,9 @@ type Sink interface {
 	Token(chunk string)
 	// RoundStart is called at the beginning of each executor round.
 	RoundStart(taskID string, round, maxRounds int)
+	// LintErrors is called when the linter finds issues after applying edits.
+	// summary is a human-readable multi-line list of the issues.
+	LintErrors(taskID, summary string)
 	// VerdictBadge is called once the critic verdict is parsed.
 	VerdictBadge(taskID string, verdict, summary string)
 	// TaskMerged is called after a PASS squash-merge into the staging branch.
@@ -28,6 +31,10 @@ func (StdoutSink) RoundStart(taskID string, round, maxRounds int) {
 	if round > 1 {
 		fmt.Printf("\n[task %s] retrying (round %d/%d)\n", taskID, round, maxRounds)
 	}
+}
+
+func (StdoutSink) LintErrors(taskID, summary string) {
+	fmt.Printf("\n[task %s] lint errors:\n%s\n", taskID, summary)
 }
 
 func (StdoutSink) VerdictBadge(taskID, verdict, summary string) {
@@ -52,6 +59,7 @@ type DiscardSink struct{}
 
 func (DiscardSink) Token(string)                              {}
 func (DiscardSink) RoundStart(string, int, int)               {}
+func (DiscardSink) LintErrors(string, string)                 {}
 func (DiscardSink) VerdictBadge(string, string, string)       {}
 func (DiscardSink) TaskMerged(string, string)                 {}
 func (DiscardSink) TaskFailed(string, string)                 {}

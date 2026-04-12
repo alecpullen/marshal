@@ -194,7 +194,14 @@ func (r *Repo) MergeSquash(branch, message string) error {
 	if strings.Contains(strings.ToLower(out), "already up to date") {
 		return ErrAlreadyUpToDate
 	}
-	return r.commit(message)
+	if err := r.commit(message); errors.Is(err, ErrNothingToCommit) {
+		// The task branch had commits but their net diff against staging is
+		// zero (e.g. a file was changed then reverted).  Treat as up-to-date
+		// so the engine retries rather than returning a hard error.
+		return ErrAlreadyUpToDate
+	} else {
+		return err
+	}
 }
 
 // ResetHard resets HEAD and the working tree to sha.

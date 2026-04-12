@@ -37,6 +37,12 @@ type TaskFailedMsg struct {
 	LastIssue string
 }
 
+// LintErrorsMsg is sent when the linter finds issues after applying edits.
+type LintErrorsMsg struct {
+	TaskID  string
+	Summary string // multi-line list of lint issues
+}
+
 // TaskDoneMsg is sent when the engine goroutine finishes (pass, fail, or error).
 type TaskDoneMsg struct{ Err error }
 
@@ -72,6 +78,9 @@ func (s *ChanSink) VerdictBadge(id, verdict, summary string) {
 }
 func (s *ChanSink) TaskMerged(id, sha string) {
 	s.prog.Send(TaskMergedMsg{TaskID: id, StagingSHA: sha})
+}
+func (s *ChanSink) LintErrors(id, summary string) {
+	s.prog.Send(LintErrorsMsg{TaskID: id, Summary: summary})
 }
 func (s *ChanSink) TaskFailed(id, issue string) {
 	s.prog.Send(TaskFailedMsg{TaskID: id, LastIssue: issue})

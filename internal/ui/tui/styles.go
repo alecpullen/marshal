@@ -27,6 +27,10 @@ var (
 			Bold(true).
 			Foreground(colorRed)
 
+	styleLint = lipgloss.NewStyle().
+			Foreground(colorYellow).
+			Italic(true)
+
 	styleSystem = lipgloss.NewStyle().
 			Foreground(colorFaint).
 			Italic(true)

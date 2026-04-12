@@ -17,6 +17,7 @@ import (
 	"github.com/alec/marshal/internal/config"
 	"github.com/alec/marshal/internal/edit"
 	"github.com/alec/marshal/internal/git"
+	"github.com/alec/marshal/internal/linter"
 	"github.com/alec/marshal/internal/prompts"
 	"github.com/alec/marshal/internal/repomap"
 	"github.com/alec/marshal/internal/session"
@@ -93,6 +94,7 @@ type Config struct {
 	GitEnabled bool               // when false all git operations are skipped
 	ChatFiles  []string           // recently referenced files for repo-map personalization
 	EditFormat config.EditFormat  // controls executor output format
+	LinterCfg  config.LinterConfig // linter commands; zero value disables linting
 }
 
 // txer abstracts the task-branch lifecycle so the engine can run with or
@@ -115,14 +117,15 @@ func (noopTx) Abandon() error        { return nil }
 
 // Engine orchestrates the executor–critic round loop for a single task.
 type Engine struct {
-	repo      *git.Repo
-	gitSess   *git.Session
-	store     *session.Store
-	reg       *backend.Registry
-	cfg       Config
-	sink      Sink
-	repoMap   string        // pre-built repo map text, injected into executor prompt
-	repoMapM  *repomap.Map  // cached map for file content injection
+	repo     *git.Repo
+	gitSess  *git.Session
+	store    *session.Store
+	reg      *backend.Registry
+	cfg      Config
+	sink     Sink
+	repoMap  string       // pre-built repo map text, injected into executor prompt
+	repoMapM *repomap.Map // cached map for file content injection
+	lint     *linter.Linter
 }
 
 // New creates an Engine. All parameters are required.
@@ -155,6 +158,12 @@ func New(
 		if err == nil {
 			e.repoMap = m.String()
 			e.repoMapM = m
+		}
+
+		// Create linter if any command is configured.
+		lc := cfg.LinterCfg
+		if lc.Go != "" || lc.Python != "" || lc.JS != "" || lc.TS != "" {
+			e.lint = linter.New(lc, repo.Root())
 		}
 	}
 	return e
@@ -228,8 +237,8 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 			return fmt.Errorf("executor stream: %w", streamErr)
 		}
 
-		// c. Apply whole-file edits from executor response.
-		e.applyEdits(execContent)
+		// c. Apply edits from executor response; capture changed file paths.
+		changedFiles := e.applyEdits(execContent)
 
 		// d. Commit all changes on the task branch.
 		commitMsg := fmt.Sprintf("marshal: task %s round %d", taskID, round)
@@ -241,7 +250,19 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		// e. Diff against parent staging SHA for critic context.
 		diff, _ := tx.Diff()
 
-		// f. Call critic (non-streaming for reliable JSON extraction).
+		// f. Run linter; on failures short-circuit to next round.
+		if e.lint != nil && len(changedFiles) > 0 {
+			lintIssues, _ := e.lint.Run(ctx, changedFiles)
+			if len(lintIssues) > 0 {
+				summary := linter.Format(lintIssues)
+				e.sink.LintErrors(taskID, summary)
+				issue = "linter reported the following errors that must be fixed:\n" + summary
+				fix = "Fix every linter error listed above. Do not proceed until the code is lint-clean."
+				continue
+			}
+		}
+
+		// g. Call critic (non-streaming for reliable JSON extraction).
 		criticMsgs := e.buildCriticMessages(prompt, execContent, diff)
 		criticContent, criticPToks, criticCToks, criticErr := e.callBackend(ctx, criticB, criticMsgs)
 		if criticErr != nil {
@@ -495,19 +516,22 @@ func (e *Engine) callBackend(ctx context.Context, b backend.Backend, msgs []back
 
 // --- Edit application --------------------------------------------------------
 
-func (e *Engine) applyEdits(content string) {
+// applyEdits writes files from the executor response and returns the relative
+// paths of files that were successfully written.
+func (e *Engine) applyEdits(content string) []string {
 	switch e.cfg.EditFormat {
 	case config.EditFormatSearchReplace:
-		e.applySearchReplace(content)
+		return e.applySearchReplace(content)
 	case config.EditFormatUdiff:
-		e.applyUdiff(content)
+		return e.applyUdiff(content)
 	default:
-		e.applyWhole(content)
+		return e.applyWhole(content)
 	}
 }
 
-func (e *Engine) applyWhole(content string) {
+func (e *Engine) applyWhole(content string) []string {
 	edits := edit.ParseWhole(content)
+	var written []string
 	for _, fe := range edits {
 		rel := filepath.Clean(fe.Path)
 		if strings.HasPrefix(rel, "..") {
@@ -517,20 +541,22 @@ func (e *Engine) applyWhole(content string) {
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			continue
 		}
-		_ = os.WriteFile(abs, []byte(fe.Content), 0o644)
+		if err := os.WriteFile(abs, []byte(fe.Content), 0o644); err == nil {
+			written = append(written, rel)
+		}
 	}
+	return written
 }
 
-func (e *Engine) applySearchReplace(content string) {
+func (e *Engine) applySearchReplace(content string) []string {
 	edits := edit.ParseSearchReplace(content)
+	var written []string
 	for _, se := range edits {
 		rel := filepath.Clean(se.Path)
 		if strings.HasPrefix(rel, "..") {
 			continue
 		}
 		abs := filepath.Join(e.repo.Root(), rel)
-
-		// Read existing content (empty string if file does not exist yet).
 		existing, _ := os.ReadFile(abs)
 		updated, ok := se.ApplyToContent(string(existing))
 		if !ok {
@@ -539,19 +565,22 @@ func (e *Engine) applySearchReplace(content string) {
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			continue
 		}
-		_ = os.WriteFile(abs, []byte(updated), 0o644)
+		if err := os.WriteFile(abs, []byte(updated), 0o644); err == nil {
+			written = append(written, rel)
+		}
 	}
+	return written
 }
 
-func (e *Engine) applyUdiff(content string) {
+func (e *Engine) applyUdiff(content string) []string {
 	edits := edit.ParseUdiff(content)
+	var written []string
 	for _, ue := range edits {
 		rel := filepath.Clean(ue.Path)
 		if strings.HasPrefix(rel, "..") {
 			continue
 		}
 		abs := filepath.Join(e.repo.Root(), rel)
-
 		existing, _ := os.ReadFile(abs)
 		updated, ok := ue.ApplyToContent(string(existing))
 		if !ok {
@@ -560,8 +589,11 @@ func (e *Engine) applyUdiff(content string) {
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			continue
 		}
-		_ = os.WriteFile(abs, []byte(updated), 0o644)
+		if err := os.WriteFile(abs, []byte(updated), 0o644); err == nil {
+			written = append(written, rel)
+		}
 	}
+	return written
 }
 
 // --- Ledger helpers ----------------------------------------------------------

@@ -152,6 +152,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fmt.Sprintf("retrying (round %d/%d)…", msg.Round, msg.MaxRounds))
 		}
 
+	case LintErrorsMsg:
+		m = m.flushStreaming()
+		m = m.appendEntry("lint", "lint errors:\n"+msg.Summary)
+
 	case TokenMsg:
 		m.streaming.WriteString(msg.Content)
 		m = m.rebuildViewport()
@@ -273,6 +277,8 @@ func renderEntry(e chatEntry, width int) string {
 		return stylePass.Width(width).Render(e.content)
 	case "fail":
 		return styleFail.Width(width).Render(e.content)
+	case "lint":
+		return styleLint.Width(width).Render(e.content)
 	default: // "system"
 		return styleSystem.Width(width).Render(e.content)
 	}

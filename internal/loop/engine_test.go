@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alec/marshal/internal/backend"
+	"github.com/alec/marshal/internal/config"
 	"github.com/alec/marshal/internal/git"
 	"github.com/alec/marshal/internal/loop"
 	"github.com/alec/marshal/internal/session"
@@ -361,6 +362,76 @@ func TestEngine_RetryOnFail_PassOnSecond(t *testing.T) {
 
 	if criticCalls.Load() != 2 {
 		t.Errorf("expected 2 critic calls (fail+pass), got %d", criticCalls.Load())
+	}
+
+	tasks, _ := store.TasksForSession(sessID)
+	if len(tasks) != 1 || tasks[0].Status != session.StatusPassed {
+		t.Errorf("expected 1 passed task, got %+v", tasks)
+	}
+}
+
+func TestEngine_LintFailTriggersRetry(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH")
+	}
+
+	repo := newTestGitRepo(t)
+	// go vet requires a go.mod to locate the module.
+	writeTestFile(t, repo.Root(), "go.mod", "module example.com/testmod\n\ngo 1.21\n")
+	gitAddCommit(t, repo.Root(), "add go.mod")
+
+	// Round 1: executor writes a file with a bad Printf (go vet will flag it).
+	// Round 2: executor fixes it (clean file).
+	var execCalls atomic.Int32
+	execSrv := httptest.NewServer(muxBackend(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := execCalls.Add(1)
+			var resp string
+			if n == 1 {
+				// Bad file: go vet will report a printf format mismatch.
+				resp = "main.go\n```go\npackage main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Printf(\"%d\", \"oops\")\n}\n```"
+			} else {
+				// Fixed file with a real addition so net diff vs staging is non-zero.
+				resp = "main.go\n```go\npackage main\n\nfunc Hello() string { return \"hello\" }\n\nfunc main() {}\n```"
+			}
+			sseResponse(resp)(w, r)
+		}),
+		jsonResponse("unused"),
+	))
+	passVerdict := `{"verdict":"PASS","summary":"ok","issue":"","fix":"","concerns":[]}`
+	criticSrv := httptest.NewServer(jsonResponse(passVerdict))
+	defer execSrv.Close()
+	defer criticSrv.Close()
+
+	store := newTestStore(t)
+	gitSess := git.NewSession(repo, git.SessionOptions{})
+	_ = gitSess.Start()
+	mainSHA := headSHAOf(t, repo.Root())
+
+	sessID := "test-lint-retry"
+	_ = store.InsertSession(&session.Session{
+		ID: sessID, TargetBranch: "main", TargetStartSHA: mainSHA,
+		StagingBranch: gitSess.StagingBranch, StartedAt: time.Now(),
+	})
+
+	reg := newTestRegistry(t, execSrv, criticSrv)
+	eng := loop.New(
+		loop.Config{
+			MaxRounds:  3,
+			SessionID:  sessID,
+			GitEnabled: true,
+			LinterCfg:  config.LinterConfig{Go: "go vet"},
+		},
+		repo, gitSess, store, reg, loop.DiscardSink{},
+	)
+
+	if err := eng.Run(context.Background(), "write main.go"); err != nil {
+		t.Fatalf("expected PASS after lint retry, got: %v", err)
+	}
+
+	// Executor should have been called twice (once for the bad file, once fixed).
+	if execCalls.Load() < 2 {
+		t.Errorf("expected at least 2 executor calls (lint retry), got %d", execCalls.Load())
 	}
 
 	tasks, _ := store.TasksForSession(sessID)

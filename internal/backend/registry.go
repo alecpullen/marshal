@@ -6,6 +6,12 @@ import (
 	"github.com/alec/marshal/internal/config"
 )
 
+// NewRegistryFromBackends builds a Registry directly from a role→Backend map.
+// Useful in tests that supply mock backends without a full config.
+func NewRegistryFromBackends(backends map[string]Backend) *Registry {
+	return &Registry{backends: backends}
+}
+
 // Registry maps the four model roles to their respective Backend instances.
 type Registry struct {
 	backends map[string]Backend

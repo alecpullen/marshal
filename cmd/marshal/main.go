@@ -2,15 +2,23 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/debug"
+	"strings"
+	"time"
 
 	"github.com/alec/marshal/internal/backend"
 	"github.com/alec/marshal/internal/config"
 	"github.com/alec/marshal/internal/git"
 	"github.com/alec/marshal/internal/logging"
+	"github.com/alec/marshal/internal/loop"
+	"github.com/alec/marshal/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -127,7 +135,7 @@ func chatCmd(gf *globalFlags) *cobra.Command {
 // ── run (stub) ────────────────────────────────────────────────────────────────
 
 func runCmd(gf *globalFlags) *cobra.Command {
-	var noTUI bool
+	var noShip bool
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
@@ -135,13 +143,116 @@ func runCmd(gf *globalFlags) *cobra.Command {
 		Short: "Run a single task against the current repo",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return stubNotImplemented("run (M3)")
+			prompt := args[0]
+
+			cfg, err := config.Load(config.Options{Profile: gf.profile})
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			if err := cfg.Validate(); err != nil {
+				return err
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			repo, err := git.New(cwd, git.RepoConfig{
+				CoAuthoredBy: cfg.Model.Executor.Model,
+			})
+			if err != nil {
+				return fmt.Errorf("not a git repo: %w", err)
+			}
+
+			// Open (or create) the session database.
+			dbDir := filepath.Join(repo.Root(), ".marshal")
+			if err := os.MkdirAll(dbDir, 0o755); err != nil {
+				return err
+			}
+			// Keep SQLite WAL files out of git so that `git add -A` on a task
+			// branch never stages them, which would block `git checkout` back
+			// to the staging branch.
+			ensureMarshalExcluded(repo.Root())
+			store, err := session.Open(filepath.Join(dbDir, "sessions.db"))
+			if err != nil {
+				return fmt.Errorf("session store: %w", err)
+			}
+			defer store.Close()
+
+			// Start git session.
+			gitSess := git.NewSession(repo, git.SessionOptions{KeepBranch: noShip})
+			if err := gitSess.Start(); err != nil {
+				return fmt.Errorf("session start: %w", err)
+			}
+
+			// Record session in DB.
+			sessID := newCmdID()
+			now := time.Now()
+			if err := store.InsertSession(&session.Session{
+				ID:             sessID,
+				TargetBranch:   gitSess.TargetBranch,
+				TargetStartSHA: gitSess.TargetStartSHA,
+				StagingBranch:  gitSess.StagingBranch,
+				StartedAt:      now,
+			}); err != nil {
+				_ = gitSess.Teardown()
+				return fmt.Errorf("insert session: %w", err)
+			}
+
+			// Build backend registry.
+			reg, err := backend.NewRegistry(cfg, nil)
+			if err != nil {
+				_ = gitSess.Teardown()
+				return fmt.Errorf("backend registry: %w", err)
+			}
+
+			// Choose sink.
+			var sink loop.Sink = loop.StdoutSink{}
+			_ = jsonOutput // M11 will add NDJSON sink
+
+			// Run the task loop.
+			eng := loop.New(
+				loop.Config{MaxRounds: cfg.Loop.MaxRounds, SessionID: sessID},
+				repo, gitSess, store, reg, sink,
+			)
+			runErr := eng.Run(cmd.Context(), prompt)
+
+			if runErr == nil {
+				// PASS: optionally ship to the target branch.
+				if !noShip {
+					sha, shipErr := gitSess.Ship(prompt)
+					if shipErr != nil {
+						return fmt.Errorf("ship: %w", shipErr)
+					}
+					if err := store.ShipSession(sessID, gitSess.StagingBranch, sha); err != nil {
+						return fmt.Errorf("update session: %w", err)
+					}
+					fmt.Printf("shipped to %s (%s)\n", gitSess.TargetBranch, sha[:8])
+				} else {
+					fmt.Printf("task passed — staged on %s (use /ship to land on %s)\n",
+						gitSess.StagingBranch, gitSess.TargetBranch)
+				}
+				return nil
+			}
+
+			if errors.Is(runErr, loop.ErrTaskFailed) {
+				_ = gitSess.Teardown()
+				return fmt.Errorf("task failed")
+			}
+			_ = gitSess.Teardown()
+			return runErr
 		},
 	}
 
-	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "Disable TUI (headless mode)")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit NDJSON events (implies --no-tui)")
+	cmd.Flags().BoolVar(&noShip, "no-ship", false, "Leave changes on the staging branch instead of shipping to target")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit NDJSON events (M11)")
 	return cmd
+}
+
+func newCmdID() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // ── pipeline (stub) ───────────────────────────────────────────────────────────
@@ -311,4 +422,27 @@ Useful for verifying the git layer works correctly.`,
 
 func stubNotImplemented(milestone string) error {
 	return fmt.Errorf("not yet implemented: %s", milestone)
+}
+
+// ensureMarshalExcluded adds ".marshal/" to .git/info/exclude (if not already
+// present) so that git never tracks SQLite WAL/SHM files created inside the
+// .marshal/ directory. This prevents `git add -A` from staging those files on
+// a task branch, which would cause `git checkout` back to the staging branch
+// to fail with "local changes would be overwritten".
+func ensureMarshalExcluded(repoRoot string) {
+	excludePath := filepath.Join(repoRoot, ".git", "info", "exclude")
+	data, _ := os.ReadFile(excludePath)
+	if strings.Contains(string(data), ".marshal/") {
+		return
+	}
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	// Ensure we start on a fresh line.
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		fmt.Fprintln(f)
+	}
+	fmt.Fprintln(f, ".marshal/")
 }

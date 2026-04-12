@@ -66,11 +66,21 @@ type GitConfig struct {
 	Enabled bool `toml:"enabled"`
 }
 
+// EditFormat selects how the executor expresses file changes.
+type EditFormat string
+
+const (
+	EditFormatWholeFile    EditFormat = "wholefile"     // full file in fenced block
+	EditFormatSearchReplace EditFormat = "search-replace" // <<<<<<< SEARCH / >>>>>>> REPLACE
+	EditFormatUdiff        EditFormat = "udiff"          // unified diff
+)
+
 // LoopConfig controls task-loop behaviour.
 type LoopConfig struct {
 	MaxRounds    int         `toml:"max_rounds"`
 	CompactAfter int         `toml:"compact_after"`
 	Clarify      ClarifyMode `toml:"clarify"`
+	EditFormat   EditFormat  `toml:"edit_format"`
 }
 
 // LinterConfig maps file-extension groups to linter commands.
@@ -143,6 +153,7 @@ func defaults() Config {
 			MaxRounds:    3,
 			CompactAfter: 2,
 			Clarify:      ClarifyAmbiguous,
+			EditFormat:   EditFormatWholeFile,
 		},
 		Linters: LinterConfig{
 			Go:     "golangci-lint run",

@@ -30,7 +30,38 @@ var (
 	criticSystemPrompt   = prompts.Critic
 )
 
-const executorOutputInstructions = `Output any files you create or modify using this format — the filename on its own line immediately before a fenced code block containing the complete file content:
+// executorOutputInstructions returns format-specific instructions for the executor.
+func executorOutputInstructions(fmt config.EditFormat) string {
+	switch fmt {
+	case config.EditFormatSearchReplace:
+		return `Output changes using SEARCH/REPLACE blocks. For each change, write the filename on its own line, then a block like this:
+
+main.go
+<<<<<<< SEARCH
+old content to find (must match exactly)
+=======
+new content to replace it with
+>>>>>>> REPLACE
+
+To create a new file, leave the SEARCH section empty. Output ONLY changed files.`
+
+	case config.EditFormatUdiff:
+		return `Output changes as a unified diff. Use standard unified-diff format:
+
+` + "```diff" + `
+--- a/main.go
++++ b/main.go
+@@ -1,4 +1,4 @@
+ context line
+-old line
++new line
+ context line
+` + "```" + `
+
+Include 2–3 lines of context around each change. Output ONLY changed files.`
+
+	default: // EditFormatWholeFile
+		return `Output any files you create or modify using this format — the filename on its own line immediately before a fenced code block containing the complete file content:
 
 main.go
 ` + "```" + `go
@@ -39,12 +70,18 @@ package main
 ` + "```" + `
 
 Output ONLY files that changed. Do not truncate or summarise file contents.`
+	}
+}
 
 const criticOutputInstructions = `Respond with ONLY this JSON object (no markdown, no prose):
 {"verdict":"PASS","summary":"one sentence","issue":"","fix":"","concerns":[]}
 
 Use "PASS" if the task is correctly and completely implemented. Use "FAIL" otherwise.
 "issue" and "fix" must be non-empty on FAIL.`
+
+// fileInjectionBudget is the maximum total characters of file content
+// injected into the executor prompt.
+const fileInjectionBudget = 100_000
 
 // ErrTaskFailed is returned by Engine.Run when all rounds are exhausted.
 var ErrTaskFailed = errors.New("task failed after all rounds")
@@ -53,8 +90,9 @@ var ErrTaskFailed = errors.New("task failed after all rounds")
 type Config struct {
 	MaxRounds  int
 	SessionID  string
-	GitEnabled bool     // when false all git operations are skipped
-	ChatFiles  []string // recently referenced files for repo-map personalization
+	GitEnabled bool               // when false all git operations are skipped
+	ChatFiles  []string           // recently referenced files for repo-map personalization
+	EditFormat config.EditFormat  // controls executor output format
 }
 
 // txer abstracts the task-branch lifecycle so the engine can run with or
@@ -77,13 +115,14 @@ func (noopTx) Abandon() error        { return nil }
 
 // Engine orchestrates the executor–critic round loop for a single task.
 type Engine struct {
-	repo    *git.Repo
-	gitSess *git.Session
-	store   *session.Store
-	reg     *backend.Registry
-	cfg     Config
-	sink    Sink
-	repoMap string // pre-built repo map text, injected into executor round 1
+	repo      *git.Repo
+	gitSess   *git.Session
+	store     *session.Store
+	reg       *backend.Registry
+	cfg       Config
+	sink      Sink
+	repoMap   string        // pre-built repo map text, injected into executor prompt
+	repoMapM  *repomap.Map  // cached map for file content injection
 }
 
 // New creates an Engine. All parameters are required.
@@ -115,6 +154,7 @@ func New(
 		})
 		if err == nil {
 			e.repoMap = m.String()
+			e.repoMapM = m
 		}
 	}
 	return e
@@ -311,11 +351,18 @@ func (e *Engine) buildExecutorMessages(prompt, issue, fix string, round int) []b
 		sb.WriteString("```\n\n")
 	}
 
+	// Inject top-ranked file contents so the executor can read before writing.
+	if fc := e.buildFileContext(); fc != "" {
+		sb.WriteString(fc)
+	}
+
+	outputInstructions := executorOutputInstructions(e.cfg.EditFormat)
+
 	if round == 1 {
 		sb.WriteString("Task: ")
 		sb.WriteString(prompt)
 		sb.WriteString("\n\n")
-		sb.WriteString(executorOutputInstructions)
+		sb.WriteString(outputInstructions)
 	} else {
 		sb.WriteString("Task: ")
 		sb.WriteString(prompt)
@@ -332,13 +379,60 @@ func (e *Engine) buildExecutorMessages(prompt, issue, fix string, round int) []b
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\nPlease try again.\n\n")
-		sb.WriteString(executorOutputInstructions)
+		sb.WriteString(outputInstructions)
 	}
 
 	return []backend.Message{
 		{Role: backend.MessageRoleSystem, Content: executorSystemPrompt},
 		{Role: backend.MessageRoleUser, Content: sb.String()},
 	}
+}
+
+// buildFileContext reads the top-ranked files from the repo map up to the
+// fileInjectionBudget character limit and returns them formatted for injection
+// into the executor prompt.  Returns an empty string when there is no repo or
+// no files to inject.
+func (e *Engine) buildFileContext() string {
+	if e.repo == nil || e.repoMapM == nil || len(e.repoMapM.Sections) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Current file contents (read before making changes):\n\n")
+	budget := fileInjectionBudget
+	wrote := 0
+
+	for _, sec := range e.repoMapM.Sections {
+		abs := filepath.Join(e.repo.Root(), sec.Path)
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		if len(content) > budget {
+			// Skip individual files that exceed the remaining budget.
+			continue
+		}
+		budget -= len(content)
+
+		sb.WriteString(sec.Path)
+		sb.WriteString("\n```\n")
+		sb.WriteString(content)
+		if !strings.HasSuffix(content, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("```\n\n")
+		wrote++
+
+		if budget <= 0 {
+			break
+		}
+	}
+
+	if wrote == 0 {
+		return ""
+	}
+	return sb.String()
 }
 
 func (e *Engine) buildCriticMessages(prompt, execContent, diff string) []backend.Message {
@@ -402,9 +496,19 @@ func (e *Engine) callBackend(ctx context.Context, b backend.Backend, msgs []back
 // --- Edit application --------------------------------------------------------
 
 func (e *Engine) applyEdits(content string) {
+	switch e.cfg.EditFormat {
+	case config.EditFormatSearchReplace:
+		e.applySearchReplace(content)
+	case config.EditFormatUdiff:
+		e.applyUdiff(content)
+	default:
+		e.applyWhole(content)
+	}
+}
+
+func (e *Engine) applyWhole(content string) {
 	edits := edit.ParseWhole(content)
 	for _, fe := range edits {
-		// Resolve path relative to repo root; reject traversals.
 		rel := filepath.Clean(fe.Path)
 		if strings.HasPrefix(rel, "..") {
 			continue
@@ -414,6 +518,49 @@ func (e *Engine) applyEdits(content string) {
 			continue
 		}
 		_ = os.WriteFile(abs, []byte(fe.Content), 0o644)
+	}
+}
+
+func (e *Engine) applySearchReplace(content string) {
+	edits := edit.ParseSearchReplace(content)
+	for _, se := range edits {
+		rel := filepath.Clean(se.Path)
+		if strings.HasPrefix(rel, "..") {
+			continue
+		}
+		abs := filepath.Join(e.repo.Root(), rel)
+
+		// Read existing content (empty string if file does not exist yet).
+		existing, _ := os.ReadFile(abs)
+		updated, ok := se.ApplyToContent(string(existing))
+		if !ok {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			continue
+		}
+		_ = os.WriteFile(abs, []byte(updated), 0o644)
+	}
+}
+
+func (e *Engine) applyUdiff(content string) {
+	edits := edit.ParseUdiff(content)
+	for _, ue := range edits {
+		rel := filepath.Clean(ue.Path)
+		if strings.HasPrefix(rel, "..") {
+			continue
+		}
+		abs := filepath.Join(e.repo.Root(), rel)
+
+		existing, _ := os.ReadFile(abs)
+		updated, ok := ue.ApplyToContent(string(existing))
+		if !ok {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			continue
+		}
+		_ = os.WriteFile(abs, []byte(updated), 0o644)
 	}
 }
 

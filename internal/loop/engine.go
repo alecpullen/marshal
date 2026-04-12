@@ -18,6 +18,7 @@ import (
 	"github.com/alec/marshal/internal/edit"
 	"github.com/alec/marshal/internal/git"
 	"github.com/alec/marshal/internal/prompts"
+	"github.com/alec/marshal/internal/repomap"
 	"github.com/alec/marshal/internal/session"
 )
 
@@ -52,7 +53,8 @@ var ErrTaskFailed = errors.New("task failed after all rounds")
 type Config struct {
 	MaxRounds  int
 	SessionID  string
-	GitEnabled bool // when false all git operations are skipped
+	GitEnabled bool     // when false all git operations are skipped
+	ChatFiles  []string // recently referenced files for repo-map personalization
 }
 
 // txer abstracts the task-branch lifecycle so the engine can run with or
@@ -81,6 +83,7 @@ type Engine struct {
 	reg     *backend.Registry
 	cfg     Config
 	sink    Sink
+	repoMap string // pre-built repo map text, injected into executor round 1
 }
 
 // New creates an Engine. All parameters are required.
@@ -95,7 +98,7 @@ func New(
 	if cfg.MaxRounds == 0 {
 		cfg.MaxRounds = 3
 	}
-	return &Engine{
+	e := &Engine{
 		repo:    repo,
 		gitSess: gitSess,
 		store:   store,
@@ -103,6 +106,18 @@ func New(
 		cfg:     cfg,
 		sink:    sink,
 	}
+	// Build the repo map eagerly if we have a repo root. Errors are
+	// non-fatal: the executor still runs, just without symbol context.
+	if repo != nil {
+		ig, _ := git.LoadMarshalIgnore(repo.Root())
+		m, err := repomap.Build(repo.Root(), ig, repomap.Options{
+			ChatFiles: cfg.ChatFiles,
+		})
+		if err == nil {
+			e.repoMap = m.String()
+		}
+	}
+	return e
 }
 
 // Run executes one task for prompt.
@@ -286,6 +301,15 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 
 func (e *Engine) buildExecutorMessages(prompt, issue, fix string, round int) []backend.Message {
 	var sb strings.Builder
+
+	// Repo map is included on every round so the executor has file context
+	// when retrying.  It is placed before the task so the task text is close
+	// to the end of the prompt (better attention on most models).
+	if e.repoMap != "" {
+		sb.WriteString("Repository map (ranked by relevance):\n```\n")
+		sb.WriteString(e.repoMap)
+		sb.WriteString("```\n\n")
+	}
 
 	if round == 1 {
 		sb.WriteString("Task: ")

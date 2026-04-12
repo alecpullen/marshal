@@ -153,7 +153,7 @@ M0 → M1 → M2 → M3 → M4 → M5 (‖M4) → M6 → M7 (‖M6) → M8 → M
 | M6 edit formats | **done** (wholefile, search-replace, udiff; Format interface; per-model settings) |
 | M7 linter feedback loop | **done** |
 | M8 prompt layering + compaction + skills | **done** (security layer; schema-migration, security-audit, test-generation built-ins) |
-| M9 pipeline | not started |
+| M9 pipeline | **done** (planner, scheduler, integration critic, pipeline command) |
 | M10 Aider-parity polish | not started |
 | M11 headless/CI mode | not started |
 | M12 executor tool use | not started |

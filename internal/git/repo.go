@@ -304,6 +304,26 @@ func (r *Repo) buildCommitMessage(message string) string {
 	return message + "\n\n" + trailer
 }
 
+// HEAD returns the current commit SHA.
+func (r *Repo) HEAD() (string, error) {
+	return r.run("rev-parse", "HEAD")
+}
+
+// DiffBranches returns the diff between two branches or refs.
+func (r *Repo) DiffBranches(base, branch string) (string, error) {
+	ctx := r.cfg.DiffContext
+	if ctx == 0 {
+		ctx = 1
+	}
+	return r.run("diff", fmt.Sprintf("-U%d", ctx), base, branch)
+}
+
+// Merge merges branch into the current branch (not squash).
+func (r *Repo) Merge(branch, message string) error {
+	_, err := r.run("merge", "-m", message, branch)
+	return err
+}
+
 // --- Internal helpers --------------------------------------------------------
 
 // run executes a git command in the repo root and returns trimmed stdout.

@@ -18,6 +18,8 @@ import (
 	"github.com/alec/marshal/internal/git"
 	"github.com/alec/marshal/internal/logging"
 	"github.com/alec/marshal/internal/loop"
+	"github.com/alec/marshal/internal/pipeline"
+	"github.com/alec/marshal/internal/planner"
 	"github.com/alec/marshal/internal/session"
 	"github.com/alec/marshal/internal/skills"
 	"github.com/alec/marshal/internal/ui/tui"
@@ -353,22 +355,197 @@ func newCmdID() string {
 	return hex.EncodeToString(b)
 }
 
-// ── pipeline (stub) ───────────────────────────────────────────────────────────
+// ── pipeline (M9) ─────────────────────────────────────────────────────────────
 
 func pipelineCmd(gf *globalFlags) *cobra.Command {
 	var pipelineOnly bool
+	var noTUI bool
 
 	cmd := &cobra.Command{
 		Use:   "pipeline <feature>",
 		Short: "Decompose and run a multi-task pipeline",
-		Args:  cobra.ExactArgs(1),
+		Long: `Decomposes a high-level feature into a DAG of tasks, runs them in parallel
+tiers on isolation branches, invokes the integration critic, and merges or holds.
+
+Example:
+  marshal pipeline "add staff portal with timesheets and rentman integration"`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return stubNotImplemented("pipeline (M9)")
+			cfg, err := config.Load(config.Options{Profile: gf.profile})
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+
+			// Find repo root and setup git.
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+
+			repo, err := git.New(cwd, git.RepoConfig{CoAuthoredBy: cfg.Model.Executor.Model})
+			if err != nil {
+				return fmt.Errorf("git repo: %w", err)
+			}
+
+			var gitSess *git.Session
+			if cfg.Git.Enabled {
+				gitSess = git.NewSession(repo, git.SessionOptions{})
+				if err := gitSess.Start(); err != nil {
+					return fmt.Errorf("git session: %w", err)
+				}
+				defer gitSess.Teardown()
+			}
+
+			store, err := tui.OpenStore(repo.Root())
+			if err != nil {
+				return fmt.Errorf("session store: %w", err)
+			}
+			defer store.Close()
+
+			reg, err := backend.NewRegistry(cfg, nil)
+			if err != nil {
+				return fmt.Errorf("backend registry: %w", err)
+			}
+
+			marshalB, err := reg.For(config.RoleMarshal)
+			if err != nil {
+				return fmt.Errorf("marshal backend: %w", err)
+			}
+
+			// Generate task graph from the planner.
+			feature := args[0]
+			taskGraph, err := planner.Generate(cmd.Context(), marshalB, feature)
+			if err != nil {
+				return fmt.Errorf("planning: %w", err)
+			}
+
+			if pipelineOnly {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(taskGraph)
+			}
+
+			// Run in headless mode or TUI.
+			if noTUI {
+				return runPipelineHeadless(cmd.Context(), cfg, repo, gitSess, store, reg, taskGraph)
+			}
+			return runPipelineTUI(cmd.Context(), cfg, repo, gitSess, store, reg, taskGraph)
 		},
 	}
 
 	cmd.Flags().BoolVar(&pipelineOnly, "pipeline-only", false, "Emit the task graph and exit without executing")
+	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "Run pipeline in headless mode (NDJSON output)")
 	return cmd
+}
+
+func runPipelineHeadless(ctx context.Context, cfg *config.Config, repo *git.Repo, gitSess *git.Session, store *session.Store, reg *backend.Registry, graph *planner.TaskGraph) error {
+	// Convert planner tasks to pipeline tasks.
+	var tasks []*pipeline.PipelineTask
+	for _, t := range graph.Tasks {
+		tasks = append(tasks, &pipeline.PipelineTask{
+			ID:          t.ID,
+			Description: t.Description,
+			Files:       t.FilesLikelyAffected,
+			DependsOn:   t.DependsOn,
+			MaxRounds:   cfg.Loop.MaxRounds,
+		})
+	}
+
+	scheduler, err := pipeline.NewScheduler(tasks)
+	if err != nil {
+		return fmt.Errorf("scheduler: %w", err)
+	}
+
+	fmt.Printf("{\"event\":\"pipeline_start\",\"tasks\":%d}\n", len(tasks))
+
+	err = scheduler.Run(ctx, func(ctx context.Context, t *pipeline.PipelineTask) error {
+		fmt.Printf("{\"event\":\"task_start\",\"task_id\":%q}\n", t.ID)
+
+		// Create task branch.
+		tx, err := gitSess.BeginTask(t.ID)
+		if err != nil {
+			fmt.Printf("{\"event\":\"task_failed\",\"task_id\":%q,\"error\":%q}\n", t.ID, err.Error())
+			return err
+		}
+		defer tx.Abandon()
+
+		// Run single-task loop.
+		sessID := "pipeline-" + t.ID
+		eng := loop.New(
+			loop.Config{
+				MaxRounds:    cfg.Loop.MaxRounds,
+				CompactAfter: cfg.Loop.CompactAfter,
+				SessionID:    sessID,
+				GitEnabled:   cfg.Git.Enabled,
+				LinterCfg:    cfg.Linters,
+				EditFormat:   cfg.Loop.EditFormat,
+			},
+			repo, gitSess, store, reg, loop.StdoutSink{},
+		)
+
+		if err := eng.Run(ctx, t.Description); err != nil {
+			fmt.Printf("{\"event\":\"task_failed\",\"task_id\":%q,\"error\":%q}\n", t.ID, err.Error())
+			return err
+		}
+
+		// Merge to task branch.
+		if err := tx.Commit(fmt.Sprintf("Pipeline task %s", t.ID)); err != nil {
+			return err
+		}
+		if err := tx.Merge(fmt.Sprintf("Merge %s", t.ID)); err != nil {
+			return err
+		}
+
+		fmt.Printf("{\"event\":\"task_passed\",\"task_id\":%q}\n", t.ID)
+		return nil
+	})
+
+	if err != nil {
+		fmt.Printf("{\"event\":\"pipeline_failed\",\"error\":%q}\n", err.Error())
+		return err
+	}
+
+	// Integration critic.
+	var taskBranches []string
+	for _, t := range tasks {
+		taskBranches = append(taskBranches, "marshal/task-"+t.ID)
+	}
+
+	combinedDiff, err := pipeline.ComputeCombinedDiff(repo, gitSess.StagingBranch, taskBranches)
+	if err != nil {
+		return fmt.Errorf("combined diff: %w", err)
+	}
+
+	criticB, _ := reg.For(config.RoleCritic)
+	ic := pipeline.NewIntegrationCritic(criticB)
+	verdict, err := ic.Review(ctx, combinedDiff, taskBranches)
+	if err != nil {
+		return fmt.Errorf("integration critic: %w", err)
+	}
+
+	if verdict.Verdict != "PASS" {
+		fmt.Printf("{\"event\":\"integration_fail\",\"verdict\":%q,\"implicated\":%v}\n", verdict.Verdict, verdict.Implicated)
+		return fmt.Errorf("integration critic rejected: %s", verdict.Summary)
+	}
+
+	// Topological merge.
+	taskIDs := make([]string, len(tasks))
+	for i, t := range tasks {
+		taskIDs[i] = t.ID
+	}
+	newSHA, err := pipeline.TopologicalMerge(repo, gitSess.StagingBranch, tasks)
+	if err != nil {
+		return fmt.Errorf("topological merge: %w", err)
+	}
+
+	fmt.Printf("{\"event\":\"pipeline_complete\",\"staging_sha\":%q}\n", newSHA)
+	fmt.Println("\nPipeline complete. Run '/ship' in TUI to merge to target branch.")
+	return nil
+}
+
+func runPipelineTUI(ctx context.Context, cfg *config.Config, repo *git.Repo, gitSess *git.Session, store *session.Store, reg *backend.Registry, graph *planner.TaskGraph) error {
+	// For now, delegate to headless mode. Full TUI pipeline view is future work.
+	return runPipelineHeadless(ctx, cfg, repo, gitSess, store, reg, graph)
 }
 
 // ── debug ─────────────────────────────────────────────────────────────────────

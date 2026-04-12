@@ -19,6 +19,7 @@ import (
 	"github.com/alec/marshal/internal/logging"
 	"github.com/alec/marshal/internal/loop"
 	"github.com/alec/marshal/internal/session"
+	"github.com/alec/marshal/internal/ui/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -120,16 +121,78 @@ func configShowCmd(gf *globalFlags) *cobra.Command {
 	}
 }
 
-// ── chat (stub) ───────────────────────────────────────────────────────────────
+// ── chat ──────────────────────────────────────────────────────────────────────
 
 func chatCmd(gf *globalFlags) *cobra.Command {
-	return &cobra.Command{
+	var noShip bool
+
+	cmd := &cobra.Command{
 		Use:   "chat",
 		Short: "Start an interactive AI coding session (TUI)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return stubNotImplemented("chat (M4)")
+			cfg, err := config.Load(config.Options{Profile: gf.profile})
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			if err := cfg.Validate(); err != nil {
+				return err
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			repo, err := git.New(cwd, git.RepoConfig{CoAuthoredBy: cfg.Model.Executor.Model})
+			if err != nil {
+				return fmt.Errorf("not a git repo: %w", err)
+			}
+
+			store, err := tui.OpenStore(repo.Root())
+			if err != nil {
+				return fmt.Errorf("session store: %w", err)
+			}
+			defer store.Close()
+
+			var gitSess *git.Session
+			if cfg.Git.Enabled {
+				gitSess = git.NewSession(repo, git.SessionOptions{KeepBranch: noShip})
+				if err := gitSess.Start(); err != nil {
+					return fmt.Errorf("session start: %w", err)
+				}
+			}
+
+			reg, err := backend.NewRegistry(cfg, nil)
+			if err != nil {
+				if gitSess != nil {
+					_ = gitSess.Teardown()
+				}
+				return fmt.Errorf("backend registry: %w", err)
+			}
+
+			if runErr := tui.Run(cmd.Context(), cfg, repo, gitSess, store, reg); runErr != nil {
+				if gitSess != nil {
+					_ = gitSess.Teardown()
+				}
+				return runErr
+			}
+
+			if cfg.Git.Enabled && !noShip {
+				sha, shipErr := gitSess.Ship("marshal chat session")
+				if shipErr != nil {
+					fmt.Fprintf(os.Stderr, "ship: %v\n", shipErr)
+				} else {
+					fmt.Printf("shipped to %s (%s)\n", gitSess.TargetBranch, sha[:8])
+				}
+			}
+			if gitSess != nil {
+				_ = gitSess.Teardown()
+			}
+			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&noShip, "no-ship", false, "Keep changes on staging; do not merge to target on exit")
+	return cmd
 }
 
 // ── run (stub) ────────────────────────────────────────────────────────────────
@@ -169,9 +232,6 @@ func runCmd(gf *globalFlags) *cobra.Command {
 			if err := os.MkdirAll(dbDir, 0o755); err != nil {
 				return err
 			}
-			// Keep SQLite WAL files out of git so that `git add -A` on a task
-			// branch never stages them, which would block `git checkout` back
-			// to the staging branch.
 			ensureMarshalExcluded(repo.Root())
 			store, err := session.Open(filepath.Join(dbDir, "sessions.db"))
 			if err != nil {
@@ -179,30 +239,36 @@ func runCmd(gf *globalFlags) *cobra.Command {
 			}
 			defer store.Close()
 
-			// Start git session.
-			gitSess := git.NewSession(repo, git.SessionOptions{KeepBranch: noShip})
-			if err := gitSess.Start(); err != nil {
-				return fmt.Errorf("session start: %w", err)
-			}
-
-			// Record session in DB.
+			// Start git session only when git integration is enabled.
+			var gitSess *git.Session
 			sessID := newCmdID()
 			now := time.Now()
-			if err := store.InsertSession(&session.Session{
-				ID:             sessID,
-				TargetBranch:   gitSess.TargetBranch,
-				TargetStartSHA: gitSess.TargetStartSHA,
-				StagingBranch:  gitSess.StagingBranch,
-				StartedAt:      now,
-			}); err != nil {
-				_ = gitSess.Teardown()
+			sessRecord := &session.Session{
+				ID:        sessID,
+				StartedAt: now,
+			}
+			if cfg.Git.Enabled {
+				gitSess = git.NewSession(repo, git.SessionOptions{KeepBranch: noShip})
+				if err := gitSess.Start(); err != nil {
+					return fmt.Errorf("session start: %w", err)
+				}
+				sessRecord.TargetBranch = gitSess.TargetBranch
+				sessRecord.TargetStartSHA = gitSess.TargetStartSHA
+				sessRecord.StagingBranch = gitSess.StagingBranch
+			}
+			if err := store.InsertSession(sessRecord); err != nil {
+				if gitSess != nil {
+					_ = gitSess.Teardown()
+				}
 				return fmt.Errorf("insert session: %w", err)
 			}
 
 			// Build backend registry.
 			reg, err := backend.NewRegistry(cfg, nil)
 			if err != nil {
-				_ = gitSess.Teardown()
+				if gitSess != nil {
+					_ = gitSess.Teardown()
+				}
 				return fmt.Errorf("backend registry: %w", err)
 			}
 
@@ -212,14 +278,17 @@ func runCmd(gf *globalFlags) *cobra.Command {
 
 			// Run the task loop.
 			eng := loop.New(
-				loop.Config{MaxRounds: cfg.Loop.MaxRounds, SessionID: sessID},
+				loop.Config{
+					MaxRounds:  cfg.Loop.MaxRounds,
+					SessionID:  sessID,
+					GitEnabled: cfg.Git.Enabled,
+				},
 				repo, gitSess, store, reg, sink,
 			)
 			runErr := eng.Run(cmd.Context(), prompt)
 
 			if runErr == nil {
-				// PASS: optionally ship to the target branch.
-				if !noShip {
+				if cfg.Git.Enabled && !noShip {
 					sha, shipErr := gitSess.Ship(prompt)
 					if shipErr != nil {
 						return fmt.Errorf("ship: %w", shipErr)
@@ -228,18 +297,24 @@ func runCmd(gf *globalFlags) *cobra.Command {
 						return fmt.Errorf("update session: %w", err)
 					}
 					fmt.Printf("shipped to %s (%s)\n", gitSess.TargetBranch, sha[:8])
-				} else {
+				} else if cfg.Git.Enabled {
 					fmt.Printf("task passed — staged on %s (use /ship to land on %s)\n",
 						gitSess.StagingBranch, gitSess.TargetBranch)
+				} else {
+					fmt.Println("task passed")
+				}
+				if gitSess != nil {
+					_ = gitSess.Teardown()
 				}
 				return nil
 			}
 
-			if errors.Is(runErr, loop.ErrTaskFailed) {
+			if gitSess != nil {
 				_ = gitSess.Teardown()
+			}
+			if errors.Is(runErr, loop.ErrTaskFailed) {
 				return fmt.Errorf("task failed")
 			}
-			_ = gitSess.Teardown()
 			return runErr
 		},
 	}

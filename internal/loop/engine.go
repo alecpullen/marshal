@@ -50,9 +50,28 @@ var ErrTaskFailed = errors.New("task failed after all rounds")
 
 // Config controls Engine behaviour.
 type Config struct {
-	MaxRounds int
-	SessionID string
+	MaxRounds  int
+	SessionID  string
+	GitEnabled bool // when false all git operations are skipped
 }
+
+// txer abstracts the task-branch lifecycle so the engine can run with or
+// without git.  *git.TaskTx satisfies this; noopTx is used when git is
+// disabled.
+type txer interface {
+	Commit(message string) error
+	Diff() (string, error)
+	Merge(message string) error
+	Abandon() error
+}
+
+// noopTx is a no-op txer used when git integration is disabled.
+type noopTx struct{}
+
+func (noopTx) Commit(string) error   { return nil }
+func (noopTx) Diff() (string, error) { return "", nil }
+func (noopTx) Merge(string) error    { return nil }
+func (noopTx) Abandon() error        { return nil }
 
 // Engine orchestrates the executor–critic round loop for a single task.
 type Engine struct {
@@ -98,10 +117,18 @@ func New(
 func (e *Engine) Run(ctx context.Context, prompt string) error {
 	taskID := newTaskID()
 
-	// 1. Create task isolation branch.
-	tx, err := e.gitSess.BeginTask(taskID)
-	if err != nil {
-		return fmt.Errorf("begin task: %w", err)
+	// 1. Create task isolation branch (or no-op when git is disabled).
+	var tx txer
+	var parentStagingSHA string
+	if e.cfg.GitEnabled {
+		realTx, err := e.gitSess.BeginTask(taskID)
+		if err != nil {
+			return fmt.Errorf("begin task: %w", err)
+		}
+		parentStagingSHA = realTx.ParentStagingSHA
+		tx = realTx
+	} else {
+		tx = noopTx{}
 	}
 
 	// 2. Insert task row.
@@ -110,7 +137,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		ID:               taskID,
 		SessionID:        e.cfg.SessionID,
 		Prompt:           prompt,
-		ParentStagingSHA: tx.ParentStagingSHA,
+		ParentStagingSHA: parentStagingSHA,
 		Status:           session.StatusRunning,
 		StartedAt:        now,
 	}); err != nil {
@@ -209,7 +236,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 
 		e.sink.VerdictBadge(taskID, verdict.Verdict, verdict.Summary)
 
-		// i. PASS: merge to staging.
+		// i. PASS: merge to staging (no-op when git is disabled).
 		if verdict.IsPASS() {
 			shortPrompt := truncate(prompt, 60)
 			mergeMsg := fmt.Sprintf("task %s: %s", taskID, shortPrompt)
@@ -223,7 +250,10 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 				}
 				return fmt.Errorf("merge to staging: %w", mergeErr)
 			}
-			newSHA, _ := e.gitSess.StagingHEAD()
+			var newSHA string
+			if e.cfg.GitEnabled {
+				newSHA, _ = e.gitSess.StagingHEAD()
+			}
 			endedAt := time.Now()
 			_ = e.store.UpdateTask(taskID, session.TaskUpdate{
 				Status:     session.StatusPassed,

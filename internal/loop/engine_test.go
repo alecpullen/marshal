@@ -222,7 +222,7 @@ func TestEngine_Pass(t *testing.T) {
 
 	reg := newTestRegistry(t, execSrv, criticSrv)
 	eng := loop.New(
-		loop.Config{MaxRounds: 3, SessionID: sessID},
+		loop.Config{MaxRounds: 3, SessionID: sessID, GitEnabled: true},
 		repo, gitSess, store, reg, loop.DiscardSink{},
 	)
 
@@ -292,7 +292,7 @@ func TestEngine_FailAfterRetries(t *testing.T) {
 
 	reg := newTestRegistry(t, execSrv, criticSrv)
 	eng := loop.New(
-		loop.Config{MaxRounds: 2, SessionID: sessID},
+		loop.Config{MaxRounds: 2, SessionID: sessID, GitEnabled: true},
 		repo, gitSess, store, reg, loop.DiscardSink{},
 	)
 
@@ -351,7 +351,7 @@ func TestEngine_RetryOnFail_PassOnSecond(t *testing.T) {
 
 	reg := newTestRegistry(t, execSrv, criticSrv)
 	eng := loop.New(
-		loop.Config{MaxRounds: 3, SessionID: sessID},
+		loop.Config{MaxRounds: 3, SessionID: sessID, GitEnabled: true},
 		repo, gitSess, store, reg, loop.DiscardSink{},
 	)
 
@@ -393,7 +393,7 @@ func TestEngine_MainUnchangedAfterPass(t *testing.T) {
 
 	reg := newTestRegistry(t, execSrv, criticSrv)
 	eng := loop.New(
-		loop.Config{MaxRounds: 3, SessionID: sessID},
+		loop.Config{MaxRounds: 3, SessionID: sessID, GitEnabled: true},
 		repo, gitSess, store, reg, loop.DiscardSink{},
 	)
 	_ = eng.Run(context.Background(), "no-op")

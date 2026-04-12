@@ -26,3 +26,8 @@ base_url = "http://localhost:1234/v1"
 max_rounds    = 3
 compact_after = 2
 clarify       = "ambiguous"
+
+[git]
+# Set to true to enable branch creation, commits, and merges.
+# Keep false while iterating on the TUI to avoid accidental branch operations.
+enabled = false

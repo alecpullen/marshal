@@ -57,6 +57,15 @@ func (m ModelConfig) Redacted() ModelConfig {
 	return c
 }
 
+// GitConfig controls git integration.
+type GitConfig struct {
+	// Enabled gates all git operations (branch creation, commits, merges).
+	// When false the executor still writes files to disk and the critic still
+	// reviews them, but no branches are created and no commits are made.
+	// Default: false — safe for development without a clean git working tree.
+	Enabled bool `toml:"enabled"`
+}
+
 // LoopConfig controls task-loop behaviour.
 type LoopConfig struct {
 	MaxRounds    int         `toml:"max_rounds"`
@@ -96,6 +105,7 @@ type Profile struct {
 type Config struct {
 	Model    Models                `toml:"model"`
 	Loop     LoopConfig            `toml:"loop"`
+	Git      GitConfig             `toml:"git"`
 	Linters  LinterConfig          `toml:"linters"`
 	Tools    ToolsConfig           `toml:"tools"`
 	Profiles map[string]Profile    `toml:"profiles"`

@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS rounds (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_rounds_task   ON rounds(task_id);
+
+CREATE TABLE IF NOT EXISTS read_only_files (
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    path        TEXT NOT NULL,
+    added_at    TEXT NOT NULL,
+    PRIMARY KEY (session_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_rof_session ON read_only_files(session_id);
 `
 
 // Store is a SQLite-backed ledger for sessions, tasks, and rounds.
@@ -200,6 +208,58 @@ func (s *Store) RoundsForTask(taskID string) ([]*Round, error) {
 		result = append(result, r)
 	}
 	return result, rows.Err()
+}
+
+// --- Read-only files ---------------------------------------------------------
+
+// AddReadOnlyFile adds a file to the session's read-only list.
+func (s *Store) AddReadOnlyFile(sessionID, path string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO read_only_files(session_id, path, added_at) VALUES (?, ?, ?)`,
+		sessionID, path, now,
+	)
+	return err
+}
+
+// RemoveReadOnlyFile removes a file from the session's read-only list.
+func (s *Store) RemoveReadOnlyFile(sessionID, path string) error {
+	_, err := s.db.Exec(
+		`DELETE FROM read_only_files WHERE session_id = ? AND path = ?`,
+		sessionID, path,
+	)
+	return err
+}
+
+// GetReadOnlyFiles returns all read-only files for a session.
+func (s *Store) GetReadOnlyFiles(sessionID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT path FROM read_only_files WHERE session_id = ? ORDER BY added_at`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		files = append(files, path)
+	}
+	return files, rows.Err()
+}
+
+// ClearReadOnlyFiles removes all read-only files for a session.
+func (s *Store) ClearReadOnlyFiles(sessionID string) error {
+	_, err := s.db.Exec(
+		`DELETE FROM read_only_files WHERE session_id = ?`,
+		sessionID,
+	)
+	return err
 }
 
 // --- Scan helpers ------------------------------------------------------------

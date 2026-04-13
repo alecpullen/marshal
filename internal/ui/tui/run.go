@@ -17,6 +17,7 @@ import (
 	"github.com/alec/marshal/internal/prompts"
 	"github.com/alec/marshal/internal/session"
 	"github.com/alec/marshal/internal/skills"
+	"github.com/alec/marshal/internal/watch"
 )
 
 // Run starts the interactive TUI. It blocks until the user quits (Ctrl+C /
@@ -46,6 +47,12 @@ func Run(
 		return callMarshalGate(ctx, marshalB, prompt)
 	}
 
+	// Get read-only files from context or store
+	var readOnlyFiles []string
+	if store != nil {
+		readOnlyFiles, _ = store.GetReadOnlyFiles(sessID)
+	}
+
 	runEngine := func(ctx context.Context, prompt string, sink loop.Sink, executorExtra, criticExtra string) error {
 		eng := loop.New(
 			loop.Config{
@@ -53,6 +60,7 @@ func Run(
 				CompactAfter:  cfg.Loop.CompactAfter,
 				SessionID:     sessID,
 				GitEnabled:    cfg.Git.Enabled,
+				ReadOnlyFiles: readOnlyFiles,
 				LinterCfg:     cfg.Linters,
 				EditFormat:    cfg.Loop.EditFormat,
 				ExecutorExtra: executorExtra,
@@ -64,7 +72,15 @@ func Run(
 	}
 
 	pref := &progRef{}
-	m := newModel(ctx, runGate, runEngine, skillsReg, store, sessID, pref)
+
+	// Create watch manager (not started until /watch command)
+	var watchMgr *watch.Manager
+	if repo != nil {
+		ig, _ := git.LoadMarshalIgnore(repo.Root())
+		watchMgr, _ = watch.NewManager(repo, ig)
+	}
+
+	m := newModel(ctx, runGate, runEngine, skillsReg, store, sessID, repo.Root(), readOnlyFiles, watchMgr, pref)
 
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),

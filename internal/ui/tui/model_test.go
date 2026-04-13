@@ -19,7 +19,7 @@ func noopGate(_ context.Context, _ string) (string, string, error) {
 func noopEngine(_ context.Context, _ string, _ loop.Sink, _, _ string) error { return nil }
 
 func newTestModel() model {
-	m := newModel(context.Background(), noopGate, noopEngine, skills.New(), nil, "test-session", &progRef{})
+	m := newModel(context.Background(), noopGate, noopEngine, skills.New(), nil, "test-session", "/tmp", []string{}, nil, &progRef{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return next.(model)
 }
@@ -250,7 +250,7 @@ func TestModel_SlashSkillsList_Empty(t *testing.T) {
 func TestModel_SlashSkillsList_WithSkills(t *testing.T) {
 	reg := skills.New()
 	_ = reg.Register(&skills.Skill{Name: "test", Trigger: "/test", Description: "write tests"})
-	m := newModel(context.Background(), noopGate, noopEngine, reg, nil, "test-session", &progRef{})
+	m := newModel(context.Background(), noopGate, noopEngine, reg, nil, "test-session", "/tmp", []string{}, nil, &progRef{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(model)
 
@@ -278,14 +278,14 @@ func TestModel_SlashSkillActivation(t *testing.T) {
 	reg := skills.New()
 	_ = reg.Register(&skills.Skill{
 		Name:    "test",
-		Trigger: "/test",
+		Trigger: "/mytest",
 		Executor: skills.SkillLayer{SystemExtra: "write tests only"},
 	})
-	m := newModel(context.Background(), noopGate, engineFn, reg, nil, "test-session", &progRef{})
+	m := newModel(context.Background(), noopGate, engineFn, reg, nil, "test-session", "/tmp", []string{}, nil, &progRef{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(model)
 
-	m = upd(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/test add unit tests")})
+	m = upd(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/mytest add unit tests")})
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(model)
 

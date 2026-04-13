@@ -87,6 +87,7 @@ type Config struct {
 	SessionID     string
 	GitEnabled    bool                // when false all git operations are skipped
 	ChatFiles     []string            // recently referenced files for repo-map personalization
+	ReadOnlyFiles []string            // read-only files to include in context but never write
 	EditFormat    config.EditFormat   // controls executor output format
 	LinterCfg     config.LinterConfig // linter commands; zero value disables linting
 	ExecutorExtra string              // appended to executor system prompt (from active skill)
@@ -434,7 +435,7 @@ func (e *Engine) buildExecutorMessages(prompt, issue, fix string, round int) []b
 // into the executor prompt.  Returns an empty string when there is no repo or
 // no files to inject.
 func (e *Engine) buildFileContext() string {
-	if e.repo == nil || e.repoMapM == nil || len(e.repoMapM.Sections) == 0 {
+	if e.repo == nil {
 		return ""
 	}
 
@@ -443,8 +444,13 @@ func (e *Engine) buildFileContext() string {
 	budget := fileInjectionBudget
 	wrote := 0
 
-	for _, sec := range e.repoMapM.Sections {
-		abs := filepath.Join(e.repo.Root(), sec.Path)
+	// First, include read-only files (these are high priority context)
+	for _, path := range e.cfg.ReadOnlyFiles {
+		abs := filepath.Join(e.repo.Root(), filepath.Clean(path))
+		// Security: ensure path stays within repo
+		if !strings.HasPrefix(abs, e.repo.Root()) {
+			continue
+		}
 		data, err := os.ReadFile(abs)
 		if err != nil {
 			continue
@@ -456,8 +462,8 @@ func (e *Engine) buildFileContext() string {
 		}
 		budget -= len(content)
 
-		sb.WriteString(sec.Path)
-		sb.WriteString("\n```\n")
+		sb.WriteString(path)
+		sb.WriteString(" (read-only)\n```\n")
 		sb.WriteString(content)
 		if !strings.HasSuffix(content, "\n") {
 			sb.WriteString("\n")
@@ -467,6 +473,48 @@ func (e *Engine) buildFileContext() string {
 
 		if budget <= 0 {
 			break
+		}
+	}
+
+	// Then, include repo map ranked files (if any)
+	if e.repoMapM != nil {
+		for _, sec := range e.repoMapM.Sections {
+			// Skip if already included as read-only
+			alreadyIncluded := false
+			for _, rof := range e.cfg.ReadOnlyFiles {
+				if sec.Path == rof {
+					alreadyIncluded = true
+					break
+				}
+			}
+			if alreadyIncluded {
+				continue
+			}
+
+			abs := filepath.Join(e.repo.Root(), sec.Path)
+			data, err := os.ReadFile(abs)
+			if err != nil {
+				continue
+			}
+			content := string(data)
+			if len(content) > budget {
+				// Skip individual files that exceed the remaining budget.
+				continue
+			}
+			budget -= len(content)
+
+			sb.WriteString(sec.Path)
+			sb.WriteString("\n```\n")
+			sb.WriteString(content)
+			if !strings.HasSuffix(content, "\n") {
+				sb.WriteString("\n")
+			}
+			sb.WriteString("```\n\n")
+			wrote++
+
+			if budget <= 0 {
+				break
+			}
 		}
 	}
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -15,6 +17,7 @@ import (
 	"github.com/alec/marshal/internal/loop"
 	"github.com/alec/marshal/internal/session"
 	"github.com/alec/marshal/internal/skills"
+	"github.com/alec/marshal/internal/watch"
 )
 
 // progRef is a shared mutable pointer so that the model (a value type) can
@@ -35,7 +38,9 @@ type model struct {
 	skillsReg *skills.Registry
 	store     *session.Store
 	sessionID string
+	repoRoot  string
 	pref      *progRef
+	watchMgr  *watch.Manager
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -45,11 +50,12 @@ type model struct {
 	input    textarea.Model
 
 	// State.
-	entries   []chatEntry
-	busy      bool
-	width     int
-	height    int
-	streaming *strings.Builder // in-progress executor tokens
+	entries       []chatEntry
+	busy          bool
+	width         int
+	height        int
+	streaming     *strings.Builder // in-progress executor tokens
+	readOnlyFiles []string         // read-only files for this session
 }
 
 const (
@@ -65,6 +71,9 @@ func newModel(
 	skillsReg *skills.Registry,
 	store *session.Store,
 	sessionID string,
+	repoRoot string,
+	readOnlyFiles []string,
+	watchMgr *watch.Manager,
 	pref *progRef,
 ) model {
 	ctx, cancel := context.WithCancel(ctx)
@@ -81,17 +90,20 @@ func newModel(
 	vp.SetContent("")
 
 	return model{
-		runGate:   runGate,
-		runEngine: runEngine,
-		skillsReg: skillsReg,
-		store:     store,
-		sessionID: sessionID,
-		pref:      pref,
-		ctx:       ctx,
-		cancel:    cancel,
-		viewport:  vp,
-		input:     ta,
-		streaming: &strings.Builder{},
+		runGate:       runGate,
+		runEngine:     runEngine,
+		skillsReg:     skillsReg,
+		store:         store,
+		sessionID:     sessionID,
+		repoRoot:      repoRoot,
+		pref:          pref,
+		watchMgr:      watchMgr,
+		ctx:           ctx,
+		cancel:        cancel,
+		viewport:      vp,
+		input:         ta,
+		streaming:     &strings.Builder{},
+		readOnlyFiles: readOnlyFiles,
 	}
 }
 
@@ -374,18 +386,110 @@ func (m model) handleSlash(input string) (tea.Model, tea.Cmd) {
 // handleBuiltin executes a built-in slash command.
 func (m model) handleBuiltin(a commands.Action) (tea.Model, tea.Cmd) {
 	switch a.Name {
-	case "skills":
+	// Info/display commands
+	case commands.CmdSkills:
 		m = m.appendEntry("system", m.formatSkillsList())
-	case "help":
-		m = m.appendEntry("system", helpText)
-	case "history":
+	case commands.CmdHelp:
+		m = m.appendEntry("system", m.formatHelp())
+	case commands.CmdHistory:
 		m = m.appendEntry("system", m.formatHistory())
-	case "ship":
-		m = m.appendEntry("system", "/ship — not yet implemented (coming in M9)")
-	case "undo":
-		m = m.appendEntry("system", "/undo — not yet implemented (coming in M9)")
-	case "revert":
-		m = m.appendEntry("system", "/revert — not yet implemented (coming in M9)")
+	case commands.CmdTokens:
+		m = m.appendEntry("system", "/tokens — not yet implemented (M10)")
+	case commands.CmdMap:
+		m = m.appendEntry("system", m.formatRepoMap())
+	case commands.CmdMapRefresh:
+		m = m.appendEntry("system", "/map-refresh — not yet implemented (M10)")
+	case commands.CmdSettings:
+		m = m.appendEntry("system", m.formatSettings())
+	case commands.CmdReport:
+		m = m.appendEntry("system", "/report — not yet implemented (M10)")
+
+	// Git workflow commands
+	case commands.CmdShip:
+		m = m.handleShip(a)
+	case commands.CmdUndo:
+		m = m.handleUndo()
+	case commands.CmdRevert:
+		m = m.handleRevert(a)
+	case commands.CmdCommit:
+		m = m.handleCommit(a)
+
+	// File management commands
+	case commands.CmdAdd:
+		m = m.handleAdd(a)
+	case commands.CmdDrop:
+		m = m.handleDrop(a)
+	case commands.CmdLs:
+		m = m.handleLs()
+	case commands.CmdDiff:
+		m = m.handleDiff()
+	case commands.CmdReadOnly:
+		m = m.handleReadOnly(a)
+
+	// Shell/execution commands
+	case commands.CmdRun:
+		m = m.handleRun(a)
+	case commands.CmdTest:
+		m = m.handleTest(a)
+	case commands.CmdGit:
+		m = m.handleGit(a)
+	case commands.CmdLint:
+		m = m.handleLint(a)
+
+	// External integration commands
+	case commands.CmdWeb:
+		m = m.appendEntry("system", "/web — not yet implemented (M10b)")
+	case commands.CmdPaste:
+		m = m.appendEntry("system", "/paste — not yet implemented (M10)")
+	case commands.CmdVoice:
+		m = m.appendEntry("system", "/voice — not yet implemented (M10b)")
+	case commands.CmdWatch:
+		m = m.handleWatch(a)
+	case commands.CmdUnwatch:
+		m = m.handleUnwatch()
+
+	// Session/state commands
+	case commands.CmdSave:
+		m = m.appendEntry("system", "/save — not yet implemented (M10)")
+	case commands.CmdLoad:
+		m = m.appendEntry("system", "/load — not yet implemented (M10)")
+	case commands.CmdReset:
+		m = m.appendEntry("system", "/reset — not yet implemented (M10)")
+	case commands.CmdClear:
+		m = m.handleClear()
+	case commands.CmdDiscard:
+		m = m.appendEntry("system", "/discard — not yet implemented (M10)")
+	case commands.CmdSession:
+		m = m.appendEntry("system", m.formatSession())
+	case commands.CmdTask:
+		m = m.appendEntry("system", "/task — not yet implemented (M10)")
+	case commands.CmdQuit:
+		m.cancel()
+		return m, tea.Quit
+
+	// Editor/context commands
+	case commands.CmdCopy:
+		m = m.appendEntry("system", "/copy — not yet implemented (M10)")
+	case commands.CmdCopyContext:
+		m = m.appendEntry("system", "/copy-context — not yet implemented (M10)")
+	case commands.CmdEditor:
+		m = m.appendEntry("system", "/editor — not yet implemented (M10)")
+	case commands.CmdEdit:
+		m = m.appendEntry("system", "/edit — not yet implemented (M10)")
+
+	// Model/configuration commands
+	case commands.CmdModel:
+		m = m.appendEntry("system", "/model — not yet implemented (M10)")
+	case commands.CmdThinkTokens:
+		m = m.appendEntry("system", "/think-tokens — not yet implemented (M10)")
+	case commands.CmdReasoningEffort:
+		m = m.appendEntry("system", "/reasoning-effort — not yet implemented (M10)")
+	case commands.CmdMultilineMode:
+		m = m.handleMultilineMode()
+
+	default:
+		m = m.appendEntry("system",
+			fmt.Sprintf("unknown command %q — type /help for available commands", a.Name))
 	}
 	return m, nil
 }
@@ -439,13 +543,307 @@ func (m model) formatHistory() string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-const helpText = `Commands:
-  /ship           ship staged work to the target branch (M9)
-  /undo           undo the last task (M9)
-  /revert <id>    revert a specific task by ID (M9)
+// formatHelp returns the full help text for all commands.
+func (m model) formatHelp() string {
+	return `Commands:
+
+Git Workflow:
+  /ship [msg]     squash-merge staging branch to target branch
+  /undo           revert the most recent successful task
+  /revert <id>    revert a specific task by ID
+  /commit [msg]   commit current changes with message
+
+Info/Display:
   /history        show task ledger for current session
   /skills         list available skill extensions
   /help           show this help
+  /tokens         show token usage statistics
+  /map            show repository map
+  /map-refresh    rebuild the repository map
+  /settings       show current settings
+  /report         generate a session report
+
+File Management:
+  /add <file>     add file(s) to the chat context
+  /drop <file>    remove file(s) from the chat context
+  /ls             list files in the current context
+  /diff           show diff of current changes
+  /read-only <f>  add file(s) as read-only context
+
+Shell/Execution:
+  /run <cmd>      run a shell command
+  /test [args]    run tests (auto-detects test runner)
+  /git <args>     run a git command
+  /lint [files]   run linter on files
+
+External Integration:
+  /web <url>      fetch and include web content
+  /paste          paste from clipboard
+  /voice          record and transcribe voice input
+  /watch [dir]    watch files for AI comment markers
+  /unwatch        stop watching files
+
+Session/State:
+  /save [name]    save current session state
+  /load [name]    load a saved session state
+  /reset          reset session state
+  /clear          clear the chat display
+  /discard        discard current task changes
+  /session        show session information
+  /task <desc>    create a named task
+  /quit           exit the application
+
+Editor/Context:
+  /copy [text]    copy text to clipboard
+  /copy-context   copy current chat context
+  /editor [file]  open external editor
+  /edit <file>    edit a file directly
+
+Model/Configuration:
+  /model [name]   show or switch active model
+  /think-tokens <n>  set thinking token budget
+  /reasoning-effort <n>  set reasoning effort level
+  /multiline-mode toggle multiline input mode
 
 Skills from ~/.config/marshal/skills/*.toml are also available.
-Ctrl+C to quit.`
+Type /quit or press Ctrl+C to exit.`
+}
+
+// --- Command handlers --------------------------------------------------------
+
+func (m model) handleShip(a commands.Action) model {
+	// TODO: Implement ship command - squash merge staging to target
+	m = m.appendEntry("system", "/ship — squash-merging staging to target (M10 implementation needed)")
+	return m
+}
+
+func (m model) handleUndo() model {
+	// TODO: Implement undo command - revert most recent task
+	m = m.appendEntry("system", "/undo — reverting most recent task (M10 implementation needed)")
+	return m
+}
+
+func (m model) handleRevert(a commands.Action) model {
+	if a.Arg == "" {
+		m = m.appendEntry("system", "usage: /revert <task-id>")
+		return m
+	}
+	// TODO: Implement revert command
+	m = m.appendEntry("system", fmt.Sprintf("/revert %s — reverting specific task (M10 implementation needed)", a.Arg))
+	return m
+}
+
+func (m model) handleCommit(a commands.Action) model {
+	msg := a.Prompt
+	if msg == "" {
+		msg = "marshal: manual commit"
+	}
+	// TODO: Implement commit command
+	m = m.appendEntry("system", fmt.Sprintf("/commit — committing with message: %s (M10 implementation needed)", msg))
+	return m
+}
+
+func (m model) handleAdd(a commands.Action) model {
+	if len(a.Args) == 0 {
+		m = m.appendEntry("system", "usage: /add <file1> [file2] ...")
+		return m
+	}
+	// TODO: Implement add command - add files to context
+	m = m.appendEntry("system", fmt.Sprintf("/add %v — adding files to context (M10 implementation needed)", a.Args))
+	return m
+}
+
+func (m model) handleDrop(a commands.Action) model {
+	if len(a.Args) == 0 {
+		m = m.appendEntry("system", "usage: /drop <file1> [file2] ...")
+		return m
+	}
+	// TODO: Implement drop command - remove files from context
+	m = m.appendEntry("system", fmt.Sprintf("/drop %v — removing files from context (M10 implementation needed)", a.Args))
+	return m
+}
+
+func (m model) handleLs() model {
+	// TODO: Implement ls command - list files in context
+	m = m.appendEntry("system", "/ls — files in context:\n  (M10 implementation needed)")
+	return m
+}
+
+func (m model) handleDiff() model {
+	// TODO: Implement diff command - show current diff
+	m = m.appendEntry("system", "/diff — showing current changes (M10 implementation needed)")
+	return m
+}
+
+func (m model) handleReadOnly(a commands.Action) model {
+	if len(a.Args) == 0 {
+		// List current read-only files
+		if len(m.readOnlyFiles) == 0 {
+			m = m.appendEntry("system", "Read-only files: none")
+		} else {
+			var sb strings.Builder
+			sb.WriteString("Read-only files:\n")
+			for _, f := range m.readOnlyFiles {
+				sb.WriteString(fmt.Sprintf("  %s\n", f))
+			}
+			m = m.appendEntry("system", strings.TrimRight(sb.String(), "\n"))
+		}
+		return m
+	}
+
+	// Add files to read-only list
+	added := 0
+	for _, path := range a.Args {
+		// Clean and validate path
+		path = filepath.Clean(path)
+		if strings.HasPrefix(path, "..") {
+			m = m.appendEntry("system", fmt.Sprintf("  skipped %s (outside repo)", path))
+			continue
+		}
+		// Check if file exists
+		absPath := filepath.Join(m.repoRoot, path)
+		if _, err := os.Stat(absPath); os.IsNotExist(err) {
+			m = m.appendEntry("system", fmt.Sprintf("  skipped %s (not found)", path))
+			continue
+		}
+
+		// Add to session store
+		if m.store != nil && m.sessionID != "" {
+			if err := m.store.AddReadOnlyFile(m.sessionID, path); err != nil {
+				m = m.appendEntry("system", fmt.Sprintf("  error adding %s: %v", path, err))
+				continue
+			}
+		}
+
+		// Add to in-memory list if not already present
+		found := false
+		for _, f := range m.readOnlyFiles {
+			if f == path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.readOnlyFiles = append(m.readOnlyFiles, path)
+			added++
+		}
+	}
+
+	if added > 0 {
+		m = m.appendEntry("system", fmt.Sprintf("Added %d file(s) to read-only context", added))
+	} else {
+		m = m.appendEntry("system", "No new files added (may already be in context or not found)")
+	}
+	return m
+}
+
+func (m model) handleRun(a commands.Action) model {
+	if a.Prompt == "" {
+		m = m.appendEntry("system", "usage: /run <command>")
+		return m
+	}
+	// TODO: Implement run command
+	m = m.appendEntry("system", fmt.Sprintf("/run %s — executing command (M10 implementation needed)", a.Prompt))
+	return m
+}
+
+func (m model) handleTest(a commands.Action) model {
+	// TODO: Implement test command - auto-detect and run tests
+	args := a.Prompt
+	if args == "" {
+		args = "(auto-detect)"
+	}
+	m = m.appendEntry("system", fmt.Sprintf("/test %s — running tests (M10 implementation needed)", args))
+	return m
+}
+
+func (m model) handleGit(a commands.Action) model {
+	if a.Prompt == "" {
+		m = m.appendEntry("system", "usage: /git <args>")
+		return m
+	}
+	// TODO: Implement git command passthrough
+	m = m.appendEntry("system", fmt.Sprintf("/git %s — running git command (M10 implementation needed)", a.Prompt))
+	return m
+}
+
+func (m model) handleLint(a commands.Action) model {
+	// TODO: Implement lint command
+	files := a.Prompt
+	if files == "" {
+		files = "(changed files)"
+	}
+	m = m.appendEntry("system", fmt.Sprintf("/lint %s — running linter (M10 implementation needed)", files))
+	return m
+}
+
+func (m model) handleClear() model {
+	// Clear the chat display
+	m.entries = nil
+	m.streaming.Reset()
+	m = m.rebuildViewport()
+	m = m.appendEntry("system", "Chat display cleared.")
+	return m
+}
+
+func (m model) handleMultilineMode() model {
+	// TODO: Implement multiline mode toggle
+	m = m.appendEntry("system", "/multiline-mode — toggling multiline input (M10 implementation needed)")
+	return m
+}
+
+func (m model) formatRepoMap() string {
+	// TODO: Implement repo map display
+	return "Repository map:\n  (M10 implementation needed - will show PageRank-ranked file list)"
+}
+
+func (m model) formatSettings() string {
+	// TODO: Implement settings display
+	return "Current settings:\n  (M10 implementation needed - will show active config)"
+}
+
+func (m model) formatSession() string {
+	if m.sessionID == "" {
+		return "No active session."
+	}
+	return fmt.Sprintf("Session: %s\n  (M10 will show more session details)", m.sessionID)
+}
+
+func (m model) handleWatch(a commands.Action) model {
+	if m.watchMgr == nil {
+		m = m.appendEntry("system", "Watch mode not available (no repository)")
+		return m
+	}
+
+	if m.watchMgr.IsActive() {
+		m = m.appendEntry("system", "Watch mode is already active. Use /unwatch to stop.")
+		return m
+	}
+
+	if err := m.watchMgr.Start(); err != nil {
+		m = m.appendEntry("system", fmt.Sprintf("Failed to start watch mode: %v", err))
+		return m
+	}
+
+	msg := "Watch mode started. Monitoring files for // ai: markers..."
+	if a.Arg != "" {
+		msg = fmt.Sprintf("Watch mode started on %s. Monitoring for // ai: markers...", a.Arg)
+	}
+	m = m.appendEntry("system", msg)
+	return m
+}
+
+func (m model) handleUnwatch() model {
+	if m.watchMgr == nil || !m.watchMgr.IsActive() {
+		m = m.appendEntry("system", "Watch mode is not active.")
+		return m
+	}
+
+	if err := m.watchMgr.Stop(); err != nil {
+		m = m.appendEntry("system", fmt.Sprintf("Error stopping watch mode: %v", err))
+		return m
+	}
+
+	m = m.appendEntry("system", "Watch mode stopped.")
+	return m
+}

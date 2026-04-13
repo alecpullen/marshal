@@ -74,18 +74,19 @@ func TestDispatch_History(t *testing.T) {
 }
 
 func TestDispatch_SkillFound(t *testing.T) {
+	// Use a trigger that doesn't conflict with built-in commands
 	reg := makeReg(t, &skills.Skill{
-		Name:    "test",
-		Trigger: "/test",
+		Name:    "mytest",
+		Trigger: "/mytest",
 	})
-	a, ok := commands.Dispatch("/test add unit tests", reg)
+	a, ok := commands.Dispatch("/mytest add unit tests", reg)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
 	if a.Kind != commands.KindSkill {
 		t.Errorf("expected KindSkill, got %v", a.Kind)
 	}
-	if a.Skill == nil || a.Skill.Name != "test" {
+	if a.Skill == nil || a.Skill.Name != "mytest" {
 		t.Errorf("skill: %+v", a.Skill)
 	}
 	if a.Prompt != "add unit tests" {

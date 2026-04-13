@@ -14,6 +14,8 @@ type Sink interface {
 	LintErrors(taskID, summary string)
 	// VerdictBadge is called once the critic verdict is parsed.
 	VerdictBadge(taskID string, verdict, summary string)
+	// RoundEnd is called at the end of each round with token counts.
+	RoundEnd(taskID string, round, promptTokens, completionTokens int)
 	// TaskMerged is called after a PASS squash-merge into the staging branch.
 	TaskMerged(taskID, stagingSHA string)
 	// TaskFailed is called when all rounds are exhausted.
@@ -54,6 +56,10 @@ func (StdoutSink) TaskFailed(taskID, lastIssue string) {
 	fmt.Printf("[task %s] failed after all rounds: %s\n", taskID, lastIssue)
 }
 
+func (StdoutSink) RoundEnd(taskID string, round, promptTokens, completionTokens int) {
+	// No-op for stdout sink; token counts are not displayed in human mode.
+}
+
 // DiscardSink drops all events. Useful in tests that don't care about output.
 type DiscardSink struct{}
 
@@ -61,5 +67,6 @@ func (DiscardSink) Token(string)                              {}
 func (DiscardSink) RoundStart(string, int, int)               {}
 func (DiscardSink) LintErrors(string, string)                 {}
 func (DiscardSink) VerdictBadge(string, string, string)       {}
+func (DiscardSink) RoundEnd(string, int, int, int)            {}
 func (DiscardSink) TaskMerged(string, string)                 {}
 func (DiscardSink) TaskFailed(string, string)                 {}

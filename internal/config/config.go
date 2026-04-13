@@ -96,6 +96,13 @@ type ToolsConfig struct {
 	RunCommandAllowlist []string `toml:"run_command_allowlist"`
 }
 
+// AnalyticsConfig controls analytics settings.
+type AnalyticsConfig struct {
+	Enabled  bool   `toml:"enabled"`
+	Provider string `toml:"provider"`
+	APIKey   string `toml:"api_key"`
+}
+
 // Models is the four-role model roster.
 type Models struct {
 	Marshal   ModelConfig `toml:"marshal"`
@@ -113,12 +120,13 @@ type Profile struct {
 
 // Config is the top-level configuration object.
 type Config struct {
-	Model    Models                `toml:"model"`
-	Loop     LoopConfig            `toml:"loop"`
-	Git      GitConfig             `toml:"git"`
-	Linters  LinterConfig          `toml:"linters"`
-	Tools    ToolsConfig           `toml:"tools"`
-	Profiles map[string]Profile    `toml:"profiles"`
+	Model     Models                `toml:"model"`
+	Loop      LoopConfig            `toml:"loop"`
+	Git       GitConfig             `toml:"git"`
+	Linters   LinterConfig          `toml:"linters"`
+	Tools     ToolsConfig           `toml:"tools"`
+	Analytics AnalyticsConfig       `toml:"analytics"`
+	Profiles  map[string]Profile  `toml:"profiles"`
 
 	// LogFile is the optional path for the structured log sink.
 	LogFile string `toml:"log_file"`

@@ -53,14 +53,17 @@ func Run(
 		readOnlyFiles, _ = store.GetReadOnlyFiles(sessID)
 	}
 
-	runEngine := func(ctx context.Context, prompt string, sink loop.Sink, executorExtra, criticExtra string) error {
+	// runEngine builds a fresh Engine for each task so that chatFiles and
+	// readOnlyFiles reflect the TUI's current state at submission time.
+	runEngine := func(ctx context.Context, prompt string, sink loop.Sink, executorExtra, criticExtra string, chatFiles, roFiles []string) error {
 		eng := loop.New(
 			loop.Config{
 				MaxRounds:     cfg.Loop.MaxRounds,
 				CompactAfter:  cfg.Loop.CompactAfter,
 				SessionID:     sessID,
 				GitEnabled:    cfg.Git.Enabled,
-				ReadOnlyFiles: readOnlyFiles,
+				ChatFiles:     chatFiles,
+				ReadOnlyFiles: roFiles,
 				LinterCfg:     cfg.Linters,
 				EditFormat:    cfg.Loop.EditFormat,
 				ExecutorExtra: executorExtra,
@@ -80,7 +83,7 @@ func Run(
 		watchMgr, _ = watch.NewManager(repo, ig)
 	}
 
-	m := newModel(ctx, runGate, runEngine, skillsReg, store, sessID, repo.Root(), readOnlyFiles, watchMgr, pref)
+	m := newModel(ctx, runGate, runEngine, skillsReg, store, sessID, repo.Root(), readOnlyFiles, watchMgr, pref, cfg, gitSess, repo)
 
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),

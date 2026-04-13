@@ -186,6 +186,32 @@ func (s *Store) InsertRound(r *Round) error {
 	return err
 }
 
+// RoundsForSession returns all rounds for all tasks in a session ordered by
+// task ID and round number.
+func (s *Store) RoundsForSession(sessionID string) ([]*Round, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_id, task_id, round, role, model,
+		       prompt_tokens, completion_tokens, duration_ms,
+		       content, verdict_json, think_blocks
+		FROM rounds WHERE session_id=? ORDER BY task_id, round`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*Round
+	for rows.Next() {
+		r := &Round{}
+		err := rows.Scan(&r.ID, &r.SessionID, &r.TaskID, &r.Round,
+			&r.Role, &r.Model, &r.PromptTokens, &r.CompletionTokens,
+			&r.DurationMS, &r.Content, &r.VerdictJSON, &r.ThinkBlocks)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) RoundsForTask(taskID string) ([]*Round, error) {
 	rows, err := s.db.Query(`
 		SELECT id, session_id, task_id, round, role, model,

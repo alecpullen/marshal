@@ -1,0 +1,221 @@
+# Example GitHub Actions workflow for Marshal CI mode
+#
+# This workflow demonstrates how to use `marshal run --json` for automated
+# code changes in CI pipelines. It emits NDJSON events and uses structured
+# exit codes for reliable automation.
+#
+# Exit codes:
+#   0 = PASS & merged
+#   1 = task exhausted retries
+#   2 = config error
+#   3 = git error
+#   4 = pipeline integration FAIL
+
+name: Marshal CI
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Task description for marshal'
+        required: true
+        default: 'Fix any linting errors in the codebase'
+
+jobs:
+  marshal-run:
+    # Run when triggered manually or via PR comment containing "/marshal"
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.comment.body, '/marshal')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git operations
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Install Marshal
+        run: |
+          # Option 1: Install from source
+          go install github.com/alec/marshal/cmd/marshal@latest
+
+          # Option 2: Use pre-built binary from releases
+          # curl -sSL https://github.com/alec/marshal/releases/latest/download/marshal-linux-amd64 -o /usr/local/bin/marshal
+          # chmod +x /usr/local/bin/marshal
+
+      - name: Configure Marshal
+        env:
+          MARSHAL_EXECUTOR_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MARSHAL_EXECUTOR_MODEL: claude-sonnet-4-6
+          MARSHAL_CRITIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MARSHAL_CRITIC_MODEL: claude-sonnet-4-6
+        run: |
+          mkdir -p ~/.config/marshal
+          cat > ~/.config/marshal/config.toml << 'EOF'
+          [model.executor]
+          provider = "openai-compat"
+          base_url = "https://api.anthropic.com/v1"
+          api_key = "${MARSHAL_EXECUTOR_API_KEY}"
+          model = "${MARSHAL_EXECUTOR_MODEL}"
+
+          [model.critic]
+          provider = "openai-compat"
+          base_url = "https://api.anthropic.com/v1"
+          api_key = "${MARSHAL_CRITIC_API_KEY}"
+          model = "${MARSHAL_CRITIC_MODEL}"
+
+          [loop]
+          max_rounds = 3
+          edit_format = "search_replace"
+
+          [git]
+          enabled = true
+          EOF
+
+      - name: Run Marshal (single task)
+        id: marshal
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Extract task from PR comment or use workflow input
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            TASK=$(echo "${{ github.event.comment.body }}" | sed 's/\/marshal//')
+          else
+            TASK="${{ github.event.inputs.task }}"
+          fi
+
+          echo "Running: $TASK"
+
+          # Run marshal with NDJSON output and capture events
+          marshal run --json --exit "$TASK" 2>&1 | tee marshal-output.ndjson
+
+          # Store exit code for step outcome
+          exit_code=${PIPESTATUS[0]}
+          echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+          # Parse NDJSON for summary (requires jq)
+          if command -v jq &> /dev/null; then
+            verdict=$(jq -r 'select(.event == "session_end") | .verdict' marshal-output.ndjson | tail -1)
+            total_tokens=$(jq -r 'select(.event == "session_end") | .total_tokens' marshal-output.ndjson | tail -1)
+            duration=$(jq -r 'select(.event == "session_end") | .duration_ms' marshal-output.ndjson | tail -1)
+
+            echo "verdict=$verdict" >> $GITHUB_OUTPUT
+            echo "total_tokens=$total_tokens" >> $GITHUB_OUTPUT
+            echo "duration_ms=$duration" >> $GITHUB_OUTPUT
+          fi
+
+          exit $exit_code
+
+      - name: Comment on PR (success)
+        if: steps.marshal.outputs.exit_code == '0' && github.event.issue.number
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `✅ **Marshal completed successfully**
+
+              - Verdict: ${{ steps.marshal.outputs.verdict }}
+              - Tokens: ${{ steps.marshal.outputs.total_tokens }}
+              - Duration: ${{ steps.marshal.outputs.duration_ms }}ms
+
+              Changes have been committed to this PR.`
+            })
+
+      - name: Comment on PR (failure)
+        if: steps.marshal.outputs.exit_code != '0' && github.event.issue.number
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const exitCode = ${{ steps.marshal.outputs.exit_code }};
+            let reason = 'Unknown error';
+            if (exitCode == 1) reason = 'Task failed after all retry rounds';
+            if (exitCode == 2) reason = 'Configuration error';
+            if (exitCode == 3) reason = 'Git operation failed';
+            if (exitCode == 4) reason = 'Pipeline integration rejected';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ **Marshal failed** (exit code: ${exitCode})
+
+              Reason: ${reason}
+
+              Please check the workflow logs for details.`
+            })
+
+      - name: Upload NDJSON output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: marshal-output
+          path: marshal-output.ndjson
+
+  # Example: Pipeline mode for complex multi-task changes
+  marshal-pipeline:
+    if: github.event_name == 'workflow_dispatch' && contains(github.event.inputs.task, 'pipeline')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Install Marshal
+        run: go install github.com/alec/marshal/cmd/marshal@latest
+
+      - name: Configure Marshal
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          mkdir -p ~/.config/marshal
+          cat > ~/.config/marshal/config.toml << 'EOF'
+          [model.executor]
+          provider = "openai-compat"
+          base_url = "https://api.anthropic.com/v1"
+          api_key = "${ANTHROPIC_API_KEY}"
+          model = "claude-sonnet-4-6"
+
+          [model.marshal]
+          provider = "openai-compat"
+          base_url = "https://api.anthropic.com/v1"
+          api_key = "${ANTHROPIC_API_KEY}"
+          model = "claude-sonnet-4-6"
+          EOF
+
+      - name: Run Marshal Pipeline
+        run: |
+          FEATURE="${{ github.event.inputs.task }}"
+          # Remove 'pipeline:' prefix if present
+          FEATURE=$(echo "$FEATURE" | sed 's/^pipeline://')
+
+          echo "Running pipeline: $FEATURE"
+          marshal pipeline --no-tui "$FEATURE" 2>&1 | tee pipeline-output.ndjson
+
+      - name: Upload pipeline output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-output
+          path: pipeline-output.ndjson

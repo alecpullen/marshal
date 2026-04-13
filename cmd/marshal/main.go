@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alec/marshal/internal/analytics"
+	"github.com/alec/marshal/internal/output/jsonstream"
 	"github.com/alec/marshal/internal/backend"
 	"github.com/alec/marshal/internal/config"
 	"github.com/alec/marshal/internal/git"
@@ -29,10 +31,57 @@ import (
 // Version is set at link time via -ldflags; falls back to VCS info.
 var Version = ""
 
+// Exit codes for headless/CI mode.
+//   0 = PASS & merged
+//   1 = task exhausted retries
+//   2 = config error
+//   3 = git error
+//   4 = pipeline integration FAIL
+const (
+	exitOK              = 0
+	exitTaskFailed      = 1
+	exitConfigError     = 2
+	exitGitError        = 3
+	exitPipelineFail    = 4
+)
+
 func main() {
 	if err := rootCmd().Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
+}
+
+// categorizedError wraps an error with a specific exit code.
+type categorizedError struct {
+	code int
+	err  error
+}
+
+func (e *categorizedError) Error() string { return e.err.Error() }
+func (e *categorizedError) Unwrap() error  { return e.err }
+
+// withExitCode wraps err with the specified exit code.
+func withExitCode(code int, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &categorizedError{code: code, err: err}
+}
+
+// exitCodeFor determines the exit code from an error.
+func exitCodeFor(err error) int {
+	if err == nil {
+		return exitOK
+	}
+	var cat *categorizedError
+	if errors.As(err, &cat) {
+		return cat.code
+	}
+	// Default: check error type heuristics.
+	if errors.Is(err, loop.ErrTaskFailed) {
+		return exitTaskFailed
+	}
+	return 1 // generic error
 }
 
 // globalFlags are persistent flags shared by all subcommands.
@@ -138,6 +187,9 @@ func chatCmd(gf *globalFlags) *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 			if err := cfg.Validate(); err != nil {
+				if hint := onboardingHint(cfg); hint != "" {
+					fmt.Fprintln(os.Stderr, hint)
+				}
 				return err
 			}
 
@@ -217,25 +269,68 @@ func chatCmd(gf *globalFlags) *cobra.Command {
 	return cmd
 }
 
-// ── run (stub) ────────────────────────────────────────────────────────────────
+// ── run (one-shot mode) ───────────────────────────────────────────────────────
 
 func runCmd(gf *globalFlags) *cobra.Command {
 	var noShip bool
 	var jsonOutput bool
+	var messageFlag string
+	var fileFlag string
+	var exitFlag bool
 
 	cmd := &cobra.Command{
-		Use:   "run <task>",
-		Short: "Run a single task against the current repo",
-		Args:  cobra.ExactArgs(1),
+		Use:   "run [task]",
+		Short: "Run a single task against the current repo (one-shot mode)",
+		Long: `Run a single task against the current repo.
+
+You can specify the task as:
+  - Positional argument: marshal run "add a new feature"
+  - -m flag:             marshal run -m "add a new feature"
+  - -f flag:             marshal run -f task.txt
+
+Examples:
+  marshal run "add error handling to main.go"
+  marshal run -m "add error handling to main.go" --exit
+  marshal run -f feature-request.txt --no-ship`,
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			prompt := args[0]
+			// Determine prompt from args, -m flag, or -f flag
+			var prompt string
+			switch {
+			case messageFlag != "":
+				prompt = messageFlag
+			case fileFlag != "":
+				data, err := os.ReadFile(fileFlag)
+				if err != nil {
+					return fmt.Errorf("read task file: %w", err)
+				}
+				prompt = string(data)
+			case len(args) > 0:
+				prompt = strings.Join(args, " ")
+			default:
+				return fmt.Errorf("no task specified (use positional arg, -m, or -f)")
+			}
+
+			if strings.TrimSpace(prompt) == "" {
+				return fmt.Errorf("task cannot be empty")
+			}
+
+			// Initialize analytics client (disabled by default)
+			analyticsClient := analytics.NewClient(nil, resolvedVersion())
+			if analyticsClient.IsEnabled() {
+				analyticsClient.TrackCommand("run", args...)
+				defer analyticsClient.Close()
+			}
 
 			cfg, err := config.Load(config.Options{Profile: gf.profile})
 			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
+				return withExitCode(exitConfigError, fmt.Errorf("loading config: %w", err))
 			}
 			if err := cfg.Validate(); err != nil {
-				return err
+				if hint := onboardingHint(cfg); hint != "" {
+					fmt.Fprintln(os.Stderr, hint)
+				}
+				return withExitCode(exitConfigError, err)
 			}
 
 			cwd, err := os.Getwd()
@@ -246,7 +341,7 @@ func runCmd(gf *globalFlags) *cobra.Command {
 				CoAuthoredBy: cfg.Model.Executor.Model,
 			})
 			if err != nil {
-				return fmt.Errorf("not a git repo: %w", err)
+				return withExitCode(exitGitError, fmt.Errorf("not a git repo: %w", err))
 			}
 
 			// Open (or create) the session database.
@@ -272,7 +367,7 @@ func runCmd(gf *globalFlags) *cobra.Command {
 			if cfg.Git.Enabled {
 				gitSess = git.NewSession(repo, git.SessionOptions{KeepBranch: noShip})
 				if err := gitSess.Start(); err != nil {
-					return fmt.Errorf("session start: %w", err)
+					return withExitCode(exitGitError, fmt.Errorf("session start: %w", err))
 				}
 				sessRecord.TargetBranch = gitSess.TargetBranch
 				sessRecord.TargetStartSHA = gitSess.TargetStartSHA
@@ -296,7 +391,11 @@ func runCmd(gf *globalFlags) *cobra.Command {
 
 			// Choose sink.
 			var sink loop.Sink = loop.StdoutSink{}
-			_ = jsonOutput // M11 will add NDJSON sink
+			var ndjsonSink *jsonstream.NDJSONSink
+			if jsonOutput {
+				ndjsonSink = jsonstream.NewSink(os.Stdout, sessID, prompt)
+				sink = ndjsonSink
+			}
 
 			// Run the task loop.
 			eng := loop.New(
@@ -313,20 +412,42 @@ func runCmd(gf *globalFlags) *cobra.Command {
 			runErr := eng.Run(cmd.Context(), prompt)
 
 			if runErr == nil {
+				// Track successful task
+				if analyticsClient.IsEnabled() {
+					analyticsClient.TrackTask(prompt, cfg.Model.Executor.Model, 0, 0, time.Since(now), true)
+				}
+
+				var stagingSHA string
 				if cfg.Git.Enabled && !noShip {
 					sha, shipErr := gitSess.Ship(prompt)
 					if shipErr != nil {
-						return fmt.Errorf("ship: %w", shipErr)
+						if ndjsonSink != nil {
+							ndjsonSink.SessionSuccess("")
+						}
+						return withExitCode(exitGitError, fmt.Errorf("ship: %w", shipErr))
 					}
+					stagingSHA = sha
 					if err := store.ShipSession(sessID, gitSess.StagingBranch, sha); err != nil {
-						return fmt.Errorf("update session: %w", err)
+						if ndjsonSink != nil {
+							ndjsonSink.SessionSuccess("")
+						}
+						return withExitCode(exitGitError, fmt.Errorf("update session: %w", err))
 					}
-					fmt.Printf("shipped to %s (%s)\n", gitSess.TargetBranch, sha[:8])
+					if ndjsonSink == nil {
+						fmt.Printf("shipped to %s (%s)\n", gitSess.TargetBranch, sha[:8])
+					}
 				} else if cfg.Git.Enabled {
-					fmt.Printf("task passed — staged on %s (use /ship to land on %s)\n",
-						gitSess.StagingBranch, gitSess.TargetBranch)
+					if ndjsonSink == nil {
+						fmt.Printf("task passed — staged on %s (use /ship to land on %s)\n",
+							gitSess.StagingBranch, gitSess.TargetBranch)
+					}
 				} else {
-					fmt.Println("task passed")
+					if ndjsonSink == nil {
+						fmt.Println("task passed")
+					}
+				}
+				if ndjsonSink != nil {
+					ndjsonSink.SessionSuccess(stagingSHA)
 				}
 				if gitSess != nil {
 					_ = gitSess.Teardown()
@@ -338,7 +459,14 @@ func runCmd(gf *globalFlags) *cobra.Command {
 				_ = gitSess.Teardown()
 			}
 			if errors.Is(runErr, loop.ErrTaskFailed) {
-				return fmt.Errorf("task failed")
+				// Track failed task
+				if analyticsClient.IsEnabled() {
+					analyticsClient.TrackTask(prompt, cfg.Model.Executor.Model, 0, 0, time.Since(now), false)
+				}
+				if exitFlag {
+					os.Exit(exitTaskFailed)
+				}
+				return withExitCode(exitTaskFailed, fmt.Errorf("task failed"))
 			}
 			return runErr
 		},
@@ -346,6 +474,9 @@ func runCmd(gf *globalFlags) *cobra.Command {
 
 	cmd.Flags().BoolVar(&noShip, "no-ship", false, "Leave changes on the staging branch instead of shipping to target")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit NDJSON events (M11)")
+	cmd.Flags().StringVarP(&messageFlag, "message", "m", "", "Task message (alternative to positional arg)")
+	cmd.Flags().StringVarP(&fileFlag, "file", "f", "", "Read task from file")
+	cmd.Flags().BoolVar(&exitFlag, "exit", false, "Exit with code 1 instead of error message on task failure (for scripting)")
 	return cmd
 }
 
@@ -525,7 +656,7 @@ func runPipelineHeadless(ctx context.Context, cfg *config.Config, repo *git.Repo
 
 	if verdict.Verdict != "PASS" {
 		fmt.Printf("{\"event\":\"integration_fail\",\"verdict\":%q,\"implicated\":%v}\n", verdict.Verdict, verdict.Implicated)
-		return fmt.Errorf("integration critic rejected: %s", verdict.Summary)
+		return withExitCode(exitPipelineFail, fmt.Errorf("integration critic rejected: %s", verdict.Summary))
 	}
 
 	// Topological merge.
@@ -697,6 +828,39 @@ Useful for verifying the git layer works correctly.`,
 
 func stubNotImplemented(milestone string) error {
 	return fmt.Errorf("not yet implemented: %s", milestone)
+}
+
+// onboardingHint returns a setup hint when the config is missing API keys.
+// It checks common environment variables and suggests a fix.
+func onboardingHint(cfg *config.Config) string {
+	if cfg.Model.Executor.APIKey != "" {
+		return "" // already configured
+	}
+	var sb strings.Builder
+	sb.WriteString("\nFirst-run setup: no API key configured for the executor model.\n\n")
+
+	switch {
+	case os.Getenv("ANTHROPIC_API_KEY") != "":
+		sb.WriteString("Detected ANTHROPIC_API_KEY. Add to marshal.toml:\n\n")
+		sb.WriteString("  [model.executor]\n")
+		sb.WriteString("  provider = \"openai-compat\"\n")
+		sb.WriteString("  base_url = \"https://api.anthropic.com/v1\"\n")
+		sb.WriteString("  api_key  = \"${ANTHROPIC_API_KEY}\"\n")
+		sb.WriteString("  model    = \"claude-sonnet-4-6\"\n")
+	case os.Getenv("OPENAI_API_KEY") != "":
+		sb.WriteString("Detected OPENAI_API_KEY. Add to marshal.toml:\n\n")
+		sb.WriteString("  [model.executor]\n")
+		sb.WriteString("  provider = \"openai-compat\"\n")
+		sb.WriteString("  api_key  = \"${OPENAI_API_KEY}\"\n")
+		sb.WriteString("  model    = \"gpt-4o\"\n")
+	default:
+		sb.WriteString("Options:\n")
+		sb.WriteString("  • Copy marshal.toml.example to marshal.toml and fill in your API key\n")
+		sb.WriteString("  • Or set MARSHAL_EXECUTOR_API_KEY=<key> and MARSHAL_EXECUTOR_MODEL=<model>\n")
+		sb.WriteString("  • Or set ANTHROPIC_API_KEY or OPENAI_API_KEY and update marshal.toml\n")
+	}
+	sb.WriteString("\nSee marshal.toml.example for a complete configuration reference.\n")
+	return sb.String()
 }
 
 // ensureMarshalExcluded adds ".marshal/" to .git/info/exclude (if not already

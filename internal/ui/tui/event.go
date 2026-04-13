@@ -37,6 +37,14 @@ type TaskFailedMsg struct {
 	LastIssue string
 }
 
+// RoundEndMsg signals the end of a round with token counts.
+type RoundEndMsg struct {
+	TaskID           string
+	Round            int
+	PromptTokens     int
+	CompletionTokens int
+}
+
 // LintErrorsMsg is sent when the linter finds issues after applying edits.
 type LintErrorsMsg struct {
 	TaskID  string
@@ -45,6 +53,25 @@ type LintErrorsMsg struct {
 
 // TaskDoneMsg is sent when the engine goroutine finishes (pass, fail, or error).
 type TaskDoneMsg struct{ Err error }
+
+// ShellResultMsg carries the output of a shell command run by a TUI handler.
+type ShellResultMsg struct {
+	Label  string // display label, e.g. "$ ls -la" or "/diff"
+	Output string
+	Err    error
+}
+
+// EditorResultMsg carries text from an external editor session.
+type EditorResultMsg struct {
+	Text string
+	Err  error
+}
+
+// MapRefreshedMsg signals that the repo map has been rebuilt.
+type MapRefreshedMsg struct {
+	Map string
+	Err error
+}
 
 // MarshalGateMsg is sent after the Marshal model has classified a prompt.
 //
@@ -84,4 +111,7 @@ func (s *ChanSink) LintErrors(id, summary string) {
 }
 func (s *ChanSink) TaskFailed(id, issue string) {
 	s.prog.Send(TaskFailedMsg{TaskID: id, LastIssue: issue})
+}
+func (s *ChanSink) RoundEnd(id string, round, promptTokens, completionTokens int) {
+	s.prog.Send(RoundEndMsg{TaskID: id, Round: round, PromptTokens: promptTokens, CompletionTokens: completionTokens})
 }

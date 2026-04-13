@@ -16,10 +16,12 @@ func noopGate(_ context.Context, _ string) (string, string, error) {
 	return "proceed", "", nil
 }
 
-func noopEngine(_ context.Context, _ string, _ loop.Sink, _, _ string) error { return nil }
+func noopEngine(_ context.Context, _ string, _ loop.Sink, _, _ string, _, _ []string) error {
+	return nil
+}
 
 func newTestModel() model {
-	m := newModel(context.Background(), noopGate, noopEngine, skills.New(), nil, "test-session", "/tmp", []string{}, nil, &progRef{})
+	m := newModel(context.Background(), noopGate, noopEngine, skills.New(), nil, "test-session", "/tmp", []string{}, nil, &progRef{}, nil, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return next.(model)
 }
@@ -250,7 +252,7 @@ func TestModel_SlashSkillsList_Empty(t *testing.T) {
 func TestModel_SlashSkillsList_WithSkills(t *testing.T) {
 	reg := skills.New()
 	_ = reg.Register(&skills.Skill{Name: "test", Trigger: "/test", Description: "write tests"})
-	m := newModel(context.Background(), noopGate, noopEngine, reg, nil, "test-session", "/tmp", []string{}, nil, &progRef{})
+	m := newModel(context.Background(), noopGate, noopEngine, reg, nil, "test-session", "/tmp", []string{}, nil, &progRef{}, nil, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(model)
 
@@ -271,7 +273,7 @@ func TestModel_SlashSkillsList_WithSkills(t *testing.T) {
 
 func TestModel_SlashSkillActivation(t *testing.T) {
 	var capturedExtra string
-	engineFn := func(_ context.Context, _ string, _ loop.Sink, execExtra, _ string) error {
+	engineFn := func(_ context.Context, _ string, _ loop.Sink, execExtra, _ string, _, _ []string) error {
 		capturedExtra = execExtra
 		return nil
 	}
@@ -281,7 +283,7 @@ func TestModel_SlashSkillActivation(t *testing.T) {
 		Trigger: "/mytest",
 		Executor: skills.SkillLayer{SystemExtra: "write tests only"},
 	})
-	m := newModel(context.Background(), noopGate, engineFn, reg, nil, "test-session", "/tmp", []string{}, nil, &progRef{})
+	m := newModel(context.Background(), noopGate, engineFn, reg, nil, "test-session", "/tmp", []string{}, nil, &progRef{}, nil, nil, nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = next.(model)
 

@@ -233,15 +233,32 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		// a. Build executor messages.
 		execMsgs := e.buildExecutorMessages(prompt, issue, fix, round)
 
-		// b. Stream executor; collect full text for diff + critic.
-		execContent, execPToks, execCToks, streamErr := e.streamToSink(ctx, executorB, execMsgs)
-		if streamErr != nil {
-			_ = tx.Abandon()
-			return fmt.Errorf("executor stream: %w", streamErr)
-		}
+		// b. Execute via tool-use (if supported) or stream + edit formats.
+		var execContent string
+		var execPToks, execCToks int
+		var changedFiles []string
+		var execErr error
 
-		// c. Apply edits from executor response; capture changed file paths.
-		changedFiles := e.applyEdits(execContent)
+		if executorB.SupportsTools() {
+			// Tool-use path: multi-turn tool calling with compact prompts (for 16K context models)
+			toolUseMsgs := e.buildToolUseMessages(prompt, issue, fix, round)
+			execContent, execPToks, execCToks, execErr = e.runToolUseRound(ctx, executorB, toolUseMsgs)
+			if execErr != nil {
+				_ = tx.Abandon()
+				return fmt.Errorf("tool-use round: %w", execErr)
+			}
+			// Get changed files from git status after tool execution
+			changedFiles = e.getChangedFilesFromGit()
+		} else {
+			// Edit-format path: stream response and apply edits
+			execContent, execPToks, execCToks, execErr = e.streamToSink(ctx, executorB, execMsgs)
+			if execErr != nil {
+				_ = tx.Abandon()
+				return fmt.Errorf("executor stream: %w", execErr)
+			}
+			// c. Apply edits from executor response; capture changed file paths.
+			changedFiles = e.applyEdits(execContent)
+		}
 
 		// d. Commit all changes on the task branch.
 		commitMsg := fmt.Sprintf("marshal: task %s round %d", taskID, round)
@@ -314,6 +331,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		})
 
 		e.sink.VerdictBadge(taskID, verdict.Verdict, verdict.Summary)
+		e.sink.RoundEnd(taskID, round, execPToks+criticPToks, execCToks+criticCToks)
 
 		// i. PASS: merge to staging (no-op when git is disabled).
 		if verdict.IsPASS() {
@@ -422,6 +440,40 @@ func (e *Engine) buildExecutorMessages(prompt, issue, fix string, round int) []b
 		}
 		sb.WriteString("\nPlease try again.\n\n")
 		sb.WriteString(outputInstructions)
+	}
+
+	return []backend.Message{
+		{Role: backend.MessageRoleSystem, Content: e.execSysPrompt},
+		{Role: backend.MessageRoleUser, Content: sb.String()},
+	}
+}
+
+// buildToolUseMessages creates compact prompts for tool-use models with limited context (e.g., 16K).
+// It excludes the repo map and file context to save tokens, since the model can use read_file tool.
+func (e *Engine) buildToolUseMessages(prompt, issue, fix string, round int) []backend.Message {
+	var sb strings.Builder
+
+	sb.WriteString("You have access to tools: read_file, write_file, and run_command.\n")
+	sb.WriteString("Use these tools to complete the task. Prefer reading files before modifying them.\n\n")
+
+	if round == 1 {
+		sb.WriteString("Task: ")
+		sb.WriteString(prompt)
+	} else {
+		sb.WriteString("Task: ")
+		sb.WriteString(prompt)
+		sb.WriteString("\n\nYour previous attempt was rejected.\n")
+		if issue != "" {
+			sb.WriteString("Issue: ")
+			sb.WriteString(issue)
+			sb.WriteString("\n")
+		}
+		if fix != "" {
+			sb.WriteString("Fix: ")
+			sb.WriteString(fix)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\nPlease try again using the available tools.")
 	}
 
 	return []backend.Message{
@@ -662,6 +714,21 @@ func (e *Engine) applyUdiff(content string) []string {
 		}
 	}
 	return written
+}
+
+// getChangedFilesFromGit returns a list of changed files after tool execution.
+// It uses git status to find modified files.
+func (e *Engine) getChangedFilesFromGit() []string {
+	if e.repo == nil {
+		return nil
+	}
+
+	// Use DirtyFiles to get list of changed files
+	files, err := e.repo.DirtyFiles()
+	if err != nil {
+		return nil
+	}
+	return files
 }
 
 // --- Ledger helpers ----------------------------------------------------------

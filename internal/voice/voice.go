@@ -1,5 +1,9 @@
 // Package voice implements voice recording and transcription for the /voice command.
 // It uses gordonklaus/portaudio for recording and OpenAI-compatible Whisper API for transcription.
+//
+//go:build portaudio
+// +build portaudio
+
 package voice
 
 import (
@@ -10,7 +14,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/gordonklaus/portaudio"

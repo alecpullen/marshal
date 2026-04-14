@@ -37,8 +37,9 @@ type progRef struct{ p *tea.Program }
 
 // chatEntry is one logical row in the visible chat history.
 type chatEntry struct {
-	kind    string // "user" | "marshal" | "executor" | "pass" | "fail" | "system" | "lint"
-	content string
+	kind      string // "user" | "marshal" | "executor" | "pass" | "fail" | "system" | "lint" | "thinking"
+	content   string
+	collapsed bool // for "thinking" entries - auto-collapse when final output arrives
 }
 
 // model is the top-level Bubbletea model.
@@ -85,9 +86,9 @@ type model struct {
 	toolOperations []toolOperationState
 
 	// Think block summarization state.
-	thinkAccumulator strings.Builder // accumulates think content
-	lastThinkSummary string          // last summary from marshal
-	summarizeThink   chan string     // channel to trigger summarization
+	thinkAccumulator *strings.Builder // accumulates think content (pointer to avoid copy issues)
+	lastThinkSummary string           // last summary from marshal
+	summarizeThink   chan string      // channel to trigger summarization
 }
 
 // toolOperationState tracks the state of a tool operation for compact display.
@@ -299,6 +300,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.appendEntry("lint", "lint errors:\n"+msg.Summary)
 
 	case TokenMsg:
+		// Collapse all thinking entries when final output starts streaming
+		for i := range m.entries {
+			if m.entries[i].kind == "thinking" {
+				m.entries[i].collapsed = true
+			}
+		}
 		m.streaming.WriteString(msg.Content)
 		m = m.rebuildViewport()
 
@@ -312,10 +319,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case TaskMergedMsg:
 		sha := msg.StagingSHA
-		if len(sha) > 8 {
+		if sha == "" {
+			// Git disabled - task completed without merge
+			m = m.appendEntry("system", "✓ task completed (git disabled)")
+		} else if len(sha) > 8 {
 			sha = sha[:8]
+			m = m.appendEntry("system", fmt.Sprintf("✓ merged to staging (%s)", sha))
+		} else {
+			m = m.appendEntry("system", fmt.Sprintf("✓ merged to staging (%s)", sha))
 		}
-		m = m.appendEntry("system", fmt.Sprintf("merged to staging (%s)", sha))
 
 	case TaskFailedMsg:
 		m = m.appendEntry("system", "task failed after all rounds")
@@ -563,25 +575,39 @@ func (m model) handleToolOperationDetail(msg ToolOperationDetailMsg) model {
 }
 
 // handleThinkBlock accumulates think content and triggers marshal summarization.
-func (m model) handleThinkBlock(msg ThinkBlockMsg) (model, tea.Cmd) {
+// Also streams thinking content into collapsible blocks in real-time.
+// NOTE: Uses pointer receiver because thinkAccumulator is a strings.Builder.
+func (m *model) handleThinkBlock(msg ThinkBlockMsg) (model, tea.Cmd) {
 	if msg.Done {
 		// Final chunk - summarize accumulated content
-		if m.thinkAccumulator.Len() > 0 {
+		if m.thinkAccumulator != nil && m.thinkAccumulator.Len() > 0 {
 			content := m.thinkAccumulator.String()
 			m.thinkAccumulator.Reset()
 			// Trigger async summarization
-			return m, m.summarizeThinkAsync(content)
+			return *m, m.summarizeThinkAsync(content)
 		}
 	} else {
-		// Accumulate think content
+		// Accumulate think content for summarization
+		if m.thinkAccumulator == nil {
+			m.thinkAccumulator = &strings.Builder{}
+		}
 		m.thinkAccumulator.WriteString(msg.Content)
+
+		// Stream think content to UI in real-time (collapsible blocks)
+		// Append to last thinking entry if it exists and isn't collapsed, else create new
+		if len(m.entries) > 0 && m.entries[len(m.entries)-1].kind == "thinking" && !m.entries[len(m.entries)-1].collapsed {
+			m.entries[len(m.entries)-1].content += msg.Content
+		} else {
+			m.entries = append(m.entries, chatEntry{kind: "thinking", content: msg.Content, collapsed: false})
+		}
+
 		// If we have enough content, trigger a summary update
-		if m.thinkAccumulator.Len() > 200 && len(m.lastThinkSummary) == 0 {
+		if m.thinkAccumulator != nil && m.thinkAccumulator.Len() > 200 && len(m.lastThinkSummary) == 0 {
 			content := m.thinkAccumulator.String()
-			return m, m.summarizeThinkAsync(content)
+			return *m, m.summarizeThinkAsync(content)
 		}
 	}
-	return m, nil
+	return *m, nil
 }
 
 // summarizeThinkAsync sends think content to marshal for summarization.
@@ -736,6 +762,20 @@ func renderEntry(e chatEntry, width int) string {
 		return stylePass.Width(width).Render(e.content)
 	case "fail":
 		return styleFail.Width(width).Render(e.content)
+	case "thinking":
+		if e.collapsed {
+			// Show collapsed summary with count of chars
+			preview := "💭 "
+			if len(e.content) > 80 {
+				preview += e.content[:80] + "..."
+			} else {
+				preview += strings.TrimSpace(e.content)
+			}
+			return styleFaint.Width(width).Render(preview)
+		}
+		// Expanded - show full content with a faint header
+		header := styleFaint.Render("💭 Thinking...")
+		return header + "\n" + styleFaint.Width(width).Render(e.content)
 	default:
 		return styleSystem.Width(width).Render(e.content)
 	}

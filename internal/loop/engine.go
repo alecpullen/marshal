@@ -93,8 +93,15 @@ You may include code snippets in fenced blocks to illustrate issues, but NEVER a
 const criticOutputInstructions = `Respond with ONLY this JSON object (no markdown, no prose):
 {"verdict":"PASS","summary":"one sentence","issue":"","fix":"","concerns":[]}
 
-Use "PASS" if the task is correctly and completely implemented. Use "FAIL" otherwise.
-"issue" and "fix" must be non-empty on FAIL.`
+Use "PASS" if the task is correctly and completely done. Use "FAIL" otherwise.
+"issue" and "fix" must be non-empty on FAIL.
+
+IMPORTANT: For analysis/audit tasks (like "audit the auth system" or "analyze security flaws"), the executor should:
+- Examine relevant files
+- Output findings/analysis as text
+- NOT necessarily modify files
+If the executor examined files and provided findings, PASS even if no files were modified.
+Only FAIL if the executor truly did nothing or provided no meaningful analysis.`
 
 // ErrTaskFailed is returned by Engine.Run when all rounds are exhausted.
 var ErrTaskFailed = errors.New("task failed after all rounds")
@@ -610,49 +617,57 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 			return nil
 		}
 
-		// i. PASS: merge to staging (no-op when git is disabled).
+		// i. PASS: complete the task (merge to staging if git enabled).
 		if verdict.IsPASS() {
-			shortPrompt := truncate(prompt, 60)
-			mergeMsg := fmt.Sprintf("task %s: %s", taskID, shortPrompt)
-			if mergeErr := tx.Merge(mergeMsg); mergeErr != nil {
-				if errors.Is(mergeErr, git.ErrAlreadyUpToDate) {
-					// Task branch has no commits relative to staging.
-					if e.cfg.ReadOnly {
-						// For read-only analysis tasks, no changes is expected.
-						// Mark as passed and return success.
-						var newSHA string
-						if e.cfg.GitEnabled {
-							newSHA, _ = e.gitSess.StagingHEAD()
-						}
-						endedAt := time.Now()
-						_ = e.store.UpdateTask(taskID, session.TaskUpdate{
-							Status:     session.StatusPassed,
-							StagingSHA: &newSHA,
-							EndedAt:    &endedAt,
-							Summary:    &verdict.Summary,
-						})
-						e.sink.TaskMerged(taskID, newSHA)
-						return nil
-					}
-					// For normal tasks, no changes is a FAIL — retry.
-					issue = "the executor made no file changes"
-					fix = "output the complete content of any files that need to change"
-					continue
-				}
-				return fmt.Errorf("merge to staging: %w", mergeErr)
-			}
-			var newSHA string
 			if e.cfg.GitEnabled {
+				// Git enabled: merge to staging branch
+				shortPrompt := truncate(prompt, 60)
+				mergeMsg := fmt.Sprintf("task %s: %s", taskID, shortPrompt)
+				if mergeErr := tx.Merge(mergeMsg); mergeErr != nil {
+					if errors.Is(mergeErr, git.ErrAlreadyUpToDate) {
+						// Task branch has no commits relative to staging.
+						if e.cfg.ReadOnly {
+							// For read-only analysis tasks, no changes is expected.
+							// Mark as passed and return success.
+							var newSHA string
+							newSHA, _ = e.gitSess.StagingHEAD()
+							endedAt := time.Now()
+							_ = e.store.UpdateTask(taskID, session.TaskUpdate{
+								Status:     session.StatusPassed,
+								StagingSHA: &newSHA,
+								EndedAt:    &endedAt,
+								Summary:    &verdict.Summary,
+							})
+							e.sink.TaskMerged(taskID, newSHA)
+							return nil
+						}
+						// For normal tasks, no changes is a FAIL — retry.
+						issue = "the executor made no file changes"
+						fix = "output the complete content of any files that need to change"
+						continue
+					}
+					return fmt.Errorf("merge to staging: %w", mergeErr)
+				}
+				var newSHA string
 				newSHA, _ = e.gitSess.StagingHEAD()
+				endedAt := time.Now()
+				_ = e.store.UpdateTask(taskID, session.TaskUpdate{
+					Status:     session.StatusPassed,
+					StagingSHA: &newSHA,
+					EndedAt:    &endedAt,
+					Summary:    &verdict.Summary,
+				})
+				e.sink.TaskMerged(taskID, newSHA)
+			} else {
+				// Git disabled: just mark as passed without merge
+				endedAt := time.Now()
+				_ = e.store.UpdateTask(taskID, session.TaskUpdate{
+					Status:  session.StatusPassed,
+					EndedAt: &endedAt,
+					Summary: &verdict.Summary,
+				})
+				e.sink.TaskMerged(taskID, "")
 			}
-			endedAt := time.Now()
-			_ = e.store.UpdateTask(taskID, session.TaskUpdate{
-				Status:     session.StatusPassed,
-				StagingSHA: &newSHA,
-				EndedAt:    &endedAt,
-				Summary:    &verdict.Summary,
-			})
-			e.sink.TaskMerged(taskID, newSHA)
 			return nil
 		}
 
@@ -969,14 +984,15 @@ func (e *Engine) buildCriticMessages(prompt, execContent, diff string) []backend
 	sb.WriteString("\n\n")
 
 	if diff != "" {
-		sb.WriteString("Git diff (what changed):\n```diff\n")
+		sb.WriteString("Git diff (file changes):\n```diff\n")
 		sb.WriteString(diff)
 		sb.WriteString("\n```\n\n")
 	} else {
-		sb.WriteString("No changes were made to the repository.\n\n")
+		// Analysis tasks often don't modify files - be clearer about this
+		sb.WriteString("No file modifications were made (this is OK for analysis/audit tasks).\n\n")
 	}
 
-	sb.WriteString("Executor response:\n")
+	sb.WriteString("Executor response/output:\n")
 	sb.WriteString(execContent)
 	sb.WriteString("\n\n")
 	sb.WriteString(criticOutputInstructions)

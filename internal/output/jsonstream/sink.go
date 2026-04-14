@@ -122,6 +122,12 @@ func (s *NDJSONSink) ThinkBlock(taskID, content string) {
 	s.emit(eventThinkBlock(taskID, content))
 }
 
+func (s *NDJSONSink) ThinkBlockDone(taskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventThinkBlockDone(taskID))
+}
+
 func (s *NDJSONSink) ProposalsReady(taskID string, files []string, summary string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -425,6 +431,18 @@ func eventThinkBlock(taskID, content string) thinkBlockEvent {
 		event:   newEvent("think_block"),
 		TaskID:  taskID,
 		Content: content,
+	}
+}
+
+type thinkBlockDoneEvent struct {
+	event
+	TaskID string `json:"task_id"`
+}
+
+func eventThinkBlockDone(taskID string) thinkBlockDoneEvent {
+	return thinkBlockDoneEvent{
+		event:  newEvent("think_block_done"),
+		TaskID: taskID,
 	}
 }
 

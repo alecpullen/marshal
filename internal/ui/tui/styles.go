@@ -35,6 +35,9 @@ var (
 			Foreground(colorFaint).
 			Italic(true)
 
+	styleFaint = lipgloss.NewStyle().
+			Foreground(colorFaint)
+
 	styleStatusBar = lipgloss.NewStyle().
 			Foreground(colorFaint)
 

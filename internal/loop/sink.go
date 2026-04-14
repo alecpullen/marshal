@@ -36,6 +36,8 @@ type Sink interface {
 	// ThinkBlock is called when a thinking/reasoning block is detected in the executor output.
 	// This allows the marshal model to provide real-time summaries of what the executor is doing.
 	ThinkBlock(taskID, content string)
+	// ThinkBlockDone is called when the thinking/reasoning block is complete.
+	ThinkBlockDone(taskID string)
 	// ProposalsReady is called when file changes have been proposed and are awaiting critic review.
 	ProposalsReady(taskID string, files []string, summary string)
 	// ProposalsApplied is called after proposals have been applied following critic approval.
@@ -71,7 +73,13 @@ func (StdoutSink) VerdictBadge(taskID, verdict, summary string) {
 }
 
 func (StdoutSink) TaskMerged(taskID, stagingSHA string) {
-	fmt.Printf("[task %s] merged to staging (%s)\n", taskID, stagingSHA[:8])
+	if stagingSHA == "" {
+		fmt.Printf("[task %s] task completed (git disabled)\n", taskID)
+	} else if len(stagingSHA) >= 8 {
+		fmt.Printf("[task %s] merged to staging (%s)\n", taskID, stagingSHA[:8])
+	} else {
+		fmt.Printf("[task %s] merged to staging (%s)\n", taskID, stagingSHA)
+	}
 }
 
 func (StdoutSink) TaskFailed(taskID, lastIssue string) {
@@ -109,7 +117,11 @@ func (StdoutSink) ToolOperationDetail(taskID, path, content string) {
 }
 
 func (StdoutSink) ThinkBlock(taskID, content string) {
-	// In stdout mode, silently drop think blocks (too verbose)
+	// Silently ignore think blocks for stdout - they're internal reasoning
+}
+
+func (StdoutSink) ThinkBlockDone(taskID string) {
+	// No-op for stdout
 }
 
 func (StdoutSink) ProposalsReady(taskID string, files []string, summary string) {
@@ -143,6 +155,7 @@ func (DiscardSink) PermissionRequest(string, string, string, string, chan<- bool
 func (DiscardSink) ToolOperation(string, string, string, string, string) {}
 func (DiscardSink) ToolOperationDetail(string, string, string)           {}
 func (DiscardSink) ThinkBlock(string, string)                            {}
+func (DiscardSink) ThinkBlockDone(string)                                {}
 func (DiscardSink) ProposalsReady(string, []string, string)              {}
 func (DiscardSink) ProposalsApplied(string, []string)                    {}
 func (DiscardSink) ProposalsDiscarded(string, string)                    {}

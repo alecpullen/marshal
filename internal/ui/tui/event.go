@@ -218,6 +218,10 @@ func (s *ChanSink) ThinkBlock(id, content string) {
 	s.prog.Send(ThinkBlockMsg{TaskID: id, Content: content})
 }
 
+func (s *ChanSink) ThinkBlockDone(id string) {
+	s.prog.Send(ThinkBlockMsg{TaskID: id, Done: true})
+}
+
 func (s *ChanSink) ProposalsReady(id string, files []string, summary string) {
 	s.prog.Send(ProposalsReadyMsg{TaskID: id, Files: files, Summary: summary})
 }

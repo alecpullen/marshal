@@ -61,11 +61,12 @@ func (e *Engine) runToolUseRound(ctx context.Context, b backend.Backend, msgs []
 				return "", promptTokens, completionTokens, fmt.Errorf("tool use stream chunk: %w", chunk.Err)
 			}
 
-			// Stream content to UI for live feedback
+			// Accumulate content and stream as think blocks for collapsible display
 			if chunk.Content != "" {
 				contentBuilder.WriteString(chunk.Content)
 				allContent.WriteString(chunk.Content) // Accumulate across all iterations
-				e.sink.Token(chunk.Content)
+				// Stream as think block for real-time display in collapsible blocks
+				e.sink.ThinkBlock(e.cfg.SessionID, chunk.Content)
 			}
 
 			// Accumulate tool call deltas
@@ -89,6 +90,9 @@ func (e *Engine) runToolUseRound(ctx context.Context, b backend.Backend, msgs []
 
 			completionTokens++
 		}
+
+		// Signal that think block streaming is complete for this iteration
+		e.sink.ThinkBlockDone(e.cfg.SessionID)
 
 		// Use tool calls from stream (or fall back to non-streaming if none found)
 		toolCalls := accumulatedToolCalls

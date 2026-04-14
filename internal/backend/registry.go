@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/alec/marshal/internal/config"
+	"github.com/alec/marshal/internal/models"
 )
 
 // NewRegistryFromBackends builds a Registry directly from a role→Backend map.
@@ -20,7 +21,8 @@ type Registry struct {
 // NewRegistry builds a Registry from the loaded config.
 // tokenCounter is passed to each OpenAI-compat backend; pass nil to use the
 // char-heuristic fallback.
-func NewRegistry(cfg *config.Config, tokenCounter func([]Message) (int, error)) (*Registry, error) {
+// modelReg provides per-model capability detection (supports_tools, etc.).
+func NewRegistry(cfg *config.Config, tokenCounter func([]Message) (int, error), modelReg *models.Registry) (*Registry, error) {
 	r := &Registry{backends: make(map[string]Backend, 4)}
 
 	roles := []struct {
@@ -34,7 +36,7 @@ func NewRegistry(cfg *config.Config, tokenCounter func([]Message) (int, error)) 
 	}
 
 	for _, entry := range roles {
-		b, err := newOpenAICompatFromModelConfig(entry.mc, tokenCounter)
+		b, err := newOpenAICompatFromModelConfig(entry.mc, tokenCounter, modelReg)
 		if err != nil {
 			return nil, fmt.Errorf("backend for role %q: %w", entry.name, err)
 		}
@@ -53,8 +55,10 @@ func (r *Registry) For(role string) (Backend, error) {
 }
 
 // newOpenAICompatFromModelConfig constructs an OpenAI-compat Backend from a
-// ModelConfig.  All providers in v0.1 use the OpenAI-compat endpoint.
-func newOpenAICompatFromModelConfig(mc config.ModelConfig, tc func([]Message) (int, error)) (Backend, error) {
+// ModelConfig. All providers in v0.1 use the OpenAI-compat endpoint.
+// Tool-use support is determined from per-model settings; local models default
+// to false to avoid loop-prone behavior on weak models (PR-3 7.2).
+func newOpenAICompatFromModelConfig(mc config.ModelConfig, tc func([]Message) (int, error), modelReg *models.Registry) (Backend, error) {
 	if mc.Model == "" {
 		return nil, fmt.Errorf("model name is required")
 	}
@@ -68,14 +72,26 @@ func newOpenAICompatFromModelConfig(mc config.ModelConfig, tc func([]Message) (i
 		subtype = SubtypeOpenAI
 	}
 
-	// Assume tools + JSON mode are supported by default; the per-model
-	// settings table (M5) will refine this per model string.
+	// Check per-model settings for tool support (PR-3 7.2).
+	// Local models (ollama, llama.cpp, etc.) default to supports_tools=false.
+	supTools := true // default for hosted models
+	supJSON := true
+	if modelReg != nil {
+		settings := modelReg.Lookup(mc.Model)
+		supTools = settings.SupportsTools
+		supJSON = settings.SupportsJSON
+	}
+	// Auto-disable tools for detected local subtypes as a safety net.
+	if subtype != SubtypeOpenAI {
+		supTools = false
+	}
+
 	return NewOpenAICompat(OpenAICompatConfig{
 		BaseURL:       baseURL,
 		APIKey:        mc.APIKey,
 		ModelName:     mc.Model,
-		SupTools:      true,
-		SupJSONMode:   true,
+		SupTools:      supTools,
+		SupJSONMode:   supJSON,
 		Subtype:       subtype,
 		Temperature:   mc.Temperature,
 		TopP:          mc.TopP,

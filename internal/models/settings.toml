@@ -59,6 +59,30 @@ context_window = 128000
 [models.ollama]
 pattern = "ollama/*"
 supports_tools = false
-edit_format = "wholefile"
+edit_format = "search-replace"
 max_tokens = 4096
 context_window = 8192
+
+# llama.cpp server (local) — tool-use disabled by default, weak models often loop
+[models.llama_cpp]
+pattern = "*/llama.cpp/*"
+supports_tools = false
+edit_format = "search-replace"
+max_tokens = 4096
+context_window = 8192
+
+# LM Studio local server — tool-use disabled by default
+[models.lmstudio]
+pattern = "*/lmstudio/*"
+supports_tools = false
+edit_format = "search-replace"
+max_tokens = 4096
+context_window = 8192
+
+# vLLM local server — may support tools but conservative default
+[models.vllm]
+pattern = "*/vllm/*"
+supports_tools = false
+edit_format = "search-replace"
+max_tokens = 4096
+context_window = 16384

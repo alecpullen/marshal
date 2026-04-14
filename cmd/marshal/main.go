@@ -14,12 +14,13 @@ import (
 	"time"
 
 	"github.com/alec/marshal/internal/analytics"
-	"github.com/alec/marshal/internal/output/jsonstream"
 	"github.com/alec/marshal/internal/backend"
 	"github.com/alec/marshal/internal/config"
 	"github.com/alec/marshal/internal/git"
 	"github.com/alec/marshal/internal/logging"
 	"github.com/alec/marshal/internal/loop"
+	"github.com/alec/marshal/internal/models"
+	"github.com/alec/marshal/internal/output/jsonstream"
 	"github.com/alec/marshal/internal/pipeline"
 	"github.com/alec/marshal/internal/planner"
 	"github.com/alec/marshal/internal/session"
@@ -217,7 +218,9 @@ func chatCmd(gf *globalFlags) *cobra.Command {
 				}
 			}
 
-			reg, err := backend.NewRegistry(cfg, nil)
+			// Load model settings registry for capability detection (PR-3 7.2).
+			modelReg, _ := models.LoadDefault()
+			reg, err := backend.NewRegistry(cfg, nil, modelReg)
 			if err != nil {
 				if gitSess != nil {
 					_ = gitSess.Teardown()
@@ -410,8 +413,9 @@ Examples:
 				return fmt.Errorf("insert session: %w", err)
 			}
 
-			// Build backend registry.
-			reg, err := backend.NewRegistry(cfg, nil)
+			// Build backend registry with model settings for capability detection.
+			modelReg, _ := models.LoadDefault()
+			reg, err := backend.NewRegistry(cfg, nil, modelReg)
 			if err != nil {
 				if gitSess != nil {
 					_ = gitSess.Teardown()
@@ -563,7 +567,8 @@ Example:
 			}
 			defer store.Close()
 
-			reg, err := backend.NewRegistry(cfg, nil)
+			modelReg, _ := models.LoadDefault()
+			reg, err := backend.NewRegistry(cfg, nil, modelReg)
 			if err != nil {
 				return fmt.Errorf("backend registry: %w", err)
 			}

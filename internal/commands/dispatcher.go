@@ -65,6 +65,7 @@ const (
 	CmdWatch           = "watch"
 	CmdUnwatch         = "unwatch"
 	CmdPermission      = "permission"
+	CmdInit            = "init"
 )
 
 // Action is the result of dispatching a slash command.
@@ -170,6 +171,8 @@ func Dispatch(input string, reg *skills.Registry) (Action, bool) {
 		return Action{Kind: KindBuiltin, Name: CmdUnwatch}, true
 
 	// Session/state commands
+	case "/init":
+		return Action{Kind: KindBuiltin, Name: CmdInit, Arg: rest, Args: args}, true
 	case "/save":
 		return Action{Kind: KindBuiltin, Name: CmdSave, Arg: rest}, true
 	case "/load":

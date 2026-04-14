@@ -24,6 +24,7 @@ import (
 	"github.com/alecpullen/marshal/internal/commands"
 	"github.com/alecpullen/marshal/internal/config"
 	"github.com/alecpullen/marshal/internal/git"
+	initmgr "github.com/alecpullen/marshal/internal/init"
 	"github.com/alecpullen/marshal/internal/loop"
 	"github.com/alecpullen/marshal/internal/repomap"
 	"github.com/alecpullen/marshal/internal/session"
@@ -88,7 +89,10 @@ type model struct {
 	// Think block summarization state.
 	thinkAccumulator *strings.Builder // accumulates think content (pointer to avoid copy issues)
 	lastThinkSummary string           // last summary from marshal
-	summarizeThink   chan string      // channel to trigger summarization
+	summarizing      bool             // true if currently requesting summary (prevents spam)
+
+	// Completion/suggestion state.
+	completionState *completionState // nil when not completing
 }
 
 // toolOperationState tracks the state of a tool operation for compact display.
@@ -136,7 +140,7 @@ func newModel(
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 
-	return model{
+	m := model{
 		runGate:       runGate,
 		runEngine:     runEngine,
 		cfg:           cfg,
@@ -155,6 +159,49 @@ func newModel(
 		input:         ta,
 		streaming:     &strings.Builder{},
 		readOnlyFiles: readOnlyFiles,
+	}
+
+	// Auto-load session context and repo map if they exist
+	m.loadSessionContext()
+
+	return m
+}
+
+// loadSessionContext auto-loads .marshal/session_context.md and .marshal/repomap.txt
+// as read-only files if they exist.
+func (m *model) loadSessionContext() {
+	sessionContextPath := filepath.Join(m.repoRoot, ".marshal", "session_context.md")
+	if _, err := os.Stat(sessionContextPath); err == nil {
+		// Check if already in readOnlyFiles
+		found := false
+		for _, f := range m.readOnlyFiles {
+			if f == ".marshal/session_context.md" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.readOnlyFiles = append(m.readOnlyFiles, ".marshal/session_context.md")
+		}
+	}
+
+	repoMapPath := filepath.Join(m.repoRoot, ".marshal", "repomap.txt")
+	if _, err := os.Stat(repoMapPath); err == nil {
+		// Check if already in readOnlyFiles
+		found := false
+		for _, f := range m.readOnlyFiles {
+			if f == ".marshal/repomap.txt" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.readOnlyFiles = append(m.readOnlyFiles, ".marshal/repomap.txt")
+		}
+		// Also load into cache
+		if data, err := os.ReadFile(repoMapPath); err == nil {
+			m.cachedRepoMap = string(data)
+		}
 	}
 }
 
@@ -191,6 +238,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingResponse = nil
 				m = m.appendEntry("system", stylePermissionNo.Render("✗ No")+" — changes rejected")
 				m = m.lock()
+				return m, nil
+			}
+		}
+
+		// Handle completion navigation with Tab/Shift+Tab
+		if m.hasCompletions() {
+			switch msg.Type {
+			case tea.KeyTab:
+				m.selectNextCompletion()
+				return m, nil
+			case tea.KeyShiftTab:
+				m.selectPrevCompletion()
+				return m, nil
+			case tea.KeyEnter:
+				if m.acceptCompletion() {
+					return m, nil
+				}
+			case tea.KeyEsc:
+				m.clearCompletions()
 				return m, nil
 			}
 		}
@@ -232,6 +298,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case tea.KeyCtrlD:
+			// Ctrl+D cycles through detail levels (compact -> normal -> verbose)
+			switch m.cfg.Loop.Detail {
+			case config.DetailCompact:
+				m.cfg.Loop.Detail = config.DetailNormal
+				m = m.appendEntry("system", styleDetailLevel.Render("[normal]")+" detail level")
+			case config.DetailNormal:
+				m.cfg.Loop.Detail = config.DetailVerbose
+				m = m.appendEntry("system", styleDetailLevel.Render("[verbose]")+" detail level")
+			case config.DetailVerbose:
+				m.cfg.Loop.Detail = config.DetailCompact
+				m = m.appendEntry("system", styleDetailLevel.Render("[compact]")+" detail level")
+			}
+			// Force viewport refresh to apply new detail level
+			m = m.rebuildViewport()
+
 		case tea.KeyCtrlY:
 			// Ctrl+Y copies the entire conversation to clipboard.
 			m = m.copyConversation()
@@ -264,6 +346,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.input, cmd = m.input.Update(msg)
 				cmds = append(cmds, cmd)
+				// Update completions after input changes
+				m.updateCompletions()
 			}
 		}
 
@@ -300,9 +384,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.appendEntry("lint", "lint errors:\n"+msg.Summary)
 
 	case TokenMsg:
-		// Collapse all thinking entries when final output starts streaming
+		// Collapse all thinking entries and marshal summaries when final output starts
 		for i := range m.entries {
 			if m.entries[i].kind == "thinking" {
+				m.entries[i].collapsed = true
+			}
+			// Also collapse marshal summaries (🤔) when final content arrives
+			if m.entries[i].kind == "marshal" && strings.HasPrefix(m.entries[i].content, "🤔") {
 				m.entries[i].collapsed = true
 			}
 		}
@@ -360,7 +448,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, thinkCmd)
 
 	case ThinkSummaryMsg:
-		m = m.handleThinkSummary(msg)
+		// handleThinkSummary has pointer receiver to update summarizing flag
+		next := m.handleThinkSummary(msg)
+		m = next
 
 	case ProposalsReadyMsg:
 		m = m.handleProposalsReady(msg)
@@ -405,6 +495,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cachedRepoMap = msg.Map
 			lines := strings.Count(msg.Map, "\n") + 1
 			m = m.appendEntry("system", fmt.Sprintf("Repository map refreshed (%d lines)", lines))
+			// Ensure repo map is in read-only files for AI access
+			if msg.Path != "" {
+				repoMapRel := ".marshal/repomap.txt"
+				found := false
+				for _, f := range m.readOnlyFiles {
+					if f == repoMapRel {
+						found = true
+						break
+					}
+				}
+				if !found {
+					m.readOnlyFiles = append(m.readOnlyFiles, repoMapRel)
+				}
+			}
+		}
+
+	case InitResultMsg:
+		if msg.Err != nil {
+			m = m.appendEntry("system", fmt.Sprintf("init error: %v", msg.Err))
+		} else if msg.Result != nil {
+			// Update session state
+			m.sessionID = msg.Result.SessionID
+			if msg.Result.GitSession != nil {
+				m.gitSess = msg.Result.GitSession
+			}
+			if msg.Result.RepoMapCache != "" {
+				m.cachedRepoMap = msg.Result.RepoMapCache
+			}
+			// Add session context and repo map as read-only files
+			if msg.Result.ContextPath != "" {
+				relPath := ".marshal/session_context.md"
+				m.readOnlyFiles = append(m.readOnlyFiles, relPath)
+			}
+			if msg.Result.RepoMapPath != "" {
+				relPath := ".marshal/repomap.txt"
+				m.readOnlyFiles = append(m.readOnlyFiles, relPath)
+			}
+			m = m.appendEntry("system", msg.Result.Status())
 		}
 
 	case EditorResultMsg:
@@ -480,6 +608,12 @@ func (m model) flushStreaming() model {
 	if m.streaming.Len() == 0 {
 		return m
 	}
+	// Collapse all thinking entries when final output is flushed
+	for i := range m.entries {
+		if m.entries[i].kind == "thinking" {
+			m.entries[i].collapsed = true
+		}
+	}
 	m.entries = append(m.entries, chatEntry{kind: "executor", content: m.streaming.String()})
 	m.streaming = &strings.Builder{}
 	return m.rebuildViewport()
@@ -499,42 +633,79 @@ func (m model) handleToolOperation(msg ToolOperationMsg) model {
 	}
 
 	// Build compact display entry
+	// Special case: executor running indicator (mode header)
+	if msg.ToolName == "executor" && msg.Status == "running" {
+		// Show as a clean header line: ▶ executor (model-name) — analyzing
+		headerText := fmt.Sprintf("▶ %s %s",
+			styleToolPath.Render(msg.Path),
+			styleToolSummary.Render(msg.Summary),
+		)
+		// Check if we already have a running executor entry to update
+		execIdx := -1
+		for i, op := range m.toolOperations {
+			if op.toolName == "executor" {
+				execIdx = i
+				break
+			}
+		}
+		if execIdx == -1 {
+			m.toolOperations = append(m.toolOperations, toolOperationState{
+				toolName: "executor",
+				path:     msg.Path,
+				status:   msg.Status,
+				summary:  msg.Summary,
+				entryIdx: len(m.entries),
+			})
+			m = m.appendEntry("system", headerText)
+		} else {
+			// Update existing
+			entryIdx := m.toolOperations[execIdx].entryIdx
+			if entryIdx >= 0 && entryIdx < len(m.entries) {
+				m.entries[entryIdx].content = headerText
+				m = m.rebuildViewport()
+			}
+		}
+		return m
+	}
+
 	var statusIcon string
 	var statusStyle lipgloss.Style
-	displayStatus := msg.Status
 	switch msg.Status {
 	case "running", "writing":
 		statusIcon = "◐"
 		statusStyle = styleToolStatusWriting
-		displayStatus = "Editing"
 	case "reading":
 		statusIcon = "◯"
 		statusStyle = styleToolStatusReading
-		displayStatus = "Reading"
 	case "done":
 		statusIcon = "✓"
 		statusStyle = styleToolStatusDone
-		displayStatus = "Done"
 	case "failed":
 		statusIcon = "✗"
 		statusStyle = styleToolStatusFailed
-		displayStatus = "Failed"
 	case "proposed":
 		statusIcon = "⏸️"
 		statusStyle = styleToolStatusRunning
-		displayStatus = "Proposed"
 	default:
 		statusIcon = "○"
 	}
 
-	// Compact format: ◐ Editing (write_file) src/config.go +45/-12
-	compactText := fmt.Sprintf("%s %s (%s) %s %s",
-		statusStyle.Render(statusIcon),
-		displayStatus,
-		styleToolName.Render(msg.ToolName),
-		styleToolPath.Render(msg.Path),
-		styleToolSummary.Render(msg.Summary),
-	)
+	// Ultra-compact format: ✓ read_file auth.ts (245 lines)
+	var compactText string
+	if msg.Summary != "" {
+		compactText = fmt.Sprintf("%s %s %s %s",
+			statusStyle.Render(statusIcon),
+			styleToolName.Render(msg.ToolName),
+			styleToolPath.Render(msg.Path),
+			styleToolSummary.Render(msg.Summary),
+		)
+	} else {
+		compactText = fmt.Sprintf("%s %s %s",
+			statusStyle.Render(statusIcon),
+			styleToolName.Render(msg.ToolName),
+			styleToolPath.Render(msg.Path),
+		)
+	}
 
 	if foundIdx == -1 {
 		// New operation - add to tracking and append entry
@@ -593,16 +764,38 @@ func (m *model) handleThinkBlock(msg ThinkBlockMsg) (model, tea.Cmd) {
 		}
 		m.thinkAccumulator.WriteString(msg.Content)
 
-		// Stream think content to UI in real-time (collapsible blocks)
-		// Append to last thinking entry if it exists and isn't collapsed, else create new
-		if len(m.entries) > 0 && m.entries[len(m.entries)-1].kind == "thinking" && !m.entries[len(m.entries)-1].collapsed {
-			m.entries[len(m.entries)-1].content += msg.Content
-		} else {
-			m.entries = append(m.entries, chatEntry{kind: "thinking", content: msg.Content, collapsed: false})
+		// Stream think content to UI - keep it as a single live-updating line
+		// Replace newlines with spaces to maintain single-line display
+		cleanContent := strings.ReplaceAll(msg.Content, "\n", " ")
+		cleanContent = strings.ReplaceAll(cleanContent, "\r", "")
+
+		// Find or create a single thinking entry for live updates
+		// We only want ONE thinking entry that updates in place
+		thinkIdx := -1
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].kind == "thinking" {
+				thinkIdx = i
+				break
+			}
 		}
 
-		// If we have enough content, trigger a summary update
-		if m.thinkAccumulator != nil && m.thinkAccumulator.Len() > 200 && len(m.lastThinkSummary) == 0 {
+		if thinkIdx >= 0 && !m.entries[thinkIdx].collapsed {
+			// Update existing thinking entry - keep it truncated to prevent overflow
+			newContent := m.entries[thinkIdx].content + cleanContent
+			// Truncate to last 100 chars with ellipsis if too long
+			if len(newContent) > 100 {
+				newContent = "..." + newContent[len(newContent)-97:]
+			}
+			m.entries[thinkIdx].content = newContent
+		} else {
+			// Create new thinking entry
+			m.entries = append(m.entries, chatEntry{kind: "thinking", content: cleanContent, collapsed: false})
+		}
+
+		// If we have enough content and aren't already summarizing, trigger a summary
+		// Use higher threshold (500) and check summarizing flag to prevent spam
+		if !m.summarizing && m.thinkAccumulator.Len() > 500 && m.lastThinkSummary == "" {
+			m.summarizing = true
 			content := m.thinkAccumulator.String()
 			return *m, m.summarizeThinkAsync(content)
 		}
@@ -650,13 +843,32 @@ type ThinkSummaryMsg struct {
 	Summary string
 }
 
-// handleThinkSummary displays the marshal's summary of executor thinking.
-func (m model) handleThinkSummary(msg ThinkSummaryMsg) model {
-	if msg.Summary != "" && msg.Summary != m.lastThinkSummary {
-		m.lastThinkSummary = msg.Summary
-		m = m.appendEntry("marshal", "🤔 "+msg.Summary)
+// handleThinkSummary displays/replaces the marshal's summary of executor thinking.
+// Replaces any previous marshal summary to avoid stacking too many lines.
+// Uses pointer receiver to update summarizing flag.
+func (m *model) handleThinkSummary(msg ThinkSummaryMsg) model {
+	m.summarizing = false // Reset flag regardless of result
+	if msg.Summary == "" || msg.Summary == m.lastThinkSummary {
+		return *m
 	}
-	return m
+	m.lastThinkSummary = msg.Summary
+
+	// Find and replace the last marshal entry, or create new one
+	marshalIdx := -1
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].kind == "marshal" && strings.HasPrefix(m.entries[i].content, "🤔") {
+			marshalIdx = i
+			break
+		}
+	}
+
+	newContent := "🤔 " + msg.Summary
+	if marshalIdx >= 0 {
+		m.entries[marshalIdx].content = newContent
+	} else {
+		m.entries = append(m.entries, chatEntry{kind: "marshal", content: newContent})
+	}
+	return *m
 }
 
 // handleProposalsReady displays that proposals are awaiting critic review.
@@ -685,28 +897,33 @@ func (m model) handleProposalsDiscarded(msg ProposalsDiscardedMsg) model {
 func (m model) copyConversation() model {
 	var sb strings.Builder
 	for _, entry := range m.entries {
+		// Strip ANSI codes from content before copying
+		cleanContent := stripANSI(entry.content)
 		switch entry.kind {
 		case "user":
 			sb.WriteString("> ")
-			sb.WriteString(entry.content)
+			sb.WriteString(cleanContent)
 			sb.WriteString("\n\n")
 		case "marshal":
 			sb.WriteString("[Marshal] ")
-			sb.WriteString(entry.content)
+			sb.WriteString(cleanContent)
 			sb.WriteString("\n\n")
 		case "executor":
-			sb.WriteString(entry.content)
+			sb.WriteString(cleanContent)
 			sb.WriteString("\n\n")
+		case "thinking":
+			// Skip thinking blocks in copy
+			continue
 		case "system":
-			sb.WriteString(entry.content)
+			sb.WriteString(cleanContent)
 			sb.WriteString("\n")
 		case "pass":
 			sb.WriteString("✓ PASS: ")
-			sb.WriteString(entry.content)
+			sb.WriteString(cleanContent)
 			sb.WriteString("\n\n")
 		case "fail":
 			sb.WriteString("✗ FAIL: ")
-			sb.WriteString(entry.content)
+			sb.WriteString(cleanContent)
 			sb.WriteString("\n\n")
 		}
 	}
@@ -723,25 +940,45 @@ func (m model) copyConversation() model {
 	return m
 }
 
+// stripANSI removes ANSI escape sequences from text.
+func stripANSI(text string) string {
+	// ANSI escape sequence pattern: ESC[ ... m
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	return ansiRegex.ReplaceAllString(text, "")
+}
+
 func (m model) rebuildViewport() model {
 	var sb strings.Builder
 	w := m.viewport.Width
 	if w <= 0 {
 		w = 80
 	}
+	// Account for horizontal padding (2 chars margin on each side)
+	contentWidth := w - 4
+	if contentWidth < 20 {
+		contentWidth = 20 // Minimum width
+	}
+
 	for i, e := range m.entries {
 		if i > 0 {
 			sb.WriteByte('\n')
 		}
-		sb.WriteString(renderEntry(e, w))
+		sb.WriteString(m.renderEntry(e, contentWidth))
 	}
 	if m.streaming.Len() > 0 {
 		if len(m.entries) > 0 {
 			sb.WriteByte('\n')
 		}
-		sb.WriteString(styleExecutor.Width(w).Render(m.streaming.String()))
+		// Apply markdown formatting to streaming content in real-time
+		streamContent := m.streaming.String()
+		if m.cfg != nil && m.cfg.Loop.Detail != config.DetailCompact {
+			streamContent = formatMarkdown(streamContent, contentWidth)
+		}
+		sb.WriteString(streamContent)
 	}
-	m.viewport.SetContent(sb.String())
+	// Wrap content in viewport style with margins
+	content := styleViewportContent.Width(w).Render(sb.String())
+	m.viewport.SetContent(content)
 	// Only auto-scroll if user is already at the bottom (following the stream).
 	// This allows users to scroll up and read earlier content while streaming.
 	if m.viewport.AtBottom() {
@@ -750,32 +987,43 @@ func (m model) rebuildViewport() model {
 	return m
 }
 
-func renderEntry(e chatEntry, width int) string {
+func (m model) renderEntry(e chatEntry, width int) string {
 	switch e.kind {
 	case "user":
 		return stylePromptPrefix.Render("> ") + styleUser.Width(width-2).Render(e.content)
 	case "marshal":
+		// Collapse marshal summaries (🤔) when final output arrives
+		if e.collapsed && strings.HasPrefix(e.content, "🤔") {
+			return styleThinkingCollapsed.Width(width).Render("💭 " + strings.TrimPrefix(e.content, "🤔 "))
+		}
 		return styleMarshal.Width(width).Render(e.content)
 	case "executor":
+		// Use lightweight markdown formatting for executor output
+		// This is much faster than glamour for real-time streaming
+		if m.cfg != nil && m.cfg.Loop.Detail != config.DetailCompact {
+			return formatMarkdown(e.content, width)
+		}
 		return styleExecutor.Width(width).Render(e.content)
 	case "pass":
 		return stylePass.Width(width).Render(e.content)
 	case "fail":
 		return styleFail.Width(width).Render(e.content)
 	case "thinking":
-		if e.collapsed {
+		// In compact mode, always collapse thinking
+		compactMode := m.cfg == nil || m.cfg.Loop.Detail == config.DetailCompact
+		if e.collapsed || compactMode {
 			// Show collapsed summary with count of chars
 			preview := "💭 "
-			if len(e.content) > 80 {
-				preview += e.content[:80] + "..."
+			contentPreview := strings.TrimSpace(e.content)
+			if len(contentPreview) > 80 {
+				preview += contentPreview[:80] + "..."
 			} else {
-				preview += strings.TrimSpace(e.content)
+				preview += contentPreview
 			}
-			return styleFaint.Width(width).Render(preview)
+			return styleThinkingCollapsed.Width(width).Render(preview)
 		}
-		// Expanded - show full content with a faint header
-		header := styleFaint.Render("💭 Thinking...")
-		return header + "\n" + styleFaint.Width(width).Render(e.content)
+		// Expanded - show full content with distinct styling
+		return styleThinking.Width(width).Render("💭 " + e.content)
 	default:
 		return styleSystem.Width(width).Render(e.content)
 	}
@@ -787,6 +1035,123 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// formatMarkdown applies lightweight markdown formatting using lipgloss.
+// Much faster than glamour for real-time streaming.
+func formatMarkdown(content string, width int) string {
+	lines := strings.Split(content, "\n")
+	var result strings.Builder
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		switch {
+		// Headers - soft blue, not bold
+		case strings.HasPrefix(trimmed, "### "):
+			result.WriteString(styleMarkdownHeader.Render(trimmed[4:]))
+			result.WriteString("\n")
+		case strings.HasPrefix(trimmed, "## "):
+			result.WriteString(styleMarkdownHeader.Render(trimmed[3:]))
+			result.WriteString("\n")
+		case strings.HasPrefix(trimmed, "# "):
+			result.WriteString(styleMarkdownHeader.Render(trimmed[2:]))
+			result.WriteString("\n")
+
+		// Intro/transition lines - bold title style
+		// Detect phrases like "Based on my examination...", "Here is my analysis..."
+		case isIntroLine(trimmed):
+			result.WriteString(styleMarkdownIntro.Render(trimmed))
+			result.WriteString("\n")
+
+		// Code blocks (start/end) - subtle background
+		case strings.HasPrefix(trimmed, "```"):
+			result.WriteString(styleMarkdownCodeBlock.Render(trimmed) + "\n")
+
+		// Inline code
+		case strings.Contains(trimmed, "`") && !strings.HasPrefix(trimmed, "```"):
+			// Simple inline code handling
+			parts := strings.Split(trimmed, "`")
+			for i, part := range parts {
+				if i%2 == 1 {
+					// Inside backticks
+					result.WriteString(styleMarkdownCode.Render(part))
+				} else {
+					// Regular text with bold handling
+					result.WriteString(formatBoldText(part, styleMarkdownBold))
+				}
+			}
+			result.WriteString("\n")
+
+		// Blockquote
+		case strings.HasPrefix(trimmed, "> "):
+			result.WriteString(styleMarkdownQuote.Width(width - 2).Render(trimmed[2:]))
+			result.WriteString("\n")
+
+		// List items
+		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* "):
+			result.WriteString(styleMarkdownList.Render("• " + trimmed[2:]))
+			result.WriteString("\n")
+		case regexp.MustCompile(`^\d+\. `).MatchString(trimmed):
+			result.WriteString(styleMarkdownList.Render(trimmed))
+			result.WriteString("\n")
+
+		// Horizontal rule
+		case trimmed == "---" || trimmed == "***":
+			result.WriteString(strings.Repeat("─", width))
+			result.WriteString("\n")
+
+		// Regular text with bold handling
+		default:
+			result.WriteString(formatBoldText(trimmed, styleMarkdownBold))
+			result.WriteString("\n")
+		}
+	}
+
+	return result.String()
+}
+
+// formatBoldText handles **bold** text
+func formatBoldText(text string, boldStyle lipgloss.Style) string {
+	if !strings.Contains(text, "**") {
+		return text
+	}
+
+	parts := strings.Split(text, "**")
+	var result strings.Builder
+	for i, part := range parts {
+		if i%2 == 1 {
+			// Inside **
+			result.WriteString(boldStyle.Render(part))
+		} else {
+			result.WriteString(part)
+		}
+	}
+	return result.String()
+}
+
+// isIntroLine detects transition/intro phrases that should be styled as titles
+func isIntroLine(text string) bool {
+	introPatterns := []string{
+		"based on my",
+		"here is my",
+		"here are my",
+		"i've identified",
+		"i have identified",
+		"after examining",
+		"following my analysis",
+		"my analysis shows",
+		"audit findings",
+		"security audit",
+	}
+	lower := strings.ToLower(text)
+	for _, pattern := range introPatterns {
+		if strings.Contains(lower, pattern) {
+			// Make sure it's a complete sentence/phrase, not just a word
+			return len(text) > 20 && len(text) < 150
+		}
+	}
+	return false
 }
 
 func (m model) renderInputBox() string {
@@ -803,12 +1168,31 @@ func (m model) renderInputBox() string {
 		return stylePermissionPrompt.Width(m.width - 4).Render(prompt)
 	}
 
+	var parts []string
+
+	// Show completions if active
+	if m.hasCompletions() {
+		preview := m.getCompletionPreview()
+		help := m.formatCompletionHelp()
+		if preview != "" {
+			completionBox := styleCompletionBox.Width(m.width - 4).Render(preview)
+			parts = append(parts, completionBox)
+		}
+		if help != "" {
+			helpText := styleCompletionHelp.Width(m.width - 4).Render(help)
+			parts = append(parts, helpText)
+		}
+	}
+
 	hint := "Enter: send"
 	if m.multilineMode {
 		hint = "Ctrl+S: send  Enter: newline"
 	}
 	m.input.Placeholder = "Ask Marshal anything… (" + hint + ")"
-	return styleInputBorder.Width(m.width - 2).Render(m.input.View())
+	inputBox := styleInputBorder.Width(m.width - 2).Render(m.input.View())
+	parts = append(parts, inputBox)
+
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func (m model) renderStatus() string {
@@ -818,12 +1202,43 @@ func (m model) renderStatus() string {
 	} else {
 		status = styleStatusBar.Render("○ ready")
 	}
+
+	// Add session indicator
+	sessionIndicator := m.renderSessionIndicator()
+
 	hint := styleStatusBar.Render("ctrl+c quit  ctrl+y copy  shift+enter newline")
-	gap := m.width - lipgloss.Width(status) - lipgloss.Width(hint)
+	gap := m.width - lipgloss.Width(status) - lipgloss.Width(sessionIndicator) - lipgloss.Width(hint)
 	if gap < 1 {
 		gap = 1
 	}
-	return status + strings.Repeat(" ", gap) + hint
+	return status + sessionIndicator + strings.Repeat(" ", gap) + hint
+}
+
+// renderSessionIndicator returns a status indicator showing if Marshal is initialized
+func (m model) renderSessionIndicator() string {
+	// Check for .marshal directory existence
+	if m.repoRoot == "" {
+		return ""
+	}
+
+	marshalDir := filepath.Join(m.repoRoot, ".marshal")
+	if _, err := os.Stat(marshalDir); os.IsNotExist(err) {
+		// Not initialized - show suggestion
+		return styleStatusUninitialized.Render(" [run /init]")
+	}
+
+	// Check for session context file
+	contextPath := filepath.Join(marshalDir, "session_context.md")
+	if _, err := os.Stat(contextPath); err == nil {
+		// Fully initialized with session context
+		if m.sessionID != "" {
+			return styleStatusInitialized.Render(" [session: " + m.sessionID[:8] + "]")
+		}
+		return styleStatusInitialized.Render(" [initialized]")
+	}
+
+	// Partially initialized (has .marshal but no context)
+	return styleStatusPartial.Render(" [partial]")
 }
 
 // --- commands ----------------------------------------------------------------
@@ -918,6 +1333,8 @@ func (m model) handleBuiltin(a commands.Action) (tea.Model, tea.Cmd) {
 
 	// ── Async commands (shell / git / network) ──────────────────────────────
 
+	case commands.CmdInit:
+		m, cmd = m.handleInit(a)
 	case commands.CmdRun:
 		m, cmd = m.handleRun(a)
 	case commands.CmdTest:
@@ -1027,6 +1444,39 @@ func (m model) handleBuiltin(a commands.Action) (tea.Model, tea.Cmd) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Async command handlers (return model + tea.Cmd)
 // ─────────────────────────────────────────────────────────────────────────────
+
+func (m model) handleInit(a commands.Action) (model, tea.Cmd) {
+	// Check for --force flag
+	opts := initmgr.Options{
+		SkipGit:     false,
+		SkipRepoMap: false,
+		SkipConfig:  false,
+		Force:       false,
+	}
+	for _, arg := range a.Args {
+		switch arg {
+		case "--force", "-f":
+			opts.Force = true
+		case "--skip-git":
+			opts.SkipGit = true
+		case "--skip-repomap":
+			opts.SkipRepoMap = true
+		case "--skip-config":
+			opts.SkipConfig = true
+		}
+	}
+
+	m = m.appendEntry("system", "Initializing Marshal session…")
+	repoRoot := m.repoRoot
+
+	return m, func() tea.Msg {
+		result, err := initmgr.Init(repoRoot, opts)
+		if err != nil {
+			return ShellResultMsg{Label: "/init", Output: "", Err: err}
+		}
+		return InitResultMsg{Result: result}
+	}
+}
 
 func (m model) handleRun(a commands.Action) (model, tea.Cmd) {
 	if a.Prompt == "" {
@@ -1351,7 +1801,11 @@ func (m model) handleMapRefresh() (model, tea.Cmd) {
 		if err != nil {
 			return MapRefreshedMsg{Err: err}
 		}
-		return MapRefreshedMsg{Map: rm.String()}
+		// Persist repo map to disk
+		repoMapContent := rm.String()
+		repoMapPath := filepath.Join(root, ".marshal", "repomap.txt")
+		_ = os.WriteFile(repoMapPath, []byte(repoMapContent), 0o644)
+		return MapRefreshedMsg{Map: repoMapContent, Path: repoMapPath}
 	}
 }
 
@@ -1933,6 +2387,17 @@ func (m model) formatHelp() string {
 	}
 	return `Commands:
 
+Session Management:
+  /init [--force]      initialize a new Marshal session (creates .marshal/, session DB, repo map)
+  /session             show session information
+  /save [name]         save context file list (~/.config/marshal/contexts/<name>.json)
+  /load [name]         load a saved context file list
+  /reset               clear all context files
+  /clear               clear the chat display
+  /discard             discard pending output buffer
+  /task <desc>         submit a task directly (skips marshal gate)
+  /quit                exit the application
+
 Git Workflow:
   /ship [msg]          squash-merge staging branch to target branch
   /undo                revert the most recent commit on the staging branch
@@ -1948,7 +2413,6 @@ Info/Display:
   /map-refresh         rebuild the repository map
   /settings            show current settings
   /report              generate a session report
-  /session             show session information
   /model [name]        show active models (runtime switching: edit marshal.toml)
 
 File Management:
@@ -1973,15 +2437,6 @@ External Integration:
   /watch [dir]         watch files for // ai: markers
   /unwatch             stop watching files
 
-Session/State:
-  /save [name]         save context file list (~/.config/marshal/contexts/<name>.json)
-  /load [name]         load a saved context file list
-  /reset               clear all context files
-  /clear               clear the chat display
-  /discard             discard pending output buffer
-  /task <desc>         submit a task directly (skips marshal gate)
-  /quit                exit the application
-
 Editor/Context:
   /editor              open $EDITOR for a note (content loaded into input on close)
   /edit <file>         open a file in $EDITOR
@@ -1996,6 +2451,7 @@ Skills from ~/.config/marshal/skills/*.toml are also available.
 
 Key shortcuts:
   Ctrl+C      quit
+  Ctrl+D      cycle detail level (compact/normal/verbose)
   Ctrl+Y      copy conversation to clipboard
   Shift+Enter insert newline (in multiline mode)
 

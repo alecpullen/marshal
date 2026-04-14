@@ -113,6 +113,15 @@ const (
 	PermissionSmart  PermissionMode = "smart"  // Ask only for destructive/major changes
 )
 
+// DetailLevel controls the verbosity of TUI output.
+type DetailLevel string
+
+const (
+	DetailCompact DetailLevel = "compact" // Minimal output, collapsed by default
+	DetailNormal  DetailLevel = "normal"  // Standard output with markdown rendering
+	DetailVerbose DetailLevel = "verbose" // Full detail with expandable sections
+)
+
 // LoopConfig controls task-loop behaviour.
 type LoopConfig struct {
 	MaxRounds      int            `toml:"max_rounds"`
@@ -124,6 +133,7 @@ type LoopConfig struct {
 	LocalProfile   bool           `toml:"local_profile"`    // one-knob local optimization
 	Permission     PermissionMode `toml:"permission"`       // when to ask for edit confirmation
 	ShowDiff       bool           `toml:"show_diff"`        // show diff after edits (default: true)
+	Detail         DetailLevel    `toml:"detail"`           // TUI verbosity level (default: normal)
 }
 
 // LinterConfig maps file-extension groups to linter commands.
@@ -316,6 +326,7 @@ func defaults() Config {
 			LocalProfile:   false,
 			Permission:     PermissionNever,
 			ShowDiff:       true,
+			Detail:         DetailNormal,
 		},
 		Linters: LinterConfig{
 			Go:     "golangci-lint run",

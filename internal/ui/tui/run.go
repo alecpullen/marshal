@@ -41,10 +41,13 @@ func Run(
 		return fmt.Errorf("marshal backend: %w", err)
 	}
 
+	// Load session context for Marshal awareness
+	sessionContext := loadSessionContext(repo)
+
 	// runGate calls the Marshal model and returns (action, text, error).
 	// action is "proceed", "chat", or "clarify".
 	runGate := func(ctx context.Context, prompt string) (string, string, error) {
-		return callMarshalGate(ctx, marshalB, prompt)
+		return callMarshalGate(ctx, marshalB, prompt, sessionContext)
 	}
 
 	// Get read-only files from context or store
@@ -106,9 +109,15 @@ func Run(
 //   - "PROCEED"          → route to the executor loop
 //   - "CHAT: <text>"     → conversational reply, shown directly
 //   - anything else      → clarifying question, shown directly
-func callMarshalGate(ctx context.Context, b backend.Backend, prompt string) (action, text string, err error) {
+func callMarshalGate(ctx context.Context, b backend.Backend, prompt string, sessionContext string) (action, text string, err error) {
+	// Assemble system prompt with session context
+	sysPrompt := prompts.Marshal
+	if sessionContext != "" {
+		sysPrompt = prompts.Assemble(sysPrompt, sessionContext)
+	}
+
 	msgs := []backend.Message{
-		{Role: backend.MessageRoleSystem, Content: prompts.Marshal},
+		{Role: backend.MessageRoleSystem, Content: sysPrompt},
 		{Role: backend.MessageRoleUser, Content: prompt},
 	}
 	resp, err := b.Complete(ctx, backend.Request{Messages: msgs})
@@ -126,6 +135,20 @@ func callMarshalGate(ctx context.Context, b backend.Backend, prompt string) (act
 	}
 	// Clarifying question or anything else unexpected — show it to the user.
 	return "clarify", raw, nil
+}
+
+// loadSessionContext reads the session context file if it exists.
+// Returns empty string if no context is available.
+func loadSessionContext(repo *git.Repo) string {
+	if repo == nil {
+		return ""
+	}
+	contextPath := filepath.Join(repo.Root(), ".marshal", "session_context.md")
+	data, err := os.ReadFile(contextPath)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // OpenStore opens (or creates) the marshal SQLite database in the repo root.

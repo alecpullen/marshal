@@ -17,6 +17,7 @@ import (
 	"github.com/alecpullen/marshal/internal/backend"
 	"github.com/alecpullen/marshal/internal/config"
 	"github.com/alecpullen/marshal/internal/git"
+	initmgr "github.com/alecpullen/marshal/internal/init"
 	"github.com/alecpullen/marshal/internal/logging"
 	"github.com/alecpullen/marshal/internal/loop"
 	"github.com/alecpullen/marshal/internal/models"
@@ -113,6 +114,7 @@ discrete, branch-isolated, critic-reviewed task.`,
 	root.AddCommand(
 		versionCmd(),
 		configCmd(gf),
+		initCmd(gf),
 		chatCmd(gf),
 		runCmd(gf),
 		pipelineCmd(gf),
@@ -173,6 +175,56 @@ func configShowCmd(gf *globalFlags) *cobra.Command {
 			return enc.Encode(redacted)
 		},
 	}
+}
+
+// ── init ──────────────────────────────────────────────────────────────────────
+
+func initCmd(gf *globalFlags) *cobra.Command {
+	var skipGit bool
+	var skipRepoMap bool
+	var skipConfig bool
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize a Marshal session in the current repository",
+		Long: `Initialize Marshal in the current directory by creating:
+  - .marshal/ directory with SQLite session database
+  - Repository map (PageRank-ranked symbol index)
+  - Git session staging branch (if git is available)
+  - Sample marshal.toml configuration file (if not exists)
+
+Use --force to reinitialize an existing Marshal session.
+Use --skip-* flags to skip specific initialization steps.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+
+			opts := initmgr.Options{
+				SkipGit:     skipGit,
+				SkipRepoMap: skipRepoMap,
+				SkipConfig:  skipConfig,
+				Force:       force,
+			}
+
+			result, err := initmgr.Init(cwd, opts)
+			if err != nil {
+				return fmt.Errorf("initialization failed: %w", err)
+			}
+
+			fmt.Println(result.Status())
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&skipGit, "skip-git", false, "Skip git session initialization")
+	cmd.Flags().BoolVar(&skipRepoMap, "skip-repomap", false, "Skip repository map generation")
+	cmd.Flags().BoolVar(&skipConfig, "skip-config", false, "Skip sample config file creation")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force reinitialization")
+
+	return cmd
 }
 
 // ── chat ──────────────────────────────────────────────────────────────────────

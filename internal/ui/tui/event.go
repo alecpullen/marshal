@@ -3,6 +3,8 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+
+	initmgr "github.com/alecpullen/marshal/internal/init"
 )
 
 // The following tea.Msg types are sent from background goroutines to the
@@ -143,8 +145,15 @@ type EditorResultMsg struct {
 
 // MapRefreshedMsg signals that the repo map has been rebuilt.
 type MapRefreshedMsg struct {
-	Map string
-	Err error
+	Map  string
+	Path string // Path to persisted repo map file
+	Err  error
+}
+
+// InitResultMsg carries the result of /init command.
+type InitResultMsg struct {
+	Result *initmgr.Result
+	Err    error
 }
 
 // MarshalGateMsg is sent after the Marshal model has classified a prompt.

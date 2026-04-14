@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/alec/marshal/internal/config"
+	"github.com/alecpullen/marshal/internal/config"
 )
 
 // Issue is a single lint diagnostic.

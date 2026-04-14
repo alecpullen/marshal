@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/git"
-	"github.com/alec/marshal/internal/prompts"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/git"
+	"github.com/alecpullen/marshal/internal/prompts"
 )
 
 // IntegrationVerdict is the result of the integration critic review.

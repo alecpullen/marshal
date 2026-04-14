@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/BurntSushi/toml"
-	"github.com/alec/marshal/internal/config"
-	"github.com/alec/marshal/internal/edit"
+	"github.com/alecpullen/marshal/internal/config"
+	"github.com/alecpullen/marshal/internal/edit"
 )
 
 //go:embed settings.toml

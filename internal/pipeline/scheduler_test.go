@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alec/marshal/internal/pipeline"
+	"github.com/alecpullen/marshal/internal/pipeline"
 )
 
 func TestNewScheduler_SingleTask(t *testing.T) {

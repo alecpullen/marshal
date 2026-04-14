@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/tools"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/tools"
 )
 
 // runToolUseRound executes a single round using tool-use instead of edit formats.

@@ -54,7 +54,7 @@ marshal run --json "fix the bug" | jq -r 'select(.event == "session_end") | .ver
 marshal-job:
   image: golang:1.23
   script:
-    - go install github.com/alec/marshal/cmd/marshal@latest
+    - go install github.com/alecpullen/marshal/cmd/marshal@latest
     - marshal run --json "$CI_COMMIT_MESSAGE" | tee output.ndjson
   artifacts:
     paths:
@@ -74,7 +74,7 @@ jobs:
       - run:
           name: Run Marshal
           command: |
-            go install github.com/alec/marshal/cmd/marshal@latest
+            go install github.com/alecpullen/marshal/cmd/marshal@latest
             marshal run --json "refactor this code"
 ```
 
@@ -86,7 +86,7 @@ pipeline {
     stages {
         stage('Marshal') {
             steps {
-                sh 'go install github.com/alec/marshal/cmd/marshal@latest'
+                sh 'go install github.com/alecpullen/marshal/cmd/marshal@latest'
                 sh 'marshal run --json "update dependencies"'
             }
         }

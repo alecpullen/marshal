@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/alec/marshal/internal/pipeline"
+	"github.com/alecpullen/marshal/internal/pipeline"
 )
 
 // Test complex DAG: A → B → D, A → C → D (diamond pattern)

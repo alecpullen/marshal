@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/planner"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/planner"
 )
 
 // mockBackend for testing planner generation

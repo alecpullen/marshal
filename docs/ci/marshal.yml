@@ -47,10 +47,10 @@ jobs:
       - name: Install Marshal
         run: |
           # Option 1: Install from source
-          go install github.com/alec/marshal/cmd/marshal@latest
+          go install github.com/alecpullen/marshal/cmd/marshal@latest
 
           # Option 2: Use pre-built binary from releases
-          # curl -sSL https://github.com/alec/marshal/releases/latest/download/marshal-linux-amd64 -o /usr/local/bin/marshal
+          # curl -sSL https://github.com/alecpullen/marshal/releases/latest/download/marshal-linux-amd64 -o /usr/local/bin/marshal
           # chmod +x /usr/local/bin/marshal
 
       - name: Configure Marshal
@@ -183,7 +183,7 @@ jobs:
           go-version: '1.23'
 
       - name: Install Marshal
-        run: go install github.com/alec/marshal/cmd/marshal@latest
+        run: go install github.com/alecpullen/marshal/cmd/marshal@latest
 
       - name: Configure Marshal
         env:

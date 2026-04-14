@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/alec/marshal/internal/git"
+	"github.com/alecpullen/marshal/internal/git"
 )
 
 // Marker types for AI comments.

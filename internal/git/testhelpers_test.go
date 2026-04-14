@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alec/marshal/internal/git"
+	"github.com/alecpullen/marshal/internal/git"
 )
 
 // newTestRepo initialises a temporary git repository, makes an initial commit,

@@ -8,8 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/alec/marshal/internal/loop"
-	"github.com/alec/marshal/internal/skills"
+	"github.com/alecpullen/marshal/internal/loop"
+	"github.com/alecpullen/marshal/internal/skills"
 )
 
 func noopGate(_ context.Context, _ string) (string, string, error) {

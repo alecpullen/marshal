@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alec/marshal/internal/edit"
+	"github.com/alecpullen/marshal/internal/edit"
 )
 
 func TestFormatFor_WholeFile(t *testing.T) {

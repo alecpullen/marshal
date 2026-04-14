@@ -12,7 +12,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/alec/marshal/internal/config"
+	"github.com/alecpullen/marshal/internal/config"
 )
 
 // Event represents a single analytics event.

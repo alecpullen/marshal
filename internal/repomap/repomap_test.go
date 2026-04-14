@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alec/marshal/internal/repomap"
+	"github.com/alecpullen/marshal/internal/repomap"
 )
 
 // writeFile creates a file at path with content, creating parent dirs.

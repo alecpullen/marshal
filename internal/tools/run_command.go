@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alec/marshal/internal/sandbox"
+	"github.com/alecpullen/marshal/internal/sandbox"
 )
 
 // RunCommandInput is the JSON input schema for the run_command tool.

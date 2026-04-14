@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/alec/marshal/internal/skills"
+	"github.com/alecpullen/marshal/internal/skills"
 )
 
 func TestRegistry_RegisterAndFind(t *testing.T) {

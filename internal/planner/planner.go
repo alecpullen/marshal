@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/prompts"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/prompts"
 )
 
 // Task represents a single unit of work in the pipeline task graph.

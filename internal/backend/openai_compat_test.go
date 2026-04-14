@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alec/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/backend"
 )
 
 // sseServer builds a test HTTP server that returns the given SSE lines.

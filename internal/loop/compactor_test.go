@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/git"
-	"github.com/alec/marshal/internal/loop"
-	"github.com/alec/marshal/internal/session"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/git"
+	"github.com/alecpullen/marshal/internal/loop"
+	"github.com/alecpullen/marshal/internal/session"
 )
 
 // callbackHandler wraps a function that returns response content per call.

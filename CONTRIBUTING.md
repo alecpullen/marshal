@@ -5,7 +5,7 @@ Thank you for your interest in contributing to Marshal!
 ## Development Setup
 
 ```bash
-git clone https://github.com/alec/marshal.git
+git clone https://github.com/alecpullen/marshal.git
 cd marshal
 go mod tidy
 go build -o bin/marshal ./cmd/marshal

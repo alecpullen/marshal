@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alec/marshal/internal/git"
+	"github.com/alecpullen/marshal/internal/git"
 )
 
 func TestNew_NotARepo(t *testing.T) {

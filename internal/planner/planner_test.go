@@ -3,7 +3,7 @@ package planner_test
 import (
 	"testing"
 
-	"github.com/alec/marshal/internal/planner"
+	"github.com/alecpullen/marshal/internal/planner"
 )
 
 func TestValidate_ValidGraph(t *testing.T) {

@@ -10,14 +10,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/config"
-	"github.com/alec/marshal/internal/git"
-	"github.com/alec/marshal/internal/loop"
-	"github.com/alec/marshal/internal/prompts"
-	"github.com/alec/marshal/internal/session"
-	"github.com/alec/marshal/internal/skills"
-	"github.com/alec/marshal/internal/watch"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/config"
+	"github.com/alecpullen/marshal/internal/git"
+	"github.com/alecpullen/marshal/internal/loop"
+	"github.com/alecpullen/marshal/internal/prompts"
+	"github.com/alecpullen/marshal/internal/session"
+	"github.com/alecpullen/marshal/internal/skills"
+	"github.com/alecpullen/marshal/internal/watch"
 )
 
 // Run starts the interactive TUI. It blocks until the user quits (Ctrl+C /

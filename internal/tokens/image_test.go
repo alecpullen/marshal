@@ -3,7 +3,7 @@ package tokens_test
 import (
 	"testing"
 
-	"github.com/alec/marshal/internal/tokens"
+	"github.com/alecpullen/marshal/internal/tokens"
 )
 
 func TestCountImageTokens_LowDetail(t *testing.T) {

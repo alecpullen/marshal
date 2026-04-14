@@ -3,8 +3,8 @@ package models_test
 import (
 	"testing"
 
-	"github.com/alec/marshal/internal/config"
-	"github.com/alec/marshal/internal/models"
+	"github.com/alecpullen/marshal/internal/config"
+	"github.com/alecpullen/marshal/internal/models"
 )
 
 func TestLoadDefault(t *testing.T) {

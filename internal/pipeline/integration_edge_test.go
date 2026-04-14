@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/pipeline"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/pipeline"
 )
 
 // Test integration critic with FAIL verdict

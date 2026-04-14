@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/config"
-	"github.com/alec/marshal/internal/git"
-	"github.com/alec/marshal/internal/loop"
-	"github.com/alec/marshal/internal/session"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/config"
+	"github.com/alecpullen/marshal/internal/git"
+	"github.com/alecpullen/marshal/internal/loop"
+	"github.com/alecpullen/marshal/internal/session"
 )
 
 // --- Test helpers ------------------------------------------------------------

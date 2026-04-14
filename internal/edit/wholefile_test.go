@@ -3,7 +3,7 @@ package edit_test
 import (
 	"testing"
 
-	"github.com/alec/marshal/internal/edit"
+	"github.com/alecpullen/marshal/internal/edit"
 )
 
 func TestParseWhole_SingleFile(t *testing.T) {

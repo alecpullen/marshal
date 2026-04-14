@@ -3,7 +3,7 @@ package reasoning_test
 import (
 	"testing"
 
-	"github.com/alec/marshal/internal/reasoning"
+	"github.com/alecpullen/marshal/internal/reasoning"
 )
 
 func TestStrip_NoThinkBlocks(t *testing.T) {

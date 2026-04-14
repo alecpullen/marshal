@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/alec/marshal/internal/reasoning"
+	"github.com/alecpullen/marshal/internal/reasoning"
 )
 
 // Verdict is the structured response from the critic model.

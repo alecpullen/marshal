@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alec/marshal/internal/prompts"
+	"github.com/alecpullen/marshal/internal/prompts"
 )
 
 func TestAssemble_BaseOnly(t *testing.T) {

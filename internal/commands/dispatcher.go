@@ -5,7 +5,7 @@ package commands
 import (
 	"strings"
 
-	"github.com/alec/marshal/internal/skills"
+	"github.com/alecpullen/marshal/internal/skills"
 )
 
 // Kind classifies a dispatched action.

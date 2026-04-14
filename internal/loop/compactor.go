@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/prompts"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/prompts"
 )
 
 // roundResult records the outcome of a single executor round for use by the

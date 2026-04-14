@@ -22,21 +22,21 @@ Marshal combines the conversational fluidity of Aider/Claude Code with a discipl
 
 ### Binary Releases
 
-Download pre-built binaries from [GitHub Releases](https://github.com/alec/marshal/releases):
+Download pre-built binaries from [GitHub Releases](https://github.com/alecpullen/marshal/releases):
 
 ```bash
 # Linux/macOS
-curl -sSL https://github.com/alec/marshal/releases/latest/download/marshal_$(uname -s)_$(uname -m).tar.gz | tar xz
+curl -sSL https://github.com/alecpullen/marshal/releases/latest/download/marshal_$(uname -s)_$(uname -m).tar.gz | tar xz
 sudo mv marshal /usr/local/bin/
 
 # Or use go install
-go install github.com/alec/marshal/cmd/marshal@latest
+go install github.com/alecpullen/marshal/cmd/marshal@latest
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/alec/marshal.git
+git clone https://github.com/alecpullen/marshal.git
 cd marshal
 go build -o bin/marshal ./cmd/marshal
 ```

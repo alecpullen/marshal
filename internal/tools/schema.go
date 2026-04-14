@@ -7,7 +7,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/alec/marshal/internal/sandbox"
+	"github.com/alecpullen/marshal/internal/sandbox"
 )
 
 // ToolHandler is the function signature for all tool handlers.

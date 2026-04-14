@@ -3,8 +3,8 @@ package commands_test
 import (
 	"testing"
 
-	"github.com/alec/marshal/internal/commands"
-	"github.com/alec/marshal/internal/skills"
+	"github.com/alecpullen/marshal/internal/commands"
+	"github.com/alecpullen/marshal/internal/skills"
 )
 
 func makeReg(t *testing.T, ss ...*skills.Skill) *skills.Registry {

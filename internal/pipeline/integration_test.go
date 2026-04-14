@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/pipeline"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/pipeline"
 )
 
 func TestIntegrationCritic_Review_EmptyDiff(t *testing.T) {

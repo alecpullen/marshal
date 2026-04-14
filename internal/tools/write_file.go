@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/alec/marshal/internal/sandbox"
+	"github.com/alecpullen/marshal/internal/sandbox"
 )
 
 // WriteFileInput is the JSON input schema for the write_file tool.

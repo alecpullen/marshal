@@ -3,7 +3,7 @@ package loop_test
 import (
 	"testing"
 
-	"github.com/alec/marshal/internal/loop"
+	"github.com/alecpullen/marshal/internal/loop"
 )
 
 func TestParseVerdict_PlainJSON(t *testing.T) {

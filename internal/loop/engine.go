@@ -13,15 +13,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alec/marshal/internal/backend"
-	"github.com/alec/marshal/internal/config"
-	"github.com/alec/marshal/internal/edit"
-	"github.com/alec/marshal/internal/git"
-	"github.com/alec/marshal/internal/linter"
-	"github.com/alec/marshal/internal/models"
-	"github.com/alec/marshal/internal/prompts"
-	"github.com/alec/marshal/internal/repomap"
-	"github.com/alec/marshal/internal/session"
+	"github.com/alecpullen/marshal/internal/backend"
+	"github.com/alecpullen/marshal/internal/config"
+	"github.com/alecpullen/marshal/internal/edit"
+	"github.com/alecpullen/marshal/internal/git"
+	"github.com/alecpullen/marshal/internal/linter"
+	"github.com/alecpullen/marshal/internal/models"
+	"github.com/alecpullen/marshal/internal/prompts"
+	"github.com/alecpullen/marshal/internal/repomap"
+	"github.com/alecpullen/marshal/internal/session"
 )
 
 
@@ -419,7 +419,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 			return nil
 		}
 
-			// g. Self-critique mode (PR-3 3.2): when executor==critic model and the backend
+		// g. Self-critique mode (PR-3 3.2): when executor==critic model and the backend
 		// supports grammar constraints, emit verdict as part of executor output instead
 		// of a separate round-trip. This halves per-round latency for local models.
 		var verdict *Verdict

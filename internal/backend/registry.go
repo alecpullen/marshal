@@ -3,8 +3,8 @@ package backend
 import (
 	"fmt"
 
-	"github.com/alec/marshal/internal/config"
-	"github.com/alec/marshal/internal/models"
+	"github.com/alecpullen/marshal/internal/config"
+	"github.com/alecpullen/marshal/internal/models"
 )
 
 // NewRegistryFromBackends builds a Registry directly from a role→Backend map.

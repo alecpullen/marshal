@@ -86,14 +86,36 @@ type ResponseFormat struct {
 
 // --- Request / Response / Chunk ----------------------------------------------
 
+// JSONMode controls structured output capability level.
+type JSONMode int
+
+const (
+	JSONNone JSONMode = iota
+	JSONLoose     // OpenAI {type:"json_object"}
+	JSONGrammar   // llama.cpp grammar / Ollama format / vLLM json_schema
+)
+
 // Request is a model-agnostic chat-completion request.
 type Request struct {
 	Messages       []Message
 	MaxTokens      int
 	Temperature    float64
+	TopP           float64
+	MinP           float64 // llama.cpp / koboldcpp specific
+	RepeatPenalty  float64 // llama.cpp / local models
+	Seed           int     // for reproducibility
 	ResponseFormat *ResponseFormat
 	Tools          []Tool
 	ToolChoice     ToolChoice
+	// JSONMode requests grammar-constrained output (local models).
+	// When JSONGrammar, the backend should use Grammar if available.
+	JSONMode JSONMode
+	// Grammar is a GBNF grammar string for llama.cpp servers.
+	// Only used when JSONMode == JSONGrammar.
+	Grammar string
+	// ExtraBody is merged into the request JSON for provider-specific extensions.
+	// e.g., llama.cpp {"cache_prompt": true}, Ollama {"keep_alive": "30m"}
+	ExtraBody map[string]any
 }
 
 // Usage reports token consumption for a request.

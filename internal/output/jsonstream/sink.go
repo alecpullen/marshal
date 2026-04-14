@@ -26,6 +26,11 @@ type NDJSONSink struct {
 	lastVerdict           string
 	lastSummary           string
 	startTime             time.Time
+
+	// Per-round timing (local-model metrics).
+	roundStartTime     time.Time
+	firstTokenReceived bool
+	ttftMs             int64 // time-to-first-token in milliseconds
 }
 
 // NewSink creates an NDJSONSink that writes to w (typically os.Stdout).
@@ -46,16 +51,24 @@ func NewSink(w io.Writer, sessionID, prompt string) *NDJSONSink {
 }
 
 // Token accumulates streaming content for the current round.
+// Records time-to-first-token on the first chunk.
 func (s *NDJSONSink) Token(chunk string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.firstTokenReceived && chunk != "" {
+		s.ttftMs = time.Since(s.roundStartTime).Milliseconds()
+		s.firstTokenReceived = true
+	}
 	s.roundResponse.WriteString(chunk)
 }
 
-// RoundStart emits the round_start event.
+// RoundStart emits the round_start event and resets per-round timing.
 func (s *NDJSONSink) RoundStart(taskID string, round, maxRounds int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.roundStartTime = time.Now()
+	s.firstTokenReceived = false
+	s.ttftMs = 0
 	s.emit(eventRoundStart(taskID, round, maxRounds))
 }
 
@@ -73,7 +86,7 @@ func (s *NDJSONSink) VerdictBadge(taskID string, verdict, summary string) {
 	s.lastSummary = summary
 }
 
-// RoundEnd emits the round_end event with accumulated response and token counts.
+// RoundEnd emits the round_end event with accumulated response, token counts, and timing metrics.
 func (s *NDJSONSink) RoundEnd(taskID string, round, promptTokens, completionTokens int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,12 +94,23 @@ func (s *NDJSONSink) RoundEnd(taskID string, round, promptTokens, completionToke
 	s.totalPromptTokens += promptTokens
 	s.totalCompletionTokens += completionTokens
 
-	s.emit(eventRoundEnd(taskID, round, s.roundResponse.String(), s.lastVerdict, s.lastSummary, promptTokens, completionTokens))
+	durationMs := time.Since(s.roundStartTime).Milliseconds()
+
+	// Calculate throughput (tokens per second) from completion tokens and duration.
+	var tokensPerSec float64
+	if durationMs > 0 && completionTokens > 0 {
+		tokensPerSec = float64(completionTokens) / (float64(durationMs) / 1000.0)
+	}
+
+	s.emit(eventRoundEnd(taskID, round, s.roundResponse.String(), s.lastVerdict, s.lastSummary,
+		promptTokens, completionTokens, s.ttftMs, tokensPerSec))
 
 	// Reset for next round.
 	s.roundResponse.Reset()
 	s.lastVerdict = ""
 	s.lastSummary = ""
+	s.firstTokenReceived = false
+	s.ttftMs = 0
 }
 
 // TaskMerged emits the merged event.
@@ -139,13 +163,16 @@ type roundStartEvent struct {
 
 type roundEndEvent struct {
 	event
-	TaskID           string `json:"task_id"`
-	Round            int    `json:"round"`
-	Response         string `json:"response"`
-	Verdict          string `json:"verdict,omitempty"`
-	Summary          string `json:"summary,omitempty"`
-	PromptTokens     int    `json:"prompt_tokens"`
-	CompletionTokens int    `json:"completion_tokens"`
+	TaskID           string  `json:"task_id"`
+	Round            int     `json:"round"`
+	Response         string  `json:"response"`
+	Verdict          string  `json:"verdict,omitempty"`
+	Summary          string  `json:"summary,omitempty"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	// Timing fields for local-model benchmarking
+	TimeToFirstTokenMs int64   `json:"ttft_ms,omitempty"`      // time-to-first-token
+	TokensPerSec       float64 `json:"tokens_per_sec,omitempty"` // throughput estimate
 }
 
 type verdictEvent struct {
@@ -196,16 +223,18 @@ func eventRoundStart(taskID string, round, maxRounds int) roundStartEvent {
 	}
 }
 
-func eventRoundEnd(taskID string, round int, response, verdict, summary string, pToks, cToks int) roundEndEvent {
+func eventRoundEnd(taskID string, round int, response, verdict, summary string, pToks, cToks int, ttftMs int64, tokensPerSec float64) roundEndEvent {
 	return roundEndEvent{
-		event:            newEvent("round_end"),
-		TaskID:           taskID,
-		Round:            round,
-		Response:         response,
-		Verdict:          verdict,
-		Summary:          summary,
-		PromptTokens:     pToks,
-		CompletionTokens: cToks,
+		event:              newEvent("round_end"),
+		TaskID:             taskID,
+		Round:              round,
+		Response:           response,
+		Verdict:            verdict,
+		Summary:            summary,
+		PromptTokens:       pToks,
+		CompletionTokens:   cToks,
+		TimeToFirstTokenMs: ttftMs,
+		TokensPerSec:       tokensPerSec,
 	}
 }
 

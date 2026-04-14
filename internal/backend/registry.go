@@ -63,13 +63,24 @@ func newOpenAICompatFromModelConfig(mc config.ModelConfig, tc func([]Message) (i
 		baseURL = "https://api.openai.com/v1"
 	}
 
+	subtype := ProviderSubtype(mc.Subtype)
+	if subtype == "" {
+		subtype = SubtypeOpenAI
+	}
+
 	// Assume tools + JSON mode are supported by default; the per-model
 	// settings table (M5) will refine this per model string.
 	return NewOpenAICompat(OpenAICompatConfig{
-		BaseURL:     baseURL,
-		APIKey:      mc.APIKey,
-		ModelName:   mc.Model,
-		SupTools:    true,
-		SupJSONMode: true,
+		BaseURL:       baseURL,
+		APIKey:        mc.APIKey,
+		ModelName:     mc.Model,
+		SupTools:      true,
+		SupJSONMode:   true,
+		Subtype:       subtype,
+		Temperature:   mc.Temperature,
+		TopP:          mc.TopP,
+		MinP:          mc.MinP,
+		RepeatPenalty: mc.RepeatPenalty,
+		Seed:          mc.Seed,
 	}, tc), nil
 }

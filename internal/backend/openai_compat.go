@@ -27,6 +27,17 @@ const (
 	streamChannelBuf   = 16
 )
 
+// ProviderSubtype distinguishes local-server dialects.
+type ProviderSubtype string
+
+const (
+	SubtypeOpenAI   ProviderSubtype = "openai"
+	SubtypeOllama   ProviderSubtype = "ollama"
+	SubtypeLlamaCPP ProviderSubtype = "llama_cpp"
+	SubtypeVLLM     ProviderSubtype = "vllm"
+	SubtypeLMStudio ProviderSubtype = "lmstudio"
+)
+
 // OpenAICompatConfig holds provider-level settings for an OpenAI-compatible
 // endpoint (Fireworks, Ollama, OpenRouter, Together, Groq, DeepSeek, …).
 type OpenAICompatConfig struct {
@@ -36,6 +47,14 @@ type OpenAICompatConfig struct {
 	SupTools     bool
 	SupJSONMode  bool
 	HTTPClient   *http.Client // nil → http.DefaultClient
+	// Subtype hints at local-server dialect for request shaping.
+	Subtype ProviderSubtype
+	// Sampler parameters for local models.
+	Temperature   float64
+	TopP          float64
+	MinP          float64
+	RepeatPenalty float64
+	Seed          int
 }
 
 // openAICompatBackend implements Backend for any OpenAI-compatible /v1 endpoint.
@@ -333,11 +352,18 @@ type oaiRequestBody struct {
 	Messages       []oaiMessage    `json:"messages"`
 	MaxTokens      int             `json:"max_tokens,omitempty"`
 	Temperature    float64         `json:"temperature,omitempty"`
+	TopP           float64         `json:"top_p,omitempty"`
+	MinP           float64         `json:"min_p,omitempty"`           // llama.cpp
+	RepeatPenalty  float64         `json:"repeat_penalty,omitempty"`  // llama.cpp
+	Seed           int             `json:"seed,omitempty"`
 	Stream         bool            `json:"stream,omitempty"`
 	StreamOptions  *oaiStreamOpts  `json:"stream_options,omitempty"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 	Tools          []Tool          `json:"tools,omitempty"`
 	ToolChoice     ToolChoice      `json:"tool_choice,omitempty"`
+	// llama.cpp specific fields (not part of OpenAI spec)
+	Grammar      string                 `json:"grammar,omitempty"`
+	CachePrompt  bool                   `json:"cache_prompt,omitempty"`
 }
 
 type oaiStreamOpts struct {
@@ -351,6 +377,64 @@ type oaiMessage struct {
 	Name       string      `json:"name,omitempty"`
 	ToolCallID string      `json:"tool_call_id,omitempty"`
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
+}
+
+// adaptRequestBody applies provider-subtype specific transformations.
+// It mutates the body in place and returns it for chaining.
+func adaptRequestBody(body *oaiRequestBody, subtype ProviderSubtype, cfg OpenAICompatConfig, req Request) {
+	switch subtype {
+	case SubtypeLlamaCPP:
+		// llama.cpp server extensions
+		if cfg.MinP != 0 {
+			body.MinP = cfg.MinP
+		}
+		if cfg.RepeatPenalty != 0 {
+			body.RepeatPenalty = cfg.RepeatPenalty
+		}
+		if cfg.Seed != 0 {
+			body.Seed = cfg.Seed
+		}
+		if req.Grammar != "" {
+			body.Grammar = req.Grammar
+		}
+		// Cache hint from ExtraBody
+		if req.ExtraBody != nil {
+			if v, ok := req.ExtraBody["cache_prompt"]; ok {
+				body.CachePrompt, _ = v.(bool)
+			}
+		}
+
+	case SubtypeOllama:
+		// Ollama uses its own request format via /api/generate or /v1/chat/completions
+		// For /v1/chat/completions it accepts standard OpenAI shape plus options
+		// We pass sampler params as they are accepted
+		if cfg.TopP != 0 {
+			body.TopP = cfg.TopP
+		}
+
+	case SubtypeVLLM:
+		// vLLM supports standard OpenAI shape
+		// guided_json via response_format for grammar-like constraints
+		if req.JSONMode == JSONGrammar && req.Grammar != "" {
+			// vLLM uses json_schema, not GBNF grammar
+			// For now we fall back to json_object mode
+			if body.ResponseFormat == nil {
+				body.ResponseFormat = &ResponseFormat{Type: "json_object"}
+			}
+		}
+
+	case SubtypeLMStudio:
+		// LM Studio is standard OpenAI compatible
+		// No special adaptations needed
+	}
+
+	// Apply config-level sampler defaults if request didn't specify
+	if body.Temperature == 0 && cfg.Temperature != 0 {
+		body.Temperature = cfg.Temperature
+	}
+	if body.TopP == 0 && cfg.TopP != 0 {
+		body.TopP = cfg.TopP
+	}
 }
 
 func (b *openAICompatBackend) buildRequestBody(req Request, stream bool) ([]byte, error) {
@@ -385,6 +469,9 @@ func (b *openAICompatBackend) buildRequestBody(req Request, stream bool) ([]byte
 		body.Tools = req.Tools
 		body.ToolChoice = req.ToolChoice
 	}
+
+	// Apply subtype-specific adaptations
+	adaptRequestBody(&body, b.cfg.Subtype, b.cfg, req)
 
 	return json.Marshal(body)
 }

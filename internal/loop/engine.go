@@ -18,6 +18,7 @@ import (
 	"github.com/alec/marshal/internal/edit"
 	"github.com/alec/marshal/internal/git"
 	"github.com/alec/marshal/internal/linter"
+	"github.com/alec/marshal/internal/models"
 	"github.com/alec/marshal/internal/prompts"
 	"github.com/alec/marshal/internal/repomap"
 	"github.com/alec/marshal/internal/session"
@@ -73,10 +74,6 @@ const criticOutputInstructions = `Respond with ONLY this JSON object (no markdow
 Use "PASS" if the task is correctly and completely implemented. Use "FAIL" otherwise.
 "issue" and "fix" must be non-empty on FAIL.`
 
-// fileInjectionBudget is the maximum total characters of file content
-// injected into the executor prompt.
-const fileInjectionBudget = 100_000
-
 // ErrTaskFailed is returned by Engine.Run when all rounds are exhausted.
 var ErrTaskFailed = errors.New("task failed after all rounds")
 
@@ -92,6 +89,8 @@ type Config struct {
 	LinterCfg     config.LinterConfig // linter commands; zero value disables linting
 	ExecutorExtra string              // appended to executor system prompt (from active skill)
 	CriticExtra   string              // appended to critic system prompt (from active skill)
+	LinterIsCritic bool               // auto-PASS when linter is clean
+	CriticMode     config.CriticMode   // "separate" or "self"
 }
 
 // txer abstracts the task-branch lifecycle so the engine can run with or
@@ -125,6 +124,26 @@ type Engine struct {
 	lint            *linter.Linter
 	execSysPrompt   string // assembled executor system prompt (base + skill extra)
 	criticSysPrompt string // assembled critic system prompt (base + skill extra)
+	executorModel   string // model name for context window lookup
+	criticSubtype   backend.ProviderSubtype // for grammar constraint selection
+}
+
+// fileInjectionBudget returns the character budget for file content injection,
+// derived from the executor model's context window. We reserve space for:
+//   - system prompt (~2K tokens)
+//   - output (~max_tokens)
+//   - repo map (~2K tokens)
+//   - task + instructions (~1K tokens)
+//   - round-2+ issue/fix (~1K tokens)
+// Budget is in characters, assuming ~4 chars/token.
+func (e *Engine) fileInjectionBudget() int {
+	ctxWindow := models.ContextWindowFor(e.executorModel)
+	reserveTokens := 2048 + 4096 + 2048 + 1024 + 1024 // ~10K safety margin
+	budgetTokens := ctxWindow - reserveTokens
+	if budgetTokens < 2048 {
+		budgetTokens = 2048 // floor at 2K tokens (8K chars)
+	}
+	return budgetTokens * 4 // chars per token heuristic
 }
 
 // New creates an Engine. All parameters are required.
@@ -168,6 +187,27 @@ func New(
 		}
 	}
 	return e
+}
+
+// SetExecutorModel sets the executor model name for context window lookups.
+// Call this before Run if the model name is known (e.g., from config).
+func (e *Engine) SetExecutorModel(model string) {
+	e.executorModel = model
+}
+
+// SetCriticSubtype sets the critic provider subtype for grammar constraint selection.
+// Call this before Run if using a local model backend.
+func (e *Engine) SetCriticSubtype(subtype backend.ProviderSubtype) {
+	e.criticSubtype = subtype
+}
+
+// executorCacheHints returns ExtraBody fields for KV-cache warming based on
+// the executor backend subtype. These are passed to local servers to enable
+// prefix caching across rounds.
+func (e *Engine) executorCacheHints() map[string]any {
+	// Currently no executor subtype stored; default empty.
+	// PR-3 will wire executorSubtype from config.
+	return nil
 }
 
 // Run executes one task for prompt.
@@ -225,13 +265,14 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 	// 3. Round loop.
 	var issue, fix string
 	var history []roundResult // failure history fed to the compactor
+	var tc taskContext        // immutable context, built on round 1
 
 	for round := 1; round <= e.cfg.MaxRounds; round++ {
 		e.sink.RoundStart(taskID, round, e.cfg.MaxRounds)
 		roundStart := time.Now()
 
 		// a. Build executor messages.
-		execMsgs := e.buildExecutorMessages(prompt, issue, fix, round)
+		execMsgs := e.buildExecutorMessages(prompt, issue, fix, round, &tc)
 
 		// b. Execute via tool-use (if supported) or stream + edit formats.
 		var execContent string
@@ -283,8 +324,10 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		}
 
 		// g. Call critic (non-streaming for reliable JSON extraction).
+		// Use grammar-constrained output for local models (llama.cpp) to eliminate
+		// "unparseable verdict" failures.
 		criticMsgs := e.buildCriticMessages(prompt, execContent, diff)
-		criticContent, criticPToks, criticCToks, criticErr := e.callBackend(ctx, criticB, criticMsgs)
+		criticContent, criticPToks, criticCToks, criticErr := e.callCritic(ctx, criticB, criticMsgs, e.criticSubtype)
 		if criticErr != nil {
 			_ = tx.Abandon()
 			return fmt.Errorf("critic: %w", criticErr)
@@ -399,53 +442,92 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 
 // --- Prompt builders ---------------------------------------------------------
 
-func (e *Engine) buildExecutorMessages(prompt, issue, fix string, round int) []backend.Message {
-	var sb strings.Builder
+// taskContext holds the immutable task description and output instructions.
+// It is constructed once at round 1 and reused on subsequent rounds to
+// preserve the KV cache prefix.
+type taskContext struct {
+	Prompt             string
+	OutputInstructions string
+	RepoMap            string // skeleton view, computed once
+	FileContext        string // skeleton or full body, computed once
+}
 
-	// Repo map is included on every round so the executor has file context
-	// when retrying.  It is placed before the task so the task text is close
-	// to the end of the prompt (better attention on most models).
-	if e.repoMap != "" {
-		sb.WriteString("Repository map (ranked by relevance):\n```\n")
-		sb.WriteString(e.repoMap)
-		sb.WriteString("```\n\n")
-	}
-
-	// Inject top-ranked file contents so the executor can read before writing.
-	if fc := e.buildFileContext(); fc != "" {
-		sb.WriteString(fc)
-	}
-
+// buildExecutorMessages assembles messages with a stable prefix contract.
+//
+// Round 1: [system] + [user: repo_map + file_context + task + instructions]
+// Round 2+: [system] + [user: repo_map + file_context + task + instructions]
+//            + [user: previous attempt was rejected + issue + fix]
+//
+// The first user message (immutable context) is identical on every round,
+// so local-server KV caches hit for the expensive prefix. Only the final
+// user message (the retry prompt) changes.
+func (e *Engine) buildExecutorMessages(prompt, issue, fix string, round int, tc *taskContext) []backend.Message {
 	outputInstructions := executorOutputInstructions(e.cfg.EditFormat)
 
+	// Round 1: build and cache the immutable context block.
 	if round == 1 {
-		sb.WriteString("Task: ")
-		sb.WriteString(prompt)
-		sb.WriteString("\n\n")
-		sb.WriteString(outputInstructions)
-	} else {
-		sb.WriteString("Task: ")
-		sb.WriteString(prompt)
-		sb.WriteString("\n\n")
-		sb.WriteString("Your previous attempt was rejected by the code reviewer.\n\n")
-		if issue != "" {
-			sb.WriteString("Issue: ")
-			sb.WriteString(issue)
-			sb.WriteString("\n")
-		}
-		if fix != "" {
-			sb.WriteString("Suggested fix: ")
-			sb.WriteString(fix)
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\nPlease try again.\n\n")
-		sb.WriteString(outputInstructions)
+		tc.Prompt = prompt
+		tc.OutputInstructions = outputInstructions
+		tc.RepoMap = e.buildRepoMapContext()
+		tc.FileContext = e.buildFileContext(prompt) // skeleton-first, prompt-relative expansion
 	}
 
-	return []backend.Message{
-		{Role: backend.MessageRoleSystem, Content: e.execSysPrompt},
-		{Role: backend.MessageRoleUser, Content: sb.String()},
+	// Assemble the immutable context message (same on every round).
+	var ctxBuilder strings.Builder
+	if tc.RepoMap != "" {
+		ctxBuilder.WriteString(tc.RepoMap)
+		ctxBuilder.WriteString("\n\n")
 	}
+	if tc.FileContext != "" {
+		ctxBuilder.WriteString(tc.FileContext)
+		ctxBuilder.WriteString("\n\n")
+	}
+	ctxBuilder.WriteString("Task: ")
+	ctxBuilder.WriteString(tc.Prompt)
+	ctxBuilder.WriteString("\n\n")
+	ctxBuilder.WriteString(tc.OutputInstructions)
+
+	messages := []backend.Message{
+		{Role: backend.MessageRoleSystem, Content: e.execSysPrompt},
+		{Role: backend.MessageRoleUser, Content: ctxBuilder.String()},
+	}
+
+	// Round 2+: append the mutable retry prompt as a separate user message.
+	// This keeps the prefix stable while isolating the changing retry signal.
+	if round > 1 {
+		var retryBuilder strings.Builder
+		retryBuilder.WriteString("Your previous attempt was rejected by the code reviewer.\n\n")
+		if issue != "" {
+			retryBuilder.WriteString("Issue: ")
+			retryBuilder.WriteString(issue)
+			retryBuilder.WriteString("\n")
+		}
+		if fix != "" {
+			retryBuilder.WriteString("Suggested fix: ")
+			retryBuilder.WriteString(fix)
+			retryBuilder.WriteString("\n")
+		}
+		retryBuilder.WriteString("\nPlease try again, taking the issue and fix into account.")
+		messages = append(messages, backend.Message{
+			Role:    backend.MessageRoleUser,
+			Content: retryBuilder.String(),
+		})
+	}
+
+	return messages
+}
+
+// buildRepoMapContext returns the repo map formatted for prompt injection.
+// Returns empty string if no repo map is available.
+func (e *Engine) buildRepoMapContext() string {
+	if e.repoMap == "" {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("Repository map (ranked by relevance):\n```\n")
+	sb.WriteString(e.repoMap)
+	sb.WriteString("```")
+	return sb.String()
 }
 
 // buildToolUseMessages creates compact prompts for tool-use models with limited context (e.g., 16K).
@@ -482,24 +564,66 @@ func (e *Engine) buildToolUseMessages(prompt, issue, fix string, round int) []ba
 	}
 }
 
-// buildFileContext reads the top-ranked files from the repo map up to the
-// fileInjectionBudget character limit and returns them formatted for injection
-// into the executor prompt.  Returns an empty string when there is no repo or
-// no files to inject.
-func (e *Engine) buildFileContext() string {
+// fileMatchesPrompt returns true if the file path or any of its symbols
+// appear in the task prompt (case-insensitive).
+func fileMatchesPrompt(path string, symbols []string, prompt string) bool {
+	lowerPrompt := strings.ToLower(prompt)
+	if strings.Contains(lowerPrompt, strings.ToLower(path)) {
+		return true
+	}
+	for _, sym := range symbols {
+		if strings.Contains(lowerPrompt, strings.ToLower(sym)) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildSkeleton returns a skeleton view of a file: path + symbol list.
+// Does not read file contents; uses the repo map's extracted symbols.
+func (e *Engine) buildSkeleton(sec repomap.Section) string {
+	var sb strings.Builder
+	sb.WriteString(sec.Path)
+	sb.WriteString(":\n")
+	for _, sym := range sec.Symbols {
+		sb.WriteString("  - ")
+		sb.WriteString(sym)
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
+// buildFileContext returns file context for the executor prompt using a
+// skeleton-first approach (PR-1 variant a). Files are shown as skeleton views
+// (path + symbol list) unless the task prompt explicitly references the file
+// path or a symbol defined in that file, in which case the full body is shown.
+//
+// This keeps the prompt compact for small-context local models while still
+// providing full file contents when the task clearly targets specific files.
+func (e *Engine) buildFileContext(prompt string) string {
 	if e.repo == nil {
 		return ""
 	}
 
-	var sb strings.Builder
-	sb.WriteString("Current file contents (read before making changes):\n\n")
-	budget := fileInjectionBudget
+	budget := e.fileInjectionBudget()
 	wrote := 0
 
-	// First, include read-only files (these are high priority context)
+	var sb strings.Builder
+	sb.WriteString("File context (skeletons shown; full body if mentioned in task):\n\n")
+
+	// Helper to check if path is in read-only list.
+	isReadOnly := func(path string) bool {
+		for _, rof := range e.cfg.ReadOnlyFiles {
+			if path == rof {
+				return true
+			}
+		}
+		return false
+	}
+
+	// First, include read-only files with full content (high priority).
 	for _, path := range e.cfg.ReadOnlyFiles {
 		abs := filepath.Join(e.repo.Root(), filepath.Clean(path))
-		// Security: ensure path stays within repo
 		if !strings.HasPrefix(abs, e.repo.Root()) {
 			continue
 		}
@@ -509,7 +633,6 @@ func (e *Engine) buildFileContext() string {
 		}
 		content := string(data)
 		if len(content) > budget {
-			// Skip individual files that exceed the remaining budget.
 			continue
 		}
 		budget -= len(content)
@@ -528,40 +651,47 @@ func (e *Engine) buildFileContext() string {
 		}
 	}
 
-	// Then, include repo map ranked files (if any)
+	// Then, include repo map ranked files using skeleton-first approach.
 	if e.repoMapM != nil {
 		for _, sec := range e.repoMapM.Sections {
-			// Skip if already included as read-only
-			alreadyIncluded := false
-			for _, rof := range e.cfg.ReadOnlyFiles {
-				if sec.Path == rof {
-					alreadyIncluded = true
-					break
+			// Skip if already included as read-only.
+			if isReadOnly(sec.Path) {
+				continue
+			}
+
+			// Decide: skeleton or full body?
+			// Full body only if task mentions the file path or its symbols.
+			showFullBody := fileMatchesPrompt(sec.Path, sec.Symbols, prompt)
+
+			if showFullBody {
+				abs := filepath.Join(e.repo.Root(), sec.Path)
+				data, err := os.ReadFile(abs)
+				if err != nil {
+					continue
 				}
-			}
-			if alreadyIncluded {
-				continue
-			}
+				content := string(data)
+				if len(content) > budget {
+					continue
+				}
+				budget -= len(content)
 
-			abs := filepath.Join(e.repo.Root(), sec.Path)
-			data, err := os.ReadFile(abs)
-			if err != nil {
-				continue
-			}
-			content := string(data)
-			if len(content) > budget {
-				// Skip individual files that exceed the remaining budget.
-				continue
-			}
-			budget -= len(content)
-
-			sb.WriteString(sec.Path)
-			sb.WriteString("\n```\n")
-			sb.WriteString(content)
-			if !strings.HasSuffix(content, "\n") {
+				sb.WriteString(sec.Path)
+				sb.WriteString("\n```\n")
+				sb.WriteString(content)
+				if !strings.HasSuffix(content, "\n") {
+					sb.WriteString("\n")
+				}
+				sb.WriteString("```\n\n")
+			} else {
+				// Skeleton view is compact (~200 chars typical).
+				skeleton := e.buildSkeleton(sec)
+				if len(skeleton) > budget {
+					continue
+				}
+				budget -= len(skeleton)
+				sb.WriteString(skeleton)
 				sb.WriteString("\n")
 			}
-			sb.WriteString("```\n\n")
 			wrote++
 
 			if budget <= 0 {
@@ -606,7 +736,13 @@ func (e *Engine) buildCriticMessages(prompt, execContent, diff string) []backend
 // streamToSink streams an executor request, forwarding each token to the sink.
 // Returns the full concatenated content and token counts.
 func (e *Engine) streamToSink(ctx context.Context, b backend.Backend, msgs []backend.Message) (content string, promptToks, completionToks int, err error) {
-	ch, err := b.Stream(ctx, backend.Request{Messages: msgs})
+	req := backend.Request{Messages: msgs}
+	// Pass cache hints for local-server KV prefix caching (PR-2 feature).
+	// PR-3 will wire executorSubtype to populate these hints.
+	if extra := e.executorCacheHints(); extra != nil {
+		req.ExtraBody = extra
+	}
+	ch, err := b.Stream(ctx, req)
 	if err != nil {
 		return "", 0, 0, err
 	}
@@ -628,6 +764,29 @@ func (e *Engine) streamToSink(ctx context.Context, b backend.Backend, msgs []bac
 // we get the full JSON in one shot before trying to parse it).
 func (e *Engine) callBackend(ctx context.Context, b backend.Backend, msgs []backend.Message) (content string, promptToks, completionToks int, err error) {
 	resp, err := b.Complete(ctx, backend.Request{Messages: msgs})
+	if err != nil {
+		return "", 0, 0, err
+	}
+	return resp.Content, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, nil
+}
+
+// callCritic calls the critic backend with grammar-constrained output when
+// supported (local models). This dramatically reduces "unparseable verdict"
+// failures on llama.cpp servers.
+func (e *Engine) callCritic(ctx context.Context, b backend.Backend, msgs []backend.Message, subtype backend.ProviderSubtype) (content string, promptToks, completionToks int, err error) {
+	req := backend.Request{
+		Messages:    msgs,
+		ResponseFormat: &backend.ResponseFormat{Type: "json_object"},
+		JSONMode:    backend.JSONLoose,
+	}
+
+	// Enable grammar mode for local models that support it.
+	if subtype == backend.SubtypeLlamaCPP {
+		req.JSONMode = backend.JSONGrammar
+		req.Grammar = backend.VerdictGrammar()
+	}
+
+	resp, err := b.Complete(ctx, req)
 	if err != nil {
 		return "", 0, 0, err
 	}

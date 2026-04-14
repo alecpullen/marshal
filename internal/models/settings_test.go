@@ -114,6 +114,25 @@ func TestModelSettings_GetConfigEditFormat(t *testing.T) {
 	}
 }
 
+func TestContextWindowFor(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int
+	}{
+		{"gpt-4o", 128000},
+		{"claude-3-5-sonnet", 200000},
+		{"qwen3-coder", 32768},
+		{"deepseek-coder", 16384},
+		{"ollama/llama3.1", 8192},         // pattern match
+		{"unknown-model-xyz", 8192},       // default
+	}
+	for _, tt := range tests {
+		if got := models.ContextWindowFor(tt.model); got != tt.want {
+			t.Errorf("ContextWindowFor(%q) = %d, want %d", tt.model, got, tt.want)
+		}
+	}
+}
+
 func TestDefaultSettings(t *testing.T) {
 	ms := models.DefaultSettings()
 	if ms.Name != "unknown" {
@@ -130,5 +149,8 @@ func TestDefaultSettings(t *testing.T) {
 	}
 	if ms.MaxTokens != 4096 {
 		t.Errorf("MaxTokens: got %d, want %d", ms.MaxTokens, 4096)
+	}
+	if ms.ContextWindow != 8192 {
+		t.Errorf("ContextWindow: got %d, want %d", ms.ContextWindow, 8192)
 	}
 }

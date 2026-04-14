@@ -37,6 +37,17 @@ const (
 	ClarifyAlways   ClarifyMode = "always"
 )
 
+// ProviderSubtype distinguishes local-server dialects for OpenAI-compatible endpoints.
+type ProviderSubtype string
+
+const (
+	SubtypeOpenAI    ProviderSubtype = "openai"
+	SubtypeOllama    ProviderSubtype = "ollama"
+	SubtypeLlamaCPP  ProviderSubtype = "llama_cpp"
+	SubtypeVLLM      ProviderSubtype = "vllm"
+	SubtypeLMStudio  ProviderSubtype = "lmstudio"
+)
+
 // ModelConfig holds per-role model settings.
 type ModelConfig struct {
 	Provider string `toml:"provider"`
@@ -46,6 +57,13 @@ type ModelConfig struct {
 	// Optional overrides
 	MaxTokens   int     `toml:"max_tokens"`
 	Temperature float64 `toml:"temperature"`
+	// Sampler parameters for local model tuning
+	TopP           float64 `toml:"top_p"`
+	MinP           float64 `toml:"min_p"`
+	RepeatPenalty  float64 `toml:"repeat_penalty"`
+	Seed           int     `toml:"seed"`
+	// ProviderSubtype hints at local-server dialect; auto-detected from BaseURL when empty.
+	Subtype ProviderSubtype `toml:"subtype"`
 }
 
 // Redacted returns a copy with the API key masked.
@@ -75,12 +93,23 @@ const (
 	EditFormatUdiff        EditFormat = "udiff"          // unified diff
 )
 
+// CriticMode controls how the critic is invoked.
+type CriticMode string
+
+const (
+	CriticModeSeparate CriticMode = "separate" // separate round-trip to critic model
+	CriticModeSelf     CriticMode = "self"     // executor emits self-critique
+)
+
 // LoopConfig controls task-loop behaviour.
 type LoopConfig struct {
-	MaxRounds    int         `toml:"max_rounds"`
-	CompactAfter int         `toml:"compact_after"`
-	Clarify      ClarifyMode `toml:"clarify"`
-	EditFormat   EditFormat  `toml:"edit_format"`
+	MaxRounds      int         `toml:"max_rounds"`
+	CompactAfter   int         `toml:"compact_after"`
+	Clarify        ClarifyMode `toml:"clarify"`
+	EditFormat     EditFormat  `toml:"edit_format"`
+	LinterIsCritic bool        `toml:"linter_is_critic"` // auto-PASS on clean lint
+	CriticMode     CriticMode  `toml:"critic_mode"`      // "separate" or "self"
+	LocalProfile   bool        `toml:"local_profile"`    // one-knob local optimization
 }
 
 // LinterConfig maps file-extension groups to linter commands.
@@ -154,14 +183,119 @@ func (c *Config) ModelFor(role string) (ModelConfig, error) {
 // ActiveProfile returns the name of the currently active profile (empty = base).
 func (c *Config) ActiveProfile() string { return c.activeProfile }
 
+// ApplyModelDefaults runs DetectSubtype and ApplyDefaults on all configured models.
+func (c *Config) ApplyModelDefaults() {
+	c.Model.Marshal.DetectSubtype()
+	c.Model.Marshal.ApplyDefaults()
+	c.Model.Executor.DetectSubtype()
+	c.Model.Executor.ApplyDefaults()
+	c.Model.Critic.DetectSubtype()
+	c.Model.Critic.ApplyDefaults()
+	c.Model.Compactor.DetectSubtype()
+	c.Model.Compactor.ApplyDefaults()
+
+	// Auto-detect local profile if not explicitly set.
+	if !c.Loop.LocalProfile {
+		c.Loop.LocalProfile = c.hasLocalSubtype()
+	}
+
+	// Apply local-profile defaults when enabled.
+	if c.Loop.LocalProfile {
+		c.applyLocalProfileDefaults()
+	}
+}
+
+// hasLocalSubtype returns true if any role points at a local server.
+func (c *Config) hasLocalSubtype() bool {
+	roles := []ModelConfig{c.Model.Marshal, c.Model.Executor, c.Model.Critic, c.Model.Compactor}
+	for _, mc := range roles {
+		if mc.DetectSubtype() != SubtypeOpenAI {
+			return true
+		}
+	}
+	return false
+}
+
+// applyLocalProfileDefaults sets sensible defaults for local models.
+func (c *Config) applyLocalProfileDefaults() {
+	// Conservative round limits: small models rarely recover across rounds.
+	if c.Loop.MaxRounds == 0 || c.Loop.MaxRounds == 3 {
+		c.Loop.MaxRounds = 2
+	}
+	if c.Loop.CompactAfter == 0 || c.Loop.CompactAfter == 2 {
+		c.Loop.CompactAfter = 1
+	}
+
+	// Linter acts as critic for faster feedback.
+	if !c.Loop.LinterIsCritic {
+		c.Loop.LinterIsCritic = true
+	}
+
+	// Self-critique when feasible (halves round-trips).
+	if c.Loop.CriticMode == "" || c.Loop.CriticMode == CriticModeSeparate {
+		// Check if executor and critic point at same model.
+		execModel := c.Model.Executor.Model
+		critModel := c.Model.Critic.Model
+		if execModel != "" && execModel == critModel {
+			c.Loop.CriticMode = CriticModeSelf
+		}
+	}
+
+	// Smaller diffs work better with small context windows.
+	if c.Loop.EditFormat == "" || c.Loop.EditFormat == EditFormatWholeFile {
+		c.Loop.EditFormat = EditFormatSearchReplace
+	}
+}
+
+// ApplyLocalProfile sets local-optimized defaults when LocalProfile is true
+// or when a local subtype is auto-detected. Shows a banner in the returned string.
+func (c *Config) ApplyLocalProfile() string {
+	// Auto-detect if any role uses a local subtype
+	isLocal := c.Model.Executor.DetectSubtype() != SubtypeOpenAI ||
+		c.Model.Critic.DetectSubtype() != SubtypeOpenAI ||
+		c.Model.Marshal.DetectSubtype() != SubtypeOpenAI ||
+		c.Model.Compactor.DetectSubtype() != SubtypeOpenAI
+
+	if !c.Loop.LocalProfile && !isLocal {
+		return "" // nothing to do, not a local setup
+	}
+
+	// Apply local-profile defaults (only if not explicitly set)
+	if c.Loop.MaxRounds == 0 || c.Loop.MaxRounds == 3 { // default was 3
+		c.Loop.MaxRounds = 2
+	}
+	if c.Loop.CompactAfter == 0 || c.Loop.CompactAfter == 2 { // default was 2
+		c.Loop.CompactAfter = 1
+	}
+	if !c.Loop.LinterIsCritic {
+		c.Loop.LinterIsCritic = true
+	}
+	if c.Loop.CriticMode == "" || c.Loop.CriticMode == CriticModeSeparate {
+		c.Loop.CriticMode = CriticModeSelf
+	}
+	if c.Loop.EditFormat == "" || c.Loop.EditFormat == EditFormatWholeFile {
+		c.Loop.EditFormat = EditFormatSearchReplace
+	}
+
+	return fmt.Sprintf("local profile active (%s executor)\n  max_rounds=%d  critic=%s  edit=%s  pipeline_parallel=1\n  override with loop.local_profile=false",
+		c.Model.Executor.DetectSubtype(),
+		c.Loop.MaxRounds,
+		c.Loop.CriticMode,
+		c.Loop.EditFormat,
+	)
+}
+
 // defaults returns a Config populated with sensible defaults.
 func defaults() Config {
 	return Config{
 		Loop: LoopConfig{
-			MaxRounds:    3,
-			CompactAfter: 2,
-			Clarify:      ClarifyAmbiguous,
-			EditFormat:   EditFormatWholeFile,
+			MaxRounds:      3,
+			CompactAfter:   2,
+			Clarify:        ClarifyAmbiguous,
+			EditFormat:     EditFormatWholeFile,
+			LinterIsCritic: false,
+			CriticMode:     CriticModeSeparate,
+			LocalProfile:   false,
 		},
 		Linters: LinterConfig{
 			Go:     "golangci-lint run",
@@ -211,6 +345,9 @@ func Load(opts Options) (*Config, error) {
 
 	// Apply MARSHAL_* environment variable overrides.
 	applyEnvOverrides(&cfg)
+
+	// Detect subtypes and apply local-model defaults.
+	cfg.ApplyModelDefaults()
 
 	return &cfg, nil
 }
@@ -295,6 +432,74 @@ func mergeModelConfig(dst *ModelConfig, src ModelConfig) {
 	}
 	if src.Temperature != 0 {
 		dst.Temperature = src.Temperature
+	}
+	if src.TopP != 0 {
+		dst.TopP = src.TopP
+	}
+	if src.MinP != 0 {
+		dst.MinP = src.MinP
+	}
+	if src.RepeatPenalty != 0 {
+		dst.RepeatPenalty = src.RepeatPenalty
+	}
+	if src.Seed != 0 {
+		dst.Seed = src.Seed
+	}
+	if src.Subtype != "" {
+		dst.Subtype = src.Subtype
+	}
+}
+
+// DetectSubtype infers the provider subtype from the BaseURL when not explicitly set.
+// Detection rules:
+//   - :11434 or /api/generate path -> ollama
+//   - :1234 (LM Studio default) -> lmstudio
+//   - :8000 + /v1/models lists non-OpenAI -> vllm (heuristic)
+//   - localhost with /slots endpoint -> llama_cpp
+//   - anything else -> openai
+func (m *ModelConfig) DetectSubtype() ProviderSubtype {
+	if m.Subtype != "" {
+		return m.Subtype
+	}
+	if m.BaseURL == "" {
+		return SubtypeOpenAI
+	}
+	lower := strings.ToLower(m.BaseURL)
+
+	// Ollama detection
+	if strings.Contains(lower, ":11434") || strings.Contains(lower, "/api/generate") {
+		return SubtypeOllama
+	}
+
+	// LM Studio detection
+	if strings.Contains(lower, ":1234") {
+		return SubtypeLMStudio
+	}
+
+	// vLLM detection (heuristic: port 8000)
+	if strings.Contains(lower, ":8000") {
+		return SubtypeVLLM
+	}
+
+	// llama.cpp server detection (default port 8080 or localhost)
+	if strings.Contains(lower, ":8080") || strings.Contains(lower, "localhost") {
+		return SubtypeLlamaCPP
+	}
+
+	return SubtypeOpenAI
+}
+
+// ApplyDefaults sets sensible defaults for local models based on subtype.
+// Call after DetectSubtype and after loading config.
+func (m *ModelConfig) ApplyDefaults() {
+	if m.DetectSubtype() != SubtypeOpenAI {
+		// Local model defaults for coding
+		if m.Temperature == 0 && m.TopP == 0 && m.MinP == 0 {
+			m.Temperature = 0.0
+			m.TopP = 0.95
+			m.MinP = 0.05
+			m.RepeatPenalty = 1.05
+		}
 	}
 }
 

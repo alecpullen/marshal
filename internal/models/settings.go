@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/BurntSushi/toml"
 	"github.com/alec/marshal/internal/config"
@@ -23,6 +24,10 @@ type ModelSettings struct {
 	SupportsJSON   bool   `toml:"supports_json"`
 	EditFormat     string `toml:"edit_format"`
 	MaxTokens      int    `toml:"max_tokens"`
+	// ContextWindow is the maximum total tokens (input + output) the model
+	// accepts. Used to derive the file-injection budget so small local models
+	// don't have their windows blown by 100K-char dumps.
+	ContextWindow  int    `toml:"context_window"`
 }
 
 // Registry holds model settings keyed by model name or pattern.
@@ -111,7 +116,33 @@ func DefaultSettings() ModelSettings {
 		SupportsJSON:   true,
 		EditFormat:     "wholefile",
 		MaxTokens:      4096,
+		ContextWindow:  8192,
 	}
+}
+
+// defaultReg caches the embedded registry for package-level helpers.
+var (
+	defaultReg     *Registry
+	defaultRegOnce sync.Once
+)
+
+func defaultRegistry() *Registry {
+	defaultRegOnce.Do(func() {
+		defaultReg, _ = LoadDefault()
+	})
+	return defaultReg
+}
+
+// ContextWindowFor returns the context window (in tokens) for the given
+// model name. Falls back to the default when the model is unknown or has no
+// configured window.
+func ContextWindowFor(modelName string) int {
+	reg := defaultRegistry()
+	ms := reg.Lookup(modelName)
+	if ms.ContextWindow > 0 {
+		return ms.ContextWindow
+	}
+	return DefaultSettings().ContextWindow
 }
 
 // GetEditFormat returns the appropriate edit.Format for the model.

@@ -177,6 +177,7 @@ func configShowCmd(gf *globalFlags) *cobra.Command {
 
 func chatCmd(gf *globalFlags) *cobra.Command {
 	var noShip bool
+	var noWarmup bool
 
 	cmd := &cobra.Command{
 		Use:   "chat",
@@ -224,6 +225,12 @@ func chatCmd(gf *globalFlags) *cobra.Command {
 				return fmt.Errorf("backend registry: %w", err)
 			}
 
+			// Warmup: send 1-token requests to each local endpoint to prime KV caches.
+			// This avoids cold-start latency on first user turn.
+			if !noWarmup {
+				warmupEndpoints(cmd.Context(), cfg, reg)
+			}
+
 			// Load skills: built-ins first, then user-defined (~/.config/marshal/skills/*.toml).
 			// Missing user directory is silently ignored. User skills can override built-ins.
 			skillsReg := skills.New()
@@ -266,7 +273,30 @@ func chatCmd(gf *globalFlags) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&noShip, "no-ship", false, "Keep changes on staging; do not merge to target on exit")
+	cmd.Flags().BoolVar(&noWarmup, "no-warmup", false, "Skip endpoint warmup (for local models)")
 	return cmd
+}
+
+// warmupEndpoints sends a 1-token dummy request to each configured endpoint.
+// This primes the KV cache on local servers (llama.cpp, Ollama) and avoids the
+// 5-15s cold-start latency on the first real user turn.
+func warmupEndpoints(ctx context.Context, cfg *config.Config, reg *backend.Registry) {
+	roles := []string{config.RoleExecutor, config.RoleCritic, config.RoleCompactor}
+	for _, role := range roles {
+		b, err := reg.For(role)
+		if err != nil {
+			continue
+		}
+		// Fire a minimal request in the background; errors are silent.
+		go func(r string) {
+			_, _ = b.Complete(ctx, backend.Request{
+				Messages: []backend.Message{
+					{Role: backend.MessageRoleUser, Content: "warmup"},
+				},
+				MaxTokens: 1,
+			})
+		}(role)
+	}
 }
 
 // ── run (one-shot mode) ───────────────────────────────────────────────────────

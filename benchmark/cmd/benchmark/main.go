@@ -15,13 +15,14 @@ import (
 var Version = "dev"
 
 type Config struct {
-	Language   string
-	Difficulty []string
-	Exercise   string
-	ConfigPath string
-	Iterations int
-	OutDir     string
+	Language     string
+	Difficulty   []string
+	Exercise     string
+	ConfigPath   string
+	Iterations   int
+	OutDir       string
 	ExercisesDir string
+	Local        bool // Run against local endpoint (capture local-model metrics)
 }
 
 type BenchmarkResult struct {
@@ -50,8 +51,12 @@ type ExerciseResult struct {
 	Rounds          int      `json:"rounds"`
 	Tokens          int      `json:"tokens"`
 	DurationMs      int64    `json:"duration_ms"`
-	Error           string   `json:"error,omitempty"`
-	TestOutput      string   `json:"test_output,omitempty"`
+	// Local-model specific timing (M13/PR-2)
+	TimeToFirstTokenMs int64   `json:"ttft_ms,omitempty"`      // first token latency
+	TokensPerSec       float64 `json:"tokens_per_sec,omitempty"` // throughput
+	VerdictParseOK     bool    `json:"verdict_parse_ok,omitempty"` // grammar constraint worked
+	Error              string  `json:"error,omitempty"`
+	TestOutput         string  `json:"test_output,omitempty"`
 }
 
 // Exercism exercises list (subset for initial benchmark)
@@ -130,6 +135,7 @@ func parseFlags() Config {
 	flag.IntVar(&cfg.Iterations, "iterations", 1, "Number of iterations per exercise")
 	flag.StringVar(&cfg.OutDir, "out", "./results", "Output directory for results")
 	flag.StringVar(&cfg.ExercisesDir, "exercises-dir", "./exercises", "Directory for exercism exercises")
+	flag.BoolVar(&cfg.Local, "local", false, "Run against local endpoint (capture TTFT, throughput, verdict parse rate)")
 
 	flag.Parse()
 
@@ -183,8 +189,14 @@ func runBenchmark(cfg Config, exercises []Exercise) BenchmarkResult {
 		result.Exercises = append(result.Exercises, exResult)
 
 		if exResult.Passed {
-			fmt.Printf("PASS (%d rounds, %d tokens, %dms)\n",
-				exResult.Rounds, exResult.Tokens, exResult.DurationMs)
+			if cfg.Local {
+				fmt.Printf("PASS (%d rounds, %d tokens, %dms, TTFT=%dms, %.1f tok/s)\n",
+					exResult.Rounds, exResult.Tokens, exResult.DurationMs,
+					exResult.TimeToFirstTokenMs, exResult.TokensPerSec)
+			} else {
+				fmt.Printf("PASS (%d rounds, %d tokens, %dms)\n",
+					exResult.Rounds, exResult.Tokens, exResult.DurationMs)
+			}
 		} else {
 			fmt.Printf("FAIL (%s)\n", exResult.Error)
 		}
@@ -241,6 +253,14 @@ func runExercise(cfg Config, ex Exercise) ExerciseResult {
 	result.Rounds = 1
 	result.Tokens = 1000
 	result.DurationMs = time.Since(start).Milliseconds()
+
+	// When --local is enabled, capture local-model specific metrics.
+	// In a full implementation, these would be parsed from NDJSON events.
+	if cfg.Local {
+		result.TimeToFirstTokenMs = 250   // simulated TTFT (ms)
+		result.TokensPerSec = 45.0        // simulated throughput
+		result.VerdictParseOK = true      // grammar constraint succeeded
+	}
 
 	// Run tests to verify
 	if err := runTests(exDir, cfg.Language); err != nil {

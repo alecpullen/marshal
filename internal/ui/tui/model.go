@@ -149,9 +149,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+		case tea.KeyCtrlC:
 			m.cancel()
 			return m, tea.Quit
+
+		case tea.KeyEsc:
+			if m.busy {
+				// Interrupt current streaming response without quitting.
+				m.cancel()
+				m = m.appendEntry("system", " interrupted")
+				m = m.unlock()
+				// Reset context for future operations.
+				m.ctx, m.cancel = context.WithCancel(context.Background())
+			} else {
+				// When idle, clear the input field if it has content.
+				if m.input.Value() != "" {
+					m.input.Reset()
+				}
+			}
 
 		case tea.KeyCtrlS:
 			// Ctrl+S submits in multiline mode (or always as an alternative).

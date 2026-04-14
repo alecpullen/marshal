@@ -114,7 +114,86 @@ func (e *SearchReplaceEdit) ApplyToContent(current string) (updated string, ok b
 
 	// 2. Normalised-whitespace match: compare trimmed lines.
 	updated, ok = applyNormalised(current, e.Search, replace)
-	return updated, ok
+	if ok {
+		return updated, true
+	}
+
+	// 3. Fuzzy match: try with leading/trailing whitespace trimmed
+	trimmedSearch := strings.TrimSpace(e.Search)
+	if trimmedSearch != e.Search && strings.Contains(current, trimmedSearch) {
+		// Find the trimmed content and replace with proper indentation handling
+		idx := strings.Index(current, trimmedSearch)
+		if idx != -1 {
+			return current[:idx] + replace + current[idx+len(trimmedSearch):], true
+		}
+	}
+
+	return current, false
+}
+
+// MismatchInfo holds diagnostic info about why search/replace failed.
+type MismatchInfo struct {
+	SearchAttempted string  // what the model tried to find
+	FilePreview     string  // what's actually in the file (first few lines)
+	SearchLineCount int     // how many lines in search
+	FileLineCount   int     // how many lines in file
+	MatchPercentage float64 // approximate match quality
+	SuggestedSearch string  // what the model probably meant
+}
+
+// GetMismatchInfo analyzes why the search failed and returns diagnostic info.
+func (e *SearchReplaceEdit) GetMismatchInfo(current string) MismatchInfo {
+	info := MismatchInfo{
+		SearchAttempted: e.Search,
+		FilePreview:     truncate(current, 500),
+		SearchLineCount: strings.Count(e.Search, "\n") + 1,
+		FileLineCount:   strings.Count(current, "\n") + 1,
+	}
+
+	// Calculate match percentage (simplified)
+	if len(e.Search) > 0 {
+		matched := 0
+		searchLines := strings.Split(e.Search, "\n")
+		currentLines := strings.Split(current, "\n")
+		for _, sline := range searchLines {
+			slineTrim := strings.TrimSpace(sline)
+			if slineTrim == "" {
+				continue
+			}
+			for _, cline := range currentLines {
+				if strings.Contains(cline, slineTrim) {
+					matched++
+					break
+				}
+			}
+		}
+		info.MatchPercentage = float64(matched) / float64(len(searchLines)) * 100
+	}
+
+	// Try to suggest what the model probably meant
+	// Look for the first non-empty search line in current file
+	searchLines := strings.Split(e.Search, "\n")
+	for _, sline := range searchLines {
+		slineTrim := strings.TrimSpace(sline)
+		if slineTrim != "" && len(slineTrim) > 10 {
+			idx := strings.Index(current, slineTrim)
+			if idx != -1 {
+				// Found partial match, extract surrounding context
+				start := idx - 100
+				if start < 0 {
+					start = 0
+				}
+				end := idx + len(slineTrim) + 200
+				if end > len(current) {
+					end = len(current)
+				}
+				info.SuggestedSearch = truncate(current[start:end], 300)
+				break
+			}
+		}
+	}
+
+	return info
 }
 
 // applyNormalised tries to find search in current by comparing each line
@@ -166,4 +245,12 @@ func isDividerMarker(line string) bool {
 func isReplaceMarker(line string) bool {
 	t := strings.TrimSpace(line)
 	return strings.HasPrefix(t, ">>>>>>>")
+}
+
+// truncate limits a string to n characters.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

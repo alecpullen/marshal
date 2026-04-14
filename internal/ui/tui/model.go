@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/alecpullen/marshal/internal/backend"
 	"github.com/alecpullen/marshal/internal/commands"
 	"github.com/alecpullen/marshal/internal/config"
 	"github.com/alecpullen/marshal/internal/git"
@@ -44,7 +45,7 @@ type chatEntry struct {
 type model struct {
 	// Dependencies injected by run.go.
 	runGate   func(ctx context.Context, prompt string) (action, text string, err error)
-	runEngine func(ctx context.Context, prompt string, sink loop.Sink, executorExtra, criticExtra string, chatFiles, readOnlyFiles []string) error
+	runEngine func(ctx context.Context, prompt string, sink loop.Sink, executorExtra, criticExtra string, chatFiles, readOnlyFiles []string, readOnly bool) error
 	cfg       *config.Config
 	gitSess   *git.Session
 	repo      *git.Repo
@@ -54,6 +55,7 @@ type model struct {
 	repoRoot  string
 	pref      *progRef
 	watchMgr  *watch.Manager
+	marshalB  backend.Backend // marshal backend for think block summarization
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -74,6 +76,28 @@ type model struct {
 	thinkTokens     int
 	reasoningEffort string
 	cachedRepoMap   string
+
+	// Permission gate state.
+	permissionPrompt *PermissionRequestMsg // current permission request waiting for response
+	pendingResponse  chan<- bool           // channel to send permission response
+
+	// Tool operations for compact display.
+	toolOperations []toolOperationState
+
+	// Think block summarization state.
+	thinkAccumulator strings.Builder // accumulates think content
+	lastThinkSummary string          // last summary from marshal
+	summarizeThink   chan string     // channel to trigger summarization
+}
+
+// toolOperationState tracks the state of a tool operation for compact display.
+type toolOperationState struct {
+	toolName string
+	path     string
+	status   string // pending, running, done, failed
+	summary  string
+	details  string // expandable diff/content
+	entryIdx int    // index in m.entries for in-place updates (-1 if not yet added)
 }
 
 const (
@@ -85,7 +109,7 @@ const (
 func newModel(
 	ctx context.Context,
 	runGate func(context.Context, string) (string, string, error),
-	runEngine func(context.Context, string, loop.Sink, string, string, []string, []string) error,
+	runEngine func(context.Context, string, loop.Sink, string, string, []string, []string, bool) error,
 	skillsReg *skills.Registry,
 	store *session.Store,
 	sessionID string,
@@ -96,6 +120,7 @@ func newModel(
 	cfg *config.Config,
 	gitSess *git.Session,
 	repo *git.Repo,
+	marshalB backend.Backend,
 ) model {
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -122,6 +147,7 @@ func newModel(
 		repoRoot:      repoRoot,
 		pref:          pref,
 		watchMgr:      watchMgr,
+		marshalB:      marshalB,
 		ctx:           ctx,
 		cancel:        cancel,
 		viewport:      vp,
@@ -148,6 +174,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.relayout()
 
 	case tea.KeyMsg:
+		// Handle permission prompt responses first
+		if m.permissionPrompt != nil && m.pendingResponse != nil {
+			switch strings.ToLower(msg.String()) {
+			case "y", "yes":
+				m.pendingResponse <- true
+				m.permissionPrompt = nil
+				m.pendingResponse = nil
+				m = m.appendEntry("system", stylePermissionYes.Render("✓ Yes")+" — applying changes")
+				m = m.lock() // Lock again for task execution
+				return m, nil
+			case "n", "no":
+				m.pendingResponse <- false
+				m.permissionPrompt = nil
+				m.pendingResponse = nil
+				m = m.appendEntry("system", stylePermissionNo.Render("✗ No")+" — changes rejected")
+				m = m.lock()
+				return m, nil
+			}
+		}
+
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			m.cancel()
@@ -185,6 +231,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case tea.KeyCtrlY:
+			// Ctrl+Y copies the entire conversation to clipboard.
+			m = m.copyConversation()
+
 		case tea.KeyEnter:
 			if !m.busy {
 				if m.multilineMode {
@@ -221,12 +271,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MarshalGateMsg:
 		if msg.Err != nil {
 			m = m.appendEntry("system", "gate error: "+msg.Err.Error())
-			cmds = append(cmds, m.startEngine(msg.Prompt, "", ""))
+			cmds = append(cmds, m.startEngine(msg.Prompt, "", "", false))
 			break
 		}
 		switch msg.Action {
 		case "proceed":
-			cmds = append(cmds, m.startEngine(msg.Prompt, "", ""))
+			cmds = append(cmds, m.startEngine(msg.Prompt, "", "", false))
 		case "chat":
 			m = m.appendEntry("marshal", msg.Text)
 			m = m.unlock()
@@ -269,6 +319,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case TaskFailedMsg:
 		m = m.appendEntry("system", "task failed after all rounds")
+
+	case FileEditStartMsg:
+		m = m.appendEntry("system", fmt.Sprintf("writing %s…", msg.Path))
+
+	case FileEditDoneMsg:
+		m = m.appendEntry("executor", fmt.Sprintf("✓ %s (+%d/-%d)", msg.Path, msg.Added, msg.Deleted))
+
+	case FileEditFailedMsg:
+		m = m.appendEntry("fail", fmt.Sprintf("✗ %s: %s", msg.Path, msg.Reason))
+
+	// Permission request handling
+	case PermissionRequestMsg:
+		m.permissionPrompt = &msg
+		m.pendingResponse = msg.Response
+		m = m.unlock() // Allow user input for Yes/No response
+
+	// Tool operation compact display
+	case ToolOperationMsg:
+		m = m.handleToolOperation(msg)
+
+	case ToolOperationDetailMsg:
+		m = m.handleToolOperationDetail(msg)
+
+	case ThinkBlockMsg:
+		var thinkCmd tea.Cmd
+		m, thinkCmd = m.handleThinkBlock(msg)
+		cmds = append(cmds, thinkCmd)
+
+	case ThinkSummaryMsg:
+		m = m.handleThinkSummary(msg)
+
+	case ProposalsReadyMsg:
+		m = m.handleProposalsReady(msg)
+
+	case ProposalsAppliedMsg:
+		m = m.handleProposalsApplied(msg)
+
+	case ProposalsDiscardedMsg:
+		m = m.handleProposalsDiscarded(msg)
+
+	case TaskDescriptionMsg:
+		if msg.Description != "" {
+			m = m.appendEntry("marshal", "🎯 "+msg.Description)
+		}
 
 	case TaskDoneMsg:
 		m = m.flushStreaming()
@@ -359,6 +453,12 @@ func (m model) unlock() model {
 	return m
 }
 
+func (m model) lock() model {
+	m.busy = true
+	m.input.Blur()
+	return m
+}
+
 func (m model) appendEntry(kind, content string) model {
 	m.entries = append(m.entries, chatEntry{kind: kind, content: content})
 	return m.rebuildViewport()
@@ -371,6 +471,230 @@ func (m model) flushStreaming() model {
 	m.entries = append(m.entries, chatEntry{kind: "executor", content: m.streaming.String()})
 	m.streaming = &strings.Builder{}
 	return m.rebuildViewport()
+}
+
+// handleToolOperation updates or adds a tool operation entry for compact display.
+func (m model) handleToolOperation(msg ToolOperationMsg) model {
+	// Find existing operation or create new one
+	foundIdx := -1
+	for i, op := range m.toolOperations {
+		if op.path == msg.Path && op.toolName == msg.ToolName {
+			m.toolOperations[i].status = msg.Status
+			m.toolOperations[i].summary = msg.Summary
+			foundIdx = i
+			break
+		}
+	}
+
+	// Build compact display entry
+	var statusIcon string
+	var statusStyle lipgloss.Style
+	displayStatus := msg.Status
+	switch msg.Status {
+	case "running", "writing":
+		statusIcon = "◐"
+		statusStyle = styleToolStatusWriting
+		displayStatus = "Editing"
+	case "reading":
+		statusIcon = "◯"
+		statusStyle = styleToolStatusReading
+		displayStatus = "Reading"
+	case "done":
+		statusIcon = "✓"
+		statusStyle = styleToolStatusDone
+		displayStatus = "Done"
+	case "failed":
+		statusIcon = "✗"
+		statusStyle = styleToolStatusFailed
+		displayStatus = "Failed"
+	case "proposed":
+		statusIcon = "⏸️"
+		statusStyle = styleToolStatusRunning
+		displayStatus = "Proposed"
+	default:
+		statusIcon = "○"
+	}
+
+	// Compact format: ◐ Editing (write_file) src/config.go +45/-12
+	compactText := fmt.Sprintf("%s %s (%s) %s %s",
+		statusStyle.Render(statusIcon),
+		displayStatus,
+		styleToolName.Render(msg.ToolName),
+		styleToolPath.Render(msg.Path),
+		styleToolSummary.Render(msg.Summary),
+	)
+
+	if foundIdx == -1 {
+		// New operation - add to tracking and append entry
+		m.toolOperations = append(m.toolOperations, toolOperationState{
+			toolName: msg.ToolName,
+			path:     msg.Path,
+			status:   msg.Status,
+			summary:  msg.Summary,
+			entryIdx: len(m.entries), // Will be the index after we append
+		})
+		m = m.appendEntry("system", compactText)
+	} else {
+		// Existing operation - update in place
+		entryIdx := m.toolOperations[foundIdx].entryIdx
+		if entryIdx >= 0 && entryIdx < len(m.entries) {
+			// Update the existing entry
+			m.entries[entryIdx].content = compactText
+			m = m.rebuildViewport()
+		} else {
+			// Fallback: entry index invalid, just append
+			m.toolOperations[foundIdx].entryIdx = len(m.entries)
+			m = m.appendEntry("system", compactText)
+		}
+	}
+
+	return m
+}
+
+// handleToolOperationDetail stores the detailed diff/content for expandable view.
+func (m model) handleToolOperationDetail(msg ToolOperationDetailMsg) model {
+	for i, op := range m.toolOperations {
+		if op.path == msg.Path {
+			m.toolOperations[i].details = msg.Content
+			break
+		}
+	}
+	return m
+}
+
+// handleThinkBlock accumulates think content and triggers marshal summarization.
+func (m model) handleThinkBlock(msg ThinkBlockMsg) (model, tea.Cmd) {
+	if msg.Done {
+		// Final chunk - summarize accumulated content
+		if m.thinkAccumulator.Len() > 0 {
+			content := m.thinkAccumulator.String()
+			m.thinkAccumulator.Reset()
+			// Trigger async summarization
+			return m, m.summarizeThinkAsync(content)
+		}
+	} else {
+		// Accumulate think content
+		m.thinkAccumulator.WriteString(msg.Content)
+		// If we have enough content, trigger a summary update
+		if m.thinkAccumulator.Len() > 200 && len(m.lastThinkSummary) == 0 {
+			content := m.thinkAccumulator.String()
+			return m, m.summarizeThinkAsync(content)
+		}
+	}
+	return m, nil
+}
+
+// summarizeThinkAsync sends think content to marshal for summarization.
+func (m model) summarizeThinkAsync(content string) tea.Cmd {
+	return func() tea.Msg {
+		if m.marshalB == nil {
+			return nil
+		}
+		summary, err := m.callMarshalForThinkSummary(content)
+		if err != nil {
+			return nil
+		}
+		return ThinkSummaryMsg{Summary: summary}
+	}
+}
+
+// callMarshalForThinkSummary asks the marshal model to summarize think content.
+func (m model) callMarshalForThinkSummary(content string) (string, error) {
+	prompt := fmt.Sprintf(`The executor is working on a task. Here is its internal reasoning so far:
+
+"""
+%s
+"""
+
+Provide a brief 1-sentence summary of what the executor is currently doing or planning to do. Be concise and focus on the action.`, truncate(content, 1000))
+
+	msgs := []backend.Message{
+		{Role: backend.MessageRoleSystem, Content: "You summarize the executor's reasoning into brief action descriptions."},
+		{Role: backend.MessageRoleUser, Content: prompt},
+	}
+	resp, err := m.marshalB.Complete(m.ctx, backend.Request{Messages: msgs})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Content), nil
+}
+
+// ThinkSummaryMsg carries a summarized think block from the marshal.
+type ThinkSummaryMsg struct {
+	Summary string
+}
+
+// handleThinkSummary displays the marshal's summary of executor thinking.
+func (m model) handleThinkSummary(msg ThinkSummaryMsg) model {
+	if msg.Summary != "" && msg.Summary != m.lastThinkSummary {
+		m.lastThinkSummary = msg.Summary
+		m = m.appendEntry("marshal", "🤔 "+msg.Summary)
+	}
+	return m
+}
+
+// handleProposalsReady displays that proposals are awaiting critic review.
+func (m model) handleProposalsReady(msg ProposalsReadyMsg) model {
+	fileList := strings.Join(msg.Files, ", ")
+	if len(msg.Files) > 3 {
+		fileList = fmt.Sprintf("%d files", len(msg.Files))
+	}
+	m = m.appendEntry("system", fmt.Sprintf("⏸️  Proposed changes to %s awaiting review...", fileList))
+	return m
+}
+
+// handleProposalsApplied displays that proposals were applied after approval.
+func (m model) handleProposalsApplied(msg ProposalsAppliedMsg) model {
+	m = m.appendEntry("system", fmt.Sprintf("✓ Applied %d files after review", len(msg.Files)))
+	return m
+}
+
+// handleProposalsDiscarded displays that proposals were rejected.
+func (m model) handleProposalsDiscarded(msg ProposalsDiscardedMsg) model {
+	m = m.appendEntry("system", fmt.Sprintf("✗ Proposals rejected: %s", msg.Reason))
+	return m
+}
+
+// copyConversation copies all conversation entries to the clipboard.
+func (m model) copyConversation() model {
+	var sb strings.Builder
+	for _, entry := range m.entries {
+		switch entry.kind {
+		case "user":
+			sb.WriteString("> ")
+			sb.WriteString(entry.content)
+			sb.WriteString("\n\n")
+		case "marshal":
+			sb.WriteString("[Marshal] ")
+			sb.WriteString(entry.content)
+			sb.WriteString("\n\n")
+		case "executor":
+			sb.WriteString(entry.content)
+			sb.WriteString("\n\n")
+		case "system":
+			sb.WriteString(entry.content)
+			sb.WriteString("\n")
+		case "pass":
+			sb.WriteString("✓ PASS: ")
+			sb.WriteString(entry.content)
+			sb.WriteString("\n\n")
+		case "fail":
+			sb.WriteString("✗ FAIL: ")
+			sb.WriteString(entry.content)
+			sb.WriteString("\n\n")
+		}
+	}
+
+	content := sb.String()
+	if content != "" {
+		err := clipboard.WriteAll(content)
+		if err != nil {
+			m = m.appendEntry("system", fmt.Sprintf("Failed to copy to clipboard: %v", err))
+		} else {
+			m = m.appendEntry("system", "📋 Conversation copied to clipboard (Ctrl+Y)")
+		}
+	}
+	return m
 }
 
 func (m model) rebuildViewport() model {
@@ -412,14 +736,33 @@ func renderEntry(e chatEntry, width int) string {
 		return stylePass.Width(width).Render(e.content)
 	case "fail":
 		return styleFail.Width(width).Render(e.content)
-	case "lint":
-		return styleLint.Width(width).Render(e.content)
-	default: // "system"
+	default:
 		return styleSystem.Width(width).Render(e.content)
 	}
 }
 
+// truncate limits a string to n characters, adding "..." if truncated.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 func (m model) renderInputBox() string {
+	// Show permission prompt overlay if active
+	if m.permissionPrompt != nil {
+		prompt := fmt.Sprintf("Allow %s (%s) %s?\n%s\n\n%s / %s",
+			strings.Title(m.permissionPrompt.ToolName),
+			styleToolName.Render(m.permissionPrompt.ToolName),
+			styleToolPath.Render(m.permissionPrompt.Path),
+			styleToolSummary.Render(m.permissionPrompt.Preview),
+			stylePermissionYes.Render("[Y]es"),
+			stylePermissionNo.Render("[N]o"),
+		)
+		return stylePermissionPrompt.Width(m.width - 4).Render(prompt)
+	}
+
 	hint := "Enter: send"
 	if m.multilineMode {
 		hint = "Ctrl+S: send  Enter: newline"
@@ -435,7 +778,7 @@ func (m model) renderStatus() string {
 	} else {
 		status = styleStatusBar.Render("○ ready")
 	}
-	hint := styleStatusBar.Render("ctrl+c quit  shift+enter newline")
+	hint := styleStatusBar.Render("ctrl+c quit  ctrl+y copy  shift+enter newline")
 	gap := m.width - lipgloss.Width(status) - lipgloss.Width(hint)
 	if gap < 1 {
 		gap = 1
@@ -459,17 +802,48 @@ func (m model) callGate(prompt string) tea.Cmd {
 // startEngine returns a tea.Cmd that runs the executor-critic loop and
 // delivers TaskDoneMsg when it finishes. It snapshots the current chatFiles
 // and readOnlyFiles so mid-task /add commands don't affect in-flight work.
-func (m model) startEngine(prompt, executorExtra, criticExtra string) tea.Cmd {
+func (m model) startEngine(prompt, executorExtra, criticExtra string, readOnly bool) tea.Cmd {
 	pref := m.pref
 	runEngine := m.runEngine
 	ctx := m.ctx
 	chatFiles := append([]string{}, m.chatFiles...)
 	readOnlyFiles := append([]string{}, m.readOnlyFiles...)
+
+	// Return a command that first describes the task, then starts the engine
 	return func() tea.Msg {
+		// First, show task description (async, won't block)
+		go m.showTaskDescription(prompt, pref.p)
+
+		// Then immediately start the engine
 		sink := NewChanSink(pref.p)
-		err := runEngine(ctx, prompt, sink, executorExtra, criticExtra, chatFiles, readOnlyFiles)
+		err := runEngine(ctx, prompt, sink, executorExtra, criticExtra, chatFiles, readOnlyFiles, readOnly)
 		return TaskDoneMsg{Err: err}
 	}
+}
+
+// showTaskDescription asynchronously gets and displays a task description.
+func (m model) showTaskDescription(prompt string, p *tea.Program) {
+	if m.marshalB == nil {
+		return
+	}
+
+	msgs := []backend.Message{
+		{Role: backend.MessageRoleSystem, Content: "You briefly describe what a task will involve. Respond with 1 short sentence."},
+		{Role: backend.MessageRoleUser, Content: fmt.Sprintf("Task: %s\n\nDescribe what will likely be done in one short sentence.", prompt)},
+	}
+	resp, err := m.marshalB.Complete(m.ctx, backend.Request{Messages: msgs})
+	if err != nil {
+		return
+	}
+	desc := strings.TrimSpace(resp.Content)
+	if desc != "" && p != nil {
+		p.Send(TaskDescriptionMsg{Description: desc})
+	}
+}
+
+// TaskDescriptionMsg carries a description of what the task will do.
+type TaskDescriptionMsg struct {
+	Description string
 }
 
 // handleSlash dispatches a "/" prefixed input to a built-in command or skill.
@@ -484,6 +858,7 @@ func (m model) handleSlash(input string) (tea.Model, tea.Cmd) {
 			action.Prompt,
 			action.Skill.Executor.SystemExtra,
 			action.Skill.Critic.SystemExtra,
+			action.Skill.ReadOnly,
 		)
 
 	case commands.KindBuiltin:
@@ -586,7 +961,7 @@ func (m model) handleBuiltin(a commands.Action) (tea.Model, tea.Cmd) {
 			m.input.Blur()
 			m.busy = true
 			m = m.appendEntry("user", a.Prompt)
-			return m, m.startEngine(a.Prompt, "", "")
+			return m, m.startEngine(a.Prompt, "", "", false)
 		}
 	case commands.CmdQuit:
 		m.cancel()
@@ -599,6 +974,8 @@ func (m model) handleBuiltin(a commands.Action) (tea.Model, tea.Cmd) {
 		m = m.handleReasoningEffort(a)
 	case commands.CmdMultilineMode:
 		m = m.handleMultilineMode()
+	case commands.CmdPermission:
+		m = m.handlePermission(a)
 
 	default:
 		m = m.appendEntry("system",
@@ -1138,7 +1515,7 @@ func (m model) handleSave(a commands.Action) model {
 		return m
 	}
 	type savedCtx struct {
-		ChatFiles    []string `json:"chat_files"`
+		ChatFiles     []string `json:"chat_files"`
 		ReadOnlyFiles []string `json:"read_only_files"`
 	}
 	data, _ := json.Marshal(savedCtx{ChatFiles: m.chatFiles, ReadOnlyFiles: m.readOnlyFiles})
@@ -1168,7 +1545,7 @@ func (m model) handleLoad(a commands.Action) model {
 		return m
 	}
 	type savedCtx struct {
-		ChatFiles    []string `json:"chat_files"`
+		ChatFiles     []string `json:"chat_files"`
 		ReadOnlyFiles []string `json:"read_only_files"`
 	}
 	var ctx savedCtx
@@ -1278,6 +1655,35 @@ func (m model) handleMultilineMode() model {
 	} else {
 		m.input.KeyMap.InsertNewline.SetKeys("shift+enter")
 		m = m.appendEntry("system", "Multiline mode OFF: Enter sends message, Shift+Enter adds newline.")
+	}
+	return m
+}
+
+func (m model) handlePermission(a commands.Action) model {
+	if m.cfg == nil {
+		m = m.appendEntry("system", "Config not available")
+		return m
+	}
+
+	if a.Arg == "" {
+		// Show current permission setting
+		mode := m.cfg.Loop.Permission
+		if mode == "" {
+			mode = "never" // default
+		}
+		m = m.appendEntry("system", fmt.Sprintf("Permission mode: %s\n  never  = auto-approve all edits (default)\n  always = prompt Y/N before each edit\n\nUsage: /permission <never|always>", mode))
+		return m
+	}
+
+	switch strings.ToLower(a.Arg) {
+	case "never", "off", "false":
+		m.cfg.Loop.Permission = config.PermissionNever
+		m = m.appendEntry("system", "Permission mode: never — edits will be auto-approved")
+	case "always", "on", "true":
+		m.cfg.Loop.Permission = config.PermissionAlways
+		m = m.appendEntry("system", "Permission mode: always — you will be prompted Y/N before each edit")
+	default:
+		m = m.appendEntry("system", fmt.Sprintf("Unknown permission mode: %q\nUsage: /permission <never|always>", a.Arg))
 	}
 	return m
 }
@@ -1544,8 +1950,15 @@ Model/Configuration:
   /think-tokens <n>    set thinking token budget (0 to clear)
   /reasoning-effort <low|medium|high>   set reasoning effort level
   /multiline-mode      toggle multiline input (` + submit + `)
+  /permission <mode>   edit confirmation: never=auto-approve, always=prompt Y/N
 
 Skills from ~/.config/marshal/skills/*.toml are also available.
+
+Key shortcuts:
+  Ctrl+C      quit
+  Ctrl+Y      copy conversation to clipboard
+  Shift+Enter insert newline (in multiline mode)
+
 Press Ctrl+C or type /quit to exit.`
 }
 
@@ -1615,7 +2028,7 @@ func fetchWebContent(url string) (string, error) {
 }
 
 var (
-	reHTMLTag   = regexp.MustCompile(`<[^>]+>`)
+	reHTMLTag    = regexp.MustCompile(`<[^>]+>`)
 	reWhitespace = regexp.MustCompile(`[ \t]+`)
 )
 

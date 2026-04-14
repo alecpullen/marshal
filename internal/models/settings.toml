@@ -36,6 +36,16 @@ context_window = 200000
 [models.qwen3-coder]
 name = "Qwen3 Coder"
 supports_tools = true
+supports_json = false
+edit_format = "search-replace"
+max_tokens = 4096
+context_window = 32768
+
+[models.qwen3-coder-30b]
+name = "Qwen3 Coder 30B"
+pattern = "qwen3-coder*"
+supports_tools = false
+supports_json = false
 edit_format = "search-replace"
 max_tokens = 4096
 context_window = 32768

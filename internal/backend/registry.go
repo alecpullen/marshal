@@ -76,13 +76,28 @@ func newOpenAICompatFromModelConfig(mc config.ModelConfig, tc func([]Message) (i
 	// Local models (ollama, llama.cpp, etc.) default to supports_tools=false.
 	supTools := true // default for hosted models
 	supJSON := true
+	hasExplicitToolSetting := false
+
+	// 1. Check user's explicit config setting first (highest priority)
+	if mc.SupportsTools != nil {
+		supTools = *mc.SupportsTools
+		hasExplicitToolSetting = true
+	}
+
+	// 2. Check model registry for known model settings
 	if modelReg != nil {
 		settings := modelReg.Lookup(mc.Model)
-		supTools = settings.SupportsTools
-		supJSON = settings.SupportsJSON
+		// If model found in registry and user didn't explicitly set supports_tools
+		if settings.Name != "" && settings.Name != "unknown" && mc.SupportsTools == nil {
+			supTools = settings.SupportsTools
+			supJSON = settings.SupportsJSON
+			hasExplicitToolSetting = true
+		}
 	}
-	// Auto-disable tools for detected local subtypes as a safety net.
-	if subtype != SubtypeOpenAI {
+
+	// 3. Auto-disable tools for detected local subtypes ONLY if no explicit setting.
+	// This allows users to force-enable tools for local models that support them.
+	if subtype != SubtypeOpenAI && !hasExplicitToolSetting {
 		supTools = false
 	}
 

@@ -55,19 +55,23 @@ func Run(
 
 	// runEngine builds a fresh Engine for each task so that chatFiles and
 	// readOnlyFiles reflect the TUI's current state at submission time.
-	runEngine := func(ctx context.Context, prompt string, sink loop.Sink, executorExtra, criticExtra string, chatFiles, roFiles []string) error {
+	runEngine := func(ctx context.Context, prompt string, sink loop.Sink, executorExtra, criticExtra string, chatFiles, roFiles []string, readOnly bool) error {
 		eng := loop.New(
 			loop.Config{
-				MaxRounds:     cfg.Loop.MaxRounds,
-				CompactAfter:  cfg.Loop.CompactAfter,
-				SessionID:     sessID,
-				GitEnabled:    cfg.Git.Enabled,
-				ChatFiles:     chatFiles,
-				ReadOnlyFiles: roFiles,
-				LinterCfg:     cfg.Linters,
-				EditFormat:    cfg.Loop.EditFormat,
-				ExecutorExtra: executorExtra,
-				CriticExtra:   criticExtra,
+				MaxRounds:      cfg.Loop.MaxRounds,
+				CompactAfter:   cfg.Loop.CompactAfter,
+				SessionID:      sessID,
+				GitEnabled:     cfg.Git.Enabled,
+				ChatFiles:      chatFiles,
+				ReadOnlyFiles:  roFiles,
+				LinterCfg:      cfg.Linters,
+				EditFormat:     cfg.Loop.EditFormat,
+				ExecutorExtra:  executorExtra,
+				CriticExtra:    criticExtra,
+				ReadOnly:       readOnly,
+				Permission:     cfg.Loop.Permission,
+				ShowDiff:       cfg.Loop.ShowDiff,
+				PreApplyReview: cfg.PreApplyReview,
 			},
 			repo, gitSess, store, reg, sink,
 		)
@@ -83,7 +87,7 @@ func Run(
 		watchMgr, _ = watch.NewManager(repo, ig)
 	}
 
-	m := newModel(ctx, runGate, runEngine, skillsReg, store, sessID, repo.Root(), readOnlyFiles, watchMgr, pref, cfg, gitSess, repo)
+	m := newModel(ctx, runGate, runEngine, skillsReg, store, sessID, repo.Root(), readOnlyFiles, watchMgr, pref, cfg, gitSess, repo, marshalB)
 
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),

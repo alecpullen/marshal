@@ -113,7 +113,7 @@ func DefaultSettings() ModelSettings {
 		Name:           "unknown",
 		SupportsTools:  false,
 		SupportsVision: false,
-		SupportsJSON:   true,
+		SupportsJSON:   false,
 		EditFormat:     "wholefile",
 		MaxTokens:      4096,
 		ContextWindow:  8192,

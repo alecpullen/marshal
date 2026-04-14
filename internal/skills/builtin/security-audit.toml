@@ -1,6 +1,7 @@
 name = "Security Audit"
 description = "Review code for security vulnerabilities and best practices"
 trigger = "/audit"
+read_only = true
 
 [executor]
 system_extra = """
@@ -16,13 +17,15 @@ When performing security audits:
 9. Identify insecure randomness for security purposes
 10. Review CORS configuration and CSP headers
 
+IMPORTANT: This is an analysis-only task. Do NOT modify any files. Only read and analyze the code, then provide your findings.
+
 Output format:
 - Severity: Critical | High | Medium | Low
 - Location: file path and line numbers
 - Issue: brief description
-- Fix: concrete code suggestion or pattern
+- Fix: concrete code suggestion or pattern (as text, not as file edits)
 
-Do not just flag issues — provide secure replacement code.
+Do not just flag issues — provide secure replacement code suggestions.
 """
 
 [critic]
@@ -35,4 +38,6 @@ When reviewing security audit results:
 5. Check that cryptographic recommendations use modern algorithms
 6. Ensure input validation covers all entry points (headers, params, body)
 7. Verify error messages don't leak sensitive information
+
+IMPORTANT: This is a read-only analysis task. The executor should NOT have modified any files. PASS if the security analysis is thorough and accurate, regardless of whether any code changes were made.
 """

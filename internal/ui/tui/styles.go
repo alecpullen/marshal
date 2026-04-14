@@ -49,4 +49,51 @@ var (
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(colorFaint).
 				PaddingLeft(1)
+
+	// Tool operation styles for compact display
+	styleToolOperation = lipgloss.NewStyle().
+				Foreground(colorFaint)
+
+	styleToolName = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorBlue)
+
+	styleToolPath = lipgloss.NewStyle().
+			Foreground(lipgloss.NoColor{})
+
+	styleToolStatusRunning = lipgloss.NewStyle().
+				Foreground(colorYellow)
+
+	styleToolStatusReading = lipgloss.NewStyle().
+				Foreground(colorBlue)
+
+	styleToolStatusWriting = lipgloss.NewStyle().
+				Foreground(colorYellow)
+
+	styleToolStatusDone = lipgloss.NewStyle().
+				Foreground(colorGreen)
+
+	styleToolStatusFailed = lipgloss.NewStyle().
+				Foreground(colorRed)
+
+	styleToolSummary = lipgloss.NewStyle().
+				Foreground(colorFaint).
+				Italic(true)
+
+	// Permission prompt styles
+	stylePermissionPrompt = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorYellow).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(colorYellow).
+				Padding(1).
+				Margin(1)
+
+	stylePermissionYes = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorGreen)
+
+	stylePermissionNo = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorRed)
 )

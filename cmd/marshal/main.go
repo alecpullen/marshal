@@ -33,17 +33,18 @@ import (
 var Version = ""
 
 // Exit codes for headless/CI mode.
-//   0 = PASS & merged
-//   1 = task exhausted retries
-//   2 = config error
-//   3 = git error
-//   4 = pipeline integration FAIL
+//
+//	0 = PASS & merged
+//	1 = task exhausted retries
+//	2 = config error
+//	3 = git error
+//	4 = pipeline integration FAIL
 const (
-	exitOK              = 0
-	exitTaskFailed      = 1
-	exitConfigError     = 2
-	exitGitError        = 3
-	exitPipelineFail    = 4
+	exitOK           = 0
+	exitTaskFailed   = 1
+	exitConfigError  = 2
+	exitGitError     = 3
+	exitPipelineFail = 4
 )
 
 func main() {
@@ -59,7 +60,7 @@ type categorizedError struct {
 }
 
 func (e *categorizedError) Error() string { return e.err.Error() }
-func (e *categorizedError) Unwrap() error  { return e.err }
+func (e *categorizedError) Unwrap() error { return e.err }
 
 // withExitCode wraps err with the specified exit code.
 func withExitCode(code int, err error) error {
@@ -434,12 +435,15 @@ Examples:
 			// Run the task loop.
 			eng := loop.New(
 				loop.Config{
-					MaxRounds:    cfg.Loop.MaxRounds,
-					CompactAfter: cfg.Loop.CompactAfter,
-					SessionID:    sessID,
-					GitEnabled:   cfg.Git.Enabled,
-					LinterCfg:    cfg.Linters,
-					EditFormat:   cfg.Loop.EditFormat,
+					MaxRounds:      cfg.Loop.MaxRounds,
+					CompactAfter:   cfg.Loop.CompactAfter,
+					SessionID:      sessID,
+					GitEnabled:     cfg.Git.Enabled,
+					LinterCfg:      cfg.Linters,
+					EditFormat:     cfg.Loop.EditFormat,
+					Permission:     cfg.Loop.Permission,
+					ShowDiff:       cfg.Loop.ShowDiff,
+					PreApplyReview: cfg.PreApplyReview,
 				},
 				repo, gitSess, store, reg, sink,
 			)
@@ -644,12 +648,15 @@ func runPipelineHeadless(ctx context.Context, cfg *config.Config, repo *git.Repo
 		sessID := "pipeline-" + t.ID
 		eng := loop.New(
 			loop.Config{
-				MaxRounds:    cfg.Loop.MaxRounds,
-				CompactAfter: cfg.Loop.CompactAfter,
-				SessionID:    sessID,
-				GitEnabled:   cfg.Git.Enabled,
-				LinterCfg:    cfg.Linters,
-				EditFormat:   cfg.Loop.EditFormat,
+				MaxRounds:      cfg.Loop.MaxRounds,
+				CompactAfter:   cfg.Loop.CompactAfter,
+				SessionID:      sessID,
+				GitEnabled:     cfg.Git.Enabled,
+				LinterCfg:      cfg.Linters,
+				EditFormat:     cfg.Loop.EditFormat,
+				Permission:     cfg.Loop.Permission,
+				ShowDiff:       cfg.Loop.ShowDiff,
+				PreApplyReview: cfg.PreApplyReview,
 			},
 			repo, gitSess, store, reg, loop.StdoutSink{},
 		)

@@ -15,6 +15,8 @@ import (
 type ReadFileResult struct {
 	Content   string `json:"content"`
 	Path      string `json:"path"`
+	Lines     int    `json:"lines"` // Total lines read
+	Size      int    `json:"size"`  // Size in bytes
 	Truncated bool   `json:"truncated,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
@@ -114,6 +116,10 @@ func ReadFile(repoRoot string, input json.RawMessage) (*ReadFileResult, error) {
 	}
 
 	contentStr := string(content)
+	totalLines := strings.Count(contentStr, "\n")
+	if !strings.HasSuffix(contentStr, "\n") && contentStr != "" {
+		totalLines++ // Count last line if no trailing newline
+	}
 
 	// Handle line-based pagination if requested
 	if params.Offset > 0 || params.Limit > 0 {
@@ -122,8 +128,8 @@ func ReadFile(repoRoot string, input json.RawMessage) (*ReadFileResult, error) {
 		// Validate offset
 		if params.Offset >= len(lines) {
 			return &ReadFileResult{
-				Path:   params.Path,
-				Error:  fmt.Sprintf("offset %d exceeds file length (%d lines)", params.Offset, len(lines)),
+				Path:      params.Path,
+				Error:     fmt.Sprintf("offset %d exceeds file length (%d lines)", params.Offset, len(lines)),
 				Truncated: true,
 			}, nil
 		}
@@ -143,10 +149,14 @@ func ReadFile(repoRoot string, input json.RawMessage) (*ReadFileResult, error) {
 		}
 
 		contentStr = strings.Join(lines[params.Offset:end], "\n")
+		readLines := end - params.Offset
+		size := len(contentStr)
 
 		return &ReadFileResult{
 			Path:      params.Path,
 			Content:   contentStr,
+			Lines:     readLines,
+			Size:      size,
 			Truncated: truncated,
 		}, nil
 	}
@@ -155,5 +165,7 @@ func ReadFile(repoRoot string, input json.RawMessage) (*ReadFileResult, error) {
 	return &ReadFileResult{
 		Path:    params.Path,
 		Content: contentStr,
+		Lines:   totalLines,
+		Size:    len(content),
 	}, nil
 }

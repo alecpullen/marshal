@@ -78,6 +78,68 @@ func (s *NDJSONSink) LintErrors(taskID, summary string) {
 	// we don't emit a separate event but they would be in the round_end response.
 }
 
+// FileEditStart emits the file_edit_start event.
+func (s *NDJSONSink) FileEditStart(taskID, path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventFileEditStart(taskID, path))
+}
+
+// FileEditDone emits the file_edit_done event.
+func (s *NDJSONSink) FileEditDone(taskID, path string, added, deleted int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventFileEditDone(taskID, path, added, deleted))
+}
+
+// FileEditFailed emits the file_edit_failed event.
+func (s *NDJSONSink) FileEditFailed(taskID, path, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventFileEditFailed(taskID, path, reason))
+}
+
+func (s *NDJSONSink) PermissionRequest(taskID, toolName, path, preview string, response chan<- bool) {
+	// In NDJSON mode, auto-approve (no interactive prompt)
+	response <- true
+}
+
+func (s *NDJSONSink) ToolOperation(taskID, toolName, path, status, summary string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventToolOperation(taskID, toolName, path, status, summary))
+}
+
+func (s *NDJSONSink) ToolOperationDetail(taskID, path, content string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventToolOperationDetail(taskID, path, content))
+}
+
+func (s *NDJSONSink) ThinkBlock(taskID, content string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventThinkBlock(taskID, content))
+}
+
+func (s *NDJSONSink) ProposalsReady(taskID string, files []string, summary string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventProposalsReady(taskID, files, summary))
+}
+
+func (s *NDJSONSink) ProposalsApplied(taskID string, files []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventProposalsApplied(taskID, files))
+}
+
+func (s *NDJSONSink) ProposalsDiscarded(taskID, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emit(eventProposalsDiscarded(taskID, reason))
+}
+
 // VerdictBadge stores the verdict for inclusion in round_end; does not emit immediately.
 func (s *NDJSONSink) VerdictBadge(taskID string, verdict, summary string) {
 	s.mu.Lock()
@@ -163,15 +225,15 @@ type roundStartEvent struct {
 
 type roundEndEvent struct {
 	event
-	TaskID           string  `json:"task_id"`
-	Round            int     `json:"round"`
-	Response         string  `json:"response"`
-	Verdict          string  `json:"verdict,omitempty"`
-	Summary          string  `json:"summary,omitempty"`
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
+	TaskID           string `json:"task_id"`
+	Round            int    `json:"round"`
+	Response         string `json:"response"`
+	Verdict          string `json:"verdict,omitempty"`
+	Summary          string `json:"summary,omitempty"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
 	// Timing fields for local-model benchmarking
-	TimeToFirstTokenMs int64   `json:"ttft_ms,omitempty"`      // time-to-first-token
+	TimeToFirstTokenMs int64   `json:"ttft_ms,omitempty"`        // time-to-first-token
 	TokensPerSec       float64 `json:"tokens_per_sec,omitempty"` // throughput estimate
 }
 
@@ -184,19 +246,40 @@ type verdictEvent struct {
 
 type mergedEvent struct {
 	event
-	TaskID      string `json:"task_id"`
-	StagingSHA  string `json:"staging_sha"`
+	TaskID     string `json:"task_id"`
+	StagingSHA string `json:"staging_sha"`
 }
 
 type sessionEndEvent struct {
 	event
-	SessionID          string `json:"session_id"`
-	Verdict            string `json:"verdict"`
-	PromptTokens       int    `json:"prompt_tokens"`
-	CompletionTokens   int    `json:"completion_tokens"`
-	TotalTokens        int    `json:"total_tokens"`
-	DurationMS         int64  `json:"duration_ms"`
-	Error              string `json:"error,omitempty"`
+	SessionID        string `json:"session_id"`
+	Verdict          string `json:"verdict"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	TotalTokens      int    `json:"total_tokens"`
+	DurationMS       int64  `json:"duration_ms"`
+	Error            string `json:"error,omitempty"`
+}
+
+type fileEditStartEvent struct {
+	event
+	TaskID string `json:"task_id"`
+	Path   string `json:"path"`
+}
+
+type fileEditDoneEvent struct {
+	event
+	TaskID  string `json:"task_id"`
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Deleted int    `json:"deleted"`
+}
+
+type fileEditFailedEvent struct {
+	event
+	TaskID string `json:"task_id"`
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }
 
 func newEvent(name string) event {
@@ -265,5 +348,126 @@ func eventSessionEnd(sessID, verdict string, pToks, cToks int, duration int64, e
 		TotalTokens:      pToks + cToks,
 		DurationMS:       duration,
 		Error:            err,
+	}
+}
+
+func eventFileEditStart(taskID, path string) fileEditStartEvent {
+	return fileEditStartEvent{
+		event:  newEvent("file_edit_start"),
+		TaskID: taskID,
+		Path:   path,
+	}
+}
+
+func eventFileEditDone(taskID, path string, added, deleted int) fileEditDoneEvent {
+	return fileEditDoneEvent{
+		event:   newEvent("file_edit_done"),
+		TaskID:  taskID,
+		Path:    path,
+		Added:   added,
+		Deleted: deleted,
+	}
+}
+
+func eventFileEditFailed(taskID, path, reason string) fileEditFailedEvent {
+	return fileEditFailedEvent{
+		event:  newEvent("file_edit_failed"),
+		TaskID: taskID,
+		Path:   path,
+		Reason: reason,
+	}
+}
+
+type toolOperationEvent struct {
+	event
+	TaskID   string `json:"task_id"`
+	ToolName string `json:"tool_name"`
+	Path     string `json:"path"`
+	Status   string `json:"status"`
+	Summary  string `json:"summary,omitempty"`
+}
+
+type toolOperationDetailEvent struct {
+	event
+	TaskID  string `json:"task_id"`
+	Path    string `json:"path"`
+	Content string `json:"content,omitempty"`
+}
+
+func eventToolOperation(taskID, toolName, path, status, summary string) toolOperationEvent {
+	return toolOperationEvent{
+		event:    newEvent("tool_operation"),
+		TaskID:   taskID,
+		ToolName: toolName,
+		Path:     path,
+		Status:   status,
+		Summary:  summary,
+	}
+}
+
+func eventToolOperationDetail(taskID, path, content string) toolOperationDetailEvent {
+	return toolOperationDetailEvent{
+		event:   newEvent("tool_operation_detail"),
+		TaskID:  taskID,
+		Path:    path,
+		Content: content,
+	}
+}
+
+type thinkBlockEvent struct {
+	event
+	TaskID  string `json:"task_id"`
+	Content string `json:"content"`
+}
+
+func eventThinkBlock(taskID, content string) thinkBlockEvent {
+	return thinkBlockEvent{
+		event:   newEvent("think_block"),
+		TaskID:  taskID,
+		Content: content,
+	}
+}
+
+type proposalsReadyEvent struct {
+	event
+	TaskID  string   `json:"task_id"`
+	Files   []string `json:"files"`
+	Summary string   `json:"summary"`
+}
+
+type proposalsAppliedEvent struct {
+	event
+	TaskID string   `json:"task_id"`
+	Files  []string `json:"files"`
+}
+
+type proposalsDiscardedEvent struct {
+	event
+	TaskID string `json:"task_id"`
+	Reason string `json:"reason"`
+}
+
+func eventProposalsReady(taskID string, files []string, summary string) proposalsReadyEvent {
+	return proposalsReadyEvent{
+		event:   newEvent("proposals_ready"),
+		TaskID:  taskID,
+		Files:   files,
+		Summary: summary,
+	}
+}
+
+func eventProposalsApplied(taskID string, files []string) proposalsAppliedEvent {
+	return proposalsAppliedEvent{
+		event:  newEvent("proposals_applied"),
+		TaskID: taskID,
+		Files:  files,
+	}
+}
+
+func eventProposalsDiscarded(taskID, reason string) proposalsDiscardedEvent {
+	return proposalsDiscardedEvent{
+		event:  newEvent("proposals_discarded"),
+		TaskID: taskID,
+		Reason: reason,
 	}
 }

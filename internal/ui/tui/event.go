@@ -54,6 +54,80 @@ type LintErrorsMsg struct {
 // TaskDoneMsg is sent when the engine goroutine finishes (pass, fail, or error).
 type TaskDoneMsg struct{ Err error }
 
+// FileEditStartMsg is sent when the engine begins writing a file.
+type FileEditStartMsg struct {
+	TaskID string
+	Path   string
+}
+
+// FileEditDoneMsg is sent after a file is successfully written.
+type FileEditDoneMsg struct {
+	TaskID  string
+	Path    string
+	Added   int
+	Deleted int
+}
+
+// FileEditFailedMsg is sent when a file edit fails (e.g., search/replace mismatch).
+type FileEditFailedMsg struct {
+	TaskID string
+	Path   string
+	Reason string
+}
+
+// PermissionRequestMsg is sent when the engine needs user confirmation before editing.
+type PermissionRequestMsg struct {
+	TaskID   string
+	ToolName string // "write_file", "read_file", "run_command", "search_replace", etc.
+	Path     string // file path being operated on (empty for run_command)
+	Preview  string // brief preview of the change (e.g., "+5/-3 lines" or truncated content)
+	// Response channel - sends true for "yes", false for "no"
+	Response chan<- bool
+}
+
+// ToolOperationMsg is sent to show a compact tool operation indicator.
+type ToolOperationMsg struct {
+	TaskID   string
+	ToolName string // "write_file", "read_file", "run_command"
+	Path     string // file path or command being executed
+	Status   string // "pending", "running", "done", "failed"
+	Summary  string // brief summary (e.g., "+5/-3" for edits, or "1.2KB" for reads)
+}
+
+// ToolOperationDetailMsg carries the full diff/content for expandable view.
+type ToolOperationDetailMsg struct {
+	TaskID  string
+	Path    string
+	Content string
+}
+
+// ThinkBlockMsg carries a thinking/reasoning block from the executor.
+// This enables the marshal model to provide real-time summaries.
+type ThinkBlockMsg struct {
+	TaskID  string
+	Content string // The thinking content (may be partial during streaming)
+	Done    bool   // True when this is the final chunk of the think block
+}
+
+// ProposalsReadyMsg signals that file changes have been proposed and are awaiting critic review.
+type ProposalsReadyMsg struct {
+	TaskID  string
+	Files   []string // list of files with proposed changes
+	Summary string   // summary of changes
+}
+
+// ProposalsAppliedMsg signals that proposals have been applied after critic approval.
+type ProposalsAppliedMsg struct {
+	TaskID string
+	Files  []string // list of files that were applied
+}
+
+// ProposalsDiscardedMsg signals that proposals were rejected and discarded.
+type ProposalsDiscardedMsg struct {
+	TaskID string
+	Reason string // reason for discard
+}
+
 // ShellResultMsg carries the output of a shell command run by a TUI handler.
 type ShellResultMsg struct {
 	Label  string // display label, e.g. "$ ls -la" or "/diff"
@@ -114,4 +188,44 @@ func (s *ChanSink) TaskFailed(id, issue string) {
 }
 func (s *ChanSink) RoundEnd(id string, round, promptTokens, completionTokens int) {
 	s.prog.Send(RoundEndMsg{TaskID: id, Round: round, PromptTokens: promptTokens, CompletionTokens: completionTokens})
+}
+
+func (s *ChanSink) FileEditStart(id, path string) {
+	s.prog.Send(FileEditStartMsg{TaskID: id, Path: path})
+}
+
+func (s *ChanSink) FileEditDone(id, path string, added, deleted int) {
+	s.prog.Send(FileEditDoneMsg{TaskID: id, Path: path, Added: added, Deleted: deleted})
+}
+
+func (s *ChanSink) FileEditFailed(id, path, reason string) {
+	s.prog.Send(FileEditFailedMsg{TaskID: id, Path: path, Reason: reason})
+}
+
+func (s *ChanSink) PermissionRequest(id, toolName, path, preview string, response chan<- bool) {
+	s.prog.Send(PermissionRequestMsg{TaskID: id, ToolName: toolName, Path: path, Preview: preview, Response: response})
+}
+
+func (s *ChanSink) ToolOperation(id, toolName, path, status, summary string) {
+	s.prog.Send(ToolOperationMsg{TaskID: id, ToolName: toolName, Path: path, Status: status, Summary: summary})
+}
+
+func (s *ChanSink) ToolOperationDetail(id, path, content string) {
+	s.prog.Send(ToolOperationDetailMsg{TaskID: id, Path: path, Content: content})
+}
+
+func (s *ChanSink) ThinkBlock(id, content string) {
+	s.prog.Send(ThinkBlockMsg{TaskID: id, Content: content})
+}
+
+func (s *ChanSink) ProposalsReady(id string, files []string, summary string) {
+	s.prog.Send(ProposalsReadyMsg{TaskID: id, Files: files, Summary: summary})
+}
+
+func (s *ChanSink) ProposalsApplied(id string, files []string) {
+	s.prog.Send(ProposalsAppliedMsg{TaskID: id, Files: files})
+}
+
+func (s *ChanSink) ProposalsDiscarded(id string, reason string) {
+	s.prog.Send(ProposalsDiscardedMsg{TaskID: id, Reason: reason})
 }

@@ -134,6 +134,34 @@ system_extra = "PASS only if tests are comprehensive."
 	}
 }
 
+func TestLoad_ReadOnlySkill(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+name        = "Security Audit"
+description = "Review code for security vulnerabilities"
+trigger     = "/audit"
+read_only   = true
+
+[executor]
+system_extra = "Check for security issues."
+`
+	if err := os.WriteFile(filepath.Join(dir, "audit.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := skills.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := r.Find("/audit")
+	if !ok {
+		t.Fatal("expected to find /audit")
+	}
+	if !s.ReadOnly {
+		t.Error("expected ReadOnly to be true")
+	}
+}
+
 func TestLoad_InvalidTOML(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "bad.toml"), []byte("not valid toml [[["), 0o644); err != nil {
@@ -176,6 +204,13 @@ func TestLoadBuiltins(t *testing.T) {
 	for _, trigger := range expected {
 		if _, ok := r.Find(trigger); !ok {
 			t.Errorf("expected to find built-in skill %q", trigger)
+		}
+	}
+
+	// Security audit should be read-only
+	if audit, ok := r.Find("/audit"); ok {
+		if !audit.ReadOnly {
+			t.Error("expected /audit skill to have ReadOnly=true")
 		}
 	}
 }

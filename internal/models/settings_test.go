@@ -141,8 +141,8 @@ func TestDefaultSettings(t *testing.T) {
 	if ms.SupportsTools {
 		t.Error("expected SupportsTools=false")
 	}
-	if !ms.SupportsJSON {
-		t.Error("expected SupportsJSON=true")
+	if ms.SupportsJSON {
+		t.Error("expected SupportsJSON=false")
 	}
 	if ms.EditFormat != "wholefile" {
 		t.Errorf("EditFormat: got %q, want %q", ms.EditFormat, "wholefile")

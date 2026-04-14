@@ -32,20 +32,20 @@ const (
 type ClarifyMode string
 
 const (
-	ClarifyNever    ClarifyMode = "never"
+	ClarifyNever     ClarifyMode = "never"
 	ClarifyAmbiguous ClarifyMode = "ambiguous"
-	ClarifyAlways   ClarifyMode = "always"
+	ClarifyAlways    ClarifyMode = "always"
 )
 
 // ProviderSubtype distinguishes local-server dialects for OpenAI-compatible endpoints.
 type ProviderSubtype string
 
 const (
-	SubtypeOpenAI    ProviderSubtype = "openai"
-	SubtypeOllama    ProviderSubtype = "ollama"
-	SubtypeLlamaCPP  ProviderSubtype = "llama_cpp"
-	SubtypeVLLM      ProviderSubtype = "vllm"
-	SubtypeLMStudio  ProviderSubtype = "lmstudio"
+	SubtypeOpenAI   ProviderSubtype = "openai"
+	SubtypeOllama   ProviderSubtype = "ollama"
+	SubtypeLlamaCPP ProviderSubtype = "llama_cpp"
+	SubtypeVLLM     ProviderSubtype = "vllm"
+	SubtypeLMStudio ProviderSubtype = "lmstudio"
 )
 
 // ModelConfig holds per-role model settings.
@@ -58,12 +58,15 @@ type ModelConfig struct {
 	MaxTokens   int     `toml:"max_tokens"`
 	Temperature float64 `toml:"temperature"`
 	// Sampler parameters for local model tuning
-	TopP           float64 `toml:"top_p"`
-	MinP           float64 `toml:"min_p"`
-	RepeatPenalty  float64 `toml:"repeat_penalty"`
-	Seed           int     `toml:"seed"`
+	TopP          float64 `toml:"top_p"`
+	MinP          float64 `toml:"min_p"`
+	RepeatPenalty float64 `toml:"repeat_penalty"`
+	Seed          int     `toml:"seed"`
 	// ProviderSubtype hints at local-server dialect; auto-detected from BaseURL when empty.
 	Subtype ProviderSubtype `toml:"subtype"`
+	// SupportsTools explicitly enables/disables tool-use for this model.
+	// When set, it overrides the auto-detection logic (useful for local models that support tools).
+	SupportsTools *bool `toml:"supports_tools,omitempty"`
 }
 
 // Redacted returns a copy with the API key masked.
@@ -88,9 +91,9 @@ type GitConfig struct {
 type EditFormat string
 
 const (
-	EditFormatWholeFile    EditFormat = "wholefile"     // full file in fenced block
+	EditFormatWholeFile     EditFormat = "wholefile"      // full file in fenced block
 	EditFormatSearchReplace EditFormat = "search-replace" // <<<<<<< SEARCH / >>>>>>> REPLACE
-	EditFormatUdiff        EditFormat = "udiff"          // unified diff
+	EditFormatUdiff         EditFormat = "udiff"          // unified diff
 )
 
 // CriticMode controls how the critic is invoked.
@@ -101,15 +104,26 @@ const (
 	CriticModeSelf     CriticMode = "self"     // executor emits self-critique
 )
 
+// PermissionMode controls when to ask for user confirmation before edits.
+type PermissionMode string
+
+const (
+	PermissionNever  PermissionMode = "never"  // Never ask, apply edits immediately (default)
+	PermissionAlways PermissionMode = "always" // Always ask before any edit
+	PermissionSmart  PermissionMode = "smart"  // Ask only for destructive/major changes
+)
+
 // LoopConfig controls task-loop behaviour.
 type LoopConfig struct {
-	MaxRounds      int         `toml:"max_rounds"`
-	CompactAfter   int         `toml:"compact_after"`
-	Clarify        ClarifyMode `toml:"clarify"`
-	EditFormat     EditFormat  `toml:"edit_format"`
-	LinterIsCritic bool        `toml:"linter_is_critic"` // auto-PASS on clean lint
-	CriticMode     CriticMode  `toml:"critic_mode"`      // "separate" or "self"
-	LocalProfile   bool        `toml:"local_profile"`    // one-knob local optimization
+	MaxRounds      int            `toml:"max_rounds"`
+	CompactAfter   int            `toml:"compact_after"`
+	Clarify        ClarifyMode    `toml:"clarify"`
+	EditFormat     EditFormat     `toml:"edit_format"`
+	LinterIsCritic bool           `toml:"linter_is_critic"` // auto-PASS on clean lint
+	CriticMode     CriticMode     `toml:"critic_mode"`      // "separate" or "self"
+	LocalProfile   bool           `toml:"local_profile"`    // one-knob local optimization
+	Permission     PermissionMode `toml:"permission"`       // when to ask for edit confirmation
+	ShowDiff       bool           `toml:"show_diff"`        // show diff after edits (default: true)
 }
 
 // LinterConfig maps file-extension groups to linter commands.
@@ -142,23 +156,27 @@ type Models struct {
 
 // Profile is a named overlay merged on top of the base config.
 type Profile struct {
-	Model   Models      `toml:"model"`
-	Loop    LoopConfig  `toml:"loop"`
+	Model   Models       `toml:"model"`
+	Loop    LoopConfig   `toml:"loop"`
 	Linters LinterConfig `toml:"linters"`
 }
 
 // Config is the top-level configuration object.
 type Config struct {
-	Model     Models                `toml:"model"`
-	Loop      LoopConfig            `toml:"loop"`
-	Git       GitConfig             `toml:"git"`
-	Linters   LinterConfig          `toml:"linters"`
-	Tools     ToolsConfig           `toml:"tools"`
-	Analytics AnalyticsConfig       `toml:"analytics"`
-	Profiles  map[string]Profile  `toml:"profiles"`
+	Model     Models             `toml:"model"`
+	Loop      LoopConfig         `toml:"loop"`
+	Git       GitConfig          `toml:"git"`
+	Linters   LinterConfig       `toml:"linters"`
+	Tools     ToolsConfig        `toml:"tools"`
+	Analytics AnalyticsConfig    `toml:"analytics"`
+	Profiles  map[string]Profile `toml:"profiles"`
 
 	// LogFile is the optional path for the structured log sink.
 	LogFile string `toml:"log_file"`
+
+	// PreApplyReview enables critic review before file changes are applied.
+	// When true, the critic reviews proposed changes before any files are modified.
+	PreApplyReview bool `toml:"pre_apply_review"`
 
 	// resolved profile name (set by Load, not from TOML)
 	activeProfile string
@@ -296,6 +314,8 @@ func defaults() Config {
 			LinterIsCritic: false,
 			CriticMode:     CriticModeSeparate,
 			LocalProfile:   false,
+			Permission:     PermissionNever,
+			ShowDiff:       true,
 		},
 		Linters: LinterConfig{
 			Go:     "golangci-lint run",

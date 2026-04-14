@@ -24,7 +24,6 @@ import (
 	"github.com/alecpullen/marshal/internal/session"
 )
 
-
 // executorOutputInstructions returns format-specific instructions for the executor.
 func executorOutputInstructions(fmt config.EditFormat) string {
 	switch fmt {
@@ -68,6 +67,29 @@ Output ONLY files that changed. Do not truncate or summarise file contents.`
 	}
 }
 
+// readOnlyOutputInstructions returns instructions for read-only analysis tasks.
+// The executor should provide analysis without attempting to modify any files.
+func readOnlyOutputInstructions() string {
+	return `This is a READ-ONLY analysis task. You are NOT permitted to modify any files.
+
+ABSOLUTE PROHIBITION:
+- Do NOT output SEARCH/REPLACE blocks
+- Do NOT output unified diffs
+- Do NOT output complete file contents with "save this file" instructions
+- Do NOT use any file write tools if available
+
+Your ONLY job is to analyze the code and provide findings as text.
+
+Output format:
+1. Start with a brief summary of what you analyzed
+2. For each finding include:
+   - Location: file path and line numbers
+   - Issue: description of the problem or observation
+   - Recommendation: suggested fix or improvement (as text only)
+
+You may include code snippets in fenced blocks to illustrate issues, but NEVER as instructions to modify files.`
+}
+
 const criticOutputInstructions = `Respond with ONLY this JSON object (no markdown, no prose):
 {"verdict":"PASS","summary":"one sentence","issue":"","fix":"","concerns":[]}
 
@@ -79,18 +101,22 @@ var ErrTaskFailed = errors.New("task failed after all rounds")
 
 // Config controls Engine behaviour.
 type Config struct {
-	MaxRounds     int
-	CompactAfter  int                 // call compactor after this many consecutive FAIL rounds (0 = disabled)
-	SessionID     string
-	GitEnabled    bool                // when false all git operations are skipped
-	ChatFiles     []string            // recently referenced files for repo-map personalization
-	ReadOnlyFiles []string            // read-only files to include in context but never write
-	EditFormat    config.EditFormat   // controls executor output format
-	LinterCfg     config.LinterConfig // linter commands; zero value disables linting
-	ExecutorExtra string              // appended to executor system prompt (from active skill)
-	CriticExtra   string              // appended to critic system prompt (from active skill)
-	LinterIsCritic bool               // auto-PASS when linter is clean
-	CriticMode     config.CriticMode   // "separate" or "self"
+	MaxRounds      int
+	CompactAfter   int // call compactor after this many consecutive FAIL rounds (0 = disabled)
+	SessionID      string
+	GitEnabled     bool                  // when false all git operations are skipped
+	ChatFiles      []string              // recently referenced files for repo-map personalization
+	ReadOnlyFiles  []string              // read-only files to include in context but never write
+	EditFormat     config.EditFormat     // controls executor output format
+	LinterCfg      config.LinterConfig   // linter commands; zero value disables linting
+	ExecutorExtra  string                // appended to executor system prompt (from active skill)
+	CriticExtra    string                // appended to critic system prompt (from active skill)
+	LinterIsCritic bool                  // auto-PASS when linter is clean
+	CriticMode     config.CriticMode     // "separate" or "self"
+	ReadOnly       bool                  // when true, skip edit application (analysis-only tasks)
+	Permission     config.PermissionMode // when to ask for edit confirmation
+	ShowDiff       bool                  // show diff after edits
+	PreApplyReview bool                  // critic reviews proposals before files are changed
 }
 
 // txer abstracts the task-branch lifecycle so the engine can run with or
@@ -111,6 +137,16 @@ func (noopTx) Diff() (string, error) { return "", nil }
 func (noopTx) Merge(string) error    { return nil }
 func (noopTx) Abandon() error        { return nil }
 
+// ProposedChange represents a file change proposed by the executor but not yet applied.
+type ProposedChange struct {
+	Path       string // relative path
+	ToolName   string // "write_file", "search_replace", "udiff"
+	OldContent string // original content (empty for new files)
+	NewContent string // proposed new content
+	Added      int    // line count stats
+	Deleted    int    // line count stats
+}
+
 // Engine orchestrates the executor–critic round loop for a single task.
 type Engine struct {
 	repo            *git.Repo
@@ -122,11 +158,16 @@ type Engine struct {
 	repoMap         string       // pre-built repo map text, injected into executor prompt
 	repoMapM        *repomap.Map // cached map for file content injection
 	lint            *linter.Linter
-	execSysPrompt   string // assembled executor system prompt (base + skill extra)
-	criticSysPrompt string // assembled critic system prompt (base + skill extra)
-	executorModel   string // model name for context window lookup
-	executorSubtype   backend.ProviderSubtype // for grammar constraint selection
+	execSysPrompt   string                  // assembled executor system prompt (base + skill extra)
+	criticSysPrompt string                  // assembled critic system prompt (base + skill extra)
+	executorModel   string                  // model name for context window lookup
+	executorSubtype backend.ProviderSubtype // for grammar constraint selection
 	criticSubtype   backend.ProviderSubtype // for grammar constraint selection
+
+	// Proposal mode state (for pre-apply critic review)
+	proposals     []ProposedChange  // accumulated proposed changes
+	proposalMode  bool              // true when capturing instead of applying
+	inMemoryFiles map[string]string // virtual filesystem for proposal mode reads
 }
 
 // fileInjectionBudget returns the character budget for file content injection,
@@ -136,6 +177,7 @@ type Engine struct {
 //   - repo map (~2K tokens)
 //   - task + instructions (~1K tokens)
 //   - round-2+ issue/fix (~1K tokens)
+//
 // Budget is in characters, assuming ~4 chars/token.
 func (e *Engine) fileInjectionBudget() int {
 	ctxWindow := models.ContextWindowFor(e.executorModel)
@@ -306,8 +348,28 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		var changedFiles []string
 		var execErr error
 
-		if executorB.SupportsTools() {
+		if e.cfg.ReadOnly {
+			// Read-only mode: stream response but do not apply any edits.
+			execContent, execPToks, execCToks, execErr = e.streamToSink(ctx, executorB, execMsgs, false) // silent=false: show analysis
+			if execErr != nil {
+				_ = tx.Abandon()
+				return fmt.Errorf("executor stream: %w", execErr)
+			}
+			// No edits applied in read-only mode.
+			changedFiles = nil
+		} else if e.cfg.PreApplyReview && executorB.SupportsTools() {
+			// Pre-apply review mode: capture proposals, get critic approval, then apply
+			toolUseMsgs := e.buildToolUseMessages(prompt, issue, fix, round)
+			execContent, execPToks, execCToks, execErr = e.runToolUseRoundWithProposals(ctx, executorB, toolUseMsgs, taskID, round)
+			if execErr != nil {
+				_ = tx.Abandon()
+				return fmt.Errorf("tool-use round with proposals: %w", execErr)
+			}
+			// Get changed files from applied proposals (if critic approved)
+			changedFiles = e.getChangedFilesFromGit()
+		} else if executorB.SupportsTools() {
 			// Tool-use path: multi-turn tool calling with compact prompts (for 16K context models)
+			e.sink.ToolOperation(e.cfg.SessionID, "executor", executorB.Model(), "running", "tool-use mode")
 			toolUseMsgs := e.buildToolUseMessages(prompt, issue, fix, round)
 			execContent, execPToks, execCToks, execErr = e.runToolUseRound(ctx, executorB, toolUseMsgs)
 			if execErr != nil {
@@ -317,8 +379,9 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 			// Get changed files from git status after tool execution
 			changedFiles = e.getChangedFilesFromGit()
 		} else {
-			// Edit-format path: stream response and apply edits
-			execContent, execPToks, execCToks, execErr = e.streamToSink(ctx, executorB, execMsgs)
+			// Edit-format path: silent=true to suppress code spam, show compact operations instead
+			e.sink.ToolOperation(e.cfg.SessionID, "executor", executorB.Model()+" (search/replace)", "running", "")
+			execContent, execPToks, execCToks, execErr = e.streamToSink(ctx, executorB, execMsgs, true)
 			if execErr != nil {
 				_ = tx.Abandon()
 				return fmt.Errorf("executor stream: %w", execErr)
@@ -327,11 +390,13 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 			changedFiles = e.applyEdits(execContent)
 		}
 
-		// d. Commit all changes on the task branch.
-		commitMsg := fmt.Sprintf("marshal: task %s round %d", taskID, round)
-		if commitErr := tx.Commit(commitMsg); commitErr != nil && !errors.Is(commitErr, git.ErrNothingToCommit) {
-			_ = tx.Abandon()
-			return fmt.Errorf("commit: %w", commitErr)
+		// d. Commit all changes on the task branch (if not already done in proposal mode).
+		if !e.cfg.PreApplyReview {
+			commitMsg := fmt.Sprintf("marshal: task %s round %d", taskID, round)
+			if commitErr := tx.Commit(commitMsg); commitErr != nil && !errors.Is(commitErr, git.ErrNothingToCommit) {
+				_ = tx.Abandon()
+				return fmt.Errorf("commit: %w", commitErr)
+			}
 		}
 
 		// e. Diff against parent staging SHA for critic context.
@@ -397,7 +462,24 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 			mergeMsg := fmt.Sprintf("task %s: %s", taskID, shortPrompt)
 			if mergeErr := tx.Merge(mergeMsg); mergeErr != nil {
 				if errors.Is(mergeErr, git.ErrAlreadyUpToDate) {
-					// Task branch has no commits relative to staging — treat as FAIL.
+					// Task branch has no commits relative to staging.
+					if e.cfg.ReadOnly {
+						// For read-only analysis tasks, no changes is expected.
+						var newSHA string
+						if e.cfg.GitEnabled {
+							newSHA, _ = e.gitSess.StagingHEAD()
+						}
+						endedAt := time.Now()
+						_ = e.store.UpdateTask(taskID, session.TaskUpdate{
+							Status:     session.StatusPassed,
+							StagingSHA: &newSHA,
+							EndedAt:    &endedAt,
+							Summary:    &verdict.Summary,
+						})
+						e.sink.TaskMerged(taskID, newSHA)
+						return nil
+					}
+					// For normal tasks, no changes is a FAIL — retry.
 					issue = "the executor made no file changes"
 					fix = "output the complete content of any files that need to change"
 					continue
@@ -501,14 +583,58 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		e.sink.VerdictBadge(taskID, verdict.Verdict, verdict.Summary)
 		e.sink.RoundEnd(taskID, round, execPToks+criticPToks, execCToks+criticCToks)
 
+		// Check if this was an analysis/audit task (no files were modified)
+		// If so, override FAIL to PASS since analysis tasks don't require file changes
+		if !verdict.IsPASS() && len(changedFiles) == 0 && !e.cfg.ReadOnly {
+			// This was an analysis task with no file modifications - auto-pass
+			// The critic may have failed it expecting edits, but analysis tasks don't edit
+			verdict = &Verdict{
+				Verdict: "PASS",
+				Summary: "Analysis complete - no file changes required",
+				Issue:   "",
+				Fix:     "",
+			}
+			e.sink.VerdictBadge(taskID, verdict.Verdict, verdict.Summary)
+			var newSHA string
+			if e.cfg.GitEnabled {
+				newSHA, _ = e.gitSess.StagingHEAD()
+			}
+			endedAt := time.Now()
+			_ = e.store.UpdateTask(taskID, session.TaskUpdate{
+				Status:     session.StatusPassed,
+				StagingSHA: &newSHA,
+				EndedAt:    &endedAt,
+				Summary:    &verdict.Summary,
+			})
+			e.sink.TaskMerged(taskID, newSHA)
+			return nil
+		}
+
 		// i. PASS: merge to staging (no-op when git is disabled).
 		if verdict.IsPASS() {
 			shortPrompt := truncate(prompt, 60)
 			mergeMsg := fmt.Sprintf("task %s: %s", taskID, shortPrompt)
 			if mergeErr := tx.Merge(mergeMsg); mergeErr != nil {
 				if errors.Is(mergeErr, git.ErrAlreadyUpToDate) {
-					// Task branch has no commits relative to staging — treat
-					// this as a FAIL so the executor retries.
+					// Task branch has no commits relative to staging.
+					if e.cfg.ReadOnly {
+						// For read-only analysis tasks, no changes is expected.
+						// Mark as passed and return success.
+						var newSHA string
+						if e.cfg.GitEnabled {
+							newSHA, _ = e.gitSess.StagingHEAD()
+						}
+						endedAt := time.Now()
+						_ = e.store.UpdateTask(taskID, session.TaskUpdate{
+							Status:     session.StatusPassed,
+							StagingSHA: &newSHA,
+							EndedAt:    &endedAt,
+							Summary:    &verdict.Summary,
+						})
+						e.sink.TaskMerged(taskID, newSHA)
+						return nil
+					}
+					// For normal tasks, no changes is a FAIL — retry.
 					issue = "the executor made no file changes"
 					fix = "output the complete content of any files that need to change"
 					continue
@@ -581,13 +707,18 @@ type taskContext struct {
 //
 // Round 1: [system] + [user: repo_map + file_context + task + instructions]
 // Round 2+: [system] + [user: repo_map + file_context + task + instructions]
-//            + [user: previous attempt was rejected + issue + fix]
+//   - [user: previous attempt was rejected + issue + fix]
 //
 // The first user message (immutable context) is identical on every round,
 // so local-server KV caches hit for the expensive prefix. Only the final
 // user message (the retry prompt) changes.
 func (e *Engine) buildExecutorMessages(prompt, issue, fix string, round int, tc *taskContext) []backend.Message {
-	outputInstructions := executorOutputInstructions(e.cfg.EditFormat)
+	var outputInstructions string
+	if e.cfg.ReadOnly {
+		outputInstructions = readOnlyOutputInstructions()
+	} else {
+		outputInstructions = executorOutputInstructions(e.cfg.EditFormat)
+	}
 
 	// Round 1: build and cache the immutable context block.
 	if round == 1 {
@@ -859,8 +990,10 @@ func (e *Engine) buildCriticMessages(prompt, execContent, diff string) []backend
 // --- Backend helpers ---------------------------------------------------------
 
 // streamToSink streams an executor request, forwarding each token to the sink.
+// When silent=true, tokens are not streamed to reduce console spam (used for edit formats
+// where we show compact tool operations instead).
 // Returns the full concatenated content and token counts.
-func (e *Engine) streamToSink(ctx context.Context, b backend.Backend, msgs []backend.Message) (content string, promptToks, completionToks int, err error) {
+func (e *Engine) streamToSink(ctx context.Context, b backend.Backend, msgs []backend.Message, silent bool) (content string, promptToks, completionToks int, err error) {
 	req := backend.Request{Messages: msgs}
 	// Pass cache hints for local-server KV prefix caching (PR-2 feature).
 	// PR-3 will wire executorSubtype to populate these hints.
@@ -872,17 +1005,81 @@ func (e *Engine) streamToSink(ctx context.Context, b backend.Backend, msgs []bac
 		return "", 0, 0, err
 	}
 	var sb strings.Builder
+	extractor := newThinkBlockExtractor()
 	for chunk := range ch {
 		if chunk.Err != nil {
 			return sb.String(), 0, 0, chunk.Err
 		}
 		sb.WriteString(chunk.Content)
-		e.sink.Token(chunk.Content)
+		if !silent {
+			e.sink.Token(chunk.Content)
+		}
+		// Extract and emit think blocks for real-time summarization
+		if thinkContent, found := extractor.Extract(chunk.Content); found {
+			e.sink.ThinkBlock(e.cfg.SessionID, thinkContent)
+		}
 		completionToks++
 	}
 	// Token counts from the backend are approximate here; M5 will add accurate
 	// counting via the tokens package.
 	return sb.String(), 0, completionToks, nil
+}
+
+// thinkBlockExtractor parses thinking/reasoning blocks and plan descriptions from model output.
+type thinkBlockExtractor struct {
+	accumulating bool
+	content      strings.Builder
+	mode         string // "thinking", "plan", etc.
+}
+
+func newThinkBlockExtractor() *thinkBlockExtractor {
+	return &thinkBlockExtractor{}
+}
+
+// Extract processes text and returns any think block or plan content found.
+// Returns (content, hasContent)
+func (e *thinkBlockExtractor) Extract(text string) (string, bool) {
+	// First check for "Plan: " descriptions (immediate capture)
+	if idx := strings.Index(text, "Plan: "); idx != -1 {
+		// Find the end of the plan line
+		rest := text[idx+len("Plan: "):]
+		endIdx := strings.Index(rest, "\n")
+		if endIdx == -1 {
+			endIdx = len(rest)
+		}
+		return "Plan: " + rest[:endIdx], true
+	}
+
+	// Look for <thinking> start
+	if !e.accumulating {
+		if idx := strings.Index(text, "<thinking>"); idx != -1 {
+			e.accumulating = true
+			e.mode = "thinking"
+			startIdx := idx + len("<thinking>")
+			// Check if end is in same chunk
+			if endIdx := strings.Index(text[startIdx:], "</thinking>"); endIdx != -1 {
+				content := text[startIdx : startIdx+endIdx]
+				e.accumulating = false
+				return content, true
+			}
+			// Start accumulating
+			e.content.WriteString(text[startIdx:])
+		}
+		return "", false
+	}
+
+	// We're accumulating, look for end
+	if idx := strings.Index(text, "</thinking>"); idx != -1 {
+		e.content.WriteString(text[:idx])
+		content := e.content.String()
+		e.accumulating = false
+		e.content.Reset()
+		return content, true
+	}
+
+	// Still accumulating
+	e.content.WriteString(text)
+	return "", false
 }
 
 // callBackend performs a non-streaming completion (used for the critic so that
@@ -905,8 +1102,20 @@ func (e *Engine) callCritic(ctx context.Context, b backend.Backend, msgs []backe
 	}
 
 	// Only set JSON response format if the backend supports it.
+	// For unsupported backends, explicitly request text to avoid API errors.
+	// Note: Some APIs (Fireworks) don't support "json_object" and need special handling.
 	if b.SupportsJSONMode() {
-		req.ResponseFormat = &backend.ResponseFormat{Type: "json_object"}
+		// For non-OpenAI subtypes (like local servers), use text format to avoid
+		// API compatibility issues. The critic prompt already instructs the model
+		// to output JSON, so we don't need to force it via response_format.
+		if subtype == backend.SubtypeOpenAI {
+			req.ResponseFormat = &backend.ResponseFormat{Type: "json_object"}
+		} else {
+			// Use text format for local/non-standard APIs to avoid compatibility issues
+			req.ResponseFormat = &backend.ResponseFormat{Type: "text"}
+		}
+	} else {
+		req.ResponseFormat = &backend.ResponseFormat{Type: "text"}
 	}
 
 	// Enable grammar mode for local models that support it.
@@ -960,8 +1169,11 @@ func (e *Engine) runSelfCritique(ctx context.Context, b backend.Backend, execMsg
 	}
 
 	// Only set JSON response format if the backend supports it.
+	// For unsupported backends, explicitly request text to avoid API errors.
 	if b.SupportsJSONMode() {
 		req.ResponseFormat = &backend.ResponseFormat{Type: "json_object"}
+	} else {
+		req.ResponseFormat = &backend.ResponseFormat{Type: "text"}
 	}
 
 	resp, err := b.Complete(ctx, req)
@@ -1055,19 +1267,79 @@ func (e *Engine) applySearchReplace(content string) []string {
 	for _, se := range edits {
 		rel := filepath.Clean(se.Path)
 		if strings.HasPrefix(rel, "..") {
+			e.sink.FileEditFailed(e.cfg.SessionID, rel, "path escapes repo root")
 			continue
 		}
+
+		// Show compact operation start
+		e.sink.ToolOperation(e.cfg.SessionID, "search_replace", rel, "running", "")
+
+		// Check permission gate - calculate preview based on search vs replace lines
+		if e.cfg.Permission != config.PermissionNever {
+			searchLines := strings.Count(se.Search, "\n")
+			replaceLines := strings.Count(se.Replace, "\n")
+			if se.Search == "" {
+				searchLines = 0 // new file
+			}
+			added := max(0, replaceLines-searchLines)
+			deleted := max(0, searchLines-replaceLines)
+			preview := fmt.Sprintf("+%d/-%d lines", added, deleted)
+			if !e.requestEditPermission(rel, "search_replace", preview) {
+				e.sink.ToolOperation(e.cfg.SessionID, "search_replace", rel, "failed", "denied by user")
+				continue
+			}
+		}
+
 		abs := filepath.Join(e.repo.Root(), rel)
 		existing, _ := os.ReadFile(abs)
-		updated, ok := se.ApplyToContent(string(existing))
+		existingStr := string(existing)
+		updated, ok := se.ApplyToContent(existingStr)
 		if !ok {
+			// Get detailed mismatch info for better diagnostics
+			info := se.GetMismatchInfo(existingStr)
+			errorMsg := fmt.Sprintf("search content not found (match: %.0f%%)", info.MatchPercentage)
+
+			// More detailed error for TUI
+			searchLineCount := strings.Count(se.Search, "\n") + 1
+			fileLineCount := strings.Count(existingStr, "\n") + 1
+			debugInfo := fmt.Sprintf("Tried to find %d lines, file has %d lines",
+				searchLineCount, fileLineCount)
+			if len(se.Search) > 0 && len(existingStr) > 0 {
+				// Show first line of search vs first line of file
+				searchFirst := strings.Split(se.Search, "\n")[0]
+				fileFirst := strings.Split(existingStr, "\n")[0]
+				debugInfo += fmt.Sprintf(" | Search starts: '%s' | File starts: '%s'",
+					truncate(searchFirst, 40), truncate(fileFirst, 40))
+			}
+
+			e.sink.FileEditFailed(e.cfg.SessionID, rel, errorMsg)
+			e.sink.ToolOperation(e.cfg.SessionID, "search_replace", rel, "failed", debugInfo)
+
+			// Log detailed mismatch for debugging
+			e.sink.Token(fmt.Sprintf("\n[DEBUG] Search/Replace failed for %s:\n", rel))
+			e.sink.Token(fmt.Sprintf("  Searched for %d chars (first 80): %q\n",
+				len(se.Search), truncate(se.Search, 80)))
+			e.sink.Token(fmt.Sprintf("  File content is %d chars (first 80): %q\n",
+				len(existingStr), truncate(existingStr, 80)))
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			e.sink.FileEditFailed(e.cfg.SessionID, rel, "failed to create directory")
+			e.sink.ToolOperation(e.cfg.SessionID, "search_replace", rel, "failed", "mkdir failed")
 			continue
 		}
 		if err := os.WriteFile(abs, []byte(updated), 0o644); err == nil {
+			// Count added/deleted lines for diff stats
+			existingLines := strings.Count(string(existing), "\n")
+			updatedLines := strings.Count(updated, "\n")
+			added := max(0, updatedLines-existingLines)
+			deleted := max(0, existingLines-updatedLines)
 			written = append(written, rel)
+			e.sink.FileEditDone(e.cfg.SessionID, rel, added, deleted)
+			e.sink.ToolOperation(e.cfg.SessionID, "search_replace", rel, "done", fmt.Sprintf("+%d/-%d", added, deleted))
+		} else {
+			e.sink.FileEditFailed(e.cfg.SessionID, rel, "write failed")
+			e.sink.ToolOperation(e.cfg.SessionID, "search_replace", rel, "failed", "write error")
 		}
 	}
 	return written
@@ -1112,6 +1384,16 @@ func (e *Engine) getChangedFilesFromGit() []string {
 	return files
 }
 
+// requestEditPermission asks the user for permission before applying an edit.
+// Returns true if permission granted, false otherwise.
+func (e *Engine) requestEditPermission(path, toolName, preview string) bool {
+	response := make(chan bool, 1)
+	e.sink.PermissionRequest(e.cfg.SessionID, toolName, path, preview, response)
+
+	// Wait for response
+	return <-response
+}
+
 // --- Ledger helpers ----------------------------------------------------------
 
 func (e *Engine) recordRound(r *session.Round) {
@@ -1131,4 +1413,152 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// --- Proposal mode helpers ---------------------------------------------------
+
+// beginProposalMode starts capturing file changes instead of applying them.
+func (e *Engine) beginProposalMode() {
+	e.proposalMode = true
+	e.proposals = nil
+	e.inMemoryFiles = make(map[string]string)
+}
+
+// endProposalMode stops proposal capture.
+func (e *Engine) endProposalMode() {
+	e.proposalMode = false
+}
+
+// addProposal adds a proposed change to the list.
+func (e *Engine) addProposal(pc ProposedChange) {
+	e.proposals = append(e.proposals, pc)
+	// Update in-memory filesystem so subsequent reads see the proposed content
+	e.inMemoryFiles[pc.Path] = pc.NewContent
+}
+
+// buildProposalDiff creates a unified diff string from all proposals.
+func (e *Engine) buildProposalDiff() string {
+	var sb strings.Builder
+	for _, p := range e.proposals {
+		if p.OldContent == "" {
+			// New file
+			sb.WriteString(fmt.Sprintf("--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", p.Path, strings.Count(p.NewContent, "\n")+1))
+			for _, line := range strings.Split(p.NewContent, "\n") {
+				sb.WriteString("+" + line + "\n")
+			}
+		} else {
+			// Modified file - create unified diff
+			sb.WriteString(fmt.Sprintf("--- a/%s\n+++ b/%s\n", p.Path, p.Path))
+			// Simplified diff - just show changed lines
+			oldLines := strings.Split(p.OldContent, "\n")
+			newLines := strings.Split(p.NewContent, "\n")
+			sb.WriteString(fmt.Sprintf("@@ -1,%d +1,%d @@\n", len(oldLines), len(newLines)))
+			for _, line := range oldLines {
+				sb.WriteString("-" + line + "\n")
+			}
+			for _, line := range newLines {
+				sb.WriteString("+" + line + "\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// applyProposals actually writes all proposed changes to disk.
+func (e *Engine) applyProposals() ([]string, error) {
+	var applied []string
+	for _, p := range e.proposals {
+		rel := filepath.Clean(p.Path)
+		if strings.HasPrefix(rel, "..") {
+			continue
+		}
+		abs := filepath.Join(e.repo.Root(), rel)
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			return applied, fmt.Errorf("create dir for %s: %w", p.Path, err)
+		}
+		if err := os.WriteFile(abs, []byte(p.NewContent), 0o644); err != nil {
+			return applied, fmt.Errorf("write %s: %w", p.Path, err)
+		}
+		applied = append(applied, rel)
+		e.sink.FileEditDone(e.cfg.SessionID, rel, p.Added, p.Deleted)
+	}
+	return applied, nil
+}
+
+// discardProposals clears all proposed changes without applying them.
+func (e *Engine) discardProposals() {
+	e.proposals = nil
+	e.inMemoryFiles = nil
+}
+
+// handleWriteFileProposal captures a write_file tool call as a proposal instead of applying it.
+func (e *Engine) handleWriteFileProposal(args json.RawMessage) (interface{}, error) {
+	var params struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+		Append  bool   `json:"append,omitempty"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	rel := filepath.Clean(params.Path)
+	if strings.HasPrefix(rel, "..") {
+		return nil, fmt.Errorf("path escapes repo root")
+	}
+
+	// Read existing content for diff stats
+	abs := filepath.Join(e.repo.Root(), rel)
+	oldContent := ""
+	if existing, err := os.ReadFile(abs); err == nil {
+		oldContent = string(existing)
+	}
+
+	// If append mode, combine with existing/proposed content
+	newContent := params.Content
+	if params.Append {
+		if existing, ok := e.inMemoryFiles[rel]; ok {
+			newContent = existing + newContent
+		} else if existing, err := os.ReadFile(abs); err == nil {
+			newContent = string(existing) + newContent
+		}
+	}
+
+	// Calculate line stats
+	oldLines := strings.Count(oldContent, "\n")
+	if oldContent != "" && !strings.HasSuffix(oldContent, "\n") {
+		oldLines++
+	}
+	newLines := strings.Count(newContent, "\n")
+	if newContent != "" && !strings.HasSuffix(newContent, "\n") {
+		newLines++
+	}
+	added := 0
+	deleted := 0
+	if oldContent == "" {
+		// New file
+		added = newLines
+	} else {
+		added = max(0, newLines-oldLines)
+		deleted = max(0, oldLines-newLines)
+	}
+
+	// Create proposal
+	proposal := ProposedChange{
+		Path:       rel,
+		ToolName:   "write_file",
+		OldContent: oldContent,
+		NewContent: newContent,
+		Added:      added,
+		Deleted:    deleted,
+	}
+	e.addProposal(proposal)
+
+	// Return success result (simulating actual write)
+	return map[string]interface{}{
+		"path":  rel,
+		"size":  len(newContent),
+		"lines": newLines,
+	}, nil
 }

@@ -38,4 +38,8 @@ type Skill struct {
 	Trigger     string     `toml:"trigger"`
 	Executor    SkillLayer `toml:"executor"`
 	Critic      SkillLayer `toml:"critic"`
+	// ReadOnly indicates this skill is for analysis only; the executor should not
+	// modify any files. When true, edit application is skipped and the critic
+	// evaluates the analysis quality rather than code changes.
+	ReadOnly    bool       `toml:"read_only"`
 }

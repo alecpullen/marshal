@@ -1,0 +1,63 @@
+# Default profile: all local models
+[model.marshal]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+supports_tools = true
+
+[model.executor]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+supports_tools = true
+
+[model.critic]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+supports_json_mode = false
+
+[model.compactor]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+
+# Hybrid profile: Fireworks Kimi K2.5 Turbo executor + local 30B for support roles
+[profiles.hybrid.model.executor]
+provider = "openai-compat"
+model    = "accounts/fireworks/routers/kimi-k2p5-turbo"
+api_key  = "${FIREWORKS_API_KEY}"
+base_url = "https://api.fireworks.ai/inference/v1"
+supports_tools = true
+
+[profiles.hybrid.model.critic]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+
+[profiles.hybrid.model.marshal]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+
+[profiles.hybrid.model.compactor]
+provider = "lmstudio"
+model    = "qwen3-coder-30b-a3b-instruct"
+api_key  = "lm-studio"
+base_url = "http://localhost:1234/v1"
+
+[loop]
+max_rounds    = 3
+compact_after = 2
+clarify       = "ambiguous"
+
+[git]
+# Set to true to enable branch creation, commits, and merges.
+# Keep false while iterating on the TUI to avoid accidental branch operations.
+enabled = false

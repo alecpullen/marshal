@@ -1,22 +1,22 @@
 # Marshal
 
-**AI coding assistant with multi-model orchestration and git-native workflows.**
+AI coding assistant with multi-model orchestration and git-native workflows.
 
-Marshal combines the conversational fluidity of Aider/Claude Code with a disciplined, branch-isolated execution model. Every user turn is a discrete, critic-reviewed task — but the UX feels like a natural pair-programming session.
+Marshal combines the conversational interface of Aider and Claude Code with a disciplined, branch-isolated execution model. Every user turn becomes a discrete, critic-reviewed task, but the interface remains a natural pair-programming session.
 
 [![Go Version](https://img.shields.io/badge/go-1.23+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ## Features
 
-- **🤖 Four-Role Architecture**: Marshal (gate), Executor, Critic, and Compactor models work together
-- **🌿 Git-Native Workflow**: Three-tier branch hierarchy (target → staging → task) with automatic isolation
-- **🔧 Multiple Edit Modes**: Search/replace, unified diff, whole-file, or tool-use (for capable models)
-- **💬 Conversational TUI**: Natural chat interface with streaming responses
-- **🤝 Tool Use**: `read_file`, `write_file`, `run_command` for models that support function calling
-- **⚡ Headless/CI Mode**: NDJSON output for automated workflows
-- **🛡️ Security**: Path allowlisting, command allowlisting, sandboxed execution
-- **📊 Repo Map**: Tree-sitter based symbol extraction with intelligent ranking
+- Four-role model architecture: Marshal (orchestrator), Executor, Critic, and Compactor
+- Git-native workflow with three-tier branch hierarchy (target, staging, task)
+- Multiple edit modes: search/replace, unified diff, whole-file, and tool-use
+- Conversational TUI with streaming responses
+- Tool use support: read_file, write_file, run_command for capable models
+- Headless and CI mode with NDJSON output
+- Security: path allowlisting, command allowlisting, sandboxed execution
+- Repo map: tree-sitter based symbol extraction with PageRank ranking
 
 ## Installation
 
@@ -43,7 +43,7 @@ go build -o bin/marshal ./cmd/marshal
 
 ## Quick Start
 
-1. **Create a configuration file** (`marshal.toml`):
+1. Create a configuration file (`marshal.toml`):
 
 ```toml
 [model.executor]
@@ -72,14 +72,14 @@ max_rounds = 3
 enabled = true
 ```
 
-2. **Start an interactive session**:
+2. Start an interactive session:
 
 ```bash
 cd your-repo
 marshal chat
 ```
 
-3. **Or run a single task**:
+3. Or run a single task:
 
 ```bash
 marshal run "add error handling to the login function"
@@ -94,13 +94,13 @@ The TUI provides a conversational interface:
 ```
 Marshal » add a README with installation instructions
 [Executor streams response...]
-✓ PASS  README.md created with comprehensive installation guide
+PASS: README.md created with installation guide
 
 Marshal » /ship
 shipped to main (a1b2c3d)
 ```
 
-**Key slash commands**:
+Key slash commands:
 - `/add <file>` - Add file to context
 - `/diff` - Show current changes
 - `/ship` - Merge staging to target branch
@@ -115,14 +115,14 @@ For automation and scripting:
 # Basic usage
 marshal run "fix the typo in README.md"
 
-# With flags
+# With JSON output
 marshal run --json --exit "run the test suite" | jq '.verdict'
 
 # From a file
 marshal run -f task-description.txt
 ```
 
-**Exit codes**:
+Exit codes:
 - `0` - Task passed and merged
 - `1` - Task failed after all rounds
 - `2` - Configuration error
@@ -162,7 +162,7 @@ compact_after = 2
 enabled = true
 ```
 
-**Supported providers**:
+Supported providers:
 - Fireworks AI
 - OpenAI
 - Anthropic (via OpenAI-compatible proxy)
@@ -178,10 +178,10 @@ Marshal's four roles can use different models:
 
 | Role | Purpose | Recommended |
 |------|---------|-------------|
-| **Executor** | Code generation | Claude Sonnet, GPT-4o, Kimi K2.5 |
-| **Critic** | Code review | Qwen2.5-14B, Claude Haiku |
-| **Marshal** | Task classification | Qwen2.5-7B, smaller local models |
-| **Compactor** | History summarization | Same as Marshal |
+| Executor | Code generation | Claude Sonnet, GPT-4o, Kimi K2.5 |
+| Critic | Code review | Qwen2.5-14B, Claude Haiku |
+| Marshal | Task classification | Qwen2.5-7B, smaller local models |
+| Compactor | History summarization | Same as Marshal |
 
 See [docs/models/roster.md](docs/models/roster.md) for detailed recommendations.
 
@@ -189,16 +189,21 @@ See [docs/models/roster.md](docs/models/roster.md) for detailed recommendations.
 
 ```
 User Input
-    ↓
-[Marshal Model] → classify (proceed/chat/clarify)
-    ↓ (if proceed)
-[Executor] → generate code (with tool-use or edit formats)
-    ↓
-[Critic] → review and output verdict (PASS/FAIL)
-    ↓ (if FAIL, retry up to max_rounds)
-[Git] → commit on task branch
-    ↓ (if PASS)
-[Git] → squash-merge to staging
+    |
+    v
+[Marshal Model] -> classify (proceed/chat/clarify)
+    |
+    v (if proceed)
+[Executor] -> generate code (with tool-use or edit formats)
+    |
+    v
+[Critic] -> review and output verdict (PASS/FAIL)
+    |
+    v (if FAIL, retry up to max_rounds)
+[Git] -> commit on task branch
+    |
+    v (if PASS)
+[Git] -> squash-merge to staging
 ```
 
 ## Documentation
@@ -222,11 +227,11 @@ See [benchmark/README.md](benchmark/README.md) for methodology.
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 

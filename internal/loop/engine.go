@@ -423,7 +423,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		// supports grammar constraints, emit verdict as part of executor output instead
 		// of a separate round-trip. This halves per-round latency for local models.
 		var verdict *Verdict
-		var thinks []ThinkBlock
+		var thinks []string
 		var criticPToks, criticCToks int
 		var criticContent string // content recorded for critic round
 		if e.canUseSelfCritique(executorB) {
@@ -463,9 +463,6 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		if verdict == nil {
 			// Should not happen, but guard against nil pointer.
 			verdict = &Verdict{Verdict: "FAIL", Summary: "no verdict produced"}
-		if parseErr != nil {
-			// Treat unparseable verdict as FAIL so we can retry.
-			verdict = &Verdict{Verdict: "FAIL", Summary: "critic returned unparseable response", Issue: parseErr.Error()}
 		}
 
 		durationMS := time.Since(roundStart).Milliseconds()
@@ -990,7 +987,8 @@ func extractVerdictFromContent(content string) (*Verdict, error) {
 	}
 	jsonStr := content[start+len("<verdict>") : end]
 	jsonStr = strings.TrimSpace(jsonStr)
-	return ParseVerdict(jsonStr)
+	verdict, _, err := ParseVerdict(jsonStr)
+	return verdict, err
 }
 
 // stripVerdictBlock removes the <verdict>...</verdict> block from content.

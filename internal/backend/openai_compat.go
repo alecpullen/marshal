@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,9 +24,39 @@ const (
 	minRetryWait = 125 * time.Millisecond
 	maxRetryWait = 10 * time.Second
 
-	defaultMaxTokens   = 8192
-	streamChannelBuf   = 16
+	defaultMaxTokens = 8192
+	streamChannelBuf = 16
 )
+
+// endpointSemaphores provides a per-BaseURL semaphore to serialize requests
+// for single-slot local servers (PR-3 6.3). The map is protected by the mutex.
+var (
+	endpointMu        sync.Mutex
+	endpointSemaphores = make(map[string]*sync.Mutex)
+)
+
+// acquireEndpointLock grabs the per-BaseURL semaphore for this backend.
+// Callers should defer releaseEndpointLock(b.cfg.BaseURL).
+func acquireEndpointLock(baseURL string) *sync.Mutex {
+	endpointMu.Lock()
+	sem, ok := endpointSemaphores[baseURL]
+	if !ok {
+		sem = &sync.Mutex{}
+		endpointSemaphores[baseURL] = sem
+	}
+	endpointMu.Unlock()
+	sem.Lock()
+	return sem
+}
+
+func releaseEndpointLock(baseURL string) {
+	endpointMu.Lock()
+	sem, ok := endpointSemaphores[baseURL]
+	endpointMu.Unlock()
+	if ok {
+		sem.Unlock()
+	}
+}
 
 // ProviderSubtype distinguishes local-server dialects.
 type ProviderSubtype string
@@ -97,6 +128,10 @@ func (b *openAICompatBackend) Complete(ctx context.Context, req Request) (Respon
 		return Response{}, err
 	}
 
+	// Serialize requests to the same endpoint for single-slot local servers (PR-3 6.3).
+	acquireEndpointLock(b.cfg.BaseURL)
+	defer releaseEndpointLock(b.cfg.BaseURL)
+
 	httpResp, err := b.doWithRetry(ctx, func() (*http.Response, error) {
 		return b.post(ctx, body)
 	})
@@ -143,6 +178,10 @@ func (b *openAICompatBackend) Stream(ctx context.Context, req Request) (<-chan C
 	if err != nil {
 		return nil, err
 	}
+
+	// Serialize requests to the same endpoint for single-slot local servers (PR-3 6.3).
+	acquireEndpointLock(b.cfg.BaseURL)
+	defer releaseEndpointLock(b.cfg.BaseURL)
 
 	httpResp, err := b.doWithRetry(ctx, func() (*http.Response, error) {
 		return b.post(ctx, body)

@@ -1,0 +1,18 @@
+.marshal/
+marshal
+*.exe
+.DS_Store
+.env
+.claude/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.envrc
+
+# Local Ollama config (contains localhost URLs, not secrets but user-specific)
+ollama.toml
+marshal2.toml

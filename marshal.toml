@@ -1,0 +1,94 @@
+[marshal]
+# Qwen3 8B — serverless, hybrid thinking, conversational orchestrator
+model       = "accounts/fireworks/models/qwen3-8b"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
+temperature = 0.6
+max_tokens  = 2048
+
+[orchestrator]
+# Autonomous orchestrator behavior
+mode = "autonomous"           # "autonomous" or "interactive" — default: autonomous
+max_exploration_steps = 10     # Max steps when exploring codebase (default: 10)
+auto_confirm_complex = true   # Auto-execute complex tasks without confirmation (default: true)
+ask_before_destructive = true  # Always ask before destructive operations (default: true)
+min_confidence = 0.6           # Threshold for exploring vs asking questions (default: 0.6)
+
+[executor]
+# Qwen3 Coder 480B A35B — serverless, agentic coding, RL-trained on SWE-Bench
+model       = "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
+temperature = 0.2
+max_tokens  = 4096
+# Enable autonomous tool use: read_file, write_file, edit_file, search_code, list_directory, run_command
+# enable_tools = false
+# max_tool_calls = 20  # per execution round (default 20)
+
+# --- Extended Provider Examples (M13) ---
+# Uncomment to use native Anthropic, Gemini, or AWS Bedrock backends
+
+# [executor]
+# provider = "claude"  # or "anthropic"
+# model = "claude-3-5-sonnet-20241022"
+# api_key = "${ANTHROPIC_API_KEY}"
+# temperature = 0.2
+# max_tokens = 4096
+
+# [executor]
+# provider = "gemini"
+# model = "gemini-1.5-flash-latest"
+# api_key = "${GEMINI_API_KEY}"
+# temperature = 0.2
+# max_tokens = 4096
+
+# [executor]
+# provider = "bedrock"
+# model = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+# base_url = "us-east-1"  # AWS region
+# temperature = 0.2
+# max_tokens = 4096
+
+[critic]
+# DeepSeek R1-0528 — serverless, full 671B reasoning, system prompt supported
+model       = "accounts/fireworks/models/deepseek-r1-0528"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
+temperature = 0.6
+max_tokens  = 8192
+json_output = true
+
+[planner]
+model       = "accounts/fireworks/models/deepseek-v3p2"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
+temperature = 0.0
+max_tokens  = 2048
+
+[integration_critic]
+model       = "accounts/fireworks/models/deepseek-r1-0528"
+base_url    = "https://api.fireworks.ai/inference/v1"
+api_key     = "${FIREWORKS_API_KEY}"
+temperature = 0.6
+max_tokens  = 8192
+
+[loop]
+max_rounds        = 3
+auto_commit       = false   # manual review for local testing
+auto_revert       = true
+branch_isolation  = true
+compact_after     = 2
+
+[session]
+db_path = ".marshal/sessions.db"
+
+[retry]
+max_attempts       = 3
+initial_backoff_ms = 1000
+backoff_factor     = 2.0
+retry_status_codes = [429, 502, 503]
+
+[ui]
+# Editor to open when pressing enter on a file in the explorer.
+# Falls back to $EDITOR, then vim.
+editor = "vim"

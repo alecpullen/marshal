@@ -900,9 +900,13 @@ func (e *Engine) callBackend(ctx context.Context, b backend.Backend, msgs []back
 // failures on llama.cpp servers.
 func (e *Engine) callCritic(ctx context.Context, b backend.Backend, msgs []backend.Message, subtype backend.ProviderSubtype) (content string, promptToks, completionToks int, err error) {
 	req := backend.Request{
-		Messages:       msgs,
-		ResponseFormat: &backend.ResponseFormat{Type: "json_object"},
-		JSONMode:       backend.JSONLoose,
+		Messages: msgs,
+		JSONMode: backend.JSONLoose,
+	}
+
+	// Only set JSON response format if the backend supports it.
+	if b.SupportsJSONMode() {
+		req.ResponseFormat = &backend.ResponseFormat{Type: "json_object"}
 	}
 
 	// Enable grammar mode for local models that support it.
@@ -949,11 +953,15 @@ func (e *Engine) runSelfCritique(ctx context.Context, b backend.Backend, execMsg
 
 	// Request grammar-constrained output for reliable verdict parsing.
 	req := backend.Request{
-		Messages:       msgs,
-		ResponseFormat: &backend.ResponseFormat{Type: "json_object"},
-		JSONMode:       backend.JSONGrammar,
-		Grammar:        backend.VerdictGrammar(),
-		ExtraBody:      e.executorCacheHints(),
+		Messages:  msgs,
+		JSONMode:  backend.JSONGrammar,
+		Grammar:   backend.VerdictGrammar(),
+		ExtraBody: e.executorCacheHints(),
+	}
+
+	// Only set JSON response format if the backend supports it.
+	if b.SupportsJSONMode() {
+		req.ResponseFormat = &backend.ResponseFormat{Type: "json_object"}
 	}
 
 	resp, err := b.Complete(ctx, req)

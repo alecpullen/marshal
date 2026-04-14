@@ -454,7 +454,9 @@ func adaptRequestBody(body *oaiRequestBody, subtype ProviderSubtype, cfg OpenAIC
 	case SubtypeVLLM:
 		// vLLM supports standard OpenAI shape
 		// guided_json via response_format for grammar-like constraints
-		if req.JSONMode == JSONGrammar && req.Grammar != "" {
+		// Note: We only set response_format if the backend supports JSON mode.
+		// Some vLLM providers only accept 'json_schema' or 'text', not 'json_object'.
+		if cfg.SupJSONMode && req.JSONMode == JSONGrammar && req.Grammar != "" {
 			// vLLM uses json_schema, not GBNF grammar
 			// For now we fall back to json_object mode
 			if body.ResponseFormat == nil {

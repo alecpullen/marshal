@@ -392,7 +392,11 @@ func (m model) rebuildViewport() model {
 		sb.WriteString(styleExecutor.Width(w).Render(m.streaming.String()))
 	}
 	m.viewport.SetContent(sb.String())
-	m.viewport.GotoBottom()
+	// Only auto-scroll if user is already at the bottom (following the stream).
+	// This allows users to scroll up and read earlier content while streaming.
+	if m.viewport.AtBottom() {
+		m.viewport.GotoBottom()
+	}
 	return m
 }
 

@@ -737,7 +737,8 @@ func debugChatCmd(gf *globalFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
 			}
-			registry, err := backend.NewRegistry(cfg, nil)
+			modelReg, _ := models.LoadDefault()
+			registry, err := backend.NewRegistry(cfg, nil, modelReg)
 			if err != nil {
 				return fmt.Errorf("building registry: %w", err)
 			}

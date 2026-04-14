@@ -125,6 +125,7 @@ type Engine struct {
 	execSysPrompt   string // assembled executor system prompt (base + skill extra)
 	criticSysPrompt string // assembled critic system prompt (base + skill extra)
 	executorModel   string // model name for context window lookup
+	executorSubtype   backend.ProviderSubtype // for grammar constraint selection
 	criticSubtype   backend.ProviderSubtype // for grammar constraint selection
 }
 
@@ -201,12 +202,37 @@ func (e *Engine) SetCriticSubtype(subtype backend.ProviderSubtype) {
 	e.criticSubtype = subtype
 }
 
+// SetExecutorSubtype sets the executor provider subtype for grammar constraint
+// selection and cache hints. Call this before Run if using a local model backend.
+func (e *Engine) SetExecutorSubtype(subtype backend.ProviderSubtype) {
+	e.executorSubtype = subtype
+}
+
+// canUseSelfCritique returns true when self-critique mode is enabled and viable:
+//   - CriticMode is "self"
+//   - Executor backend supports JSON mode (for grammar constraint)
+//   - Executor subtype supports grammar mode (local models)
+func (e *Engine) canUseSelfCritique(executorB backend.Backend) bool {
+	if e.cfg.CriticMode != config.CriticModeSelf {
+		return false
+	}
+	if !executorB.SupportsJSONMode() {
+		return false
+	}
+	// Grammar mode is required for reliable self-critique on local models.
+	if e.executorSubtype != backend.SubtypeLlamaCPP {
+		return false
+	}
+	return true
+}
+
 // executorCacheHints returns ExtraBody fields for KV-cache warming based on
 // the executor backend subtype. These are passed to local servers to enable
 // prefix caching across rounds.
 func (e *Engine) executorCacheHints() map[string]any {
-	// Currently no executor subtype stored; default empty.
-	// PR-3 will wire executorSubtype from config.
+	if e.executorSubtype == backend.SubtypeLlamaCPP {
+		return map[string]any{"cache_prompt": true}
+	}
 	return nil
 }
 
@@ -312,6 +338,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 		diff, _ := tx.Diff()
 
 		// f. Run linter; on failures short-circuit to next round.
+		var lintPassed bool
 		if e.lint != nil && len(changedFiles) > 0 {
 			lintIssues, _ := e.lint.Run(ctx, changedFiles)
 			if len(lintIssues) > 0 {
@@ -321,20 +348,121 @@ func (e *Engine) Run(ctx context.Context, prompt string) error {
 				fix = "Fix every linter error listed above. Do not proceed until the code is lint-clean."
 				continue
 			}
+			lintPassed = true
 		}
 
-		// g. Call critic (non-streaming for reliable JSON extraction).
-		// Use grammar-constrained output for local models (llama.cpp) to eliminate
-		// "unparseable verdict" failures.
-		criticMsgs := e.buildCriticMessages(prompt, execContent, diff)
-		criticContent, criticPToks, criticCToks, criticErr := e.callCritic(ctx, criticB, criticMsgs, e.criticSubtype)
-		if criticErr != nil {
-			_ = tx.Abandon()
-			return fmt.Errorf("critic: %w", criticErr)
+		// f.1 Linter-is-critic mode: when linter passes and diff is non-empty, auto-PASS
+		// without a critic round-trip (PR-3 3.1). This saves latency for local models.
+		if e.cfg.LinterIsCritic && lintPassed && diff != "" {
+			// Synthetic PASS verdict from linter.
+			verdict := &Verdict{
+				Verdict: "PASS",
+				Summary: "Linter passed; auto-approved in local-profile mode.",
+			}
+			durationMS := time.Since(roundStart).Milliseconds()
+
+			// Record executor round (no critic round needed).
+			e.recordRound(&session.Round{
+				SessionID:        e.cfg.SessionID,
+				TaskID:           taskID,
+				Round:            round,
+				Role:             config.RoleExecutor,
+				Model:            executorB.Model(),
+				PromptTokens:     execPToks,
+				CompletionTokens: execCToks,
+				DurationMS:       durationMS,
+				Content:          execContent,
+			})
+			// Record a synthetic critic round with the linter verdict.
+			verdictJSON, _ := json.Marshal(verdict)
+			verdictStr := string(verdictJSON)
+			e.recordRound(&session.Round{
+				SessionID:        e.cfg.SessionID,
+				TaskID:           taskID,
+				Round:            round,
+				Role:             config.RoleCritic,
+				Model:            "linter",
+				PromptTokens:     0,
+				CompletionTokens: 0,
+				DurationMS:       0,
+				Content:          verdict.Summary,
+				VerdictJSON:      &verdictStr,
+			})
+
+			e.sink.VerdictBadge(taskID, verdict.Verdict, verdict.Summary)
+			e.sink.RoundEnd(taskID, round, execPToks, execCToks)
+
+			// Merge to staging.
+			shortPrompt := truncate(prompt, 60)
+			mergeMsg := fmt.Sprintf("task %s: %s", taskID, shortPrompt)
+			if mergeErr := tx.Merge(mergeMsg); mergeErr != nil {
+				if errors.Is(mergeErr, git.ErrAlreadyUpToDate) {
+					// Task branch has no commits relative to staging — treat as FAIL.
+					issue = "the executor made no file changes"
+					fix = "output the complete content of any files that need to change"
+					continue
+				}
+				return fmt.Errorf("merge to staging: %w", mergeErr)
+			}
+			var newSHA string
+			if e.cfg.GitEnabled {
+				newSHA, _ = e.gitSess.StagingHEAD()
+			}
+			endedAt := time.Now()
+			_ = e.store.UpdateTask(taskID, session.TaskUpdate{
+				Status:     session.StatusPassed,
+				StagingSHA: &newSHA,
+				EndedAt:    &endedAt,
+				Summary:    &verdict.Summary,
+			})
+			e.sink.TaskMerged(taskID, newSHA)
+			return nil
 		}
 
-		// g. Parse verdict (strips think blocks).
-		verdict, thinks, parseErr := ParseVerdict(criticContent)
+			// g. Self-critique mode (PR-3 3.2): when executor==critic model and the backend
+		// supports grammar constraints, emit verdict as part of executor output instead
+		// of a separate round-trip. This halves per-round latency for local models.
+		var verdict *Verdict
+		var thinks []ThinkBlock
+		var criticPToks, criticCToks int
+		var criticContent string // content recorded for critic round
+		if e.canUseSelfCritique(executorB) {
+			var scErr error
+			execContent, verdict, execPToks, execCToks, scErr = e.runSelfCritique(ctx, executorB, execMsgs, diff)
+			if scErr != nil {
+				_ = tx.Abandon()
+				return fmt.Errorf("self-critique: %w", scErr)
+			}
+			// Re-apply edits from the stripped executor content.
+			changedFiles = e.applyEdits(execContent)
+			// Self-critique uses same token count for both phases.
+			criticPToks, criticCToks = 0, 0
+			// Record the verdict as critic content.
+			vd, _ := json.Marshal(verdict)
+			criticContent = string(vd)
+		} else {
+			// Standard critic call (non-streaming for reliable JSON extraction).
+			// Use grammar-constrained output for local models (llama.cpp) to eliminate
+			// "unparseable verdict" failures.
+			criticMsgs := e.buildCriticMessages(prompt, execContent, diff)
+			var criticErr error
+			criticContent, criticPToks, criticCToks, criticErr = e.callCritic(ctx, criticB, criticMsgs, e.criticSubtype)
+			if criticErr != nil {
+				_ = tx.Abandon()
+				return fmt.Errorf("critic: %w", criticErr)
+			}
+			// Parse verdict (strips think blocks).
+			var parseErr error
+			verdict, thinks, parseErr = ParseVerdict(criticContent)
+			if parseErr != nil {
+				// Treat unparseable verdict as FAIL so we can retry.
+				verdict = &Verdict{Verdict: "FAIL", Summary: "critic returned unparseable response", Issue: parseErr.Error()}
+			}
+		}
+
+		if verdict == nil {
+			// Should not happen, but guard against nil pointer.
+			verdict = &Verdict{Verdict: "FAIL", Summary: "no verdict produced"}
 		if parseErr != nil {
 			// Treat unparseable verdict as FAIL so we can retry.
 			verdict = &Verdict{Verdict: "FAIL", Summary: "critic returned unparseable response", Issue: parseErr.Error()}
@@ -775,9 +903,9 @@ func (e *Engine) callBackend(ctx context.Context, b backend.Backend, msgs []back
 // failures on llama.cpp servers.
 func (e *Engine) callCritic(ctx context.Context, b backend.Backend, msgs []backend.Message, subtype backend.ProviderSubtype) (content string, promptToks, completionToks int, err error) {
 	req := backend.Request{
-		Messages:    msgs,
+		Messages:       msgs,
 		ResponseFormat: &backend.ResponseFormat{Type: "json_object"},
-		JSONMode:    backend.JSONLoose,
+		JSONMode:       backend.JSONLoose,
 	}
 
 	// Enable grammar mode for local models that support it.
@@ -791,6 +919,94 @@ func (e *Engine) callCritic(ctx context.Context, b backend.Backend, msgs []backe
 		return "", 0, 0, err
 	}
 	return resp.Content, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, nil
+}
+
+// selfCritiqueInstructions is appended to executor output instructions in self-critique mode.
+// The executor outputs code changes, then emits a verdict JSON block at the end.
+const selfCritiqueInstructions = `
+
+After completing the code changes, output a verdict block at the very end:
+
+<verdict>
+{"verdict":"PASS|FAIL","summary":"one sentence","issue":"","fix":"","concerns":[]}
+</verdict>
+
+Use PASS if the task is correctly and completely implemented. Use FAIL otherwise.
+"issue" and "fix" must be non-empty on FAIL.`
+
+// runSelfCritique calls the executor with grammar-constrained output that includes
+// both the code changes and a verdict JSON block. This halves per-round latency
+// when executor and critic are the same model (PR-3 3.2).
+func (e *Engine) runSelfCritique(ctx context.Context, b backend.Backend, execMsgs []backend.Message, diff string) (execContent string, verdict *Verdict, execPToks, execCToks int, err error) {
+	// Append self-critique instructions and diff to the last user message.
+	msgs := make([]backend.Message, len(execMsgs))
+	copy(msgs, execMsgs)
+
+	// Find the last user message and append self-critique instructions.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == backend.MessageRoleUser {
+			msgs[i].Content = msgs[i].Content + "\n\n" + selfCritiqueInstructions + "\n\nGit diff:\n" + diff
+			break
+		}
+	}
+
+	// Request grammar-constrained output for reliable verdict parsing.
+	req := backend.Request{
+		Messages:       msgs,
+		ResponseFormat: &backend.ResponseFormat{Type: "json_object"},
+		JSONMode:       backend.JSONGrammar,
+		Grammar:        backend.VerdictGrammar(),
+		ExtraBody:      e.executorCacheHints(),
+	}
+
+	resp, err := b.Complete(ctx, req)
+	if err != nil {
+		return "", nil, 0, 0, err
+	}
+
+	content := resp.Content
+	// Try to extract verdict from <verdict>...</verdict> tags.
+	verdict, parseErr := extractVerdictFromContent(content)
+	if parseErr != nil {
+		// If extraction fails, treat as unparseable but still return the content.
+		verdict = &Verdict{
+			Verdict: "FAIL",
+			Summary: "self-critique returned unparseable response",
+			Issue:   parseErr.Error(),
+		}
+	}
+
+	// Strip the verdict block from content for edit parsing.
+	execContent = stripVerdictBlock(content)
+	return execContent, verdict, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, nil
+}
+
+// extractVerdictFromContent extracts the verdict JSON from <verdict> tags.
+func extractVerdictFromContent(content string) (*Verdict, error) {
+	start := strings.Index(content, "<verdict>")
+	end := strings.Index(content, "</verdict>")
+	if start == -1 || end == -1 || end <= start {
+		return nil, fmt.Errorf("no <verdict> block found")
+	}
+	jsonStr := content[start+len("<verdict>") : end]
+	jsonStr = strings.TrimSpace(jsonStr)
+	return ParseVerdict(jsonStr)
+}
+
+// stripVerdictBlock removes the <verdict>...</verdict> block from content.
+func stripVerdictBlock(content string) string {
+	start := strings.Index(content, "<verdict>")
+	if start == -1 {
+		return content
+	}
+	end := strings.Index(content, "</verdict>")
+	if end == -1 {
+		return content
+	}
+	// Return content before <verdict> and after </verdict>
+	before := content[:start]
+	after := content[end+len("</verdict>"):]
+	return strings.TrimSpace(before) + "\n" + strings.TrimSpace(after)
 }
 
 // --- Edit application --------------------------------------------------------

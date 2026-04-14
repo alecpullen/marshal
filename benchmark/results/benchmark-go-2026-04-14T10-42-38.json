@@ -1,0 +1,35 @@
+{
+  "version": "dev",
+  "timestamp": "2026-04-14T10:42:38.997261423+10:00",
+  "config": {
+    "Language": "go",
+    "Difficulty": [
+      "easy"
+    ],
+    "Exercise": "hello-world",
+    "ConfigPath": "",
+    "Iterations": 1,
+    "OutDir": "./results",
+    "ExercisesDir": "./exercises"
+  },
+  "summary": {
+    "total_exercises": 1,
+    "passed": 1,
+    "failed": 0,
+    "success_rate": 100,
+    "avg_rounds": 1,
+    "total_tokens": 1000,
+    "total_duration_ms": 0
+  },
+  "exercises": [
+    {
+      "name": "hello-world",
+      "language": "go",
+      "difficulty": "easy",
+      "passed": true,
+      "rounds": 1,
+      "tokens": 1000,
+      "duration_ms": 0
+    }
+  ]
+}

@@ -79,7 +79,37 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
+	// Run migrations to handle schema changes from older versions.
+	if err := runMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migration: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// runMigrations applies schema changes for existing databases.
+// SQLite doesn't support ALTER COLUMN, but we can add missing columns.
+func runMigrations(db *sql.DB) error {
+	// Check if task_id column exists in rounds table (added in a later version).
+	var taskIDColCount int
+	row := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('rounds') WHERE name = 'task_id'`)
+	if err := row.Scan(&taskIDColCount); err != nil {
+		return fmt.Errorf("checking task_id column: %w", err)
+	}
+	if taskIDColCount == 0 {
+		// task_id column is missing - add it
+		if _, err := db.Exec(`ALTER TABLE rounds ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("adding task_id column: %w", err)
+		}
+		// Also need to drop and recreate the index since it depends on task_id
+		if _, err := db.Exec(`DROP INDEX IF EXISTS idx_rounds_task`); err != nil {
+			return fmt.Errorf("dropping old index: %w", err)
+		}
+		if _, err := db.Exec(`CREATE INDEX idx_rounds_task ON rounds(task_id)`); err != nil {
+			return fmt.Errorf("creating task index: %w", err)
+		}
+	}
+	return nil
 }
 
 // Close releases the database connection.

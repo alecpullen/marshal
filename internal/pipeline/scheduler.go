@@ -34,16 +34,25 @@ type PipelineTask struct {
 
 // Scheduler manages the execution of pipeline tasks across tiers.
 type Scheduler struct {
-	tasks      map[string]*PipelineTask
-	tiers      [][]*PipelineTask
-	fileLocks  map[string]*sync.Mutex
+	tasks       map[string]*PipelineTask
+	tiers       [][]*PipelineTask
+	fileLocks   map[string]*sync.Mutex
+	maxParallel int // max concurrent tasks per tier (0 = unlimited)
 }
 
 // NewScheduler creates a scheduler from a list of tasks.
 func NewScheduler(tasks []*PipelineTask) (*Scheduler, error) {
+	return NewSchedulerWithParallel(tasks, 0)
+}
+
+// NewSchedulerWithParallel creates a scheduler with a limit on concurrent tasks per tier.
+// maxParallel=0 means unlimited (default behavior). Use maxParallel=1 for local profiles
+// to avoid single-GPU contention (PR-3 6.2).
+func NewSchedulerWithParallel(tasks []*PipelineTask, maxParallel int) (*Scheduler, error) {
 	s := &Scheduler{
-		tasks:     make(map[string]*PipelineTask),
-		fileLocks: make(map[string]*sync.Mutex),
+		tasks:       make(map[string]*PipelineTask),
+		fileLocks:   make(map[string]*sync.Mutex),
+		maxParallel: maxParallel,
 	}
 
 	for _, t := range tasks {
@@ -134,9 +143,21 @@ func (s *Scheduler) Run(ctx context.Context, runTask func(ctx context.Context, t
 	for tierIdx, tier := range s.tiers {
 		g, ctx := errgroup.WithContext(ctx)
 
+		// Create semaphore to limit concurrency when maxParallel > 0 (PR-3 6.2).
+		var sem chan struct{}
+		if s.maxParallel > 0 {
+			sem = make(chan struct{}, s.maxParallel)
+		}
+
 		for _, t := range tier {
 			t := t // capture for closure
 			g.Go(func() error {
+				// Acquire semaphore if parallelism is limited.
+				if sem != nil {
+					sem <- struct{}{}
+					defer func() { <-sem }()
+				}
+
 				// Acquire locks for all files this task touches.
 				locks := s.acquireLocks(t.Files)
 				defer s.releaseLocks(locks)

@@ -95,33 +95,38 @@ This plan optimizes Marshal for use with local models (Ollama, llama.cpp, vLLM, 
 
 ---
 
-## PR-3: Local Profile Macro (Pending)
+## PR-3: Local Profile Macro (Completed)
 
 **Theme:** One knob to rule them all; gated behind auto-detection.
 
-### 3.1 Linter-is-critic mode
+### 3.1 Linter-is-critic mode ✅
 - `loop.linter_is_critic = true`
 - When linter passes + diff is small, auto-PASS without critic round-trip
 - Config flag in `Config.LinterIsCritic`
+- Implementation: `internal/loop/engine.go` round-end linter check with synthetic PASS verdict
 
-### 3.2 Self-critique mode
+### 3.2 Self-critique mode ✅
 - `loop.critic_mode = "self" | "separate"`
 - When executor == critic model, emit verdict as grammar-constrained suffix
 - Halves per-round latency for single-model setups
+- Implementation: `canUseSelfCritique()`, `runSelfCritique()` with `<verdict>` tag extraction
 
-### 3.3 Scale max_rounds to 2 for local
+### 3.3 Scale max_rounds to 2 for local ✅
 - Small models rarely recover across rounds
 - Auto-default `max_rounds=2`, `compact_after=1` when local detected
+- Implementation: `config.go applyLocalProfileDefaults()`
 
-### 6.2 Single-GPU serialization for pipeline
+### 6.2 Single-GPU serialization for pipeline ✅
 - `pipeline.max_parallel = 1` for local profiles
 - `errgroup` already used; clamp parallel when subtype is local
+- Implementation: `NewSchedulerWithParallel()` with semaphore-based limiting
 
-### 6.3 Request queue per endpoint
+### 6.3 Request queue per endpoint ✅
 - Simple semaphore per `BaseURL` in backend
 - Prevents executor + critic overlap on single-slot servers
+- Implementation: `endpointSemaphores` map with `acquireEndpointLock/releaseEndpointLock`
 
-### 7.1 Local-profile macro
+### 7.1 Local-profile macro ✅
 - `loop.local_profile = true` toggles coherent set of defaults:
   - `max_rounds = 2`
   - `compact_after = 1`
@@ -130,13 +135,15 @@ This plan optimizes Marshal for use with local models (Ollama, llama.cpp, vLLM, 
   - `edit_format = "search-replace"`
   - `pipeline_parallel = 1`
 - Auto-detected from subtype with TUI banner
+- Implementation: `ApplyLocalProfile()` in `config.go`
 
-### 7.2 Disable tool-use for local by default
+### 7.2 Disable tool-use for local by default ✅
 - Override `supports_tools=false` in ollama/llama_cpp presets
 - Unless user explicitly opts in per-model
 - Tool-use path often loops on weak models
+- Implementation: `settings.toml` presets + `newOpenAICompatFromModelConfig()` auto-disable
 
-### (b) Token-budget cascade
+### (b) Token-budget cascade (Future work)
 - `context.expand_cascade = true` for 32K+ local models
 - Greedy promotion: skeleton → full-body until budget exhausted
 - Only for larger local models (variant b from plan)
@@ -149,7 +156,7 @@ This plan optimizes Marshal for use with local models (Ollama, llama.cpp, vLLM, 
 |----|----------|--------|
 | **PR-1** | 1.1, 1.2, 1.3, 4.1 | **Completed** |
 | **PR-2** | 5.1, 5.2, 5.3, 2.1-2.3, 4.2, 6.1, 8.1, 8.2 | **Completed** |
-| **PR-3** | 3.1, 3.2, 3.3, 6.2, 6.3, 7.1, 7.2, (b) | **Pending** |
+| **PR-3** | 3.1, 3.2, 3.3, 6.2, 6.3, 7.1, 7.2, (b) | **Completed** |
 
 ---
 

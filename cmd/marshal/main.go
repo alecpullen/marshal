@@ -617,7 +617,12 @@ func runPipelineHeadless(ctx context.Context, cfg *config.Config, repo *git.Repo
 		})
 	}
 
-	scheduler, err := pipeline.NewScheduler(tasks)
+	// Use maxParallel=1 for local profiles to avoid single-GPU contention (PR-3 6.2).
+	maxParallel := 0
+	if cfg.Loop.LocalProfile {
+		maxParallel = 1
+	}
+	scheduler, err := pipeline.NewSchedulerWithParallel(tasks, maxParallel)
 	if err != nil {
 		return fmt.Errorf("scheduler: %w", err)
 	}

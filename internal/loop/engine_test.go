@@ -98,7 +98,7 @@ func currentBranchOf(t *testing.T, dir string) string {
 // newTestStore opens an in-memory SQLite database.
 func newTestStore(t *testing.T) *session.Store {
 	t.Helper()
-	store, err := session.Open(filepath.Join(t.TempDir(), "test.db"))
+	store, err := session.Open(filepath.Join(t.TempDir(), "test.db"), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

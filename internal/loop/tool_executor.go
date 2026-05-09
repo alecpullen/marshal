@@ -420,10 +420,7 @@ func extractPathFromArgs(args json.RawMessage) string {
 			return data.Path
 		}
 		if data.Command != "" {
-			// Truncate long commands for display
-			if len(data.Command) > 50 {
-				return data.Command[:50] + "..."
-			}
+			// Return full command - TUI will handle wrapping
 			return data.Command
 		}
 	}

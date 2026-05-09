@@ -63,7 +63,7 @@ func Init(repoRoot string, opts Options) (*Result, error) {
 
 	// 3. Open/create session database
 	dbPath := filepath.Join(result.MarshalDir, "sessions.db")
-	store, err := session.Open(dbPath)
+	store, err := session.Open(dbPath, repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("opening session store: %w", err)
 	}
@@ -97,6 +97,11 @@ func Init(repoRoot string, opts Options) (*Result, error) {
 	// Insert session record
 	if err := store.InsertSession(sess); err != nil {
 		return nil, fmt.Errorf("inserting session: %w", err)
+	}
+
+	// Initialize context store for this session
+	if err := store.OpenWithSession(sessionID); err != nil {
+		return nil, fmt.Errorf("initializing context store: %w", err)
 	}
 
 	// 6. Generate repository map if not skipped

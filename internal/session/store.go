@@ -3,9 +3,12 @@ package session
 import (
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite" // register "sqlite" driver
+
+	"github.com/alecpullen/marshal/internal/context"
 )
 
 const schema = `
@@ -49,6 +52,38 @@ CREATE TABLE IF NOT EXISTS rounds (
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_rounds_task   ON rounds(task_id);
 
+CREATE TABLE IF NOT EXISTS plans (
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    description  TEXT,
+    source_task  TEXT NOT NULL,
+    goals_json   TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plans_session ON plans(session_id);
+
+CREATE TABLE IF NOT EXISTS goals (
+    id              TEXT PRIMARY KEY,
+    plan_id         TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+    session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    title           TEXT NOT NULL,
+    description     TEXT,
+    priority        TEXT NOT NULL,
+    files_json      TEXT,
+    depends_on_json TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    created_at      TEXT NOT NULL,
+    started_at      TEXT,
+    completed_at    TEXT,
+    task_id         TEXT,
+    findings_json   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_goals_plan ON goals(plan_id);
+CREATE INDEX IF NOT EXISTS idx_goals_session ON goals(session_id);
+CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+
 CREATE TABLE IF NOT EXISTS read_only_files (
     session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     path        TEXT NOT NULL,
@@ -60,12 +95,14 @@ CREATE INDEX IF NOT EXISTS idx_rof_session ON read_only_files(session_id);
 
 // Store is a SQLite-backed ledger for sessions, tasks, and rounds.
 type Store struct {
-	db *sql.DB
+	db           *sql.DB
+	contextStore *context.Store
+	blobDir      string
 }
 
 // Open opens (or creates) the SQLite database at path and runs the schema
-// migration.
-func Open(path string) (*Store, error) {
+// migration. The repoRoot is required for context store blob storage.
+func Open(path string, repoRoot string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
@@ -84,7 +121,41 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migration: %w", err)
 	}
-	return &Store{db: db}, nil
+
+	// Apply v2 schema if needed
+	if err := migrateToV2(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("v2 migration: %w", err)
+	}
+
+	// Initialize blob directory (but context store is per-session)
+	var blobDir string
+	if repoRoot != "" {
+		blobDir = filepath.Join(repoRoot, ".marshal", "sessions")
+	}
+
+	return &Store{db: db, blobDir: blobDir}, nil
+}
+
+// OpenWithSession opens the store and initializes context store for a specific session.
+func (s *Store) OpenWithSession(sessionID string) error {
+	if s.blobDir == "" {
+		return fmt.Errorf("blob directory not configured")
+	}
+
+	sessionBlobDir := filepath.Join(s.blobDir, sessionID, "ctx")
+	ctxStore, err := context.NewStore(s.db, sessionID, sessionBlobDir)
+	if err != nil {
+		return fmt.Errorf("initializing context store: %w", err)
+	}
+
+	s.contextStore = ctxStore
+	return nil
+}
+
+// ContextStore returns the context store (if initialized).
+func (s *Store) ContextStore() *context.Store {
+	return s.contextStore
 }
 
 // runMigrations applies schema changes for existing databases.
@@ -112,8 +183,44 @@ func runMigrations(db *sql.DB) error {
 	return nil
 }
 
-// Close releases the database connection.
-func (s *Store) Close() error { return s.db.Close() }
+// migrateToV2 migrates the schema to version 2 with context store tables.
+func migrateToV2(db *sql.DB) error {
+	// Check current schema version
+	var version int
+	err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&version)
+	if err != nil {
+		// Table doesn't exist yet, create it
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+			return fmt.Errorf("creating schema_version table: %w", err)
+		}
+	}
+
+	if version >= 2 {
+		// Already at v2 or higher
+		return nil
+	}
+
+	// Apply v2 schema
+	if _, err := db.Exec(SchemaV2); err != nil {
+		return fmt.Errorf("applying v2 schema: %w", err)
+	}
+
+	// Record migration
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO schema_version (version, applied_at) VALUES (2, ?)`, now); err != nil {
+		return fmt.Errorf("recording v2 migration: %w", err)
+	}
+
+	return nil
+}
+
+// Close releases the database connection and context store.
+func (s *Store) Close() error {
+	if s.contextStore != nil {
+		s.contextStore.Close()
+	}
+	return s.db.Close()
+}
 
 // --- Sessions ----------------------------------------------------------------
 
@@ -373,4 +480,175 @@ func nullStr(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// --- Plan and Goal methods ---------------------------------------------------
+
+// Plan represents a generated fix plan from audit findings
+type Plan struct {
+	ID          string    `json:"id"`
+	SessionID   string    `json:"session_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SourceTask  string    `json:"source_task"`
+	GoalsJSON   string    `json:"goals_json"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// Goal represents a discrete fix task
+type Goal struct {
+	ID           string     `json:"id"`
+	PlanID       string     `json:"plan_id"`
+	SessionID    string     `json:"session_id"`
+	Title        string     `json:"title"`
+	Description  string     `json:"description"`
+	Priority     string     `json:"priority"`
+	Status       string     `json:"status"`
+	FilesJSON    string     `json:"files_json"`
+	DependsJSON  string     `json:"depends_on_json"`
+	CreatedAt    time.Time  `json:"created_at"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	TaskID       *string    `json:"task_id,omitempty"`
+	FindingsJSON string     `json:"findings_json"`
+}
+
+// InsertPlan inserts a new plan.
+func (st *Store) InsertPlan(p *Plan) error {
+	_, err := st.db.Exec(`
+		INSERT INTO plans (id, session_id, name, description, source_task, goals_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, p.ID, p.SessionID, p.Name, p.Description, p.SourceTask, p.GoalsJSON,
+		p.CreatedAt.Format(time.RFC3339Nano), p.UpdatedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+// InsertGoal inserts a single goal.
+func (st *Store) InsertGoal(g *Goal) error {
+	_, err := st.db.Exec(`
+		INSERT INTO goals (id, plan_id, session_id, title, description, priority, status,
+		                   files_json, depends_on_json, created_at, started_at, completed_at, task_id, findings_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, g.ID, g.PlanID, g.SessionID, g.Title, g.Description, g.Priority, g.Status,
+		g.FilesJSON, g.DependsJSON, g.CreatedAt.Format(time.RFC3339Nano),
+		nullTime(g.StartedAt), nullTime(g.CompletedAt), nullStrPtr(g.TaskID), g.FindingsJSON)
+	return err
+}
+
+// UpdateGoalStatus updates a goal's status and timestamps.
+func (st *Store) UpdateGoalStatus(goalID string, status string, taskID *string) error {
+	now := time.Now()
+	var startedAt, completedAt interface{}
+
+	if status == "active" {
+		startedAt = now.Format(time.RFC3339Nano)
+	}
+	if status == "completed" || status == "failed" || status == "skipped" {
+		completedAt = now.Format(time.RFC3339Nano)
+	}
+
+	_, err := st.db.Exec(`
+		UPDATE goals SET status = ?, started_at = ?, completed_at = ?, task_id = ?
+		WHERE id = ?
+	`, status, startedAt, completedAt, nullStrPtr(taskID), goalID)
+	if err != nil {
+		return err
+	}
+
+	// Update plan's updated_at timestamp
+	_, err = st.db.Exec(`
+		UPDATE plans SET updated_at = ?
+		WHERE id = (SELECT plan_id FROM goals WHERE id = ?)
+	`, now.Format(time.RFC3339Nano), goalID)
+	return err
+}
+
+// GetActivePlanForSession retrieves the most recently updated plan for a session.
+func (st *Store) GetActivePlanForSession(sessionID string) (*Plan, error) {
+	row := st.db.QueryRow(`
+		SELECT id, session_id, name, description, source_task, goals_json, created_at, updated_at
+		FROM plans WHERE session_id = ? ORDER BY updated_at DESC LIMIT 1
+	`, sessionID)
+
+	p := &Plan{}
+	var createdAt, updatedAt string
+	err := row.Scan(&p.ID, &p.SessionID, &p.Name, &p.Description, &p.SourceTask,
+		&p.GoalsJSON, &createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	p.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	return p, nil
+}
+
+// GetGoalsForPlan retrieves all goals for a plan.
+func (st *Store) GetGoalsForPlan(planID string) ([]*Goal, error) {
+	rows, err := st.db.Query(`
+		SELECT id, plan_id, session_id, title, description, priority, status,
+		       files_json, depends_on_json, created_at, started_at, completed_at, task_id, findings_json
+		FROM goals WHERE plan_id = ? ORDER BY created_at ASC
+	`, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var goals []*Goal
+	for rows.Next() {
+		g := &Goal{}
+		var createdAt string
+		var startedAt, completedAt sql.NullString
+		var taskID sql.NullString
+		err := rows.Scan(&g.ID, &g.PlanID, &g.SessionID, &g.Title, &g.Description,
+			&g.Priority, &g.Status, &g.FilesJSON, &g.DependsJSON, &createdAt,
+			&startedAt, &completedAt, &taskID, &g.FindingsJSON)
+		if err != nil {
+			continue
+		}
+		g.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if startedAt.Valid {
+			t, _ := time.Parse(time.RFC3339Nano, startedAt.String)
+			g.StartedAt = &t
+		}
+		if completedAt.Valid {
+			t, _ := time.Parse(time.RFC3339Nano, completedAt.String)
+			g.CompletedAt = &t
+		}
+		if taskID.Valid {
+			g.TaskID = &taskID.String
+		}
+		goals = append(goals, g)
+	}
+	return goals, rows.Err()
+}
+
+// GetPendingGoalsCount returns the number of pending/active goals in a plan.
+func (st *Store) GetPendingGoalsCount(planID string) (int, error) {
+	var count int
+	err := st.db.QueryRow(`
+		SELECT COUNT(*) FROM goals
+		WHERE plan_id = ? AND status IN ('pending', 'active')
+	`, planID).Scan(&count)
+	return count, err
+}
+
+// nullTime returns nil if t is nil, otherwise formatted time — for nullable DATETIME columns.
+func nullTime(t *time.Time) interface{} {
+	if t == nil {
+		return nil
+	}
+	return t.Format(time.RFC3339Nano)
+}
+
+// nullStrPtr returns nil if s is nil, otherwise *s — for nullable TEXT columns.
+func nullStrPtr(s *string) interface{} {
+	if s == nil {
+		return nil
+	}
+	return *s
 }

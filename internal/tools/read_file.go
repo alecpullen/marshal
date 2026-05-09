@@ -9,16 +9,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/alecpullen/marshal/internal/context"
+	"github.com/alecpullen/marshal/pkg/protocol"
 )
 
 // ReadFileResult is the structured result from the read_file tool.
 type ReadFileResult struct {
-	Content   string `json:"content"`
-	Path      string `json:"path"`
-	Lines     int    `json:"lines"` // Total lines read
-	Size      int    `json:"size"`  // Size in bytes
-	Truncated bool   `json:"truncated,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Content     string             `json:"content"`
+	Path        string             `json:"path"`
+	Lines       int                `json:"lines"` // Total lines read
+	Size        int                `json:"size"`  // Size in bytes
+	Truncated   bool               `json:"truncated,omitempty"`
+	Error       string             `json:"error,omitempty"`
+	ContextRef  protocol.ContextRef `json:"context_ref,omitempty"` // Content-addressed reference if stored
+	StoredInline bool              `json:"stored_inline,omitempty"` // Whether content was stored inline
 }
 
 // ReadFileInput is the input schema for the read_file tool.
@@ -168,4 +174,57 @@ func ReadFile(repoRoot string, input json.RawMessage) (*ReadFileResult, error) {
 		Lines:   totalLines,
 		Size:    len(content),
 	}, nil
+}
+
+// ReadFileWithContext reads a file and stores it in the context store.
+// This is used when the caller wants to track the file content for later retrieval.
+func ReadFileWithContext(repoRoot string, input json.RawMessage, ctxStore *context.Store) (*ReadFileResult, error) {
+	result, err := ReadFile(repoRoot, input)
+	if err != nil || result.Error != "" {
+		return result, err
+	}
+
+	// Skip storing if context store is not available
+	if ctxStore == nil {
+		return result, nil
+	}
+
+	// Parse input to get original path for key
+	var params ReadFileInput
+	json.Unmarshal(input, &params)
+
+	// Create entry key
+	key := protocol.NewEntryKey(protocol.EntryKindFile, params.Path)
+
+	// Store in context store
+	ref, err := ctxStore.Put([]byte(result.Content), key, "read_file", []string{"source", "file"}, 0)
+	if err != nil {
+		// Non-fatal: still return the result, just without context ref
+		return result, nil
+	}
+
+	result.ContextRef = ref
+	result.StoredInline = len(result.Content) <= context.DefaultInlineThreshold
+
+	return result, nil
+}
+
+// StoreReadFile stores previously read file content in the context store.
+// This can be used to retroactively store content that was read without context tracking.
+func StoreReadFile(result *ReadFileResult, ctxStore *context.Store, ttl time.Duration) error {
+	if ctxStore == nil || result.Error != "" {
+		return nil
+	}
+
+	key := protocol.NewEntryKey(protocol.EntryKindFile, result.Path)
+
+	ref, err := ctxStore.Put([]byte(result.Content), key, "read_file", []string{"source", "file"}, ttl)
+	if err != nil {
+		return err
+	}
+
+	result.ContextRef = ref
+	result.StoredInline = len(result.Content) <= context.DefaultInlineThreshold
+
+	return nil
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/alecpullen/marshal/internal/git"
 	initmgr "github.com/alecpullen/marshal/internal/init"
 	"github.com/alecpullen/marshal/internal/loop"
+	"github.com/alecpullen/marshal/internal/plan"
 	"github.com/alecpullen/marshal/internal/repomap"
 	"github.com/alecpullen/marshal/internal/session"
 	"github.com/alecpullen/marshal/internal/skills"
@@ -93,6 +94,10 @@ type model struct {
 
 	// Completion/suggestion state.
 	completionState *completionState // nil when not completing
+
+	// Plan/audit-to-fix state.
+	planGenerator *plan.Generator // plan generator for audit-to-fix
+	currentPlan   *plan.Plan      // active fix plan
 }
 
 // toolOperationState tracks the state of a tool operation for compact display.
@@ -163,6 +168,14 @@ func newModel(
 
 	// Auto-load session context and repo map if they exist
 	m.loadSessionContext()
+
+	// Initialize plan generator and load any existing plan
+	if store != nil {
+		m.planGenerator = plan.NewGenerator(store)
+		if p, err := m.planGenerator.LoadActivePlanForSession(sessionID); err == nil && p != nil {
+			m.currentPlan = p
+		}
+	}
 
 	return m
 }
@@ -990,24 +1003,31 @@ func (m model) rebuildViewport() model {
 func (m model) renderEntry(e chatEntry, width int) string {
 	switch e.kind {
 	case "user":
-		return stylePromptPrefix.Render("> ") + styleUser.Width(width-2).Render(e.content)
+		// Wrap user content and prefix
+		wrapped := wrapText(e.content, width-2)
+		return stylePromptPrefix.Render("> ") + styleUser.Render(wrapped)
 	case "marshal":
 		// Collapse marshal summaries (🤔) when final output arrives
 		if e.collapsed && strings.HasPrefix(e.content, "🤔") {
-			return styleThinkingCollapsed.Width(width).Render("💭 " + strings.TrimPrefix(e.content, "🤔 "))
+			wrapped := wrapText("💭 "+strings.TrimPrefix(e.content, "🤔 "), width)
+			return styleThinkingCollapsed.Render(wrapped)
 		}
-		return styleMarshal.Width(width).Render(e.content)
+		wrapped := wrapText(e.content, width)
+		return styleMarshal.Render(wrapped)
 	case "executor":
 		// Use lightweight markdown formatting for executor output
 		// This is much faster than glamour for real-time streaming
 		if m.cfg != nil && m.cfg.Loop.Detail != config.DetailCompact {
 			return formatMarkdown(e.content, width)
 		}
-		return styleExecutor.Width(width).Render(e.content)
+		wrapped := wrapText(e.content, width)
+		return styleExecutor.Render(wrapped)
 	case "pass":
-		return stylePass.Width(width).Render(e.content)
+		wrapped := wrapText(e.content, width)
+		return stylePass.Render(wrapped)
 	case "fail":
-		return styleFail.Width(width).Render(e.content)
+		wrapped := wrapText(e.content, width)
+		return styleFail.Render(wrapped)
 	case "thinking":
 		// In compact mode, always collapse thinking
 		compactMode := m.cfg == nil || m.cfg.Loop.Detail == config.DetailCompact
@@ -1020,12 +1040,15 @@ func (m model) renderEntry(e chatEntry, width int) string {
 			} else {
 				preview += contentPreview
 			}
-			return styleThinkingCollapsed.Width(width).Render(preview)
+			wrapped := wrapText(preview, width)
+			return styleThinkingCollapsed.Render(wrapped)
 		}
 		// Expanded - show full content with distinct styling
-		return styleThinking.Width(width).Render("💭 " + e.content)
+		wrapped := wrapText("💭 "+e.content, width)
+		return styleThinking.Render(wrapped)
 	default:
-		return styleSystem.Width(width).Render(e.content)
+		wrapped := wrapText(e.content, width)
+		return styleSystem.Render(wrapped)
 	}
 }
 
@@ -1035,6 +1058,59 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// wrapText wraps text at the specified width, respecting word boundaries.
+// It handles ANSI escape codes properly and preserves existing line breaks.
+func wrapText(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+
+	lines := strings.Split(text, "\n")
+	var result strings.Builder
+
+	for _, line := range lines {
+		if line == "" {
+			result.WriteByte('\n')
+			continue
+		}
+
+		// If line is shorter than width, keep it as-is
+		if len(line) <= width {
+			result.WriteString(line)
+			result.WriteByte('\n')
+			continue
+		}
+
+		// Wrap long lines
+		words := strings.Fields(line)
+		currentLine := ""
+
+		for _, word := range words {
+			// Check if adding this word would exceed width
+			if len(currentLine) > 0 && len(currentLine)+1+len(word) > width {
+				// Flush current line
+				result.WriteString(currentLine)
+				result.WriteByte('\n')
+				currentLine = word
+			} else {
+				if len(currentLine) > 0 {
+					currentLine += " "
+				}
+				currentLine += word
+			}
+		}
+
+		// Don't forget the last line
+		if len(currentLine) > 0 {
+			result.WriteString(currentLine)
+			result.WriteByte('\n')
+		}
+	}
+
+	// Remove trailing newline if present
+	return strings.TrimSuffix(result.String(), "\n")
 }
 
 // formatMarkdown applies lightweight markdown formatting using lipgloss.
@@ -1049,19 +1125,23 @@ func formatMarkdown(content string, width int) string {
 		switch {
 		// Headers - soft blue, not bold
 		case strings.HasPrefix(trimmed, "### "):
-			result.WriteString(styleMarkdownHeader.Render(trimmed[4:]))
+			wrapped := wrapText(trimmed[4:], width)
+			result.WriteString(styleMarkdownHeader.Render(wrapped))
 			result.WriteString("\n")
 		case strings.HasPrefix(trimmed, "## "):
-			result.WriteString(styleMarkdownHeader.Render(trimmed[3:]))
+			wrapped := wrapText(trimmed[3:], width)
+			result.WriteString(styleMarkdownHeader.Render(wrapped))
 			result.WriteString("\n")
 		case strings.HasPrefix(trimmed, "# "):
-			result.WriteString(styleMarkdownHeader.Render(trimmed[2:]))
+			wrapped := wrapText(trimmed[2:], width)
+			result.WriteString(styleMarkdownHeader.Render(wrapped))
 			result.WriteString("\n")
 
 		// Intro/transition lines - bold title style
 		// Detect phrases like "Based on my examination...", "Here is my analysis..."
 		case isIntroLine(trimmed):
-			result.WriteString(styleMarkdownIntro.Render(trimmed))
+			wrapped := wrapText(trimmed, width)
+			result.WriteString(styleMarkdownIntro.Render(wrapped))
 			result.WriteString("\n")
 
 		// Code blocks (start/end) - subtle background
@@ -1085,15 +1165,18 @@ func formatMarkdown(content string, width int) string {
 
 		// Blockquote
 		case strings.HasPrefix(trimmed, "> "):
-			result.WriteString(styleMarkdownQuote.Width(width - 2).Render(trimmed[2:]))
+			wrapped := wrapText(trimmed[2:], width-2)
+			result.WriteString(styleMarkdownQuote.Render(wrapped))
 			result.WriteString("\n")
 
 		// List items
 		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* "):
-			result.WriteString(styleMarkdownList.Render("• " + trimmed[2:]))
+			wrapped := wrapText("• "+trimmed[2:], width)
+			result.WriteString(styleMarkdownList.Render(wrapped))
 			result.WriteString("\n")
 		case regexp.MustCompile(`^\d+\. `).MatchString(trimmed):
-			result.WriteString(styleMarkdownList.Render(trimmed))
+			wrapped := wrapText(trimmed, width)
+			result.WriteString(styleMarkdownList.Render(wrapped))
 			result.WriteString("\n")
 
 		// Horizontal rule
@@ -1101,9 +1184,10 @@ func formatMarkdown(content string, width int) string {
 			result.WriteString(strings.Repeat("─", width))
 			result.WriteString("\n")
 
-		// Regular text with bold handling
+		// Regular text with bold handling - wrap at width
 		default:
-			result.WriteString(formatBoldText(trimmed, styleMarkdownBold))
+			wrapped := wrapText(formatBoldText(trimmed, styleMarkdownBold), width)
+			result.WriteString(wrapped)
 			result.WriteString("\n")
 		}
 	}
@@ -1434,9 +1518,17 @@ func (m model) handleBuiltin(a commands.Action) (tea.Model, tea.Cmd) {
 	case commands.CmdPermission:
 		m = m.handlePermission(a)
 
+	// ── Plan/audit-to-fix commands ───────────────────────────────────────────
+
+	case commands.CmdPlan:
+		m = m.handlePlan(a)
+	case commands.CmdNext:
+		m, cmd = m.handleNext()
+	case commands.CmdGoal:
+		m = m.handleGoal()
+
 	default:
-		m = m.appendEntry("system",
-			fmt.Sprintf("unknown command %q — type /help for available commands", a.Name))
+		m = m.appendEntry("system", fmt.Sprintf("unknown command %q", a.Name))
 	}
 	return m, cmd
 }
@@ -2437,6 +2529,12 @@ External Integration:
   /watch [dir]         watch files for // ai: markers
   /unwatch             stop watching files
 
+Plan/Audit-to-Fix:
+  /plan                show current fix plan status
+  /plan generate       create a fix plan from the last audit task
+  /next                execute the next pending goal in the plan
+  /goal                show details of the current active goal
+
 Editor/Context:
   /editor              open $EDITOR for a note (content loaded into input on close)
   /edit <file>         open a file in $EDITOR
@@ -2548,4 +2646,166 @@ func stripHTML(s string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plan/audit-to-fix handlers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// handlePlan handles the /plan command for viewing or generating fix plans.
+func (m model) handlePlan(a commands.Action) model {
+	if m.planGenerator == nil {
+		return m.appendEntry("system", "Plan generator not available (no session store)")
+	}
+
+	// Check for subcommands
+	args := a.Args
+	if len(args) > 0 && args[0] == "generate" {
+		// Generate plan from last task
+		return m.handlePlanGenerate()
+	}
+
+	// Show current plan status
+	if m.currentPlan == nil {
+		// Try to load from store
+		if p, err := m.planGenerator.LoadActivePlanForSession(m.sessionID); err == nil && p != nil {
+			m.currentPlan = p
+		} else {
+			return m.appendEntry("system", "No active plan. Run '/plan generate' to create a plan from the last audit.")
+		}
+	}
+
+	status := plan.FormatPlanStatus(m.currentPlan)
+	return m.appendEntry("system", status)
+}
+
+// handlePlanGenerate creates a fix plan from the most recent audit task.
+func (m model) handlePlanGenerate() model {
+	// Get the most recent completed task (should be the audit)
+	tasks, err := m.store.TasksForSession(m.sessionID)
+	if err != nil {
+		return m.appendEntry("system", fmt.Sprintf("Error loading tasks: %v", err))
+	}
+
+	// Find the most recent completed task with audit output
+	var lastTask *session.Task
+	for i := len(tasks) - 1; i >= 0; i-- {
+		if tasks[i].Status == session.StatusPassed || tasks[i].Status == session.StatusFailed {
+			lastTask = tasks[i]
+			break
+		}
+	}
+
+	if lastTask == nil {
+		return m.appendEntry("system", "No completed task found. Run an audit first.")
+	}
+
+	// Get the task output (from rounds)
+	rounds, err := m.store.RoundsForSession(m.sessionID)
+	if err != nil {
+		return m.appendEntry("system", fmt.Sprintf("Error loading rounds: %v", err))
+	}
+
+	// Build audit output from rounds
+	var auditOutput strings.Builder
+	for _, r := range rounds {
+		if r.TaskID == lastTask.ID && r.Role == "executor" {
+			auditOutput.WriteString(r.Content)
+		}
+	}
+
+	if auditOutput.Len() == 0 {
+		return m.appendEntry("system", "No audit output found in last task.")
+	}
+
+	// Generate plan
+	p, err := m.planGenerator.GenerateFromAudit(m.sessionID, lastTask.ID, auditOutput.String())
+	if err != nil {
+		return m.appendEntry("system", fmt.Sprintf("Error generating plan: %v", err))
+	}
+
+	m.currentPlan = p
+	status := plan.FormatPlanStatus(p)
+	return m.appendEntry("system", "Generated fix plan from audit:\n\n"+status)
+}
+
+// handleNext executes the next pending goal in the plan.
+func (m model) handleNext() (model, tea.Cmd) {
+	if m.currentPlan == nil {
+		if m.planGenerator != nil {
+			if p, err := m.planGenerator.LoadActivePlanForSession(m.sessionID); err == nil && p != nil {
+				m.currentPlan = p
+			}
+		}
+		if m.currentPlan == nil {
+			return m.appendEntry("system", "No active plan. Run '/plan generate' first."), nil
+		}
+	}
+
+	next := m.currentPlan.NextGoal()
+	if next == nil {
+		// Check if plan is complete
+		if m.currentPlan.IsComplete() {
+			return m.appendEntry("system", "Plan complete! All goals have been addressed."), nil
+		}
+		return m.appendEntry("system", "No pending goals available. Check dependencies."), nil
+	}
+
+	// Update goal status to active
+	if err := m.planGenerator.UpdateGoalStatus(next.ID, string(plan.GoalActive), nil); err != nil {
+		return m.appendEntry("system", fmt.Sprintf("Error updating goal: %v", err)), nil
+	}
+	next.Status = plan.GoalActive
+
+	// Generate task prompt from goal
+	prompt := plan.GetGoalPrompt(next)
+
+	// Start the engine with the goal prompt
+	m.input.Blur()
+	m.busy = true
+	m = m.appendEntry("system", fmt.Sprintf("Starting goal: [%s] %s", next.Priority, next.Title))
+	m = m.appendEntry("user", prompt)
+
+	return m, m.startEngine(prompt, "", "", false)
+}
+
+// handleGoal shows details of the current active goal.
+func (m model) handleGoal() model {
+	if m.currentPlan == nil {
+		return m.appendEntry("system", "No active plan. Run '/plan generate' first.")
+	}
+
+	// Find active goal
+	var active *plan.Goal
+	for _, g := range m.currentPlan.Goals {
+		if g.Status == plan.GoalActive {
+			active = g
+			break
+		}
+	}
+
+	if active == nil {
+		// Show next pending goal
+		next := m.currentPlan.NextGoal()
+		if next == nil {
+			return m.appendEntry("system", "No active or pending goals. Plan may be complete.")
+		}
+		return m.appendEntry("system", fmt.Sprintf("Next goal (pending): [%s] %s\n\nRun /next to start working on this goal.", next.Priority, next.Title))
+	}
+
+	// Show active goal details
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Active Goal: [%s] %s\n", active.Priority, active.Title))
+	sb.WriteString(fmt.Sprintf("Status: %s\n\n", active.Status))
+	sb.WriteString("Description:\n")
+	sb.WriteString(active.Description)
+
+	if len(active.Files) > 0 {
+		sb.WriteString("\n\nRelated Files:\n")
+		for _, f := range active.Files {
+			sb.WriteString(fmt.Sprintf("- %s\n", f))
+		}
+	}
+
+	return m.appendEntry("system", sb.String())
 }

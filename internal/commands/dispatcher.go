@@ -66,6 +66,9 @@ const (
 	CmdUnwatch         = "unwatch"
 	CmdPermission      = "permission"
 	CmdInit            = "init"
+	CmdPlan            = "plan"
+	CmdNext            = "next"
+	CmdGoal            = "goal"
 )
 
 // Action is the result of dispatching a slash command.
@@ -213,6 +216,14 @@ func Dispatch(input string, reg *skills.Registry) (Action, bool) {
 		return Action{Kind: KindBuiltin, Name: CmdLint, Prompt: rest}, true
 	case "/permission":
 		return Action{Kind: KindBuiltin, Name: CmdPermission, Arg: rest}, true
+
+	// Plan/audit-to-fix commands
+	case "/plan":
+		return Action{Kind: KindBuiltin, Name: CmdPlan, Arg: rest, Args: args}, true
+	case "/next":
+		return Action{Kind: KindBuiltin, Name: CmdNext}, true
+	case "/goal":
+		return Action{Kind: KindBuiltin, Name: CmdGoal}, true
 	}
 
 	// Skill registry lookup.

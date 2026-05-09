@@ -159,7 +159,7 @@ func OpenStore(repoRoot string) (*session.Store, error) {
 		return nil, err
 	}
 	ensureExcluded(repoRoot)
-	return session.Open(filepath.Join(dbDir, "sessions.db"))
+	return session.Open(filepath.Join(dbDir, "sessions.db"), repoRoot)
 }
 
 // ensureExcluded adds ".marshal/" to .git/info/exclude so that git never

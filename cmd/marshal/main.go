@@ -118,7 +118,10 @@ discrete, branch-isolated, critic-reviewed task.`,
 		chatCmd(gf),
 		runCmd(gf),
 		pipelineCmd(gf),
+		graphCmd(gf),
 		debugCmd(gf),
+		doctorCmd(gf),
+		profileCmd(gf),
 	)
 
 	return root
@@ -436,7 +439,7 @@ Examples:
 				return err
 			}
 			ensureMarshalExcluded(repo.Root())
-			store, err := session.Open(filepath.Join(dbDir, "sessions.db"))
+			store, err := session.Open(filepath.Join(dbDir, "sessions.db"), repo.Root())
 			if err != nil {
 				return fmt.Errorf("session store: %w", err)
 			}
@@ -464,6 +467,14 @@ Examples:
 					_ = gitSess.Teardown()
 				}
 				return fmt.Errorf("insert session: %w", err)
+			}
+
+			// Initialize context store for this session
+			if err := store.OpenWithSession(sessID); err != nil {
+				if gitSess != nil {
+					_ = gitSess.Teardown()
+				}
+				return fmt.Errorf("context store: %w", err)
 			}
 
 			// Build backend registry with model settings for capability detection.

@@ -1,0 +1,159 @@
+package knowledge
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	ctxstore "github.com/alecpullen/marshal/internal/context"
+	"github.com/alecpullen/marshal/pkg/protocol"
+)
+
+// KnowledgeTier provides the three-layer retrieval system.
+type KnowledgeTier struct {
+	store           *ctxstore.Store
+	lastSearchScore float64
+	lastTopResults  []protocol.ContextRef
+	bm25K1          float64 // Tuned for code
+	bm25B           float64
+}
+
+// NewKnowledgeTier creates a new knowledge tier.
+func NewKnowledgeTier(store *ctxstore.Store) *KnowledgeTier {
+	return &KnowledgeTier{
+		store:  store,
+		bm25K1: 1.2, // Tuned: lower than default 1.5 for more term frequency sensitivity
+		bm25B:  0.5, // Less length normalization (code files vary in length)
+	}
+}
+
+// Fetch retrieves an entry by exact reference (Layer A).
+func (kt *KnowledgeTier) Fetch(ctx context.Context, ref protocol.ContextRef) (*protocol.ContextEntry, error) {
+	return kt.store.Get(ctx, ref)
+}
+
+// List retrieves entries matching query (Layer A).
+func (kt *KnowledgeTier) List(ctx context.Context, query protocol.ListQuery) ([]protocol.ContextEntry, error) {
+	return kt.store.List(ctx, query)
+}
+
+// Search performs full-text search (Layer B).
+func (kt *KnowledgeTier) Search(ctx context.Context, query string, mode SearchMode, scope string) ([]protocol.SearchResult, error) {
+	if query == "" {
+		return nil, fmt.Errorf("search query cannot be empty")
+	}
+
+	if !mode.IsValid() {
+		return nil, fmt.Errorf("invalid search mode: %s", mode)
+	}
+
+	// Build search query with scope
+	sq := protocol.SearchQuery{
+		Query:      query,
+		LatestOnly: true,
+		Limit:      20,
+	}
+
+	// Apply scope filter
+	if scope != "" && scope != "all" {
+		sq.Tags = Scope(scope).ToTags()
+	}
+
+	results, err := kt.store.Search(ctx, sq)
+	if err != nil {
+		return nil, fmt.Errorf("search failed: %w", err)
+	}
+
+	// Track for confidence calculation and caching
+	kt.updateTracking(results)
+
+	// Apply mode-specific processing
+	switch mode {
+	case SearchModeExact:
+		return results, nil
+	case SearchModeFuzzy:
+		return kt.applyFuzzyBoost(results, query), nil
+	case SearchModeSemantic:
+		return nil, fmt.Errorf("semantic search not implemented (Phase 3.75)")
+	default:
+		return results, nil
+	}
+}
+
+// updateTracking stores results for confidence calculation.
+func (kt *KnowledgeTier) updateTracking(results []protocol.SearchResult) {
+	if len(results) > 0 {
+		kt.lastSearchScore = results[0].Score
+
+		// Store top 10 for cache signature
+		topCount := 10
+		if len(results) < topCount {
+			topCount = len(results)
+		}
+
+		kt.lastTopResults = make([]protocol.ContextRef, topCount)
+		for i := 0; i < topCount; i++ {
+			kt.lastTopResults[i] = results[i].Entry.Ref
+		}
+	} else {
+		kt.lastSearchScore = 0
+		kt.lastTopResults = nil
+	}
+}
+
+// applyFuzzyBoost adjusts BM25 scores for fuzzy matching.
+func (kt *KnowledgeTier) applyFuzzyBoost(results []protocol.SearchResult, query string) []protocol.SearchResult {
+	// TODO: Implement fuzzy boost using edit distance
+	// For now, return as-is since store handles BM25
+	return results
+}
+
+// LastSearchScore returns the score of the top result from last search.
+func (kt *KnowledgeTier) LastSearchScore() float64 {
+	return kt.lastSearchScore
+}
+
+// LastTopResults returns the top results from last search.
+func (kt *KnowledgeTier) LastTopResults() []protocol.ContextRef {
+	return kt.lastTopResults
+}
+
+// GetBM25Params returns the tuned BM25 parameters.
+func (kt *KnowledgeTier) GetBM25Params() (k1, b float64) {
+	return kt.bm25K1, kt.bm25B
+}
+
+// FormatResults formats search results for display.
+func FormatResults(results []protocol.SearchResult, limit int) string {
+	if len(results) == 0 {
+		return "No results found."
+	}
+
+	if limit <= 0 || limit > len(results) {
+		limit = len(results)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d results:\n\n", len(results)))
+
+	for i := 0; i < limit; i++ {
+		r := results[i]
+		shortRef := fmt.Sprintf("%s/%s", r.Entry.Key.Kind(), r.Entry.Key.Path())
+
+		sb.WriteString(fmt.Sprintf("%d. %s (score: %.2f)\n", i+1, shortRef, r.Score))
+
+		if r.Snippet != "" {
+			sb.WriteString(fmt.Sprintf("   %s\n", r.Snippet))
+		} else {
+			// Show first 100 chars of content
+			content := string(r.Entry.Content)
+			if len(content) > 100 {
+				content = content[:100] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("   %s\n", content))
+		}
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
+}

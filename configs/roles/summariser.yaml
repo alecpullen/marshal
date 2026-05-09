@@ -1,0 +1,112 @@
+# Summariser Role Manifest
+# Phase 3.8: Generates LLM-backed summaries of code files and packages
+
+id: summariser
+role: summariser
+version: "1.0"
+description: "Generates structured summaries of code files and packages for the knowledge base"
+
+# Use a cheaper/faster model for summaries
+model_binding: fast
+
+# Execution limits (summaries should be quick)
+max_iterations: 1
+timeout: 30s
+
+# Required tools
+tools:
+  - read_file          # Read source file content
+  - kb_file_symbols    # Get symbol index for the file
+  - kb_symbol_lookup   # Cross-reference symbols
+
+# Output must be valid FileSummary JSON
+output_required: true
+output_schema:
+  type: object
+  required: [path, content_hash, symbols_hash, purpose, public_surface, generated_at]
+  properties:
+    path:
+      type: string
+      description: "File path being summarized"
+    content_hash:
+      type: string
+      description: "BLAKE3 hash of file content"
+    symbols_hash:
+      type: string
+      description: "Hash of symbol set for invalidation"
+    purpose:
+      type: string
+      description: "1-2 sentence description of file's main responsibility"
+    public_surface:
+      type: array
+      items:
+        type: string
+      description: "List of exported/public symbols (MUST match symbol index)"
+    depends_on:
+      type: array
+      items:
+        type: string
+      description: "Internal and external dependencies"
+    related_to:
+      type: array
+      items:
+        type: string
+      description: "Related files in the codebase"
+    notes:
+      type: string
+      description: "Implementation notes or important details"
+    generated_at:
+      type: string
+      format: date-time
+      description: "ISO 8601 timestamp"
+
+# System prompt for structured summary generation
+system_prompt: |
+  You are a code summarization assistant. Your task is to analyze a source code file 
+  and generate a structured summary following the FileSummary schema.
+  
+  You will be provided with:
+  - The file path
+  - The file content
+  - The symbol index (all exported symbols)
+  
+  Generate a JSON object matching the FileSummary schema with these fields:
+  
+  1. path: The file path (provided)
+  2. content_hash: The content hash (provided)
+  3. symbols_hash: The symbols hash (provided)
+  4. purpose: A 1-2 sentence description of the file's main responsibility. 
+     Be specific but concise. Example: "Implements JWT token validation middleware 
+     for the API, extracting and verifying bearer tokens from HTTP headers."
+  5. public_surface: An array of exported symbol names. CRITICAL: Only include 
+     symbols that are actually in the provided symbol index and marked as exported. 
+     Do not hallucinate. When in doubt, omit.
+  6. depends_on: Array of dependencies (internal paths like "../utils" or external like "npm:lodash")
+  7. related_to: Array of related files in the same package or with similar purpose
+  8. notes: Any important implementation details, edge cases, or design patterns used
+  9. generated_at: Current ISO 8601 timestamp
+  
+  Rules:
+  - Output ONLY valid JSON, no markdown code blocks, no explanations
+  - Purpose must be factual, not marketing language
+  - PublicSurface must be verifiable against the symbol index
+  - Be concise - aim for 50-100 words total
+  - Focus on "what" and "why", not "how" (implementation details go in notes)
+
+# Context assembly policy
+context_policy:
+  inherit: ["session_id", "task_id"]
+  exclude: ["history"]
+  max_tokens: 4000
+  summarize_if_over: 6000
+
+# Safety: summaries are read-only
+requires_read_before_edit: false
+
+# Capabilities
+capabilities:
+  - structured_output
+  - kb_summary_generation
+
+# Cannot spawn sub-agents (single-purpose role)
+can_spawn_agents: false

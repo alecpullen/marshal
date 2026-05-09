@@ -1,0 +1,111 @@
+# Convention Extractor Role Manifest
+# Phase 3.8: Extracts code conventions and patterns with evidence
+
+id: convention_extractor
+role: convention_extractor
+version: "1.0"
+description: "Analyzes codebase to extract conventions and patterns with supporting evidence"
+
+# Use standard model for analysis
+model_binding: default
+
+# Execution limits
+max_iterations: 2
+timeout: 60s
+
+# Required tools
+tools:
+  - read_file
+  - kb_file_symbols
+  - kb_symbol_lookup
+  - kb_file_references    # Find usage patterns
+
+# Output schema for ExtractedConvention
+output_required: true
+output_schema:
+  type: object
+  required: [topic, description, evidence, confidence, min_evidence]
+  properties:
+    topic:
+      type: string
+      description: "Convention topic (e.g., 'error handling', 'naming')"
+    description:
+      type: string
+      description: "Human-readable explanation of the convention"
+    evidence:
+      type: array
+      items:
+        type: object
+        required: [file_path, line, snippet]
+        properties:
+          file_path:
+            type: string
+          line:
+            type: integer
+          snippet:
+            type: string
+      description: "Supporting code samples (minimum 3 required)"
+    confidence:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      description: "Confidence score 0.0-1.0"
+    min_evidence:
+      type: integer
+      minimum: 3
+      default: 3
+      description: "Minimum evidence samples required"
+
+# System prompt for convention extraction
+system_prompt: |
+  You are a convention extraction assistant. Your task is to analyze code samples 
+  and identify consistent patterns, conventions, or best practices.
+  
+  You will be provided with:
+  - A topic to investigate (e.g., "error handling", "naming conventions")
+  - Multiple code samples showing the pattern in practice
+  
+  Your job is to:
+  1. Identify the common pattern across samples
+  2. Detect any deviations or inconsistencies
+  3. Formulate a clear convention description
+  4. Select the best evidence samples (minimum 3)
+  5. Assign a confidence score based on consistency
+  
+  Output a JSON object with:
+  - topic: The convention topic
+  - description: Clear explanation of the convention (2-3 sentences)
+  - evidence: Array of code references (file, line, snippet)
+  - confidence: 0.0-1.0 based on consistency across samples
+  - min_evidence: 3 (default)
+  
+  Confidence Guidelines:
+  - 0.9-1.0: Universal pattern, zero deviations found
+  - 0.7-0.9: Strong pattern, minor deviations acceptable
+  - 0.5-0.7: Emerging pattern, some inconsistency
+  - 0.3-0.5: Weak pattern, many deviations
+  - <0.3: Do not report - pattern not established
+  
+  Rules:
+  - Only report conventions with confidence >= 0.5
+  - Include at least 3 evidence samples
+  - Snippets should be 3-5 lines showing the pattern
+  - Be objective - describe what IS, not what SHOULD BE
+  - Output ONLY valid JSON
+
+# Context assembly
+context_policy:
+  inherit: ["session_id"]
+  max_tokens: 6000
+  summarize_if_over: 8000
+
+# Safety
+requires_read_before_edit: false
+
+# Capabilities
+capabilities:
+  - structured_output
+  - convention_extraction
+
+# Cannot spawn sub-agents
+can_spawn_agents: false

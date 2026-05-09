@@ -1,0 +1,102 @@
+role: orchestrator
+version: "1.0"
+description: "Marshal orchestrator - plans and coordinates multi-agent task graphs"
+
+model_binding: $models.marshal
+system_prompt: ./prompts/orchestrator.md
+
+tools:
+  - ctx_search
+  - ctx_fetch
+  - ctx_list
+  - kb_symbol_lookup
+  - kb_file_summary
+  - kb_package_summary
+  - kb_conventions
+  - query_knowledge
+  - read_file
+  - write_file
+  - run_command
+
+context_policy:
+  inherit:
+    - project_root
+    - active_files_index
+    - kb_project_map
+    - approved_conventions
+  exclude:
+    - full_conversation
+    - task_graph
+    - decision_log
+  max_tokens: 16000
+  summarize_if_over: 12000
+
+output_schema:
+  type: object
+  required:
+    - tasks
+  properties:
+    tasks:
+      type: array
+      items:
+        type: object
+        required:
+          - id
+          - role
+          - goal
+          - description
+          - depends_on
+        properties:
+          id:
+            type: string
+            pattern: "^task-[a-z0-9-]+$"
+          role:
+            type: string
+            enum: [research, codegen, reviewer, test_writer, docs, fixer, synthesize]
+          goal:
+            type: string
+            maxLength: 500
+          description:
+            type: string
+            maxLength: 200
+          depends_on:
+            type: array
+            items:
+              type: string
+          files_likely_affected:
+            type: array
+            items:
+              type: string
+          estimated_tokens:
+            type: integer
+            minimum: 100
+            maximum: 100000
+
+max_iterations: 2
+timeout: 2m
+
+requires_read_before_edit: false
+can_spawn_agents: true
+allowed_sub_roles:
+  - research
+  - codegen
+  - reviewer
+  - test_writer
+  - docs
+  - fixer
+  - synthesize
+max_concurrent_subs: 3
+
+capabilities:
+  - task_planning
+  - dynamic_replanning
+  - kb_integration
+  - parallel_execution
+  - progress_tracking
+
+replan_config:
+  on_failure: true
+  on_critic_feedback: true
+  manual_only: false
+  max_replans: 5
+  cost_budget_cents: 50

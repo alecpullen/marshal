@@ -1,24 +1,31 @@
 # Marshal Configuration
 # See marshal.toml.example for full documentation
 
+[model.marshal]
+provider = "ollama"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "qooba/qwen3-coder-30b-a3b-instruct:q3_k_m"
+supports_tools = false
+
 [model.executor]
-provider = "openai-compat"
-base_url = "https://api.fireworks.ai/inference/v1"
-api_key = "${FIREWORKS_API_KEY}"
-model = "accounts/fireworks/routers/kimi-k2p5-turbo"
-supports_tools = true
+provider = "ollama"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "qooba/qwen3-coder-30b-a3b-instruct:q3_k_m"
+supports_tools = false
 
 [model.critic]
-provider = "openai-compat"
-base_url = "https://api.fireworks.ai/inference/v1"
-api_key = "${FIREWORKS_API_KEY}"
-model = "accounts/fireworks/routers/kimi-k2p5-turbo"
+provider = "ollama"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "qooba/qwen3-coder-30b-a3b-instruct:q3_k_m"
 
-[model.marshal]
-provider = "openai-compat"
-base_url = "https://api.fireworks.ai/inference/v1"
-api_key = "${FIREWORKS_API_KEY}"
-model = "accounts/fireworks/routers/kimi-k2p5-turbo"
+[model.compactor]
+provider = "ollama"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "qooba/qwen3-coder-30b-a3b-instruct:q3_k_m"
 
 [loop]
 max_rounds = 3

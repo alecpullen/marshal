@@ -42,3 +42,4 @@ go.work.sum
 
 # Session files
 .marshal_sessions/
+.openrouter-api

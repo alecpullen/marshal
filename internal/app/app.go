@@ -18,10 +18,12 @@ import (
 	"marshal/internal/app/tui"
 )
 
-type ProgramRunner func(model tea.Model, output io.Writer) error
+type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
+type configLoader func(config.LoadOptions) (config.Config, error)
 
 type options struct {
 	now           func() time.Time
+	configLoader  configLoader
 	programRunner ProgramRunner
 }
 
@@ -35,13 +37,30 @@ func WithNow(now func() time.Time) Option {
 
 func WithProgramRunner(runner ProgramRunner) Option {
 	return func(opts *options) {
+		if runner == nil {
+			return
+		}
 		opts.programRunner = runner
 	}
 }
 
+func WithConfigLoader(loader configLoader) Option {
+	return func(opts *options) {
+		if loader == nil {
+			return
+		}
+		opts.configLoader = loader
+	}
+}
+
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	runOpts := options{
 		now:           time.Now,
+		configLoader:  config.Load,
 		programRunner: runProgram,
 	}
 	for _, opt := range opts {
@@ -56,14 +75,23 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		return fmt.Errorf("find working directory: %w", err)
 	}
 
-	cfg, err := config.Load(config.LoadOptions{WorkingDir: workingDir})
+	cfg, err := runOpts.configLoader(config.LoadOptions{WorkingDir: workingDir})
 	if err != nil {
 		return err
 	}
 
 	logger := logging.New(stderr, slog.LevelInfo)
 	state := session.New(cfg, workingDir, runOpts.now())
+	done := make(chan struct{})
+	defer close(done)
 	defer state.Shutdown()
+	go func() {
+		select {
+		case <-ctx.Done():
+			state.Shutdown()
+		case <-done:
+		}
+	}()
 
 	logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
@@ -73,11 +101,11 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	default:
 	}
 
-	return runOpts.programRunner(tui.New(state), stdout)
+	return runOpts.programRunner(ctx, tui.New(state), stdout)
 }
 
-func runProgram(model tea.Model, output io.Writer) error {
-	program := tea.NewProgram(model, tea.WithOutput(output))
+func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {
+	program := tea.NewProgram(model, tea.WithOutput(output), tea.WithContext(ctx))
 	_, err := program.Run()
 	return err
 }

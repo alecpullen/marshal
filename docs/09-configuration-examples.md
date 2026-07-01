@@ -1,0 +1,255 @@
+# 09. Configuration Examples
+
+## Global config
+
+Path idea:
+
+```text
+~/.config/marshal/config.toml
+```
+
+Example:
+
+```toml
+[profile]
+default = "local_balanced"
+
+[providers.ollama]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+
+[providers.lmstudio]
+type = "openai_compatible"
+base_url = "http://localhost:1234/v1"
+api_key = "lm-studio"
+
+[providers.openrouter]
+type = "openai_compatible"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+```
+
+## Model presets
+
+```toml
+[models.presets.tiny]
+provider = "ollama"
+model = "qwen2.5-coder:1.5b"
+context_window = 8192
+temperature = 0.0
+max_output_tokens = 1024
+tool_calling = "json"
+local_only = true
+
+[models.presets.fast]
+provider = "ollama"
+model = "qwen2.5-coder:7b"
+context_window = 32768
+temperature = 0.1
+max_output_tokens = 2048
+tool_calling = "json"
+local_only = true
+
+[models.presets.coder]
+provider = "ollama"
+model = "qwen2.5-coder:14b"
+context_window = 32768
+temperature = 0.1
+max_output_tokens = 4096
+tool_calling = "native"
+local_only = true
+
+[models.presets.reasoning]
+provider = "openrouter"
+model = "anthropic/claude-sonnet-4"
+context_window = 200000
+temperature = 0.2
+max_output_tokens = 8192
+tool_calling = "native"
+local_only = false
+```
+
+## Agent profile
+
+```toml
+[agent_profiles.local_balanced]
+router = "tiny"
+knowledge = "tiny"
+summarizer = "tiny"
+repo_scout = "fast"
+tester = "fast"
+planner = "coder"
+implementer = "coder"
+reviewer = "coder"
+security_reviewer = "coder"
+
+[agent_profiles.hybrid_saver]
+router = "tiny"
+knowledge = "tiny"
+summarizer = "tiny"
+repo_scout = "fast"
+tester = "fast"
+planner = "coder"
+implementer = "coder"
+reviewer = "reasoning"
+security_reviewer = "reasoning"
+```
+
+## Project config
+
+Path idea:
+
+```text
+.marshal/config.toml
+```
+
+Example:
+
+```toml
+[project]
+name = "marshal"
+languages = ["go", "markdown"]
+
+[commands]
+test = "go test ./..."
+lint = "golangci-lint run"
+format = "gofmt -w ."
+
+[profile]
+default = "local_balanced"
+
+[privacy]
+remote_providers_allowed = false
+redact_secrets = true
+include_gitignored_files = false
+
+[indexing]
+use_treesitter = true
+use_embeddings = false
+summarise_files = true
+ignore = [
+  "node_modules/**",
+  "vendor/**",
+  "dist/**",
+  ".git/**"
+]
+```
+
+## Role-specific context config
+
+```toml
+[agents.knowledge.context]
+max_repo_context_tokens = 12000
+max_conversation_tokens = 1000
+include_raw_code = false
+include_summaries = true
+include_symbols = true
+
+[agents.implementer.context]
+max_repo_context_tokens = 48000
+max_conversation_tokens = 8000
+include_raw_code = true
+include_summaries = true
+include_symbols = true
+
+[agents.reviewer.context]
+max_repo_context_tokens = 64000
+max_conversation_tokens = 4000
+include_diff = true
+include_tests = true
+include_raw_code = true
+
+[agents.router.context]
+max_repo_context_tokens = 2000
+include_raw_code = false
+include_summaries = true
+```
+
+## Routing escalation
+
+```toml
+[routing.rules]
+allow_escalation = true
+allow_remote_fallback = false
+require_approval_for_remote = true
+
+[[routing.escalation]]
+role = "implementer"
+if = "test_failed_twice"
+from = "coder"
+to = "reasoning"
+
+[[routing.escalation]]
+role = "planner"
+if = "context_required_gt_32k"
+from = "fast"
+to = "coder"
+
+[[routing.escalation]]
+role = "reviewer"
+if = "security_sensitive"
+from = "fast"
+to = "reasoning"
+```
+
+## Tool policy
+
+```toml
+[tools.shell]
+default_timeout_seconds = 120
+max_output_bytes = 200000
+allow_network = false
+allow_sudo = false
+allow_destructive = false
+
+[tools.shell.allow]
+commands = [
+  "go test",
+  "go vet",
+  "git status",
+  "git diff",
+  "rg",
+  "ls",
+  "cat"
+]
+
+[tools.shell.confirm]
+commands = [
+  "npm install",
+  "go get",
+  "docker compose up",
+  "git checkout",
+  "git stash"
+]
+
+[tools.shell.deny]
+patterns = [
+  "rm -rf /",
+  "curl * | sh",
+  "wget * | sh",
+  "git reset --hard",
+  "git clean -fd"
+]
+```
+
+## Local resource config
+
+```toml
+[local_resources]
+max_parallel_inference = 1
+avoid_loading_multiple_large_models = true
+unload_idle_models_after = "10m"
+reserve_vram_mb = 2048
+```
+
+## Budget config
+
+```toml
+[budgets]
+max_remote_cost_per_day_usd = 2.00
+max_remote_cost_per_task_usd = 0.25
+max_local_parallel_models = 2
+max_context_tokens_per_task = 200000
+prefer_local = true
+```

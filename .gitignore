@@ -1,0 +1,12 @@
+# Local build outputs
+/marshal
+/bin/
+
+# Go test/build artifacts
+*.test
+*.out
+coverage.txt
+
+# Editor and OS files
+.DS_Store
+.idea/

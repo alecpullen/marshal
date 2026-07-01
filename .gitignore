@@ -10,3 +10,6 @@ coverage.txt
 # Editor and OS files
 .DS_Store
 .idea/
+
+# Agent workflow scratch
+.superpowers/

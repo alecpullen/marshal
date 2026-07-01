@@ -2,22 +2,22 @@
 
 ## Milestone A: Project skeleton
 
-- [ ] Create Go module
-- [ ] Add CLI entrypoint at `cmd/marshal/main.go`
-- [ ] Add config loader
-- [ ] Add logging
-- [ ] Add basic app state
-- [ ] Add graceful shutdown handling
+- [x] Create Go module
+- [x] Add CLI entrypoint at `cmd/marshal/main.go`
+- [x] Add config loader
+- [x] Add logging
+- [x] Add basic app state
+- [x] Add graceful shutdown handling
 
 ## Milestone B: TUI shell
 
-- [ ] Add Bubble Tea app skeleton
-- [ ] Add chat input
-- [ ] Add streaming output area
-- [ ] Add status bar
-- [ ] Add command palette placeholder
-- [ ] Add tool log panel placeholder
-- [ ] Add diff panel placeholder
+- [x] Add Bubble Tea app skeleton
+- [x] Add chat input
+- [x] Add streaming output area
+- [x] Add status bar
+- [x] Add command palette placeholder
+- [x] Add tool log panel placeholder
+- [x] Add diff panel placeholder
 
 ## Milestone C: Provider abstraction
 

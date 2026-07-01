@@ -10,13 +10,19 @@ import (
 	"syscall"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui"
 )
 
+type ProgramRunner func(model tea.Model, output io.Writer) error
+
 type options struct {
-	now func() time.Time
+	now           func() time.Time
+	programRunner ProgramRunner
 }
 
 type Option func(*options)
@@ -27,8 +33,17 @@ func WithNow(now func() time.Time) Option {
 	}
 }
 
+func WithProgramRunner(runner ProgramRunner) Option {
+	return func(opts *options) {
+		opts.programRunner = runner
+	}
+}
+
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option) error {
-	runOpts := options{now: time.Now}
+	runOpts := options{
+		now:           time.Now,
+		programRunner: runProgram,
+	}
 	for _, opt := range opts {
 		opt(&runOpts)
 	}
@@ -55,10 +70,14 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	select {
 	case <-ctx.Done():
 		return nil
-	case <-state.Done():
-		return nil
 	default:
-		_, _ = fmt.Fprintln(stdout, "Marshal")
-		return nil
 	}
+
+	return runOpts.programRunner(tui.New(state), stdout)
+}
+
+func runProgram(model tea.Model, output io.Writer) error {
+	program := tea.NewProgram(model, tea.WithOutput(output))
+	_, err := program.Run()
+	return err
 }

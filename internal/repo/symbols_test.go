@@ -149,6 +149,34 @@ type (
 	assertHasSymbol(t, got, db.Symbol{FilePath: "types.go", Kind: "type", Name: "AliasType", Signature: "type AliasType string", LineStart: 5, LineEnd: 5})
 }
 
+func TestExtractSymbolsImportsSingle(t *testing.T) {
+	source := []byte(`package foo
+
+import "fmt"
+`)
+	got, err := ExtractSymbols("imports.go", source)
+	if err != nil {
+		t.Fatalf("ExtractSymbols failed: %v", err)
+	}
+	assertHasSymbol(t, got, db.Symbol{FilePath: "imports.go", Kind: "import", Name: "fmt", Signature: `"fmt"`, LineStart: 3, LineEnd: 3})
+}
+
+func TestExtractSymbolsImportsGroupedWithAlias(t *testing.T) {
+	source := []byte(`package foo
+
+import (
+	"fmt"
+	bar "example.com/bar"
+)
+`)
+	got, err := ExtractSymbols("imports.go", source)
+	if err != nil {
+		t.Fatalf("ExtractSymbols failed: %v", err)
+	}
+	assertHasSymbol(t, got, db.Symbol{FilePath: "imports.go", Kind: "import", Name: "fmt", Signature: `"fmt"`, LineStart: 4, LineEnd: 4})
+	assertHasSymbol(t, got, db.Symbol{FilePath: "imports.go", Kind: "import", Name: "example.com/bar", Signature: `bar "example.com/bar"`, LineStart: 5, LineEnd: 5})
+}
+
 // assertHasSymbol fails the test unless got contains a symbol matching
 // want's Name and Kind. Fields left at their zero value on want are not
 // checked, so callers can assert only the fields relevant to a test.

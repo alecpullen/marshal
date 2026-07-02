@@ -1,8 +1,8 @@
 package policy
 
 import (
-	"strings"
 	"marshal/internal/app/config"
+	"strings"
 )
 
 type Decision string
@@ -23,6 +23,15 @@ func NewEngine(cfg *config.Config, sessionRules []string) *PolicyEngine {
 		config:       cfg,
 		sessionRules: sessionRules,
 	}
+}
+
+// SetSessionRules replaces the engine's in-memory session allow-list.
+// PolicyEngine is normally constructed once per app run and lives for the
+// whole session, but session rules (added via the TUI's "Always Allow"
+// action) accrue after construction — callers with a long-lived engine
+// must call this before Evaluate to see rules added since the last call.
+func (pe *PolicyEngine) SetSessionRules(rules []string) {
+	pe.sessionRules = rules
 }
 
 func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {

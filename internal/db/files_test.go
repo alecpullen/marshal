@@ -52,13 +52,22 @@ func TestSaveAndGetFileIndex(t *testing.T) {
 		t.Fatalf("expected %d files, got %d", len(files), len(got))
 	}
 
-	for i := range files {
-		if got[i].Path != files[i].Path ||
-			got[i].Language != files[i].Language ||
-			got[i].Hash != files[i].Hash ||
-			got[i].SizeBytes != files[i].SizeBytes ||
-			!got[i].LastIndexedAt.Equal(files[i].LastIndexedAt) {
-			t.Errorf("file %d mismatch:\n got: %+v\nwant: %+v", i, got[i], files[i])
+	wantByPath := make(map[string]FileIndex, len(files))
+	for _, f := range files {
+		wantByPath[f.Path] = f
+	}
+
+	for _, gotFile := range got {
+		wantFile, ok := wantByPath[gotFile.Path]
+		if !ok {
+			t.Errorf("unexpected file path: %s", gotFile.Path)
+			continue
+		}
+		if gotFile.Language != wantFile.Language ||
+			gotFile.Hash != wantFile.Hash ||
+			gotFile.SizeBytes != wantFile.SizeBytes ||
+			!gotFile.LastIndexedAt.Equal(wantFile.LastIndexedAt) {
+			t.Errorf("file %s mismatch:\n got: %+v\nwant: %+v", gotFile.Path, gotFile, wantFile)
 		}
 	}
 }

@@ -47,13 +47,13 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 	return nil
 }
 
-// GetFileIndex returns all file rows for a project, ordered by insertion order.
+// GetFileIndex returns all file rows for a project, ordered by path.
 func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
 	rows, err := db.sqlDB.Query(
 		`SELECT path, language, hash, size_bytes, last_indexed_at
 		 FROM files
 		 WHERE project_id = ?
-		 ORDER BY id`,
+		 ORDER BY path`,
 		projectID,
 	)
 	if err != nil {

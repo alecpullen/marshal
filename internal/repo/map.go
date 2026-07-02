@@ -40,6 +40,9 @@ type dirNode struct {
 }
 
 func insertPath(node *dirNode, parts []string) {
+	if len(parts) == 0 {
+		return
+	}
 	if len(parts) == 1 {
 		node.files = append(node.files, parts[0])
 		return

@@ -2,8 +2,6 @@ package native
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +12,6 @@ import (
 
 func TestRepoMapTool(t *testing.T) {
 	tmp := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\n"), 0644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
 
 	dbConn, err := db.Open(":memory:")
 	if err != nil {
@@ -51,5 +46,39 @@ func TestRepoMapTool(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "main.go") {
 		t.Fatalf("expected main.go in map content: %s", res.Content)
+	}
+}
+
+func TestRepoMapToolEmptyIndex(t *testing.T) {
+	tmp := t.TempDir()
+
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject(tmp, "test")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: tmp, DB: dbConn, ProjectID: projectID}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	tool, ok := reg.Lookup("repo.map")
+	if !ok {
+		t.Fatal("repo.map not found")
+	}
+	res, err := tool.Handler(context.Background(), registry.ToolCall{})
+	if err != nil {
+		t.Fatalf("repo.map failed: %v", err)
+	}
+	if !strings.Contains(res.Content, "Run repo.index to build the file index first.") {
+		t.Fatalf("expected empty-index prompt in content: %s", res.Content)
 	}
 }

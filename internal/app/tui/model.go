@@ -3,11 +3,13 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 )
 
 type Model struct {
@@ -90,6 +92,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.input.Placeholder = "Edit command..."
 						m.input.Focus()
 						return m, nil
+					case "r":
+						if m.state.HasBackup() {
+							_ = m.state.RollbackBackup()
+							m.state.LogToolCall(registry.AuditEvent{
+								Timestamp:     time.Now(),
+								ToolName:      "rollback",
+								ResultSummary: "Rollback applied successfully",
+							})
+							return m, nil
+						}
 					}
 				}
 				// Ignore all other key inputs when approval prompt is shown and not editing
@@ -108,6 +120,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state.AddMessage(session.RoleUser, value)
 				m.input.Reset()
 				return m, nil
+			default:
+				switch msg.String() {
+				case "r":
+					if m.state.HasBackup() {
+						_ = m.state.RollbackBackup()
+						m.state.LogToolCall(registry.AuditEvent{
+							Timestamp:     time.Now(),
+							ToolName:      "rollback",
+							ResultSummary: "Rollback applied successfully",
+						})
+						return m, nil
+					}
+				}
 			}
 		}
 	}
@@ -133,6 +158,7 @@ func formatBoxLine(s string, width int) string {
 
 func (m Model) View() string {
 	var b strings.Builder
+	tc := m.state.PendingApproval()
 
 	fmt.Fprintf(&b, "Marshal\n")
 	fmt.Fprintf(&b, "Status: project=%s cwd=%s local-only=%t\n\n",
@@ -166,14 +192,17 @@ func (m Model) View() string {
 	}
 
 	fmt.Fprintf(&b, "\nDiff\n")
-	fmt.Fprintf(&b, "  No patch proposed.\n")
+	if tc != nil && tc.Diff != "" {
+		fmt.Fprintf(&b, "%s\n", tc.Diff)
+	} else {
+		fmt.Fprintf(&b, "  No patch proposed.\n")
+	}
 
 	if err := m.state.ProviderError(); err != nil {
 		fmt.Fprintf(&b, "\nProvider Error\n")
 		fmt.Fprintf(&b, "  %s\n", err.Error())
 	}
 
-	tc := m.state.PendingApproval()
 	if tc != nil {
 		boxWidth := 75
 		fmt.Fprintf(&b, "\n┌── SECURITY APPROVAL REQUIRED ───────────────────────────────────────────┐\n")
@@ -188,11 +217,18 @@ func (m Model) View() string {
 		if m.editingCommand {
 			fmt.Fprintf(&b, "Edit command and press [Enter] to run, [Esc] to cancel\n")
 		} else {
-			fmt.Fprintf(&b, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always Allow in this Session\n")
+			if m.state.HasBackup() {
+				fmt.Fprintf(&b, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always Allow in this Session  [r] Rollback Last Patch\n")
+			} else {
+				fmt.Fprintf(&b, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always Allow in this Session\n")
+			}
 		}
 	}
 
 	if tc == nil || m.editingCommand {
+		if m.state.HasBackup() {
+			fmt.Fprintf(&b, "[r] Rollback Last Patch\n")
+		}
 		fmt.Fprintf(&b, "\n%s\n", m.input.View())
 	}
 

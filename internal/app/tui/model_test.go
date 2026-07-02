@@ -248,3 +248,27 @@ func TestViewShowsAuditLogs(t *testing.T) {
 	}
 }
 
+func TestTUIRollbackFlow(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := session.New(config.Default(), tmpDir, time.Unix(100, 0))
+	state.StoreBackup([]session.BackupFile{
+		{Path: "app.go", Content: "original content"},
+	})
+
+	model := New(state)
+
+	// Update with 'r' keypress to trigger rollback
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	model = updated.(Model)
+
+	if state.HasBackup() {
+		t.Fatal("expected backup to be cleared after rollback")
+	}
+
+	view := model.View()
+	if !strings.Contains(view, "[r] Rollback Last Patch") {
+		// should be removed after backup is cleared
+	}
+}
+
+

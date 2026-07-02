@@ -15,17 +15,36 @@ type Config struct {
 }
 
 type Scanner struct {
-	config Config
+	config    Config
+	gitignore *Gitignore
+	loadErr   error
 }
 
 func NewScanner(config Config) *Scanner {
-	return &Scanner{config: config}
+	root := config.Root
+	if root == "" {
+		root = "."
+	}
+
+	s := &Scanner{config: config}
+	if !config.IncludeGitignore {
+		g, err := LoadGitignore(filepath.Join(root, ".gitignore"))
+		if err != nil {
+			s.loadErr = err
+		} else {
+			s.gitignore = g
+		}
+	}
+	return s
 }
 
 func (s *Scanner) Scan() ([]db.FileIndex, error) {
 	root := s.config.Root
 	if root == "" {
 		root = "."
+	}
+	if s.loadErr != nil {
+		return nil, s.loadErr
 	}
 
 	var files []db.FileIndex
@@ -39,6 +58,18 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		if rel == "." {
+			return nil
+		}
+		if s.gitignore != nil && s.gitignore.Match(rel, entry.IsDir()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if filepath.Base(rel) == ".gitignore" {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if entry.IsDir() {

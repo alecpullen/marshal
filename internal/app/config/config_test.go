@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"marshal/internal/llm/routing"
 )
 
 func TestDefaultConfigValues(t *testing.T) {
@@ -340,5 +342,109 @@ patterns = ["rm -rf"]
 	}
 	if !reflect.DeepEqual(s.Deny.Patterns, []string{"rm -rf"}) {
 		t.Errorf("Deny.Patterns = %#v", s.Deny.Patterns)
+	}
+}
+
+func TestLoadParsesRoutingConfig(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[models.presets.coder]
+provider = "ollama"
+model = "qwen2.5-coder:14b"
+context_window = 32768
+max_output_tokens = 4096
+temperature = 0.1
+top_p = 1.0
+tool_calling = "json"
+reasoning_effort = "none"
+local_only = true
+
+[agent_profiles.local_balanced]
+repo_scout = "coder"
+implementer = "coder"
+reviewer = "coder"
+
+[agents.implementer.context]
+max_repo_context_tokens = 48000
+max_conversation_tokens = 8000
+include_raw_code = true
+include_summaries = true
+include_symbols = true
+include_diff = false
+include_tests = true
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	preset := cfg.Models.Presets["coder"]
+	if preset.Provider != "ollama" || preset.Model != "qwen2.5-coder:14b" || !preset.LocalOnly {
+		t.Fatalf("preset coder = %#v", preset)
+	}
+	if preset.ContextWindow != 32768 || preset.MaxOutputTokens != 4096 || preset.Temperature != 0.1 || preset.TopP != 1.0 {
+		t.Fatalf("preset numeric fields = %#v", preset)
+	}
+	profile := cfg.AgentProfiles["local_balanced"]
+	if profile.Roles[routing.RoleRepoScout] != "coder" || profile.Roles[routing.RoleImplementer] != "coder" {
+		t.Fatalf("profile roles = %#v", profile.Roles)
+	}
+	budget := cfg.Agents[routing.RoleImplementer].Context
+	if budget.MaxRepoContextTokens != 48000 || budget.MaxConversationTokens != 8000 || !budget.IncludeRawCode || !budget.IncludeTests {
+		t.Fatalf("budget = %#v", budget)
+	}
+}
+
+func TestLoadRoutingConfigProjectOverridesGlobalByKey(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, home+"/.config/marshal/config.toml", `
+[models.presets.coder]
+provider = "ollama"
+model = "global"
+local_only = true
+
+[agent_profiles.local_balanced]
+implementer = "coder"
+
+[agents.implementer.context]
+max_repo_context_tokens = 12000
+`)
+	writeFile(t, work+"/.marshal/config.toml", `
+[models.presets.coder]
+provider = "lmstudio"
+model = "project"
+local_only = true
+
+[models.presets.fast]
+provider = "ollama"
+model = "fast"
+local_only = true
+
+[agent_profiles.local_balanced]
+repo_scout = "fast"
+implementer = "coder"
+
+[agents.implementer.context]
+max_repo_context_tokens = 48000
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Models.Presets["coder"].Provider != "lmstudio" || cfg.Models.Presets["coder"].Model != "project" {
+		t.Fatalf("coder preset = %#v", cfg.Models.Presets["coder"])
+	}
+	if cfg.Models.Presets["fast"].Model != "fast" {
+		t.Fatalf("fast preset missing: %#v", cfg.Models.Presets)
+	}
+	if cfg.AgentProfiles["local_balanced"].Roles[routing.RoleRepoScout] != "fast" {
+		t.Fatalf("profile = %#v", cfg.AgentProfiles["local_balanced"])
+	}
+	if cfg.Agents[routing.RoleImplementer].Context.MaxRepoContextTokens != 48000 {
+		t.Fatalf("implementer budget = %#v", cfg.Agents[routing.RoleImplementer].Context)
 	}
 }

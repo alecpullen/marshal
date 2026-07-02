@@ -59,13 +59,13 @@
 
 ## Milestone G: Patch workflow
 
-- [ ] Parse model patch proposal
-- [ ] Validate patch applies cleanly
-- [ ] Show unified diff
-- [ ] Approve/reject patch
-- [ ] Apply patch
-- [ ] Show git diff after patch
-- [ ] Rollback option
+- [x] Parse model patch proposal
+- [x] Validate patch applies cleanly
+- [x] Show unified diff
+- [x] Approve/reject patch
+- [x] Apply patch
+- [x] Show git diff after patch
+- [x] Rollback option
 
 ## Milestone H: Agent loop
 

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -54,8 +55,8 @@ type State struct {
 	WorkingDir string
 	StartedAt  time.Time
 	DB         *db.DB
-	ProjectID  int64
 	SessionID  string
+	Logger     *slog.Logger
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -69,15 +70,15 @@ type State struct {
 	lastBackup      []BackupFile
 }
 
-func New(cfg config.Config, workingDir string, now time.Time, database *db.DB, projectID int64, sessionID string) *State {
+func New(cfg config.Config, workingDir string, now time.Time, database *db.DB, sessionID string, logger *slog.Logger) *State {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &State{
 		Config:     cfg,
 		WorkingDir: workingDir,
 		StartedAt:  now,
 		DB:         database,
-		ProjectID:  projectID,
 		SessionID:  sessionID,
+		Logger:     logger,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -96,7 +97,9 @@ func (s *State) AddMessage(role Role, content string) {
 
 	if s.DB != nil && s.SessionID != "" {
 		// Best-effort persistence; do not fail the in-memory transcript.
-		_ = s.DB.SaveMessage(s.SessionID, string(role), content, msg.CreatedAt)
+		if err := s.DB.SaveMessage(s.SessionID, string(role), content, msg.CreatedAt); err != nil && s.Logger != nil {
+			s.Logger.Error("save message failed", "error", err, "session_id", s.SessionID, "role", role)
+		}
 	}
 }
 
@@ -167,7 +170,9 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 	s.auditLog = append(s.auditLog, event)
 
 	if s.DB != nil && s.SessionID != "" {
-		_ = s.DB.SaveToolCall(s.SessionID, event)
+		if err := s.DB.SaveToolCall(s.SessionID, event); err != nil && s.Logger != nil {
+			s.Logger.Error("save tool call failed", "error", err, "session_id", s.SessionID, "tool", event.ToolName)
+		}
 	}
 }
 

@@ -2,6 +2,8 @@ package session
 
 import (
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -13,7 +15,7 @@ import (
 )
 
 func TestStateAppendsMessagesInOrder(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, "", nil)
 
 	state.AddMessage(RoleSystem, "ready")
 	state.AddMessage(RoleUser, "hello")
@@ -31,7 +33,7 @@ func TestStateAppendsMessagesInOrder(t *testing.T) {
 }
 
 func TestMessagesReturnsCopy(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, "", nil)
 	state.AddMessage(RoleUser, "hello")
 
 	messages := state.Messages()
@@ -44,7 +46,7 @@ func TestMessagesReturnsCopy(t *testing.T) {
 }
 
 func TestShutdownCancelsState(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, "", nil)
 	state.Shutdown()
 
 	select {
@@ -55,7 +57,7 @@ func TestShutdownCancelsState(t *testing.T) {
 }
 
 func TestSetProviderErrorStoresAndRetrieves(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, "", nil)
 
 	testErr := errors.New("provider connection failed")
 	state.SetProviderError(testErr)
@@ -67,7 +69,7 @@ func TestSetProviderErrorStoresAndRetrieves(t *testing.T) {
 }
 
 func TestSetProviderErrorNilClearsExistingError(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, "", nil)
 
 	testErr := errors.New("provider connection failed")
 	state.SetProviderError(testErr)
@@ -81,7 +83,7 @@ func TestSetProviderErrorNilClearsExistingError(t *testing.T) {
 }
 
 func TestStatePendingApprovalAndSessionRules(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, "", nil)
 
 	// Initially nil
 	if got := state.PendingApproval(); got != nil {
@@ -113,7 +115,7 @@ func TestStatePendingApprovalAndSessionRules(t *testing.T) {
 }
 
 func TestStateAuditLog(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, "", nil)
 
 	if got := len(state.AuditLog()); got != 0 {
 		t.Fatalf("AuditLog() length = %d, want 0", got)
@@ -134,7 +136,7 @@ func TestStateAuditLog(t *testing.T) {
 
 func TestStateBackups(t *testing.T) {
 	tmpDir := t.TempDir()
-	state := New(config.Default(), tmpDir, time.Unix(100, 0), nil, 0, "")
+	state := New(config.Default(), tmpDir, time.Unix(100, 0), nil, "", nil)
 
 	if state.HasBackup() {
 		t.Fatal("initially HasBackup() should be false")
@@ -207,7 +209,8 @@ func TestStatePersistsMessagesAndAudits(t *testing.T) {
 	}
 
 	cfg := config.Default()
-	s := New(cfg, "/repo", time.Unix(100, 0), dbConn, projectID, sessionID)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(cfg, "/repo", time.Unix(100, 0), dbConn, sessionID, logger)
 
 	s.AddMessage(RoleUser, "hello")
 	s.AddMessage(RoleAssistant, "hi")

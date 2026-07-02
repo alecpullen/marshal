@@ -68,6 +68,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.shellRunTool(),
 		tools.testRunTool(),
 		tools.repoIndexTool(),
+		tools.repoMapTool(),
 	} {
 		if err := reg.Register(tool); err != nil {
 			return err

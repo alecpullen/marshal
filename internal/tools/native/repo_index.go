@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"marshal/internal/db"
 	"marshal/internal/repo"
 	"marshal/internal/tools/registry"
 )
@@ -41,6 +44,27 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("save file index: %w", err)
 		}
 
+		var symbols []db.Symbol
+		for _, f := range files {
+			if f.Language != "go" {
+				continue
+			}
+			content, readErr := os.ReadFile(filepath.Join(t.root, f.Path))
+			if readErr != nil {
+				// Unreadable file: keep its file-index entry, skip symbols.
+				continue
+			}
+			fileSymbols, extractErr := repo.ExtractSymbols(f.Path, content)
+			if extractErr != nil {
+				// Unparseable file: keep its file-index entry, skip symbols.
+				continue
+			}
+			symbols = append(symbols, fileSymbols...)
+		}
+		if err := t.db.SaveSymbols(t.projectID, symbols); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("save symbols: %w", err)
+		}
+
 		langCounts := map[string]int{}
 		for _, f := range files {
 			if f.Language != "" {
@@ -59,9 +83,10 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 		for _, lang := range langs {
 			b.WriteString(fmt.Sprintf("  %s: %d\n", lang, langCounts[lang]))
 		}
+		fmt.Fprintf(&b, "\nSymbols: %d\n", len(symbols))
 
 		return registry.ToolResult{
-			Summary: fmt.Sprintf("Indexed %d files", len(files)),
+			Summary: fmt.Sprintf("Indexed %d files, %d symbols", len(files), len(symbols)),
 			Content: b.String(),
 		}, nil
 	}

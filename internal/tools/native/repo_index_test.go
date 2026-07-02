@@ -12,7 +12,9 @@ import (
 
 func TestRepoIndexTool(t *testing.T) {
 	tmp := t.TempDir()
-	os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\n"), 0644)
+	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
 
 	dbConn, err := db.Open(":memory:")
 	if err != nil {

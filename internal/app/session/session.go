@@ -54,9 +54,9 @@ type State struct {
 	Config     config.Config
 	WorkingDir string
 	StartedAt  time.Time
-	DB         *db.DB
-	SessionID  string
-	Logger     *slog.Logger
+	db         *db.DB
+	sessionID  string
+	logger     *slog.Logger
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -76,9 +76,9 @@ func New(cfg config.Config, workingDir string, now time.Time, database *db.DB, s
 		Config:     cfg,
 		WorkingDir: workingDir,
 		StartedAt:  now,
-		DB:         database,
-		SessionID:  sessionID,
-		Logger:     logger,
+		db:         database,
+		sessionID:  sessionID,
+		logger:     logger,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -95,10 +95,10 @@ func (s *State) AddMessage(role Role, content string) {
 	s.messages = append(s.messages, msg)
 	s.mu.Unlock()
 
-	if s.DB != nil && s.SessionID != "" && s.Logger != nil {
+	if s.db != nil && s.sessionID != "" && s.logger != nil {
 		// Best-effort persistence; do not fail the in-memory transcript.
-		if err := s.DB.SaveMessage(s.SessionID, string(role), content, msg.CreatedAt); err != nil {
-			s.Logger.Error("save message failed", "error", err, "session_id", s.SessionID, "role", role)
+		if err := s.db.SaveMessage(s.sessionID, string(role), content, msg.CreatedAt); err != nil {
+			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
 		}
 	}
 }
@@ -172,9 +172,9 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 	s.auditLog = append(s.auditLog, event)
 	s.mu.Unlock()
 
-	if s.DB != nil && s.SessionID != "" && s.Logger != nil {
-		if err := s.DB.SaveToolCall(s.SessionID, event); err != nil {
-			s.Logger.Error("save tool call failed", "error", err, "session_id", s.SessionID, "tool", event.ToolName)
+	if s.db != nil && s.sessionID != "" && s.logger != nil {
+		if err := s.db.SaveToolCall(s.sessionID, event); err != nil {
+			s.logger.Error("save tool call failed", "error", err, "session_id", s.sessionID, "tool", event.ToolName)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -20,7 +21,7 @@ func (db *DB) GetProject(id int64) (Project, error) {
 	var createdAt, updatedAt string
 	row := db.queryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE id = ?`, id)
 	if err := row.Scan(&p.ID, &p.RootPath, &p.Name, &createdAt, &updatedAt); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return Project{}, fmt.Errorf("project not found: %d", id)
 		}
 		return Project{}, fmt.Errorf("load project: %w", err)

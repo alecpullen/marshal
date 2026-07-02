@@ -44,7 +44,7 @@ func TestRepoCardTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repo.card failed: %v", err)
 	}
-	if !strings.Contains(res.Content, "test") {
+	if !strings.Contains(res.Content, "Project: test") {
 		t.Fatalf("expected project name in card content: %s", res.Content)
 	}
 }

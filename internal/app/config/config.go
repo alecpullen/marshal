@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	Project  ProjectConfig  `toml:"project"`
-	Commands CommandsConfig `toml:"commands"`
-	Profile  ProfileConfig  `toml:"profile"`
-	Privacy  PrivacyConfig  `toml:"privacy"`
-	Indexing IndexingConfig `toml:"indexing"`
+	Project   ProjectConfig             `toml:"project"`
+	Commands  CommandsConfig            `toml:"commands"`
+	Profile   ProfileConfig             `toml:"profile"`
+	Privacy   PrivacyConfig             `toml:"privacy"`
+	Indexing  IndexingConfig            `toml:"indexing"`
+	Providers map[string]ProviderConfig `toml:"providers"`
 }
 
 type ProjectConfig struct {
@@ -42,6 +43,15 @@ type IndexingConfig struct {
 	UseEmbeddings  bool     `toml:"use_embeddings"`
 	SummariseFiles bool     `toml:"summarise_files"`
 	Ignore         []string `toml:"ignore"`
+}
+
+// ProviderConfig is one [providers.<name>] entry. Only the fields needed
+// for the generic OpenAI-compatible provider are present.
+type ProviderConfig struct {
+	Type      string `toml:"type"` // "openai_compatible" is the only supported value in this milestone
+	BaseURL   string `toml:"base_url"`
+	APIKey    string `toml:"api_key"`     // literal key; wins over APIKeyEnv if both set
+	APIKeyEnv string `toml:"api_key_env"` // env var name to resolve at provider-construction time (NOT resolved here)
 }
 
 type LoadOptions struct {
@@ -73,6 +83,11 @@ type configFile struct {
 		SummariseFiles *bool    `toml:"summarise_files"`
 		Ignore         []string `toml:"ignore"`
 	} `toml:"indexing"`
+	// Providers, unlike the other configFile fields above, is not a
+	// pointer-to-anonymous-struct: a nil map already distinguishes
+	// "providers section absent from this file" from "present", so no
+	// pointer wrapping is needed.
+	Providers map[string]ProviderConfig `toml:"providers"`
 }
 
 func Default() Config {
@@ -100,6 +115,9 @@ func Default() Config {
 			SummariseFiles: false,
 			Ignore:         []string{"node_modules/**", "vendor/**", "dist/**", ".git/**"},
 		},
+		// Providers is intentionally left nil: Marshal is local-first with no
+		// built-in provider assumptions, and provider URLs/keys are
+		// user-specific (see docs/09-configuration-examples.md).
 	}
 }
 
@@ -200,6 +218,18 @@ func merge(cfg *Config, file configFile) {
 		}
 		if file.Indexing.Ignore != nil {
 			cfg.Indexing.Ignore = file.Indexing.Ignore
+		}
+	}
+	if file.Providers != nil {
+		if cfg.Providers == nil {
+			cfg.Providers = make(map[string]ProviderConfig, len(file.Providers))
+		}
+		// Whole-entry overwrite by key: a provider name defined in both the
+		// global and project file is fully replaced by the project file's
+		// entry (not deep-merged field-by-field), mirroring how a later file
+		// "wins" for scalar fields elsewhere in this function.
+		for name, pc := range file.Providers {
+			cfg.Providers[name] = pc
 		}
 	}
 }

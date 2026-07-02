@@ -22,6 +22,15 @@ type Message struct {
 	CreatedAt time.Time
 }
 
+type PendingToolCall struct {
+	ID      string
+	Name    string
+	Args    string
+	Command string
+	Risk    string
+	Reason  string
+}
+
 type State struct {
 	Config     config.Config
 	WorkingDir string
@@ -30,9 +39,11 @@ type State struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu          sync.Mutex
-	messages    []Message
-	providerErr error
+	mu              sync.Mutex
+	messages        []Message
+	providerErr     error
+	pendingApproval *PendingToolCall
+	sessionRules    []string
 }
 
 func New(cfg config.Config, workingDir string, now time.Time) *State {
@@ -90,4 +101,30 @@ func (s *State) ProviderError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.providerErr
+}
+
+func (s *State) SetPendingApproval(tc *PendingToolCall) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingApproval = tc
+}
+
+func (s *State) PendingApproval() *PendingToolCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingApproval
+}
+
+func (s *State) AddSessionRule(prefix string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionRules = append(s.sessionRules, prefix)
+}
+
+func (s *State) SessionRules() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rules := make([]string, len(s.sessionRules))
+	copy(rules, s.sessionRules)
+	return rules
 }

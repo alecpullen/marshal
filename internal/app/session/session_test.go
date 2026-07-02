@@ -75,3 +75,35 @@ func TestSetProviderErrorNilClearsExistingError(t *testing.T) {
 		t.Fatalf("ProviderError() = %v, want nil", got)
 	}
 }
+
+func TestStatePendingApprovalAndSessionRules(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0))
+
+	// Initially nil
+	if got := state.PendingApproval(); got != nil {
+		t.Fatalf("PendingApproval() = %v, want nil", got)
+	}
+
+	tc := &PendingToolCall{
+		ID:      "123",
+		Name:    "shell.run",
+		Args:    `{"command": "go test"}`,
+		Command: "go test",
+		Risk:    "command",
+		Reason:  "test verification",
+	}
+
+	state.SetPendingApproval(tc)
+	gotTc := state.PendingApproval()
+	if gotTc == nil || gotTc.ID != "123" || gotTc.Command != "go test" {
+		t.Fatalf("PendingApproval() = %#v, want %#v", gotTc, tc)
+	}
+
+	// Add session rule
+	state.AddSessionRule("go test")
+	rules := state.SessionRules()
+	if len(rules) != 1 || rules[0] != "go test" {
+		t.Fatalf("SessionRules() = %v, want ['go test']", rules)
+	}
+}
+

@@ -184,5 +184,3 @@ func TestStateBackups(t *testing.T) {
 		t.Fatalf("unexpected messages: %#v", msgs)
 	}
 }
-
-

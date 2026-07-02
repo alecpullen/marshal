@@ -186,5 +186,3 @@ func TestFileWritePatchRollbackIntegration(t *testing.T) {
 		t.Fatalf("expected reverted permissions to be 0755, got %v", info.Mode())
 	}
 }
-
-

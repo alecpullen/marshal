@@ -208,5 +208,3 @@ func (s *State) RollbackBackup() error {
 	s.AddMessage(RoleSystem, "System notice: The user has rolled back the last patch. All modified files have been reverted to their original state.")
 	return nil
 }
-
-

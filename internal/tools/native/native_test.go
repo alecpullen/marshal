@@ -24,6 +24,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"repo.index":       registry.RiskReadOnly,
 		"repo.map":         registry.RiskReadOnly,
 		"repo.card":        registry.RiskReadOnly,
+		"symbols.find":     registry.RiskReadOnly,
 		"git.status":       registry.RiskReadOnly,
 		"git.diff":         registry.RiskReadOnly,
 		"shell.run":        registry.RiskCommand,

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"marshal/internal/llm/routing"
 	"os"
 	"path/filepath"
 
@@ -9,14 +10,47 @@ import (
 )
 
 type Config struct {
-	Project   ProjectConfig             `toml:"project"`
-	Commands  CommandsConfig            `toml:"commands"`
-	Profile   ProfileConfig             `toml:"profile"`
-	Agent     AgentConfig               `toml:"agent"`
-	Privacy   PrivacyConfig             `toml:"privacy"`
-	Indexing  IndexingConfig            `toml:"indexing"`
-	Providers map[string]ProviderConfig `toml:"providers"`
-	Tools     ToolsConfig               `toml:"tools"`
+	Project       ProjectConfig                         `toml:"project"`
+	Commands      CommandsConfig                        `toml:"commands"`
+	Profile       ProfileConfig                         `toml:"profile"`
+	Agent         AgentConfig                           `toml:"agent"`
+	Privacy       PrivacyConfig                         `toml:"privacy"`
+	Indexing      IndexingConfig                        `toml:"indexing"`
+	Providers     map[string]ProviderConfig             `toml:"providers"`
+	Models        ModelsConfig                          `toml:"models"`
+	AgentProfiles map[string]routing.AgentProfile       `toml:"agent_profiles"`
+	Agents        map[routing.AgentRole]AgentRoleConfig `toml:"agents"`
+	Tools         ToolsConfig                           `toml:"tools"`
+}
+
+type ModelsConfig struct {
+	Presets map[string]routing.ModelPreset `toml:"presets"`
+}
+
+type AgentRoleConfig struct {
+	Context routing.ContextBudget `toml:"context"`
+}
+
+type modelPresetConfig struct {
+	Provider        string  `toml:"provider"`
+	Model           string  `toml:"model"`
+	ContextWindow   int     `toml:"context_window"`
+	MaxOutputTokens int     `toml:"max_output_tokens"`
+	Temperature     float64 `toml:"temperature"`
+	TopP            float64 `toml:"top_p"`
+	ToolCalling     string  `toml:"tool_calling"`
+	ReasoningEffort string  `toml:"reasoning_effort"`
+	LocalOnly       bool    `toml:"local_only"`
+}
+
+type contextBudgetConfig struct {
+	MaxRepoContextTokens  int  `toml:"max_repo_context_tokens"`
+	MaxConversationTokens int  `toml:"max_conversation_tokens"`
+	IncludeRawCode        bool `toml:"include_raw_code"`
+	IncludeSummaries      bool `toml:"include_summaries"`
+	IncludeSymbols        bool `toml:"include_symbols"`
+	IncludeDiff           bool `toml:"include_diff"`
+	IncludeTests          bool `toml:"include_tests"`
 }
 
 type ToolsConfig struct {
@@ -141,6 +175,25 @@ type configFile struct {
 	// "providers section absent from this file" from "present", so no
 	// pointer wrapping is needed.
 	Providers map[string]ProviderConfig `toml:"providers"`
+	Models    *struct {
+		Presets map[string]modelPresetConfig `toml:"presets"`
+	} `toml:"models"`
+	AgentProfiles map[string]agentProfileConfig `toml:"agent_profiles"`
+	Agents        map[routing.AgentRole]struct {
+		Context contextBudgetConfig `toml:"context"`
+	} `toml:"agents"`
+}
+
+type agentProfileConfig struct {
+	Router           string `toml:"router"`
+	Knowledge        string `toml:"knowledge"`
+	Summarizer       string `toml:"summarizer"`
+	RepoScout        string `toml:"repo_scout"`
+	Tester           string `toml:"tester"`
+	Planner          string `toml:"planner"`
+	Implementer      string `toml:"implementer"`
+	Reviewer         string `toml:"reviewer"`
+	SecurityReviewer string `toml:"security_reviewer"`
 }
 
 func Default() Config {
@@ -168,6 +221,11 @@ func Default() Config {
 			SummariseFiles: false,
 			Ignore:         []string{"node_modules/**", "vendor/**", "dist/**", ".git/**"},
 		},
+		Models: ModelsConfig{
+			Presets: map[string]routing.ModelPreset{},
+		},
+		AgentProfiles: map[string]routing.AgentProfile{},
+		Agents:        map[routing.AgentRole]AgentRoleConfig{},
 		Tools: ToolsConfig{
 			Shell: ShellToolConfig{
 				DefaultTimeoutSeconds: 120,
@@ -238,6 +296,65 @@ func loadFile(path string) (configFile, error) {
 	return file, nil
 }
 
+func profileFromConfig(name string, in agentProfileConfig) routing.AgentProfile {
+	roles := map[routing.AgentRole]string{}
+	if in.Router != "" {
+		roles[routing.RoleRouter] = in.Router
+	}
+	if in.Knowledge != "" {
+		roles[routing.RoleKnowledge] = in.Knowledge
+	}
+	if in.Summarizer != "" {
+		roles[routing.RoleSummarizer] = in.Summarizer
+	}
+	if in.RepoScout != "" {
+		roles[routing.RoleRepoScout] = in.RepoScout
+	}
+	if in.Tester != "" {
+		roles[routing.RoleTester] = in.Tester
+	}
+	if in.Planner != "" {
+		roles[routing.RolePlanner] = in.Planner
+	}
+	if in.Implementer != "" {
+		roles[routing.RoleImplementer] = in.Implementer
+	}
+	if in.Reviewer != "" {
+		roles[routing.RoleReviewer] = in.Reviewer
+	}
+	if in.SecurityReviewer != "" {
+		roles[routing.RoleSecurityReviewer] = in.SecurityReviewer
+	}
+	return routing.AgentProfile{Name: name, Roles: roles}
+}
+
+func presetFromConfig(name string, in modelPresetConfig) routing.ModelPreset {
+	return routing.ModelPreset{
+		Name:            name,
+		Provider:        in.Provider,
+		Model:           in.Model,
+		ContextWindow:   in.ContextWindow,
+		MaxOutputTokens: in.MaxOutputTokens,
+		Temperature:     in.Temperature,
+		TopP:            in.TopP,
+		ToolCalling:     in.ToolCalling,
+		ReasoningEffort: in.ReasoningEffort,
+		LocalOnly:       in.LocalOnly,
+	}
+}
+
+func contextBudgetFromConfig(in contextBudgetConfig) routing.ContextBudget {
+	return routing.ContextBudget{
+		MaxRepoContextTokens:  in.MaxRepoContextTokens,
+		MaxConversationTokens: in.MaxConversationTokens,
+		IncludeRawCode:        in.IncludeRawCode,
+		IncludeSummaries:      in.IncludeSummaries,
+		IncludeSymbols:        in.IncludeSymbols,
+		IncludeDiff:           in.IncludeDiff,
+		IncludeTests:          in.IncludeTests,
+	}
+}
+
 func merge(cfg *Config, file configFile) {
 	if file.Project != nil {
 		if file.Project.Name != nil {
@@ -304,6 +421,30 @@ func merge(cfg *Config, file configFile) {
 		// "wins" for scalar fields elsewhere in this function.
 		for name, pc := range file.Providers {
 			cfg.Providers[name] = pc
+		}
+	}
+	if file.Models != nil && file.Models.Presets != nil {
+		if cfg.Models.Presets == nil {
+			cfg.Models.Presets = map[string]routing.ModelPreset{}
+		}
+		for name, preset := range file.Models.Presets {
+			cfg.Models.Presets[name] = presetFromConfig(name, preset)
+		}
+	}
+	if file.AgentProfiles != nil {
+		if cfg.AgentProfiles == nil {
+			cfg.AgentProfiles = map[string]routing.AgentProfile{}
+		}
+		for name, profile := range file.AgentProfiles {
+			cfg.AgentProfiles[name] = profileFromConfig(name, profile)
+		}
+	}
+	if file.Agents != nil {
+		if cfg.Agents == nil {
+			cfg.Agents = map[routing.AgentRole]AgentRoleConfig{}
+		}
+		for role, agentCfg := range file.Agents {
+			cfg.Agents[role] = AgentRoleConfig{Context: contextBudgetFromConfig(agentCfg.Context)}
 		}
 	}
 	if file.Tools != nil && file.Tools.Shell != nil {

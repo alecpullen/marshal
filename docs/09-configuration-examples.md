@@ -168,6 +168,9 @@ include_summaries = true
 
 ## Routing escalation
 
+Dynamic routing escalation is not implemented yet. The following keys are a
+future configuration sketch and are currently ignored by Marshal.
+
 ```toml
 [routing.rules]
 allow_escalation = true

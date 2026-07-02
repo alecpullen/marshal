@@ -3,13 +3,16 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/settings"
 	"marshal/internal/tools/registry"
 )
 
@@ -29,9 +32,20 @@ type Model struct {
 	runner         AgentRunner
 	ctx            context.Context
 	busy           bool
+	settingsOpen   bool
+	settingsModel  settings.Model
+	configReloader ConfigReloader
 }
 
 type Option func(*Model)
+
+type ConfigReloader func(cfg config.Config) error
+
+func WithConfigReloader(fn ConfigReloader) Option {
+	return func(m *Model) {
+		m.configReloader = fn
+	}
+}
 
 // WithRunner configures the TUI to drive submitted messages through runner
 // instead of the Milestone A-G placeholder behavior (append and do
@@ -43,6 +57,10 @@ func WithRunner(ctx context.Context, runner AgentRunner) Option {
 		m.ctx = ctx
 		m.runner = runner
 	}
+}
+
+func projectConfigPath(workingDir string) string {
+	return filepath.Join(workingDir, ".marshal", "config.toml")
 }
 
 func New(state *session.State, opts ...Option) Model {
@@ -83,11 +101,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tickCmd()
+	case settings.SavedMsg:
+		m.state.Config = msg.Cfg
+		if m.configReloader != nil {
+			if err := m.configReloader(msg.Cfg); err != nil {
+				m.state.SetProviderError(err)
+				m.settingsModel = settings.New(msg.Cfg, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+				return m, nil
+			}
+		}
+		m.settingsOpen = false
+		return m, nil
+	case settings.CancelledMsg:
+		m.settingsOpen = false
+		return m, nil
 	case tea.KeyMsg:
 		// Always allow Ctrl+C to quit
 		if msg.Type == tea.KeyCtrlC {
 			m.state.Shutdown()
 			return m, tea.Quit
+		}
+
+		if m.settingsOpen {
+			if msg.Type == tea.KeyCtrlO {
+				m.settingsOpen = false
+				return m, nil
+			}
+			updated, cmd := m.settingsModel.Update(msg)
+			m.settingsModel = updated.(settings.Model)
+			return m, cmd
 		}
 
 		if tc != nil {
@@ -155,6 +197,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyEsc:
 				m.state.Shutdown()
 				return m, tea.Quit
+			case tea.KeyCtrlO:
+				m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+				m.settingsOpen = true
+				return m, nil
 			case tea.KeyEnter:
 				value := strings.TrimSpace(m.input.Value())
 				if value == "" || m.busy {
@@ -220,6 +266,10 @@ func formatBoxLine(s string, width int) string {
 }
 
 func (m Model) View() string {
+	if m.settingsOpen {
+		return m.settingsModel.View()
+	}
+
 	var b strings.Builder
 	tc := m.state.PendingApproval()
 

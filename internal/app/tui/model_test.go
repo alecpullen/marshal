@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/settings"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
@@ -475,5 +476,31 @@ func TestEnterWhileBusyIsIgnored(t *testing.T) {
 	case <-runner.called:
 		t.Fatal("runner.Run was called while busy")
 	default:
+	}
+}
+
+
+func TestCtrlOOpensSettings(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(Model)
+	if !m.settingsOpen {
+		t.Fatal("expected settingsOpen to be true")
+	}
+}
+
+func TestSettingsCancelClosesOverlay(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(Model)
+	if !m.settingsOpen {
+		t.Fatal("expected settingsOpen")
+	}
+	updated, _ = m.Update(settings.CancelledMsg{})
+	m = updated.(Model)
+	if m.settingsOpen {
+		t.Fatal("expected settingsOpen to be false after cancel")
 	}
 }

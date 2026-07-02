@@ -45,6 +45,7 @@ type PendingToolCall struct {
 type BackupFile struct {
 	Path    string
 	Content string
+	Mode    os.FileMode
 }
 
 type State struct {
@@ -189,18 +190,22 @@ func (s *State) HasBackup() bool {
 
 func (s *State) RollbackBackup() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.lastBackup) == 0 {
+	backups := make([]BackupFile, len(s.lastBackup))
+	copy(backups, s.lastBackup)
+	s.lastBackup = nil
+	s.mu.Unlock()
+
+	if len(backups) == 0 {
 		return fmt.Errorf("no backup available")
 	}
-	for _, bf := range s.lastBackup {
-		// Re-resolve path relative to WorkingDir
+	for _, bf := range backups {
 		path := filepath.Join(s.WorkingDir, bf.Path)
-		if err := os.WriteFile(path, []byte(bf.Content), 0644); err != nil {
+		if err := os.WriteFile(path, []byte(bf.Content), bf.Mode); err != nil {
 			return err
 		}
 	}
-	s.lastBackup = nil
+
+	s.AddMessage(RoleSystem, "System notice: The user has rolled back the last patch. All modified files have been reverted to their original state.")
 	return nil
 }
 

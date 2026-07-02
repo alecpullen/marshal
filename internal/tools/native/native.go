@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
@@ -20,6 +21,7 @@ type Options struct {
 	CommandRunner  CommandRunner
 	TestCommand    string
 	MaxOutputBytes int
+	SessionState   *session.State
 }
 
 type CommandRunner interface {
@@ -43,6 +45,7 @@ type toolSet struct {
 	runner         CommandRunner
 	testCommand    string
 	maxOutputBytes int
+	sessionState   *session.State
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -98,5 +101,6 @@ func newToolSet(opts Options) (*toolSet, error) {
 		runner:         runner,
 		testCommand:    testCommand,
 		maxOutputBytes: maxOutputBytes,
+		sessionState:   opts.SessionState,
 	}, nil
 }

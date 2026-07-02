@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
@@ -115,4 +118,73 @@ func TestFileWritePatchTool(t *testing.T) {
 		t.Fatalf("file content not patched: %s", string(data))
 	}
 }
+
+func TestFileWritePatchRollbackIntegration(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	orig := "package main\r\n\r\nfunc main() {\r\n\tprintln(\"hello\")\r\n}\r\n"
+	if err := os.WriteFile(filePath, []byte(orig), 0755); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	state := session.New(config.Default(), root, time.Unix(100, 0))
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		SessionState:  state,
+	}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+
+	args := `{"patch": "File: app.go\n<<<<<<< SEARCH\n\tprintln(\"hello\")\n=======\n\tprintln(\"patched\")\n>>>>>>> REPLACE"}`
+	_, err := invokeTool(t, reg, "file.write_patch", args)
+	if err != nil {
+		t.Fatalf("write_patch failed: %v", err)
+	}
+
+	// 1. Verify backup was saved in session state
+	if !state.HasBackup() {
+		t.Fatal("expected session state to contain backup after patch")
+	}
+
+	backup := state.Backup()
+	if len(backup) != 1 || backup[0].Path != "app.go" || backup[0].Content != orig || backup[0].Mode != 0755 {
+		t.Fatalf("unexpected backup contents/mode: %#v", backup)
+	}
+
+	// 2. Verify line endings were preserved as CRLF
+	patchedData, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to read patched file: %v", err)
+	}
+	if !strings.Contains(string(patchedData), "\r\n") {
+		t.Fatal("expected CRLF line endings to be preserved in patched file")
+	}
+
+	// 3. Perform Rollback
+	err = state.RollbackBackup()
+	if err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+
+	// 4. Verify file reverted completely including permissions and CRLF
+	revertedData, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to read reverted file: %v", err)
+	}
+	if string(revertedData) != orig {
+		t.Fatalf("reverted file content mismatch: got %q, want %q", string(revertedData), orig)
+	}
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("failed to stat reverted file: %v", err)
+	}
+	if info.Mode() != 0755 {
+		t.Fatalf("expected reverted permissions to be 0755, got %v", info.Mode())
+	}
+}
+
 

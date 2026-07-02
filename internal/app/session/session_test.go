@@ -2,6 +2,8 @@ package session
 
 import (
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,14 +132,20 @@ func TestStateAuditLog(t *testing.T) {
 }
 
 func TestStateBackups(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0))
+	tmpDir := t.TempDir()
+	state := New(config.Default(), tmpDir, time.Unix(100, 0))
 
 	if state.HasBackup() {
 		t.Fatal("initially HasBackup() should be false")
 	}
 
+	filePath := tmpDir + "/test.txt"
+	if err := os.WriteFile(filePath, []byte("patched content"), 0755); err != nil {
+		t.Fatalf("setup write failed: %v", err)
+	}
+
 	backups := []BackupFile{
-		{Path: "test.txt", Content: "original content"},
+		{Path: "test.txt", Content: "original content", Mode: 0755},
 	}
 	state.StoreBackup(backups)
 
@@ -146,13 +154,34 @@ func TestStateBackups(t *testing.T) {
 	}
 
 	got := state.Backup()
-	if len(got) != 1 || got[0].Content != "original content" {
+	if len(got) != 1 || got[0].Content != "original content" || got[0].Mode != 0755 {
 		t.Fatalf("unexpected backup: %#v", got)
 	}
 
-	state.ClearBackup()
+	// Test RollbackBackup
+	err := state.RollbackBackup()
+	if err != nil {
+		t.Fatalf("RollbackBackup failed: %v", err)
+	}
+
+	// Verify file reverted
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if string(data) != "original content" {
+		t.Fatalf("expected reverted content, got %q", string(data))
+	}
+
+	// Verify state cleared
 	if state.HasBackup() {
-		t.Fatal("expected HasBackup() to be false after clear")
+		t.Fatal("expected HasBackup() to be false after rollback")
+	}
+
+	// Verify system notice added
+	msgs := state.Messages()
+	if len(msgs) != 1 || msgs[0].Role != RoleSystem || !strings.Contains(msgs[0].Content, "rolled back") {
+		t.Fatalf("unexpected messages: %#v", msgs)
 	}
 }
 

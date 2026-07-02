@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -79,5 +80,31 @@ func TestViewContainsExpectedPanels(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestViewShowsProviderErrorWhenSet(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	model := New(state)
+
+	state.SetProviderError(errors.New("dial tcp: connection refused"))
+	view := model.View()
+
+	if !strings.Contains(view, "Provider Error") {
+		t.Fatalf("View() missing 'Provider Error' substring:\n%s", view)
+	}
+	if !strings.Contains(view, "connection refused") {
+		t.Fatalf("View() missing 'connection refused' substring:\n%s", view)
+	}
+}
+
+func TestViewOmitsProviderErrorSectionByDefault(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	model := New(state)
+
+	view := model.View()
+
+	if strings.Contains(view, "Provider Error") {
+		t.Fatalf("View() should not contain 'Provider Error' when no error is set:\n%s", view)
 	}
 }

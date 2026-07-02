@@ -82,6 +82,19 @@ func TestScannerReturnsErrorForMissingRoot(t *testing.T) {
 	}
 }
 
+func TestScannerInvalidIgnorePattern(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	scanner := NewScanner(Config{Root: dir, Ignore: []string{"["}})
+	_, err := scanner.Scan()
+	if err == nil {
+		t.Fatalf("expected Scan to return an error for invalid ignore pattern, got nil")
+	}
+}
+
 func TestScannerIgnoresDirectoryPattern(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644); err != nil {

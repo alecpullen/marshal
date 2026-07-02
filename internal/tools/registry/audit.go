@@ -30,17 +30,20 @@ type AuditEvent struct {
 
 func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, approval ApprovalState, err error) AuditEvent {
 	event := AuditEvent{
-		Timestamp:       now,
-		ToolName:        call.Name,
-		Args:            append(json.RawMessage(nil), call.Args...),
-		Risk:            tool.Risk,
-		Approval:        approval,
-		ResultSummary:   result.Summary,
-		FilesChanged:    append([]string(nil), result.FilesChanged...),
-		CommandExitCode: result.CommandExitCode,
+		Timestamp:     now,
+		ToolName:      call.Name,
+		Args:          append(json.RawMessage(nil), call.Args...),
+		Risk:          tool.Risk,
+		Approval:      approval,
+		ResultSummary: result.Summary,
+		FilesChanged:  append([]string(nil), result.FilesChanged...),
 	}
 	if event.ToolName == "" {
 		event.ToolName = tool.Name
+	}
+	if result.CommandExitCode != nil {
+		exitCode := *result.CommandExitCode
+		event.CommandExitCode = &exitCode
 	}
 	if err != nil {
 		event.Error = err.Error()

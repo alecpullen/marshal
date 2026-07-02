@@ -818,8 +818,10 @@ func TestFindSymbolsFiltersByNameAndKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindSymbols failed: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 name matches, got %d: %+v", len(got), got)
+	// "scan" matches NewScanner, Scan, and Scanner (all contain "scan" as a
+	// case-insensitive substring); RenderCard does not.
+	if len(got) != 3 {
+		t.Fatalf("expected 3 name matches, got %d: %+v", len(got), got)
 	}
 
 	got, err = db.FindSymbols(projectID, "", "type", 0)

@@ -21,14 +21,14 @@
 
 ## Milestone C: Provider abstraction
 
-- [ ] Define `Provider` interface
-- [ ] Define `ChatRequest`, `ChatMessage`, `ChatEvent`
-- [ ] Implement generic OpenAI-compatible provider
-- [ ] Add streaming response support
-- [ ] Add provider config
-- [ ] Test with Ollama
-- [ ] Test with LM Studio
-- [ ] Add provider error display in TUI
+- [x] Define `Provider` interface
+- [x] Define `ChatRequest`, `ChatMessage`, `ChatEvent`
+- [x] Implement generic OpenAI-compatible provider
+- [x] Add streaming response support
+- [x] Add provider config
+- [x] Test with Ollama
+- [x] Test with LM Studio
+- [x] Add provider error display in TUI
 
 ## Milestone D: Tool registry
 

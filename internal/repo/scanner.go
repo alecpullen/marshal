@@ -10,9 +10,9 @@ import (
 type Config struct {
 	Root   string
 	Ignore []string
-	// IncludeGitignore is intentionally declared here and will be wired to
-	// .gitignore parsing in Task 2.
-	IncludeGitignore bool
+	// SkipGitignore, when true, prevents the scanner from loading and
+	// applying the root .gitignore file. By default .gitignore is loaded.
+	SkipGitignore bool
 }
 
 type Scanner struct {
@@ -20,17 +20,20 @@ type Scanner struct {
 	gitignore *Gitignore
 }
 
-func NewScanner(config Config) *Scanner {
+func NewScanner(config Config) (*Scanner, error) {
 	var g *Gitignore
-	if !config.IncludeGitignore {
+	var err error
+	if !config.SkipGitignore {
 		root := config.Root
 		if root == "" {
 			root = "."
 		}
-		loaded, _ := LoadGitignore(filepath.Join(root, ".gitignore"))
-		g = loaded
+		g, err = LoadGitignore(filepath.Join(root, ".gitignore"))
+		if err != nil {
+			return nil, err
+		}
 	}
-	return &Scanner{config: config, gitignore: g}
+	return &Scanner{config: config, gitignore: g}, nil
 }
 
 func (s *Scanner) Scan() ([]db.FileIndex, error) {

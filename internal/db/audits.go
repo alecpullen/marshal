@@ -64,9 +64,10 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		var risk string
 		var approval string
 		var exitCode sql.NullInt64
-		var filesChanged string
+		var filesChanged sql.NullString
+		var errorString sql.NullString
 		var created string
-		if err := rows.Scan(&e.AgentRole, &e.Model, &e.ToolName, &args, &e.ResultSummary, &risk, &approval, &exitCode, &filesChanged, &e.Error, &created); err != nil {
+		if err := rows.Scan(&e.AgentRole, &e.Model, &e.ToolName, &args, &e.ResultSummary, &risk, &approval, &exitCode, &filesChanged, &errorString, &created); err != nil {
 			return nil, fmt.Errorf("scan tool call row: %w", err)
 		}
 		e.Args = []byte(args)
@@ -76,8 +77,13 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 			code := int(exitCode.Int64)
 			e.CommandExitCode = &code
 		}
-		if err := json.Unmarshal([]byte(filesChanged), &e.FilesChanged); err != nil {
-			return nil, fmt.Errorf("unmarshal files changed: %w", err)
+		if errorString.Valid {
+			e.Error = errorString.String
+		}
+		if filesChanged.Valid && filesChanged.String != "" {
+			if err := json.Unmarshal([]byte(filesChanged.String), &e.FilesChanged); err != nil {
+				return nil, fmt.Errorf("unmarshal files changed: %w", err)
+			}
 		}
 		parsed, err := time.Parse(time.RFC3339, created)
 		if err != nil {

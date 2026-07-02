@@ -1,0 +1,83 @@
+package db
+
+import (
+	"fmt"
+	"time"
+)
+
+type FileIndex struct {
+	Path          string
+	Language      string
+	Hash          string
+	SizeBytes     int64
+	LastIndexedAt time.Time
+}
+
+// SaveFileIndex replaces the file index for a project. It deletes all existing
+// files for the project and inserts the provided rows. Callers are expected to
+// pass the complete current index.
+func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
+	tx, err := db.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin save file index transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM files WHERE project_id = ?`, projectID); err != nil {
+		return fmt.Errorf("delete existing files: %w", err)
+	}
+
+	stmt, err := tx.Prepare(`INSERT INTO files (project_id, path, language, hash, size_bytes, last_indexed_at)
+							 VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare file insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, f := range files {
+		_, err := stmt.Exec(projectID, f.Path, f.Language, f.Hash, f.SizeBytes, f.LastIndexedAt.UTC().Format(time.RFC3339))
+		if err != nil {
+			return fmt.Errorf("insert file %s: %w", f.Path, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit save file index: %w", err)
+	}
+	return nil
+}
+
+// GetFileIndex returns all file rows for a project, ordered by insertion order.
+func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
+	rows, err := db.sqlDB.Query(
+		`SELECT path, language, hash, size_bytes, last_indexed_at
+		 FROM files
+		 WHERE project_id = ?
+		 ORDER BY id`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query file index: %w", err)
+	}
+	defer rows.Close()
+
+	var files []FileIndex
+	for rows.Next() {
+		var f FileIndex
+		var lastIndexed string
+		if err := rows.Scan(&f.Path, &f.Language, &f.Hash, &f.SizeBytes, &lastIndexed); err != nil {
+			return nil, fmt.Errorf("scan file row: %w", err)
+		}
+		parsed, err := time.Parse(time.RFC3339, lastIndexed)
+		if err != nil {
+			return nil, fmt.Errorf("parse last_indexed_at: %w", err)
+		}
+		f.LastIndexedAt = parsed.UTC()
+		files = append(files, f)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate file rows: %w", err)
+	}
+	return files, nil
+}

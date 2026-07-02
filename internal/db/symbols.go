@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type Symbol struct {
 	ID        int64
@@ -57,6 +60,52 @@ func (db *DB) GetSymbols(projectID int64) ([]Symbol, error) {
 		 ORDER BY file_path, line_start`,
 		projectID,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("query symbols: %w", err)
+	}
+	defer rows.Close()
+
+	var symbols []Symbol
+	for rows.Next() {
+		var s Symbol
+		if err := rows.Scan(&s.ID, &s.FilePath, &s.Kind, &s.Name, &s.Receiver, &s.Signature, &s.LineStart, &s.LineEnd); err != nil {
+			return nil, fmt.Errorf("scan symbol row: %w", err)
+		}
+		symbols = append(symbols, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate symbol rows: %w", err)
+	}
+	return symbols, nil
+}
+
+// FindSymbols returns symbols for a project matching an optional
+// case-insensitive name substring and/or exact kind, ordered by file path
+// then line start. limit defaults to 50 when <= 0 and is clamped to 200.
+func (db *DB) FindSymbols(projectID int64, name, kind string, limit int) ([]Symbol, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	query := `SELECT id, file_path, kind, name, receiver, signature, line_start, line_end
+			   FROM symbols
+			   WHERE project_id = ?`
+	args := []any{projectID}
+	if name != "" {
+		query += ` AND LOWER(name) LIKE ?`
+		args = append(args, "%"+strings.ToLower(name)+"%")
+	}
+	if kind != "" {
+		query += ` AND kind = ?`
+		args = append(args, kind)
+	}
+	query += ` ORDER BY file_path, line_start LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := db.sqlDB.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query symbols: %w", err)
 	}

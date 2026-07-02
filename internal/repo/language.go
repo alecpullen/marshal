@@ -5,9 +5,11 @@ import (
 	"strings"
 )
 
+// DetectLanguage returns a language identifier for the given path based on
+// its basename or extension. It returns an empty string when no mapping exists.
 func DetectLanguage(path string) string {
 	base := filepath.Base(path)
-	if lang, ok := specialLanguages[base]; ok {
+	if lang, ok := specialLanguages[strings.ToLower(base)]; ok {
 		return lang
 	}
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
@@ -18,8 +20,8 @@ func DetectLanguage(path string) string {
 }
 
 var specialLanguages = map[string]string{
-	"Dockerfile": "dockerfile",
-	"Makefile":   "makefile",
+	"dockerfile": "dockerfile",
+	"makefile":   "makefile",
 	"go.mod":     "go-module",
 	"go.sum":     "go-sum",
 }

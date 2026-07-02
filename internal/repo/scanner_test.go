@@ -1,6 +1,8 @@
 package repo
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -109,8 +111,9 @@ func TestScannerComputesHashesAndLanguages(t *testing.T) {
 	if f.Language != "go" {
 		t.Fatalf("expected language go, got %s", f.Language)
 	}
-	if f.Hash == "" {
-		t.Fatal("expected non-empty hash")
+	expected := fmt.Sprintf("%x", sha256.Sum256([]byte("package main\n")))
+	if f.Hash != expected {
+		t.Fatalf("expected hash %s, got %s", expected, f.Hash)
 	}
 	if f.SizeBytes != 13 {
 		t.Fatalf("expected size 13, got %d", f.SizeBytes)

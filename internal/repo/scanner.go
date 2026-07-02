@@ -3,6 +3,7 @@ package repo
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -85,7 +86,7 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		fullPath := path
 		hash, size, hashErr := hashFile(fullPath)
 		if hashErr != nil {
-			return nil
+			return fmt.Errorf("hash file %q: %w", rel, hashErr)
 		}
 		files = append(files, db.FileIndex{
 			Path:      rel,

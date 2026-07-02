@@ -8,8 +8,10 @@ import (
 )
 
 type Config struct {
-	Root             string
-	Ignore           []string
+	Root    string
+	Ignore  []string
+	// IncludeGitignore is intentionally declared here and will be wired to
+	// .gitignore parsing in Task 2.
 	IncludeGitignore bool
 }
 
@@ -29,6 +31,8 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 
 	var files []db.FileIndex
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		// Unreadable paths are intentionally skipped during indexing so that
+		// one bad path does not abort the whole scan.
 		if err != nil {
 			return nil
 		}

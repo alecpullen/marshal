@@ -365,3 +365,60 @@ func TestRunAddsPlanToContextPackForActionCalls(t *testing.T) {
 		t.Fatalf("action request missing plan context: %#v", p.requests[1].Messages)
 	}
 }
+
+func TestRunPreservesContextPackSectionMetadataWhenAddingPlan(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		"1. Inspect the repo.\n2. Run the demo tool.",
+		`{"rationale":"need data","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
+	}}
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{
+				Kind:            contextpack.SectionFileSnippet,
+				Title:           "internal/app/app.go",
+				Content:         "package app",
+				Source:          "internal/app/app.go:1-3",
+				Priority:        30,
+				EstimatedTokens: 3,
+			},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 3},
+	})
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "Add a test"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	pack := state.ContextPack()
+	if len(pack.Sections) != 2 {
+		t.Fatalf("len(pack.Sections) = %d, want 2: %#v", len(pack.Sections), pack.Sections)
+	}
+
+	var snippet *contextpack.Section
+	for i := range pack.Sections {
+		if pack.Sections[i].Kind == contextpack.SectionFileSnippet {
+			snippet = &pack.Sections[i]
+			break
+		}
+	}
+	if snippet == nil {
+		t.Fatalf("missing file snippet section: %#v", pack.Sections)
+	}
+	if snippet.Source != "internal/app/app.go:1-3" {
+		t.Fatalf("snippet.Source = %q, want %q", snippet.Source, "internal/app/app.go:1-3")
+	}
+}

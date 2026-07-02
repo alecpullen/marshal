@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -22,6 +23,8 @@ type Options struct {
 	TestCommand    string
 	MaxOutputBytes int
 	SessionState   *session.State
+	DB             *db.DB
+	ProjectID      int64
 }
 
 type CommandRunner interface {
@@ -46,6 +49,8 @@ type toolSet struct {
 	testCommand    string
 	maxOutputBytes int
 	sessionState   *session.State
+	db             *db.DB
+	projectID      int64
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -62,6 +67,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.gitDiffTool(),
 		tools.shellRunTool(),
 		tools.testRunTool(),
+		tools.repoIndexTool(),
 	} {
 		if err := reg.Register(tool); err != nil {
 			return err
@@ -102,5 +108,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		testCommand:    testCommand,
 		maxOutputBytes: maxOutputBytes,
 		sessionState:   opts.SessionState,
+		db:             opts.DB,
+		projectID:      opts.ProjectID,
 	}, nil
 }

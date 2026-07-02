@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
 
@@ -80,6 +81,44 @@ func TestViewContainsExpectedPanels(t *testing.T) {
 		"Tool Log",
 		"Context",
 		"Diff",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestViewShowsInactiveRouteByDefault(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+
+	view := model.View()
+	if !strings.Contains(view, "Route: inactive") {
+		t.Fatalf("View() missing inactive route:\n%s", view)
+	}
+}
+
+func TestViewShowsActiveRoute(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetActiveRoute(session.RouteInfo{
+		Role:      routing.RoleImplementer,
+		Profile:   "local_balanced",
+		Preset:    "coder",
+		Provider:  "ollama",
+		Model:     "qwen2.5-coder:14b",
+		LocalOnly: true,
+		Active:    true,
+	})
+	model := New(state)
+
+	view := model.View()
+	for _, want := range []string{
+		"Route: role=implementer",
+		"profile=local_balanced",
+		"preset=coder",
+		"provider=ollama",
+		"model=qwen2.5-coder:14b",
+		"local-only=true",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q:\n%s", want, view)

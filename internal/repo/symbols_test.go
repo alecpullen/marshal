@@ -118,6 +118,37 @@ type (
 	assertHasSymbol(t, got, db.Symbol{FilePath: "types.go", Kind: "type", Name: "Bar", Signature: "type Bar string", LineStart: 5, LineEnd: 5})
 }
 
+func TestExtractSymbolsTypeAliases(t *testing.T) {
+	source := []byte(`package foo
+
+type Alias = int
+
+type Another = string
+`)
+	got, err := ExtractSymbols("aliases.go", source)
+	if err != nil {
+		t.Fatalf("ExtractSymbols failed: %v", err)
+	}
+	assertHasSymbol(t, got, db.Symbol{FilePath: "aliases.go", Kind: "type", Name: "Alias", Signature: "type Alias int", LineStart: 3, LineEnd: 3})
+	assertHasSymbol(t, got, db.Symbol{FilePath: "aliases.go", Kind: "type", Name: "Another", Signature: "type Another string", LineStart: 5, LineEnd: 5})
+}
+
+func TestExtractSymbolsGroupedTypeAliases(t *testing.T) {
+	source := []byte(`package foo
+
+type (
+	RegularType int
+	AliasType = string
+)
+`)
+	got, err := ExtractSymbols("types.go", source)
+	if err != nil {
+		t.Fatalf("ExtractSymbols failed: %v", err)
+	}
+	assertHasSymbol(t, got, db.Symbol{FilePath: "types.go", Kind: "type", Name: "RegularType", Signature: "type RegularType int", LineStart: 4, LineEnd: 4})
+	assertHasSymbol(t, got, db.Symbol{FilePath: "types.go", Kind: "type", Name: "AliasType", Signature: "type AliasType string", LineStart: 5, LineEnd: 5})
+}
+
 // assertHasSymbol fails the test unless got contains a symbol matching
 // want's Name and Kind. Fields left at their zero value on want are not
 // checked, so callers can assert only the fields relevant to a test.

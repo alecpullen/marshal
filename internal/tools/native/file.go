@@ -142,6 +142,12 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			}
 			original := string(data)
 
+			info, err := os.Stat(path)
+			var mode os.FileMode = 0644
+			if err == nil {
+				mode = info.Mode()
+			}
+
 			diff, err := patch.GenerateDiff(fp.Path, original, fp)
 			if err == nil {
 				diffs = append(diffs, diff)
@@ -150,17 +156,23 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			backups = append(backups, session.BackupFile{
 				Path:    fp.Path,
 				Content: original,
+				Mode:    mode,
 			})
 
 			patched := patch.ApplyPatch(original, fp)
-			if err := os.WriteFile(path, []byte(patched), 0644); err != nil {
+			if strings.Contains(original, "\r\n") {
+				patched = strings.ReplaceAll(patched, "\n", "\r\n")
+			}
+
+			if err := os.WriteFile(path, []byte(patched), mode); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("write file %s: %w", fp.Path, err)
 			}
 		}
 
-		// Note: The caller orchestrator / loop is responsible for calling
-		// state.StoreBackup(backups) when tool execution is approved.
-		// For unit test purposes, we'll return summary list of modified files.
+		if t.sessionState != nil {
+			t.sessionState.StoreBackup(backups)
+		}
+
 		var paths []string
 		for _, fp := range patches {
 			paths = append(paths, fp.Path)

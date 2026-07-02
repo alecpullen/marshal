@@ -26,36 +26,45 @@ func GenerateDiff(path string, content string, fp FilePatch) (string, error) {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "--- a/%s\n+++ b/%s\n", path, path)
 
-	lines := strings.Split(normContent, "\n")
+	currentContent := normContent
+	lineDelta := 0
+
 	for _, chunk := range fp.Chunks {
 		normSearch := strings.ReplaceAll(chunk.Search, "\r\n", "\n")
-		idx := strings.Index(normContent, normSearch)
+		normReplace := strings.ReplaceAll(chunk.Replace, "\r\n", "\n")
+
+		idx := strings.Index(currentContent, normSearch)
 		if idx == -1 {
 			return "", fmt.Errorf("search block not found during diffing: %s", path)
 		}
 
-		// Find start line number
-		before := normContent[:idx]
-		startLine := strings.Count(before, "\n") + 1
+		before := currentContent[:idx]
+		intermediateStartLine := strings.Count(before, "\n") + 1
+
+		oldStartLine := intermediateStartLine - lineDelta
+		newStartLine := intermediateStartLine
 
 		searchLines := strings.Split(normSearch, "\n")
-		replaceLines := strings.Split(strings.ReplaceAll(chunk.Replace, "\r\n", "\n"), "\n")
+		replaceLines := strings.Split(normReplace, "\n")
+		currentLines := strings.Split(currentContent, "\n")
 
-		// Grab context lines
 		ctxBeforeCount := 3
-		if startLine-1 < ctxBeforeCount {
-			ctxBeforeCount = startLine - 1
+		if intermediateStartLine-1 < ctxBeforeCount {
+			ctxBeforeCount = intermediateStartLine - 1
 		}
-		ctxBefore := lines[startLine-1-ctxBeforeCount : startLine-1]
+		ctxBefore := currentLines[intermediateStartLine-1-ctxBeforeCount : intermediateStartLine-1]
 
-		ctxAfterStart := startLine - 1 + len(searchLines)
+		ctxAfterStart := intermediateStartLine - 1 + len(searchLines)
 		ctxAfterCount := 3
-		if len(lines)-ctxAfterStart < ctxAfterCount {
-			ctxAfterCount = len(lines) - ctxAfterStart
+		if len(currentLines)-ctxAfterStart < ctxAfterCount {
+			ctxAfterCount = len(currentLines) - ctxAfterStart
 		}
-		ctxAfter := lines[ctxAfterStart : ctxAfterStart+ctxAfterCount]
+		ctxAfter := currentLines[ctxAfterStart : ctxAfterStart+ctxAfterCount]
 
-		fmt.Fprintf(&sb, "@@ -%d,%d +%d,%d @@\n", startLine-ctxBeforeCount, len(searchLines)+ctxBeforeCount+ctxAfterCount, startLine-ctxBeforeCount, len(replaceLines)+ctxBeforeCount+ctxAfterCount)
+		fmt.Fprintf(&sb, "@@ -%d,%d +%d,%d @@\n",
+			oldStartLine-ctxBeforeCount, len(searchLines)+ctxBeforeCount+ctxAfterCount,
+			newStartLine-ctxBeforeCount, len(replaceLines)+ctxBeforeCount+ctxAfterCount,
+		)
 		for _, l := range ctxBefore {
 			fmt.Fprintf(&sb, " %s\n", l)
 		}
@@ -68,6 +77,9 @@ func GenerateDiff(path string, content string, fp FilePatch) (string, error) {
 		for _, l := range ctxAfter {
 			fmt.Fprintf(&sb, " %s\n", l)
 		}
+
+		currentContent = strings.Replace(currentContent, normSearch, normReplace, 1)
+		lineDelta += len(replaceLines) - len(searchLines)
 	}
 	return sb.String(), nil
 }

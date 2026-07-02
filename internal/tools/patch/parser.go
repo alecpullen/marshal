@@ -31,18 +31,18 @@ func Parse(proposal string) ([]FilePatch, error) {
 			continue
 		}
 
-		if strings.HasPrefix(trimmed, "<<<<<<< SEARCH") {
+		if trimmed == "<<<<<<< SEARCH" {
 			inSearch = true
 			searchBuffer = nil
 			continue
 		}
-		if strings.HasPrefix(trimmed, "=======") && inSearch {
+		if trimmed == "=======" && inSearch {
 			inSearch = false
 			inReplace = true
 			replaceBuffer = nil
 			continue
 		}
-		if strings.HasPrefix(trimmed, ">>>>>>> REPLACE") && inReplace {
+		if trimmed == ">>>>>>> REPLACE" && inReplace {
 			inReplace = false
 			chunk := PatchChunk{
 				Search:  strings.Join(searchBuffer, "\n"),

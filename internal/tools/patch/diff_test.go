@@ -44,3 +44,44 @@ func main() {
 		t.Errorf("Diff missing added lines: %s", diff)
 	}
 }
+
+func TestMultiChunkApplyAndDiff(t *testing.T) {
+	fileContent := `line 1
+line 2
+line 3
+line 4
+line 5
+`
+
+	patch := FilePatch{
+		Path: "test.txt",
+		Chunks: []PatchChunk{
+			{
+				Search:  "line 2",
+				Replace: "line 2 modified\nline 2.5 inserted",
+			},
+			{
+				Search:  "line 4",
+				Replace: "line 4 modified",
+			},
+		},
+	}
+
+	ok, err := ValidatePatch(fileContent, patch)
+	if !ok || err != nil {
+		t.Fatalf("ValidatePatch failed: %v", err)
+	}
+
+	diff, err := GenerateDiff("test.txt", fileContent, patch)
+	if err != nil {
+		t.Fatalf("GenerateDiff failed: %v", err)
+	}
+
+	// Verify the line count shifts are correctly mapped in unified diff header
+	if !strings.Contains(diff, "@@ -1,5 +1,6 @@") {
+		t.Errorf("Diff missing or incorrect first header: %s", diff)
+	}
+	if !strings.Contains(diff, "@@ -1,6 +2,6 @@") {
+		t.Errorf("Diff missing or incorrect second header: %s", diff)
+	}
+}

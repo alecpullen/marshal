@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/tools/registry"
 )
 
 func TestStateAppendsMessagesInOrder(t *testing.T) {
@@ -105,6 +106,26 @@ func TestStatePendingApprovalAndSessionRules(t *testing.T) {
 	rules := state.SessionRules()
 	if len(rules) != 1 || rules[0] != "go test" {
 		t.Fatalf("SessionRules() = %v, want ['go test']", rules)
+	}
+}
+
+func TestStateAuditLog(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0))
+
+	if got := len(state.AuditLog()); got != 0 {
+		t.Fatalf("AuditLog() length = %d, want 0", got)
+	}
+
+	event := registry.AuditEvent{
+		Timestamp:     time.Now(),
+		ToolName:      "shell.run",
+		ResultSummary: "exit status 0",
+	}
+
+	state.LogToolCall(event)
+	log := state.AuditLog()
+	if len(log) != 1 || log[0].ToolName != "shell.run" || log[0].ResultSummary != "exit status 0" {
+		t.Fatalf("AuditLog() = %#v, want event", log)
 	}
 }
 

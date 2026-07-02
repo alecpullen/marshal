@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/tools/registry"
 )
 
 type Role string
@@ -50,6 +51,7 @@ type State struct {
 	providerErr     error
 	pendingApproval *PendingToolCall
 	sessionRules    []string
+	auditLog        []registry.AuditEvent
 }
 
 func New(cfg config.Config, workingDir string, now time.Time) *State {
@@ -133,4 +135,18 @@ func (s *State) SessionRules() []string {
 	rules := make([]string, len(s.sessionRules))
 	copy(rules, s.sessionRules)
 	return rules
+}
+
+func (s *State) LogToolCall(event registry.AuditEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.auditLog = append(s.auditLog, event)
+}
+
+func (s *State) AuditLog() []registry.AuditEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	log := make([]registry.AuditEvent, len(s.auditLog))
+	copy(log, s.auditLog)
+	return log
 }

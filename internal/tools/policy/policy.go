@@ -30,13 +30,20 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		return DecisionAllow, "low-risk read tool", nil
 	}
 
+	var cmd string
 	cmdRaw, ok := args["command"]
 	if !ok {
-		return DecisionConfirm, "missing command arg", nil
-	}
-	cmd, ok := cmdRaw.(string)
-	if !ok {
-		return DecisionConfirm, "invalid command arg type", nil
+		if toolName == "test.run" {
+			cmd = pe.config.Commands.Test
+		} else {
+			return DecisionConfirm, "missing command arg", nil
+		}
+	} else {
+		var typeOk bool
+		cmd, typeOk = cmdRaw.(string)
+		if !typeOk {
+			return DecisionConfirm, "invalid command arg type", nil
+		}
 	}
 
 	normCmd := normalizeCommand(cmd)
@@ -105,9 +112,17 @@ func isBlockedByGuardrail(cmd string) bool {
 
 	// Network installer check (curl/wget piped to sh/bash/zsh)
 	if (strings.Contains(cmd, "curl") || strings.Contains(cmd, "wget")) && strings.Contains(cmd, "|") {
-		for _, shell := range []string{"sh", "bash", "zsh"} {
-			if matchPattern("*|*"+shell, cmd) || matchPattern("*|* "+shell, cmd) {
-				return true
+		parts := strings.Split(cmd, "|")
+		for i := 1; i < len(parts); i++ {
+			subCmd := strings.TrimSpace(parts[i])
+			words := strings.Fields(subCmd)
+			if len(words) > 0 {
+				firstWord := words[0]
+				for _, shell := range []string{"sh", "bash", "zsh"} {
+					if firstWord == shell || strings.HasSuffix(firstWord, "/"+shell) {
+						return true
+					}
+				}
 			}
 		}
 	}

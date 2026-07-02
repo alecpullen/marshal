@@ -65,29 +65,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			} else {
-				switch msg.String() {
-				case "enter":
+				switch msg.Type {
+				case tea.KeyEnter:
 					tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
 					m.state.SetPendingApproval(nil)
 					return m, nil
-				case "d":
-					tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
-					m.state.SetPendingApproval(nil)
-					return m, nil
-				case "a":
-					m.state.AddSessionRule(tc.Command)
-					tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
-					m.state.SetPendingApproval(nil)
-					return m, nil
-				case "e":
-					m.editingCommand = true
-					m.input.SetValue(tc.Command)
-					m.input.Placeholder = "Edit command..."
-					m.input.Focus()
-					return m, nil
-				case "esc":
+				case tea.KeyEsc:
 					m.state.Shutdown()
 					return m, tea.Quit
+				default:
+					switch msg.String() {
+					case "d":
+						tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
+						m.state.SetPendingApproval(nil)
+						return m, nil
+					case "a":
+						m.state.AddSessionRule(tc.Command)
+						tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+						m.state.SetPendingApproval(nil)
+						return m, nil
+					case "e":
+						m.editingCommand = true
+						m.input.SetValue(tc.Command)
+						m.input.Placeholder = "Edit command..."
+						m.input.Focus()
+						return m, nil
+					}
 				}
 				// Ignore all other key inputs when approval prompt is shown and not editing
 				return m, nil
@@ -114,6 +117,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func formatBoxLine(s string, width int) string {
+	contentWidth := width - 6 // "│   " (4) + " │" (2)
+	runes := []rune(s)
+	if len(runes) > contentWidth {
+		s = string(runes[:contentWidth-3]) + "..."
+		runes = []rune(s)
+	}
+	padLen := contentWidth - len(runes)
+	if padLen < 0 {
+		padLen = 0
+	}
+	return fmt.Sprintf("│   %s%s │\n", string(runes), strings.Repeat(" ", padLen))
+}
+
 func (m Model) View() string {
 	var b strings.Builder
 
@@ -137,8 +154,17 @@ func (m Model) View() string {
 	fmt.Fprintf(&b, "  No model output yet.\n")
 	fmt.Fprintf(&b, "\nCommand Palette\n")
 	fmt.Fprintf(&b, "  No commands available yet.\n")
+	
 	fmt.Fprintf(&b, "\nTool Log\n")
-	fmt.Fprintf(&b, "  No tool calls yet.\n")
+	auditLog := m.state.AuditLog()
+	if len(auditLog) == 0 {
+		fmt.Fprintf(&b, "  No tool calls yet.\n")
+	} else {
+		for _, event := range auditLog {
+			fmt.Fprintf(&b, "  [%s] %s -> %s\n", event.Timestamp.Format("15:04:05"), event.ToolName, event.ResultSummary)
+		}
+	}
+
 	fmt.Fprintf(&b, "\nDiff\n")
 	fmt.Fprintf(&b, "  No patch proposed.\n")
 
@@ -149,14 +175,15 @@ func (m Model) View() string {
 
 	tc := m.state.PendingApproval()
 	if tc != nil {
+		boxWidth := 75
 		fmt.Fprintf(&b, "\n┌── SECURITY APPROVAL REQUIRED ───────────────────────────────────────────┐\n")
 		fmt.Fprintf(&b, "│ Agent wants to run:                                                     │\n")
-		fmt.Fprintf(&b, "│   %s\n", tc.Command)
+		fmt.Fprintf(&b, "%s", formatBoxLine(tc.Command, boxWidth))
 		fmt.Fprintf(&b, "│                                                                         │\n")
 		fmt.Fprintf(&b, "│ Reason:                                                                 │\n")
-		fmt.Fprintf(&b, "│   %s\n", tc.Reason)
+		fmt.Fprintf(&b, "%s", formatBoxLine(tc.Reason, boxWidth))
 		fmt.Fprintf(&b, "│                                                                         │\n")
-		fmt.Fprintf(&b, "│ Risk Level: %s\n", tc.Risk)
+		fmt.Fprintf(&b, "%s", formatBoxLine("Risk Level: "+tc.Risk, boxWidth))
 		fmt.Fprintf(&b, "└─────────────────────────────────────────────────────────────────────────┘\n")
 		if m.editingCommand {
 			fmt.Fprintf(&b, "Edit command and press [Enter] to run, [Esc] to cancel\n")

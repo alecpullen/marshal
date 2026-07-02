@@ -55,7 +55,7 @@ For the current single-agent runtime, role selection should be conservative:
 - `ClassEdit` resolves as `implementer`.
 - `ClassCommand` resolves as `implementer`.
 
-If a selected profile does not define the chosen role, fall back to `implementer`. If that is also missing, fall back to legacy `[agent]`.
+If a selected profile does not define the chosen role, fall back to `implementer`. If that is also missing, fall back to legacy `[agent]`. Fallback to `implementer` applies only when the role is not mapped in the profile; it does **not** apply when the mapped preset is missing or when the preset is a remote provider blocked by `privacy.remote_providers_allowed=false`. Those cases return explicit errors so misconfiguration and policy violations are visible rather than silently switching roles.
 
 ## Config Shape
 
@@ -176,6 +176,8 @@ Routing errors should be explicit and testable:
 - preset mapped to missing provider
 - preset uses a remote provider while `privacy.remote_providers_allowed=false`
 - no routed profile and incomplete legacy `[agent]` fallback
+
+Role fallback to `implementer` is intentionally narrow: it occurs only when the profile does not map the selected role. Missing presets and remote-provider blocks are surfaced as explicit errors rather than silently falling back.
 
 At app startup, routing or provider-construction failure should keep the TUI usable with the runner disabled and a provider/status error recorded, rather than crashing the whole app. This preserves Marshal's local-first behavior when no model has been configured yet.
 

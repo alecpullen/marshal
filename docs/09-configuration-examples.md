@@ -166,6 +166,15 @@ include_raw_code = false
 include_summaries = true
 ```
 
+## Notes on parsed-but-reserved fields
+
+Milestone L parses and stores the following fields, but the current static runtime does not yet apply all of them:
+
+- In `[models.presets.<name>]`, `context_window`, `max_output_tokens`, `temperature`, `top_p`, `tool_calling`, and `reasoning_effort` are reserved for future milestones that will pass preset metadata to the provider factory and runner.
+- In `[agents.<role>.context]`, `max_conversation_tokens`, `include_raw_code`, `include_summaries`, `include_symbols`, `include_diff`, and `include_tests` are reserved for future context-pack filtering and conversation budget behavior.
+
+Only `provider`, `model`, `local_only`, and `max_repo_context_tokens` affect Milestone L runtime behavior.
+
 ## Routing escalation
 
 Dynamic routing escalation is not implemented yet. The following keys are a

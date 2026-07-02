@@ -87,6 +87,36 @@ func TestScannerRespectsGitignore(t *testing.T) {
 	}
 }
 
+func TestScannerComputesHashesAndLanguages(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
+
+	scanner, err := NewScanner(Config{Root: dir})
+	if err != nil {
+		t.Fatalf("NewScanner failed: %v", err)
+	}
+	files, err := scanner.Scan()
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	f := files[0]
+	if f.Path != "main.go" {
+		t.Fatalf("expected main.go, got %s", f.Path)
+	}
+	if f.Language != "go" {
+		t.Fatalf("expected language go, got %s", f.Language)
+	}
+	if f.Hash == "" {
+		t.Fatal("expected non-empty hash")
+	}
+	if f.SizeBytes != 13 {
+		t.Fatalf("expected size 13, got %d", f.SizeBytes)
+	}
+}
+
 func TestScannerSkipGitignore(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644)

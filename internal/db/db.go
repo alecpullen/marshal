@@ -37,7 +37,55 @@ func (db *DB) Migrate() error {
 	if err != nil {
 		return fmt.Errorf("execute database schema migrations: %w", err)
 	}
+
+	// Backward-compatible schema extensions: add any columns introduced after
+	// the initial tool_calls table creation. New databases already contain
+	// these columns, so the additions are no-ops in that case.
+	columns, err := db.tableColumns("tool_calls")
+	if err != nil {
+		return fmt.Errorf("inspect tool_calls columns: %w", err)
+	}
+	columnDefs := map[string]string{
+		"command_exit_code": "INTEGER",
+		"files_changed":     "TEXT",
+		"error":             "TEXT",
+	}
+	for name, def := range columnDefs {
+		if columns[name] {
+			continue
+		}
+		query := fmt.Sprintf("ALTER TABLE tool_calls ADD COLUMN %s %s", name, def)
+		if _, err := db.sqlDB.Exec(query); err != nil {
+			return fmt.Errorf("add column %s to tool_calls: %w", name, err)
+		}
+	}
+
 	return nil
+}
+
+// tableColumns returns the set of column names for the given table.
+func (db *DB) tableColumns(table string) (map[string]bool, error) {
+	rows, err := db.sqlDB.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, fmt.Errorf("pragma table_info for %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dfltValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dfltValue, &pk); err != nil {
+			return nil, fmt.Errorf("scan table_info row: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate table_info rows: %w", err)
+	}
+	return columns, nil
 }
 
 func (db *DB) exec(query string, args ...any) (sql.Result, error) {

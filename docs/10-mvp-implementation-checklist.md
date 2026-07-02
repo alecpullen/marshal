@@ -69,13 +69,13 @@
 
 ## Milestone H: Agent loop
 
-- [ ] Task object
-- [ ] Basic task classification
-- [ ] Planning prompt
-- [ ] Tool-use prompt
-- [ ] Tool result summarisation
-- [ ] Retry/error handling
-- [ ] Final response summary
+- [x] Task object
+- [x] Basic task classification
+- [x] Planning prompt
+- [x] Tool-use prompt
+- [x] Tool result summarisation
+- [x] Retry/error handling
+- [x] Final response summary
 
 ## Milestone I: SQLite persistence
 

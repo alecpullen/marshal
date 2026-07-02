@@ -185,4 +185,3 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 	}
 	return tool
 }
-

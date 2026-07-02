@@ -203,3 +203,47 @@ func TestRefreshPlanPreservesUnknownSectionKinds(t *testing.T) {
 		t.Fatalf("plan section missing after unknown section: %#v", updated.Sections)
 	}
 }
+
+func TestRebudgetPreservesExistingPlanAndAppliesMaxTokens(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+			{Kind: SectionPlan, Title: "Current Plan", Content: "1. Keep this plan", EstimatedTokens: 5},
+			{Kind: SectionFileSnippet, Title: "internal/app/app.go", Source: "internal/app/app.go:1-3", Content: "package app", EstimatedTokens: 3},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 12000, EstimatedTokens: 12},
+	}
+
+	updated := Rebudget(pack, 24000, func() time.Time { return time.Unix(300, 0).UTC() })
+
+	if updated.TokenUsage.MaxTokens != 24000 {
+		t.Fatalf("MaxTokens = %d, want 24000", updated.TokenUsage.MaxTokens)
+	}
+	if len(updated.Sections) != 3 || updated.Sections[1].Kind != SectionPlan {
+		t.Fatalf("sections = %#v, want plan preserved", updated.Sections)
+	}
+	if updated.Sections[1].Content != "1. Keep this plan" {
+		t.Fatalf("plan content = %q", updated.Sections[1].Content)
+	}
+	if updated.Sections[2].Source != "internal/app/app.go:1-3" {
+		t.Fatalf("snippet source = %q", updated.Sections[2].Source)
+	}
+}
+
+func TestRefreshPlanWithBudgetUsesProvidedMaxTokens(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	}
+
+	updated := RefreshPlanWithBudget(pack, []string{"1. Inspect"}, 24000, func() time.Time { return time.Unix(300, 0).UTC() })
+
+	if updated.TokenUsage.MaxTokens != 24000 {
+		t.Fatalf("MaxTokens = %d, want 24000", updated.TokenUsage.MaxTokens)
+	}
+	if len(updated.Sections) != 2 || updated.Sections[1].Kind != SectionPlan {
+		t.Fatalf("sections = %#v, want repo card then plan", updated.Sections)
+	}
+}

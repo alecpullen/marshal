@@ -41,6 +41,8 @@ func extractDeclaration(path string, node *sitter.Node, source []byte) []db.Symb
 		return []db.Symbol{funcSymbol(path, node, source, "method", receiverType(node, source))}
 	case "type_declaration":
 		return typeSymbols(path, node, source)
+	case "import_declaration":
+		return importSymbols(path, node, source)
 	default:
 		return nil
 	}
@@ -120,4 +122,43 @@ func typeKindWord(typeNode *sitter.Node, source []byte) string {
 	text := typeNode.Content(source)
 	line := strings.SplitN(text, "\n", 2)[0]
 	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), "{"))
+}
+
+func importSymbols(path string, node *sitter.Node, source []byte) []db.Symbol {
+	var specs []*sitter.Node
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "import_spec":
+			specs = append(specs, child)
+		case "import_spec_list":
+			for j := 0; j < int(child.NamedChildCount()); j++ {
+				if sub := child.NamedChild(j); sub.Type() == "import_spec" {
+					specs = append(specs, sub)
+				}
+			}
+		}
+	}
+
+	var symbols []db.Symbol
+	for _, spec := range specs {
+		pathNode := spec.ChildByFieldName("path")
+		if pathNode == nil {
+			continue
+		}
+		importPath := strings.Trim(pathNode.Content(source), `"`)
+		signature := pathNode.Content(source)
+		if aliasNode := spec.ChildByFieldName("name"); aliasNode != nil {
+			signature = aliasNode.Content(source) + " " + signature
+		}
+		symbols = append(symbols, db.Symbol{
+			FilePath:  path,
+			Kind:      "import",
+			Name:      importPath,
+			Signature: signature,
+			LineStart: int(spec.StartPoint().Row) + 1,
+			LineEnd:   int(spec.EndPoint().Row) + 1,
+		})
+	}
+	return symbols
 }

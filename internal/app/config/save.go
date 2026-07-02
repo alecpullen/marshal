@@ -25,12 +25,16 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}{Default: &defaultProfile}
 
 	activePresetName := activePresetName(cfg)
-	agentProvider := cfg.Agent.Provider
-	agentModel := cfg.Agent.Model
-	file.Agent = &struct {
-		Provider *string `toml:"provider"`
-		Model    *string `toml:"model"`
-	}{Provider: &agentProvider, Model: &agentModel}
+	if activePresetName == "" {
+		agentProvider := cfg.Agent.Provider
+		agentModel := cfg.Agent.Model
+		file.Agent = &struct {
+			Provider *string `toml:"provider"`
+			Model    *string `toml:"model"`
+		}{Provider: &agentProvider, Model: &agentModel}
+	} else {
+		file.Agent = nil
+	}
 
 	remoteAllowed := cfg.Privacy.RemoteProvidersAllowed
 	if file.Privacy == nil {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
+	"marshal/internal/db"
 )
 
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
@@ -53,6 +55,10 @@ func WithConfigLoader(loader configLoader) Option {
 	}
 }
 
+func dbPath(workingDir string) string {
+	return filepath.Join(workingDir, ".marshal", "marshal.db")
+}
+
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option) error {
 	if ctx.Err() != nil {
 		return nil
@@ -80,8 +86,32 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		return err
 	}
 
+	if err := os.MkdirAll(filepath.Join(workingDir, ".marshal"), 0755); err != nil {
+		return fmt.Errorf("create .marshal directory: %w", err)
+	}
+
+	database, err := db.Open(dbPath(workingDir))
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	if err := database.Migrate(); err != nil {
+		return fmt.Errorf("migrate database: %w", err)
+	}
+
+	projectID, err := database.GetOrCreateProject(workingDir, cfg.Project.Name)
+	if err != nil {
+		return fmt.Errorf("get or create project: %w", err)
+	}
+
+	sessionID := fmt.Sprintf("sess_%d", runOpts.now().UnixNano())
+	if err := database.CreateSession(sessionID, projectID, "", runOpts.now()); err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+
 	logger := logging.New(stderr, slog.LevelInfo)
-	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{Logger: logger})
+	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
 	done := make(chan struct{})
 	defer close(done)
 	defer state.Shutdown()

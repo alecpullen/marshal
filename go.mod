@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/pelletier/go-toml/v2 v2.4.2
+	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	modernc.org/sqlite v1.53.0
 )
 

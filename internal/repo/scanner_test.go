@@ -121,3 +121,25 @@ func TestScannerIgnoresDirectoryPattern(t *testing.T) {
 		}
 	}
 }
+
+func TestScannerRespectsGitignore(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("secret.txt\n"), 0644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("secret"), 0644); err != nil {
+		t.Fatalf("write secret.txt: %v", err)
+	}
+
+	scanner := NewScanner(Config{Root: dir})
+	files, err := scanner.Scan()
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(files) != 1 || files[0].Path != "main.go" {
+		t.Fatalf("expected only main.go, got %+v", files)
+	}
+}

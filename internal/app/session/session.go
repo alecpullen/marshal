@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
@@ -74,6 +75,7 @@ type State struct {
 	sessionRules    []string
 	auditLog        []registry.AuditEvent
 	lastBackup      []BackupFile
+	contextPack     contextpack.Pack
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
@@ -158,6 +160,18 @@ func (s *State) PendingApproval() *PendingToolCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pendingApproval
+}
+
+func (s *State) SetContextPack(pack contextpack.Pack) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contextPack = pack.Clone()
+}
+
+func (s *State) ContextPack() contextpack.Pack {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.contextPack.Clone()
 }
 
 func (s *State) AddSessionRule(prefix string) {

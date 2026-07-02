@@ -23,4 +23,10 @@ func TestRenderRepoCard(t *testing.T) {
 	if !strings.Contains(out, "markdown: 1") {
 		t.Errorf("expected markdown count in card:\n%s", out)
 	}
+	if !strings.Contains(out, "cmd/") {
+		t.Errorf("expected cmd/ directory in card:\n%s", out)
+	}
+	if strings.Contains(out, "  ./") {
+		t.Errorf("expected no ./ directory entry in card:\n%s", out)
+	}
 }

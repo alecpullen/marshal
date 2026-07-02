@@ -120,3 +120,86 @@ func TestEmptyPackRendersEmptyAndClonesSafely(t *testing.T) {
 		t.Fatalf("Clone did not protect section content: %#v", pack.Sections)
 	}
 }
+
+func TestRefreshPlanInsertsBeforeSnippetsAndToolOutput(t *testing.T) {
+	now := time.Unix(200, 0).UTC()
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+			{Kind: SectionFileSnippet, Title: "internal/app/app.go", Content: "package app", EstimatedTokens: 3},
+			{Kind: SectionToolOutput, Title: "go.test", Content: "ok", EstimatedTokens: 1},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 12000, EstimatedTokens: 8},
+	}
+
+	updated := RefreshPlan(pack, []string{"1. Inspect", "2. Patch"}, func() time.Time { return now })
+
+	if len(updated.Sections) != 4 {
+		t.Fatalf("len(updated.Sections) = %d, want 4: %#v", len(updated.Sections), updated.Sections)
+	}
+	wantKinds := []SectionKind{SectionRepoCard, SectionPlan, SectionFileSnippet, SectionToolOutput}
+	for i, want := range wantKinds {
+		if updated.Sections[i].Kind != want {
+			t.Fatalf("section %d kind = %q, want %q", i, updated.Sections[i].Kind, want)
+		}
+	}
+	if updated.GeneratedAt != now {
+		t.Fatalf("GeneratedAt = %s, want %s", updated.GeneratedAt, now)
+	}
+}
+
+func TestRefreshPlanRespectsMaxTokensAndMarksTruncated(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: strings.Repeat("r", 8), EstimatedTokens: 2},
+			{Kind: SectionFileSnippet, Title: "internal/app/app.go", Content: strings.Repeat("s", 16), EstimatedTokens: 4},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 8, EstimatedTokens: 6},
+	}
+
+	updated := RefreshPlan(pack, []string{strings.Repeat("p", 32)}, func() time.Time { return time.Unix(200, 0).UTC() })
+
+	if updated.TokenUsage.EstimatedTokens > updated.TokenUsage.MaxTokens {
+		t.Fatalf("estimated tokens %d exceeds max %d", updated.TokenUsage.EstimatedTokens, updated.TokenUsage.MaxTokens)
+	}
+	if !updated.TokenUsage.Truncated {
+		t.Fatalf("TokenUsage.Truncated = false, want true")
+	}
+	if len(updated.Sections) != 2 {
+		t.Fatalf("len(updated.Sections) = %d, want 2 after snippet skip: %#v", len(updated.Sections), updated.Sections)
+	}
+	if updated.Sections[0].Kind != SectionRepoCard || updated.Sections[1].Kind != SectionPlan {
+		t.Fatalf("section kinds = %#v, want repo card then plan", updated.Sections)
+	}
+	if !strings.Contains(updated.Sections[1].Content, "...[truncated]") {
+		t.Fatalf("plan content missing truncation marker: %q", updated.Sections[1].Content)
+	}
+}
+
+func TestRefreshPlanPreservesUnknownSectionKinds(t *testing.T) {
+	unknownKind := SectionKind("future_kind")
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+			{Kind: unknownKind, Title: "Future", Content: "future payload", Source: "future/source", Priority: 25, EstimatedTokens: 4},
+			{Kind: SectionPlan, Title: "Current Plan", Content: "old plan", EstimatedTokens: 2},
+			{Kind: SectionToolOutput, Title: "go.test", Content: "ok", EstimatedTokens: 1},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 12000, EstimatedTokens: 11},
+	}
+
+	updated := RefreshPlan(pack, []string{"1. New plan"}, func() time.Time { return time.Unix(200, 0).UTC() })
+
+	if len(updated.Sections) != 4 {
+		t.Fatalf("len(updated.Sections) = %d, want 4: %#v", len(updated.Sections), updated.Sections)
+	}
+	if updated.Sections[1].Kind != unknownKind {
+		t.Fatalf("updated.Sections[1].Kind = %q, want %q", updated.Sections[1].Kind, unknownKind)
+	}
+	if updated.Sections[1].Source != "future/source" || updated.Sections[1].Priority != 25 {
+		t.Fatalf("unknown section metadata changed: %#v", updated.Sections[1])
+	}
+	if updated.Sections[2].Kind != SectionPlan {
+		t.Fatalf("plan section missing after unknown section: %#v", updated.Sections)
+	}
+}

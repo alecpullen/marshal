@@ -366,6 +366,60 @@ func TestRunAddsPlanToContextPackForActionCalls(t *testing.T) {
 	}
 }
 
+func TestRunAddsPlanToContextPackBeforeSnippetsAndToolOutput(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		"1. Inspect the repo.\n2. Run the demo tool.",
+		`{"rationale":"need data","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
+	}}
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+			{Kind: contextpack.SectionFileSnippet, Title: "internal/app/app.go", Content: "package app", EstimatedTokens: 3},
+			{Kind: contextpack.SectionToolOutput, Title: "go.test", Content: "ok", EstimatedTokens: 1},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 8},
+	})
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "Add a test"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var actionContext string
+	for _, msg := range p.requests[1].Messages {
+		if strings.Contains(msg.Content, "Project context pack:") {
+			actionContext = msg.Content
+			break
+		}
+	}
+	if actionContext == "" {
+		t.Fatalf("action request missing context pack: %#v", p.requests[1].Messages)
+	}
+
+	planIdx := strings.Index(actionContext, "## Current Plan")
+	snippetIdx := strings.Index(actionContext, "## internal/app/app.go")
+	toolIdx := strings.Index(actionContext, "## go.test")
+	if planIdx == -1 || snippetIdx == -1 || toolIdx == -1 {
+		t.Fatalf("missing expected sections in action context:\n%s", actionContext)
+	}
+	if !(planIdx < snippetIdx && snippetIdx < toolIdx) {
+		t.Fatalf("section order wrong in action context:\n%s", actionContext)
+	}
+}
+
 func TestRunPreservesContextPackSectionMetadataWhenAddingPlan(t *testing.T) {
 	p := &scriptedProvider{responses: []string{
 		"1. Inspect the repo.\n2. Run the demo tool.",

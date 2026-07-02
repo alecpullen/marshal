@@ -115,6 +115,9 @@ func TestResolveUsesLegacyWhenNoProfileRouteExists(t *testing.T) {
 	if route.Preset.Provider != "ollama" || route.Preset.Model != "qwen2.5-coder:14b" {
 		t.Fatalf("legacy route preset = %#v", route.Preset)
 	}
+	if route.Preset.LocalOnly {
+		t.Fatal("legacy preset LocalOnly = true, want false")
+	}
 }
 
 func TestResolveMissingProfileWithoutLegacyReturnsError(t *testing.T) {

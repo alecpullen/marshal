@@ -83,10 +83,9 @@ func (r *StaticRouter) legacyRoute(role AgentRole) (Route, bool) {
 		Role:    role,
 		Profile: "legacy",
 		Preset: ModelPreset{
-			Name:      "legacy",
-			Provider:  r.config.LegacyProvider,
-			Model:     r.config.LegacyModel,
-			LocalOnly: true,
+			Name:     "legacy",
+			Provider: r.config.LegacyProvider,
+			Model:    r.config.LegacyModel,
 		},
 		Legacy: true,
 	}, true

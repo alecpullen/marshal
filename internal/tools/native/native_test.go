@@ -22,6 +22,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"file.write_patch": registry.RiskWorkspaceWrite,
 		"repo.search":      registry.RiskReadOnly,
 		"repo.index":       registry.RiskReadOnly,
+		"repo.map":         registry.RiskReadOnly,
 		"git.status":       registry.RiskReadOnly,
 		"git.diff":         registry.RiskReadOnly,
 		"shell.run":        registry.RiskCommand,

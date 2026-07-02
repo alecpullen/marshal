@@ -1,7 +1,8 @@
 | Task | Status | Details |
 | --- | --- | --- |
-| Task 1: Policy Engine Foundation and Rules Matching | [x] | Implement policy engine with evaluation logic, glob patterns, prefix matching, and unit tests |
-| Task 2: Config Rules Schema Integration | [x] | Integrate tools.shell rules (allow, confirm, deny) configuration parser and tests |
-| Task 3: Session State Extensions | [x] | Extend session.State with pending tool call and session rules fields and tests |
-| Task 4: Interactive TUI Approval Pane | [x] | Implement interactive TUI approval layout and key handlers (Enter, d, a, e) and tests |
-| Task 5: Final Check and Verification | [x] | Run project-wide tests, vet files, mark checklist complete, and perform final commit |
+| 1. Explore project context | [x] | Check design docs, recent commits, and requirements for the Milestone G patch workflow |
+| 2. Ask clarifying questions | [x] | Ask clarifying questions about user requirements for patch formatting and rollback mechanics |
+| 3. Propose 2-3 approaches | [x] | Outline options for parsing models' patches, applying them in Go, and handling rollbacks |
+| 4. Present design | [x] | Present selected design to the user for approval |
+| 5. Write design doc | [ ] | Document the approved design in `docs/superpowers/specs/2026-07-02-milestone-g-patch-workflow-design.md` and commit it |
+| 6. Transition to implementation | [ ] | Invoke the writing-plans skill to create a detailed implementation plan |

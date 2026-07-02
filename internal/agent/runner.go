@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -22,6 +23,10 @@ const (
 )
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
+
+type RouteResolver interface {
+	Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error)
+}
 
 // Runner drives one agent turn end to end: classify -> (optionally plan) ->
 // loop { call the model, parse its action, execute or answer } -> summarise.
@@ -35,6 +40,7 @@ type Runner struct {
 	Policy            *policy.PolicyEngine
 	State             *session.State
 	Model             string
+	RouteResolver     RouteResolver
 	Now               func() time.Time
 	MaxToolIterations int
 	MaxRetries        int
@@ -62,6 +68,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 
 	task := NewTask(goal, r.Now())
 	task.Class = Classify(goal)
+	route := r.resolveRoute(task)
 
 	messages := []schema.ChatMessage{
 		BuildSystemPrompt(r.Registry.List()),
@@ -78,7 +85,11 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 		}
 		task.Plan = splitPlanLines(planText)
 		if current := r.State.ContextPack(); !current.IsEmpty() {
-			updatedPack := contextpack.RefreshPlan(current, task.Plan, r.Now)
+			maxTokens := current.TokenUsage.MaxTokens
+			if route.ContextBudget.MaxRepoContextTokens > 0 {
+				maxTokens = route.ContextBudget.MaxRepoContextTokens
+			}
+			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
 			messages = []schema.ChatMessage{BuildSystemPrompt(r.Registry.List())}
 			messages = appendContextPackMessage(messages, updatedPack)
@@ -123,6 +134,40 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	task.Status = TaskStatusFailed
 	r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.")
 	return ErrMaxIterationsExceeded
+}
+
+func (r *Runner) resolveRoute(task *Task) routing.Route {
+	if r.RouteResolver == nil {
+		return routing.Route{}
+	}
+
+	route, resolvedProvider, err := r.RouteResolver.Resolve(routing.TaskProfile{Class: string(task.Class)})
+	if err != nil {
+		r.State.SetProviderError(err)
+		return routing.Route{}
+	}
+	if resolvedProvider != nil {
+		r.Provider = resolvedProvider
+	}
+	r.Model = route.Preset.Model
+	r.State.SetActiveRoute(session.RouteInfo{
+		Role:      route.Role,
+		Profile:   route.Profile,
+		Preset:    route.Preset.Name,
+		Provider:  route.Preset.Provider,
+		Model:     route.Preset.Model,
+		LocalOnly: route.Preset.LocalOnly,
+		Legacy:    route.Legacy,
+		Active:    true,
+	})
+	if route.ContextBudget.MaxRepoContextTokens > 0 {
+		pack := r.State.ContextPack()
+		if !pack.IsEmpty() {
+			pack = contextpack.Rebudget(pack, route.ContextBudget.MaxRepoContextTokens, r.Now)
+			r.State.SetContextPack(pack)
+		}
+	}
+	return route
 }
 
 func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pack) []schema.ChatMessage {

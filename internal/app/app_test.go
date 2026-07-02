@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,5 +242,80 @@ func TestRunCreatesDatabase(t *testing.T) {
 	dbPath := filepath.Join(dir, ".marshal", "marshal.db")
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Fatalf("database file was not created at %s", dbPath)
+	}
+}
+
+func TestRunDisplaysInactiveRouteWhenNoProviderConfigured(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	var view string
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			view = model.View()
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(view, "Route: inactive") {
+		t.Fatalf("view missing inactive route:\n%s", view)
+	}
+}
+
+func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	cfg := config.Default()
+	cfg.Agent.Provider = "ollama"
+	cfg.Agent.Model = "qwen2.5-coder:14b"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "local"},
+	}
+
+	var view string
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return cfg, nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			view = model.View()
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	for _, want := range []string{
+		"Route: role=implementer",
+		"profile=legacy",
+		"preset=legacy",
+		"provider=ollama",
+		"model=qwen2.5-coder:14b",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
 	}
 }

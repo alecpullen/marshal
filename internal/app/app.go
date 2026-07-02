@@ -13,11 +13,17 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"marshal/internal/agent"
 	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
 	"marshal/internal/db"
+	"marshal/internal/llm/provider"
+	"marshal/internal/llm/routing"
+	"marshal/internal/tools/native"
+	"marshal/internal/tools/policy"
+	"marshal/internal/tools/registry"
 )
 
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
@@ -57,6 +63,91 @@ func WithConfigLoader(loader configLoader) Option {
 
 func dbPath(workingDir string) string {
 	return filepath.Join(workingDir, ".marshal", "marshal.db")
+}
+
+func routingConfigFromAppConfig(cfg config.Config) routing.Config {
+	contextBudgets := make(map[routing.AgentRole]routing.ContextBudget, len(cfg.Agents))
+	for role, agentCfg := range cfg.Agents {
+		contextBudgets[role] = agentCfg.Context
+	}
+	return routing.Config{
+		DefaultProfile: cfg.Profile.Default,
+		RemoteAllowed:  cfg.Privacy.RemoteProvidersAllowed,
+		Presets:        cfg.Models.Presets,
+		Profiles:       cfg.AgentProfiles,
+		ContextBudgets: contextBudgets,
+		LegacyProvider: cfg.Agent.Provider,
+		LegacyModel:    cfg.Agent.Model,
+	}
+}
+
+type routedProviderResolver struct {
+	router    *routing.StaticRouter
+	cfg       config.Config
+	providers map[string]provider.Provider
+}
+
+func newRoutedProviderResolver(cfg config.Config) *routedProviderResolver {
+	return &routedProviderResolver{
+		router:    routing.NewStaticRouter(routingConfigFromAppConfig(cfg)),
+		cfg:       cfg,
+		providers: make(map[string]provider.Provider),
+	}
+}
+
+func (r *routedProviderResolver) Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error) {
+	route, err := r.router.Resolve(task)
+	if err != nil {
+		return routing.Route{}, nil, err
+	}
+	if existing, ok := r.providers[route.Preset.Provider]; ok {
+		return route, existing, nil
+	}
+
+	providerConfig, ok := r.cfg.Providers[route.Preset.Provider]
+	if !ok {
+		return routing.Route{}, nil, fmt.Errorf("routing provider %q is not configured", route.Preset.Provider)
+	}
+	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig)
+	if err != nil {
+		return routing.Route{}, nil, err
+	}
+	r.providers[route.Preset.Provider] = p
+	return route, p, nil
+}
+
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64) (*agent.Runner, error) {
+	resolver := newRoutedProviderResolver(cfg)
+	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
+	if err != nil {
+		return nil, err
+	}
+
+	reg := registry.New()
+	if err := native.RegisterAll(reg, native.Options{
+		WorkspaceRoot: state.WorkingDir,
+		TestCommand:   cfg.Commands.Test,
+		SessionState:  state,
+		DB:            database,
+		ProjectID:     projectID,
+	}); err != nil {
+		return nil, err
+	}
+
+	pol := policy.NewEngine(&cfg, state.SessionRules())
+	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
+	runner.RouteResolver = resolver
+	state.SetActiveRoute(session.RouteInfo{
+		Role:      route.Role,
+		Profile:   route.Profile,
+		Preset:    route.Preset.Name,
+		Provider:  route.Preset.Provider,
+		Model:     route.Preset.Model,
+		LocalOnly: route.Preset.LocalOnly,
+		Legacy:    route.Legacy,
+		Active:    true,
+	})
+	return runner, nil
 }
 
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option) error {
@@ -112,6 +203,12 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 
 	logger := logging.New(stderr, slog.LevelInfo)
 	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
+	var tuiOpts []tui.Option
+	if runner, err := buildAgentRunner(ctx, cfg, state, database, projectID); err == nil {
+		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
+	} else {
+		state.SetProviderError(err)
+	}
 	done := make(chan struct{})
 	defer close(done)
 	defer state.Shutdown()
@@ -131,7 +228,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	default:
 	}
 
-	return runOpts.programRunner(ctx, tui.New(state), stdout)
+	return runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
 }
 
 func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {

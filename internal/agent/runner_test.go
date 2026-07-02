@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/contextpack"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -22,6 +24,7 @@ type scriptedProvider struct {
 	responses []string
 	errs      []error
 	calls     int
+	requests  []schema.ChatRequest
 }
 
 func (p *scriptedProvider) Name() string { return "scripted" }
@@ -40,6 +43,7 @@ func (p *scriptedProvider) Capabilities(ctx context.Context) schema.ProviderCapa
 
 func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
 	idx := p.calls
+	p.requests = append(p.requests, req)
 	p.calls++
 
 	ch := make(chan schema.ChatEvent, 2)
@@ -265,5 +269,99 @@ func TestRunStopsAfterMaxToolIterationsWithoutFinalAnswer(t *testing.T) {
 	}
 	if len(state.AuditLog()) != 2 {
 		t.Fatalf("len(auditLog) = %d, want 2 (bounded by MaxToolIterations)", len(state.AuditLog()))
+	}
+}
+
+func TestRunInjectsStoredContextPack(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"simple","action":{"type":"answer","content":"Marshal is indexed."}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	})
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(p.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(p.requests))
+	}
+	var found bool
+	for _, msg := range p.requests[0].Messages {
+		if strings.Contains(msg.Content, "Project context pack:") && strings.Contains(msg.Content, "Project: marshal") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("request missing context pack: %#v", p.requests[0].Messages)
+	}
+}
+
+func TestRunOmitsContextPackWhenEmpty(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"simple","action":{"type":"answer","content":"No pack."}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	for _, msg := range p.requests[0].Messages {
+		if strings.Contains(msg.Content, "Project context pack:") {
+			t.Fatalf("empty context pack was injected: %#v", p.requests[0].Messages)
+		}
+	}
+}
+
+func TestRunAddsPlanToContextPackForActionCalls(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		"1. Inspect the repo.\n2. Run the demo tool.",
+		`{"rationale":"need data","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
+	}}
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	})
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "Add a test"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(p.requests) < 2 {
+		t.Fatalf("provider requests = %d, want at least 2", len(p.requests))
+	}
+	var foundPlan bool
+	for _, msg := range p.requests[1].Messages {
+		if strings.Contains(msg.Content, "## Current Plan") && strings.Contains(msg.Content, "Inspect the repo") {
+			foundPlan = true
+		}
+	}
+	if !foundPlan {
+		t.Fatalf("action request missing plan context: %#v", p.requests[1].Messages)
 	}
 }

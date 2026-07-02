@@ -89,6 +89,16 @@ func TestRunStartsProgram(t *testing.T) {
 }
 
 func TestRunPassesAppContextToRunner(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -97,16 +107,6 @@ func TestRunPassesAppContextToRunner(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		dir := t.TempDir()
-		origWd, err := os.Getwd()
-		if err != nil {
-			t.Fatalf("getwd: %v", err)
-		}
-		if err := os.Chdir(dir); err != nil {
-			t.Fatalf("chdir: %v", err)
-		}
-		defer os.Chdir(origWd)
-
 		errCh <- Run(ctx, bytes.NewBuffer(nil), bytes.NewBuffer(nil),
 			WithNow(func() time.Time { return time.Unix(100, 0) }),
 			WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
@@ -200,7 +200,7 @@ func TestRunReturnsInjectedConfigLoadError(t *testing.T) {
 	}
 }
 
-func TestRunCreatesDatabaseAndSession(t *testing.T) {
+func TestRunCreatesDatabase(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
@@ -227,7 +227,7 @@ func TestRunCreatesDatabaseAndSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = Run(ctx, os.Stdout, os.Stderr, WithNow(func() time.Time {
+	err = Run(ctx, bytes.NewBuffer(nil), bytes.NewBuffer(nil), WithNow(func() time.Time {
 		return time.Unix(1000, 0)
 	}), WithProgramRunner(runner))
 	if err != nil {

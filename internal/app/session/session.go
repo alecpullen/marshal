@@ -22,13 +22,19 @@ type Message struct {
 	CreatedAt time.Time
 }
 
+type UserApprovalDecision struct {
+	Approved bool
+	Edited   string
+}
+
 type PendingToolCall struct {
-	ID      string
-	Name    string
-	Args    string
-	Command string
-	Risk    string
-	Reason  string
+	ID           string
+	Name         string
+	Args         string
+	Command      string
+	Risk         string
+	Reason       string
+	ResponseChan chan UserApprovalDecision
 }
 
 type State struct {

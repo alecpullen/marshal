@@ -1,8 +1,7 @@
 | Task | Status | Details |
 | --- | --- | --- |
-| 1. Explore project context | [x] | Examine implementation of Milestones C, D, and E (specifically the tool runner, command execution, and TUI config structure) |
-| 2. Ask clarifying questions | [x] | Ask clarifying questions about user requirements for Milestone F approval system |
-| 3. Propose 2-3 approaches | [x] | Outline different architectures for risk classification, config validation, and prompt integration |
-| 4. Present design | [x] | Present selected design to the user for approval |
-| 5. Write design doc | [x] | Document the approved design in `docs/plans/2026-07-02-milestone-f-approval-system-design.md` and commit it |
-| 6. Transition to implementation | [x] | Invoke the writing-plans skill to create a detailed implementation plan |
+| Task 1: Policy Engine Foundation and Rules Matching | [x] | Implement policy engine with evaluation logic, glob patterns, prefix matching, and unit tests |
+| Task 2: Config Rules Schema Integration | [x] | Integrate tools.shell rules (allow, confirm, deny) configuration parser and tests |
+| Task 3: Session State Extensions | [x] | Extend session.State with pending tool call and session rules fields and tests |
+| Task 4: Interactive TUI Approval Pane | [x] | Implement interactive TUI approval layout and key handlers (Enter, d, a, e) and tests |
+| Task 5: Final Check and Verification | [x] | Run project-wide tests, vet files, mark checklist complete, and perform final commit |

@@ -50,12 +50,12 @@
 
 ## Milestone F: Approval system
 
-- [ ] Command risk classifier
-- [ ] Approval prompt in TUI
-- [ ] Deny/edit/approve actions
-- [ ] Per-session allow rules
-- [ ] Config allow/confirm/deny rules
-- [ ] Tool call logging
+- [x] Command risk classifier
+- [x] Approval prompt in TUI
+- [x] Deny/edit/approve actions
+- [x] Per-session allow rules
+- [x] Config allow/confirm/deny rules
+- [x] Tool call logging
 
 ## Milestone G: Patch workflow
 

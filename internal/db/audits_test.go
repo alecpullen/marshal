@@ -76,6 +76,9 @@ func TestSaveAndGetToolCalls(t *testing.T) {
 	if got.Error != event.Error {
 		t.Errorf("expected error %q, got %q", event.Error, got.Error)
 	}
+	if len(got.FilesChanged) != 1 || got.FilesChanged[0] != "foo.go" {
+		t.Errorf("expected files changed [foo.go], got %v", got.FilesChanged)
+	}
 
 	t.Run("with error", func(t *testing.T) {
 		errArgs, err := json.Marshal(map[string]string{"command": "go fail"})
@@ -115,4 +118,139 @@ func TestSaveAndGetToolCalls(t *testing.T) {
 			t.Errorf("expected error %q, got %q", errEvent.Error, got.Error)
 		}
 	})
+}
+
+func TestSaveAndGetToolCalls_NilFields(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	sessionID := "session-nil-fields"
+	if err := db.CreateSession(sessionID, projectID, "nil fields test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]string{"path": "README.md"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	event := registry.AuditEvent{
+		Timestamp:       time.Date(2026, 7, 2, 12, 2, 0, 0, time.UTC),
+		AgentRole:       "reviewer",
+		Model:           "test-model",
+		ToolName:        "file.read",
+		Args:            args,
+		Risk:            registry.RiskReadOnly,
+		Approval:        registry.ApprovalNotRequired,
+		ResultSummary:   "read file",
+		FilesChanged:    nil,
+		CommandExitCode: nil,
+		Error:           "",
+	}
+
+	if err := db.SaveToolCall(sessionID, event); err != nil {
+		t.Fatalf("SaveToolCall failed: %v", err)
+	}
+
+	calls, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolCalls failed: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+
+	got := calls[0]
+	if got.CommandExitCode != nil {
+		t.Errorf("expected nil exit code, got %v", got.CommandExitCode)
+	}
+	if got.FilesChanged != nil {
+		t.Errorf("expected nil files changed, got %v", got.FilesChanged)
+	}
+	if got.Error != "" {
+		t.Errorf("expected empty error, got %q", got.Error)
+	}
+}
+
+func TestGetToolCalls_LegacyRows(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	// Simulate a pre-migration tool_calls table that lacks the columns added
+	// after the initial schema: command_exit_code, files_changed, and error.
+	_, err = db.sqlDB.Exec(`CREATE TABLE tool_calls (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT,
+		agent_role TEXT,
+		model TEXT,
+		tool_name TEXT,
+		args_json TEXT,
+		result_summary TEXT,
+		risk_level TEXT,
+		approval_state TEXT,
+		created_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatalf("create legacy tool_calls table: %v", err)
+	}
+
+	sessionID := "session-legacy"
+	createdAt := time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	_, err = db.sqlDB.Exec(
+		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID,
+		"implementer",
+		"legacy-model",
+		"shell.exec",
+		`{"command":"go test"}`,
+		"tests passed",
+		string(registry.RiskCommand),
+		string(registry.ApprovalApproved),
+		createdAt,
+	)
+	if err != nil {
+		t.Fatalf("insert legacy tool call: %v", err)
+	}
+
+	// Migrate should add the missing columns without touching the existing row.
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	calls, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolCalls failed: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+
+	got := calls[0]
+	if got.ToolName != "shell.exec" {
+		t.Errorf("expected tool name shell.exec, got %q", got.ToolName)
+	}
+	if got.CommandExitCode != nil {
+		t.Errorf("expected nil exit code for legacy row, got %v", got.CommandExitCode)
+	}
+	if got.FilesChanged != nil {
+		t.Errorf("expected nil files changed for legacy row, got %v", got.FilesChanged)
+	}
+	if got.Error != "" {
+		t.Errorf("expected empty error for legacy row, got %q", got.Error)
+	}
 }

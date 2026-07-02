@@ -9,9 +9,12 @@ import (
 )
 
 type Config struct {
-	Root             string
-	Ignore           []string
-	IncludeGitignore bool
+	Root   string
+	Ignore []string
+	// SkipGitignore controls whether .gitignore files are ignored.
+	// When false (the default), .gitignore rules are applied.
+	// When true, .gitignore files are skipped entirely.
+	SkipGitignore bool
 }
 
 type Scanner struct {
@@ -26,8 +29,9 @@ func NewScanner(config Config) *Scanner {
 		root = "."
 	}
 
+	config.Root = root
 	s := &Scanner{config: config}
-	if !config.IncludeGitignore {
+	if !config.SkipGitignore {
 		g, err := LoadGitignore(filepath.Join(root, ".gitignore"))
 		if err != nil {
 			s.loadErr = err
@@ -40,9 +44,6 @@ func NewScanner(config Config) *Scanner {
 
 func (s *Scanner) Scan() ([]db.FileIndex, error) {
 	root := s.config.Root
-	if root == "" {
-		root = "."
-	}
 	if s.loadErr != nil {
 		return nil, s.loadErr
 	}

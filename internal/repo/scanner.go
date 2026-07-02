@@ -27,9 +27,9 @@ type Scanner struct {
 	loadErr   error
 }
 
-// DefaultIgnoredDirs is the set of directory names that should always be
+// defaultIgnoredDirs is the set of directory names that should always be
 // skipped during repository scanning and search.
-var DefaultIgnoredDirs = map[string]bool{
+var defaultIgnoredDirs = map[string]bool{
 	".git": true, ".idea": true, ".superpowers": true, ".worktrees": true,
 	".agent": true, ".claude": true,
 	"node_modules": true, "vendor": true, "dist": true, "build": true, "tmp": true,
@@ -38,7 +38,7 @@ var DefaultIgnoredDirs = map[string]bool{
 // IsDefaultIgnoredDir reports whether name is a directory that should always
 // be skipped.
 func IsDefaultIgnoredDir(name string) bool {
-	return DefaultIgnoredDirs[name]
+	return defaultIgnoredDirs[name]
 }
 
 func NewScanner(config Config) *Scanner {

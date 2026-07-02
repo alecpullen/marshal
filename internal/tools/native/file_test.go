@@ -127,7 +127,7 @@ func TestFileWritePatchRollbackIntegration(t *testing.T) {
 		t.Fatalf("WriteFile error: %v", err)
 	}
 
-	state := session.New(config.Default(), root, time.Unix(100, 0))
+	state := session.New(config.Default(), root, time.Unix(100, 0), nil, 0, "")
 
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{

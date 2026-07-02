@@ -15,7 +15,7 @@ import (
 )
 
 func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	model := New(state)
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
@@ -36,7 +36,7 @@ func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
 }
 
 func TestEnterOnWhitespaceDoesNotAppendMessage(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	model := New(state)
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeySpace})
@@ -50,7 +50,7 @@ func TestEnterOnWhitespaceDoesNotAppendMessage(t *testing.T) {
 }
 
 func TestQuitKeyRequestsShutdown(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	model := New(state)
 
 	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -66,7 +66,7 @@ func TestQuitKeyRequestsShutdown(t *testing.T) {
 }
 
 func TestViewContainsExpectedPanels(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	model := New(state)
 
 	view := model.View()
@@ -86,7 +86,7 @@ func TestViewContainsExpectedPanels(t *testing.T) {
 }
 
 func TestViewShowsProviderErrorWhenSet(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	model := New(state)
 
 	state.SetProviderError(errors.New("dial tcp: connection refused"))
@@ -101,7 +101,7 @@ func TestViewShowsProviderErrorWhenSet(t *testing.T) {
 }
 
 func TestViewOmitsProviderErrorSectionByDefault(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	model := New(state)
 
 	view := model.View()
@@ -112,7 +112,7 @@ func TestViewOmitsProviderErrorSectionByDefault(t *testing.T) {
 }
 
 func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 
 	respChan := make(chan session.UserApprovalDecision, 1)
 	tc := &session.PendingToolCall{
@@ -230,7 +230,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 }
 
 func TestViewShowsAuditLogs(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	model := New(state)
 
 	// Log a tool call
@@ -251,7 +251,7 @@ func TestViewShowsAuditLogs(t *testing.T) {
 
 func TestTUIRollbackFlow(t *testing.T) {
 	tmpDir := t.TempDir()
-	state := session.New(config.Default(), tmpDir, time.Unix(100, 0))
+	state := session.New(config.Default(), tmpDir, time.Unix(100, 0), nil, 0, "")
 	state.StoreBackup([]session.BackupFile{
 		{Path: "app.go", Content: "original content"},
 	})
@@ -283,7 +283,7 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 }
 
 func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	model := New(state, WithRunner(context.Background(), runner))
 
@@ -336,7 +336,7 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 }
 
 func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	model := New(state)
 	model.busy = true
 
@@ -355,7 +355,7 @@ func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
 }
 
 func TestEnterWithoutRunnerFallsBackToPlainAppend(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	model := New(state)
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
@@ -373,7 +373,7 @@ func TestEnterWithoutRunnerFallsBackToPlainAppend(t *testing.T) {
 }
 
 func TestEnterWhileBusyIsIgnored(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	model := New(state, WithRunner(context.Background(), runner))
 	model.busy = true

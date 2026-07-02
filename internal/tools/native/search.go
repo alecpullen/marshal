@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"marshal/internal/repo"
 	"marshal/internal/tools/registry"
 )
 
@@ -79,7 +80,7 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 			return err
 		}
 		if entry.IsDir() {
-			if shouldSkipSearchDir(entry.Name()) && path != start {
+			if repo.IsDefaultIgnoredDir(entry.Name()) && path != start {
 				return filepath.SkipDir
 			}
 			return nil
@@ -142,13 +143,4 @@ func (t *toolSet) searchFile(path string, query string, remaining int) []string 
 	}
 
 	return matches
-}
-
-func shouldSkipSearchDir(name string) bool {
-	switch name {
-	case ".git", ".idea", ".superpowers", ".worktrees", "node_modules", "vendor", "dist":
-		return true
-	default:
-		return false
-	}
 }

@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"marshal/internal/repo"
@@ -20,7 +21,7 @@ func (t *toolSet) repoMapTool() registry.Tool {
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		if t.db == nil || t.projectID == 0 {
-			return registry.ToolResult{}, fmt.Errorf("database not configured for repo.map")
+			return registry.ToolResult{}, errors.New("database not configured for repo.map")
 		}
 		files, err := t.db.GetFileIndex(t.projectID)
 		if err != nil {

@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -21,7 +22,7 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		if t.db == nil || t.projectID == 0 {
-			return registry.ToolResult{}, fmt.Errorf("database not configured for repo.index")
+			return registry.ToolResult{}, errors.New("database not configured for repo.index")
 		}
 
 		scanner := repo.NewScanner(repo.Config{Root: t.root})

@@ -27,6 +27,20 @@ type Scanner struct {
 	loadErr   error
 }
 
+// DefaultIgnoredDirs is the set of directory names that should always be
+// skipped during repository scanning and search.
+var DefaultIgnoredDirs = map[string]bool{
+	".git": true, ".idea": true, ".superpowers": true, ".worktrees": true,
+	".agent": true, ".claude": true,
+	"node_modules": true, "vendor": true, "dist": true, "build": true, "tmp": true,
+}
+
+// IsDefaultIgnoredDir reports whether name is a directory that should always
+// be skipped.
+func IsDefaultIgnoredDir(name string) bool {
+	return DefaultIgnoredDirs[name]
+}
+
 func NewScanner(config Config) *Scanner {
 	root := config.Root
 	if root == "" {
@@ -36,6 +50,8 @@ func NewScanner(config Config) *Scanner {
 	config.Root = root
 	s := &Scanner{config: config}
 	if !config.SkipGitignore {
+		// Current limitation: only the root .gitignore is loaded.
+		// Per-directory .gitignore files are not yet supported.
 		g, err := LoadGitignore(filepath.Join(root, ".gitignore"))
 		if err != nil {
 			s.loadErr = err
@@ -132,14 +148,7 @@ func hashFile(path string) (string, int64, error) {
 // shouldSkipDir reports whether rel is a known tooling or output directory
 // that should always be skipped during scanning.
 func shouldSkipDir(rel string) bool {
-	name := filepath.Base(rel)
-	switch name {
-	case ".git", ".idea", ".superpowers", ".worktrees", ".agent", ".claude",
-		"node_modules", "vendor", "dist", "build", "tmp":
-		return true
-	default:
-		return false
-	}
+	return IsDefaultIgnoredDir(filepath.Base(rel))
 }
 
 // isIgnored reports whether rel matches any configured ignore pattern.

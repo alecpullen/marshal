@@ -2,6 +2,8 @@
 | --- | --- | --- |
 | Task 1: Create repo scanner with ignore rules | completed | internal/repo/scanner.go |
 | Task 2: Add .gitignore support | completed | internal/repo/gitignore.go |
+
+Note under Task 2: Current limitation: only root `.gitignore` is loaded; nested `.gitignore` files are not yet supported.
 | Task 3: Detect language and hash files | completed | internal/repo/language.go, hashFile |
 | Task 4: Add repo.index tool | completed | internal/tools/native/repo_index.go |
 | Task 5: Add repo.map tool | completed | internal/repo/map.go, repo_map.go |

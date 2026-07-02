@@ -2,6 +2,9 @@ package session
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -35,6 +38,7 @@ type PendingToolCall struct {
 	Command      string
 	Risk         string
 	Reason       string
+	Diff         string // Added field for patch rendering
 	ResponseChan chan UserApprovalDecision
 }
 
@@ -182,4 +186,22 @@ func (s *State) HasBackup() bool {
 	defer s.mu.Unlock()
 	return len(s.lastBackup) > 0
 }
+
+func (s *State) RollbackBackup() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.lastBackup) == 0 {
+		return fmt.Errorf("no backup available")
+	}
+	for _, bf := range s.lastBackup {
+		// Re-resolve path relative to WorkingDir
+		path := filepath.Join(s.WorkingDir, bf.Path)
+		if err := os.WriteFile(path, []byte(bf.Content), 0644); err != nil {
+			return err
+		}
+	}
+	s.lastBackup = nil
+	return nil
+}
+
 

@@ -33,7 +33,11 @@ func (t *toolSet) repoMapTool() registry.Tool {
 				Content: "Run repo.index to build the file index first.",
 			}, nil
 		}
-		content := repo.RenderDirectoryMap(files, repoMapMaxFiles)
+		symbols, err := t.db.GetSymbols(t.projectID)
+		if err != nil {
+			return registry.ToolResult{}, fmt.Errorf("load symbol index: %w", err)
+		}
+		content := repo.RenderDirectoryMap(files, symbols, repoMapMaxFiles)
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("Directory map with %d files", len(files)),
 			Content: content,

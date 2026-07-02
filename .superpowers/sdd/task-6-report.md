@@ -20,8 +20,9 @@
 
 ## Post-edit checks
 
-- `go test ./...`
-- `git status --short`
+- `go test ./...` passed after docs edits
+- final `go test ./...` passed after commit
+- final `git status --short` was clean
 
 ## Concerns
 

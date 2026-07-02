@@ -31,3 +31,11 @@ func (db *DB) Close() error {
 	}
 	return db.sqlDB.Close()
 }
+
+func (db *DB) Migrate() error {
+	_, err := db.sqlDB.Exec(schema)
+	if err != nil {
+		return fmt.Errorf("execute database schema migrations: %w", err)
+	}
+	return nil
+}

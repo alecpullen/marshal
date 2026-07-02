@@ -11,7 +11,10 @@ func TestScannerFindsFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644)
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# readme"), 0644)
 
-	scanner := NewScanner(Config{Root: dir})
+	scanner, err := NewScanner(Config{Root: dir})
+	if err != nil {
+		t.Fatalf("NewScanner failed: %v", err)
+	}
 	files, err := scanner.Scan()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
@@ -34,7 +37,10 @@ func TestScannerSkipsIgnoredDirs(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "node_modules", "pkg"), 0755)
 	os.WriteFile(filepath.Join(dir, "node_modules", "pkg", "index.js"), []byte("// js"), 0644)
 
-	scanner := NewScanner(Config{Root: dir})
+	scanner, err := NewScanner(Config{Root: dir})
+	if err != nil {
+		t.Fatalf("NewScanner failed: %v", err)
+	}
 	files, err := scanner.Scan()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
@@ -49,7 +55,10 @@ func TestScannerAppliesConfigIgnore(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644)
 	os.WriteFile(filepath.Join(dir, "foo_test.go"), []byte("package main"), 0644)
 
-	scanner := NewScanner(Config{Root: dir, Ignore: []string{"*_test.go"}})
+	scanner, err := NewScanner(Config{Root: dir, Ignore: []string{"*_test.go"}})
+	if err != nil {
+		t.Fatalf("NewScanner failed: %v", err)
+	}
 	files, err := scanner.Scan()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
@@ -65,12 +74,38 @@ func TestScannerRespectsGitignore(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("secret.txt\n"), 0644)
 	os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("secret"), 0644)
 
-	scanner := NewScanner(Config{Root: dir})
+	scanner, err := NewScanner(Config{Root: dir})
+	if err != nil {
+		t.Fatalf("NewScanner failed: %v", err)
+	}
 	files, err := scanner.Scan()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
 	if len(files) != 1 || files[0].Path != "main.go" {
 		t.Fatalf("expected only main.go, got %+v", files)
+	}
+}
+
+func TestScannerSkipGitignore(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644)
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("secret.txt\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("secret"), 0644)
+
+	scanner, err := NewScanner(Config{Root: dir, SkipGitignore: true})
+	if err != nil {
+		t.Fatalf("NewScanner failed: %v", err)
+	}
+	files, err := scanner.Scan()
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	paths := map[string]bool{}
+	for _, f := range files {
+		paths[f.Path] = true
+	}
+	if !paths["main.go"] || !paths["secret.txt"] {
+		t.Fatalf("expected main.go and secret.txt, got %+v", files)
 	}
 }

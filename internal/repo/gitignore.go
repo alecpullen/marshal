@@ -54,6 +54,10 @@ func parseGitignorePattern(line string) gitignorePattern {
 		p.dirOnly = true
 		line = strings.TrimSuffix(line, "/")
 	}
+	// A slash anywhere in the pattern anchors it to the .gitignore location.
+	if strings.Contains(line, "/") {
+		p.anchored = true
+	}
 	p.segments = strings.Split(line, "/")
 	return p
 }

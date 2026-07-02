@@ -260,3 +260,55 @@ func writeFile(t *testing.T, path string, contents string) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 }
+
+func TestLoadToolsRules(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+
+	writeFile(t, home+"/.config/marshal/config.toml", `
+[tools.shell]
+auto_approve = false
+allow_destructive = false
+[tools.shell.allow]
+commands = ["go test"]
+[tools.shell.confirm]
+commands = ["npm install"]
+[tools.shell.deny]
+patterns = ["sudo"]
+`)
+
+	writeFile(t, work+"/.marshal/config.toml", `
+[tools.shell]
+auto_approve = true
+allow_destructive = true
+[tools.shell.allow]
+commands = ["go test", "git status"]
+[tools.shell.confirm]
+commands = ["yarn install"]
+[tools.shell.deny]
+patterns = ["rm -rf"]
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	s := cfg.Tools.Shell
+	if !s.AutoApprove {
+		t.Fatal("AutoApprove not merged, want true")
+	}
+	if !s.AllowDestructive {
+		t.Fatal("AllowDestructive not merged, want true")
+	}
+	if !reflect.DeepEqual(s.Allow.Commands, []string{"go test", "git status"}) {
+		t.Errorf("Allow.Commands = %#v", s.Allow.Commands)
+	}
+	if !reflect.DeepEqual(s.Confirm.Commands, []string{"yarn install"}) {
+		t.Errorf("Confirm.Commands = %#v", s.Confirm.Commands)
+	}
+	if !reflect.DeepEqual(s.Deny.Patterns, []string{"rm -rf"}) {
+		t.Errorf("Deny.Patterns = %#v", s.Deny.Patterns)
+	}
+}
+

@@ -15,6 +15,31 @@ type Config struct {
 	Privacy   PrivacyConfig             `toml:"privacy"`
 	Indexing  IndexingConfig            `toml:"indexing"`
 	Providers map[string]ProviderConfig `toml:"providers"`
+	Tools     ToolsConfig               `toml:"tools"`
+}
+
+type ToolsConfig struct {
+	Shell ShellToolConfig `toml:"shell"`
+}
+
+type ShellToolConfig struct {
+	DefaultTimeoutSeconds int          `toml:"default_timeout_seconds"`
+	MaxOutputBytes        int          `toml:"max_output_bytes"`
+	AllowNetwork          bool         `toml:"allow_network"`
+	AllowSudo             bool         `toml:"allow_sudo"`
+	AllowDestructive      bool         `toml:"allow_destructive"`
+	AutoApprove           bool         `toml:"auto_approve"`
+	Allow                 CommandRules `toml:"allow"`
+	Confirm               CommandRules `toml:"confirm"`
+	Deny                  PatternRules `toml:"deny"`
+}
+
+type CommandRules struct {
+	Commands []string `toml:"commands"`
+}
+
+type PatternRules struct {
+	Patterns []string `toml:"patterns"`
 }
 
 type ProjectConfig struct {
@@ -83,6 +108,19 @@ type configFile struct {
 		SummariseFiles *bool    `toml:"summarise_files"`
 		Ignore         []string `toml:"ignore"`
 	} `toml:"indexing"`
+	Tools *struct {
+		Shell *struct {
+			DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
+			MaxOutputBytes        *int          `toml:"max_output_bytes"`
+			AllowNetwork          *bool         `toml:"allow_network"`
+			AllowSudo             *bool         `toml:"allow_sudo"`
+			AllowDestructive      *bool         `toml:"allow_destructive"`
+			AutoApprove           *bool         `toml:"auto_approve"`
+			Allow                 *CommandRules `toml:"allow"`
+			Confirm               *CommandRules `toml:"confirm"`
+			Deny                  *PatternRules `toml:"deny"`
+		} `toml:"shell"`
+	} `toml:"tools"`
 	// Providers, unlike the other configFile fields above, is not a
 	// pointer-to-anonymous-struct: a nil map already distinguishes
 	// "providers section absent from this file" from "present", so no
@@ -114,6 +152,19 @@ func Default() Config {
 			UseEmbeddings:  false,
 			SummariseFiles: false,
 			Ignore:         []string{"node_modules/**", "vendor/**", "dist/**", ".git/**"},
+		},
+		Tools: ToolsConfig{
+			Shell: ShellToolConfig{
+				DefaultTimeoutSeconds: 120,
+				MaxOutputBytes:        200000,
+				AllowNetwork:          false,
+				AllowSudo:             false,
+				AllowDestructive:      false,
+				AutoApprove:           false,
+				Allow:                 CommandRules{Commands: []string{"go test", "git status", "git diff"}},
+				Confirm:               CommandRules{Commands: []string{"go get", "npm install"}},
+				Deny:                  PatternRules{Patterns: []string{"rm -rf", "sudo", "curl * | sh"}},
+			},
 		},
 		// Providers is intentionally left nil: Marshal is local-first with no
 		// built-in provider assumptions, and provider URLs/keys are
@@ -230,6 +281,36 @@ func merge(cfg *Config, file configFile) {
 		// "wins" for scalar fields elsewhere in this function.
 		for name, pc := range file.Providers {
 			cfg.Providers[name] = pc
+		}
+	}
+	if file.Tools != nil && file.Tools.Shell != nil {
+		s := file.Tools.Shell
+		if s.DefaultTimeoutSeconds != nil {
+			cfg.Tools.Shell.DefaultTimeoutSeconds = *s.DefaultTimeoutSeconds
+		}
+		if s.MaxOutputBytes != nil {
+			cfg.Tools.Shell.MaxOutputBytes = *s.MaxOutputBytes
+		}
+		if s.AllowNetwork != nil {
+			cfg.Tools.Shell.AllowNetwork = *s.AllowNetwork
+		}
+		if s.AllowSudo != nil {
+			cfg.Tools.Shell.AllowSudo = *s.AllowSudo
+		}
+		if s.AllowDestructive != nil {
+			cfg.Tools.Shell.AllowDestructive = *s.AllowDestructive
+		}
+		if s.AutoApprove != nil {
+			cfg.Tools.Shell.AutoApprove = *s.AutoApprove
+		}
+		if s.Allow != nil && s.Allow.Commands != nil {
+			cfg.Tools.Shell.Allow.Commands = s.Allow.Commands
+		}
+		if s.Confirm != nil && s.Confirm.Commands != nil {
+			cfg.Tools.Shell.Confirm.Commands = s.Confirm.Commands
+		}
+		if s.Deny != nil && s.Deny.Patterns != nil {
+			cfg.Tools.Shell.Deny.Patterns = s.Deny.Patterns
 		}
 	}
 }

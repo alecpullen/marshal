@@ -85,12 +85,13 @@ func TestStatePendingApprovalAndSessionRules(t *testing.T) {
 	}
 
 	tc := &PendingToolCall{
-		ID:      "123",
-		Name:    "shell.run",
-		Args:    `{"command": "go test"}`,
-		Command: "go test",
-		Risk:    "command",
-		Reason:  "test verification",
+		ID:           "123",
+		Name:         "shell.run",
+		Args:         `{"command": "go test"}`,
+		Command:      "go test",
+		Risk:         "command",
+		Reason:       "test verification",
+		ResponseChan: make(chan UserApprovalDecision, 1),
 	}
 
 	state.SetPendingApproval(tc)

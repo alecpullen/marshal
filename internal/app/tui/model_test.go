@@ -108,3 +108,99 @@ func TestViewOmitsProviderErrorSectionByDefault(t *testing.T) {
 		t.Fatalf("View() should not contain 'Provider Error' when no error is set:\n%s", view)
 	}
 }
+
+func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	
+	respChan := make(chan session.UserApprovalDecision, 1)
+	tc := &session.PendingToolCall{
+		ID:           "456",
+		Name:         "shell.run",
+		Args:         `{"command":"go test"}`,
+		Command:      "go test",
+		Risk:         "command",
+		Reason:       "run tests",
+		ResponseChan: respChan,
+	}
+	state.SetPendingApproval(tc)
+
+	model := New(state)
+
+	// Check rendering of banner
+	view := model.View()
+	if !strings.Contains(view, "SECURITY APPROVAL REQUIRED") {
+		t.Fatal("View() missing SECURITY APPROVAL REQUIRED banner")
+	}
+	if !strings.Contains(view, "go test") {
+		t.Fatal("View() missing proposed command")
+	}
+
+	// 1. Test Deny Keypress 'd'
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	model = updated.(Model)
+	
+	select {
+	case dec := <-respChan:
+		if dec.Approved {
+			t.Fatal("expected decision to be denied")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for deny response")
+	}
+	if state.PendingApproval() != nil {
+		t.Fatal("expected pending approval to be cleared")
+	}
+
+	// Set up again for Enter key
+	state.SetPendingApproval(tc)
+	model = New(state)
+
+	// 2. Test Approve Keypress 'enter'
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	
+	select {
+	case dec := <-respChan:
+		if !dec.Approved || dec.Edited != "" {
+			t.Fatal("expected decision to be approved and not edited")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for approve response")
+	}
+
+	// Set up again for Edit key
+	state.SetPendingApproval(tc)
+	model = New(state)
+
+	// 3. Test Edit Keypress 'e'
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	model = updated.(Model)
+
+	if !model.editingCommand {
+		t.Fatal("expected model to enter editingCommand mode")
+	}
+	if model.input.Value() != "go test" {
+		t.Fatalf("expected input value to be 'go test', got %q", model.input.Value())
+	}
+
+	// Simulate typing to edit command
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" -v")})
+	model = updated.(Model)
+	if model.input.Value() != "go test -v" {
+		t.Fatalf("expected edited input value to be 'go test -v', got %q", model.input.Value())
+	}
+
+	// Press Enter to confirm edited command
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	select {
+	case dec := <-respChan:
+		if !dec.Approved || dec.Edited != "go test -v" {
+			t.Fatalf("expected decision to be approved with edited command, got: %#v", dec)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for edited response")
+	}
+}
+

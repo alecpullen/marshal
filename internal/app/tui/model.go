@@ -11,8 +11,9 @@ import (
 )
 
 type Model struct {
-	state *session.State
-	input textinput.Model
+	state          *session.State
+	input          textinput.Model
+	editingCommand bool
 }
 
 func New(state *session.State) Model {
@@ -23,8 +24,9 @@ func New(state *session.State) Model {
 	input.Width = 80
 
 	return Model{
-		state: state,
-		input: input,
+		state:          state,
+		input:          input,
+		editingCommand: false,
 	}
 }
 
@@ -33,20 +35,77 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	tc := m.state.PendingApproval()
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+		// Always allow Ctrl+C to quit
+		if msg.Type == tea.KeyCtrlC {
 			m.state.Shutdown()
 			return m, tea.Quit
-		case tea.KeyEnter:
-			value := strings.TrimSpace(m.input.Value())
-			if value == "" {
+		}
+
+		if tc != nil {
+			if m.editingCommand {
+				switch msg.Type {
+				case tea.KeyEsc:
+					m.editingCommand = false
+					m.input.Reset()
+					m.input.Placeholder = "Ask Marshal..."
+					return m, nil
+				case tea.KeyEnter:
+					value := strings.TrimSpace(m.input.Value())
+					if value != "" {
+						tc.ResponseChan <- session.UserApprovalDecision{Approved: true, Edited: value}
+						m.editingCommand = false
+						m.input.Reset()
+						m.input.Placeholder = "Ask Marshal..."
+						m.state.SetPendingApproval(nil)
+					}
+					return m, nil
+				}
+			} else {
+				switch msg.String() {
+				case "enter":
+					tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+					m.state.SetPendingApproval(nil)
+					return m, nil
+				case "d":
+					tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
+					m.state.SetPendingApproval(nil)
+					return m, nil
+				case "a":
+					m.state.AddSessionRule(tc.Command)
+					tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+					m.state.SetPendingApproval(nil)
+					return m, nil
+				case "e":
+					m.editingCommand = true
+					m.input.SetValue(tc.Command)
+					m.input.Placeholder = "Edit command..."
+					m.input.Focus()
+					return m, nil
+				case "esc":
+					m.state.Shutdown()
+					return m, tea.Quit
+				}
+				// Ignore all other key inputs when approval prompt is shown and not editing
 				return m, nil
 			}
-			m.state.AddMessage(session.RoleUser, value)
-			m.input.Reset()
-			return m, nil
+		} else {
+			switch msg.Type {
+			case tea.KeyEsc:
+				m.state.Shutdown()
+				return m, tea.Quit
+			case tea.KeyEnter:
+				value := strings.TrimSpace(m.input.Value())
+				if value == "" {
+					return m, nil
+				}
+				m.state.AddMessage(session.RoleUser, value)
+				m.input.Reset()
+				return m, nil
+			}
 		}
 	}
 
@@ -88,7 +147,27 @@ func (m Model) View() string {
 		fmt.Fprintf(&b, "  %s\n", err.Error())
 	}
 
-	fmt.Fprintf(&b, "\n%s\n", m.input.View())
+	tc := m.state.PendingApproval()
+	if tc != nil {
+		fmt.Fprintf(&b, "\n┌── SECURITY APPROVAL REQUIRED ───────────────────────────────────────────┐\n")
+		fmt.Fprintf(&b, "│ Agent wants to run:                                                     │\n")
+		fmt.Fprintf(&b, "│   %s\n", tc.Command)
+		fmt.Fprintf(&b, "│                                                                         │\n")
+		fmt.Fprintf(&b, "│ Reason:                                                                 │\n")
+		fmt.Fprintf(&b, "│   %s\n", tc.Reason)
+		fmt.Fprintf(&b, "│                                                                         │\n")
+		fmt.Fprintf(&b, "│ Risk Level: %s\n", tc.Risk)
+		fmt.Fprintf(&b, "└─────────────────────────────────────────────────────────────────────────┘\n")
+		if m.editingCommand {
+			fmt.Fprintf(&b, "Edit command and press [Enter] to run, [Esc] to cancel\n")
+		} else {
+			fmt.Fprintf(&b, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always Allow in this Session\n")
+		}
+	}
+
+	if tc == nil || m.editingCommand {
+		fmt.Fprintf(&b, "\n%s\n", m.input.View())
+	}
 
 	return b.String()
 }

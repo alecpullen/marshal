@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/contextpack"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
 )
@@ -69,5 +70,33 @@ func TestBuildCorrectionMessageIncludesErrorText(t *testing.T) {
 	var decoded map[string]any
 	if json.Unmarshal([]byte(msg.Content), &decoded) == nil {
 		t.Fatal("correction message should be plain instructive text, not JSON")
+	}
+}
+
+func TestBuildContextPackMessageReturnsFalseForEmptyPack(t *testing.T) {
+	msg, ok := BuildContextPackMessage(contextpack.Pack{})
+	if ok {
+		t.Fatalf("ok = true, want false")
+	}
+	if msg.Content != "" {
+		t.Fatalf("msg.Content = %q, want empty", msg.Content)
+	}
+}
+
+func TestBuildContextPackMessageRendersPack(t *testing.T) {
+	msg, ok := BuildContextPackMessage(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	})
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if msg.Role != schema.RoleUser {
+		t.Fatalf("Role = %q, want %q", msg.Role, schema.RoleUser)
+	}
+	if !strings.Contains(msg.Content, "Project context pack:") || !strings.Contains(msg.Content, "Project: marshal") {
+		t.Fatalf("context message missing rendered pack:\n%s", msg.Content)
 	}
 }

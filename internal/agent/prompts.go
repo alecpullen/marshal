@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"marshal/internal/contextpack"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
 )
@@ -48,6 +49,14 @@ func BuildPlanningPrompt(goal string) schema.ChatMessage {
 			goal,
 		),
 	}
+}
+
+func BuildContextPackMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
+	rendered := contextpack.Render(pack)
+	if rendered == "" {
+		return schema.ChatMessage{}, false
+	}
+	return schema.ChatMessage{Role: schema.RoleUser, Content: rendered}, true
 }
 
 func BuildToolResultMessage(name string, result registry.ToolResult) schema.ChatMessage {

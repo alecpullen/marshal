@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/contextpack"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
@@ -64,8 +65,9 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 
 	messages := []schema.ChatMessage{
 		BuildSystemPrompt(r.Registry.List()),
-		{Role: schema.RoleUser, Content: goal},
 	}
+	messages = appendContextPackMessage(messages, r.State.ContextPack())
+	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
 	if task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
@@ -75,6 +77,13 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 			return r.fail(task, err)
 		}
 		task.Plan = splitPlanLines(planText)
+		if current := r.State.ContextPack(); !current.IsEmpty() {
+			updatedPack := packWithPlan(current, task.Plan, r.Now)
+			r.State.SetContextPack(updatedPack)
+			messages = []schema.ChatMessage{BuildSystemPrompt(r.Registry.List())}
+			messages = appendContextPackMessage(messages, updatedPack)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
+		}
 		r.State.AddMessage(session.RoleAssistant, "Plan:\n"+planText)
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: "Plan:\n" + planText})
 	}
@@ -114,6 +123,38 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	task.Status = TaskStatusFailed
 	r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.")
 	return ErrMaxIterationsExceeded
+}
+
+func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pack) []schema.ChatMessage {
+	if msg, ok := BuildContextPackMessage(pack); ok {
+		return append(messages, msg)
+	}
+	return messages
+}
+
+func packWithPlan(pack contextpack.Pack, plan []string, now func() time.Time) contextpack.Pack {
+	input := contextpack.BuildInput{
+		Plan:      plan,
+		MaxTokens: pack.TokenUsage.MaxTokens,
+		Now:       now,
+	}
+	for _, section := range pack.Sections {
+		switch section.Kind {
+		case contextpack.SectionRepoCard:
+			input.RepoCard = section.Content
+		case contextpack.SectionFileSnippet:
+			input.FileSnippets = append(input.FileSnippets, contextpack.FileSnippet{
+				Path:    section.Title,
+				Content: section.Content,
+			})
+		case contextpack.SectionToolOutput:
+			input.RecentToolOutput = append(input.RecentToolOutput, contextpack.ToolOutput{
+				ToolName: section.Title,
+				Summary:  section.Content,
+			})
+		}
+	}
+	return contextpack.NewBuilder().Build(input)
 }
 
 func (r *Runner) fail(task *Task, err error) error {

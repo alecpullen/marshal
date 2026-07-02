@@ -12,6 +12,7 @@ type Config struct {
 	Project   ProjectConfig             `toml:"project"`
 	Commands  CommandsConfig            `toml:"commands"`
 	Profile   ProfileConfig             `toml:"profile"`
+	Agent     AgentConfig               `toml:"agent"`
 	Privacy   PrivacyConfig             `toml:"privacy"`
 	Indexing  IndexingConfig            `toml:"indexing"`
 	Providers map[string]ProviderConfig `toml:"providers"`
@@ -57,6 +58,16 @@ type ProfileConfig struct {
 	Default string `toml:"default"`
 }
 
+// AgentConfig names which configured provider and model the agent loop
+// (Milestone H) uses. Both fields are intentionally blank in Default():
+// Marshal is local-first with no built-in provider assumptions (see
+// Providers' Default() comment) — the app runs with the agent loop disabled
+// until a user configures both a [providers.<name>] entry and this section.
+type AgentConfig struct {
+	Provider string `toml:"provider"`
+	Model    string `toml:"model"`
+}
+
 type PrivacyConfig struct {
 	RemoteProvidersAllowed bool `toml:"remote_providers_allowed"`
 	RedactSecrets          bool `toml:"redact_secrets"`
@@ -97,6 +108,10 @@ type configFile struct {
 	Profile *struct {
 		Default *string `toml:"default"`
 	} `toml:"profile"`
+	Agent *struct {
+		Provider *string `toml:"provider"`
+		Model    *string `toml:"model"`
+	} `toml:"agent"`
 	Privacy *struct {
 		RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
 		RedactSecrets          *bool `toml:"redact_secrets"`
@@ -245,6 +260,14 @@ func merge(cfg *Config, file configFile) {
 	}
 	if file.Profile != nil && file.Profile.Default != nil {
 		cfg.Profile.Default = *file.Profile.Default
+	}
+	if file.Agent != nil {
+		if file.Agent.Provider != nil {
+			cfg.Agent.Provider = *file.Agent.Provider
+		}
+		if file.Agent.Model != nil {
+			cfg.Agent.Model = *file.Agent.Model
+		}
 	}
 	if file.Privacy != nil {
 		if file.Privacy.RemoteProvidersAllowed != nil {

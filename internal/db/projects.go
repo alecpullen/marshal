@@ -1,6 +1,8 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -11,6 +13,29 @@ type Project struct {
 	Name      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// GetProject returns the project row for the given ID.
+func (db *DB) GetProject(id int64) (Project, error) {
+	var p Project
+	var createdAt, updatedAt string
+	row := db.queryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE id = ?`, id)
+	if err := row.Scan(&p.ID, &p.RootPath, &p.Name, &createdAt, &updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Project{}, fmt.Errorf("project not found: %d", id)
+		}
+		return Project{}, fmt.Errorf("load project: %w", err)
+	}
+	var parseErr error
+	p.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
+	if parseErr != nil {
+		return Project{}, fmt.Errorf("parse created_at: %w", parseErr)
+	}
+	p.UpdatedAt, parseErr = time.Parse(time.RFC3339, updatedAt)
+	if parseErr != nil {
+		return Project{}, fmt.Errorf("parse updated_at: %w", parseErr)
+	}
+	return p, nil
 }
 
 // GetOrCreateProject returns the project ID for rootPath, creating the row

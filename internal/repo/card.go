@@ -25,8 +25,6 @@ func RenderRepoCard(projectName string, files []db.FileIndex) string {
 		parts := strings.Split(filepath.ToSlash(f.Path), "/")
 		if len(parts) > 1 {
 			rootDirs[parts[0]] = true
-		} else {
-			rootDirs["."] = true
 		}
 	}
 

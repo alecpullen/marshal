@@ -66,3 +66,30 @@ All passed.
 Created commit:
 
 - `feat(agent): inject context packs into prompts`
+
+## Review Fix: Preserve Stored Context-Pack Metadata
+
+Reviewer finding: the first implementation rebuilt the stored pack through `contextpack.BuildInput`, which narrowed upstream data and lost section metadata such as file-snippet `Source` ranges.
+
+Fix applied:
+
+- changed `internal/agent/runner.go` so plan refresh now clones the stored pack and updates only `SectionPlan`
+- preserved all non-plan sections exactly, including `Kind`, `Title`, `Content`, `Source`, `Priority`, and `EstimatedTokens`
+- preserved unknown and future section kinds by carrying them through untouched
+- recomputed `TokenUsage.EstimatedTokens` from the final section list without dropping sections
+
+Regression test added:
+
+- `TestRunPreservesContextPackSectionMetadataWhenAddingPlan`
+
+This test verifies a stored file-snippet section with `Source: "internal/app/app.go:1-3"` still has that exact `Source` after `Run` adds the current plan.
+
+Review-fix test results:
+
+```bash
+go test ./internal/agent -run 'TestRunAddsPlanToContextPackForActionCalls|TestRunPreservesContextPackSectionMetadataWhenAddingPlan' -v
+go test ./internal/agent -v
+go test ./...
+```
+
+All passed.

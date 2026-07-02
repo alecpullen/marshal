@@ -133,28 +133,46 @@ func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pa
 }
 
 func packWithPlan(pack contextpack.Pack, plan []string, now func() time.Time) contextpack.Pack {
-	input := contextpack.BuildInput{
-		Plan:      plan,
-		MaxTokens: pack.TokenUsage.MaxTokens,
-		Now:       now,
+	updated := pack.Clone()
+	planSection := contextpack.Section{
+		Kind:            contextpack.SectionPlan,
+		Title:           "Current Plan",
+		Priority:        20,
+		Content:         strings.Join(plan, "\n"),
+		EstimatedTokens: contextpack.EstimateTokens(strings.Join(plan, "\n")),
 	}
-	for _, section := range pack.Sections {
-		switch section.Kind {
-		case contextpack.SectionRepoCard:
-			input.RepoCard = section.Content
-		case contextpack.SectionFileSnippet:
-			input.FileSnippets = append(input.FileSnippets, contextpack.FileSnippet{
-				Path:    section.Title,
-				Content: section.Content,
-			})
-		case contextpack.SectionToolOutput:
-			input.RecentToolOutput = append(input.RecentToolOutput, contextpack.ToolOutput{
-				ToolName: section.Title,
-				Summary:  section.Content,
-			})
+
+	sections := make([]contextpack.Section, 0, len(updated.Sections)+1)
+	replacedPlan := false
+	for _, section := range updated.Sections {
+		if section.Kind == contextpack.SectionPlan {
+			if !replacedPlan && len(plan) > 0 {
+				sections = append(sections, planSection)
+				replacedPlan = true
+			}
+			continue
 		}
+		sections = append(sections, section)
 	}
-	return contextpack.NewBuilder().Build(input)
+	if !replacedPlan && len(plan) > 0 {
+		sections = append(sections, planSection)
+	}
+
+	updated.Sections = sections
+	if updated.TokenUsage.MaxTokens <= 0 {
+		updated.TokenUsage.MaxTokens = contextpack.DefaultMaxTokens
+	}
+	updated.TokenUsage.EstimatedTokens = 0
+	for i := range updated.Sections {
+		if updated.Sections[i].EstimatedTokens == 0 && updated.Sections[i].Content != "" {
+			updated.Sections[i].EstimatedTokens = contextpack.EstimateTokens(updated.Sections[i].Content)
+		}
+		updated.TokenUsage.EstimatedTokens += updated.Sections[i].EstimatedTokens
+	}
+	if now != nil {
+		updated.GeneratedAt = now().UTC()
+	}
+	return updated
 }
 
 func (r *Runner) fail(task *Task, err error) error {

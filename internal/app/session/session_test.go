@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
@@ -42,6 +43,30 @@ func TestMessagesReturnsCopy(t *testing.T) {
 	got := state.Messages()[0].Content
 	if got != "hello" {
 		t.Fatalf("stored message = %q, want hello", got)
+	}
+}
+
+func TestStateContextPackStoresCopies(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	pack := contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal"},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	}
+
+	state.SetContextPack(pack)
+	pack.Sections[0].Content = "mutated before read"
+
+	got := state.ContextPack()
+	if got.Sections[0].Content != "Project: marshal" {
+		t.Fatalf("ContextPack() = %#v, want stored copy", got)
+	}
+
+	got.Sections[0].Content = "mutated after read"
+	gotAgain := state.ContextPack()
+	if gotAgain.Sections[0].Content != "Project: marshal" {
+		t.Fatalf("ContextPack() returned mutable internal slice: %#v", gotAgain)
 	}
 }
 

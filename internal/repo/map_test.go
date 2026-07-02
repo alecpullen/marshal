@@ -21,3 +21,17 @@ func TestRenderDirectoryMap(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderDirectoryMapTruncates(t *testing.T) {
+	files := []db.FileIndex{
+		{Path: "a.go", Language: "go"},
+		{Path: "b.go", Language: "go"},
+		{Path: "c.go", Language: "go"},
+		{Path: "d.go", Language: "go"},
+		{Path: "e.go", Language: "go"},
+	}
+	out := RenderDirectoryMap(files, 2)
+	if !strings.Contains(out, "... (3 more files)") {
+		t.Errorf("expected truncation marker in map:\n%s", out)
+	}
+}

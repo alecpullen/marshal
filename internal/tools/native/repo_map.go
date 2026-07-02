@@ -9,6 +9,8 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+const repoMapMaxFiles = 200
+
 func (t *toolSet) repoMapTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.map",
@@ -30,7 +32,7 @@ func (t *toolSet) repoMapTool() registry.Tool {
 				Content: "Run repo.index to build the file index first.",
 			}, nil
 		}
-		content := repo.RenderDirectoryMap(files, 200)
+		content := repo.RenderDirectoryMap(files, repoMapMaxFiles)
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("Directory map with %d files", len(files)),
 			Content: content,

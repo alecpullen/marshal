@@ -41,12 +41,12 @@
 
 ## Milestone E: Basic native tools
 
-- [ ] `file.read`
-- [ ] `repo.search`
-- [ ] `git.status`
-- [ ] `git.diff`
-- [ ] `shell.run`
-- [ ] `test.run`
+- [x] `file.read`
+- [x] `repo.search`
+- [x] `git.status`
+- [x] `git.diff`
+- [x] `shell.run`
+- [x] `test.run`
 
 ## Milestone F: Approval system
 

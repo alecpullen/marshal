@@ -203,9 +203,37 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 
 	logger := logging.New(stderr, slog.LevelInfo)
 	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
+	var runner *agent.Runner
+	runner, err = buildAgentRunner(ctx, cfg, state, database, projectID)
 	var tuiOpts []tui.Option
-	if runner, err := buildAgentRunner(ctx, cfg, state, database, projectID); err == nil {
+	if err == nil {
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
+		configReloader := func(newCfg config.Config) error {
+			state.Config = newCfg
+			if runner == nil {
+				return nil
+			}
+			resolver := newRoutedProviderResolver(newCfg)
+			route, p, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
+			if err != nil {
+				return err
+			}
+			runner.Provider = p
+			runner.Model = route.Preset.Model
+			runner.RouteResolver = resolver
+			state.SetActiveRoute(session.RouteInfo{
+				Role:      route.Role,
+				Profile:   route.Profile,
+				Preset:    route.Preset.Name,
+				Provider:  route.Preset.Provider,
+				Model:     route.Preset.Model,
+				LocalOnly: route.Preset.LocalOnly,
+				Legacy:    route.Legacy,
+				Active:    true,
+			})
+			return nil
+		}
+		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	} else {
 		state.SetProviderError(err)
 	}

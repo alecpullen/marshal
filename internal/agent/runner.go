@@ -68,7 +68,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 
 	task := NewTask(goal, r.Now())
 	task.Class = Classify(goal)
-	route := r.resolveRoute(task)
+	turnProvider, turnModel, route := r.resolveRoute(task)
 
 	messages := []schema.ChatMessage{
 		BuildSystemPrompt(r.Registry.List()),
@@ -79,7 +79,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	if task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
-		planText, err := r.chatWithRetry(ctx, planMessages)
+		planText, err := r.chatWithRetry(ctx, turnProvider, turnModel, planMessages)
 		if err != nil {
 			return r.fail(task, err)
 		}
@@ -101,7 +101,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 
 	task.Status = TaskStatusExecuting
 	for iteration := 0; iteration < r.MaxToolIterations; iteration++ {
-		raw, err := r.chatWithRetry(ctx, messages)
+		raw, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
 		if err != nil {
 			return r.fail(task, err)
 		}
@@ -136,20 +136,24 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	return ErrMaxIterationsExceeded
 }
 
-func (r *Runner) resolveRoute(task *Task) routing.Route {
+func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {
+	turnProvider := r.Provider
+	turnModel := r.Model
 	if r.RouteResolver == nil {
-		return routing.Route{}
+		return turnProvider, turnModel, routing.Route{}
 	}
 
 	route, resolvedProvider, err := r.RouteResolver.Resolve(routing.TaskProfile{Class: string(task.Class)})
 	if err != nil {
 		r.State.SetProviderError(err)
-		return routing.Route{}
+		return turnProvider, turnModel, routing.Route{}
 	}
 	if resolvedProvider != nil {
-		r.Provider = resolvedProvider
+		turnProvider = resolvedProvider
 	}
-	r.Model = route.Preset.Model
+	if route.Preset.Model != "" {
+		turnModel = route.Preset.Model
+	}
 	r.State.SetActiveRoute(session.RouteInfo{
 		Role:      route.Role,
 		Profile:   route.Profile,
@@ -167,7 +171,7 @@ func (r *Runner) resolveRoute(task *Task) routing.Route {
 			r.State.SetContextPack(pack)
 		}
 	}
-	return route
+	return turnProvider, turnModel, route
 }
 
 func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pack) []schema.ChatMessage {
@@ -190,11 +194,11 @@ func (r *Runner) fail(task *Task, err error) error {
 // model *output* is handled separately in Run via BuildCorrectionMessage; it
 // is not retried here because it is not a chatOnce failure — chatOnce
 // succeeded, the text just didn't parse as an action.
-func (r *Runner) chatWithRetry(ctx context.Context, messages []schema.ChatMessage) (string, error) {
+func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (string, error) {
 	attempts := r.MaxRetries + 1
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		text, err := r.chatOnce(ctx, messages)
+		text, err := r.chatOnce(ctx, p, model, messages)
 		if err == nil {
 			return text, nil
 		}
@@ -203,9 +207,9 @@ func (r *Runner) chatWithRetry(ctx context.Context, messages []schema.ChatMessag
 	return "", lastErr
 }
 
-func (r *Runner) chatOnce(ctx context.Context, messages []schema.ChatMessage) (string, error) {
-	events, err := r.Provider.Chat(ctx, schema.ChatRequest{
-		Model:    r.Model,
+func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (string, error) {
+	events, err := p.Chat(ctx, schema.ChatRequest{
+		Model:    model,
 		Messages: messages,
 		Stream:   true,
 	})

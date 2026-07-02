@@ -1,7 +1,11 @@
 package repo
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 
 	"marshal/internal/db"
@@ -78,13 +82,37 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		if s.isIgnored(rel) {
 			return nil
 		}
-		files = append(files, db.FileIndex{Path: rel})
+		fullPath := path
+		hash, size, hashErr := hashFile(fullPath)
+		if hashErr != nil {
+			return nil
+		}
+		files = append(files, db.FileIndex{
+			Path:      rel,
+			Language:  DetectLanguage(rel),
+			Hash:      hash,
+			SizeBytes: size,
+		})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return files, nil
+}
+
+func hashFile(path string) (string, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	size, err := io.Copy(h, f)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), size, nil
 }
 
 func shouldSkipDir(rel string) bool {

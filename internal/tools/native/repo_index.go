@@ -45,6 +45,7 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 		}
 
 		var symbols []db.Symbol
+		var warnings []string
 		for _, f := range files {
 			if f.Language != "go" {
 				continue
@@ -52,11 +53,13 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			content, readErr := os.ReadFile(filepath.Join(t.root, f.Path))
 			if readErr != nil {
 				// Unreadable file: keep its file-index entry, skip symbols.
+				warnings = append(warnings, fmt.Sprintf("%s: read error", f.Path))
 				continue
 			}
 			fileSymbols, extractErr := repo.ExtractSymbols(f.Path, content)
 			if extractErr != nil {
 				// Unparseable file: keep its file-index entry, skip symbols.
+				warnings = append(warnings, fmt.Sprintf("%s: parse error", f.Path))
 				continue
 			}
 			symbols = append(symbols, fileSymbols...)
@@ -84,6 +87,13 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			b.WriteString(fmt.Sprintf("  %s: %d\n", lang, langCounts[lang]))
 		}
 		fmt.Fprintf(&b, "\nSymbols: %d\n", len(symbols))
+		if len(warnings) > 0 {
+			sort.Strings(warnings)
+			b.WriteString("\nWarnings:\n")
+			for _, w := range warnings {
+				b.WriteString(fmt.Sprintf("  %s\n", w))
+			}
+		}
 
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("Indexed %d files, %d symbols", len(files), len(symbols)),

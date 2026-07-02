@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"marshal/internal/repo"
@@ -28,6 +30,8 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("scan repo: %w", err)
 		}
 
+		// The tool layer owns LastIndexedAt: set it just before persisting so
+		// callers know when this index snapshot was captured.
 		now := time.Now().UTC()
 		for i := range files {
 			files[i].LastIndexedAt = now
@@ -43,13 +47,21 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			}
 		}
 
-		content := "Languages:\n"
-		for lang, count := range langCounts {
-			content += fmt.Sprintf("  %s: %d\n", lang, count)
+		langs := make([]string, 0, len(langCounts))
+		for lang := range langCounts {
+			langs = append(langs, lang)
 		}
+		sort.Strings(langs)
+
+		var b strings.Builder
+		b.WriteString("Languages:\n")
+		for _, lang := range langs {
+			b.WriteString(fmt.Sprintf("  %s: %d\n", lang, langCounts[lang]))
+		}
+
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("Indexed %d files", len(files)),
-			Content: content,
+			Content: b.String(),
 		}, nil
 	}
 	return tool

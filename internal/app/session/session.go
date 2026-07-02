@@ -50,6 +50,12 @@ type BackupFile struct {
 	Mode    os.FileMode
 }
 
+type Persistence struct {
+	DB        *db.DB
+	SessionID string
+	Logger    *slog.Logger
+}
+
 type State struct {
 	Config     config.Config
 	WorkingDir string
@@ -70,18 +76,22 @@ type State struct {
 	lastBackup      []BackupFile
 }
 
-func New(cfg config.Config, workingDir string, now time.Time, database *db.DB, sessionID string, logger *slog.Logger) *State {
+func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &State{
 		Config:     cfg,
 		WorkingDir: workingDir,
 		StartedAt:  now,
-		db:         database,
-		sessionID:  sessionID,
-		logger:     logger,
+		db:         p.DB,
+		sessionID:  p.SessionID,
+		logger:     p.Logger,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
+}
+
+func (s *State) persistenceEnabled() bool {
+	return s.db != nil && s.sessionID != "" && s.logger != nil
 }
 
 func (s *State) AddMessage(role Role, content string) {
@@ -95,7 +105,7 @@ func (s *State) AddMessage(role Role, content string) {
 	s.messages = append(s.messages, msg)
 	s.mu.Unlock()
 
-	if s.db != nil && s.sessionID != "" && s.logger != nil {
+	if s.persistenceEnabled() {
 		// Best-effort persistence; do not fail the in-memory transcript.
 		if err := s.db.SaveMessage(s.sessionID, string(role), content, msg.CreatedAt); err != nil {
 			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
@@ -172,7 +182,7 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 	s.auditLog = append(s.auditLog, event)
 	s.mu.Unlock()
 
-	if s.db != nil && s.sessionID != "" && s.logger != nil {
+	if s.persistenceEnabled() {
 		if err := s.db.SaveToolCall(s.sessionID, event); err != nil {
 			s.logger.Error("save tool call failed", "error", err, "session_id", s.sessionID, "tool", event.ToolName)
 		}

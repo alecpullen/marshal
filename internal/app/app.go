@@ -81,7 +81,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	}
 
 	logger := logging.New(stderr, slog.LevelInfo)
-	state := session.New(cfg, workingDir, runOpts.now(), nil, "", logger)
+	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{Logger: logger})
 	done := make(chan struct{})
 	defer close(done)
 	defer state.Shutdown()

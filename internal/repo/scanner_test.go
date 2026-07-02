@@ -165,3 +165,32 @@ func TestScannerIncludesGitignoredFilesWhenConfigured(t *testing.T) {
 		t.Fatalf("expected .gitignore itself to be skipped, got %+v", files)
 	}
 }
+
+func TestScannerComputesHashesAndLanguages(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	scanner := NewScanner(Config{Root: dir})
+	files, err := scanner.Scan()
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	f := files[0]
+	if f.Path != "main.go" {
+		t.Fatalf("expected main.go, got %s", f.Path)
+	}
+	if f.Language != "go" {
+		t.Fatalf("expected language go, got %s", f.Language)
+	}
+	if f.Hash == "" {
+		t.Fatal("expected non-empty hash")
+	}
+	if f.SizeBytes != 13 {
+		t.Fatalf("expected size 13, got %d", f.SizeBytes)
+	}
+}

@@ -1,8 +1,12 @@
 package repo
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 
 	"marshal/internal/db"
@@ -93,13 +97,36 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		if skip {
 			return nil
 		}
-		files = append(files, db.FileIndex{Path: rel})
+		hash, size, hashErr := hashFile(path)
+		if hashErr != nil {
+			return fmt.Errorf("hash %s: %w", rel, hashErr)
+		}
+		files = append(files, db.FileIndex{
+			Path:      rel,
+			Language:  DetectLanguage(rel),
+			Hash:      hash,
+			SizeBytes: size,
+		})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return files, nil
+}
+
+func hashFile(path string) (string, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	size, err := io.Copy(h, f)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), size, nil
 }
 
 // shouldSkipDir reports whether rel is a known tooling or output directory

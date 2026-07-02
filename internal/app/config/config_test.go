@@ -251,6 +251,37 @@ api_key_env = "OPENROUTER_API_KEY"
 	}
 }
 
+func TestLoadParsesAgentSection(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	dir := filepath.Join(home, ".config", "marshal")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := "[agent]\nprovider = \"ollama\"\nmodel = \"qwen2.5-coder:14b\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Agent.Provider != "ollama" {
+		t.Fatalf("Agent.Provider = %q, want %q", cfg.Agent.Provider, "ollama")
+	}
+	if cfg.Agent.Model != "qwen2.5-coder:14b" {
+		t.Fatalf("Agent.Model = %q, want %q", cfg.Agent.Model, "qwen2.5-coder:14b")
+	}
+}
+
+func TestDefaultLeavesAgentProviderEmpty(t *testing.T) {
+	cfg := Default()
+	if cfg.Agent.Provider != "" || cfg.Agent.Model != "" {
+		t.Fatalf("Default().Agent = %#v, want zero value (local-first: no assumed provider)", cfg.Agent)
+	}
+}
+
 func writeFile(t *testing.T, path string, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -311,4 +342,3 @@ patterns = ["rm -rf"]
 		t.Errorf("Deny.Patterns = %#v", s.Deny.Patterns)
 	}
 }
-

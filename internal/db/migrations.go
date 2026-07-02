@@ -52,4 +52,17 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     error TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS symbols (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    receiver TEXT,
+    signature TEXT NOT NULL,
+    line_start INTEGER NOT NULL,
+    line_end INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_symbols_project_name ON symbols(project_id, name);
 `

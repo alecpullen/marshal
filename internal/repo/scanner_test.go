@@ -115,11 +115,7 @@ func TestScannerIgnoresDirectoryPattern(t *testing.T) {
 	if len(files) != 1 || files[0].Path != "main.go" {
 		t.Fatalf("expected only main.go, got %+v", files)
 	}
-	for _, f := range files {
-		if f.Path == "ignored_dir/file.txt" || f.Path == "ignored_dir" {
-			t.Fatalf("expected ignored_dir to be excluded, got %+v", files)
-		}
-	}
+	// ignored_dir was skipped as a directory, so its contents are not returned.
 }
 
 func TestScannerRespectsGitignore(t *testing.T) {
@@ -141,5 +137,37 @@ func TestScannerRespectsGitignore(t *testing.T) {
 	}
 	if len(files) != 1 || files[0].Path != "main.go" {
 		t.Fatalf("expected only main.go, got %+v", files)
+	}
+}
+
+func TestScannerIncludesGitignoredFilesWhenConfigured(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("secret.txt\n"), 0644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("secret"), 0644); err != nil {
+		t.Fatalf("write secret.txt: %v", err)
+	}
+
+	scanner := NewScanner(Config{Root: dir, SkipGitignore: true})
+	files, err := scanner.Scan()
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+	paths := map[string]bool{}
+	for _, f := range files {
+		paths[f.Path] = true
+	}
+	if !paths["main.go"] || !paths["secret.txt"] {
+		t.Fatalf("expected main.go and secret.txt, got %+v", files)
+	}
+	if paths[".gitignore"] {
+		t.Fatalf("expected .gitignore itself to be skipped, got %+v", files)
 	}
 }

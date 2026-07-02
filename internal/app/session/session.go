@@ -38,6 +38,11 @@ type PendingToolCall struct {
 	ResponseChan chan UserApprovalDecision
 }
 
+type BackupFile struct {
+	Path    string
+	Content string
+}
+
 type State struct {
 	Config     config.Config
 	WorkingDir string
@@ -52,6 +57,7 @@ type State struct {
 	pendingApproval *PendingToolCall
 	sessionRules    []string
 	auditLog        []registry.AuditEvent
+	lastBackup      []BackupFile
 }
 
 func New(cfg config.Config, workingDir string, now time.Time) *State {
@@ -150,3 +156,30 @@ func (s *State) AuditLog() []registry.AuditEvent {
 	copy(log, s.auditLog)
 	return log
 }
+
+func (s *State) StoreBackup(backups []BackupFile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastBackup = backups
+}
+
+func (s *State) Backup() []BackupFile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	backups := make([]BackupFile, len(s.lastBackup))
+	copy(backups, s.lastBackup)
+	return backups
+}
+
+func (s *State) ClearBackup() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastBackup = nil
+}
+
+func (s *State) HasBackup() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.lastBackup) > 0
+}
+

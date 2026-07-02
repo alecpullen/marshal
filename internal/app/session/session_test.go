@@ -129,3 +129,31 @@ func TestStateAuditLog(t *testing.T) {
 	}
 }
 
+func TestStateBackups(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0))
+
+	if state.HasBackup() {
+		t.Fatal("initially HasBackup() should be false")
+	}
+
+	backups := []BackupFile{
+		{Path: "test.txt", Content: "original content"},
+	}
+	state.StoreBackup(backups)
+
+	if !state.HasBackup() {
+		t.Fatal("expected HasBackup() to be true")
+	}
+
+	got := state.Backup()
+	if len(got) != 1 || got[0].Content != "original content" {
+		t.Fatalf("unexpected backup: %#v", got)
+	}
+
+	state.ClearBackup()
+	if state.HasBackup() {
+		t.Fatal("expected HasBackup() to be false after clear")
+	}
+}
+
+

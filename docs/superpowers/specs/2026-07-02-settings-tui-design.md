@@ -41,6 +41,7 @@ Add a new sub-package `internal/app/tui/settings` that owns the settings form an
 ```text
 internal/app/tui
   model.go          -- adds settingsOpen flag, routes messages when open
+  option.go         -- adds WithProviderBuilder option for runtime rebuild
 internal/app/tui/settings
   model.go          -- settings Bubble Tea model, field navigation, save/cancel
   field.go          -- simple field abstractions (string, bool, select)
@@ -57,6 +58,16 @@ internal/app/config
 ```
 
 This separation keeps the main TUI model from growing into a settings form manager and makes the settings model independently testable.
+
+### Provider rebuild hook
+
+The main TUI is constructed with an optional `ProviderBuilder` callback:
+
+```go
+type ProviderBuilder func(cfg config.Config) (provider.Provider, error)
+```
+
+When settings are saved, the main model calls this callback with the reloaded config. On success it replaces the runner's provider; on failure it records a provider error and leaves the settings overlay open so the user can correct the configuration. If no builder is provided, settings are still saved but the active provider remains unchanged until Marshal is restarted.
 
 ## Components
 
@@ -90,7 +101,7 @@ default = "local_balanced"
 provider = "ollama"
 model = "qwen2.5-coder:14b"
 
-[models.presets.active]
+[models.presets.coder]
 provider = "ollama"
 model = "qwen2.5-coder:14b"
 local_only = true
@@ -98,6 +109,8 @@ local_only = true
 [privacy]
 remote_providers_allowed = false
 ```
+
+The preset section that is edited is the one currently mapped to the default profile's `implementer` role. If the default profile does not define an `implementer` role, the TUI falls back to the legacy `[agent]` provider/model fields and does not show or edit a preset.
 
 The function preserves the existing file only if it already exists; otherwise it creates `.marshal/config.toml`. It does not read or merge global config — the caller reloads via `config.Load` after writing.
 
@@ -112,7 +125,7 @@ The function preserves the existing file only if it already exists; otherwise it
    - On failure it sets the footer error and stays open.
 5. Main model receives `settingsSavedMsg`:
    - Updates `m.state.Config`.
-   - Rebuilds the active route/provider if provider/model/profile changed.
+   - If a `ProviderBuilder` was configured, calls it with the new config and replaces the runner's provider on success. On failure it records a provider error and keeps the overlay open.
    - Sets `settingsOpen = false`.
 6. User presses `Esc`:
    - Settings model returns `settingsCancelledMsg`.

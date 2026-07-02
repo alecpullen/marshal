@@ -1,12 +1,12 @@
 | Task | Status | Details |
 | --- | --- | --- |
-| Task 1: Task object and task classification | completed | Create task.go, classify.go, and their tests |
-| Task 2: JSON action protocol parser | completed | Create protocol.go and protocol_test.go |
-| Task 3: Prompt builders | completed | Create prompts.go and prompts_test.go |
-| Task 4: Patch preview diff helper | completed | Create patch_preview.go and patch_preview_test.go |
-| Task 5: Policy engine session-rule refresh | completed | Implement SetSessionRules in policy.go |
-| Task 6: Agent config fields | completed | Parse [agent] TOML section in config.go |
-| Task 7: Runner orchestrator | completed | Create runner.go and runner_test.go |
-| Task 8: App wiring | completed | Wire agent runner in app.go |
-| Task 9: TUI async integration | completed | Update TUI model to drive AgentRunner asynchronously |
-| Task 10: Final verification and checklist update | completed | Update checklist and verify entire repo compiles and tests pass |
+| Task 1: Add SQLite Driver to go.mod | completed | Add modernc.org/sqlite dependency to go.mod and go.sum |
+| Task 2: Create DB package and connection lifecycle | completed | Create db.go, db_test.go, implement Open and Close |
+| Task 3: Database Migrations | completed | Implement Migrate() running core schema tables SQL |
+| Task 4: Project Storage Methods | completed | Implement GetOrCreateProject persistence |
+| Task 5: File Index Metadata Storage | completed | Implement SaveFileIndex and GetFileIndex persistence |
+| Task 6: Session and Message Persistence | completed | Implement session creation and message save/get |
+| Task 7: Tool Call Audit Persistence | completed | Implement tool call audit event persistence |
+| Task 8: Integrate DB Persistence into session.State | completed | Update AddMessage/LogToolCall to save to SQLite |
+| Task 9: App Wiring and Database Lifecycle | completed | Wire SQLite database, migrations, and session in app.go |
+| Task 10: Final Verification and MVP Checklist | completed | Verify entire codebase compiles and checks off checklist |

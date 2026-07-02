@@ -8,19 +8,29 @@ import (
 )
 
 type Config struct {
-	Root    string
-	Ignore  []string
+	Root   string
+	Ignore []string
 	// IncludeGitignore is intentionally declared here and will be wired to
 	// .gitignore parsing in Task 2.
 	IncludeGitignore bool
 }
 
 type Scanner struct {
-	config Config
+	config    Config
+	gitignore *Gitignore
 }
 
 func NewScanner(config Config) *Scanner {
-	return &Scanner{config: config}
+	var g *Gitignore
+	if !config.IncludeGitignore {
+		root := config.Root
+		if root == "" {
+			root = "."
+		}
+		loaded, _ := LoadGitignore(filepath.Join(root, ".gitignore"))
+		g = loaded
+	}
+	return &Scanner{config: config, gitignore: g}
 }
 
 func (s *Scanner) Scan() ([]db.FileIndex, error) {
@@ -44,6 +54,12 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		if rel == "." {
 			return nil
 		}
+		if s.gitignore != nil && s.gitignore.Match(rel, entry.IsDir()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if entry.IsDir() {
 			if shouldSkipDir(rel) {
 				return fs.SkipDir
@@ -51,6 +67,9 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 			return nil
 		}
 		if !entry.Type().IsRegular() {
+			return nil
+		}
+		if filepath.Base(rel) == ".gitignore" {
 			return nil
 		}
 		if s.isIgnored(rel) {

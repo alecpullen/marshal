@@ -10,6 +10,8 @@ var (
 	ErrPresetNotFound        = errors.New("routing: preset not found")
 	ErrRemoteProviderBlocked = errors.New("routing: remote provider blocked")
 	ErrNoRoute               = errors.New("routing: no route available")
+
+	errRoleNotConfigured = errors.New("routing: role not configured")
 )
 
 type StaticRouter struct {
@@ -26,9 +28,16 @@ func (r *StaticRouter) Resolve(task TaskProfile) (Route, error) {
 	if err == nil {
 		return route, nil
 	}
-	if role != RoleImplementer {
-		if fallback, fallbackErr := r.resolveProfileRole(RoleImplementer); fallbackErr == nil {
+	if !isNoConfiguredRoute(err) {
+		return Route{}, err
+	}
+	if role != RoleImplementer && errors.Is(err, errRoleNotConfigured) {
+		fallback, fallbackErr := r.resolveProfileRole(RoleImplementer)
+		if fallbackErr == nil {
 			return fallback, nil
+		}
+		if !isNoConfiguredRoute(fallbackErr) {
+			return Route{}, fallbackErr
 		}
 	}
 	if legacy, ok := r.legacyRoute(role); ok {
@@ -55,7 +64,7 @@ func (r *StaticRouter) resolveProfileRole(role AgentRole) (Route, error) {
 	}
 	presetName, ok := profile.Roles[role]
 	if !ok || presetName == "" {
-		return Route{}, fmt.Errorf("%w: %s role %s", ErrPresetNotFound, profile.Name, role)
+		return Route{}, fmt.Errorf("%w: %s role %s", errRoleNotConfigured, profile.Name, role)
 	}
 	preset, ok := r.config.Presets[presetName]
 	if !ok {
@@ -73,6 +82,10 @@ func (r *StaticRouter) resolveProfileRole(role AgentRole) (Route, error) {
 		Preset:        preset,
 		ContextBudget: r.config.ContextBudgets[role],
 	}, nil
+}
+
+func isNoConfiguredRoute(err error) bool {
+	return errors.Is(err, ErrProfileNotFound) || errors.Is(err, errRoleNotConfigured)
 }
 
 func (r *StaticRouter) legacyRoute(role AgentRole) (Route, bool) {

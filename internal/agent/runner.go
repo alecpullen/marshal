@@ -146,6 +146,7 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 	route, resolvedProvider, err := r.RouteResolver.Resolve(routing.TaskProfile{Class: string(task.Class)})
 	if err != nil {
 		r.State.SetProviderError(err)
+		r.State.SetActiveRoute(session.RouteInfo{})
 		return turnProvider, turnModel, routing.Route{}
 	}
 	if resolvedProvider != nil {

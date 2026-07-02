@@ -618,4 +618,7 @@ func TestRunFallsBackToOriginalProviderAndModelAfterResolverError(t *testing.T) 
 	if got := state.ProviderError(); !errors.Is(got, resolverErr) {
 		t.Fatalf("ProviderError = %v, want %v", got, resolverErr)
 	}
+	if route := state.ActiveRoute(); route.Active {
+		t.Fatalf("ActiveRoute = %#v, want inactive after resolver error fallback", route)
+	}
 }

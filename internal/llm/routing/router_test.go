@@ -99,6 +99,52 @@ func TestResolveFallsBackToImplementerForMissingRole(t *testing.T) {
 	}
 }
 
+func TestResolveQuestionMissingRepoScoutPresetDoesNotFallBackToImplementer(t *testing.T) {
+	router := NewStaticRouter(Config{
+		DefaultProfile: "local_balanced",
+		Presets: map[string]ModelPreset{
+			"coder": {Name: "coder", Provider: "ollama", Model: "coder", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{
+			"local_balanced": {
+				Name: "local_balanced",
+				Roles: map[AgentRole]string{
+					RoleRepoScout:   "missing",
+					RoleImplementer: "coder",
+				},
+			},
+		},
+	})
+	_, err := router.Resolve(TaskProfile{Class: "question"})
+	if !errors.Is(err, ErrPresetNotFound) {
+		t.Fatalf("err = %v, want ErrPresetNotFound", err)
+	}
+}
+
+func TestResolveQuestionRemoteBlockedDoesNotFallBackToImplementer(t *testing.T) {
+	router := NewStaticRouter(Config{
+		DefaultProfile: "local_balanced",
+		RemoteAllowed:  false,
+		Presets: map[string]ModelPreset{
+			"remote": {Name: "remote", Provider: "openrouter", Model: "remote-model", LocalOnly: false},
+			"coder":  {Name: "coder", Provider: "ollama", Model: "coder", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{
+			"local_balanced": {
+				Name: "local_balanced",
+				Roles: map[AgentRole]string{
+					RoleRepoScout:   "remote",
+					RoleImplementer: "coder",
+				},
+			},
+		},
+	})
+	_, err := router.Resolve(TaskProfile{Class: "question"})
+	if !errors.Is(err, ErrRemoteProviderBlocked) {
+		t.Fatalf("err = %v, want ErrRemoteProviderBlocked", err)
+	}
+}
+
 func TestResolveUsesLegacyWhenNoProfileRouteExists(t *testing.T) {
 	router := NewStaticRouter(Config{
 		DefaultProfile: "missing",

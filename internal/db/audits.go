@@ -22,8 +22,8 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 	}
 
 	_, err = db.exec(
-		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID,
 		event.AgentRole,
 		event.Model,
@@ -34,6 +34,7 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		string(event.Approval),
 		exitCode,
 		string(filesChanged),
+		event.Error,
 		event.Timestamp.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -45,7 +46,7 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 // GetToolCalls returns all audit events for a session in chronological order.
 func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 	rows, err := db.sqlDB.Query(
-		`SELECT agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, created_at
+		`SELECT agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at
 		 FROM tool_calls
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,
@@ -65,7 +66,7 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		var exitCode sql.NullInt64
 		var filesChanged string
 		var created string
-		if err := rows.Scan(&e.AgentRole, &e.Model, &e.ToolName, &args, &e.ResultSummary, &risk, &approval, &exitCode, &filesChanged, &created); err != nil {
+		if err := rows.Scan(&e.AgentRole, &e.Model, &e.ToolName, &args, &e.ResultSummary, &risk, &approval, &exitCode, &filesChanged, &e.Error, &created); err != nil {
 			return nil, fmt.Errorf("scan tool call row: %w", err)
 		}
 		e.Args = []byte(args)

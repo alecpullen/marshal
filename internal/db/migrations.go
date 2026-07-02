@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     approval_state TEXT,
     command_exit_code INTEGER,
     files_changed TEXT,
+    error TEXT,
     created_at TEXT NOT NULL
 );
 `

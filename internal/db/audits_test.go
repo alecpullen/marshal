@@ -29,7 +29,10 @@ func TestSaveAndGetToolCalls(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	args, _ := json.Marshal(map[string]string{"command": "go test"})
+	args, err := json.Marshal(map[string]string{"command": "go test"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
 	exitCode := 0
 	event := registry.AuditEvent{
 		Timestamp:       time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC),
@@ -70,4 +73,46 @@ func TestSaveAndGetToolCalls(t *testing.T) {
 	if got.CommandExitCode == nil || *got.CommandExitCode != 0 {
 		t.Errorf("expected exit code 0, got %v", got.CommandExitCode)
 	}
+	if got.Error != event.Error {
+		t.Errorf("expected error %q, got %q", event.Error, got.Error)
+	}
+
+	t.Run("with error", func(t *testing.T) {
+		errArgs, err := json.Marshal(map[string]string{"command": "go fail"})
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+		errEvent := registry.AuditEvent{
+			Timestamp:     time.Date(2026, 7, 2, 12, 1, 0, 0, time.UTC),
+			AgentRole:     "implementer",
+			Model:         "test-model",
+			ToolName:      "shell.exec",
+			Args:          errArgs,
+			Risk:          registry.RiskCommand,
+			Approval:      registry.ApprovalApproved,
+			ResultSummary: "command failed",
+			FilesChanged:  []string{},
+			Error:         "exit status 1",
+		}
+
+		if err := db.SaveToolCall(sessionID, errEvent); err != nil {
+			t.Fatalf("SaveToolCall failed: %v", err)
+		}
+
+		calls, err := db.GetToolCalls(sessionID)
+		if err != nil {
+			t.Fatalf("GetToolCalls failed: %v", err)
+		}
+		if len(calls) != 2 {
+			t.Fatalf("expected 2 tool calls, got %d", len(calls))
+		}
+
+		got := calls[1]
+		if got.ToolName != "shell.exec" {
+			t.Errorf("tool name mismatch: got %q", got.ToolName)
+		}
+		if got.Error != errEvent.Error {
+			t.Errorf("expected error %q, got %q", errEvent.Error, got.Error)
+		}
+	})
 }

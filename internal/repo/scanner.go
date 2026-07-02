@@ -35,14 +35,18 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
-			return relErr
+			return fmt.Errorf("rel %s: %w", path, relErr)
 		}
 		rel = filepath.ToSlash(rel)
 		if rel == "." {
 			return nil
 		}
 		if entry.IsDir() {
-			if shouldSkipDir(rel) || s.isIgnored(rel) {
+			skip, ignoreErr := s.isIgnored(rel)
+			if ignoreErr != nil {
+				return ignoreErr
+			}
+			if shouldSkipDir(rel) || skip {
 				return fs.SkipDir
 			}
 			return nil
@@ -50,7 +54,11 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		if !entry.Type().IsRegular() {
 			return nil
 		}
-		if s.isIgnored(rel) {
+		skip, ignoreErr := s.isIgnored(rel)
+		if ignoreErr != nil {
+			return ignoreErr
+		}
+		if skip {
 			return nil
 		}
 		files = append(files, db.FileIndex{Path: rel})
@@ -62,6 +70,8 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 	return files, nil
 }
 
+// shouldSkipDir reports whether rel is a known tooling or output directory
+// that should always be skipped during scanning.
 func shouldSkipDir(rel string) bool {
 	name := filepath.Base(rel)
 	switch name {
@@ -75,15 +85,23 @@ func shouldSkipDir(rel string) bool {
 
 // isIgnored reports whether rel matches any configured ignore pattern.
 // Patterns are matched against both the relative path and the basename
-// using filepath.Match.
-func (s *Scanner) isIgnored(rel string) bool {
+// using filepath.Match. An error is returned if any pattern is invalid.
+func (s *Scanner) isIgnored(rel string) (bool, error) {
 	for _, pattern := range s.config.Ignore {
-		if matched, _ := filepath.Match(pattern, rel); matched {
-			return true
+		matched, err := filepath.Match(pattern, rel)
+		if err != nil {
+			return false, fmt.Errorf("invalid ignore pattern %q: %w", pattern, err)
 		}
-		if matched, _ := filepath.Match(pattern, filepath.Base(rel)); matched {
-			return true
+		if matched {
+			return true, nil
+		}
+		matched, err = filepath.Match(pattern, filepath.Base(rel))
+		if err != nil {
+			return false, fmt.Errorf("invalid ignore pattern %q: %w", pattern, err)
+		}
+		if matched {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }

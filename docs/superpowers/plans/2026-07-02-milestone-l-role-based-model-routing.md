@@ -172,6 +172,9 @@ func TestResolveUsesLegacyWhenNoProfileRouteExists(t *testing.T) {
 	if !route.Legacy {
 		t.Fatal("Legacy = false, want true")
 	}
+	if route.Preset.LocalOnly {
+		t.Fatal("legacy route LocalOnly = true, want false because legacy [agent] has no local-only flag")
+	}
 	if route.Preset.Provider != "ollama" || route.Preset.Model != "qwen2.5-coder:14b" {
 		t.Fatalf("legacy route preset = %#v", route.Preset)
 	}
@@ -387,10 +390,9 @@ func (r *StaticRouter) legacyRoute(role AgentRole) (Route, bool) {
 		Role:    role,
 		Profile: "legacy",
 		Preset: ModelPreset{
-			Name:      "legacy",
-			Provider:  r.config.LegacyProvider,
-			Model:     r.config.LegacyModel,
-			LocalOnly: true,
+			Name:     "legacy",
+			Provider: r.config.LegacyProvider,
+			Model:    r.config.LegacyModel,
 		},
 		Legacy: true,
 	}, true

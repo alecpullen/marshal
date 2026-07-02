@@ -40,19 +40,22 @@ func (r *Registry) Register(tool Tool) error {
 		return fmt.Errorf("%w: %q", ErrDuplicateTool, tool.Name)
 	}
 
-	r.tools[tool.Name] = tool
+	r.tools[tool.Name] = cloneTool(tool)
 	return nil
 }
 
 func (r *Registry) Lookup(name string) (Tool, bool) {
 	tool, ok := r.tools[name]
-	return tool, ok
+	if !ok {
+		return Tool{}, false
+	}
+	return cloneTool(tool), true
 }
 
 func (r *Registry) List() []Tool {
 	tools := make([]Tool, 0, len(r.tools))
 	for _, tool := range r.tools {
-		tools = append(tools, tool)
+		tools = append(tools, cloneTool(tool))
 	}
 
 	sort.Slice(tools, func(i, j int) bool {
@@ -60,4 +63,12 @@ func (r *Registry) List() []Tool {
 	})
 
 	return tools
+}
+
+func cloneTool(tool Tool) Tool {
+	cloned := tool
+	if len(tool.Schema) > 0 {
+		cloned.Schema = append(json.RawMessage(nil), tool.Schema...)
+	}
+	return cloned
 }

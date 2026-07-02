@@ -61,6 +61,25 @@ func TestRegisterAcceptsValidTool(t *testing.T) {
 	}
 }
 
+func TestRegisterCopiesSchemaBytes(t *testing.T) {
+	reg := New()
+	tool := testTool("example.copy_on_register")
+
+	if err := reg.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	tool.Schema[0] = '!'
+
+	got, ok := reg.Lookup("example.copy_on_register")
+	if !ok {
+		t.Fatal("Lookup returned ok=false")
+	}
+	if string(got.Schema) != `{"type":"object"}` {
+		t.Fatalf("Lookup schema = %q, want %q", got.Schema, `{"type":"object"}`)
+	}
+}
+
 func TestRegisterRejectsEmptyName(t *testing.T) {
 	reg := New()
 	tool := testTool("   ")
@@ -140,6 +159,29 @@ func TestLookupMissReturnsFalse(t *testing.T) {
 	}
 }
 
+func TestLookupReturnsSchemaCopy(t *testing.T) {
+	reg := New()
+
+	if err := reg.Register(testTool("example.copy_on_lookup")); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	got, ok := reg.Lookup("example.copy_on_lookup")
+	if !ok {
+		t.Fatal("Lookup returned ok=false")
+	}
+
+	got.Schema[0] = '!'
+
+	again, ok := reg.Lookup("example.copy_on_lookup")
+	if !ok {
+		t.Fatal("second Lookup returned ok=false")
+	}
+	if string(again.Schema) != `{"type":"object"}` {
+		t.Fatalf("Lookup schema = %q, want %q", again.Schema, `{"type":"object"}`)
+	}
+}
+
 func TestListReturnsToolsSortedByName(t *testing.T) {
 	reg := New()
 	for _, name := range []string{"example.zed", "example.alpha", "example.middle"} {
@@ -156,6 +198,23 @@ func TestListReturnsToolsSortedByName(t *testing.T) {
 		if got[i].Name != want {
 			t.Fatalf("List()[%d].Name = %q, want %q", i, got[i].Name, want)
 		}
+	}
+}
+
+func TestListReturnsSchemaCopies(t *testing.T) {
+	reg := New()
+	for _, name := range []string{"example.zed", "example.alpha"} {
+		if err := reg.Register(testTool(name)); err != nil {
+			t.Fatalf("Register(%q): %v", name, err)
+		}
+	}
+
+	got := reg.List()
+	got[0].Schema[0] = '!'
+
+	again := reg.List()
+	if string(again[0].Schema) != `{"type":"object"}` {
+		t.Fatalf("List()[0].Schema = %q, want %q", again[0].Schema, `{"type":"object"}`)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"marshal/internal/db"
@@ -45,6 +46,12 @@ func TestRepoIndexTool(t *testing.T) {
 	if res.Summary == "" {
 		t.Fatal("expected non-empty summary")
 	}
+	if !strings.Contains(res.Summary, "1 file") {
+		t.Fatalf("expected summary to contain '1 file', got %q", res.Summary)
+	}
+	if !strings.Contains(res.Content, "go: 1") {
+		t.Fatalf("expected content to contain 'go: 1', got %q", res.Content)
+	}
 
 	files, err := dbConn.GetFileIndex(projectID)
 	if err != nil {
@@ -52,5 +59,8 @@ func TestRepoIndexTool(t *testing.T) {
 	}
 	if len(files) != 1 || files[0].Path != "main.go" {
 		t.Fatalf("expected 1 indexed main.go, got %+v", files)
+	}
+	if files[0].Language != "go" {
+		t.Fatalf("expected Language == 'go', got %q", files[0].Language)
 	}
 }

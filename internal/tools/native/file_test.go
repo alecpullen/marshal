@@ -82,3 +82,37 @@ func writeFile(t *testing.T, path string, contents string) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 }
+
+func TestFileWritePatchTool(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "app.go")
+	orig := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
+	if err := os.WriteFile(filePath, []byte(orig), 0644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+
+	args := `{"patch": "File: app.go\n<<<<<<< SEARCH\n\tprintln(\"hello\")\n=======\n\tprintln(\"patched\")\n>>>>>>> REPLACE"}`
+	res, err := invokeTool(t, reg, "file.write_patch", args)
+	if err != nil {
+		t.Fatalf("handler failed: %v", err)
+	}
+
+	if res.Summary == "" {
+		t.Fatal("expected non-empty summary")
+	}
+
+	// Verify file was patched
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read file failed: %v", err)
+	}
+	if !strings.Contains(string(data), "println(\"patched\")") {
+		t.Fatalf("file content not patched: %s", string(data))
+	}
+}
+

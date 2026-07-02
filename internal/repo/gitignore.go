@@ -2,6 +2,7 @@ package repo
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,11 @@ func ParseGitignore(content string) (*Gitignore, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		patterns = append(patterns, parseGitignorePattern(line))
+		p, err := parseGitignorePattern(line)
+		if err != nil {
+			return nil, err
+		}
+		patterns = append(patterns, p)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -44,7 +49,7 @@ func LoadGitignore(path string) (*Gitignore, error) {
 	return ParseGitignore(string(data))
 }
 
-func parseGitignorePattern(line string) gitignorePattern {
+func parseGitignorePattern(line string) (gitignorePattern, error) {
 	p := gitignorePattern{}
 	if strings.HasPrefix(line, "/") {
 		p.anchored = true
@@ -59,7 +64,12 @@ func parseGitignorePattern(line string) gitignorePattern {
 		p.anchored = true
 	}
 	p.segments = strings.Split(line, "/")
-	return p
+	for _, seg := range p.segments {
+		if _, err := filepath.Match(seg, ""); err != nil {
+			return gitignorePattern{}, fmt.Errorf("invalid gitignore pattern %q: %w", line, err)
+		}
+	}
+	return p, nil
 }
 
 func (g *Gitignore) Match(path string, isDir bool) bool {

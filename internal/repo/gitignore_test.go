@@ -47,6 +47,13 @@ func TestGitignoreAnchoredPattern(t *testing.T) {
 	}
 }
 
+func TestParseGitignoreInvalidPattern(t *testing.T) {
+	_, err := ParseGitignore("[\n")
+	if err == nil {
+		t.Fatalf("ParseGitignore invalid pattern: expected error, got nil")
+	}
+}
+
 func TestGitignoreMiddleSlashPattern(t *testing.T) {
 	g, err := ParseGitignore("foo/bar\n")
 	if err != nil {

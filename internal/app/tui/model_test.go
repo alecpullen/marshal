@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 )
 
 func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
@@ -201,6 +202,49 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for edited response")
+	}
+
+	// Set up again for Always Allow key
+	state.SetPendingApproval(tc)
+	model = New(state)
+
+	// 4. Test Always Allow Keypress 'a'
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = updated.(Model)
+
+	select {
+	case dec := <-respChan:
+		if !dec.Approved {
+			t.Fatal("expected decision to be approved via always allow")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for always allow response")
+	}
+
+	// Check if session rule was added
+	rules := state.SessionRules()
+	if len(rules) != 1 || rules[0] != "go test" {
+		t.Fatalf("expected session rules to contain 'go test', got %#v", rules)
+	}
+}
+
+func TestViewShowsAuditLogs(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	model := New(state)
+
+	// Log a tool call
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp:     time.Unix(1719946800, 0), // 15:00:00 UTC approximately
+		ToolName:      "shell.run",
+		ResultSummary: "command exit status 0",
+	})
+
+	view := model.View()
+	if !strings.Contains(view, "shell.run") {
+		t.Fatal("expected View to contain logged tool name")
+	}
+	if !strings.Contains(view, "command exit status 0") {
+		t.Fatal("expected View to contain logged tool result summary")
 	}
 }
 

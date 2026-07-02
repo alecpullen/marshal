@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -12,24 +13,55 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// AgentRunner is the one thing the TUI knows about the agent loop: how to
+// kick off a turn and get back a terminal error (or nil). It is satisfied
+// structurally by *agent.Runner without this package importing
+// internal/agent — the TUI stays a rendering layer with no policy/prompt
+// logic, per CLAUDE.md's design constraints.
+type AgentRunner interface {
+	Run(ctx context.Context, goal string) error
+}
+
 type Model struct {
 	state          *session.State
 	input          textinput.Model
 	editingCommand bool
+	runner         AgentRunner
+	ctx            context.Context
+	busy           bool
 }
 
-func New(state *session.State) Model {
+type Option func(*Model)
+
+// WithRunner configures the TUI to drive submitted messages through runner
+// instead of the Milestone A-G placeholder behavior (append and do
+// nothing). ctx is used for every agent turn dispatched from this model —
+// callers should pass the same cancellable context the surrounding
+// tea.Program itself uses, so Ctrl+C/SIGINT cancels an in-flight turn.
+func WithRunner(ctx context.Context, runner AgentRunner) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.runner = runner
+	}
+}
+
+func New(state *session.State, opts ...Option) Model {
 	input := textinput.New()
 	input.Placeholder = "Ask Marshal..."
 	input.Focus()
 	input.CharLimit = 4000
 	input.Width = 80
 
-	return Model{
+	m := Model{
 		state:          state,
 		input:          input,
 		editingCommand: false,
+		ctx:            context.Background(),
 	}
+	for _, opt := range opts {
+		opt(&m)
+	}
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -40,6 +72,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	tc := m.state.PendingApproval()
 
 	switch msg := msg.(type) {
+	case agentFinishedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.state.SetProviderError(msg.err)
+		}
+		return m, nil
+	case agentTickMsg:
+		if !m.busy {
+			return m, nil
+		}
+		return m, tickCmd()
 	case tea.KeyMsg:
 		// Always allow Ctrl+C to quit
 		if msg.Type == tea.KeyCtrlC {
@@ -114,12 +157,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case tea.KeyEnter:
 				value := strings.TrimSpace(m.input.Value())
-				if value == "" {
+				if value == "" || m.busy {
 					return m, nil
 				}
-				m.state.AddMessage(session.RoleUser, value)
 				m.input.Reset()
-				return m, nil
+				if m.runner == nil {
+					m.state.AddMessage(session.RoleUser, value)
+					return m, nil
+				}
+				m.busy = true
+				return m, tea.Batch(runAgentCmd(m.ctx, m.runner, value), tickCmd())
 			default:
 				switch msg.String() {
 				case "r":
@@ -140,6 +187,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+type agentFinishedMsg struct{ err error }
+type agentTickMsg struct{}
+
+func runAgentCmd(ctx context.Context, runner AgentRunner, goal string) tea.Cmd {
+	return func() tea.Msg {
+		err := runner.Run(ctx, goal)
+		return agentFinishedMsg{err: err}
+	}
+}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+		return agentTickMsg{}
+	})
 }
 
 func formatBoxLine(s string, width int) string {
@@ -177,10 +240,14 @@ func (m Model) View() string {
 	}
 
 	fmt.Fprintf(&b, "\nStreaming Output\n")
-	fmt.Fprintf(&b, "  No model output yet.\n")
+	if m.busy {
+		fmt.Fprintf(&b, "  Agent is working...\n")
+	} else {
+		fmt.Fprintf(&b, "  No model output yet.\n")
+	}
 	fmt.Fprintf(&b, "\nCommand Palette\n")
 	fmt.Fprintf(&b, "  No commands available yet.\n")
-	
+
 	fmt.Fprintf(&b, "\nTool Log\n")
 	auditLog := m.state.AuditLog()
 	if len(auditLog) == 0 {

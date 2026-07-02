@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -112,7 +113,7 @@ func TestViewOmitsProviderErrorSectionByDefault(t *testing.T) {
 
 func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
-	
+
 	respChan := make(chan session.UserApprovalDecision, 1)
 	tc := &session.PendingToolCall{
 		ID:           "456",
@@ -139,7 +140,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// 1. Test Deny Keypress 'd'
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	model = updated.(Model)
-	
+
 	select {
 	case dec := <-respChan:
 		if dec.Approved {
@@ -159,7 +160,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// 2. Test Approve Keypress 'enter'
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(Model)
-	
+
 	select {
 	case dec := <-respChan:
 		if !dec.Approved || dec.Edited != "" {
@@ -271,4 +272,125 @@ func TestTUIRollbackFlow(t *testing.T) {
 	}
 }
 
+type fakeAgentRunner struct {
+	called chan string
+	err    error
+}
 
+func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
+	f.called <- goal
+	return f.err
+}
+
+func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	model := New(state, WithRunner(context.Background(), runner))
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	model = updated.(Model)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if !model.busy {
+		t.Fatal("model.busy = false, want true after dispatching an agent run")
+	}
+	if cmd == nil {
+		t.Fatal("Update returned a nil cmd, want a batch of agent+tick commands")
+	}
+
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
+	}
+	if len(batch) != 2 {
+		t.Fatalf("len(batch) = %d, want 2", len(batch))
+	}
+
+	var sawFinished, sawTick bool
+	for _, sub := range batch {
+		switch msg := sub().(type) {
+		case agentFinishedMsg:
+			sawFinished = true
+			if msg.err != nil {
+				t.Fatalf("agentFinishedMsg.err = %v, want nil", msg.err)
+			}
+		case agentTickMsg:
+			sawTick = true
+		default:
+			t.Fatalf("unexpected message type %T", msg)
+		}
+	}
+	if !sawFinished || !sawTick {
+		t.Fatalf("sawFinished=%v sawTick=%v, want both true", sawFinished, sawTick)
+	}
+
+	select {
+	case goal := <-runner.called:
+		if goal != "hello" {
+			t.Fatalf("runner.Run goal = %q, want %q", goal, "hello")
+		}
+	default:
+		t.Fatal("runner.Run was not called")
+	}
+}
+
+func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	model := New(state)
+	model.busy = true
+
+	updated, cmd := model.Update(agentFinishedMsg{err: errors.New("boom")})
+	model = updated.(Model)
+
+	if model.busy {
+		t.Fatal("model.busy = true, want false after agentFinishedMsg")
+	}
+	if cmd != nil {
+		t.Fatal("expected a nil cmd after agentFinishedMsg")
+	}
+	if err := state.ProviderError(); err == nil || err.Error() != "boom" {
+		t.Fatalf("ProviderError() = %v, want an error wrapping %q", err, "boom")
+	}
+}
+
+func TestEnterWithoutRunnerFallsBackToPlainAppend(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	model := New(state)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if model.busy {
+		t.Fatal("model.busy = true, want false when no runner is configured")
+	}
+	messages := state.Messages()
+	if len(messages) != 1 || messages[0].Content != "hi" {
+		t.Fatalf("messages = %#v, want a single message %q", messages, "hi")
+	}
+}
+
+func TestEnterWhileBusyIsIgnored(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0))
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	model := New(state, WithRunner(context.Background(), runner))
+	model.busy = true
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	model = updated.(Model)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if cmd != nil {
+		if _, ok := cmd().(tea.BatchMsg); ok {
+			t.Fatal("Update dispatched a new agent run while already busy")
+		}
+	}
+	select {
+	case <-runner.called:
+		t.Fatal("runner.Run was called while busy")
+	default:
+	}
+}

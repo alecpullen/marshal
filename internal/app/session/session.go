@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
 
@@ -57,6 +58,17 @@ type Persistence struct {
 	Logger    *slog.Logger
 }
 
+type RouteInfo struct {
+	Role      routing.AgentRole
+	Profile   string
+	Preset    string
+	Provider  string
+	Model     string
+	LocalOnly bool
+	Legacy    bool
+	Active    bool
+}
+
 type State struct {
 	Config     config.Config
 	WorkingDir string
@@ -76,6 +88,7 @@ type State struct {
 	auditLog        []registry.AuditEvent
 	lastBackup      []BackupFile
 	contextPack     contextpack.Pack
+	activeRoute     RouteInfo
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
@@ -172,6 +185,18 @@ func (s *State) ContextPack() contextpack.Pack {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.contextPack.Clone()
+}
+
+func (s *State) SetActiveRoute(route RouteInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeRoute = route
+}
+
+func (s *State) ActiveRoute() RouteInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeRoute
 }
 
 func (s *State) AddSessionRule(prefix string) {

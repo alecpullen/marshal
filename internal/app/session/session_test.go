@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
 
@@ -67,6 +68,27 @@ func TestStateContextPackStoresCopies(t *testing.T) {
 	gotAgain := state.ContextPack()
 	if gotAgain.Sections[0].Content != "Project: marshal" {
 		t.Fatalf("ContextPack() returned mutable internal slice: %#v", gotAgain)
+	}
+}
+
+func TestStateActiveRouteStoresCopies(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	route := RouteInfo{
+		Role:      routing.RoleImplementer,
+		Profile:   "local_balanced",
+		Preset:    "coder",
+		Provider:  "ollama",
+		Model:     "qwen2.5-coder:14b",
+		LocalOnly: true,
+		Active:    true,
+	}
+
+	state.SetActiveRoute(route)
+	route.Model = "mutated"
+
+	got := state.ActiveRoute()
+	if got.Model != "qwen2.5-coder:14b" || !got.Active {
+		t.Fatalf("ActiveRoute() = %#v", got)
 	}
 }
 

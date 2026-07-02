@@ -229,6 +229,14 @@ func (m Model) View() string {
 		m.state.WorkingDir,
 		!m.state.Config.Privacy.RemoteProvidersAllowed,
 	)
+	route := m.state.ActiveRoute()
+	if route.Active {
+		fmt.Fprintf(&b, "Route: role=%s profile=%s preset=%s provider=%s model=%s local-only=%t\n\n",
+			route.Role, route.Profile, route.Preset, route.Provider, route.Model, route.LocalOnly,
+		)
+	} else {
+		fmt.Fprintf(&b, "Route: inactive\n\n")
+	}
 
 	fmt.Fprintf(&b, "Transcript\n")
 	messages := m.state.Messages()

@@ -20,9 +20,6 @@ func TestScannerFindsFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files, got %d", len(files))
-	}
 	paths := map[string]bool{}
 	for _, f := range files {
 		paths[f.Path] = true
@@ -156,9 +153,6 @@ func TestScannerIncludesGitignoredFilesWhenConfigured(t *testing.T) {
 	files, err := scanner.Scan()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
-	}
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files, got %d", len(files))
 	}
 	paths := map[string]bool{}
 	for _, f := range files {

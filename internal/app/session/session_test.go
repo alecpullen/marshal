@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -46,5 +47,31 @@ func TestShutdownCancelsState(t *testing.T) {
 	case <-state.Done():
 	case <-time.After(time.Second):
 		t.Fatal("state was not cancelled")
+	}
+}
+
+func TestSetProviderErrorStoresAndRetrieves(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0))
+
+	testErr := errors.New("provider connection failed")
+	state.SetProviderError(testErr)
+
+	got := state.ProviderError()
+	if !errors.Is(got, testErr) {
+		t.Fatalf("ProviderError() = %v, want %v", got, testErr)
+	}
+}
+
+func TestSetProviderErrorNilClearsExistingError(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0))
+
+	testErr := errors.New("provider connection failed")
+	state.SetProviderError(testErr)
+
+	state.SetProviderError(nil)
+
+	got := state.ProviderError()
+	if got != nil {
+		t.Fatalf("ProviderError() = %v, want nil", got)
 	}
 }

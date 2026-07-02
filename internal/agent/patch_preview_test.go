@@ -56,3 +56,10 @@ func TestPreviewPatchDiffRejectsSearchBlockNotFound(t *testing.T) {
 		t.Fatal("expected validation error, got nil")
 	}
 }
+
+func TestPreviewPatchDiffRejectsEmptyPatch(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := PreviewPatchDiff(dir, ""); err == nil {
+		t.Fatal("expected error for empty patch, got nil")
+	}
+}

@@ -18,12 +18,13 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 	}
 
 	want := map[string]registry.RiskLevel{
-		"file.read":   registry.RiskReadOnly,
-		"repo.search": registry.RiskReadOnly,
-		"git.status":  registry.RiskReadOnly,
-		"git.diff":    registry.RiskReadOnly,
-		"shell.run":   registry.RiskCommand,
-		"test.run":    registry.RiskCommand,
+		"file.read":        registry.RiskReadOnly,
+		"file.write_patch": registry.RiskWorkspaceWrite,
+		"repo.search":      registry.RiskReadOnly,
+		"git.status":       registry.RiskReadOnly,
+		"git.diff":         registry.RiskReadOnly,
+		"shell.run":        registry.RiskCommand,
+		"test.run":         registry.RiskCommand,
 	}
 	if got := reg.List(); len(got) != len(want) {
 		t.Fatalf("len(List()) = %d, want %d", len(got), len(want))

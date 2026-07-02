@@ -53,6 +53,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 
 	for _, tool := range []registry.Tool{
 		tools.fileReadTool(),
+		tools.fileWritePatchTool(),
 		tools.repoSearchTool(),
 		tools.gitStatusTool(),
 		tools.gitDiffTool(),

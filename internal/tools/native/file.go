@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"marshal/internal/app/session"
+	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
 )
 
@@ -82,3 +84,93 @@ func selectLines(content string, startLine int, endLine int) (string, int, int) 
 	}
 	return selected, startLine, endLine
 }
+
+type fileWritePatchArgs struct {
+	Patch string `json:"patch"`
+}
+
+func (t *toolSet) fileWritePatchTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "file.write_patch",
+		Description: "Apply a search/replace patch block format to files in the workspace.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"]}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		args, err := decodeArgs[fileWritePatchArgs](tool, call.Args)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+
+		patches, err := patch.Parse(args.Patch)
+		if err != nil {
+			return registry.ToolResult{}, fmt.Errorf("parse patch error: %w", err)
+		}
+		if len(patches) == 0 {
+			return registry.ToolResult{}, fmt.Errorf("no valid patches found in proposal")
+		}
+
+		// Dry run first
+		for _, fp := range patches {
+			path, err := resolveWorkspacePath(t.root, fp.Path)
+			if err != nil {
+				return registry.ToolResult{}, err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, err)
+			}
+			ok, err := patch.ValidatePatch(string(data), fp)
+			if !ok || err != nil {
+				return registry.ToolResult{}, fmt.Errorf("patch validation failed for %s: %v", fp.Path, err)
+			}
+		}
+
+		// Generate diff to display in session
+		var diffs []string
+		var backups []session.BackupFile
+
+		// Apply for real
+		for _, fp := range patches {
+			path, err := resolveWorkspacePath(t.root, fp.Path)
+			if err != nil {
+				return registry.ToolResult{}, err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return registry.ToolResult{}, err
+			}
+			original := string(data)
+
+			diff, err := patch.GenerateDiff(fp.Path, original, fp)
+			if err == nil {
+				diffs = append(diffs, diff)
+			}
+
+			backups = append(backups, session.BackupFile{
+				Path:    fp.Path,
+				Content: original,
+			})
+
+			patched := patch.ApplyPatch(original, fp)
+			if err := os.WriteFile(path, []byte(patched), 0644); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("write file %s: %w", fp.Path, err)
+			}
+		}
+
+		// Note: The caller orchestrator / loop is responsible for calling
+		// state.StoreBackup(backups) when tool execution is approved.
+		// For unit test purposes, we'll return summary list of modified files.
+		var paths []string
+		for _, fp := range patches {
+			paths = append(paths, fp.Path)
+		}
+
+		return registry.ToolResult{
+			Summary: fmt.Sprintf("Applied patches to: %s", strings.Join(paths, ", ")),
+			Content: strings.Join(diffs, "\n\n"),
+		}, nil
+	}
+	return tool
+}
+

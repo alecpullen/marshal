@@ -35,38 +35,41 @@ func (b Builder) Build(input BuildInput) Pack {
 	}
 
 	candidates := buildCandidateSections(input)
-	pack := Pack{
-		TokenUsage:  TokenUsage{MaxTokens: maxTokens},
-		GeneratedAt: now().UTC(),
+	return buildPackFromSections(candidates, maxTokens, now().UTC())
+}
+
+func RefreshPlan(pack Pack, plan []string, now func() time.Time) Pack {
+	maxTokens := pack.TokenUsage.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxTokens
 	}
 
-	remaining := maxTokens
-	for _, section := range candidates {
-		section.EstimatedTokens = EstimateTokens(section.Content)
-		if section.EstimatedTokens == 0 {
-			continue
-		}
-		if section.EstimatedTokens <= remaining {
-			pack.Sections = append(pack.Sections, section)
-			pack.TokenUsage.EstimatedTokens += section.EstimatedTokens
-			remaining -= section.EstimatedTokens
-			continue
-		}
-
-		truncated, ok := truncateToTokens(section.Content, remaining)
-		if !ok {
-			pack.TokenUsage.Truncated = true
-			continue
-		}
-		section.Content = truncated
-		section.EstimatedTokens = EstimateTokens(section.Content)
-		pack.Sections = append(pack.Sections, section)
-		pack.TokenUsage.EstimatedTokens += section.EstimatedTokens
-		pack.TokenUsage.Truncated = true
-		remaining -= section.EstimatedTokens
+	generatedAt := pack.GeneratedAt.UTC()
+	if generatedAt.IsZero() {
+		generatedAt = time.Now().UTC()
+	}
+	if now != nil {
+		generatedAt = now().UTC()
 	}
 
-	return pack
+	planSection, hasPlan := newPlanSection(plan)
+	sections := make([]Section, 0, len(pack.Sections)+1)
+	insertedPlan := false
+	for _, section := range pack.Sections {
+		if section.Kind == SectionPlan {
+			continue
+		}
+		if hasPlan && !insertedPlan && (section.Kind == SectionFileSnippet || section.Kind == SectionToolOutput) {
+			sections = append(sections, planSection)
+			insertedPlan = true
+		}
+		sections = append(sections, section)
+	}
+	if hasPlan && !insertedPlan {
+		sections = append(sections, planSection)
+	}
+
+	return buildPackFromSections(sections, maxTokens, generatedAt)
 }
 
 func buildCandidateSections(input BuildInput) []Section {
@@ -122,6 +125,54 @@ func buildCandidateSections(input BuildInput) []Section {
 		})
 	}
 	return sections
+}
+
+func buildPackFromSections(sections []Section, maxTokens int, generatedAt time.Time) Pack {
+	pack := Pack{
+		TokenUsage:  TokenUsage{MaxTokens: maxTokens},
+		GeneratedAt: generatedAt,
+	}
+
+	remaining := maxTokens
+	for _, section := range sections {
+		section.EstimatedTokens = EstimateTokens(section.Content)
+		if section.EstimatedTokens == 0 {
+			continue
+		}
+		if section.EstimatedTokens <= remaining {
+			pack.Sections = append(pack.Sections, section)
+			pack.TokenUsage.EstimatedTokens += section.EstimatedTokens
+			remaining -= section.EstimatedTokens
+			continue
+		}
+
+		truncated, ok := truncateToTokens(section.Content, remaining)
+		if !ok {
+			pack.TokenUsage.Truncated = true
+			continue
+		}
+		section.Content = truncated
+		section.EstimatedTokens = EstimateTokens(section.Content)
+		pack.Sections = append(pack.Sections, section)
+		pack.TokenUsage.EstimatedTokens += section.EstimatedTokens
+		pack.TokenUsage.Truncated = true
+		remaining -= section.EstimatedTokens
+	}
+
+	return pack
+}
+
+func newPlanSection(plan []string) (Section, bool) {
+	content := strings.TrimSpace(strings.Join(plan, "\n"))
+	if content == "" {
+		return Section{}, false
+	}
+	return Section{
+		Kind:     SectionPlan,
+		Title:    "Current Plan",
+		Priority: 20,
+		Content:  content,
+	}, true
 }
 
 func truncateToTokens(content string, maxTokens int) (string, bool) {

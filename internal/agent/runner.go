@@ -78,7 +78,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 		}
 		task.Plan = splitPlanLines(planText)
 		if current := r.State.ContextPack(); !current.IsEmpty() {
-			updatedPack := packWithPlan(current, task.Plan, r.Now)
+			updatedPack := contextpack.RefreshPlan(current, task.Plan, r.Now)
 			r.State.SetContextPack(updatedPack)
 			messages = []schema.ChatMessage{BuildSystemPrompt(r.Registry.List())}
 			messages = appendContextPackMessage(messages, updatedPack)
@@ -130,49 +130,6 @@ func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pa
 		return append(messages, msg)
 	}
 	return messages
-}
-
-func packWithPlan(pack contextpack.Pack, plan []string, now func() time.Time) contextpack.Pack {
-	updated := pack.Clone()
-	planSection := contextpack.Section{
-		Kind:            contextpack.SectionPlan,
-		Title:           "Current Plan",
-		Priority:        20,
-		Content:         strings.Join(plan, "\n"),
-		EstimatedTokens: contextpack.EstimateTokens(strings.Join(plan, "\n")),
-	}
-
-	sections := make([]contextpack.Section, 0, len(updated.Sections)+1)
-	replacedPlan := false
-	for _, section := range updated.Sections {
-		if section.Kind == contextpack.SectionPlan {
-			if !replacedPlan && len(plan) > 0 {
-				sections = append(sections, planSection)
-				replacedPlan = true
-			}
-			continue
-		}
-		sections = append(sections, section)
-	}
-	if !replacedPlan && len(plan) > 0 {
-		sections = append(sections, planSection)
-	}
-
-	updated.Sections = sections
-	if updated.TokenUsage.MaxTokens <= 0 {
-		updated.TokenUsage.MaxTokens = contextpack.DefaultMaxTokens
-	}
-	updated.TokenUsage.EstimatedTokens = 0
-	for i := range updated.Sections {
-		if updated.Sections[i].EstimatedTokens == 0 && updated.Sections[i].Content != "" {
-			updated.Sections[i].EstimatedTokens = contextpack.EstimateTokens(updated.Sections[i].Content)
-		}
-		updated.TokenUsage.EstimatedTokens += updated.Sections[i].EstimatedTokens
-	}
-	if now != nil {
-		updated.GeneratedAt = now().UTC()
-	}
-	return updated
 }
 
 func (r *Runner) fail(task *Task, err error) error {

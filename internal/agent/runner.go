@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -22,6 +23,10 @@ const (
 )
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
+
+type RouteResolver interface {
+	Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error)
+}
 
 // Runner drives one agent turn end to end: classify -> (optionally plan) ->
 // loop { call the model, parse its action, execute or answer } -> summarise.
@@ -35,6 +40,7 @@ type Runner struct {
 	Policy            *policy.PolicyEngine
 	State             *session.State
 	Model             string
+	RouteResolver     RouteResolver
 	Now               func() time.Time
 	MaxToolIterations int
 	MaxRetries        int
@@ -62,6 +68,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 
 	task := NewTask(goal, r.Now())
 	task.Class = Classify(goal)
+	turnProvider, turnModel, route := r.resolveRoute(task)
 
 	messages := []schema.ChatMessage{
 		BuildSystemPrompt(r.Registry.List()),
@@ -72,13 +79,17 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	if task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
-		planText, err := r.chatWithRetry(ctx, planMessages)
+		planText, err := r.chatWithRetry(ctx, turnProvider, turnModel, planMessages)
 		if err != nil {
 			return r.fail(task, err)
 		}
 		task.Plan = splitPlanLines(planText)
 		if current := r.State.ContextPack(); !current.IsEmpty() {
-			updatedPack := contextpack.RefreshPlan(current, task.Plan, r.Now)
+			maxTokens := current.TokenUsage.MaxTokens
+			if route.ContextBudget.MaxRepoContextTokens > 0 {
+				maxTokens = route.ContextBudget.MaxRepoContextTokens
+			}
+			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
 			messages = []schema.ChatMessage{BuildSystemPrompt(r.Registry.List())}
 			messages = appendContextPackMessage(messages, updatedPack)
@@ -90,7 +101,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 
 	task.Status = TaskStatusExecuting
 	for iteration := 0; iteration < r.MaxToolIterations; iteration++ {
-		raw, err := r.chatWithRetry(ctx, messages)
+		raw, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
 		if err != nil {
 			return r.fail(task, err)
 		}
@@ -125,6 +136,45 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	return ErrMaxIterationsExceeded
 }
 
+func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {
+	turnProvider := r.Provider
+	turnModel := r.Model
+	if r.RouteResolver == nil {
+		return turnProvider, turnModel, routing.Route{}
+	}
+
+	route, resolvedProvider, err := r.RouteResolver.Resolve(routing.TaskProfile{Class: string(task.Class)})
+	if err != nil {
+		r.State.SetProviderError(err)
+		r.State.SetActiveRoute(session.RouteInfo{})
+		return turnProvider, turnModel, routing.Route{}
+	}
+	if resolvedProvider != nil {
+		turnProvider = resolvedProvider
+	}
+	if route.Preset.Model != "" {
+		turnModel = route.Preset.Model
+	}
+	r.State.SetActiveRoute(session.RouteInfo{
+		Role:      route.Role,
+		Profile:   route.Profile,
+		Preset:    route.Preset.Name,
+		Provider:  route.Preset.Provider,
+		Model:     route.Preset.Model,
+		LocalOnly: route.Preset.LocalOnly,
+		Legacy:    route.Legacy,
+		Active:    true,
+	})
+	if route.ContextBudget.MaxRepoContextTokens > 0 {
+		pack := r.State.ContextPack()
+		if !pack.IsEmpty() {
+			pack = contextpack.Rebudget(pack, route.ContextBudget.MaxRepoContextTokens, r.Now)
+			r.State.SetContextPack(pack)
+		}
+	}
+	return turnProvider, turnModel, route
+}
+
 func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pack) []schema.ChatMessage {
 	if msg, ok := BuildContextPackMessage(pack); ok {
 		return append(messages, msg)
@@ -145,11 +195,11 @@ func (r *Runner) fail(task *Task, err error) error {
 // model *output* is handled separately in Run via BuildCorrectionMessage; it
 // is not retried here because it is not a chatOnce failure — chatOnce
 // succeeded, the text just didn't parse as an action.
-func (r *Runner) chatWithRetry(ctx context.Context, messages []schema.ChatMessage) (string, error) {
+func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (string, error) {
 	attempts := r.MaxRetries + 1
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		text, err := r.chatOnce(ctx, messages)
+		text, err := r.chatOnce(ctx, p, model, messages)
 		if err == nil {
 			return text, nil
 		}
@@ -158,9 +208,9 @@ func (r *Runner) chatWithRetry(ctx context.Context, messages []schema.ChatMessag
 	return "", lastErr
 }
 
-func (r *Runner) chatOnce(ctx context.Context, messages []schema.ChatMessage) (string, error) {
-	events, err := r.Provider.Chat(ctx, schema.ChatRequest{
-		Model:    r.Model,
+func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (string, error) {
+	events, err := p.Chat(ctx, schema.ChatRequest{
+		Model:    model,
 		Messages: messages,
 		Stream:   true,
 	})

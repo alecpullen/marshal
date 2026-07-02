@@ -43,6 +43,13 @@ func RefreshPlan(pack Pack, plan []string, now func() time.Time) Pack {
 	if maxTokens <= 0 {
 		maxTokens = DefaultMaxTokens
 	}
+	return RefreshPlanWithBudget(pack, plan, maxTokens, now)
+}
+
+func RefreshPlanWithBudget(pack Pack, plan []string, maxTokens int, now func() time.Time) Pack {
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxTokens
+	}
 
 	generatedAt := pack.GeneratedAt.UTC()
 	if generatedAt.IsZero() {
@@ -70,6 +77,22 @@ func RefreshPlan(pack Pack, plan []string, now func() time.Time) Pack {
 	}
 
 	return buildPackFromSections(sections, maxTokens, generatedAt)
+}
+
+func Rebudget(pack Pack, maxTokens int, now func() time.Time) Pack {
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxTokens
+	}
+
+	generatedAt := pack.GeneratedAt.UTC()
+	if generatedAt.IsZero() {
+		generatedAt = time.Now().UTC()
+	}
+	if now != nil {
+		generatedAt = now().UTC()
+	}
+
+	return buildPackFromSections(pack.Clone().Sections, maxTokens, generatedAt)
 }
 
 func buildCandidateSections(input BuildInput) []Section {

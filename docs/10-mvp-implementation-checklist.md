@@ -108,13 +108,13 @@
 
 ## Milestone L: Role-based model routing v1
 
-- [ ] Define `AgentRole`
-- [ ] Define `ModelPreset`
-- [ ] Define `AgentProfile`
-- [ ] Implement static router
-- [ ] Show active model in TUI
-- [ ] Add local-only flag
-- [ ] Add role-specific context budget
+- [x] Define `AgentRole`
+- [x] Define `ModelPreset`
+- [x] Define `AgentProfile`
+- [x] Implement static router
+- [x] Show active model in TUI
+- [x] Add local-only flag
+- [x] Add role-specific context budget
 
 ## Milestone M: Tree-sitter indexing v1
 

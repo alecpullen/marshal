@@ -11,6 +11,8 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/provider"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -64,6 +66,35 @@ func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	ch <- schema.ChatEvent{Type: schema.ChatEventDone}
 	close(ch)
 	return ch, nil
+}
+
+type scriptedRouteResolver struct {
+	routes    []routing.Route
+	providers []provider.Provider
+	errs      []error
+	tasks     []routing.TaskProfile
+}
+
+func (r *scriptedRouteResolver) Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error) {
+	r.tasks = append(r.tasks, task)
+	if len(r.errs) > 0 {
+		err := r.errs[0]
+		r.errs = r.errs[1:]
+		if err != nil {
+			return routing.Route{}, nil, err
+		}
+	}
+	if len(r.routes) == 0 {
+		return routing.Route{}, nil, routing.ErrNoRoute
+	}
+	route := r.routes[0]
+	r.routes = r.routes[1:]
+	var p provider.Provider
+	if len(r.providers) > 0 {
+		p = r.providers[0]
+		r.providers = r.providers[1:]
+	}
+	return route, p, nil
 }
 
 func newTestState(t *testing.T) *session.State {
@@ -474,5 +505,120 @@ func TestRunPreservesContextPackSectionMetadataWhenAddingPlan(t *testing.T) {
 	}
 	if snippet.Source != "internal/app/app.go:1-3" {
 		t.Fatalf("snippet.Source = %q, want %q", snippet.Source, "internal/app/app.go:1-3")
+	}
+}
+
+func TestRunResolvesQuestionRouteAndUpdatesModel(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"simple","action":{"type":"answer","content":"ok"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	resolver := &scriptedRouteResolver{
+		routes: []routing.Route{{
+			Role:    routing.RoleRepoScout,
+			Profile: "local_balanced",
+			Preset:  routing.ModelPreset{Name: "fast", Provider: "ollama", Model: "fast-model", LocalOnly: true},
+		}},
+		providers: []provider.Provider{p},
+	}
+	runner := NewRunner(p, reg, pol, state, "fallback-model")
+	runner.RouteResolver = resolver
+
+	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(resolver.tasks) != 1 || resolver.tasks[0].Class != "question" {
+		t.Fatalf("resolved tasks = %#v", resolver.tasks)
+	}
+	if p.requests[0].Model != "fast-model" {
+		t.Fatalf("request model = %q, want fast-model", p.requests[0].Model)
+	}
+	route := state.ActiveRoute()
+	if route.Role != routing.RoleRepoScout || route.Model != "fast-model" || !route.Active {
+		t.Fatalf("ActiveRoute = %#v", route)
+	}
+}
+
+func TestRunAppliesRouteContextBudgetToExistingPack(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		"1. Inspect.\n2. Edit.",
+		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	state.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4}},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	})
+	resolver := &scriptedRouteResolver{
+		routes: []routing.Route{{
+			Role:          routing.RoleImplementer,
+			Preset:        routing.ModelPreset{Name: "coder", Provider: "ollama", Model: "coder-model", LocalOnly: true},
+			ContextBudget: routing.ContextBudget{MaxRepoContextTokens: 24000},
+		}},
+		providers: []provider.Provider{p},
+	}
+	runner := NewRunner(p, reg, pol, state, "fallback-model")
+	runner.RouteResolver = resolver
+
+	if err := runner.Run(context.Background(), "Add a test"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	pack := state.ContextPack()
+	if pack.TokenUsage.MaxTokens != 24000 {
+		t.Fatalf("pack max tokens = %d, want 24000", pack.TokenUsage.MaxTokens)
+	}
+}
+
+func TestRunFallsBackToOriginalProviderAndModelAfterResolverError(t *testing.T) {
+	fallbackProvider := &scriptedProvider{responses: []string{
+		`{"rationale":"fallback","action":{"type":"answer","content":"fallback ok"}}`,
+	}}
+	routedProvider := &scriptedProvider{responses: []string{
+		`{"rationale":"routed","action":{"type":"answer","content":"route ok"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	resolverErr := errors.New("resolver unavailable")
+	resolver := &scriptedRouteResolver{
+		routes: []routing.Route{{
+			Role:    routing.RoleRepoScout,
+			Profile: "local_balanced",
+			Preset:  routing.ModelPreset{Name: "fast", Provider: "ollama", Model: "fast-model", LocalOnly: true},
+		}},
+		providers: []provider.Provider{routedProvider},
+		errs:      []error{nil, resolverErr},
+	}
+	runner := NewRunner(fallbackProvider, reg, pol, state, "fallback-model")
+	runner.RouteResolver = resolver
+
+	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
+		t.Fatalf("first Run returned error: %v", err)
+	}
+	if err := runner.Run(context.Background(), "What is the fallback model?"); err != nil {
+		t.Fatalf("second Run returned error: %v", err)
+	}
+
+	if len(routedProvider.requests) != 1 {
+		t.Fatalf("routed provider requests = %d, want 1", len(routedProvider.requests))
+	}
+	if routedProvider.requests[0].Model != "fast-model" {
+		t.Fatalf("routed request model = %q, want fast-model", routedProvider.requests[0].Model)
+	}
+	if len(fallbackProvider.requests) != 1 {
+		t.Fatalf("fallback provider requests = %d, want 1", len(fallbackProvider.requests))
+	}
+	if fallbackProvider.requests[0].Model != "fallback-model" {
+		t.Fatalf("fallback request model = %q, want fallback-model", fallbackProvider.requests[0].Model)
+	}
+	if got := state.ProviderError(); !errors.Is(got, resolverErr) {
+		t.Fatalf("ProviderError = %v, want %v", got, resolverErr)
+	}
+	if route := state.ActiveRoute(); route.Active {
+		t.Fatalf("ActiveRoute = %#v, want inactive after resolver error fallback", route)
 	}
 }

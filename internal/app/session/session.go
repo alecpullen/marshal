@@ -11,8 +11,9 @@ import (
 type Role string
 
 const (
-	RoleSystem Role = "system"
-	RoleUser   Role = "user"
+	RoleSystem    Role = "system"
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
 )
 
 type Message struct {
@@ -29,8 +30,9 @@ type State struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu       sync.Mutex
-	messages []Message
+	mu          sync.Mutex
+	messages    []Message
+	providerErr error
 }
 
 func New(cfg config.Config, workingDir string, now time.Time) *State {
@@ -70,4 +72,22 @@ func (s *State) Shutdown() {
 
 func (s *State) Done() <-chan struct{} {
 	return s.ctx.Done()
+}
+
+// SetProviderError records the most recent provider-level failure (HTTP
+// error, malformed response, connection failure, etc.) for display in the
+// TUI. Passing nil clears it — callers should clear on the next
+// successful call. Nothing in this milestone calls this yet; it exists so
+// a future agent loop has a place to report provider failures without
+// further session.State changes.
+func (s *State) SetProviderError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.providerErr = err
+}
+
+func (s *State) ProviderError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.providerErr
 }

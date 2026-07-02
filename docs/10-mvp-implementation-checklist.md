@@ -99,12 +99,12 @@
 
 ## Milestone K: Context pack v1
 
-- [ ] Build context pack from repo card
-- [ ] Include selected file snippets
-- [ ] Include recent tool output
-- [ ] Include current plan
-- [ ] Track approximate token usage
-- [ ] Add context browser in TUI
+- [x] Build context pack from repo card
+- [x] Include selected file snippets
+- [x] Include recent tool output
+- [x] Include current plan
+- [x] Track approximate token usage
+- [x] Add context browser in TUI
 
 ## Milestone L: Role-based model routing v1
 

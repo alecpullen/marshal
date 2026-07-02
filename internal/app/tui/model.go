@@ -82,6 +82,12 @@ func (m Model) View() string {
 	fmt.Fprintf(&b, "  No tool calls yet.\n")
 	fmt.Fprintf(&b, "\nDiff\n")
 	fmt.Fprintf(&b, "  No patch proposed.\n")
+
+	if err := m.state.ProviderError(); err != nil {
+		fmt.Fprintf(&b, "\nProvider Error\n")
+		fmt.Fprintf(&b, "  %s\n", err.Error())
+	}
+
 	fmt.Fprintf(&b, "\n%s\n", m.input.View())
 
 	return b.String()

@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"fmt"
 	"io/fs"
 	"path/filepath"
 
@@ -30,7 +31,7 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 	var files []db.FileIndex
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return fmt.Errorf("walk %s: %w", path, err)
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
@@ -41,7 +42,7 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 			return nil
 		}
 		if entry.IsDir() {
-			if shouldSkipDir(rel) {
+			if shouldSkipDir(rel) || s.isIgnored(rel) {
 				return fs.SkipDir
 			}
 			return nil
@@ -72,6 +73,9 @@ func shouldSkipDir(rel string) bool {
 	}
 }
 
+// isIgnored reports whether rel matches any configured ignore pattern.
+// Patterns are matched against both the relative path and the basename
+// using filepath.Match.
 func (s *Scanner) isIgnored(rel string) bool {
 	for _, pattern := range s.config.Ignore {
 		if matched, _ := filepath.Match(pattern, rel); matched {

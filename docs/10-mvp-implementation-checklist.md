@@ -134,6 +134,15 @@
 - [ ] Add memory browser in TUI
 - [ ] Mark stale memories manually
 
+## Milestone N.5: Settings TUI
+
+- [x] Add `config.SaveProjectConfig`
+- [x] Add settings form fields
+- [x] Add settings Bubble Tea model
+- [x] Wire settings overlay into main TUI
+- [x] Apply saved config to agent runner
+- [x] Add `Ctrl+O` shortcut
+
 ## Milestone O: First swarm prototype
 
 - [ ] Shared task state

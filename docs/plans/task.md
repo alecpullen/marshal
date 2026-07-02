@@ -1,8 +1,7 @@
 | Task | Status | Details |
 | --- | --- | --- |
-| 1. Explore project context | [x] | Check design docs, recent commits, and requirements for the Milestone G patch workflow |
-| 2. Ask clarifying questions | [x] | Ask clarifying questions about user requirements for patch formatting and rollback mechanics |
-| 3. Propose 2-3 approaches | [x] | Outline options for parsing models' patches, applying them in Go, and handling rollbacks |
-| 4. Present design | [x] | Present selected design to the user for approval |
-| 5. Write design doc | [x] | Document the approved design in `docs/superpowers/specs/2026-07-02-milestone-g-patch-workflow-design.md` and commit it |
-| 6. Transition to implementation | [x] | Invoke the writing-plans skill to create a detailed implementation plan |
+| Task 1: Search/Replace Block Parser | completed | Implement block parsing of Aider-style diffs in internal/tools/patch/parser.go |
+| Task 2: Dry-Run Validation and Unified Diff Engine | completed | Implement ValidatePatch and GenerateDiff in internal/tools/patch/diff.go |
+| Task 3: Backup and Rollback State in Session | completed | Implement backup state fields and methods in internal/app/session/session.go |
+| Task 4: Add file.write_patch Tool | completed | Register and implement file.write_patch native tool in internal/tools/native |
+| Task 5: TUI Integration and Interactive Rollback | completed | Integrate unified diff preview and keybindings for rollback in internal/app/tui/model.go |

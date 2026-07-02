@@ -48,13 +48,7 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 		presetName = activePreset.Name
 	}
 
-	m.fields = append(m.fields, newStringField(
-		"Preset",
-		presetName,
-		func(v string) {
-			// Preset name is read-only in v1; edits apply to the active preset.
-		},
-	))
+	m.fields = append(m.fields, newLabelField("Preset", presetName))
 
 	provider := cfg.Agent.Provider
 	model := cfg.Agent.Model
@@ -69,10 +63,10 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 		"Provider",
 		provider,
 		func(v string) {
-			if activePreset.Name != "" {
-				if p, ok := m.cfg.Models.Presets[activePreset.Name]; ok {
+			if name := m.activePresetName(); name != "" {
+				if p, ok := m.cfg.Models.Presets[name]; ok {
 					p.Provider = v
-					m.cfg.Models.Presets[activePreset.Name] = p
+					m.cfg.Models.Presets[name] = p
 				}
 			} else {
 				m.cfg.Agent.Provider = v
@@ -84,10 +78,10 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 		"Model",
 		model,
 		func(v string) {
-			if activePreset.Name != "" {
-				if p, ok := m.cfg.Models.Presets[activePreset.Name]; ok {
+			if name := m.activePresetName(); name != "" {
+				if p, ok := m.cfg.Models.Presets[name]; ok {
 					p.Model = v
-					m.cfg.Models.Presets[activePreset.Name] = p
+					m.cfg.Models.Presets[name] = p
 				}
 			} else {
 				m.cfg.Agent.Model = v
@@ -100,10 +94,10 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 		"block remote providers for this preset",
 		&localOnly,
 		func(v bool) {
-			if activePreset.Name != "" {
-				if p, ok := m.cfg.Models.Presets[activePreset.Name]; ok {
+			if name := m.activePresetName(); name != "" {
+				if p, ok := m.cfg.Models.Presets[name]; ok {
 					p.LocalOnly = v
-					m.cfg.Models.Presets[activePreset.Name] = p
+					m.cfg.Models.Presets[name] = p
 				}
 			}
 		},
@@ -137,6 +131,18 @@ func activePresetFromConfig(cfg config.Config) routing.ModelPreset {
 	return routing.ModelPreset{Name: name}
 }
 
+func (m *Model) activePresetName() string {
+	profile, ok := m.cfg.AgentProfiles[m.cfg.Profile.Default]
+	if !ok {
+		return ""
+	}
+	name, ok := profile.Roles[routing.RoleImplementer]
+	if !ok {
+		return ""
+	}
+	return name
+}
+
 func (m Model) Init() tea.Cmd {
 	return nil
 }
@@ -166,6 +172,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) nextField() {
+	if len(m.fields) == 0 {
+		return
+	}
 	if m.focused >= 0 && m.focused < len(m.fields) {
 		m.fields[m.focused].Blur()
 	}
@@ -177,6 +186,9 @@ func (m *Model) nextField() {
 }
 
 func (m *Model) prevField() {
+	if len(m.fields) == 0 {
+		return
+	}
 	if m.focused >= 0 && m.focused < len(m.fields) {
 		m.fields[m.focused].Blur()
 	}

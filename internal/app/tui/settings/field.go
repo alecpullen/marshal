@@ -43,12 +43,35 @@ func (f *stringField) Update(msg tea.Msg) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		f.input, _ = f.input.Update(msg)
-		f.onChange(f.input.Value())
+		if f.onChange != nil {
+			f.onChange(f.input.Value())
+		}
 	}
 }
 
 func (f *stringField) View(width int) string {
 	return fmt.Sprintf("%s: %s", f.label, f.input.View())
+}
+
+type labelField struct {
+	label string
+	value string
+}
+
+func newLabelField(label, value string) *labelField {
+	return &labelField{label: label, value: value}
+}
+
+func (f *labelField) Label() string { return f.label }
+
+func (f *labelField) Focus() {}
+
+func (f *labelField) Blur() {}
+
+func (f *labelField) Update(msg tea.Msg) {}
+
+func (f *labelField) View(width int) string {
+	return fmt.Sprintf("%s: %s", f.label, f.value)
 }
 
 type boolField struct {
@@ -119,12 +142,16 @@ func (f *selectField) Update(msg tea.Msg) {
 		case tea.KeyLeft, tea.KeyUp:
 			if f.selected > 0 {
 				f.selected--
-				f.onChange(f.options[f.selected])
+				if f.onChange != nil {
+					f.onChange(f.options[f.selected])
+				}
 			}
 		case tea.KeyRight, tea.KeyDown, tea.KeyEnter, tea.KeySpace:
 			if f.selected < len(f.options)-1 {
 				f.selected++
-				f.onChange(f.options[f.selected])
+				if f.onChange != nil {
+					f.onChange(f.options[f.selected])
+				}
 			}
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -52,6 +53,9 @@ type State struct {
 	Config     config.Config
 	WorkingDir string
 	StartedAt  time.Time
+	DB         *db.DB
+	ProjectID  int64
+	SessionID  string
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -65,12 +69,15 @@ type State struct {
 	lastBackup      []BackupFile
 }
 
-func New(cfg config.Config, workingDir string, now time.Time) *State {
+func New(cfg config.Config, workingDir string, now time.Time, database *db.DB, projectID int64, sessionID string) *State {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &State{
 		Config:     cfg,
 		WorkingDir: workingDir,
 		StartedAt:  now,
+		DB:         database,
+		ProjectID:  projectID,
+		SessionID:  sessionID,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -80,11 +87,17 @@ func (s *State) AddMessage(role Role, content string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.messages = append(s.messages, Message{
+	msg := Message{
 		Role:      role,
 		Content:   content,
 		CreatedAt: time.Now(),
-	})
+	}
+	s.messages = append(s.messages, msg)
+
+	if s.DB != nil && s.SessionID != "" {
+		// Best-effort persistence; do not fail the in-memory transcript.
+		_ = s.DB.SaveMessage(s.SessionID, string(role), content, msg.CreatedAt)
+	}
 }
 
 func (s *State) Messages() []Message {
@@ -152,6 +165,10 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.auditLog = append(s.auditLog, event)
+
+	if s.DB != nil && s.SessionID != "" {
+		_ = s.DB.SaveToolCall(s.SessionID, event)
+	}
 }
 
 func (s *State) AuditLog() []registry.AuditEvent {

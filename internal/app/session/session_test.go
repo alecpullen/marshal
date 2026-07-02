@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
 func TestStateAppendsMessagesInOrder(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0))
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 
 	state.AddMessage(RoleSystem, "ready")
 	state.AddMessage(RoleUser, "hello")
@@ -30,7 +31,7 @@ func TestStateAppendsMessagesInOrder(t *testing.T) {
 }
 
 func TestMessagesReturnsCopy(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0))
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	state.AddMessage(RoleUser, "hello")
 
 	messages := state.Messages()
@@ -43,7 +44,7 @@ func TestMessagesReturnsCopy(t *testing.T) {
 }
 
 func TestShutdownCancelsState(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0))
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 	state.Shutdown()
 
 	select {
@@ -54,7 +55,7 @@ func TestShutdownCancelsState(t *testing.T) {
 }
 
 func TestSetProviderErrorStoresAndRetrieves(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0))
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 
 	testErr := errors.New("provider connection failed")
 	state.SetProviderError(testErr)
@@ -66,7 +67,7 @@ func TestSetProviderErrorStoresAndRetrieves(t *testing.T) {
 }
 
 func TestSetProviderErrorNilClearsExistingError(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0))
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 
 	testErr := errors.New("provider connection failed")
 	state.SetProviderError(testErr)
@@ -80,7 +81,7 @@ func TestSetProviderErrorNilClearsExistingError(t *testing.T) {
 }
 
 func TestStatePendingApprovalAndSessionRules(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0))
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 
 	// Initially nil
 	if got := state.PendingApproval(); got != nil {
@@ -112,7 +113,7 @@ func TestStatePendingApprovalAndSessionRules(t *testing.T) {
 }
 
 func TestStateAuditLog(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0))
+	state := New(config.Default(), "/repo", time.Unix(100, 0), nil, 0, "")
 
 	if got := len(state.AuditLog()); got != 0 {
 		t.Fatalf("AuditLog() length = %d, want 0", got)
@@ -133,7 +134,7 @@ func TestStateAuditLog(t *testing.T) {
 
 func TestStateBackups(t *testing.T) {
 	tmpDir := t.TempDir()
-	state := New(config.Default(), tmpDir, time.Unix(100, 0))
+	state := New(config.Default(), tmpDir, time.Unix(100, 0), nil, 0, "")
 
 	if state.HasBackup() {
 		t.Fatal("initially HasBackup() should be false")
@@ -182,5 +183,55 @@ func TestStateBackups(t *testing.T) {
 	msgs := state.Messages()
 	if len(msgs) != 1 || msgs[0].Role != RoleSystem || !strings.Contains(msgs[0].Content, "rolled back") {
 		t.Fatalf("unexpected messages: %#v", msgs)
+	}
+}
+
+func TestStatePersistsMessagesAndAudits(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	sessionID := "sess-1"
+	if err := dbConn.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	cfg := config.Default()
+	s := New(cfg, "/repo", time.Unix(100, 0), dbConn, projectID, sessionID)
+
+	s.AddMessage(RoleUser, "hello")
+	s.AddMessage(RoleAssistant, "hi")
+
+	event := registry.AuditEvent{
+		Timestamp:     time.Now().UTC(),
+		ToolName:      "file.read",
+		ResultSummary: "read main.go",
+	}
+	s.LogToolCall(event)
+
+	messages, err := dbConn.GetMessages(sessionID)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 persisted messages, got %d", len(messages))
+	}
+
+	calls, err := dbConn.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("get tool calls: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 persisted tool call, got %d", len(calls))
 	}
 }

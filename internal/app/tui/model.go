@@ -258,6 +258,21 @@ func (m Model) View() string {
 		}
 	}
 
+	fmt.Fprintf(&b, "\nContext\n")
+	pack := m.state.ContextPack()
+	if pack.IsEmpty() {
+		fmt.Fprintf(&b, "  No context pack built yet.\n")
+	} else {
+		fmt.Fprintf(&b, "  Context Pack: %d/%d tokens\n", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens)
+		for _, section := range pack.Sections {
+			source := section.Source
+			if source == "" {
+				source = "no source"
+			}
+			fmt.Fprintf(&b, "  [%s] %s (%s, %d tokens)\n", section.Kind, section.Title, source, section.EstimatedTokens)
+		}
+	}
+
 	fmt.Fprintf(&b, "\nDiff\n")
 	if tc != nil && tc.Diff != "" {
 		fmt.Fprintf(&b, "%s\n", tc.Diff)

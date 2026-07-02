@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/contextpack"
 	"marshal/internal/tools/registry"
 )
 
@@ -77,6 +78,7 @@ func TestViewContainsExpectedPanels(t *testing.T) {
 		"Streaming Output",
 		"Command Palette",
 		"Tool Log",
+		"Context",
 		"Diff",
 	} {
 		if !strings.Contains(view, want) {
@@ -108,6 +110,48 @@ func TestViewOmitsProviderErrorSectionByDefault(t *testing.T) {
 
 	if strings.Contains(view, "Provider Error") {
 		t.Fatalf("View() should not contain 'Provider Error' when no error is set:\n%s", view)
+	}
+}
+
+func TestViewShowsEmptyContextPanel(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+
+	view := model.View()
+	if !strings.Contains(view, "Context") {
+		t.Fatalf("View() missing Context panel:\n%s", view)
+	}
+	if !strings.Contains(view, "No context pack built yet.") {
+		t.Fatalf("View() missing empty context message:\n%s", view)
+	}
+}
+
+func TestViewShowsContextPackSummary(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{
+				Kind:            contextpack.SectionRepoCard,
+				Title:           "Repo Card",
+				Source:          "repo.card",
+				Content:         "Project: marshal",
+				EstimatedTokens: 4,
+			},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	})
+	model := New(state)
+
+	view := model.View()
+	for _, want := range []string{
+		"Context Pack: 4/12000 tokens",
+		"repo_card",
+		"Repo Card",
+		"repo.card",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q:\n%s", want, view)
+		}
 	}
 }
 

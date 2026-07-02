@@ -80,6 +80,44 @@ func Valid() int {
 	assertHasSymbol(t, got, db.Symbol{FilePath: "broken.go", Kind: "function", Name: "Valid"})
 }
 
+func TestExtractSymbolsTypes(t *testing.T) {
+	source := []byte(`package foo
+
+type Scanner struct {
+	root string
+}
+
+type Matcher interface {
+	Match(s string) bool
+}
+
+type ID int
+`)
+	got, err := ExtractSymbols("types.go", source)
+	if err != nil {
+		t.Fatalf("ExtractSymbols failed: %v", err)
+	}
+	assertHasSymbol(t, got, db.Symbol{FilePath: "types.go", Kind: "type", Name: "Scanner", Signature: "type Scanner struct", LineStart: 3, LineEnd: 5})
+	assertHasSymbol(t, got, db.Symbol{FilePath: "types.go", Kind: "type", Name: "Matcher", Signature: "type Matcher interface", LineStart: 7, LineEnd: 9})
+	assertHasSymbol(t, got, db.Symbol{FilePath: "types.go", Kind: "type", Name: "ID", Signature: "type ID int", LineStart: 11, LineEnd: 11})
+}
+
+func TestExtractSymbolsGroupedTypeBlock(t *testing.T) {
+	source := []byte(`package foo
+
+type (
+	Foo int
+	Bar string
+)
+`)
+	got, err := ExtractSymbols("types.go", source)
+	if err != nil {
+		t.Fatalf("ExtractSymbols failed: %v", err)
+	}
+	assertHasSymbol(t, got, db.Symbol{FilePath: "types.go", Kind: "type", Name: "Foo", Signature: "type Foo int", LineStart: 4, LineEnd: 4})
+	assertHasSymbol(t, got, db.Symbol{FilePath: "types.go", Kind: "type", Name: "Bar", Signature: "type Bar string", LineStart: 5, LineEnd: 5})
+}
+
 // assertHasSymbol fails the test unless got contains a symbol matching
 // want's Name and Kind. Fields left at their zero value on want are not
 // checked, so callers can assert only the fields relevant to a test.

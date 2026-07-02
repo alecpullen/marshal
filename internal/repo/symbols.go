@@ -39,6 +39,8 @@ func extractDeclaration(path string, node *sitter.Node, source []byte) []db.Symb
 		return []db.Symbol{funcSymbol(path, node, source, "function", "")}
 	case "method_declaration":
 		return []db.Symbol{funcSymbol(path, node, source, "method", receiverType(node, source))}
+	case "type_declaration":
+		return typeSymbols(path, node, source)
 	default:
 		return nil
 	}
@@ -83,4 +85,39 @@ func receiverType(node *sitter.Node, source []byte) string {
 		return ""
 	}
 	return typeNode.Content(source)
+}
+
+func typeSymbols(path string, node *sitter.Node, source []byte) []db.Symbol {
+	var symbols []db.Symbol
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		spec := node.NamedChild(i)
+		if spec.Type() != "type_spec" {
+			continue
+		}
+		nameNode := spec.ChildByFieldName("name")
+		typeNode := spec.ChildByFieldName("type")
+		if nameNode == nil || typeNode == nil {
+			continue
+		}
+		name := nameNode.Content(source)
+		symbols = append(symbols, db.Symbol{
+			FilePath:  path,
+			Kind:      "type",
+			Name:      name,
+			Signature: "type " + name + " " + typeKindWord(typeNode, source),
+			LineStart: int(spec.StartPoint().Row) + 1,
+			LineEnd:   int(spec.EndPoint().Row) + 1,
+		})
+	}
+	return symbols
+}
+
+// typeKindWord summarizes a type_spec's type node as a short trailing word
+// for its signature: the underlying type text for simple aliases (e.g.
+// "int"), or the composite keyword ("struct"/"interface"/...) with its
+// opening brace stripped for struct/interface/composite types.
+func typeKindWord(typeNode *sitter.Node, source []byte) string {
+	text := typeNode.Content(source)
+	line := strings.SplitN(text, "\n", 2)[0]
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), "{"))
 }

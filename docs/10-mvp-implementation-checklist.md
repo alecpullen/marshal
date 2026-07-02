@@ -118,12 +118,12 @@
 
 ## Milestone M: Tree-sitter indexing v1
 
-- [ ] Add Tree-sitter dependency
-- [ ] Parse Go files first
-- [ ] Extract functions/types/imports
-- [ ] Store symbols
-- [ ] Add `symbols.find` tool
-- [ ] Add symbol summaries to repo map
+- [x] Add Tree-sitter dependency
+- [x] Parse Go files first
+- [x] Extract functions/types/imports
+- [x] Store symbols
+- [x] Add `symbols.find` tool
+- [x] Add symbol summaries to repo map
 
 ## Milestone N: Knowledge agent v1
 

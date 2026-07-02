@@ -79,13 +79,13 @@
 
 ## Milestone I: SQLite persistence
 
-- [ ] Add SQLite connection
-- [ ] Add migrations
-- [ ] Store sessions
-- [ ] Store messages
-- [ ] Store tool calls
-- [ ] Store file index metadata
-- [ ] Store basic project config state
+- [x] Add SQLite connection
+- [x] Add migrations
+- [x] Store sessions
+- [x] Store messages
+- [x] Store tool calls
+- [x] Store file index metadata
+- [x] Store basic project config state
 
 ## Milestone J: Repo indexing v1
 

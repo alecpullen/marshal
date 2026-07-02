@@ -32,12 +32,12 @@
 
 ## Milestone D: Tool registry
 
-- [ ] Define `Tool` type
-- [ ] Define `ToolHandler`
-- [ ] Define risk levels
-- [ ] Add registry lookup
-- [ ] Add schema validation placeholder
-- [ ] Add tool call audit event
+- [x] Define `Tool` type
+- [x] Define `ToolHandler`
+- [x] Define risk levels
+- [x] Add registry lookup
+- [x] Add schema validation placeholder
+- [x] Add tool call audit event
 
 ## Milestone E: Basic native tools
 

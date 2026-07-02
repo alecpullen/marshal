@@ -89,13 +89,13 @@
 
 ## Milestone J: Repo indexing v1
 
-- [ ] Scan files
-- [ ] Respect `.gitignore`
-- [ ] Hash files
-- [ ] Detect language by extension
-- [ ] Store file records
-- [ ] Generate simple directory map
-- [ ] Generate simple repo card
+- [x] Scan files
+- [x] Respect `.gitignore`
+- [x] Hash files
+- [x] Detect language by extension
+- [x] Store file records
+- [x] Generate simple directory map
+- [x] Generate simple repo card
 
 ## Milestone K: Context pack v1
 

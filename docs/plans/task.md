@@ -1,12 +1,9 @@
 | Task | Status | Details |
 | --- | --- | --- |
-| Task 1: Add SQLite Driver to go.mod | completed | Add modernc.org/sqlite dependency to go.mod and go.sum |
-| Task 2: Create DB package and connection lifecycle | completed | Create db.go, db_test.go, implement Open and Close |
-| Task 3: Database Migrations | completed | Implement Migrate() running core schema tables SQL |
-| Task 4: Project Storage Methods | completed | Implement GetOrCreateProject persistence |
-| Task 5: File Index Metadata Storage | completed | Implement SaveFileIndex and GetFileIndex persistence |
-| Task 6: Session and Message Persistence | completed | Implement session creation and message save/get |
-| Task 7: Tool Call Audit Persistence | completed | Implement tool call audit event persistence |
-| Task 8: Integrate DB Persistence into session.State | completed | Update AddMessage/LogToolCall to save to SQLite |
-| Task 9: App Wiring and Database Lifecycle | completed | Wire SQLite database, migrations, and session in app.go |
-| Task 10: Final Verification and MVP Checklist | completed | Verify entire codebase compiles and checks off checklist |
+| Task 1: Create repo scanner with ignore rules | completed | internal/repo/scanner.go |
+| Task 2: Add .gitignore support | completed | internal/repo/gitignore.go |
+| Task 3: Detect language and hash files | completed | internal/repo/language.go, hashFile |
+| Task 4: Add repo.index tool | completed | internal/tools/native/repo_index.go |
+| Task 5: Add repo.map tool | completed | internal/repo/map.go, repo_map.go |
+| Task 6: Add repo.card tool | completed | internal/repo/card.go, repo_card.go |
+| Task 7: Register tools and verify | completed | native_test.go, docs updated |

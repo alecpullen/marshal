@@ -39,3 +39,11 @@ func (db *DB) Migrate() error {
 	}
 	return nil
 }
+
+func (db *DB) exec(query string, args ...any) (sql.Result, error) {
+	return db.sqlDB.Exec(query, args...)
+}
+
+func (db *DB) queryRow(query string, args ...any) *sql.Row {
+	return db.sqlDB.QueryRow(query, args...)
+}

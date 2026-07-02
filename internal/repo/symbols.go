@@ -91,7 +91,7 @@ func typeSymbols(path string, node *sitter.Node, source []byte) []db.Symbol {
 	var symbols []db.Symbol
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		spec := node.NamedChild(i)
-		if spec.Type() != "type_spec" {
+		if spec.Type() != "type_spec" && spec.Type() != "type_alias" {
 			continue
 		}
 		nameNode := spec.ChildByFieldName("name")

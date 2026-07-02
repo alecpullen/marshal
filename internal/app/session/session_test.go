@@ -229,6 +229,9 @@ func TestStatePersistsMessagesAndAudits(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 persisted messages, got %d", len(messages))
 	}
+	if messages[0].Role != "user" || messages[0].Content != "hello" {
+		t.Fatalf("first persisted message = %#v, want user/hello", messages[0])
+	}
 
 	calls, err := dbConn.GetToolCalls(sessionID)
 	if err != nil {
@@ -236,5 +239,8 @@ func TestStatePersistsMessagesAndAudits(t *testing.T) {
 	}
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 persisted tool call, got %d", len(calls))
+	}
+	if calls[0].ToolName != "file.read" || calls[0].ResultSummary != "read main.go" {
+		t.Fatalf("persisted tool call = %#v, want file.read/read main.go", calls[0])
 	}
 }

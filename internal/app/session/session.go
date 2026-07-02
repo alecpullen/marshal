@@ -85,19 +85,19 @@ func New(cfg config.Config, workingDir string, now time.Time, database *db.DB, s
 }
 
 func (s *State) AddMessage(role Role, content string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	msg := Message{
 		Role:      role,
 		Content:   content,
 		CreatedAt: time.Now(),
 	}
-	s.messages = append(s.messages, msg)
 
-	if s.DB != nil && s.SessionID != "" {
+	s.mu.Lock()
+	s.messages = append(s.messages, msg)
+	s.mu.Unlock()
+
+	if s.DB != nil && s.SessionID != "" && s.Logger != nil {
 		// Best-effort persistence; do not fail the in-memory transcript.
-		if err := s.DB.SaveMessage(s.SessionID, string(role), content, msg.CreatedAt); err != nil && s.Logger != nil {
+		if err := s.DB.SaveMessage(s.SessionID, string(role), content, msg.CreatedAt); err != nil {
 			s.Logger.Error("save message failed", "error", err, "session_id", s.SessionID, "role", role)
 		}
 	}
@@ -166,11 +166,14 @@ func (s *State) SessionRules() []string {
 
 func (s *State) LogToolCall(event registry.AuditEvent) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
 	s.auditLog = append(s.auditLog, event)
+	s.mu.Unlock()
 
-	if s.DB != nil && s.SessionID != "" {
-		if err := s.DB.SaveToolCall(s.SessionID, event); err != nil && s.Logger != nil {
+	if s.DB != nil && s.SessionID != "" && s.Logger != nil {
+		if err := s.DB.SaveToolCall(s.SessionID, event); err != nil {
 			s.Logger.Error("save tool call failed", "error", err, "session_id", s.SessionID, "tool", event.ToolName)
 		}
 	}

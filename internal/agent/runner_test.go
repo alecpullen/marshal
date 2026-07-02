@@ -64,7 +64,7 @@ func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 
 func newTestState(t *testing.T) *session.State {
 	t.Helper()
-	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), nil, 0, "")
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), nil, "", nil)
 }
 
 func TestRunAnswersQuestionWithoutToolCalls(t *testing.T) {

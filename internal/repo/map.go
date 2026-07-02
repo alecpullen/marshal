@@ -5,14 +5,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"marshal/internal/db"
 )
 
 // RenderDirectoryMap renders a simple indented directory tree from a file
 // index. It shows up to maxFiles file entries; if there are more, it appends
-// a truncation note.
-func RenderDirectoryMap(files []db.FileIndex, maxFiles int) string {
+// a truncation note. Each Go file's exported top-level functions, methods,
+// and types are listed inline in parens after the filename. Unexported
+// symbols and imports are omitted here to keep the map compact, but remain
+// fully queryable via the symbols.find tool.
+func RenderDirectoryMap(files []db.FileIndex, symbols []db.Symbol, maxFiles int) string {
 	if maxFiles <= 0 {
 		maxFiles = 200
 	}
@@ -20,12 +25,14 @@ func RenderDirectoryMap(files []db.FileIndex, maxFiles int) string {
 	tree := &dirNode{name: ".", children: map[string]*dirNode{}}
 	for _, f := range files {
 		parts := strings.Split(filepath.ToSlash(f.Path), "/")
-		insertPath(tree, parts)
+		insertPath(tree, parts, f.Path)
 	}
+
+	bySymbolFile := groupExportedSymbols(symbols)
 
 	var b strings.Builder
 	var fileCount int
-	renderNode(&b, tree, "", &fileCount, maxFiles)
+	renderNode(&b, tree, "", &fileCount, maxFiles, bySymbolFile)
 
 	if fileCount > maxFiles {
 		fmt.Fprintf(&b, "\n... (%d more files)\n", fileCount-maxFiles)
@@ -39,12 +46,12 @@ type dirNode struct {
 	files    []string
 }
 
-func insertPath(node *dirNode, parts []string) {
+func insertPath(node *dirNode, parts []string, fullPath string) {
 	if len(parts) == 0 {
 		return
 	}
 	if len(parts) == 1 {
-		node.files = append(node.files, parts[0])
+		node.files = append(node.files, fullPath)
 		return
 	}
 	child, ok := node.children[parts[0]]
@@ -52,10 +59,10 @@ func insertPath(node *dirNode, parts []string) {
 		child = &dirNode{name: parts[0], children: map[string]*dirNode{}}
 		node.children[parts[0]] = child
 	}
-	insertPath(child, parts[1:])
+	insertPath(child, parts[1:], fullPath)
 }
 
-func renderNode(b *strings.Builder, node *dirNode, prefix string, fileCount *int, maxFiles int) {
+func renderNode(b *strings.Builder, node *dirNode, prefix string, fileCount *int, maxFiles int, bySymbolFile map[string][]db.Symbol) {
 	dirs := make([]string, 0, len(node.children))
 	for name := range node.children {
 		dirs = append(dirs, name)
@@ -63,14 +70,46 @@ func renderNode(b *strings.Builder, node *dirNode, prefix string, fileCount *int
 	sort.Strings(dirs)
 	for _, name := range dirs {
 		fmt.Fprintf(b, "%s%s/\n", prefix, name)
-		renderNode(b, node.children[name], prefix+"  ", fileCount, maxFiles)
+		renderNode(b, node.children[name], prefix+"  ", fileCount, maxFiles, bySymbolFile)
 	}
 
 	sort.Strings(node.files)
-	for _, name := range node.files {
+	for _, fullPath := range node.files {
 		if *fileCount < maxFiles {
-			fmt.Fprintf(b, "%s%s\n", prefix, name)
+			fmt.Fprintf(b, "%s%s%s\n", prefix, filepath.Base(fullPath), exportedSymbolSuffix(fullPath, bySymbolFile))
 		}
 		*fileCount++
 	}
+}
+
+// groupExportedSymbols indexes symbols by file path, keeping only the
+// exported top-level functions, methods, and types useful for repo-map
+// orientation. Imports and unexported symbols are excluded here; both
+// remain fully queryable via symbols.find.
+func groupExportedSymbols(symbols []db.Symbol) map[string][]db.Symbol {
+	byFile := map[string][]db.Symbol{}
+	for _, s := range symbols {
+		if s.Kind == "import" || !isExportedName(s.Name) {
+			continue
+		}
+		byFile[s.FilePath] = append(byFile[s.FilePath], s)
+	}
+	return byFile
+}
+
+func exportedSymbolSuffix(path string, byFile map[string][]db.Symbol) string {
+	syms := byFile[path]
+	if len(syms) == 0 {
+		return ""
+	}
+	names := make([]string, len(syms))
+	for i, s := range syms {
+		names[i] = s.Name
+	}
+	return " (" + strings.Join(names, ", ") + ")"
+}
+
+func isExportedName(name string) bool {
+	r, _ := utf8.DecodeRuneInString(name)
+	return unicode.IsUpper(r)
 }

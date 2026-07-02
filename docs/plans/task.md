@@ -9,4 +9,4 @@
 | Task 7: Runner orchestrator | completed | Create runner.go and runner_test.go |
 | Task 8: App wiring | completed | Wire agent runner in app.go |
 | Task 9: TUI async integration | completed | Update TUI model to drive AgentRunner asynchronously |
-| Task 10: Final verification and checklist update | in_progress | Update checklist and verify entire repo compiles and tests pass |
+| Task 10: Final verification and checklist update | completed | Update checklist and verify entire repo compiles and tests pass |

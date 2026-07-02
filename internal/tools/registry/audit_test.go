@@ -61,6 +61,22 @@ func TestNewAuditEventCopiesToolCallResultAndError(t *testing.T) {
 	}
 }
 
+func TestNewAuditEventCopiesCommandExitCode(t *testing.T) {
+	now := time.Unix(123, 0)
+	exitCode := 2
+	result := ToolResult{
+		Summary:         "tests failed",
+		CommandExitCode: &exitCode,
+	}
+
+	event := NewAuditEvent(now, testTool("shell.run"), ToolCall{Name: "shell.run"}, result, ApprovalNotRequired, nil)
+	exitCode = 9
+
+	if event.CommandExitCode == nil || *event.CommandExitCode != 2 {
+		t.Fatalf("CommandExitCode = %#v, want independent copy with value 2", event.CommandExitCode)
+	}
+}
+
 func TestNewAuditEventCopiesFilesChangedSlice(t *testing.T) {
 	now := time.Unix(123, 0)
 	result := ToolResult{

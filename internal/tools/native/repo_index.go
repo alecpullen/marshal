@@ -22,10 +22,7 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("database not configured for repo.index")
 		}
 
-		scanner, err := repo.NewScanner(repo.Config{Root: t.root})
-		if err != nil {
-			return registry.ToolResult{}, fmt.Errorf("create scanner: %w", err)
-		}
+		scanner := repo.NewScanner(repo.Config{Root: t.root})
 		files, err := scanner.Scan()
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("scan repo: %w", err)

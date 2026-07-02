@@ -13,6 +13,7 @@ func TestDetectLanguage(t *testing.T) {
 		{"main.py", "python"},
 		{"README.md", "markdown"},
 		{"Dockerfile", "dockerfile"},
+		{"dockerfile", "dockerfile"},
 		{"Makefile", "makefile"},
 		{"file.unknown", ""},
 		{"noext", ""},

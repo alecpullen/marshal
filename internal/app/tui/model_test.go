@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -698,4 +699,32 @@ func TestAltScreenViewFits80x24(t *testing.T) {
 	}
 }
 
+func TestViewFitsTerminalSizes(t *testing.T) {
+	sizes := []struct {
+		width  int
+		height int
+	}{
+		{40, 10},
+		{50, 20},
+		{80, 24},
+	}
+	for _, sz := range sizes {
+		t.Run(fmt.Sprintf("%dx%d", sz.width, sz.height), func(t *testing.T) {
+			state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+			model := New(state)
+			updated, _ := model.Update(tea.WindowSizeMsg{Width: sz.width, Height: sz.height})
+			model = updated.(Model)
 
+			view := model.View()
+			lines := strings.Split(view, "\n")
+			if len(lines) > sz.height {
+				t.Fatalf("view height = %d lines, want <= %d", len(lines), sz.height)
+			}
+			for i, line := range lines {
+				if w := len([]rune(line)); w > sz.width {
+					t.Fatalf("line %d width = %d, want <= %d: %q", i, w, sz.width, line)
+				}
+			}
+		})
+	}
+}

@@ -116,11 +116,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	tc := m.state.PendingApproval()
 
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		// Calculate chat viewport dimensions (70% width, height minus status/input/borders)
+		chatWidth := int(float64(m.width) * 0.70)
+		chatHeight := m.height - 8
+		if chatHeight < 1 {
+			chatHeight = 1
+		}
+		m.viewport.Width = chatWidth
+		m.viewport.Height = chatHeight
+		m.refreshViewport()
+		return m, nil
 	case agentFinishedMsg:
 		m.busy = false
 		if msg.err != nil {
 			m.state.SetProviderError(msg.err)
 		}
+		m.refreshViewport()
 		return m, nil
 	case agentTickMsg:
 		if !m.busy {
@@ -164,6 +178,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			updated, cmd := m.memoryModel.Update(msg)
 			m.memoryModel = updated.(memory.Model)
 			return m, cmd
+		}
+
+		// Tab cycling
+		if msg.Type == tea.KeyTab {
+			m.activeTab = (m.activeTab + 1) % 3
+			return m, nil
+		}
+		if msg.Type == tea.KeyShiftTab {
+			m.activeTab = (m.activeTab - 1 + 3) % 3
+			return m, nil
+		}
+
+		// Global tab switching hotkeys
+		if msg.Type == tea.KeyCtrlP {
+			m.activeTab = 0
+			return m, nil
+		}
+		if msg.Type == tea.KeyCtrlX {
+			m.activeTab = 1
+			return m, nil
+		}
+		if msg.Type == tea.KeyCtrlT {
+			m.activeTab = 2
+			return m, nil
+		}
+		if msg.Type == tea.KeyCtrlR {
+			if m.state.HasBackup() {
+				_ = m.state.RollbackBackup()
+				m.state.LogToolCall(registry.AuditEvent{
+					Timestamp:     time.Now(),
+					ToolName:      "rollback",
+					ResultSummary: "Rollback applied successfully",
+				})
+				m.refreshViewport()
+				return m, nil
+			}
 		}
 
 		if tc != nil {
@@ -219,6 +269,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								ToolName:      "rollback",
 								ResultSummary: "Rollback applied successfully",
 							})
+							m.refreshViewport()
 							return m, nil
 						}
 					}
@@ -227,36 +278,70 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		} else {
-			switch msg.Type {
-			case tea.KeyEsc:
-				m.state.Shutdown()
-				return m, tea.Quit
-			case tea.KeyCtrlO:
-				m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-				m.settingsOpen = true
-				return m, nil
-			case tea.KeyCtrlK:
-				if m.memoryDB == nil {
+			if m.inputFocused {
+				switch msg.Type {
+				case tea.KeyEsc:
+					m.inputFocused = false
+					m.input.Blur()
 					return m, nil
-				}
-				m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
-				m.memoryOpen = true
-				return m, nil
-			case tea.KeyEnter:
-				value := strings.TrimSpace(m.input.Value())
-				if value == "" || m.busy {
+				case tea.KeyCtrlO:
+					m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+					m.settingsOpen = true
 					return m, nil
-				}
-				m.input.Reset()
-				if m.runner == nil {
-					m.state.AddMessage(session.RoleUser, value)
+				case tea.KeyCtrlK:
+					if m.memoryDB == nil {
+						return m, nil
+					}
+					m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
+					m.memoryOpen = true
 					return m, nil
+				case tea.KeyEnter:
+					value := strings.TrimSpace(m.input.Value())
+					if value == "" || m.busy {
+						return m, nil
+					}
+					m.input.Reset()
+					if m.runner == nil {
+						m.state.AddMessage(session.RoleUser, value)
+						m.refreshViewport()
+						return m, nil
+					}
+					m.busy = true
+					return m, tea.Batch(runAgentCmd(m.ctx, m.runner, value), tickCmd())
 				}
-				m.busy = true
-				return m, tea.Batch(runAgentCmd(m.ctx, m.runner, value), tickCmd())
-			default:
-				switch msg.String() {
-				case "r":
+			} else {
+				switch msg.Type {
+				case tea.KeyEsc:
+					m.state.Shutdown()
+					return m, tea.Quit
+				case tea.KeyEnter:
+					m.inputFocused = true
+					return m, m.input.Focus()
+				case tea.KeyCtrlO:
+					m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+					m.settingsOpen = true
+					return m, nil
+				case tea.KeyCtrlK:
+					if m.memoryDB == nil {
+						return m, nil
+					}
+					m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
+					m.memoryOpen = true
+					return m, nil
+				case tea.KeyRunes:
+					switch msg.String() {
+					case "1":
+						m.activeTab = 0
+						return m, nil
+					case "2":
+						m.activeTab = 1
+						return m, nil
+					case "3":
+						m.activeTab = 2
+						return m, nil
+					}
+				}
+				if msg.String() == "r" {
 					if m.state.HasBackup() {
 						_ = m.state.RollbackBackup()
 						m.state.LogToolCall(registry.AuditEvent{
@@ -264,9 +349,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							ToolName:      "rollback",
 							ResultSummary: "Rollback applied successfully",
 						})
+						m.refreshViewport()
 						return m, nil
 					}
 				}
+				var vpCmd tea.Cmd
+				m.viewport, vpCmd = m.viewport.Update(msg)
+				return m, vpCmd
 			}
 		}
 	}
@@ -274,6 +363,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func (m *Model) refreshViewport() {
+	var b strings.Builder
+	messages := m.state.Messages()
+	if len(messages) == 0 {
+		b.WriteString("  No messages yet.\n")
+	}
+	for _, message := range messages {
+		b.WriteString(fmt.Sprintf("  %s: %s\n\n", message.Role, message.Content))
+	}
+	m.viewport.SetContent(b.String())
+	m.viewport.GotoBottom()
 }
 
 type agentFinishedMsg struct{ err error }

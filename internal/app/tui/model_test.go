@@ -58,7 +58,10 @@ func TestQuitKeyRequestsShutdown(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 
-	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	// First Esc unfocuses input
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	// Second Esc quits
+	_, cmd := updated.(Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if cmd == nil {
 		t.Fatal("quit command is nil")
 	}
@@ -418,8 +421,8 @@ func TestTUIRollbackFlow(t *testing.T) {
 
 	model := New(state)
 
-	// Update with 'r' keypress to trigger rollback
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	// Update with Ctrl+R to trigger rollback
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
 	model = updated.(Model)
 
 	if state.HasBackup() {
@@ -591,4 +594,40 @@ func TestModelLayoutStateInit(t *testing.T) {
 		t.Errorf("expected activeTab to be 0 (Plan), got %d", model.activeTab)
 	}
 }
+
+func TestFocusAndTabNavigation(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+
+	// Test Esc unfocuses input
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	if model.inputFocused {
+		t.Error("Esc did not unfocus input")
+	}
+
+	// Test Enter focuses input when unfocused
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if !model.inputFocused {
+		t.Error("Enter did not focus input when unfocused")
+	}
+
+	// Test Ctrl+X switches tab to Context (1)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	model = updated.(Model)
+	if model.activeTab != 1 {
+		t.Errorf("Ctrl+X did not switch to Context tab, got activeTab=%d", model.activeTab)
+	}
+
+	// Test number key when unfocused
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc}) // unfocus
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")}) // Press '3'
+	model = updated.(Model)
+	if model.activeTab != 2 {
+		t.Errorf("Pressing 3 did not switch to Log tab, got activeTab=%d", model.activeTab)
+	}
+}
+
 

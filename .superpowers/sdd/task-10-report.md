@@ -118,3 +118,32 @@ git status --short
 ## Concerns
 
 - The view currently writes lines without width management, exactly as scoped by the brief. Long memory content can overflow the drawn box until a later task introduces layout constraints or shared rendering helpers.
+
+## Fix report: task review findings
+
+### Changed files
+
+- `internal/app/tui/memory/view.go`
+- `internal/app/tui/memory/model.go`
+- `internal/app/tui/memory/model_test.go`
+- `.superpowers/sdd/task-10-report.md`
+
+### Commands run
+
+```bash
+go test ./internal/app/tui/memory/... -v
+gofmt -w internal/app/tui/memory/view.go internal/app/tui/memory/model.go internal/app/tui/memory/model_test.go
+go test ./internal/app/tui/memory/... -v
+go build ./cmd/marshal
+go test ./...
+```
+
+### Pass/fail summary
+
+- `go test ./internal/app/tui/memory/... -v`: PASS
+- `go build ./cmd/marshal`: PASS
+- `go test ./...`: PASS
+
+### Concerns
+
+- The view now hard-clamps each rendered row to the current fixed frame width; it does not wrap multi-line content, which keeps the ASCII frame intact and matches the package's current simplicity.

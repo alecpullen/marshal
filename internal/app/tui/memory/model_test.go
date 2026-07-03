@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -119,6 +120,23 @@ func TestCKeyMarksSelectedMemoryConfirmed(t *testing.T) {
 	}
 }
 
+func TestCKeyRefreshesUpdatedAtInMemory(t *testing.T) {
+	database, projectID := newTestDB(t)
+	now := time.Unix(100, 0).UTC()
+	if err := database.SaveMemory(projectID, "fact", "Uses SQLite", "sess-1", now); err != nil {
+		t.Fatalf("SaveMemory failed: %v", err)
+	}
+	m := New(database, projectID)
+	before := m.memories[0].UpdatedAt
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+
+	if !m.memories[0].UpdatedAt.After(before) {
+		t.Fatalf("in-memory UpdatedAt = %s, want after %s", m.memories[0].UpdatedAt, before)
+	}
+}
+
 func TestViewShowsMemoriesAndEmptyState(t *testing.T) {
 	database, projectID := newTestDB(t)
 	m := New(database, projectID)
@@ -135,5 +153,64 @@ func TestViewShowsMemoriesAndEmptyState(t *testing.T) {
 	view = m.View()
 	if !strings.Contains(view, "TUI built with Bubble Tea") {
 		t.Fatalf("View() missing memory content:\n%s", view)
+	}
+}
+
+func TestViewKeepsFrameLinesBoundedAndClosed(t *testing.T) {
+	database, projectID := newTestDB(t)
+	longContent := strings.Repeat("bubble-tea-memory-", 8)
+	if err := database.SaveMemory(projectID, "architecture", longContent, "sess-1", time.Unix(100, 0)); err != nil {
+		t.Fatalf("SaveMemory failed: %v", err)
+	}
+	m := New(database, projectID)
+	m.footer = "Update failed: " + strings.Repeat("database-locked ", 8)
+
+	view := m.View()
+	assertBoundedFrame(t, view)
+
+	if strings.Contains(view, longContent) {
+		t.Fatalf("View() rendered untruncated memory content:\n%s", view)
+	}
+	if strings.Contains(view, m.footer) {
+		t.Fatalf("View() rendered untruncated footer content:\n%s", view)
+	}
+}
+
+func assertBoundedFrame(t *testing.T, view string) {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
+	if len(lines) == 0 {
+		t.Fatal("View() returned no lines")
+	}
+
+	expectedWidth := utf8.RuneCountInString(lines[0])
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if got := utf8.RuneCountInString(line); got != expectedWidth {
+			t.Fatalf("line width = %d, want %d:\n%q\nfull view:\n%s", got, expectedWidth, line, view)
+		}
+		first, _ := utf8.DecodeRuneInString(line)
+		last, _ := utf8.DecodeLastRuneInString(line)
+		switch first {
+		case '│':
+			if last != '│' {
+				t.Fatalf("content line missing right border:\n%q\nfull view:\n%s", line, view)
+			}
+		case '├':
+			if last != '┤' {
+				t.Fatalf("separator line missing right border:\n%q\nfull view:\n%s", line, view)
+			}
+		case '┌':
+			if last != '┐' {
+				t.Fatalf("top border missing right corner:\n%q\nfull view:\n%s", line, view)
+			}
+		case '└':
+			if last != '┘' {
+				t.Fatalf("bottom border missing right corner:\n%q\nfull view:\n%s", line, view)
+			}
+		}
 	}
 }

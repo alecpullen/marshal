@@ -79,11 +79,13 @@ func (m *Model) setConfidence(confidence string) {
 		return
 	}
 	selected := m.memories[m.cursor]
-	if err := m.db.SetMemoryConfidence(selected.ID, confidence, time.Now()); err != nil {
+	now := time.Now().UTC()
+	if err := m.db.SetMemoryConfidence(selected.ID, confidence, now); err != nil {
 		m.footer = "Update failed: " + err.Error()
 		return
 	}
 	selected.Confidence = confidence
+	selected.UpdatedAt = now
 	m.memories[m.cursor] = selected
 	m.footer = ""
 }

@@ -28,6 +28,15 @@ type RouteResolver interface {
 	Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error)
 }
 
+// MemoryProvider supplies durable project memories for injection into the
+// context pack at the start of each turn. It returns contextpack.MemoryNote
+// (not a type from internal/knowledge) so that internal/agent never needs
+// to depend on internal/knowledge (the two packages must not import each
+// other; see the Milestone N design doc).
+type MemoryProvider interface {
+	Memories(projectID int64) ([]contextpack.MemoryNote, error)
+}
+
 // Runner drives one agent turn end to end: classify -> (optionally plan) ->
 // loop { call the model, parse its action, execute or answer } -> summarise.
 // It is the only thing in Marshal that calls Provider.Chat, Registry.Lookup,
@@ -41,6 +50,8 @@ type Runner struct {
 	State             *session.State
 	Model             string
 	RouteResolver     RouteResolver
+	MemoryProvider    MemoryProvider
+	ProjectID         int64
 	Now               func() time.Time
 	MaxToolIterations int
 	MaxRetries        int
@@ -69,6 +80,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	task := NewTask(goal, r.Now())
 	task.Class = Classify(goal)
 	turnProvider, turnModel, route := r.resolveRoute(task)
+	r.mergeMemories()
 
 	messages := []schema.ChatMessage{
 		BuildSystemPrompt(r.Registry.List()),
@@ -173,6 +185,27 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 		}
 	}
 	return turnProvider, turnModel, route
+}
+
+// mergeMemories injects the project's current durable memories into the
+// context pack, if a MemoryProvider is configured. Failures are ignored so a
+// missing or unhealthy memory source never blocks a turn.
+func (r *Runner) mergeMemories() {
+	if r.MemoryProvider == nil {
+		return
+	}
+
+	memories, err := r.MemoryProvider.Memories(r.ProjectID)
+	if err != nil || len(memories) == 0 {
+		return
+	}
+
+	current := r.State.ContextPack()
+	maxTokens := current.TokenUsage.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = contextpack.DefaultMaxTokens
+	}
+	r.State.SetContextPack(contextpack.MergeMemories(current, memories, maxTokens, r.Now))
 }
 
 func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pack) []schema.ChatMessage {

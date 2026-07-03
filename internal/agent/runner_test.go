@@ -97,6 +97,15 @@ func (r *scriptedRouteResolver) Resolve(task routing.TaskProfile) (routing.Route
 	return route, p, nil
 }
 
+type fakeMemoryProvider struct {
+	memories []contextpack.MemoryNote
+	err      error
+}
+
+func (f *fakeMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, error) {
+	return f.memories, f.err
+}
+
 func newTestState(t *testing.T) *session.State {
 	t.Helper()
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
@@ -351,6 +360,54 @@ func TestRunOmitsContextPackWhenEmpty(t *testing.T) {
 		if strings.Contains(msg.Content, "Project context pack:") {
 			t.Fatalf("empty context pack was injected: %#v", p.requests[0].Messages)
 		}
+	}
+}
+
+func TestRunMergesMemoriesIntoContextPackBeforeFirstMessage(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"simple","action":{"type":"answer","content":"done"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.MemoryProvider = &fakeMemoryProvider{memories: []contextpack.MemoryNote{
+		{Kind: "fact", Content: "Uses SQLite for persistence"},
+	}}
+	runner.ProjectID = 7
+
+	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	pack := state.ContextPack()
+	found := false
+	for _, section := range pack.Sections {
+		if section.Kind == contextpack.SectionMemory && strings.Contains(section.Content, "Uses SQLite for persistence") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a memory section in context pack, got %#v", pack.Sections)
+	}
+}
+
+func TestRunWithoutMemoryProviderLeavesContextPackEmpty(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"simple","action":{"type":"answer","content":"done"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	pack := state.ContextPack()
+	if !pack.IsEmpty() {
+		t.Fatalf("expected empty context pack when MemoryProvider is nil, got %#v", pack.Sections)
 	}
 }
 

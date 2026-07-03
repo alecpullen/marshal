@@ -459,6 +459,9 @@ func tickCmd() tea.Cmd {
 }
 
 func truncateRunes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
 	runes := []rune(s)
 	if len(runes) <= limit {
 		return s
@@ -610,9 +613,6 @@ func (m Model) View() string {
 	} else {
 		helpText = "  [Enter] Focus Input  [1-3] Switch Tabs  [Ctrl+O] Settings  [Ctrl+K] Memories  [Ctrl+R] Rollback"
 	}
-	if len([]rune(helpText)) > m.leftWidth-2 {
-		helpText = truncateRunes(helpText, m.leftWidth-2)
-	}
 
 	inputContent := lipgloss.JoinVertical(lipgloss.Left,
 		inputStyle.Render(m.input.View()),
@@ -697,10 +697,11 @@ func (m Model) View() string {
 	}
 	busyItem := busyStyle.Render(busyText)
 
-	// Determine how much room is left for project/cwd so the status bar stays
-	// on a single line. The fixed items are MARSHAL, the busy/idle block, and
-	// the local-only flag; project/cwd are truncated adaptively when the
-	// terminal is narrow, but never exceed the caps from the spec.
+	// The plan caps project at 16 runes and cwd at 24 runes. In narrow
+	// terminals those fields would force the status bar to wrap, so we
+	// allocate the remaining width greedily (project first, then cwd) while
+	// respecting the caps and dropping a field entirely when even its label
+	// wouldn't fit.
 	fixedWidth := visibleRunes(statusBarAccent.Render(" MARSHAL ")) +
 		visibleRunes(busyItem) +
 		visibleRunes(localOnlyText)

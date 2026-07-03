@@ -109,6 +109,11 @@ func TestEndSessionPersistsSummaryMemoriesAndFileSummaries(t *testing.T) {
 		ResultSummary: "applied patch",
 		FilesChanged:  []string{"bar.go"},
 	})
+	if err := database.SaveFileIndex(projectID, []db.FileIndex{
+		{Path: "bar.go", Hash: "h1", LastIndexedAt: time.Unix(100, 0)},
+	}); err != nil {
+		t.Fatalf("SaveFileIndex failed: %v", err)
+	}
 
 	response := `{"session_summary":"Fixed the bug.","memories":[{"kind":"fact","content":"Uses SQLite for persistence"}],"file_summaries":{"bar.go":"Defines package foo"}}`
 	resolver := &fakeRouteResolver{route: knowledgeRoute(), prov: &fakeProvider{response: response}}
@@ -149,13 +154,18 @@ func TestEndSessionPersistsSummaryMemoriesAndFileSummaries(t *testing.T) {
 		t.Fatal("EndedAt is nil, want set")
 	}
 
-	if err := database.SaveFileIndex(projectID, []db.FileIndex{
-		{Path: "bar.go", Hash: "h1", LastIndexedAt: time.Unix(100, 0)},
-	}); err != nil {
-		t.Fatalf("SaveFileIndex failed: %v", err)
+	files, err := database.GetFileIndex(projectID)
+	if err != nil {
+		t.Fatalf("GetFileIndex failed: %v", err)
 	}
-	if err := database.UpdateFileSummary(projectID, "bar.go", "Defines package foo"); err != nil {
-		t.Fatalf("UpdateFileSummary failed: %v", err)
+	if len(files) != 1 {
+		t.Fatalf("files = %#v, want one row", files)
+	}
+	if files[0].Path != "bar.go" {
+		t.Fatalf("Path = %q, want %q", files[0].Path, "bar.go")
+	}
+	if files[0].Summary != "Defines package foo" {
+		t.Fatalf("Summary = %q, want %q", files[0].Summary, "Defines package foo")
 	}
 }
 

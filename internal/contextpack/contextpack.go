@@ -8,6 +8,7 @@ type SectionKind string
 
 const (
 	SectionRepoCard    SectionKind = "repo_card"
+	SectionMemory      SectionKind = "memory"
 	SectionPlan        SectionKind = "plan"
 	SectionFileSnippet SectionKind = "file_snippet"
 	SectionToolOutput  SectionKind = "tool_output"
@@ -54,6 +55,16 @@ type ToolOutput struct {
 	ToolName string
 	Summary  string
 	Content  string
+}
+
+// MemoryNote is contextpack's own view of a durable memory — just enough
+// to render a section. It is declared here (not imported from
+// internal/knowledge) so that internal/agent, which already depends on
+// contextpack, never needs to depend on internal/knowledge (the two
+// packages must not import each other — see the Milestone N design doc).
+type MemoryNote struct {
+	Kind    string
+	Content string
 }
 
 func (p Pack) IsEmpty() bool {

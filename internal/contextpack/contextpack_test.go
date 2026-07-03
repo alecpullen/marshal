@@ -247,3 +247,97 @@ func TestRefreshPlanWithBudgetUsesProvidedMaxTokens(t *testing.T) {
 		t.Fatalf("sections = %#v, want repo card then plan", updated.Sections)
 	}
 }
+
+func TestMergeMemoriesInsertsBeforePlanAndSnippets(t *testing.T) {
+	now := time.Unix(200, 0).UTC()
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4},
+			{Kind: SectionPlan, Title: "Current Plan", Content: "1. Inspect", EstimatedTokens: 3},
+			{Kind: SectionFileSnippet, Title: "internal/app/app.go", Content: "package app", EstimatedTokens: 3},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 12000, EstimatedTokens: 10},
+	}
+
+	memories := []MemoryNote{
+		{Kind: "fact", Content: "Uses SQLite for persistence"},
+		{Kind: "architecture", Content: "TUI built with Bubble Tea"},
+	}
+
+	updated := MergeMemories(pack, memories, 12000, func() time.Time { return now })
+
+	if len(updated.Sections) != 4 {
+		t.Fatalf("len(updated.Sections) = %d, want 4: %#v", len(updated.Sections), updated.Sections)
+	}
+	wantKinds := []SectionKind{SectionRepoCard, SectionMemory, SectionPlan, SectionFileSnippet}
+	for i, want := range wantKinds {
+		if updated.Sections[i].Kind != want {
+			t.Fatalf("section %d kind = %q, want %q", i, updated.Sections[i].Kind, want)
+		}
+	}
+	if !strings.Contains(updated.Sections[1].Content, "Uses SQLite for persistence") {
+		t.Fatalf("memory section missing content: %q", updated.Sections[1].Content)
+	}
+	if !strings.Contains(updated.Sections[1].Content, "TUI built with Bubble Tea") {
+		t.Fatalf("memory section missing content: %q", updated.Sections[1].Content)
+	}
+	if updated.GeneratedAt != now {
+		t.Fatalf("GeneratedAt = %s, want %s", updated.GeneratedAt, now)
+	}
+}
+
+func TestMergeMemoriesReplacesExistingMemorySection(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Content: "Project: marshal", EstimatedTokens: 4},
+			{Kind: SectionMemory, Title: "Project Memories", Content: "[fact] stale note", EstimatedTokens: 3},
+			{Kind: SectionPlan, Content: "1. Inspect", EstimatedTokens: 3},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 12000, EstimatedTokens: 10},
+	}
+
+	updated := MergeMemories(pack, []MemoryNote{{Kind: "fact", Content: "fresh note"}}, 12000, func() time.Time { return time.Unix(300, 0).UTC() })
+
+	if len(updated.Sections) != 3 {
+		t.Fatalf("len(updated.Sections) = %d, want 3: %#v", len(updated.Sections), updated.Sections)
+	}
+	if updated.Sections[1].Kind != SectionMemory || strings.Contains(updated.Sections[1].Content, "stale note") {
+		t.Fatalf("memory section not replaced: %#v", updated.Sections[1])
+	}
+	if !strings.Contains(updated.Sections[1].Content, "fresh note") {
+		t.Fatalf("memory section missing new content: %q", updated.Sections[1].Content)
+	}
+}
+
+func TestMergeMemoriesEmptyIsNoOp(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Content: "Project: marshal", EstimatedTokens: 4},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	}
+
+	updated := MergeMemories(pack, nil, 12000, func() time.Time { return time.Unix(300, 0).UTC() })
+
+	if len(updated.Sections) != 1 || updated.Sections[0].Kind != SectionRepoCard {
+		t.Fatalf("expected pack unchanged, got %#v", updated.Sections)
+	}
+}
+
+func TestMergeMemoriesRespectsMaxTokensAndMarksTruncated(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Content: strings.Repeat("r", 8), EstimatedTokens: 2},
+		},
+		TokenUsage: TokenUsage{MaxTokens: 8, EstimatedTokens: 2},
+	}
+
+	updated := MergeMemories(pack, []MemoryNote{{Kind: "fact", Content: strings.Repeat("m", 64)}}, 8, func() time.Time { return time.Unix(300, 0).UTC() })
+
+	if updated.TokenUsage.EstimatedTokens > updated.TokenUsage.MaxTokens {
+		t.Fatalf("estimated tokens %d exceeds max %d", updated.TokenUsage.EstimatedTokens, updated.TokenUsage.MaxTokens)
+	}
+	if !updated.TokenUsage.Truncated {
+		t.Fatal("TokenUsage.Truncated = false, want true")
+	}
+}

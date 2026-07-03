@@ -60,6 +60,16 @@ func (db *DB) Migrate() error {
 		}
 	}
 
+	fileColumns, err := db.tableColumns("files")
+	if err != nil {
+		return fmt.Errorf("inspect files columns: %w", err)
+	}
+	if !fileColumns["summary"] {
+		if _, err := db.sqlDB.Exec(`ALTER TABLE files ADD COLUMN summary TEXT`); err != nil {
+			return fmt.Errorf("add column summary to files: %w", err)
+		}
+	}
+
 	return nil
 }
 

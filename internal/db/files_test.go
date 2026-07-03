@@ -113,3 +113,97 @@ func TestSaveFileIndexUpdatesExisting(t *testing.T) {
 		t.Errorf("expected updated hash/size, got %+v", got[0])
 	}
 }
+
+func TestSaveFileIndexPreservesSummaryWhenHashUnchanged(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	files := []FileIndex{
+		{Path: "main.go", Hash: "v1", SizeBytes: 1, LastIndexedAt: time.Now().UTC()},
+	}
+	if err := db.SaveFileIndex(projectID, files); err != nil {
+		t.Fatalf("SaveFileIndex failed: %v", err)
+	}
+	if err := db.UpdateFileSummary(projectID, "main.go", "Entry point"); err != nil {
+		t.Fatalf("UpdateFileSummary failed: %v", err)
+	}
+
+	if err := db.SaveFileIndex(projectID, files); err != nil {
+		t.Fatalf("second SaveFileIndex failed: %v", err)
+	}
+
+	got, err := db.GetFileIndex(projectID)
+	if err != nil {
+		t.Fatalf("GetFileIndex failed: %v", err)
+	}
+	if len(got) != 1 || got[0].Summary != "Entry point" {
+		t.Fatalf("expected summary preserved, got %#v", got)
+	}
+}
+
+func TestSaveFileIndexClearsSummaryWhenHashChanges(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	if err := db.SaveFileIndex(projectID, []FileIndex{
+		{Path: "main.go", Hash: "v1", SizeBytes: 1, LastIndexedAt: time.Now().UTC()},
+	}); err != nil {
+		t.Fatalf("SaveFileIndex failed: %v", err)
+	}
+	if err := db.UpdateFileSummary(projectID, "main.go", "Entry point"); err != nil {
+		t.Fatalf("UpdateFileSummary failed: %v", err)
+	}
+
+	if err := db.SaveFileIndex(projectID, []FileIndex{
+		{Path: "main.go", Hash: "v2", SizeBytes: 2, LastIndexedAt: time.Now().UTC()},
+	}); err != nil {
+		t.Fatalf("second SaveFileIndex failed: %v", err)
+	}
+
+	got, err := db.GetFileIndex(projectID)
+	if err != nil {
+		t.Fatalf("GetFileIndex failed: %v", err)
+	}
+	if len(got) != 1 || got[0].Summary != "" {
+		t.Fatalf("expected summary cleared after hash change, got %#v", got)
+	}
+}
+
+func TestUpdateFileSummaryNoOpForMissingPath(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	if err := db.UpdateFileSummary(projectID, "does-not-exist.go", "should not error"); err != nil {
+		t.Fatalf("UpdateFileSummary returned error for missing path: %v", err)
+	}
+}

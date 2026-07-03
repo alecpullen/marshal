@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -11,11 +12,16 @@ type FileIndex struct {
 	Hash          string
 	SizeBytes     int64
 	LastIndexedAt time.Time
+	Summary       string
 }
 
-// SaveFileIndex replaces the file index for a project. It deletes all existing
-// files for the project and inserts the provided rows. Callers are expected to
-// pass the complete current index.
+// SaveFileIndex replaces the file index for a project. It deletes all
+// existing files for the project and inserts the provided rows, preserving
+// each file's stored Summary when its path+hash is unchanged from the
+// existing index. A changed hash (or a new path) means the old summary no
+// longer describes the file's current content, so it is dropped; the
+// knowledge pass (internal/knowledge) fills it back in later via
+// UpdateFileSummary.
 func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 	tx, err := db.sqlDB.Begin()
 	if err != nil {
@@ -23,19 +29,47 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 	}
 	defer tx.Rollback()
 
+	existing := map[string]FileIndex{}
+	rows, err := tx.Query(`SELECT path, hash, summary FROM files WHERE project_id = ?`, projectID)
+	if err != nil {
+		return fmt.Errorf("query existing file index: %w", err)
+	}
+	for rows.Next() {
+		var path, hash string
+		var summary sql.NullString
+		if err := rows.Scan(&path, &hash, &summary); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan existing file row: %w", err)
+		}
+		f := FileIndex{Path: path, Hash: hash}
+		if summary.Valid {
+			f.Summary = summary.String
+		}
+		existing[path] = f
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate existing file rows: %w", err)
+	}
+	rows.Close()
+
 	if _, err := tx.Exec(`DELETE FROM files WHERE project_id = ?`, projectID); err != nil {
 		return fmt.Errorf("delete existing files: %w", err)
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO files (project_id, path, language, hash, size_bytes, last_indexed_at)
-							 VALUES (?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO files (project_id, path, language, hash, size_bytes, last_indexed_at, summary)
+							 VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare file insert: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, f := range files {
-		_, err := stmt.Exec(projectID, f.Path, f.Language, f.Hash, f.SizeBytes, f.LastIndexedAt.UTC().Format(time.RFC3339))
+		summary := f.Summary
+		if prior, ok := existing[f.Path]; ok && prior.Hash == f.Hash {
+			summary = prior.Summary
+		}
+		_, err := stmt.Exec(projectID, f.Path, f.Language, f.Hash, f.SizeBytes, f.LastIndexedAt.UTC().Format(time.RFC3339), summary)
 		if err != nil {
 			return fmt.Errorf("insert file %s: %w", f.Path, err)
 		}
@@ -50,7 +84,7 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 // GetFileIndex returns all file rows for a project, ordered by path.
 func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
 	rows, err := db.sqlDB.Query(
-		`SELECT path, language, hash, size_bytes, last_indexed_at
+		`SELECT path, language, hash, size_bytes, last_indexed_at, summary
 		 FROM files
 		 WHERE project_id = ?
 		 ORDER BY path`,
@@ -65,7 +99,8 @@ func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
 	for rows.Next() {
 		var f FileIndex
 		var lastIndexed string
-		if err := rows.Scan(&f.Path, &f.Language, &f.Hash, &f.SizeBytes, &lastIndexed); err != nil {
+		var summary sql.NullString
+		if err := rows.Scan(&f.Path, &f.Language, &f.Hash, &f.SizeBytes, &lastIndexed, &summary); err != nil {
 			return nil, fmt.Errorf("scan file row: %w", err)
 		}
 		parsed, err := time.Parse(time.RFC3339, lastIndexed)
@@ -73,6 +108,9 @@ func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
 			return nil, fmt.Errorf("parse last_indexed_at: %w", err)
 		}
 		f.LastIndexedAt = parsed.UTC()
+		if summary.Valid {
+			f.Summary = summary.String
+		}
 		files = append(files, f)
 	}
 
@@ -80,4 +118,18 @@ func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
 		return nil, fmt.Errorf("iterate file rows: %w", err)
 	}
 	return files, nil
+}
+
+// UpdateFileSummary sets Summary for a single existing file row, without
+// touching hash/language/size/last_indexed_at. It is a no-op (not an error)
+// if no row matches project_id+path.
+func (db *DB) UpdateFileSummary(projectID int64, path, summary string) error {
+	_, err := db.exec(
+		`UPDATE files SET summary = ? WHERE project_id = ? AND path = ?`,
+		summary, projectID, path,
+	)
+	if err != nil {
+		return fmt.Errorf("update file summary: %w", err)
+	}
+	return nil
 }

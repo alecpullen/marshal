@@ -919,3 +919,26 @@ func TestApprovalBannerHasSingleBorder(t *testing.T) {
 		t.Fatalf("approval banner missing human reason:\n%s", view)
 	}
 }
+
+func TestRenderWhileStateMutatedDoesNotRace(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			state.AddMessage(session.RoleAssistant, fmt.Sprintf("msg %d", i))
+			state.LogToolCall(registry.AuditEvent{ToolName: "test", ResultSummary: "ok"})
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		_ = model.View()
+		updated, _ := model.Update(agentTickMsg{})
+		model = updated.(Model)
+	}
+	<-done
+}

@@ -33,6 +33,12 @@ const (
 	minTerminalWidth  = 40
 	minTerminalHeight = 10
 	minPanelWidth     = 10
+
+	totalHorizontalBorderGutter = 5 // left border + right border + gutter
+	verticalOverhead            = 4 // status bar + right-column border rows
+	chatBelowViewportRows       = 3 // input line + help line + rounding slack
+	tabHeaderMaxRows            = 4 // cap wrapped tab header to this many rows
+	helpMaxRows                 = chatBelowViewportRows - 1
 )
 
 type Model struct {
@@ -136,9 +142,9 @@ func (m *Model) resize(width, height int) {
 	m.width = width
 	m.height = height
 
-	// 70/30 split over the interior width: subtract the two-column borders on
-	// each side plus the one-column gutter between columns.
-	availableWidth := width - 5
+	// 70/30 split over the interior width: subtract the left/right column
+	// borders and the one-column gutter between columns.
+	availableWidth := width - totalHorizontalBorderGutter
 	if availableWidth < minPanelWidth*2 {
 		availableWidth = minPanelWidth * 2
 	}
@@ -155,17 +161,17 @@ func (m *Model) resize(width, height int) {
 		}
 	}
 
-	// Vertical budget: status bar (1) + the main content area. The right column
-	// body is contentHeight-3 and the wrapped tab header can occupy four rows,
-	// so the interior content height is height-4.
-	m.contentHeight = height - 4
+	// Vertical budget: status bar (1 row) + right-column border (2 rows) +
+	// interior content. The interior content height must leave room for the
+	// input/help rows below the chat viewport.
+	m.contentHeight = height - verticalOverhead
 	if m.contentHeight < 5 {
 		m.contentHeight = 5
 	}
 
-	// Left column interior: chat box (two-line border + viewport) + input line +
-	// wrapped help line(s). Reserve three rows below the chat viewport.
-	m.chatHeight = m.contentHeight - 3
+	// Chat viewport height is the interior content height minus the rows
+	// reserved for the input line and wrapped help line(s) below it.
+	m.chatHeight = m.contentHeight - chatBelowViewportRows
 	if m.chatHeight < 1 {
 		m.chatHeight = 1
 	}
@@ -475,10 +481,10 @@ var (
 			Foreground(accentColor).
 			Padding(0, 1)
 	inactiveTabStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder(), false, false, true, false).
-			BorderForeground(dimColor).
-			Foreground(dimColor).
-			Padding(0, 1)
+				Border(lipgloss.NormalBorder(), false, false, true, false).
+				BorderForeground(dimColor).
+				Foreground(dimColor).
+				Padding(0, 1)
 	statusBarAccent = lipgloss.NewStyle().
 			Background(accentColor).
 			Foreground(lipgloss.Color("0")).
@@ -567,15 +573,18 @@ func (m Model) View() string {
 
 	// Render input box
 	inputStyle := lipgloss.NewStyle().Width(m.leftWidth).Padding(0, 1)
-	helpStyle := lipgloss.NewStyle().Width(m.leftWidth - 2).Foreground(dimColor)
-	
+	helpStyle := lipgloss.NewStyle().
+		MaxWidth(m.leftWidth - 2).
+		MaxHeight(helpMaxRows).
+		Foreground(dimColor)
+
 	var helpText string
 	if m.inputFocused {
 		helpText = "  [Esc] Unfocus  [Tab] Cycle Tabs  [Ctrl+O] Settings  [Ctrl+K] Memories  [Ctrl+R] Rollback"
 	} else {
 		helpText = "  [Enter] Focus Input  [1-3] Switch Tabs  [Ctrl+O] Settings  [Ctrl+K] Memories  [Ctrl+R] Rollback"
 	}
-	
+
 	inputContent := lipgloss.JoinVertical(lipgloss.Left,
 		inputStyle.Render(m.input.View()),
 		helpStyle.Render(helpText),
@@ -593,6 +602,10 @@ func (m Model) View() string {
 		headers = append(headers, style.Render(fmt.Sprintf("[%d] %s", i+1, name)))
 	}
 	tabHeader := lipgloss.JoinHorizontal(lipgloss.Top, headers...)
+	tabHeader = lipgloss.NewStyle().
+		Width(m.rightWidth - 2).
+		MaxHeight(tabHeaderMaxRows).
+		Render(tabHeader)
 
 	var sidebarBody string
 	sbStyle := lipgloss.NewStyle().
@@ -660,7 +673,7 @@ func (m Model) View() string {
 	}
 
 	statusBarText := lipgloss.JoinHorizontal(lipgloss.Top, statusItems...)
-	statusBar := statusBarBg.Width(m.width).Render(statusBarText)
+	statusBar := statusBarBg.Width(m.width).MaxHeight(1).Render(statusBarText)
 
 	// Assemble layout
 	mainLayout := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)

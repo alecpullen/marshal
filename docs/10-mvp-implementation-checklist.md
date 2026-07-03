@@ -127,12 +127,12 @@
 
 ## Milestone N: Knowledge agent v1
 
-- [ ] Summarise session at end
-- [ ] Summarise changed files
-- [ ] Store durable project memories
-- [ ] Add confidence state
-- [ ] Add memory browser in TUI
-- [ ] Mark stale memories manually
+- [x] Summarise session at end
+- [x] Summarise changed files
+- [x] Store durable project memories
+- [x] Add confidence state
+- [x] Add memory browser in TUI
+- [x] Mark stale memories manually
 
 ## Milestone N.5: Settings TUI
 

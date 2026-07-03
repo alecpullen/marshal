@@ -1,6 +1,8 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -10,6 +12,15 @@ type Message struct {
 	Role      string
 	Content   string
 	CreatedAt time.Time
+}
+
+type Session struct {
+	ID        string
+	ProjectID int64
+	Title     string
+	StartedAt time.Time
+	EndedAt   *time.Time
+	Summary   string
 }
 
 // CreateSession inserts a new agent_sessions row. The session id is generated
@@ -22,6 +33,52 @@ func (db *DB) CreateSession(sessionID string, projectID int64, title string, sta
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
+	}
+	return nil
+}
+
+// GetSession returns the session row for the given ID.
+func (db *DB) GetSession(sessionID string) (Session, error) {
+	var s Session
+	var startedAt string
+	var endedAt, summary sql.NullString
+	row := db.queryRow(
+		`SELECT id, project_id, title, started_at, ended_at, summary FROM agent_sessions WHERE id = ?`,
+		sessionID,
+	)
+	if err := row.Scan(&s.ID, &s.ProjectID, &s.Title, &startedAt, &endedAt, &summary); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, fmt.Errorf("session not found: %s", sessionID)
+		}
+		return Session{}, fmt.Errorf("load session: %w", err)
+	}
+	parsedStarted, err := time.Parse(time.RFC3339, startedAt)
+	if err != nil {
+		return Session{}, fmt.Errorf("parse started_at: %w", err)
+	}
+	s.StartedAt = parsedStarted.UTC()
+	if endedAt.Valid {
+		parsedEnded, err := time.Parse(time.RFC3339, endedAt.String)
+		if err != nil {
+			return Session{}, fmt.Errorf("parse ended_at: %w", err)
+		}
+		parsedEnded = parsedEnded.UTC()
+		s.EndedAt = &parsedEnded
+	}
+	if summary.Valid {
+		s.Summary = summary.String
+	}
+	return s, nil
+}
+
+// EndSession sets ended_at and summary on an existing session row.
+func (db *DB) EndSession(sessionID string, endedAt time.Time, summary string) error {
+	_, err := db.exec(
+		`UPDATE agent_sessions SET ended_at = ?, summary = ? WHERE id = ?`,
+		endedAt.UTC().Format(time.RFC3339), summary, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("end session: %w", err)
 	}
 	return nil
 }

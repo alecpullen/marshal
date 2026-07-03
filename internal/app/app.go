@@ -39,6 +39,8 @@ type options struct {
 
 type Option func(*options)
 
+var shutdownKnowledgeTimeout = 5 * time.Second
+
 func WithNow(now func() time.Time) Option {
 	return func(opts *options) {
 		opts.now = now
@@ -283,7 +285,9 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	}
 
 	progErr := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
-	knowledge.EndSession(context.Background(), knowledge.EndSessionInput{
+	knowledgeCtx, cancelKnowledge := context.WithTimeout(context.Background(), shutdownKnowledgeTimeout)
+	defer cancelKnowledge()
+	knowledge.EndSession(knowledgeCtx, knowledge.EndSessionInput{
 		DB:            database,
 		ProjectID:     projectID,
 		SessionID:     sessionID,

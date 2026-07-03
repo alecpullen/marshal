@@ -266,6 +266,29 @@ func TestRunRetriesOnProviderErrorThenSucceeds(t *testing.T) {
 	}
 }
 
+func TestMergeMemoriesRemovesExistingMemorySectionWhenProviderReturnsNone(t *testing.T) {
+	state := newTestState(t)
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Content: "Project: marshal", EstimatedTokens: 4},
+			{Kind: contextpack.SectionMemory, Title: "Project Memories", Content: "[fact] stale note", EstimatedTokens: 3},
+			{Kind: contextpack.SectionPlan, Content: "1. Inspect", EstimatedTokens: 3},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 10},
+	})
+
+	runner := NewRunner(&scriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.MemoryProvider = &fakeMemoryProvider{}
+
+	runner.mergeMemories(0)
+
+	for _, section := range state.ContextPack().Sections {
+		if section.Kind == contextpack.SectionMemory {
+			t.Fatalf("stale memory section remained in context pack: %#v", state.ContextPack().Sections)
+		}
+	}
+}
+
 func TestRunFailsAfterExhaustingRetries(t *testing.T) {
 	failure := errors.New("connection reset")
 	p := &scriptedProvider{errs: []error{failure, failure, failure}}

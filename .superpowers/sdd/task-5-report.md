@@ -1,57 +1,130 @@
-# Task 5 Report
+# Task 5 Report: Context Pack Memory Section and MergeMemories
 
-## Scope
+## Implementation Summary
 
-- Updated `internal/app/app.go`
-- Updated `internal/app/app_test.go`
-- Added `.superpowers/sdd/task-5-report.md`
+Successfully implemented Task 5 as specified in the task brief. Added support for durable project memories in the contextpack package through:
 
-## Test-first sequence
+1. **New `SectionMemory` section kind** (priority 15)
+2. **`MemoryNote` type** for representing individual memory entries
+3. **`newMemorySection()` helper function** that formats memory notes with optional kind tags
+4. **`MergeMemories()` public function** that replaces/inserts memory sections and respects token budgets
 
-1. Added app wiring tests:
-   - `TestRunDisplaysInactiveRouteWhenNoProviderConfigured`
-   - `TestRunDisplaysActiveLegacyRouteWhenAgentConfigured`
-2. Ran the focused app tests before implementation and captured the expected behavior:
+## Files Changed
 
-   ```text
-   go test ./internal/app -run 'TestRunDisplaysInactiveRouteWhenNoProviderConfigured|TestRunDisplaysActiveLegacyRouteWhenAgentConfigured' -v
-   === RUN   TestRunDisplaysInactiveRouteWhenNoProviderConfigured
-   --- PASS: TestRunDisplaysInactiveRouteWhenNoProviderConfigured (0.01s)
-   === RUN   TestRunDisplaysActiveLegacyRouteWhenAgentConfigured
-       app_test.go:318: view missing "Route: role=implementer":
-           Marshal
-           Status: project=marshal cwd=/private/var/folders/ln/zqkmts017v37dfrpp7w0g4cr0000gn/T/TestRunDisplaysActiveLegacyRouteWhenAgentConfigured3286535048/001 local-only=true
+- `internal/contextpack/contextpack.go`: Added `SectionMemory` constant and `MemoryNote` type
+- `internal/contextpack/builder.go`: Added `newMemorySection()` and `MergeMemories()` functions
+- `internal/contextpack/contextpack_test.go`: Added four new test functions
 
-           Route: inactive
-   ...
-   --- FAIL: TestRunDisplaysActiveLegacyRouteWhenAgentConfigured (0.01s)
-   FAIL
-   FAIL    marshal/internal/app    0.557s
-   FAIL
-   ```
+## TDD Evidence
 
-3. Implemented app-level routing and provider construction:
-   - added `routingConfigFromAppConfig`
-   - added `routedProviderResolver` with provider caching by provider name
-   - added `buildAgentRunner`
-   - converted app config into `routing.Config`, including default profile, remote-provider policy, presets, profiles, per-role context budgets, and legacy provider/model
-   - constructed routed providers via `provider.NewFromConfig`
-   - registered native tools, created the policy engine, built a real `agent.Runner`, and attached `runner.RouteResolver`
-   - set initial active route metadata when runner construction succeeds
-   - kept startup non-fatal when route/provider setup fails by storing the error in session state and still launching the TUI
+### RED Phase
+Command: `go test ./internal/contextpack/... -run TestMergeMemories -v`
 
-## Final verification
-
-```text
-go test ./internal/app -run 'TestRunDisplaysInactiveRouteWhenNoProviderConfigured|TestRunDisplaysActiveLegacyRouteWhenAgentConfigured' -v
-PASS
-ok      marshal/internal/app
-
-go test ./internal/app -v
-PASS
-ok      marshal/internal/app
+Output (build failed, as expected):
 ```
+internal/contextpack/contextpack_test.go:262:16: undefined: MemoryNote
+internal/contextpack/contextpack_test.go:267:13: undefined: MergeMemories
+internal/contextpack/contextpack_test.go:272:46: undefined: SectionMemory
+...
+```
+
+### GREEN Phase
+Command: `go test ./internal/contextpack/... -v`
+
+Output (all tests pass):
+```
+=== RUN   TestMergeMemoriesInsertsBeforePlanAndSnippets
+--- PASS: TestMergeMemoriesInsertsBeforePlanAndSnippets (0.00s)
+=== RUN   TestMergeMemoriesReplacesExistingMemorySection
+--- PASS: TestMergeMemoriesReplacesExistingMemorySection (0.00s)
+=== RUN   TestMergeMemoriesEmptyIsNoOp
+--- PASS: TestMergeMemoriesEmptyIsNoOp (0.00s)
+=== RUN   TestMergeMemoriesRespectsMaxTokensAndMarksTruncated
+--- PASS: TestMergeMemoriesRespectsMaxTokensAndMarksTruncated (0.00s)
+PASS
+ok  	marshal/internal/contextpack	0.497s
+```
+
+Total: 14 tests, all passing (10 existing + 4 new)
+
+## Self-Review Findings
+
+### ✓ Insertion Point Verification
+**Requirement:** Memory section must insert immediately before first plan/file-snippet/tool-output section
+
+**Evidence:** Test `TestMergeMemoriesInsertsBeforePlanAndSnippets` verifies:
+- Pack with [RepoCard, Plan, FileSnippet] → [RepoCard, Memory, Plan, FileSnippet]
+- Memory inserted at index 1 (before plan at index 2)
+
+**Code path:** Lines 246-250 in builder.go check `(section.Kind == SectionPlan || section.Kind == SectionFileSnippet || section.Kind == SectionToolOutput)` before inserting.
+
+### ✓ Priority Ordering
+Required: repo_card=10, memory=15, plan=20, file_snippet=30, tool_output=40
+
+Verified in `buildCandidateSections()` (builder.go):
+- SectionRepoCard: Priority = 10 ✓
+- SectionMemory: Priority = 15 (newMemorySection line 227) ✓
+- SectionPlan: Priority = 20 ✓
+- SectionFileSnippet: Priority = 30 ✓
+- SectionToolOutput: Priority = 40 ✓
+
+### ✓ Priority Field Is Not Used for Sorting
+Confirmed: `buildPackFromSections()` (builder.go:153) processes sections in order without sorting by Priority. Priority is metadata only.
+
+### ✓ Replacement Logic
+Test `TestMergeMemoriesReplacesExistingMemorySection` verifies:
+- Old memory section with "stale note" is removed
+- New memory section with "fresh note" replaces it at same position
+- Net section count unchanged (3 before, 3 after)
+
+Code path: Line 241 in builder.go skips old memory sections with `continue`.
+
+### ✓ Empty Memories No-Op
+Test `TestMergeMemoriesEmptyIsNoOp` verifies:
+- `MergeMemories(pack, nil, ...)` returns pack with original sections unchanged
+- Code path: `newMemorySection(nil)` returns `(Section{}, false)`, so memory insertion is skipped
+
+### ✓ Token Budget Respect
+Test `TestMergeMemoriesRespectsMaxTokensAndMarksTruncated` verifies:
+- Memory section is truncated when exceeding budget
+- `TokenUsage.Truncated` is set to true
+- EstimatedTokens never exceeds MaxTokens
+
+Code path: All sections passed to `buildPackFromSections()` which enforces budget.
+
+### ✓ Existing Tests Unchanged
+All 10 existing contextpack tests still pass:
+- TestEstimateTokensRoundsUpByFourRunes
+- TestBuilderOrdersSectionsAndTracksTokens
+- TestBuilderTruncatesToBudget
+- TestRenderUsesStableSectionFormat
+- TestEmptyPackRendersEmptyAndClonesSafely
+- TestRefreshPlanInsertsBeforeSnippetsAndToolOutput
+- TestRefreshPlanRespectsMaxTokensAndMarksTruncated
+- TestRefreshPlanPreservesUnknownSectionKinds
+- TestRebudgetPreservesExistingPlanAndAppliesMaxTokens
+- TestRefreshPlanWithBudgetUsesProvidedMaxTokens
+
+## Code Structure Alignment
+
+MergeMemories mirrors RefreshPlanWithBudget's pattern:
+1. Validate maxTokens, set default if needed
+2. Preserve or compute generatedAt timestamp
+3. Build candidate section(s)
+4. Iterate through existing sections, removing old ones and inserting new at correct position
+5. Rebuild pack with `buildPackFromSections()` to apply token budget
 
 ## Concerns
 
-- None.
+None. All requirements met, all tests pass (existing and new), implementation follows established patterns.
+
+## Commit
+
+```
+58becd0 feat(contextpack): add memory section and MergeMemories
+```
+
+Commit includes exactly the three files specified in the task brief:
+- internal/contextpack/contextpack.go
+- internal/contextpack/builder.go
+- internal/contextpack/contextpack_test.go

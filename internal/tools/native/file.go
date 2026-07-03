@@ -179,8 +179,9 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 		}
 
 		return registry.ToolResult{
-			Summary: fmt.Sprintf("Applied patches to: %s", strings.Join(paths, ", ")),
-			Content: strings.Join(diffs, "\n\n"),
+			Summary:      fmt.Sprintf("Applied patches to: %s", strings.Join(paths, ", ")),
+			Content:      strings.Join(diffs, "\n\n"),
+			FilesChanged: append([]string(nil), paths...),
 		}, nil
 	}
 	return tool

@@ -510,6 +510,51 @@ func TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession(t *testing.T) {
 	}
 }
 
+func TestRunBoundsShutdownKnowledgePass(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	now := time.Unix(100, 0)
+	previousTimeout := shutdownKnowledgeTimeout
+	shutdownKnowledgeTimeout = 25 * time.Millisecond
+	defer func() { shutdownKnowledgeTimeout = previousTimeout }()
+
+	start := time.Now()
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return now }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			state := modelState(t, model)
+			state.AddMessage(session.RoleUser, "keep session history")
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Run took %s, want shutdown knowledge pass bounded", elapsed)
+	}
+}
+
 func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -609,13 +654,12 @@ func newKnowledgeTestServer(t *testing.T, extraction string) *httptest.Server {
 		if req.Model == "" {
 			t.Fatal("expected model in request")
 		}
-		if !req.Stream {
-			t.Fatal("expected streaming chat request")
+		if req.Stream {
+			t.Fatal("expected non-streaming chat request")
 		}
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n", extraction)
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, extraction)
 	})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)

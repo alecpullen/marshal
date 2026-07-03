@@ -133,7 +133,7 @@ func chatOnce(ctx context.Context, p provider.Provider, model string, message sc
 	events, err := p.Chat(ctx, schema.ChatRequest{
 		Model:    model,
 		Messages: []schema.ChatMessage{message},
-		Stream:   true,
+		Stream:   false,
 	})
 	if err != nil {
 		return "", err

@@ -663,9 +663,9 @@ func TestResizeComputesGeometry(t *testing.T) {
 func TestAltScreenViewLayout(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
-	// Simulate terminal size
-	model.width = 100
-	model.height = 40
+	// Simulate terminal size via the resize path so stored geometry is populated.
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	model = updated.(Model)
 
 	view := model.View()
 	// Check for sidebar tabs, status bar working dir
@@ -680,5 +680,22 @@ func TestAltScreenViewLayout(t *testing.T) {
 	}
 }
 
+func TestAltScreenViewFits80x24(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	view := model.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) > 24 {
+		t.Fatalf("view height = %d lines, want <= 24", len(lines))
+	}
+	for i, line := range lines {
+		if len([]rune(line)) > 80 {
+			t.Fatalf("line %d width = %d, want <= 80: %q", i, len([]rune(line)), line)
+		}
+	}
+}
 
 

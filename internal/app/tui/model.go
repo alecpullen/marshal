@@ -136,30 +136,34 @@ func (m *Model) resize(width, height int) {
 	m.width = width
 	m.height = height
 
-	// 70/30 split with a one-column gutter.
-	m.leftWidth = int(float64(width) * 0.70)
+	// 70/30 split over the interior width: subtract the two-column borders on
+	// each side plus the one-column gutter between columns.
+	availableWidth := width - 5
+	if availableWidth < minPanelWidth*2 {
+		availableWidth = minPanelWidth * 2
+	}
+	m.leftWidth = int(float64(availableWidth) * 0.70)
 	if m.leftWidth < minPanelWidth {
 		m.leftWidth = minPanelWidth
 	}
-	m.rightWidth = width - m.leftWidth - 1
+	m.rightWidth = availableWidth - m.leftWidth
 	if m.rightWidth < minPanelWidth {
 		m.rightWidth = minPanelWidth
-		m.leftWidth = width - m.rightWidth - 1
+		m.leftWidth = availableWidth - m.rightWidth
 		if m.leftWidth < minPanelWidth {
 			m.leftWidth = minPanelWidth
 		}
 	}
 
-	// Vertical budget: status bar (1). The main content area fills the rest.
-	// Left column = chat box (border + viewport + border) + input line + help line.
-	// Right column outer height = contentHeight.
-	m.contentHeight = height - 1
+	// Vertical budget: status bar (1) + the main content area. The right column
+	// has a two-line rounded border, so the interior content height is height-3.
+	m.contentHeight = height - 3
 	if m.contentHeight < 5 {
 		m.contentHeight = 5
 	}
 
-	// Viewport is the chat box interior: contentHeight minus the two-row chat
-	// border minus the input and help rows.
+	// Left column interior: chat box (two-line border + viewport) + input line +
+	// wrapped help line(s). Reserve three rows below the chat viewport.
 	m.chatHeight = m.contentHeight - 4
 	if m.chatHeight < 1 {
 		m.chatHeight = 1
@@ -498,42 +502,25 @@ func (m Model) View() string {
 
 	tc := m.state.PendingApproval()
 
-	// Widths
-	leftWidth := int(float64(m.width) * 0.70)
-	rightWidth := m.width - leftWidth - 2 // space for borders
-
-	// Heights
-	contentHeight := m.height - 3
-	if contentHeight < 1 {
-		contentHeight = 1
-	}
-
-	// Sub-heights in Left Column
-	inputHeight := 3
-	chatHeight := contentHeight - inputHeight
-	if chatHeight < 1 {
-		chatHeight = 1
-	}
-
 	// 1. Render Left Column Content
 	var leftContent string
 	if tc != nil && tc.Diff != "" {
-		splitWidth := (leftWidth - 4) / 2
+		splitWidth := (m.leftWidth - 4) / 2
 		if splitWidth < 1 {
 			splitWidth = 1
 		}
 		diffStyle := lipgloss.NewStyle().
 			Width(splitWidth).
-			Height(chatHeight - 2).
-			MaxHeight(chatHeight - 2).
+			Height(m.chatHeight - 2).
+			MaxHeight(m.chatHeight - 2).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(dimColor)
 		diffView := diffStyle.Render(tc.Diff)
 
 		approvalStyle := lipgloss.NewStyle().
 			Width(splitWidth).
-			Height(chatHeight - 2).
-			MaxHeight(chatHeight - 2).
+			Height(m.chatHeight - 2).
+			MaxHeight(m.chatHeight - 2).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(accentColor)
 
@@ -552,8 +539,8 @@ func (m Model) View() string {
 		leftContent = lipgloss.JoinHorizontal(lipgloss.Top, diffView, approvalView)
 	} else if tc != nil {
 		approvalStyle := lipgloss.NewStyle().
-			Width(leftWidth - 2).
-			Height(chatHeight - 2).
+			Width(m.leftWidth).
+			Height(m.chatHeight - 2).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(accentColor)
 		var b strings.Builder
@@ -569,19 +556,17 @@ func (m Model) View() string {
 		b.WriteString("└─────────────────────────────────────────────────────────────────────────┘")
 		leftContent = approvalStyle.Render(b.String())
 	} else {
-		m.viewport.Width = leftWidth - 2
-		m.viewport.Height = chatHeight
 		leftContent = lipgloss.NewStyle().
-			Width(leftWidth - 2).
-			Height(chatHeight).
+			Width(m.leftWidth).
+			Height(m.chatHeight).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(dimColor).
 			Render(m.viewport.View())
 	}
 
 	// Render input box
-	inputStyle := lipgloss.NewStyle().Width(leftWidth - 2).Padding(0, 1)
-	helpStyle := lipgloss.NewStyle().Foreground(dimColor)
+	inputStyle := lipgloss.NewStyle().Width(m.leftWidth).Padding(0, 1)
+	helpStyle := lipgloss.NewStyle().Width(m.leftWidth - 2).Foreground(dimColor)
 	
 	var helpText string
 	if m.inputFocused {
@@ -610,9 +595,9 @@ func (m Model) View() string {
 
 	var sidebarBody string
 	sbStyle := lipgloss.NewStyle().
-		Width(rightWidth).
-		Height(contentHeight - 2).
-		MaxHeight(contentHeight - 2)
+		Width(m.rightWidth - 2).
+		Height(m.contentHeight - 4).
+		MaxHeight(m.contentHeight - 4)
 
 	switch m.activeTab {
 	case 0:
@@ -654,8 +639,8 @@ func (m Model) View() string {
 
 	sidebarContent := lipgloss.JoinVertical(lipgloss.Left, tabHeader, sidebarBody)
 	rightColumn := lipgloss.NewStyle().
-		Width(rightWidth).
-		Height(contentHeight).
+		Width(m.rightWidth).
+		Height(m.contentHeight).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(dimColor).
 		Render(sidebarContent)

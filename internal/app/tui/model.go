@@ -191,6 +191,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
+		m.settingsModel.SetSize(m.width, m.height)
+		m.memoryModel.SetSize(m.width, m.height)
 		m.refreshViewport()
 		return m, nil
 	case agentFinishedMsg:
@@ -360,6 +362,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case tea.KeyCtrlO:
 					m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+					m.settingsModel.SetSize(m.width, m.height)
 					m.settingsOpen = true
 					return m, nil
 				case tea.KeyCtrlK:
@@ -367,6 +370,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
+					m.memoryModel.SetSize(m.width, m.height)
 					m.memoryOpen = true
 					return m, nil
 				case tea.KeyEnter:
@@ -393,6 +397,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.input.Focus()
 				case tea.KeyCtrlO:
 					m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+					m.settingsModel.SetSize(m.width, m.height)
 					m.settingsOpen = true
 					return m, nil
 				case tea.KeyCtrlK:
@@ -400,6 +405,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
+					m.memoryModel.SetSize(m.width, m.height)
 					m.memoryOpen = true
 					return m, nil
 				case tea.KeyRunes:

@@ -2,7 +2,6 @@ package settings
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -50,7 +49,13 @@ func (f *stringField) Update(msg tea.Msg) {
 }
 
 func (f *stringField) View(width int) string {
-	return fmt.Sprintf("%s: %s", f.label, f.input.View())
+	label := f.label + ": "
+	available := width - len([]rune(label)) - 2 // cursor / focus prefix
+	if available < 1 {
+		available = 1
+	}
+	f.input.Width = available
+	return label + f.input.View()
 }
 
 type labelField struct {
@@ -71,17 +76,18 @@ func (f *labelField) Blur() {}
 func (f *labelField) Update(msg tea.Msg) {}
 
 func (f *labelField) View(width int) string {
-	return fmt.Sprintf("%s: %s", f.label, f.value)
+	return truncateRunes(f.label+": "+f.value, width)
 }
 
 type boolField struct {
-	label    string
-	value    *bool
-	onChange func(bool)
+	label       string
+	description string
+	value       *bool
+	onChange    func(bool)
 }
 
 func newBoolField(label string, desc string, value *bool, onChange func(bool)) *boolField {
-	return &boolField{label: fmt.Sprintf("%s (%s)", label, desc), value: value, onChange: onChange}
+	return &boolField{label: label, description: desc, value: value, onChange: onChange}
 }
 
 func (f *boolField) Label() string { return f.label }
@@ -103,11 +109,15 @@ func (f *boolField) Update(msg tea.Msg) {
 }
 
 func (f *boolField) View(width int) string {
-	marker := " "
+	val := "false"
 	if *f.value {
-		marker = "x"
+		val = "true"
 	}
-	return fmt.Sprintf("[%s] %s", marker, f.label)
+	s := fmt.Sprintf("%s: %s", f.label, val)
+	if f.description != "" {
+		s += " (" + f.description + ")"
+	}
+	return truncateRunes(s, width)
 }
 
 func (f *boolField) Value() bool { return *f.value }
@@ -158,15 +168,8 @@ func (f *selectField) Update(msg tea.Msg) {
 }
 
 func (f *selectField) View(width int) string {
-	var parts []string
-	for i, opt := range f.options {
-		if i == f.selected {
-			parts = append(parts, fmt.Sprintf(">%s<", opt))
-		} else {
-			parts = append(parts, opt)
-		}
-	}
-	return fmt.Sprintf("%s: %s", f.label, strings.Join(parts, "  "))
+	s := f.label + ": " + f.Value()
+	return truncateRunes(s, width)
 }
 
 func (f *selectField) Value() string {

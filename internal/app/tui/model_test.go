@@ -630,4 +630,22 @@ func TestFocusAndTabNavigation(t *testing.T) {
 	}
 }
 
+func TestAltScreenViewLayout(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	// Simulate terminal size
+	model.width = 100
+	model.height = 40
+
+	view := model.View()
+	// Check for sidebar tabs, status bar working dir
+	if !strings.Contains(view, "[1] Plan") {
+		t.Error("view missing Plan tab title")
+	}
+	if !strings.Contains(view, "/repo") {
+		t.Error("view missing working directory in status bar")
+	}
+}
+
+
 

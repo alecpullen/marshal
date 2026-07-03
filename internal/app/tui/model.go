@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -408,7 +409,215 @@ func formatBoxLine(s string, width int) string {
 	return fmt.Sprintf("│   %s%s │\n", string(runes), strings.Repeat(" ", padLen))
 }
 
+var (
+	accentColor    = lipgloss.Color("86")  // Cyan/Teal
+	dimColor       = lipgloss.Color("244") // Gray
+	activeTabStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, false, true, false).
+			BorderForeground(accentColor).
+			Foreground(accentColor).
+			Padding(0, 1)
+	inactiveTabStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, false, true, false).
+			BorderForeground(dimColor).
+			Foreground(dimColor).
+			Padding(0, 1)
+	statusBarAccent = lipgloss.NewStyle().
+			Background(accentColor).
+			Foreground(lipgloss.Color("0")).
+			Padding(0, 1).
+			Bold(true)
+	statusBarBg = lipgloss.NewStyle().
+			Background(lipgloss.Color("236")).
+			Foreground(lipgloss.Color("252"))
+)
+
 func (m Model) View() string {
+	if m.width == 0 || m.height == 0 {
+		return m.fallbackView()
+	}
+
+	if m.settingsOpen {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.settingsModel.View())
+	}
+	if m.memoryOpen {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
+	}
+
+	tc := m.state.PendingApproval()
+
+	// Widths
+	leftWidth := int(float64(m.width) * 0.70)
+	rightWidth := m.width - leftWidth - 2 // space for borders
+
+	// Heights
+	contentHeight := m.height - 3
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+
+	// Sub-heights in Left Column
+	inputHeight := 3
+	chatHeight := contentHeight - inputHeight
+	if chatHeight < 1 {
+		chatHeight = 1
+	}
+
+	// 1. Render Left Column Content
+	var leftContent string
+	if tc != nil && tc.Diff != "" {
+		splitWidth := (leftWidth - 4) / 2
+		if splitWidth < 1 {
+			splitWidth = 1
+		}
+		diffStyle := lipgloss.NewStyle().
+			Width(splitWidth).
+			Height(chatHeight - 2).
+			MaxHeight(chatHeight - 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(dimColor)
+		diffView := diffStyle.Render(tc.Diff)
+
+		approvalStyle := lipgloss.NewStyle().
+			Width(splitWidth).
+			Height(chatHeight - 2).
+			MaxHeight(chatHeight - 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(accentColor)
+
+		var b strings.Builder
+		b.WriteString("┌─ SECURITY APPROVAL REQUIRED ┐\n")
+		b.WriteString(fmt.Sprintf("Command: %s\n", tc.Command))
+		b.WriteString(fmt.Sprintf("Reason: %s\n", tc.Reason))
+		b.WriteString(fmt.Sprintf("Risk: %s\n", tc.Risk))
+		b.WriteString("\nOptions:\n")
+		b.WriteString("[Enter] Approve\n[d] Deny\n[e] Edit\n[a] Always Allow\n")
+		if m.state.HasBackup() {
+			b.WriteString("[r] Rollback\n")
+		}
+
+		approvalView := approvalStyle.Render(b.String())
+		leftContent = lipgloss.JoinHorizontal(lipgloss.Top, diffView, approvalView)
+	} else if tc != nil {
+		approvalStyle := lipgloss.NewStyle().
+			Width(leftWidth - 2).
+			Height(chatHeight - 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(accentColor)
+		var b strings.Builder
+		b.WriteString("┌── SECURITY APPROVAL REQUIRED ───────────────────────────────────────────┐\n")
+		b.WriteString(fmt.Sprintf("│ Command: %s\n", tc.Command))
+		b.WriteString(fmt.Sprintf("│ Reason: %s\n", tc.Reason))
+		b.WriteString(fmt.Sprintf("│ Risk: %s\n", tc.Risk))
+		b.WriteString("├─────────────────────────────────────────────────────────────────────────┤\n")
+		b.WriteString("│ [Enter] Approve  [d] Deny  [e] Edit  [a] Always Allow                   │\n")
+		if m.state.HasBackup() {
+			b.WriteString("│ [r] Rollback Last Patch                                                 │\n")
+		}
+		b.WriteString("└─────────────────────────────────────────────────────────────────────────┘")
+		leftContent = approvalStyle.Render(b.String())
+	} else {
+		m.viewport.Width = leftWidth - 2
+		m.viewport.Height = chatHeight
+		leftContent = lipgloss.NewStyle().
+			Width(leftWidth - 2).
+			Height(chatHeight).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(dimColor).
+			Render(m.viewport.View())
+	}
+
+	// Render input box
+	inputStyle := lipgloss.NewStyle().Width(leftWidth - 2).Padding(0, 1)
+	inputContent := inputStyle.Render(m.input.View())
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, leftContent, inputContent)
+
+	// 2. Render Right Column Content (Tabs)
+	tabNames := []string{"Plan", "Context", "Log"}
+	var headers []string
+	for i, name := range tabNames {
+		style := inactiveTabStyle
+		if m.activeTab == i {
+			style = activeTabStyle
+		}
+		headers = append(headers, style.Render(fmt.Sprintf("[%d] %s", i+1, name)))
+	}
+	tabHeader := lipgloss.JoinHorizontal(lipgloss.Top, headers...)
+
+	var sidebarBody string
+	sbStyle := lipgloss.NewStyle().
+		Width(rightWidth).
+		Height(contentHeight - 2).
+		MaxHeight(contentHeight - 2)
+
+	switch m.activeTab {
+	case 0:
+		var sb strings.Builder
+		sb.WriteString("Current Plan:\n\n")
+		sb.WriteString(" ● Redesign terminal UI layout\n")
+		if tc != nil {
+			sb.WriteString(fmt.Sprintf("   → Pending approval: %s\n", tc.Command))
+		} else if m.busy {
+			sb.WriteString("   → Agent is executing tasks...\n")
+		} else {
+			sb.WriteString("   → Ready for user input.\n")
+		}
+		sidebarBody = sbStyle.Render(sb.String())
+	case 1:
+		var sb strings.Builder
+		pack := m.state.ContextPack()
+		if pack.IsEmpty() {
+			sb.WriteString("No context pack built yet.\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("Pack: %d/%d tokens\n\n", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens))
+			for _, section := range pack.Sections {
+				sb.WriteString(fmt.Sprintf("📄 %s (%d tk)\n", section.Title, section.EstimatedTokens))
+			}
+		}
+		sidebarBody = sbStyle.Render(sb.String())
+	case 2:
+		var sb strings.Builder
+		auditLog := m.state.AuditLog()
+		if len(auditLog) == 0 {
+			sb.WriteString("No tool calls yet.\n")
+		} else {
+			for _, event := range auditLog {
+				sb.WriteString(fmt.Sprintf("[%s] %s -> %s\n", event.Timestamp.Format("15:04:05"), event.ToolName, event.ResultSummary))
+			}
+		}
+		sidebarBody = sbStyle.Render(sb.String())
+	}
+
+	sidebarContent := lipgloss.JoinVertical(lipgloss.Left, tabHeader, sidebarBody)
+	rightColumn := lipgloss.NewStyle().
+		Width(rightWidth).
+		Height(contentHeight).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(dimColor).
+		Render(sidebarContent)
+
+	// 3. Render Status Bar
+	statusItems := []string{
+		statusBarAccent.Render(" MARSHAL "),
+		fmt.Sprintf(" project=%s ", m.state.Config.Project.Name),
+		fmt.Sprintf(" cwd=%s ", m.state.WorkingDir),
+		fmt.Sprintf(" local-only=%t ", !m.state.Config.Privacy.RemoteProvidersAllowed),
+	}
+	if m.busy {
+		statusItems = append(statusItems, statusBarAccent.Render(" WORKING "))
+	} else {
+		statusItems = append(statusItems, " IDLE ")
+	}
+
+	statusBarText := lipgloss.JoinHorizontal(lipgloss.Top, statusItems...)
+	statusBar := statusBarBg.Width(m.width).Render(statusBarText)
+
+	// Assemble layout
+	mainLayout := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
+	return lipgloss.JoinVertical(lipgloss.Left, mainLayout, statusBar)
+}
+
+func (m Model) fallbackView() string {
 	if m.settingsOpen {
 		return m.settingsModel.View()
 	}

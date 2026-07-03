@@ -65,4 +65,16 @@ CREATE TABLE IF NOT EXISTS symbols (
     line_end INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_project_name ON symbols(project_id, name);
+
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    source_session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
 `

@@ -202,3 +202,45 @@ func TestResolveBlocksRemotePresetWhenRemoteDisabled(t *testing.T) {
 		t.Fatalf("err = %v, want ErrRemoteProviderBlocked", err)
 	}
 }
+
+func TestResolveKnowledgeUsesKnowledgeRoleWhenConfigured(t *testing.T) {
+	router := NewStaticRouter(Config{
+		DefaultProfile: "local_balanced",
+		RemoteAllowed:  false,
+		Presets: map[string]ModelPreset{
+			"tiny": {Name: "tiny", Provider: "ollama", Model: "qwen2.5:0.5b", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{
+			"local_balanced": {
+				Name: "local_balanced",
+				Roles: map[AgentRole]string{
+					RoleKnowledge: "tiny",
+				},
+			},
+		},
+	})
+
+	route, err := router.Resolve(TaskProfile{Class: "knowledge"})
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if route.Role != RoleKnowledge {
+		t.Fatalf("Role = %q, want %q", route.Role, RoleKnowledge)
+	}
+	if route.Preset.Name != "tiny" {
+		t.Fatalf("Preset = %#v, want tiny", route.Preset)
+	}
+}
+
+func TestResolveKnowledgeFallsBackToImplementerWhenNotConfigured(t *testing.T) {
+	route, err := testRouter().Resolve(TaskProfile{Class: "knowledge"})
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if route.Role != RoleImplementer {
+		t.Fatalf("Role = %q, want %q (fallback)", route.Role, RoleImplementer)
+	}
+	if route.Preset.Name != "coder" {
+		t.Fatalf("Preset = %#v, want coder", route.Preset)
+	}
+}

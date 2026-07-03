@@ -11,7 +11,7 @@ In scope:
 - Summarize the session transcript at session end and store it on `agent_sessions`.
 - Extract durable project memories (`fact` / `architecture` / `decision` kinds) with a confidence state (`tentative` / `confirmed` / `stale`).
 - Summarize files touched during the session (via the existing audit log's `FilesChanged`), storing the summary on the file's index row.
-- A memory browser overlay in the TUI, opened with `Ctrl+M`, supporting manual stale-toggling.
+- A memory browser overlay in the TUI, opened with `Ctrl+K`, supporting manual stale-toggling.
 - Feed non-stale memories into context packs via a new `memory` section.
 
 Out of scope:
@@ -253,7 +253,7 @@ Keybindings inside the browser: `↑`/`k` and `↓`/`j` move the cursor; `c` set
 `internal/app/tui/model.go` wiring (mirrors the `settingsOpen`/`settingsModel` pattern at lines 35-36, 104-117, 125-133, 200-203, 269-271):
 
 - New fields `memoryOpen bool`, `memoryModel memory.Model`.
-- New keybinding `Ctrl+M` (unused today) opens it: `m.memoryModel = memory.New(database, projectID); m.memoryOpen = true`.
+- New keybinding `Ctrl+K` opens it: `m.memoryModel = memory.New(database, projectID); m.memoryOpen = true`. (Not `Ctrl+M`: in raw terminal input, Ctrl+M is byte-identical to Enter — bubbletea's `KeyCtrlM` and `KeyEnter` share the same `KeyType` value — so binding it would break message submission. `Ctrl+K` has no such collision in this codebase.)
 - When `memoryOpen`, `Update` short-circuits key handling to `m.memoryModel.Update(msg)`, same as the settings short-circuit.
 - `View()` returns `m.memoryModel.View()` early when `memoryOpen`, same as settings.
 - `memory.ClosedMsg` sets `memoryOpen = false`.
@@ -279,7 +279,7 @@ Keybindings inside the browser: `↑`/`k` and `↓`/`j` move the cursor; `c` set
 - `internal/contextpack/contextpack_test.go`: extend for `MergeMemories` (budget truncation, replace-on-rebuild, empty-memories no-op).
 - `internal/agent/runner_test.go`: extend for the `MemoryProvider` merge call at the top of `Run` (memories present vs. `MemoryProvider` nil).
 - `internal/app/tui/memory/model_test.go` (new), `view_test.go` (new): mirror `settings/model_test.go`'s style — cursor movement, stale/confirm toggling, close message.
-- `internal/app/tui/model_test.go`: extend for `Ctrl+M` open/close short-circuit, mirroring existing settings-overlay tests.
+- `internal/app/tui/model_test.go`: extend for `Ctrl+K` open/close short-circuit, mirroring existing settings-overlay tests.
 
 ## Acceptance Criteria
 
@@ -287,6 +287,6 @@ Keybindings inside the browser: `↑`/`k` and `↓`/`j` move the cursor; `c` set
 - Milestone N checklist (`docs/10-mvp-implementation-checklist.md`) is fully checked.
 - Ending a session with at least one user message produces a session summary, zero or more memories, and zero or more file summaries for session-touched files, all queryable from the DB afterward.
 - Ending a session with no user messages performs no LLM call and no writes beyond what already existed.
-- `Ctrl+M` opens a memory browser listing all non-deleted memories for the project; `s` marks the selected memory stale, `c` marks it confirmed; `Esc` closes it.
+- `Ctrl+K` opens a memory browser listing all non-deleted memories for the project; `s` marks the selected memory stale, `c` marks it confirmed; `Esc` closes it.
 - A subsequent session's context pack includes a `memory` section built from non-stale memories, subject to the pack's token budget.
 - A failed knowledge-pass LLM call does not change Marshal's process exit code or produce a visible error to the user.

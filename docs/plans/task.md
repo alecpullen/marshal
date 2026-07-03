@@ -6,4 +6,5 @@
 | Present design | [x] | Design breakdown (layout, panels, keybindings) |
 | Write design doc | [x] | Save to docs/plans/2026-07-03-tui-redesign-design.md |
 | Integrate settings TUI into layout | [x] | Ask user preference and update design & implementation plans |
-| Transition to implementation | [x] | Invoke writing-plans skill |
+| Integrate memory browser into layout | [x] | Update design & implementation plans for memory browser overlay |
+| Transition to implementation | [/] | Invoke writing-plans skill |

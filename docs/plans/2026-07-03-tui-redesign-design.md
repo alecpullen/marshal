@@ -87,3 +87,11 @@ When Settings is opened (`Ctrl+O`):
 * We use `lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, settingsView)` to position the panel.
 * If canceled (`Esc`) or saved (`Ctrl+S`), the TUI returns to the main multi-panel dashboard layout.
 
+## 5. Memory Browser TUI Integration
+
+When the Memory Browser is opened (`Ctrl+K`):
+* The TUI displays the project memories panel centered on the screen (replacing the primary dashboard view).
+* We use `lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, memoryView)` to position the panel.
+* If closed (`Esc`), the TUI returns to the main multi-panel dashboard layout.
+
+

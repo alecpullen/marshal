@@ -156,15 +156,16 @@ func (m *Model) resize(width, height int) {
 	}
 
 	// Vertical budget: status bar (1) + the main content area. The right column
-	// has a two-line rounded border, so the interior content height is height-3.
-	m.contentHeight = height - 3
+	// body is contentHeight-3 and the wrapped tab header can occupy four rows,
+	// so the interior content height is height-4.
+	m.contentHeight = height - 4
 	if m.contentHeight < 5 {
 		m.contentHeight = 5
 	}
 
 	// Left column interior: chat box (two-line border + viewport) + input line +
 	// wrapped help line(s). Reserve three rows below the chat viewport.
-	m.chatHeight = m.contentHeight - 4
+	m.chatHeight = m.contentHeight - 3
 	if m.chatHeight < 1 {
 		m.chatHeight = 1
 	}
@@ -596,8 +597,8 @@ func (m Model) View() string {
 	var sidebarBody string
 	sbStyle := lipgloss.NewStyle().
 		Width(m.rightWidth - 2).
-		Height(m.contentHeight - 4).
-		MaxHeight(m.contentHeight - 4)
+		Height(m.contentHeight - 3).
+		MaxHeight(m.contentHeight - 3)
 
 	switch m.activeTab {
 	case 0:

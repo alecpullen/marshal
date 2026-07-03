@@ -895,3 +895,27 @@ func TestBusyTickRefreshesViewport(t *testing.T) {
 		t.Fatalf("viewport not refreshed during busy tick:\n%s", view)
 	}
 }
+
+func TestApprovalBannerHasSingleBorder(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	tc := &session.PendingToolCall{
+		ID:           "1",
+		Name:         "shell.run",
+		Command:      "go test",
+		Risk:         "low",
+		Reason:       "run tests to validate changes",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(tc)
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	view := model.View()
+	if strings.Count(view, "┌") > 1 {
+		t.Fatalf("approval banner has double borders:\n%s", view)
+	}
+	if !strings.Contains(view, "run tests") {
+		t.Fatalf("approval banner missing human reason:\n%s", view)
+	}
+}

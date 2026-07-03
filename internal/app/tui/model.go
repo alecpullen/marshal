@@ -495,6 +495,13 @@ func truncateRunes(s string, limit int) string {
 	return string(runes[:limit])
 }
 
+func riskText(tc *session.PendingToolCall) string {
+	if tc.Reason != "" {
+		return tc.Reason
+	}
+	return tc.Risk
+}
+
 func visibleRunes(s string) int {
 	var count int
 	inEsc := false
@@ -607,20 +614,28 @@ func (m Model) View() string {
 	} else if tc != nil {
 		approvalStyle := lipgloss.NewStyle().
 			Width(m.leftWidth).
-			Height(m.chatHeight - 2).
+			Height(m.chatHeight).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(accentColor)
+
+		cmdLine := truncateRunes(tc.Command, m.leftWidth-12)
+		reasonLine := truncateRunes(tc.Reason, m.leftWidth-10)
+		riskLine := truncateRunes(riskText(tc), m.leftWidth-8)
+
 		var b strings.Builder
-		b.WriteString("┌── SECURITY APPROVAL REQUIRED ───────────────────────────────────────────┐\n")
-		b.WriteString(fmt.Sprintf("│ Command: %s\n", tc.Command))
-		b.WriteString(fmt.Sprintf("│ Reason: %s\n", tc.Reason))
-		b.WriteString(fmt.Sprintf("│ Risk: %s\n", tc.Risk))
-		b.WriteString("├─────────────────────────────────────────────────────────────────────────┤\n")
-		b.WriteString("│ [Enter] Approve  [d] Deny  [e] Edit  [a] Always Allow                   │\n")
-		if m.state.HasBackup() {
-			b.WriteString("│ [r] Rollback Last Patch                                                 │\n")
+		b.WriteString("SECURITY APPROVAL REQUIRED\n\n")
+		b.WriteString(fmt.Sprintf("Command: %s\n", cmdLine))
+		b.WriteString(fmt.Sprintf("Reason: %s\n", reasonLine))
+		b.WriteString(fmt.Sprintf("Risk: %s\n", riskLine))
+		b.WriteString("\n[Enter] Approve  [d] Deny  [e] Edit")
+		if tc.Command != "" {
+			b.WriteString(fmt.Sprintf("  [a] Always allow \"%s\"", truncateRunes(tc.Command, 20)))
 		}
-		b.WriteString("└─────────────────────────────────────────────────────────────────────────┘")
+		if m.state.HasBackup() {
+			b.WriteString("  [r] Rollback")
+		}
+		b.WriteString("\n")
+
 		leftContent = approvalStyle.Render(b.String())
 	} else {
 		leftContent = lipgloss.NewStyle().

@@ -80,7 +80,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	task := NewTask(goal, r.Now())
 	task.Class = Classify(goal)
 	turnProvider, turnModel, route := r.resolveRoute(task)
-	r.mergeMemories()
+	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
 	messages := []schema.ChatMessage{
 		BuildSystemPrompt(r.Registry.List()),
@@ -190,7 +190,7 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 // mergeMemories injects the project's current durable memories into the
 // context pack, if a MemoryProvider is configured. Failures are ignored so a
 // missing or unhealthy memory source never blocks a turn.
-func (r *Runner) mergeMemories() {
+func (r *Runner) mergeMemories(maxTokenOverride int) {
 	if r.MemoryProvider == nil {
 		return
 	}
@@ -201,7 +201,10 @@ func (r *Runner) mergeMemories() {
 	}
 
 	current := r.State.ContextPack()
-	maxTokens := current.TokenUsage.MaxTokens
+	maxTokens := maxTokenOverride
+	if maxTokens <= 0 {
+		maxTokens = current.TokenUsage.MaxTokens
+	}
 	if maxTokens <= 0 {
 		maxTokens = contextpack.DefaultMaxTokens
 	}

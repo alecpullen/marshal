@@ -50,6 +50,8 @@ func roleForTaskClass(class string) AgentRole {
 	switch class {
 	case "question":
 		return RoleRepoScout
+	case "knowledge":
+		return RoleKnowledge
 	case "edit", "command":
 		return RoleImplementer
 	default:

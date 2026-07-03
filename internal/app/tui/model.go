@@ -12,7 +12,9 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -35,6 +37,10 @@ type Model struct {
 	settingsOpen   bool
 	settingsModel  settings.Model
 	configReloader ConfigReloader
+	memoryOpen     bool
+	memoryModel    memory.Model
+	memoryDB       *db.DB
+	memoryProject  int64
 }
 
 type Option func(*Model)
@@ -44,6 +50,15 @@ type ConfigReloader func(cfg config.Config) error
 func WithConfigReloader(fn ConfigReloader) Option {
 	return func(m *Model) {
 		m.configReloader = fn
+	}
+}
+
+// WithMemoryStore configures the memory browser overlay (Ctrl+K) with the
+// project database it should read from.
+func WithMemoryStore(database *db.DB, projectID int64) Option {
+	return func(m *Model) {
+		m.memoryDB = database
+		m.memoryProject = projectID
 	}
 }
 
@@ -115,6 +130,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case settings.CancelledMsg:
 		m.settingsOpen = false
 		return m, nil
+	case memory.ClosedMsg:
+		m.memoryOpen = false
+		return m, nil
 	case tea.KeyMsg:
 		// Always allow Ctrl+C to quit
 		if msg.Type == tea.KeyCtrlC {
@@ -129,6 +147,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			updated, cmd := m.settingsModel.Update(msg)
 			m.settingsModel = updated.(settings.Model)
+			return m, cmd
+		}
+		if m.memoryOpen {
+			updated, cmd := m.memoryModel.Update(msg)
+			m.memoryModel = updated.(memory.Model)
 			return m, cmd
 		}
 
@@ -201,6 +224,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
 				m.settingsOpen = true
 				return m, nil
+			case tea.KeyCtrlK:
+				if m.memoryDB == nil {
+					return m, nil
+				}
+				m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
+				m.memoryOpen = true
+				return m, nil
 			case tea.KeyEnter:
 				value := strings.TrimSpace(m.input.Value())
 				if value == "" || m.busy {
@@ -268,6 +298,9 @@ func formatBoxLine(s string, width int) string {
 func (m Model) View() string {
 	if m.settingsOpen {
 		return m.settingsModel.View()
+	}
+	if m.memoryOpen {
+		return m.memoryModel.View()
 	}
 
 	var b strings.Builder

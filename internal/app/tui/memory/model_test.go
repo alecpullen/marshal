@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -212,5 +213,56 @@ func assertBoundedFrame(t *testing.T, view string) {
 				t.Fatalf("bottom border missing right corner:\n%q\nfull view:\n%s", line, view)
 			}
 		}
+	}
+}
+
+func openTestDB(t *testing.T) *db.DB {
+	t.Helper()
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	return database
+}
+
+func createTestProject(t *testing.T, database *db.DB) int64 {
+	t.Helper()
+	projectID, err := database.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+	return projectID
+}
+
+func TestMemoryViewportScrollsAndClamps(t *testing.T) {
+	database := openTestDB(t)
+	pid := createTestProject(t, database)
+	for i := 0; i < 50; i++ {
+		if err := database.SaveMemory(pid, "fact", fmt.Sprintf("memory %d", i), "test-session", time.Unix(int64(i), 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := New(database, pid)
+	m.SetSize(80, 24)
+
+	// Move cursor to bottom.
+	for i := 0; i < 60; i++ {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+	if m.cursor != 49 {
+		t.Fatalf("cursor = %d, want 49", m.cursor)
+	}
+	if m.offset <= 0 {
+		t.Fatalf("offset did not move: %d", m.offset)
+	}
+
+	view := m.View()
+	if strings.Contains(view, "memory 0") {
+		t.Fatal("first memory should be scrolled out of view")
 	}
 }

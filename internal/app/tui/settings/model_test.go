@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,5 +43,40 @@ func TestCancelReturnsCancelledMsg(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(CancelledMsg); !ok {
 		t.Fatalf("expected CancelledMsg, got %T", msg)
+	}
+}
+
+func TestSettingsViewKeepsFrameBounded(t *testing.T) {
+	cfg := config.Default()
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"default": {Roles: map[routing.AgentRole]string{routing.RoleImplementer: "local"}},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"local": {Name: "local", Provider: "ollama", Model: "qwen2.5-coder:14b"},
+	}
+	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
+	m.SetSize(80, 24)
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	maxW := 0
+	for _, line := range lines {
+		if w := len([]rune(line)); w > maxW {
+			maxW = w
+		}
+	}
+	if maxW > 60 {
+		t.Fatalf("settings width = %d, want <= 60", maxW)
+	}
+	if maxW < 30 {
+		t.Fatalf("settings width = %d, looks broken", maxW)
+	}
+	first := lines[0]
+	last := lines[len(lines)-2]
+	if !strings.HasPrefix(first, "┌") || !strings.HasSuffix(first, "┐") {
+		t.Fatalf("top border broken: %q", first)
+	}
+	if !strings.HasPrefix(last, "└") || !strings.HasSuffix(last, "┘") {
+		t.Fatalf("bottom border broken: %q", last)
 	}
 }

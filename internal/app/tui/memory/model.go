@@ -14,6 +14,9 @@ type Model struct {
 	memories  []db.Memory
 	cursor    int
 	footer    string
+	width     int
+	height    int
+	offset    int
 }
 
 func New(database *db.DB, projectID int64) Model {
@@ -31,32 +34,37 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
+func (m *Model) SetSize(width, height int) {
+	m.width = width
+	m.height = height
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	keyMsg, ok := msg.(tea.KeyMsg)
-	if !ok {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.SetSize(msg.Width, msg.Height)
 		return m, nil
-	}
-
-	switch keyMsg.Type {
-	case tea.KeyEsc:
-		return m, func() tea.Msg { return ClosedMsg{} }
-	case tea.KeyUp:
-		m.moveCursor(-1)
-		return m, nil
-	case tea.KeyDown:
-		m.moveCursor(1)
-		return m, nil
-	}
-
-	switch keyMsg.String() {
-	case "k":
-		m.moveCursor(-1)
-	case "j":
-		m.moveCursor(1)
-	case "c":
-		m.setConfidence(db.MemoryConfidenceConfirmed)
-	case "s":
-		m.setConfidence(db.MemoryConfidenceStale)
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyEsc:
+			return m, func() tea.Msg { return ClosedMsg{} }
+		case tea.KeyUp:
+			m.moveCursor(-1)
+			return m, nil
+		case tea.KeyDown:
+			m.moveCursor(1)
+			return m, nil
+		}
+		switch msg.String() {
+		case "k":
+			m.moveCursor(-1)
+		case "j":
+			m.moveCursor(1)
+		case "c":
+			m.setConfidence(db.MemoryConfidenceConfirmed)
+		case "s":
+			m.setConfidence(db.MemoryConfidenceStale)
+		}
 	}
 	return m, nil
 }
@@ -72,6 +80,30 @@ func (m *Model) moveCursor(delta int) {
 	if m.cursor >= len(m.memories) {
 		m.cursor = len(m.memories) - 1
 	}
+	m.keepCursorInView()
+}
+
+func (m *Model) keepCursorInView() {
+	visible := m.visibleCount()
+	if visible <= 0 {
+		return
+	}
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+visible {
+		m.offset = m.cursor - visible + 1
+	}
+}
+
+// visibleCount uses a value receiver because it does not mutate state.
+func (m Model) visibleCount() int {
+	// title(1) + separator(1) + footer/help(2) + borders(2)
+	available := m.height - 6
+	if available < 1 {
+		return 1
+	}
+	return available
 }
 
 func (m *Model) setConfidence(confidence string) {

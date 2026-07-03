@@ -17,6 +17,13 @@ type Model struct {
 	fields         []field
 	focused        int
 	footer         string
+	width          int
+	height         int
+}
+
+func (m *Model) SetSize(width, height int) {
+	m.width = width
+	m.height = height
 }
 
 func New(cfg config.Config, workingDir, projectCfgPath string) Model {
@@ -35,6 +42,10 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 		profileNames = []string{""}
 	}
 
+	// Known issue: changing the Default profile does not recompute the active
+	// preset label or repopulate the Provider/Model/Local-only fields in place.
+	// The select field callback only receives the new value string, and the
+	// current implementation keeps the originally computed fields.
 	m.fields = append(m.fields, newSelectField(
 		"Default profile",
 		profileNames,

@@ -458,6 +458,33 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+func truncateRunes(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit])
+}
+
+func visibleRunes(s string) int {
+	var count int
+	inEsc := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if r == 'm' {
+				inEsc = false
+			}
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 func formatBoxLine(s string, width int) string {
 	contentWidth := width - 6 // "│   " (4) + " │" (2)
 	runes := []rune(s)
@@ -574,15 +601,17 @@ func (m Model) View() string {
 	// Render input box
 	inputStyle := lipgloss.NewStyle().Width(m.leftWidth).Padding(0, 1)
 	helpStyle := lipgloss.NewStyle().
-		MaxWidth(m.leftWidth - 2).
-		MaxHeight(helpMaxRows).
-		Foreground(dimColor)
+		Foreground(dimColor).
+		MaxWidth(m.leftWidth - 2)
 
 	var helpText string
 	if m.inputFocused {
 		helpText = "  [Esc] Unfocus  [Tab] Cycle Tabs  [Ctrl+O] Settings  [Ctrl+K] Memories  [Ctrl+R] Rollback"
 	} else {
 		helpText = "  [Enter] Focus Input  [1-3] Switch Tabs  [Ctrl+O] Settings  [Ctrl+K] Memories  [Ctrl+R] Rollback"
+	}
+	if len([]rune(helpText)) > m.leftWidth-2 {
+		helpText = truncateRunes(helpText, m.leftWidth-2)
 	}
 
 	inputContent := lipgloss.JoinVertical(lipgloss.Left,
@@ -660,20 +689,46 @@ func (m Model) View() string {
 		Render(sidebarContent)
 
 	// 3. Render Status Bar
-	statusItems := []string{
-		statusBarAccent.Render(" MARSHAL "),
-		fmt.Sprintf(" project=%s ", m.state.Config.Project.Name),
-		fmt.Sprintf(" cwd=%s ", m.state.WorkingDir),
-		fmt.Sprintf(" local-only=%t ", !m.state.Config.Privacy.RemoteProvidersAllowed),
-	}
+	localOnlyText := fmt.Sprintf(" local-only=%t ", !m.state.Config.Privacy.RemoteProvidersAllowed)
+	busyStyle := statusBarAccent.Width(9)
+	busyText := "  IDLE   "
 	if m.busy {
-		statusItems = append(statusItems, statusBarAccent.Render(" WORKING "))
-	} else {
-		statusItems = append(statusItems, " IDLE ")
+		busyText = " WORKING "
+	}
+	busyItem := busyStyle.Render(busyText)
+
+	// Determine how much room is left for project/cwd so the status bar stays
+	// on a single line. The fixed items are MARSHAL, the busy/idle block, and
+	// the local-only flag; project/cwd are truncated adaptively when the
+	// terminal is narrow, but never exceed the caps from the spec.
+	fixedWidth := visibleRunes(statusBarAccent.Render(" MARSHAL ")) +
+		visibleRunes(busyItem) +
+		visibleRunes(localOnlyText)
+	remaining := m.width - fixedWidth
+	const projectOverhead = 10 // " project=" + " "
+	const cwdOverhead = 6      // " cwd=" + " "
+	projectMax, cwdMax := 0, 0
+	if remaining > projectOverhead {
+		projectMax = min(16, remaining-projectOverhead)
+		remaining -= projectOverhead + projectMax
+		if remaining > cwdOverhead {
+			cwdMax = min(24, remaining-cwdOverhead)
+		}
 	}
 
+	statusItems := []string{
+		statusBarAccent.Render(" MARSHAL "),
+	}
+	if projectMax > 0 {
+		statusItems = append(statusItems, fmt.Sprintf(" project=%s ", truncateRunes(m.state.Config.Project.Name, projectMax)))
+	}
+	if cwdMax > 0 {
+		statusItems = append(statusItems, fmt.Sprintf(" cwd=%s ", truncateRunes(m.state.WorkingDir, cwdMax)))
+	}
+	statusItems = append(statusItems, localOnlyText, busyItem)
+
 	statusBarText := lipgloss.JoinHorizontal(lipgloss.Top, statusItems...)
-	statusBar := statusBarBg.Width(m.width).MaxHeight(1).Render(statusBarText)
+	statusBar := statusBarBg.Width(m.width).MaxWidth(m.width).Render(statusBarText)
 
 	// Assemble layout
 	mainLayout := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)

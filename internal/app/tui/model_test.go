@@ -699,6 +699,21 @@ func TestAltScreenViewFits80x24(t *testing.T) {
 	}
 }
 
+func TestStatusBarFitsTerminalWidth(t *testing.T) {
+	state := session.New(config.Default(), "/very/long/working/directory/path", time.Unix(100, 0), session.Persistence{})
+	state.Config.Project.Name = "a-very-long-project-name"
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	view := model.View()
+	lines := strings.Split(view, "\n")
+	last := lines[len(lines)-1]
+	if len([]rune(last)) > 80 {
+		t.Fatalf("status bar width = %d, want <= 80", len([]rune(last)))
+	}
+}
+
 func TestViewFitsTerminalSizes(t *testing.T) {
 	sizes := []struct {
 		width  int

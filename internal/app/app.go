@@ -18,7 +18,9 @@ import (
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
+	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/knowledge"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/native"
@@ -87,6 +89,12 @@ type routedProviderResolver struct {
 	providers map[string]provider.Provider
 }
 
+// dbMemoryProvider adapts stored project memories for context-pack
+// injection, excluding memories that have been marked stale.
+type dbMemoryProvider struct {
+	db *db.DB
+}
+
 func newRoutedProviderResolver(cfg config.Config) *routedProviderResolver {
 	return &routedProviderResolver{
 		router:    routing.NewStaticRouter(routingConfigFromAppConfig(cfg)),
@@ -116,6 +124,21 @@ func (r *routedProviderResolver) Resolve(task routing.TaskProfile) (routing.Rout
 	return route, p, nil
 }
 
+func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, error) {
+	memories, err := p.db.GetMemories(projectID)
+	if err != nil {
+		return nil, err
+	}
+	notes := make([]contextpack.MemoryNote, 0, len(memories))
+	for _, m := range memories {
+		if m.Confidence == db.MemoryConfidenceStale {
+			continue
+		}
+		notes = append(notes, contextpack.MemoryNote{Kind: m.Kind, Content: m.Content})
+	}
+	return notes, nil
+}
+
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64) (*agent.Runner, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
@@ -137,6 +160,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	pol := policy.NewEngine(&cfg, state.SessionRules())
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.RouteResolver = resolver
+	runner.MemoryProvider = &dbMemoryProvider{db: database}
+	runner.ProjectID = projectID
 	state.SetActiveRoute(session.RouteInfo{
 		Role:      route.Role,
 		Profile:   route.Profile,
@@ -206,6 +231,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	var runner *agent.Runner
 	runner, err = buildAgentRunner(ctx, cfg, state, database, projectID)
 	var tuiOpts []tui.Option
+	tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
 	if err == nil {
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 		configReloader := func(newCfg config.Config) error {
@@ -256,7 +282,19 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	default:
 	}
 
-	return runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
+	knowledgeResolver := newRoutedProviderResolver(cfg)
+	progErr := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
+	knowledge.EndSession(context.Background(), knowledge.EndSessionInput{
+		DB:            database,
+		ProjectID:     projectID,
+		SessionID:     sessionID,
+		State:         state,
+		RouteResolver: knowledgeResolver,
+		WorkingDir:    workingDir,
+		Now:           runOpts.now,
+		Logger:        logger,
+	})
+	return progErr
 }
 
 func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {

@@ -11,8 +11,10 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/contextpack"
+	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
@@ -65,6 +67,60 @@ func TestQuitKeyRequestsShutdown(t *testing.T) {
 	case <-state.Done():
 	case <-time.After(time.Second):
 		t.Fatal("state was not shut down")
+	}
+}
+
+func TestCtrlKOpensMemoryBrowser(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	m := New(state, WithMemoryStore(database, projectID))
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	m = updated.(Model)
+	if !m.memoryOpen {
+		t.Fatal("expected memoryOpen to be true")
+	}
+	if !strings.Contains(m.View(), "Project Memories") {
+		t.Fatalf("View() missing memory browser:\n%s", m.View())
+	}
+}
+
+func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	m := New(state, WithMemoryStore(database, projectID))
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	m = updated.(Model)
+	if !m.memoryOpen {
+		t.Fatal("expected memoryOpen")
+	}
+	updated, _ = m.Update(memory.ClosedMsg{})
+	m = updated.(Model)
+	if m.memoryOpen {
+		t.Fatal("expected memoryOpen to be false after ClosedMsg")
 	}
 }
 
@@ -478,7 +534,6 @@ func TestEnterWhileBusyIsIgnored(t *testing.T) {
 	default:
 	}
 }
-
 
 func TestCtrlOOpensSettings(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})

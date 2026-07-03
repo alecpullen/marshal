@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui"
+	"marshal/internal/db"
 )
 
 func TestRunSkipsProgramAndConfigLoadWhenContextIsCancelled(t *testing.T) {
@@ -317,5 +320,125 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestRunTriggersKnowledgeEndSessionButSkipsWithNoMessages(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	now := time.Unix(100, 0)
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return now }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	database, dberr := db.Open(dbPath(dir))
+	if dberr != nil {
+		t.Fatalf("open db: %v", dberr)
+	}
+	defer database.Close()
+
+	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
+	got, err := database.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.EndedAt != nil || got.Summary != "" {
+		t.Fatalf("expected no session-end write with no messages, got %#v", got)
+	}
+}
+
+func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	var view string
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			m := model.(tui.Model)
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+			m = updated.(tui.Model)
+			view = m.View()
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(view, "Project Memories") {
+		t.Fatalf("view missing memory browser after Ctrl+K:\n%s", view)
+	}
+}
+
+func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	projectID, err := database.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+	now := time.Unix(100, 0)
+	if err := database.SaveMemory(projectID, "fact", "keep me", "sess_1", now); err != nil {
+		t.Fatalf("SaveMemory confirmed failed: %v", err)
+	}
+	if err := database.SaveMemory(projectID, "fact", "drop me", "sess_1", now); err != nil {
+		t.Fatalf("SaveMemory stale failed: %v", err)
+	}
+	stored, err := database.GetMemories(projectID)
+	if err != nil {
+		t.Fatalf("GetMemories failed: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("len(stored) = %d, want 2", len(stored))
+	}
+	staleID := stored[1].ID
+	if err := database.SetMemoryConfidence(staleID, db.MemoryConfidenceStale, now.Add(time.Second)); err != nil {
+		t.Fatalf("SetMemoryConfidence failed: %v", err)
+	}
+
+	provider := dbMemoryProvider{db: database}
+	memories, err := provider.Memories(projectID)
+	if err != nil {
+		t.Fatalf("Memories failed: %v", err)
+	}
+	if len(memories) != 1 {
+		t.Fatalf("len(memories) = %d, want 1", len(memories))
+	}
+	if memories[0].Content != "keep me" {
+		t.Fatalf("memory content = %q, want %q", memories[0].Content, "keep me")
 	}
 }

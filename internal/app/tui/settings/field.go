@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -50,7 +51,7 @@ func (f *stringField) Update(msg tea.Msg) {
 
 func (f *stringField) View(width int) string {
 	label := f.label + ": "
-	available := width - len([]rune(label)) - 2 // cursor / focus prefix
+	available := width - len([]rune(label))
 	if available < 1 {
 		available = 1
 	}
@@ -168,7 +169,15 @@ func (f *selectField) Update(msg tea.Msg) {
 }
 
 func (f *selectField) View(width int) string {
-	s := f.label + ": " + f.Value()
+	var parts []string
+	for i, opt := range f.options {
+		if i == f.selected {
+			parts = append(parts, fmt.Sprintf(">%s<", opt))
+		} else {
+			parts = append(parts, opt)
+		}
+	}
+	s := fmt.Sprintf("%s: %s", f.label, strings.Join(parts, "  "))
 	return truncateRunes(s, width)
 }
 

@@ -35,7 +35,7 @@ const (
 	minPanelWidth     = 10
 
 	totalHorizontalBorderGutter = 5 // left border + right border + gutter
-	verticalOverhead            = 4 // status bar + right-column border rows
+	verticalOverhead            = 4 // status bar (1) + right-column border (2) + slack (1)
 	chatBelowViewportRows       = 3 // input line + help line + rounding slack
 	tabHeaderMaxRows            = 4 // cap wrapped tab header to this many rows
 	helpMaxRows                 = chatBelowViewportRows - 1
@@ -162,8 +162,8 @@ func (m *Model) resize(width, height int) {
 	}
 
 	// Vertical budget: status bar (1 row) + right-column border (2 rows) +
-	// interior content. The interior content height must leave room for the
-	// input/help rows below the chat viewport.
+	// one row of rounding/help slack + interior content. The interior content
+	// height must leave room for the input/help rows below the chat viewport.
 	m.contentHeight = height - verticalOverhead
 	if m.contentHeight < 5 {
 		m.contentHeight = 5

@@ -83,3 +83,41 @@ go build ./cmd/marshal
 ## Concerns
 
 - None.
+
+## Fix report: task review findings
+
+### Changed files
+
+- `internal/app/app.go`
+- `internal/app/app_test.go`
+- `internal/app/tui/model_test.go`
+- `.superpowers/sdd/task-11-report.md`
+
+### Exact commands run
+
+```bash
+gofmt -w internal/app/app_test.go internal/app/tui/model_test.go
+go test ./internal/app/tui/... -run 'TestCtrlKWithoutMemoryStoreDoesNothing' -v
+go test ./internal/app/... -run 'TestRunUsesLiveConfigForShutdownKnowledgePass|TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession' -v
+gofmt -w internal/app/app.go
+go test ./internal/app/... -run 'TestRunUsesLiveConfigForShutdownKnowledgePass|TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession' -v
+go test ./internal/app/tui/... -v
+go test ./internal/app/... -v
+go build ./cmd/marshal
+go test ./...
+```
+
+### Pass/fail summary
+
+- Initial focused run failed as expected on stale shutdown config: `TestRunUsesLiveConfigForShutdownKnowledgePass` resolved `"used old config"` instead of `"used reloaded config"`.
+- Added regression coverage for `Ctrl+K` without a memory DB and for preserving the original `programRunner` error while still running `knowledge.EndSession`.
+- After fixing `Run` to build the shutdown resolver from `state.Config` after `programRunner` returns, all focused tests passed.
+- Required verification passed:
+  - `go test ./internal/app/tui/... -v`
+  - `go test ./internal/app/... -v`
+  - `go build ./cmd/marshal`
+  - `go test ./...`
+
+### Concerns
+
+- None.

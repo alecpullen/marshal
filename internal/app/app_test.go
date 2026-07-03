@@ -3,20 +3,28 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
+	"marshal/internal/app/tui/settings"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 )
 
 func TestRunSkipsProgramAndConfigLoadWhenContextIsCancelled(t *testing.T) {
@@ -397,6 +405,111 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 	}
 }
 
+func TestRunUsesLiveConfigForShutdownKnowledgePass(t *testing.T) {
+	oldServer := newKnowledgeTestServer(t, `{"session_summary":"used old config"}`)
+	newServer := newKnowledgeTestServer(t, `{"session_summary":"used reloaded config"}`)
+
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	now := time.Unix(100, 0)
+	initialCfg := knowledgeEnabledConfig(oldServer.URL, "old-provider")
+	reloadedCfg := knowledgeEnabledConfig(newServer.URL, "new-provider")
+
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return now }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return initialCfg, nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			state := modelState(t, model)
+			state.AddMessage(session.RoleUser, "summarize this session")
+
+			m := model.(tui.Model)
+			updated, _ := m.Update(settings.SavedMsg{Cfg: reloadedCfg})
+			_ = updated.(tui.Model)
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	database, dberr := db.Open(dbPath(dir))
+	if dberr != nil {
+		t.Fatalf("open db: %v", dberr)
+	}
+	defer database.Close()
+
+	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
+	got, err := database.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.Summary != "used reloaded config" {
+		t.Fatalf("Summary = %q, want %q", got.Summary, "used reloaded config")
+	}
+	if got.EndedAt == nil {
+		t.Fatal("EndedAt is nil, want set")
+	}
+}
+
+func TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession(t *testing.T) {
+	server := newKnowledgeTestServer(t, `{"session_summary":"runner failed but knowledge ran"}`)
+
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	now := time.Unix(100, 0)
+	wantErr := errors.New("program runner failed")
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return now }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			state := modelState(t, model)
+			state.AddMessage(session.RoleUser, "keep session history")
+			return wantErr
+		}),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run error = %v, want %v", err, wantErr)
+	}
+
+	database, dberr := db.Open(dbPath(dir))
+	if dberr != nil {
+		t.Fatalf("open db: %v", dberr)
+	}
+	defer database.Close()
+
+	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
+	got, err := database.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if got.Summary != "runner failed but knowledge ran" {
+		t.Fatalf("Summary = %q, want %q", got.Summary, "runner failed but knowledge ran")
+	}
+	if got.EndedAt == nil {
+		t.Fatal("EndedAt is nil, want set")
+	}
+}
+
 func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -441,4 +554,80 @@ func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
 	if memories[0].Content != "keep me" {
 		t.Fatalf("memory content = %q, want %q", memories[0].Content, "keep me")
 	}
+}
+
+func knowledgeEnabledConfig(baseURL, providerName string) config.Config {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		providerName: {
+			Type:    "openai_compatible",
+			BaseURL: baseURL,
+			APIKey:  "test-key",
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"implementer": {
+			Name:      "implementer",
+			Provider:  providerName,
+			Model:     "impl-model",
+			LocalOnly: true,
+		},
+		"knowledge": {
+			Name:      "knowledge",
+			Provider:  providerName,
+			Model:     "knowledge-model",
+			LocalOnly: true,
+		},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		cfg.Profile.Default: {
+			Name: cfg.Profile.Default,
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: "implementer",
+				routing.RoleKnowledge:   "knowledge",
+			},
+		},
+	}
+	return cfg
+}
+
+func newKnowledgeTestServer(t *testing.T, extraction string) *httptest.Server {
+	t.Helper()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Model == "" {
+			t.Fatal("expected model in request")
+		}
+		if !req.Stream {
+			t.Fatal("expected streaming chat request")
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n", extraction)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func modelState(t *testing.T, model tea.Model) *session.State {
+	t.Helper()
+	value := reflect.ValueOf(model)
+	field := value.FieldByName("state")
+	if !field.IsValid() || field.IsNil() {
+		t.Fatal("tui model has no state")
+	}
+	return (*session.State)(unsafe.Pointer(field.Pointer()))
 }

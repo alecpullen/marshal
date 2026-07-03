@@ -282,14 +282,13 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	default:
 	}
 
-	knowledgeResolver := newRoutedProviderResolver(cfg)
 	progErr := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
 	knowledge.EndSession(context.Background(), knowledge.EndSessionInput{
 		DB:            database,
 		ProjectID:     projectID,
 		SessionID:     sessionID,
 		State:         state,
-		RouteResolver: knowledgeResolver,
+		RouteResolver: newRoutedProviderResolver(state.Config),
 		WorkingDir:    workingDir,
 		Now:           runOpts.now,
 		Logger:        logger,

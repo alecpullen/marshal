@@ -645,6 +645,9 @@ func TestAltScreenViewLayout(t *testing.T) {
 	if !strings.Contains(view, "/repo") {
 		t.Error("view missing working directory in status bar")
 	}
+	if !strings.Contains(view, "[Ctrl+O] Settings") {
+		t.Error("view missing keybind help text")
+	}
 }
 
 

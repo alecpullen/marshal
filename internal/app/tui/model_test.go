@@ -860,3 +860,38 @@ func TestProviderErrorVisibleInAltScreen(t *testing.T) {
 		t.Fatalf("provider error not visible in AltScreen view:\n%s", view)
 	}
 }
+
+type streamingRunner struct {
+	called chan string
+}
+
+func (s *streamingRunner) Run(ctx context.Context, goal string) error {
+	s.called <- goal
+	return nil
+}
+
+func TestBusyTickRefreshesViewport(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	runner := &streamingRunner{called: make(chan string, 1)}
+	model := New(state, WithRunner(context.Background(), runner))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	// Start a turn.
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	// Simulate the agent adding a message mid-turn.
+	state.AddMessage(session.RoleAssistant, "working...")
+
+	// Tick should refresh the viewport.
+	updated, _ = model.Update(agentTickMsg{})
+	model = updated.(Model)
+
+	view := model.View()
+	if !strings.Contains(view, "working...") {
+		t.Fatalf("viewport not refreshed during busy tick:\n%s", view)
+	}
+}

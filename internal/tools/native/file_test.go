@@ -3,6 +3,7 @@ package native
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,9 @@ func TestFileWritePatchTool(t *testing.T) {
 
 	if res.Summary == "" {
 		t.Fatal("expected non-empty summary")
+	}
+	if !reflect.DeepEqual(res.FilesChanged, []string{"app.go"}) {
+		t.Fatalf("FilesChanged = %#v, want %#v", res.FilesChanged, []string{"app.go"})
 	}
 
 	// Verify file was patched

@@ -22,6 +22,7 @@ import (
 type fakeProvider struct {
 	response string
 	err      error
+	requests []schema.ChatRequest
 }
 
 func (p *fakeProvider) Name() string { return "fake" }
@@ -35,6 +36,7 @@ func (p *fakeProvider) Capabilities(ctx context.Context) schema.ProviderCapabili
 	return schema.ProviderCapabilities{}
 }
 func (p *fakeProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	p.requests = append(p.requests, req)
 	ch := make(chan schema.ChatEvent, 2)
 	if p.err != nil {
 		ch <- schema.ChatEvent{Type: schema.ChatEventError, Err: p.err}
@@ -116,7 +118,8 @@ func TestEndSessionPersistsSummaryMemoriesAndFileSummaries(t *testing.T) {
 	}
 
 	response := `{"session_summary":"Fixed the bug.","memories":[{"kind":"fact","content":"Uses SQLite for persistence"}],"file_summaries":{"bar.go":"Defines package foo"}}`
-	resolver := &fakeRouteResolver{route: knowledgeRoute(), prov: &fakeProvider{response: response}}
+	prov := &fakeProvider{response: response}
+	resolver := &fakeRouteResolver{route: knowledgeRoute(), prov: prov}
 
 	EndSession(context.Background(), EndSessionInput{
 		DB:            database,
@@ -166,6 +169,12 @@ func TestEndSessionPersistsSummaryMemoriesAndFileSummaries(t *testing.T) {
 	}
 	if files[0].Summary != "Defines package foo" {
 		t.Fatalf("Summary = %q, want %q", files[0].Summary, "Defines package foo")
+	}
+	if len(prov.requests) != 1 {
+		t.Fatalf("len(requests) = %d, want 1", len(prov.requests))
+	}
+	if prov.requests[0].Stream {
+		t.Fatal("knowledge chat request used streaming, want non-streaming")
 	}
 }
 

@@ -196,7 +196,7 @@ func (r *Runner) mergeMemories(maxTokenOverride int) {
 	}
 
 	memories, err := r.MemoryProvider.Memories(r.ProjectID)
-	if err != nil || len(memories) == 0 {
+	if err != nil {
 		return
 	}
 

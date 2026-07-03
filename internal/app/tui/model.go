@@ -529,7 +529,19 @@ func (m Model) View() string {
 
 	// Render input box
 	inputStyle := lipgloss.NewStyle().Width(leftWidth - 2).Padding(0, 1)
-	inputContent := inputStyle.Render(m.input.View())
+	helpStyle := lipgloss.NewStyle().Foreground(dimColor)
+	
+	var helpText string
+	if m.inputFocused {
+		helpText = "  [Esc] Unfocus  [Tab] Cycle Tabs  [Ctrl+O] Settings  [Ctrl+K] Memories  [Ctrl+R] Rollback"
+	} else {
+		helpText = "  [Enter] Focus Input  [1-3] Switch Tabs  [Ctrl+O] Settings  [Ctrl+K] Memories  [Ctrl+R] Rollback"
+	}
+	
+	inputContent := lipgloss.JoinVertical(lipgloss.Left,
+		inputStyle.Render(m.input.View()),
+		helpStyle.Render(helpText),
+	)
 	leftColumn := lipgloss.JoinVertical(lipgloss.Left, leftContent, inputContent)
 
 	// 2. Render Right Column Content (Tabs)

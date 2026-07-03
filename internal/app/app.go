@@ -301,7 +301,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 }
 
 func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {
-	program := tea.NewProgram(model, tea.WithOutput(output), tea.WithContext(ctx))
+	program := tea.NewProgram(model, tea.WithOutput(output), tea.WithContext(ctx), tea.WithAltScreen())
 	_, err := program.Run()
 	return err
 }

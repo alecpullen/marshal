@@ -98,8 +98,12 @@ func (m *Model) keepCursorInView() {
 
 // visibleCount uses a value receiver because it does not mutate state.
 func (m Model) visibleCount() int {
-	// title(1) + separator(1) + footer/help(2) + borders(2)
-	available := m.height - 6
+	// title(1) + separator(1) + help(1) + optional footer(1) + borders(2)
+	overhead := 6
+	if m.footer == "" {
+		overhead = 5
+	}
+	available := m.height - overhead
 	if available < 1 {
 		return 1
 	}

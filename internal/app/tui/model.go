@@ -71,7 +71,6 @@ type Model struct {
 
 	// Viewport dirty tracking.
 	lastMessageCount int
-	lastAuditCount   int
 }
 
 type Option func(*Model)

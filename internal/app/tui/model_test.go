@@ -124,6 +124,26 @@ func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
 	}
 }
 
+func TestCtrlKWithoutMemoryStoreDoesNothing(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Ctrl+K panicked without memory store: %v", r)
+		}
+	}()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	m = updated.(Model)
+	if m.memoryOpen {
+		t.Fatal("expected memoryOpen to remain false without memory store")
+	}
+	if strings.Contains(m.View(), "Project Memories") {
+		t.Fatalf("View() should not show memory browser without memory store:\n%s", m.View())
+	}
+}
+
 func TestViewContainsExpectedPanels(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)

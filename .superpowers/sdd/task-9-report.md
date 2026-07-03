@@ -77,3 +77,36 @@ Results:
 ## Concerns
 
 - `mergeMemories()` ignores provider errors by design per the task brief, so failures are silent. That matches the requirement, but it also means memory source health is not surfaced from `Runner`.
+
+## Fix report: task review findings
+
+### Changed files
+
+- `internal/agent/runner.go`
+- `internal/agent/runner_test.go`
+- `.superpowers/sdd/task-9-report.md`
+
+### Commands run
+
+```bash
+go test ./internal/agent/... -run TestRunAppliesRouteContextBudgetToMemoryOnlyPack -v
+/usr/local/go/bin/gofmt -w internal/agent/runner.go internal/agent/runner_test.go
+go test ./internal/agent/... -run "TestRunMergesMemories|TestRunMemoryProvider|TestRunWithoutMemoryProvider" -v
+go test ./internal/agent/... -run "TestRunAppliesRouteContextBudgetToMemoryOnlyPack|TestRunSwallowsMemoryProviderErrorsWithoutInjectingMemorySection" -v
+go test ./internal/agent/... -v
+go build ./cmd/marshal
+go test ./...
+```
+
+### Pass/fail summary
+
+- `go test ./internal/agent/... -run TestRunAppliesRouteContextBudgetToMemoryOnlyPack -v`: failed before the fix (`pack max tokens = 12000, want 8`), passed after the fix.
+- `go test ./internal/agent/... -run "TestRunMergesMemories|TestRunMemoryProvider|TestRunWithoutMemoryProvider" -v`: passed.
+- `go test ./internal/agent/... -run "TestRunAppliesRouteContextBudgetToMemoryOnlyPack|TestRunSwallowsMemoryProviderErrorsWithoutInjectingMemorySection" -v`: passed.
+- `go test ./internal/agent/... -v`: passed.
+- `go build ./cmd/marshal`: passed.
+- `go test ./...`: passed.
+
+### Concerns
+
+- The required targeted test command does not match the new swallowed-error regression by name, so I ran that new regression in an additional focused command alongside the required sequence.

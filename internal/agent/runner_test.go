@@ -379,6 +379,43 @@ func TestRunMergesMemoriesIntoContextPackBeforeFirstMessage(t *testing.T) {
 	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
+	if len(p.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(p.requests))
+	}
+
+	var contextMessage string
+	for _, msg := range p.requests[0].Messages {
+		if strings.Contains(msg.Content, "Project context pack:") {
+			contextMessage = msg.Content
+			break
+		}
+	}
+	if contextMessage == "" {
+		t.Fatalf("first provider request missing context pack: %#v", p.requests[0].Messages)
+	}
+	if !strings.Contains(contextMessage, "## Project Memories") || !strings.Contains(contextMessage, "Uses SQLite for persistence") {
+		t.Fatalf("first provider request missing memory content:\n%s", contextMessage)
+	}
+	userIdx := -1
+	for i, msg := range p.requests[0].Messages {
+		if msg.Role == schema.RoleUser && msg.Content == "What does this project do?" {
+			userIdx = i
+			break
+		}
+	}
+	if userIdx == -1 {
+		t.Fatalf("first provider request missing user message: %#v", p.requests[0].Messages)
+	}
+	contextIdx := -1
+	for i, msg := range p.requests[0].Messages {
+		if msg.Content == contextMessage {
+			contextIdx = i
+			break
+		}
+	}
+	if contextIdx == -1 || contextIdx > userIdx {
+		t.Fatalf("context pack should precede user message: %#v", p.requests[0].Messages)
+	}
 
 	pack := state.ContextPack()
 	found := false
@@ -408,6 +445,40 @@ func TestRunWithoutMemoryProviderLeavesContextPackEmpty(t *testing.T) {
 	pack := state.ContextPack()
 	if !pack.IsEmpty() {
 		t.Fatalf("expected empty context pack when MemoryProvider is nil, got %#v", pack.Sections)
+	}
+}
+
+func TestRunSwallowsMemoryProviderErrorsWithoutInjectingMemorySection(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"simple","action":{"type":"answer","content":"done"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.MemoryProvider = &fakeMemoryProvider{err: errors.New("memory backend unavailable")}
+	runner.ProjectID = 7
+
+	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(p.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(p.requests))
+	}
+	for _, msg := range p.requests[0].Messages {
+		if strings.Contains(msg.Content, "Project context pack:") {
+			t.Fatalf("unexpected context pack injected after memory provider error: %#v", p.requests[0].Messages)
+		}
+	}
+
+	pack := state.ContextPack()
+	for _, section := range pack.Sections {
+		if section.Kind == contextpack.SectionMemory {
+			t.Fatalf("unexpected memory section after provider error: %#v", pack.Sections)
+		}
+	}
+	if got := state.Messages(); len(got) != 2 || got[1].Content != "done" {
+		t.Fatalf("turn did not complete successfully: %#v", got)
 	}
 }
 
@@ -627,6 +698,54 @@ func TestRunAppliesRouteContextBudgetToExistingPack(t *testing.T) {
 	pack := state.ContextPack()
 	if pack.TokenUsage.MaxTokens != 24000 {
 		t.Fatalf("pack max tokens = %d, want 24000", pack.TokenUsage.MaxTokens)
+	}
+}
+
+func TestRunAppliesRouteContextBudgetToMemoryOnlyPack(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"done","action":{"type":"answer","content":"ok"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	resolver := &scriptedRouteResolver{
+		routes: []routing.Route{{
+			Role:          routing.RoleImplementer,
+			Preset:        routing.ModelPreset{Name: "coder", Provider: "ollama", Model: "coder-model", LocalOnly: true},
+			ContextBudget: routing.ContextBudget{MaxRepoContextTokens: 8},
+		}},
+		providers: []provider.Provider{p},
+	}
+	runner := NewRunner(p, reg, pol, state, "fallback-model")
+	runner.RouteResolver = resolver
+	runner.MemoryProvider = &fakeMemoryProvider{memories: []contextpack.MemoryNote{
+		{Kind: "fact", Content: strings.Repeat("m", 64)},
+	}}
+	runner.ProjectID = 7
+
+	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	pack := state.ContextPack()
+	if pack.TokenUsage.MaxTokens != 8 {
+		t.Fatalf("pack max tokens = %d, want 8", pack.TokenUsage.MaxTokens)
+	}
+	if !pack.TokenUsage.Truncated {
+		t.Fatalf("expected memory-only pack to be truncated by route budget: %#v", pack.TokenUsage)
+	}
+	var memory *contextpack.Section
+	for i := range pack.Sections {
+		if pack.Sections[i].Kind == contextpack.SectionMemory {
+			memory = &pack.Sections[i]
+			break
+		}
+	}
+	if memory == nil {
+		t.Fatalf("expected memory section in pack: %#v", pack.Sections)
+	}
+	if !strings.Contains(memory.Content, "...[truncated]") {
+		t.Fatalf("expected truncated memory content, got %q", memory.Content)
 	}
 }
 

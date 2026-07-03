@@ -68,6 +68,10 @@ type Model struct {
 	rightWidth    int
 	contentHeight int
 	chatHeight    int
+
+	// Viewport dirty tracking.
+	lastMessageCount int
+	lastAuditCount   int
 }
 
 type Option func(*Model)
@@ -206,6 +210,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.busy {
 			return m, nil
 		}
+		m.refreshViewport()
 		return m, tickCmd()
 	case settings.SavedMsg:
 		m.state.Config = msg.Cfg
@@ -447,8 +452,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) refreshViewport() {
-	var b strings.Builder
 	messages := m.state.Messages()
+	if len(messages) == m.lastMessageCount && !m.busy {
+		return
+	}
+	m.lastMessageCount = len(messages)
+
+	var b strings.Builder
 	if len(messages) == 0 {
 		b.WriteString("  No messages yet.\n")
 	}

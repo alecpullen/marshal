@@ -213,6 +213,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := m.configReloader(msg.Cfg); err != nil {
 				m.state.SetProviderError(err)
 				m.settingsModel = settings.New(msg.Cfg, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+				m.settingsModel.SetSize(m.width, m.height)
 				return m, nil
 			}
 		}

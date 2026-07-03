@@ -630,6 +630,36 @@ func TestFocusAndTabNavigation(t *testing.T) {
 	}
 }
 
+func TestResizeComputesGeometry(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model := updated.(Model)
+
+	if model.width != 80 || model.height != 24 {
+		t.Fatalf("size = %dx%d, want 80x24", model.width, model.height)
+	}
+	if model.leftWidth < 50 || model.leftWidth > 60 {
+		t.Fatalf("leftWidth = %d, want ~56", model.leftWidth)
+	}
+	if model.rightWidth < minPanelWidth {
+		t.Fatalf("rightWidth = %d, too small", model.rightWidth)
+	}
+	if model.chatHeight < 1 {
+		t.Fatalf("chatHeight = %d, want >= 1", model.chatHeight)
+	}
+	if model.viewport.Width != model.leftWidth-2 {
+		t.Fatalf("viewport.Width = %d, want %d", model.viewport.Width, model.leftWidth-2)
+	}
+	if model.viewport.Height != model.chatHeight {
+		t.Fatalf("viewport.Height = %d, want %d", model.viewport.Height, model.chatHeight)
+	}
+	if model.input.Width != model.leftWidth-4 {
+		t.Fatalf("input.Width = %d, want %d", model.input.Width, model.leftWidth-4)
+	}
+}
+
 func TestAltScreenViewLayout(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)

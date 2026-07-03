@@ -29,6 +29,12 @@ type AgentRunner interface {
 	Run(ctx context.Context, goal string) error
 }
 
+const (
+	minTerminalWidth  = 40
+	minTerminalHeight = 10
+	minPanelWidth     = 10
+)
+
 type Model struct {
 	state          *session.State
 	input          textinput.Model
@@ -50,6 +56,12 @@ type Model struct {
 	activeTab    int // 0 = Plan, 1 = Context, 2 = Log
 	inputFocused bool
 	viewport     viewport.Model
+
+	// Layout geometry computed once per WindowSizeMsg.
+	leftWidth     int
+	rightWidth    int
+	contentHeight int
+	chatHeight    int
 }
 
 type Option func(*Model)
@@ -113,21 +125,61 @@ func (m Model) Init() tea.Cmd {
 	return textinput.Blink
 }
 
+func (m *Model) resize(width, height int) {
+	if width < minTerminalWidth {
+		width = minTerminalWidth
+	}
+	if height < minTerminalHeight {
+		height = minTerminalHeight
+	}
+
+	m.width = width
+	m.height = height
+
+	// 70/30 split with a one-column gutter.
+	m.leftWidth = int(float64(width) * 0.70)
+	if m.leftWidth < minPanelWidth {
+		m.leftWidth = minPanelWidth
+	}
+	m.rightWidth = width - m.leftWidth - 1
+	if m.rightWidth < minPanelWidth {
+		m.rightWidth = minPanelWidth
+		m.leftWidth = width - m.rightWidth - 1
+		if m.leftWidth < minPanelWidth {
+			m.leftWidth = minPanelWidth
+		}
+	}
+
+	// Vertical budget: status bar (1). The main content area fills the rest.
+	// Left column = chat box (border + viewport + border) + input line + help line.
+	// Right column outer height = contentHeight.
+	m.contentHeight = height - 1
+	if m.contentHeight < 5 {
+		m.contentHeight = 5
+	}
+
+	// Viewport is the chat box interior: contentHeight minus the two-row chat
+	// border minus the input and help rows.
+	m.chatHeight = m.contentHeight - 4
+	if m.chatHeight < 1 {
+		m.chatHeight = 1
+	}
+
+	// Viewport content excludes the chat box border.
+	m.viewport.Width = max(m.leftWidth-2, 1)
+	m.viewport.Height = max(m.chatHeight, 1)
+
+	// Input lives in a padded box with no border. inputStyle uses Width(m.leftWidth)
+	// and Padding(0,1), so the textinput content width is leftWidth-4.
+	m.input.Width = max(m.leftWidth-4, 1)
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	tc := m.state.PendingApproval()
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		// Calculate chat viewport dimensions (70% width, height minus status/input/borders)
-		chatWidth := int(float64(m.width) * 0.70)
-		chatHeight := m.height - 8
-		if chatHeight < 1 {
-			chatHeight = 1
-		}
-		m.viewport.Width = chatWidth
-		m.viewport.Height = chatHeight
+		m.resize(msg.Width, msg.Height)
 		m.refreshViewport()
 		return m, nil
 	case agentFinishedMsg:

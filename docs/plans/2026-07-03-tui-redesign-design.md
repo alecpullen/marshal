@@ -77,3 +77,13 @@ The TUI uses `tea.WithAltScreen()` to run in full-screen mode, dividing the scre
   * **Warning:** Yellow (`#D7AF00`).
   * **Critical:** Red (`#D75F5F`).
 * **Text Wrapping:** Ensure chat messages, diffs, and logs are explicitly wrapped using `lipgloss.Width` and `runewidth` constraints to prevent visual clipping.
+
+---
+
+## 4. Settings TUI Integration
+
+When Settings is opened (`Ctrl+O`):
+* The TUI displays the settings configuration panel centered on the screen (replacing the primary dashboard view).
+* We use `lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, settingsView)` to position the panel.
+* If canceled (`Esc`) or saved (`Ctrl+S`), the TUI returns to the main multi-panel dashboard layout.
+

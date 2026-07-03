@@ -318,6 +318,7 @@ In `internal/app/tui/model.go`:
   )
   ```
 * Implement modular view rendering:
+  - Check if `m.settingsOpen` is true. If so, return the settings view centered on the terminal screen using `lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.settingsModel.View())`.
   - `renderChatView()`: format messages into a single text block, update `viewport.SetContent()`, and return `m.viewport.View()`.
   - `renderSidebar()`: format right column. Header contains active/inactive tab buttons. Content lists Plan checklist items, Context files, or Tool logs based on `m.activeTab`.
   - `renderStatusBar()`: construct the bottom bar spanning full `m.width`.

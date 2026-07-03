@@ -5,4 +5,5 @@
 | Propose 2-3 approaches | [x] | Present TUI layout & UX options with trade-offs |
 | Present design | [x] | Design breakdown (layout, panels, keybindings) |
 | Write design doc | [x] | Save to docs/plans/2026-07-03-tui-redesign-design.md |
-| Transition to implementation | [x] | Invoke writing-plans skill |
+| Integrate settings TUI into layout | [x] | Ask user preference and update design & implementation plans |
+| Transition to implementation | [/] | Invoke writing-plans skill |

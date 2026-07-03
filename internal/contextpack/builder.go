@@ -198,6 +198,69 @@ func newPlanSection(plan []string) (Section, bool) {
 	}, true
 }
 
+func newMemorySection(memories []MemoryNote) (Section, bool) {
+	var lines []string
+	for _, m := range memories {
+		content := strings.TrimSpace(m.Content)
+		if content == "" {
+			continue
+		}
+		if m.Kind != "" {
+			lines = append(lines, fmt.Sprintf("[%s] %s", m.Kind, content))
+		} else {
+			lines = append(lines, content)
+		}
+	}
+	if len(lines) == 0 {
+		return Section{}, false
+	}
+	return Section{
+		Kind:     SectionMemory,
+		Title:    "Project Memories",
+		Priority: 15,
+		Content:  strings.Join(lines, "\n"),
+	}, true
+}
+
+// MergeMemories replaces any existing memory section in pack with a single
+// new section built from memories (joined newline-separated), inserted
+// immediately before the first plan/file-snippet/tool-output section (or
+// appended if none exist), then rebuilds the pack within maxTokens. Mirrors
+// RefreshPlanWithBudget's replace-and-rebuild shape.
+func MergeMemories(pack Pack, memories []MemoryNote, maxTokens int, now func() time.Time) Pack {
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxTokens
+	}
+
+	generatedAt := pack.GeneratedAt.UTC()
+	if generatedAt.IsZero() {
+		generatedAt = time.Now().UTC()
+	}
+	if now != nil {
+		generatedAt = now().UTC()
+	}
+
+	memorySection, hasMemory := newMemorySection(memories)
+	sections := make([]Section, 0, len(pack.Sections)+1)
+	insertedMemory := false
+	for _, section := range pack.Sections {
+		if section.Kind == SectionMemory {
+			continue
+		}
+		if hasMemory && !insertedMemory &&
+			(section.Kind == SectionPlan || section.Kind == SectionFileSnippet || section.Kind == SectionToolOutput) {
+			sections = append(sections, memorySection)
+			insertedMemory = true
+		}
+		sections = append(sections, section)
+	}
+	if hasMemory && !insertedMemory {
+		sections = append(sections, memorySection)
+	}
+
+	return buildPackFromSections(sections, maxTokens, generatedAt)
+}
+
 func truncateToTokens(content string, maxTokens int) (string, bool) {
 	if maxTokens <= 0 {
 		return "", false

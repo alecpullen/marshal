@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"marshal/internal/app/config"
@@ -41,6 +42,13 @@ type Model struct {
 	memoryModel    memory.Model
 	memoryDB       *db.DB
 	memoryProject  int64
+
+	// New Layout State
+	width        int
+	height       int
+	activeTab    int // 0 = Plan, 1 = Context, 2 = Log
+	inputFocused bool
+	viewport     viewport.Model
 }
 
 type Option func(*Model)
@@ -90,6 +98,9 @@ func New(state *session.State, opts ...Option) Model {
 		input:          input,
 		editingCommand: false,
 		ctx:            context.Background(),
+		inputFocused:   true,
+		activeTab:      0,
+		viewport:       viewport.New(0, 0),
 	}
 	for _, opt := range opts {
 		opt(&m)

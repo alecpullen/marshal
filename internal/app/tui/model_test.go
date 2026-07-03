@@ -579,3 +579,16 @@ func TestSettingsCancelClosesOverlay(t *testing.T) {
 		t.Fatal("expected settingsOpen to be false after cancel")
 	}
 }
+
+func TestModelLayoutStateInit(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+
+	if !model.inputFocused {
+		t.Error("expected inputFocused to be true by default")
+	}
+	if model.activeTab != 0 {
+		t.Errorf("expected activeTab to be 0 (Plan), got %d", model.activeTab)
+	}
+}
+

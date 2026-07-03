@@ -754,3 +754,109 @@ func TestViewFitsTerminalSizes(t *testing.T) {
 		})
 	}
 }
+
+func TestGlobalKeysDoNotLeakDuringApproval(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	tc := &session.PendingToolCall{
+		ID:           "1",
+		Name:         "shell.run",
+		Command:      "go test",
+		Risk:         "low",
+		Reason:       "run tests",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(tc)
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyTab},
+		{Type: tea.KeyShiftTab},
+		{Type: tea.KeyCtrlP},
+		{Type: tea.KeyCtrlX},
+		{Type: tea.KeyCtrlT},
+		{Type: tea.KeyCtrlR},
+	} {
+		updated, _ := model.Update(key)
+		m := updated.(Model)
+		if m.activeTab != 0 {
+			t.Fatalf("activeTab changed on %v during approval", key)
+		}
+	}
+	if state.PendingApproval() == nil {
+		t.Fatal("approval was cleared by a global key")
+	}
+}
+
+func TestEscDuringApprovalDenies(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	tc := &session.PendingToolCall{
+		ID:           "1",
+		Name:         "shell.run",
+		Command:      "go test",
+		Risk:         "low",
+		Reason:       "run tests",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(tc)
+	model := New(state)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m := updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("Esc during approval should not return a quit command")
+	}
+	select {
+	case dec := <-tc.ResponseChan:
+		if dec.Approved {
+			t.Fatal("Esc should deny approval")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no decision sent on Esc")
+	}
+	if m.state.PendingApproval() != nil {
+		t.Fatal("pending approval was not cleared")
+	}
+}
+
+func TestCtrlKTogglesMemory(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	db, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(state, WithMemoryStore(db, pid))
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	model = updated.(Model)
+	if !model.memoryOpen {
+		t.Fatal("Ctrl+K did not open memory")
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	model = updated.(Model)
+	if model.memoryOpen {
+		t.Fatal("Ctrl+K did not close memory")
+	}
+}
+
+func TestProviderErrorVisibleInAltScreen(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetProviderError(errors.New("connection refused"))
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	view := model.View()
+	if !strings.Contains(view, "connection refused") {
+		t.Fatalf("provider error not visible in AltScreen view:\n%s", view)
+	}
+}

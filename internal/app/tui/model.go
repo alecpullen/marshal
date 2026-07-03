@@ -239,45 +239,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		if m.memoryOpen {
+			if msg.Type == tea.KeyCtrlK {
+				m.memoryOpen = false
+				return m, nil
+			}
 			updated, cmd := m.memoryModel.Update(msg)
 			m.memoryModel = updated.(memory.Model)
 			return m, cmd
-		}
-
-		// Tab cycling
-		if msg.Type == tea.KeyTab {
-			m.activeTab = (m.activeTab + 1) % 3
-			return m, nil
-		}
-		if msg.Type == tea.KeyShiftTab {
-			m.activeTab = (m.activeTab - 1 + 3) % 3
-			return m, nil
-		}
-
-		// Global tab switching hotkeys
-		if msg.Type == tea.KeyCtrlP {
-			m.activeTab = 0
-			return m, nil
-		}
-		if msg.Type == tea.KeyCtrlX {
-			m.activeTab = 1
-			return m, nil
-		}
-		if msg.Type == tea.KeyCtrlT {
-			m.activeTab = 2
-			return m, nil
-		}
-		if msg.Type == tea.KeyCtrlR {
-			if m.state.HasBackup() {
-				_ = m.state.RollbackBackup()
-				m.state.LogToolCall(registry.AuditEvent{
-					Timestamp:     time.Now(),
-					ToolName:      "rollback",
-					ResultSummary: "Rollback applied successfully",
-				})
-				m.refreshViewport()
-				return m, nil
-			}
 		}
 
 		if tc != nil {
@@ -285,6 +253,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch msg.Type {
 				case tea.KeyEsc:
 					m.editingCommand = false
+					m.inputFocused = false
+					m.input.Blur()
 					m.input.Reset()
 					m.input.Placeholder = "Ask Marshal..."
 					return m, nil
@@ -293,6 +263,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if value != "" {
 						tc.ResponseChan <- session.UserApprovalDecision{Approved: true, Edited: value}
 						m.editingCommand = false
+						m.inputFocused = false
+						m.input.Blur()
 						m.input.Reset()
 						m.input.Placeholder = "Ask Marshal..."
 						m.state.SetPendingApproval(nil)
@@ -306,8 +278,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state.SetPendingApproval(nil)
 					return m, nil
 				case tea.KeyEsc:
-					m.state.Shutdown()
-					return m, tea.Quit
+					tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
+					m.state.SetPendingApproval(nil)
+					return m, nil
 				default:
 					switch msg.String() {
 					case "d":
@@ -321,6 +294,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					case "e":
 						m.editingCommand = true
+						m.inputFocused = true
 						m.input.SetValue(tc.Command)
 						m.input.Placeholder = "Edit command..."
 						m.input.Focus()
@@ -342,6 +316,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		} else {
+			// Tab cycling
+			if msg.Type == tea.KeyTab {
+				m.activeTab = (m.activeTab + 1) % 3
+				return m, nil
+			}
+			if msg.Type == tea.KeyShiftTab {
+				m.activeTab = (m.activeTab - 1 + 3) % 3
+				return m, nil
+			}
+
+			// Global tab switching hotkeys
+			if msg.Type == tea.KeyCtrlP {
+				m.activeTab = 0
+				return m, nil
+			}
+			if msg.Type == tea.KeyCtrlX {
+				m.activeTab = 1
+				return m, nil
+			}
+			if msg.Type == tea.KeyCtrlT {
+				m.activeTab = 2
+				return m, nil
+			}
+			if msg.Type == tea.KeyCtrlR {
+				if m.state.HasBackup() {
+					_ = m.state.RollbackBackup()
+					m.state.LogToolCall(registry.AuditEvent{
+						Timestamp:     time.Now(),
+						ToolName:      "rollback",
+						ResultSummary: "Rollback applied successfully",
+					})
+					m.refreshViewport()
+					return m, nil
+				}
+			}
+
 			if m.inputFocused {
 				switch msg.Type {
 				case tea.KeyEsc:
@@ -523,6 +533,10 @@ var (
 	statusBarBg = lipgloss.NewStyle().
 			Background(lipgloss.Color("236")).
 			Foreground(lipgloss.Color("252"))
+	errorBannerStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("196")).
+				Foreground(lipgloss.Color("255")).
+				Padding(0, 1)
 )
 
 func (m Model) View() string {
@@ -733,7 +747,12 @@ func (m Model) View() string {
 
 	// Assemble layout
 	mainLayout := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
-	return lipgloss.JoinVertical(lipgloss.Left, mainLayout, statusBar)
+	result := mainLayout
+	if err := m.state.ProviderError(); err != nil {
+		banner := errorBannerStyle.Width(m.width).MaxWidth(m.width).Render("Error: " + truncateRunes(err.Error(), m.width-8))
+		result = lipgloss.JoinVertical(lipgloss.Left, mainLayout, banner)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, result, statusBar)
 }
 
 func (m Model) fallbackView() string {

@@ -1,10 +1,6 @@
 | Task | Status | Details |
 | --- | --- | --- |
-| Explore project context | [x] | Review TUI structure, Bubble Tea/Lip Gloss files |
-| Ask clarifying questions | [x] | Ask user about desired panels, layout, behavior |
-| Propose 2-3 approaches | [x] | Present TUI layout & UX options with trade-offs |
-| Present design | [x] | Design breakdown (layout, panels, keybindings) |
-| Write design doc | [x] | Save to docs/plans/2026-07-03-tui-redesign-design.md |
-| Integrate settings TUI into layout | [x] | Ask user preference and update design & implementation plans |
-| Integrate memory browser into layout | [x] | Update design & implementation plans for memory browser overlay |
-| Transition to implementation | [x] | Invoke writing-plans skill |
+| Task 1: Update Model struct with layout and tab state | [x] | Add width, height, activeTab, inputFocused, viewport to Model |
+| Task 2: Implement focus toggle, tab switching, and window resizing in Update | [x] | Handle keys (Esc, Enter, Ctrl+P/K/T, 1/2/3) and window resize msg |
+| Task 3: Build stylish Lip Gloss styles and View layout assembly | [x] | Implement dual column layout with Lip Gloss styling and Centered Modals for settings/memory |
+| Task 4: Hook up AltScreen mode in application entrypoint | [x] | Wire AltScreen option in internal/app/app.go |

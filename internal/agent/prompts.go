@@ -39,7 +39,7 @@ var roleAddenda = map[AgentRole]rolePrompt{
 	RoleImplementer: {
 		focus:          "You are an implementer. Make focused edits. After each edit, run the narrowest useful validation. Prefer file.read and file.write_patch over shell commands when possible.",
 		allowedActions: []string{"tool_call", "patch", "final"},
-		example:        `{"rationale": "The parser expects an integer but receives a string.", "action": {"type": "patch", "content": "File: parser.go\n<<<<<<< SEARCH\nfunc parse(input string) int {\n=======\nfunc parse(input string) (int, error) {\n>>>>>>> REPLACE"}}`,
+		example:        `{"rationale": "The loop skips the last element because the boundary is off by one.", "action": {"type": "patch", "content": "File: parser.go\n<<<<<<< SEARCH\nfor i := 0; i < len(items)-1; i++ {\n=======\nfor i := 0; i < len(items); i++ {\n>>>>>>> REPLACE"}}`,
 	},
 	RoleTester: {
 		focus:          "You are a tester. Run tests and diagnose failures. Do not modify source files. Report the minimal change needed to fix the failure.",
@@ -73,13 +73,17 @@ const baseRules = `Rules:
 
 const baseOutputFormat = `Respond with exactly one JSON object and nothing else.
 
-Shape:
-{"rationale": "short reason", "action": {"type": "answer", "content": "..."}}
-{"rationale": "short reason", "action": {"type": "tool_call", "tool": "tool.name", "args": {...}}}
-{"rationale": "short reason", "action": {"type": "patch", "content": "File: path/to/file\n<<<<<<< SEARCH\nold content\n=======\nnew content\n>>>>>>> REPLACE"}}
-{"rationale": "short reason", "action": {"type": "final", "content": "..."}}
+Examples:
 
-For patch actions use search/replace blocks, one per file. Do not use unified diff syntax.`
+{"rationale": "The user asked a direct factual question.", "action": {"type": "answer", "content": "Go added generics in version 1.18."}}
+
+{"rationale": "I need to read the relevant source file before editing.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "internal/agent/prompts.go"}}}
+
+{"rationale": "Replace the placeholder patch example with a concrete search/replace block.", "action": {"type": "patch", "content": "File: path/to/file.go\n<<<<<<< SEARCH\nold line\n=======\nnew line\n>>>>>>> REPLACE"}}
+
+{"rationale": "The task is finished and all tests pass.", "action": {"type": "final", "content": "Updated the system prompt with few-shot examples for every action type."}}
+
+For patch actions use search/replace blocks, one block per file. Do not use unified diff syntax.`
 
 func renderRoleAddendum(r rolePrompt) string {
 	var b strings.Builder

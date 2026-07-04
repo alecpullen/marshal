@@ -11,13 +11,18 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func dummyTools() []registry.Tool {
+	return []registry.Tool{
+		{Name: "file.read", Risk: registry.RiskReadOnly, Description: "Read a file."},
+		{Name: "shell.run", Risk: registry.RiskCommand, Description: "Run a shell command."},
+	}
+}
+
 func TestBuildSystemPromptListsTools(t *testing.T) {
-	tools := []registry.Tool{
+	msg := BuildSystemPrompt(RoleGeneral, []registry.Tool{
 		{Name: "file.read", Description: "Read a workspace file.", Risk: registry.RiskReadOnly},
 		{Name: "shell.run", Description: "Run a shell command.", Risk: registry.RiskCommand},
-	}
-
-	msg := BuildSystemPrompt(RoleGeneral, tools)
+	})
 
 	if msg.Role != schema.RoleSystem {
 		t.Fatalf("Role = %q, want %q", msg.Role, schema.RoleSystem)
@@ -27,6 +32,108 @@ func TestBuildSystemPromptListsTools(t *testing.T) {
 	}
 	if !strings.Contains(msg.Content, "Marshal") {
 		t.Fatalf("system prompt missing agent identity: %s", msg.Content)
+	}
+}
+
+func TestBuildSystemPromptContainsBaseSections(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools())
+	content := msg.Content
+
+	if msg.Role != schema.RoleSystem {
+		t.Fatalf("Role = %q, want %q", msg.Role, schema.RoleSystem)
+	}
+
+	for _, want := range []string{
+		"You are Marshal, a local-first coding assistant",
+		"You receive a context pack with each turn",
+		"Prefer small, verifiable changes",
+		"Respond with exactly one JSON object",
+		"Available tools:",
+		"file.read",
+		"shell.run",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("prompt missing expected section %q\n%s", want, content)
+		}
+	}
+}
+
+func TestBuildSystemPromptPlannerHasCorrectAllowedActions(t *testing.T) {
+	msg := BuildSystemPrompt(RolePlanner, dummyTools())
+	content := msg.Content
+
+	if !strings.Contains(content, "You are a planner") {
+		t.Error("planner role focus missing")
+	}
+	if !strings.Contains(content, "Allowed actions for this role: answer, final") {
+		t.Errorf("planner allowed actions incorrect; got:\n%s", content)
+	}
+}
+
+func TestBuildSystemPromptImplementerHasCorrectAllowedActions(t *testing.T) {
+	msg := BuildSystemPrompt(RoleImplementer, dummyTools())
+	content := msg.Content
+
+	if !strings.Contains(content, "You are an implementer") {
+		t.Error("implementer role focus missing")
+	}
+	if !strings.Contains(content, "Allowed actions for this role: tool_call, final") {
+		t.Errorf("implementer allowed actions incorrect; got:\n%s", content)
+	}
+}
+
+func TestBuildSystemPromptTesterHasCorrectAllowedActions(t *testing.T) {
+	msg := BuildSystemPrompt(RoleTester, dummyTools())
+	content := msg.Content
+
+	if !strings.Contains(content, "You are a tester") {
+		t.Error("tester role focus missing")
+	}
+	if !strings.Contains(content, "Allowed actions for this role: tool_call, final") {
+		t.Errorf("tester allowed actions incorrect; got:\n%s", content)
+	}
+}
+
+func TestBuildSystemPromptReviewerHasCorrectAllowedActions(t *testing.T) {
+	msg := BuildSystemPrompt(RoleReviewer, dummyTools())
+	content := msg.Content
+
+	if !strings.Contains(content, "You are a reviewer") {
+		t.Error("reviewer role focus missing")
+	}
+	if !strings.Contains(content, "Allowed actions for this role: tool_call, final") {
+		t.Errorf("reviewer allowed actions incorrect; got:\n%s", content)
+	}
+}
+
+func TestBuildSystemPromptUnknownRoleFallsBackToGeneral(t *testing.T) {
+	msg := BuildSystemPrompt(AgentRole("nonexistent"), dummyTools())
+	content := msg.Content
+
+	if !strings.Contains(content, "You are the general agent") {
+		t.Error("unknown role should fall back to general agent addendum")
+	}
+	if !strings.Contains(content, "Allowed actions for this role: answer, tool_call, final") {
+		t.Error("unknown role should fall back to general agent allowed actions")
+	}
+}
+
+func TestBuildSystemPromptEachRoleHasAllowedActions(t *testing.T) {
+	expected := map[AgentRole]string{
+		RoleGeneral:     "Allowed actions for this role: answer, tool_call, final",
+		RolePlanner:     "Allowed actions for this role: answer, final",
+		RoleImplementer: "Allowed actions for this role: tool_call, final",
+		RoleTester:      "Allowed actions for this role: tool_call, final",
+		RoleReviewer:    "Allowed actions for this role: tool_call, final",
+	}
+
+	for role, want := range expected {
+		msg := BuildSystemPrompt(role, dummyTools())
+		content := msg.Content
+
+		if !strings.Contains(content, want) {
+			t.Errorf("role %q missing allowed actions line %q\n%s", role, want, content)
+		}
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
+	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/knowledge"
@@ -142,11 +143,11 @@ func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, 
 	return notes, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64) (*agent.Runner, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64) (*agent.Runner, *registry.Registry, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	reg := registry.New()
@@ -157,7 +158,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		DB:            database,
 		ProjectID:     projectID,
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	pol := policy.NewEngine(&cfg, state.SessionRules())
@@ -187,7 +188,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		Legacy:    route.Legacy,
 		Active:    true,
 	})
-	return runner, nil
+	return runner, reg, nil
 }
 
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option) error {
@@ -244,9 +245,19 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	logger := logging.New(stderr, slog.LevelInfo)
 	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
 	var runner *agent.Runner
-	runner, err = buildAgentRunner(ctx, cfg, state, database, projectID)
+	var toolReg *registry.Registry
+	runner, toolReg, err = buildAgentRunner(ctx, cfg, state, database, projectID)
+
+	cmdReg := commands.New()
+	if err == nil {
+		if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
+			return fmt.Errorf("register commands: %w", err)
+		}
+	}
+
 	var tuiOpts []tui.Option
 	tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
+	tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
 	if err == nil {
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 		configReloader := func(newCfg config.Config) error {

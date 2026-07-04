@@ -55,6 +55,7 @@ type Runner struct {
 	Now               func() time.Time
 	MaxToolIterations int
 	MaxRetries        int
+	RequestTimeout    time.Duration
 }
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
@@ -245,6 +246,12 @@ func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model s
 }
 
 func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (string, error) {
+	if r.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.RequestTimeout)
+		defer cancel()
+	}
+
 	events, err := p.Chat(ctx, schema.ChatRequest{
 		Model:    model,
 		Messages: messages,

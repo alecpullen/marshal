@@ -170,6 +170,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if cfg.Agent.MaxRetries > 0 {
 		runner.MaxRetries = cfg.Agent.MaxRetries
 	}
+	if runner.RequestTimeout == 0 {
+		runner.RequestTimeout = 60 * time.Second
+	}
 	state.SetActiveRoute(session.RouteInfo{
 		Role:      route.Role,
 		Profile:   route.Profile,

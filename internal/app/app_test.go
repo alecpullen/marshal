@@ -274,15 +274,16 @@ func TestRunDisplaysInactiveRouteWhenNoProviderConfigured(t *testing.T) {
 			return config.Default(), nil
 		}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
-			view = model.View()
+			updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			view = updated.View()
 			return nil
 		}),
 	)
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if !strings.Contains(view, "Route: inactive") {
-		t.Fatalf("view missing inactive route:\n%s", view)
+	if !strings.Contains(view, "inactive") {
+		t.Fatalf("view missing inactive route in status bar:\n%s", view)
 	}
 }
 
@@ -311,7 +312,8 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 			return cfg, nil
 		}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
-			view = model.View()
+			updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			view = updated.View()
 			return nil
 		}),
 	)
@@ -319,11 +321,9 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	for _, want := range []string{
-		"Route: role=implementer",
-		"profile=legacy",
-		"preset=legacy",
-		"provider=ollama",
-		"model=qwen2.5-coder:14b",
+		"implementer",
+		"ollama",
+		"qwen2.5-coder:14b",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)

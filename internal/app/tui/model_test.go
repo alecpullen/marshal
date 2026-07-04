@@ -148,20 +148,26 @@ func TestCtrlKWithoutMemoryStoreDoesNothing(t *testing.T) {
 	}
 }
 
-func TestViewContainsExpectedPanels(t *testing.T) {
+func TestPolishedViewContainsCurrentLayoutChrome(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
 
-	view := model.View()
+	view := m.View()
 	for _, want := range []string{
 		"Marshal",
-		"Status",
-		"Transcript",
-		"Streaming Output",
-		"Command Palette",
-		"Tool Log",
-		"Context",
-		"Diff",
+		"Ask",
+		"Plan",
+		"Auto",
+		"Swarm",
+		"Chat",
+		"live transcript",
+		"1 Plan",
+		"2 Context",
+		"3 Log",
+		"MARSHAL",
+		"Ask Marshal...",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q:\n%s", want, view)
@@ -169,17 +175,7 @@ func TestViewContainsExpectedPanels(t *testing.T) {
 	}
 }
 
-func TestViewShowsInactiveRouteByDefault(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
-
-	view := model.View()
-	if !strings.Contains(view, "Route: inactive") {
-		t.Fatalf("View() missing inactive route:\n%s", view)
-	}
-}
-
-func TestViewShowsActiveRoute(t *testing.T) {
+func TestPolishedStatusBarShowsRouteWhenActive(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.SetActiveRoute(session.RouteInfo{
 		Role:      routing.RoleImplementer,
@@ -190,63 +186,57 @@ func TestViewShowsActiveRoute(t *testing.T) {
 		LocalOnly: true,
 		Active:    true,
 	})
-	model := New(state)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
 
-	view := model.View()
+	view := m.View()
 	for _, want := range []string{
-		"Route: role=implementer",
-		"profile=local_balanced",
-		"preset=coder",
-		"provider=ollama",
-		"model=qwen2.5-coder:14b",
-		"local-only=true",
+		"MARSHAL",
+		"Auto",
+		"implementer",
+		"qwen2.5-coder:14b @ ollama",
+		"local",
 	} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("View() missing %q:\n%s", want, view)
+			t.Fatalf("View() missing status item %q:\n%s", want, view)
 		}
 	}
 }
 
-func TestViewShowsProviderErrorWhenSet(t *testing.T) {
+func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
-
-	state.SetProviderError(errors.New("dial tcp: connection refused"))
-	view := model.View()
-
-	if !strings.Contains(view, "Provider Error") {
-		t.Fatalf("View() missing 'Provider Error' substring:\n%s", view)
+	tc := &session.PendingToolCall{
+		ID:      "approval-1",
+		Name:    "shell.run",
+		Command: "go test ./...",
+		Risk:    "command",
+		Reason:  "run the repository test suite",
+		Diff:    "--- a/app.go\n+++ b/app.go\n+added line",
 	}
-	if !strings.Contains(view, "connection refused") {
-		t.Fatalf("View() missing 'connection refused' substring:\n%s", view)
+	state.SetPendingApproval(tc)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"Agent wants to run",
+		"go test ./...",
+		"Reason",
+		"run the repository test suite",
+		"Risk",
+		"--- a/app.go",
+		"+++ b/app.go",
+		"+added line",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing approval item %q:\n%s", want, view)
+		}
 	}
 }
 
-func TestViewOmitsProviderErrorSectionByDefault(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
-
-	view := model.View()
-
-	if strings.Contains(view, "Provider Error") {
-		t.Fatalf("View() should not contain 'Provider Error' when no error is set:\n%s", view)
-	}
-}
-
-func TestViewShowsEmptyContextPanel(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
-
-	view := model.View()
-	if !strings.Contains(view, "Context") {
-		t.Fatalf("View() missing Context panel:\n%s", view)
-	}
-	if !strings.Contains(view, "No context pack built yet.") {
-		t.Fatalf("View() missing empty context message:\n%s", view)
-	}
-}
-
-func TestViewShowsContextPackSummary(t *testing.T) {
+func TestPolishedRightPanelTracksActiveTab(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.SetContextPack(contextpack.Pack{
 		Sections: []contextpack.Section{
@@ -260,18 +250,181 @@ func TestViewShowsContextPackSummary(t *testing.T) {
 		},
 		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
 	})
-	model := New(state)
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp:     time.Unix(1719946800, 0),
+		ToolName:      "shell.run",
+		ResultSummary: "command exit status 0",
+	})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
 
-	view := model.View()
+	planView := m.View()
+	for _, want := range []string{"No active plan.", "Ready for input", "1 Plan", "2 Context", "3 Log"} {
+		if !strings.Contains(planView, want) {
+			t.Fatalf("plan tab content missing %q:\n%s", want, planView)
+		}
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	m = updated.(Model)
+	contextView := m.View()
+	for _, want := range []string{"Context Pack", "4 / 12k", "Repo Card"} {
+		if !strings.Contains(contextView, want) {
+			t.Fatalf("context tab missing %q:\n%s", want, contextView)
+		}
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	m = updated.(Model)
+	logView := m.View()
+	for _, want := range []string{"shell.run", "command exit"} {
+		if !strings.Contains(logView, want) {
+			t.Fatalf("log tab missing %q:\n%s", want, logView)
+		}
+	}
+}
+
+func TestPolishedViewFitsCommonTerminalSizes(t *testing.T) {
+	longMessage := "I am checking that the transcript, prompt, and thinking blocks all reflow cleanly when the terminal width changes across common viewport sizes."
+	longThinking := "First inspect the current viewport width. Then keep the newest visible reasoning in the thinking block while making sure every rendered line still respects the terminal width budget."
+	for _, size := range []struct {
+		width  int
+		height int
+	}{
+		{80, 24},
+		{100, 30},
+		{120, 40},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+			state.AddMessage(session.RoleUser, longMessage)
+			state.BeginStreaming()
+			state.AppendThinking(longThinking)
+			m := New(state)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+			m = updated.(Model)
+			m.busy = true
+			m.refreshViewport()
+
+			view := m.View()
+			lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+			if len(lines) > size.height {
+				t.Fatalf("line count = %d, want <= %d\n%s", len(lines), size.height, view)
+			}
+			for i, line := range lines {
+				if got := visibleRunes(line); got > size.width {
+					t.Fatalf("line %d width = %d, want <= %d\n%s", i+1, got, size.width, line)
+				}
+			}
+		})
+	}
+}
+
+func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	message := "This transcript line should be wide enough to wrap differently after resizing from a wide terminal down to a narrow terminal."
+	thinking := "The live thinking copy should also be rebuilt after resize so it follows the narrowed viewport width instead of keeping stale wrapping."
+	state.AddMessage(session.RoleUser, message)
+	state.BeginStreaming()
+	state.AppendThinking(thinking)
+	m := New(state)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+	m.busy = true
+	m.refreshViewport()
+	wideView := m.View()
+
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	narrowView := m.View()
+	expectedViewport := renderMessage(string(session.RoleUser), message, m.viewport.Width) + renderThinkingBox(thinking, m.viewport.Width)
+
+	// viewport.View() pads every line to the viewport's fixed width/height
+	// with trailing spaces and blank lines; strip that padding before
+	// comparing against the raw rendered content.
+	trimPadding := func(s string) string {
+		lines := strings.Split(s, "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimRight(line, " ")
+		}
+		return strings.TrimRight(strings.Join(lines, "\n"), "\n")
+	}
+
+	if got, want := trimPadding(m.viewport.View()), trimPadding(expectedViewport); got != want {
+		t.Fatalf("viewport content did not rebuild for resized width\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+
+	if wideView == narrowView {
+		t.Fatalf("expected resize to change rendered view")
+	}
+
+	lines := strings.Split(strings.TrimRight(narrowView, "\n"), "\n")
+	if len(lines) > 24 {
+		t.Fatalf("line count = %d, want <= 24\n%s", len(lines), narrowView)
+	}
+	for i, line := range lines {
+		if got := visibleRunes(line); got > 80 {
+			t.Fatalf("line %d width = %d, want <= 80\n%s", i+1, got, line)
+		}
+	}
+}
+
+func TestPolishedTranscriptShowsRolesThinkingAndInput(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "fix the layout")
+	state.BeginStreaming()
+	state.AppendThinking("I need to inspect the render bounds and keep the newest reasoning visible.")
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	m.busy = true
+	m.refreshViewport()
+
+	view := m.View()
 	for _, want := range []string{
-		"Context Pack: 4/12000 tokens",
-		"repo_card",
-		"Repo Card",
-		"repo.card",
+		"user",
+		"fix the layout",
+		"thinking",
+		"Ask Marshal...",
+		"Ctrl+G thinking",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestViewShowsProviderErrorWhenSet(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	state.SetProviderError(errors.New("dial tcp: connection refused"))
+	view := m.View()
+
+	if !strings.Contains(view, "Provider Error") {
+		t.Fatalf("View() missing 'Provider Error' substring:\n%s", view)
+	}
+	if !strings.Contains(view, "connection refused") {
+		t.Fatalf("View() missing 'connection refused' substring:\n%s", view)
+	}
+}
+
+func TestViewOmitsProviderErrorSectionByDefault(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	view := m.View()
+
+	if strings.Contains(view, "Provider Error") {
+		t.Fatalf("View() should not contain 'Provider Error' when no error is set:\n%s", view)
 	}
 }
 
@@ -290,20 +443,21 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	}
 	state.SetPendingApproval(tc)
 
-	model := New(state)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
 
-	// Check rendering of banner
-	view := model.View()
-	if !strings.Contains(view, "SECURITY APPROVAL REQUIRED") {
-		t.Fatal("View() missing SECURITY APPROVAL REQUIRED banner")
+	view := m.View()
+	if !strings.Contains(view, "Approval") {
+		t.Fatal("View() missing Approval panel")
 	}
 	if !strings.Contains(view, "go test") {
 		t.Fatal("View() missing proposed command")
 	}
 
 	// 1. Test Deny Keypress 'd'
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(Model)
 
 	select {
 	case dec := <-respChan:
@@ -319,11 +473,11 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 
 	// Set up again for Enter key
 	state.SetPendingApproval(tc)
-	model = New(state)
+	m = New(state)
 
 	// 2. Test Approve Keypress 'enter'
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
 
 	select {
 	case dec := <-respChan:
@@ -336,29 +490,29 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 
 	// Set up again for Edit key
 	state.SetPendingApproval(tc)
-	model = New(state)
+	m = New(state)
 
 	// 3. Test Edit Keypress 'e'
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
 
-	if !model.editingCommand {
+	if !m.editingCommand {
 		t.Fatal("expected model to enter editingCommand mode")
 	}
-	if model.input.Value() != "go test" {
-		t.Fatalf("expected input value to be 'go test', got %q", model.input.Value())
+	if m.input.Value() != "go test" {
+		t.Fatalf("expected input value to be 'go test', got %q", m.input.Value())
 	}
 
 	// Simulate typing to edit command
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" -v")})
-	model = updated.(Model)
-	if model.input.Value() != "go test -v" {
-		t.Fatalf("expected edited input value to be 'go test -v', got %q", model.input.Value())
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" -v")})
+	m = updated.(Model)
+	if m.input.Value() != "go test -v" {
+		t.Fatalf("expected edited input value to be 'go test -v', got %q", m.input.Value())
 	}
 
 	// Press Enter to confirm edited command
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
 
 	select {
 	case dec := <-respChan:
@@ -371,11 +525,11 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 
 	// Set up again for Always Allow key
 	state.SetPendingApproval(tc)
-	model = New(state)
+	m = New(state)
 
 	// 4. Test Always Allow Keypress 'a'
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = updated.(Model)
 
 	select {
 	case dec := <-respChan:
@@ -390,26 +544,6 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	rules := state.SessionRules()
 	if len(rules) != 1 || rules[0] != "go test" {
 		t.Fatalf("expected session rules to contain 'go test', got %#v", rules)
-	}
-}
-
-func TestViewShowsAuditLogs(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
-
-	// Log a tool call
-	state.LogToolCall(registry.AuditEvent{
-		Timestamp:     time.Unix(1719946800, 0), // 15:00:00 UTC approximately
-		ToolName:      "shell.run",
-		ResultSummary: "command exit status 0",
-	})
-
-	view := model.View()
-	if !strings.Contains(view, "shell.run") {
-		t.Fatal("expected View to contain logged tool name")
-	}
-	if !strings.Contains(view, "command exit status 0") {
-		t.Fatal("expected View to contain logged tool result summary")
 	}
 }
 
@@ -650,14 +784,14 @@ func TestResizeComputesGeometry(t *testing.T) {
 	if model.chatHeight < 1 {
 		t.Fatalf("chatHeight = %d, want >= 1", model.chatHeight)
 	}
-	if model.viewport.Width != model.leftWidth-2 {
-		t.Fatalf("viewport.Width = %d, want %d", model.viewport.Width, model.leftWidth-2)
+	if model.viewport.Width != model.leftWidth {
+		t.Fatalf("viewport.Width = %d, want %d", model.viewport.Width, model.leftWidth)
 	}
-	if model.viewport.Height != model.chatHeight {
-		t.Fatalf("viewport.Height = %d, want %d", model.viewport.Height, model.chatHeight)
+	if model.viewport.Height != model.chatHeight-1 {
+		t.Fatalf("viewport.Height = %d, want %d", model.viewport.Height, model.chatHeight-1)
 	}
-	if model.input.Width != model.leftWidth-4 {
-		t.Fatalf("input.Width = %d, want %d", model.input.Width, model.leftWidth-4)
+	if model.input.Width != model.leftWidth-6 {
+		t.Fatalf("input.Width = %d, want %d", model.input.Width, model.leftWidth-6)
 	}
 }
 
@@ -669,14 +803,10 @@ func TestAltScreenViewLayout(t *testing.T) {
 	model = updated.(Model)
 
 	view := model.View()
-	// Check for sidebar tabs, status bar working dir
-	if !strings.Contains(view, "[1] Plan") {
+	if !strings.Contains(view, "1 Plan") {
 		t.Error("view missing Plan tab title")
 	}
-	if !strings.Contains(view, "/repo") {
-		t.Error("view missing working directory in status bar")
-	}
-	if !strings.Contains(view, "[Ctrl+O] Settings") {
+	if !strings.Contains(view, "Ctrl+O") {
 		t.Error("view missing keybind help text")
 	}
 }
@@ -688,7 +818,7 @@ func TestAltScreenViewFits80x24(t *testing.T) {
 	model = updated.(Model)
 
 	view := model.View()
-	lines := strings.Split(view, "\n")
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 	if len(lines) > 24 {
 		t.Fatalf("view height = %d lines, want <= 24", len(lines))
 	}
@@ -733,6 +863,7 @@ func TestViewFitsTerminalSizes(t *testing.T) {
 		{40, 10},
 		{50, 20},
 		{80, 24},
+		{100, 30},
 	}
 	for _, sz := range sizes {
 		t.Run(fmt.Sprintf("%dx%d", sz.width, sz.height), func(t *testing.T) {
@@ -742,7 +873,7 @@ func TestViewFitsTerminalSizes(t *testing.T) {
 			model = updated.(Model)
 
 			view := model.View()
-			lines := strings.Split(view, "\n")
+			lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 			if len(lines) > sz.height {
 				t.Fatalf("view height = %d lines, want <= %d", len(lines), sz.height)
 			}
@@ -943,8 +1074,14 @@ func TestApprovalBannerHasSingleBorder(t *testing.T) {
 	model = updated.(Model)
 
 	view := model.View()
-	if strings.Count(view, "┌") > 1 {
-		t.Fatalf("approval banner has double borders:\n%s", view)
+	// With an empty diff there should be a single full-width Approval panel,
+	// not a split Diff+Approval layout. A duplicated or nested panel would
+	// show multiple "Approval" titles or a "Diff" title alongside it.
+	if strings.Count(view, "Approval") != 1 {
+		t.Fatalf("approval banner missing title or duplicated:\n%s", view)
+	}
+	if strings.Contains(view, "Diff") {
+		t.Fatalf("approval banner should not be split into a Diff panel:\n%s", view)
 	}
 	if !strings.Contains(view, "run tests") {
 		t.Fatalf("approval banner missing human reason:\n%s", view)
@@ -1218,5 +1355,251 @@ func TestSettingsNavigationWithDefaultConfig(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "> Preset:") {
 		t.Fatalf("Tab should move focus to second field with default config:\n%s", view)
+	}
+}
+
+func TestPolishedSidebarTabsAndContextSummary(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetContextPack(contextpack.Pack{
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 18000, MaxTokens: 32000},
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Source: "repo.card", EstimatedTokens: 120},
+			{Kind: contextpack.SectionFileSnippet, Title: "internal/app/tui/model.go", Source: "internal/app/tui/model.go", EstimatedTokens: 8400},
+		},
+	})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+	m.activeTab = 1
+
+	view := m.View()
+	for _, want := range []string{
+		"1 Plan",
+		"2 Context",
+		"3 Log",
+		"Context Pack",
+		"18k / 32k",
+		"internal/app/tui/model.go",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestRenderSidebarTabsSingleRowAcrossActiveIndex(t *testing.T) {
+	const width = 40
+	labels := []string{"1 Plan", "2 Context", "3 Log"}
+	var lineCounts []int
+	for active := 0; active < 3; active++ {
+		out := renderSidebarTabs(width, active)
+		lines := strings.Split(out, "\n")
+		lineCounts = append(lineCounts, len(lines))
+
+		// Diagnostic-only: each label must appear somewhere in the output.
+		// This alone does not prove the labels are aligned onto a single
+		// row — lipgloss.JoinHorizontal pads every block to equal height,
+		// so a label detached onto its own line still "appears somewhere"
+		// even in the buggy mismatched-pill-height case.
+		for _, name := range labels {
+			found := false
+			for _, line := range lines {
+				if strings.Contains(line, name) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("active=%d: no line contains label %q; lines=%q", active, name, lines)
+			}
+		}
+
+		// Load-bearing assertion: the tab strip must render as a single
+		// logical row, meaning there must be one line that simultaneously
+		// contains all three labels together. If active/inactive pill
+		// styles have mismatched rendered heights, the labels land on
+		// different lines relative to each other and no single line
+		// contains all three, even though each label individually still
+		// appears somewhere in the block.
+		foundCombinedLine := false
+		for _, line := range lines {
+			allPresent := true
+			for _, name := range labels {
+				if !strings.Contains(line, name) {
+					allPresent = false
+					break
+				}
+			}
+			if allPresent {
+				foundCombinedLine = true
+				break
+			}
+		}
+		if !foundCombinedLine {
+			t.Fatalf("active=%d: no single line contains all labels %q together; lines=%q", active, labels, lines)
+		}
+	}
+
+	for i := 1; i < len(lineCounts); i++ {
+		if lineCounts[i] != lineCounts[0] {
+			t.Fatalf("renderSidebarTabs height varies by active index: active=0 -> %d lines, active=%d -> %d lines", lineCounts[0], i, lineCounts[i])
+		}
+	}
+}
+
+func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetPendingApproval(&session.PendingToolCall{
+		Command:      "go test ./internal/app/tui/...",
+		Reason:       "Validate layout bounds and modal capture.",
+		Risk:         "Low - test command, no destructive flags detected.",
+		Diff:         "- old\n+ new\n",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"Diff",
+		"Agent wants to run",
+		"go test ./internal/app/tui/...",
+		"Reason",
+		"Risk",
+		"Enter approve",
+		"d deny",
+		"e edit",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing approval copy %q:\n%s", want, view)
+		}
+	}
+
+	// The panel labeled "Risk" must show the actual risk classification,
+	// not a second copy of the Reason text. Find the line following the
+	// "Risk" label and assert it holds the Risk content (and not the
+	// Reason content) — this guards against riskText() preferring Reason
+	// over Risk.
+	lines := strings.Split(view, "\n")
+	foundRiskLine := false
+	for i, line := range lines {
+		if strings.Contains(line, "Risk") && i+1 < len(lines) {
+			next := lines[i+1]
+			if strings.Contains(next, "Low - test command") {
+				foundRiskLine = true
+			}
+			if strings.Contains(next, "Validate layout bounds") {
+				t.Fatalf("Risk section shows Reason content instead of Risk content:\n%s", view)
+			}
+		}
+	}
+	if !foundRiskLine {
+		t.Fatalf("View() did not render the Risk classification text under the Risk label:\n%s", view)
+	}
+}
+
+func TestPolishedProviderErrorUsesCompactBanner(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetProviderError(errors.New("provider timeout: retrying local_heavy"))
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"Provider Error",
+		"fits AltScreen",
+		"provider timeout",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing provider error copy %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestPolishedProviderErrorBannerFitsCommonTerminalSizes(t *testing.T) {
+	for _, size := range []struct {
+		width  int
+		height int
+	}{
+		{40, 10},
+		{80, 24},
+		{100, 30},
+		{120, 40},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+			state.SetProviderError(errors.New("provider timeout: retrying local_heavy"))
+			m := New(state)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+			m = updated.(Model)
+
+			view := m.View()
+			lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+			if len(lines) > size.height {
+				t.Fatalf("line count = %d, want <= %d\n%s", len(lines), size.height, view)
+			}
+			for i, line := range lines {
+				if got := visibleRunes(line); got > size.width {
+					t.Fatalf("line %d width = %d, want <= %d\n%s", i+1, got, size.width, line)
+				}
+			}
+		})
+	}
+}
+
+func TestPolishedCurrentLayoutFullSurface(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetActiveRoute(session.RouteInfo{
+		Role:      routing.RoleImplementer,
+		Profile:   "local_balanced",
+		Preset:    "coder",
+		Provider:  "ollama",
+		Model:     "qwen2.5-coder:14b",
+		LocalOnly: true,
+		Active:    true,
+	})
+	state.AddMessage(session.RoleUser, "fix the failing TUI layout tests")
+	state.AddMessage(session.RoleAssistant, "I found the render drift and am tightening the layout.")
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp:     time.Unix(100, 0),
+		ToolName:      "go test",
+		ResultSummary: "FAIL: line exceeds width",
+	})
+	state.SetContextPack(contextpack.Pack{
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 18000, MaxTokens: 32000},
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionFileSnippet, Title: "internal/app/tui/model.go", Source: "internal/app/tui/model.go", EstimatedTokens: 8400},
+			{Kind: contextpack.SectionFileSnippet, Title: "internal/app/session/session.go", Source: "internal/app/session/session.go", EstimatedTokens: 4100},
+		},
+	})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"Marshal",
+		"Chat",
+		"live transcript",
+		"user",
+		"assistant",
+		"1 Plan",
+		"2 Context",
+		"3 Log",
+		"MARSHAL",
+		"implementer",
+		"qwen2.5-coder:14b @ ollama",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("full surface missing %q:\n%s", want, view)
+		}
+	}
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	for i, line := range lines {
+		if got := visibleRunes(line); got > 120 {
+			t.Fatalf("line %d width = %d, want <= 120\n%s", i+1, got, line)
+		}
 	}
 }

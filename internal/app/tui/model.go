@@ -624,6 +624,56 @@ func renderKeyHelp(width int, focused bool) string {
 	return mutedStyle.MaxWidth(max(width, 1)).Render(truncateRunes(text, max(width, 1)))
 }
 
+func renderModeStrip(active string, width int) string {
+	if active == "" {
+		active = "Auto"
+	}
+	labels := []string{"Ask", "Plan", "Auto", "Swarm"}
+	rendered := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if strings.EqualFold(label, active) {
+			rendered = append(rendered, lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(label))
+			continue
+		}
+		rendered = append(rendered, mutedStyle.Render(label))
+	}
+	return lipgloss.NewStyle().
+		Width(max(width, 1)).
+		MaxWidth(max(width, 1)).
+		Render(strings.Join(rendered, " "))
+}
+
+func renderStatusBar(width int, state *session.State, busy bool) string {
+	route := state.ActiveRoute()
+	role := "inactive"
+	modelProvider := "no model"
+	locality := "remote-ok"
+	if route.Active {
+		role = string(route.Role)
+		modelProvider = fmt.Sprintf("%s @ %s", route.Model, route.Provider)
+		if route.LocalOnly {
+			locality = "local"
+		}
+	} else if !state.Config.Privacy.RemoteProvidersAllowed {
+		locality = "local"
+	}
+
+	busyText := "IDLE"
+	if busy {
+		busyText = "WORKING"
+	}
+	parts := []string{
+		statusBarBrand.Render("MARSHAL"),
+		" Auto ",
+		fmt.Sprintf(" %s ", truncateRunes(role, 16)),
+		fmt.Sprintf(" %s ", truncateRunes(modelProvider, 28)),
+		fmt.Sprintf(" %s ", locality),
+		statusBarBusy.Width(9).Render(busyText),
+	}
+	line := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	return statusBarBg.Width(width).MaxWidth(width).Render(truncateRunes(line, width))
+}
+
 func riskText(tc *session.PendingToolCall) string {
 	if tc.Reason != "" {
 		return tc.Reason
@@ -747,214 +797,54 @@ func (m Model) View() string {
 
 	tc := m.state.PendingApproval()
 
-	// 1. Render Left Column Content
-	var leftContent string
-	if tc != nil && tc.Diff != "" {
-		splitWidth := (m.leftWidth - 4) / 2
-		if splitWidth < 1 {
-			splitWidth = 1
-		}
-		diffStyle := lipgloss.NewStyle().
-			Width(splitWidth).
-			Height(m.chatHeight - 2).
-			MaxHeight(m.chatHeight - 2).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(dimColor)
-		diffView := diffStyle.Render(tc.Diff)
+	chatPanel := m.renderChatPanel(tc)
+	inputPanel := m.renderInputArea()
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, chatPanel, inputPanel)
 
-		approvalStyle := lipgloss.NewStyle().
-			Width(splitWidth).
-			Height(m.chatHeight - 2).
-			MaxHeight(m.chatHeight - 2).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accentColor)
+	rightColumn := m.renderRightInfoPanel(tc)
 
-		var b strings.Builder
-		b.WriteString("┌─ SECURITY APPROVAL REQUIRED ┐\n")
-		b.WriteString(fmt.Sprintf("Command: %s\n", tc.Command))
-		b.WriteString(fmt.Sprintf("Reason: %s\n", tc.Reason))
-		b.WriteString(fmt.Sprintf("Risk: %s\n", tc.Risk))
-		b.WriteString("\nOptions:\n")
-		b.WriteString("[Enter] Approve\n[d] Deny\n[e] Edit\n[a] Always Allow\n")
-		if m.state.HasBackup() {
-			b.WriteString("[r] Rollback\n")
-		}
-
-		approvalView := approvalStyle.Render(b.String())
-		leftContent = lipgloss.JoinHorizontal(lipgloss.Top, diffView, approvalView)
-	} else if tc != nil {
-		approvalStyle := lipgloss.NewStyle().
-			Width(m.leftWidth).
-			Height(m.chatHeight).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accentColor)
-
-		cmdLine := truncateRunes(tc.Command, m.leftWidth-12)
-		reasonLine := truncateRunes(tc.Reason, m.leftWidth-10)
-		riskLine := truncateRunes(riskText(tc), m.leftWidth-8)
-
-		var b strings.Builder
-		b.WriteString("SECURITY APPROVAL REQUIRED\n\n")
-		b.WriteString(fmt.Sprintf("Command: %s\n", cmdLine))
-		b.WriteString(fmt.Sprintf("Reason: %s\n", reasonLine))
-		b.WriteString(fmt.Sprintf("Risk: %s\n", riskLine))
-		b.WriteString("\n[Enter] Approve  [d] Deny  [e] Edit")
-		if tc.Command != "" {
-			b.WriteString(fmt.Sprintf("  [a] Always allow \"%s\"", truncateRunes(tc.Command, 20)))
-		}
-		if m.state.HasBackup() {
-			b.WriteString("  [r] Rollback")
-		}
-		b.WriteString("\n")
-
-		leftContent = approvalStyle.Render(b.String())
-	} else {
-		leftContent = lipgloss.NewStyle().
-			Width(m.leftWidth).
-			Height(m.chatHeight).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(dimColor).
-			Render(m.viewport.View())
-	}
-
-	// Render input box
-	inputStyle := lipgloss.NewStyle().Width(m.leftWidth).Padding(0, 1)
-	helpStyle := lipgloss.NewStyle().
-		Foreground(dimColor).
-		MaxWidth(m.leftWidth - 2)
-
-	var helpText string
-	if m.inputFocused {
-		helpText = "  [Esc] Unfocus  [Tab] Cycle Tabs  [Ctrl+O] Settings  [Ctrl+K] Memories  [Ctrl+R] Rollback"
-	} else {
-		helpText = "  [Enter] Focus Input  [1-3] Switch Tabs  [Ctrl+O] Settings  [Ctrl+K] Memories  [Ctrl+R] Rollback"
-	}
-
-	inputContent := lipgloss.JoinVertical(lipgloss.Left,
-		inputStyle.Render(m.input.View()),
-		helpStyle.Render(helpText),
-	)
-	leftColumn := lipgloss.JoinVertical(lipgloss.Left, leftContent, inputContent)
-
-	// 2. Render Right Column Content (Tabs)
-	tabNames := []string{"Plan", "Context", "Log"}
-	var headers []string
-	for i, name := range tabNames {
-		style := inactiveTabStyle
-		if m.activeTab == i {
-			style = activeTabStyle
-		}
-		headers = append(headers, style.Render(fmt.Sprintf("[%d] %s", i+1, name)))
-	}
-	tabHeader := lipgloss.JoinHorizontal(lipgloss.Top, headers...)
-	tabHeader = lipgloss.NewStyle().
-		Width(m.rightWidth - 2).
-		MaxHeight(tabHeaderMaxRows).
-		Render(tabHeader)
-
-	var sidebarBody string
-	sbStyle := lipgloss.NewStyle().
-		Width(m.rightWidth - 2).
-		Height(m.contentHeight - 3).
-		MaxHeight(m.contentHeight - 3)
-
-	switch m.activeTab {
-	case 0:
-		var sb strings.Builder
-		sb.WriteString("Current Plan:\n\n")
-		sb.WriteString(" ● Redesign terminal UI layout\n")
-		if tc != nil {
-			sb.WriteString(fmt.Sprintf("   → Pending approval: %s\n", tc.Command))
-		} else if m.busy {
-			sb.WriteString("   → Agent is executing tasks...\n")
-		} else {
-			sb.WriteString("   → Ready for user input.\n")
-		}
-		sidebarBody = sbStyle.Render(sb.String())
-	case 1:
-		var sb strings.Builder
-		pack := m.state.ContextPack()
-		if pack.IsEmpty() {
-			sb.WriteString("No context pack built yet.\n")
-		} else {
-			sb.WriteString(fmt.Sprintf("Pack: %d/%d tokens\n\n", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens))
-			for _, section := range pack.Sections {
-				sb.WriteString(fmt.Sprintf("📄 %s (%d tk)\n", section.Title, section.EstimatedTokens))
-			}
-		}
-		sidebarBody = sbStyle.Render(sb.String())
-	case 2:
-		var sb strings.Builder
-		auditLog := m.state.AuditLog()
-		if len(auditLog) == 0 {
-			sb.WriteString("No tool calls yet.\n")
-		} else {
-			for _, event := range auditLog {
-				sb.WriteString(fmt.Sprintf("[%s] %s -> %s\n", event.Timestamp.Format("15:04:05"), event.ToolName, event.ResultSummary))
-			}
-		}
-		sidebarBody = sbStyle.Render(sb.String())
-	}
-
-	sidebarContent := lipgloss.JoinVertical(lipgloss.Left, tabHeader, sidebarBody)
-	rightColumn := lipgloss.NewStyle().
-		Width(m.rightWidth).
-		Height(m.contentHeight).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(dimColor).
-		Render(sidebarContent)
-
-	// 3. Render Status Bar
-	localOnlyText := fmt.Sprintf(" local-only=%t ", !m.state.Config.Privacy.RemoteProvidersAllowed)
-	busyStyle := statusBarAccent.Width(9)
-	busyText := "  IDLE   "
-	if m.busy {
-		busyText = " WORKING "
-	}
-	busyItem := busyStyle.Render(busyText)
-
-	// The plan caps project at 16 runes and cwd at 24 runes. In narrow
-	// terminals those fields would force the status bar to wrap, so we
-	// allocate the remaining width greedily (project first, then cwd) while
-	// respecting the caps and dropping a field entirely when even its label
-	// wouldn't fit.
-	fixedWidth := visibleRunes(statusBarAccent.Render(" MARSHAL ")) +
-		visibleRunes(busyItem) +
-		visibleRunes(localOnlyText)
-	remaining := m.width - fixedWidth
-	const projectOverhead = 10 // " project=" + " "
-	const cwdOverhead = 6      // " cwd=" + " "
-	projectMax, cwdMax := 0, 0
-	if remaining > projectOverhead {
-		projectMax = min(16, remaining-projectOverhead)
-		remaining -= projectOverhead + projectMax
-		if remaining > cwdOverhead {
-			cwdMax = min(24, remaining-cwdOverhead)
-		}
-	}
-
-	statusItems := []string{
-		statusBarAccent.Render(" MARSHAL "),
-	}
-	if projectMax > 0 {
-		statusItems = append(statusItems, fmt.Sprintf(" project=%s ", truncateRunes(m.state.Config.Project.Name, projectMax)))
-	}
-	if cwdMax > 0 {
-		statusItems = append(statusItems, fmt.Sprintf(" cwd=%s ", truncateRunes(m.state.WorkingDir, cwdMax)))
-	}
-	statusItems = append(statusItems, localOnlyText, busyItem)
-
-	statusBarText := lipgloss.JoinHorizontal(lipgloss.Top, statusItems...)
-	statusBar := statusBarBg.Width(m.width).MaxWidth(m.width).Render(statusBarText)
-
-	// Assemble layout
 	mainLayout := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
-	result := mainLayout
 	if err := m.state.ProviderError(); err != nil {
-		banner := errorBannerStyle.Width(m.width).MaxWidth(m.width).Render("Error: " + truncateRunes(err.Error(), m.width-8))
-		result = lipgloss.JoinVertical(lipgloss.Left, mainLayout, banner)
+		errorBanner := m.renderProviderError(err)
+		rightColumn = lipgloss.JoinVertical(lipgloss.Left, rightColumn, errorBanner)
+		mainLayout = lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, result, statusBar)
+
+	topBar := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		mutedStyle.Width(3).Render("● ● ●"),
+		lipgloss.NewStyle().Width(max(m.width-28, 1)).Align(lipgloss.Center).Bold(true).Render("Marshal"),
+		renderModeStrip("Auto", 20),
+	)
+
+	statusBar := renderStatusBar(m.width, m.state, m.busy)
+	return lipgloss.JoinVertical(lipgloss.Left, topBar, mainLayout, statusBar)
+}
+
+func (m Model) renderChatPanel(tc *session.PendingToolCall) string {
+	return renderPanel("Chat", "live transcript", m.viewport.View(), m.leftWidth, m.chatHeight)
+}
+
+func (m Model) renderInputArea() string {
+	inputStyle := lipgloss.NewStyle().
+		Width(m.leftWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(panelBorderColor).
+		Padding(0, 1)
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		inputStyle.Render(m.input.View()),
+		renderKeyHelp(m.leftWidth, m.inputFocused),
+	)
+}
+
+func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
+	return renderPanel("1 Plan  2 Context  3 Log", "inspector", "", m.rightWidth, m.contentHeight)
+}
+
+func (m Model) renderProviderError(err error) string {
+	body := "Error: " + truncateRunes(err.Error(), max(m.rightWidth-10, 1))
+	return renderPanel("Provider Error Banner", "fits AltScreen", body, m.rightWidth, 5)
 }
 
 func (m Model) fallbackView() string {

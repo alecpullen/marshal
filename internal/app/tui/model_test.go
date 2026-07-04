@@ -196,6 +196,35 @@ func TestPolishedViewContainsCurrentLayoutChrome(t *testing.T) {
 	}
 }
 
+func TestPolishedStatusBarShowsRouteWhenActive(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetActiveRoute(session.RouteInfo{
+		Role:      routing.RoleImplementer,
+		Profile:   "local_balanced",
+		Preset:    "coder",
+		Provider:  "ollama",
+		Model:     "qwen2.5-coder:14b",
+		LocalOnly: true,
+		Active:    true,
+	})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"MARSHAL",
+		"Auto",
+		"implementer",
+		"qwen2.5-coder:14b @ ollama",
+		"local",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing status item %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestPolishedViewFitsCommonTerminalSizes(t *testing.T) {
 	for _, size := range []struct {
 		width  int

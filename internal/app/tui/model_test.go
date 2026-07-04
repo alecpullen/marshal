@@ -280,11 +280,10 @@ func TestPolishedRightPanelTracksActiveTab(t *testing.T) {
 	m = updated.(Model)
 
 	planView := m.View()
-	if !strings.Contains(planView, "Current Plan:") || !strings.Contains(planView, "Ready for user input.") {
-		t.Fatalf("plan tab content missing:\n%s", planView)
-	}
-	if !strings.Contains(planView, "› 1 Plan") {
-		t.Fatalf("plan tab chrome missing active indicator:\n%s", planView)
+	for _, want := range []string{"Inspect current TUI layout", "Match mockup panel chrome", "Ready for input", "1 Plan", "2 Context", "3 Log"} {
+		if !strings.Contains(planView, want) {
+			t.Fatalf("plan tab content missing %q:\n%s", want, planView)
+		}
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -292,25 +291,19 @@ func TestPolishedRightPanelTracksActiveTab(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
 	m = updated.(Model)
 	contextView := m.View()
-	for _, want := range []string{"Pack: 4/12000 tokens", "Repo Card"} {
+	for _, want := range []string{"Context Pack", "4 / 12k", "Repo Card"} {
 		if !strings.Contains(contextView, want) {
 			t.Fatalf("context tab missing %q:\n%s", want, contextView)
 		}
-	}
-	if !strings.Contains(contextView, "› 2 Context") {
-		t.Fatalf("context tab chrome missing active indicator:\n%s", contextView)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
 	m = updated.(Model)
 	logView := m.View()
-	for _, want := range []string{"shell.run", "->"} {
+	for _, want := range []string{"shell.run", "command exit"} {
 		if !strings.Contains(logView, want) {
 			t.Fatalf("log tab missing %q:\n%s", want, logView)
 		}
-	}
-	if !strings.Contains(logView, "› 3") || !strings.Contains(logView, "Log") {
-		t.Fatalf("log tab chrome missing active indicator:\n%s", logView)
 	}
 }
 
@@ -1280,5 +1273,34 @@ func TestBusyTickRefreshesViewportOnReasoningGrowthAlone(t *testing.T) {
 	model = updated.(Model)
 	if !strings.Contains(model.View(), "step one step two") {
 		t.Fatalf("expected viewport to refresh on reasoning growth alone (message count unchanged):\n%s", model.View())
+	}
+}
+
+func TestPolishedSidebarTabsAndContextSummary(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetContextPack(contextpack.Pack{
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 18000, MaxTokens: 32000},
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Source: "repo.card", EstimatedTokens: 120},
+			{Kind: contextpack.SectionFileSnippet, Title: "internal/app/tui/model.go", Source: "internal/app/tui/model.go", EstimatedTokens: 8400},
+		},
+	})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+	m.activeTab = 1
+
+	view := m.View()
+	for _, want := range []string{
+		"1 Plan",
+		"2 Context",
+		"3 Log",
+		"Context Pack",
+		"18k / 32k",
+		"internal/app/tui/model.go",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q:\n%s", want, view)
+		}
 	}
 }

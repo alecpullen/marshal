@@ -101,7 +101,7 @@ func TestList(t *testing.T) {
 func TestRegisterAll(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	err := RegisterAll(cmdReg, toolReg, "test-project")
+	err := RegisterAll(cmdReg, toolReg)
 	if err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
@@ -114,7 +114,7 @@ func TestRegisterAll(t *testing.T) {
 func TestHelpCommand(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("help")
 	result := cmd.Handler(newTestState(), nil)
@@ -126,7 +126,7 @@ func TestHelpCommand(t *testing.T) {
 func TestToolsCommand(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("tools")
 	result := cmd.Handler(newTestState(), nil)
@@ -138,7 +138,7 @@ func TestToolsCommand(t *testing.T) {
 func TestRouteCommand(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
 	state.SetActiveRoute(session.RouteInfo{
@@ -160,7 +160,7 @@ func TestRouteCommand(t *testing.T) {
 func TestContextCommand(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
 	state.AddMessage(session.RoleUser, "hello")
@@ -176,7 +176,7 @@ func TestContextCommand(t *testing.T) {
 func TestNewCommand(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
 	state.AddMessage(session.RoleUser, "hello")
@@ -195,7 +195,7 @@ func TestNewCommand(t *testing.T) {
 func TestConfigCommand(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("config")
@@ -208,7 +208,7 @@ func TestConfigCommand(t *testing.T) {
 func TestRollbackNoBackup(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("rollback")
@@ -221,7 +221,7 @@ func TestRollbackNoBackup(t *testing.T) {
 func TestExitQuitCommands(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("exit")
@@ -240,7 +240,7 @@ func TestExitQuitCommands(t *testing.T) {
 func TestModeSwitchCommands(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("ask")
@@ -265,7 +265,7 @@ func TestModeSwitchCommands(t *testing.T) {
 func TestStopCommand(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("stop")
@@ -278,7 +278,7 @@ func TestStopCommand(t *testing.T) {
 func TestModelCommandEmptyArgs(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
-	RegisterAll(cmdReg, toolReg, "test")
+	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("model")

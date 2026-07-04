@@ -721,6 +721,49 @@ func TestRunPreservesContextPackSectionMetadataWhenAddingPlan(t *testing.T) {
 	}
 }
 
+type blockingProvider struct{}
+
+func (p *blockingProvider) Name() string { return "blocking" }
+
+func (p *blockingProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) { return nil, nil }
+
+func (p *blockingProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
+	return schema.EmbedResponse{}, nil
+}
+
+func (p *blockingProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
+	return schema.ProviderCapabilities{}
+}
+
+func (p *blockingProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	events := make(chan schema.ChatEvent)
+	go func() {
+		defer close(events)
+		<-ctx.Done()
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: ctx.Err()}
+	}()
+	return events, nil
+}
+
+func TestChatOnceTimesOutPerRequest(t *testing.T) {
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(&blockingProvider{}, reg, pol, state, "test-model")
+	runner.RequestTimeout = 50 * time.Millisecond
+
+	start := time.Now()
+	_, err := runner.chatOnce(context.Background(), &blockingProvider{}, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("chatOnce returned %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("chatOnce took too long to time out: %v", elapsed)
+	}
+}
+
 func TestRunResolvesQuestionRouteAndUpdatesModel(t *testing.T) {
 	p := &scriptedProvider{responses: []string{
 		`{"rationale":"simple","action":{"type":"answer","content":"ok"}}`,

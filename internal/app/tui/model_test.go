@@ -1394,6 +1394,28 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 			t.Fatalf("View() missing approval copy %q:\n%s", want, view)
 		}
 	}
+
+	// The panel labeled "Risk" must show the actual risk classification,
+	// not a second copy of the Reason text. Find the line following the
+	// "Risk" label and assert it holds the Risk content (and not the
+	// Reason content) — this guards against riskText() preferring Reason
+	// over Risk.
+	lines := strings.Split(view, "\n")
+	foundRiskLine := false
+	for i, line := range lines {
+		if strings.Contains(line, "Risk") && i+1 < len(lines) {
+			next := lines[i+1]
+			if strings.Contains(next, "Low - test command") {
+				foundRiskLine = true
+			}
+			if strings.Contains(next, "Validate layout bounds") {
+				t.Fatalf("Risk section shows Reason content instead of Risk content:\n%s", view)
+			}
+		}
+	}
+	if !foundRiskLine {
+		t.Fatalf("View() did not render the Risk classification text under the Risk label:\n%s", view)
+	}
 }
 
 func TestPolishedProviderErrorUsesCompactBanner(t *testing.T) {
@@ -1412,5 +1434,35 @@ func TestPolishedProviderErrorUsesCompactBanner(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing provider error copy %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestPolishedProviderErrorBannerFitsCommonTerminalSizes(t *testing.T) {
+	for _, size := range []struct {
+		width  int
+		height int
+	}{
+		{80, 24},
+		{100, 30},
+		{120, 40},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+			state.SetProviderError(errors.New("provider timeout: retrying local_heavy"))
+			m := New(state)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+			m = updated.(Model)
+
+			view := m.View()
+			lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+			if len(lines) > size.height {
+				t.Fatalf("line count = %d, want <= %d\n%s", len(lines), size.height, view)
+			}
+			for i, line := range lines {
+				if got := visibleRunes(line); got > size.width {
+					t.Fatalf("line %d width = %d, want <= %d\n%s", i+1, got, size.width, line)
+				}
+			}
+		})
 	}
 }

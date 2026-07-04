@@ -682,10 +682,10 @@ func renderStatusBar(width int, state *session.State, busy bool) string {
 }
 
 func riskText(tc *session.PendingToolCall) string {
-	if tc.Reason != "" {
-		return tc.Reason
+	if tc.Risk != "" {
+		return tc.Risk
 	}
-	return tc.Risk
+	return tc.Reason
 }
 
 func visibleRunes(s string) int {
@@ -804,11 +804,25 @@ func (m Model) View() string {
 
 	tc := m.state.PendingApproval()
 
-	chatPanel := m.renderChatPanel(tc)
-	inputPanel := m.renderInputArea()
+	// When a provider-error banner will be appended below mainLayout, it
+	// consumes rows that the normal layout budget (see resize()) doesn't
+	// account for. Shrink the chat/right-panel content height for this
+	// render pass by exactly the banner's visible height (its own content
+	// rows plus the 2 rows renderPanel's border adds) so the total output
+	// still fits the terminal height. This only mutates a local copy of m
+	// (View has a value receiver), so it never affects stored state.
+	layout := m
+	if err := m.state.ProviderError(); err != nil {
+		reserved := providerErrorBannerContentHeight(m.contentHeight) + 2
+		layout.contentHeight = max(m.contentHeight-reserved, 5)
+		layout.chatHeight = max(layout.contentHeight-chatBelowViewportRows, 1)
+	}
+
+	chatPanel := layout.renderChatPanel(tc)
+	inputPanel := layout.renderInputArea()
 	leftColumn := lipgloss.JoinVertical(lipgloss.Left, chatPanel, inputPanel)
 
-	rightColumn := m.renderRightInfoPanel(tc)
+	rightColumn := layout.renderRightInfoPanel(tc)
 
 	mainLayout := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
 
@@ -870,14 +884,8 @@ func (m Model) renderApprovalArea(tc *session.PendingToolCall) string {
 		mutedStyle.Render("Risk"),
 		truncateRunes(riskText(tc), max(splitWidth-4, 1)),
 		"",
-		"Enter approve",
-		"e edit",
-		"d deny",
-		"a always allow",
+		helpLine,
 	}, "\n")
-	if m.state.HasBackup() {
-		approvalBody += "\nr rollback"
-	}
 	approvalPanel := renderPanel("Approval", "security", approvalBody, splitWidth, m.chatHeight)
 	return lipgloss.JoinHorizontal(lipgloss.Top, diffPanel, approvalPanel)
 }
@@ -1095,7 +1103,16 @@ func (m Model) renderProviderError(err error) string {
 		Padding(0, 1).
 		Width(bodyWidth).
 		Render(lipgloss.NewStyle().Foreground(errorColor).Render("! ") + truncateRunes(err.Error(), max(bodyWidth-2, 1)))
-	return renderPanel("Provider Error Banner", "fits AltScreen", body, panelWidth, min(6, max(m.contentHeight/3, 4)))
+	return renderPanel("Provider Error Banner", "fits AltScreen", body, panelWidth, providerErrorBannerContentHeight(m.contentHeight))
+}
+
+// providerErrorBannerContentHeight returns the content-height argument to
+// pass to renderPanel for the provider-error banner. It is shared with
+// View(), which must reserve the same number of rows (this value + 2 for
+// renderPanel's border) from the main layout so the banner has room without
+// pushing the total rendered output past the terminal height.
+func providerErrorBannerContentHeight(contentHeight int) int {
+	return min(6, max(contentHeight/3, 4))
 }
 
 func (m Model) fallbackView() string {

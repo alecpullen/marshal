@@ -30,7 +30,7 @@ func (m Model) View() string {
 	if m.footer != "" {
 		b.WriteString(frameLine(m.footer, inner))
 	}
-	b.WriteString(frameLine("[Ctrl+S] Save  [Esc] Cancel  [Tab] Next field", inner))
+	b.WriteString(frameLine("[Ctrl+S] Save  [Esc] Cancel  [Tab/↑/↓] Navigate", inner))
 	b.WriteString(frameBottom(frameWidth))
 	return b.String()
 }

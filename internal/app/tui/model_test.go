@@ -1599,7 +1599,6 @@ func TestStatusBarShowsDoneBadgeAfterActivity(t *testing.T) {
 
 	updated, _ = m.Update(agentFinishedMsg{})
 	m = updated.(Model)
-	state.SetActivity(session.Activity{})
 
 	view := m.View()
 	if !strings.Contains(view, "✓") {
@@ -1624,7 +1623,6 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 
 	updated, _ = m.Update(agentFinishedMsg{})
 	m = updated.(Model)
-	state.SetActivity(session.Activity{})
 
 	if !strings.Contains(m.View(), "✓") {
 		t.Fatal("expected done badge immediately after finish")

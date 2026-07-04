@@ -217,6 +217,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.state.SetProviderError(msg.err)
 		}
+		m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
 			m.lastActivityDone = time.Now()
 			m.lastActivityKind = session.ActivityIdle

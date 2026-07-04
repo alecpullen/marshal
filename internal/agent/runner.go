@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	DefaultMaxToolIterations = 16
-	DefaultMaxRetries        = 2
+	DefaultMaxToolIterations  = 16
+	DefaultMaxRetries         = 2
+	DefaultMaxParallelActions = 4
 )
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
@@ -44,31 +45,33 @@ type MemoryProvider interface {
 // registry, policy) stays decoupled and is exercised independently by
 // Milestones C-G's own tests.
 type Runner struct {
-	Provider          provider.Provider
-	Registry          *registry.Registry
-	Policy            *policy.PolicyEngine
-	State             *session.State
-	Model             string
-	RouteResolver     RouteResolver
-	MemoryProvider    MemoryProvider
-	ProjectID         int64
-	Now               func() time.Time
-	MaxToolIterations int
-	MaxRetries        int
-	RequestTimeout    time.Duration
-	ResponseFormat    *schema.ResponseFormat
+	Provider           provider.Provider
+	Registry           *registry.Registry
+	Policy             *policy.PolicyEngine
+	State              *session.State
+	Model              string
+	RouteResolver      RouteResolver
+	MemoryProvider     MemoryProvider
+	ProjectID          int64
+	Now                func() time.Time
+	MaxToolIterations  int
+	MaxRetries         int
+	RequestTimeout     time.Duration
+	ResponseFormat     *schema.ResponseFormat
+	MaxParallelActions int
 }
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
 	return &Runner{
-		Provider:          p,
-		Registry:          reg,
-		Policy:            pol,
-		State:             state,
-		Model:             model,
-		Now:               time.Now,
-		MaxToolIterations: DefaultMaxToolIterations,
-		MaxRetries:        DefaultMaxRetries,
+		Provider:           p,
+		Registry:           reg,
+		Policy:             pol,
+		State:              state,
+		Model:              model,
+		Now:                time.Now,
+		MaxToolIterations:  DefaultMaxToolIterations,
+		MaxRetries:         DefaultMaxRetries,
+		MaxParallelActions: DefaultMaxParallelActions,
 	}
 }
 

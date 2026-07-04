@@ -81,6 +81,7 @@ type Runner struct {
 	ResponseFormat     *schema.ResponseFormat
 	MaxParallelActions int
 	MaxToolResultChars int
+	ForceClass         string // if set, overrides Classify() in Run()
 
 	callHistory   []toolCallKey
 	callHistoryMu sync.Mutex
@@ -102,6 +103,10 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 	}
 }
 
+func (r *Runner) SetForceClass(class string) {
+	r.ForceClass = class
+}
+
 // Run executes one full agent turn for goal. It records the user's message,
 // the assistant's plan (if any), every tool call/result, and the final
 // answer directly onto r.State, so the TUI's existing transcript/audit-log/
@@ -115,7 +120,11 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	r.callHistoryMu.Unlock()
 
 	task := NewTask(goal, r.Now())
-	task.Class = Classify(goal)
+	if r.ForceClass != "" {
+		task.Class = TaskClass(r.ForceClass)
+	} else {
+		task.Class = Classify(goal)
+	}
 	turnProvider, turnModel, route := r.resolveRoute(task)
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 

@@ -106,3 +106,15 @@ Added `TestRenderSidebarTabsSingleRowAcrossActiveIndex` to `internal/app/tui/mod
 - `gofmt -l .` — no output (all files already formatted).
 
 Commit: `ce0994e` — "fix(tui): align sidebar pill tabs onto a single row".
+
+### Follow-up: strengthened `TestRenderSidebarTabsSingleRowAcrossActiveIndex` (tautology fix)
+
+A later task reviewer flagged that `TestRenderSidebarTabsSingleRowAcrossActiveIndex`, as added above, was tautological: its two checks (each label appears on *some* line; total line count is stable across active indices) both pass even on the pre-fix buggy `renderSidebarTabs` from `67d6cfc`, because `lipgloss.JoinHorizontal(lipgloss.Top, ...)` already pads every joined block to the same total height regardless of alignment, and each label's text still shows up somewhere in the output even when it's detached onto the wrong row relative to its siblings. The test could never fail against the bug it was written to catch.
+
+Fix: added a load-bearing assertion that finds the one line (if any) containing all three labels (`"1 Plan"`, `"2 Context"`, `"3 Log"`) together, for every active index (0, 1, 2), and fails if no such line exists. Kept the original per-label "appears somewhere" checks as secondary diagnostics.
+
+RED/GREEN evidence:
+- RED: temporarily reverted `renderSidebarTabs` in `internal/app/tui/model.go` to drop the `padPillHeight(...)` call (i.e. `parts = append(parts, inactivePillStyle.Render(label))`, reproducing the pre-`ce0994e` bug), then ran `go test ./internal/app/tui/... -run TestRenderSidebarTabsSingleRowAcrossActiveIndex -v`. The new assertion failed as expected: `active=0: no single line contains all labels ["1 Plan" "2 Context" "3 Log"] together; lines=["╭────────╮ 2 Context  3 Log             " "│ 1 Plan │                              " "╰────────╯                              "]` — showing "1 Plan" detached from "2 Context"/"3 Log" onto a different row, exactly the bug this test exists to catch.
+- GREEN: restored the real `padPillHeight` call and reran the same command; the test passed, and the full suite (`go test ./internal/app/tui/... -v`), `go build ./...`, and `go vet ./...` were all clean with no other changes to `model.go`.
+
+Commit: "test(tui): assert sidebar tab labels share one rendered line" (see repo history for exact SHA).

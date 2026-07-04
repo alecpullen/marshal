@@ -584,8 +584,8 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 	if width < 4 {
 		width = 4
 	}
-	if height < 3 {
-		height = 3
+	if height < 2 {
+		height = 2
 	}
 	// width and height are the interior content dimensions of the panel;
 	// lipgloss adds the rounded border on top of them, so the panel's total
@@ -858,7 +858,15 @@ func (m Model) renderApprovalArea(tc *session.PendingToolCall) string {
 	}
 
 	splitWidth := max((m.leftWidth-2)/2, 10)
-	diffBody := truncateRunes(tc.Diff, splitWidth*max(m.chatHeight-1, 1))
+	diffLines := strings.Split(tc.Diff, "\n")
+	maxDiffLines := max(m.chatHeight-1, 1)
+	if len(diffLines) > maxDiffLines {
+		diffLines = diffLines[:maxDiffLines]
+	}
+	for i := range diffLines {
+		diffLines[i] = truncateRunes(diffLines[i], splitWidth)
+	}
+	diffBody := strings.Join(diffLines, "\n")
 	diffPanel := renderPanel("Diff", "proposed patch", diffBody, splitWidth, m.chatHeight)
 
 	approvalBody := strings.Join([]string{

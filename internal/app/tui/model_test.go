@@ -976,6 +976,8 @@ func TestViewFitsTerminalSizes(t *testing.T) {
 		width  int
 		height int
 	}{
+		{40, 10},
+		{50, 20},
 		{80, 24},
 		{100, 30},
 	}
@@ -1101,7 +1103,7 @@ func TestProviderErrorVisibleInAltScreen(t *testing.T) {
 	model = updated.(Model)
 
 	view := model.View()
-	if !strings.Contains(view, "connection") {
+	if !strings.Contains(view, "connection refused") {
 		t.Fatalf("provider error not visible in AltScreen view:\n%s", view)
 	}
 }
@@ -1157,8 +1159,14 @@ func TestApprovalBannerHasSingleBorder(t *testing.T) {
 	model = updated.(Model)
 
 	view := model.View()
+	// With an empty diff there should be a single full-width Approval panel,
+	// not a split Diff+Approval layout. A duplicated or nested panel would
+	// show multiple "Approval" titles or a "Diff" title alongside it.
 	if strings.Count(view, "Approval") != 1 {
 		t.Fatalf("approval banner missing title or duplicated:\n%s", view)
+	}
+	if strings.Contains(view, "Diff") {
+		t.Fatalf("approval banner should not be split into a Diff panel:\n%s", view)
 	}
 	if !strings.Contains(view, "run tests") {
 		t.Fatalf("approval banner missing human reason:\n%s", view)

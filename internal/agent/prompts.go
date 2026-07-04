@@ -160,6 +160,12 @@ func BuildToolErrorMessage(name string, reason string) schema.ChatMessage {
 	}
 }
 
+func BuildCachedToolResultMessage(name string, result registry.ToolResult) schema.ChatMessage {
+	cached := result
+	cached.Summary = "(cached) " + result.Summary
+	return BuildToolResultMessage(name, cached)
+}
+
 func BuildCorrectionMessage(err error) schema.ChatMessage {
 	return schema.ChatMessage{
 		Role: schema.RoleUser,

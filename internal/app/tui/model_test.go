@@ -1466,3 +1466,58 @@ func TestPolishedProviderErrorBannerFitsCommonTerminalSizes(t *testing.T) {
 		})
 	}
 }
+
+func TestPolishedCurrentLayoutFullSurface(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetActiveRoute(session.RouteInfo{
+		Role:      routing.RoleImplementer,
+		Profile:   "local_balanced",
+		Preset:    "coder",
+		Provider:  "ollama",
+		Model:     "qwen2.5-coder:14b",
+		LocalOnly: true,
+		Active:    true,
+	})
+	state.AddMessage(session.RoleUser, "fix the failing TUI layout tests")
+	state.AddMessage(session.RoleAssistant, "I found the render drift and am tightening the layout.")
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp:     time.Unix(100, 0),
+		ToolName:      "go test",
+		ResultSummary: "FAIL: line exceeds width",
+	})
+	state.SetContextPack(contextpack.Pack{
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 18000, MaxTokens: 32000},
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionFileSnippet, Title: "internal/app/tui/model.go", Source: "internal/app/tui/model.go", EstimatedTokens: 8400},
+			{Kind: contextpack.SectionFileSnippet, Title: "internal/app/session/session.go", Source: "internal/app/session/session.go", EstimatedTokens: 4100},
+		},
+	})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"Marshal",
+		"Chat",
+		"live transcript",
+		"user",
+		"assistant",
+		"1 Plan",
+		"2 Context",
+		"3 Log",
+		"MARSHAL",
+		"implementer",
+		"qwen2.5-coder:14b @ ollama",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("full surface missing %q:\n%s", want, view)
+		}
+	}
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	for i, line := range lines {
+		if got := visibleRunes(line); got > 120 {
+			t.Fatalf("line %d width = %d, want <= 120\n%s", i+1, got, line)
+		}
+	}
+}

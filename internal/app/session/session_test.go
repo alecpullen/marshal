@@ -354,6 +354,26 @@ func TestAddMessageAttachesReasoningFromInProgressAndClearsIt(t *testing.T) {
 	}
 }
 
+func TestTurnToolCacheCachesAndClears(t *testing.T) {
+	state := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
+	args := []byte(`{"path":"a.go"}`)
+	want := registry.ToolResult{Summary: "read ok", Content: "package a"}
+
+	state.SetTurnToolResult("file.read", args, want)
+	got, ok := state.GetTurnToolResult("file.read", args)
+	if !ok {
+		t.Fatal("expected cache hit")
+	}
+	if got.Content != want.Content {
+		t.Fatalf("cached content = %q, want %q", got.Content, want.Content)
+	}
+
+	state.ClearTurnToolCache()
+	if _, ok := state.GetTurnToolResult("file.read", args); ok {
+		t.Fatal("expected cache miss after clear")
+	}
+}
+
 func TestStreamingLifecycleIsRaceFree(t *testing.T) {
 	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
 

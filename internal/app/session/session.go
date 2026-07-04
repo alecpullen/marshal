@@ -102,19 +102,21 @@ type State struct {
 	lastBackup      []BackupFile
 	contextPack     contextpack.Pack
 	activeRoute     RouteInfo
+	turnToolCache   map[string]registry.ToolResult
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &State{
-		Config:     cfg,
-		WorkingDir: workingDir,
-		StartedAt:  now,
-		db:         p.DB,
-		sessionID:  p.SessionID,
-		logger:     p.Logger,
-		ctx:        ctx,
-		cancel:     cancel,
+		Config:        cfg,
+		WorkingDir:    workingDir,
+		StartedAt:     now,
+		db:            p.DB,
+		sessionID:     p.SessionID,
+		logger:        p.Logger,
+		ctx:           ctx,
+		cancel:        cancel,
+		turnToolCache: make(map[string]registry.ToolResult),
 	}
 }
 
@@ -338,4 +340,25 @@ func (s *State) RollbackBackup() error {
 
 	s.AddMessage(RoleSystem, "System notice: The user has rolled back the last patch. All modified files have been reverted to their original state.")
 	return nil
+}
+
+func (s *State) ClearTurnToolCache() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turnToolCache = make(map[string]registry.ToolResult)
+}
+
+func (s *State) GetTurnToolResult(toolName string, normalizedArgs []byte) (registry.ToolResult, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := toolName + "|" + string(normalizedArgs)
+	result, ok := s.turnToolCache[key]
+	return result, ok
+}
+
+func (s *State) SetTurnToolResult(toolName string, normalizedArgs []byte, result registry.ToolResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := toolName + "|" + string(normalizedArgs)
+	s.turnToolCache[key] = result
 }

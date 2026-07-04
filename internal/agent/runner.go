@@ -25,6 +25,20 @@ const (
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
 
+// normalizeArgs returns a canonical JSON representation of a tool's
+// arguments so that {"b":1,"a":2} and {"a":2,"b":1} share the same
+// cache key. Empty arguments normalise to {}.
+func normalizeArgs(args json.RawMessage) ([]byte, error) {
+	if len(args) == 0 {
+		return []byte("{}"), nil
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(args, &m); err != nil {
+		return nil, err
+	}
+	return json.Marshal(m)
+}
+
 type RouteResolver interface {
 	Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error)
 }

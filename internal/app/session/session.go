@@ -24,6 +24,21 @@ const (
 	RoleAssistant Role = "assistant"
 )
 
+type ActivityKind string
+
+const (
+	ActivityIdle     ActivityKind = "idle"
+	ActivityThinking ActivityKind = "thinking"
+	ActivityTool     ActivityKind = "tool"
+	ActivityApproval ActivityKind = "approval"
+)
+
+type Activity struct {
+	Kind      ActivityKind
+	Label     string
+	StartedAt time.Time
+}
+
 type Message struct {
 	Role          Role
 	Content       string
@@ -103,6 +118,8 @@ type State struct {
 	contextPack     contextpack.Pack
 	activeRoute     RouteInfo
 	turnToolCache   map[string]registry.ToolResult
+	activity        Activity
+	plan            []string
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
@@ -256,6 +273,33 @@ func (s *State) ActiveRoute() RouteInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activeRoute
+}
+
+func (s *State) SetActivity(a Activity) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activity = a
+}
+
+func (s *State) Activity() Activity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activity
+}
+
+func (s *State) SetPlan(plan []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.plan = make([]string, len(plan))
+	copy(s.plan, plan)
+}
+
+func (s *State) Plan() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := make([]string, len(s.plan))
+	copy(p, s.plan)
+	return p
 }
 
 func (s *State) AddSessionRule(prefix string) {

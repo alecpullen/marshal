@@ -387,8 +387,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "failed to normalize arguments")}, nil
 	}
 
-	// Read-only cache lookup.
-	if tool.Risk == registry.RiskReadOnly {
+	// Cacheable read-only cache lookup.
+	if tool.Cacheable {
 		if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
 			r.recordToolCall(toolName, string(normalizedArgs))
 			logged := cached
@@ -455,7 +455,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	}
 
 	summarized := SummarizeToolResult(toolName, result, r.MaxToolResultChars)
-	if tool.Risk == registry.RiskReadOnly {
+	if tool.Cacheable {
 		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)
 	}
 	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)

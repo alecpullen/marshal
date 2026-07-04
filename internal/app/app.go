@@ -164,6 +164,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.RouteResolver = resolver
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
+	if cfg.Agent.MaxToolIterations > 0 {
+		runner.MaxToolIterations = cfg.Agent.MaxToolIterations
+	}
+	if cfg.Agent.MaxRetries > 0 {
+		runner.MaxRetries = cfg.Agent.MaxRetries
+	}
 	state.SetActiveRoute(session.RouteInfo{
 		Role:      route.Role,
 		Profile:   route.Profile,

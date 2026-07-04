@@ -98,8 +98,10 @@ type ProfileConfig struct {
 // Providers' Default() comment) — the app runs with the agent loop disabled
 // until a user configures both a [providers.<name>] entry and this section.
 type AgentConfig struct {
-	Provider string `toml:"provider"`
-	Model    string `toml:"model"`
+	Provider          string `toml:"provider"`
+	Model             string `toml:"model"`
+	MaxToolIterations int    `toml:"max_tool_iterations"`
+	MaxRetries        int    `toml:"max_retries"`
 }
 
 type PrivacyConfig struct {
@@ -143,8 +145,10 @@ type configFile struct {
 		Default *string `toml:"default"`
 	} `toml:"profile"`
 	Agent *struct {
-		Provider *string `toml:"provider"`
-		Model    *string `toml:"model"`
+		Provider          *string `toml:"provider"`
+		Model             *string `toml:"model"`
+		MaxToolIterations *int    `toml:"max_tool_iterations"`
+		MaxRetries        *int    `toml:"max_retries"`
 	} `toml:"agent"`
 	Privacy *struct {
 		RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
@@ -384,6 +388,12 @@ func merge(cfg *Config, file configFile) {
 		}
 		if file.Agent.Model != nil {
 			cfg.Agent.Model = *file.Agent.Model
+		}
+		if file.Agent.MaxToolIterations != nil {
+			cfg.Agent.MaxToolIterations = *file.Agent.MaxToolIterations
+		}
+		if file.Agent.MaxRetries != nil {
+			cfg.Agent.MaxRetries = *file.Agent.MaxRetries
 		}
 	}
 	if file.Privacy != nil {

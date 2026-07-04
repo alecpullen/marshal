@@ -82,6 +82,30 @@ func TestBuildSystemPromptImplementerHasCorrectAllowedActions(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptDescribesPatchFormat(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools())
+	content := msg.Content
+
+	if !strings.Contains(content, "<<<<<<< SEARCH") {
+		t.Error("system prompt missing search/replace patch marker <<<<<<< SEARCH")
+	}
+	if !strings.Contains(content, ">>>>>>> REPLACE") {
+		t.Error("system prompt missing search/replace patch marker >>>>>>> REPLACE")
+	}
+}
+
+func TestBuildSystemPromptImplementerIncludesPatchExample(t *testing.T) {
+	msg := BuildSystemPrompt(RoleImplementer, dummyTools())
+	content := msg.Content
+
+	if !strings.Contains(content, `"type": "patch"`) {
+		t.Error("implementer role example missing patch action")
+	}
+	if !strings.Contains(content, "File:") {
+		t.Error("implementer role patch example missing File: header")
+	}
+}
+
 func TestBuildSystemPromptTesterHasCorrectAllowedActions(t *testing.T) {
 	msg := BuildSystemPrompt(RoleTester, dummyTools())
 	content := msg.Content
@@ -113,14 +137,14 @@ func TestBuildSystemPromptUnknownRoleFallsBackToGeneral(t *testing.T) {
 	if !strings.Contains(content, "You are the general agent") {
 		t.Error("unknown role should fall back to general agent addendum")
 	}
-	if !strings.Contains(content, "Allowed actions for this role: answer, tool_call, final") {
+	if !strings.Contains(content, "Allowed actions for this role: answer, tool_call, patch, final") {
 		t.Error("unknown role should fall back to general agent allowed actions")
 	}
 }
 
 func TestBuildSystemPromptEachRoleHasAllowedActions(t *testing.T) {
 	expected := map[AgentRole]string{
-		RoleGeneral:     "Allowed actions for this role: answer, tool_call, final",
+		RoleGeneral:     "Allowed actions for this role: answer, tool_call, patch, final",
 		RolePlanner:     "Allowed actions for this role: answer, final",
 		RoleImplementer: "Allowed actions for this role: tool_call, patch, final",
 		RoleTester:      "Allowed actions for this role: tool_call, final",

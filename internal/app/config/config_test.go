@@ -284,6 +284,45 @@ func TestDefaultLeavesAgentProviderEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadParsesAgentLimits(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	dir := filepath.Join(home, ".config", "marshal")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := `[agent]
+provider = "ollama"
+model = "qwen3-coder"
+max_tool_iterations = 32
+max_retries = 5
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Agent.MaxToolIterations != 32 {
+		t.Fatalf("Agent.MaxToolIterations = %d, want 32", cfg.Agent.MaxToolIterations)
+	}
+	if cfg.Agent.MaxRetries != 5 {
+		t.Fatalf("Agent.MaxRetries = %d, want 5", cfg.Agent.MaxRetries)
+	}
+}
+
+func TestDefaultAgentLimitsAreZero(t *testing.T) {
+	cfg := Default()
+	if cfg.Agent.MaxToolIterations != 0 {
+		t.Fatalf("Agent.MaxToolIterations = %d, want 0 (runner default applies)", cfg.Agent.MaxToolIterations)
+	}
+	if cfg.Agent.MaxRetries != 0 {
+		t.Fatalf("Agent.MaxRetries = %d, want 0 (runner default applies)", cfg.Agent.MaxRetries)
+	}
+}
+
 func writeFile(t *testing.T, path string, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

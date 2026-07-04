@@ -70,6 +70,18 @@ tool_calling = "native"
 local_only = false
 ```
 
+## Agent loop config
+
+```toml
+[agent]
+provider = "ollama"
+model = "qwen3-coder"
+max_tool_iterations = 32
+max_retries = 2
+```
+
+`max_tool_iterations` caps how many back-to-back tool calls the agent may make before it must produce a final answer (default 16). `max_retries` controls how many times a transient provider request is retried (default 2). Raise `max_tool_iterations` for complex local tasks if the model frequently runs out of iterations.
+
 ## Agent profile
 
 ```toml

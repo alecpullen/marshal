@@ -254,11 +254,18 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 		return "", err
 	}
 
+	r.State.BeginStreaming()
+	defer r.State.EndStreaming()
+
 	var sb strings.Builder
 	for event := range events {
 		switch event.Type {
 		case schema.ChatEventDelta:
-			sb.WriteString(event.Delta)
+			if event.Kind == schema.DeltaThinking {
+				r.State.AppendThinking(event.Delta)
+			} else {
+				sb.WriteString(event.Delta)
+			}
 		case schema.ChatEventError:
 			return "", event.Err
 		case schema.ChatEventDone:

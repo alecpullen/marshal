@@ -21,11 +21,14 @@ type chatCompletionRequestBody struct {
 }
 
 // chatCompletionChunk is a single SSE `data:` payload for streaming
-// responses: choices[0].delta.content.
+// responses: choices[0].delta.content, plus the reasoning_content
+// convention used by DeepSeek-R1-style reasoning models served over an
+// OpenAI-compatible endpoint (vLLM, Ollama, etc.).
 type chatCompletionChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`

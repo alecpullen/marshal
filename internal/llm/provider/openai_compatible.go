@@ -201,6 +201,9 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			continue
 		}
 		choice := chunk.Choices[0]
+		if choice.Delta.ReasoningContent != "" {
+			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: choice.Delta.ReasoningContent}
+		}
 		if choice.Delta.Content != "" {
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: choice.Delta.Content}
 		}

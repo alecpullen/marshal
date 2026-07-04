@@ -94,6 +94,25 @@ func TestBuildSystemPromptDescribesPatchFormat(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptContainsActionExamples(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools())
+	content := msg.Content
+
+	for _, want := range []string{
+		`"type": "answer"`,
+		`"type": "tool_call"`,
+		`"type": "patch"`,
+		`"type": "final"`,
+		"<<<<<<< SEARCH",
+		">>>>>>> REPLACE",
+		"Do not use unified diff syntax",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("system prompt missing expected content %q\n%s", want, content)
+		}
+	}
+}
+
 func TestBuildSystemPromptImplementerIncludesPatchExample(t *testing.T) {
 	msg := BuildSystemPrompt(RoleImplementer, dummyTools())
 	content := msg.Content

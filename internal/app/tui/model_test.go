@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
@@ -1551,6 +1552,129 @@ func TestPolishedProviderErrorBannerFitsCommonTerminalSizes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSlashCommandExit(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	model := New(state, WithCommandRegistry(cmdReg))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	model.input.SetValue("/exit")
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if cmd == nil {
+		t.Error("expected quit command from /exit, got nil")
+	}
+}
+
+func TestSlashCommandHelp(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	model := New(state, WithCommandRegistry(cmdReg))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	model.input.SetValue("/help")
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m := updated.(*Model)
+
+	msgs := m.state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected system message from /help")
+	}
+	if !strings.Contains(msgs[0].Content, "Available commands") {
+		t.Errorf("help output missing header: %s", msgs[0].Content)
+	}
+}
+
+func TestSlashCommandUnknown(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	model := New(state, WithCommandRegistry(cmdReg))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	model.input.SetValue("/nonexistent")
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m := updated.(*Model)
+
+	msgs := m.state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected error message for unknown command")
+	}
+	if !strings.Contains(msgs[0].Content, "Unknown command") {
+		t.Errorf("expected unknown command message, got: %s", msgs[0].Content)
+	}
+}
+
+func TestSlashCommandNotSentToAgent(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	model := New(state, WithCommandRegistry(cmdReg), WithRunner(context.Background(), runner))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	model.input.SetValue("/help")
+	model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	select {
+	case <-runner.called:
+		t.Error("/help should not be sent to agent runner")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSlashCommandClearMessages(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	model := New(state, WithCommandRegistry(cmdReg))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	model.state.AddMessage(session.RoleUser, "hello")
+	model.input.SetValue("/new")
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m := updated.(*Model)
+
+	// The handler clears all messages, but dispatchCommand adds a system
+	// message with the result string. The user message should be gone.
+	msgs := m.state.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 system message after /new, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].Content, "Cleared") {
+		t.Errorf("expected system message to mention clearing, got: %s", msgs[0].Content)
+	}
+}
+
+func TestSlashCommandBusyStillDispatched(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	cmdReg := setupCmdReg(t)
+	model := New(state, WithCommandRegistry(cmdReg))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+	model.busy = true
+
+	model.input.SetValue("/help")
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m := updated.(*Model)
+
+	msgs := m.state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("commands should work even when busy")
+	}
+}
+
+func setupCmdReg(t *testing.T) *commands.Registry {
+	t.Helper()
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New(), "test"); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
+	}
+	return cmdReg
 }
 
 func TestPolishedCurrentLayoutFullSurface(t *testing.T) {

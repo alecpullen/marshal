@@ -107,6 +107,7 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 // answer directly onto r.State, so the TUI's existing transcript/audit-log/
 // approval rendering picks all of it up with no TUI changes.
 func (r *Runner) Run(ctx context.Context, goal string) error {
+	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	r.State.AddMessage(session.RoleUser, goal)
 	r.State.ClearTurnToolCache()
 	r.callHistoryMu.Lock()
@@ -133,6 +134,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 			return r.fail(task, err)
 		}
 		task.Plan = splitPlanLines(planText)
+		r.State.SetPlan(task.Plan)
 		if current := r.State.ContextPack(); !current.IsEmpty() {
 			maxTokens := current.TokenUsage.MaxTokens
 			if route.ContextBudget.MaxRepoContextTokens > 0 {
@@ -312,7 +314,9 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	}
 
 	r.State.BeginStreaming()
+	r.State.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: r.Now()})
 	defer r.State.EndStreaming()
+	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 
 	var sb strings.Builder
 	for event := range events {
@@ -419,6 +423,13 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	case policy.DecisionAllow:
 		approval = registry.ApprovalNotRequired
 	}
+
+	label := toolName
+	if command, ok := argsMap["command"].(string); ok && command != "" {
+		label = fmt.Sprintf("%s: %s", toolName, command)
+	}
+	r.State.SetActivity(session.Activity{Kind: session.ActivityTool, Label: label, StartedAt: r.Now()})
+	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 
 	call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
 	result, execErr := tool.Handler(ctx, call)
@@ -553,12 +564,17 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 	}
 	r.State.SetPendingApproval(tc)
 
+	label := fmt.Sprintf("waiting for approval: %s", command)
+	r.State.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: label, StartedAt: r.Now()})
+
 	select {
 	case decision := <-tc.ResponseChan:
 		r.State.SetPendingApproval(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return decision.Approved, decision.Edited, nil
 	case <-ctx.Done():
 		r.State.SetPendingApproval(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return false, "", ctx.Err()
 	}
 }

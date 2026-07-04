@@ -916,6 +916,35 @@ func renderMessage(role, content string, width int) string {
 	return b.String()
 }
 
+// pillHeight is the number of lines activePillStyle occupies once rendered
+// (its rounded border adds a top and bottom line around the label).
+var pillHeight = lipgloss.Height(activePillStyle.Render("x"))
+
+// padPillHeight vertically pads a rendered (borderless) pill block with
+// blank lines so its height matches activePillStyle's bordered block. This
+// keeps active and inactive pills the same rendered height — required so
+// lipgloss.JoinHorizontal aligns them on a single row — without adding the
+// horizontal border characters that a real border would introduce.
+func padPillHeight(rendered string) string {
+	height := lipgloss.Height(rendered)
+	extra := pillHeight - height
+	if extra <= 0 {
+		return rendered
+	}
+	blank := strings.Repeat(" ", lipgloss.Width(rendered))
+	top := extra / 2
+	bottom := extra - top
+	lines := make([]string, 0, top+1+bottom)
+	for i := 0; i < top; i++ {
+		lines = append(lines, blank)
+	}
+	lines = append(lines, rendered)
+	for i := 0; i < bottom; i++ {
+		lines = append(lines, blank)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func renderSidebarTabs(width int, active int) string {
 	names := []string{"Plan", "Context", "Log"}
 	parts := make([]string, 0, len(names))
@@ -925,7 +954,7 @@ func renderSidebarTabs(width int, active int) string {
 			parts = append(parts, activePillStyle.Render(label))
 			continue
 		}
-		parts = append(parts, inactivePillStyle.Render(label))
+		parts = append(parts, padPillHeight(inactivePillStyle.Render(label)))
 	}
 	return lipgloss.NewStyle().
 		Width(max(width, 1)).
@@ -947,13 +976,13 @@ func (m Model) renderPlanTab(width int, height int, tc *session.PendingToolCall,
 	} else {
 		rows = append(rows, "→  Ready for input")
 	}
-	return lipgloss.NewStyle().Width(width).Height(height).MaxHeight(height).Render(strings.Join(rows, "\n"))
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(strings.Join(rows, "\n"))
 }
 
 func (m Model) renderContextTab(width int, height int) string {
 	pack := m.state.ContextPack()
 	if pack.IsEmpty() {
-		return mutedStyle.Width(width).Height(height).Render("No context pack built yet.")
+		return mutedStyle.Width(width).MaxWidth(width).Height(height).Render("No context pack built yet.")
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Context Pack\n")
@@ -966,15 +995,21 @@ func (m Model) renderContextTab(width int, height int) string {
 		if title == "" {
 			title = section.Source
 		}
+		// Budget accounts for a leading "N  " index (up to 3 chars), a
+		// trailing "  " separator, and a token suffix from
+		// compactTokenCount which is normally <=3 chars ("999") but can
+		// grow to 4+ for very large packs (e.g. "100k"). MaxWidth below
+		// clamps any residual overflow, so this fixed budget is a safe
+		// approximation rather than an exact fit.
 		fmt.Fprintf(&b, "%d  %s  %s\n", i+1, truncateRunes(title, max(width-8, 1)), compactTokenCount(section.EstimatedTokens))
 	}
-	return lipgloss.NewStyle().Width(width).Height(height).MaxHeight(height).Render(b.String())
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(b.String())
 }
 
 func (m Model) renderLogTab(width int, height int) string {
 	auditLog := m.state.AuditLog()
 	if len(auditLog) == 0 {
-		return mutedStyle.Width(width).Height(height).Render("No tool calls yet.")
+		return mutedStyle.Width(width).MaxWidth(width).Height(height).Render("No tool calls yet.")
 	}
 	var b strings.Builder
 	for i, event := range auditLog {
@@ -987,7 +1022,7 @@ func (m Model) renderLogTab(width int, height int) string {
 			truncateRunes(event.ResultSummary, max(width-20, 1)),
 		)
 	}
-	return lipgloss.NewStyle().Width(width).Height(height).MaxHeight(height).Render(b.String())
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(b.String())
 }
 
 func compactTokenCount(tokens int) string {

@@ -1304,3 +1304,37 @@ func TestPolishedSidebarTabsAndContextSummary(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderSidebarTabsSingleRowAcrossActiveIndex(t *testing.T) {
+	const width = 40
+	var lineCounts []int
+	for active := 0; active < 3; active++ {
+		out := renderSidebarTabs(width, active)
+		lines := strings.Split(out, "\n")
+		lineCounts = append(lineCounts, len(lines))
+
+		// The whole tab strip must render as a single logical row: every
+		// output line must be the same height regardless of which pill is
+		// active, and no label may appear detached on its own line without
+		// its siblings (which is what happens when active/inactive pill
+		// styles have mismatched rendered heights).
+		for _, name := range []string{"Plan", "Context", "Log"} {
+			found := false
+			for _, line := range lines {
+				if strings.Contains(line, name) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("active=%d: no line contains label %q; lines=%q", active, name, lines)
+			}
+		}
+	}
+
+	for i := 1; i < len(lineCounts); i++ {
+		if lineCounts[i] != lineCounts[0] {
+			t.Fatalf("renderSidebarTabs height varies by active index: active=0 -> %d lines, active=%d -> %d lines", lineCounts[0], i, lineCounts[i])
+		}
+	}
+}

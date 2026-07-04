@@ -926,3 +926,20 @@ func TestRunFallsBackToOriginalProviderAndModelAfterResolverError(t *testing.T) 
 		t.Fatalf("ActiveRoute = %#v, want inactive after resolver error fallback", route)
 	}
 }
+
+func TestNormalizeArgsIsStableAcrossKeyOrder(t *testing.T) {
+	a, err := normalizeArgs(json.RawMessage(`{"b":1,"a":2}`))
+	if err != nil {
+		t.Fatalf("normalizeArgs error: %v", err)
+	}
+	b, err := normalizeArgs(json.RawMessage(`{"a":2,"b":1}`))
+	if err != nil {
+		t.Fatalf("normalizeArgs error: %v", err)
+	}
+	if string(a) != string(b) {
+		t.Fatalf("keys ordered differently produced different normalization: %q vs %q", a, b)
+	}
+	if string(a) != `{"a":2,"b":1}` {
+		t.Fatalf("unexpected normalized form: %q", a)
+	}
+}

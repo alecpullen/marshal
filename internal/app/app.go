@@ -250,7 +250,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 
 	cmdReg := commands.New()
 	if err == nil {
-		if err := commands.RegisterAll(cmdReg, toolReg, cfg.Project.Name); err != nil {
+		if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
 			return fmt.Errorf("register commands: %w", err)
 		}
 	}

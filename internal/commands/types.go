@@ -47,7 +47,7 @@ func (r *Registry) Register(cmd Command) error {
 }
 
 func (r *Registry) Lookup(name string) (Command, bool) {
-	cmd, ok := r.commands[name]
+	cmd, ok := r.commands[strings.ToLower(name)]
 	return cmd, ok
 }
 

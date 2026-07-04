@@ -83,6 +83,7 @@ type Runner struct {
 	MaxToolResultChars int
 	ForceClass         string // if set, overrides Classify() in Run()
 
+	forceClassMu sync.Mutex
 	callHistory   []toolCallKey
 	callHistoryMu sync.Mutex
 	loopNudgeSent bool
@@ -104,7 +105,9 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 }
 
 func (r *Runner) SetForceClass(class string) {
+	r.forceClassMu.Lock()
 	r.ForceClass = class
+	r.forceClassMu.Unlock()
 }
 
 // Run executes one full agent turn for goal. It records the user's message,
@@ -120,8 +123,11 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	r.callHistoryMu.Unlock()
 
 	task := NewTask(goal, r.Now())
-	if r.ForceClass != "" {
-		task.Class = TaskClass(r.ForceClass)
+	r.forceClassMu.Lock()
+	fc := r.ForceClass
+	r.forceClassMu.Unlock()
+	if fc != "" {
+		task.Class = TaskClass(fc)
 	} else {
 		task.Class = Classify(goal)
 	}

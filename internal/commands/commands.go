@@ -8,7 +8,7 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-func RegisterAll(cmdReg *Registry, toolReg *registry.Registry, projectName string) error {
+func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 	commands := []Command{
 		{
 			Name:        "exit",

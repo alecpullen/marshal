@@ -59,7 +59,7 @@ type Model struct {
 	memoryProject  int64
 	cmdRegistry    *commands.Registry
 	agentCancel    context.CancelFunc
-	forceMode      string
+	forceMode      string // reserved for future status-bar display
 
 	// New Layout State
 	width        int

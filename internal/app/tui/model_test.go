@@ -1671,7 +1671,7 @@ func TestSlashCommandBusyStillDispatched(t *testing.T) {
 func setupCmdReg(t *testing.T) *commands.Registry {
 	t.Helper()
 	cmdReg := commands.New()
-	if err := commands.RegisterAll(cmdReg, registry.New(), "test"); err != nil {
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
 	return cmdReg

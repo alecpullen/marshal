@@ -36,7 +36,7 @@ const (
 
 	totalHorizontalBorderGutter = 5 // left border + right border + gutter
 	verticalOverhead            = 4 // status bar (1) + right-column border (2) + slack (1)
-	chatBelowViewportRows       = 3 // input line + help line + rounding slack
+	chatBelowViewportRows       = 4 // bordered input box (3) + help line (1)
 	tabHeaderMaxRows            = 4 // cap wrapped tab header to this many rows
 	helpMaxRows                 = chatBelowViewportRows - 1
 )
@@ -812,8 +812,8 @@ func (m Model) View() string {
 
 	topBar := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		mutedStyle.Width(3).Render("● ● ●"),
-		lipgloss.NewStyle().Width(max(m.width-28, 1)).Align(lipgloss.Center).Bold(true).Render("Marshal"),
+		mutedStyle.Width(5).Render("● ● ●"),
+		lipgloss.NewStyle().Width(max(m.width-25, 1)).Align(lipgloss.Center).Bold(true).Render("Marshal"),
 		renderModeStrip("Auto", 20),
 	)
 

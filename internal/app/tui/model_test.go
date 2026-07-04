@@ -580,6 +580,8 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 	return f.err
 }
 
+func (f *fakeAgentRunner) SetForceClass(string) {}
+
 func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
@@ -1000,6 +1002,8 @@ func (s *streamingRunner) Run(ctx context.Context, goal string) error {
 	s.called <- goal
 	return nil
 }
+
+func (s *streamingRunner) SetForceClass(string) {}
 
 func TestBusyTickRefreshesViewport(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})

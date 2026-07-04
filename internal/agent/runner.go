@@ -83,7 +83,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
 	messages := []schema.ChatMessage{
-		BuildSystemPrompt(r.Registry.List()),
+		BuildSystemPrompt(RoleGeneral, r.Registry.List()),
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
@@ -103,7 +103,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 			}
 			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
-			messages = []schema.ChatMessage{BuildSystemPrompt(r.Registry.List())}
+			messages = []schema.ChatMessage{BuildSystemPrompt(RoleGeneral, r.Registry.List())}
 			messages = appendContextPackMessage(messages, updatedPack)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}

@@ -24,6 +24,7 @@ import (
 // so tests exercising max-iteration limits do not need to script every turn.
 type scriptedProvider struct {
 	responses []string
+	thinking  []string
 	errs      []error
 	calls     int
 	requests  []schema.ChatRequest
@@ -48,7 +49,11 @@ func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	p.requests = append(p.requests, req)
 	p.calls++
 
-	ch := make(chan schema.ChatEvent, 2)
+	ch := make(chan schema.ChatEvent, 3)
+	if idx < len(p.thinking) && p.thinking[idx] != "" {
+		ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: p.thinking[idx]}
+	}
+
 	if idx < len(p.errs) && p.errs[idx] != nil {
 		ch <- schema.ChatEvent{Type: schema.ChatEventError, Err: p.errs[idx]}
 		close(ch)
@@ -109,6 +114,54 @@ func (f *fakeMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote
 func newTestState(t *testing.T) *session.State {
 	t.Helper()
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+}
+
+func TestChatOnceRoutesThinkingDeltasToStateAndReturnsAnswerText(t *testing.T) {
+	p := &scriptedProvider{
+		thinking:  []string{"considering the question"},
+		responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	text, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
+	if err != nil {
+		t.Fatalf("chatOnce returned error: %v", err)
+	}
+	wantText := `{"rationale":"r","action":{"type":"answer","content":"done"}}`
+	if text != wantText {
+		t.Fatalf("chatOnce returned %q, want %q", text, wantText)
+	}
+	if got := state.InProgress().Reasoning; got != "considering the question" {
+		t.Fatalf("InProgress().Reasoning = %q, want %q", got, "considering the question")
+	}
+	if state.InProgress().Active {
+		t.Fatal("InProgress().Active = true, want false after chatOnce returns")
+	}
+}
+
+func TestChatOnceEndsStreamingEvenOnProviderError(t *testing.T) {
+	p := &scriptedProvider{
+		thinking: []string{"partial thought"},
+		errs:     []error{errors.New("boom")},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
+	if err == nil {
+		t.Fatal("chatOnce returned nil error, want the provider error")
+	}
+	if got := state.InProgress().Reasoning; got != "partial thought" {
+		t.Fatalf("InProgress().Reasoning = %q, want %q (thinking captured before the error must survive EndStreaming)", got, "partial thought")
+	}
+	if state.InProgress().Active {
+		t.Fatal("InProgress().Active = true after error, want false (EndStreaming must still run)")
+	}
 }
 
 func TestRunAnswersQuestionWithoutToolCalls(t *testing.T) {

@@ -1002,18 +1002,39 @@ func renderSidebarTabs(width int, active int) string {
 		Render(lipgloss.JoinHorizontal(lipgloss.Top, parts...))
 }
 
-func (m Model) renderPlanTab(width int, height int, tc *session.PendingToolCall, busy bool) string {
-	rows := []string{
-		mutedStyle.Render("No active plan. Ask the agent what to do next."),
+func (m Model) renderPlanTab(width int, height int, tc *session.PendingToolCall) string {
+	plan := m.state.Plan()
+	activity := m.state.Activity()
+
+	var b strings.Builder
+
+	if len(plan) == 0 && activity.Kind == session.ActivityIdle {
+		b.WriteString(mutedStyle.Render("No active plan. Ask the agent what to do next."))
+		b.WriteString("\n\n→  Ready for input")
+		return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(b.String())
 	}
+
+	if len(plan) > 0 {
+		b.WriteString(mutedStyle.Render("Current Plan:"))
+		b.WriteString("\n")
+		for _, item := range plan {
+			b.WriteString(fmt.Sprintf(" ● %s\n", truncateRunes(item, max(width-4, 1))))
+		}
+	}
+
 	if tc != nil {
-		rows = append(rows, "→  Pending approval: "+truncateRunes(tc.Command, max(width-22, 1)))
-	} else if busy {
-		rows = append(rows, "→  Agent is working")
+		b.WriteString(fmt.Sprintf("\n→  Pending approval: %s", truncateRunes(tc.Command, max(width-22, 1))))
+	} else if activity.Kind != session.ActivityIdle {
+		label := activity.Label
+		if activity.Kind == session.ActivityThinking {
+			label = "thinking..."
+		}
+		b.WriteString(fmt.Sprintf("\n→  %s %s", m.spinnerFrame, truncateRunes(label, max(width-6, 1))))
 	} else {
-		rows = append(rows, "→  Ready for input")
+		b.WriteString("\n→  Ready for input")
 	}
-	return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(strings.Join(rows, "\n"))
+
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(b.String())
 }
 
 func (m Model) renderContextTab(width int, height int) string {
@@ -1077,7 +1098,7 @@ func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
 	var body string
 	switch m.activeTab {
 	case 0:
-		body = m.renderPlanTab(innerWidth, bodyHeight, tc, m.busy)
+		body = m.renderPlanTab(innerWidth, bodyHeight, tc)
 	case 1:
 		body = m.renderContextTab(innerWidth, bodyHeight)
 	default:

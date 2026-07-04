@@ -38,7 +38,7 @@ var roleAddenda = map[AgentRole]rolePrompt{
 	},
 	RoleImplementer: {
 		focus:          "You are an implementer. Make focused edits. After each edit, run the narrowest useful validation. Prefer file.read and file.write_patch over shell commands when possible.",
-		allowedActions: []string{"tool_call", "final"},
+		allowedActions: []string{"tool_call", "patch", "final"},
 		example:        `{"rationale": "The parser expects an integer but receives a string.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "parser.go"}}}`,
 	},
 	RoleTester: {
@@ -76,6 +76,7 @@ const baseOutputFormat = `Respond with exactly one JSON object and nothing else.
 Shape:
 {"rationale": "short reason", "action": {"type": "answer", "content": "..."}}
 {"rationale": "short reason", "action": {"type": "tool_call", "tool": "tool.name", "args": {...}}}
+{"rationale": "short reason", "action": {"type": "patch", "content": "... unified diff ..."}}
 {"rationale": "short reason", "action": {"type": "final", "content": "..."}}`
 
 func renderRoleAddendum(r rolePrompt) string {

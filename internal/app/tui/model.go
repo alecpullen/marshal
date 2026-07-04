@@ -701,8 +701,10 @@ func (m Model) renderStatusBar(width int) string {
 	var busyText string
 	switch activity.Kind {
 	case session.ActivityIdle:
-		if m.lastActivityLabel != "" && time.Since(m.lastActivityDone) < doneDisplayDuration {
-			busyText = fmt.Sprintf("✓ %s", truncateRunes(m.lastActivityLabel, 30))
+		if tc := m.state.PendingApproval(); tc != nil {
+			busyText = fmt.Sprintf("✓ %s", truncateRunes(tc.Command, 9))
+		} else if m.lastActivityLabel != "" && time.Since(m.lastActivityDone) < doneDisplayDuration {
+			busyText = fmt.Sprintf("✓ %s", truncateRunes(m.lastActivityLabel, 9))
 		} else {
 			busyText = "IDLE"
 		}

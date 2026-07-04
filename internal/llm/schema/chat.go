@@ -19,16 +19,21 @@ type ChatMessage struct {
 	Content string
 }
 
+type ResponseFormat struct {
+	Type string `json:"type"`
+}
+
 // ChatRequest is the provider-agnostic chat request shape. Pointer fields
-// (Temperature, TopP, MaxTokens) distinguish "unset" from "zero" so the
-// provider can omit them from the wire request rather than sending
-// temperature=0 unintentionally.
+// (Temperature, TopP, MaxTokens, ResponseFormat) distinguish "unset" from
+// "zero" so the provider can omit them from the wire request rather than
+// sending temperature=0 unintentionally.
 type ChatRequest struct {
-	Model       string
-	Messages    []ChatMessage
-	Stream      bool
-	Temperature *float64
-	TopP        *float64
-	MaxTokens   *int
-	Stop        []string
+	Model          string
+	Messages       []ChatMessage
+	Stream         bool
+	Temperature    *float64
+	TopP           *float64
+	MaxTokens      *int
+	Stop           []string
+	ResponseFormat *ResponseFormat
 }

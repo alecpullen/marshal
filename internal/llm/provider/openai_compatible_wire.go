@@ -1,5 +1,7 @@
 package provider
 
+import "marshal/internal/llm/schema"
+
 type apiError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
@@ -11,13 +13,14 @@ type chatMessageBody struct {
 }
 
 type chatCompletionRequestBody struct {
-	Model       string            `json:"model"`
-	Messages    []chatMessageBody `json:"messages"`
-	Stream      bool              `json:"stream"`
-	Temperature *float64          `json:"temperature,omitempty"`
-	TopP        *float64          `json:"top_p,omitempty"`
-	MaxTokens   *int              `json:"max_tokens,omitempty"`
-	Stop        []string          `json:"stop,omitempty"`
+	Model          string                 `json:"model"`
+	Messages       []chatMessageBody      `json:"messages"`
+	Stream         bool                   `json:"stream"`
+	Temperature    *float64               `json:"temperature,omitempty"`
+	TopP           *float64               `json:"top_p,omitempty"`
+	MaxTokens      *int                   `json:"max_tokens,omitempty"`
+	Stop           []string               `json:"stop,omitempty"`
+	ResponseFormat *schema.ResponseFormat `json:"response_format,omitempty"`
 }
 
 // chatCompletionChunk is a single SSE `data:` payload for streaming

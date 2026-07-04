@@ -56,6 +56,7 @@ type Runner struct {
 	MaxToolIterations int
 	MaxRetries        int
 	RequestTimeout    time.Duration
+	ResponseFormat    *schema.ResponseFormat
 }
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
@@ -253,9 +254,10 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	}
 
 	events, err := p.Chat(ctx, schema.ChatRequest{
-		Model:    model,
-		Messages: messages,
-		Stream:   true,
+		Model:          model,
+		Messages:       messages,
+		Stream:         true,
+		ResponseFormat: r.ResponseFormat,
 	})
 	if err != nil {
 		return "", err

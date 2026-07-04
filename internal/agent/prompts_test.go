@@ -77,7 +77,7 @@ func TestBuildSystemPromptImplementerHasCorrectAllowedActions(t *testing.T) {
 	if !strings.Contains(content, "You are an implementer") {
 		t.Error("implementer role focus missing")
 	}
-	if !strings.Contains(content, "Allowed actions for this role: tool_call, final") {
+	if !strings.Contains(content, "Allowed actions for this role: tool_call, patch, final") {
 		t.Errorf("implementer allowed actions incorrect; got:\n%s", content)
 	}
 }
@@ -122,7 +122,7 @@ func TestBuildSystemPromptEachRoleHasAllowedActions(t *testing.T) {
 	expected := map[AgentRole]string{
 		RoleGeneral:     "Allowed actions for this role: answer, tool_call, final",
 		RolePlanner:     "Allowed actions for this role: answer, final",
-		RoleImplementer: "Allowed actions for this role: tool_call, final",
+		RoleImplementer: "Allowed actions for this role: tool_call, patch, final",
 		RoleTester:      "Allowed actions for this role: tool_call, final",
 		RoleReviewer:    "Allowed actions for this role: tool_call, final",
 	}

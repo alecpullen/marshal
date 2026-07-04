@@ -118,6 +118,7 @@ mode will later pass the active role.
 > ```json
 > {"rationale": "short reason", "action": {"type": "answer", "content": "..."}}
 > {"rationale": "short reason", "action": {"type": "tool_call", "tool": "tool.name", "args": {...}}}
+> {"rationale": "short reason", "action": {"type": "patch", "content": "... unified diff ..."}}
 > {"rationale": "short reason", "action": {"type": "final", "content": "..."}}
 > ```
 
@@ -176,7 +177,7 @@ Addendum:
 #### `RoleImplementer`
 
 - Focus: Make the smallest code change that satisfies the plan.
-- Allowed actions: `tool_call`, `final`.
+- Allowed actions: `tool_call`, `patch`, `final`.
 - Example:
 
 > ```json

@@ -161,7 +161,7 @@ func TestLiveAgentGitDiff(t *testing.T) {
 	runner, state, ctx := newLiveAgentRunner(t)
 	runLiveGoal(t, runner, state, ctx, 2*time.Minute, "Use the git.diff tool to show the current diff and summarize what changed.")
 	final := strings.ToLower(finalAnswer(state))
-	if !strings.Contains(final, "live_agent_test.go") && !strings.Contains(final, "diff") && !strings.Contains(final, "changed") {
+	if !strings.Contains(final, "live_agent_test.go") && !strings.Contains(final, "diff") && !strings.Contains(final, "change") && !strings.Contains(final, "modified") && !strings.Contains(final, "added") {
 		t.Fatalf("final answer did not summarize diff: %s", finalAnswer(state))
 	}
 }

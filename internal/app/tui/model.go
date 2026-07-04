@@ -681,8 +681,8 @@ func renderModeStrip(active string, width int) string {
 		Render(strings.Join(rendered, " "))
 }
 
-func renderStatusBar(width int, state *session.State, busy bool) string {
-	route := state.ActiveRoute()
+func (m Model) renderStatusBar(width int) string {
+	route := m.state.ActiveRoute()
 	role := "inactive"
 	modelProvider := "no model"
 	locality := "remote-ok"
@@ -692,21 +692,38 @@ func renderStatusBar(width int, state *session.State, busy bool) string {
 		if route.LocalOnly {
 			locality = "local"
 		}
-	} else if !state.Config.Privacy.RemoteProvidersAllowed {
+	} else if !m.state.Config.Privacy.RemoteProvidersAllowed {
 		locality = "local"
 	}
 
-	busyText := "IDLE"
-	if busy {
-		busyText = "WORKING"
+	activity := m.state.Activity()
+	var busyText string
+	switch activity.Kind {
+	case session.ActivityIdle:
+		if m.lastActivityLabel != "" && time.Since(m.lastActivityDone) < doneDisplayDuration {
+			busyText = fmt.Sprintf("✓ %s", truncateRunes(m.lastActivityLabel, 30))
+		} else {
+			busyText = "IDLE"
+		}
+	case session.ActivityThinking:
+		busyText = fmt.Sprintf("%s thinking...", m.spinnerFrame)
+	case session.ActivityTool, session.ActivityApproval:
+		label := activity.Label
+		if label == "" {
+			label = string(activity.Kind)
+		}
+		busyText = fmt.Sprintf("%s %s", m.spinnerFrame, truncateRunes(label, 30))
+	default:
+		busyText = "IDLE"
 	}
+
 	parts := []string{
 		statusBarBrand.Render("MARSHAL"),
 		" Auto ",
 		fmt.Sprintf(" %s ", truncateRunes(role, 16)),
 		fmt.Sprintf(" %s ", truncateRunes(modelProvider, 28)),
 		fmt.Sprintf(" %s ", locality),
-		statusBarBusy.Width(9).Render(busyText),
+		statusBarBusy.Width(9).MaxWidth(9).Render(truncateRunes(busyText, 9)),
 	}
 	line := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 	return statusBarBg.Width(width).MaxWidth(width).Render(truncateRunes(line, width))
@@ -816,7 +833,7 @@ func (m Model) View() string {
 		renderModeStrip("Auto", 20),
 	)
 
-	statusBar := renderStatusBar(m.width, m.state, m.busy)
+	statusBar := m.renderStatusBar(m.width)
 	return lipgloss.JoinVertical(lipgloss.Left, topBar, mainLayout, statusBar)
 }
 

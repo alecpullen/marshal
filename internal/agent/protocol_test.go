@@ -87,3 +87,45 @@ func TestParseActionRejectsMalformedJSON(t *testing.T) {
 		t.Fatal("expected error for malformed JSON, got nil")
 	}
 }
+
+func TestParseActionAcceptsActionsArray(t *testing.T) {
+	raw := `{"rationale":"read two files","actions":[{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}},{"type":"tool_call","tool":"file.read","args":{"path":"b.go"}}]}`
+
+	action, err := ParseAction(raw)
+	if err != nil {
+		t.Fatalf("ParseAction returned error: %v", err)
+	}
+	if len(action.Actions) != 2 {
+		t.Fatalf("len(Actions) = %d, want 2", len(action.Actions))
+	}
+	if action.Actions[0].Tool != "file.read" {
+		t.Fatalf("first tool = %q, want file.read", action.Actions[0].Tool)
+	}
+	if action.Type != "" {
+		t.Fatalf("single-action Type should be empty when Actions is set, got %q", action.Type)
+	}
+}
+
+func TestParseActionRejectsActionsWithMissingTool(t *testing.T) {
+	raw := `{"rationale":"bad","actions":[{"type":"tool_call","args":{}}]}`
+
+	_, err := ParseAction(raw)
+	if !errors.Is(err, ErrMissingTool) {
+		t.Fatalf("err = %v, want ErrMissingTool", err)
+	}
+}
+
+func TestParseActionBackwardCompatibleWithSingleAction(t *testing.T) {
+	raw := `{"rationale":"r","action":{"type":"final","content":"done"}}`
+
+	action, err := ParseAction(raw)
+	if err != nil {
+		t.Fatalf("ParseAction returned error: %v", err)
+	}
+	if action.Type != ActionFinal || action.Content != "done" {
+		t.Fatalf("action = %#v", action)
+	}
+	if len(action.Actions) != 0 {
+		t.Fatalf("Actions should be empty for single-action envelope")
+	}
+}

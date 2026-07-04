@@ -23,20 +23,21 @@ var (
 )
 
 // ModelAction is the parsed form of the JSON action-protocol envelope
-// described in docs/07-agent-runtime-and-swarm.md:
-//
-//	{"rationale": "...", "action": {"type": "tool_call", "tool": "...", "args": {...}}}
+// described in docs/07-agent-runtime-and-swarm.md. When Actions is set,
+// the single-action fields are empty and vice-versa.
 type ModelAction struct {
 	Rationale string
 	Type      ActionType
 	Tool      string
 	Args      json.RawMessage
 	Content   string
+	Actions   []ModelAction // parallel read-only tool calls
 }
 
 type actionEnvelope struct {
-	Rationale string        `json:"rationale"`
-	Action    actionPayload `json:"action"`
+	Rationale string          `json:"rationale"`
+	Action    actionPayload   `json:"action"`
+	Actions   []actionPayload `json:"actions,omitempty"`
 }
 
 type actionPayload struct {
@@ -46,10 +47,9 @@ type actionPayload struct {
 	Content string          `json:"content,omitempty"`
 }
 
-// ParseAction extracts and validates the single JSON action object a model
-// is instructed (via BuildSystemPrompt) to reply with. It tolerates a
-// leading/trailing ```json fence, since local models frequently wrap JSON
-// in markdown even when told not to.
+// ParseAction extracts and validates the JSON action envelope. It tolerates a
+// leading/trailing ```json fence, since local models frequently wrap JSON in
+// markdown even when told not to.
 func ParseAction(raw string) (ModelAction, error) {
 	jsonText, err := extractJSONObject(raw)
 	if err != nil {
@@ -61,23 +61,41 @@ func ParseAction(raw string) (ModelAction, error) {
 		return ModelAction{}, fmt.Errorf("agent: malformed action JSON: %w", err)
 	}
 
-	switch envelope.Action.Type {
-	case ActionAnswer, ActionToolCall, ActionPatch, ActionFinal:
-	default:
-		return ModelAction{}, fmt.Errorf("%w: %q", ErrUnknownActionType, envelope.Action.Type)
+	if len(envelope.Actions) > 0 {
+		actions := make([]ModelAction, 0, len(envelope.Actions))
+		for _, p := range envelope.Actions {
+			ma, err := validatePayload(p)
+			if err != nil {
+				return ModelAction{}, err
+			}
+			actions = append(actions, ma)
+		}
+		return ModelAction{Rationale: envelope.Rationale, Actions: actions}, nil
 	}
 
-	if envelope.Action.Type == ActionToolCall && strings.TrimSpace(envelope.Action.Tool) == "" {
-		return ModelAction{}, ErrMissingTool
+	ma, err := validatePayload(envelope.Action)
+	if err != nil {
+		return ModelAction{}, err
 	}
-
 	return ModelAction{
 		Rationale: envelope.Rationale,
-		Type:      envelope.Action.Type,
-		Tool:      envelope.Action.Tool,
-		Args:      envelope.Action.Args,
-		Content:   envelope.Action.Content,
+		Type:      ma.Type,
+		Tool:      ma.Tool,
+		Args:      ma.Args,
+		Content:   ma.Content,
 	}, nil
+}
+
+func validatePayload(p actionPayload) (ModelAction, error) {
+	switch p.Type {
+	case ActionAnswer, ActionToolCall, ActionPatch, ActionFinal:
+	default:
+		return ModelAction{}, fmt.Errorf("%w: %q", ErrUnknownActionType, p.Type)
+	}
+	if p.Type == ActionToolCall && strings.TrimSpace(p.Tool) == "" {
+		return ModelAction{}, ErrMissingTool
+	}
+	return ModelAction{Type: p.Type, Tool: p.Tool, Args: p.Args, Content: p.Content}, nil
 }
 
 func extractJSONObject(raw string) (string, error) {

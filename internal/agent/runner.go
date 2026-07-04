@@ -31,7 +31,7 @@ var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations w
 // arguments so that {"b":1,"a":2} and {"a":2,"b":1} share the same
 // cache key. Empty arguments normalise to {}.
 func normalizeArgs(args json.RawMessage) ([]byte, error) {
-	if len(args) == 0 {
+	if len(args) == 0 || string(args) == "null" {
 		return []byte("{}"), nil
 	}
 	var m map[string]interface{}
@@ -164,8 +164,8 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
 
 		if len(action.Actions) > 0 {
-			if !r.allReadOnly(action.Actions) {
-				messages = append(messages, BuildCorrectionMessage(errors.New("the 'actions' array may only contain read-only tool_call entries")))
+			if err := r.allReadOnly(action.Actions); err != nil {
+				messages = append(messages, BuildCorrectionMessage(err))
 				continue
 			}
 			resultMsgs, execErr := r.executeActions(ctx, action.Actions)
@@ -467,26 +467,28 @@ func (r *Runner) shouldNudgeLoop() bool {
 	return false
 }
 
-func (r *Runner) allReadOnly(actions []ModelAction) bool {
+func (r *Runner) allReadOnly(actions []ModelAction) error {
 	for _, a := range actions {
 		if a.Type != ActionToolCall {
-			return false
+			return fmt.Errorf("action type %q in actions array is not a tool_call", a.Type)
 		}
 		tool, ok := r.Registry.Lookup(a.Tool)
-		if !ok || tool.Risk != registry.RiskReadOnly {
-			return false
+		if !ok {
+			return fmt.Errorf("unknown tool %q in actions array", a.Tool)
+		}
+		if tool.Risk != registry.RiskReadOnly {
+			return fmt.Errorf("tool %q is read-write, not read-only — actions array only supports read-only tools", a.Tool)
 		}
 	}
-	return true
+	return nil
 }
 
 func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]schema.ChatMessage, error) {
-	results := make([]schema.ChatMessage, len(actions))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
-
 	sem := make(chan struct{}, r.MaxParallelActions)
+	results := make([][]schema.ChatMessage, len(actions))
 
 	for i, a := range actions {
 		wg.Add(1)
@@ -503,7 +505,7 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 				mu.Unlock()
 				return
 			}
-			results[idx] = joinMessages(msgs)
+			results[idx] = msgs
 		}(i, a)
 	}
 	wg.Wait()
@@ -511,21 +513,12 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 	if firstErr != nil {
 		return nil, firstErr
 	}
-	return results, nil
-}
 
-func joinMessages(msgs []schema.ChatMessage) schema.ChatMessage {
-	if len(msgs) == 0 {
-		return schema.ChatMessage{Role: schema.RoleUser, Content: ""}
+	var flat []schema.ChatMessage
+	for _, msgs := range results {
+		flat = append(flat, msgs...)
 	}
-	if len(msgs) == 1 {
-		return msgs[0]
-	}
-	var parts []string
-	for _, m := range msgs {
-		parts = append(parts, m.Content)
-	}
-	return schema.ChatMessage{Role: schema.RoleUser, Content: strings.Join(parts, "\n\n")}
+	return flat, nil
 }
 
 // requestApproval blocks until the TUI (or any caller driving

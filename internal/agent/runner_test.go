@@ -1099,3 +1099,41 @@ func TestRunSummarizesLargeToolResults(t *testing.T) {
 		t.Fatalf("large tool result was not truncated in audit log: %#v", state.AuditLog())
 	}
 }
+
+func TestRunRejectsNonReadOnlyActions(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.write",
+		Risk: registry.RiskCommand, // not read-only
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "written", Content: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		"1. Try parallel write.",
+		`{"rationale":"bad parallel","actions":[{"type":"tool_call","tool":"demo.write","args":{}}]}`,
+		`{"rationale":"corrected","action":{"type":"final","content":"Done."}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	if err := runner.Run(context.Background(), "Try parallel write"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	found := false
+	for _, req := range p.requests {
+		for _, m := range req.Messages {
+			if strings.Contains(m.Content, "read-only") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("missing correction message in provider requests: %#v", p.requests)
+	}
+}

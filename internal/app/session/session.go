@@ -134,6 +134,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *St
 		ctx:           ctx,
 		cancel:        cancel,
 		turnToolCache: make(map[string]registry.ToolResult),
+		activity:      Activity{Kind: ActivityIdle},
 	}
 }
 
@@ -278,6 +279,9 @@ func (s *State) ActiveRoute() RouteInfo {
 func (s *State) SetActivity(a Activity) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if a.Kind == "" {
+		a.Kind = ActivityIdle
+	}
 	s.activity = a
 }
 

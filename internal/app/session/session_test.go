@@ -394,3 +394,72 @@ func TestStreamingLifecycleIsRaceFree(t *testing.T) {
 	}
 	<-done
 }
+
+func TestStateActivityRoundTrip(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	got := state.Activity()
+	if got.Kind != ActivityIdle {
+		t.Fatalf("initial Activity().Kind = %q, want idle", got.Kind)
+	}
+
+	act := Activity{Kind: ActivityTool, Label: "shell.run: go test", StartedAt: time.Unix(200, 0)}
+	state.SetActivity(act)
+
+	got = state.Activity()
+	if got.Kind != ActivityTool || got.Label != "shell.run: go test" {
+		t.Fatalf("Activity() = %#v", got)
+	}
+}
+
+func TestStateActivityZeroValueIsIdle(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	state.SetActivity(Activity{})
+	got := state.Activity()
+	if got.Kind != ActivityIdle || got.Label != "" {
+		t.Fatalf("Activity() = %#v, want zero/idle", got)
+	}
+}
+
+func TestStatePlanRoundTrip(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	if len(state.Plan()) != 0 {
+		t.Fatal("initial Plan() should be empty")
+	}
+
+	plan := []string{"Refactor layout", "Add tests", "Update docs"}
+	state.SetPlan(plan)
+
+	got := state.Plan()
+	if len(got) != 3 || got[0] != "Refactor layout" || got[1] != "Add tests" {
+		t.Fatalf("Plan() = %v", got)
+	}
+
+	plan[0] = "mutated"
+	gotAgain := state.Plan()
+	if gotAgain[0] != "Refactor layout" {
+		t.Fatalf("Plan() returned mutable internal slice: %v", gotAgain)
+	}
+}
+
+func TestStateActivityIsRaceFree(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			state.SetActivity(Activity{Kind: ActivityThinking, Label: "thinking..."})
+			state.SetActivity(Activity{Kind: ActivityTool, Label: "shell.run: go test"})
+			state.SetActivity(Activity{})
+		}
+	}()
+
+	for i := 0; i < 100; i++ {
+		_ = state.Activity()
+		_ = state.Plan()
+	}
+	<-done
+}

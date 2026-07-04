@@ -22,6 +22,7 @@ const (
 	DefaultMaxToolIterations  = 16
 	DefaultMaxRetries         = 2
 	DefaultMaxParallelActions = 4
+	loopNudgeMessage          = "You appear to be repeating the same step. Either produce a final answer or ask the user for clarification."
 )
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
@@ -97,6 +98,7 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 		MaxToolIterations:  DefaultMaxToolIterations,
 		MaxRetries:         DefaultMaxRetries,
 		MaxParallelActions: DefaultMaxParallelActions,
+		MaxToolResultChars: DefaultMaxToolResultChars,
 	}
 }
 
@@ -377,9 +379,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			r.State.LogToolCall(event)
 			msgs := []schema.ChatMessage{BuildCachedToolResultMessage(toolName, cached)}
 			if r.shouldNudgeLoop() {
-				nudge := "You appear to be repeating the same step. Either produce a final answer or ask the user for clarification."
-				msgs = append(msgs, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-				r.State.AddMessage(session.RoleSystem, nudge)
+				msgs = append(msgs, schema.ChatMessage{Role: schema.RoleSystem, Content: loopNudgeMessage})
+				r.State.AddMessage(session.RoleSystem, loopNudgeMessage)
 			}
 			return msgs, nil
 		}
@@ -437,11 +438,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	msgs := []schema.ChatMessage{BuildToolResultMessage(toolName, summarized)}
 	r.recordToolCall(toolName, string(normalizedArgs))
 	if r.shouldNudgeLoop() {
-		msgs = append(msgs, schema.ChatMessage{
-			Role:    schema.RoleSystem,
-			Content: "You appear to be repeating the same step. Either produce a final answer or ask the user for clarification.",
-		})
-		r.State.AddMessage(session.RoleSystem, "You appear to be repeating the same step. Either produce a final answer or ask the user for clarification.")
+		msgs = append(msgs, schema.ChatMessage{Role: schema.RoleSystem, Content: loopNudgeMessage})
+		r.State.AddMessage(session.RoleSystem, loopNudgeMessage)
 	}
 	return msgs, nil
 }
@@ -488,10 +486,14 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 	var mu sync.Mutex
 	var firstErr error
 
+	sem := make(chan struct{}, r.MaxParallelActions)
+
 	for i, a := range actions {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(idx int, act ModelAction) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			msgs, err := r.executeToolCall(ctx, act)
 			if err != nil {
 				mu.Lock()

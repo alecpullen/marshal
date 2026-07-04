@@ -900,11 +900,11 @@ func TestResizeComputesGeometry(t *testing.T) {
 	if model.chatHeight < 1 {
 		t.Fatalf("chatHeight = %d, want >= 1", model.chatHeight)
 	}
-	if model.viewport.Width != model.leftWidth-2 {
-		t.Fatalf("viewport.Width = %d, want %d", model.viewport.Width, model.leftWidth-2)
+	if model.viewport.Width != model.leftWidth {
+		t.Fatalf("viewport.Width = %d, want %d", model.viewport.Width, model.leftWidth)
 	}
-	if model.viewport.Height != model.chatHeight {
-		t.Fatalf("viewport.Height = %d, want %d", model.viewport.Height, model.chatHeight)
+	if model.viewport.Height != model.chatHeight-1 {
+		t.Fatalf("viewport.Height = %d, want %d", model.viewport.Height, model.chatHeight-1)
 	}
 	if model.input.Width != model.leftWidth-6 {
 		t.Fatalf("input.Width = %d, want %d", model.input.Width, model.leftWidth-6)

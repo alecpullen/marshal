@@ -1307,18 +1307,19 @@ func TestPolishedSidebarTabsAndContextSummary(t *testing.T) {
 
 func TestRenderSidebarTabsSingleRowAcrossActiveIndex(t *testing.T) {
 	const width = 40
+	labels := []string{"1 Plan", "2 Context", "3 Log"}
 	var lineCounts []int
 	for active := 0; active < 3; active++ {
 		out := renderSidebarTabs(width, active)
 		lines := strings.Split(out, "\n")
 		lineCounts = append(lineCounts, len(lines))
 
-		// The whole tab strip must render as a single logical row: every
-		// output line must be the same height regardless of which pill is
-		// active, and no label may appear detached on its own line without
-		// its siblings (which is what happens when active/inactive pill
-		// styles have mismatched rendered heights).
-		for _, name := range []string{"Plan", "Context", "Log"} {
+		// Diagnostic-only: each label must appear somewhere in the output.
+		// This alone does not prove the labels are aligned onto a single
+		// row — lipgloss.JoinHorizontal pads every block to equal height,
+		// so a label detached onto its own line still "appears somewhere"
+		// even in the buggy mismatched-pill-height case.
+		for _, name := range labels {
 			found := false
 			for _, line := range lines {
 				if strings.Contains(line, name) {
@@ -1329,6 +1330,31 @@ func TestRenderSidebarTabsSingleRowAcrossActiveIndex(t *testing.T) {
 			if !found {
 				t.Fatalf("active=%d: no line contains label %q; lines=%q", active, name, lines)
 			}
+		}
+
+		// Load-bearing assertion: the tab strip must render as a single
+		// logical row, meaning there must be one line that simultaneously
+		// contains all three labels together. If active/inactive pill
+		// styles have mismatched rendered heights, the labels land on
+		// different lines relative to each other and no single line
+		// contains all three, even though each label individually still
+		// appears somewhere in the block.
+		foundCombinedLine := false
+		for _, line := range lines {
+			allPresent := true
+			for _, name := range labels {
+				if !strings.Contains(line, name) {
+					allPresent = false
+					break
+				}
+			}
+			if allPresent {
+				foundCombinedLine = true
+				break
+			}
+		}
+		if !foundCombinedLine {
+			t.Fatalf("active=%d: no single line contains all labels %q together; lines=%q", active, labels, lines)
 		}
 	}
 

@@ -569,6 +569,61 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 	return style.Render(fmt.Sprintf("thinking (%s)\n\n%s", formatThinkDuration(duration), reasoning)) + "\n\n"
 }
 
+func renderPanel(title string, meta string, body string, width int, height int) string {
+	if width < 4 {
+		width = 4
+	}
+	if height < 3 {
+		height = 3
+	}
+	innerWidth := max(width-2, 1)
+	header := panelTitleStyle.Render(truncateRunes(title, innerWidth))
+	if meta != "" {
+		metaWidth := innerWidth - visibleRunes(title) - 2
+		if metaWidth > 0 {
+			header = lipgloss.JoinHorizontal(
+				lipgloss.Top,
+				header,
+				strings.Repeat(" ", max(metaWidth-visibleRunes(meta), 1)),
+				mutedStyle.Render(truncateRunes(meta, metaWidth)),
+			)
+		}
+	}
+	contentHeight := max(height-3, 1)
+	content := lipgloss.NewStyle().
+		Width(innerWidth).
+		Height(contentHeight).
+		MaxHeight(contentHeight).
+		Render(body)
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(panelBorderColor).
+		Render(lipgloss.JoinVertical(lipgloss.Left, header, content))
+}
+
+func renderKeyHelp(width int, focused bool) string {
+	items := []string{
+		"Esc unfocus",
+		"Tab tabs",
+		"Ctrl+O settings",
+		"Ctrl+K memories",
+		"Ctrl+G thinking",
+	}
+	if !focused {
+		items = []string{
+			"Enter focus",
+			"1-3 tabs",
+			"Ctrl+O settings",
+			"Ctrl+K memories",
+			"Ctrl+G thinking",
+		}
+	}
+	text := strings.Join(items, "  ")
+	return mutedStyle.MaxWidth(max(width, 1)).Render(truncateRunes(text, max(width, 1)))
+}
+
 func riskText(tc *session.PendingToolCall) string {
 	if tc.Reason != "" {
 		return tc.Reason
@@ -610,14 +665,62 @@ func formatBoxLine(s string, width int) string {
 }
 
 var (
-	accentColor       = lipgloss.Color("86")  // Cyan/Teal
-	dimColor          = lipgloss.Color("244") // Gray
-	thinkingLineStyle = lipgloss.NewStyle().Foreground(dimColor).Italic(true)
-	activeTabStyle    = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), false, false, true, false).
-				BorderForeground(accentColor).
-				Foreground(accentColor).
+	shellBorderColor = lipgloss.Color("238")
+	panelBorderColor = lipgloss.Color("240")
+	panelSoftColor   = lipgloss.Color("236")
+	accentColor      = lipgloss.Color("38")
+	violetColor      = lipgloss.Color("99")
+	dimColor         = lipgloss.Color("244")
+	mutedColor       = lipgloss.Color("247")
+	successColor     = lipgloss.Color("71")
+	warningColor     = lipgloss.Color("178")
+	errorColor       = lipgloss.Color("167")
+
+	mutedStyle      = lipgloss.NewStyle().Foreground(dimColor)
+	panelTitleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("255")).
+			Bold(true)
+	thinkingLineStyle = lipgloss.NewStyle().
+				Foreground(dimColor).
+				Italic(true)
+	userRoleStyle   = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	agentRoleStyle  = lipgloss.NewStyle().Foreground(violetColor).Bold(true)
+	toolRoleStyle   = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
+	outputRoleStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
+
+	activePillStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(accentColor).
+			Foreground(accentColor).
+			Padding(0, 1)
+	inactivePillStyle = lipgloss.NewStyle().
+				Foreground(dimColor).
 				Padding(0, 1)
+
+	statusBarBrand = lipgloss.NewStyle().
+			Background(violetColor).
+			Foreground(lipgloss.Color("255")).
+			Padding(0, 1).
+			Bold(true)
+	statusBarBg = lipgloss.NewStyle().
+			Background(lipgloss.Color("235")).
+			Foreground(lipgloss.Color("252"))
+	statusBarBusy = lipgloss.NewStyle().
+			Background(lipgloss.Color("235")).
+			Foreground(warningColor).
+			Padding(0, 1).
+			Bold(true)
+	errorBannerStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(errorColor).
+				Foreground(lipgloss.Color("252")).
+				Padding(0, 1)
+
+	activeTabStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, false, true, false).
+			BorderForeground(accentColor).
+			Foreground(accentColor).
+			Padding(0, 1)
 	inactiveTabStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder(), false, false, true, false).
 				BorderForeground(dimColor).
@@ -628,13 +731,6 @@ var (
 			Foreground(lipgloss.Color("0")).
 			Padding(0, 1).
 			Bold(true)
-	statusBarBg = lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Foreground(lipgloss.Color("252"))
-	errorBannerStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("196")).
-				Foreground(lipgloss.Color("255")).
-				Padding(0, 1)
 )
 
 func (m Model) View() string {

@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marshal TUI Mockup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d12;
+      --terminal: #11141b;
+      --panel: #161a22;
+      --panel-2: #1b202a;
+      --line: #343b48;
+      --line-soft: #252b35;
+      --text: #e7e9ee;
+      --muted: #98a2b3;
+      --dim: #697386;
+      --teal: #00afd7;
+      --violet: #7b6ff0;
+      --green: #5faf5f;
+      --yellow: #d7af00;
+      --red: #d75f5f;
+      --shadow: 0 22px 60px rgba(0, 0, 0, .38);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(0, 175, 215, .12), transparent 28rem),
+        linear-gradient(145deg, #090b10 0%, #10131a 45%, #0c0f15 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1280px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+      max-width: 100vw;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 18px;
+    }
+
+    h1,
+    h2,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 28px;
+      line-height: 1.15;
+      font-weight: 720;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .summary {
+      margin-top: 8px;
+      max-width: 740px;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 14px;
+    }
+
+    .doc-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .doc-links span {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 8px;
+      background: rgba(255, 255, 255, .03);
+    }
+
+    .terminal {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--terminal);
+      box-shadow: var(--shadow);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      max-width: 100%;
+    }
+
+    .terminal *,
+    .scenario * {
+      min-width: 0;
+    }
+
+    .terminal-bar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 16px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: #0f1218;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .lights {
+      display: flex;
+      gap: 7px;
+    }
+
+    .light {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--line);
+    }
+
+    .light:nth-child(1) { background: #d75f5f; }
+    .light:nth-child(2) { background: #d7af00; }
+    .light:nth-child(3) { background: #5faf5f; }
+
+    .window-title {
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .mode-strip {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .mode-strip span {
+      color: var(--dim);
+    }
+
+    .mode-strip .active {
+      color: var(--teal);
+    }
+
+    .dashboard {
+      display: grid;
+      grid-template-columns: minmax(0, 7fr) minmax(280px, 3fr);
+      gap: 10px;
+      min-height: 642px;
+      padding: 10px;
+    }
+
+    .panel {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 38px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 0;
+    }
+
+    .panel-title {
+      color: var(--text);
+      font-weight: 700;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .tab {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      padding: 4px 6px;
+      color: var(--muted);
+      text-overflow: ellipsis;
+    }
+
+    .tab.active {
+      border-color: rgba(0, 175, 215, .45);
+      background: rgba(0, 175, 215, .11);
+      color: var(--teal);
+    }
+
+    .main-col {
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto auto;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .chat-body {
+      height: 100%;
+      padding: 14px;
+      overflow: hidden;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .msg {
+      display: grid;
+      grid-template-columns: 74px minmax(0, 1fr);
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .role {
+      color: var(--dim);
+      text-align: right;
+    }
+
+    .role.user { color: var(--teal); }
+    .role.agent { color: var(--violet); }
+    .role.tool { color: var(--yellow); }
+
+    .content {
+      min-width: 0;
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+
+    .thinking {
+      margin: 2px 0 12px 86px;
+      border: 1px solid #303743;
+      border-radius: 8px;
+      background: #12161d;
+      color: #a7b0c0;
+      overflow: hidden;
+    }
+
+    .thinking-title {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 6px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      padding: 7px 10px;
+      color: var(--dim);
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    .thinking pre,
+    .code pre,
+    .diff pre {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      font: inherit;
+    }
+
+    .thinking pre {
+      padding: 10px;
+      font-style: italic;
+      line-height: 1.45;
+    }
+
+    .thought-line {
+      margin: 0 0 10px 86px;
+      color: var(--dim);
+      font-style: italic;
+    }
+
+    .input {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f131a;
+      font-size: 13px;
+    }
+
+    .prompt {
+      color: var(--teal);
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .placeholder {
+      color: var(--dim);
+    }
+
+    .help {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      color: var(--dim);
+      font-size: 11px;
+    }
+
+    .help span,
+    .doc-links span,
+    .sidebar-body,
+    .approval,
+    .future-panel .body {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .help b {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .side-col {
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .sidebar-body {
+      padding: 14px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .plan-list,
+    .context-list,
+    .log-list {
+      display: grid;
+      gap: 11px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .plan-list li,
+    .context-list li,
+    .log-list li {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .done { color: var(--green); }
+    .active-dot { color: var(--teal); }
+    .pending { color: var(--dim); }
+
+    .meta {
+      color: var(--dim);
+      font-size: 12px;
+    }
+
+    .mini-card {
+      margin-top: 14px;
+      border: 1px solid var(--line-soft);
+      border-radius: 7px;
+      background: var(--panel-2);
+      padding: 11px;
+    }
+
+    .mini-card strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .meter {
+      height: 8px;
+      overflow: hidden;
+      border-radius: 10px;
+      background: #0f131a;
+    }
+
+    .meter span {
+      display: block;
+      width: 56%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--teal), var(--violet));
+    }
+
+    .status {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0;
+      overflow: hidden;
+      border-top: 1px solid #202633;
+      background: #131722;
+      font-size: 12px;
+    }
+
+    .status span {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      padding: 9px 10px;
+      border-right: 1px solid #202633;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status .brand {
+      background: var(--violet);
+      color: white;
+      font-weight: 800;
+    }
+
+    .status .busy {
+      margin-left: auto;
+      border-left: 1px solid #202633;
+      border-right: 0;
+      color: var(--yellow);
+    }
+
+    .scenario-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .scenario {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(17, 20, 27, .78);
+      overflow: hidden;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .scenario h2 {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line-soft);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .approval-state {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, .76fr);
+      gap: 10px;
+      padding: 10px;
+      min-height: 330px;
+    }
+
+    .diff,
+    .approval {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .diff pre {
+      padding: 13px;
+      line-height: 1.55;
+      font-size: 12px;
+    }
+
+    .minus { color: #ff9494; }
+    .plus { color: #8be28b; }
+
+    .approval {
+      padding: 15px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .approval h3 {
+      margin: 0 0 14px;
+      font: inherit;
+      color: var(--teal);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .approval-label {
+      margin-top: 12px;
+      color: var(--dim);
+    }
+
+    .approval-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .key {
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 5px 7px;
+      background: #0f131a;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .future-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, .9fr);
+      grid-template-rows: 172px 172px;
+      gap: 10px;
+      padding: 10px;
+    }
+
+    .future-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .future-panel .body {
+      padding: 12px;
+      color: var(--muted);
+    }
+
+    .split-stack {
+      display: grid;
+      grid-template-rows: 1fr 1fr;
+      gap: 8px;
+      height: 100%;
+    }
+
+    .code {
+      border: 1px solid var(--line-soft);
+      border-radius: 6px;
+      background: #10141b;
+      padding: 9px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 900px) {
+      header {
+        display: block;
+        width: calc(100vw - 32px);
+        max-width: calc(100vw - 32px);
+        overflow: hidden;
+      }
+
+      main {
+        width: 100%;
+        padding: 24px 16px 36px;
+        overflow: hidden;
+      }
+
+      h1 {
+        width: calc(100vw - 32px);
+        max-width: calc(100vw - 32px);
+        font-size: 26px;
+        white-space: normal;
+      }
+
+      .summary,
+      .doc-links,
+      .terminal,
+      .scenario-grid,
+      .scenario {
+        width: calc(100vw - 32px);
+        max-width: calc(100vw - 32px);
+      }
+
+      .doc-links {
+        justify-content: flex-start;
+        margin-top: 14px;
+      }
+
+      .dashboard,
+      .scenario-grid,
+      .approval-state,
+      .future-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .terminal-bar {
+        grid-template-columns: auto minmax(0, 1fr);
+      }
+
+      .window-title {
+        text-align: center;
+      }
+
+      .mode-strip {
+        grid-column: 1 / -1;
+        justify-content: flex-start;
+        padding-left: 2px;
+      }
+
+      .dashboard {
+        min-height: auto;
+      }
+
+      .side-col {
+        grid-template-rows: auto;
+      }
+
+      .thinking,
+      .thought-line {
+        margin-left: 0;
+      }
+
+      .msg {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+
+      .role {
+        text-align: left;
+      }
+
+      .status .busy {
+        margin-left: 0;
+      }
+    }
+
+    @media (max-width: 520px) {
+      header,
+      h1,
+      .summary,
+      .doc-links,
+      .terminal,
+      .scenario-grid,
+      .scenario {
+        width: 358px;
+        max-width: 358px;
+      }
+
+      h1 {
+        font-size: 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Marshal TUI UI Changes Mockup</h1>
+        <p class="summary">Static browser mockup based on the TUI redesign, jank-fix, and streaming thinking specs. It shows the near-term two-column dashboard plus the approval and future multi-panel states called out in the docs.</p>
+      </div>
+      <div class="doc-links" aria-label="Source documents">
+        <span>docs/06-tui-design.md</span>
+        <span>tui-jank-fix-and-redesign</span>
+        <span>streaming-thinking-blocks</span>
+      </div>
+    </header>
+
+    <section class="terminal" aria-label="Primary TUI dashboard mockup">
+      <div class="terminal-bar">
+        <div class="lights" aria-hidden="true">
+          <span class="light"></span>
+          <span class="light"></span>
+          <span class="light"></span>
+        </div>
+        <div class="window-title">Marshal</div>
+        <div class="mode-strip"><span>Ask</span><span>Plan</span><span class="active">Auto</span><span>Swarm</span></div>
+      </div>
+
+      <div class="dashboard">
+        <div class="main-col">
+          <section class="panel">
+            <div class="panel-header">
+              <span class="panel-title">Chat</span>
+              <span>live transcript</span>
+            </div>
+            <div class="chat-body">
+              <div class="msg">
+                <div class="role user">user</div>
+                <div class="content">fix the failing TUI layout tests and make the streaming state visible</div>
+              </div>
+              <div class="thought-line">⚙ thought for 4s</div>
+              <div class="msg">
+                <div class="role agent">agent</div>
+                <div class="content">I found the render drift: geometry is recomputed during View and the viewport is refreshed only when the turn completes.</div>
+              </div>
+              <div class="msg">
+                <div class="role tool">tool</div>
+                <div class="content">go test ./internal/app/tui -run TestLayoutBounds</div>
+              </div>
+              <div class="msg">
+                <div class="role tool">output</div>
+                <div class="content">FAIL: line 17 exceeds width 80; approval banner double border detected</div>
+              </div>
+
+              <div class="thinking">
+                <div class="thinking-title">
+                  <span>thinking</span>
+                  <span>streaming · Ctrl+H expands history</span>
+                </div>
+                <pre>I need to keep View read-only, resize the viewport from a single geometry helper, and tail the reasoning panel so the newest model thoughts remain visible while the answer JSON buffers.</pre>
+              </div>
+
+              <div class="msg">
+                <div class="role agent">agent</div>
+                <div class="content">Working on a single resize path, guarded modal key routing, and a plain-text approval body with one rounded border.</div>
+              </div>
+            </div>
+          </section>
+
+          <div class="input">
+            <span class="prompt">❯</span>
+            <span class="placeholder">Ask Marshal...</span>
+          </div>
+
+          <div class="help" aria-label="Keyboard help">
+            <span><b>Esc</b> unfocus</span>
+            <span><b>Tab</b> cycle focus</span>
+            <span><b>Ctrl+P</b> palette</span>
+            <span><b>Ctrl+T</b> tool log</span>
+            <span><b>Ctrl+K</b> context</span>
+            <span><b>Ctrl+H</b> thinking</span>
+          </div>
+        </div>
+
+        <div class="side-col">
+          <section class="panel">
+            <div class="panel-header">
+              <div class="tabs" aria-label="Sidebar tabs">
+                <span class="tab active">1 Plan</span>
+                <span class="tab">2 Context</span>
+                <span class="tab">3 Log</span>
+              </div>
+              <span>inspector</span>
+            </div>
+            <div class="sidebar-body">
+              <ul class="plan-list">
+                <li><span class="done">✓</span><span>Inspect failing render snapshots</span></li>
+                <li><span class="done">✓</span><span>Move layout math into resize helper</span></li>
+                <li><span class="active-dot">●</span><span>Render streaming thinking panel</span></li>
+                <li><span class="pending">○</span><span>Verify modal keys cannot leak</span></li>
+                <li><span class="pending">○</span><span>Run bounds tests at 80×24</span></li>
+              </ul>
+
+              <div class="mini-card">
+                <strong>Context Pack</strong>
+                <ul class="context-list">
+                  <li><span>1</span><span>internal/app/tui/model.go <span class="meta">8.4k</span></span></li>
+                  <li><span>2</span><span>internal/app/session/session.go <span class="meta">4.1k</span></span></li>
+                  <li><span>3</span><span>docs/06-tui-design.md <span class="meta">2.2k</span></span></li>
+                </ul>
+              </div>
+
+              <div class="mini-card">
+                <strong>Usage</strong>
+                <div class="meter" aria-hidden="true"><span></span></div>
+                <p class="meta" style="margin-top:8px;">ctx 18k / 32k · local only</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <span class="panel-title">Provider Error Banner</span>
+              <span>fits AltScreen</span>
+            </div>
+            <div class="sidebar-body">
+              <div class="code"><pre><span class="minus">!</span> provider timeout: retrying local_heavy
+role implementer · qwen2.5-coder:14b</pre></div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="status" aria-label="Status bar">
+        <span class="brand">MARSHAL</span>
+        <span>Auto</span>
+        <span>Implementer</span>
+        <span>qwen2.5-coder:14b @ Ollama</span>
+        <span>local</span>
+        <span>ctx 18k/32k</span>
+        <span class="busy">WORKING</span>
+      </div>
+    </section>
+
+    <div class="scenario-grid">
+      <section class="scenario" aria-label="Approval and diff mockup">
+        <h2>Approval + Diff State</h2>
+        <div class="approval-state">
+          <div class="diff">
+            <div class="panel-header">
+              <span class="panel-title">Diff</span>
+              <span>proposed patch</span>
+            </div>
+            <pre><span class="minus">- m.viewport.Width = width - 2</span>
+<span class="plus">+ m.geometry = layoutFor(width, height)</span>
+<span class="plus">+ m.viewport.Width = m.geometry.ChatWidth</span>
+
+<span class="minus">- banner := drawBox(drawApproval())</span>
+<span class="plus">+ banner := approvalBody()</span>
+<span class="plus">+ return approvalStyle.Render(banner)</span></pre>
+          </div>
+
+          <div class="approval">
+            <h3>Agent wants to run</h3>
+            <div>go test ./internal/app/tui/...</div>
+            <div class="approval-label">Reason</div>
+            <div>Validate layout bounds, modal capture, and streaming refresh behavior.</div>
+            <div class="approval-label">Risk</div>
+            <div>Low - test command, no destructive flags detected.</div>
+            <div class="approval-actions">
+              <span class="key">Enter approve</span>
+              <span class="key">e edit</span>
+              <span class="key">d deny</span>
+              <span class="key">a always allow "go test"</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="scenario" aria-label="Future panel grid mockup">
+        <h2>Phase 2 Multi-Panel Grid</h2>
+        <div class="future-grid">
+          <div class="future-panel">
+            <div class="panel-header"><span class="panel-title">Chat</span><span>main flow</span></div>
+            <div class="body">User and agent transcript, collapsed thinking summaries, pinned input below the grid.</div>
+          </div>
+          <div class="future-panel">
+            <div class="panel-header"><span class="panel-title">Context</span><span>repo map</span></div>
+            <div class="body">Relevant files, symbol snippets, tool results, and memories before remote escalation.</div>
+          </div>
+          <div class="future-panel">
+            <div class="panel-header"><span class="panel-title">Diff</span><span>patch control</span></div>
+            <div class="body">
+              <div class="code"><pre><span class="minus">- old parser branch</span>
+<span class="plus">+ guarded parser branch</span>
+apply all · reject all · rollback</pre></div>
+            </div>
+          </div>
+          <div class="split-stack">
+            <div class="future-panel">
+              <div class="panel-header"><span class="panel-title">Plan</span><span>progress</span></div>
+              <div class="body">✓ inspect · ● patch · ○ test</div>
+            </div>
+            <div class="future-panel">
+              <div class="panel-header"><span class="panel-title">Tool Log</span><span>audit</span></div>
+              <div class="body">rg · sed · go test · approval decisions</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

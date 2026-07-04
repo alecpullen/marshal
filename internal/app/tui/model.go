@@ -38,6 +38,8 @@ const (
 	totalHorizontalBorderGutter = 5 // left border + right border + gutter
 	verticalOverhead            = 4 // status bar (1) + right-column border (2) + slack (1)
 	chatBelowViewportRows       = 4 // bordered input box (3) + help line (1)
+
+	doneDisplayDuration = 2 * time.Second
 )
 
 type Model struct {
@@ -72,6 +74,12 @@ type Model struct {
 	lastMessageCount int
 	lastStreamLen    int
 	thinkingExpanded bool
+
+	spinner           Spinner
+	spinnerFrame      string
+	lastActivityLabel string
+	lastActivityDone  time.Time
+	lastActivityKind  session.ActivityKind
 }
 
 type Option func(*Model)
@@ -125,6 +133,7 @@ func New(state *session.State, opts ...Option) Model {
 		inputFocused:   true,
 		activeTab:      0,
 		viewport:       viewport.New(0, 0),
+		spinner:        NewSpinner(),
 	}
 	for _, opt := range opts {
 		opt(&m)
@@ -208,11 +217,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.state.SetProviderError(msg.err)
 		}
+		if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
+			m.lastActivityDone = time.Now()
+			m.lastActivityKind = session.ActivityIdle
+		}
 		m.refreshViewport()
 		return m, nil
 	case agentTickMsg:
 		if !m.busy {
 			return m, nil
+		}
+		m.spinnerFrame = m.spinner.Next()
+		act := m.state.Activity()
+		if act.Kind == session.ActivityIdle && m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
+			m.lastActivityDone = time.Now()
+		}
+		m.lastActivityKind = act.Kind
+		if act.Kind != session.ActivityIdle && act.Label != "" {
+			m.lastActivityLabel = act.Label
 		}
 		m.refreshViewport()
 		return m, tickCmd()

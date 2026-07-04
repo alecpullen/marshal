@@ -950,6 +950,7 @@ func TestRunCachesReadOnlyToolResults(t *testing.T) {
 	if err := reg.Register(registry.Tool{
 		Name: "demo.read",
 		Risk: registry.RiskReadOnly,
+		Cacheable: true,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 			calls++
 			return registry.ToolResult{Summary: "ok", Content: "demo content"}, nil
@@ -1097,6 +1098,150 @@ func TestRunSummarizesLargeToolResults(t *testing.T) {
 	}
 	if !foundTruncated {
 		t.Fatalf("large tool result was not truncated in audit log: %#v", state.AuditLog())
+	}
+}
+
+func TestRunnerChatOnceSetsThinkingActivity(t *testing.T) {
+	p := &scriptedProvider{
+		thinking:  []string{"thinking about it"},
+		responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
+	if err != nil {
+		t.Fatalf("chatOnce returned error: %v", err)
+	}
+
+	act := state.Activity()
+	if act.Kind != session.ActivityIdle {
+		t.Fatalf("activity after chatOnce = %q, want idle", act.Kind)
+	}
+
+	if got := state.InProgress().Reasoning; got == "" {
+		t.Fatalf("thinking was not captured")
+	}
+}
+
+func TestRunnerSetsActivityDuringToolExecute(t *testing.T) {
+	p := &scriptedProvider{
+		responses: []string{
+			`{"rationale":"let me check","action":{"type":"tool_call","tool":"file.read","args":{"path":"main.go"}}}`,
+			`{"rationale":"done","action":{"type":"answer","content":"done"}}`,
+		},
+	}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name:  "file.read",
+		Risk:  registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.MaxToolIterations = 2
+
+	err := runner.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	act := state.Activity()
+	if act.Kind != session.ActivityIdle {
+		t.Fatalf("activity after run = %q, want idle", act.Kind)
+	}
+}
+
+func TestRunnerSetsActivityDuringApproval(t *testing.T) {
+	p := &scriptedProvider{
+		responses: []string{
+			`{"rationale":"need to run","action":{"type":"tool_call","tool":"shell.run","args":{"command":"go test"}}}`,
+			`{"rationale":"done","action":{"type":"answer","content":"done"}}`,
+		},
+	}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name:  "shell.run",
+		Risk:  registry.RiskCommand,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.MaxToolIterations = 2
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		err := runner.Run(ctx, "hi")
+		if err != nil {
+			t.Logf("Run returned: %v", err)
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	act := state.Activity()
+	if act.Kind == session.ActivityApproval {
+		t.Logf("activity is approval: %v", act.Label)
+	}
+
+	tc := state.PendingApproval()
+	if tc == nil {
+		t.Fatalf("expected pending approval")
+	}
+
+	tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
+
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return")
+	}
+
+	act = state.Activity()
+	if act.Kind != session.ActivityIdle {
+		t.Fatalf("activity after approval = %q, want idle", act.Kind)
+	}
+}
+
+func TestRunnerSetsPlanAfterPlanningPhase(t *testing.T) {
+	p := &scriptedProvider{
+		responses: []string{
+			"Refactor the layout\nAdd tests\nupdate docs",
+			`{"rationale":"done","action":{"type":"answer","content":"done"}}`,
+		},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.MaxToolIterations = 2
+
+	err := runner.Run(context.Background(), "build a feature")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	plan := state.Plan()
+	if len(plan) != 3 {
+		t.Fatalf("Plan() length = %d, want 3: %v", len(plan), plan)
+	}
+	if plan[0] != "Refactor the layout" || plan[1] != "Add tests" || plan[2] != "update docs" {
+		t.Fatalf("Plan() = %v", plan)
 	}
 }
 

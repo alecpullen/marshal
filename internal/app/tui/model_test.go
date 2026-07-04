@@ -1549,6 +1549,131 @@ func TestPolishedProviderErrorBannerFitsCommonTerminalSizes(t *testing.T) {
 	}
 }
 
+func TestStatusBarShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: time.Now()})
+	m := New(state)
+	m.spinnerFrame = "⠋"
+	m.busy = true
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "⠋") {
+		t.Fatalf("View() missing spinner frame in status bar:\n%s", view)
+	}
+	if !strings.Contains(view, "thinking...") {
+		t.Fatalf("View() missing thinking label in status bar:\n%s", view)
+	}
+}
+
+func TestStatusBarShowsToolLabel(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test ./...", StartedAt: time.Now()})
+	m := New(state)
+	m.spinnerFrame = "⠹"
+	m.busy = true
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "⠹") {
+		t.Fatalf("View() missing spinner frame in status bar:\n%s", view)
+	}
+	if !strings.Contains(view, "shell.run") {
+		t.Fatalf("View() missing tool label in status bar:\n%s", view)
+	}
+}
+
+func TestStatusBarShowsDoneBadgeAfterActivity(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	m.busy = true
+	m.spinnerFrame = "⠏"
+	state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Now()})
+	m.lastActivityKind = session.ActivityTool
+	m.lastActivityLabel = "shell.run: go test"
+
+	updated, _ = m.Update(agentFinishedMsg{})
+	m = updated.(Model)
+	state.SetActivity(session.Activity{})
+
+	view := m.View()
+	if !strings.Contains(view, "✓") {
+		t.Fatalf("View() missing done checkmark in status bar:\n%s", view)
+	}
+	if !strings.Contains(view, "shell.r") {
+		t.Fatalf("View() missing tool label in done badge:\n%s", view)
+	}
+}
+
+func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	m.busy = true
+	m.spinnerFrame = "⠏"
+	state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Now()})
+	m.lastActivityKind = session.ActivityTool
+	m.lastActivityLabel = "shell.run: go test"
+
+	updated, _ = m.Update(agentFinishedMsg{})
+	m = updated.(Model)
+	state.SetActivity(session.Activity{})
+
+	if !strings.Contains(m.View(), "✓") {
+		t.Fatal("expected done badge immediately after finish")
+	}
+
+	m.lastActivityDone = m.lastActivityDone.Add(-doneDisplayDuration).Add(-time.Millisecond)
+
+	view := m.View()
+	if strings.Contains(view, "✓") {
+		t.Fatalf("done badge should have expired after %v:\n%s", doneDisplayDuration, view)
+	}
+	if !strings.Contains(view, "IDLE") {
+		t.Fatalf("View() missing IDLE after done badge expiry:\n%s", view)
+	}
+}
+
+func TestPlanTabShowsPlanItemsAndSpinner(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetPlan([]string{"Refactor layout", "Add tests", "Update docs"})
+	state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Now()})
+	m := New(state)
+	m.spinnerFrame = "⠙"
+	m.busy = true
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{"Current Plan:", "Refactor layout", "Add tests", "Update docs", "shell.run: go test"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Plan tab missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestPlanTabShowsNoActivePlanWhenIdleAndEmpty(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "No active plan") {
+		t.Fatalf("Plan tab missing 'No active plan':\n%s", view)
+	}
+	if !strings.Contains(view, "Ready for input") {
+		t.Fatalf("Plan tab missing 'Ready for input':\n%s", view)
+	}
+}
+
 func TestPolishedCurrentLayoutFullSurface(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.SetActiveRoute(session.RouteInfo{

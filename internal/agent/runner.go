@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"marshal/internal/app/session"
@@ -52,6 +53,11 @@ type MemoryProvider interface {
 	Memories(projectID int64) ([]contextpack.MemoryNote, error)
 }
 
+type toolCallKey struct {
+	Name string
+	Args string
+}
+
 // Runner drives one agent turn end to end: classify -> (optionally plan) ->
 // loop { call the model, parse its action, execute or answer } -> summarise.
 // It is the only thing in Marshal that calls Provider.Chat, Registry.Lookup,
@@ -73,6 +79,11 @@ type Runner struct {
 	RequestTimeout     time.Duration
 	ResponseFormat     *schema.ResponseFormat
 	MaxParallelActions int
+	MaxToolResultChars int
+
+	callHistory   []toolCallKey
+	callHistoryMu sync.Mutex
+	loopNudgeSent bool
 }
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
@@ -95,6 +106,11 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 // approval rendering picks all of it up with no TUI changes.
 func (r *Runner) Run(ctx context.Context, goal string) error {
 	r.State.AddMessage(session.RoleUser, goal)
+	r.State.ClearTurnToolCache()
+	r.callHistoryMu.Lock()
+	r.callHistory = nil
+	r.loopNudgeSent = false
+	r.callHistoryMu.Unlock()
 
 	task := NewTask(goal, r.Now())
 	task.Class = Classify(goal)
@@ -145,6 +161,19 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 		}
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
 
+		if len(action.Actions) > 0 {
+			if !r.allReadOnly(action.Actions) {
+				messages = append(messages, BuildCorrectionMessage(errors.New("the 'actions' array may only contain read-only tool_call entries")))
+				continue
+			}
+			resultMsgs, execErr := r.executeActions(ctx, action.Actions)
+			if execErr != nil {
+				return r.fail(task, execErr)
+			}
+			messages = append(messages, resultMsgs...)
+			continue
+		}
+
 		switch action.Type {
 		case ActionAnswer, ActionFinal:
 			task.Summary = action.Content
@@ -152,11 +181,11 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 			r.State.AddMessage(session.RoleAssistant, action.Content)
 			return nil
 		case ActionToolCall, ActionPatch:
-			resultMsg, err := r.executeToolCall(ctx, action)
+			resultMsgs, err := r.executeToolCall(ctx, action)
 			if err != nil {
 				return r.fail(task, err)
 			}
-			messages = append(messages, resultMsg)
+			messages = append(messages, resultMsgs...)
 		default:
 			messages = append(messages, BuildCorrectionMessage(fmt.Errorf("unsupported action type %q", action.Type)))
 		}
@@ -302,9 +331,10 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 }
 
 // executeToolCall evaluates policy, blocks for user approval if required,
-// executes the tool, logs an audit event, and returns the schema.ChatMessage
-// to feed the result (or failure reason) back to the model.
-func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (schema.ChatMessage, error) {
+// executes the tool, logs an audit event, and returns one or more
+// schema.ChatMessages to feed the result (or failure reason) back to the
+// model. The slice may include a loop-detection nudge message.
+func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]schema.ChatMessage, error) {
 	toolName := action.Tool
 	if action.Type == ActionPatch {
 		toolName = "file.write_patch"
@@ -312,14 +342,14 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (schem
 
 	tool, ok := r.Registry.Lookup(toolName)
 	if !ok {
-		return BuildToolErrorMessage(toolName, "unknown tool"), nil
+		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "unknown tool")}, nil
 	}
 
 	args := action.Args
 	if action.Type == ActionPatch {
 		encoded, err := json.Marshal(map[string]string{"patch": action.Content})
 		if err != nil {
-			return BuildToolErrorMessage(toolName, "failed to encode patch arguments"), nil
+			return []schema.ChatMessage{BuildToolErrorMessage(toolName, "failed to encode patch arguments")}, nil
 		}
 		args = encoded
 	}
@@ -327,14 +357,38 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (schem
 	argsMap := map[string]interface{}{}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &argsMap); err != nil {
-			return BuildToolErrorMessage(toolName, "arguments are not a valid JSON object"), nil
+			return []schema.ChatMessage{BuildToolErrorMessage(toolName, "arguments are not a valid JSON object")}, nil
+		}
+	}
+
+	normalizedArgs, normErr := normalizeArgs(args)
+	if normErr != nil {
+		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "failed to normalize arguments")}, nil
+	}
+
+	// Read-only cache lookup.
+	if tool.Risk == registry.RiskReadOnly {
+		if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
+			r.recordToolCall(toolName, string(normalizedArgs))
+			logged := cached
+			logged.Summary = "(cached) " + logged.Summary
+			call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
+			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
+			r.State.LogToolCall(event)
+			msgs := []schema.ChatMessage{BuildCachedToolResultMessage(toolName, cached)}
+			if r.shouldNudgeLoop() {
+				nudge := "You appear to be repeating the same step. Either produce a final answer or ask the user for clarification."
+				msgs = append(msgs, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
+				r.State.AddMessage(session.RoleSystem, nudge)
+			}
+			return msgs, nil
 		}
 	}
 
 	r.Policy.SetSessionRules(r.State.SessionRules())
 	decision, reason, err := r.Policy.Evaluate(toolName, argsMap)
 	if err != nil {
-		return BuildToolErrorMessage(toolName, err.Error()), nil
+		return []schema.ChatMessage{BuildToolErrorMessage(toolName, err.Error())}, nil
 	}
 
 	approval := registry.ApprovalNotRequired
@@ -342,22 +396,23 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (schem
 	case policy.DecisionDeny:
 		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
 		r.State.LogToolCall(event)
-		return BuildToolErrorMessage(toolName, "denied by policy: "+reason), nil
+		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "denied by policy: "+reason)}, nil
 	case policy.DecisionConfirm:
 		approved, edited, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason)
 		if waitErr != nil {
-			return schema.ChatMessage{}, waitErr
+			return nil, waitErr
 		}
 		if !approved {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
 			r.State.LogToolCall(event)
-			return BuildToolErrorMessage(toolName, "denied by user"), nil
+			return []schema.ChatMessage{BuildToolErrorMessage(toolName, "denied by user")}, nil
 		}
 		approval = registry.ApprovalApproved
 		if edited != "" {
 			argsMap["command"] = edited
 			if remarshalled, merr := json.Marshal(argsMap); merr == nil {
 				args = remarshalled
+				normalizedArgs, _ = normalizeArgs(args)
 			}
 		}
 	case policy.DecisionAllow:
@@ -366,12 +421,109 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (schem
 
 	call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
 	result, execErr := tool.Handler(ctx, call)
-	event := registry.NewAuditEvent(r.Now(), tool, call, result, approval, execErr)
-	r.State.LogToolCall(event)
 	if execErr != nil {
-		return BuildToolErrorMessage(toolName, execErr.Error()), nil
+		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
+		r.State.LogToolCall(event)
+		return []schema.ChatMessage{BuildToolErrorMessage(toolName, execErr.Error())}, nil
 	}
-	return BuildToolResultMessage(toolName, result), nil
+
+	summarized := SummarizeToolResult(toolName, result, r.MaxToolResultChars)
+	if tool.Risk == registry.RiskReadOnly {
+		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)
+	}
+	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)
+	r.State.LogToolCall(event)
+
+	msgs := []schema.ChatMessage{BuildToolResultMessage(toolName, summarized)}
+	r.recordToolCall(toolName, string(normalizedArgs))
+	if r.shouldNudgeLoop() {
+		msgs = append(msgs, schema.ChatMessage{
+			Role:    schema.RoleSystem,
+			Content: "You appear to be repeating the same step. Either produce a final answer or ask the user for clarification.",
+		})
+		r.State.AddMessage(session.RoleSystem, "You appear to be repeating the same step. Either produce a final answer or ask the user for clarification.")
+	}
+	return msgs, nil
+}
+
+func (r *Runner) recordToolCall(name, args string) {
+	r.callHistoryMu.Lock()
+	defer r.callHistoryMu.Unlock()
+	r.callHistory = append(r.callHistory, toolCallKey{Name: name, Args: args})
+}
+
+func (r *Runner) shouldNudgeLoop() bool {
+	r.callHistoryMu.Lock()
+	defer r.callHistoryMu.Unlock()
+	if r.loopNudgeSent {
+		return false
+	}
+	n := len(r.callHistory)
+	if n < 3 {
+		return false
+	}
+	if r.callHistory[n-1] == r.callHistory[n-2] && r.callHistory[n-2] == r.callHistory[n-3] {
+		r.loopNudgeSent = true
+		return true
+	}
+	return false
+}
+
+func (r *Runner) allReadOnly(actions []ModelAction) bool {
+	for _, a := range actions {
+		if a.Type != ActionToolCall {
+			return false
+		}
+		tool, ok := r.Registry.Lookup(a.Tool)
+		if !ok || tool.Risk != registry.RiskReadOnly {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]schema.ChatMessage, error) {
+	results := make([]schema.ChatMessage, len(actions))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	for i, a := range actions {
+		wg.Add(1)
+		go func(idx int, act ModelAction) {
+			defer wg.Done()
+			msgs, err := r.executeToolCall(ctx, act)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			results[idx] = joinMessages(msgs)
+		}(i, a)
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return results, nil
+}
+
+func joinMessages(msgs []schema.ChatMessage) schema.ChatMessage {
+	if len(msgs) == 0 {
+		return schema.ChatMessage{Role: schema.RoleUser, Content: ""}
+	}
+	if len(msgs) == 1 {
+		return msgs[0]
+	}
+	var parts []string
+	for _, m := range msgs {
+		parts = append(parts, m.Content)
+	}
+	return schema.ChatMessage{Role: schema.RoleUser, Content: strings.Join(parts, "\n\n")}
 }
 
 // requestApproval blocks until the TUI (or any caller driving

@@ -916,71 +916,104 @@ func renderMessage(role, content string, width int) string {
 	return b.String()
 }
 
-func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
-	bodyWidth := max(m.rightWidth-6, 1)
-	tabLabels := []string{
-		"1 Plan",
-		"2 Context",
-		"3 Log",
-	}
-	renderedTabs := make([]string, 0, len(tabLabels))
-	for i, label := range tabLabels {
-		text := label
-		style := mutedStyle
-		if m.activeTab == i {
-			text = "› " + label
-			style = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+func renderSidebarTabs(width int, active int) string {
+	names := []string{"Plan", "Context", "Log"}
+	parts := make([]string, 0, len(names))
+	for i, name := range names {
+		label := fmt.Sprintf("%d %s", i+1, name)
+		if active == i {
+			parts = append(parts, activePillStyle.Render(label))
+			continue
 		}
-		renderedTabs = append(renderedTabs, style.Render(text))
+		parts = append(parts, inactivePillStyle.Render(label))
 	}
-	tabLine := strings.Join(renderedTabs, " ")
-	if visibleRunes(tabLine) > bodyWidth && len(renderedTabs) == 3 {
-		tabLine = strings.Join(renderedTabs[:2], " ") + "\n" + renderedTabs[2]
-	}
-	tabStrip := lipgloss.NewStyle().
-		Width(bodyWidth).
-		MaxWidth(bodyWidth).
-		Render(tabLine)
+	return lipgloss.NewStyle().
+		Width(max(width, 1)).
+		MaxWidth(max(width, 1)).
+		Render(lipgloss.JoinHorizontal(lipgloss.Top, parts...))
+}
 
-	var bodyLines []string
+func (m Model) renderPlanTab(width int, height int, tc *session.PendingToolCall, busy bool) string {
+	rows := []string{
+		lipgloss.NewStyle().Foreground(successColor).Render("✓") + "  Inspect current TUI layout",
+		lipgloss.NewStyle().Foreground(successColor).Render("✓") + "  Apply polished visual tokens",
+		lipgloss.NewStyle().Foreground(accentColor).Render("●") + "  Match mockup panel chrome",
+		mutedStyle.Render("○") + "  Verify bounds at 80x24",
+	}
+	if tc != nil {
+		rows = append(rows, "→  Pending approval: "+truncateRunes(tc.Command, max(width-22, 1)))
+	} else if busy {
+		rows = append(rows, "→  Agent is working")
+	} else {
+		rows = append(rows, "→  Ready for input")
+	}
+	return lipgloss.NewStyle().Width(width).Height(height).MaxHeight(height).Render(strings.Join(rows, "\n"))
+}
+
+func (m Model) renderContextTab(width int, height int) string {
+	pack := m.state.ContextPack()
+	if pack.IsEmpty() {
+		return mutedStyle.Width(width).Height(height).Render("No context pack built yet.")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Context Pack\n")
+	fmt.Fprintf(&b, "ctx %s / %s\n\n", compactTokenCount(pack.TokenUsage.EstimatedTokens), compactTokenCount(pack.TokenUsage.MaxTokens))
+	for i, section := range pack.Sections {
+		if i >= 6 {
+			break
+		}
+		title := section.Title
+		if title == "" {
+			title = section.Source
+		}
+		fmt.Fprintf(&b, "%d  %s  %s\n", i+1, truncateRunes(title, max(width-8, 1)), compactTokenCount(section.EstimatedTokens))
+	}
+	return lipgloss.NewStyle().Width(width).Height(height).MaxHeight(height).Render(b.String())
+}
+
+func (m Model) renderLogTab(width int, height int) string {
+	auditLog := m.state.AuditLog()
+	if len(auditLog) == 0 {
+		return mutedStyle.Width(width).Height(height).Render("No tool calls yet.")
+	}
+	var b strings.Builder
+	for i, event := range auditLog {
+		if i >= 8 {
+			break
+		}
+		fmt.Fprintf(&b, "%s  %s  %s\n",
+			event.Timestamp.Format("15:04"),
+			truncateRunes(event.ToolName, 10),
+			truncateRunes(event.ResultSummary, max(width-20, 1)),
+		)
+	}
+	return lipgloss.NewStyle().Width(width).Height(height).MaxHeight(height).Render(b.String())
+}
+
+func compactTokenCount(tokens int) string {
+	if tokens >= 1000 {
+		return fmt.Sprintf("%dk", tokens/1000)
+	}
+	return fmt.Sprintf("%d", tokens)
+}
+
+func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
+	innerWidth := max(m.rightWidth-2, 1)
+	bodyHeight := max(m.contentHeight-5, 1)
+	tabs := renderSidebarTabs(innerWidth, m.activeTab)
+
+	var body string
 	switch m.activeTab {
 	case 0:
-		bodyLines = []string{
-			"Current Plan:",
-			"",
-			"● Redesign terminal UI layout",
-		}
-		if tc != nil {
-			bodyLines = append(bodyLines, fmt.Sprintf("→ Pending approval: %s", truncateRunes(tc.Command, max(bodyWidth-20, 1))))
-		} else if m.busy {
-			bodyLines = append(bodyLines, "→ Agent is executing tasks...")
-		} else {
-			bodyLines = append(bodyLines, "→ Ready for user input.")
-		}
+		body = m.renderPlanTab(innerWidth, bodyHeight, tc, m.busy)
 	case 1:
-		pack := m.state.ContextPack()
-		if pack.IsEmpty() {
-			bodyLines = []string{"No context pack built yet."}
-		} else {
-			bodyLines = []string{fmt.Sprintf("Pack: %d/%d tokens", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens), ""}
-			for _, section := range pack.Sections {
-				bodyLines = append(bodyLines, truncateRunes(fmt.Sprintf("%s (%d tk)", section.Title, section.EstimatedTokens), bodyWidth))
-			}
-		}
-	case 2:
-		auditLog := m.state.AuditLog()
-		if len(auditLog) == 0 {
-			bodyLines = []string{"No tool calls yet."}
-		} else {
-			bodyLines = make([]string, 0, len(auditLog))
-			for _, event := range auditLog {
-				bodyLines = append(bodyLines, truncateRunes(fmt.Sprintf("[%s] %s -> %s", event.Timestamp.Format("15:04:05"), event.ToolName, event.ResultSummary), bodyWidth))
-			}
-		}
+		body = m.renderContextTab(innerWidth, bodyHeight)
+	default:
+		body = m.renderLogTab(innerWidth, bodyHeight)
 	}
 
-	body := tabStrip + "\n\n" + strings.Join(bodyLines, "\n")
-	return renderPanel("Inspector", "", body, m.rightWidth, m.contentHeight)
+	content := lipgloss.JoinVertical(lipgloss.Left, tabs, body)
+	return renderPanel("", "inspector", content, m.rightWidth, m.contentHeight)
 }
 
 func (m Model) renderProviderError(err error) string {

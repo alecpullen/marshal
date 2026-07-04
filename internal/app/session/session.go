@@ -181,6 +181,17 @@ func (s *State) Messages() []Message {
 	return messages
 }
 
+// ClearMessages removes all messages from the transcript and returns the
+// count of messages that were cleared. It does not affect the audit log,
+// pending approvals, backups, or context pack.
+func (s *State) ClearMessages() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := len(s.messages)
+	s.messages = nil
+	return count
+}
+
 // BeginStreaming starts a new in-progress message, resetting any reasoning
 // left over from a previous call. Call this once per model call that may
 // stream reasoning content, before consuming its event stream.

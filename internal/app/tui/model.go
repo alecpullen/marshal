@@ -17,7 +17,9 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/commands"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
 
@@ -28,6 +30,7 @@ import (
 // logic, per CLAUDE.md's design constraints.
 type AgentRunner interface {
 	Run(ctx context.Context, goal string) error
+	SetForceClass(class string)
 }
 
 const (
@@ -56,6 +59,9 @@ type Model struct {
 	memoryModel    memory.Model
 	memoryDB       *db.DB
 	memoryProject  int64
+	cmdRegistry    *commands.Registry
+	agentCancel    context.CancelFunc
+	forceMode      string // reserved for future status-bar display
 
 	// New Layout State
 	width        int
@@ -89,6 +95,12 @@ type ConfigReloader func(cfg config.Config) error
 func WithConfigReloader(fn ConfigReloader) Option {
 	return func(m *Model) {
 		m.configReloader = fn
+	}
+}
+
+func WithCommandRegistry(reg *commands.Registry) Option {
+	return func(m *Model) {
+		m.cmdRegistry = reg
 	}
 }
 
@@ -214,6 +226,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case agentFinishedMsg:
 		m.busy = false
+		m.agentCancel = nil
 		if msg.err != nil {
 			m.state.SetProviderError(msg.err)
 		}
@@ -415,17 +428,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case tea.KeyEnter:
 					value := strings.TrimSpace(m.input.Value())
-					if value == "" || m.busy {
+					if value == "" {
 						return m, nil
 					}
 					m.input.Reset()
+
+					if strings.HasPrefix(value, "/") {
+						return m.dispatchCommand(value)
+					}
+
+					if m.busy {
+						return m, nil
+					}
 					if m.runner == nil {
 						m.state.AddMessage(session.RoleUser, value)
 						m.refreshViewport()
 						return m, nil
 					}
 					m.busy = true
-					return m, tea.Batch(runAgentCmd(m.ctx, m.runner, value), tickCmd())
+					agentCtx, cancel := context.WithCancel(m.ctx)
+					m.agentCancel = cancel
+					return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd())
 				}
 			} else {
 				switch msg.Type {
@@ -526,6 +549,133 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
 		return agentTickMsg{}
 	})
+}
+
+func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
+	parts := strings.Fields(raw)
+	if len(parts) == 0 {
+		return m, nil
+	}
+	name := strings.TrimPrefix(parts[0], "/")
+	var args []string
+	if len(parts) > 1 {
+		args = parts[1:]
+	}
+
+	if m.cmdRegistry == nil {
+		m.state.AddMessage(session.RoleSystem, "Command registry not available.")
+		m.refreshViewport()
+		return m, nil
+	}
+	cmd, ok := m.cmdRegistry.Lookup(name)
+	if !ok {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown command: /%s. Type /help for available commands.", name))
+		m.refreshViewport()
+		return m, nil
+	}
+
+	msg := cmd.Handler(m.state, args)
+
+	if msg != "" {
+		m.state.AddMessage(session.RoleSystem, msg)
+	}
+
+	switch cmd.Name {
+	case "exit", "quit":
+		m.state.Shutdown()
+		return m, tea.Quit
+
+	case "settings":
+		m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+		m.settingsModel.SetSize(m.width, m.height)
+		m.settingsOpen = true
+		m.refreshViewport()
+		return m, nil
+
+	case "memory":
+		if m.memoryDB == nil {
+			m.state.AddMessage(session.RoleSystem, "Memory browser not available (no database configured).")
+			m.refreshViewport()
+			return m, nil
+		}
+		m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
+		m.memoryModel.SetSize(m.width, m.height)
+		m.memoryOpen = true
+		m.refreshViewport()
+		return m, nil
+
+	case "stop":
+		if m.agentCancel != nil {
+			m.agentCancel()
+			m.agentCancel = nil
+			m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.")
+		}
+		m.refreshViewport()
+		return m, nil
+
+	case "ask":
+		if m.runner != nil {
+			m.runner.SetForceClass("question")
+		}
+		m.forceMode = "ask"
+		m.refreshViewport()
+		return m, nil
+
+	case "edit":
+		if m.runner != nil {
+			m.runner.SetForceClass("edit")
+		}
+		m.forceMode = "edit"
+		m.refreshViewport()
+		return m, nil
+
+	case "auto":
+		if m.runner != nil {
+			m.runner.SetForceClass("")
+		}
+		m.forceMode = ""
+		m.refreshViewport()
+		return m, nil
+
+	case "model":
+		if len(args) == 0 {
+			m.state.AddMessage(session.RoleSystem, "Usage: /model <preset-name>. Available presets are listed in your config.toml.")
+			m.refreshViewport()
+			return m, nil
+		}
+		if m.configReloader != nil {
+			presetName := args[0]
+			newCfg := m.state.Config
+			preset, ok := newCfg.Models.Presets[presetName]
+			if !ok {
+				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown preset: %s", presetName))
+				m.refreshViewport()
+				return m, nil
+			}
+			newCfg.Profile.Default = "switched"
+			newCfg.AgentProfiles = map[string]routing.AgentProfile{
+				"switched": {
+					Name: "switched",
+					Roles: map[routing.AgentRole]string{
+						routing.RoleImplementer: presetName,
+						routing.RoleRepoScout:   presetName,
+						routing.RoleKnowledge:   presetName,
+					},
+				},
+			}
+			if err := m.configReloader(newCfg); err != nil {
+				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err))
+			} else {
+				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model))
+			}
+		}
+		m.refreshViewport()
+		return m, nil
+
+	default:
+		m.refreshViewport()
+		return m, nil
+	}
 }
 
 func truncateRunes(s string, limit int) string {

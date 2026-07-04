@@ -27,10 +27,10 @@ func TestCreateSessionAndMessages(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	if err := db.SaveMessage(sessionID, "user", "hello", now.Add(time.Second)); err != nil {
+	if err := db.SaveMessage(sessionID, "user", "hello", now.Add(time.Second), "", 0); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
-	if err := db.SaveMessage(sessionID, "assistant", "hi there", now.Add(2*time.Second)); err != nil {
+	if err := db.SaveMessage(sessionID, "assistant", "hi there", now.Add(2*time.Second), "considering the greeting", 4*time.Second); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
 
@@ -44,8 +44,17 @@ func TestCreateSessionAndMessages(t *testing.T) {
 	if messages[0].Role != "user" || messages[0].Content != "hello" {
 		t.Errorf("message 0 mismatch: %+v", messages[0])
 	}
+	if messages[0].Reasoning != "" || messages[0].ThinkDurationMs != 0 {
+		t.Errorf("message 0 should have no reasoning: %+v", messages[0])
+	}
 	if messages[1].Role != "assistant" || messages[1].Content != "hi there" {
 		t.Errorf("message 1 mismatch: %+v", messages[1])
+	}
+	if messages[1].Reasoning != "considering the greeting" {
+		t.Errorf("message 1 reasoning = %q, want %q", messages[1].Reasoning, "considering the greeting")
+	}
+	if messages[1].ThinkDurationMs != 4000 {
+		t.Errorf("message 1 think duration = %d ms, want 4000", messages[1].ThinkDurationMs)
 	}
 }
 

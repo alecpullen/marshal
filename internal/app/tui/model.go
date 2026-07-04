@@ -822,6 +822,26 @@ func (m Model) View() string {
 }
 
 func (m Model) renderChatPanel(tc *session.PendingToolCall) string {
+	if tc != nil {
+		contentWidth := max(m.leftWidth-6, 1)
+		lines := []string{
+			"SECURITY APPROVAL REQUIRED",
+			"",
+			fmt.Sprintf("Command: %s", truncateRunes(tc.Command, contentWidth-9)),
+			fmt.Sprintf("Reason: %s", truncateRunes(tc.Reason, contentWidth-8)),
+			fmt.Sprintf("Risk: %s", truncateRunes(tc.Risk, contentWidth-6)),
+		}
+		if tc.Command != "" {
+			lines = append(lines, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always allow")
+		}
+		if m.state.HasBackup() {
+			lines = append(lines, "[r] Rollback")
+		}
+		if tc.Diff != "" {
+			lines = append(lines, "", "Diff:", truncateRunes(tc.Diff, contentWidth))
+		}
+		return renderPanel("Chat", "live transcript", strings.Join(lines, "\n"), m.leftWidth, m.chatHeight)
+	}
 	return renderPanel("Chat", "live transcript", m.viewport.View(), m.leftWidth, m.chatHeight)
 }
 
@@ -839,7 +859,46 @@ func (m Model) renderInputArea() string {
 }
 
 func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
-	return renderPanel("1 Plan  2 Context  3 Log", "inspector", "", m.rightWidth, m.contentHeight)
+	bodyWidth := max(m.rightWidth-6, 1)
+
+	var bodyLines []string
+	switch m.activeTab {
+	case 0:
+		bodyLines = []string{
+			"Current Plan:",
+			"",
+			"● Redesign terminal UI layout",
+		}
+		if tc != nil {
+			bodyLines = append(bodyLines, fmt.Sprintf("→ Pending approval: %s", truncateRunes(tc.Command, max(bodyWidth-20, 1))))
+		} else if m.busy {
+			bodyLines = append(bodyLines, "→ Agent is executing tasks...")
+		} else {
+			bodyLines = append(bodyLines, "→ Ready for user input.")
+		}
+	case 1:
+		pack := m.state.ContextPack()
+		if pack.IsEmpty() {
+			bodyLines = []string{"No context pack built yet."}
+		} else {
+			bodyLines = []string{fmt.Sprintf("Pack: %d/%d tokens", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens), ""}
+			for _, section := range pack.Sections {
+				bodyLines = append(bodyLines, truncateRunes(fmt.Sprintf("%s (%d tk)", section.Title, section.EstimatedTokens), bodyWidth))
+			}
+		}
+	case 2:
+		auditLog := m.state.AuditLog()
+		if len(auditLog) == 0 {
+			bodyLines = []string{"No tool calls yet."}
+		} else {
+			bodyLines = make([]string, 0, len(auditLog))
+			for _, event := range auditLog {
+				bodyLines = append(bodyLines, truncateRunes(fmt.Sprintf("[%s] %s -> %s", event.Timestamp.Format("15:04:05"), event.ToolName, event.ResultSummary), bodyWidth))
+			}
+		}
+	}
+
+	return renderPanel("1 Plan  2 Context  3 Log", "inspector", strings.Join(bodyLines, "\n"), m.rightWidth, m.contentHeight)
 }
 
 func (m Model) renderProviderError(err error) string {

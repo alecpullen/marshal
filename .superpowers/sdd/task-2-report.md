@@ -61,3 +61,31 @@ Task 2 fit-fix follow-up
       - `120x40`: PASS
 - Follow-up concerns:
   - I did not rerun the broader `go test ./internal/app/tui` package sweep in this follow-up because the user asked specifically to clear the focused Task 2 review gate. The earlier report still reflects that wider suite remained red against later-task expectations at that point in time.
+
+Review-fix follow-up
+
+- Findings addressed:
+  - Restored pending approval rendering in the polished `View()` path by making `renderChatPanel(tc)` render approval details and diff content when a pending tool call exists.
+  - Restored tab-dependent right-panel behavior by making `renderRightInfoPanel(tc)` switch on `activeTab` and render the prior Plan / Context / Log bodies again inside the Task 2 helper structure.
+  - Added focused regression tests for pending approval visibility and tab switching.
+- Implementation details:
+  - `renderChatPanel(tc)` now uses `tc` to render:
+    - `SECURITY APPROVAL REQUIRED`
+    - command / reason / risk inventory
+    - approval key hints
+    - diff content when `tc.Diff` is present
+  - `renderRightInfoPanel(tc)` now uses `m.activeTab`:
+    - Plan tab shows current-plan copy and pending-approval/busy/idle state
+    - Context tab shows empty-state or context-pack summary
+    - Log tab shows audit-log entries or the empty-state
+  - This also removes the temporary unused-parameter smell for `tc`.
+- TDD evidence:
+  - RED: `go test ./internal/app/tui -run 'TestPolishedViewPreservesPendingApprovalContent|TestPolishedRightPanelTracksActiveTab' -v`
+    - Failed because the polished shell did not render approval content and the right panel ignored `activeTab`.
+  - GREEN: `go test ./internal/app/tui -run 'TestPolishedViewPreservesPendingApprovalContent|TestPolishedRightPanelTracksActiveTab' -v`
+    - PASS after restoring approval and tab-dependent rendering.
+- Fresh test results:
+  - `go test ./internal/app/tui -run 'TestPolishedViewContainsCurrentLayoutChrome|TestPolishedStatusBarShowsRouteWhenActive|TestPolishedViewFitsCommonTerminalSizes' -v`
+    - PASS
+  - `go test ./internal/app/tui -run 'TestPolishedViewPreservesPendingApprovalContent|TestPolishedRightPanelTracksActiveTab|TestPolishedViewContainsCurrentLayoutChrome|TestPolishedStatusBarShowsRouteWhenActive|TestPolishedViewFitsCommonTerminalSizes' -v`
+    - PASS

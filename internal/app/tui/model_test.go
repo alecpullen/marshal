@@ -169,6 +169,62 @@ func TestViewContainsExpectedPanels(t *testing.T) {
 	}
 }
 
+func TestPolishedViewContainsCurrentLayoutChrome(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"Marshal",
+		"Ask",
+		"Plan",
+		"Auto",
+		"Swarm",
+		"Chat",
+		"live transcript",
+		"1 Plan",
+		"2 Context",
+		"3 Log",
+		"MARSHAL",
+		"Ask Marshal...",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestPolishedViewFitsCommonTerminalSizes(t *testing.T) {
+	for _, size := range []struct {
+		width  int
+		height int
+	}{
+		{80, 24},
+		{100, 30},
+		{120, 40},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+			m := New(state)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+			m = updated.(Model)
+
+			view := m.View()
+			lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+			if len(lines) > size.height {
+				t.Fatalf("line count = %d, want <= %d\n%s", len(lines), size.height, view)
+			}
+			for i, line := range lines {
+				if got := visibleRunes(line); got > size.width {
+					t.Fatalf("line %d width = %d, want <= %d\n%s", i+1, got, size.width, line)
+				}
+			}
+		})
+	}
+}
+
 func TestViewShowsInactiveRouteByDefault(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)

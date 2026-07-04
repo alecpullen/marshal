@@ -50,14 +50,14 @@ func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	p.calls++
 
 	ch := make(chan schema.ChatEvent, 3)
+	if idx < len(p.thinking) && p.thinking[idx] != "" {
+		ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: p.thinking[idx]}
+	}
+
 	if idx < len(p.errs) && p.errs[idx] != nil {
 		ch <- schema.ChatEvent{Type: schema.ChatEventError, Err: p.errs[idx]}
 		close(ch)
 		return ch, nil
-	}
-
-	if idx < len(p.thinking) && p.thinking[idx] != "" {
-		ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: p.thinking[idx]}
 	}
 
 	content := ""
@@ -143,18 +143,21 @@ func TestChatOnceRoutesThinkingDeltasToStateAndReturnsAnswerText(t *testing.T) {
 }
 
 func TestChatOnceEndsStreamingEvenOnProviderError(t *testing.T) {
-	p := &scriptedProvider{errs: []error{errors.New("boom")}}
+	p := &scriptedProvider{
+		thinking: []string{"partial thought"},
+		errs:     []error{errors.New("boom")},
+	}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
-	state.BeginStreaming()
-	state.AppendThinking("partial thought")
-
 	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
 	if err == nil {
 		t.Fatal("chatOnce returned nil error, want the provider error")
+	}
+	if got := state.InProgress().Reasoning; got != "partial thought" {
+		t.Fatalf("InProgress().Reasoning = %q, want %q (thinking captured before the error must survive EndStreaming)", got, "partial thought")
 	}
 	if state.InProgress().Active {
 		t.Fatal("InProgress().Active = true after error, want false (EndStreaming must still run)")

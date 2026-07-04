@@ -315,6 +315,8 @@ func TestPolishedRightPanelTracksActiveTab(t *testing.T) {
 }
 
 func TestPolishedViewFitsCommonTerminalSizes(t *testing.T) {
+	longMessage := "I am checking that the transcript, prompt, and thinking blocks all reflow cleanly when the terminal width changes across common viewport sizes."
+	longThinking := "First inspect the current viewport width. Then keep the newest visible reasoning in the thinking block while making sure every rendered line still respects the terminal width budget."
 	for _, size := range []struct {
 		width  int
 		height int
@@ -325,9 +327,14 @@ func TestPolishedViewFitsCommonTerminalSizes(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+			state.AddMessage(session.RoleUser, longMessage)
+			state.BeginStreaming()
+			state.AppendThinking(longThinking)
 			m := New(state)
 			updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
 			m = updated.(Model)
+			m.busy = true
+			m.refreshViewport()
 
 			view := m.View()
 			lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
@@ -340,6 +347,56 @@ func TestPolishedViewFitsCommonTerminalSizes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	message := "This transcript line should be wide enough to wrap differently after resizing from a wide terminal down to a narrow terminal."
+	thinking := "The live thinking copy should also be rebuilt after resize so it follows the narrowed viewport width instead of keeping stale wrapping."
+	state.AddMessage(session.RoleUser, message)
+	state.BeginStreaming()
+	state.AppendThinking(thinking)
+	m := New(state)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+	m.busy = true
+	m.refreshViewport()
+	wideView := m.View()
+
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	narrowView := m.View()
+	expectedViewport := renderMessage(string(session.RoleUser), message, m.viewport.Width) + renderThinkingBox(thinking, m.viewport.Width)
+
+	// viewport.View() pads every line to the viewport's fixed width/height
+	// with trailing spaces and blank lines; strip that padding before
+	// comparing against the raw rendered content.
+	trimPadding := func(s string) string {
+		lines := strings.Split(s, "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimRight(line, " ")
+		}
+		return strings.TrimRight(strings.Join(lines, "\n"), "\n")
+	}
+
+	if got, want := trimPadding(m.viewport.View()), trimPadding(expectedViewport); got != want {
+		t.Fatalf("viewport content did not rebuild for resized width\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+
+	if wideView == narrowView {
+		t.Fatalf("expected resize to change rendered view")
+	}
+
+	lines := strings.Split(strings.TrimRight(narrowView, "\n"), "\n")
+	if len(lines) > 24 {
+		t.Fatalf("line count = %d, want <= 24\n%s", len(lines), narrowView)
+	}
+	for i, line := range lines {
+		if got := visibleRunes(line); got > 80 {
+			t.Fatalf("line %d width = %d, want <= 80\n%s", i+1, got, line)
+		}
 	}
 }
 

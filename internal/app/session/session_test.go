@@ -291,3 +291,86 @@ func TestStatePersistsMessagesAndAudits(t *testing.T) {
 		t.Fatalf("persisted tool call = %#v, want file.read/read main.go", calls[0])
 	}
 }
+
+func TestBeginStreamingThenAppendThinkingAccumulatesReasoning(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	state.BeginStreaming()
+	state.AppendThinking("checking the ")
+	state.AppendThinking("auth flow")
+
+	got := state.InProgress()
+	if !got.Active {
+		t.Fatal("InProgress().Active = false, want true after BeginStreaming")
+	}
+	if got.Reasoning != "checking the auth flow" {
+		t.Fatalf("InProgress().Reasoning = %q, want %q", got.Reasoning, "checking the auth flow")
+	}
+}
+
+func TestEndStreamingMarksInactiveButPreservesReasoning(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	state.BeginStreaming()
+	state.AppendThinking("checking the auth flow")
+	state.EndStreaming()
+
+	got := state.InProgress()
+	if got.Active {
+		t.Fatal("InProgress().Active = true, want false after EndStreaming")
+	}
+	if got.Reasoning != "checking the auth flow" {
+		t.Fatalf("InProgress().Reasoning = %q, want preserved after EndStreaming", got.Reasoning)
+	}
+}
+
+func TestAddMessageAttachesReasoningFromInProgressAndClearsIt(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	state.BeginStreaming()
+	state.AppendThinking("checking the auth flow")
+	state.EndStreaming()
+	state.AddMessage(RoleAssistant, "Here's the fix.")
+
+	messages := state.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("len(Messages()) = %d, want 1", len(messages))
+	}
+	if messages[0].Reasoning != "checking the auth flow" {
+		t.Fatalf("messages[0].Reasoning = %q, want %q", messages[0].Reasoning, "checking the auth flow")
+	}
+	if messages[0].ThinkDuration <= 0 {
+		t.Fatalf("messages[0].ThinkDuration = %v, want > 0", messages[0].ThinkDuration)
+	}
+
+	if got := state.InProgress().Reasoning; got != "" {
+		t.Fatalf("InProgress().Reasoning after AddMessage = %q, want empty (cleared)", got)
+	}
+
+	state.AddMessage(RoleUser, "thanks")
+	messages = state.Messages()
+	if messages[1].Reasoning != "" || messages[1].ThinkDuration != 0 {
+		t.Fatalf("messages[1] should have no reasoning when nothing was streamed: %#v", messages[1])
+	}
+}
+
+func TestStreamingLifecycleIsRaceFree(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			state.BeginStreaming()
+			state.AppendThinking("step")
+			state.EndStreaming()
+			state.AddMessage(RoleAssistant, "answer")
+		}
+	}()
+
+	for i := 0; i < 100; i++ {
+		_ = state.InProgress()
+		_ = state.Messages()
+	}
+	<-done
+}

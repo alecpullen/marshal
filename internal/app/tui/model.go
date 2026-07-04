@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -38,7 +39,6 @@ const (
 	verticalOverhead            = 4 // status bar (1) + right-column border (2) + slack (1)
 	chatBelowViewportRows       = 4 // bordered input box (3) + help line (1)
 	tabHeaderMaxRows            = 4 // cap wrapped tab header to this many rows
-	helpMaxRows                 = chatBelowViewportRows - 1
 )
 
 type Model struct {
@@ -112,6 +112,7 @@ func projectConfigPath(workingDir string) string {
 
 func New(state *session.State, opts ...Option) Model {
 	input := textinput.New()
+	input.Prompt = ""
 	input.Placeholder = "Ask Marshal..."
 	input.Focus()
 	input.CharLimit = 4000
@@ -477,7 +478,7 @@ func (m *Model) refreshViewport() {
 		if message.Reasoning != "" {
 			b.WriteString(renderThinkingSummary(message.Reasoning, message.ThinkDuration, m.thinkingExpanded, m.viewport.Width))
 		}
-		b.WriteString(fmt.Sprintf("  %s: %s\n\n", message.Role, message.Content))
+		b.WriteString(renderMessage(string(message.Role), message.Content, m.viewport.Width))
 	}
 	if inProgress.Active {
 		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.viewport.Width))
@@ -546,7 +547,13 @@ func renderThinkingBox(reasoning string, width int) string {
 		Foreground(dimColor).
 		Italic(true)
 	tail := tailRunes(reasoning, boxWidth*thinkingBoxTailLines)
-	return style.Render("thinking\n\n"+tail) + "\n\n"
+	header := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		"thinking",
+		strings.Repeat(" ", max(boxWidth-34, 1)),
+		"streaming · Ctrl+G expands history",
+	)
+	return style.Render(header+"\n\n"+tail) + "\n\n"
 }
 
 // renderThinkingSummary renders a finished message's captured reasoning,
@@ -605,18 +612,18 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 
 func renderKeyHelp(width int, focused bool) string {
 	items := []string{
-		"Esc unfocus",
-		"Tab tabs",
-		"Ctrl+O settings",
-		"Ctrl+K memories",
+		"Esc",
+		"Tab",
+		"Ctrl+O",
+		"Ctrl+K",
 		"Ctrl+G thinking",
 	}
 	if !focused {
 		items = []string{
-			"Enter focus",
-			"1-3 tabs",
-			"Ctrl+O settings",
-			"Ctrl+K memories",
+			"Enter",
+			"1-3",
+			"Ctrl+O",
+			"Ctrl+K",
 			"Ctrl+G thinking",
 		}
 	}
@@ -823,30 +830,34 @@ func (m Model) View() string {
 
 func (m Model) renderChatPanel(tc *session.PendingToolCall) string {
 	if tc != nil {
-		contentWidth := max(m.leftWidth-6, 1)
-		lines := []string{
-			"SECURITY APPROVAL REQUIRED",
-			"",
-			fmt.Sprintf("Command: %s", truncateRunes(tc.Command, contentWidth-9)),
-			fmt.Sprintf("Reason: %s", truncateRunes(tc.Reason, contentWidth-8)),
-			fmt.Sprintf("Risk: %s", truncateRunes(tc.Risk, contentWidth-6)),
-		}
-		if tc.Command != "" {
-			lines = append(lines, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always allow")
-		}
-		if m.state.HasBackup() {
-			lines = append(lines, "[r] Rollback")
-		}
-		if tc.Diff != "" {
-			lines = append(lines, "", "Diff:")
-			diffLines := strings.Split(tc.Diff, "\n")
-			for _, diffLine := range diffLines {
-				lines = append(lines, truncateRunes(diffLine, contentWidth))
-			}
-		}
-		return renderPanel("Chat", "live transcript", strings.Join(lines, "\n"), m.leftWidth, m.chatHeight)
+		return m.renderApprovalArea(tc)
 	}
 	return renderPanel("Chat", "live transcript", m.viewport.View(), m.leftWidth, m.chatHeight)
+}
+
+func (m Model) renderApprovalArea(tc *session.PendingToolCall) string {
+	contentWidth := max(m.leftWidth-6, 1)
+	lines := []string{
+		"SECURITY APPROVAL REQUIRED",
+		"",
+		fmt.Sprintf("Command: %s", truncateRunes(tc.Command, contentWidth-9)),
+		fmt.Sprintf("Reason: %s", truncateRunes(tc.Reason, contentWidth-8)),
+		fmt.Sprintf("Risk: %s", truncateRunes(tc.Risk, contentWidth-6)),
+	}
+	if tc.Command != "" {
+		lines = append(lines, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always allow")
+	}
+	if m.state.HasBackup() {
+		lines = append(lines, "[r] Rollback")
+	}
+	if tc.Diff != "" {
+		lines = append(lines, "", "Diff:")
+		diffLines := strings.Split(tc.Diff, "\n")
+		for _, diffLine := range diffLines {
+			lines = append(lines, truncateRunes(diffLine, contentWidth))
+		}
+	}
+	return renderPanel("Chat", "live transcript", strings.Join(lines, "\n"), m.leftWidth, m.chatHeight)
 }
 
 func (m Model) renderInputArea() string {
@@ -855,11 +866,54 @@ func (m Model) renderInputArea() string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(panelBorderColor).
 		Padding(0, 1)
+	inputLine := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("❯ "),
+		m.input.View(),
+	)
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		inputStyle.Render(m.input.View()),
+		inputStyle.Render(inputLine),
 		renderKeyHelp(m.leftWidth, m.inputFocused),
 	)
+}
+
+func renderMessage(role, content string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	label := strings.ToLower(role)
+	roleStyle := mutedStyle
+	switch label {
+	case "user":
+		roleStyle = userRoleStyle
+	case "agent", "assistant":
+		roleStyle = agentRoleStyle
+	case "tool":
+		roleStyle = toolRoleStyle
+	case "output":
+		roleStyle = outputRoleStyle
+	}
+
+	prefixWidth := 10
+	contentWidth := max(width-prefixWidth-2, 1)
+	wrapped := ansi.Wrap(content, contentWidth, "")
+	var b strings.Builder
+	lines := strings.Split(wrapped, "\n")
+	for i, line := range lines {
+		if i == 0 {
+			b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(label))
+			b.WriteString("  ")
+			b.WriteString(line)
+			b.WriteString("\n")
+			continue
+		}
+		b.WriteString(strings.Repeat(" ", prefixWidth+2))
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {

@@ -202,13 +202,16 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 	if width < 4 {
 		width = 4
 	}
-	if height < 3 {
-		height = 3
+	if height < 2 {
+		height = 2
 	}
-	innerWidth := max(width-2, 1)
-	header := panelTitleStyle.Render(truncateRunes(title, innerWidth))
+	// width and height are the interior content dimensions; lipgloss adds the
+	// rounded border on top of them, so the rendered panel is width+2 by height+2.
+	innerWidth := max(width, 1)
+	truncatedTitle := truncateRunes(title, innerWidth)
+	header := panelTitleStyle.Render(truncatedTitle)
 	if meta != "" {
-		metaWidth := innerWidth - visibleRunes(title) - 2
+		metaWidth := innerWidth - visibleRunes(truncatedTitle)
 		if metaWidth > 0 {
 			header = lipgloss.JoinHorizontal(
 				lipgloss.Top,
@@ -218,7 +221,7 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 			)
 		}
 	}
-	contentHeight := max(height-3, 1)
+	contentHeight := max(height-1, 1)
 	content := lipgloss.NewStyle().
 		Width(innerWidth).
 		Height(contentHeight).
@@ -936,18 +939,26 @@ func (m Model) renderApprovalArea(tc *session.PendingToolCall) string {
 	}
 
 	splitWidth := max((m.leftWidth-2)/2, 10)
-	diffBody := truncateRunes(tc.Diff, splitWidth*max(m.chatHeight-4, 1))
+	diffLines := strings.Split(tc.Diff, "\n")
+	maxDiffLines := max(m.chatHeight-1, 1)
+	if len(diffLines) > maxDiffLines {
+		diffLines = diffLines[:maxDiffLines]
+	}
+	for i := range diffLines {
+		diffLines[i] = truncateRunes(diffLines[i], splitWidth)
+	}
+	diffBody := strings.Join(diffLines, "\n")
 	diffPanel := renderPanel("Diff", "proposed patch", diffBody, splitWidth, m.chatHeight)
 
 	approvalBody := strings.Join([]string{
 		panelTitleStyle.Foreground(accentColor).Render("Agent wants to run"),
-		truncateRunes(tc.Command, max(splitWidth-4, 1)),
+		truncateRunes(tc.Command, max(splitWidth, 1)),
 		"",
 		mutedStyle.Render("Reason"),
-		truncateRunes(tc.Reason, max(splitWidth-4, 1)),
+		truncateRunes(tc.Reason, max(splitWidth, 1)),
 		"",
 		mutedStyle.Render("Risk"),
-		truncateRunes(riskText(tc), max(splitWidth-4, 1)),
+		truncateRunes(riskText(tc), max(splitWidth, 1)),
 		"",
 		"Enter approve",
 		"e edit",

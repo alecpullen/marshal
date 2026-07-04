@@ -148,27 +148,6 @@ func TestCtrlKWithoutMemoryStoreDoesNothing(t *testing.T) {
 	}
 }
 
-func TestViewContainsExpectedPanels(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
-
-	view := model.View()
-	for _, want := range []string{
-		"Marshal",
-		"Status",
-		"Transcript",
-		"Streaming Output",
-		"Command Palette",
-		"Tool Log",
-		"Context",
-		"Diff",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("View() missing %q:\n%s", want, view)
-		}
-	}
-}
-
 func TestPolishedViewContainsCurrentLayoutChrome(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
@@ -281,7 +260,7 @@ func TestPolishedRightPanelTracksActiveTab(t *testing.T) {
 	m = updated.(Model)
 
 	planView := m.View()
-	for _, want := range []string{"Inspect current TUI layout", "Match mockup panel chrome", "Ready for input", "1 Plan", "2 Context", "3 Log"} {
+	for _, want := range []string{"No active plan.", "Ready for input", "1 Plan", "2 Context", "3 Log"} {
 		if !strings.Contains(planView, want) {
 			t.Fatalf("plan tab content missing %q:\n%s", want, planView)
 		}
@@ -419,50 +398,14 @@ func TestPolishedTranscriptShowsRolesThinkingAndInput(t *testing.T) {
 	}
 }
 
-func TestViewShowsInactiveRouteByDefault(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
-
-	view := model.View()
-	if !strings.Contains(view, "Route: inactive") {
-		t.Fatalf("View() missing inactive route:\n%s", view)
-	}
-}
-
-func TestViewShowsActiveRoute(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	state.SetActiveRoute(session.RouteInfo{
-		Role:      routing.RoleImplementer,
-		Profile:   "local_balanced",
-		Preset:    "coder",
-		Provider:  "ollama",
-		Model:     "qwen2.5-coder:14b",
-		LocalOnly: true,
-		Active:    true,
-	})
-	model := New(state)
-
-	view := model.View()
-	for _, want := range []string{
-		"Route: role=implementer",
-		"profile=local_balanced",
-		"preset=coder",
-		"provider=ollama",
-		"model=qwen2.5-coder:14b",
-		"local-only=true",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("View() missing %q:\n%s", want, view)
-		}
-	}
-}
-
 func TestViewShowsProviderErrorWhenSet(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
 
 	state.SetProviderError(errors.New("dial tcp: connection refused"))
-	view := model.View()
+	view := m.View()
 
 	if !strings.Contains(view, "Provider Error") {
 		t.Fatalf("View() missing 'Provider Error' substring:\n%s", view)
@@ -474,54 +417,14 @@ func TestViewShowsProviderErrorWhenSet(t *testing.T) {
 
 func TestViewOmitsProviderErrorSectionByDefault(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
 
-	view := model.View()
+	view := m.View()
 
 	if strings.Contains(view, "Provider Error") {
 		t.Fatalf("View() should not contain 'Provider Error' when no error is set:\n%s", view)
-	}
-}
-
-func TestViewShowsEmptyContextPanel(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
-
-	view := model.View()
-	if !strings.Contains(view, "Context") {
-		t.Fatalf("View() missing Context panel:\n%s", view)
-	}
-	if !strings.Contains(view, "No context pack built yet.") {
-		t.Fatalf("View() missing empty context message:\n%s", view)
-	}
-}
-
-func TestViewShowsContextPackSummary(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	state.SetContextPack(contextpack.Pack{
-		Sections: []contextpack.Section{
-			{
-				Kind:            contextpack.SectionRepoCard,
-				Title:           "Repo Card",
-				Source:          "repo.card",
-				Content:         "Project: marshal",
-				EstimatedTokens: 4,
-			},
-		},
-		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
-	})
-	model := New(state)
-
-	view := model.View()
-	for _, want := range []string{
-		"Context Pack: 4/12000 tokens",
-		"repo_card",
-		"Repo Card",
-		"repo.card",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("View() missing %q:\n%s", want, view)
-		}
 	}
 }
 
@@ -540,20 +443,21 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	}
 	state.SetPendingApproval(tc)
 
-	model := New(state)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
 
-	// Check rendering of banner
-	view := model.View()
-	if !strings.Contains(view, "SECURITY APPROVAL REQUIRED") {
-		t.Fatal("View() missing SECURITY APPROVAL REQUIRED banner")
+	view := m.View()
+	if !strings.Contains(view, "Approval") {
+		t.Fatal("View() missing Approval panel")
 	}
 	if !strings.Contains(view, "go test") {
 		t.Fatal("View() missing proposed command")
 	}
 
 	// 1. Test Deny Keypress 'd'
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(Model)
 
 	select {
 	case dec := <-respChan:
@@ -569,11 +473,11 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 
 	// Set up again for Enter key
 	state.SetPendingApproval(tc)
-	model = New(state)
+	m = New(state)
 
 	// 2. Test Approve Keypress 'enter'
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
 
 	select {
 	case dec := <-respChan:
@@ -586,29 +490,29 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 
 	// Set up again for Edit key
 	state.SetPendingApproval(tc)
-	model = New(state)
+	m = New(state)
 
 	// 3. Test Edit Keypress 'e'
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
 
-	if !model.editingCommand {
+	if !m.editingCommand {
 		t.Fatal("expected model to enter editingCommand mode")
 	}
-	if model.input.Value() != "go test" {
-		t.Fatalf("expected input value to be 'go test', got %q", model.input.Value())
+	if m.input.Value() != "go test" {
+		t.Fatalf("expected input value to be 'go test', got %q", m.input.Value())
 	}
 
 	// Simulate typing to edit command
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" -v")})
-	model = updated.(Model)
-	if model.input.Value() != "go test -v" {
-		t.Fatalf("expected edited input value to be 'go test -v', got %q", model.input.Value())
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" -v")})
+	m = updated.(Model)
+	if m.input.Value() != "go test -v" {
+		t.Fatalf("expected edited input value to be 'go test -v', got %q", m.input.Value())
 	}
 
 	// Press Enter to confirm edited command
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
 
 	select {
 	case dec := <-respChan:
@@ -621,11 +525,11 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 
 	// Set up again for Always Allow key
 	state.SetPendingApproval(tc)
-	model = New(state)
+	m = New(state)
 
 	// 4. Test Always Allow Keypress 'a'
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-	model = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = updated.(Model)
 
 	select {
 	case dec := <-respChan:
@@ -640,26 +544,6 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	rules := state.SessionRules()
 	if len(rules) != 1 || rules[0] != "go test" {
 		t.Fatalf("expected session rules to contain 'go test', got %#v", rules)
-	}
-}
-
-func TestViewShowsAuditLogs(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := New(state)
-
-	// Log a tool call
-	state.LogToolCall(registry.AuditEvent{
-		Timestamp:     time.Unix(1719946800, 0), // 15:00:00 UTC approximately
-		ToolName:      "shell.run",
-		ResultSummary: "command exit status 0",
-	})
-
-	view := model.View()
-	if !strings.Contains(view, "shell.run") {
-		t.Fatal("expected View to contain logged tool name")
-	}
-	if !strings.Contains(view, "command exit status 0") {
-		t.Fatal("expected View to contain logged tool result summary")
 	}
 }
 
@@ -1435,7 +1319,7 @@ func TestPolishedProviderErrorUsesCompactBanner(t *testing.T) {
 
 	view := m.View()
 	for _, want := range []string{
-		"Provider Error Banner",
+		"Provider Error",
 		"fits AltScreen",
 		"provider timeout",
 	} {
@@ -1450,6 +1334,7 @@ func TestPolishedProviderErrorBannerFitsCommonTerminalSizes(t *testing.T) {
 		width  int
 		height int
 	}{
+		{40, 10},
 		{80, 24},
 		{100, 30},
 		{120, 40},

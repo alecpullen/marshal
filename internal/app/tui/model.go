@@ -600,7 +600,7 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 			header = lipgloss.JoinHorizontal(
 				lipgloss.Top,
 				header,
-				strings.Repeat(" ", max(metaWidth-visibleRunes(meta), 1)),
+				strings.Repeat(" ", max(metaWidth-visibleRunes(meta), 0)),
 				mutedStyle.Render(truncateRunes(meta, metaWidth)),
 			)
 		}
@@ -637,7 +637,7 @@ func renderKeyHelp(width int, focused bool) string {
 		}
 	}
 	text := strings.Join(items, "  ")
-	return mutedStyle.MaxWidth(max(width, 1)).Render(truncateRunes(text, max(width, 1)))
+	return mutedStyle.MaxWidth(max(width, 1)).Render(ansi.Truncate(text, max(width, 1), "…"))
 }
 
 func renderModeStrip(active string, width int) string {
@@ -698,36 +698,7 @@ func riskText(tc *session.PendingToolCall) string {
 }
 
 func visibleRunes(s string) int {
-	var count int
-	inEsc := false
-	for _, r := range s {
-		if r == '\x1b' {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if r == 'm' {
-				inEsc = false
-			}
-			continue
-		}
-		count++
-	}
-	return count
-}
-
-func formatBoxLine(s string, width int) string {
-	contentWidth := width - 6 // "│   " (4) + " │" (2)
-	runes := []rune(s)
-	if len(runes) > contentWidth {
-		s = string(runes[:contentWidth-3]) + "..."
-		runes = []rune(s)
-	}
-	padLen := contentWidth - len(runes)
-	if padLen < 0 {
-		padLen = 0
-	}
-	return fmt.Sprintf("│   %s%s │\n", string(runes), strings.Repeat(" ", padLen))
+	return ansi.StringWidth(s)
 }
 
 var (
@@ -791,25 +762,11 @@ func (m Model) View() string {
 
 	tc := m.state.PendingApproval()
 
-	// When a provider-error banner will be appended below mainLayout, it
-	// consumes rows that the normal layout budget (see resize()) doesn't
-	// account for. Shrink the chat/right-panel content height for this
-	// render pass by exactly the banner's visible height (its own content
-	// rows plus the 2 rows renderPanel's border adds) so the total output
-	// still fits the terminal height. This only mutates a local copy of m
-	// (View has a value receiver), so it never affects stored state.
-	layout := m
-	if err := m.state.ProviderError(); err != nil {
-		reserved := providerErrorBannerContentHeight(m.contentHeight) + 2
-		layout.contentHeight = max(m.contentHeight-reserved, 5)
-		layout.chatHeight = max(layout.contentHeight-chatBelowViewportRows, 1)
-	}
-
-	chatPanel := layout.renderChatPanel(tc)
-	inputPanel := layout.renderInputArea()
+	chatPanel := m.renderChatPanel(tc)
+	inputPanel := m.renderInputArea()
 	leftColumn := lipgloss.JoinVertical(lipgloss.Left, chatPanel, inputPanel)
 
-	rightColumn := layout.renderRightInfoPanel(tc)
+	rightColumn := m.renderRightInfoPanel(tc)
 
 	mainLayout := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
 
@@ -821,14 +778,16 @@ func (m Model) View() string {
 	)
 
 	statusBar := renderStatusBar(m.width, m.state, m.busy)
-	if err := m.state.ProviderError(); err != nil {
-		errorBanner := m.renderProviderError(err)
-		return lipgloss.JoinVertical(lipgloss.Left, topBar, mainLayout, errorBanner, statusBar)
-	}
 	return lipgloss.JoinVertical(lipgloss.Left, topBar, mainLayout, statusBar)
 }
 
 func (m Model) renderChatPanel(tc *session.PendingToolCall) string {
+	if err := m.state.ProviderError(); err != nil {
+		body := lipgloss.NewStyle().
+			Foreground(errorColor).
+			Render("! " + truncateRunes(err.Error(), max(m.leftWidth-2, 1)))
+		return renderPanel("Provider Error", "fits AltScreen", body, m.leftWidth, m.chatHeight)
+	}
 	if tc != nil {
 		return m.renderApprovalArea(tc)
 	}
@@ -857,7 +816,7 @@ func (m Model) renderApprovalArea(tc *session.PendingToolCall) string {
 		return renderPanel("Approval", "pending", body, m.leftWidth, m.chatHeight)
 	}
 
-	splitWidth := max((m.leftWidth-2)/2, 10)
+	splitWidth := max((m.leftWidth-4)/2, 10)
 	diffLines := strings.Split(tc.Diff, "\n")
 	maxDiffLines := max(m.chatHeight-1, 1)
 	if len(diffLines) > maxDiffLines {
@@ -989,10 +948,7 @@ func renderSidebarTabs(width int, active int) string {
 
 func (m Model) renderPlanTab(width int, height int, tc *session.PendingToolCall, busy bool) string {
 	rows := []string{
-		lipgloss.NewStyle().Foreground(successColor).Render("✓") + "  Inspect current TUI layout",
-		lipgloss.NewStyle().Foreground(successColor).Render("✓") + "  Apply polished visual tokens",
-		lipgloss.NewStyle().Foreground(accentColor).Render("●") + "  Match mockup panel chrome",
-		mutedStyle.Render("○") + "  Verify bounds at 80x24",
+		mutedStyle.Render("No active plan. Ask the agent what to do next."),
 	}
 	if tc != nil {
 		rows = append(rows, "→  Pending approval: "+truncateRunes(tc.Command, max(width-22, 1)))
@@ -1076,29 +1032,6 @@ func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
 	return renderPanel("", "inspector", content, m.rightWidth, m.contentHeight)
 }
 
-func (m Model) renderProviderError(err error) string {
-	// The banner spans the full terminal width (rather than nesting inside
-	// the right column, which is too narrow to hold the "Provider Error
-	// Banner" title and "fits AltScreen" meta on one header line) so it
-	// reads as a compact, self-contained alert strip below the two-column
-	// layout. renderPanel provides the single rounded border, so the body
-	// is just styled text.
-	panelWidth := max(m.width-2, 4)
-	body := lipgloss.NewStyle().
-		Foreground(errorColor).
-		Render("! " + truncateRunes(err.Error(), max(panelWidth-2, 1)))
-	return renderPanel("Provider Error Banner", "fits AltScreen", body, panelWidth, providerErrorBannerContentHeight(m.contentHeight))
-}
-
-// providerErrorBannerContentHeight returns the content-height argument to
-// pass to renderPanel for the provider-error banner. It is shared with
-// View(), which must reserve the same number of rows (this value + 2 for
-// renderPanel's border) from the main layout so the banner has room without
-// pushing the total rendered output past the terminal height.
-func providerErrorBannerContentHeight(contentHeight int) int {
-	return min(6, max(contentHeight/3, 4))
-}
-
 func (m Model) fallbackView() string {
 	if m.settingsOpen {
 		return m.settingsModel.View()
@@ -1106,108 +1039,7 @@ func (m Model) fallbackView() string {
 	if m.memoryOpen {
 		return m.memoryModel.View()
 	}
-
-	var b strings.Builder
-	tc := m.state.PendingApproval()
-
-	fmt.Fprintf(&b, "Marshal\n")
-	fmt.Fprintf(&b, "Status: project=%s cwd=%s local-only=%t\n\n",
-		m.state.Config.Project.Name,
-		m.state.WorkingDir,
-		!m.state.Config.Privacy.RemoteProvidersAllowed,
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		mutedStyle.Render("Marshal — waiting for terminal resize..."),
 	)
-	route := m.state.ActiveRoute()
-	if route.Active {
-		fmt.Fprintf(&b, "Route: role=%s profile=%s preset=%s provider=%s model=%s local-only=%t\n\n",
-			route.Role, route.Profile, route.Preset, route.Provider, route.Model, route.LocalOnly,
-		)
-	} else {
-		fmt.Fprintf(&b, "Route: inactive\n\n")
-	}
-
-	fmt.Fprintf(&b, "Transcript\n")
-	messages := m.state.Messages()
-	if len(messages) == 0 {
-		fmt.Fprintf(&b, "  No messages yet.\n")
-	}
-	for _, message := range messages {
-		fmt.Fprintf(&b, "  %s: %s\n", message.Role, message.Content)
-	}
-
-	fmt.Fprintf(&b, "\nStreaming Output\n")
-	if m.busy {
-		fmt.Fprintf(&b, "  Agent is working...\n")
-	} else {
-		fmt.Fprintf(&b, "  No model output yet.\n")
-	}
-	fmt.Fprintf(&b, "\nCommand Palette\n")
-	fmt.Fprintf(&b, "  No commands available yet.\n")
-
-	fmt.Fprintf(&b, "\nTool Log\n")
-	auditLog := m.state.AuditLog()
-	if len(auditLog) == 0 {
-		fmt.Fprintf(&b, "  No tool calls yet.\n")
-	} else {
-		for _, event := range auditLog {
-			fmt.Fprintf(&b, "  [%s] %s -> %s\n", event.Timestamp.Format("15:04:05"), event.ToolName, event.ResultSummary)
-		}
-	}
-
-	fmt.Fprintf(&b, "\nContext\n")
-	pack := m.state.ContextPack()
-	if pack.IsEmpty() {
-		fmt.Fprintf(&b, "  No context pack built yet.\n")
-	} else {
-		fmt.Fprintf(&b, "  Context Pack: %d/%d tokens\n", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens)
-		for _, section := range pack.Sections {
-			source := section.Source
-			if source == "" {
-				source = "no source"
-			}
-			fmt.Fprintf(&b, "  [%s] %s (%s, %d tokens)\n", section.Kind, section.Title, source, section.EstimatedTokens)
-		}
-	}
-
-	fmt.Fprintf(&b, "\nDiff\n")
-	if tc != nil && tc.Diff != "" {
-		fmt.Fprintf(&b, "%s\n", tc.Diff)
-	} else {
-		fmt.Fprintf(&b, "  No patch proposed.\n")
-	}
-
-	if err := m.state.ProviderError(); err != nil {
-		fmt.Fprintf(&b, "\nProvider Error\n")
-		fmt.Fprintf(&b, "  %s\n", err.Error())
-	}
-
-	if tc != nil {
-		boxWidth := 75
-		fmt.Fprintf(&b, "\n┌── SECURITY APPROVAL REQUIRED ───────────────────────────────────────────┐\n")
-		fmt.Fprintf(&b, "│ Agent wants to run:                                                     │\n")
-		fmt.Fprintf(&b, "%s", formatBoxLine(tc.Command, boxWidth))
-		fmt.Fprintf(&b, "│                                                                         │\n")
-		fmt.Fprintf(&b, "│ Reason:                                                                 │\n")
-		fmt.Fprintf(&b, "%s", formatBoxLine(tc.Reason, boxWidth))
-		fmt.Fprintf(&b, "│                                                                         │\n")
-		fmt.Fprintf(&b, "%s", formatBoxLine("Risk Level: "+tc.Risk, boxWidth))
-		fmt.Fprintf(&b, "└─────────────────────────────────────────────────────────────────────────┘\n")
-		if m.editingCommand {
-			fmt.Fprintf(&b, "Edit command and press [Enter] to run, [Esc] to cancel\n")
-		} else {
-			if m.state.HasBackup() {
-				fmt.Fprintf(&b, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always Allow in this Session  [r] Rollback Last Patch\n")
-			} else {
-				fmt.Fprintf(&b, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always Allow in this Session\n")
-			}
-		}
-	}
-
-	if tc == nil || m.editingCommand {
-		if m.state.HasBackup() {
-			fmt.Fprintf(&b, "[r] Rollback Last Patch\n")
-		}
-		fmt.Fprintf(&b, "\n%s\n", m.input.View())
-	}
-
-	return b.String()
 }

@@ -70,6 +70,24 @@ func (db *DB) Migrate() error {
 		}
 	}
 
+	messageColumns, err := db.tableColumns("messages")
+	if err != nil {
+		return fmt.Errorf("inspect messages columns: %w", err)
+	}
+	messageColumnDefs := map[string]string{
+		"reasoning":         "TEXT",
+		"think_duration_ms": "INTEGER",
+	}
+	for name, def := range messageColumnDefs {
+		if messageColumns[name] {
+			continue
+		}
+		query := fmt.Sprintf("ALTER TABLE messages ADD COLUMN %s %s", name, def)
+		if _, err := db.sqlDB.Exec(query); err != nil {
+			return fmt.Errorf("add column %s to messages: %w", name, err)
+		}
+	}
+
 	return nil
 }
 

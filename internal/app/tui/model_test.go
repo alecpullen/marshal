@@ -942,3 +942,92 @@ func TestRenderWhileStateMutatedDoesNotRace(t *testing.T) {
 	}
 	<-done
 }
+
+func TestThinkingBoxRendersWhileStreaming(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	state.BeginStreaming()
+	state.AppendThinking("checking the auth flow")
+	model.busy = true
+	model.refreshViewport()
+
+	view := model.View()
+	if !strings.Contains(view, "thinking") {
+		t.Fatalf("view missing thinking box:\n%s", view)
+	}
+	if !strings.Contains(view, "checking the auth flow") {
+		t.Fatalf("view missing live reasoning text:\n%s", view)
+	}
+}
+
+func TestFinishedMessageShowsCollapsedThinkingSummary(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	state.BeginStreaming()
+	state.AppendThinking("checking the auth flow")
+	state.EndStreaming()
+	state.AddMessage(session.RoleAssistant, "Here's the fix.")
+	model.refreshViewport()
+
+	view := model.View()
+	if !strings.Contains(view, "thought for") {
+		t.Fatalf("view missing collapsed thinking summary:\n%s", view)
+	}
+	if strings.Contains(view, "checking the auth flow") {
+		t.Fatalf("full reasoning text should not be visible when collapsed:\n%s", view)
+	}
+}
+
+func TestCtrlGTogglesThinkingExpansion(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	state.BeginStreaming()
+	state.AppendThinking("checking the auth flow")
+	state.EndStreaming()
+	state.AddMessage(session.RoleAssistant, "Here's the fix.")
+	model.refreshViewport()
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	model = updated.(Model)
+	if !strings.Contains(model.View(), "checking the auth flow") {
+		t.Fatalf("expected expanded reasoning after Ctrl+G:\n%s", model.View())
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	model = updated.(Model)
+	if strings.Contains(model.View(), "checking the auth flow") {
+		t.Fatalf("expected collapsed reasoning after second Ctrl+G:\n%s", model.View())
+	}
+}
+
+func TestBusyTickRefreshesViewportOnReasoningGrowthAlone(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+	model.busy = true
+
+	state.BeginStreaming()
+	state.AppendThinking("step one")
+	updated, _ = model.Update(agentTickMsg{})
+	model = updated.(Model)
+	if !strings.Contains(model.View(), "step one") {
+		t.Fatal("expected viewport to show reasoning after first tick")
+	}
+
+	state.AppendThinking(" step two")
+	updated, _ = model.Update(agentTickMsg{})
+	model = updated.(Model)
+	if !strings.Contains(model.View(), "step one step two") {
+		t.Fatalf("expected viewport to refresh on reasoning growth alone (message count unchanged):\n%s", model.View())
+	}
+}

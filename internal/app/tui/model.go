@@ -71,6 +71,8 @@ type Model struct {
 
 	// Viewport dirty tracking.
 	lastMessageCount int
+	lastStreamLen    int
+	thinkingExpanded bool
 }
 
 type Option func(*Model)
@@ -359,6 +361,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+			if msg.Type == tea.KeyCtrlG {
+				m.thinkingExpanded = !m.thinkingExpanded
+				m.lastMessageCount = -1 // force refreshViewport to rebuild despite unchanged message/stream state
+				m.refreshViewport()
+				return m, nil
+			}
+
 			if m.inputFocused {
 				switch msg.Type {
 				case tea.KeyEsc:
@@ -452,17 +461,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) refreshViewport() {
 	messages := m.state.Messages()
-	if len(messages) == m.lastMessageCount && !m.busy {
+	inProgress := m.state.InProgress()
+	streamLen := len(inProgress.Reasoning)
+	if len(messages) == m.lastMessageCount && streamLen == m.lastStreamLen && !m.busy {
 		return
 	}
 	m.lastMessageCount = len(messages)
+	m.lastStreamLen = streamLen
 
 	var b strings.Builder
 	if len(messages) == 0 {
 		b.WriteString("  No messages yet.\n")
 	}
 	for _, message := range messages {
+		if message.Reasoning != "" {
+			b.WriteString(renderThinkingSummary(message.Reasoning, message.ThinkDuration, m.thinkingExpanded, m.viewport.Width))
+		}
 		b.WriteString(fmt.Sprintf("  %s: %s\n\n", message.Role, message.Content))
+	}
+	if inProgress.Active {
+		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.viewport.Width))
 	}
 	m.viewport.SetContent(b.String())
 	m.viewport.GotoBottom()
@@ -493,6 +511,62 @@ func truncateRunes(s string, limit int) string {
 		return s
 	}
 	return string(runes[:limit])
+}
+
+// tailRunes returns the last limit runes of s (the most recent text),
+// unlike truncateRunes which keeps the first limit runes.
+func tailRunes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[len(runes)-limit:])
+}
+
+func formatThinkDuration(d time.Duration) string {
+	return fmt.Sprintf("%.0fs", d.Seconds())
+}
+
+const thinkingBoxTailLines = 6
+
+// renderThinkingBox renders the live "thinking" panel shown while a model
+// call's reasoning is still streaming in.
+func renderThinkingBox(reasoning string, width int) string {
+	boxWidth := width - 2
+	if boxWidth < 1 {
+		boxWidth = 1
+	}
+	style := lipgloss.NewStyle().
+		Width(boxWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(dimColor).
+		Foreground(dimColor).
+		Italic(true)
+	tail := tailRunes(reasoning, boxWidth*thinkingBoxTailLines)
+	return style.Render("thinking\n\n"+tail) + "\n\n"
+}
+
+// renderThinkingSummary renders a finished message's captured reasoning,
+// either collapsed to one line or, when expanded, as a full boxed panel
+// matching renderThinkingBox's style.
+func renderThinkingSummary(reasoning string, duration time.Duration, expanded bool, width int) string {
+	if !expanded {
+		return thinkingLineStyle.Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))) + "\n"
+	}
+	boxWidth := width - 2
+	if boxWidth < 1 {
+		boxWidth = 1
+	}
+	style := lipgloss.NewStyle().
+		Width(boxWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(dimColor).
+		Foreground(dimColor).
+		Italic(true)
+	return style.Render(fmt.Sprintf("thinking (%s)\n\n%s", formatThinkDuration(duration), reasoning)) + "\n\n"
 }
 
 func riskText(tc *session.PendingToolCall) string {
@@ -536,13 +610,14 @@ func formatBoxLine(s string, width int) string {
 }
 
 var (
-	accentColor    = lipgloss.Color("86")  // Cyan/Teal
-	dimColor       = lipgloss.Color("244") // Gray
-	activeTabStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder(), false, false, true, false).
-			BorderForeground(accentColor).
-			Foreground(accentColor).
-			Padding(0, 1)
+	accentColor       = lipgloss.Color("86")  // Cyan/Teal
+	dimColor          = lipgloss.Color("244") // Gray
+	thinkingLineStyle = lipgloss.NewStyle().Foreground(dimColor).Italic(true)
+	activeTabStyle    = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder(), false, false, true, false).
+				BorderForeground(accentColor).
+				Foreground(accentColor).
+				Padding(0, 1)
 	inactiveTabStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder(), false, false, true, false).
 				BorderForeground(dimColor).

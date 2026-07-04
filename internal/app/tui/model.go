@@ -539,6 +539,11 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		args = parts[1:]
 	}
 
+	if m.cmdRegistry == nil {
+		m.state.AddMessage(session.RoleSystem, "Command registry not available.")
+		m.refreshViewport()
+		return m, nil
+	}
 	cmd, ok := m.cmdRegistry.Lookup(name)
 	if !ok {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown command: /%s. Type /help for available commands.", name))

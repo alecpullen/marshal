@@ -83,6 +83,10 @@ Examples:
 
 {"rationale": "The task is finished and all tests pass.", "action": {"type": "final", "content": "Updated the system prompt with few-shot examples for every action type."}}
 
+For parallel read-only work, you may return multiple tool calls in one response using the "actions" array. Every entry must be a read-only "tool_call". Example:
+
+{"rationale": "Read both files at once.", "actions": [{"type": "tool_call", "tool": "file.read", "args": {"path": "a.go"}}, {"type": "tool_call", "tool": "file.read", "args": {"path": "b.go"}}]}
+
 For patch actions use search/replace blocks, one block per file. Do not use unified diff syntax.`
 
 func renderRoleAddendum(r rolePrompt) string {
@@ -154,6 +158,12 @@ func BuildToolErrorMessage(name string, reason string) schema.ChatMessage {
 		Role:    schema.RoleUser,
 		Content: fmt.Sprintf("Tool %s failed: %s", name, reason),
 	}
+}
+
+func BuildCachedToolResultMessage(name string, result registry.ToolResult) schema.ChatMessage {
+	cached := result
+	cached.Summary = "(cached) " + result.Summary
+	return BuildToolResultMessage(name, cached)
 }
 
 func BuildCorrectionMessage(err error) schema.ChatMessage {

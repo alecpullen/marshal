@@ -233,6 +233,18 @@ func TestBuildContextPackMessageReturnsFalseForEmptyPack(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptDescribesParallelActionsArray(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools())
+	content := msg.Content
+
+	if !strings.Contains(content, `"actions"`) {
+		t.Error("system prompt missing parallel actions array description")
+	}
+	if !strings.Contains(content, "parallel read-only work") {
+		t.Error("system prompt missing parallel read-only guidance")
+	}
+}
+
 func TestBuildContextPackMessageRendersPack(t *testing.T) {
 	msg, ok := BuildContextPackMessage(contextpack.Pack{
 		Sections: []contextpack.Section{

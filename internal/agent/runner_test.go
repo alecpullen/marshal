@@ -926,3 +926,214 @@ func TestRunFallsBackToOriginalProviderAndModelAfterResolverError(t *testing.T) 
 		t.Fatalf("ActiveRoute = %#v, want inactive after resolver error fallback", route)
 	}
 }
+
+func TestNormalizeArgsIsStableAcrossKeyOrder(t *testing.T) {
+	a, err := normalizeArgs(json.RawMessage(`{"b":1,"a":2}`))
+	if err != nil {
+		t.Fatalf("normalizeArgs error: %v", err)
+	}
+	b, err := normalizeArgs(json.RawMessage(`{"a":2,"b":1}`))
+	if err != nil {
+		t.Fatalf("normalizeArgs error: %v", err)
+	}
+	if string(a) != string(b) {
+		t.Fatalf("keys ordered differently produced different normalization: %q vs %q", a, b)
+	}
+	if string(a) != `{"a":2,"b":1}` {
+		t.Fatalf("unexpected normalized form: %q", a)
+	}
+}
+
+func TestRunCachesReadOnlyToolResults(t *testing.T) {
+	calls := 0
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			calls++
+			return registry.ToolResult{Summary: "ok", Content: "demo content"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		"1. Read the demo value twice.",
+		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{"key":"value"}}}`,
+		`{"rationale":"read again","action":{"type":"tool_call","tool":"demo.read","args":{"key":"value"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	if err := runner.Run(context.Background(), "Read the demo value twice"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("handler called %d times, want 1 (second call should be cached)", calls)
+	}
+	foundCached := false
+	for _, ev := range state.AuditLog() {
+		if strings.Contains(ev.ResultSummary, "(cached)") {
+			foundCached = true
+		}
+	}
+	if !foundCached {
+		t.Fatalf("audit log missing cached result marker: %#v", state.AuditLog())
+	}
+}
+
+func TestRunExecutesParallelReadOnlyActions(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.a",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "a ok", Content: "alpha"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := reg.Register(registry.Tool{
+		Name: "demo.b",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "b ok", Content: "beta"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		"1. Read both demo values.",
+		`{"rationale":"read both","actions":[{"type":"tool_call","tool":"demo.a","args":{}},{"type":"tool_call","tool":"demo.b","args":{}}]}`,
+		`{"rationale":"done","action":{"type":"final","content":"Got alpha and beta."}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	if err := runner.Run(context.Background(), "Read both demo values"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.AuditLog()) != 2 {
+		t.Fatalf("len(auditLog) = %d, want 2", len(state.AuditLog()))
+	}
+	final := state.Messages()[len(state.Messages())-1].Content
+	if !strings.Contains(final, "alpha") || !strings.Contains(final, "beta") {
+		t.Fatalf("final answer missing parallel results: %s", final)
+	}
+}
+
+func TestRunDetectsRepeatedToolCalls(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		"1. Read the demo value.",
+		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
+		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
+		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.MaxToolIterations = 5
+
+	if err := runner.Run(context.Background(), "Read the demo value"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	found := false
+	for _, m := range state.Messages() {
+		if strings.Contains(m.Content, "repeating the same step") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing loop-detection nudge in transcript: %#v", state.Messages())
+	}
+}
+
+func TestRunSummarizesLargeToolResults(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "big file", Content: strings.Repeat("x", DefaultMaxToolResultChars+100)}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		"1. Read the big file.",
+		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	if err := runner.Run(context.Background(), "Read the big file"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	foundTruncated := false
+	for _, ev := range state.AuditLog() {
+		if strings.Contains(ev.ResultSummary, "[truncated]") {
+			foundTruncated = true
+			break
+		}
+	}
+	if !foundTruncated {
+		t.Fatalf("large tool result was not truncated in audit log: %#v", state.AuditLog())
+	}
+}
+
+func TestRunRejectsNonReadOnlyActions(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "demo.write",
+		Risk: registry.RiskCommand, // not read-only
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "written", Content: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		"1. Try parallel write.",
+		`{"rationale":"bad parallel","actions":[{"type":"tool_call","tool":"demo.write","args":{}}]}`,
+		`{"rationale":"corrected","action":{"type":"final","content":"Done."}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	if err := runner.Run(context.Background(), "Try parallel write"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	found := false
+	for _, req := range p.requests {
+		for _, m := range req.Messages {
+			if strings.Contains(m.Content, "read-only") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("missing correction message in provider requests: %#v", p.requests)
+	}
+}

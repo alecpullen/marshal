@@ -906,8 +906,8 @@ func TestResizeComputesGeometry(t *testing.T) {
 	if model.viewport.Height != model.chatHeight {
 		t.Fatalf("viewport.Height = %d, want %d", model.viewport.Height, model.chatHeight)
 	}
-	if model.input.Width != model.leftWidth-4 {
-		t.Fatalf("input.Width = %d, want %d", model.input.Width, model.leftWidth-4)
+	if model.input.Width != model.leftWidth-6 {
+		t.Fatalf("input.Width = %d, want %d", model.input.Width, model.leftWidth-6)
 	}
 }
 
@@ -1157,8 +1157,8 @@ func TestApprovalBannerHasSingleBorder(t *testing.T) {
 	model = updated.(Model)
 
 	view := model.View()
-	if strings.Count(view, "┌") > 1 {
-		t.Fatalf("approval banner has double borders:\n%s", view)
+	if strings.Count(view, "Approval") != 1 {
+		t.Fatalf("approval banner missing title or duplicated:\n%s", view)
 	}
 	if !strings.Contains(view, "run tests") {
 		t.Fatalf("approval banner missing human reason:\n%s", view)

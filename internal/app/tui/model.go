@@ -186,9 +186,11 @@ func (m *Model) resize(width, height int) {
 	m.viewport.Width = max(m.leftWidth-2, 1)
 	m.viewport.Height = max(m.chatHeight, 1)
 
-	// Input lives in a padded box with no border. inputStyle uses Width(m.leftWidth)
-	// and Padding(0,1), so the textinput content width is leftWidth-4.
-	m.input.Width = max(m.leftWidth-4, 1)
+	// Input lives in a bordered, padded box. inputStyle uses Width(m.leftWidth),
+	// Border (2 cols) and Padding(0,1) (2 cols), so the available interior width
+	// is leftWidth-4. The prompt "❯ " occupies 2 cols, leaving leftWidth-6 for
+	// the textinput's own content.
+	m.input.Width = max(m.leftWidth-6, 1)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -547,10 +549,12 @@ func renderThinkingBox(reasoning string, width int) string {
 		Foreground(dimColor).
 		Italic(true)
 	tail := tailRunes(reasoning, boxWidth*thinkingBoxTailLines)
+	// Header is "thinking" (8) + spaces + 34-character subtitle. Keep it on
+	// one line by sizing the spacer so the joined result is exactly boxWidth.
 	header := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		"thinking",
-		strings.Repeat(" ", max(boxWidth-34, 1)),
+		strings.Repeat(" ", max(boxWidth-42, 1)),
 		"streaming · Ctrl+G expands history",
 	)
 	return style.Render(header+"\n\n"+tail) + "\n\n"
@@ -583,10 +587,14 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 	if height < 3 {
 		height = 3
 	}
-	innerWidth := max(width-2, 1)
-	header := panelTitleStyle.Render(truncateRunes(title, innerWidth))
+	// width is the interior content width of the panel; lipgloss adds the
+	// rounded border on top of this, so the panel's total visual width is
+	// width+2. Content and header must fill the interior exactly.
+	innerWidth := max(width, 1)
+	truncatedTitle := truncateRunes(title, innerWidth)
+	header := panelTitleStyle.Render(truncatedTitle)
 	if meta != "" {
-		metaWidth := innerWidth - visibleRunes(title) - 2
+		metaWidth := innerWidth - visibleRunes(truncatedTitle) - 2
 		if metaWidth > 0 {
 			header = lipgloss.JoinHorizontal(
 				lipgloss.Top,
@@ -722,7 +730,6 @@ func formatBoxLine(s string, width int) string {
 }
 
 var (
-	shellBorderColor = lipgloss.Color("238")
 	panelBorderColor = lipgloss.Color("240")
 	panelSoftColor   = lipgloss.Color("236")
 	accentColor      = lipgloss.Color("38")
@@ -767,27 +774,7 @@ var (
 			Foreground(warningColor).
 			Padding(0, 1).
 			Bold(true)
-	errorBannerStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(errorColor).
-				Foreground(lipgloss.Color("252")).
-				Padding(0, 1)
 
-	activeTabStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder(), false, false, true, false).
-			BorderForeground(accentColor).
-			Foreground(accentColor).
-			Padding(0, 1)
-	inactiveTabStyle = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), false, false, true, false).
-				BorderForeground(dimColor).
-				Foreground(dimColor).
-				Padding(0, 1)
-	statusBarAccent = lipgloss.NewStyle().
-			Background(accentColor).
-			Foreground(lipgloss.Color("0")).
-			Padding(0, 1).
-			Bold(true)
 )
 
 func (m Model) View() string {

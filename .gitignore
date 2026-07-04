@@ -14,3 +14,7 @@ coverage.txt
 # Agent workflow scratch
 .superpowers/
 .worktrees/
+.agent/
+
+# Local project config and database
+.marshal/

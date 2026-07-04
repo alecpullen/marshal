@@ -17,7 +17,7 @@ func TestBuildSystemPromptListsTools(t *testing.T) {
 		{Name: "shell.run", Description: "Run a shell command.", Risk: registry.RiskCommand},
 	}
 
-	msg := BuildSystemPrompt(tools)
+	msg := BuildSystemPrompt(RoleGeneral, tools)
 
 	if msg.Role != schema.RoleSystem {
 		t.Fatalf("Role = %q, want %q", msg.Role, schema.RoleSystem)

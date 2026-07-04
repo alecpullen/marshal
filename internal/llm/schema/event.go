@@ -12,8 +12,26 @@ const (
 	ChatEventError ChatEventType = "error"
 )
 
+// DeltaKind distinguishes the model's free-form reasoning/thinking narration
+// (DeltaThinking) from its normal output (DeltaAnswer), when a provider
+// exposes the two as separate channels — e.g. the `reasoning_content` field
+// emitted by DeepSeek-R1-style reasoning models over an OpenAI-compatible
+// streaming API. DeltaAnswer is the zero value, so providers/models that
+// never populate a reasoning channel are unaffected: every ChatEvent they
+// emit defaults to DeltaAnswer exactly as before this field existed.
+type DeltaKind int
+
+const (
+	DeltaAnswer DeltaKind = iota
+	DeltaThinking
+)
+
 type ChatEvent struct {
 	Type ChatEventType
+
+	// Kind discriminates Delta as answer text vs. reasoning/thinking text.
+	// Populated only when Type == ChatEventDelta.
+	Kind DeltaKind
 
 	// Delta holds incremental (or, for non-streaming, complete) assistant
 	// text content. Populated only when Type == ChatEventDelta.

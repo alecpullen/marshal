@@ -25,9 +25,21 @@ const (
 )
 
 type Message struct {
-	Role      Role
-	Content   string
-	CreatedAt time.Time
+	Role          Role
+	Content       string
+	Reasoning     string
+	ThinkDuration time.Duration
+	CreatedAt     time.Time
+}
+
+// InProgressMessage holds the reasoning text accumulated for the model call
+// currently in flight (if any). It is not itself a Message: it becomes the
+// Reasoning/ThinkDuration of the next Message added via AddMessage, at which
+// point it is cleared for the next call.
+type InProgressMessage struct {
+	Reasoning string
+	StartedAt time.Time
+	Active    bool
 }
 
 type UserApprovalDecision struct {
@@ -82,6 +94,7 @@ type State struct {
 
 	mu              sync.Mutex
 	messages        []Message
+	inProgress      InProgressMessage
 	providerErr     error
 	pendingApproval *PendingToolCall
 	sessionRules    []string
@@ -110,19 +123,27 @@ func (s *State) persistenceEnabled() bool {
 }
 
 func (s *State) AddMessage(role Role, content string) {
-	msg := Message{
-		Role:      role,
-		Content:   content,
-		CreatedAt: time.Now(),
-	}
-
 	s.mu.Lock()
+	reasoning := s.inProgress.Reasoning
+	var thinkDuration time.Duration
+	if reasoning != "" {
+		thinkDuration = time.Since(s.inProgress.StartedAt)
+	}
+	s.inProgress = InProgressMessage{}
+
+	msg := Message{
+		Role:          role,
+		Content:       content,
+		Reasoning:     reasoning,
+		ThinkDuration: thinkDuration,
+		CreatedAt:     time.Now(),
+	}
 	s.messages = append(s.messages, msg)
 	s.mu.Unlock()
 
 	if s.persistenceEnabled() {
 		// Best-effort persistence; do not fail the in-memory transcript.
-		if err := s.db.SaveMessage(s.sessionID, string(role), content, msg.CreatedAt); err != nil {
+		if err := s.db.SaveMessage(s.sessionID, string(role), content, msg.CreatedAt, reasoning, thinkDuration); err != nil {
 			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
 		}
 	}
@@ -135,6 +156,39 @@ func (s *State) Messages() []Message {
 	messages := make([]Message, len(s.messages))
 	copy(messages, s.messages)
 	return messages
+}
+
+// BeginStreaming starts a new in-progress message, resetting any reasoning
+// left over from a previous call. Call this once per model call that may
+// stream reasoning content, before consuming its event stream.
+func (s *State) BeginStreaming() {
+	s.mu.Lock()
+	s.inProgress = InProgressMessage{StartedAt: time.Now(), Active: true}
+	s.mu.Unlock()
+}
+
+// AppendThinking appends a chunk of reasoning/thinking text to the
+// in-progress message.
+func (s *State) AppendThinking(delta string) {
+	s.mu.Lock()
+	s.inProgress.Reasoning += delta
+	s.mu.Unlock()
+}
+
+// EndStreaming marks the in-progress message inactive. Reasoning captured so
+// far is preserved (not cleared) so a subsequent AddMessage call can still
+// pick it up.
+func (s *State) EndStreaming() {
+	s.mu.Lock()
+	s.inProgress.Active = false
+	s.mu.Unlock()
+}
+
+// InProgress returns a copy of the current in-progress message.
+func (s *State) InProgress() InProgressMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inProgress
 }
 
 func (s *State) Shutdown() {

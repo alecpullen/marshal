@@ -166,15 +166,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return CancelledMsg{} }
 		case tea.KeyCtrlS:
 			return m, m.saveCmd()
-		case tea.KeyTab:
+		case tea.KeyTab, tea.KeyDown:
 			m.nextField()
 			return m, nil
-		case tea.KeyShiftTab:
+		case tea.KeyShiftTab, tea.KeyUp:
 			m.prevField()
 			return m, nil
 		default:
 			if m.focused >= 0 && m.focused < len(m.fields) {
-				m.fields[m.focused].Update(msg)
+				cmd := m.fields[m.focused].Update(msg)
+				return m, cmd
 			}
 			return m, nil
 		}

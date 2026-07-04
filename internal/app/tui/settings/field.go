@@ -12,7 +12,7 @@ type field interface {
 	Label() string
 	Focus()
 	Blur()
-	Update(msg tea.Msg)
+	Update(msg tea.Msg) tea.Cmd
 	View(width int) string
 }
 
@@ -39,14 +39,17 @@ func (f *stringField) Blur() {
 	f.input.Blur()
 }
 
-func (f *stringField) Update(msg tea.Msg) {
+func (f *stringField) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		f.input, _ = f.input.Update(msg)
+		var cmd tea.Cmd
+		f.input, cmd = f.input.Update(msg)
 		if f.onChange != nil {
 			f.onChange(f.input.Value())
 		}
+		return cmd
 	}
+	return nil
 }
 
 func (f *stringField) View(width int) string {
@@ -74,7 +77,7 @@ func (f *labelField) Focus() {}
 
 func (f *labelField) Blur() {}
 
-func (f *labelField) Update(msg tea.Msg) {}
+func (f *labelField) Update(msg tea.Msg) tea.Cmd { return nil }
 
 func (f *labelField) View(width int) string {
 	return truncateRunes(f.label+": "+f.value, width)
@@ -97,7 +100,7 @@ func (f *boolField) Focus() {}
 
 func (f *boolField) Blur() {}
 
-func (f *boolField) Update(msg tea.Msg) {
+func (f *boolField) Update(msg tea.Msg) tea.Cmd {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.Type {
 		case tea.KeySpace, tea.KeyEnter:
@@ -107,14 +110,15 @@ func (f *boolField) Update(msg tea.Msg) {
 			}
 		}
 	}
+	return nil
 }
 
 func (f *boolField) View(width int) string {
-	val := "false"
+	marker := " "
 	if *f.value {
-		val = "true"
+		marker = "x"
 	}
-	s := fmt.Sprintf("%s: %s", f.label, val)
+	s := fmt.Sprintf("[%s] %s", marker, f.label)
 	if f.description != "" {
 		s += " (" + f.description + ")"
 	}
@@ -147,17 +151,17 @@ func (f *selectField) Focus() {}
 
 func (f *selectField) Blur() {}
 
-func (f *selectField) Update(msg tea.Msg) {
+func (f *selectField) Update(msg tea.Msg) tea.Cmd {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.Type {
-		case tea.KeyLeft, tea.KeyUp:
+		case tea.KeyLeft:
 			if f.selected > 0 {
 				f.selected--
 				if f.onChange != nil {
 					f.onChange(f.options[f.selected])
 				}
 			}
-		case tea.KeyRight, tea.KeyDown, tea.KeyEnter, tea.KeySpace:
+		case tea.KeyRight, tea.KeyEnter, tea.KeySpace:
 			if f.selected < len(f.options)-1 {
 				f.selected++
 				if f.onChange != nil {
@@ -166,6 +170,7 @@ func (f *selectField) Update(msg tea.Msg) {
 			}
 		}
 	}
+	return nil
 }
 
 func (f *selectField) View(width int) string {

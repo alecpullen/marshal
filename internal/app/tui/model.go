@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -477,7 +478,7 @@ func (m *Model) refreshViewport() {
 		if message.Reasoning != "" {
 			b.WriteString(renderThinkingSummary(message.Reasoning, message.ThinkDuration, m.thinkingExpanded, m.viewport.Width))
 		}
-		b.WriteString(fmt.Sprintf("  %s: %s\n\n", message.Role, message.Content))
+		b.WriteString(renderMessage(string(message.Role), message.Content, m.viewport.Width))
 	}
 	if inProgress.Active {
 		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.viewport.Width))
@@ -593,6 +594,42 @@ func visibleRunes(s string) int {
 		count++
 	}
 	return count
+}
+
+// renderMessage formats a chat message so its content wraps within the given
+// viewport width instead of being clipped. The role label is printed on the
+// first line and continuation lines are indented to align with the content.
+func renderMessage(role, content string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	prefix := fmt.Sprintf("  %s: ", role)
+	prefixWidth := visibleRunes(prefix)
+	contentWidth := width - prefixWidth
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	wrapped := ansi.Wrap(content, contentWidth, "")
+	var b strings.Builder
+	first := true
+	for _, line := range strings.Split(wrapped, "\n") {
+		if first {
+			b.WriteString(prefix)
+			b.WriteString(line)
+			first = false
+		} else if line == "" {
+			// Preserve paragraph breaks without adding trailing indentation.
+			b.WriteString("\n")
+			continue
+		} else {
+			b.WriteString(strings.Repeat(" ", prefixWidth))
+			b.WriteString(line)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 func formatBoxLine(s string, width int) string {

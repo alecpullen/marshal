@@ -896,6 +896,37 @@ func TestBusyTickRefreshesViewport(t *testing.T) {
 	}
 }
 
+func TestChatMessagesWrapWithinViewportWidth(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	longContent := strings.Repeat("the quick brown fox jumps over the lazy dog ", 3)
+	state.AddMessage(session.RoleUser, longContent)
+	model.refreshViewport()
+
+	viewport := model.viewport.View()
+	lines := strings.Split(viewport, "\n")
+	maxWidth := model.viewport.Width
+
+	wrapped := false
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		if len([]rune(line)) > maxWidth {
+			t.Fatalf("viewport line %d exceeds width %d: %q", i, maxWidth, line)
+		}
+		if strings.HasPrefix(line, "  ") && !strings.Contains(line, "user:") && strings.Contains(line, "quick") {
+			wrapped = true
+		}
+	}
+	if !wrapped {
+		t.Fatalf("expected long message to wrap onto continuation lines:\n%s", viewport)
+	}
+}
+
 func TestApprovalBannerHasSingleBorder(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	tc := &session.PendingToolCall{
@@ -1029,5 +1060,163 @@ func TestBusyTickRefreshesViewportOnReasoningGrowthAlone(t *testing.T) {
 	model = updated.(Model)
 	if !strings.Contains(model.View(), "step one step two") {
 		t.Fatalf("expected viewport to refresh on reasoning growth alone (message count unchanged):\n%s", model.View())
+	}
+}
+
+func TestSettingsNavigationThroughMainModel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Profile.Default = "local_balanced"
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {
+			Name: "local_balanced",
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: "coder",
+			},
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+	}
+	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(Model)
+	if !m.settingsOpen {
+		t.Fatal("expected settingsOpen")
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "> Default profile:") {
+		t.Fatalf("first settings field should be focused:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+
+	view = m.View()
+	if !strings.Contains(view, "> Preset:") {
+		t.Fatalf("Tab should move focus to second field:\n%s", view)
+	}
+}
+
+func TestSettingsTypingThroughMainModel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Profile.Default = "local_balanced"
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {
+			Name: "local_balanced",
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: "coder",
+			},
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+	}
+	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(Model)
+
+	// Tab to Provider field (third field)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "> Provider:") {
+		t.Fatalf("expected Provider field focused:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
+	m = updated.(Model)
+
+	view = m.View()
+	if !strings.Contains(view, "Provider: ollamaz") {
+		t.Fatalf("typing should append to Provider value, got:\n%s", view)
+	}
+
+	// Move cursor left inside the textinput and type in the middle.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	m = updated.(Model)
+
+	view = m.View()
+	if !strings.Contains(view, "Provider: ollamaAz") {
+		t.Fatalf("cursor movement should insert in the middle, got:\n%s", view)
+	}
+}
+
+func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Profile.Default = "local_balanced"
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {
+			Name: "local_balanced",
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: "coder",
+			},
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+	}
+	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(Model)
+
+	// Tab to Remote providers allowed field (last field)
+	for i := 0; i < 5; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		m = updated.(Model)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "> [ ] Remote providers allowed") {
+		t.Fatalf("expected Remote providers allowed field focused:\n%s", view)
+	}
+	if !strings.Contains(view, "[ ] Remote providers allowed") {
+		t.Fatalf("expected bool to start false, got:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+
+	view = m.View()
+	if !strings.Contains(view, "[x] Remote providers allowed") {
+		t.Fatalf("Space should toggle bool to true, got:\n%s", view)
+	}
+}
+
+func TestSettingsNavigationWithDefaultConfig(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(Model)
+	if !m.settingsOpen {
+		t.Fatal("expected settingsOpen")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "> Preset:") {
+		t.Fatalf("Tab should move focus to second field with default config:\n%s", view)
 	}
 }

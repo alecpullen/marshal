@@ -233,7 +233,7 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 		Command: "go test ./...",
 		Risk:    "command",
 		Reason:  "run the repository test suite",
-		Diff:    "--- a/app.go\n+++ b/app.go",
+		Diff:    "--- a/app.go\n+++ b/app.go\n+added line",
 	}
 	state.SetPendingApproval(tc)
 	m := New(state)
@@ -247,6 +247,8 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 		"run the repository test suite",
 		"Risk: command",
 		"--- a/app.go",
+		"+++ b/app.go",
+		"+added line",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing approval item %q:\n%s", want, view)
@@ -281,6 +283,9 @@ func TestPolishedRightPanelTracksActiveTab(t *testing.T) {
 	if !strings.Contains(planView, "Current Plan:") || !strings.Contains(planView, "Ready for user input.") {
 		t.Fatalf("plan tab content missing:\n%s", planView)
 	}
+	if !strings.Contains(planView, "› 1 Plan") {
+		t.Fatalf("plan tab chrome missing active indicator:\n%s", planView)
+	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)
@@ -292,6 +297,9 @@ func TestPolishedRightPanelTracksActiveTab(t *testing.T) {
 			t.Fatalf("context tab missing %q:\n%s", want, contextView)
 		}
 	}
+	if !strings.Contains(contextView, "› 2 Context") {
+		t.Fatalf("context tab chrome missing active indicator:\n%s", contextView)
+	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
 	m = updated.(Model)
@@ -300,6 +308,9 @@ func TestPolishedRightPanelTracksActiveTab(t *testing.T) {
 		if !strings.Contains(logView, want) {
 			t.Fatalf("log tab missing %q:\n%s", want, logView)
 		}
+	}
+	if !strings.Contains(logView, "› 3") || !strings.Contains(logView, "Log") {
+		t.Fatalf("log tab chrome missing active indicator:\n%s", logView)
 	}
 }
 

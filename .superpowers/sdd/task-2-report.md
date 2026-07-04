@@ -89,3 +89,24 @@ Review-fix follow-up
     - PASS
   - `go test ./internal/app/tui -run 'TestPolishedViewPreservesPendingApprovalContent|TestPolishedRightPanelTracksActiveTab|TestPolishedViewContainsCurrentLayoutChrome|TestPolishedStatusBarShowsRouteWhenActive|TestPolishedViewFitsCommonTerminalSizes' -v`
     - PASS
+
+Re-review follow-up
+
+- Findings addressed:
+  - Restored a real right-panel tab strip with visible active state in the polished shell.
+  - Preserved multi-line diff visibility in pending approvals instead of collapsing `tc.Diff` into a single truncated segment.
+  - Tightened the focused tests so they prove active tab chrome and multi-line diff visibility.
+- Implementation details:
+  - `renderRightInfoPanel(tc)` now renders a compact tab strip above the panel body.
+    - Active tab is shown with an explicit `›` marker and accent-colored bold text.
+    - Inactive tabs use the muted styling.
+    - The strip wraps between tab items when the inspector width is narrow, so labels like `3 Log` remain readable as a unit.
+  - `renderChatPanel(tc)` now splits `tc.Diff` on newlines and appends each diff line separately, truncating per line rather than truncating the entire diff blob as one string.
+- Test updates:
+  - `TestPolishedViewPreservesPendingApprovalContent` now verifies multiple diff lines are visible, including `--- a/app.go`, `+++ b/app.go`, and `+added line`.
+  - `TestPolishedRightPanelTracksActiveTab` now verifies the active tab chrome appears for Plan, Context, and Log views.
+- Fresh test results:
+  - `env GOCACHE=/private/tmp/codex-gocache go test ./internal/app/tui -run 'TestPolishedViewPreservesPendingApprovalContent|TestPolishedRightPanelTracksActiveTab' -v`
+    - PASS
+  - `env GOCACHE=/private/tmp/codex-gocache go test ./internal/app/tui -run 'TestPolishedViewContainsCurrentLayoutChrome|TestPolishedStatusBarShowsRouteWhenActive|TestPolishedViewFitsCommonTerminalSizes|TestPolishedViewPreservesPendingApprovalContent|TestPolishedRightPanelTracksActiveTab' -v`
+    - PASS

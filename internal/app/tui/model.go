@@ -838,7 +838,11 @@ func (m Model) renderChatPanel(tc *session.PendingToolCall) string {
 			lines = append(lines, "[r] Rollback")
 		}
 		if tc.Diff != "" {
-			lines = append(lines, "", "Diff:", truncateRunes(tc.Diff, contentWidth))
+			lines = append(lines, "", "Diff:")
+			diffLines := strings.Split(tc.Diff, "\n")
+			for _, diffLine := range diffLines {
+				lines = append(lines, truncateRunes(diffLine, contentWidth))
+			}
 		}
 		return renderPanel("Chat", "live transcript", strings.Join(lines, "\n"), m.leftWidth, m.chatHeight)
 	}
@@ -860,6 +864,29 @@ func (m Model) renderInputArea() string {
 
 func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
 	bodyWidth := max(m.rightWidth-6, 1)
+	tabLabels := []string{
+		"1 Plan",
+		"2 Context",
+		"3 Log",
+	}
+	renderedTabs := make([]string, 0, len(tabLabels))
+	for i, label := range tabLabels {
+		text := label
+		style := mutedStyle
+		if m.activeTab == i {
+			text = "› " + label
+			style = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+		}
+		renderedTabs = append(renderedTabs, style.Render(text))
+	}
+	tabLine := strings.Join(renderedTabs, " ")
+	if visibleRunes(tabLine) > bodyWidth && len(renderedTabs) == 3 {
+		tabLine = strings.Join(renderedTabs[:2], " ") + "\n" + renderedTabs[2]
+	}
+	tabStrip := lipgloss.NewStyle().
+		Width(bodyWidth).
+		MaxWidth(bodyWidth).
+		Render(tabLine)
 
 	var bodyLines []string
 	switch m.activeTab {
@@ -898,7 +925,8 @@ func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
 		}
 	}
 
-	return renderPanel("1 Plan  2 Context  3 Log", "inspector", strings.Join(bodyLines, "\n"), m.rightWidth, m.contentHeight)
+	body := tabStrip + "\n\n" + strings.Join(bodyLines, "\n")
+	return renderPanel("Inspector", "", body, m.rightWidth, m.contentHeight)
 }
 
 func (m Model) renderProviderError(err error) string {

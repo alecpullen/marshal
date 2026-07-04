@@ -811,11 +811,6 @@ func (m Model) View() string {
 	rightColumn := m.renderRightInfoPanel(tc)
 
 	mainLayout := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
-	if err := m.state.ProviderError(); err != nil {
-		errorBanner := m.renderProviderError(err)
-		rightColumn = lipgloss.JoinVertical(lipgloss.Left, rightColumn, errorBanner)
-		mainLayout = lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
-	}
 
 	topBar := lipgloss.JoinHorizontal(
 		lipgloss.Top,
@@ -825,6 +820,10 @@ func (m Model) View() string {
 	)
 
 	statusBar := renderStatusBar(m.width, m.state, m.busy)
+	if err := m.state.ProviderError(); err != nil {
+		errorBanner := m.renderProviderError(err)
+		return lipgloss.JoinVertical(lipgloss.Left, topBar, mainLayout, errorBanner, statusBar)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, topBar, mainLayout, statusBar)
 }
 
@@ -836,28 +835,51 @@ func (m Model) renderChatPanel(tc *session.PendingToolCall) string {
 }
 
 func (m Model) renderApprovalArea(tc *session.PendingToolCall) string {
-	contentWidth := max(m.leftWidth-6, 1)
-	lines := []string{
-		"SECURITY APPROVAL REQUIRED",
-		"",
-		fmt.Sprintf("Command: %s", truncateRunes(tc.Command, contentWidth-9)),
-		fmt.Sprintf("Reason: %s", truncateRunes(tc.Reason, contentWidth-8)),
-		fmt.Sprintf("Risk: %s", truncateRunes(tc.Risk, contentWidth-6)),
-	}
-	if tc.Command != "" {
-		lines = append(lines, "[Enter] Approve  [d] Deny  [e] Edit  [a] Always allow")
-	}
+	helpLine := "Enter approve  d deny  e edit  a always allow"
 	if m.state.HasBackup() {
-		lines = append(lines, "[r] Rollback")
+		helpLine += "  r rollback"
 	}
-	if tc.Diff != "" {
-		lines = append(lines, "", "Diff:")
-		diffLines := strings.Split(tc.Diff, "\n")
-		for _, diffLine := range diffLines {
-			lines = append(lines, truncateRunes(diffLine, contentWidth))
-		}
+
+	if tc.Diff == "" {
+		body := strings.Join([]string{
+			panelTitleStyle.Foreground(accentColor).Render("Agent wants to run"),
+			truncateRunes(tc.Command, max(m.leftWidth-4, 1)),
+			"",
+			mutedStyle.Render("Reason"),
+			truncateRunes(tc.Reason, max(m.leftWidth-4, 1)),
+			"",
+			mutedStyle.Render("Risk"),
+			truncateRunes(riskText(tc), max(m.leftWidth-4, 1)),
+			"",
+			helpLine,
+		}, "\n")
+		return renderPanel("Approval", "pending", body, m.leftWidth, m.chatHeight)
 	}
-	return renderPanel("Chat", "live transcript", strings.Join(lines, "\n"), m.leftWidth, m.chatHeight)
+
+	splitWidth := max((m.leftWidth-2)/2, 10)
+	diffBody := truncateRunes(tc.Diff, splitWidth*max(m.chatHeight-4, 1))
+	diffPanel := renderPanel("Diff", "proposed patch", diffBody, splitWidth, m.chatHeight)
+
+	approvalBody := strings.Join([]string{
+		panelTitleStyle.Foreground(accentColor).Render("Agent wants to run"),
+		truncateRunes(tc.Command, max(splitWidth-4, 1)),
+		"",
+		mutedStyle.Render("Reason"),
+		truncateRunes(tc.Reason, max(splitWidth-4, 1)),
+		"",
+		mutedStyle.Render("Risk"),
+		truncateRunes(riskText(tc), max(splitWidth-4, 1)),
+		"",
+		"Enter approve",
+		"e edit",
+		"d deny",
+		"a always allow",
+	}, "\n")
+	if m.state.HasBackup() {
+		approvalBody += "\nr rollback"
+	}
+	approvalPanel := renderPanel("Approval", "security", approvalBody, splitWidth, m.chatHeight)
+	return lipgloss.JoinHorizontal(lipgloss.Top, diffPanel, approvalPanel)
 }
 
 func (m Model) renderInputArea() string {
@@ -1052,8 +1074,28 @@ func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
 }
 
 func (m Model) renderProviderError(err error) string {
-	body := "Error: " + truncateRunes(err.Error(), max(m.rightWidth-10, 1))
-	return renderPanel("Provider Error Banner", "fits AltScreen", body, m.rightWidth, 5)
+	// The banner spans the full terminal width (rather than nesting inside
+	// the right column, which is too narrow to hold the "Provider Error
+	// Banner" title and "fits AltScreen" meta on one header line) so it
+	// reads as a compact, self-contained alert strip below the two-column
+	// layout.
+	//
+	// renderPanel adds its own rounded border outside the width it is
+	// given (verified: renderPanel(w, ...) renders w+2 columns wide), so
+	// the panel width passed in must be m.width-2 for the banner to line
+	// up flush with topBar/statusBar above and below it. The nested body
+	// style below has the same border-adds-on-top behavior, so its width
+	// is sized down by another 2 columns to fit inside the panel's inner
+	// content area.
+	panelWidth := max(m.width-2, 4)
+	bodyWidth := max(panelWidth-4, 1)
+	body := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(panelSoftColor).
+		Padding(0, 1).
+		Width(bodyWidth).
+		Render(lipgloss.NewStyle().Foreground(errorColor).Render("! ") + truncateRunes(err.Error(), max(bodyWidth-2, 1)))
+	return renderPanel("Provider Error Banner", "fits AltScreen", body, panelWidth, min(6, max(m.contentHeight/3, 4)))
 }
 
 func (m Model) fallbackView() string {

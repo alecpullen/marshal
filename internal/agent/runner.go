@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	DefaultMaxToolIterations = 8
+	DefaultMaxToolIterations = 16
 	DefaultMaxRetries        = 2
 )
 

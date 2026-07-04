@@ -29,8 +29,10 @@ func SaveProjectConfig(path string, cfg Config) error {
 		agentProvider := cfg.Agent.Provider
 		agentModel := cfg.Agent.Model
 		file.Agent = &struct {
-			Provider *string `toml:"provider"`
-			Model    *string `toml:"model"`
+			Provider          *string `toml:"provider"`
+			Model             *string `toml:"model"`
+			MaxToolIterations *int    `toml:"max_tool_iterations"`
+			MaxRetries        *int    `toml:"max_retries"`
 		}{Provider: &agentProvider, Model: &agentModel}
 	} else {
 		file.Agent = nil

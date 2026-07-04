@@ -18,6 +18,15 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestRunnerDefaultsAreSensible(t *testing.T) {
+	if DefaultMaxToolIterations != 16 {
+		t.Fatalf("DefaultMaxToolIterations = %d, want 16", DefaultMaxToolIterations)
+	}
+	if DefaultMaxRetries != 2 {
+		t.Fatalf("DefaultMaxRetries = %d, want 2", DefaultMaxRetries)
+	}
+}
+
 // scriptedProvider returns pre-canned responses in call order. Each call to
 // Chat consumes the next entry from responses/errs (whichever is non-empty
 // at that index); once the scripts run out, the last response is repeated

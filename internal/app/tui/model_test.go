@@ -225,6 +225,84 @@ func TestPolishedStatusBarShowsRouteWhenActive(t *testing.T) {
 	}
 }
 
+func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	tc := &session.PendingToolCall{
+		ID:      "approval-1",
+		Name:    "shell.run",
+		Command: "go test ./...",
+		Risk:    "command",
+		Reason:  "run the repository test suite",
+		Diff:    "--- a/app.go\n+++ b/app.go",
+	}
+	state.SetPendingApproval(tc)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"SECURITY APPROVAL REQUIRED",
+		"go test ./...",
+		"run the repository test suite",
+		"Risk: command",
+		"--- a/app.go",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing approval item %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestPolishedRightPanelTracksActiveTab(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{
+				Kind:            contextpack.SectionRepoCard,
+				Title:           "Repo Card",
+				Source:          "repo.card",
+				Content:         "Project: marshal",
+				EstimatedTokens: 4,
+			},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	})
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp:     time.Unix(1719946800, 0),
+		ToolName:      "shell.run",
+		ResultSummary: "command exit status 0",
+	})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	planView := m.View()
+	if !strings.Contains(planView, "Current Plan:") || !strings.Contains(planView, "Ready for user input.") {
+		t.Fatalf("plan tab content missing:\n%s", planView)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	m = updated.(Model)
+	contextView := m.View()
+	for _, want := range []string{"Pack: 4/12000 tokens", "Repo Card"} {
+		if !strings.Contains(contextView, want) {
+			t.Fatalf("context tab missing %q:\n%s", want, contextView)
+		}
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	m = updated.(Model)
+	logView := m.View()
+	for _, want := range []string{"shell.run", "->"} {
+		if !strings.Contains(logView, want) {
+			t.Fatalf("log tab missing %q:\n%s", want, logView)
+		}
+	}
+}
+
 func TestPolishedViewFitsCommonTerminalSizes(t *testing.T) {
 	for _, size := range []struct {
 		width  int

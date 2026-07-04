@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -476,4 +477,47 @@ func TestChatStreamingReasoningContentEmitsThinkingDelta(t *testing.T) {
 	}
 
 	assertChannelClosed(t, events)
+}
+
+func TestBuildChatRequestBodyIncludesResponseFormat(t *testing.T) {
+	body, err := buildChatRequestBody(schema.ChatRequest{
+		Model:          "test-model",
+		Messages:       []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+		ResponseFormat: &schema.ResponseFormat{Type: "json_object"},
+	})
+	if err != nil {
+		t.Fatalf("buildChatRequestBody returned error: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+
+	raw, ok := parsed["response_format"]
+	if !ok {
+		t.Fatalf("request body missing response_format field")
+	}
+	if string(raw) != `{"type":"json_object"}` {
+		t.Fatalf("response_format = %s, want {\"type\":\"json_object\"}", string(raw))
+	}
+}
+
+func TestBuildChatRequestBodyOmitsResponseFormatWhenNil(t *testing.T) {
+	body, err := buildChatRequestBody(schema.ChatRequest{
+		Model:    "test-model",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("buildChatRequestBody returned error: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+
+	if _, ok := parsed["response_format"]; ok {
+		t.Fatalf("request body should not contain response_format when nil")
+	}
 }

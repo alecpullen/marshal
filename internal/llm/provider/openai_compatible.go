@@ -58,9 +58,11 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 
 func defaultCapabilities() schema.ProviderCapabilities {
 	return schema.ProviderCapabilities{
-		Streaming:   true,
-		Embeddings:  true,
-		ToolCalling: false,
+		Streaming:        true,
+		Embeddings:       true,
+		ToolCalling:      false,
+		JSONMode:         true,
+		StructuredOutput: true,
 	}
 }
 
@@ -163,13 +165,14 @@ func buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
 		messages = append(messages, chatMessageBody{Role: string(m.Role), Content: m.Content})
 	}
 	return json.Marshal(chatCompletionRequestBody{
-		Model:       req.Model,
-		Messages:    messages,
-		Stream:      req.Stream,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		MaxTokens:   req.MaxTokens,
-		Stop:        req.Stop,
+		Model:          req.Model,
+		Messages:       messages,
+		Stream:         req.Stream,
+		Temperature:    req.Temperature,
+		TopP:           req.TopP,
+		MaxTokens:      req.MaxTokens,
+		Stop:           req.Stop,
+		ResponseFormat: req.ResponseFormat,
 	})
 }
 

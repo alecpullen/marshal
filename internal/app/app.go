@@ -23,6 +23,7 @@ import (
 	"marshal/internal/knowledge"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -164,6 +165,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.RouteResolver = resolver
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
+	if route.Preset.ToolCalling == "json" && resolvedProvider.Capabilities(ctx).JSONMode {
+		runner.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
+	}
 	if cfg.Agent.MaxToolIterations > 0 {
 		runner.MaxToolIterations = cfg.Agent.MaxToolIterations
 	}
@@ -258,6 +262,11 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 			runner.Provider = p
 			runner.Model = route.Preset.Model
 			runner.RouteResolver = resolver
+			if route.Preset.ToolCalling == "json" && p.Capabilities(ctx).JSONMode {
+				runner.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
+			} else {
+				runner.ResponseFormat = nil
+			}
 			state.SetActiveRoute(session.RouteInfo{
 				Role:      route.Role,
 				Profile:   route.Profile,

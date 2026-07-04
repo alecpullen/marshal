@@ -39,7 +39,7 @@ model = "qwen2.5-coder:1.5b"
 context_window = 8192
 temperature = 0.0
 max_output_tokens = 1024
-tool_calling = "json"
+tool_calling = "json"        # requests response_format={"type":"json_object"} if provider supports JSON mode
 local_only = true
 
 [models.presets.fast]

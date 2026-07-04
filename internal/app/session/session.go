@@ -128,6 +128,9 @@ func (s *State) AddMessage(role Role, content string) {
 	var thinkDuration time.Duration
 	if reasoning != "" {
 		thinkDuration = time.Since(s.inProgress.StartedAt)
+		if thinkDuration <= 0 {
+			thinkDuration = time.Millisecond
+		}
 	}
 	s.inProgress = InProgressMessage{}
 

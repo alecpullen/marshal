@@ -242,10 +242,11 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 
 	view := m.View()
 	for _, want := range []string{
-		"SECURITY APPROVAL REQUIRED",
+		"Agent wants to run",
 		"go test ./...",
+		"Reason",
 		"run the repository test suite",
-		"Risk: command",
+		"Risk",
 		"--- a/app.go",
 		"+++ b/app.go",
 		"+added line",
@@ -1361,6 +1362,55 @@ func TestRenderSidebarTabsSingleRowAcrossActiveIndex(t *testing.T) {
 	for i := 1; i < len(lineCounts); i++ {
 		if lineCounts[i] != lineCounts[0] {
 			t.Fatalf("renderSidebarTabs height varies by active index: active=0 -> %d lines, active=%d -> %d lines", lineCounts[0], i, lineCounts[i])
+		}
+	}
+}
+
+func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetPendingApproval(&session.PendingToolCall{
+		Command:      "go test ./internal/app/tui/...",
+		Reason:       "Validate layout bounds and modal capture.",
+		Risk:         "Low - test command, no destructive flags detected.",
+		Diff:         "- old\n+ new\n",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	})
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"Diff",
+		"Agent wants to run",
+		"go test ./internal/app/tui/...",
+		"Reason",
+		"Risk",
+		"Enter approve",
+		"d deny",
+		"e edit",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing approval copy %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestPolishedProviderErrorUsesCompactBanner(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.SetProviderError(errors.New("provider timeout: retrying local_heavy"))
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+
+	view := m.View()
+	for _, want := range []string{
+		"Provider Error Banner",
+		"fits AltScreen",
+		"provider timeout",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing provider error copy %q:\n%s", want, view)
 		}
 	}
 }

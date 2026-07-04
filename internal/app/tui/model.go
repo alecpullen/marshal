@@ -38,7 +38,6 @@ const (
 	totalHorizontalBorderGutter = 5 // left border + right border + gutter
 	verticalOverhead            = 4 // status bar (1) + right-column border (2) + slack (1)
 	chatBelowViewportRows       = 4 // bordered input box (3) + help line (1)
-	tabHeaderMaxRows            = 4 // cap wrapped tab header to this many rows
 )
 
 type Model struct {
@@ -182,9 +181,10 @@ func (m *Model) resize(width, height int) {
 		m.chatHeight = 1
 	}
 
-	// Viewport content excludes the chat box border.
-	m.viewport.Width = max(m.leftWidth-2, 1)
-	m.viewport.Height = max(m.chatHeight, 1)
+	// Viewport fills the Chat panel interior, whose border is added by
+	// renderPanel on top of these dimensions.
+	m.viewport.Width = max(m.leftWidth, 1)
+	m.viewport.Height = max(m.chatHeight-1, 1)
 
 	// Input lives in a bordered, padded box. inputStyle uses Width(m.leftWidth),
 	// Border (2 cols) and Padding(0,1) (2 cols), so the available interior width
@@ -587,14 +587,15 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 	if height < 3 {
 		height = 3
 	}
-	// width is the interior content width of the panel; lipgloss adds the
-	// rounded border on top of this, so the panel's total visual width is
-	// width+2. Content and header must fill the interior exactly.
+	// width and height are the interior content dimensions of the panel;
+	// lipgloss adds the rounded border on top of them, so the panel's total
+	// visual size is width+2 by height+2. Header and body must fill the
+	// interior exactly.
 	innerWidth := max(width, 1)
 	truncatedTitle := truncateRunes(title, innerWidth)
 	header := panelTitleStyle.Render(truncatedTitle)
 	if meta != "" {
-		metaWidth := innerWidth - visibleRunes(truncatedTitle) - 2
+		metaWidth := innerWidth - visibleRunes(truncatedTitle)
 		if metaWidth > 0 {
 			header = lipgloss.JoinHorizontal(
 				lipgloss.Top,
@@ -604,7 +605,7 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 			)
 		}
 	}
-	contentHeight := max(height-3, 1)
+	contentHeight := max(height-1, 1)
 	content := lipgloss.NewStyle().
 		Width(innerWidth).
 		Height(contentHeight).
@@ -774,7 +775,6 @@ var (
 			Foreground(warningColor).
 			Padding(0, 1).
 			Bold(true)
-
 )
 
 func (m Model) View() string {
@@ -844,13 +844,13 @@ func (m Model) renderApprovalArea(tc *session.PendingToolCall) string {
 	if tc.Diff == "" {
 		body := strings.Join([]string{
 			panelTitleStyle.Foreground(accentColor).Render("Agent wants to run"),
-			truncateRunes(tc.Command, max(m.leftWidth-4, 1)),
+			truncateRunes(tc.Command, max(m.leftWidth, 1)),
 			"",
 			mutedStyle.Render("Reason"),
-			truncateRunes(tc.Reason, max(m.leftWidth-4, 1)),
+			truncateRunes(tc.Reason, max(m.leftWidth, 1)),
 			"",
 			mutedStyle.Render("Risk"),
-			truncateRunes(riskText(tc), max(m.leftWidth-4, 1)),
+			truncateRunes(riskText(tc), max(m.leftWidth, 1)),
 			"",
 			helpLine,
 		}, "\n")
@@ -858,18 +858,18 @@ func (m Model) renderApprovalArea(tc *session.PendingToolCall) string {
 	}
 
 	splitWidth := max((m.leftWidth-2)/2, 10)
-	diffBody := truncateRunes(tc.Diff, splitWidth*max(m.chatHeight-4, 1))
+	diffBody := truncateRunes(tc.Diff, splitWidth*max(m.chatHeight-1, 1))
 	diffPanel := renderPanel("Diff", "proposed patch", diffBody, splitWidth, m.chatHeight)
 
 	approvalBody := strings.Join([]string{
 		panelTitleStyle.Foreground(accentColor).Render("Agent wants to run"),
-		truncateRunes(tc.Command, max(splitWidth-4, 1)),
+		truncateRunes(tc.Command, max(splitWidth, 1)),
 		"",
 		mutedStyle.Render("Reason"),
-		truncateRunes(tc.Reason, max(splitWidth-4, 1)),
+		truncateRunes(tc.Reason, max(splitWidth, 1)),
 		"",
 		mutedStyle.Render("Risk"),
-		truncateRunes(riskText(tc), max(splitWidth-4, 1)),
+		truncateRunes(riskText(tc), max(splitWidth, 1)),
 		"",
 		helpLine,
 	}, "\n")
@@ -1050,8 +1050,8 @@ func compactTokenCount(tokens int) string {
 }
 
 func (m Model) renderRightInfoPanel(tc *session.PendingToolCall) string {
-	innerWidth := max(m.rightWidth-2, 1)
-	bodyHeight := max(m.contentHeight-5, 1)
+	innerWidth := max(m.rightWidth, 1)
+	bodyHeight := max(m.contentHeight-4, 1)
 	tabs := renderSidebarTabs(innerWidth, m.activeTab)
 
 	var body string
@@ -1073,23 +1073,12 @@ func (m Model) renderProviderError(err error) string {
 	// the right column, which is too narrow to hold the "Provider Error
 	// Banner" title and "fits AltScreen" meta on one header line) so it
 	// reads as a compact, self-contained alert strip below the two-column
-	// layout.
-	//
-	// renderPanel adds its own rounded border outside the width it is
-	// given (verified: renderPanel(w, ...) renders w+2 columns wide), so
-	// the panel width passed in must be m.width-2 for the banner to line
-	// up flush with topBar/statusBar above and below it. The nested body
-	// style below has the same border-adds-on-top behavior, so its width
-	// is sized down by another 2 columns to fit inside the panel's inner
-	// content area.
+	// layout. renderPanel provides the single rounded border, so the body
+	// is just styled text.
 	panelWidth := max(m.width-2, 4)
-	bodyWidth := max(panelWidth-4, 1)
 	body := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(panelSoftColor).
-		Padding(0, 1).
-		Width(bodyWidth).
-		Render(lipgloss.NewStyle().Foreground(errorColor).Render("! ") + truncateRunes(err.Error(), max(bodyWidth-2, 1)))
+		Foreground(errorColor).
+		Render("! " + truncateRunes(err.Error(), max(panelWidth-2, 1)))
 	return renderPanel("Provider Error Banner", "fits AltScreen", body, panelWidth, providerErrorBannerContentHeight(m.contentHeight))
 }
 

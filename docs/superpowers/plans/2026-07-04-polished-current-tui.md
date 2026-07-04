@@ -205,10 +205,13 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 	if height < 3 {
 		height = 3
 	}
-	innerWidth := max(width-2, 1)
-	header := panelTitleStyle.Render(truncateRunes(title, innerWidth))
+	// width and height are the interior content dimensions; lipgloss adds the
+	// rounded border on top of them, so the rendered panel is width+2 by height+2.
+	innerWidth := max(width, 1)
+	truncatedTitle := truncateRunes(title, innerWidth)
+	header := panelTitleStyle.Render(truncatedTitle)
 	if meta != "" {
-		metaWidth := innerWidth - visibleRunes(title) - 2
+		metaWidth := innerWidth - visibleRunes(truncatedTitle)
 		if metaWidth > 0 {
 			header = lipgloss.JoinHorizontal(
 				lipgloss.Top,
@@ -218,7 +221,7 @@ func renderPanel(title string, meta string, body string, width int, height int) 
 			)
 		}
 	}
-	contentHeight := max(height-3, 1)
+	contentHeight := max(height-1, 1)
 	content := lipgloss.NewStyle().
 		Width(innerWidth).
 		Height(contentHeight).

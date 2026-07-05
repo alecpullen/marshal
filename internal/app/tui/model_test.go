@@ -222,14 +222,13 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 
 	view := m.View()
 	for _, want := range []string{
+		"Approval needed",
 		"Agent wants to run",
 		"go test ./...",
-		"Reason",
-		"run the repository test suite",
 		"Risk",
-		"--- a/app.go",
-		"+++ b/app.go",
-		"+added line",
+		"Enter approve",
+		"d deny",
+		"e edit",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing approval item %q:\n%s", want, view)
@@ -1079,17 +1078,16 @@ func TestApprovalBannerHasSingleBorder(t *testing.T) {
 	model = updated.(Model)
 
 	view := model.View()
-	// With an empty diff there should be a single full-width Approval panel,
-	// not a split Diff+Approval layout. A duplicated or nested panel would
-	// show multiple "Approval" titles or a "Diff" title alongside it.
-	if strings.Count(view, "Approval") != 1 {
-		t.Fatalf("approval banner missing title or duplicated:\n%s", view)
+	// With an empty diff there should be a single inline approval block,
+	// not a split Diff+Approval layout.
+	if strings.Count(view, "Diff") > 0 {
+		t.Fatalf("approval should not show a Diff panel:\n%s", view)
 	}
-	if strings.Contains(view, "Diff") {
-		t.Fatalf("approval banner should not be split into a Diff panel:\n%s", view)
+	if !strings.Contains(view, "⚠ Approval needed") {
+		t.Fatalf("approval banner missing title:\n%s", view)
 	}
-	if !strings.Contains(view, "run tests") {
-		t.Fatalf("approval banner missing human reason:\n%s", view)
+	if !strings.Contains(view, "go test") {
+		t.Fatalf("approval banner missing command:\n%s", view)
 	}
 }
 
@@ -1467,10 +1465,9 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 
 	view := m.View()
 	for _, want := range []string{
-		"Diff",
+		"Approval needed",
 		"Agent wants to run",
 		"go test ./internal/app/tui/...",
-		"Reason",
 		"Risk",
 		"Enter approve",
 		"d deny",
@@ -1481,26 +1478,21 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 		}
 	}
 
-	// The panel labeled "Risk" must show the actual risk classification,
-	// not a second copy of the Reason text. Find the line following the
-	// "Risk" label and assert it holds the Risk content (and not the
-	// Reason content) — this guards against riskText() preferring Reason
-	// over Risk.
+	// The risk label must show the actual risk classification, not the Reason text.
 	lines := strings.Split(view, "\n")
 	foundRiskLine := false
 	for i, line := range lines {
-		if strings.Contains(line, "Risk") && i+1 < len(lines) {
-			next := lines[i+1]
-			if strings.Contains(next, "Low - test command") {
+		if strings.Contains(line, "Risk:") && i < len(lines) {
+			if strings.Contains(line, "Low - test command") {
 				foundRiskLine = true
 			}
-			if strings.Contains(next, "Validate layout bounds") {
+			if strings.Contains(line, "Validate layout bounds") {
 				t.Fatalf("Risk section shows Reason content instead of Risk content:\n%s", view)
 			}
 		}
 	}
 	if !foundRiskLine {
-		t.Fatalf("View() did not render the Risk classification text under the Risk label:\n%s", view)
+		t.Fatalf("View() did not render the Risk classification text:\n%s", view)
 	}
 }
 
@@ -1915,6 +1907,66 @@ func TestRenderToolResultShowsSummary(t *testing.T) {
 	result := renderToolResult("tool", "file.read completed · 12 tokens\ndetail line", 80)
 	if !strings.Contains(result, "file.read completed") {
 		t.Fatalf("expected tool summary, got: %s", result)
+	}
+}
+
+func TestApprovalRendersInlineInChat(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+
+	state.AddMessage(session.RoleUser, "run the tests", session.ContentTypePlain)
+	state.SetPendingApproval(&session.PendingToolCall{
+		ID:           "call_1",
+		Name:         "shell.run",
+		Command:      "go test ./...",
+		Risk:         "command",
+		Reason:       "needs confirmation",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	})
+
+	m.refreshViewport()
+	view := m.View()
+
+	if !strings.Contains(view, "go test ./...") {
+		t.Fatalf("View() does not contain the approval command:\n%s", view)
+	}
+	if !strings.Contains(view, "Approval") {
+		t.Fatalf("View() does not contain the Approval panel title:\n%s", view)
+	}
+	if !strings.Contains(view, "run the tests") {
+		t.Fatalf("View() does not contain the prior user message (approval took over chat):\n%s", view)
+	}
+}
+
+func TestApprovalKeyHandlingStillWorksInline(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+
+	ch := make(chan session.UserApprovalDecision, 1)
+	state.SetPendingApproval(&session.PendingToolCall{
+		ID:           "call_1",
+		Name:         "shell.run",
+		Command:      "echo hi",
+		Risk:         "command",
+		Reason:       "needs confirmation",
+		ResponseChan: ch,
+	})
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	select {
+	case decision := <-ch:
+		if !decision.Approved {
+			t.Fatal("approval decision = false, want true (Enter should approve)")
+		}
+	default:
+		t.Fatal("no decision sent on ResponseChan after Enter")
+	}
+	if state.PendingApproval() != nil {
+		t.Fatal("PendingApproval still set after Enter, want nil")
 	}
 }
 

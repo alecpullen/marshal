@@ -83,6 +83,19 @@ func parseMarkdownLine(line string) (lipgloss.Style, string) {
 	return lipgloss.NewStyle(), line
 }
 
+func roleStyleFor(role string) lipgloss.Style {
+	switch strings.ToLower(role) {
+	case "user":
+		return userRoleStyle
+	case "agent", "assistant":
+		return agentRoleStyle
+	case "tool", "output":
+		return toolRoleStyle
+	default:
+		return mutedStyle
+	}
+}
+
 func renderCodeBlock(content string, width int) string {
 	if width < 1 {
 		width = 1
@@ -101,17 +114,7 @@ func renderPlain(role, content string, width int) string {
 		width = 1
 	}
 	label := strings.ToLower(role)
-	roleStyle := mutedStyle
-	switch label {
-	case "user":
-		roleStyle = userRoleStyle
-	case "agent", "assistant":
-		roleStyle = agentRoleStyle
-	case "tool":
-		roleStyle = toolRoleStyle
-	case "output":
-		roleStyle = outputRoleStyle
-	}
+	roleStyle := roleStyleFor(role)
 	prefixWidth := 10
 	contentWidth := max(width-prefixWidth-2, 1)
 	wrapped := ansi.Wrap(content, contentWidth, "")
@@ -138,20 +141,10 @@ func renderPlan(role, content string, width int) string {
 		width = 1
 	}
 	label := strings.ToLower(role)
-	roleStyle := mutedStyle
-	switch label {
-	case "user":
-		roleStyle = userRoleStyle
-	case "agent", "assistant":
-		roleStyle = agentRoleStyle
-	case "tool":
-		roleStyle = toolRoleStyle
-	case "output":
-		roleStyle = outputRoleStyle
-	}
+	roleStyle := roleStyleFor(role)
 	prefixWidth := 10
 	panelInner := max(width-2, 1)
-	contentWidth := max(panelInner-prefixWidth-2, 1)
+	contentWidth := max(panelInner-prefixWidth-4, 1)
 	bullet := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("•")
 
 	lines := strings.Split(content, "\n")
@@ -188,17 +181,7 @@ func renderDiff(role, content string, width int) string {
 		width = 1
 	}
 	label := strings.ToLower(role)
-	roleStyle := mutedStyle
-	switch label {
-	case "user":
-		roleStyle = userRoleStyle
-	case "agent", "assistant":
-		roleStyle = agentRoleStyle
-	case "tool":
-		roleStyle = toolRoleStyle
-	case "output":
-		roleStyle = outputRoleStyle
-	}
+	roleStyle := roleStyleFor(role)
 	prefixWidth := 10
 	panelInner := max(width-2, 1)
 	contentWidth := max(panelInner-prefixWidth-2, 1)
@@ -252,13 +235,19 @@ func renderToolResult(role, content string, width int) string {
 	if len(lines) == 0 {
 		return ""
 	}
+	label := "tool"
+	prefixWidth := 10
+	roleStyle := roleStyleFor("tool")
 	var b strings.Builder
 	firstLine := strings.TrimSpace(lines[0])
+	b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(label))
+	b.WriteString("  ")
 	b.WriteString(toolRoleStyle.Render(firstLine))
 	b.WriteString("\n")
 	for _, line := range lines[1:] {
 		wrapped := ansi.Wrap(line, width, "")
 		for _, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(strings.Repeat(" ", prefixWidth+2))
 			b.WriteString(mutedStyle.Render(wl))
 			b.WriteString("\n")
 		}
@@ -271,35 +260,30 @@ func renderMarkdown(role, content string, width int) string {
 		width = 1
 	}
 	label := strings.ToLower(role)
-	roleStyle := mutedStyle
-	switch label {
-	case "user":
-		roleStyle = userRoleStyle
-	case "agent", "assistant":
-		roleStyle = agentRoleStyle
-	case "tool":
-		roleStyle = toolRoleStyle
-	case "output":
-		roleStyle = outputRoleStyle
-	}
+	roleStyle := roleStyleFor(role)
 	prefixWidth := 10
 	contentWidth := max(width-prefixWidth-2, 1)
 
 	blocks := splitFencedBlocks(content)
 	var b strings.Builder
+	firstBlock := true
 
 	for _, block := range blocks {
 		switch block.kind {
 		case "code":
 			rendered := renderCodeBlock(block.text, contentWidth)
 			codeLines := strings.Split(rendered, "\n")
-			for i, line := range codeLines {
-				if i == 0 {
+			for _, line := range codeLines {
+				if line == "" {
+					continue
+				}
+				if firstBlock {
 					b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(label))
 					b.WriteString("  ")
 					b.WriteString(line)
 					b.WriteString("\n")
-				} else if line != "" {
+					firstBlock = false
+				} else {
 					b.WriteString(strings.Repeat(" ", prefixWidth+2))
 					b.WriteString(line)
 					b.WriteString("\n")
@@ -314,12 +298,13 @@ func renderMarkdown(role, content string, width int) string {
 				style, transformed := parseMarkdownLine(pLine)
 				wrapped := ansi.Wrap(transformed, contentWidth, "")
 				wrappedLines := strings.Split(wrapped, "\n")
-				for j, wl := range wrappedLines {
-					if j == 0 {
+				for _, wl := range wrappedLines {
+					if firstBlock {
 						b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(label))
 						b.WriteString("  ")
 						b.WriteString(style.Render(wl))
 						b.WriteString("\n")
+						firstBlock = false
 					} else {
 						b.WriteString(strings.Repeat(" ", prefixWidth+2))
 						b.WriteString(style.Render(wl))

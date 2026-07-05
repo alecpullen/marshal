@@ -1091,10 +1091,7 @@ func renderMessage(msg session.Message, width int) string {
 func renderCode(role, content string, width int) string {
 	prefixWidth := 10
 	innerWidth := max(width-prefixWidth-6, 1)
-	roleStyle := agentRoleStyle
-	if strings.ToLower(role) == "user" {
-		roleStyle = userRoleStyle
-	}
+	roleStyle := roleStyleFor(role)
 	panel := renderCodeBlock(content, innerWidth)
 	var b strings.Builder
 	b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(strings.ToLower(role)))

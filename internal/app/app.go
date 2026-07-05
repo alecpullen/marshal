@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"marshal/internal/agent"
+	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
@@ -91,6 +93,7 @@ func routingConfigFromAppConfig(cfg config.Config) routing.Config {
 type routedProviderResolver struct {
 	router    *routing.StaticRouter
 	cfg       config.Config
+	mu        sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
 	providers map[string]provider.Provider
 }
 
@@ -113,20 +116,42 @@ func (r *routedProviderResolver) Resolve(task routing.TaskProfile) (routing.Rout
 	if err != nil {
 		return routing.Route{}, nil, err
 	}
-	if existing, ok := r.providers[route.Preset.Provider]; ok {
-		return route, existing, nil
-	}
-
-	providerConfig, ok := r.cfg.Providers[route.Preset.Provider]
-	if !ok {
-		return routing.Route{}, nil, fmt.Errorf("routing provider %q is not configured", route.Preset.Provider)
-	}
-	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig)
+	p, err := r.providerFor(route)
 	if err != nil {
 		return routing.Route{}, nil, err
 	}
-	r.providers[route.Preset.Provider] = p
 	return route, p, nil
+}
+
+// ResolveRole is Resolve for an explicit swarm role instead of a task class.
+func (r *routedProviderResolver) ResolveRole(role routing.AgentRole) (routing.Route, provider.Provider, error) {
+	route, err := r.router.ResolveRole(role)
+	if err != nil {
+		return routing.Route{}, nil, err
+	}
+	p, err := r.providerFor(route)
+	if err != nil {
+		return routing.Route{}, nil, err
+	}
+	return route, p, nil
+}
+
+func (r *routedProviderResolver) providerFor(route routing.Route) (provider.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.providers[route.Preset.Provider]; ok {
+		return existing, nil
+	}
+	providerConfig, ok := r.cfg.Providers[route.Preset.Provider]
+	if !ok {
+		return nil, fmt.Errorf("routing provider %q is not configured", route.Preset.Provider)
+	}
+	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig)
+	if err != nil {
+		return nil, err
+	}
+	r.providers[route.Preset.Provider] = p
+	return p, nil
 }
 
 func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, error) {
@@ -144,11 +169,11 @@ func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, 
 	return notes, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index) (*agent.Runner, *registry.Registry, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -159,7 +184,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		DB:            database,
 		ProjectID:     projectID,
 	}); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -192,7 +217,53 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		Legacy:    route.Legacy,
 		Active:    true,
 	})
-	return runner, reg, nil
+	swarmRunner := buildSwarmRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
+	return runner, reg, swarmRunner, nil
+}
+
+// buildSwarmRunner wires the Milestone O swarm: every role runner shares
+// the session state, policy engine, and one WriteLock; read-only roles get
+// the filtered registry view; each role's provider/model comes from the
+// routing profile via ResolveRole (falling back to the implementer preset
+// for unconfigured roles).
+func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *swarm.Orchestrator {
+	readOnlyReg := registry.ReadOnlyView(reg)
+	gate := &swarm.WriteLock{}
+	memory := &dbMemoryProvider{db: database}
+
+	factory := func(role agent.AgentRole, readOnly bool) (*agent.Runner, error) {
+		// agent.AgentRole and routing.AgentRole share string values
+		// ("planner", "repo_scout", "implementer", "reviewer").
+		route, p, err := resolver.ResolveRole(routing.AgentRole(role))
+		if err != nil {
+			return nil, err
+		}
+		toolReg := reg
+		if readOnly {
+			toolReg = readOnlyReg
+		}
+		r := agent.NewRunner(p, toolReg, pol, state, route.Preset.Model)
+		r.Role = role
+		r.WriteGate = gate
+		r.SkillIndex = skillIndex
+		r.MemoryProvider = memory
+		r.ProjectID = projectID
+		r.RequestTimeout = 60 * time.Second
+		// Swarm role prompts embed the shared plan, so skip the per-turn
+		// classify/plan pass (class "question" bypasses planning).
+		r.SetForceClass("question")
+		if route.Preset.ToolCalling == "json" && p.Capabilities(ctx).JSONMode {
+			r.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
+		}
+		if cfg.Agent.MaxToolIterations > 0 {
+			r.MaxToolIterations = cfg.Agent.MaxToolIterations
+		}
+		if cfg.Agent.MaxRetries > 0 {
+			r.MaxRetries = cfg.Agent.MaxRetries
+		}
+		return r, nil
+	}
+	return swarm.New(state, factory)
 }
 
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option) error {
@@ -262,7 +333,9 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 
 	var runner *agent.Runner
 	var toolReg *registry.Registry
-	runner, toolReg, err = buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
+	var swarmRunner *swarm.Orchestrator
+	runner, toolReg, swarmRunner, err = buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
+	_ = swarmRunner
 
 	cmdReg := commands.New()
 	if err == nil {

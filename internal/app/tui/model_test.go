@@ -121,6 +121,38 @@ func TestTypingIsAlwaysCaptured(t *testing.T) {
 	}
 }
 
+func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	if err := reg.Register(commands.Command{Name: "settings", Description: "Open settings", Handler: func(*session.State, []string) string { return "" }}); err != nil {
+		t.Fatalf("Register settings failed: %v", err)
+	}
+	if err := reg.Register(commands.Command{Name: "swarm", Description: "Run swarm", Args: "<goal>", Handler: func(*session.State, []string) string { return "" }}); err != nil {
+		t.Fatalf("Register swarm failed: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+
+	for _, r := range "/se" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "/settings") {
+		t.Fatalf("View() missing command suggestion:\n%s", view)
+	}
+	if strings.Contains(view, "/swarm") {
+		t.Fatalf("View() should filter suggestions by prefix:\n%s", view)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if got := m.input.Value(); got != "/settings " {
+		t.Fatalf("input after Tab = %q, want %q", got, "/settings ")
+	}
+}
+
 func TestPageKeysScrollViewport(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	for i := 0; i < 100; i++ {
@@ -138,6 +170,33 @@ func TestPageKeysScrollViewport(t *testing.T) {
 	}
 	if m.input.Value() != "" {
 		t.Fatalf("PgUp leaked into the input: %q", m.input.Value())
+	}
+}
+
+func TestCtrlUCtrlDScrollViewport(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+	bottom := m.viewport.YOffset
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m = updated.(Model)
+	if m.viewport.YOffset >= bottom {
+		t.Fatalf("Ctrl+U did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset)
+	}
+	upOffset := m.viewport.YOffset
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = updated.(Model)
+	if m.viewport.YOffset <= upOffset {
+		t.Fatalf("Ctrl+D did not scroll down: offset %d -> %d", upOffset, m.viewport.YOffset)
+	}
+	if m.input.Value() != "" {
+		t.Fatalf("scroll keys leaked into the input: %q", m.input.Value())
 	}
 }
 
@@ -264,7 +323,7 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	narrowView := m.View()
-	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width) + renderThinkingBox(thinking, m.viewport.Width)
+	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width) + renderThinkingBox(thinking, m.spinnerFrame, m.viewport.Width)
 
 	// viewport.View() pads every line to the viewport's fixed width/height
 	// with trailing spaces and blank lines; strip that padding before
@@ -905,6 +964,22 @@ func TestThinkingBoxRendersWhileStreaming(t *testing.T) {
 	}
 }
 
+func TestThinkingDoesNotRenderBeforeReasoningStreams(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	state.BeginStreaming()
+	model.busy = true
+	model.refreshViewport()
+
+	view := model.View()
+	if strings.Contains(view, "thinking") {
+		t.Fatalf("view should not show a thinking panel before reasoning arrives:\n%s", view)
+	}
+}
+
 func TestFinishedMessageShowsCollapsedThinkingSummary(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
@@ -1453,6 +1528,93 @@ func TestActiveToolCallRendersInline(t *testing.T) {
 	}
 }
 
+func TestRecentToolCallRendersInlineAfterFastToolCompletes(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	m.busy = true
+	m.now = func() time.Time { return time.Unix(105, 0) }
+
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp:     time.Unix(104, 0),
+		ToolName:      "file.read",
+		ResultSummary: "/repo/main.go",
+	})
+
+	m.refreshViewport()
+	view := m.View()
+
+	if !strings.Contains(view, "file.read") {
+		t.Fatalf("View() does not show recent tool name:\n%s", view)
+	}
+	if !strings.Contains(view, "/repo/main.go") {
+		t.Fatalf("View() does not show recent tool summary:\n%s", view)
+	}
+}
+
+func TestCompletedToolCallsRemainInTranscriptLog(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	m.now = func() time.Time { return time.Unix(200, 0) }
+
+	state.AddMessage(session.RoleUser, "inspect the repo", session.ContentTypePlain)
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp:     time.Unix(100, 0),
+		ToolName:      "file.read",
+		ResultSummary: "/repo/main.go",
+	})
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp:     time.Unix(101, 0),
+		ToolName:      "shell.run",
+		ResultSummary: "go test ./...",
+	})
+
+	m.refreshViewport()
+	view := m.View()
+
+	for _, want := range []string{"file.read", "/repo/main.go", "shell.run", "go test ./..."} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing persistent tool log item %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestCompletedToolCallsRenderInMessageTimeline(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(120, 40)
+	m.now = func() time.Time { return time.Unix(200, 0) }
+
+	state.AddMessage(session.RoleUser, "USER: inspect auth flow", session.ContentTypePlain)
+	time.Sleep(2 * time.Millisecond)
+	state.AddMessage(session.RoleAssistant, "ASSISTANT: auth flow summary", session.ContentTypePlain)
+
+	messages := state.Messages()
+	if len(messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2", len(messages))
+	}
+	toolTime := messages[0].CreatedAt.Add(messages[1].CreatedAt.Sub(messages[0].CreatedAt) / 2)
+	state.LogToolCall(registry.AuditEvent{
+		Timestamp:     toolTime,
+		ToolName:      "file.read",
+		ResultSummary: "internal/auth.go",
+	})
+
+	m.refreshViewport()
+	view := m.View()
+
+	userIdx := strings.Index(view, "USER: inspect auth flow")
+	toolIdx := strings.Index(view, "file.read")
+	assistantIdx := strings.Index(view, "ASSISTANT: auth flow summary")
+	if userIdx == -1 || toolIdx == -1 || assistantIdx == -1 {
+		t.Fatalf("view missing timeline entries:\n%s", view)
+	}
+	if !(userIdx < toolIdx && toolIdx < assistantIdx) {
+		t.Fatalf("tool log should render between related messages, got user=%d tool=%d assistant=%d:\n%s", userIdx, toolIdx, assistantIdx, view)
+	}
+}
+
 func TestActiveToolCallClearsFromView(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
@@ -1468,7 +1630,7 @@ func TestActiveToolCallClearsFromView(t *testing.T) {
 	viewWithTool := m.View()
 
 	state.ClearActiveToolCall()
-	m.lastMessageCount = -1
+	m.lastTranscriptHash = 0
 	m.refreshViewport()
 	viewWithoutTool := m.View()
 

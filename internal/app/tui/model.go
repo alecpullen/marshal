@@ -518,7 +518,7 @@ func (m *Model) refreshViewport() {
 	_, activeTool := m.state.ActiveToolCall()
 	busy := m.busy || activeTool || streamLen > 0
 
-	hash := transcriptHash(items, streamLen, busy)
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width)
 	if hash == m.lastTranscriptHash {
 		return
 	}
@@ -777,9 +777,9 @@ func compactTokenCount(tokens int) string {
 	return fmt.Sprintf("%d", tokens)
 }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int) uint64 {
 	var h uint64
-	h = uint64(len(items)) ^ (uint64(streamLen) << 20)
+	h = uint64(len(items)) ^ (uint64(streamLen) << 20) ^ (uint64(width) << 40)
 	for i, item := range items {
 		h ^= uint64(item.Timestamp.UnixNano()) * uint64(i+1)
 	}

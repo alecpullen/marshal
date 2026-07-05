@@ -110,7 +110,7 @@ func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m.state.SetProviderError(errors.New("connection refused"))
-	m.lastMessageCount = -1
+	m.lastTranscriptHash = 0
 	m.refreshViewport()
 	view := m.View()
 

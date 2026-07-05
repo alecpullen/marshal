@@ -25,6 +25,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/skills"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -143,7 +144,7 @@ func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, 
 	return notes, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64) (*agent.Runner, *registry.Registry, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index) (*agent.Runner, *registry.Registry, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
@@ -161,8 +162,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		return nil, nil, err
 	}
 
+	skills.RegisterTool(reg, skillIndex, state)
+
 	pol := policy.NewEngine(&cfg, state.SessionRules())
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
+	runner.SkillIndex = skillIndex
 	runner.RouteResolver = resolver
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
@@ -244,9 +248,21 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 
 	logger := logging.New(stderr, slog.LevelInfo)
 	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = ""
+	}
+	globalSkillsDir := filepath.Join(homeDir, ".config", "marshal", "skills")
+	projectSkillsDir := filepath.Join(workingDir, ".marshal", "skills")
+	skillIndex, err := skills.LoadSkills(globalSkillsDir, projectSkillsDir)
+	if err != nil {
+		return fmt.Errorf("load skills: %w", err)
+	}
+
 	var runner *agent.Runner
 	var toolReg *registry.Registry
-	runner, toolReg, err = buildAgentRunner(ctx, cfg, state, database, projectID)
+	runner, toolReg, err = buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
 
 	cmdReg := commands.New()
 	if err == nil {

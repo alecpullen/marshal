@@ -1636,6 +1636,39 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 	}
 }
 
+func TestFinalAnswerRendersWithResponseLabel(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+
+	state.AddMessageFinal(session.RoleAssistant, "here is the answer", session.ContentTypeMarkdown)
+
+	m.refreshViewport()
+	view := m.View()
+
+	if !strings.Contains(view, "Response") {
+		t.Fatalf("View() does not show Response label for final answer:\n%s", view)
+	}
+}
+
+func TestNonFinalAnswerRendersWithAgentLabel(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+
+	state.AddMessage(session.RoleAssistant, "intermediate text", session.ContentTypeMarkdown)
+
+	m.refreshViewport()
+	view := m.View()
+
+	if !strings.Contains(view, "assistant") {
+		t.Fatalf("View() does not show assistant label for non-final message:\n%s", view)
+	}
+	if strings.Contains(view, "Response") {
+		t.Fatalf("View() shows Response label for non-final message:\n%s", view)
+	}
+}
+
 func TestPlanTabShowsPlanItemsAndSpinner(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.SetPlan([]string{"Refactor layout", "Add tests", "Update docs"})

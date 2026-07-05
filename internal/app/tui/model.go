@@ -1153,6 +1153,9 @@ func (m Model) renderInputArea() string {
 }
 
 func renderMessage(msg session.Message, width int) string {
+	if msg.Final {
+		return renderFinalAnswer(msg.Content, width)
+	}
 	switch msg.ContentType {
 	case session.ContentTypeMarkdown:
 		return renderMarkdown(string(msg.Role), msg.Content, width)

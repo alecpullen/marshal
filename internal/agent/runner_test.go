@@ -1334,8 +1334,8 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 			}
 		}
 	}
-	if len(systemPromptMsgs) < 2 {
-		t.Fatalf("expected at least 2 provider requests with system messages, got %d", len(systemPromptMsgs))
+	if len(systemPromptMsgs) < 3 {
+		t.Fatalf("expected at least 3 provider requests with system messages, got %d", len(systemPromptMsgs))
 	}
 	if !strings.Contains(systemPromptMsgs[0], "`debug`") {
 		t.Fatal("first system prompt should list debug skill")
@@ -1344,6 +1344,6 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 		t.Fatal("first system prompt should include skill description")
 	}
 	if !strings.Contains(systemPromptMsgs[2], "Active Skills") {
-		t.Fatal("second system prompt should show Active Skills")
+		t.Fatal("third system prompt should show Active Skills")
 	}
 }

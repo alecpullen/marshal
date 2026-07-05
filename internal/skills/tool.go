@@ -52,7 +52,7 @@ func handleSkillLoad(call registry.ToolCall, idx *Index, state *session.State) (
 	if !pack.IsEmpty() {
 		estimatedBody := contextpack.EstimateTokens(skill.Body)
 		remaining := pack.TokenUsage.MaxTokens - pack.TokenUsage.EstimatedTokens
-		if estimatedBody > remaining && remaining > 0 {
+		if estimatedBody > remaining {
 			return registry.ToolResult{}, fmt.Errorf(
 				"cannot load skill: body is ~%d tokens but only %d tokens remain in context budget",
 				estimatedBody, remaining,

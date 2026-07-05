@@ -317,3 +317,67 @@ func renderMarkdown(role, content string, width int) string {
 	b.WriteString("\n")
 	return b.String()
 }
+
+func renderFinalAnswer(content string, width int) string {
+	if width < 10 {
+		width = 10
+	}
+	prefixWidth := 10
+	contentWidth := max(width-prefixWidth-4, 1)
+	label := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("Response")
+
+	blocks := splitFencedBlocks(content)
+	var b strings.Builder
+	b.WriteString(label)
+	b.WriteString("  ")
+	firstBlock := true
+
+	for _, block := range blocks {
+		switch block.kind {
+		case "code":
+			rendered := renderCodeBlock(block.text, contentWidth)
+			codeLines := strings.Split(rendered, "\n")
+			for _, line := range codeLines {
+				if line == "" {
+					continue
+				}
+				if firstBlock {
+					b.WriteString(line)
+					b.WriteString("\n")
+					firstBlock = false
+				} else {
+					b.WriteString(strings.Repeat(" ", prefixWidth+2))
+					b.WriteString(line)
+					b.WriteString("\n")
+				}
+			}
+		case "prose":
+			proseLines := strings.Split(block.text, "\n")
+			if len(proseLines) == 1 && proseLines[0] == "" {
+				continue
+			}
+			for _, pLine := range proseLines {
+				style, transformed := parseMarkdownLine(pLine)
+				wrapped := ansi.Wrap(transformed, contentWidth, "")
+				wrappedLines := strings.Split(wrapped, "\n")
+				for _, wl := range wrappedLines {
+					if firstBlock {
+						b.WriteString(style.Render(wl))
+						b.WriteString("\n")
+						firstBlock = false
+					} else {
+						b.WriteString(strings.Repeat(" ", prefixWidth+2))
+						b.WriteString(style.Render(wl))
+						b.WriteString("\n")
+					}
+				}
+			}
+		}
+	}
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(accentColor).
+		PaddingLeft(1)
+	return borderStyle.Render(b.String()) + "\n\n"
+}

@@ -222,6 +222,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
 
+		if inProgress := r.State.InProgress(); inProgress.Reasoning != "" && action.Type != ActionAnswer && action.Type != ActionFinal {
+			r.State.LogThinking(session.ThinkingEntry{
+				Text:      inProgress.Reasoning,
+				Duration:  time.Since(inProgress.StartedAt),
+				StartedAt: inProgress.StartedAt,
+			})
+		}
+
 		if len(action.Actions) > 0 {
 			if err := r.allReadOnly(action.Actions); err != nil {
 				messages = append(messages, BuildCorrectionMessage(err))

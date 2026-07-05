@@ -372,6 +372,11 @@ func TestRunFailsAfterExhaustingRetries(t *testing.T) {
 }
 
 func TestRunStopsAfterMaxToolIterationsWithoutFinalAnswer(t *testing.T) {
+	// The model always tool-calls and never answers, exhausting the tool
+	// budget. Since finalize's own model call can still be reached (the
+	// provider does not error), the loop salvages a completed task instead
+	// of failing outright. See TestExhaustionSalvageFailureReturnsError for
+	// the case where the salvage call itself errors.
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{
 		Name: "demo.read",
@@ -390,12 +395,81 @@ func TestRunStopsAfterMaxToolIterationsWithoutFinalAnswer(t *testing.T) {
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.MaxToolIterations = 2
 
-	err := runner.Run(context.Background(), "Loop forever")
-	if !errors.Is(err, ErrMaxIterationsExceeded) {
-		t.Fatalf("err = %v, want ErrMaxIterationsExceeded", err)
+	task, err := runner.RunTask(context.Background(), "Loop forever")
+	if err != nil {
+		t.Fatalf("RunTask err = %v, want nil (salvaged)", err)
+	}
+	if task.Status != TaskStatusCompleted || task.SalvagedReason == "" {
+		t.Fatalf("task = %+v, want completed+salvaged", task)
 	}
 	if len(state.AuditLog()) != 2 {
 		t.Fatalf("len(auditLog) = %d, want 2 (bounded by MaxToolIterations)", len(state.AuditLog()))
+	}
+}
+
+func TestExhaustionSalvagesInsteadOfFailing(t *testing.T) {
+	// Model always calls a tool with distinct args (never repeating, so the
+	// hard-stall path never fires), and never answers -> the loop runs to
+	// exhaustion. finalize (scripted to answer on the next call) must then
+	// salvage the turn instead of failing it.
+	state := newTestState(t)
+	prov := &scriptedProvider{responses: []string{
+		`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
+		`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"b.go"}}}`,
+		`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"c.go"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Salvaged answer."}}`,
+	}}
+	r := NewRunner(prov, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.MaxToolIterations = 3
+	r.MaxRetries = 0
+	r.SetForceClass(string(ClassQuestion))
+
+	task, err := r.RunTask(context.Background(), "inspect a.go")
+	if err != nil {
+		t.Fatalf("RunTask err = %v, want nil (salvaged)", err)
+	}
+	if task.Status != TaskStatusCompleted || task.SalvagedReason == "" {
+		t.Fatalf("task = %+v, want completed+salvaged", task)
+	}
+}
+
+func TestExhaustionWithoutValidActionFailsHard(t *testing.T) {
+	// A model that never emits a parseable action produced nothing to
+	// salvage, so exhaustion must stay a hard ErrMaxIterationsExceeded
+	// failure (the swarm relies on this to detect a broken planner/scout).
+	state := newTestState(t)
+	prov := &scriptedProvider{responses: []string{"not json at all"}}
+	r := NewRunner(prov, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.MaxToolIterations = 2
+	r.MaxRetries = 0
+	r.SetForceClass(string(ClassQuestion))
+
+	_, err := r.RunTask(context.Background(), "inspect a.go")
+	if !errors.Is(err, ErrMaxIterationsExceeded) {
+		t.Fatalf("err = %v, want ErrMaxIterationsExceeded", err)
+	}
+}
+
+func TestExhaustionSalvageFailureReturnsError(t *testing.T) {
+	// Same setup as above, but the finalize model call itself errors ->
+	// original ErrMaxIterationsExceeded semantics must be preserved.
+	state := newTestState(t)
+	prov := &scriptedProvider{
+		responses: []string{
+			`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
+			`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"b.go"}}}`,
+			`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"c.go"}}}`,
+		},
+		errs: []error{nil, nil, nil, errors.New("boom")},
+	}
+	r := NewRunner(prov, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.MaxToolIterations = 3
+	r.MaxRetries = 0
+	r.SetForceClass(string(ClassQuestion))
+
+	_, err := r.RunTask(context.Background(), "inspect a.go")
+	if !errors.Is(err, ErrMaxIterationsExceeded) {
+		t.Fatalf("err = %v, want ErrMaxIterationsExceeded", err)
 	}
 }
 
@@ -1051,19 +1125,19 @@ func TestRunDetectsRepeatedToolCalls(t *testing.T) {
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	runner.MaxToolIterations = 5
 
-	if err := runner.Run(context.Background(), "Read the demo value"); err != nil {
-		t.Fatalf("Run returned error: %v", err)
+	// Three identical tool calls in a row is an exact-repeat hard stall (see
+	// progressTracker.assess), which now forces an immediate final answer
+	// via finalize rather than a soft nudge-and-continue. The 5th scripted
+	// response ("Done.") is what finalize's forced call receives.
+	task, err := runner.RunTask(context.Background(), "Read the demo value")
+	if err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
 	}
-
-	found := false
-	for _, m := range state.Messages() {
-		if strings.Contains(m.Content, "repeating the same step") {
-			found = true
-			break
-		}
+	if task.Status != TaskStatusCompleted || task.SalvagedReason != "stalled" {
+		t.Fatalf("task = %+v, want completed with SalvagedReason=%q", task, "stalled")
 	}
-	if !found {
-		t.Fatalf("missing loop-detection nudge in transcript: %#v", state.Messages())
+	if task.Summary != "Done." {
+		t.Fatalf("task.Summary = %q, want %q", task.Summary, "Done.")
 	}
 }
 

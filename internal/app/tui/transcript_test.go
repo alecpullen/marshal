@@ -103,6 +103,26 @@ func TestRenderFinalAnswerKeepsResponseTreatment(t *testing.T) {
 	}
 }
 
+func TestRenderFinalAnswerSalvagedMarker(t *testing.T) {
+	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true, Salvaged: true, SalvageReason: "truncated"}, 80)
+	if !strings.Contains(out, "Response") {
+		t.Fatalf("salvaged final answer must keep its Response label:\n%s", out)
+	}
+	if !strings.Contains(out, "salvaged") {
+		t.Fatalf("salvaged final answer missing salvage marker:\n%s", out)
+	}
+	if !strings.Contains(out, "truncated") {
+		t.Fatalf("salvaged final answer missing salvage reason:\n%s", out)
+	}
+}
+
+func TestRenderFinalAnswerNotSalvagedHasNoMarker(t *testing.T) {
+	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true}, 80)
+	if strings.Contains(out, "salvaged") {
+		t.Fatalf("normal final answer must not contain salvage marker:\n%s", out)
+	}
+}
+
 func TestRenderActiveToolCallIsBorderless(t *testing.T) {
 	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)}
 	out := renderActiveToolCall(atc, "⠋", time.Unix(104, 0), 80)

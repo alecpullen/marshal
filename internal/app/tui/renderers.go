@@ -133,6 +133,139 @@ func renderPlain(role, content string, width int) string {
 	return b.String()
 }
 
+func renderPlan(role, content string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	label := strings.ToLower(role)
+	roleStyle := mutedStyle
+	switch label {
+	case "user":
+		roleStyle = userRoleStyle
+	case "agent", "assistant":
+		roleStyle = agentRoleStyle
+	case "tool":
+		roleStyle = toolRoleStyle
+	case "output":
+		roleStyle = outputRoleStyle
+	}
+	prefixWidth := 10
+	panelInner := max(width-2, 1)
+	contentWidth := max(panelInner-prefixWidth-2, 1)
+	bullet := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("•")
+
+	lines := strings.Split(content, "\n")
+	var b strings.Builder
+	for _, line := range lines {
+		wrapped := ansi.Wrap(line, contentWidth, "")
+		wrappedLines := strings.Split(wrapped, "\n")
+		for i, wl := range wrappedLines {
+			if i == 0 {
+				b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(label))
+				b.WriteString("  ")
+				b.WriteString(bullet)
+				b.WriteString(" ")
+				b.WriteString(wl)
+				b.WriteString("\n")
+			} else {
+				b.WriteString(strings.Repeat(" ", prefixWidth+2))
+				b.WriteString(wl)
+				b.WriteString("\n")
+			}
+		}
+	}
+	body := strings.TrimRight(b.String(), "\n")
+	bodyLines := 0
+	if len(body) > 0 {
+		bodyLines = strings.Count(body, "\n") + 1
+	}
+	height := max(bodyLines+1, 2)
+	return renderPanel("Plan", "", body, panelInner, height)
+}
+
+func renderDiff(role, content string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	label := strings.ToLower(role)
+	roleStyle := mutedStyle
+	switch label {
+	case "user":
+		roleStyle = userRoleStyle
+	case "agent", "assistant":
+		roleStyle = agentRoleStyle
+	case "tool":
+		roleStyle = toolRoleStyle
+	case "output":
+		roleStyle = outputRoleStyle
+	}
+	prefixWidth := 10
+	panelInner := max(width-2, 1)
+	contentWidth := max(panelInner-prefixWidth-2, 1)
+
+	addStyle := lipgloss.NewStyle().Foreground(successColor)
+	delStyle := lipgloss.NewStyle().Foreground(errorColor)
+
+	lines := strings.Split(content, "\n")
+	var b strings.Builder
+	for _, line := range lines {
+		var lineStyle lipgloss.Style
+		switch {
+		case strings.HasPrefix(line, "@@"):
+			lineStyle = mutedStyle
+		case strings.HasPrefix(line, "+"):
+			lineStyle = addStyle
+		case strings.HasPrefix(line, "-"):
+			lineStyle = delStyle
+		default:
+			lineStyle = lipgloss.NewStyle()
+		}
+		wrapped := ansi.Wrap(line, contentWidth, "")
+		wrappedLines := strings.Split(wrapped, "\n")
+		for i, wl := range wrappedLines {
+			if i == 0 {
+				b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(label))
+				b.WriteString("  ")
+				b.WriteString(lineStyle.Render(wl))
+				b.WriteString("\n")
+			} else {
+				b.WriteString(strings.Repeat(" ", prefixWidth+2))
+				b.WriteString(lineStyle.Render(wl))
+				b.WriteString("\n")
+			}
+		}
+	}
+	body := strings.TrimRight(b.String(), "\n")
+	bodyLines := 0
+	if len(body) > 0 {
+		bodyLines = strings.Count(body, "\n") + 1
+	}
+	height := max(bodyLines+1, 2)
+	return renderPanel("Diff", "", body, panelInner, height)
+}
+
+func renderToolResult(role, content string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	firstLine := strings.TrimSpace(lines[0])
+	b.WriteString(toolRoleStyle.Render(firstLine))
+	b.WriteString("\n")
+	for _, line := range lines[1:] {
+		wrapped := ansi.Wrap(line, width, "")
+		for _, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(mutedStyle.Render(wl))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 func renderMarkdown(role, content string, width int) string {
 	if width < 1 {
 		width = 1

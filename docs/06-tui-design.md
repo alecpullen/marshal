@@ -1,5 +1,11 @@
 # 06. TUI Design
 
+> **2026-07-05:** The dashboard layout described below is superseded by the
+> single-column transcript design in
+> `docs/superpowers/specs/2026-07-05-tui-simplification-design.md`
+> (borderless transcript, symbol-bullet messages, one status line,
+> `/context` + `/log` instead of the sidebar).
+
 ## Goal
 
 The TUI should make the agent feel transparent, inspectable, and fast.

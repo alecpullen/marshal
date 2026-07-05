@@ -24,6 +24,17 @@ const (
 	RoleAssistant Role = "assistant"
 )
 
+type ContentType string
+
+const (
+	ContentTypePlain      ContentType = "plain"
+	ContentTypeMarkdown   ContentType = "markdown"
+	ContentTypeCode       ContentType = "code"
+	ContentTypePlan       ContentType = "plan"
+	ContentTypeDiff       ContentType = "diff"
+	ContentTypeToolResult ContentType = "tool_result"
+)
+
 type ActivityKind string
 
 const (

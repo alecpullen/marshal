@@ -34,6 +34,34 @@ func TestNewModelHasFields(t *testing.T) {
 	}
 }
 
+func TestSettingsExposeAgentAndToolFields(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.Agent.MaxToolIterations = 12
+	cfg.Agent.MaxRetries = 3
+	cfg.Tools.Shell.DefaultTimeoutSeconds = 90
+	cfg.Tools.Shell.MaxOutputBytes = 123456
+	cfg.Tools.Shell.AllowNetwork = true
+	cfg.Tools.Shell.AutoApprove = false
+
+	m := New(cfg, "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 24)
+
+	view := m.View()
+	for _, want := range []string{
+		"Max tool iterations",
+		"Max retries",
+		"Shell timeout",
+		"Max shell output",
+		"Allow network",
+		"Auto-approve shell",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing settings field %q:\n%s", want, view)
+		}
+	}
+
+}
+
 func TestCancelReturnsCancelledMsg(t *testing.T) {
 	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})

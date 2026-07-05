@@ -121,6 +121,58 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 		nil,
 	))
 
+	m.fields = append(m.fields, newIntField(
+		"Max tool iterations",
+		&m.cfg.Agent.MaxToolIterations,
+		nil,
+	))
+
+	m.fields = append(m.fields, newIntField(
+		"Max retries",
+		&m.cfg.Agent.MaxRetries,
+		nil,
+	))
+
+	m.fields = append(m.fields, newIntField(
+		"Shell timeout",
+		&m.cfg.Tools.Shell.DefaultTimeoutSeconds,
+		nil,
+	))
+
+	m.fields = append(m.fields, newIntField(
+		"Max shell output",
+		&m.cfg.Tools.Shell.MaxOutputBytes,
+		nil,
+	))
+
+	m.fields = append(m.fields, newBoolField(
+		"Allow network",
+		"shell commands may use network",
+		&m.cfg.Tools.Shell.AllowNetwork,
+		nil,
+	))
+
+	m.fields = append(m.fields, newBoolField(
+		"Allow sudo",
+		"shell commands may use sudo",
+		&m.cfg.Tools.Shell.AllowSudo,
+		nil,
+	))
+
+	m.fields = append(m.fields, newBoolField(
+		"Allow destructive",
+		"shell commands may be destructive",
+		&m.cfg.Tools.Shell.AllowDestructive,
+		nil,
+	))
+
+	m.fields = append(m.fields, newBoolField(
+		"Auto-approve shell",
+		"skip shell confirmations",
+		&m.cfg.Tools.Shell.AutoApprove,
+		nil,
+	))
+
 	if len(m.fields) > 0 {
 		m.fields[0].Focus()
 	}

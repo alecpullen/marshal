@@ -25,6 +25,8 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}{Default: &defaultProfile}
 
 	activePresetName := activePresetName(cfg)
+	maxToolIterations := cfg.Agent.MaxToolIterations
+	maxRetries := cfg.Agent.MaxRetries
 	if activePresetName == "" {
 		agentProvider := cfg.Agent.Provider
 		agentModel := cfg.Agent.Model
@@ -33,9 +35,14 @@ func SaveProjectConfig(path string, cfg Config) error {
 			Model             *string `toml:"model"`
 			MaxToolIterations *int    `toml:"max_tool_iterations"`
 			MaxRetries        *int    `toml:"max_retries"`
-		}{Provider: &agentProvider, Model: &agentModel}
+		}{Provider: &agentProvider, Model: &agentModel, MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries}
 	} else {
-		file.Agent = nil
+		file.Agent = &struct {
+			Provider          *string `toml:"provider"`
+			Model             *string `toml:"model"`
+			MaxToolIterations *int    `toml:"max_tool_iterations"`
+			MaxRetries        *int    `toml:"max_retries"`
+		}{MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries}
 	}
 
 	remoteAllowed := cfg.Privacy.RemoteProvidersAllowed
@@ -70,6 +77,47 @@ func SaveProjectConfig(path string, cfg Config) error {
 			}
 		}
 	}
+
+	if file.Tools == nil {
+		file.Tools = &struct {
+			Shell *struct {
+				DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
+				MaxOutputBytes        *int          `toml:"max_output_bytes"`
+				AllowNetwork          *bool         `toml:"allow_network"`
+				AllowSudo             *bool         `toml:"allow_sudo"`
+				AllowDestructive      *bool         `toml:"allow_destructive"`
+				AutoApprove           *bool         `toml:"auto_approve"`
+				Allow                 *CommandRules `toml:"allow"`
+				Confirm               *CommandRules `toml:"confirm"`
+				Deny                  *PatternRules `toml:"deny"`
+			} `toml:"shell"`
+		}{}
+	}
+	if file.Tools.Shell == nil {
+		file.Tools.Shell = &struct {
+			DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
+			MaxOutputBytes        *int          `toml:"max_output_bytes"`
+			AllowNetwork          *bool         `toml:"allow_network"`
+			AllowSudo             *bool         `toml:"allow_sudo"`
+			AllowDestructive      *bool         `toml:"allow_destructive"`
+			AutoApprove           *bool         `toml:"auto_approve"`
+			Allow                 *CommandRules `toml:"allow"`
+			Confirm               *CommandRules `toml:"confirm"`
+			Deny                  *PatternRules `toml:"deny"`
+		}{}
+	}
+	shellTimeout := cfg.Tools.Shell.DefaultTimeoutSeconds
+	maxOutputBytes := cfg.Tools.Shell.MaxOutputBytes
+	allowNetwork := cfg.Tools.Shell.AllowNetwork
+	allowSudo := cfg.Tools.Shell.AllowSudo
+	allowDestructive := cfg.Tools.Shell.AllowDestructive
+	autoApprove := cfg.Tools.Shell.AutoApprove
+	file.Tools.Shell.DefaultTimeoutSeconds = &shellTimeout
+	file.Tools.Shell.MaxOutputBytes = &maxOutputBytes
+	file.Tools.Shell.AllowNetwork = &allowNetwork
+	file.Tools.Shell.AllowSudo = &allowSudo
+	file.Tools.Shell.AllowDestructive = &allowDestructive
+	file.Tools.Shell.AutoApprove = &autoApprove
 
 	data, err := toml.Marshal(&file)
 	if err != nil {

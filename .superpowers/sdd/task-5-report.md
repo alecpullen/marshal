@@ -1,19 +1,31 @@
-### Task 5 Report: Create renderers.go
+# Task 5: Move approval panel from viewport to input area
 
-**Status:** DONE
+## Status: Complete
 
-**Commit:** `970c2cb` — feat(tui): add renderPlain, renderMarkdown, renderCodeBlock, and markdown parser
+## Commits
+- `601d40d` — feat(tui): move approval panel from viewport to input area
 
-**Build:** `go build ./...` — clean, no errors
+## Changes
 
-**Tests:** `go test ./...` — all packages pass (18 ok, 3 no test files)
+### transcript.go
+- Renamed `renderApprovalInline` → `renderApprovalPanel`
+- Removed the internal bordered-panel wrapper (border + `\n\n` suffix)
+- Removed `if width < 10` guard (input area handles minimum width)
+- Function now returns bare content string (title, command, risk, help line)
 
-**Changes:**
-- Created `internal/app/tui/renderers.go` (201 lines)
-- `renderPlain` — exact copy of current `renderMessage` body from model.go
-- `mdBlock` struct (`kind`, `text`) and `splitFencedBlocks` — splits content into prose/code blocks by ``` fences
-- `parseMarkdownLine` — per-line markdown: headings (#/##/###), horizontal rules (---/***/___), blockquotes (>), unordered lists (- /*)
-- `renderCodeBlock` — wraps content in lipgloss rounded border with dim foreground
-- `renderMarkdown` — combines splitFencedBlocks, parseMarkdownLine, and renderCodeBlock with role label prepended per block
+### view.go
+- `renderInputArea` now checks `m.state.PendingApproval()`
+- When pending approval + editing: shows textarea with `❯` prompt inside input border
+- When pending approval + not editing: shows `renderApprovalPanel` content inside input border
+- When no pending approval (normal): activity strip + suggestions + prompt as before
 
-**Concerns:** None. The existing `renderMessage` in model.go is untouched — rename/replace happens in Task 7.
+### model.go
+- Restructured approval key handling with proper nested edit-mode branching:
+  - Edit mode (editingCommand=true): Esc cancels, Enter submits edited command, other keys pass to `m.input.Update(msg)` (instead of silently ignoring)
+  - Not editing: Enter approves, Esc/d deny, e enters edit mode (pre-fills textarea), a approve+add rule, r rollback
+- Added `m.lastTranscriptHash = 0` on every transition that changes approval state
+- Removed unnecessary `// Ignore all other key inputs when approval prompt is shown and not editing` comment
+
+## Build
+- `go build ./internal/app/tui/` — passes
+- `go test ./internal/app/tui/ -run TestView` — fails due to pre-existing `lastMessageCount` field removal in test files (expected — Task 8 handles test updates)

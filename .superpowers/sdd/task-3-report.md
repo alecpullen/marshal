@@ -1,27 +1,31 @@
-## Task 3 Report: Wire ActiveToolCall into the runner
+# Task 3 Report: Rework refreshViewport with unified transcript timeline
 
-### Changes Made
+## Status: Complete
 
-**`internal/app/session/session.go`** — Added `AddMessageFinal` method (after `AddMessage`):
-- Mirrors `AddMessage` but sets `Final: true` on the message
-- Captures reasoning and think duration (same as AddMessage)
-- Calls existing `SaveMessage` signature (without `final` param; Task 5 will update this)
+## Changes Made
 
-**`internal/agent/runner.go`** — Two changes:
-- *Line 209*: Changed `AddMessage` → `AddMessageFinal` for terminal answers (`ActionAnswer` / `ActionFinal`)
-- *Lines 455-458*: Added `SetActiveToolCall` (with `SummarizeToolArgs`) before tool execution, and `defer ClearActiveToolCall()` after it
+### model.go
+- **Step 2**: Replaced `refreshViewport()` — uses `m.state.Transcript()` instead of interleaving messages + audit events; uses single `transcriptHash` for dirty tracking
+- **Step 3**: Added `transcriptHash()` function at bottom of file
+- **Step 4**: Replaced 6 dirty tracking fields (`lastMessageCount`, `lastStreamLen`, `lastHadApproval`, `lastHadError`, `lastActiveTool`, `lastAuditCount`) with single `lastTranscriptHash uint64`
+- **Step 5**: Removed `"sort"` import (unused after removing `sortedAuditEvents`). `"registry"` kept — still used in rollback blocks
+- **Step 6**: Updated Ctrl+G toggle to use `lastTranscriptHash = 0`
+- Removed `sortedAuditEvents()` and `auditEventBeforeMessage()` — no longer needed
 
-**`internal/agent/runner_test.go`** — Added two tests:
-- `TestRunnerSetsAndClearsActiveToolCall`: Verifies `ActiveToolCall` is set when a tool handler runs and cleared after Run completes
-- `TestRunnerMarksFinalAnswer`: Verifies final answer messages have `Final: true`
+### transcript.go
+- **Step 1**: Added `renderTranscriptItem()` — dispatches by `session.TranscriptKind` to `renderThinkingSummary`, `renderCompletedToolCall`, or `renderMessage` with reasoning
+- **Step 7**: Updated `renderCompletedToolCall()` signature to remove `now time.Time` parameter; removed elapsed/time-ago suffix
 
-### Test Results
+## Build & Tests
 
-```
-=== RUN   TestRunnerSetsAndClearsActiveToolCall
---- PASS: TestRunnerSetsAndClearsActiveToolCall (0.00s)
-=== RUN   TestRunnerMarksFinalAnswer
---- PASS: TestRunnerMarksFinalAnswer (0.00s)
-```
+- `go build ./internal/app/tui/` — **PASS**
+- `go test ./internal/app/tui/ -run TestModel` — **FAIL** (expected, 2 test files reference `lastMessageCount` which was removed; Task 8 will fix)
 
-Full suite: `go test ./...` — all packages pass, no regressions.
+## Commit
+
+`e66f977` — `feat(tui): unified transcript timeline with Transcript()`
+
+## Concerns
+
+- `renderCompletedToolCall` no longer shows elapsed time (`· Xs ago`). This is intentional — Task 4 will re-add elapsed time using `TranscriptItem.Timestamp`
+- The `registry` import is still required in both model.go and transcript.go

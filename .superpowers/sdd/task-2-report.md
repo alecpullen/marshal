@@ -1,28 +1,20 @@
-# Task 2 Report: Implement Built-in Command Handlers
+# Task 2 Report: Call LogThinking in agent runner before tool execution
 
 ## Status: ✅ Complete
 
 ## What was done
 
-1. **Created** `internal/commands/commands.go` with `RegisterAll()` function registering 17 built-in commands:
-   - `exit` / `quit` — exit Marshal
-   - `new` / `clear` — start new conversation (uses `ClearMessages()`)
-   - `help` — lists all registered commands via `cmdReg.List()`
-   - `tools` — lists all tools via `toolReg.List()`
-   - `route` — shows active model route via `ActiveRoute()`
-   - `context` — shows message count, total chars, context pack sections
-   - `stop` — cancel current turn (no-op handler)
-   - `ask` / `edit` / `auto` — mode switching (no-op handlers, just return message)
-   - `model` — switch model preset (no-op handler, has `<preset-name>` arg)
-   - `config` — shows project, working dir, profile, remote allowed, auto-approve
-   - `settings` / `memory` — open panels (no-op handlers)
-   - `rollback` — rolls back last patch via `HasBackup()`/`RollbackBackup()`
+Inserted `r.State.LogThinking()` call in `internal/agent/runner.go:225-232` after the `messages = append` line and before the `if len(action.Actions)` block. This preserves intermediate reasoning from `state.InProgress()` for tool-call iterations (`ActionToolCall`, `ActionPatch`, `ActionPlan`, or the `len(action.Actions) > 0` path), while skipping final-answer iterations (`ActionAnswer`, `ActionFinal`) where reasoning is already captured by `AddMessageFinal`.
 
-2. **Fixed** three type mismatches in the brief's code to match actual types:
-   - `cfg.RemoteProvidersAllowed` → `cfg.Privacy.RemoteProvidersAllowed`
-   - `cfg.AutoApprove` → `cfg.Tools.Shell.AutoApprove`
-   - `pack.Files` → `pack.Sections` (contextpack.Pack has `Sections`, not `Files`)
+## Verification
 
-3. **Build** verified: `go build ./internal/commands/` → no errors
+- `go build ./internal/agent/` → no errors
+- `go test ./internal/agent/ -count=1` → PASS (0.924s)
+- `go vet ./internal/agent/` → no issues
 
-4. **Committed**: `78b19d0` with message `feat: add built-in command handlers`
+The `go build ./...` error in `internal/app/app.go:397` (`undefined: printMarshalBanner`) is pre-existing and unrelated.
+
+## Commits
+
+- Base: `ad0a18c0`
+- This task: `41f217d` ("feat(agent): preserve intermediate reasoning with LogThinking")

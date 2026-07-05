@@ -82,6 +82,51 @@ func TestSaveProjectConfigRoundTripLegacyAgent(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Profile.Default = "local_balanced"
+	cfg.Agent.MaxToolIterations = 8
+	cfg.Agent.MaxRetries = 2
+	cfg.Tools.Shell.DefaultTimeoutSeconds = 45
+	cfg.Tools.Shell.MaxOutputBytes = 98765
+	cfg.Tools.Shell.AllowNetwork = true
+	cfg.Tools.Shell.AllowSudo = true
+	cfg.Tools.Shell.AllowDestructive = true
+	cfg.Tools.Shell.AutoApprove = true
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {
+			Name: "local_balanced",
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: "coder",
+			},
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b"},
+	}
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if loaded.Agent.MaxToolIterations != 8 || loaded.Agent.MaxRetries != 2 {
+		t.Fatalf("agent settings = %+v", loaded.Agent)
+	}
+	shell := loaded.Tools.Shell
+	if shell.DefaultTimeoutSeconds != 45 || shell.MaxOutputBytes != 98765 ||
+		!shell.AllowNetwork || !shell.AllowSudo || !shell.AllowDestructive || !shell.AutoApprove {
+		t.Fatalf("shell settings = %+v", shell)
+	}
+}
+
 func TestSaveProjectConfigOmitsAgentWhenPresetActive(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

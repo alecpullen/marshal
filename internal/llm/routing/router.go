@@ -23,7 +23,14 @@ func NewStaticRouter(config Config) *StaticRouter {
 }
 
 func (r *StaticRouter) Resolve(task TaskProfile) (Route, error) {
-	role := roleForTaskClass(task.Class)
+	return r.ResolveRole(roleForTaskClass(task.Class))
+}
+
+// ResolveRole resolves a route for an explicit agent role, with the same
+// fallback chain Resolve uses: configured role preset → implementer
+// preset → legacy provider. The swarm orchestrator uses this to give each
+// role its own model preset (asymmetric local swarm, docs/07).
+func (r *StaticRouter) ResolveRole(role AgentRole) (Route, error) {
 	route, err := r.resolveProfileRole(role)
 	if err == nil {
 		return route, nil

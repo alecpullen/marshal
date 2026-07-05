@@ -244,3 +244,54 @@ func TestResolveKnowledgeFallsBackToImplementerWhenNotConfigured(t *testing.T) {
 		t.Fatalf("Preset = %#v, want coder", route.Preset)
 	}
 }
+
+func TestResolveRoleReturnsConfiguredPreset(t *testing.T) {
+	router := NewStaticRouter(Config{
+		DefaultProfile: "default",
+		RemoteAllowed:  false,
+		Presets: map[string]ModelPreset{
+			"local-small": {Provider: "ollama", Model: "small", LocalOnly: true},
+			"local-big":   {Provider: "ollama", Model: "big", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{
+			"default": {
+				Name: "default",
+				Roles: map[AgentRole]string{
+					RolePlanner:     "local-big",
+					RoleImplementer: "local-small",
+				},
+			},
+		},
+	})
+
+	route, err := router.ResolveRole(RolePlanner)
+	if err != nil {
+		t.Fatalf("ResolveRole: %v", err)
+	}
+	if route.Role != RolePlanner || route.Preset.Model != "big" {
+		t.Fatalf("route = %+v, want planner on model big", route)
+	}
+}
+
+func TestResolveRoleFallsBackToImplementerForUnconfiguredRole(t *testing.T) {
+	router := NewStaticRouter(Config{
+		DefaultProfile: "default",
+		Presets: map[string]ModelPreset{
+			"local-small": {Provider: "ollama", Model: "small", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{
+			"default": {
+				Name:  "default",
+				Roles: map[AgentRole]string{RoleImplementer: "local-small"},
+			},
+		},
+	})
+
+	route, err := router.ResolveRole(RoleRepoScout)
+	if err != nil {
+		t.Fatalf("ResolveRole: %v", err)
+	}
+	if route.Preset.Model != "small" {
+		t.Fatalf("route.Preset.Model = %q, want implementer fallback \"small\"", route.Preset.Model)
+	}
+}

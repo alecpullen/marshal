@@ -528,6 +528,48 @@ func TestStateActiveSkillsReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestActiveToolCallSetAndGet(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	atc := ActiveToolCall{
+		Name:      "shell.run",
+		Args:      "go test ./...",
+		StartedAt: time.Unix(200, 0),
+	}
+	state.SetActiveToolCall(atc)
+	got, ok := state.ActiveToolCall()
+	if !ok {
+		t.Fatal("ActiveToolCall() returned ok=false, want true")
+	}
+	if got.Name != "shell.run" || got.Args != "go test ./..." {
+		t.Fatalf("ActiveToolCall() = %+v, want {Name: shell.run, Args: go test ./...}", got)
+	}
+	if !got.StartedAt.Equal(time.Unix(200, 0)) {
+		t.Fatalf("StartedAt = %v, want 200", got.StartedAt)
+	}
+}
+
+func TestActiveToolCallClear(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state.SetActiveToolCall(ActiveToolCall{Name: "file.read", Args: "/path"})
+	state.ClearActiveToolCall()
+	_, ok := state.ActiveToolCall()
+	if ok {
+		t.Fatal("ActiveToolCall() returned ok=true after ClearActiveToolCall, want false")
+	}
+}
+
+func TestMessageFinalField(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state.AddMessage(RoleAssistant, "here is the answer", ContentTypeMarkdown)
+	msgs := state.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(msgs))
+	}
+	if msgs[0].Final {
+		t.Fatal("Final = true, want false (AddMessage does not set Final)")
+	}
+}
+
 func TestStateActiveSkillsRaceFree(t *testing.T) {
 	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
 

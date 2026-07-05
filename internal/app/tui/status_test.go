@@ -76,6 +76,32 @@ func TestStatusLineShowsThinkingActivity(t *testing.T) {
 	}
 }
 
+func TestStatusLineShowsToolBudgetCounter(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.spinnerFrame = "⠋"
+	m.now = func() time.Time { return time.Unix(104, 0) }
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read", StartedAt: time.Unix(100, 0)})
+	m.state.SetToolBudget(session.ToolBudget{Used: 13, Max: 16})
+
+	line := m.renderStatusLine(100)
+	if !strings.Contains(line, "tools 13/16") {
+		t.Fatalf("status line missing tool budget counter:\n%s", line)
+	}
+}
+
+func TestStatusLineOmitsToolBudgetWhenMaxIsZero(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.spinnerFrame = "⠋"
+	m.now = func() time.Time { return time.Unix(104, 0) }
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read", StartedAt: time.Unix(100, 0)})
+	m.state.SetToolBudget(session.ToolBudget{Used: 0, Max: 0})
+
+	line := m.renderStatusLine(100)
+	if strings.Contains(line, "tools") {
+		t.Fatalf("status line must not show budget when Max is 0:\n%s", line)
+	}
+}
+
 func TestStatusLineFitsWidth(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "a-very-long-model-name:70b-instruct-q4", Provider: "ollama", LocalOnly: true})

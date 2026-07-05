@@ -3,7 +3,6 @@ package swarm
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -216,5 +215,4 @@ func TestOrchestratorAbortsWhenPlannerFails(t *testing.T) {
 			t.Fatalf("no role beyond planner should run, but factory built %q", c.role)
 		}
 	}
-	_ = errors.New // keep import if unused after edits
 }

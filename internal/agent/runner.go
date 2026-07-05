@@ -168,7 +168,14 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	}
 
 	task.Status = TaskStatusExecuting
+	lastRenderedSkills := r.State.ActiveSkills()
 	for iteration := 0; iteration < r.MaxToolIterations; iteration++ {
+		currentSkills := r.State.ActiveSkills()
+		if skillsChanged(lastRenderedSkills, currentSkills) {
+			messages[0] = BuildSystemPrompt(RoleGeneral, r.Registry.List(), r.SkillIndex, currentSkills)
+			lastRenderedSkills = currentSkills
+		}
+
 		raw, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
 		if err != nil {
 			return r.fail(task, err)
@@ -594,4 +601,20 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return false, "", ctx.Err()
 	}
+}
+
+func skillsChanged(prev, curr []string) bool {
+	if len(prev) != len(curr) {
+		return true
+	}
+	prevSet := make(map[string]bool, len(prev))
+	for _, s := range prev {
+		prevSet[s] = true
+	}
+	for _, s := range curr {
+		if !prevSet[s] {
+			return true
+		}
+	}
+	return false
 }

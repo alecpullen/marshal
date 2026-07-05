@@ -146,6 +146,14 @@ func New(state *session.State, opts ...Option) Model {
 	input.KeyMap = km
 	input.Focus()
 
+	input.FocusedStyle.Base = lipgloss.NewStyle().Background(panelBgColor)
+	input.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(panelBgColor)
+	input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	input.BlurredStyle.Base = lipgloss.NewStyle().Background(panelBgColor)
+	input.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	input.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+
 	m := Model{
 		state:          state,
 		input:          input,
@@ -745,6 +753,7 @@ func visibleRunes(s string) int {
 
 var (
 	panelBorderColor = lipgloss.Color("240")
+	panelBgColor     = lipgloss.Color("235")
 	accentColor      = lipgloss.Color("38")
 	violetColor      = lipgloss.Color("99")
 	dimColor         = lipgloss.Color("244")
@@ -759,6 +768,10 @@ var (
 	thinkingLineStyle = lipgloss.NewStyle().
 				Foreground(dimColor).
 				Italic(true)
+	inputPromptStyle = lipgloss.NewStyle().
+				Foreground(accentColor).
+				Background(panelBgColor).
+				Bold(true)
 
 	transcriptFrameStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
@@ -767,10 +780,11 @@ var (
 	inputBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(accentColor).
+			Background(panelBgColor).
 			Padding(0, 1)
 
 	statusBarStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("235")).
+			Background(panelBgColor).
 			Foreground(lipgloss.Color("252"))
 )
 

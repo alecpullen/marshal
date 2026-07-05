@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 )
 
 type mdBlock struct {
@@ -108,7 +109,7 @@ func renderFinalAnswer(content string, width int) string {
 	contentWidth := max(width-prefixWidth-4, 1)
 	label := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("Response")
 
-	blocks := splitFencedBlocks(content)
+	blocks := splitFencedBlocks(strings.TrimRight(content, "\n"))
 	var b strings.Builder
 	b.WriteString(label)
 	b.WriteString("  ")
@@ -161,7 +162,7 @@ func renderFinalAnswer(content string, width int) string {
 		Border(lipgloss.NormalBorder(), false, false, false, true).
 		BorderForeground(accentColor).
 		PaddingLeft(1)
-	return borderStyle.Render(b.String()) + "\n\n"
+	return borderStyle.Render(strings.TrimRight(b.String(), "\n")) + "\n"
 }
 
 func formatThinkDuration(d time.Duration) string {
@@ -170,38 +171,18 @@ func formatThinkDuration(d time.Duration) string {
 
 const thinkingBoxTailLines = 6
 
-// renderThinkingBox renders the live "thinking" panel shown while a model
-// call's reasoning is still streaming in.
-func renderThinkingBox(reasoning string, width int) string {
-	boxWidth := width - 2
-	if boxWidth < 1 {
-		boxWidth = 1
+// renderThinkingBox renders live reasoning as a compact inline line. It
+// intentionally returns nothing until reasoning text has arrived; providers
+// that do not stream reasoning should not get an empty thinking panel.
+func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
+	reasoning = strings.TrimSpace(reasoning)
+	if reasoning == "" {
+		return ""
 	}
-	style := lipgloss.NewStyle().
-		Width(boxWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(dimColor).
-		Foreground(dimColor).
-		Italic(true)
-	tail := tailRunes(reasoning, boxWidth*thinkingBoxTailLines)
-	// Header is "thinking" + spaces + subtitle. Keep it on one line and never
-	// let it overflow the box: shrink or drop the spacer, and truncate the
-	// subtitle if the terminal is extremely narrow.
-	const (
-		titleText    = "thinking"
-		titleWidth   = 8
-		subtitleText = "streaming · Ctrl+G expands history"
-	)
-	available := max(boxWidth-titleWidth, 0)
-	subtitle := truncateRunes(subtitleText, available)
-	spacer := max(boxWidth-titleWidth-visibleRunes(subtitle), 0)
-	header := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		titleText,
-		strings.Repeat(" ", spacer),
-		subtitle,
-	)
-	return style.Render(header+"\n\n"+tail) + "\n\n"
+	contentWidth := max(width-4, 1)
+	tail := strings.ReplaceAll(tailRunes(reasoning, contentWidth*2), "\n", " ")
+	line := fmt.Sprintf("%s thinking  %s", spinnerFrame, tail)
+	return thinkingLineStyle.Render(truncateRunes(line, max(width-2, 1))) + "\n"
 }
 
 // renderThinkingSummary renders a finished message's captured reasoning,
@@ -211,17 +192,18 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 	if !expanded {
 		return thinkingLineStyle.Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))) + "\n"
 	}
-	boxWidth := width - 2
-	if boxWidth < 1 {
-		boxWidth = 1
+	contentWidth := max(width-4, 1)
+	var b strings.Builder
+	b.WriteString(thinkingLineStyle.Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))))
+	b.WriteString("\n")
+	for _, line := range strings.Split(strings.TrimSpace(reasoning), "\n") {
+		wrapped := ansi.Wrap(line, contentWidth, "")
+		for _, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(thinkingLineStyle.Render("    " + wl))
+			b.WriteString("\n")
+		}
 	}
-	style := lipgloss.NewStyle().
-		Width(boxWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(dimColor).
-		Foreground(dimColor).
-		Italic(true)
-	return style.Render(fmt.Sprintf("thinking (%s)\n\n%s", formatThinkDuration(duration), reasoning)) + "\n\n"
+	return b.String()
 }
 
 // renderMessage formats one transcript entry in the symbol-bullet style:
@@ -273,7 +255,7 @@ func renderUserMessage(content string, width int) string {
 
 func renderAgentMarkdown(content string, width int) string {
 	contentWidth := max(width-2, 1)
-	blocks := splitFencedBlocks(content)
+	blocks := splitFencedBlocks(strings.TrimRight(content, "\n"))
 	var b strings.Builder
 	for _, block := range blocks {
 		switch block.kind {
@@ -282,6 +264,9 @@ func renderAgentMarkdown(content string, width int) string {
 			b.WriteString("\n")
 		case "prose":
 			for _, pLine := range strings.Split(block.text, "\n") {
+				if strings.TrimSpace(pLine) == "" {
+					continue
+				}
 				style, transformed := parseMarkdownLine(pLine)
 				wrapped := ansi.Wrap(transformed, contentWidth, "")
 				for _, wl := range strings.Split(wrapped, "\n") {
@@ -291,8 +276,33 @@ func renderAgentMarkdown(content string, width int) string {
 			}
 		}
 	}
-	b.WriteString("\n")
-	return b.String()
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func renderTranscriptItem(item session.TranscriptItem, thinkingExpanded bool, width int) string {
+	switch item.Kind {
+	case session.KindThinking:
+		if item.Thinking == nil {
+			return ""
+		}
+		return renderThinkingSummary(item.Thinking.Text, item.Thinking.Duration, thinkingExpanded, width)
+	case session.KindAudit:
+		if item.Audit == nil {
+			return ""
+		}
+		return renderCompletedToolCall(*item.Audit, width)
+	case session.KindMessage:
+		if item.Message == nil {
+			return ""
+		}
+		var b strings.Builder
+		if item.Message.Reasoning != "" {
+			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, thinkingExpanded, width))
+		}
+		b.WriteString(renderMessage(*item.Message, width))
+		return b.String()
+	}
+	return ""
 }
 
 func renderSystemNotice(content string, width int) string {
@@ -422,6 +432,28 @@ func renderActiveToolCall(atc session.ActiveToolCall, spinnerFrame string, now t
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
+	return b.String()
+}
+
+func renderCompletedToolCall(event registry.AuditEvent, width int) string {
+	state := "done"
+	style := statusOkStyle
+	if event.Error != "" {
+		state = "failed"
+		style = statusErrStyle
+	}
+	head := fmt.Sprintf("✓ %s %s", event.ToolName, state)
+	var b strings.Builder
+	b.WriteString(style.Render(truncateRunes(head, max(width-2, 1))))
+	b.WriteString("\n")
+	summary := event.ResultSummary
+	if event.Error != "" {
+		summary = event.Error
+	}
+	if summary != "" {
+		b.WriteString(mutedStyle.Render(truncateRunes("  "+summary, max(width-2, 1))))
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 

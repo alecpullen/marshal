@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"sort"
+
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
@@ -34,6 +36,33 @@ const (
 	ContentTypeDiff       ContentType = "diff"
 	ContentTypeToolResult ContentType = "tool_result"
 )
+
+// ThinkingEntry captures reasoning text that led to a tool call. Unlike
+// Message.Reasoning (which is attached to a final answer), ThinkingEntry
+// preserves intermediate reasoning that the agent produced before calling a
+// tool — reasoning that would otherwise be lost when the next BeginStreaming
+// call resets the in-progress buffer.
+type ThinkingEntry struct {
+	Text      string
+	Duration  time.Duration
+	StartedAt time.Time
+}
+
+type TranscriptKind int
+
+const (
+	KindMessage TranscriptKind = iota
+	KindThinking
+	KindAudit
+)
+
+type TranscriptItem struct {
+	Timestamp time.Time
+	Kind      TranscriptKind
+	Message   *Message
+	Audit     *registry.AuditEvent
+	Thinking  *ThinkingEntry
+}
 
 type ActivityKind string
 
@@ -134,6 +163,7 @@ type State struct {
 	activeToolCall  *ActiveToolCall
 	sessionRules    []string
 	auditLog        []registry.AuditEvent
+	thinkingLog     []ThinkingEntry
 	lastBackup      []BackupFile
 	contextPack     contextpack.Pack
 	activeRoute     RouteInfo
@@ -269,6 +299,12 @@ func (s *State) AppendThinking(delta string) {
 func (s *State) EndStreaming() {
 	s.mu.Lock()
 	s.inProgress.Active = false
+	s.mu.Unlock()
+}
+
+func (s *State) LogThinking(entry ThinkingEntry) {
+	s.mu.Lock()
+	s.thinkingLog = append(s.thinkingLog, entry)
 	s.mu.Unlock()
 }
 
@@ -427,6 +463,50 @@ func (s *State) AuditLog() []registry.AuditEvent {
 	log := make([]registry.AuditEvent, len(s.auditLog))
 	copy(log, s.auditLog)
 	return log
+}
+
+func (s *State) Transcript() []TranscriptItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	items := make([]TranscriptItem, 0, len(s.messages)+len(s.auditLog)+len(s.thinkingLog))
+
+	for i := range s.messages {
+		msg := s.messages[i]
+		items = append(items, TranscriptItem{
+			Timestamp: msg.CreatedAt,
+			Kind:      KindMessage,
+			Message:   &msg,
+		})
+	}
+
+	for i := range s.auditLog {
+		evt := s.auditLog[i]
+		items = append(items, TranscriptItem{
+			Timestamp: evt.Timestamp,
+			Kind:      KindAudit,
+			Audit:     &evt,
+		})
+	}
+
+	for i := range s.thinkingLog {
+		t := s.thinkingLog[i]
+		items = append(items, TranscriptItem{
+			Timestamp: t.StartedAt,
+			Kind:      KindThinking,
+			Thinking:  &t,
+		})
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		ti := items[i].Timestamp
+		tj := items[j].Timestamp
+		if ti.IsZero() || tj.IsZero() {
+			return !ti.IsZero() && tj.IsZero()
+		}
+		return ti.Before(tj)
+	})
+	return items
 }
 
 func (s *State) StoreBackup(backups []BackupFile) {

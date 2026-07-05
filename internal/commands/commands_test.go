@@ -2,12 +2,14 @@ package commands
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/contextpack"
 	"marshal/internal/tools/registry"
 )
 
@@ -303,5 +305,69 @@ func TestRegisterAllIncludesSwarmCommand(t *testing.T) {
 	// The handler is a no-op; the TUI special-cases dispatch like /ask.
 	if got := cmd.Handler(nil, []string{"fix", "bug"}); got != "" {
 		t.Fatalf("swarm handler returned %q, want empty", got)
+	}
+}
+
+func TestLogCommandShowsRecentAuditEvents(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 20; i++ {
+		state.LogToolCall(registry.AuditEvent{
+			Timestamp:     time.Date(2026, 7, 5, 12, 0, i, 0, time.UTC),
+			ToolName:      fmt.Sprintf("tool.%d", i),
+			ResultSummary: fmt.Sprintf("result %d", i),
+		})
+	}
+
+	cmd, ok := cmdReg.Lookup("log")
+	if !ok {
+		t.Fatal("log command not registered")
+	}
+	out := cmd.Handler(state, nil)
+
+	if !strings.Contains(out, "tool.19") || !strings.Contains(out, "result 19") {
+		t.Fatalf("log output missing newest event:\n%s", out)
+	}
+	if strings.Contains(out, "tool.4 ") {
+		t.Fatalf("log output should only contain the last 15 events:\n%s", out)
+	}
+}
+
+func TestLogCommandEmpty(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	cmd, _ := cmdReg.Lookup("log")
+	if out := cmd.Handler(state, nil); out != "No tool calls yet." {
+		t.Fatalf("empty log output = %q", out)
+	}
+}
+
+func TestContextCommandListsPackSections(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Title: "internal/app/tui/model.go", EstimatedTokens: 8400},
+			{Source: "repo-map", EstimatedTokens: 2100},
+		},
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 10500, MaxTokens: 32000},
+	})
+
+	cmd, _ := cmdReg.Lookup("context")
+	out := cmd.Handler(state, nil)
+
+	for _, want := range []string{"10k/32k", "internal/app/tui/model.go", "8k", "repo-map"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("context output missing %q:\n%s", want, out)
+		}
 	}
 }

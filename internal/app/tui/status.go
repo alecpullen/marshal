@@ -1,0 +1,99 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/app/session"
+)
+
+const (
+	// statusHorizontalPadding is the leading and trailing single-space pad
+	// rendered around the status line content.
+	statusHorizontalPadding = 2
+	// statusMinGap is the smallest number of spaces kept between the left
+	// and right clusters when the terminal is too narrow to show everything.
+	statusMinGap = 1
+)
+
+// renderStatusLine is the single row of persistent chrome below the input:
+// left cluster identifies the session (mode · model @ provider · locality
+// · ctx usage), right cluster shows what the agent is doing right now.
+func (m Model) renderStatusLine(width int) string {
+	left := strings.Join(m.statusLeftSegments(), " · ")
+	right := m.statusRightSegment()
+
+	gap := width - visibleRunes(left) - visibleRunes(right) - statusHorizontalPadding
+	if gap < statusMinGap {
+		// Not enough room: prioritise the activity cluster. The truncation
+		// budget reserves both padding cells plus the minimum inter-cluster gap.
+		left = truncateRunes(left, max(width-visibleRunes(right)-statusHorizontalPadding-statusMinGap, 0))
+		gap = max(width-visibleRunes(left)-visibleRunes(right)-statusHorizontalPadding, statusMinGap)
+	}
+	line := " " + left + strings.Repeat(" ", gap) + right + " "
+	return statusBarBg.Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
+}
+
+func (m Model) statusLeftSegments() []string {
+	mode := m.forceMode
+	if mode == "" {
+		mode = "auto"
+	}
+	segments := []string{mode}
+
+	route := m.state.ActiveRoute()
+	if route.Active {
+		segments = append(segments, fmt.Sprintf("%s @ %s", route.Model, route.Provider))
+		if route.LocalOnly {
+			segments = append(segments, "local")
+		}
+	} else {
+		segments = append(segments, "no model")
+		if !m.state.Config.Privacy.RemoteProvidersAllowed {
+			segments = append(segments, "local")
+		}
+	}
+
+	if pack := m.state.ContextPack(); !pack.IsEmpty() {
+		segments = append(segments, fmt.Sprintf("ctx %s/%s",
+			compactTokenCount(pack.TokenUsage.EstimatedTokens),
+			compactTokenCount(pack.TokenUsage.MaxTokens)))
+	}
+	return segments
+}
+
+var (
+	statusWarnStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
+	statusErrStyle  = lipgloss.NewStyle().Foreground(errorColor).Bold(true)
+	statusOkStyle   = lipgloss.NewStyle().Foreground(successColor)
+	statusBusyStyle = lipgloss.NewStyle().Foreground(accentColor)
+)
+
+func (m Model) statusRightSegment() string {
+	// Pending approvals are surfaced by the early return above the activity
+	// switch, so the ActivityKind case below only needs to handle active work.
+	if m.state.PendingApproval() != nil {
+		return statusWarnStyle.Render("⚠ approval")
+	}
+	activity := m.state.Activity()
+	switch activity.Kind {
+	case session.ActivityThinking:
+		return statusBusyStyle.Render(fmt.Sprintf("%s thinking", m.spinnerFrame))
+	case session.ActivityTool:
+		elapsed := m.now().Sub(activity.StartedAt)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		return statusBusyStyle.Render(fmt.Sprintf("%s %s · %s", m.spinnerFrame, activity.Label, formatElapsed(elapsed)))
+	}
+	if m.state.ProviderError() != nil {
+		return statusErrStyle.Render("✗ error")
+	}
+	if m.lastActivityLabel != "" && m.now().Sub(m.lastActivityDone) < doneDisplayDuration {
+		return statusOkStyle.Render("✓ " + m.lastActivityLabel)
+	}
+	return ""
+}

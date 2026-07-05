@@ -27,10 +27,10 @@ func TestCreateSessionAndMessages(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	if err := db.SaveMessage(sessionID, "user", "hello", now.Add(time.Second), "", 0); err != nil {
+	if err := db.SaveMessage(sessionID, "user", "hello", "plain", now.Add(time.Second), "", 0); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
-	if err := db.SaveMessage(sessionID, "assistant", "hi there", now.Add(2*time.Second), "considering the greeting", 4*time.Second); err != nil {
+	if err := db.SaveMessage(sessionID, "assistant", "hi there", "markdown", now.Add(2*time.Second), "considering the greeting", 4*time.Second); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
 

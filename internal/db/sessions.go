@@ -11,6 +11,7 @@ type Message struct {
 	ID              int64
 	Role            string
 	Content         string
+	ContentType     string
 	Reasoning       string
 	ThinkDurationMs int64
 	CreatedAt       time.Time
@@ -90,7 +91,7 @@ func (db *DB) EndSession(sessionID string, endedAt time.Time, summary string) er
 // long it took, if any (empty string / zero duration otherwise) — both
 // stored as SQL NULL so a message with no captured reasoning round-trips
 // identically to how it did before these columns existed.
-func (db *DB) SaveMessage(sessionID string, role string, content string, createdAt time.Time, reasoning string, thinkDuration time.Duration) error {
+func (db *DB) SaveMessage(sessionID string, role string, content string, contentType string, createdAt time.Time, reasoning string, thinkDuration time.Duration) error {
 	var reasoningArg sql.NullString
 	if reasoning != "" {
 		reasoningArg = sql.NullString{String: reasoning, Valid: true}
@@ -99,10 +100,14 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, created
 	if thinkDuration > 0 {
 		thinkDurationArg = sql.NullInt64{Int64: thinkDuration.Milliseconds(), Valid: true}
 	}
+	var contentTypeArg sql.NullString
+	if contentType != "" && contentType != "plain" {
+		contentTypeArg = sql.NullString{String: contentType, Valid: true}
+	}
 	_, err := db.exec(
-		`INSERT INTO messages (session_id, role, content, reasoning, think_duration_ms, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		sessionID, role, content, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339),
+		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("save message: %w", err)
@@ -113,7 +118,7 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, created
 // GetMessages returns all messages for a session in chronological order.
 func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 	rows, err := db.sqlDB.Query(
-		`SELECT id, role, content, reasoning, think_duration_ms, created_at
+		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at
 		 FROM messages
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,
@@ -130,8 +135,12 @@ func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 		var created string
 		var reasoning sql.NullString
 		var thinkDurationMs sql.NullInt64
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &reasoning, &thinkDurationMs, &created); err != nil {
+		var contentType sql.NullString
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created); err != nil {
 			return nil, fmt.Errorf("scan message row: %w", err)
+		}
+		if contentType.Valid {
+			m.ContentType = contentType.String
 		}
 		if reasoning.Valid {
 			m.Reasoning = reasoning.String

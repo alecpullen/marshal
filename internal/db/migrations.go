@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
+    content_type TEXT,
     reasoning TEXT,
     think_duration_ms INTEGER,
     created_at TEXT NOT NULL

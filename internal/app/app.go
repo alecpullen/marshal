@@ -420,12 +420,18 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 }
 
 func printMarshalBanner(w io.Writer, project string) {
-	fmt.Fprintf(w, "╔═══════════════════════════════════════╗\n")
-	fmt.Fprintf(w, "║            M A R S H A L              ║\n")
-	fmt.Fprintf(w, "║  local-first coding agent             ║\n")
-	fmt.Fprintf(w, "╠═══════════════════════════════════════╣\n")
-	fmt.Fprintf(w, "║  project: %-28s ║\n", project)
-	fmt.Fprintf(w, "╚═══════════════════════════════════════╝\n")
+	fmt.Fprintf(w, `
+  ███╗   ███╗ █████╗ ██████╗ ███████╗██╗  ██╗ █████╗ ██╗
+  ████╗ ████║██╔══██╗██╔══██╗██╔════╝██║  ██║██╔══██╗██║
+  ██╔████╔██║███████║██████╔╝███████╗███████║███████║██║
+  ██║╚██╔╝██║██╔══██║██╔══██╗╚════██║██╔══██║██╔══██║██║
+  ██║ ╚═╝ ██║██║  ██║██║  ██║███████║██║  ██║██║  ██║███████╗
+  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
+
+  local-first coding agent
+  project: %s
+
+`, project)
 }
 
 func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {

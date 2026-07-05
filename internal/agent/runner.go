@@ -206,7 +206,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 		case ActionAnswer, ActionFinal:
 			task.Summary = action.Content
 			task.Status = TaskStatusCompleted
-			r.State.AddMessage(session.RoleAssistant, action.Content, session.ContentTypeMarkdown)
+			r.State.AddMessageFinal(session.RoleAssistant, action.Content, session.ContentTypeMarkdown)
 			return nil
 		case ActionToolCall, ActionPatch:
 			resultMsgs, err := r.executeToolCall(ctx, action)
@@ -453,7 +453,13 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		label = fmt.Sprintf("%s: %s", toolName, command)
 	}
 	r.State.SetActivity(session.Activity{Kind: session.ActivityTool, Label: label, StartedAt: r.Now()})
+	r.State.SetActiveToolCall(session.ActiveToolCall{
+		Name:      toolName,
+		Args:      SummarizeToolArgs(toolName, args),
+		StartedAt: r.Now(),
+	})
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	defer r.State.ClearActiveToolCall()
 
 	call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
 	result, execErr := tool.Handler(ctx, call)

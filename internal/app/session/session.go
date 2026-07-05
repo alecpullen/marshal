@@ -195,6 +195,37 @@ func (s *State) AddMessage(role Role, content string, contentType ContentType) {
 	}
 }
 
+func (s *State) AddMessageFinal(role Role, content string, contentType ContentType) {
+	s.mu.Lock()
+	reasoning := s.inProgress.Reasoning
+	var thinkDuration time.Duration
+	if reasoning != "" {
+		thinkDuration = time.Since(s.inProgress.StartedAt)
+		if thinkDuration <= 0 {
+			thinkDuration = time.Millisecond
+		}
+	}
+	s.inProgress = InProgressMessage{}
+
+	msg := Message{
+		Role:          role,
+		Content:       content,
+		ContentType:   contentType,
+		Reasoning:     reasoning,
+		ThinkDuration: thinkDuration,
+		CreatedAt:     time.Now(),
+		Final:         true,
+	}
+	s.messages = append(s.messages, msg)
+	s.mu.Unlock()
+
+	if s.persistenceEnabled() {
+		if err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), msg.CreatedAt, reasoning, thinkDuration); err != nil {
+			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
+		}
+	}
+}
+
 func (s *State) Messages() []Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()

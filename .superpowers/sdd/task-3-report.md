@@ -1,26 +1,27 @@
-# Task 3 Report: Add ClearMessages to Session State
+## Task 3 Report: Wire ActiveToolCall into the runner
 
-## What I implemented
-Added `ClearMessages()` method to `session.State` in `internal/app/session/session.go`.
-It locks the mutex, records the current message count, sets `s.messages = nil`, and returns the count.
-Placed after `Messages()` (line 182), before `BeginStreaming()` (line 197).
+### Changes Made
 
-## Test results
-All 20 tests pass, no regressions.
+**`internal/app/session/session.go`** — Added `AddMessageFinal` method (after `AddMessage`):
+- Mirrors `AddMessage` but sets `Final: true` on the message
+- Captures reasoning and think duration (same as AddMessage)
+- Calls existing `SaveMessage` signature (without `final` param; Task 5 will update this)
+
+**`internal/agent/runner.go`** — Two changes:
+- *Line 209*: Changed `AddMessage` → `AddMessageFinal` for terminal answers (`ActionAnswer` / `ActionFinal`)
+- *Lines 455-458*: Added `SetActiveToolCall` (with `SummarizeToolArgs`) before tool execution, and `defer ClearActiveToolCall()` after it
+
+**`internal/agent/runner_test.go`** — Added two tests:
+- `TestRunnerSetsAndClearsActiveToolCall`: Verifies `ActiveToolCall` is set when a tool handler runs and cleared after Run completes
+- `TestRunnerMarksFinalAnswer`: Verifies final answer messages have `Final: true`
+
+### Test Results
 
 ```
-PASS
-ok  	marshal/internal/app/session	0.514s
+=== RUN   TestRunnerSetsAndClearsActiveToolCall
+--- PASS: TestRunnerSetsAndClearsActiveToolCall (0.00s)
+=== RUN   TestRunnerMarksFinalAnswer
+--- PASS: TestRunnerMarksFinalAnswer (0.00s)
 ```
 
-## Files changed
-- `internal/app/session/session.go` — +11 lines (ClearMessages method)
-
-## Self-review findings
-- Follows existing patterns: `s.mu.Lock()`/`defer s.mu.Unlock()`, return before unlock.
-- Consistent with `ClearBackup()` and `ClearTurnToolCache()` naming conventions.
-- Does not touch audit log, backups, context pack, or persistence — as specified.
-- One concern: if there is any downstream code that holds a reference to an element of `s.messages` (e.g. from `Messages()` returning a copy), that reference is unaffected since `Messages()` already returns a deep-ish copy of the slice. No issue.
-
-## Issues or concerns
-None.
+Full suite: `go test ./...` — all packages pass, no regressions.

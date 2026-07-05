@@ -1284,6 +1284,72 @@ func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 	}
 }
 
+func TestRunnerSetsAndClearsActiveToolCall(t *testing.T) {
+	state := newTestState(t)
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "file.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			atc, ok := state.ActiveToolCall()
+			if !ok {
+				t.Error("ActiveToolCall not set during tool handler execution")
+			}
+			if atc.Name != "file.read" {
+				t.Errorf("ActiveToolCall.Name = %q, want file.read", atc.Name)
+			}
+			return registry.ToolResult{Summary: "read ok", Content: "file contents"}, nil
+		},
+	})
+
+	p := &scriptedProvider{
+		responses: []string{
+			`{"rationale":"need file","action":{"type":"tool_call","tool":"file.read","args":{"path":"/repo/main.go"}}}`,
+			`{"rationale":"done","action":{"type":"answer","content":"done"}}`,
+		},
+	}
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	if err := runner.Run(context.Background(), "read the file"); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	_, ok := state.ActiveToolCall()
+	if ok {
+		t.Error("ActiveToolCall still set after Run completed, want cleared")
+	}
+}
+
+func TestRunnerMarksFinalAnswer(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{
+		responses: []string{
+			`{"rationale":"simple","action":{"type":"answer","content":"here is the answer"}}`,
+		},
+	}
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	if err := runner.Run(context.Background(), "what is 2+2?"); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	msgs := state.Messages()
+	var answer session.Message
+	found := false
+	for _, m := range msgs {
+		if m.Role == session.RoleAssistant && m.Content == "here is the answer" {
+			answer = m
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("final answer message not found in state")
+	}
+	if !answer.Final {
+		t.Fatal("answer message Final = false, want true")
+	}
+}
+
 func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	idx := skills.NewIndex()
 	idx.Set("debug", skills.Skill{

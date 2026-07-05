@@ -51,6 +51,7 @@ type Model struct {
 	input            textinput.Model
 	editingCommand   bool
 	runner           AgentRunner
+	swarmRunner      AgentRunner
 	ctx              context.Context
 	busy             bool
 	stateStripActive bool
@@ -126,6 +127,17 @@ func WithRunner(ctx context.Context, runner AgentRunner) Option {
 	return func(m *Model) {
 		m.ctx = ctx
 		m.runner = runner
+	}
+}
+
+// WithSwarmRunner configures the TUI to route /swarm <goal> submissions
+// through runner (the swarm orchestrator). ctx follows the same rules as
+// WithRunner's: pass the cancellable program context so Ctrl+C and /stop
+// cancel an in-flight swarm run.
+func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.swarmRunner = runner
 	}
 }
 
@@ -655,6 +667,26 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		m.forceMode = ""
 		m.refreshViewport()
 		return m, nil
+
+	case "swarm":
+		goal := strings.TrimSpace(strings.Join(args, " "))
+		if goal == "" {
+			m.state.AddMessage(session.RoleSystem, "Usage: /swarm <goal>", session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		if m.swarmRunner == nil {
+			m.state.AddMessage(session.RoleSystem, "Swarm is not available (agent failed to initialise).", session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		if m.busy {
+			return m, nil
+		}
+		m.busy = true
+		agentCtx, cancel := context.WithCancel(m.ctx)
+		m.agentCancel = cancel
+		return m, tea.Batch(runAgentCmd(agentCtx, m.swarmRunner, goal), tickCmd())
 
 	case "model":
 		if len(args) == 0 {

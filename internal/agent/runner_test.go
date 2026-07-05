@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1411,5 +1412,94 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	}
 	if !strings.Contains(systemPromptMsgs[2], "Active Skills") {
 		t.Fatal("third system prompt should show Active Skills")
+	}
+}
+
+func TestRunnerUsesConfiguredRoleInSystemPrompt(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale": "done", "action": {"type": "final", "content": "review complete"}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.Role = RoleReviewer
+	runner.SetForceClass("question")
+
+	if err := runner.Run(context.Background(), "review the diff"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	system := p.requests[0].Messages[0].Content
+	if !strings.Contains(system, "You are a reviewer") {
+		t.Fatalf("system prompt did not use reviewer role:\n%s", system)
+	}
+}
+
+func TestRunTaskReturnsCompletedTaskWithSummary(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale": "done", "action": {"type": "final", "content": "all findings recorded"}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.SetForceClass("question")
+
+	task, err := runner.RunTask(context.Background(), "scout the repo")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if task.Status != TaskStatusCompleted {
+		t.Fatalf("task.Status = %q, want %q", task.Status, TaskStatusCompleted)
+	}
+	if task.Summary != "all findings recorded" {
+		t.Fatalf("task.Summary = %q, want final content", task.Summary)
+	}
+}
+
+type recordingGate struct {
+	mu           sync.Mutex
+	acquisitions int
+}
+
+func (g *recordingGate) Acquire() (release func()) {
+	g.mu.Lock()
+	g.acquisitions++
+	return g.mu.Unlock
+}
+
+func TestWriteGateAcquiredForWriteToolsOnly(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "fs.touch", Description: "write something", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "touched"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(registry.Tool{
+		Name: "fs.peek", Description: "read something", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "peeked"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		`{"rationale": "read", "action": {"type": "tool_call", "tool": "fs.peek", "args": {}}}`,
+		`{"rationale": "write", "action": {"type": "tool_call", "tool": "fs.touch", "args": {}}}`,
+		`{"rationale": "done", "action": {"type": "final", "content": "done"}}`,
+	}}
+	gate := &recordingGate{}
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	runner.SetForceClass("question")
+	runner.WriteGate = gate
+
+	if err := runner.Run(context.Background(), "touch the file"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gate.acquisitions != 1 {
+		t.Fatalf("gate acquired %d times, want 1 (write tool only)", gate.acquisitions)
 	}
 }

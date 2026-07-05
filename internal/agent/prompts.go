@@ -18,6 +18,7 @@ const (
 	RoleImplementer AgentRole = "implementer"
 	RoleTester      AgentRole = "tester"
 	RoleReviewer    AgentRole = "reviewer"
+	RoleRepoScout   AgentRole = "repo_scout"
 )
 
 type rolePrompt struct {
@@ -51,6 +52,11 @@ var roleAddenda = map[AgentRole]rolePrompt{
 		focus:          "You are a reviewer. Critique the proposed change. Identify bugs, risks, and style issues. Do not edit files.",
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Need to inspect the patched function for edge cases.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "parser.go", "start_line": 45, "end_line": 78}}}`,
+	},
+	RoleRepoScout: {
+		focus:          "You are a repo scout. Inspect the repository with read-only tools and report findings for your assigned focus area: relevant file paths, symbols, code paths, and risks. Do not modify anything. Be concise and concrete.",
+		allowedActions: []string{"tool_call", "final"},
+		example:        `{"rationale": "Locate the parser implementation before reporting findings.", "action": {"type": "tool_call", "tool": "repo.search", "args": {"query": "func Parse"}}}`,
 	},
 }
 

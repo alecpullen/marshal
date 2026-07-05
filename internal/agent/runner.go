@@ -46,6 +46,15 @@ type RouteResolver interface {
 	Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error)
 }
 
+// WriteGate serialises non-read-only tool execution across concurrently
+// running Runners. The swarm sets one shared gate on every role runner so
+// that "only one agent may write files at a time" (docs/07 swarm safety)
+// holds even if a future orchestration mode overlaps role turns.
+type WriteGate interface {
+	// Acquire blocks until the gate is free and returns its release func.
+	Acquire() (release func())
+}
+
 // MemoryProvider supplies durable project memories for injection into the
 // context pack at the start of each turn. It returns contextpack.MemoryNote
 // (not a type from internal/knowledge) so that internal/agent never needs
@@ -85,6 +94,15 @@ type Runner struct {
 	ForceClass         string // if set, overrides Classify() in Run()
 	SkillIndex         *skills.Index
 
+	// Role selects the system-prompt role addendum. Zero value behaves as
+	// RoleGeneral, so existing single-agent construction is unchanged.
+	// Swarm sub-runners set this to planner/repo_scout/implementer/reviewer.
+	Role AgentRole
+
+	// WriteGate serialises non-read-only tool execution. When nil, no
+	// serialisation is performed (default single-agent behaviour).
+	WriteGate WriteGate
+
 	forceClassMu  sync.Mutex
 	callHistory   []toolCallKey
 	callHistoryMu sync.Mutex
@@ -112,11 +130,26 @@ func (r *Runner) SetForceClass(class string) {
 	r.forceClassMu.Unlock()
 }
 
+func (r *Runner) role() AgentRole {
+	if r.Role == "" {
+		return RoleGeneral
+	}
+	return r.Role
+}
+
 // Run executes one full agent turn for goal. It records the user's message,
 // the assistant's plan (if any), every tool call/result, and the final
 // answer directly onto r.State, so the TUI's existing transcript/audit-log/
 // approval rendering picks all of it up with no TUI changes.
 func (r *Runner) Run(ctx context.Context, goal string) error {
+	_, err := r.RunTask(ctx, goal)
+	return err
+}
+
+// RunTask is Run plus access to the finished Task, so orchestrators (the
+// swarm) can read a role's final summary and status without re-parsing
+// the session transcript.
+func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	r.State.ClearTurnToolCache()
@@ -138,7 +171,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
 	messages := []schema.ChatMessage{
-		BuildSystemPrompt(RoleGeneral, r.Registry.List(), r.SkillIndex, r.State.ActiveSkills()),
+		BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills()),
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
@@ -148,7 +181,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
 		planText, err := r.chatWithRetry(ctx, turnProvider, turnModel, planMessages)
 		if err != nil {
-			return r.fail(task, err)
+			return task, r.fail(task, err)
 		}
 		task.Plan = splitPlanLines(planText)
 		r.State.SetPlan(task.Plan)
@@ -159,7 +192,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 			}
 			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
-			messages = []schema.ChatMessage{BuildSystemPrompt(RoleGeneral, r.Registry.List(), r.SkillIndex, r.State.ActiveSkills())}
+			messages = []schema.ChatMessage{BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills())}
 			messages = appendContextPackMessage(messages, updatedPack)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}
@@ -172,13 +205,13 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	for iteration := 0; iteration < r.MaxToolIterations; iteration++ {
 		currentSkills := r.State.ActiveSkills()
 		if skillsChanged(lastRenderedSkills, currentSkills) {
-			messages[0] = BuildSystemPrompt(RoleGeneral, r.Registry.List(), r.SkillIndex, currentSkills)
+			messages[0] = BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, currentSkills)
 			lastRenderedSkills = currentSkills
 		}
 
 		raw, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
 		if err != nil {
-			return r.fail(task, err)
+			return task, r.fail(task, err)
 		}
 
 		action, parseErr := ParseAction(raw)
@@ -196,7 +229,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 			}
 			resultMsgs, execErr := r.executeActions(ctx, action.Actions)
 			if execErr != nil {
-				return r.fail(task, execErr)
+				return task, r.fail(task, execErr)
 			}
 			messages = append(messages, resultMsgs...)
 			continue
@@ -207,11 +240,11 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 			task.Summary = action.Content
 			task.Status = TaskStatusCompleted
 			r.State.AddMessageFinal(session.RoleAssistant, action.Content, session.ContentTypeMarkdown)
-			return nil
+			return task, nil
 		case ActionToolCall, ActionPatch:
 			resultMsgs, err := r.executeToolCall(ctx, action)
 			if err != nil {
-				return r.fail(task, err)
+				return task, r.fail(task, err)
 			}
 			messages = append(messages, resultMsgs...)
 		default:
@@ -221,7 +254,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 
 	task.Status = TaskStatusFailed
 	r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.", session.ContentTypePlain)
-	return ErrMaxIterationsExceeded
+	return task, ErrMaxIterationsExceeded
 }
 
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {
@@ -460,6 +493,11 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	})
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	defer r.State.ClearActiveToolCall()
+
+	if r.WriteGate != nil && tool.Risk != registry.RiskReadOnly {
+		release := r.WriteGate.Acquire()
+		defer release()
+	}
 
 	call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
 	result, execErr := tool.Handler(ctx, call)

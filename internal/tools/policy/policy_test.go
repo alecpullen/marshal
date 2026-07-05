@@ -2,6 +2,7 @@ package policy
 
 import (
 	"marshal/internal/app/config"
+	"sync"
 	"testing"
 )
 
@@ -135,4 +136,40 @@ func TestSetSessionRulesUpdatesEvaluateDecisions(t *testing.T) {
 	if decision != DecisionAllow {
 		t.Fatalf("decision after session rule = %v, want %v", decision, DecisionAllow)
 	}
+}
+
+func TestPolicyEngine_ConcurrentSetSessionRulesAndEvaluate(t *testing.T) {
+	cfg := config.Default()
+	pe := NewEngine(&cfg, []string{"initial"})
+
+	var wg sync.WaitGroup
+	writers := 10
+	readers := 10
+	iterations := 100
+
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				pe.SetSessionRules([]string{"rule-a", "rule-b"})
+				pe.SetSessionRules([]string{"rule-c"})
+			}
+		}(i)
+	}
+
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "rule-c"})
+				if err != nil {
+					t.Errorf("Evaluate error: %v", err)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }

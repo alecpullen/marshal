@@ -121,10 +121,11 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 		nil,
 	))
 
-	m.fields = append(m.fields, newIntField(
+	m.fields = append(m.fields, newIntFieldWithBounds(
 		"Max tool iterations",
 		m.cfg.Agent.MaxToolIterations,
 		func(v int) { m.cfg.Agent.MaxToolIterations = v },
+		1, 0,
 	))
 
 	if len(m.fields) > 0 {

@@ -44,3 +44,19 @@ func TestIntFieldRejectsNonDigits(t *testing.T) {
 		t.Fatalf("value = %d after invalid input, want 8", f.Value())
 	}
 }
+
+func TestIntFieldWithBoundsClampsValue(t *testing.T) {
+	var got int
+	f := newIntFieldWithBounds("Max tool iterations", 8, func(v int) { got = v }, 1, 100)
+	f.Focus()
+	// Typing '2' makes 82, which exceeds max 100? No — 82 < 100. Use max 50.
+	f = newIntFieldWithBounds("Max tool iterations", 8, func(v int) { got = v }, 1, 50)
+	f.Focus()
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	if f.Value() != 50 {
+		t.Fatalf("value = %d, want 50 (clamped to max)", f.Value())
+	}
+	if got != 50 {
+		t.Fatalf("onChange value = %d, want 50", got)
+	}
+}

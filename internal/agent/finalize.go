@@ -37,7 +37,7 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 		content = action.Content
 	}
 	if strings.TrimSpace(content) == "" {
-		content = synthesizeFallback(task, raw)
+		content = synthesizeFallback(task, raw, reason)
 	}
 
 	task.Summary = content
@@ -50,9 +50,14 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 // synthesizeFallback builds a best-effort answer when the model refuses to
 // conclude. It stitches together any prose the model emitted plus the plan so
 // the user is never left with nothing.
-func synthesizeFallback(task *Task, raw string) string {
+func synthesizeFallback(task *Task, raw string, reason finalizeReason) string {
 	var b strings.Builder
-	b.WriteString("I ran out of tool budget before fully finishing. Here is my best summary of progress.\n\n")
+	switch reason {
+	case reasonStalled:
+		b.WriteString("I appear to be stuck repeating the same kind of lookup without making progress. Here is my best summary of what I know so far.\n\n")
+	default:
+		b.WriteString("I ran out of tool budget before fully finishing. Here is my best summary of progress.\n\n")
+	}
 	if len(task.Plan) > 0 {
 		b.WriteString("Plan I was following:\n")
 		for _, step := range task.Plan {

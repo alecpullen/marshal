@@ -1970,6 +1970,54 @@ func TestApprovalKeyHandlingStillWorksInline(t *testing.T) {
 	}
 }
 
+func TestActiveToolCallRendersInline(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	m.busy = true
+	m.spinnerFrame = "⠹"
+
+	state.SetActiveToolCall(session.ActiveToolCall{
+		Name:      "shell.run",
+		Args:      "go test ./...",
+		StartedAt: time.Now(),
+	})
+
+	m.refreshViewport()
+	view := m.View()
+
+	if !strings.Contains(view, "shell.run") {
+		t.Fatalf("View() does not show active tool name:\n%s", view)
+	}
+	if !strings.Contains(view, "go test ./...") {
+		t.Fatalf("View() does not show active tool args:\n%s", view)
+	}
+}
+
+func TestActiveToolCallClearsFromView(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	m.busy = true
+
+	state.SetActiveToolCall(session.ActiveToolCall{
+		Name:      "file.read",
+		Args:      "/repo/main.go",
+		StartedAt: time.Unix(100, 0),
+	})
+	m.refreshViewport()
+	viewWithTool := m.View()
+
+	state.ClearActiveToolCall()
+	m.lastMessageCount = -1
+	m.refreshViewport()
+	viewWithoutTool := m.View()
+
+	if strings.Contains(viewWithoutTool, "/repo/main.go") && !strings.Contains(viewWithTool, "/repo/main.go") {
+		t.Fatalf("tool-call block did not clear from view")
+	}
+}
+
 func TestRenderMessageDispatchesByContentType(t *testing.T) {
 	tests := []struct {
 		name        string

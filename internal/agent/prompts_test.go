@@ -333,3 +333,13 @@ func TestBuildSystemPromptEmptySkillIndex(t *testing.T) {
 		t.Fatal("system prompt should note no skills when index is empty")
 	}
 }
+
+func TestBuildSystemPromptRepoScoutRole(t *testing.T) {
+	msg := BuildSystemPrompt(RoleRepoScout, nil, nil, nil)
+	if !strings.Contains(msg.Content, "repo scout") {
+		t.Fatalf("repo scout system prompt missing role focus:\n%s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "tool_call, final") {
+		t.Fatalf("repo scout system prompt missing allowed actions:\n%s", msg.Content)
+	}
+}

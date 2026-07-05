@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 )
 
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
@@ -28,6 +29,26 @@ func TestRenderAgentProseHasNoRoleLabel(t *testing.T) {
 		if strings.Contains(strings.ToLower(out), label) {
 			t.Fatalf("agent prose must not contain role label %q:\n%s", label, out)
 		}
+	}
+}
+
+func TestRenderAgentProseDoesNotAddBlankTrailingLine(t *testing.T) {
+	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "I found the bug.\n", ContentType: session.ContentTypeMarkdown}, 80)
+	if strings.HasSuffix(out, "\n\n") {
+		t.Fatalf("agent prose should not add a blank trailing line:\n%q", out)
+	}
+}
+
+func TestRenderThinkingBoxIsCompactInline(t *testing.T) {
+	out := renderThinkingBox("checking the auth flow", "⠋", 80)
+	if strings.Contains(out, "╭") {
+		t.Fatalf("live thinking should be inline, not boxed:\n%s", out)
+	}
+	if !strings.Contains(out, "⠋ thinking") || !strings.Contains(out, "checking the auth flow") {
+		t.Fatalf("live thinking missing spinner or text:\n%s", out)
+	}
+	if strings.HasSuffix(out, "\n\n") {
+		t.Fatalf("live thinking should not add a blank trailing line:\n%q", out)
 	}
 }
 
@@ -101,6 +122,61 @@ func TestRenderProviderErrorInline(t *testing.T) {
 	if !strings.Contains(out, "✗ provider: connection refused") {
 		t.Fatalf("provider error missing ✗ line:\n%s", out)
 	}
+}
+
+func TestRenderTranscriptItem(t *testing.T) {
+	width := 80
+
+	t.Run("thinking entry collapsed", func(t *testing.T) {
+		item := session.TranscriptItem{
+			Kind: session.KindThinking,
+			Thinking: &session.ThinkingEntry{
+				Text:      "Should check the file",
+				Duration:  2 * time.Second,
+				StartedAt: time.Now(),
+			},
+		}
+		result := renderTranscriptItem(item, false, width)
+		if !strings.Contains(result, "thought for 2s") {
+			t.Errorf("expected thinking summary, got: %s", result)
+		}
+	})
+
+	t.Run("audit entry success", func(t *testing.T) {
+		item := session.TranscriptItem{
+			Kind: session.KindAudit,
+			Audit: &registry.AuditEvent{
+				ToolName:      "file.read",
+				ResultSummary: "file contents here",
+			},
+		}
+		result := renderTranscriptItem(item, false, width)
+		if !strings.Contains(result, "file.read done") {
+			t.Errorf("expected completed tool call, got: %s", result)
+		}
+		if strings.Contains(result, "ago") {
+			t.Errorf("should not contain elapsed suffix, got: %s", result)
+		}
+	})
+
+	t.Run("message entry with reasoning", func(t *testing.T) {
+		msg := session.Message{
+			Role:          session.RoleAssistant,
+			Content:       "hello",
+			ContentType:   session.ContentTypePlain,
+			Reasoning:     "thinking about greeting",
+			ThinkDuration: 1 * time.Second,
+			CreatedAt:     time.Now(),
+		}
+		item := session.TranscriptItem{
+			Kind:    session.KindMessage,
+			Message: &msg,
+		}
+		result := renderTranscriptItem(item, false, width)
+		if !strings.Contains(result, "thought for 1s") {
+			t.Errorf("expected thinking summary before message, got: %s", result)
+		}
+	})
 }
 
 func TestTranscriptLinesFitWidth(t *testing.T) {

@@ -77,6 +77,7 @@ func (db *DB) Migrate() error {
 	messageColumnDefs := map[string]string{
 		"reasoning":         "TEXT",
 		"think_duration_ms": "INTEGER",
+		"final":             "INTEGER DEFAULT 0",
 	}
 	for name, def := range messageColumnDefs {
 		if messageColumns[name] {

@@ -189,7 +189,7 @@ func (s *State) AddMessage(role Role, content string, contentType ContentType) {
 
 	if s.persistenceEnabled() {
 		// Best-effort persistence; do not fail the in-memory transcript.
-		if err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), msg.CreatedAt, reasoning, thinkDuration); err != nil {
+		if err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), msg.CreatedAt, reasoning, thinkDuration, false); err != nil {
 			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
 		}
 	}
@@ -220,7 +220,7 @@ func (s *State) AddMessageFinal(role Role, content string, contentType ContentTy
 	s.mu.Unlock()
 
 	if s.persistenceEnabled() {
-		if err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), msg.CreatedAt, reasoning, thinkDuration); err != nil {
+		if err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), msg.CreatedAt, reasoning, thinkDuration, true); err != nil {
 			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
 		}
 	}

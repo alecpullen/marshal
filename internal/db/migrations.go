@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS messages (
     content_type TEXT,
     reasoning TEXT,
     think_duration_ms INTEGER,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    final INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS tool_calls (

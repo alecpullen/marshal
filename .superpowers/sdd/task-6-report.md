@@ -1,28 +1,27 @@
-# Task 6 Report: Wire Command Registry in App
+# Task 6 Report: renderPlan, renderDiff, renderToolResult
 
-## Changes Made
+## Summary
 
-### `internal/app/app.go`
-- Added `"marshal/internal/commands"` import
-- Changed `buildAgentRunner` signature to return `*registry.Registry` alongside `*agent.Runner` (Approach A)
-- Created `cmdReg` via `commands.New()` and called `commands.RegisterAll(cmdReg, toolReg, cfg.Project.Name)` after successful agent runner build
-- Added `tui.WithCommandRegistry(cmdReg)` to `tuiOpts` (always, even when runner fails — so `/help` works in provider error state)
+Added three renderer functions to `internal/app/tui/renderers.go`:
 
-### `internal/app/tui/model.go`
-- Added nil guard in `dispatchCommand` for `m.cmdRegistry` — returns early with "Command registry not available." if nil
+- **renderPlan(role, content, width)**: Renders a "Plan" bordered panel. Each content line is a step with an accent-colored bold bullet `•`. Uses role label prefix (matching renderPlain/renderMarkdown conventions). Wrapped via `renderPanel("Plan", ...)`.
 
-### `internal/app/live_agent_test.go`
-- Updated `newLiveAgentRunner` to use `runner, _, err := buildAgentRunner(...)` for the new 3-return signature
+- **renderDiff(role, content, width)**: Renders a "Diff" bordered panel. Lines starting with `+` are green (successColor), `-` are red (errorColor), `@@` are dimmed (mutedStyle). Uses role label prefix. Wrapped via `renderPanel("Diff", ...)`.
+
+- **renderToolResult(role, content, width)**: Renders inline (no panel). First line is styled with toolRoleStyle (bold, warning color). Remaining lines are dimmed via mutedStyle. Lines are wrapped to width.
 
 ## Verification
 
-- `go build ./internal/app/` — passes
-- `go test ./internal/app/ -v` — all 14 tests pass
-- `go test ./internal/app/tui/ -v` — all 43 tests pass
-- `go build ./cmd/marshal/` — full binary build passes
+- `go build ./...` — clean
+- `go vet ./...` — clean
+- `go test ./...` — all passing
 
 ## Commit
 
 ```
-ec2eedb feat: wire command registry into app
+d269bb6 feat(tui): add renderPlan, renderDiff, renderToolResult renderers
 ```
+
+## Concerns
+
+None.

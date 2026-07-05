@@ -342,7 +342,7 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	narrowView := m.View()
-	expectedViewport := renderMessage(string(session.RoleUser), message, m.viewport.Width) + renderThinkingBox(thinking, m.viewport.Width)
+	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width) + renderThinkingBox(thinking, m.viewport.Width)
 
 	// viewport.View() pads every line to the viewport's fixed width/height
 	// with trailing spaces and blank lines; strip that padding before
@@ -1849,5 +1849,94 @@ func TestPolishedCurrentLayoutFullSurface(t *testing.T) {
 		if got := visibleRunes(line); got > 120 {
 			t.Fatalf("line %d width = %d, want <= 120\n%s", i+1, got, line)
 		}
+	}
+}
+
+func TestRenderPlainPreservesExistingBehavior(t *testing.T) {
+	result := renderPlain("user", "hello world", 80)
+	if !strings.Contains(result, "hello world") {
+		t.Fatalf("expected 'hello world' in output, got: %s", result)
+	}
+	if !strings.Contains(result, "user") {
+		t.Fatalf("expected role label in output, got: %s", result)
+	}
+}
+
+func TestRenderMarkdownHandlesHeadings(t *testing.T) {
+	result := renderMarkdown("agent", "# Title\ncontent", 80)
+	if !strings.Contains(result, "Title") {
+		t.Fatalf("expected 'Title' in heading output, got: %s", result)
+	}
+}
+
+func TestRenderMarkdownHandlesBlockquote(t *testing.T) {
+	result := renderMarkdown("agent", "> quoted text", 80)
+	if !strings.Contains(result, "│") {
+		t.Fatalf("expected blockquote pipe in output, got: %s", result)
+	}
+}
+
+func TestRenderMarkdownHandlesFencedCode(t *testing.T) {
+	content := "before\n```\ncode here\n```\nafter"
+	result := renderMarkdown("agent", content, 80)
+	if !strings.Contains(result, "code here") {
+		t.Fatalf("expected code in output, got: %s", result)
+	}
+	if !strings.Contains(result, "before") {
+		t.Fatalf("expected 'before' prose, got: %s", result)
+	}
+}
+
+func TestRenderCodeBlockWrapsInBorder(t *testing.T) {
+	result := renderCode("agent", "func main() {}", 80)
+	if !strings.Contains(result, "func main()") {
+		t.Fatalf("expected code content, got: %s", result)
+	}
+}
+
+func TestRenderPlanShowsSteps(t *testing.T) {
+	result := renderPlan("agent", "1. Refactor layout\n2. Add tests\n3. Update docs", 80)
+	if !strings.Contains(result, "Refactor layout") {
+		t.Fatalf("expected plan step, got: %s", result)
+	}
+}
+
+func TestRenderDiffColorizesAdditions(t *testing.T) {
+	result := renderDiff("agent", "+added line\n-removed line\n unchanged", 80)
+	if !strings.Contains(result, "added line") {
+		t.Fatalf("expected added line, got: %s", result)
+	}
+	if !strings.Contains(result, "removed line") {
+		t.Fatalf("expected removed line, got: %s", result)
+	}
+}
+
+func TestRenderToolResultShowsSummary(t *testing.T) {
+	result := renderToolResult("tool", "file.read completed · 12 tokens\ndetail line", 80)
+	if !strings.Contains(result, "file.read completed") {
+		t.Fatalf("expected tool summary, got: %s", result)
+	}
+}
+
+func TestRenderMessageDispatchesByContentType(t *testing.T) {
+	tests := []struct {
+		name        string
+		msg         session.Message
+		wantContain string
+	}{
+		{"plain", session.Message{Role: session.RoleUser, Content: "plain text", ContentType: session.ContentTypePlain}, "plain text"},
+		{"markdown", session.Message{Role: session.RoleAssistant, Content: "# heading", ContentType: session.ContentTypeMarkdown}, "heading"},
+		{"plan", session.Message{Role: session.RoleAssistant, Content: "step one", ContentType: session.ContentTypePlan}, "step one"},
+		{"code", session.Message{Role: session.RoleAssistant, Content: "x := 1", ContentType: session.ContentTypeCode}, "x := 1"},
+		{"diff", session.Message{Role: session.RoleAssistant, Content: "+new", ContentType: session.ContentTypeDiff}, "new"},
+		{"tool_result", session.Message{Role: "tool", Content: "tool: done\ndetail", ContentType: session.ContentTypeToolResult}, "done"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := renderMessage(tt.msg, 80)
+			if !strings.Contains(result, tt.wantContain) {
+				t.Fatalf("expected %q in %s output, got: %s", tt.wantContain, tt.name, result)
+			}
+		})
 	}
 }

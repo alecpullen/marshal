@@ -1,31 +1,42 @@
-# Task 4: Add ForceClass to Agent Runner — Report
+# Task 4 Report: Update DB schema and persistence for content_type
 
-**Status:** ✅ Complete
+**Status: DONE**
 
-## Changes
+**Commit:** `92f395b` — `feat(db): add content_type column to messages table`
 
-**File:** `internal/agent/runner.go`
+## Changes Made
 
-1. **Added `ForceClass string` field** to `Runner` struct (line 84) — placed after `MaxToolResultChars`, before `callHistory`.
+### 1. `internal/db/migrations.go`
+- Added `content_type TEXT` column to messages table DDL (after `content TEXT NOT NULL`)
 
-2. **Added `SetForceClass(class string)` method** (lines 106-108) — placed after `NewRunner()`.
+### 2. `internal/db/sessions.go` — Message struct
+- Added `ContentType string` field to `db.Message` struct
 
-3. **Updated `Run()`** (lines 119-123) — replaced `task.Class = Classify(goal)` with an override check:
-   ```go
-   if r.ForceClass != "" {
-       task.Class = TaskClass(r.ForceClass)
-   } else {
-       task.Class = Classify(goal)
-   }
-   ```
+### 3. `internal/db/sessions.go` — SaveMessage
+- Added `contentType string` parameter to signature
+- Added `sql.NullString` handling (stores NULL for empty `""` or `"plain"`, stores the value for `"markdown"`)
+- Updated INSERT to include `content_type` column
 
-## Verification
+### 4. `internal/db/sessions.go` — GetMessages
+- Added `content_type` to SELECT columns
+- Added `contentType sql.NullString` to Scan
+- Populates `m.ContentType` from NullString (defaults to `""` which means `"plain"`)
 
-- `go build ./internal/agent/` — passes
-- `go test ./internal/agent/ -v -run TestClassify` — all 7 subtests pass
+### 5. `internal/app/session/session.go`
+- Updated `SaveMessage` call to pass `string(contentType)` as 4th argument
 
-## Commit
+### 6. `internal/db/sessions_test.go`
+- Test call 1: `"plain"` content_type for user message "hello"
+- Test call 2: `"markdown"` content_type for assistant message "hi there"
+
+## Test Results
 
 ```
-fe7d228 feat: add ForceClass to agent runner for slash-command mode switching
+go build ./...            — PASS
+go test ./internal/db/... — PASS (all 24 tests)
+go test ./...             — PASS (all packages)
 ```
+
+## Concerns
+
+None. Null-string semantics: `""` and `"plain"` are stored as SQL NULL and round-trip back as `""` (default). `"markdown"` is stored as `"markdown"` and round-trips correctly.

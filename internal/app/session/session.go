@@ -57,6 +57,7 @@ type Message struct {
 	Reasoning     string
 	ThinkDuration time.Duration
 	CreatedAt     time.Time
+	Final         bool
 }
 
 // InProgressMessage holds the reasoning text accumulated for the model call
@@ -83,6 +84,12 @@ type PendingToolCall struct {
 	Reason       string
 	Diff         string // Added field for patch rendering
 	ResponseChan chan UserApprovalDecision
+}
+
+type ActiveToolCall struct {
+	Name      string
+	Args      string
+	StartedAt time.Time
 }
 
 type BackupFile struct {
@@ -124,6 +131,7 @@ type State struct {
 	inProgress      InProgressMessage
 	providerErr     error
 	pendingApproval *PendingToolCall
+	activeToolCall  *ActiveToolCall
 	sessionRules    []string
 	auditLog        []registry.AuditEvent
 	lastBackup      []BackupFile
@@ -276,6 +284,27 @@ func (s *State) PendingApproval() *PendingToolCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pendingApproval
+}
+
+func (s *State) SetActiveToolCall(atc ActiveToolCall) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeToolCall = &atc
+}
+
+func (s *State) ActiveToolCall() (ActiveToolCall, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeToolCall == nil {
+		return ActiveToolCall{}, false
+	}
+	return *s.activeToolCall, true
+}
+
+func (s *State) ClearActiveToolCall() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeToolCall = nil
 }
 
 func (s *State) SetContextPack(pack contextpack.Pack) {

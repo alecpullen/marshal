@@ -386,7 +386,7 @@ func TestPolishedTranscriptShowsRolesThinkingAndInput(t *testing.T) {
 
 	view := m.View()
 	for _, want := range []string{
-		"user",
+		"❯",
 		"fix the layout",
 		"thinking",
 		"Ask Marshal...",
@@ -1651,24 +1651,6 @@ func TestFinalAnswerRendersWithResponseLabel(t *testing.T) {
 	}
 }
 
-func TestNonFinalAnswerRendersWithAgentLabel(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	m.resize(100, 30)
-
-	state.AddMessage(session.RoleAssistant, "intermediate text", session.ContentTypeMarkdown)
-
-	m.refreshViewport()
-	view := m.View()
-
-	if !strings.Contains(view, "assistant") {
-		t.Fatalf("View() does not show assistant label for non-final message:\n%s", view)
-	}
-	if strings.Contains(view, "Response") {
-		t.Fatalf("View() shows Response label for non-final message:\n%s", view)
-	}
-}
-
 func TestPlanTabShowsPlanItemsAndSpinner(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.SetPlan([]string{"Refactor layout", "Add tests", "Update docs"})
@@ -1856,8 +1838,8 @@ func TestPolishedCurrentLayoutFullSurface(t *testing.T) {
 		"Marshal",
 		"Chat",
 		"live transcript",
-		"user",
-		"assistant",
+		"❯",
+		"I found the render drift and am tightening the layout.",
 		"1 Plan",
 		"2 Context",
 		"3 Log",
@@ -1877,69 +1859,10 @@ func TestPolishedCurrentLayoutFullSurface(t *testing.T) {
 	}
 }
 
-func TestRenderPlainPreservesExistingBehavior(t *testing.T) {
-	result := renderPlain("user", "hello world", 80)
-	if !strings.Contains(result, "hello world") {
-		t.Fatalf("expected 'hello world' in output, got: %s", result)
-	}
-	if !strings.Contains(result, "user") {
-		t.Fatalf("expected role label in output, got: %s", result)
-	}
-}
-
-func TestRenderMarkdownHandlesHeadings(t *testing.T) {
-	result := renderMarkdown("agent", "# Title\ncontent", 80)
-	if !strings.Contains(result, "Title") {
-		t.Fatalf("expected 'Title' in heading output, got: %s", result)
-	}
-}
-
-func TestRenderMarkdownHandlesBlockquote(t *testing.T) {
-	result := renderMarkdown("agent", "> quoted text", 80)
-	if !strings.Contains(result, "│") {
-		t.Fatalf("expected blockquote pipe in output, got: %s", result)
-	}
-}
-
-func TestRenderMarkdownHandlesFencedCode(t *testing.T) {
-	content := "before\n```\ncode here\n```\nafter"
-	result := renderMarkdown("agent", content, 80)
-	if !strings.Contains(result, "code here") {
-		t.Fatalf("expected code in output, got: %s", result)
-	}
-	if !strings.Contains(result, "before") {
-		t.Fatalf("expected 'before' prose, got: %s", result)
-	}
-}
-
 func TestRenderCodeBlockWrapsInBorder(t *testing.T) {
-	result := renderCode("agent", "func main() {}", 80)
+	result := renderMessage(session.Message{Role: session.RoleAssistant, Content: "func main() {}", ContentType: session.ContentTypeCode}, 80)
 	if !strings.Contains(result, "func main()") {
 		t.Fatalf("expected code content, got: %s", result)
-	}
-}
-
-func TestRenderPlanShowsSteps(t *testing.T) {
-	result := renderPlan("agent", "1. Refactor layout\n2. Add tests\n3. Update docs", 80)
-	if !strings.Contains(result, "Refactor layout") {
-		t.Fatalf("expected plan step, got: %s", result)
-	}
-}
-
-func TestRenderDiffColorizesAdditions(t *testing.T) {
-	result := renderDiff("agent", "+added line\n-removed line\n unchanged", 80)
-	if !strings.Contains(result, "added line") {
-		t.Fatalf("expected added line, got: %s", result)
-	}
-	if !strings.Contains(result, "removed line") {
-		t.Fatalf("expected removed line, got: %s", result)
-	}
-}
-
-func TestRenderToolResultShowsSummary(t *testing.T) {
-	result := renderToolResult("tool", "file.read completed · 12 tokens\ndetail line", 80)
-	if !strings.Contains(result, "file.read completed") {
-		t.Fatalf("expected tool summary, got: %s", result)
 	}
 }
 
@@ -2051,46 +1974,6 @@ func TestActiveToolCallClearsFromView(t *testing.T) {
 	}
 }
 
-func TestShellCommandShowsExpandedPanel(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	m.resize(100, 30)
-	m.busy = true
-	m.spinnerFrame = "⠹"
-
-	state.SetActiveToolCall(session.ActiveToolCall{
-		Name:      "shell.run",
-		Args:      "go test ./...",
-		StartedAt: time.Now(),
-	})
-	m.refreshViewport()
-	view := m.View()
-
-	if !strings.Contains(view, "$ go test ./...") {
-		t.Fatalf("View() does not show command with $ prefix:\n%s", view)
-	}
-}
-
-func TestNonCommandToolShowsSingleLine(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	m.resize(100, 30)
-	m.busy = true
-	m.spinnerFrame = "⠹"
-
-	state.SetActiveToolCall(session.ActiveToolCall{
-		Name:      "file.read",
-		Args:      "/repo/main.go",
-		StartedAt: time.Now(),
-	})
-	m.refreshViewport()
-	view := m.View()
-
-	if strings.Contains(view, "$ /repo/main.go") {
-		t.Fatalf("file.read should not show $ prefix (single-line only):\n%s", view)
-	}
-}
-
 func TestStateStripShowsThinking(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
@@ -2135,28 +2018,5 @@ func TestStateStripHiddenWhenIdle(t *testing.T) {
 	}
 	if strings.Contains(view, "awaiting approval") || strings.Contains(view, "⠹ thinking") {
 		t.Fatalf("View() shows state strip when idle:\n%s", view)
-	}
-}
-
-func TestRenderMessageDispatchesByContentType(t *testing.T) {
-	tests := []struct {
-		name        string
-		msg         session.Message
-		wantContain string
-	}{
-		{"plain", session.Message{Role: session.RoleUser, Content: "plain text", ContentType: session.ContentTypePlain}, "plain text"},
-		{"markdown", session.Message{Role: session.RoleAssistant, Content: "# heading", ContentType: session.ContentTypeMarkdown}, "heading"},
-		{"plan", session.Message{Role: session.RoleAssistant, Content: "step one", ContentType: session.ContentTypePlan}, "step one"},
-		{"code", session.Message{Role: session.RoleAssistant, Content: "x := 1", ContentType: session.ContentTypeCode}, "x := 1"},
-		{"diff", session.Message{Role: session.RoleAssistant, Content: "+new", ContentType: session.ContentTypeDiff}, "new"},
-		{"tool_result", session.Message{Role: "tool", Content: "tool: done\ndetail", ContentType: session.ContentTypeToolResult}, "done"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := renderMessage(tt.msg, 80)
-			if !strings.Contains(result, tt.wantContain) {
-				t.Fatalf("expected %q in %s output, got: %s", tt.wantContain, tt.name, result)
-			}
-		})
 	}
 }

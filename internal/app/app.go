@@ -394,6 +394,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		}
 	}()
 
+	printMarshalBanner(stderr, cfg.Project.Name)
 	logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
 	select {
@@ -418,8 +419,22 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	return progErr
 }
 
+func printMarshalBanner(w io.Writer, project string) {
+	fmt.Fprintf(w, "╔═══════════════════════════════════════╗\n")
+	fmt.Fprintf(w, "║            M A R S H A L              ║\n")
+	fmt.Fprintf(w, "║  local-first coding agent             ║\n")
+	fmt.Fprintf(w, "╠═══════════════════════════════════════╣\n")
+	fmt.Fprintf(w, "║  project: %-28s ║\n", project)
+	fmt.Fprintf(w, "╚═══════════════════════════════════════╝\n")
+}
+
 func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {
-	program := tea.NewProgram(model, tea.WithOutput(output), tea.WithContext(ctx), tea.WithAltScreen())
+	program := tea.NewProgram(model,
+		tea.WithOutput(output),
+		tea.WithContext(ctx),
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
 	_, err := program.Run()
 	return err
 }

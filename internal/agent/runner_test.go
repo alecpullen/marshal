@@ -433,6 +433,23 @@ func TestExhaustionSalvagesInsteadOfFailing(t *testing.T) {
 	}
 }
 
+func TestExhaustionWithoutValidActionFailsHard(t *testing.T) {
+	// A model that never emits a parseable action produced nothing to
+	// salvage, so exhaustion must stay a hard ErrMaxIterationsExceeded
+	// failure (the swarm relies on this to detect a broken planner/scout).
+	state := newTestState(t)
+	prov := &scriptedProvider{responses: []string{"not json at all"}}
+	r := NewRunner(prov, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.MaxToolIterations = 2
+	r.MaxRetries = 0
+	r.SetForceClass(string(ClassQuestion))
+
+	_, err := r.RunTask(context.Background(), "inspect a.go")
+	if !errors.Is(err, ErrMaxIterationsExceeded) {
+		t.Fatalf("err = %v, want ErrMaxIterationsExceeded", err)
+	}
+}
+
 func TestExhaustionSalvageFailureReturnsError(t *testing.T) {
 	// Same setup as above, but the finalize model call itself errors ->
 	// original ErrMaxIterationsExceeded semantics must be preserved.

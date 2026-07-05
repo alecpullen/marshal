@@ -198,6 +198,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	task.Status = TaskStatusExecuting
 	lastRenderedSkills := r.State.ActiveSkills()
 	pressureSent := false
+	producedValidAction := false
 	for iteration := 0; iteration < r.MaxToolIterations; iteration++ {
 		r.State.SetToolBudget(session.ToolBudget{Used: iteration, Max: r.MaxToolIterations})
 
@@ -225,6 +226,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			continue
 		}
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
+		producedValidAction = true
 
 		if len(action.Actions) > 0 {
 			if err := r.allReadOnly(action.Actions); err != nil {
@@ -268,13 +270,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 	}
 
-	res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonExhausted)
-	if ferr != nil {
-		task.Status = TaskStatusFailed
-		r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.", session.ContentTypePlain)
-		return task, ErrMaxIterationsExceeded
+	if producedValidAction {
+		if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonExhausted); ferr == nil {
+			return res, nil
+		}
 	}
-	return res, nil
+	task.Status = TaskStatusFailed
+	r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.", session.ContentTypePlain)
+	return task, ErrMaxIterationsExceeded
 }
 
 // maybeFinalizeOnStall inspects the tracker after a tool execution. On a

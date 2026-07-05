@@ -2058,6 +2058,53 @@ func TestNonCommandToolShowsSingleLine(t *testing.T) {
 	}
 }
 
+func TestStateStripShowsThinking(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	m.busy = true
+	m.spinnerFrame = "⠹"
+	state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: time.Now()})
+
+	view := m.View()
+	if !strings.Contains(view, "⠹ thinking") {
+		t.Fatalf("View() does not show thinking state strip:\n%s", view)
+	}
+}
+
+func TestStateStripShowsApproval(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	state.SetPendingApproval(&session.PendingToolCall{
+		ID:           "call_1",
+		Name:         "shell.run",
+		Command:      "echo hi",
+		Risk:         "command",
+		Reason:       "needs confirmation",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	})
+
+	view := m.View()
+	if !strings.Contains(view, "awaiting approval") {
+		t.Fatalf("View() does not show approval state strip:\n%s", view)
+	}
+}
+
+func TestStateStripHiddenWhenIdle(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+
+	view := m.View()
+	if !strings.Contains(view, "Chat") {
+		t.Fatal("View() does not contain Chat panel")
+	}
+	if strings.Contains(view, "awaiting approval") || strings.Contains(view, "⠹ thinking") {
+		t.Fatalf("View() shows state strip when idle:\n%s", view)
+	}
+}
+
 func TestRenderMessageDispatchesByContentType(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -40,7 +40,8 @@ const (
 
 	totalHorizontalBorderGutter = 5 // left border + right border + gutter
 	verticalOverhead            = 4 // status bar (1) + right-column border (2) + slack (1)
-	chatBelowViewportRows       = 4 // bordered input box (3) + help line (1)
+	chatBelowViewportRows       = 4  // bordered input box (3) + help line (1)
+	stateStripRows              = 1  // colored activity strip, shown only when active
 
 	doneDisplayDuration = 2 * time.Second
 )
@@ -51,8 +52,9 @@ type Model struct {
 	editingCommand bool
 	runner         AgentRunner
 	ctx            context.Context
-	busy           bool
-	settingsOpen   bool
+	busy             bool
+	stateStripActive bool
+	settingsOpen     bool
 	settingsModel  settings.Model
 	configReloader ConfigReloader
 	memoryOpen     bool
@@ -200,7 +202,13 @@ func (m *Model) resize(width, height int) {
 
 	// Chat viewport height is the interior content height minus the rows
 	// reserved for the input line and wrapped help line(s) below it.
-	m.chatHeight = m.contentHeight - chatBelowViewportRows
+	m.stateStripActive = m.state.Activity().Kind != session.ActivityIdle ||
+		m.state.PendingApproval() != nil
+	stripRows := 0
+	if m.stateStripActive {
+		stripRows = stateStripRows
+	}
+	m.chatHeight = m.contentHeight - chatBelowViewportRows - stripRows
 	if m.chatHeight < 1 {
 		m.chatHeight = 1
 	}
@@ -860,23 +868,13 @@ func (m Model) renderStatusBar(width int) string {
 
 	activity := m.state.Activity()
 	var busyText string
-	switch activity.Kind {
-	case session.ActivityIdle:
-		if tc := m.state.PendingApproval(); tc != nil {
-			busyText = fmt.Sprintf("✓ %s", truncateRunes(tc.Command, 9))
-		} else if m.lastActivityLabel != "" && time.Since(m.lastActivityDone) < doneDisplayDuration {
-			busyText = fmt.Sprintf("✓ %s", truncateRunes(m.lastActivityLabel, 9))
-		} else {
-			busyText = "IDLE"
-		}
-	case session.ActivityThinking:
-		busyText = fmt.Sprintf("%s thinking...", m.spinnerFrame)
-	case session.ActivityTool, session.ActivityApproval:
-		label := activity.Label
-		if label == "" {
-			label = string(activity.Kind)
-		}
-		busyText = fmt.Sprintf("%s %s", m.spinnerFrame, truncateRunes(label, 30))
+	switch {
+	case m.state.PendingApproval() != nil:
+		busyText = "APPROVAL"
+	case activity.Kind != session.ActivityIdle:
+		busyText = "ACTIVE"
+	case m.lastActivityLabel != "" && time.Since(m.lastActivityDone) < doneDisplayDuration:
+		busyText = fmt.Sprintf("✓ %s", truncateRunes(m.lastActivityLabel, 9))
 	default:
 		busyText = "IDLE"
 	}
@@ -891,6 +889,44 @@ func (m Model) renderStatusBar(width int) string {
 	}
 	line := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 	return statusBarBg.Width(width).MaxWidth(width).Render(truncateRunes(line, width))
+}
+
+func (m Model) renderStateStrip(width int) string {
+	activity := m.state.Activity()
+	tc := m.state.PendingApproval()
+	if activity.Kind == session.ActivityIdle && tc == nil {
+		return ""
+	}
+
+	var text string
+	var bg lipgloss.Color
+
+	switch {
+	case tc != nil:
+		text = fmt.Sprintf("⚠ awaiting approval · %s", truncateRunes(tc.Name, width-30))
+		bg = errorColor
+	case activity.Kind == session.ActivityThinking:
+		text = fmt.Sprintf("%s thinking...", m.spinnerFrame)
+		bg = accentColor
+	case activity.Kind == session.ActivityTool:
+		if atc, ok := m.state.ActiveToolCall(); ok {
+			text = fmt.Sprintf("%s running %s · %s", m.spinnerFrame, atc.Name, truncateRunes(atc.Args, width-len(atc.Name)-20))
+		} else {
+			text = fmt.Sprintf("%s %s", m.spinnerFrame, truncateRunes(activity.Label, width-4))
+		}
+		bg = warningColor
+	default:
+		return ""
+	}
+
+	return lipgloss.NewStyle().
+		Width(max(width, 1)).
+		MaxWidth(max(width, 1)).
+		Background(bg).
+		Foreground(lipgloss.Color("0")).
+		Bold(true).
+		Padding(0, 1).
+		Render(" " + truncateRunes(text, width-2))
 }
 
 func riskText(tc *session.PendingToolCall) string {
@@ -983,8 +1019,14 @@ func (m Model) View() string {
 	tc := m.state.PendingApproval()
 
 	chatPanel := m.renderChatPanel()
+	stateStrip := m.renderStateStrip(m.leftWidth)
 	inputPanel := m.renderInputArea()
-	leftColumn := lipgloss.JoinVertical(lipgloss.Left, chatPanel, inputPanel)
+	var leftColumn string
+	if stateStrip != "" {
+		leftColumn = lipgloss.JoinVertical(lipgloss.Left, chatPanel, stateStrip, inputPanel)
+	} else {
+		leftColumn = lipgloss.JoinVertical(lipgloss.Left, chatPanel, inputPanel)
+	}
 
 	rightColumn := m.renderRightInfoPanel(tc)
 

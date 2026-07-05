@@ -78,6 +78,8 @@ const baseRules = `Rules:
 - If stuck after a few attempts, stop and ask the user.
 - Summarise results clearly.`
 
+const FinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a single action of type "final".`
+
 const baseOutputFormat = `Respond with exactly one JSON object and nothing else.
 
 Examples:

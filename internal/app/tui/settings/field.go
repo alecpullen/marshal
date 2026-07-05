@@ -17,68 +17,6 @@ type field interface {
 	View(width int) string
 }
 
-type intField struct {
-	label    string
-	input    textinput.Model
-	value    *int
-	onChange func(int)
-}
-
-func newIntField(label string, value *int, onChange func(int)) *intField {
-	inp := textinput.New()
-	inp.SetValue(strconv.Itoa(*value))
-	inp.Prompt = ""
-	return &intField{label: label, input: inp, value: value, onChange: onChange}
-}
-
-func (f *intField) Label() string { return f.label }
-
-func (f *intField) Focus() {
-	f.input.Focus()
-}
-
-func (f *intField) Blur() {
-	f.input.Blur()
-}
-
-func (f *intField) Update(msg tea.Msg) tea.Cmd {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		var cmd tea.Cmd
-		f.input, cmd = f.input.Update(msg)
-		next := strings.TrimSpace(f.input.Value())
-		if next == "" {
-			*f.value = 0
-			if f.onChange != nil {
-				f.onChange(0)
-			}
-			return cmd
-		}
-		n, err := strconv.Atoi(next)
-		if err != nil || n < 0 {
-			f.input.SetValue(strconv.Itoa(*f.value))
-			f.input.CursorEnd()
-			return cmd
-		}
-		*f.value = n
-		if f.onChange != nil {
-			f.onChange(n)
-		}
-		return cmd
-	}
-	return nil
-}
-
-func (f *intField) View(width int) string {
-	label := f.label + ": "
-	available := width - len([]rune(label))
-	if available < 1 {
-		available = 1
-	}
-	f.input.Width = available
-	return label + f.input.View()
-}
-
 type stringField struct {
 	label    string
 	input    textinput.Model

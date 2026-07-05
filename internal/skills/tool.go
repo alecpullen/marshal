@@ -60,7 +60,7 @@ func handleSkillLoad(call registry.ToolCall, idx *Index, state *session.State) (
 		}
 	}
 
-	state.AddMessage(session.RoleSystem, skill.Body)
+	state.AddMessage(session.RoleSystem, skill.Body, session.ContentTypePlain)
 	state.ActivateSkill(skill.Name)
 
 	return registry.ToolResult{

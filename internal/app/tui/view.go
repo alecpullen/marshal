@@ -10,10 +10,9 @@ import (
 )
 
 const (
-	inputBoxRows          = 3 // bordered input: top border + text row + bottom border
+	inputBorderRows       = 2
 	activityStripRows     = 1
 	commandSuggestionRows = 1
-	inputAreaRowsReserved = activityStripRows + inputBoxRows
 	transcriptFrameRows   = 2
 	statusLineRows        = 1
 )

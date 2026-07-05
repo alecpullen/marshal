@@ -437,11 +437,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.updateCommandSuggestions()
+
+	// Recalculate viewport if input area height changed
+	newViewportHeight := max(m.height-transcriptFrameRows-m.inputAreaRows()-statusLineRows, 1)
+	if newViewportHeight != m.viewport.Height {
+		m.viewport.Height = newViewportHeight
+		m.lastTranscriptHash = 0
+		m.refreshViewport()
+	}
+
 	return m, cmd
 }
 
 func (m Model) inputAreaRows() int {
-	rows := inputAreaRowsReserved
+	rows := inputBorderRows + activityStripRows
+	if m.state.PendingApproval() != nil {
+		rows += 5 // approval panel: title + command + risk + help line + spacing
+	} else {
+		inputHeight := max(m.input.Height(), 1)
+		if inputHeight > m.input.MaxHeight {
+			inputHeight = m.input.MaxHeight
+		}
+		rows += inputHeight
+	}
 	if len(m.commandSuggestions) > 0 {
 		rows += commandSuggestionRows
 	}

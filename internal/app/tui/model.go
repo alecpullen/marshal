@@ -1048,8 +1048,34 @@ func renderActiveToolCall(atc session.ActiveToolCall, spinnerFrame string, now t
 		elapsed = 0
 	}
 	elapsedStr := formatElapsed(elapsed)
+
+	if atc.Name == "shell.run" || atc.Name == "test.run" {
+		return renderCommandToolCall(atc, spinnerFrame, elapsedStr, innerWidth)
+	}
+	return renderSimpleToolCall(atc, spinnerFrame, elapsedStr, innerWidth)
+}
+
+func renderCommandToolCall(atc session.ActiveToolCall, spinnerFrame, elapsedStr string, innerWidth int) string {
 	label := fmt.Sprintf("%s %s", spinnerFrame, atc.Name)
-	line := fmt.Sprintf("%s  %s  · %s", label, truncateRunes(atc.Args, innerWidth-len(label)-len(elapsedStr)-6), elapsedStr)
+	header := fmt.Sprintf("%s  · %s", label, elapsedStr)
+	cmdLine := fmt.Sprintf("$ %s", truncateRunes(atc.Args, innerWidth-2))
+	body := header + "\n" + cmdLine
+	style := lipgloss.NewStyle().
+		Width(innerWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(warningColor).
+		Foreground(warningColor).
+		Padding(0, 1)
+	return style.Render(body) + "\n\n"
+}
+
+func renderSimpleToolCall(atc session.ActiveToolCall, spinnerFrame, elapsedStr string, innerWidth int) string {
+	label := fmt.Sprintf("%s %s", spinnerFrame, atc.Name)
+	argsBudget := innerWidth - len(label) - len(elapsedStr) - 6
+	if argsBudget < 1 {
+		argsBudget = 1
+	}
+	line := fmt.Sprintf("%s  %s  · %s", label, truncateRunes(atc.Args, argsBudget), elapsedStr)
 	style := lipgloss.NewStyle().
 		Width(innerWidth).
 		Border(lipgloss.RoundedBorder()).

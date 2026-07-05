@@ -87,6 +87,7 @@ type Model struct {
 	lastActivityLabel string
 	lastActivityDone  time.Time
 	lastActivityKind  session.ActivityKind
+	now               func() time.Time
 }
 
 type Option func(*Model)
@@ -147,6 +148,7 @@ func New(state *session.State, opts ...Option) Model {
 		activeTab:      0,
 		viewport:       viewport.New(0, 0),
 		spinner:        NewSpinner(),
+		now:            time.Now,
 	}
 	for _, opt := range opts {
 		opt(&m)
@@ -536,6 +538,9 @@ func (m *Model) refreshViewport() {
 	}
 	if tc := m.state.PendingApproval(); tc != nil {
 		b.WriteString(renderApprovalInline(tc, m.viewport.Width))
+	}
+	if atc, ok := m.state.ActiveToolCall(); ok {
+		b.WriteString(renderActiveToolCall(atc, m.spinnerFrame, m.now(), m.viewport.Width))
 	}
 	m.viewport.SetContent(b.String())
 	m.viewport.GotoBottom()
@@ -1031,6 +1036,34 @@ func renderApprovalInline(tc *session.PendingToolCall, width int) string {
 		BorderForeground(warningColor).
 		Padding(0, 1)
 	return style.Render(b.String()) + "\n\n"
+}
+
+func renderActiveToolCall(atc session.ActiveToolCall, spinnerFrame string, now time.Time, width int) string {
+	if width < 10 {
+		width = 10
+	}
+	innerWidth := max(width-2, 1)
+	elapsed := now.Sub(atc.StartedAt)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	elapsedStr := formatElapsed(elapsed)
+	label := fmt.Sprintf("%s %s", spinnerFrame, atc.Name)
+	line := fmt.Sprintf("%s  %s  · %s", label, truncateRunes(atc.Args, innerWidth-len(label)-len(elapsedStr)-6), elapsedStr)
+	style := lipgloss.NewStyle().
+		Width(innerWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(warningColor).
+		Foreground(warningColor).
+		Padding(0, 1)
+	return style.Render(line) + "\n\n"
+}
+
+func formatElapsed(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
 }
 
 func (m Model) renderInputArea() string {

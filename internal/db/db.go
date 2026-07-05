@@ -75,6 +75,7 @@ func (db *DB) Migrate() error {
 		return fmt.Errorf("inspect messages columns: %w", err)
 	}
 	messageColumnDefs := map[string]string{
+		"content_type":      "TEXT",
 		"reasoning":         "TEXT",
 		"think_duration_ms": "INTEGER",
 		"final":             "INTEGER DEFAULT 0",

@@ -116,7 +116,7 @@ func (r *Runner) SetForceClass(class string) {
 // approval rendering picks all of it up with no TUI changes.
 func (r *Runner) Run(ctx context.Context, goal string) error {
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
-	r.State.AddMessage(session.RoleUser, goal)
+	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	r.State.ClearTurnToolCache()
 	r.callHistoryMu.Lock()
 	r.callHistory = nil
@@ -161,7 +161,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 			messages = appendContextPackMessage(messages, updatedPack)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}
-		r.State.AddMessage(session.RoleAssistant, "Plan:\n"+planText)
+		r.State.AddMessage(session.RoleAssistant, planText, session.ContentTypePlan)
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: "Plan:\n" + planText})
 	}
 
@@ -197,7 +197,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 		case ActionAnswer, ActionFinal:
 			task.Summary = action.Content
 			task.Status = TaskStatusCompleted
-			r.State.AddMessage(session.RoleAssistant, action.Content)
+			r.State.AddMessage(session.RoleAssistant, action.Content, session.ContentTypeMarkdown)
 			return nil
 		case ActionToolCall, ActionPatch:
 			resultMsgs, err := r.executeToolCall(ctx, action)
@@ -211,7 +211,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	}
 
 	task.Status = TaskStatusFailed
-	r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.")
+	r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.", session.ContentTypePlain)
 	return ErrMaxIterationsExceeded
 }
 
@@ -288,7 +288,7 @@ func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pa
 func (r *Runner) fail(task *Task, err error) error {
 	task.Status = TaskStatusFailed
 	r.State.SetProviderError(err)
-	r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Agent failed: %s", err.Error()))
+	r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Agent failed: %s", err.Error()), session.ContentTypePlain)
 	return err
 }
 
@@ -399,7 +399,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			msgs := []schema.ChatMessage{BuildCachedToolResultMessage(toolName, cached)}
 			if r.shouldNudgeLoop() {
 				msgs = append(msgs, schema.ChatMessage{Role: schema.RoleSystem, Content: loopNudgeMessage})
-				r.State.AddMessage(session.RoleSystem, loopNudgeMessage)
+				r.State.AddMessage(session.RoleSystem, loopNudgeMessage, session.ContentTypePlain)
 			}
 			return msgs, nil
 		}
@@ -465,7 +465,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	r.recordToolCall(toolName, string(normalizedArgs))
 	if r.shouldNudgeLoop() {
 		msgs = append(msgs, schema.ChatMessage{Role: schema.RoleSystem, Content: loopNudgeMessage})
-		r.State.AddMessage(session.RoleSystem, loopNudgeMessage)
+		r.State.AddMessage(session.RoleSystem, loopNudgeMessage, session.ContentTypePlain)
 	}
 	return msgs, nil
 }

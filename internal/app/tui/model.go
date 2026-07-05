@@ -441,7 +441,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					if m.runner == nil {
-						m.state.AddMessage(session.RoleUser, value)
+						m.state.AddMessage(session.RoleUser, value, session.ContentTypePlain)
 						m.refreshViewport()
 						return m, nil
 					}
@@ -563,13 +563,13 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	}
 
 	if m.cmdRegistry == nil {
-		m.state.AddMessage(session.RoleSystem, "Command registry not available.")
+		m.state.AddMessage(session.RoleSystem, "Command registry not available.", session.ContentTypePlain)
 		m.refreshViewport()
 		return m, nil
 	}
 	cmd, ok := m.cmdRegistry.Lookup(name)
 	if !ok {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown command: /%s. Type /help for available commands.", name))
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown command: /%s. Type /help for available commands.", name), session.ContentTypePlain)
 		m.refreshViewport()
 		return m, nil
 	}
@@ -577,7 +577,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	msg := cmd.Handler(m.state, args)
 
 	if msg != "" {
-		m.state.AddMessage(session.RoleSystem, msg)
+		m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	}
 
 	switch cmd.Name {
@@ -594,7 +594,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 
 	case "memory":
 		if m.memoryDB == nil {
-			m.state.AddMessage(session.RoleSystem, "Memory browser not available (no database configured).")
+			m.state.AddMessage(session.RoleSystem, "Memory browser not available (no database configured).", session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		}
@@ -608,7 +608,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		if m.agentCancel != nil {
 			m.agentCancel()
 			m.agentCancel = nil
-			m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.")
+			m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
 		}
 		m.refreshViewport()
 		return m, nil
@@ -639,7 +639,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 
 	case "model":
 		if len(args) == 0 {
-			m.state.AddMessage(session.RoleSystem, "Usage: /model <preset-name>. Available presets are listed in your config.toml.")
+			m.state.AddMessage(session.RoleSystem, "Usage: /model <preset-name>. Available presets are listed in your config.toml.", session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		}
@@ -648,7 +648,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			newCfg := m.state.Config
 			preset, ok := newCfg.Models.Presets[presetName]
 			if !ok {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown preset: %s", presetName))
+				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown preset: %s", presetName), session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
 			}
@@ -664,9 +664,9 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 				},
 			}
 			if err := m.configReloader(newCfg); err != nil {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err))
+				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
 			} else {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model))
+				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
 			}
 		}
 		m.refreshViewport()

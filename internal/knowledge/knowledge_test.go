@@ -105,7 +105,7 @@ func TestEndSessionPersistsSummaryMemoriesAndFileSummaries(t *testing.T) {
 	}
 
 	state := newTestState(t, dir)
-	state.AddMessage(session.RoleUser, "Fix the bug in bar.go")
+	state.AddMessage(session.RoleUser, "Fix the bug in bar.go", session.ContentTypePlain)
 	state.LogToolCall(registry.AuditEvent{
 		ToolName:      "file.write_patch",
 		ResultSummary: "applied patch",
@@ -214,7 +214,7 @@ func TestEndSessionSwallowsRouteResolutionError(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 	state := newTestState(t, t.TempDir())
-	state.AddMessage(session.RoleUser, "hello")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 
 	EndSession(context.Background(), EndSessionInput{
 		DB:            database,
@@ -243,7 +243,7 @@ func TestEndSessionSwallowsChatError(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 	state := newTestState(t, t.TempDir())
-	state.AddMessage(session.RoleUser, "hello")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	resolver := &fakeRouteResolver{route: knowledgeRoute(), prov: &fakeProvider{err: errors.New("connection refused")}}
 
 	EndSession(context.Background(), EndSessionInput{
@@ -273,7 +273,7 @@ func TestEndSessionSwallowsParseFailure(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 	state := newTestState(t, t.TempDir())
-	state.AddMessage(session.RoleUser, "hello")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	resolver := &fakeRouteResolver{route: knowledgeRoute(), prov: &fakeProvider{response: "not json at all"}}
 
 	EndSession(context.Background(), EndSessionInput{
@@ -310,7 +310,7 @@ func TestEndSessionIgnoresFileSummaryOutsideTouchedFiles(t *testing.T) {
 	}
 
 	state := newTestState(t, dir)
-	state.AddMessage(session.RoleUser, "hello")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	// No tool calls logged, so FilesChanged is empty — nothing is "touched".
 
 	response := `{"session_summary":"did nothing","memories":[],"file_summaries":{"untouched.go":"should be ignored"}}`

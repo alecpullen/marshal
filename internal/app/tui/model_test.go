@@ -301,7 +301,7 @@ func TestPolishedViewFitsCommonTerminalSizes(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-			state.AddMessage(session.RoleUser, longMessage)
+			state.AddMessage(session.RoleUser, longMessage, session.ContentTypePlain)
 			state.BeginStreaming()
 			state.AppendThinking(longThinking)
 			m := New(state)
@@ -328,7 +328,7 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	message := "This transcript line should be wide enough to wrap differently after resizing from a wide terminal down to a narrow terminal."
 	thinking := "The live thinking copy should also be rebuilt after resize so it follows the narrowed viewport width instead of keeping stale wrapping."
-	state.AddMessage(session.RoleUser, message)
+	state.AddMessage(session.RoleUser, message, session.ContentTypePlain)
 	state.BeginStreaming()
 	state.AppendThinking(thinking)
 	m := New(state)
@@ -376,7 +376,7 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 
 func TestPolishedTranscriptShowsRolesThinkingAndInput(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	state.AddMessage(session.RoleUser, "fix the layout")
+	state.AddMessage(session.RoleUser, "fix the layout", session.ContentTypePlain)
 	state.BeginStreaming()
 	state.AppendThinking("I need to inspect the render bounds and keep the newest reasoning visible.")
 	m := New(state)
@@ -1020,7 +1020,7 @@ func TestBusyTickRefreshesViewport(t *testing.T) {
 	model = updated.(Model)
 
 	// Simulate the agent adding a message mid-turn.
-	state.AddMessage(session.RoleAssistant, "working...")
+	state.AddMessage(session.RoleAssistant, "working...", session.ContentTypePlain)
 
 	// Tick should refresh the viewport.
 	updated, _ = model.Update(agentTickMsg{})
@@ -1039,7 +1039,7 @@ func TestChatMessagesWrapWithinViewportWidth(t *testing.T) {
 	model = updated.(Model)
 
 	longContent := strings.Repeat("the quick brown fox jumps over the lazy dog ", 3)
-	state.AddMessage(session.RoleUser, longContent)
+	state.AddMessage(session.RoleUser, longContent, session.ContentTypePlain)
 	model.refreshViewport()
 
 	viewport := model.viewport.View()
@@ -1103,7 +1103,7 @@ func TestRenderWhileStateMutatedDoesNotRace(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 200; i++ {
-			state.AddMessage(session.RoleAssistant, fmt.Sprintf("msg %d", i))
+			state.AddMessage(session.RoleAssistant, fmt.Sprintf("msg %d", i), session.ContentTypePlain)
 			state.LogToolCall(registry.AuditEvent{ToolName: "test", ResultSummary: "ok"})
 		}
 	}()
@@ -1145,7 +1145,7 @@ func TestFinishedMessageShowsCollapsedThinkingSummary(t *testing.T) {
 	state.BeginStreaming()
 	state.AppendThinking("checking the auth flow")
 	state.EndStreaming()
-	state.AddMessage(session.RoleAssistant, "Here's the fix.")
+	state.AddMessage(session.RoleAssistant, "Here's the fix.", session.ContentTypePlain)
 	model.refreshViewport()
 
 	view := model.View()
@@ -1166,7 +1166,7 @@ func TestCtrlGTogglesThinkingExpansion(t *testing.T) {
 	state.BeginStreaming()
 	state.AppendThinking("checking the auth flow")
 	state.EndStreaming()
-	state.AddMessage(session.RoleAssistant, "Here's the fix.")
+	state.AddMessage(session.RoleAssistant, "Here's the fix.", session.ContentTypePlain)
 	model.refreshViewport()
 
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
@@ -1757,7 +1757,7 @@ func TestSlashCommandClearMessages(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
-	model.state.AddMessage(session.RoleUser, "hello")
+	model.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	model.input.SetValue("/new")
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m := updated.(*Model)
@@ -1808,8 +1808,8 @@ func TestPolishedCurrentLayoutFullSurface(t *testing.T) {
 		LocalOnly: true,
 		Active:    true,
 	})
-	state.AddMessage(session.RoleUser, "fix the failing TUI layout tests")
-	state.AddMessage(session.RoleAssistant, "I found the render drift and am tightening the layout.")
+	state.AddMessage(session.RoleUser, "fix the failing TUI layout tests", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "I found the render drift and am tightening the layout.", session.ContentTypePlain)
 	state.LogToolCall(registry.AuditEvent{
 		Timestamp:     time.Unix(100, 0),
 		ToolName:      "go test",

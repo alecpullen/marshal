@@ -19,8 +19,8 @@ import (
 func TestStateAppendsMessagesInOrder(t *testing.T) {
 	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
 
-	state.AddMessage(RoleSystem, "ready")
-	state.AddMessage(RoleUser, "hello")
+	state.AddMessage(RoleSystem, "ready", ContentTypePlain)
+	state.AddMessage(RoleUser, "hello", ContentTypePlain)
 
 	messages := state.Messages()
 	if len(messages) != 2 {
@@ -36,7 +36,7 @@ func TestStateAppendsMessagesInOrder(t *testing.T) {
 
 func TestMessagesReturnsCopy(t *testing.T) {
 	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
-	state.AddMessage(RoleUser, "hello")
+	state.AddMessage(RoleUser, "hello", ContentTypePlain)
 
 	messages := state.Messages()
 	messages[0].Content = "mutated"
@@ -259,8 +259,8 @@ func TestStatePersistsMessagesAndAudits(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
 
-	s.AddMessage(RoleUser, "hello")
-	s.AddMessage(RoleAssistant, "hi")
+	s.AddMessage(RoleUser, "hello", ContentTypePlain)
+	s.AddMessage(RoleAssistant, "hi", ContentTypePlain)
 
 	event := registry.AuditEvent{
 		Timestamp:     time.Now().UTC(),
@@ -330,7 +330,7 @@ func TestAddMessageAttachesReasoningFromInProgressAndClearsIt(t *testing.T) {
 	state.BeginStreaming()
 	state.AppendThinking("checking the auth flow")
 	state.EndStreaming()
-	state.AddMessage(RoleAssistant, "Here's the fix.")
+	state.AddMessage(RoleAssistant, "Here's the fix.", ContentTypePlain)
 
 	messages := state.Messages()
 	if len(messages) != 1 {
@@ -347,7 +347,7 @@ func TestAddMessageAttachesReasoningFromInProgressAndClearsIt(t *testing.T) {
 		t.Fatalf("InProgress().Reasoning after AddMessage = %q, want empty (cleared)", got)
 	}
 
-	state.AddMessage(RoleUser, "thanks")
+	state.AddMessage(RoleUser, "thanks", ContentTypePlain)
 	messages = state.Messages()
 	if messages[1].Reasoning != "" || messages[1].ThinkDuration != 0 {
 		t.Fatalf("messages[1] should have no reasoning when nothing was streamed: %#v", messages[1])
@@ -384,7 +384,7 @@ func TestStreamingLifecycleIsRaceFree(t *testing.T) {
 			state.BeginStreaming()
 			state.AppendThinking("step")
 			state.EndStreaming()
-			state.AddMessage(RoleAssistant, "answer")
+			state.AddMessage(RoleAssistant, "answer", ContentTypePlain)
 		}
 	}()
 

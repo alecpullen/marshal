@@ -501,17 +501,21 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 	helpLine := "Enter approve · d deny · e edit · a always"
 	innerWidth := max(width-2, 1)
 
+	titleStyle := panelTitleStyle.Copy().Background(panelBgColor).Foreground(warningColor)
+	muted := mutedStyle.Copy().Background(panelBgColor)
+	text := lipgloss.NewStyle().Background(panelBgColor)
+
 	var b strings.Builder
-	b.WriteString(panelTitleStyle.Foreground(warningColor).Render("⚠ Approval needed"))
+	b.WriteString(titleStyle.Render("⚠ Approval needed"))
 	b.WriteString("\n")
-	b.WriteString(mutedStyle.Render("Agent wants to run:"))
+	b.WriteString(muted.Render("Agent wants to run:"))
 	b.WriteString("\n")
-	b.WriteString(truncateRunes(tc.Command, innerWidth))
+	b.WriteString(text.Render(truncateRunes(tc.Command, innerWidth)))
 	b.WriteString("\n\n")
-	b.WriteString(mutedStyle.Render("Risk: "))
-	b.WriteString(truncateRunes(riskText(tc), innerWidth))
+	b.WriteString(muted.Render("Risk: "))
+	b.WriteString(text.Render(truncateRunes(riskText(tc), innerWidth)))
 	b.WriteString("\n\n")
-	b.WriteString(mutedStyle.Render(helpLine))
+	b.WriteString(muted.Render(helpLine))
 	return b.String()
 }
 

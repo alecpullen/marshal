@@ -53,12 +53,12 @@ func (m Model) renderInputArea() string {
 		if m.editingCommand {
 			editLine := lipgloss.JoinHorizontal(
 				lipgloss.Top,
-				promptPrefixStyle.Render("❯ "),
+				inputPromptStyle.Render("❯ "),
 				m.input.View(),
 			)
-			rows = append(rows, inputBoxStyle.Render(editLine))
+			rows = append(rows, editLine)
 		} else {
-			rows = append(rows, inputBoxStyle.Render(renderApprovalPanel(tc, inputInnerWidth)))
+			rows = append(rows, renderApprovalPanel(tc, inputInnerWidth))
 		}
 	} else {
 		rows = append(rows, m.renderActivityStrip())
@@ -67,18 +67,18 @@ func (m Model) renderInputArea() string {
 		}
 		inputLine := lipgloss.JoinHorizontal(
 			lipgloss.Top,
-			promptPrefixStyle.Render("❯ "),
+			inputPromptStyle.Render("❯ "),
 			m.input.View(),
 		)
-		rows = append(rows, inputBoxStyle.Render(inputLine))
+		rows = append(rows, inputLine)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return inputBoxStyle.Render(content)
 }
 
 func (m Model) renderActivityStrip() string {
-	innerWidth := max(m.width-2, 1)
-	available := max(innerWidth-2, 1)
+	available := max(m.width-4, 1)
 	activity := m.state.Activity()
 	label := ""
 	switch activity.Kind {
@@ -92,14 +92,13 @@ func (m Model) renderActivityStrip() string {
 		label = fmt.Sprintf("%s %s · %s", m.spinnerFrame, activity.Label, formatElapsed(elapsed))
 	}
 	return lipgloss.NewStyle().
-		Width(innerWidth).
-		Padding(0, 1).
+		Width(available).
+		Background(panelBgColor).
 		Render(statusBusyStyle.Render(truncateRunes(label, available)))
 }
 
 func (m Model) renderCommandSuggestions() string {
-	innerWidth := max(m.width-2, 1)
-	available := max(innerWidth-2, 1)
+	available := max(m.width-4, 1)
 	parts := make([]string, 0, len(m.commandSuggestions))
 	separatorWidth := 2 * max(len(m.commandSuggestions)-1, 0)
 	itemWidth := max((available-separatorWidth)/max(len(m.commandSuggestions), 1), 8)
@@ -116,14 +115,14 @@ func (m Model) renderCommandSuggestions() string {
 		if i == m.commandSuggestionIndex {
 			item = promptPrefixStyle.Render(item)
 		} else {
-			item = mutedStyle.Render(item)
+			item = mutedStyle.Copy().Background(panelBgColor).Render(item)
 		}
 		parts = append(parts, item)
 	}
 	line := strings.Join(parts, "  ")
 	return lipgloss.NewStyle().
-		Width(innerWidth).
-		Padding(0, 1).
+		Width(available).
+		Background(panelBgColor).
 		Render(line)
 }
 

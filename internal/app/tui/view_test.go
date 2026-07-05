@@ -76,13 +76,13 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	if idleLines[0] != busyLines[0] {
 		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
 	}
-	activityRow := 30 - m.inputAreaRows() - statusLineRows
-	if !strings.Contains(busyLines[activityRow], "thinking") {
-		t.Fatalf("activity row moved; line %d = %q", activityRow, busyLines[activityRow])
-	}
-	inputTop := activityRow + activityStripRows
+	inputTop := 30 - m.inputAreaRows() - statusLineRows
 	if !strings.HasPrefix(busyLines[inputTop], "╭") {
 		t.Fatalf("input box top moved; line %d = %q", inputTop, busyLines[inputTop])
+	}
+	activityRow := inputTop + activityStripRows
+	if !strings.Contains(busyLines[activityRow], "thinking") {
+		t.Fatalf("activity row moved; line %d = %q", activityRow, busyLines[activityRow])
 	}
 }
 

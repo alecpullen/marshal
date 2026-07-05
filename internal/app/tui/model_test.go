@@ -55,14 +55,11 @@ func TestEnterOnWhitespaceDoesNotAppendMessage(t *testing.T) {
 	}
 }
 
-func TestQuitKeyRequestsShutdown(t *testing.T) {
+func TestCtrlCQuits(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 
-	// First Esc unfocuses input
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	// Second Esc quits
-	_, cmd := updated.(Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
 		t.Fatal("quit command is nil")
 	}
@@ -71,6 +68,75 @@ func TestQuitKeyRequestsShutdown(t *testing.T) {
 	case <-state.Done():
 	case <-time.After(time.Second):
 		t.Fatal("state was not shut down")
+	}
+}
+
+func TestEscCancelsInFlightTurn(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+	m.busy = true
+	cancelled := false
+	m.agentCancel = func() { cancelled = true }
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
+	if !cancelled {
+		t.Fatal("Esc should cancel the in-flight agent turn")
+	}
+	if m.agentCancel != nil {
+		t.Fatal("agentCancel should be cleared after Esc")
+	}
+}
+
+func TestEscWhenIdleDoesNotQuit(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		t.Fatal("Esc when idle must be a no-op (no quit command)")
+	}
+	select {
+	case <-state.Done():
+		t.Fatal("Esc must not shut the session down")
+	default:
+	}
+}
+
+func TestTypingIsAlwaysCaptured(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	for _, r := range "123r" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	if got := m.input.Value(); got != "123r" {
+		t.Fatalf("input value = %q, want %q", got, "123r")
+	}
+}
+
+func TestPageKeysScrollViewport(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+	bottom := m.viewport.YOffset
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = updated.(Model)
+	if m.viewport.YOffset >= bottom {
+		t.Fatalf("PgUp did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset)
+	}
+	if m.input.Value() != "" {
+		t.Fatalf("PgUp leaked into the input: %q", m.input.Value())
 	}
 }
 

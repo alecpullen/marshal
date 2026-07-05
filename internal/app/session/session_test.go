@@ -590,3 +590,24 @@ func TestStateActiveSkillsRaceFree(t *testing.T) {
 	}
 	<-done
 }
+
+func TestToolBudget(t *testing.T) {
+	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	if b := s.ToolBudget(); b.Used != 0 || b.Max != 0 {
+		t.Fatalf("zero value = %+v, want {0 0}", b)
+	}
+	s.SetToolBudget(ToolBudget{Used: 5, Max: 16})
+	if b := s.ToolBudget(); b.Used != 5 || b.Max != 16 {
+		t.Fatalf("ToolBudget() = %+v, want {5 16}", b)
+	}
+}
+
+func TestAddMessageSalvaged(t *testing.T) {
+	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	s.AddMessageSalvaged(RoleAssistant, "best effort answer", ContentTypeMarkdown, "exhausted")
+	msgs := s.Messages()
+	last := msgs[len(msgs)-1]
+	if !last.Final || !last.Salvaged || last.SalvageReason != "exhausted" {
+		t.Fatalf("last message = %+v, want Final+Salvaged+reason=exhausted", last)
+	}
+}

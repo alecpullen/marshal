@@ -132,6 +132,7 @@ type State struct {
 	turnToolCache   map[string]registry.ToolResult
 	activity        Activity
 	plan            []string
+	activeSkills    map[string]bool
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
@@ -147,6 +148,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *St
 		cancel:        cancel,
 		turnToolCache: make(map[string]registry.ToolResult),
 		activity:      Activity{Kind: ActivityIdle},
+		activeSkills:  make(map[string]bool),
 	}
 }
 
@@ -433,4 +435,32 @@ func (s *State) SetTurnToolResult(toolName string, normalizedArgs []byte, result
 	defer s.mu.Unlock()
 	key := toolName + "|" + string(normalizedArgs)
 	s.turnToolCache[key] = result
+}
+
+func (s *State) ActivateSkill(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeSkills[name] = true
+}
+
+func (s *State) DeactivateSkill(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.activeSkills, name)
+}
+
+func (s *State) ActiveSkills() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := make([]string, 0, len(s.activeSkills))
+	for name := range s.activeSkills {
+		names = append(names, name)
+	}
+	return names
+}
+
+func (s *State) HasActiveSkill(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeSkills[name]
 }

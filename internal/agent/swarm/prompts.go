@@ -2,8 +2,6 @@ package swarm
 
 import "fmt"
 
-// ScoutFocus is one repo scout's assigned inspection area (docs/07,
-// "Parallel research": Scout A code, Scout B tests, Scout C docs).
 type ScoutFocus struct {
 	Area        string
 	Instruction string

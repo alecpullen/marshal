@@ -44,6 +44,48 @@ func TestViewContainsStatusLine(t *testing.T) {
 	}
 }
 
+func TestTranscriptHasSubtleFrame(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	m.refreshViewport()
+
+	view := m.View()
+	if !strings.Contains(view, "┌") || !strings.Contains(view, "└") {
+		t.Fatalf("view missing transcript frame:\n%s", view)
+	}
+}
+
+func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.state.AddMessage(session.RoleUser, strings.Repeat("hello ", 120), session.ContentTypePlain)
+	m.refreshViewport()
+	idleLines := strings.Split(strings.TrimRight(m.View(), "\n"), "\n")
+
+	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: time.Unix(100, 0)})
+	m.busy = true
+	m.spinnerFrame = "⠋"
+	m.refreshViewport()
+	busyLines := strings.Split(strings.TrimRight(m.View(), "\n"), "\n")
+
+	if len(busyLines) != 30 {
+		t.Fatalf("busy view height = %d, want fixed terminal height 30", len(busyLines))
+	}
+	if len(idleLines) != len(busyLines) {
+		t.Fatalf("view height changed from %d to %d when activity started", len(idleLines), len(busyLines))
+	}
+	if idleLines[0] != busyLines[0] {
+		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
+	}
+	activityRow := 30 - m.inputAreaRows() - statusLineRows
+	if !strings.Contains(busyLines[activityRow], "thinking") {
+		t.Fatalf("activity row moved; line %d = %q", activityRow, busyLines[activityRow])
+	}
+	inputTop := activityRow + activityStripRows
+	if !strings.HasPrefix(busyLines[inputTop], "╭") {
+		t.Fatalf("input box top moved; line %d = %q", inputTop, busyLines[inputTop])
+	}
+}
+
 func TestViewFitsTerminalSizesSingleColumn(t *testing.T) {
 	sizes := [][2]int{{40, 10}, {80, 24}, {100, 30}, {120, 40}}
 	for _, size := range sizes {
@@ -82,10 +124,11 @@ func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
 
 func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	if m.viewport.Width != 98 {
-		t.Fatalf("viewport.Width = %d, want 98 (width-2)", m.viewport.Width)
+	if m.viewport.Width != 96 {
+		t.Fatalf("viewport.Width = %d, want 96 (width-4 for transcript frame)", m.viewport.Width)
 	}
-	if m.viewport.Height != 30-inputBoxRows-statusLineRows {
-		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height, 30-inputBoxRows-statusLineRows)
+	wantHeight := 30 - transcriptFrameRows - m.inputAreaRows() - statusLineRows
+	if m.viewport.Height != wantHeight {
+		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height, wantHeight)
 	}
 }

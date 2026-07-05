@@ -14,6 +14,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/skills"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -948,8 +949,8 @@ func TestRunCachesReadOnlyToolResults(t *testing.T) {
 	calls := 0
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{
-		Name: "demo.read",
-		Risk: registry.RiskReadOnly,
+		Name:      "demo.read",
+		Risk:      registry.RiskReadOnly,
 		Cacheable: true,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 			calls++
@@ -1135,8 +1136,8 @@ func TestRunnerSetsActivityDuringToolExecute(t *testing.T) {
 	}
 	reg := registry.New()
 	reg.Register(registry.Tool{
-		Name:  "file.read",
-		Risk:  registry.RiskReadOnly,
+		Name: "file.read",
+		Risk: registry.RiskReadOnly,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 			return registry.ToolResult{Summary: "ok"}, nil
 		},
@@ -1166,8 +1167,8 @@ func TestRunnerSetsActivityDuringApproval(t *testing.T) {
 	}
 	reg := registry.New()
 	reg.Register(registry.Tool{
-		Name:  "shell.run",
-		Risk:  registry.RiskCommand,
+		Name: "shell.run",
+		Risk: registry.RiskCommand,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 			return registry.ToolResult{Summary: "ok"}, nil
 		},
@@ -1280,5 +1281,69 @@ func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing correction message in provider requests: %#v", p.requests)
+	}
+}
+
+func TestRunLoadsSkillViaToolCall(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("debug", skills.Skill{
+		Name:        "debug",
+		Description: "Debugging workflow",
+		Body:        "# Debug\n\nSteps: reproduce, isolate, fix, verify.\n",
+	})
+
+	reg := registry.New()
+	state := newTestState(t)
+
+	pol := policy.NewEngine(&config.Config{}, nil)
+	skills.RegisterTool(reg, idx, state)
+
+	p := &scriptedProvider{responses: []string{
+		"1. Load the debug skill.",
+		`{"rationale":"need debugging workflow","action":{"type":"tool_call","tool":"skill.load","args":{"name":"debug"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Debug skill loaded and used."}}`,
+	}}
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SkillIndex = idx
+
+	if err := runner.Run(context.Background(), "Debug this"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if !state.HasActiveSkill("debug") {
+		t.Fatal("HasActiveSkill(debug) = false, want true")
+	}
+
+	msgs := state.Messages()
+	foundBody := false
+	for _, m := range msgs {
+		if m.Content == "# Debug\n\nSteps: reproduce, isolate, fix, verify.\n" {
+			foundBody = true
+			break
+		}
+	}
+	if !foundBody {
+		t.Fatalf("skill body not found in messages: %#v", msgs)
+	}
+
+	var systemPromptMsgs []string
+	for _, req := range p.requests {
+		for _, msg := range req.Messages {
+			if msg.Role == schema.RoleSystem {
+				systemPromptMsgs = append(systemPromptMsgs, msg.Content)
+			}
+		}
+	}
+	if len(systemPromptMsgs) < 2 {
+		t.Fatalf("expected at least 2 provider requests with system messages, got %d", len(systemPromptMsgs))
+	}
+	if !strings.Contains(systemPromptMsgs[0], "`debug`") {
+		t.Fatal("first system prompt should list debug skill")
+	}
+	if !strings.Contains(systemPromptMsgs[0], "Debugging workflow") {
+		t.Fatal("first system prompt should include skill description")
+	}
+	if !strings.Contains(systemPromptMsgs[2], "Active Skills") {
+		t.Fatal("second system prompt should show Active Skills")
 	}
 }

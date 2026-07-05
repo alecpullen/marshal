@@ -79,6 +79,7 @@ type Model struct {
 	// Viewport dirty tracking.
 	lastMessageCount int
 	lastStreamLen    int
+	lastHadApproval  bool
 	thinkingExpanded bool
 
 	spinner           Spinner
@@ -512,11 +513,13 @@ func (m *Model) refreshViewport() {
 	messages := m.state.Messages()
 	inProgress := m.state.InProgress()
 	streamLen := len(inProgress.Reasoning)
-	if len(messages) == m.lastMessageCount && streamLen == m.lastStreamLen && !m.busy {
+	hasApproval := m.state.PendingApproval() != nil
+	if len(messages) == m.lastMessageCount && streamLen == m.lastStreamLen && !m.busy && hasApproval == m.lastHadApproval {
 		return
 	}
 	m.lastMessageCount = len(messages)
 	m.lastStreamLen = streamLen
+	m.lastHadApproval = hasApproval
 
 	var b strings.Builder
 	if len(messages) == 0 {
@@ -530,6 +533,9 @@ func (m *Model) refreshViewport() {
 	}
 	if inProgress.Active {
 		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.viewport.Width))
+	}
+	if tc := m.state.PendingApproval(); tc != nil {
+		b.WriteString(renderApprovalInline(tc, m.viewport.Width))
 	}
 	m.viewport.SetContent(b.String())
 	m.viewport.GotoBottom()
@@ -971,7 +977,7 @@ func (m Model) View() string {
 
 	tc := m.state.PendingApproval()
 
-	chatPanel := m.renderChatPanel(tc)
+	chatPanel := m.renderChatPanel()
 	inputPanel := m.renderInputArea()
 	leftColumn := lipgloss.JoinVertical(lipgloss.Left, chatPanel, inputPanel)
 
@@ -990,67 +996,41 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, topBar, mainLayout, statusBar)
 }
 
-func (m Model) renderChatPanel(tc *session.PendingToolCall) string {
+func (m Model) renderChatPanel() string {
 	if err := m.state.ProviderError(); err != nil {
 		body := lipgloss.NewStyle().
 			Foreground(errorColor).
 			Render("! " + truncateRunes(err.Error(), max(m.leftWidth-2, 1)))
 		return renderPanel("Provider Error", "fits AltScreen", body, m.leftWidth, m.chatHeight)
 	}
-	if tc != nil {
-		return m.renderApprovalArea(tc)
-	}
 	return renderPanel("Chat", "live transcript", m.viewport.View(), m.leftWidth, m.chatHeight)
 }
 
-func (m Model) renderApprovalArea(tc *session.PendingToolCall) string {
-	helpLine := "Enter approve  d deny  e edit  a always allow"
-	if m.state.HasBackup() {
-		helpLine += "  r rollback"
+func renderApprovalInline(tc *session.PendingToolCall, width int) string {
+	if width < 10 {
+		width = 10
 	}
+	helpLine := "Enter approve · d deny · e edit · a always"
+	innerWidth := max(width-2, 1)
 
-	if tc.Diff == "" {
-		body := strings.Join([]string{
-			panelTitleStyle.Foreground(accentColor).Render("Agent wants to run"),
-			truncateRunes(tc.Command, max(m.leftWidth, 1)),
-			"",
-			mutedStyle.Render("Reason"),
-			truncateRunes(tc.Reason, max(m.leftWidth, 1)),
-			"",
-			mutedStyle.Render("Risk"),
-			truncateRunes(riskText(tc), max(m.leftWidth, 1)),
-			"",
-			helpLine,
-		}, "\n")
-		return renderPanel("Approval", "pending", body, m.leftWidth, m.chatHeight)
-	}
+	var b strings.Builder
+	b.WriteString(panelTitleStyle.Foreground(warningColor).Render("⚠ Approval needed"))
+	b.WriteString("\n")
+	b.WriteString(mutedStyle.Render("Agent wants to run:"))
+	b.WriteString("\n")
+	b.WriteString(truncateRunes(tc.Command, innerWidth))
+	b.WriteString("\n\n")
+	b.WriteString(mutedStyle.Render("Risk: "))
+	b.WriteString(truncateRunes(riskText(tc), innerWidth))
+	b.WriteString("\n\n")
+	b.WriteString(mutedStyle.Render(helpLine))
 
-	splitWidth := max((m.leftWidth-4)/2, 10)
-	diffLines := strings.Split(tc.Diff, "\n")
-	maxDiffLines := max(m.chatHeight-1, 1)
-	if len(diffLines) > maxDiffLines {
-		diffLines = diffLines[:maxDiffLines]
-	}
-	for i := range diffLines {
-		diffLines[i] = truncateRunes(diffLines[i], splitWidth)
-	}
-	diffBody := strings.Join(diffLines, "\n")
-	diffPanel := renderPanel("Diff", "proposed patch", diffBody, splitWidth, m.chatHeight)
-
-	approvalBody := strings.Join([]string{
-		panelTitleStyle.Foreground(accentColor).Render("Agent wants to run"),
-		truncateRunes(tc.Command, max(splitWidth, 1)),
-		"",
-		mutedStyle.Render("Reason"),
-		truncateRunes(tc.Reason, max(splitWidth, 1)),
-		"",
-		mutedStyle.Render("Risk"),
-		truncateRunes(riskText(tc), max(splitWidth, 1)),
-		"",
-		helpLine,
-	}, "\n")
-	approvalPanel := renderPanel("Approval", "security", approvalBody, splitWidth, m.chatHeight)
-	return lipgloss.JoinHorizontal(lipgloss.Top, diffPanel, approvalPanel)
+	style := lipgloss.NewStyle().
+		Width(innerWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(warningColor).
+		Padding(0, 1)
+	return style.Render(b.String()) + "\n\n"
 }
 
 func (m Model) renderInputArea() string {

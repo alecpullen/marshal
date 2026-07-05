@@ -27,10 +27,10 @@ func TestCreateSessionAndMessages(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	if err := db.SaveMessage(sessionID, "user", "hello", "plain", now.Add(time.Second), "", 0); err != nil {
+	if err := db.SaveMessage(sessionID, "user", "hello", "plain", now.Add(time.Second), "", 0, false); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
-	if err := db.SaveMessage(sessionID, "assistant", "hi there", "markdown", now.Add(2*time.Second), "considering the greeting", 4*time.Second); err != nil {
+	if err := db.SaveMessage(sessionID, "assistant", "hi there", "markdown", now.Add(2*time.Second), "considering the greeting", 4*time.Second, false); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
 
@@ -160,5 +160,74 @@ func TestGetSessionNotFound(t *testing.T) {
 	_, err = db.GetSession("does-not-exist")
 	if err == nil {
 		t.Fatal("expected an error for a missing session")
+	}
+}
+
+func newTestDB(t *testing.T) *DB {
+	t.Helper()
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	return db
+}
+
+func createTestSession(t *testing.T, db *DB) string {
+	t.Helper()
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+	sessionID := "test-session-1"
+	if err := db.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	return sessionID
+}
+
+func TestSaveMessageWithFinalFlag(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	sessionID := createTestSession(t, db)
+
+	now := time.Now().UTC()
+	if err := db.SaveMessage(sessionID, "assistant", "the answer", "markdown", now, "", 0, true); err != nil {
+		t.Fatalf("SaveMessage failed: %v", err)
+	}
+
+	msgs, err := db.GetMessages(sessionID)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(msgs))
+	}
+	if !msgs[0].Final {
+		t.Fatal("Final = false, want true")
+	}
+}
+
+func TestSaveMessageWithoutFinalFlag(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	sessionID := createTestSession(t, db)
+
+	now := time.Now().UTC()
+	if err := db.SaveMessage(sessionID, "user", "hello", "plain", now, "", 0, false); err != nil {
+		t.Fatalf("SaveMessage failed: %v", err)
+	}
+
+	msgs, err := db.GetMessages(sessionID)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(msgs))
+	}
+	if msgs[0].Final {
+		t.Fatal("Final = true, want false")
 	}
 }

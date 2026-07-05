@@ -15,6 +15,7 @@ type Message struct {
 	Reasoning       string
 	ThinkDurationMs int64
 	CreatedAt       time.Time
+	Final           bool
 }
 
 type Session struct {
@@ -91,7 +92,7 @@ func (db *DB) EndSession(sessionID string, endedAt time.Time, summary string) er
 // long it took, if any (empty string / zero duration otherwise) — both
 // stored as SQL NULL so a message with no captured reasoning round-trips
 // identically to how it did before these columns existed.
-func (db *DB) SaveMessage(sessionID string, role string, content string, contentType string, createdAt time.Time, reasoning string, thinkDuration time.Duration) error {
+func (db *DB) SaveMessage(sessionID string, role string, content string, contentType string, createdAt time.Time, reasoning string, thinkDuration time.Duration, final bool) error {
 	var reasoningArg sql.NullString
 	if reasoning != "" {
 		reasoningArg = sql.NullString{String: reasoning, Valid: true}
@@ -105,9 +106,9 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 		contentTypeArg = sql.NullString{String: contentType, Valid: true}
 	}
 	_, err := db.exec(
-		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339),
+		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at, final)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339), final,
 	)
 	if err != nil {
 		return fmt.Errorf("save message: %w", err)
@@ -118,7 +119,7 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 // GetMessages returns all messages for a session in chronological order.
 func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 	rows, err := db.sqlDB.Query(
-		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at
+		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at, final
 		 FROM messages
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,
@@ -136,7 +137,8 @@ func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 		var reasoning sql.NullString
 		var thinkDurationMs sql.NullInt64
 		var contentType sql.NullString
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created); err != nil {
+		var final sql.NullInt64
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final); err != nil {
 			return nil, fmt.Errorf("scan message row: %w", err)
 		}
 		if contentType.Valid {
@@ -148,6 +150,7 @@ func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 		if thinkDurationMs.Valid {
 			m.ThinkDurationMs = thinkDurationMs.Int64
 		}
+		m.Final = final.Valid && final.Int64 != 0
 		parsed, err := time.Parse(time.RFC3339, created)
 		if err != nil {
 			return nil, fmt.Errorf("parse created_at: %w", err)

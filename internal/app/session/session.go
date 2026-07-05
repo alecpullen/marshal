@@ -53,6 +53,7 @@ type Activity struct {
 type Message struct {
 	Role          Role
 	Content       string
+	ContentType   ContentType
 	Reasoning     string
 	ThinkDuration time.Duration
 	CreatedAt     time.Time
@@ -153,7 +154,7 @@ func (s *State) persistenceEnabled() bool {
 	return s.db != nil && s.sessionID != "" && s.logger != nil
 }
 
-func (s *State) AddMessage(role Role, content string) {
+func (s *State) AddMessage(role Role, content string, contentType ContentType) {
 	s.mu.Lock()
 	reasoning := s.inProgress.Reasoning
 	var thinkDuration time.Duration
@@ -168,6 +169,7 @@ func (s *State) AddMessage(role Role, content string) {
 	msg := Message{
 		Role:          role,
 		Content:       content,
+		ContentType:   contentType,
 		Reasoning:     reasoning,
 		ThinkDuration: thinkDuration,
 		CreatedAt:     time.Now(),
@@ -408,7 +410,7 @@ func (s *State) RollbackBackup() error {
 		}
 	}
 
-	s.AddMessage(RoleSystem, "System notice: The user has rolled back the last patch. All modified files have been reverted to their original state.")
+	s.AddMessage(RoleSystem, "System notice: The user has rolled back the last patch. All modified files have been reverted to their original state.", ContentTypePlain)
 	return nil
 }
 

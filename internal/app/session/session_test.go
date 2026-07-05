@@ -463,3 +463,88 @@ func TestStateActivityIsRaceFree(t *testing.T) {
 	}
 	<-done
 }
+
+func TestStateActiveSkillsRoundTrip(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	if len(state.ActiveSkills()) != 0 {
+		t.Fatal("initial active skills should be empty")
+	}
+
+	state.ActivateSkill("debugging")
+
+	if !state.HasActiveSkill("debugging") {
+		t.Fatal("HasActiveSkill(debugging) = false, want true")
+	}
+	if state.HasActiveSkill("nonexistent") {
+		t.Fatal("HasActiveSkill(nonexistent) = true, want false")
+	}
+
+	active := state.ActiveSkills()
+	if len(active) != 1 || active[0] != "debugging" {
+		t.Fatalf("ActiveSkills() = %v, want [debugging]", active)
+	}
+
+	state.DeactivateSkill("debugging")
+	if len(state.ActiveSkills()) != 0 {
+		t.Fatal("active skills should be empty after deactivate")
+	}
+	if state.HasActiveSkill("debugging") {
+		t.Fatal("HasActiveSkill(debugging) = true after deactivate")
+	}
+}
+
+func TestStateDeactivateSkillNonexistentNoop(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	state.DeactivateSkill("nonexistent")
+	if len(state.ActiveSkills()) != 0 {
+		t.Fatal("deactivating nonexistent skill should no-op")
+	}
+}
+
+func TestStateActivateSkillDuplicateNoop(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	state.ActivateSkill("debugging")
+	state.ActivateSkill("debugging")
+
+	active := state.ActiveSkills()
+	if len(active) != 1 {
+		t.Fatalf("duplicate activation should produce 1 entry, got %d", len(active))
+	}
+}
+
+func TestStateActiveSkillsReturnsCopy(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	state.ActivateSkill("debugging")
+	active := state.ActiveSkills()
+	active[0] = "mutated"
+
+	got := state.ActiveSkills()
+	if got[0] != "debugging" {
+		t.Fatalf("ActiveSkills() returned mutable slice: %v", got)
+	}
+}
+
+func TestStateActiveSkillsRaceFree(t *testing.T) {
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			state.ActivateSkill("a")
+			state.ActivateSkill("b")
+			state.DeactivateSkill("a")
+			state.DeactivateSkill("b")
+		}
+	}()
+
+	for i := 0; i < 100; i++ {
+		_ = state.ActiveSkills()
+		_ = state.HasActiveSkill("a")
+	}
+	<-done
+}

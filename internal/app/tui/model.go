@@ -878,13 +878,6 @@ func (m Model) renderStateStrip(width int) string {
 		Render(" " + truncateRunes(text, width-2))
 }
 
-func riskText(tc *session.PendingToolCall) string {
-	if tc.Risk != "" {
-		return tc.Risk
-	}
-	return tc.Reason
-}
-
 func visibleRunes(s string) int {
 	return ansi.StringWidth(s)
 }

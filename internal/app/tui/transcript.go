@@ -184,13 +184,22 @@ func renderThinkingBox(reasoning string, width int) string {
 		Foreground(dimColor).
 		Italic(true)
 	tail := tailRunes(reasoning, boxWidth*thinkingBoxTailLines)
-	// Header is "thinking" (8) + spaces + 34-character subtitle. Keep it on
-	// one line by sizing the spacer so the joined result is exactly boxWidth.
+	// Header is "thinking" + spaces + subtitle. Keep it on one line and never
+	// let it overflow the box: shrink or drop the spacer, and truncate the
+	// subtitle if the terminal is extremely narrow.
+	const (
+		titleText    = "thinking"
+		titleWidth   = 8
+		subtitleText = "streaming · Ctrl+G expands history"
+	)
+	available := max(boxWidth-titleWidth, 0)
+	subtitle := truncateRunes(subtitleText, available)
+	spacer := max(boxWidth-titleWidth-visibleRunes(subtitle), 0)
 	header := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		"thinking",
-		strings.Repeat(" ", max(boxWidth-42, 1)),
-		"streaming · Ctrl+G expands history",
+		titleText,
+		strings.Repeat(" ", spacer),
+		subtitle,
 	)
 	return style.Render(header+"\n\n"+tail) + "\n\n"
 }
@@ -432,6 +441,13 @@ func formatElapsed(d time.Duration) string {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
 	return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+}
+
+func riskText(tc *session.PendingToolCall) string {
+	if tc.Risk != "" {
+		return tc.Risk
+	}
+	return tc.Reason
 }
 
 // renderApprovalInline renders the approval prompt inside the chat viewport.

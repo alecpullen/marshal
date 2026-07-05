@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -143,6 +144,7 @@ func New(state *session.State, opts ...Option) Model {
 	km := textarea.DefaultKeyMap
 	km.InsertNewline.SetKeys("shift+enter")
 	input.KeyMap = km
+	input.Focus()
 
 	m := Model{
 		state:          state,
@@ -402,6 +404,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case tea.KeyEnter:
+				if key.Matches(msg, m.input.KeyMap.InsertNewline) {
+					break
+				}
 				value := strings.TrimSpace(m.input.Value())
 				if value == "" {
 					return m, nil

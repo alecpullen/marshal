@@ -343,3 +343,15 @@ func TestBuildSystemPromptRepoScoutRole(t *testing.T) {
 		t.Fatalf("repo scout system prompt missing allowed actions:\n%s", msg.Content)
 	}
 }
+
+func TestBaseRulesEncourageEarlyFinal(t *testing.T) {
+	for _, want := range []string{
+		"only to obtain facts",
+		"produce a final answer",
+		"Stop after validation",
+	} {
+		if !strings.Contains(baseRules, want) {
+			t.Errorf("baseRules missing %q", want)
+		}
+	}
+}

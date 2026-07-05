@@ -14,6 +14,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/skills"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -82,8 +83,9 @@ type Runner struct {
 	MaxParallelActions int
 	MaxToolResultChars int
 	ForceClass         string // if set, overrides Classify() in Run()
+	SkillIndex         *skills.Index
 
-	forceClassMu sync.Mutex
+	forceClassMu  sync.Mutex
 	callHistory   []toolCallKey
 	callHistoryMu sync.Mutex
 	loopNudgeSent bool
@@ -136,7 +138,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
 	messages := []schema.ChatMessage{
-		BuildSystemPrompt(RoleGeneral, r.Registry.List()),
+		BuildSystemPrompt(RoleGeneral, r.Registry.List(), r.SkillIndex, r.State.ActiveSkills()),
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
@@ -157,7 +159,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 			}
 			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
-			messages = []schema.ChatMessage{BuildSystemPrompt(RoleGeneral, r.Registry.List())}
+			messages = []schema.ChatMessage{BuildSystemPrompt(RoleGeneral, r.Registry.List(), r.SkillIndex, r.State.ActiveSkills())}
 			messages = appendContextPackMessage(messages, updatedPack)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}

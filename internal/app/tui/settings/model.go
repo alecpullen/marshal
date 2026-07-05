@@ -121,6 +121,12 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 		nil,
 	))
 
+	m.fields = append(m.fields, newIntField(
+		"Max tool iterations",
+		m.cfg.Agent.MaxToolIterations,
+		func(v int) { m.cfg.Agent.MaxToolIterations = v },
+	))
+
 	if len(m.fields) > 0 {
 		m.fields[0].Focus()
 	}

@@ -93,13 +93,13 @@ func TestDownOnLastFieldWrapsToFirst(t *testing.T) {
 	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
 	m.SetSize(80, 24)
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 6; i++ {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 	}
 
 	view := m.View()
-	if !strings.Contains(view, "> [ ] Remote providers allowed") {
+	if !strings.Contains(view, "> Max tool iterations:") {
 		t.Fatalf("expected last field focused, got:\n%s", view)
 	}
 

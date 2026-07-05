@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -191,4 +192,60 @@ func (f *selectField) Value() string {
 		return ""
 	}
 	return f.options[f.selected]
+}
+
+type intField struct {
+	label     string
+	input     textinput.Model
+	onChange  func(int)
+	lastValue int
+}
+
+func newIntField(label string, value int, onChange func(int)) *intField {
+	inp := textinput.New()
+	inp.SetValue(strconv.Itoa(value))
+	inp.Prompt = ""
+	return &intField{label: label, input: inp, onChange: onChange, lastValue: value}
+}
+
+func (f *intField) Label() string { return f.label }
+
+func (f *intField) Focus() {
+	f.input.Focus()
+}
+
+func (f *intField) Blur() {
+	f.input.Blur()
+}
+
+func (f *intField) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		var cmd tea.Cmd
+		f.input, cmd = f.input.Update(msg)
+		if v, err := strconv.Atoi(f.input.Value()); err == nil {
+			f.lastValue = v
+			if f.onChange != nil {
+				f.onChange(v)
+			}
+		} else {
+			f.input.SetValue(strconv.Itoa(f.lastValue))
+		}
+		return cmd
+	}
+	return nil
+}
+
+func (f *intField) View(width int) string {
+	label := f.label + ": "
+	available := width - len([]rune(label))
+	if available < 1 {
+		available = 1
+	}
+	f.input.Width = available
+	return label + f.input.View()
+}
+
+func (f *intField) Value() int {
+	return f.lastValue
 }

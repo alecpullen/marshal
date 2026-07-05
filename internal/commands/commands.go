@@ -125,6 +125,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			},
 		},
 		{
+			Name:        "swarm",
+			Description: "Run a goal through the swarm (planner → scouts → implementer → reviewer)",
+			Args:        "<goal>",
+			Handler:     func(state *session.State, args []string) string { return "" },
+		},
+		{
 			Name:        "model",
 			Description: "Switch to a model preset by name",
 			Args:        "<preset-name>",

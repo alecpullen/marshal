@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -581,6 +582,81 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 }
 
 func (f *fakeAgentRunner) SetForceClass(string) {}
+
+type fakeSwarmRunner struct {
+	mu    sync.Mutex
+	goals []string
+}
+
+func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.goals = append(f.goals, goal)
+	return nil
+}
+
+func (f *fakeSwarmRunner) SetForceClass(string) {}
+
+func TestSwarmCommandDispatchesGoalToSwarmRunner(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	fake := &fakeSwarmRunner{}
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	model := New(state,
+		WithCommandRegistry(cmdReg),
+		WithSwarmRunner(context.Background(), fake),
+	)
+
+	_, cmd := model.dispatchCommand("/swarm add a regression test")
+	if cmd == nil {
+		t.Fatal("dispatchCommand returned nil cmd")
+	}
+	if !model.busy {
+		t.Fatal("model should be busy while the swarm runs")
+	}
+
+	// Execute the batched commands; one of them runs the swarm.
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", msg)
+	}
+	for _, sub := range batch {
+		if sub != nil {
+			_ = sub()
+		}
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.goals) != 1 || fake.goals[0] != "add a regression test" {
+		t.Fatalf("swarm runner goals = %v, want [\"add a regression test\"]", fake.goals)
+	}
+}
+
+func TestSwarmCommandWithoutGoalShowsUsage(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	model := New(state,
+		WithCommandRegistry(cmdReg),
+		WithSwarmRunner(context.Background(), &fakeSwarmRunner{}),
+	)
+
+	_, _ = model.dispatchCommand("/swarm")
+	messages := state.Messages()
+	last := messages[len(messages)-1]
+	if !strings.Contains(last.Content, "Usage: /swarm <goal>") {
+		t.Fatalf("expected usage message, got %q", last.Content)
+	}
+	if model.busy {
+		t.Fatal("model must not be busy after a usage error")
+	}
+}
 
 func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})

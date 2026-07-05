@@ -3,6 +3,7 @@ package policy
 import (
 	"marshal/internal/app/config"
 	"strings"
+	"sync"
 )
 
 type Decision string
@@ -16,6 +17,7 @@ const (
 type PolicyEngine struct {
 	config       *config.Config
 	sessionRules []string
+	mu           sync.RWMutex
 }
 
 func NewEngine(cfg *config.Config, sessionRules []string) *PolicyEngine {
@@ -31,6 +33,8 @@ func NewEngine(cfg *config.Config, sessionRules []string) *PolicyEngine {
 // action) accrue after construction — callers with a long-lived engine
 // must call this before Evaluate to see rules added since the last call.
 func (pe *PolicyEngine) SetSessionRules(rules []string) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
 	pe.sessionRules = rules
 }
 
@@ -73,7 +77,10 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	}
 
 	// 3. Session Rules
-	for _, prefix := range pe.sessionRules {
+	pe.mu.RLock()
+	sessionRules := pe.sessionRules
+	pe.mu.RUnlock()
+	for _, prefix := range sessionRules {
 		if matchRule(normCmd, prefix) {
 			return DecisionAllow, "allowed by session-approved command: " + prefix, nil
 		}

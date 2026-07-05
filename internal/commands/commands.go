@@ -106,17 +106,23 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "ask",
 			Description: "Switch to Ask mode (read-only, no planning)",
-			Handler:     func(state *session.State, args []string) string { return "Switched to Ask mode. Agent will answer questions without planning or editing." },
+			Handler: func(state *session.State, args []string) string {
+				return "Switched to Ask mode. Agent will answer questions without planning or editing."
+			},
 		},
 		{
 			Name:        "edit",
 			Description: "Switch to Edit mode (planning + full tools)",
-			Handler:     func(state *session.State, args []string) string { return "Switched to Edit mode. Agent will plan and execute changes." },
+			Handler: func(state *session.State, args []string) string {
+				return "Switched to Edit mode. Agent will plan and execute changes."
+			},
 		},
 		{
 			Name:        "auto",
 			Description: "Switch to Auto mode (classify each turn)",
-			Handler:     func(state *session.State, args []string) string { return "Switched to Auto mode. Agent will classify each turn automatically." },
+			Handler: func(state *session.State, args []string) string {
+				return "Switched to Auto mode. Agent will classify each turn automatically."
+			},
 		},
 		{
 			Name:        "model",

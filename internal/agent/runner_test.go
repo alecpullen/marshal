@@ -1413,3 +1413,44 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 		t.Fatal("third system prompt should show Active Skills")
 	}
 }
+
+func TestRunnerUsesConfiguredRoleInSystemPrompt(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale": "done", "action": {"type": "final", "content": "review complete"}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.Role = RoleReviewer
+	runner.SetForceClass("question")
+
+	if err := runner.Run(context.Background(), "review the diff"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	system := p.requests[0].Messages[0].Content
+	if !strings.Contains(system, "You are a reviewer") {
+		t.Fatalf("system prompt did not use reviewer role:\n%s", system)
+	}
+}
+
+func TestRunTaskReturnsCompletedTaskWithSummary(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale": "done", "action": {"type": "final", "content": "all findings recorded"}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.SetForceClass("question")
+
+	task, err := runner.RunTask(context.Background(), "scout the repo")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if task.Status != TaskStatusCompleted {
+		t.Fatalf("task.Status = %q, want %q", task.Status, TaskStatusCompleted)
+	}
+	if task.Summary != "all findings recorded" {
+		t.Fatalf("task.Summary = %q, want final content", task.Summary)
+	}
+}

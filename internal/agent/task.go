@@ -27,12 +27,13 @@ const (
 // it as the loop progresses so callers can inspect what the agent decided
 // without re-parsing the message transcript.
 type Task struct {
-	Goal      string
-	Class     TaskClass
-	Status    TaskStatus
-	Plan      []string
-	Summary   string
-	StartedAt time.Time
+	Goal           string
+	Class          TaskClass
+	Status         TaskStatus
+	Plan           []string
+	Summary        string
+	StartedAt      time.Time
+	SalvagedReason string // non-empty when the final answer was forced under budget pressure
 }
 
 func NewTask(goal string, startedAt time.Time) *Task {

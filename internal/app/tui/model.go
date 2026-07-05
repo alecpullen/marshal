@@ -40,30 +40,30 @@ const (
 
 	totalHorizontalBorderGutter = 5 // left border + right border + gutter
 	verticalOverhead            = 4 // status bar (1) + right-column border (2) + slack (1)
-	chatBelowViewportRows       = 4  // bordered input box (3) + help line (1)
-	stateStripRows              = 1  // colored activity strip, shown only when active
+	chatBelowViewportRows       = 4 // bordered input box (3) + help line (1)
+	stateStripRows              = 1 // colored activity strip, shown only when active
 
 	doneDisplayDuration = 2 * time.Second
 )
 
 type Model struct {
-	state          *session.State
-	input          textinput.Model
-	editingCommand bool
-	runner         AgentRunner
-	ctx            context.Context
+	state            *session.State
+	input            textinput.Model
+	editingCommand   bool
+	runner           AgentRunner
+	ctx              context.Context
 	busy             bool
 	stateStripActive bool
 	settingsOpen     bool
-	settingsModel  settings.Model
-	configReloader ConfigReloader
-	memoryOpen     bool
-	memoryModel    memory.Model
-	memoryDB       *db.DB
-	memoryProject  int64
-	cmdRegistry    *commands.Registry
-	agentCancel    context.CancelFunc
-	forceMode      string // reserved for future status-bar display
+	settingsModel    settings.Model
+	configReloader   ConfigReloader
+	memoryOpen       bool
+	memoryModel      memory.Model
+	memoryDB         *db.DB
+	memoryProject    int64
+	cmdRegistry      *commands.Registry
+	agentCancel      context.CancelFunc
+	forceMode        string // reserved for future status-bar display
 
 	// New Layout State
 	width        int

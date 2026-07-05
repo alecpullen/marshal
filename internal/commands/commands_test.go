@@ -287,3 +287,21 @@ func TestModelCommandEmptyArgs(t *testing.T) {
 		t.Errorf("model handler should return empty string when no args, got %s", result)
 	}
 }
+
+func TestRegisterAllIncludesSwarmCommand(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	cmd, ok := cmdReg.Lookup("swarm")
+	if !ok {
+		t.Fatal("swarm command not registered")
+	}
+	if cmd.Args != "<goal>" {
+		t.Fatalf("swarm Args = %q, want \"<goal>\"", cmd.Args)
+	}
+	// The handler is a no-op; the TUI special-cases dispatch like /ask.
+	if got := cmd.Handler(nil, []string{"fix", "bug"}); got != "" {
+		t.Fatalf("swarm handler returned %q, want empty", got)
+	}
+}

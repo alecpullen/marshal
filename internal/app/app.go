@@ -335,7 +335,6 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	var toolReg *registry.Registry
 	var swarmRunner *swarm.Orchestrator
 	runner, toolReg, swarmRunner, err = buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
-	_ = swarmRunner
 
 	cmdReg := commands.New()
 	if err == nil {
@@ -349,6 +348,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
 	if err == nil {
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
+		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
 			if runner == nil {

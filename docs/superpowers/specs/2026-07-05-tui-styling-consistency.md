@@ -20,8 +20,8 @@ Unify and clean up Marshal's TUI styling. Fix border inconsistencies, add consis
 
 - Border: `RoundedBorder`
 - Border color: `panelBorderColor` (`240`)
-- Padding: `1, 1` (one cell on all sides) so messages do not touch the border
 - Background: default terminal background (no fill)
+- Messages receive a consistent 2-space left gutter so content does not touch the frame
 
 ### Input area
 

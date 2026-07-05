@@ -263,7 +263,7 @@ func renderUserMessage(content string, width int) string {
 }
 
 func renderAgentMarkdown(content string, width int) string {
-	contentWidth := max(width-2, 1)
+	contentWidth := max(width-4, 1)
 	blocks := splitFencedBlocks(strings.TrimRight(content, "\n"))
 	var b strings.Builder
 	for _, block := range blocks {
@@ -274,11 +274,17 @@ func renderAgentMarkdown(content string, width int) string {
 		case "prose":
 			for _, pLine := range strings.Split(block.text, "\n") {
 				if strings.TrimSpace(pLine) == "" {
+					b.WriteString("\n")
 					continue
 				}
 				style, transformed := parseMarkdownLine(pLine)
 				wrapped := ansi.Wrap(transformed, contentWidth, "")
-				for _, wl := range strings.Split(wrapped, "\n") {
+				for i, wl := range strings.Split(wrapped, "\n") {
+					if i == 0 {
+						b.WriteString("  ")
+					} else {
+						b.WriteString("    ")
+					}
 					b.WriteString(style.Render(wl))
 					b.WriteString("\n")
 				}
@@ -506,5 +512,25 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 	b.WriteString(truncateRunes(riskText(tc), innerWidth))
 	b.WriteString("\n\n")
 	b.WriteString(mutedStyle.Render(helpLine))
+	return b.String()
+}
+
+var bannerLogoStyle = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+
+func renderWelcomeBanner(width int) string {
+	if width < 40 {
+		return mutedStyle.Render("marshal — local-first coding agent") + "\n"
+	}
+	logo := `  ███╗   ███╗ █████╗ ██████╗ ███████╗██╗  ██╗ █████╗ ██╗
+  ████╗ ████║██╔══██╗██╔══██╗██╔════╝██║  ██║██╔══██╗██║
+  ██╔████╔██║███████║██████╔╝███████╗███████║███████║██║
+  ██║╚██╔╝██║██╔══██║██╔══██╗╚════██║██╔══██║██╔══██║██║
+  ██║ ╚═╝ ██║██║  ██║██║  ██║███████║██║  ██║██║  ██║███████╗
+  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝`
+	var b strings.Builder
+	b.WriteString(bannerLogoStyle.Render(logo))
+	b.WriteString("\n\n")
+	b.WriteString(mutedStyle.Render("  local-first coding agent"))
+	b.WriteString("\n\n")
 	return b.String()
 }

@@ -50,7 +50,7 @@ func TestTranscriptHasSubtleFrame(t *testing.T) {
 	m.refreshViewport()
 
 	view := m.View()
-	if !strings.Contains(view, "┌") || !strings.Contains(view, "└") {
+	if !strings.Contains(view, "╭") || !strings.Contains(view, "╰") {
 		t.Fatalf("view missing transcript frame:\n%s", view)
 	}
 }

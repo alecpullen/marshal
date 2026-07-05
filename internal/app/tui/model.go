@@ -748,7 +748,6 @@ var (
 	accentColor      = lipgloss.Color("38")
 	violetColor      = lipgloss.Color("99")
 	dimColor         = lipgloss.Color("244")
-	mutedColor       = lipgloss.Color("247")
 	successColor     = lipgloss.Color("71")
 	warningColor     = lipgloss.Color("178")
 	errorColor       = lipgloss.Color("167")
@@ -761,7 +760,16 @@ var (
 				Foreground(dimColor).
 				Italic(true)
 
-	statusBarBg = lipgloss.NewStyle().
+	transcriptFrameStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(panelBorderColor)
+
+	inputBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(accentColor).
+			Padding(0, 1)
+
+	statusBarStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("235")).
 			Foreground(lipgloss.Color("252"))
 )

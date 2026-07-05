@@ -38,20 +38,14 @@ func (m Model) View() string {
 }
 
 func (m Model) renderTranscriptFrame() string {
-	return lipgloss.NewStyle().
+	return transcriptFrameStyle.
 		Width(max(m.width-2, 1)).
 		Height(max(m.viewport.Height, 1)).
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("238")).
 		Render(m.viewport.View())
 }
 
 func (m Model) renderInputArea() string {
-	inputStyle := lipgloss.NewStyle().
-		Width(max(m.width-2, 1)).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(panelBorderColor).
-		Padding(0, 1)
+	inputInnerWidth := max(m.width-4, 1)
 
 	rows := make([]string, 0, 4)
 
@@ -62,9 +56,9 @@ func (m Model) renderInputArea() string {
 				promptPrefixStyle.Render("❯ "),
 				m.input.View(),
 			)
-			rows = append(rows, inputStyle.Render(editLine))
+			rows = append(rows, inputBoxStyle.Render(editLine))
 		} else {
-			rows = append(rows, inputStyle.Render(renderApprovalPanel(tc, max(m.width-4, 1))))
+			rows = append(rows, inputBoxStyle.Render(renderApprovalPanel(tc, inputInnerWidth)))
 		}
 	} else {
 		rows = append(rows, m.renderActivityStrip())
@@ -76,7 +70,7 @@ func (m Model) renderInputArea() string {
 			promptPrefixStyle.Render("❯ "),
 			m.input.View(),
 		)
-		rows = append(rows, inputStyle.Render(inputLine))
+		rows = append(rows, inputBoxStyle.Render(inputLine))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)

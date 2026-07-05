@@ -244,10 +244,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case memory.ClosedMsg:
 		m.memoryOpen = false
 		return m, nil
-	case tea.MouseMsg:
-		var vpCmd tea.Cmd
-		m.viewport, vpCmd = m.viewport.Update(msg)
-		return m, vpCmd
 	case tea.KeyMsg:
 		// Always allow Ctrl+C to quit
 		if msg.Type == tea.KeyCtrlC {
@@ -526,7 +522,7 @@ func (m *Model) refreshViewport() {
 
 	var b strings.Builder
 	if len(items) == 0 {
-		b.WriteString("  No messages yet.\n")
+		b.WriteString(renderWelcomeBanner(m.viewport.Width))
 	}
 	for _, item := range items {
 		b.WriteString(renderTranscriptItem(item, m.thinkingExpanded, m.viewport.Width))

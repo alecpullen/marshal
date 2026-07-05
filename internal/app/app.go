@@ -394,7 +394,6 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		}
 	}()
 
-	printMarshalBanner(stderr, cfg.Project.Name)
 	logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
 	select {
@@ -417,21 +416,6 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		Logger:        logger,
 	})
 	return progErr
-}
-
-func printMarshalBanner(w io.Writer, project string) {
-	fmt.Fprintf(w, `
-  ███╗   ███╗ █████╗ ██████╗ ███████╗██╗  ██╗ █████╗ ██╗
-  ████╗ ████║██╔══██╗██╔══██╗██╔════╝██║  ██║██╔══██╗██║
-  ██╔████╔██║███████║██████╔╝███████╗███████║███████║██║
-  ██║╚██╔╝██║██╔══██║██╔══██╗╚════██║██╔══██║██╔══██║██║
-  ██║ ╚═╝ ██║██║  ██║██║  ██║███████║██║  ██║██║  ██║███████╗
-  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
-
-  local-first coding agent
-  project: %s
-
-`, project)
 }
 
 func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {

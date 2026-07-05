@@ -282,8 +282,8 @@ func TestRunDisplaysInactiveRouteWhenNoProviderConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if !strings.Contains(view, "inactive") {
-		t.Fatalf("view missing inactive route in status bar:\n%s", view)
+	if !strings.Contains(view, "no model") {
+		t.Fatalf("view missing inactive route in status line:\n%s", view)
 	}
 }
 
@@ -321,9 +321,7 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	for _, want := range []string{
-		"implementer",
-		"ollama",
-		"qwen2.5-coder:14b",
+		"qwen2.5-coder:14b @ ollama",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)

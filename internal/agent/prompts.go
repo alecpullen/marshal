@@ -6,6 +6,7 @@ import (
 
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/schema"
+	"marshal/internal/skills"
 	"marshal/internal/tools/registry"
 )
 
@@ -100,7 +101,7 @@ func renderRoleAddendum(r rolePrompt) string {
 	return b.String()
 }
 
-func BuildSystemPrompt(role AgentRole, tools []registry.Tool) schema.ChatMessage {
+func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
@@ -116,6 +117,32 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool) schema.ChatMessage
 	for _, tool := range tools {
 		b.WriteString(fmt.Sprintf("- %s (%s): %s\n", tool.Name, tool.Risk, tool.Description))
 	}
+	activeMap := make(map[string]bool, len(activeSkills))
+	for _, name := range activeSkills {
+		activeMap[name] = true
+	}
+
+	if len(activeMap) > 0 {
+		b.WriteString("\n## Active Skills\n")
+		for _, name := range activeSkills {
+			b.WriteString(fmt.Sprintf("- `%s` — (Injected into context above)\n", name))
+		}
+		b.WriteString("\n")
+	} else if skillIndex != nil {
+		list := skillIndex.List()
+		if len(list) > 0 {
+			b.WriteString("\n## Available Skills\n")
+			for _, skill := range list {
+				b.WriteString(fmt.Sprintf("- `%s` — %s\n", skill.Name, skill.Description))
+			}
+			b.WriteString("\nNo skills are active. Call skill.load <name> to activate a skill when relevant to the task.\n")
+		} else {
+			b.WriteString("\n## Available Skills\nNo skills are available for this project.\n")
+		}
+	} else {
+		b.WriteString("\n## Available Skills\nNo skills are available for this project.\n")
+	}
+
 	b.WriteString("\n")
 	b.WriteString(baseOutputFormat)
 	b.WriteString("\n\n")

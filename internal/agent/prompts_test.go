@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/schema"
+	"marshal/internal/skills"
 	"marshal/internal/tools/registry"
 )
 
@@ -22,7 +23,7 @@ func TestBuildSystemPromptListsTools(t *testing.T) {
 	msg := BuildSystemPrompt(RoleGeneral, []registry.Tool{
 		{Name: "file.read", Description: "Read a workspace file.", Risk: registry.RiskReadOnly},
 		{Name: "shell.run", Description: "Run a shell command.", Risk: registry.RiskCommand},
-	})
+	}, nil, nil)
 
 	if msg.Role != schema.RoleSystem {
 		t.Fatalf("Role = %q, want %q", msg.Role, schema.RoleSystem)
@@ -36,7 +37,7 @@ func TestBuildSystemPromptListsTools(t *testing.T) {
 }
 
 func TestBuildSystemPromptContainsBaseSections(t *testing.T) {
-	msg := BuildSystemPrompt(RoleGeneral, dummyTools())
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil)
 	content := msg.Content
 
 	if msg.Role != schema.RoleSystem {
@@ -59,7 +60,7 @@ func TestBuildSystemPromptContainsBaseSections(t *testing.T) {
 }
 
 func TestBuildSystemPromptPlannerHasCorrectAllowedActions(t *testing.T) {
-	msg := BuildSystemPrompt(RolePlanner, dummyTools())
+	msg := BuildSystemPrompt(RolePlanner, dummyTools(), nil, nil)
 	content := msg.Content
 
 	if !strings.Contains(content, "You are a planner") {
@@ -71,7 +72,7 @@ func TestBuildSystemPromptPlannerHasCorrectAllowedActions(t *testing.T) {
 }
 
 func TestBuildSystemPromptImplementerHasCorrectAllowedActions(t *testing.T) {
-	msg := BuildSystemPrompt(RoleImplementer, dummyTools())
+	msg := BuildSystemPrompt(RoleImplementer, dummyTools(), nil, nil)
 	content := msg.Content
 
 	if !strings.Contains(content, "You are an implementer") {
@@ -83,7 +84,7 @@ func TestBuildSystemPromptImplementerHasCorrectAllowedActions(t *testing.T) {
 }
 
 func TestBuildSystemPromptDescribesPatchFormat(t *testing.T) {
-	msg := BuildSystemPrompt(RoleGeneral, dummyTools())
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil)
 	content := msg.Content
 
 	if !strings.Contains(content, "<<<<<<< SEARCH") {
@@ -95,7 +96,7 @@ func TestBuildSystemPromptDescribesPatchFormat(t *testing.T) {
 }
 
 func TestBuildSystemPromptContainsActionExamples(t *testing.T) {
-	msg := BuildSystemPrompt(RoleGeneral, dummyTools())
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil)
 	content := msg.Content
 
 	for _, want := range []string{
@@ -114,7 +115,7 @@ func TestBuildSystemPromptContainsActionExamples(t *testing.T) {
 }
 
 func TestBuildSystemPromptImplementerIncludesPatchExample(t *testing.T) {
-	msg := BuildSystemPrompt(RoleImplementer, dummyTools())
+	msg := BuildSystemPrompt(RoleImplementer, dummyTools(), nil, nil)
 	content := msg.Content
 
 	if !strings.Contains(content, `"type": "patch"`) {
@@ -126,7 +127,7 @@ func TestBuildSystemPromptImplementerIncludesPatchExample(t *testing.T) {
 }
 
 func TestBuildSystemPromptTesterHasCorrectAllowedActions(t *testing.T) {
-	msg := BuildSystemPrompt(RoleTester, dummyTools())
+	msg := BuildSystemPrompt(RoleTester, dummyTools(), nil, nil)
 	content := msg.Content
 
 	if !strings.Contains(content, "You are a tester") {
@@ -138,7 +139,7 @@ func TestBuildSystemPromptTesterHasCorrectAllowedActions(t *testing.T) {
 }
 
 func TestBuildSystemPromptReviewerHasCorrectAllowedActions(t *testing.T) {
-	msg := BuildSystemPrompt(RoleReviewer, dummyTools())
+	msg := BuildSystemPrompt(RoleReviewer, dummyTools(), nil, nil)
 	content := msg.Content
 
 	if !strings.Contains(content, "You are a reviewer") {
@@ -150,7 +151,7 @@ func TestBuildSystemPromptReviewerHasCorrectAllowedActions(t *testing.T) {
 }
 
 func TestBuildSystemPromptUnknownRoleFallsBackToGeneral(t *testing.T) {
-	msg := BuildSystemPrompt(AgentRole("nonexistent"), dummyTools())
+	msg := BuildSystemPrompt(AgentRole("nonexistent"), dummyTools(), nil, nil)
 	content := msg.Content
 
 	if !strings.Contains(content, "You are the general agent") {
@@ -171,7 +172,7 @@ func TestBuildSystemPromptEachRoleHasAllowedActions(t *testing.T) {
 	}
 
 	for role, want := range expected {
-		msg := BuildSystemPrompt(role, dummyTools())
+		msg := BuildSystemPrompt(role, dummyTools(), nil, nil)
 		content := msg.Content
 
 		if !strings.Contains(content, want) {
@@ -234,7 +235,7 @@ func TestBuildContextPackMessageReturnsFalseForEmptyPack(t *testing.T) {
 }
 
 func TestBuildSystemPromptDescribesParallelActionsArray(t *testing.T) {
-	msg := BuildSystemPrompt(RoleGeneral, dummyTools())
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil)
 	content := msg.Content
 
 	if !strings.Contains(content, `"actions"`) {
@@ -260,5 +261,75 @@ func TestBuildContextPackMessageRendersPack(t *testing.T) {
 	}
 	if !strings.Contains(msg.Content, "Project context pack:") || !strings.Contains(msg.Content, "Project: marshal") {
 		t.Fatalf("context message missing rendered pack:\n%s", msg.Content)
+	}
+}
+
+func TestBuildSystemPromptIncludesAvailableSkills(t *testing.T) {
+	idx := skills.NewIndex()
+	msg := BuildSystemPrompt(RoleGeneral, nil, idx, nil)
+	content := msg.Content
+
+	if !strings.Contains(content, "Available Skills") {
+		t.Fatal("system prompt should contain 'Available Skills' section placeholder")
+	}
+}
+
+func TestBuildSystemPromptWithSkills(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("debug", skills.Skill{Name: "debug", Description: "Debugging workflow"})
+	idx.Set("deploy", skills.Skill{Name: "deploy", Description: "Deployment workflows"})
+
+	msg := BuildSystemPrompt(RoleGeneral, nil, idx, nil)
+	content := msg.Content
+
+	if !strings.Contains(content, "`debug`") {
+		t.Fatal("system prompt should list debug skill")
+	}
+	if !strings.Contains(content, "`deploy`") {
+		t.Fatal("system prompt should list deploy skill")
+	}
+	if !strings.Contains(content, "Debugging workflow") {
+		t.Fatal("system prompt should include skill descriptions")
+	}
+	if !strings.Contains(content, "skill.load") {
+		t.Fatal("system prompt should mention skill.load")
+	}
+}
+
+func TestBuildSystemPromptWithActiveSkills(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("debug", skills.Skill{Name: "debug", Description: "Debugging workflow"})
+
+	active := []string{"debug"}
+	msg := BuildSystemPrompt(RoleGeneral, nil, idx, active)
+	content := msg.Content
+
+	if !strings.Contains(content, "Active Skills") {
+		t.Fatal("system prompt should show 'Active Skills' when skills are loaded")
+	}
+	if !strings.Contains(content, "`debug`") {
+		t.Fatal("system prompt should list active skill name")
+	}
+	if strings.Contains(content, "skill.load") {
+		t.Fatal("system prompt should NOT mention skill.load when skills are active")
+	}
+}
+
+func TestBuildSystemPromptNoSkills(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, nil, nil, nil)
+	content := msg.Content
+
+	if !strings.Contains(content, "No skills are available") {
+		t.Fatal("system prompt should note no skills when index is nil")
+	}
+}
+
+func TestBuildSystemPromptEmptySkillIndex(t *testing.T) {
+	idx := skills.NewIndex()
+	msg := BuildSystemPrompt(RoleGeneral, nil, idx, nil)
+	content := msg.Content
+
+	if !strings.Contains(content, "No skills are available") {
+		t.Fatal("system prompt should note no skills when index is empty")
 	}
 }

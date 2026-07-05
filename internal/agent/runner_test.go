@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1452,5 +1453,53 @@ func TestRunTaskReturnsCompletedTaskWithSummary(t *testing.T) {
 	}
 	if task.Summary != "all findings recorded" {
 		t.Fatalf("task.Summary = %q, want final content", task.Summary)
+	}
+}
+
+type recordingGate struct {
+	mu           sync.Mutex
+	acquisitions int
+}
+
+func (g *recordingGate) Acquire() (release func()) {
+	g.mu.Lock()
+	g.acquisitions++
+	return g.mu.Unlock
+}
+
+func TestWriteGateAcquiredForWriteToolsOnly(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "fs.touch", Description: "write something", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "touched"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(registry.Tool{
+		Name: "fs.peek", Description: "read something", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "peeked"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		`{"rationale": "read", "action": {"type": "tool_call", "tool": "fs.peek", "args": {}}}`,
+		`{"rationale": "write", "action": {"type": "tool_call", "tool": "fs.touch", "args": {}}}`,
+		`{"rationale": "done", "action": {"type": "final", "content": "done"}}`,
+	}}
+	gate := &recordingGate{}
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	runner.SetForceClass("question")
+	runner.WriteGate = gate
+
+	if err := runner.Run(context.Background(), "touch the file"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gate.acquisitions != 1 {
+		t.Fatalf("gate acquired %d times, want 1 (write tool only)", gate.acquisitions)
 	}
 }

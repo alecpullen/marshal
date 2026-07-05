@@ -46,6 +46,15 @@ type RouteResolver interface {
 	Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error)
 }
 
+// WriteGate serialises non-read-only tool execution across concurrently
+// running Runners. The swarm sets one shared gate on every role runner so
+// that "only one agent may write files at a time" (docs/07 swarm safety)
+// holds even if a future orchestration mode overlaps role turns.
+type WriteGate interface {
+	// Acquire blocks until the gate is free and returns its release func.
+	Acquire() (release func())
+}
+
 // MemoryProvider supplies durable project memories for injection into the
 // context pack at the start of each turn. It returns contextpack.MemoryNote
 // (not a type from internal/knowledge) so that internal/agent never needs
@@ -89,6 +98,10 @@ type Runner struct {
 	// RoleGeneral, so existing single-agent construction is unchanged.
 	// Swarm sub-runners set this to planner/repo_scout/implementer/reviewer.
 	Role AgentRole
+
+	// WriteGate serialises non-read-only tool execution. When nil, no
+	// serialisation is performed (default single-agent behaviour).
+	WriteGate WriteGate
 
 	forceClassMu  sync.Mutex
 	callHistory   []toolCallKey
@@ -480,6 +493,11 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	})
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	defer r.State.ClearActiveToolCall()
+
+	if r.WriteGate != nil && tool.Risk != registry.RiskReadOnly {
+		release := r.WriteGate.Acquire()
+		defer release()
+	}
 
 	call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
 	result, execErr := tool.Handler(ctx, call)

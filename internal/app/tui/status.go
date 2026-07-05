@@ -34,7 +34,7 @@ func (m Model) renderStatusLine(width int) string {
 		gap = max(width-visibleRunes(left)-visibleRunes(right)-statusHorizontalPadding, statusMinGap)
 	}
 	line := " " + left + strings.Repeat(" ", gap) + right + " "
-	return statusBarBg.Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
+	return statusBarStyle.Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
 }
 
 func (m Model) statusLeftSegments() []string {

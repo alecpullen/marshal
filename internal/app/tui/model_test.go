@@ -2018,6 +2018,46 @@ func TestActiveToolCallClearsFromView(t *testing.T) {
 	}
 }
 
+func TestShellCommandShowsExpandedPanel(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	m.busy = true
+	m.spinnerFrame = "⠹"
+
+	state.SetActiveToolCall(session.ActiveToolCall{
+		Name:      "shell.run",
+		Args:      "go test ./...",
+		StartedAt: time.Now(),
+	})
+	m.refreshViewport()
+	view := m.View()
+
+	if !strings.Contains(view, "$ go test ./...") {
+		t.Fatalf("View() does not show command with $ prefix:\n%s", view)
+	}
+}
+
+func TestNonCommandToolShowsSingleLine(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	m.busy = true
+	m.spinnerFrame = "⠹"
+
+	state.SetActiveToolCall(session.ActiveToolCall{
+		Name:      "file.read",
+		Args:      "/repo/main.go",
+		StartedAt: time.Now(),
+	})
+	m.refreshViewport()
+	view := m.View()
+
+	if strings.Contains(view, "$ /repo/main.go") {
+		t.Fatalf("file.read should not show $ prefix (single-line only):\n%s", view)
+	}
+}
+
 func TestRenderMessageDispatchesByContentType(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -24,6 +24,8 @@ const (
 	DefaultMaxRetries         = 2
 	DefaultMaxParallelActions = 4
 	loopNudgeMessage          = "You appear to be repeating the same step. Either produce a final answer or ask the user for clarification."
+	finalizePressureThreshold = 2
+	finalizePressureMessage   = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
 )
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
@@ -64,11 +66,6 @@ type MemoryProvider interface {
 	Memories(projectID int64) ([]contextpack.MemoryNote, error)
 }
 
-type toolCallKey struct {
-	Name string
-	Args string
-}
-
 // Runner drives one agent turn end to end: classify -> (optionally plan) ->
 // loop { call the model, parse its action, execute or answer } -> summarise.
 // It is the only thing in Marshal that calls Provider.Chat, Registry.Lookup,
@@ -103,10 +100,9 @@ type Runner struct {
 	// serialisation is performed (default single-agent behaviour).
 	WriteGate WriteGate
 
-	forceClassMu  sync.Mutex
-	callHistory   []toolCallKey
-	callHistoryMu sync.Mutex
-	loopNudgeSent bool
+	forceClassMu sync.Mutex
+	tracker      *progressTracker
+	trackerMu    sync.Mutex
 }
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
@@ -153,10 +149,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	r.State.ClearTurnToolCache()
-	r.callHistoryMu.Lock()
-	r.callHistory = nil
-	r.loopNudgeSent = false
-	r.callHistoryMu.Unlock()
+	r.trackerMu.Lock()
+	r.tracker = newProgressTracker()
+	r.trackerMu.Unlock()
 
 	task := NewTask(goal, r.Now())
 	r.forceClassMu.Lock()
@@ -202,7 +197,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	task.Status = TaskStatusExecuting
 	lastRenderedSkills := r.State.ActiveSkills()
+	pressureSent := false
 	for iteration := 0; iteration < r.MaxToolIterations; iteration++ {
+		r.State.SetToolBudget(session.ToolBudget{Used: iteration, Max: r.MaxToolIterations})
+
+		if !pressureSent && r.MaxToolIterations-iteration <= finalizePressureThreshold {
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: finalizePressureMessage})
+			r.State.AddMessage(session.RoleSystem, finalizePressureMessage, session.ContentTypePlain)
+			pressureSent = true
+		}
+
 		currentSkills := r.State.ActiveSkills()
 		if skillsChanged(lastRenderedSkills, currentSkills) {
 			messages[0] = BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, currentSkills)
@@ -232,6 +236,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				return task, r.fail(task, execErr)
 			}
 			messages = append(messages, resultMsgs...)
+			if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+				return res, ferr
+			} else if nudge != "" {
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
+				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+			}
 			continue
 		}
 
@@ -247,14 +257,45 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				return task, r.fail(task, err)
 			}
 			messages = append(messages, resultMsgs...)
+			if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+				return res, ferr
+			} else if nudge != "" {
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
+				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+			}
 		default:
 			messages = append(messages, BuildCorrectionMessage(fmt.Errorf("unsupported action type %q", action.Type)))
 		}
 	}
 
-	task.Status = TaskStatusFailed
-	r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.", session.ContentTypePlain)
-	return task, ErrMaxIterationsExceeded
+	res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonExhausted)
+	if ferr != nil {
+		task.Status = TaskStatusFailed
+		r.State.AddMessage(session.RoleSystem, "Agent stopped: exceeded max tool iterations without a final answer.", session.ContentTypePlain)
+		return task, ErrMaxIterationsExceeded
+	}
+	return res, nil
+}
+
+// maybeFinalizeOnStall inspects the tracker after a tool execution. On a
+// hard stall it forces a final answer via finalize and reports finalized so
+// the caller returns immediately. On a soft stall it returns a nudge message
+// for the caller to append to its own messages slice (messages is passed by
+// value here, so appending inside this helper would not propagate back to
+// the loop's slice).
+func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, nudge string) {
+	r.trackerMu.Lock()
+	a := r.tracker.assess()
+	r.trackerMu.Unlock()
+
+	switch a {
+	case assessHardStall:
+		res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
+		return true, res, ferr, ""
+	case assessStalling:
+		return false, task, nil, loopNudgeMessage
+	}
+	return false, task, nil, ""
 }
 
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {
@@ -396,7 +437,8 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 // executeToolCall evaluates policy, blocks for user approval if required,
 // executes the tool, logs an audit event, and returns one or more
 // schema.ChatMessages to feed the result (or failure reason) back to the
-// model. The slice may include a loop-detection nudge message.
+// model. Loop-detection/stall handling is done by the caller (RunTask), not
+// here — this only records the call into the progress tracker.
 func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]schema.ChatMessage, error) {
 	toolName := action.Tool
 	if action.Type == ActionPatch {
@@ -432,18 +474,15 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	// Cacheable read-only cache lookup.
 	if tool.Cacheable {
 		if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
-			r.recordToolCall(toolName, string(normalizedArgs))
+			r.trackerMu.Lock()
+			r.tracker.record(toolName, string(normalizedArgs))
+			r.trackerMu.Unlock()
 			logged := cached
 			logged.Summary = "(cached) " + logged.Summary
 			call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
 			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
 			r.State.LogToolCall(event)
-			msgs := []schema.ChatMessage{BuildCachedToolResultMessage(toolName, cached)}
-			if r.shouldNudgeLoop() {
-				msgs = append(msgs, schema.ChatMessage{Role: schema.RoleSystem, Content: loopNudgeMessage})
-				r.State.AddMessage(session.RoleSystem, loopNudgeMessage, session.ContentTypePlain)
-			}
-			return msgs, nil
+			return []schema.ChatMessage{BuildCachedToolResultMessage(toolName, cached)}, nil
 		}
 	}
 
@@ -515,35 +554,10 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	r.State.LogToolCall(event)
 
 	msgs := []schema.ChatMessage{BuildToolResultMessage(toolName, summarized)}
-	r.recordToolCall(toolName, string(normalizedArgs))
-	if r.shouldNudgeLoop() {
-		msgs = append(msgs, schema.ChatMessage{Role: schema.RoleSystem, Content: loopNudgeMessage})
-		r.State.AddMessage(session.RoleSystem, loopNudgeMessage, session.ContentTypePlain)
-	}
+	r.trackerMu.Lock()
+	r.tracker.record(toolName, string(normalizedArgs))
+	r.trackerMu.Unlock()
 	return msgs, nil
-}
-
-func (r *Runner) recordToolCall(name, args string) {
-	r.callHistoryMu.Lock()
-	defer r.callHistoryMu.Unlock()
-	r.callHistory = append(r.callHistory, toolCallKey{Name: name, Args: args})
-}
-
-func (r *Runner) shouldNudgeLoop() bool {
-	r.callHistoryMu.Lock()
-	defer r.callHistoryMu.Unlock()
-	if r.loopNudgeSent {
-		return false
-	}
-	n := len(r.callHistory)
-	if n < 3 {
-		return false
-	}
-	if r.callHistory[n-1] == r.callHistory[n-2] && r.callHistory[n-2] == r.callHistory[n-3] {
-		r.loopNudgeSent = true
-		return true
-	}
-	return false
 }
 
 func (r *Runner) allReadOnly(actions []ModelAction) error {

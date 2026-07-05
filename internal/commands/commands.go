@@ -92,10 +92,46 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					totalChars += len(m.Content)
 				}
 				pack := state.ContextPack()
-				return fmt.Sprintf(
-					"Context stats:\n  Messages: %d\n  Total chars: %d\n  Context pack sections: %d",
-					len(msgs), totalChars, len(pack.Sections),
+				var b strings.Builder
+				fmt.Fprintf(&b, "Context:\n  Messages: %d (%d chars)\n", len(msgs), totalChars)
+				if pack.IsEmpty() {
+					b.WriteString("  No context pack built yet.")
+					return b.String()
+				}
+				fmt.Fprintf(&b, "  Pack: %s/%s tokens, %d sections\n",
+					compactTokens(pack.TokenUsage.EstimatedTokens),
+					compactTokens(pack.TokenUsage.MaxTokens),
+					len(pack.Sections),
 				)
+				for i, section := range pack.Sections {
+					title := section.Title
+					if title == "" {
+						title = section.Source
+					}
+					fmt.Fprintf(&b, "    %d  %s  %s\n", i+1, title, compactTokens(section.EstimatedTokens))
+				}
+				return strings.TrimRight(b.String(), "\n")
+			},
+		},
+		{
+			Name:        "log",
+			Description: "Show recent tool calls (audit log)",
+			Handler: func(state *session.State, args []string) string {
+				events := state.AuditLog()
+				if len(events) == 0 {
+					return "No tool calls yet."
+				}
+				start := 0
+				if len(events) > 15 {
+					start = len(events) - 15
+				}
+				var b strings.Builder
+				b.WriteString("Recent tool calls:\n\n")
+				for _, e := range events[start:] {
+					b.WriteString(fmt.Sprintf("  %s  %-14s  %s\n",
+						e.Timestamp.Format("15:04:05"), e.ToolName, e.ResultSummary))
+				}
+				return strings.TrimRight(b.String(), "\n")
 			},
 		},
 		{
@@ -173,4 +209,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		}
 	}
 	return nil
+}
+
+// compactTokens renders a token count the way the TUI does: "842", "18k".
+func compactTokens(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%dk", n/1000)
+	}
+	return fmt.Sprintf("%d", n)
 }

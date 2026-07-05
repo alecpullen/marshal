@@ -59,10 +59,9 @@ type Model struct {
 	forceMode      string // reserved for future status-bar display
 
 	// New Layout State
-	width        int
-	height       int
-	inputFocused bool
-	viewport     viewport.Model
+	width    int
+	height   int
+	viewport viewport.Model
 
 	// Viewport dirty tracking.
 	lastMessageCount int
@@ -133,7 +132,6 @@ func New(state *session.State, opts ...Option) Model {
 		input:          input,
 		editingCommand: false,
 		ctx:            context.Background(),
-		inputFocused:   true,
 		viewport:       viewport.New(0, 0),
 		spinner:        NewSpinner(),
 		now:            time.Now,
@@ -224,6 +222,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case memory.ClosedMsg:
 		m.memoryOpen = false
 		return m, nil
+	case tea.MouseMsg:
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		return m, vpCmd
 	case tea.KeyMsg:
 		// Always allow Ctrl+C to quit
 		if msg.Type == tea.KeyCtrlC {
@@ -255,8 +257,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch msg.Type {
 				case tea.KeyEsc:
 					m.editingCommand = false
-					m.inputFocused = false
-					m.input.Blur()
 					m.input.Reset()
 					m.input.Placeholder = "Ask Marshal..."
 					return m, nil
@@ -265,8 +265,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if value != "" {
 						tc.ResponseChan <- session.UserApprovalDecision{Approved: true, Edited: value}
 						m.editingCommand = false
-						m.inputFocused = false
-						m.input.Blur()
 						m.input.Reset()
 						m.input.Placeholder = "Ask Marshal..."
 						m.state.SetPendingApproval(nil)
@@ -296,7 +294,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					case "e":
 						m.editingCommand = true
-						m.inputFocused = true
 						m.input.SetValue(tc.Command)
 						m.input.Placeholder = "Edit command..."
 						m.input.Focus()
@@ -318,7 +315,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		} else {
-			if msg.Type == tea.KeyCtrlR {
+			// Global hotkeys — input is always focused.
+			switch msg.Type {
+			case tea.KeyEsc:
+				m.cancelTurn()
+				return m, nil
+			case tea.KeyCtrlO:
+				m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+				m.settingsModel.SetSize(m.width, m.height)
+				m.settingsOpen = true
+				return m, nil
+			case tea.KeyCtrlK:
+				if m.memoryDB == nil {
+					return m, nil
+				}
+				m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
+				m.memoryModel.SetSize(m.width, m.height)
+				m.memoryOpen = true
+				return m, nil
+			case tea.KeyCtrlG:
+				m.thinkingExpanded = !m.thinkingExpanded
+				m.lastMessageCount = -1 // force refreshViewport to rebuild despite unchanged message/stream state
+				m.refreshViewport()
+				return m, nil
+			case tea.KeyCtrlR:
 				if m.state.HasBackup() {
 					_ = m.state.RollbackBackup()
 					m.state.LogToolCall(registry.AuditEvent{
@@ -327,97 +347,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						ResultSummary: "Rollback applied successfully",
 					})
 					m.refreshViewport()
-					return m, nil
 				}
-			}
-
-			if msg.Type == tea.KeyCtrlG {
-				m.thinkingExpanded = !m.thinkingExpanded
-				m.lastMessageCount = -1 // force refreshViewport to rebuild despite unchanged message/stream state
-				m.refreshViewport()
 				return m, nil
-			}
-
-			if m.inputFocused {
-				switch msg.Type {
-				case tea.KeyEsc:
-					m.inputFocused = false
-					m.input.Blur()
-					return m, nil
-				case tea.KeyCtrlO:
-					m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-					m.settingsModel.SetSize(m.width, m.height)
-					m.settingsOpen = true
-					return m, nil
-				case tea.KeyCtrlK:
-					if m.memoryDB == nil {
-						return m, nil
-					}
-					m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
-					m.memoryModel.SetSize(m.width, m.height)
-					m.memoryOpen = true
-					return m, nil
-				case tea.KeyEnter:
-					value := strings.TrimSpace(m.input.Value())
-					if value == "" {
-						return m, nil
-					}
-					m.input.Reset()
-
-					if strings.HasPrefix(value, "/") {
-						return m.dispatchCommand(value)
-					}
-
-					if m.busy {
-						return m, nil
-					}
-					if m.runner == nil {
-						m.state.AddMessage(session.RoleUser, value, session.ContentTypePlain)
-						m.refreshViewport()
-						return m, nil
-					}
-					m.busy = true
-					agentCtx, cancel := context.WithCancel(m.ctx)
-					m.agentCancel = cancel
-					return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd())
-				}
-			} else {
-				switch msg.Type {
-				case tea.KeyEsc:
-					m.state.Shutdown()
-					return m, tea.Quit
-				case tea.KeyEnter:
-					m.inputFocused = true
-					return m, m.input.Focus()
-				case tea.KeyCtrlO:
-					m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-					m.settingsModel.SetSize(m.width, m.height)
-					m.settingsOpen = true
-					return m, nil
-				case tea.KeyCtrlK:
-					if m.memoryDB == nil {
-						return m, nil
-					}
-					m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
-					m.memoryModel.SetSize(m.width, m.height)
-					m.memoryOpen = true
-					return m, nil
-				}
-				if msg.String() == "r" {
-					if m.state.HasBackup() {
-						_ = m.state.RollbackBackup()
-						m.state.LogToolCall(registry.AuditEvent{
-							Timestamp:     time.Now(),
-							ToolName:      "rollback",
-							ResultSummary: "Rollback applied successfully",
-						})
-						m.refreshViewport()
-						return m, nil
-					}
-				}
+			case tea.KeyPgUp, tea.KeyPgDown:
 				var vpCmd tea.Cmd
 				m.viewport, vpCmd = m.viewport.Update(msg)
 				return m, vpCmd
+			case tea.KeyEnter:
+				value := strings.TrimSpace(m.input.Value())
+				if value == "" {
+					return m, nil
+				}
+				m.input.Reset()
+
+				if strings.HasPrefix(value, "/") {
+					return m.dispatchCommand(value)
+				}
+
+				if m.busy {
+					return m, nil
+				}
+				if m.runner == nil {
+					m.state.AddMessage(session.RoleUser, value, session.ContentTypePlain)
+					m.refreshViewport()
+					return m, nil
+				}
+				m.busy = true
+				agentCtx, cancel := context.WithCancel(m.ctx)
+				m.agentCancel = cancel
+				return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd())
 			}
 		}
 	}
@@ -484,6 +442,19 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// cancelTurn cancels the in-flight agent turn, if any. Shared by Esc and
+// the /stop command.
+func (m *Model) cancelTurn() bool {
+	if m.agentCancel == nil {
+		return false
+	}
+	m.agentCancel()
+	m.agentCancel = nil
+	m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
+	m.refreshViewport()
+	return true
+}
+
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(raw)
 	if len(parts) == 0 {
@@ -538,12 +509,9 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "stop":
-		if m.agentCancel != nil {
-			m.agentCancel()
-			m.agentCancel = nil
-			m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
+		if !m.cancelTurn() {
+			m.refreshViewport()
 		}
-		m.refreshViewport()
 		return m, nil
 
 	case "ask":

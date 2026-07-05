@@ -430,7 +430,7 @@ func TestRunUsesLiveConfigForShutdownKnowledgePass(t *testing.T) {
 		}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 			state := modelState(t, model)
-			state.AddMessage(session.RoleUser, "summarize this session")
+			state.AddMessage(session.RoleUser, "summarize this session", session.ContentTypePlain)
 
 			m := model.(tui.Model)
 			updated, _ := m.Update(settings.SavedMsg{Cfg: reloadedCfg})
@@ -483,7 +483,7 @@ func TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession(t *testing.T) {
 		}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 			state := modelState(t, model)
-			state.AddMessage(session.RoleUser, "keep session history")
+			state.AddMessage(session.RoleUser, "keep session history", session.ContentTypePlain)
 			return wantErr
 		}),
 	)
@@ -543,7 +543,7 @@ func TestRunBoundsShutdownKnowledgePass(t *testing.T) {
 		}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 			state := modelState(t, model)
-			state.AddMessage(session.RoleUser, "keep session history")
+			state.AddMessage(session.RoleUser, "keep session history", session.ContentTypePlain)
 			return nil
 		}),
 	)

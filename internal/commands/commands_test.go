@@ -163,8 +163,8 @@ func TestContextCommand(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
-	state.AddMessage(session.RoleUser, "hello")
-	state.AddMessage(session.RoleAssistant, "hi there")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
 
 	cmd, _ := cmdReg.Lookup("context")
 	result := cmd.Handler(state, nil)
@@ -179,8 +179,8 @@ func TestNewCommand(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	state := newTestState()
-	state.AddMessage(session.RoleUser, "hello")
-	state.AddMessage(session.RoleAssistant, "hi")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "hi", session.ContentTypePlain)
 
 	cmd, _ := cmdReg.Lookup("new")
 	result := cmd.Handler(state, nil)

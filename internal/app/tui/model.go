@@ -721,57 +721,6 @@ func tailRunes(s string, limit int) string {
 	return string(runes[len(runes)-limit:])
 }
 
-func formatThinkDuration(d time.Duration) string {
-	return fmt.Sprintf("%.0fs", d.Seconds())
-}
-
-const thinkingBoxTailLines = 6
-
-// renderThinkingBox renders the live "thinking" panel shown while a model
-// call's reasoning is still streaming in.
-func renderThinkingBox(reasoning string, width int) string {
-	boxWidth := width - 2
-	if boxWidth < 1 {
-		boxWidth = 1
-	}
-	style := lipgloss.NewStyle().
-		Width(boxWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(dimColor).
-		Foreground(dimColor).
-		Italic(true)
-	tail := tailRunes(reasoning, boxWidth*thinkingBoxTailLines)
-	// Header is "thinking" (8) + spaces + 34-character subtitle. Keep it on
-	// one line by sizing the spacer so the joined result is exactly boxWidth.
-	header := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		"thinking",
-		strings.Repeat(" ", max(boxWidth-42, 1)),
-		"streaming · Ctrl+G expands history",
-	)
-	return style.Render(header+"\n\n"+tail) + "\n\n"
-}
-
-// renderThinkingSummary renders a finished message's captured reasoning,
-// either collapsed to one line or, when expanded, as a full boxed panel
-// matching renderThinkingBox's style.
-func renderThinkingSummary(reasoning string, duration time.Duration, expanded bool, width int) string {
-	if !expanded {
-		return thinkingLineStyle.Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))) + "\n"
-	}
-	boxWidth := width - 2
-	if boxWidth < 1 {
-		boxWidth = 1
-	}
-	style := lipgloss.NewStyle().
-		Width(boxWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(dimColor).
-		Foreground(dimColor).
-		Italic(true)
-	return style.Render(fmt.Sprintf("thinking (%s)\n\n%s", formatThinkDuration(duration), reasoning)) + "\n\n"
-}
-
 func renderPanel(title string, meta string, body string, width int, height int) string {
 	if width < 4 {
 		width = 4
@@ -940,23 +889,6 @@ func visibleRunes(s string) int {
 	return ansi.StringWidth(s)
 }
 
-// renderMessage formats a chat message so its content wraps within the given
-// viewport width instead of being clipped. The role label is printed on the
-// first line and continuation lines are indented to align with the content.
-func formatBoxLine(s string, width int) string {
-	contentWidth := width - 6 // "│   " (4) + " │" (2)
-	runes := []rune(s)
-	if len(runes) > contentWidth {
-		s = string(runes[:contentWidth-3]) + "..."
-		runes = []rune(s)
-	}
-	padLen := contentWidth - len(runes)
-	if padLen < 0 {
-		padLen = 0
-	}
-	return fmt.Sprintf("│   %s%s │\n", string(runes), strings.Repeat(" ", padLen))
-}
-
 var (
 	panelBorderColor = lipgloss.Color("240")
 	panelSoftColor   = lipgloss.Color("236")
@@ -975,10 +907,6 @@ var (
 	thinkingLineStyle = lipgloss.NewStyle().
 				Foreground(dimColor).
 				Italic(true)
-	userRoleStyle   = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
-	agentRoleStyle  = lipgloss.NewStyle().Foreground(violetColor).Bold(true)
-	toolRoleStyle   = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
-	outputRoleStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
 
 	activePillStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -1053,87 +981,6 @@ func (m Model) renderChatPanel() string {
 	return renderPanel("Chat", "live transcript", m.viewport.View(), m.leftWidth, m.chatHeight)
 }
 
-func renderApprovalInline(tc *session.PendingToolCall, width int) string {
-	if width < 10 {
-		width = 10
-	}
-	helpLine := "Enter approve · d deny · e edit · a always"
-	innerWidth := max(width-2, 1)
-
-	var b strings.Builder
-	b.WriteString(panelTitleStyle.Foreground(warningColor).Render("⚠ Approval needed"))
-	b.WriteString("\n")
-	b.WriteString(mutedStyle.Render("Agent wants to run:"))
-	b.WriteString("\n")
-	b.WriteString(truncateRunes(tc.Command, innerWidth))
-	b.WriteString("\n\n")
-	b.WriteString(mutedStyle.Render("Risk: "))
-	b.WriteString(truncateRunes(riskText(tc), innerWidth))
-	b.WriteString("\n\n")
-	b.WriteString(mutedStyle.Render(helpLine))
-
-	style := lipgloss.NewStyle().
-		Width(innerWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(warningColor).
-		Padding(0, 1)
-	return style.Render(b.String()) + "\n\n"
-}
-
-func renderActiveToolCall(atc session.ActiveToolCall, spinnerFrame string, now time.Time, width int) string {
-	if width < 10 {
-		width = 10
-	}
-	innerWidth := max(width-2, 1)
-	elapsed := now.Sub(atc.StartedAt)
-	if elapsed < 0 {
-		elapsed = 0
-	}
-	elapsedStr := formatElapsed(elapsed)
-
-	if atc.Name == "shell.run" || atc.Name == "test.run" {
-		return renderCommandToolCall(atc, spinnerFrame, elapsedStr, innerWidth)
-	}
-	return renderSimpleToolCall(atc, spinnerFrame, elapsedStr, innerWidth)
-}
-
-func renderCommandToolCall(atc session.ActiveToolCall, spinnerFrame, elapsedStr string, innerWidth int) string {
-	label := fmt.Sprintf("%s %s", spinnerFrame, atc.Name)
-	header := fmt.Sprintf("%s  · %s", label, elapsedStr)
-	cmdLine := fmt.Sprintf("$ %s", truncateRunes(atc.Args, innerWidth-2))
-	body := header + "\n" + cmdLine
-	style := lipgloss.NewStyle().
-		Width(innerWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(warningColor).
-		Foreground(warningColor).
-		Padding(0, 1)
-	return style.Render(body) + "\n\n"
-}
-
-func renderSimpleToolCall(atc session.ActiveToolCall, spinnerFrame, elapsedStr string, innerWidth int) string {
-	label := fmt.Sprintf("%s %s", spinnerFrame, atc.Name)
-	argsBudget := innerWidth - len(label) - len(elapsedStr) - 6
-	if argsBudget < 1 {
-		argsBudget = 1
-	}
-	line := fmt.Sprintf("%s  %s  · %s", label, truncateRunes(atc.Args, argsBudget), elapsedStr)
-	style := lipgloss.NewStyle().
-		Width(innerWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(warningColor).
-		Foreground(warningColor).
-		Padding(0, 1)
-	return style.Render(line) + "\n\n"
-}
-
-func formatElapsed(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
-}
-
 func (m Model) renderInputArea() string {
 	inputStyle := lipgloss.NewStyle().
 		Width(m.leftWidth).
@@ -1150,39 +997,6 @@ func (m Model) renderInputArea() string {
 		inputStyle.Render(inputLine),
 		renderKeyHelp(m.leftWidth, m.inputFocused),
 	)
-}
-
-func renderMessage(msg session.Message, width int) string {
-	if msg.Final {
-		return renderFinalAnswer(msg.Content, width)
-	}
-	switch msg.ContentType {
-	case session.ContentTypeMarkdown:
-		return renderMarkdown(string(msg.Role), msg.Content, width)
-	case session.ContentTypeCode:
-		return renderCode(string(msg.Role), msg.Content, width)
-	case session.ContentTypePlan:
-		return renderPlan(string(msg.Role), msg.Content, width)
-	case session.ContentTypeDiff:
-		return renderDiff(string(msg.Role), msg.Content, width)
-	case session.ContentTypeToolResult:
-		return renderToolResult(string(msg.Role), msg.Content, width)
-	default:
-		return renderPlain(string(msg.Role), msg.Content, width)
-	}
-}
-
-func renderCode(role, content string, width int) string {
-	prefixWidth := 10
-	innerWidth := max(width-prefixWidth-6, 1)
-	roleStyle := roleStyleFor(role)
-	panel := renderCodeBlock(content, innerWidth)
-	var b strings.Builder
-	b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(strings.ToLower(role)))
-	b.WriteString("  ")
-	b.WriteString(panel)
-	b.WriteString("\n\n")
-	return b.String()
 }
 
 // pillHeight is the number of lines activePillStyle occupies once rendered

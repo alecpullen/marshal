@@ -482,11 +482,7 @@ func riskText(tc *session.PendingToolCall) string {
 	return tc.Reason
 }
 
-// renderApprovalInline renders the approval prompt inside the chat viewport.
-func renderApprovalInline(tc *session.PendingToolCall, width int) string {
-	if width < 10 {
-		width = 10
-	}
+func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 	helpLine := "Enter approve · d deny · e edit · a always"
 	innerWidth := max(width-2, 1)
 
@@ -501,11 +497,5 @@ func renderApprovalInline(tc *session.PendingToolCall, width int) string {
 	b.WriteString(truncateRunes(riskText(tc), innerWidth))
 	b.WriteString("\n\n")
 	b.WriteString(mutedStyle.Render(helpLine))
-
-	style := lipgloss.NewStyle().
-		Width(innerWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(warningColor).
-		Padding(0, 1)
-	return style.Render(b.String()) + "\n\n"
+	return b.String()
 }

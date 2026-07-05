@@ -269,6 +269,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.editingCommand = false
 					m.input.Reset()
 					m.input.Placeholder = "Ask Marshal..."
+					m.lastTranscriptHash = 0
 					return m, nil
 				case tea.KeyEnter:
 					value := strings.TrimSpace(m.input.Value())
@@ -279,49 +280,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.input.Placeholder = "Ask Marshal..."
 						m.state.SetPendingApproval(nil)
 					}
+					m.lastTranscriptHash = 0
 					return m, nil
 				}
-			} else {
-				switch msg.Type {
-				case tea.KeyEnter:
-					tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
-					m.state.SetPendingApproval(nil)
-					return m, nil
-				case tea.KeyEsc:
+				var cmd tea.Cmd
+				m.input, cmd = m.input.Update(msg)
+				return m, cmd
+			}
+
+			switch msg.Type {
+			case tea.KeyEnter:
+				tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+				m.state.SetPendingApproval(nil)
+				m.lastTranscriptHash = 0
+				return m, nil
+			case tea.KeyEsc:
+				tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
+				m.state.SetPendingApproval(nil)
+				m.lastTranscriptHash = 0
+				return m, nil
+			default:
+				switch msg.String() {
+				case "d":
 					tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
 					m.state.SetPendingApproval(nil)
+					m.lastTranscriptHash = 0
 					return m, nil
-				default:
-					switch msg.String() {
-					case "d":
-						tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
-						m.state.SetPendingApproval(nil)
+				case "a":
+					m.state.AddSessionRule(tc.Command)
+					tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+					m.state.SetPendingApproval(nil)
+					m.lastTranscriptHash = 0
+					return m, nil
+				case "e":
+					m.editingCommand = true
+					m.input.SetValue(tc.Command)
+					m.input.Placeholder = "Edit command..."
+					m.input.Focus()
+					m.lastTranscriptHash = 0
+					return m, nil
+				case "r":
+					if m.state.HasBackup() {
+						_ = m.state.RollbackBackup()
+						m.state.LogToolCall(registry.AuditEvent{
+							Timestamp:     time.Now(),
+							ToolName:      "rollback",
+							ResultSummary: "Rollback applied successfully",
+						})
+						m.lastTranscriptHash = 0
+						m.refreshViewport()
 						return m, nil
-					case "a":
-						m.state.AddSessionRule(tc.Command)
-						tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
-						m.state.SetPendingApproval(nil)
-						return m, nil
-					case "e":
-						m.editingCommand = true
-						m.input.SetValue(tc.Command)
-						m.input.Placeholder = "Edit command..."
-						m.input.Focus()
-						return m, nil
-					case "r":
-						if m.state.HasBackup() {
-							_ = m.state.RollbackBackup()
-							m.state.LogToolCall(registry.AuditEvent{
-								Timestamp:     time.Now(),
-								ToolName:      "rollback",
-								ResultSummary: "Rollback applied successfully",
-							})
-							m.refreshViewport()
-							return m, nil
-						}
 					}
 				}
-				// Ignore all other key inputs when approval prompt is shown and not editing
 				return m, nil
 			}
 		} else {

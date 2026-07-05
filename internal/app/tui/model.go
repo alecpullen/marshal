@@ -243,7 +243,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
-			m.lastActivityDone = time.Now()
+			m.lastActivityDone = m.now()
 			m.lastActivityKind = session.ActivityIdle
 		}
 		m.refreshViewport()
@@ -255,7 +255,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinnerFrame = m.spinner.Next()
 		act := m.state.Activity()
 		if act.Kind == session.ActivityIdle && m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
-			m.lastActivityDone = time.Now()
+			m.lastActivityDone = m.now()
 		}
 		m.lastActivityKind = act.Kind
 		if act.Kind != session.ActivityIdle && act.Label != "" {

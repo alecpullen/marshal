@@ -3,11 +3,20 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+)
+
+const (
+	// statusHorizontalPadding is the leading and trailing single-space pad
+	// rendered around the status line content.
+	statusHorizontalPadding = 2
+	// statusMinGap is the smallest number of spaces kept between the left
+	// and right clusters when the terminal is too narrow to show everything.
+	statusMinGap = 1
 )
 
 // renderStatusLine is the single row of persistent chrome below the input:
@@ -17,14 +26,15 @@ func (m Model) renderStatusLine(width int) string {
 	left := strings.Join(m.statusLeftSegments(), " · ")
 	right := m.statusRightSegment()
 
-	gap := width - visibleRunes(left) - visibleRunes(right) - 2
-	if gap < 1 {
-		// Not enough room: prioritise the activity cluster.
-		left = truncateRunes(left, max(width-visibleRunes(right)-3, 0))
-		gap = max(width-visibleRunes(left)-visibleRunes(right)-2, 1)
+	gap := width - visibleRunes(left) - visibleRunes(right) - statusHorizontalPadding
+	if gap < statusMinGap {
+		// Not enough room: prioritise the activity cluster. The truncation
+		// budget reserves both padding cells plus the minimum inter-cluster gap.
+		left = truncateRunes(left, max(width-visibleRunes(right)-statusHorizontalPadding-statusMinGap, 0))
+		gap = max(width-visibleRunes(left)-visibleRunes(right)-statusHorizontalPadding, statusMinGap)
 	}
 	line := " " + left + strings.Repeat(" ", gap) + right + " "
-	return statusBarBg.Width(max(width, 1)).MaxWidth(max(width, 1)).Render(truncateRunes(line, width))
+	return statusBarBg.Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
 }
 
 func (m Model) statusLeftSegments() []string {
@@ -63,6 +73,8 @@ var (
 )
 
 func (m Model) statusRightSegment() string {
+	// Pending approvals are surfaced by the early return above the activity
+	// switch, so the ActivityKind case below only needs to handle active work.
 	if m.state.PendingApproval() != nil {
 		return statusWarnStyle.Render("⚠ approval")
 	}
@@ -70,7 +82,7 @@ func (m Model) statusRightSegment() string {
 	switch activity.Kind {
 	case session.ActivityThinking:
 		return statusBusyStyle.Render(fmt.Sprintf("%s thinking", m.spinnerFrame))
-	case session.ActivityTool, session.ActivityApproval:
+	case session.ActivityTool:
 		elapsed := m.now().Sub(activity.StartedAt)
 		if elapsed < 0 {
 			elapsed = 0
@@ -80,7 +92,7 @@ func (m Model) statusRightSegment() string {
 	if m.state.ProviderError() != nil {
 		return statusErrStyle.Render("✗ error")
 	}
-	if m.lastActivityLabel != "" && time.Since(m.lastActivityDone) < doneDisplayDuration {
+	if m.lastActivityLabel != "" && m.now().Sub(m.lastActivityDone) < doneDisplayDuration {
 		return statusOkStyle.Render("✓ " + m.lastActivityLabel)
 	}
 	return ""

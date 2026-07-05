@@ -65,6 +65,17 @@ func TestStatusLineShowsProviderError(t *testing.T) {
 	}
 }
 
+func TestStatusLineShowsThinkingActivity(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.spinnerFrame = "⠋"
+	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking})
+
+	line := m.renderStatusLine(100)
+	if !strings.Contains(line, "⠋") || !strings.Contains(line, "thinking") {
+		t.Fatalf("status line missing thinking activity:\n%s", line)
+	}
+}
+
 func TestStatusLineFitsWidth(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "a-very-long-model-name:70b-instruct-q4", Provider: "ollama", LocalOnly: true})
@@ -74,6 +85,21 @@ func TestStatusLineFitsWidth(t *testing.T) {
 		line := m.renderStatusLine(width)
 		for _, l := range strings.Split(line, "\n") {
 			if visibleRunes(l) > width {
+				t.Fatalf("status line exceeds width %d (%d): %q", width, visibleRunes(l), l)
+			}
+		}
+	}
+}
+
+func TestStatusLineFitsVeryNarrowWidths(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: strings.Repeat("x", 40), Provider: "ollama", LocalOnly: true})
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("x", 40), StartedAt: time.Unix(100, 0)})
+	m.spinnerFrame = "⠋"
+	for _, width := range []int{0, 1} {
+		line := m.renderStatusLine(width)
+		for _, l := range strings.Split(line, "\n") {
+			if visibleRunes(l) > max(width, 1) {
 				t.Fatalf("status line exceeds width %d (%d): %q", width, visibleRunes(l), l)
 			}
 		}

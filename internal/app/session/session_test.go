@@ -16,8 +16,12 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func newTestState() *State {
+	return New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+}
+
 func TestStateAppendsMessagesInOrder(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	state.AddMessage(RoleSystem, "ready", ContentTypePlain)
 	state.AddMessage(RoleUser, "hello", ContentTypePlain)
@@ -35,7 +39,7 @@ func TestStateAppendsMessagesInOrder(t *testing.T) {
 }
 
 func TestMessagesReturnsCopy(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 	state.AddMessage(RoleUser, "hello", ContentTypePlain)
 
 	messages := state.Messages()
@@ -48,7 +52,7 @@ func TestMessagesReturnsCopy(t *testing.T) {
 }
 
 func TestStateContextPackStoresCopies(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 	pack := contextpack.Pack{
 		Sections: []contextpack.Section{
 			{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal"},
@@ -72,7 +76,7 @@ func TestStateContextPackStoresCopies(t *testing.T) {
 }
 
 func TestStateActiveRouteStoresCopies(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 	route := RouteInfo{
 		Role:      routing.RoleImplementer,
 		Profile:   "local_balanced",
@@ -93,7 +97,7 @@ func TestStateActiveRouteStoresCopies(t *testing.T) {
 }
 
 func TestShutdownCancelsState(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 	state.Shutdown()
 
 	select {
@@ -104,7 +108,7 @@ func TestShutdownCancelsState(t *testing.T) {
 }
 
 func TestSetProviderErrorStoresAndRetrieves(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	testErr := errors.New("provider connection failed")
 	state.SetProviderError(testErr)
@@ -116,7 +120,7 @@ func TestSetProviderErrorStoresAndRetrieves(t *testing.T) {
 }
 
 func TestSetProviderErrorNilClearsExistingError(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	testErr := errors.New("provider connection failed")
 	state.SetProviderError(testErr)
@@ -130,7 +134,7 @@ func TestSetProviderErrorNilClearsExistingError(t *testing.T) {
 }
 
 func TestStatePendingApprovalAndSessionRules(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	// Initially nil
 	if got := state.PendingApproval(); got != nil {
@@ -162,7 +166,7 @@ func TestStatePendingApprovalAndSessionRules(t *testing.T) {
 }
 
 func TestStateAuditLog(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	if got := len(state.AuditLog()); got != 0 {
 		t.Fatalf("AuditLog() length = %d, want 0", got)
@@ -293,7 +297,7 @@ func TestStatePersistsMessagesAndAudits(t *testing.T) {
 }
 
 func TestBeginStreamingThenAppendThinkingAccumulatesReasoning(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	state.BeginStreaming()
 	state.AppendThinking("checking the ")
@@ -309,7 +313,7 @@ func TestBeginStreamingThenAppendThinkingAccumulatesReasoning(t *testing.T) {
 }
 
 func TestEndStreamingMarksInactiveButPreservesReasoning(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	state.BeginStreaming()
 	state.AppendThinking("checking the auth flow")
@@ -325,7 +329,7 @@ func TestEndStreamingMarksInactiveButPreservesReasoning(t *testing.T) {
 }
 
 func TestAddMessageAttachesReasoningFromInProgressAndClearsIt(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	state.BeginStreaming()
 	state.AppendThinking("checking the auth flow")
@@ -375,7 +379,7 @@ func TestTurnToolCacheCachesAndClears(t *testing.T) {
 }
 
 func TestStreamingLifecycleIsRaceFree(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	done := make(chan struct{})
 	go func() {
@@ -396,7 +400,7 @@ func TestStreamingLifecycleIsRaceFree(t *testing.T) {
 }
 
 func TestStateActivityRoundTrip(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	got := state.Activity()
 	if got.Kind != ActivityIdle {
@@ -413,7 +417,7 @@ func TestStateActivityRoundTrip(t *testing.T) {
 }
 
 func TestStateActivityZeroValueIsIdle(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	state.SetActivity(Activity{})
 	got := state.Activity()
@@ -423,7 +427,7 @@ func TestStateActivityZeroValueIsIdle(t *testing.T) {
 }
 
 func TestStatePlanRoundTrip(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	if len(state.Plan()) != 0 {
 		t.Fatal("initial Plan() should be empty")
@@ -445,7 +449,7 @@ func TestStatePlanRoundTrip(t *testing.T) {
 }
 
 func TestStateActivityIsRaceFree(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	done := make(chan struct{})
 	go func() {
@@ -465,7 +469,7 @@ func TestStateActivityIsRaceFree(t *testing.T) {
 }
 
 func TestStateActiveSkillsRoundTrip(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	if len(state.ActiveSkills()) != 0 {
 		t.Fatal("initial active skills should be empty")
@@ -495,7 +499,7 @@ func TestStateActiveSkillsRoundTrip(t *testing.T) {
 }
 
 func TestStateDeactivateSkillNonexistentNoop(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	state.DeactivateSkill("nonexistent")
 	if len(state.ActiveSkills()) != 0 {
@@ -504,7 +508,7 @@ func TestStateDeactivateSkillNonexistentNoop(t *testing.T) {
 }
 
 func TestStateActivateSkillDuplicateNoop(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	state.ActivateSkill("debugging")
 	state.ActivateSkill("debugging")
@@ -516,7 +520,7 @@ func TestStateActivateSkillDuplicateNoop(t *testing.T) {
 }
 
 func TestStateActiveSkillsReturnsCopy(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	state.ActivateSkill("debugging")
 	active := state.ActiveSkills()
@@ -529,7 +533,7 @@ func TestStateActiveSkillsReturnsCopy(t *testing.T) {
 }
 
 func TestActiveToolCallSetAndGet(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 	atc := ActiveToolCall{
 		Name:      "shell.run",
 		Args:      "go test ./...",
@@ -549,7 +553,7 @@ func TestActiveToolCallSetAndGet(t *testing.T) {
 }
 
 func TestActiveToolCallClear(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 	state.SetActiveToolCall(ActiveToolCall{Name: "file.read", Args: "/path"})
 	state.ClearActiveToolCall()
 	_, ok := state.ActiveToolCall()
@@ -559,7 +563,7 @@ func TestActiveToolCallClear(t *testing.T) {
 }
 
 func TestMessageFinalField(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 	state.AddMessage(RoleAssistant, "here is the answer", ContentTypeMarkdown)
 	msgs := state.Messages()
 	if len(msgs) != 1 {
@@ -571,7 +575,7 @@ func TestMessageFinalField(t *testing.T) {
 }
 
 func TestStateActiveSkillsRaceFree(t *testing.T) {
-	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	state := newTestState()
 
 	done := make(chan struct{})
 	go func() {
@@ -589,4 +593,55 @@ func TestStateActiveSkillsRaceFree(t *testing.T) {
 		_ = state.HasActiveSkill("a")
 	}
 	<-done
+}
+
+func TestLogThinking(t *testing.T) {
+	s := newTestState()
+	s.LogThinking(ThinkingEntry{
+		Text:      "thinking about tool call",
+		Duration:  2 * time.Second,
+		StartedAt: time.Now(),
+	})
+	transcript := s.Transcript()
+	if len(transcript) != 1 {
+		t.Fatalf("expected 1 transcript item, got %d", len(transcript))
+	}
+	if transcript[0].Kind != KindThinking {
+		t.Errorf("expected KindThinking, got %v", transcript[0].Kind)
+	}
+	if transcript[0].Thinking == nil {
+		t.Fatal("expected non-nil Thinking")
+	}
+	if transcript[0].Thinking.Text != "thinking about tool call" {
+		t.Errorf("expected thinking text, got %q", transcript[0].Thinking.Text)
+	}
+}
+
+func TestTranscriptMergeOrder(t *testing.T) {
+	s := newTestState()
+
+	s.AddMessage(RoleUser, "hello", ContentTypePlain)
+	thinkTime := time.Now()
+
+	s.LogThinking(ThinkingEntry{
+		Text:      "should I respond?",
+		Duration:  1 * time.Second,
+		StartedAt: thinkTime,
+	})
+
+	s.AddMessage(RoleAssistant, "world", ContentTypePlain)
+
+	transcripts := s.Transcript()
+	if len(transcripts) != 3 {
+		t.Fatalf("expected 3 transcript items, got %d", len(transcripts))
+	}
+	if transcripts[0].Kind != KindMessage {
+		t.Errorf("expected item 0 to be KindMessage, got %v", transcripts[0].Kind)
+	}
+	if transcripts[1].Kind != KindThinking {
+		t.Errorf("expected item 1 to be KindThinking, got %v", transcripts[1].Kind)
+	}
+	if transcripts[2].Kind != KindMessage {
+		t.Errorf("expected item 2 to be KindMessage, got %v", transcripts[2].Kind)
+	}
 }

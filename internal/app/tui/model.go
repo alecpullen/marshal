@@ -452,7 +452,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) inputAreaRows() int {
 	rows := inputBorderRows + activityStripRows
 	if m.state.PendingApproval() != nil {
-		rows += 5 // approval panel: title + command + risk + help line + spacing
+		rows += 7 // approval panel: title + command + blank + risk + blank + help line + spacing
 	} else {
 		inputHeight := max(m.input.Height(), 1)
 		if inputHeight > m.input.MaxHeight {

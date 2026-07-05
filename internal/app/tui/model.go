@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -42,7 +42,7 @@ const (
 
 type Model struct {
 	state                  *session.State
-	input                  textinput.Model
+	input                  textarea.Model
 	editingCommand         bool
 	commandSuggestions     []commands.Command
 	commandSuggestionIndex int
@@ -131,12 +131,18 @@ func projectConfigPath(workingDir string) string {
 }
 
 func New(state *session.State, opts ...Option) Model {
-	input := textinput.New()
+	input := textarea.New()
 	input.Prompt = ""
+	input.ShowLineNumbers = false
 	input.Placeholder = "Ask Marshal..."
-	input.Focus()
 	input.CharLimit = 4000
-	input.Width = 80
+	input.MaxHeight = 8
+	input.SetHeight(1)
+	input.SetWidth(80)
+
+	km := textarea.DefaultKeyMap
+	km.InsertNewline.SetKeys("shift+enter")
+	input.KeyMap = km
 
 	m := Model{
 		state:          state,
@@ -153,8 +159,12 @@ func New(state *session.State, opts ...Option) Model {
 	return m
 }
 
+func blinkCmd() tea.Cmd {
+	return textarea.Blink
+}
+
 func (m Model) Init() tea.Cmd {
-	return textinput.Blink
+	return blinkCmd()
 }
 
 func (m *Model) resize(width, height int) {
@@ -173,7 +183,7 @@ func (m *Model) resize(width, height int) {
 	m.viewport.Height = max(height-transcriptFrameRows-m.inputAreaRows()-statusLineRows, 1)
 
 	// Input interior: width minus border (2), padding (2), and prompt (2).
-	m.input.Width = max(width-8, 1)
+	m.input.SetWidth(max(width-8, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -474,7 +484,6 @@ func (m *Model) acceptCommandSuggestion() bool {
 	}
 	cmd := m.commandSuggestions[m.commandSuggestionIndex]
 	m.input.SetValue("/" + cmd.Name + " ")
-	m.input.CursorEnd()
 	m.updateCommandSuggestions()
 	return true
 }

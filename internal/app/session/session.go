@@ -87,6 +87,8 @@ type Message struct {
 	ThinkDuration time.Duration
 	CreatedAt     time.Time
 	Final         bool
+	Salvaged      bool
+	SalvageReason string
 }
 
 // InProgressMessage holds the reasoning text accumulated for the model call
@@ -144,6 +146,11 @@ type RouteInfo struct {
 	Active    bool
 }
 
+type ToolBudget struct {
+	Used int
+	Max  int
+}
+
 type State struct {
 	Config     config.Config
 	WorkingDir string
@@ -171,6 +178,7 @@ type State struct {
 	activity        Activity
 	plan            []string
 	activeSkills    map[string]bool
+	toolBudget      ToolBudget
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
@@ -245,6 +253,39 @@ func (s *State) AddMessageFinal(role Role, content string, contentType ContentTy
 		ThinkDuration: thinkDuration,
 		CreatedAt:     time.Now(),
 		Final:         true,
+	}
+	s.messages = append(s.messages, msg)
+	s.mu.Unlock()
+
+	if s.persistenceEnabled() {
+		if err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), msg.CreatedAt, reasoning, thinkDuration, true); err != nil {
+			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
+		}
+	}
+}
+
+func (s *State) AddMessageSalvaged(role Role, content string, contentType ContentType, reason string) {
+	s.mu.Lock()
+	reasoning := s.inProgress.Reasoning
+	var thinkDuration time.Duration
+	if reasoning != "" {
+		thinkDuration = time.Since(s.inProgress.StartedAt)
+		if thinkDuration <= 0 {
+			thinkDuration = time.Millisecond
+		}
+	}
+	s.inProgress = InProgressMessage{}
+
+	msg := Message{
+		Role:          role,
+		Content:       content,
+		ContentType:   contentType,
+		Reasoning:     reasoning,
+		ThinkDuration: thinkDuration,
+		CreatedAt:     time.Now(),
+		Final:         true,
+		Salvaged:      true,
+		SalvageReason: reason,
 	}
 	s.messages = append(s.messages, msg)
 	s.mu.Unlock()
@@ -411,6 +452,18 @@ func (s *State) Activity() Activity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activity
+}
+
+func (s *State) SetToolBudget(b ToolBudget) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toolBudget = b
+}
+
+func (s *State) ToolBudget() ToolBudget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.toolBudget
 }
 
 func (s *State) SetPlan(plan []string) {

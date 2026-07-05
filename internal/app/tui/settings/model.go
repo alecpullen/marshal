@@ -121,28 +121,29 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 		nil,
 	))
 
-	m.fields = append(m.fields, newIntField(
+	m.fields = append(m.fields, newIntFieldWithBounds(
 		"Max tool iterations",
-		&m.cfg.Agent.MaxToolIterations,
-		nil,
+		m.cfg.Agent.MaxToolIterations,
+		func(v int) { m.cfg.Agent.MaxToolIterations = v },
+		1, 0,
 	))
 
 	m.fields = append(m.fields, newIntField(
 		"Max retries",
-		&m.cfg.Agent.MaxRetries,
-		nil,
+		m.cfg.Agent.MaxRetries,
+		func(v int) { m.cfg.Agent.MaxRetries = v },
 	))
 
 	m.fields = append(m.fields, newIntField(
 		"Shell timeout",
-		&m.cfg.Tools.Shell.DefaultTimeoutSeconds,
-		nil,
+		m.cfg.Tools.Shell.DefaultTimeoutSeconds,
+		func(v int) { m.cfg.Tools.Shell.DefaultTimeoutSeconds = v },
 	))
 
 	m.fields = append(m.fields, newIntField(
 		"Max shell output",
-		&m.cfg.Tools.Shell.MaxOutputBytes,
-		nil,
+		m.cfg.Tools.Shell.MaxOutputBytes,
+		func(v int) { m.cfg.Tools.Shell.MaxOutputBytes = v },
 	))
 
 	m.fields = append(m.fields, newBoolField(

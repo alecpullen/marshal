@@ -101,19 +101,28 @@ func renderCodeBlock(content string, width int) string {
 	return style.Render(trimmed)
 }
 
-func renderFinalAnswer(content string, width int) string {
+func renderFinalAnswer(msg session.Message, width int) string {
 	if width < 10 {
 		width = 10
 	}
 	prefixWidth := 10
 	contentWidth := max(width-prefixWidth-4, 1)
-	label := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("Response")
+	labelText := "Response"
+	if msg.Salvaged {
+		labelText = "Response · salvaged"
+	}
+	label := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(labelText)
 
-	blocks := splitFencedBlocks(strings.TrimRight(content, "\n"))
+	blocks := splitFencedBlocks(strings.TrimRight(msg.Content, "\n"))
 	var b strings.Builder
 	b.WriteString(label)
 	b.WriteString("  ")
 	firstBlock := true
+	if msg.Salvaged && msg.SalvageReason != "" {
+		b.WriteString(mutedStyle.Render(msg.SalvageReason))
+		b.WriteString("\n")
+		firstBlock = false
+	}
 
 	for _, block := range blocks {
 		switch block.kind {
@@ -212,7 +221,7 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 // dim. Final answers keep the rich-content Response treatment.
 func renderMessage(msg session.Message, width int) string {
 	if msg.Final {
-		return renderFinalAnswer(msg.Content, width)
+		return renderFinalAnswer(msg, width)
 	}
 	if msg.Role == session.RoleUser {
 		return renderUserMessage(msg.Content, width)

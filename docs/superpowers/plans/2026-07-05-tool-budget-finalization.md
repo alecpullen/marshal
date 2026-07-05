@@ -16,7 +16,7 @@
 - The TUI renders only — no routing/policy/prompt logic in `internal/app/tui`.
 - Default budget stays **16** (`DefaultMaxToolIterations`, `runner.go:23`). Do not change it.
 - Budget state reaches the model only qualitatively (pressure/nudge text). Never inject a numeric counter into `messages`.
-- A salvaged turn is `TaskStatusCompleted` (never returns `ErrMaxIterationsExceeded`) unless the salvage model call itself errors.
+- A salvaged turn is `TaskStatusCompleted` (never returns `ErrMaxIterationsExceeded`) unless the agent never produced a parseable action, or the salvage model call itself errors.
 - Package is `marshal`; module-relative imports like `marshal/internal/agent`.
 
 ---
@@ -31,10 +31,13 @@
 - `internal/agent/prompts.go` (**modify**) — tighten `baseRules`; export the finalization directive constant used by `finalize.go`.
 - `internal/agent/task.go` (**modify**) — add `SalvagedReason string` to `Task`.
 - `internal/app/session/session.go` (**modify**) — add `ToolBudget` type + field + `SetToolBudget`/`ToolBudget` accessors; add `Salvaged` marker on the final `Message` and a `SetSalvage`/state field, plus an `AddMessageSalvaged` helper (or a variant of `AddMessageFinal`).
-- `internal/app/tui/view.go` (**modify**) — render `tools N/Max` in the activity strip and a salvage marker.
-- Test files: `runner_test.go`, `session_test.go`, `view_test.go` updated alongside.
+- `internal/app/tui/status.go` (**modify**) — render `tools N/Max` in the active-tool status segment.
+- `internal/app/tui/transcript.go` (**modify**) — render a salvage marker on salvaged final answers.
+- `internal/app/tui/settings/field.go` (**modify**) — add an `intField` type for numeric settings.
+- `internal/app/tui/settings/model.go` (**modify**) — expose `max_tool_iterations` using `intField`.
+- Test files: `runner_test.go`, `session_test.go`, `status_test.go`, `transcript_test.go`, `field_test.go`, `navigation_test.go` updated alongside.
 
-**Already done (verify-only):** `max_tool_iterations` is already a TUI settings field (`internal/app/tui/settings/model.go:124-128`) and already round-trips through `config.go`/`save.go`. Spec Component 5's "tunable" half needs no new work — Task 8 only verifies it.
+**Implementation note:** `max_tool_iterations` was *not* already exposed in the TUI settings screen; Task 8 adds an `intField` and binds it to `Agent.MaxToolIterations`.
 
 ---
 
@@ -892,91 +895,121 @@ git commit -m "feat(agent): tighten base rules to prefer early finalization"
 ## Task 7: TUI budget counter + salvage marker
 
 **Files:**
-- Modify: `internal/app/tui/view.go` (`renderActivityStrip` at `:71-90`)
-- Test: `internal/app/tui/view_test.go`
+- Modify: `internal/app/tui/status.go` (`statusRightSegment`), `internal/app/tui/transcript.go` (`renderFinalAnswer`)
+- Test: `internal/app/tui/status_test.go`, `internal/app/tui/transcript_test.go`
 
 **Interfaces:**
 - Consumes: `session.State.ToolBudget()` (Task 3), `Message.Salvaged` (Task 3).
 
-**Design:** append a `tools N/Max` segment to the activity strip label when `Max > 0` and the agent is active. The strip already builds a `label`; append the budget suffix. Keep it inside the existing single status row (`statusLineRows = 1`).
+**Design:** append a `tools N/Max` segment to the active-tool status segment when `Max > 0` and the agent is active. Flag salvaged final answers in the transcript (e.g. change the "Response" label and show the salvage reason). Keep the budget counter inside the existing single status row (`statusLineRows = 1`).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-Add to `internal/app/tui/view_test.go` (match the existing model-construction helper used by other view tests):
+Add to `internal/app/tui/status_test.go` and `internal/app/tui/transcript_test.go`:
 
 ```go
-func TestActivityStripShowsToolBudget(t *testing.T) {
-	m := newTestModel() // whatever helper view_test.go already uses
+func TestStatusLineShowsToolBudgetCounter(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.spinnerFrame = "⠋"
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read", StartedAt: m.now()})
 	m.state.SetToolBudget(session.ToolBudget{Used: 13, Max: 16})
 
-	out := m.renderActivityStrip()
-	if !strings.Contains(out, "tools 13/16") {
-		t.Fatalf("activity strip = %q, want to contain %q", out, "tools 13/16")
+	line := m.renderStatusLine(100)
+	if !strings.Contains(line, "tools 13/16") {
+		t.Fatalf("status line missing tool budget counter:\n%s", line)
+	}
+}
+
+func TestRenderFinalAnswerSalvagedMarker(t *testing.T) {
+	msg := session.Message{Role: session.RoleAssistant, Content: "All done.", Final: true, Salvaged: true, SalvageReason: "exhausted"}
+	out := renderMessage(msg, 80)
+	if !strings.Contains(out, "salvaged") {
+		t.Fatalf("salvaged final answer missing salvage marker:\n%s", out)
 	}
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test ./internal/app/tui/ -run TestActivityStripShowsToolBudget -v`
-Expected: FAIL — no `tools 13/16` substring.
+Run: `go test ./internal/app/tui/ -run 'TestStatusLineShowsToolBudgetCounter|TestRenderFinalAnswerSalvagedMarker' -v`
+Expected: FAIL — no `tools 13/16` or no salvage marker.
 
-- [ ] **Step 3: Implement the suffix**
+- [ ] **Step 3: Implement the markers**
 
-In `internal/app/tui/view.go`, in `renderActivityStrip`, after the `switch` builds `label` and before rendering, append the budget:
+In `internal/app/tui/status.go`, in `statusRightSegment`, append the budget suffix to the active-tool line:
 
 ```go
-	if b := m.state.ToolBudget(); b.Max > 0 && label != "" {
-		label = fmt.Sprintf("%s · tools %d/%d", label, b.Used, b.Max)
-	}
+	case session.ActivityTool:
+		elapsed := m.now().Sub(activity.StartedAt)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		line := fmt.Sprintf("%s %s · %s", m.spinnerFrame, activity.Label, formatElapsed(elapsed))
+		if b := m.state.ToolBudget(); b.Max > 0 {
+			line = fmt.Sprintf("%s · tools %d/%d", line, b.Used, b.Max)
+		}
+		return statusBusyStyle.Render(line)
 ```
 
-(`fmt` is already imported in this file.)
+In `internal/app/tui/transcript.go`, in `renderFinalAnswer`, flag salvaged messages by changing the "Response" label and adding a dim reason line.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./internal/app/tui/ -run TestActivityStripShowsToolBudget -v`
+Run: `go test ./internal/app/tui/ -run 'TestStatusLineShowsToolBudgetCounter|TestRenderFinalAnswerSalvagedMarker' -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-gofmt -w internal/app/tui/view.go internal/app/tui/view_test.go
-git add internal/app/tui/view.go internal/app/tui/view_test.go
-git commit -m "feat(tui): show tool budget counter in activity strip"
+gofmt -w internal/app/tui/status.go internal/app/tui/status_test.go internal/app/tui/transcript.go internal/app/tui/transcript_test.go
+git add internal/app/tui/status.go internal/app/tui/status_test.go internal/app/tui/transcript.go internal/app/tui/transcript_test.go
+git commit -m "feat(tui): tool budget counter and salvaged final-answer marker"
 ```
 
 ---
 
-## Task 8: Verify existing settings exposure + full-suite green
+## Task 8: Expose `max_tool_iterations` in settings + full-suite green
 
 **Files:**
-- Verify only: `internal/app/tui/settings/model.go:124-128`
+- Modify: `internal/app/tui/settings/field.go`, `internal/app/tui/settings/model.go`
+- Test: `internal/app/tui/settings/field_test.go`, `internal/app/tui/settings/navigation_test.go`
 
-**Interfaces:** none.
+**Interfaces:**
+- Produces: `intField` numeric settings field with optional min/max bounds.
 
-- [ ] **Step 1: Confirm the setting already exists**
+- [ ] **Step 1: Add an `intField` type**
 
-Run: `grep -n "Max tool iterations" internal/app/tui/settings/model.go`
-Expected: matches line ~125 binding `&m.cfg.Agent.MaxToolIterations`. No code change needed — spec Component 5's "tunable" requirement is already satisfied.
+In `internal/app/tui/settings/field.go`, add an `intField` that wraps `textinput.Model`, rejects non-digit input, and clamps to optional min/max bounds.
 
-- [ ] **Step 2: Run the whole suite**
+- [ ] **Step 2: Expose `max_tool_iterations`**
+
+In `internal/app/tui/settings/model.go`, append a `newIntFieldWithBounds("Max tool iterations", m.cfg.Agent.MaxToolIterations, ..., 1, 0)` field (max 0 means unbounded).
+
+- [ ] **Step 3: Write tests**
+
+Add tests for `intField` value storage, non-digit rejection, and bounds clamping. Update navigation tests to account for the additional field.
+
+- [ ] **Step 4: Run settings tests**
+
+Run: `go test ./internal/app/tui/settings/ -v`
+Expected: PASS.
+
+- [ ] **Step 5: Run the whole suite**
 
 Run: `go test ./...`
 Expected: PASS across all packages.
 
-- [ ] **Step 3: Vet and build**
+- [ ] **Step 6: Vet and build**
 
 Run: `go vet ./... && CGO_ENABLED=1 go build ./cmd/marshal`
 Expected: clean build.
 
-- [ ] **Step 4: Commit any formatting**
+- [ ] **Step 7: Commit**
 
 ```bash
-gofmt -w .
-git add -A
-git commit -m "chore: gofmt after tool-budget finalization work" || echo "nothing to commit"
+gofmt -w internal/app/tui/settings/
+git add internal/app/tui/settings/
+git commit -m "feat(tui/settings): expose max_tool_iterations setting"
 ```
 
 ---

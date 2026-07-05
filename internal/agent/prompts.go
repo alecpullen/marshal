@@ -76,7 +76,12 @@ const baseRules = `Rules:
 - Before editing, trace the relevant code path.
 - After editing, run the narrowest useful validation.
 - If stuck after a few attempts, stop and ask the user.
-- Summarise results clearly.`
+- Summarise results clearly.
+- Use tools only to obtain facts you don't already have in the transcript or context pack.
+- Once the requested change is made and validated, produce a final answer — do not keep exploring.
+- Stop after validation succeeds; do not re-verify work that already passed.`
+
+const FinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a single action of type "final".`
 
 const baseOutputFormat = `Respond with exactly one JSON object and nothing else.
 

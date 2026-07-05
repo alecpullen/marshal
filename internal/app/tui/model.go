@@ -41,23 +41,25 @@ const (
 )
 
 type Model struct {
-	state          *session.State
-	input          textinput.Model
-	editingCommand bool
-	runner         AgentRunner
-	swarmRunner    AgentRunner
-	ctx            context.Context
-	busy           bool
-	settingsOpen   bool
-	settingsModel  settings.Model
-	configReloader ConfigReloader
-	memoryOpen     bool
-	memoryModel    memory.Model
-	memoryDB       *db.DB
-	memoryProject  int64
-	cmdRegistry    *commands.Registry
-	agentCancel    context.CancelFunc
-	forceMode      string // reserved for future status-bar display
+	state                  *session.State
+	input                  textinput.Model
+	editingCommand         bool
+	commandSuggestions     []commands.Command
+	commandSuggestionIndex int
+	runner                 AgentRunner
+	swarmRunner            AgentRunner
+	ctx                    context.Context
+	busy                   bool
+	settingsOpen           bool
+	settingsModel          settings.Model
+	configReloader         ConfigReloader
+	memoryOpen             bool
+	memoryModel            memory.Model
+	memoryDB               *db.DB
+	memoryProject          int64
+	cmdRegistry            *commands.Registry
+	agentCancel            context.CancelFunc
+	forceMode              string // reserved for future status-bar display
 
 	// New Layout State
 	width    int
@@ -65,11 +67,8 @@ type Model struct {
 	viewport viewport.Model
 
 	// Viewport dirty tracking.
-	lastMessageCount int
-	lastStreamLen    int
-	lastHadApproval  bool
-	lastHadError     bool
-	thinkingExpanded bool
+	lastTranscriptHash uint64
+	thinkingExpanded   bool
 
 	spinner           Spinner
 	spinnerFrame      string
@@ -169,10 +168,9 @@ func (m *Model) resize(width, height int) {
 	m.width = width
 	m.height = height
 
-	// Transcript viewport: full width minus one column of padding on each
-	// side, full height minus the bordered input box and the status line.
-	m.viewport.Width = max(width-2, 1)
-	m.viewport.Height = max(height-inputBoxRows-statusLineRows, 1)
+	// Transcript viewport lives inside a subtle border frame.
+	m.viewport.Width = max(width-4, 1)
+	m.viewport.Height = max(height-transcriptFrameRows-m.inputAreaRows()-statusLineRows, 1)
 
 	// Input interior: width minus border (2), padding (2), and prompt (2).
 	m.input.Width = max(width-8, 1)
@@ -347,7 +345,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyCtrlG:
 				m.thinkingExpanded = !m.thinkingExpanded
-				m.lastMessageCount = -1 // force refreshViewport to rebuild despite unchanged message/stream state
+				m.lastTranscriptHash = 0
 				m.refreshViewport()
 				return m, nil
 			case tea.KeyCtrlR:
@@ -365,12 +363,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var vpCmd tea.Cmd
 				m.viewport, vpCmd = m.viewport.Update(msg)
 				return m, vpCmd
+			case tea.KeyCtrlU:
+				m.viewport.HalfViewUp()
+				return m, nil
+			case tea.KeyCtrlD:
+				m.viewport.HalfViewDown()
+				return m, nil
+			case tea.KeyUp:
+				if m.moveCommandSuggestion(-1) {
+					return m, nil
+				}
+			case tea.KeyDown:
+				if m.moveCommandSuggestion(1) {
+					return m, nil
+				}
+			case tea.KeyTab:
+				if m.acceptCommandSuggestion() {
+					return m, nil
+				}
 			case tea.KeyEnter:
 				value := strings.TrimSpace(m.input.Value())
 				if value == "" {
 					return m, nil
 				}
 				m.input.Reset()
+				m.updateCommandSuggestions()
 
 				if strings.HasPrefix(value, "/") {
 					return m.dispatchCommand(value)
@@ -394,39 +411,87 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.updateCommandSuggestions()
 	return m, cmd
 }
 
-func (m *Model) refreshViewport() {
-	messages := m.state.Messages()
-	inProgress := m.state.InProgress()
-	streamLen := len(inProgress.Reasoning)
-	hasApproval := m.state.PendingApproval() != nil
-	hasError := m.state.ProviderError() != nil
-	if len(messages) == m.lastMessageCount && streamLen == m.lastStreamLen && !m.busy &&
-		hasApproval == m.lastHadApproval && hasError == m.lastHadError {
+func (m Model) inputAreaRows() int {
+	rows := inputAreaRowsReserved
+	if len(m.commandSuggestions) > 0 {
+		rows += commandSuggestionRows
+	}
+	return rows
+}
+
+func (m *Model) updateCommandSuggestions() {
+	m.commandSuggestions = nil
+	m.commandSuggestionIndex = 0
+	if m.cmdRegistry == nil {
 		return
 	}
-	m.lastMessageCount = len(messages)
-	m.lastStreamLen = streamLen
-	m.lastHadApproval = hasApproval
-	m.lastHadError = hasError
+	value := m.input.Value()
+	if !strings.HasPrefix(value, "/") || strings.Contains(strings.TrimPrefix(value, "/"), " ") {
+		return
+	}
+	prefix := strings.ToLower(strings.TrimPrefix(value, "/"))
+	for _, cmd := range m.cmdRegistry.List() {
+		if prefix == "" || strings.HasPrefix(strings.ToLower(cmd.Name), prefix) {
+			m.commandSuggestions = append(m.commandSuggestions, cmd)
+			if len(m.commandSuggestions) == 5 {
+				break
+			}
+		}
+	}
+}
+
+func (m *Model) moveCommandSuggestion(delta int) bool {
+	if len(m.commandSuggestions) == 0 {
+		return false
+	}
+	m.commandSuggestionIndex += delta
+	if m.commandSuggestionIndex < 0 {
+		m.commandSuggestionIndex = len(m.commandSuggestions) - 1
+	}
+	if m.commandSuggestionIndex >= len(m.commandSuggestions) {
+		m.commandSuggestionIndex = 0
+	}
+	return true
+}
+
+func (m *Model) acceptCommandSuggestion() bool {
+	if len(m.commandSuggestions) == 0 {
+		return false
+	}
+	cmd := m.commandSuggestions[m.commandSuggestionIndex]
+	m.input.SetValue("/" + cmd.Name + " ")
+	m.input.CursorEnd()
+	m.updateCommandSuggestions()
+	return true
+}
+
+func (m *Model) refreshViewport() {
+	items := m.state.Transcript()
+	inProgress := m.state.InProgress()
+	streamLen := len(inProgress.Reasoning)
+	_, activeTool := m.state.ActiveToolCall()
+	busy := m.busy || activeTool || streamLen > 0
+
+	hash := transcriptHash(items, streamLen, busy)
+	if hash == m.lastTranscriptHash {
+		return
+	}
+	m.lastTranscriptHash = hash
 
 	var b strings.Builder
-	if len(messages) == 0 {
+	if len(items) == 0 {
 		b.WriteString("  No messages yet.\n")
 	}
-	for _, message := range messages {
-		if message.Reasoning != "" {
-			b.WriteString(renderThinkingSummary(message.Reasoning, message.ThinkDuration, m.thinkingExpanded, m.viewport.Width))
-		}
-		b.WriteString(renderMessage(message, m.viewport.Width))
+	for _, item := range items {
+		b.WriteString(renderTranscriptItem(item, m.thinkingExpanded, m.viewport.Width))
 	}
-	if inProgress.Active {
-		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.viewport.Width))
-	}
-	if tc := m.state.PendingApproval(); tc != nil {
-		b.WriteString(renderApprovalInline(tc, m.viewport.Width))
+
+	if inProgress.Active && inProgress.Reasoning != "" {
+		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.spinnerFrame, m.viewport.Width))
 	}
 	if atc, ok := m.state.ActiveToolCall(); ok {
 		b.WriteString(renderActiveToolCall(atc, m.spinnerFrame, m.now(), m.viewport.Width))
@@ -434,6 +499,7 @@ func (m *Model) refreshViewport() {
 	if err := m.state.ProviderError(); err != nil {
 		b.WriteString(renderProviderError(err, m.viewport.Width))
 	}
+
 	m.viewport.SetContent(b.String())
 	m.viewport.GotoBottom()
 }
@@ -667,4 +733,16 @@ func compactTokenCount(tokens int) string {
 		return fmt.Sprintf("%dk", tokens/1000)
 	}
 	return fmt.Sprintf("%d", tokens)
+}
+
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool) uint64 {
+	var h uint64
+	h = uint64(len(items)) ^ (uint64(streamLen) << 20)
+	for i, item := range items {
+		h ^= uint64(item.Timestamp.UnixNano()) * uint64(i+1)
+	}
+	if busy {
+		h ^= 0xDEADBEEF
+	}
+	return h
 }

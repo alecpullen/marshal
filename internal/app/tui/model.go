@@ -526,7 +526,7 @@ func (m *Model) refreshViewport() {
 		if message.Reasoning != "" {
 			b.WriteString(renderThinkingSummary(message.Reasoning, message.ThinkDuration, m.thinkingExpanded, m.viewport.Width))
 		}
-		b.WriteString(renderMessage(string(message.Role), message.Content, m.viewport.Width))
+		b.WriteString(renderMessage(message, m.viewport.Width))
 	}
 	if inProgress.Active {
 		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.viewport.Width))
@@ -1071,41 +1071,36 @@ func (m Model) renderInputArea() string {
 	)
 }
 
-func renderMessage(role, content string, width int) string {
-	if width < 1 {
-		width = 1
+func renderMessage(msg session.Message, width int) string {
+	switch msg.ContentType {
+	case session.ContentTypeMarkdown:
+		return renderMarkdown(string(msg.Role), msg.Content, width)
+	case session.ContentTypeCode:
+		return renderCode(string(msg.Role), msg.Content, width)
+	case session.ContentTypePlan:
+		return renderPlan(string(msg.Role), msg.Content, width)
+	case session.ContentTypeDiff:
+		return renderDiff(string(msg.Role), msg.Content, width)
+	case session.ContentTypeToolResult:
+		return renderToolResult(string(msg.Role), msg.Content, width)
+	default:
+		return renderPlain(string(msg.Role), msg.Content, width)
 	}
-	label := strings.ToLower(role)
-	roleStyle := mutedStyle
-	switch label {
-	case "user":
-		roleStyle = userRoleStyle
-	case "agent", "assistant":
-		roleStyle = agentRoleStyle
-	case "tool":
-		roleStyle = toolRoleStyle
-	case "output":
-		roleStyle = outputRoleStyle
-	}
+}
 
+func renderCode(role, content string, width int) string {
 	prefixWidth := 10
-	contentWidth := max(width-prefixWidth-2, 1)
-	wrapped := ansi.Wrap(content, contentWidth, "")
-	var b strings.Builder
-	lines := strings.Split(wrapped, "\n")
-	for i, line := range lines {
-		if i == 0 {
-			b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(label))
-			b.WriteString("  ")
-			b.WriteString(line)
-			b.WriteString("\n")
-			continue
-		}
-		b.WriteString(strings.Repeat(" ", prefixWidth+2))
-		b.WriteString(line)
-		b.WriteString("\n")
+	innerWidth := max(width-prefixWidth-6, 1)
+	roleStyle := agentRoleStyle
+	if strings.ToLower(role) == "user" {
+		roleStyle = userRoleStyle
 	}
-	b.WriteString("\n")
+	panel := renderCodeBlock(content, innerWidth)
+	var b strings.Builder
+	b.WriteString(roleStyle.Width(prefixWidth).Align(lipgloss.Right).Render(strings.ToLower(role)))
+	b.WriteString("  ")
+	b.WriteString(panel)
+	b.WriteString("\n\n")
 	return b.String()
 }
 

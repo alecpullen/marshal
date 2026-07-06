@@ -40,3 +40,32 @@ func TestReadOnlyViewFiltersOutWriteTools(t *testing.T) {
 		t.Fatalf("source registry mutated: %d tools, want 3", got)
 	}
 }
+
+func TestTesterViewAllowsReadAndCommandButNotWrites(t *testing.T) {
+	src := New()
+	mustRegister := func(tool Tool) {
+		t.Helper()
+		if err := src.Register(tool); err != nil {
+			t.Fatalf("Register(%s): %v", tool.Name, err)
+		}
+	}
+	mustRegister(Tool{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler})
+	mustRegister(Tool{Name: "test.run", Description: "test", Risk: RiskCommand, Handler: nopHandler})
+	mustRegister(Tool{Name: "patch.apply", Description: "patch", Risk: RiskWorkspaceWrite, Handler: nopHandler})
+	mustRegister(Tool{Name: "fetch", Description: "net", Risk: RiskNetwork, Handler: nopHandler})
+
+	view := TesterView(src)
+
+	if _, ok := view.Lookup("file.read"); !ok {
+		t.Error("TesterView should include read-only tools")
+	}
+	if _, ok := view.Lookup("test.run"); !ok {
+		t.Error("TesterView should include command tools")
+	}
+	if _, ok := view.Lookup("patch.apply"); ok {
+		t.Error("TesterView must exclude workspace-write tools")
+	}
+	if _, ok := view.Lookup("fetch"); ok {
+		t.Error("TesterView must exclude network tools")
+	}
+}

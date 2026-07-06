@@ -318,6 +318,17 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		return fmt.Errorf("find working directory: %w", err)
 	}
 
+	if !config.HasConfig(config.LoadOptions{WorkingDir: workingDir}) {
+		onboarding := NewOnboardingModel(workingDir)
+		p := tea.NewProgram(onboarding, tea.WithOutput(stdout), tea.WithContext(ctx))
+		if _, err := p.Run(); err != nil {
+			return fmt.Errorf("onboarding failed: %w", err)
+		}
+		if onboarding.state != stateDone {
+			return nil
+		}
+	}
+
 	cfg, err := runOpts.configLoader(config.LoadOptions{WorkingDir: workingDir})
 	if err != nil {
 		return err

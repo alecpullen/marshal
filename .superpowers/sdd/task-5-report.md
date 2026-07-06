@@ -1,31 +1,59 @@
-# Task 5: Move approval panel from viewport to input area
+# Task 5: session.SwarmProgress live state
 
-## Status: Complete
+## Status
+Completed.
 
-## Commits
-- `601d40d` — feat(tui): move approval panel from viewport to input area
+## What changed
+- Added `SwarmRoleStatus` constants: `pending`, `active`, `done`, `failed`.
+- Added `SwarmRole` and `SwarmProgress`.
+- Added mutex-protected `State` accessors:
+  - `SetSwarmProgress`
+  - `SwarmProgress`
+  - `UpdateSwarmRole`
+  - `ClearSwarmProgress`
+- Added `swarmProgress` to `State`.
+- Added tests for copy semantics, role updates, clearing, and concurrent updates.
 
-## Changes
+## TDD evidence
 
-### transcript.go
-- Renamed `renderApprovalInline` → `renderApprovalPanel`
-- Removed the internal bordered-panel wrapper (border + `\n\n` suffix)
-- Removed `if width < 10` guard (input area handles minimum width)
-- Function now returns bare content string (title, command, risk, help line)
+RED:
+```
+go test ./internal/app/session/ -run Swarm -v
+```
+Failed as expected with undefined `SwarmProgress` / accessor symbols.
 
-### view.go
-- `renderInputArea` now checks `m.state.PendingApproval()`
-- When pending approval + editing: shows textarea with `❯` prompt inside input border
-- When pending approval + not editing: shows `renderApprovalPanel` content inside input border
-- When no pending approval (normal): activity strip + suggestions + prompt as before
+GREEN:
+```
+go test ./internal/app/session/ -run Swarm -v
+```
+Passed:
+- `TestSwarmProgressSetAndCopy`
+- `TestUpdateSwarmRole`
+- `TestClearSwarmProgress`
+- `TestSwarmProgressConcurrentUpdates`
 
-### model.go
-- Restructured approval key handling with proper nested edit-mode branching:
-  - Edit mode (editingCommand=true): Esc cancels, Enter submits edited command, other keys pass to `m.input.Update(msg)` (instead of silently ignoring)
-  - Not editing: Enter approves, Esc/d deny, e enters edit mode (pre-fills textarea), a approve+add rule, r rollback
-- Added `m.lastTranscriptHash = 0` on every transition that changes approval state
-- Removed unnecessary `// Ignore all other key inputs when approval prompt is shown and not editing` comment
+Race check:
+```
+go test -race ./internal/app/session/ -run TestSwarmProgressConcurrentUpdates
+```
+Passed.
 
-## Build
-- `go build ./internal/app/tui/` — passes
-- `go test ./internal/app/tui/ -run TestView` — fails due to pre-existing `lastMessageCount` field removal in test files (expected — Task 8 handles test updates)
+Additional pre-commit check:
+```
+go vet ./...
+```
+Passed.
+
+## Files changed
+- `internal/app/session/session.go`
+- `internal/app/session/swarm_progress.go`
+- `internal/app/session/swarm_progress_test.go`
+
+## Commit
+`7a2a388 feat(session): add SwarmProgress live run state`
+
+## Self-review
+The implementation mirrors the existing `Activity`/`Plan` state style: all access is under `State.mu`, and `SwarmProgress()` returns a copy so callers cannot mutate internal slices.
+
+## Concerns
+None.

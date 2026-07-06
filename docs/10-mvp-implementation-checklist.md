@@ -145,14 +145,21 @@
 
 ## Milestone O: First swarm prototype
 
-- [ ] Shared task state
-- [ ] Planner role
-- [ ] Repo Scout role
-- [ ] Implementer role
-- [ ] Reviewer role
-- [ ] Sequential orchestration
-- [ ] Read-only parallel scout experiment
-- [ ] Write lock
+- [x] Shared task state
+- [x] Planner role
+- [x] Repo Scout role
+- [x] Implementer role
+- [x] Reviewer role
+- [x] Sequential orchestration
+- [x] Read-only parallel scout experiment
+- [x] Write lock
+
+## Phase 5 polish (post-Milestone O)
+
+- [x] Tester role integrated as an implementer↔tester feedback loop
+- [x] Swarm roster activity panel
+- [x] Run-level budgets (max fix rounds, per-role tool caps, token ceiling)
+- [ ] Real provider `usage` token metering (later milestone; ProviderUsageMeter stub in place)
 
 ## First demo target
 

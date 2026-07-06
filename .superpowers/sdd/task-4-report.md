@@ -1,15 +1,55 @@
-# Task 4 Report: Remove "· Xs ago" from completed tool calls
+# Task 4: [swarm.budget] config section
 
-**Status: ✅ Already Complete**
+## Status
+Completed.
 
-The function `renderCompletedToolCall` in `internal/app/tui/transcript.go:438` was already updated by the prior commit `e66f977` (feat(tui): unified transcript timeline). The signature already has no `now` parameter, and the body contains no elapsed calculation or "· Xs ago" suffix. The function body matches the desired output exactly.
+## What changed
+- Added `Config.Swarm SwarmConfig`.
+- Added `SwarmConfig` and `SwarmBudgetConfig`.
+- Added defaults:
+  - `MaxFixRounds = 3`
+  - `MaxTotalTokens = 120000`
+  - `ToolIters = map[string]int{}`
+- Added TOML load/merge support for `[swarm.budget]` and `[swarm.budget.tool_iters]`.
+- Added focused tests for defaults and project config merge behavior.
 
-## Verification
+## TDD evidence
 
-- `go build ./internal/app/tui/` — passes
-- `go test ./internal/app/tui/ -v -count=1` — build failures are pre-existing (`lastMessageCount` undefined in `model_test.go:1633` and `view_test.go:113`), unrelated to this task
-- No `time` import change needed (still used by `renderThinkingSummary`, `renderActiveToolCall`, and `formatElapsed`)
+RED:
+```
+go test ./internal/app/config/ -run TestSwarmBudget -v
+```
+Failed as expected because `Config` had no `Swarm` field.
 
-## Commits
+GREEN:
+```
+go test ./internal/app/config/ -run TestSwarmBudget -v
+```
+Passed:
+- `TestSwarmBudgetDefaults`
+- `TestSwarmBudgetMergesFromFile`
 
-No changes required — task was already satisfied by the previous commit.
+Regression:
+```
+go test ./internal/app/config/...
+```
+Passed.
+
+Additional pre-commit check:
+```
+go vet ./...
+```
+Passed.
+
+## Files changed
+- `internal/app/config/config.go`
+- `internal/app/config/config_test.go`
+
+## Commit
+`c9c068b feat(config): add [swarm.budget] section`
+
+## Self-review
+The implementation follows the existing pointer-backed config-file merge pattern. The tests use the existing `.marshal/config.toml` project config layout via `writeFile` and `Load`.
+
+## Concerns
+None.

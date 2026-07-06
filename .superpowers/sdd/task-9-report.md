@@ -1,35 +1,44 @@
-# Task 9: Final Integration Verification Report
+# Task 9: Wire budgets, meter, and per-role caps in app.go
 
-| # | Command | Result | Notes |
-|---|---------|--------|-------|
-| 1 | `go build ./cmd/marshal/` | ✅ PASS | Clean compile |
-| 2 | `go test ./... -count=1` | ✅ PASS | All 18 packages pass (15 ok, 3 no test files) |
-| 3 | `go vet ./...` | ✅ PASS | No issues |
-| 4 | `gofmt -l .` | ✅ PASS | All files properly formatted |
-| 5 | `go test -race ./internal/app/tui/` | ✅ PASS | No race conditions detected |
+## Status
+Completed.
 
-## Fix Applied
+## What changed
+- Added `roleToolIterations`.
+- Applied per-role tool iteration caps in the swarm runner factory.
+- Wired `MaxFixRounds`, `MaxTotalTokens`, and `NewMeter` onto the constructed swarm orchestrator.
+- Added a focused helper test for role-specific cap override and agent default fallback.
 
-A missing `printMarshalBanner` function was needed in `internal/app/app.go:420`. The function renders a simple startup banner with the project name to stderr. All checks pass after adding it.
+## TDD evidence
 
-## Summary
+RED:
+```
+go test ./internal/app/ -run TestRoleToolIterations -v
+```
+Failed as expected with `undefined: roleToolIterations`.
 
-**All checks pass.** The TUI redesign is fully integrated — builds clean, all tests pass, no vet issues, no formatting problems, and no race conditions.
+GREEN:
+```
+go test ./internal/app/ -run TestRoleToolIterations -v
+```
+Passed.
 
-## Post-Review Fixes (round 2)
+Build/vet:
+```
+go build ./...
+go vet ./...
+```
+Passed. The first sandboxed build hit a Go cache permission denial under `~/Library/Caches/go-build`; rerun outside the sandbox passed.
 
-Two issues from the final code review were fixed:
+## Files changed
+- `internal/app/app.go`
+- `internal/app/app_test.go`
 
-**Issue 1 — Missing session tests for LogThinking and Transcript**
-- Added `newTestState()` helper to reduce boilerplate across all session tests.
-- Added `TestLogThinking` — verifies that `LogThinking` produces a `KindThinking` transcript item with correct text.
-- Added `TestTranscriptMergeOrder` — verifies that transcript items are correctly interleaved by timestamp (message → thinking → message).
+## Commit
+`d7ae061 feat(app): wire swarm budgets, meter, and per-role tool caps`
 
-**Issue 2 — Approval panel height mismatch**
-- Changed `inputAreaRows()` from `rows += 5` to `rows += 7` to match the actual 7 content lines rendered by `renderApprovalPanel`.
+## Self-review
+The helper keeps cap selection pure and testable. The factory still uses runner defaults when both role-specific and agent-wide caps are zero.
 
-**Verification:**
-- `go test ./internal/app/session/ -v -count=1` ✅ PASS (30 tests)
-- `go test ./internal/app/tui/ -v -count=1` ✅ PASS (87 tests)
-- `go build ./cmd/marshal/` ✅ PASS
-- Committed as `6e05aca` with message "fix: address final review findings"
+## Concerns
+None.

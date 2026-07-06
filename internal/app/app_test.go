@@ -858,3 +858,44 @@ func modelState(t *testing.T, model tea.Model) *session.State {
 	}
 	return (*session.State)(unsafe.Pointer(field.Pointer()))
 }
+
+func TestRunMockRepoVerification(t *testing.T) {
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	mockRepoDir := filepath.Join(origWd, "..", "..", "mock-repo")
+	if err := os.Chdir(mockRepoDir); err != nil {
+		t.Fatalf("chdir to mock-repo failed: %v, origWd=%s", err, origWd)
+	}
+
+	stdout := bytes.NewBuffer(nil)
+	stderr := bytes.NewBuffer(nil)
+
+	called := false
+	err = Run(context.Background(), stdout, stderr,
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			called = true
+			state := modelState(t, model)
+			if state == nil {
+				t.Fatal("expected non-nil session.State in TUI model")
+			}
+			if state.Config.Project.Name != "mock-project" {
+				t.Errorf("expected project name 'mock-project', got %q", state.Config.Project.Name)
+			}
+			if state.Config.Commands.Test != "go test ./..." {
+				t.Errorf("expected test command 'go test ./...', got %q", state.Config.Commands.Test)
+			}
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("program runner was not called")
+	}
+}

@@ -22,7 +22,11 @@ func scoutPrompt(ts *TaskState, focus ScoutFocus) string {
 }
 
 func implementerPrompt(ts *TaskState) string {
-	return "You are the swarm implementer. Follow the plan and use the scout findings in the shared task state below. Make the smallest change that accomplishes the goal, then run the narrowest useful validation. When done, respond with a final action summarising exactly what you changed.\n\n" + ts.Render()
+	return "You are the swarm implementer. Follow the plan and use the scout findings in the shared task state below. If the state contains tester feedback about failing tests, your job this round is to fix exactly those failures. Make the smallest change that accomplishes the goal, then run the narrowest useful validation. When done, respond with a final action summarising exactly what you changed.\n\n" + ts.Render()
+}
+
+func testerPrompt(ts *TaskState) string {
+	return "You are the swarm tester. Run the project's tests for the change described in the shared task state below. Do not modify source files; only run tests and inspect output. Diagnose any failures: name the failing test and the minimal fix needed. End your final answer with a line reading exactly \"VERDICT: PASS\" if all relevant tests pass, or \"VERDICT: FAIL\" if any fail.\n\n" + ts.Render()
 }
 
 func reviewerPrompt(ts *TaskState) string {

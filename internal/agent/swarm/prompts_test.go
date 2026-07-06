@@ -45,3 +45,26 @@ func TestDefaultScoutFocusesCoverCodeTestsDocs(t *testing.T) {
 		}
 	}
 }
+
+func TestTesterPromptDemandsVerdict(t *testing.T) {
+	ts := NewTaskState("add a regression test")
+	p := testerPrompt(ts)
+	if !strings.Contains(p, "VERDICT:") {
+		t.Error("tester prompt must instruct the model to emit a VERDICT line")
+	}
+	lower := strings.ToLower(p)
+	if !strings.Contains(lower, "do not") && !strings.Contains(lower, "not modify") {
+		t.Error("tester prompt must forbid modifying source")
+	}
+	if !strings.Contains(p, "Shared task state") {
+		t.Error("tester prompt must embed rendered task state")
+	}
+}
+
+func TestImplementerPromptMentionsTesterFeedback(t *testing.T) {
+	ts := NewTaskState("fix the bug")
+	p := implementerPrompt(ts)
+	if !strings.Contains(strings.ToLower(p), "test") {
+		t.Error("implementer prompt should reference tests / tester feedback")
+	}
+}

@@ -148,11 +148,18 @@ func New(state *session.State, opts ...Option) Model {
 
 	input.FocusedStyle.Base = lipgloss.NewStyle().Background(panelBgColor)
 	input.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(panelBgColor)
-	input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(panelBgColor)
+	input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("247")).Background(panelBgColor)
 	input.BlurredStyle.Base = lipgloss.NewStyle().Background(panelBgColor)
-	input.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	input.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	input.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(panelBgColor)
+	input.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("247")).Background(panelBgColor)
+
+	// Cursor lives on the embedded cursor.Model, not on textarea.Style.
+	// Style paints the visible (reverse) block; TextStyle paints the cell
+	// when the cursor is hidden mid-blink. Both carry panelBg so the block
+	// never leaves a default-bg seam inside the input box.
+	input.Cursor.Style = lipgloss.NewStyle().Foreground(accentColor).Background(panelBgColor)
+	input.Cursor.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(panelBgColor)
 
 	m := Model{
 		state:          state,
@@ -192,8 +199,9 @@ func (m *Model) resize(width, height int) {
 	m.viewport.Width = max(width-4, 1)
 	m.viewport.Height = max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1)
 
-	// Input interior: width minus border (2), padding (2), and prompt (2).
-	m.input.SetWidth(max(width-8, 1))
+	// Input interior: width minus border (2) and padding (2) leaves the
+	// box's inner width (width-4); the "❯ " prompt occupies 2 cells of it.
+	m.input.SetWidth(max(width-6, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -782,6 +790,11 @@ func visibleRunes(s string) int {
 var (
 	panelBorderColor = lipgloss.Color("240")
 	panelBgColor     = lipgloss.Color("235")
+	// statusBarBgColor is one shade lighter than the input panel so the
+	// status strip reads as distinct chrome rather than bleeding into the
+	// input box's background. The input box's accent border sits between
+	// the two, reinforcing the seam.
+	statusBarBgColor = lipgloss.Color("237")
 	accentColor      = lipgloss.Color("38")
 	violetColor      = lipgloss.Color("99")
 	dimColor         = lipgloss.Color("244")
@@ -814,7 +827,7 @@ var (
 	riskLabelStyle = lipgloss.NewStyle().
 			Foreground(warningColor).
 			Bold(true)
-	dimSeparator = mutedStyle.Render(" · ")
+	dimSeparator = " · "
 
 	transcriptFrameStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
@@ -827,8 +840,18 @@ var (
 			Padding(0, 1)
 
 	statusBarStyle = lipgloss.NewStyle().
-			Background(panelBgColor).
+			Background(statusBarBgColor).
 			Foreground(lipgloss.Color("252"))
+
+	// inputFillStyle paints the trailing-pad spaces that
+	// fillRowsToWidth appends to each interior row of the input box so the
+	// dark panelBg reaches both vertical borders with no terminal-bg gap.
+	// It is applied per-pad-space, not as a per-line wrap, which is why it
+	// succeeds where the surrounding box background cannot: the textarea
+	// pads its viewport with raw, unstyled spaces and closes its SGR with
+	// resets just before that pad, so a whole-line background style cannot
+	// re-colour those cells — but styling the explicit pad we append does.
+	inputFillStyle = lipgloss.NewStyle().Background(panelBgColor)
 )
 
 func compactTokenCount(tokens int) string {

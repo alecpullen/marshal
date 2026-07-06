@@ -72,6 +72,10 @@ func (m Model) statusLeftSegments() []string {
 }
 
 var (
+	// These are foreground-only by design. They are used in two contexts
+	// with different backgrounds — the status strip (statusBarBgColor) and
+	// the in-transcript completed-tool line (default viewport bg) — so the
+	// background is supplied by the enclosing style at each render site.
 	statusWarnStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
 	statusErrStyle  = lipgloss.NewStyle().Foreground(errorColor).Bold(true)
 	statusOkStyle   = lipgloss.NewStyle().Foreground(successColor)

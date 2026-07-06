@@ -161,6 +161,15 @@
 - [x] Run-level budgets (max fix rounds, per-role tool caps, token ceiling)
 - [ ] Real provider `usage` token metering (later milestone; ProviderUsageMeter stub in place)
 
+## Milestone P: Plugin and MCP Ecosystem (Phase 6)
+
+- [x] MCP client stdio connection
+- [x] JSON-RPC 2.0 parser & request mapping
+- [x] Dynamic external tool registration
+- [x] Namespaced tools (`mcp.<server>.<tool>`)
+- [x] Config policies (allow, confirm, deny) for MCP tools
+- [x] Lifecycle management in app runner
+
 ## First demo target
 
 The first useful demo should support this flow:

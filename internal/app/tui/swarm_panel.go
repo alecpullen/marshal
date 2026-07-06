@@ -26,7 +26,7 @@ func renderSwarmPanel(p session.SwarmProgress, spinnerFrame string, width int) s
 	if !p.Active {
 		return ""
 	}
-	inner := max(width-4, 1)
+	inner := max(width-2, 1)
 
 	var b strings.Builder
 	b.WriteString(promptPrefixStyle.Render(truncateRunes("Swarm: "+p.Goal, inner)))

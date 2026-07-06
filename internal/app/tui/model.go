@@ -802,13 +802,6 @@ var (
 	warningColor = orangeColor
 	errorColor   = lipgloss.Color("203")
 
-	// Legacy background vars: retained (unused after later tasks) so the
-	// package keeps compiling during the incremental refactor. Removed in the
-	// cleanup task once nothing references them.
-	panelBorderColor = lipgloss.Color("240")
-	panelBgColor     = lipgloss.Color("235")
-	statusBarBgColor = lipgloss.Color("237")
-
 	mutedStyle      = lipgloss.NewStyle().Foreground(dimColor)
 	panelTitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("255")).
@@ -834,10 +827,6 @@ var (
 			Bold(true)
 	dimSeparator = " · "
 
-	transcriptFrameStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(panelBorderColor)
-
 	inputBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(coralColor).
@@ -845,8 +834,6 @@ var (
 
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252"))
-
-	inputFillStyle = lipgloss.NewStyle()
 )
 
 func compactTokenCount(tokens int) string {

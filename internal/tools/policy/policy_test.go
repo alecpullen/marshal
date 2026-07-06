@@ -173,3 +173,35 @@ func TestPolicyEngine_ConcurrentSetSessionRulesAndEvaluate(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestMCPToolSafetyPolicies(t *testing.T) {
+	cfg := config.Default()
+	cfg.MCP.Policies = map[string]string{
+		"mcp.github.list_issues":   "allow",
+		"mcp.github.create_issue":  "confirm",
+		"mcp.github.delete_branch": "deny",
+	}
+
+	pe := NewEngine(&cfg, nil)
+
+	dec, _, _ := pe.Evaluate("mcp.github.list_issues", nil)
+	if dec != DecisionAllow {
+		t.Errorf("list_issues decision = %s, want allow", dec)
+	}
+
+	dec, _, _ = pe.Evaluate("mcp.github.create_issue", nil)
+	if dec != DecisionConfirm {
+		t.Errorf("create_issue decision = %s, want confirm", dec)
+	}
+
+	dec, _, _ = pe.Evaluate("mcp.github.delete_branch", nil)
+	if dec != DecisionDeny {
+		t.Errorf("delete_branch decision = %s, want deny", dec)
+	}
+
+	// Default confirm fallback for unconfigured MCP tools
+	dec, _, _ = pe.Evaluate("mcp.github.unconfigured_tool", nil)
+	if dec != DecisionConfirm {
+		t.Errorf("unconfigured decision = %s, want confirm", dec)
+	}
+}

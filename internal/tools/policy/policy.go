@@ -39,6 +39,23 @@ func (pe *PolicyEngine) SetSessionRules(rules []string) {
 }
 
 func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {
+	if strings.HasPrefix(toolName, "mcp.") {
+		if pe.config != nil && pe.config.MCP.Policies != nil {
+			if policyStr, ok := pe.config.MCP.Policies[toolName]; ok {
+				switch Decision(policyStr) {
+				case DecisionAllow:
+					return DecisionAllow, "allowed by MCP policy config", nil
+				case DecisionConfirm:
+					return DecisionConfirm, "requires approval by MCP policy config", nil
+				case DecisionDeny:
+					return DecisionDeny, "blocked by MCP policy config", nil
+				}
+			}
+		}
+		// Default confirm fallback for write-like MCP tools
+		return DecisionConfirm, "requires approval (unconfigured MCP tool secure default)", nil
+	}
+
 	if toolName != "shell.run" && toolName != "test.run" {
 		return DecisionAllow, "low-risk read tool", nil
 	}

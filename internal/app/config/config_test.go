@@ -563,3 +563,23 @@ env = { KEY = "VALUE" }
 		t.Errorf("policy list_issues = %q, want allow", cfg.MCP.Policies["mcp.github.list_issues"])
 	}
 }
+
+func TestHasConfig(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+
+	if HasConfig(LoadOptions{HomeDir: home, WorkingDir: work}) {
+		t.Error("expected HasConfig to return false when no config exists")
+	}
+
+	if err := os.MkdirAll(work+"/.marshal", 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(work+"/.marshal/config.toml", []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !HasConfig(LoadOptions{HomeDir: home, WorkingDir: work}) {
+		t.Error("expected HasConfig to return true when project config exists")
+	}
+}

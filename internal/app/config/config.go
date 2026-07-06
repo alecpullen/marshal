@@ -572,3 +572,33 @@ func merge(cfg *Config, file configFile) {
 		}
 	}
 }
+
+func HasConfig(opts LoadOptions) bool {
+	home := opts.HomeDir
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+	}
+
+	work := opts.WorkingDir
+	if work == "" {
+		var err error
+		work, err = os.Getwd()
+		if err != nil {
+			return false
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(home, ".config", "marshal", "config.toml"),
+		filepath.Join(work, ".marshal", "config.toml"),
+	} {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
+}

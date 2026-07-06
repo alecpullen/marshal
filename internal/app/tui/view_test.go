@@ -30,7 +30,7 @@ func TestViewIsSingleColumn(t *testing.T) {
 			t.Fatalf("view still contains removed chrome %q", gone)
 		}
 	}
-	if !strings.Contains(view, "›") {
+	if !strings.Contains(view, "❯") {
 		t.Fatal("view missing input prompt / transcript")
 	}
 }

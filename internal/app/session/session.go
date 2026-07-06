@@ -114,6 +114,7 @@ type PendingToolCall struct {
 	Risk         string
 	Reason       string
 	Diff         string // Added field for patch rendering
+	Schema       string // Details / schema / description of the tool
 	ResponseChan chan UserApprovalDecision
 }
 

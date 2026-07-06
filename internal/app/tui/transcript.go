@@ -508,9 +508,21 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("⚠ Approval needed"))
 	b.WriteString("\n")
-	b.WriteString(muted.Render("Agent wants to run:"))
-	b.WriteString("\n")
-	b.WriteString(text.Render(truncateRunes(tc.Command, innerWidth)))
+
+	if tc.Name == "shell.run" {
+		b.WriteString(muted.Render("Agent wants to run:"))
+		b.WriteString("\n")
+		b.WriteString(text.Render(truncateRunes(tc.Command, innerWidth)))
+	} else {
+		b.WriteString(muted.Render("Agent wants to call tool: ") + text.Render(tc.Name))
+		b.WriteString("\n")
+		if tc.Schema != "" {
+			b.WriteString(muted.Render("Description: ") + text.Render(truncateRunes(tc.Schema, innerWidth)))
+			b.WriteString("\n")
+		}
+		b.WriteString(muted.Render("Arguments: "))
+		b.WriteString(text.Render(truncateRunes(tc.Args, innerWidth)))
+	}
 	b.WriteString("\n\n")
 	b.WriteString(muted.Render("Risk: "))
 	b.WriteString(text.Render(truncateRunes(riskText(tc), innerWidth)))

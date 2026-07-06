@@ -529,10 +529,18 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 		approval = registry.ApprovalApproved
 		if edited != "" {
-			argsMap["command"] = edited
-			if remarshalled, merr := json.Marshal(argsMap); merr == nil {
-				args = remarshalled
-				normalizedArgs, _ = normalizeArgs(args)
+			if toolName == "shell.run" {
+				argsMap["command"] = edited
+				if remarshalled, merr := json.Marshal(argsMap); merr == nil {
+					args = remarshalled
+					normalizedArgs, _ = normalizeArgs(args)
+				}
+			} else {
+				if json.Valid([]byte(edited)) {
+					args = json.RawMessage(edited)
+					normalizedArgs, _ = normalizeArgs(args)
+					_ = json.Unmarshal(args, &argsMap)
+				}
 			}
 		}
 	case policy.DecisionAllow:
@@ -661,6 +669,7 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		Risk:         string(tool.Risk),
 		Reason:       reason,
 		Diff:         diff,
+		Schema:       tool.Description,
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	r.State.SetPendingApproval(tc)

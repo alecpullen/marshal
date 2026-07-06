@@ -44,14 +44,13 @@ func TestViewContainsStatusLine(t *testing.T) {
 	}
 }
 
-func TestTranscriptHasSubtleFrame(t *testing.T) {
+func TestTranscriptIsBorderless(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m.refreshViewport()
-
-	view := m.View()
-	if !strings.Contains(view, "╭") || !strings.Contains(view, "╰") {
-		t.Fatalf("view missing transcript frame:\n%s", view)
+	transcript := m.renderTranscriptFrame()
+	if strings.Contains(transcript, "╭") || strings.Contains(transcript, "╰") {
+		t.Fatalf("transcript should have no rounded border:\n%s", transcript)
 	}
 }
 
@@ -124,8 +123,8 @@ func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
 
 func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	if m.viewport.Width != 96 {
-		t.Fatalf("viewport.Width = %d, want 96 (width-4 for transcript frame)", m.viewport.Width)
+	if m.viewport.Width != 98 {
+		t.Fatalf("viewport.Width = %d, want 98 (width-2, borderless transcript)", m.viewport.Width)
 	}
 	wantHeight := 30 - transcriptFrameRows - m.inputAreaRows() - statusLineRows
 	if m.viewport.Height != wantHeight {

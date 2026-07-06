@@ -21,7 +21,7 @@ const (
 	inputBorderRows       = 2
 	activityStripRows     = 1
 	commandSuggestionRows = 1
-	transcriptFrameRows   = 2
+	transcriptFrameRows   = 0
 	statusLineRows        = 1
 )
 
@@ -45,7 +45,7 @@ func (m Model) View() string {
 }
 
 func (m Model) renderTranscriptFrame() string {
-	return transcriptFrameStyle.
+	return lipgloss.NewStyle().
 		Width(max(m.width-2, 1)).
 		Height(max(m.viewport.Height, 1)).
 		Render(m.viewport.View())

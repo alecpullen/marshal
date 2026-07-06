@@ -11,11 +11,20 @@ import (
 	"marshal/internal/app/session"
 )
 
-// RunnerFactory builds a role-specific agent.Runner. readOnly selects the
-// read-only registry view. Implementations must return a fresh Runner per
-// call: Runner tracks per-turn state (call history, loop nudge), so
-// instances cannot be shared between concurrent scouts.
-type RunnerFactory func(role agent.AgentRole, readOnly bool) (*agent.Runner, error)
+// RegistryScope selects which tool registry view a role's runner receives.
+type RegistryScope int
+
+const (
+	ScopeFull     RegistryScope = iota // implementer: full registry (sole writer)
+	ScopeReadOnly                      // planner, scouts, reviewer
+	ScopeTester                        // tester: read-only plus command execution
+)
+
+// RunnerFactory builds a role-specific agent.Runner. Implementations must
+// return a fresh Runner per call: Runner tracks per-turn state (call
+// history, loop nudge), so instances cannot be shared between concurrent
+// scouts.
+type RunnerFactory func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error)
 
 // Orchestrator drives the Milestone O sequential swarm
 // (docs/07, "First swarm milestone"):
@@ -44,7 +53,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 
 	// 1. Planner (read-only): produces the shared plan.
 	o.announce("Swarm: planner")
-	plannerTask, err := o.runRole(ctx, agent.RolePlanner, true, plannerPrompt(ts))
+	plannerTask, err := o.runRole(ctx, agent.RolePlanner, ScopeReadOnly, plannerPrompt(ts))
 	if err != nil {
 		o.announce("Swarm aborted: planner failed.")
 		return err
@@ -61,7 +70,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 	}
 	jobs := make([]scoutJob, 0, len(focuses))
 	for _, focus := range focuses {
-		runner, err := o.NewRunner(agent.RoleRepoScout, true)
+		runner, err := o.NewRunner(agent.RoleRepoScout, ScopeReadOnly)
 		if err != nil {
 			o.announce("Swarm aborted: could not build repo scout.")
 			return err
@@ -89,7 +98,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 	// 3. Implementer: the only writer. Its runner holds the full registry
 	// and the shared WriteGate (set by the factory).
 	o.announce("Swarm: implementer")
-	implTask, err := o.runRole(ctx, agent.RoleImplementer, false, implementerPrompt(ts))
+	implTask, err := o.runRole(ctx, agent.RoleImplementer, ScopeFull, implementerPrompt(ts))
 	if err != nil {
 		o.announce("Swarm aborted: implementer failed.")
 		return err
@@ -99,7 +108,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 	// 4. Reviewer (read-only). A reviewer failure is reported, not fatal:
 	// the implementer's work is already in the working tree.
 	o.announce("Swarm: reviewer")
-	reviewTask, err := o.runRole(ctx, agent.RoleReviewer, true, reviewerPrompt(ts))
+	reviewTask, err := o.runRole(ctx, agent.RoleReviewer, ScopeReadOnly, reviewerPrompt(ts))
 	if err != nil {
 		ts.SetFinalSummary("Reviewer failed: " + err.Error())
 	} else {
@@ -110,8 +119,8 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 	return nil
 }
 
-func (o *Orchestrator) runRole(ctx context.Context, role agent.AgentRole, readOnly bool, prompt string) (*agent.Task, error) {
-	runner, err := o.NewRunner(role, readOnly)
+func (o *Orchestrator) runRole(ctx context.Context, role agent.AgentRole, scope RegistryScope, prompt string) (*agent.Task, error) {
+	runner, err := o.NewRunner(role, scope)
 	if err != nil {
 		return nil, err
 	}

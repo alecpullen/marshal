@@ -21,6 +21,7 @@ type Config struct {
 	AgentProfiles map[string]routing.AgentProfile       `toml:"agent_profiles"`
 	Agents        map[routing.AgentRole]AgentRoleConfig `toml:"agents"`
 	Tools         ToolsConfig                           `toml:"tools"`
+	Swarm         SwarmConfig                           `toml:"swarm"`
 }
 
 type ModelsConfig struct {
@@ -55,6 +56,17 @@ type contextBudgetConfig struct {
 
 type ToolsConfig struct {
 	Shell ShellToolConfig `toml:"shell"`
+}
+
+// SwarmConfig holds run-level swarm settings.
+type SwarmConfig struct {
+	Budget SwarmBudgetConfig `toml:"budget"`
+}
+
+type SwarmBudgetConfig struct {
+	MaxFixRounds   int            `toml:"max_fix_rounds"`
+	MaxTotalTokens int            `toml:"max_total_tokens"`
+	ToolIters      map[string]int `toml:"tool_iters"`
 }
 
 type ShellToolConfig struct {
@@ -174,6 +186,13 @@ type configFile struct {
 			Deny                  *PatternRules `toml:"deny"`
 		} `toml:"shell"`
 	} `toml:"tools"`
+	Swarm *struct {
+		Budget *struct {
+			MaxFixRounds   *int           `toml:"max_fix_rounds"`
+			MaxTotalTokens *int           `toml:"max_total_tokens"`
+			ToolIters      map[string]int `toml:"tool_iters"`
+		} `toml:"budget"`
+	} `toml:"swarm"`
 	// Providers, unlike the other configFile fields above, is not a
 	// pointer-to-anonymous-struct: a nil map already distinguishes
 	// "providers section absent from this file" from "present", so no
@@ -241,6 +260,13 @@ func Default() Config {
 				Allow:                 CommandRules{Commands: []string{"go test", "git status", "git diff"}},
 				Confirm:               CommandRules{Commands: []string{"go get", "npm install"}},
 				Deny:                  PatternRules{Patterns: []string{"rm -rf", "sudo", "curl * | sh"}},
+			},
+		},
+		Swarm: SwarmConfig{
+			Budget: SwarmBudgetConfig{
+				MaxFixRounds:   3,
+				MaxTotalTokens: 120000,
+				ToolIters:      map[string]int{},
 			},
 		},
 		// Providers is intentionally left nil: Marshal is local-first with no
@@ -485,6 +511,21 @@ func merge(cfg *Config, file configFile) {
 		}
 		if s.Deny != nil && s.Deny.Patterns != nil {
 			cfg.Tools.Shell.Deny.Patterns = s.Deny.Patterns
+		}
+	}
+	if file.Swarm != nil && file.Swarm.Budget != nil {
+		b := file.Swarm.Budget
+		if b.MaxFixRounds != nil {
+			cfg.Swarm.Budget.MaxFixRounds = *b.MaxFixRounds
+		}
+		if b.MaxTotalTokens != nil {
+			cfg.Swarm.Budget.MaxTotalTokens = *b.MaxTotalTokens
+		}
+		for role, iters := range b.ToolIters {
+			if cfg.Swarm.Budget.ToolIters == nil {
+				cfg.Swarm.Budget.ToolIters = map[string]int{}
+			}
+			cfg.Swarm.Budget.ToolIters[role] = iters
 		}
 	}
 }

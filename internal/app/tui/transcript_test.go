@@ -25,8 +25,8 @@ func forceColor(t *testing.T) {
 
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}, 80)
-	if !strings.Contains(out, "❯") || !strings.Contains(out, "fix the tests") {
-		t.Fatalf("user message missing ❯ prefix:\n%s", out)
+	if !strings.Contains(out, "›") || !strings.Contains(out, "fix the tests") {
+		t.Fatalf("user message missing › prefix:\n%s", out)
 	}
 	if strings.Contains(strings.ToLower(out), "user") {
 		t.Fatalf("user message must not contain a role label:\n%s", out)
@@ -152,8 +152,8 @@ func TestRenderActiveToolCallIsBorderless(t *testing.T) {
 
 func TestRenderProviderErrorInline(t *testing.T) {
 	out := renderProviderError(errors.New("connection refused"), 80)
-	if !strings.Contains(out, "✗ provider: connection refused") {
-		t.Fatalf("provider error missing ✗ line:\n%s", out)
+	if !strings.Contains(out, "✘ provider: connection refused") {
+		t.Fatalf("provider error missing ✘ line:\n%s", out)
 	}
 }
 
@@ -245,5 +245,32 @@ func TestWelcomeBannerHasCoralDotAndName(t *testing.T) {
 	// coral 209 must appear as the foreground SGR for the dot/name.
 	if !strings.Contains(out, "209") {
 		t.Fatalf("banner not styled with coral (209): %q", out)
+	}
+}
+
+func TestUserMessageUsesChevronPrefix(t *testing.T) {
+	out := stripANSI(renderUserMessage("hi there", 40))
+	if !strings.HasPrefix(strings.TrimLeft(out, " "), "› ") && !strings.Contains(out, "› ") {
+		t.Fatalf("user message should use '›' prefix: %q", out)
+	}
+}
+
+func TestCompletedToolCallUsesCheckAndCross(t *testing.T) {
+	ok := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "read"}, 40))
+	if !strings.Contains(ok, "✔") {
+		t.Fatalf("successful tool call should show ✔: %q", ok)
+	}
+	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "shell", Error: "boom"}, 40))
+	if !strings.Contains(bad, "✘") {
+		t.Fatalf("failed tool call should show ✘: %q", bad)
+	}
+}
+
+func TestApprovalPanelHasNoBackgroundFill(t *testing.T) {
+	forceColor(t)
+	tc := &session.PendingToolCall{Name: "shell.run", Command: "ls", Risk: "reads files"}
+	out := renderApprovalPanel(tc, 50)
+	if strings.Contains(out, ";235m") || strings.Contains(out, "48;5;235") {
+		t.Fatalf("approval panel still emits panel background fill:\n%q", out)
 	}
 }

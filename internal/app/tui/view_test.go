@@ -30,7 +30,7 @@ func TestViewIsSingleColumn(t *testing.T) {
 			t.Fatalf("view still contains removed chrome %q", gone)
 		}
 	}
-	if !strings.Contains(view, "❯") {
+	if !strings.Contains(view, "›") {
 		t.Fatal("view missing input prompt / transcript")
 	}
 }
@@ -113,7 +113,7 @@ func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
 	m.refreshViewport()
 	view := m.View()
 
-	if !strings.Contains(view, "✗ provider: connection refused") {
+	if !strings.Contains(view, "✘ provider: connection refused") {
 		t.Fatalf("provider error not rendered inline:\n%s", view)
 	}
 	if !strings.Contains(view, "hello") {

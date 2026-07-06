@@ -6,14 +6,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
+// forceColor makes lipgloss emit ANSI256 SGR codes for the duration of the
+// test so color-code assertions are meaningful, then restores the prior
+// profile. Requires the test not run in parallel (none in this package do).
+func forceColor(t *testing.T) {
+	t.Helper()
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+}
+
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}, 80)
-	if !strings.Contains(out, "❯") || !strings.Contains(out, "fix the tests") {
-		t.Fatalf("user message missing ❯ prefix:\n%s", out)
+	if !strings.Contains(out, "›") || !strings.Contains(out, "fix the tests") {
+		t.Fatalf("user message missing › prefix:\n%s", out)
 	}
 	if strings.Contains(strings.ToLower(out), "user") {
 		t.Fatalf("user message must not contain a role label:\n%s", out)
@@ -139,8 +152,8 @@ func TestRenderActiveToolCallIsBorderless(t *testing.T) {
 
 func TestRenderProviderErrorInline(t *testing.T) {
 	out := renderProviderError(errors.New("connection refused"), 80)
-	if !strings.Contains(out, "✗ provider: connection refused") {
-		t.Fatalf("provider error missing ✗ line:\n%s", out)
+	if !strings.Contains(out, "✘ provider: connection refused") {
+		t.Fatalf("provider error missing ✘ line:\n%s", out)
 	}
 }
 
@@ -216,5 +229,48 @@ func TestTranscriptLinesFitWidth(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestWelcomeBannerHasCoralDotAndName(t *testing.T) {
+	forceColor(t)
+	out := renderWelcomeBanner(80)
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "● marshal") {
+		t.Fatalf("banner missing '● marshal' icon+name: %q", plain)
+	}
+	if !strings.Contains(plain, "local-first coding agent") {
+		t.Fatalf("banner missing tagline: %q", plain)
+	}
+	// coral 209 must appear as the foreground SGR for the dot/name.
+	if !strings.Contains(out, "209") {
+		t.Fatalf("banner not styled with coral (209): %q", out)
+	}
+}
+
+func TestUserMessageUsesChevronPrefix(t *testing.T) {
+	out := strings.TrimLeft(stripANSI(renderUserMessage("hi there", 40)), " ")
+	if !strings.HasPrefix(out, "› ") {
+		t.Fatalf("user message should start with '› ' prefix: %q", out)
+	}
+}
+
+func TestCompletedToolCallUsesCheckAndCross(t *testing.T) {
+	ok := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "read"}, 40))
+	if !strings.Contains(ok, "✔") {
+		t.Fatalf("successful tool call should show ✔: %q", ok)
+	}
+	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "shell", Error: "boom"}, 40))
+	if !strings.Contains(bad, "✘") {
+		t.Fatalf("failed tool call should show ✘: %q", bad)
+	}
+}
+
+func TestApprovalPanelHasNoBackgroundFill(t *testing.T) {
+	forceColor(t)
+	tc := &session.PendingToolCall{Name: "shell.run", Command: "ls", Risk: "reads files"}
+	out := renderApprovalPanel(tc, 50)
+	if strings.Contains(out, ";235m") || strings.Contains(out, "48;5;235") {
+		t.Fatalf("approval panel still emits panel background fill:\n%q", out)
 	}
 }

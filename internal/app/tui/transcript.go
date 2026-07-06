@@ -243,10 +243,11 @@ var promptPrefixStyle = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
 func renderUserMessage(content string, width int) string {
 	contentWidth := max(width-2, 1)
 	wrapped := ansi.Wrap(content, contentWidth, "")
+	userPrefix := lipgloss.NewStyle().Foreground(userColor).Bold(true).Render("› ")
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {
-			b.WriteString(promptPrefixStyle.Render("❯ "))
+			b.WriteString(userPrefix)
 		} else {
 			b.WriteString("  ")
 		}
@@ -331,7 +332,7 @@ func renderSystemNotice(content string, width int) string {
 	return b.String()
 }
 
-var toolBulletStyle = lipgloss.NewStyle().Foreground(warningColor)
+var toolBulletStyle = lipgloss.NewStyle().Foreground(goldColor)
 
 func renderToolResultLine(content string, width int) string {
 	lines := strings.Split(content, "\n")
@@ -413,7 +414,7 @@ var providerErrorStyle = lipgloss.NewStyle().Foreground(errorColor).Bold(true)
 
 func renderProviderError(err error, width int) string {
 	contentWidth := max(width-2, 1)
-	wrapped := ansi.Wrap("✗ provider: "+err.Error(), contentWidth, "")
+	wrapped := ansi.Wrap("✘ provider: "+err.Error(), contentWidth, "")
 	var b strings.Builder
 	for _, line := range strings.Split(wrapped, "\n") {
 		b.WriteString(providerErrorStyle.Render(line))
@@ -446,13 +447,15 @@ func renderActiveToolCall(atc session.ActiveToolCall, spinnerFrame string, now t
 }
 
 func renderCompletedToolCall(event registry.AuditEvent, width int) string {
-	state := "done"
+	glyph := "✔"
 	style := statusOkStyle
+	state := "done"
 	if event.Error != "" {
-		state = "failed"
+		glyph = "✘"
 		style = statusErrStyle
+		state = "failed"
 	}
-	head := fmt.Sprintf("✓ %s %s", event.ToolName, state)
+	head := fmt.Sprintf("%s %s %s", glyph, event.ToolName, state)
 	var b strings.Builder
 	b.WriteString(style.Render(truncateRunes(head, max(width-2, 1))))
 	b.WriteString("\n")
@@ -495,10 +498,10 @@ func riskText(tc *session.PendingToolCall) string {
 func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 	innerWidth := max(width-2, 1)
 
-	titleStyle := panelTitleStyle.Copy().Background(panelBgColor).Foreground(warningColor)
-	muted := mutedStyle.Copy().Background(panelBgColor)
-	text := lipgloss.NewStyle().Background(panelBgColor)
-	key := keyHintStyle.Copy().Background(panelBgColor)
+	titleStyle := panelTitleStyle.Copy().Foreground(warningColor)
+	muted := mutedStyle
+	text := lipgloss.NewStyle()
+	key := keyHintStyle
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("⚠ Approval needed"))
@@ -509,7 +512,7 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 		b.WriteString("\n")
 		b.WriteString(text.Render(truncateRunes(tc.Command, innerWidth)))
 	} else {
-		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle.Copy().Background(panelBgColor).Render(tc.Name))
+		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle.Render(tc.Name))
 		b.WriteString("\n")
 		if tc.Schema != "" {
 			b.WriteString(muted.Render("Description: ") + text.Render(truncateRunes(tc.Schema, innerWidth)))
@@ -519,7 +522,7 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 		b.WriteString(text.Render(truncateRunes(tc.Args, innerWidth)))
 	}
 	b.WriteString("\n\n")
-	b.WriteString(riskLabelStyle.Copy().Background(panelBgColor).Render("Risk: "))
+	b.WriteString(riskLabelStyle.Render("Risk: "))
 	b.WriteString(text.Render(truncateRunes(riskText(tc), innerWidth)))
 	b.WriteString("\n\n")
 	helpLine := key.Render("Enter") + muted.Render(" approve ") + key.Render("d") + muted.Render(" deny ") + key.Render("e") + muted.Render(" edit ") + key.Render("a") + muted.Render(" always")
@@ -528,8 +531,8 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 }
 
 func renderWelcomeBanner(width int) string {
-	title := toolNameStyle.Copy().Bold(true).Render("marshal")
-	sep := dimSeparator
+	dot := lipgloss.NewStyle().Foreground(coralColor).Render("●")
+	title := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")
 	desc := mutedStyle.Render("local-first coding agent")
-	return "  " + title + sep + desc + "\n\n"
+	return "  " + dot + " " + title + dimSeparator + desc + "\n\n"
 }

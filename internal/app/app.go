@@ -29,10 +29,10 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
+	"marshal/internal/tools/mcp"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
-	"marshal/internal/tools/mcp"
 )
 
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error

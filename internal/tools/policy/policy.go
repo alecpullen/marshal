@@ -2,6 +2,7 @@ package policy
 
 import (
 	"marshal/internal/app/config"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -41,14 +42,29 @@ func (pe *PolicyEngine) SetSessionRules(rules []string) {
 func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {
 	if strings.HasPrefix(toolName, "mcp.") {
 		if pe.config != nil && pe.config.MCP.Policies != nil {
+			// 1. Exact Match (highest priority)
 			if policyStr, ok := pe.config.MCP.Policies[toolName]; ok {
 				switch Decision(policyStr) {
 				case DecisionAllow:
-					return DecisionAllow, "allowed by MCP policy config", nil
+					return DecisionAllow, "allowed by MCP policy config exact match", nil
 				case DecisionConfirm:
-					return DecisionConfirm, "requires approval by MCP policy config", nil
+					return DecisionConfirm, "requires approval by MCP policy config exact match", nil
 				case DecisionDeny:
-					return DecisionDeny, "blocked by MCP policy config", nil
+					return DecisionDeny, "blocked by MCP policy config exact match", nil
+				}
+			}
+
+			// 2. Pattern Match (prefix, wildcard, regex)
+			for pattern, policyStr := range pe.config.MCP.Policies {
+				if matchMCPPolicy(pattern, toolName) {
+					switch Decision(policyStr) {
+					case DecisionAllow:
+						return DecisionAllow, "allowed by MCP policy match: " + pattern, nil
+					case DecisionConfirm:
+						return DecisionConfirm, "requires approval by MCP policy match: " + pattern, nil
+					case DecisionDeny:
+						return DecisionDeny, "blocked by MCP policy match: " + pattern, nil
+					}
 				}
 			}
 		}
@@ -169,6 +185,13 @@ func normalizeCommand(s string) string {
 }
 
 func matchRule(command, prefix string) bool {
+	if strings.HasPrefix(prefix, "/") && strings.HasSuffix(prefix, "/") && len(prefix) > 2 {
+		reStr := prefix[1 : len(prefix)-1]
+		re, err := regexp.Compile(reStr)
+		if err == nil {
+			return re.MatchString(command)
+		}
+	}
 	command = normalizeCommand(command)
 	prefix = normalizeCommand(prefix)
 	if command == prefix {
@@ -178,6 +201,13 @@ func matchRule(command, prefix string) bool {
 }
 
 func matchPattern(pattern, command string) bool {
+	if strings.HasPrefix(pattern, "/") && strings.HasSuffix(pattern, "/") && len(pattern) > 2 {
+		reStr := pattern[1 : len(pattern)-1]
+		re, err := regexp.Compile(reStr)
+		if err == nil {
+			return re.MatchString(command)
+		}
+	}
 	command = normalizeCommand(command)
 	pattern = normalizeCommand(pattern)
 	if !strings.Contains(pattern, "*") {
@@ -204,4 +234,43 @@ func matchPattern(pattern, command string) bool {
 		idx += found + len(part)
 	}
 	return true
+}
+
+func matchMCPPolicy(pattern, toolName string) bool {
+	if strings.HasPrefix(pattern, "/") && strings.HasSuffix(pattern, "/") && len(pattern) > 2 {
+		reStr := pattern[1 : len(pattern)-1]
+		re, err := regexp.Compile(reStr)
+		if err == nil {
+			return re.MatchString(toolName)
+		}
+	}
+
+	if strings.Contains(pattern, "*") {
+		parts := strings.Split(pattern, "*")
+		if parts[0] != "" && !strings.HasPrefix(toolName, parts[0]) {
+			return false
+		}
+		if parts[len(parts)-1] != "" && !strings.HasSuffix(toolName, parts[len(parts)-1]) {
+			return false
+		}
+
+		idx := 0
+		for _, part := range parts {
+			if part == "" {
+				continue
+			}
+			found := strings.Index(toolName[idx:], part)
+			if found == -1 {
+				return false
+			}
+			idx += found + len(part)
+		}
+		return true
+	}
+
+	if strings.HasPrefix(toolName, pattern+".") || toolName == pattern {
+		return true
+	}
+
+	return false
 }

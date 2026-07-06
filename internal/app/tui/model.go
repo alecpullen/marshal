@@ -192,7 +192,7 @@ func (m *Model) resize(width, height int) {
 	m.height = height
 
 	// Transcript viewport lives inside a subtle border frame.
-	m.viewport.Width = max(width-4, 1)
+	m.viewport.Width = max(width-2, 1)
 	m.viewport.Height = max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1)
 
 	// Input interior: width minus border (2) and padding (2) leaves the

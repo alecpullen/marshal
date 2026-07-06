@@ -1,7 +1,7 @@
 | # | Task | Status | Component |
 |---|------|--------|-----------|
-| 1 | Add Schema field to PendingToolCall in session.go | [x] | Session |
-| 2 | Populate Schema and handle JSON editing in runner.go | [x] | Runner |
-| 3 | Support JSON args editing in TUI model.go | [x] | TUI |
-| 4 | Display Description and JSON arguments in TUI transcript.go | [x] | TUI |
-| 5 | Add tests and verify execution | [x] | Verification |
+| 1 | Centralize styles in model.go | [ ] | Styles |
+| 2 | Polish transcript.go rendering | [ ] | Transcript |
+| 3 | Polish status.go separators | [ ] | Status |
+| 4 | Clean up swarm_panel.go | [ ] | Swarm |
+| 5 | Fix test assertions and verify | [ ] | Verification |

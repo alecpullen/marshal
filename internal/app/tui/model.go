@@ -190,7 +190,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport lives inside a subtle border frame.
 	m.viewport.Width = max(width-4, 1)
-	m.viewport.Height = max(height-transcriptFrameRows-m.inputAreaRows()-statusLineRows, 1)
+	m.viewport.Height = max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1)
 
 	// Input interior: width minus border (2), padding (2), and prompt (2).
 	m.input.SetWidth(max(width-8, 1))
@@ -217,6 +217,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastActivityDone = m.now()
 			m.lastActivityKind = session.ActivityIdle
 		}
+		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
 	case agentTickMsg:
@@ -232,6 +233,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if act.Kind != session.ActivityIdle && act.Label != "" {
 			m.lastActivityLabel = act.Label
 		}
+		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, tickCmd()
 	case settings.SavedMsg:
@@ -443,9 +445,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.updateCommandSuggestions()
 
 	// Recalculate viewport if input area height changed
-	newViewportHeight := max(m.height-transcriptFrameRows-m.inputAreaRows()-statusLineRows, 1)
-	if newViewportHeight != m.viewport.Height {
-		m.viewport.Height = newViewportHeight
+	if m.updateViewportHeight() {
 		m.lastTranscriptHash = 0
 		m.refreshViewport()
 	}
@@ -468,6 +468,22 @@ func (m Model) inputAreaRows() int {
 		rows += commandSuggestionRows
 	}
 	return rows
+}
+
+func (m Model) swarmPanelRows() int {
+	if m.state.SwarmProgress().Active {
+		return swarmPanelRows
+	}
+	return 0
+}
+
+func (m *Model) updateViewportHeight() bool {
+	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1)
+	if newViewportHeight == m.viewport.Height {
+		return false
+	}
+	m.viewport.Height = newViewportHeight
+	return true
 }
 
 func (m *Model) updateCommandSuggestions() {

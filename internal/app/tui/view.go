@@ -28,13 +28,12 @@ func (m Model) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
 	}
 
-	transcript := m.renderTranscriptFrame()
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		transcript,
-		m.renderInputArea(),
-		m.renderStatusLine(m.width),
-	)
+	rows := []string{m.renderTranscriptFrame()}
+	if panel := renderSwarmPanel(m.state.SwarmProgress(), m.spinnerFrame, m.width); panel != "" {
+		rows = append(rows, panel)
+	}
+	rows = append(rows, m.renderInputArea(), m.renderStatusLine(m.width))
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 func (m Model) renderTranscriptFrame() string {

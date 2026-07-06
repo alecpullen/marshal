@@ -323,6 +323,50 @@ func TestDefaultAgentLimitsAreZero(t *testing.T) {
 	}
 }
 
+func TestSwarmBudgetDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Swarm.Budget.MaxFixRounds != 3 {
+		t.Errorf("MaxFixRounds default = %d, want 3", cfg.Swarm.Budget.MaxFixRounds)
+	}
+	if cfg.Swarm.Budget.MaxTotalTokens != 120000 {
+		t.Errorf("MaxTotalTokens default = %d, want 120000", cfg.Swarm.Budget.MaxTotalTokens)
+	}
+	if cfg.Swarm.Budget.ToolIters == nil {
+		t.Fatal("ToolIters default should be an empty map, got nil")
+	}
+}
+
+func TestSwarmBudgetMergesFromFile(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[swarm.budget]
+max_fix_rounds = 5
+max_total_tokens = 90000
+
+[swarm.budget.tool_iters]
+implementer = 25
+tester = 4
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Swarm.Budget.MaxFixRounds != 5 {
+		t.Errorf("MaxFixRounds = %d, want 5", cfg.Swarm.Budget.MaxFixRounds)
+	}
+	if cfg.Swarm.Budget.MaxTotalTokens != 90000 {
+		t.Errorf("MaxTotalTokens = %d, want 90000", cfg.Swarm.Budget.MaxTotalTokens)
+	}
+	if cfg.Swarm.Budget.ToolIters["implementer"] != 25 {
+		t.Errorf("ToolIters[implementer] = %d, want 25", cfg.Swarm.Budget.ToolIters["implementer"])
+	}
+	if cfg.Swarm.Budget.ToolIters["tester"] != 4 {
+		t.Errorf("ToolIters[tester] = %d, want 4", cfg.Swarm.Budget.ToolIters["tester"])
+	}
+}
+
 func writeFile(t *testing.T, path string, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

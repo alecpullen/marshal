@@ -259,15 +259,28 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		if route.Preset.ToolCalling == "json" && p.Capabilities(ctx).JSONMode {
 			r.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
 		}
-		if cfg.Agent.MaxToolIterations > 0 {
-			r.MaxToolIterations = cfg.Agent.MaxToolIterations
+		if cap := roleToolIterations(cfg, role); cap > 0 {
+			r.MaxToolIterations = cap
 		}
 		if cfg.Agent.MaxRetries > 0 {
 			r.MaxRetries = cfg.Agent.MaxRetries
 		}
 		return r, nil
 	}
-	return swarm.New(state, factory)
+	o := swarm.New(state, factory)
+	o.MaxFixRounds = cfg.Swarm.Budget.MaxFixRounds
+	o.MaxTotalTokens = cfg.Swarm.Budget.MaxTotalTokens
+	o.NewMeter = func() swarm.TokenMeter { return swarm.NewEstimateMeter() }
+	return o
+}
+
+// roleToolIterations returns the per-role tool-iteration cap, falling back
+// to the agent-wide cap when no role-specific value is configured.
+func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
+	if n, ok := cfg.Swarm.Budget.ToolIters[string(role)]; ok && n > 0 {
+		return n
+	}
+	return cfg.Agent.MaxToolIterations
 }
 
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option) error {

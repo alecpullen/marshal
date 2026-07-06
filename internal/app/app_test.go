@@ -19,6 +19,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"marshal/internal/agent"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
@@ -181,6 +182,19 @@ func TestWithProgramRunnerNilLeavesRunnerConfigurable(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("program runner was not called")
+	}
+}
+
+func TestRoleToolIterationsFallsBack(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.MaxToolIterations = 16
+	cfg.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
+
+	if got := roleToolIterations(cfg, agent.RoleImplementer); got != 25 {
+		t.Errorf("implementer cap = %d, want 25 (role-specific)", got)
+	}
+	if got := roleToolIterations(cfg, agent.RoleTester); got != 16 {
+		t.Errorf("tester cap = %d, want 16 (fallback to agent default)", got)
 	}
 }
 

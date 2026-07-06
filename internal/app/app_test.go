@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"marshal/internal/agent"
+	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
@@ -195,6 +196,53 @@ func TestRoleToolIterationsFallsBack(t *testing.T) {
 	}
 	if got := roleToolIterations(cfg, agent.RoleTester); got != 16 {
 		t.Errorf("tester cap = %d, want 16 (fallback to agent default)", got)
+	}
+}
+
+func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
+	ctx := context.Background()
+	initial := reloadableAgentConfig("old-provider")
+	initial.Agent.MaxToolIterations = 8
+	initial.Swarm.Budget.MaxFixRounds = 1
+	initial.Swarm.Budget.MaxTotalTokens = 100
+
+	reloaded := reloadableAgentConfig("new-provider")
+	reloaded.Agent.MaxToolIterations = 16
+	reloaded.Swarm.Budget.MaxFixRounds = 5
+	reloaded.Swarm.Budget.MaxTotalTokens = 90000
+	reloaded.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
+
+	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, _, swarmRunner, err := buildAgentRunner(ctx, initial, state, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner initial: %v", err)
+	}
+	if swarmRunner.MaxFixRounds != 1 {
+		t.Fatalf("initial MaxFixRounds = %d, want 1", swarmRunner.MaxFixRounds)
+	}
+
+	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, runner, swarmRunner); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+	if swarmRunner.MaxFixRounds != 5 {
+		t.Fatalf("reloaded MaxFixRounds = %d, want 5", swarmRunner.MaxFixRounds)
+	}
+	if swarmRunner.MaxTotalTokens != 90000 {
+		t.Fatalf("reloaded MaxTotalTokens = %d, want 90000", swarmRunner.MaxTotalTokens)
+	}
+	impl, err := swarmRunner.NewRunner(agent.RoleImplementer, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("NewRunner implementer: %v", err)
+	}
+	if impl.MaxToolIterations != 25 {
+		t.Fatalf("implementer MaxToolIterations = %d, want 25", impl.MaxToolIterations)
+	}
+	tester, err := swarmRunner.NewRunner(agent.RoleTester, swarm.ScopeTester)
+	if err != nil {
+		t.Fatalf("NewRunner tester: %v", err)
+	}
+	if tester.MaxToolIterations != 16 {
+		t.Fatalf("tester MaxToolIterations = %d, want 16", tester.MaxToolIterations)
 	}
 }
 
@@ -643,6 +691,39 @@ func knowledgeEnabledConfig(baseURL, providerName string) config.Config {
 			Roles: map[routing.AgentRole]string{
 				routing.RoleImplementer: "implementer",
 				routing.RoleKnowledge:   "knowledge",
+			},
+		},
+	}
+	return cfg
+}
+
+func reloadableAgentConfig(providerName string) config.Config {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		providerName: {
+			Type:    "openai_compatible",
+			BaseURL: "http://localhost:11434/v1",
+			APIKey:  "test-key",
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {
+			Name:      "coder",
+			Provider:  providerName,
+			Model:     "test-model",
+			LocalOnly: true,
+		},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		cfg.Profile.Default: {
+			Name: cfg.Profile.Default,
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: "coder",
+				routing.RolePlanner:     "coder",
+				routing.RoleRepoScout:   "coder",
+				routing.RoleTester:      "coder",
+				routing.RoleReviewer:    "coder",
 			},
 		},
 	}

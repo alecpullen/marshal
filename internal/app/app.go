@@ -368,33 +368,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
-			if runner == nil {
-				return nil
-			}
-			resolver := newRoutedProviderResolver(newCfg)
-			route, p, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
-			if err != nil {
-				return err
-			}
-			runner.Provider = p
-			runner.Model = route.Preset.Model
-			runner.RouteResolver = resolver
-			if route.Preset.ToolCalling == "json" && p.Capabilities(ctx).JSONMode {
-				runner.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
-			} else {
-				runner.ResponseFormat = nil
-			}
-			state.SetActiveRoute(session.RouteInfo{
-				Role:      route.Role,
-				Profile:   route.Profile,
-				Preset:    route.Preset.Name,
-				Provider:  route.Preset.Provider,
-				Model:     route.Preset.Model,
-				LocalOnly: route.Preset.LocalOnly,
-				Legacy:    route.Legacy,
-				Active:    true,
-			})
-			return nil
+			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, runner, swarmRunner)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	} else {
@@ -433,6 +407,21 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		Logger:        logger,
 	})
 	return progErr
+}
+
+func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, runner *agent.Runner, swarmRunner *swarm.Orchestrator) error {
+	if runner == nil {
+		return nil
+	}
+	newRunner, _, newSwarmRunner, err := buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
+	if err != nil {
+		return err
+	}
+	*runner = *newRunner
+	if swarmRunner != nil && newSwarmRunner != nil {
+		*swarmRunner = *newSwarmRunner
+	}
+	return nil
 }
 
 func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {

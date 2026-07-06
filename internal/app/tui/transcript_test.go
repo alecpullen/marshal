@@ -13,8 +13,14 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-func init() {
+// forceColor makes lipgloss emit ANSI256 SGR codes for the duration of the
+// test so color-code assertions are meaningful, then restores the prior
+// profile. Requires the test not run in parallel (none in this package do).
+func forceColor(t *testing.T) {
+	t.Helper()
+	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 }
 
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
@@ -227,6 +233,7 @@ func TestTranscriptLinesFitWidth(t *testing.T) {
 }
 
 func TestWelcomeBannerHasCoralDotAndName(t *testing.T) {
+	forceColor(t)
 	out := renderWelcomeBanner(80)
 	plain := stripANSI(out)
 	if !strings.Contains(plain, "● marshal") {

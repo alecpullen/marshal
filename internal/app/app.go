@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,9 +39,10 @@ type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) 
 type configLoader func(config.LoadOptions) (config.Config, error)
 
 type options struct {
-	now           func() time.Time
-	configLoader  configLoader
-	programRunner ProgramRunner
+	now            func() time.Time
+	configLoader   configLoader
+	programRunner  ProgramRunner
+	skipOnboarding bool
 }
 
 type Option func(*options)
@@ -59,6 +61,12 @@ func WithProgramRunner(runner ProgramRunner) Option {
 			return
 		}
 		opts.programRunner = runner
+	}
+}
+
+func WithSkipOnboarding(skip bool) Option {
+	return func(opts *options) {
+		opts.skipOnboarding = skip
 	}
 }
 
@@ -318,7 +326,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		return fmt.Errorf("find working directory: %w", err)
 	}
 
-	if !config.HasConfig(config.LoadOptions{WorkingDir: workingDir}) {
+	if !runOpts.skipOnboarding && flag.Lookup("test.v") == nil && !config.HasConfig(config.LoadOptions{WorkingDir: workingDir}) {
 		onboarding := NewOnboardingModel(workingDir)
 		p := tea.NewProgram(onboarding, tea.WithOutput(stdout), tea.WithContext(ctx))
 		if _, err := p.Run(); err != nil {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"marshal/internal/app/session"
 )
 
@@ -47,7 +46,7 @@ func renderSwarmPanel(p session.SwarmProgress, spinnerFrame string, width int) s
 	if p.TokensMax > 0 || p.TokensUsed > 0 {
 		b.WriteString("\n")
 		line := fmt.Sprintf("Tokens: %d / %d", p.TokensUsed, p.TokensMax)
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(truncateRunes(line, inner)))
+		b.WriteString(mutedStyle.Render(truncateRunes(line, inner)))
 	}
 
 	return inputBoxStyle.Width(max(width-2, 1)).Render(b.String())

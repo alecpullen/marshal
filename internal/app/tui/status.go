@@ -23,7 +23,7 @@ const (
 // left cluster identifies the session (mode · model @ provider · locality
 // · ctx usage), right cluster shows what the agent is doing right now.
 func (m Model) renderStatusLine(width int) string {
-	left := strings.Join(m.statusLeftSegments(), " · ")
+	left := strings.Join(m.statusLeftSegments(), dimSeparator)
 	right := m.statusRightSegment()
 
 	gap := width - visibleRunes(left) - visibleRunes(right) - statusHorizontalPadding

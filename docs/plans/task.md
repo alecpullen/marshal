@@ -1,9 +1,8 @@
 | # | Task | Status | Component |
 |---|------|--------|-----------|
-| 1 | `[mcp]` Config Schema | [x] | Config |
-| 2 | MCP JSON-RPC Protocol | [x] | MCP |
-| 3 | MCP Client (Stdio subprocess connection) | [x] | MCP |
-| 4 | MCP Manager & Tool Registration Adapter | [x] | MCP |
-| 5 | Safety Policies for MCP Tools | [x] | Policy |
-| 6 | Wire MCP Manager in `app.go` | [x] | App |
-| 7 | Full integration verification and checklist update | [x] | Bookkeeping |
+| 1 | Add TokenUsage to schema.ChatEvent | [x] | Schema |
+| 2 | Parse usage block in openai_compatible_wire.go | [x] | Provider |
+| 3 | Support stream_options and propagate usage in openai_compatible.go | [x] | Provider |
+| 4 | Implement UsageObserver in runner.go | [x] | Runner |
+| 5 | Wire UsageObserver in orchestrator.go | [x] | Swarm |
+| 6 | Add tests and verify integration | [x] | Verification |

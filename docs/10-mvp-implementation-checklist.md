@@ -159,7 +159,7 @@
 - [x] Tester role integrated as an implementer↔tester feedback loop
 - [x] Swarm roster activity panel
 - [x] Run-level budgets (max fix rounds, per-role tool caps, token ceiling)
-- [ ] Real provider `usage` token metering (later milestone; ProviderUsageMeter stub in place)
+- [x] Real provider `usage` token metering (replacing the dormant ProviderUsageMeter stub with real count accumulation)
 
 ## Milestone P: Plugin and MCP Ecosystem (Phase 6)
 

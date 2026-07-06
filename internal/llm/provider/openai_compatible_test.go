@@ -521,3 +521,83 @@ func TestBuildChatRequestBodyOmitsResponseFormatWhenNil(t *testing.T) {
 		t.Fatalf("request body should not contain response_format when nil")
 	}
 }
+
+func TestChatStreamingTokenUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n" +
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30}}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	ev1, ok := recvEvent(t, events)
+	if !ok || ev1.Type != schema.ChatEventDelta || ev1.Delta != "hel" {
+		t.Fatalf("event 1 error: %+v", ev1)
+	}
+
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventDelta || ev2.Delta != "lo" {
+		t.Fatalf("event 2 error: %+v", ev2)
+	}
+
+	ev3, ok := recvEvent(t, events)
+	if !ok || ev3.Type != schema.ChatEventDone {
+		t.Fatalf("event 3 (done) error: %+v", ev3)
+	}
+
+	if ev3.Usage == nil {
+		t.Fatal("expected token usage in done event, got nil")
+	}
+	if ev3.Usage.PromptTokens != 10 || ev3.Usage.CompletionTokens != 20 || ev3.Usage.TotalTokens != 30 {
+		t.Errorf("unexpected token usage: %+v", ev3.Usage)
+	}
+
+	assertChannelClosed(t, events)
+}
+
+func TestChatNonStreamingTokenUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":18,"total_tokens":30}}`,
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(false))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	ev1, ok := recvEvent(t, events)
+	if !ok || ev1.Type != schema.ChatEventDelta || ev1.Delta != "hello" {
+		t.Fatalf("event 1 error: %+v", ev1)
+	}
+
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventDone {
+		t.Fatalf("event 2 (done) error: %+v", ev2)
+	}
+
+	if ev2.Usage == nil {
+		t.Fatal("expected token usage in done event, got nil")
+	}
+	if ev2.Usage.PromptTokens != 12 || ev2.Usage.CompletionTokens != 18 || ev2.Usage.TotalTokens != 30 {
+		t.Errorf("unexpected token usage: %+v", ev2.Usage)
+	}
+
+	assertChannelClosed(t, events)
+}

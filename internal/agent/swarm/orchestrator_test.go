@@ -402,3 +402,67 @@ func TestSwarmPublishesProgress(t *testing.T) {
 		t.Error("progress should be cleared after run completes")
 	}
 }
+
+func TestOrchestratorUsesRealTokenUsage(t *testing.T) {
+	state := newLockTestState(t)
+
+	factory := func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error) {
+		response := `{"rationale": "done", "action": {"type": "final", "content": "mock content"}}`
+		p := &usageScriptedProvider{
+			response: response,
+			usage: schema.TokenUsage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+			},
+		}
+		r := agent.NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r.Role = role
+		r.SetForceClass("question")
+		r.MaxRetries = 0
+		return r, nil
+	}
+
+	o := New(state, factory)
+	o.MaxFixRounds = 1
+	o.MaxTotalTokens = 10000
+
+	if err := o.Run(context.Background(), "run with real tokens"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	msgs := state.Messages()
+	var found bool
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "Token budget:") {
+			found = true
+			if !strings.Contains(m.Content, "~1050 / 10000") {
+				t.Fatalf("expected '~1050 / 10000' in final message, got: %q", m.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no token budget message found")
+	}
+}
+
+type usageScriptedProvider struct {
+	response string
+	usage    schema.TokenUsage
+}
+
+func (p *usageScriptedProvider) Name() string { return "usage-scripted" }
+func (p *usageScriptedProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) { return nil, nil }
+func (p *usageScriptedProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
+	return schema.EmbedResponse{}, nil
+}
+func (p *usageScriptedProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
+	return schema.ProviderCapabilities{}
+}
+func (p *usageScriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	ch := make(chan schema.ChatEvent, 2)
+	ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: p.response}
+	ch <- schema.ChatEvent{Type: schema.ChatEventDone, Usage: &p.usage}
+	close(ch)
+	return ch, nil
+}

@@ -93,12 +93,7 @@ func renderCodeBlock(content string, width int) string {
 		width = 1
 	}
 	trimmed := strings.TrimSpace(content)
-	style := lipgloss.NewStyle().
-		Foreground(dimColor).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(dimColor).
-		Width(width)
-	return style.Render(trimmed)
+	return codeBorderStyle.Copy().Width(width).Render(trimmed)
 }
 
 func renderFinalAnswer(msg session.Message, width int) string {
@@ -498,12 +493,12 @@ func riskText(tc *session.PendingToolCall) string {
 }
 
 func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
-	helpLine := "Enter approve · d deny · e edit · a always"
 	innerWidth := max(width-2, 1)
 
 	titleStyle := panelTitleStyle.Copy().Background(panelBgColor).Foreground(warningColor)
 	muted := mutedStyle.Copy().Background(panelBgColor)
 	text := lipgloss.NewStyle().Background(panelBgColor)
+	key := keyHintStyle.Copy().Background(panelBgColor)
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("⚠ Approval needed"))
@@ -514,7 +509,7 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 		b.WriteString("\n")
 		b.WriteString(text.Render(truncateRunes(tc.Command, innerWidth)))
 	} else {
-		b.WriteString(muted.Render("Agent wants to call tool: ") + text.Render(tc.Name))
+		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle.Copy().Background(panelBgColor).Render(tc.Name))
 		b.WriteString("\n")
 		if tc.Schema != "" {
 			b.WriteString(muted.Render("Description: ") + text.Render(truncateRunes(tc.Schema, innerWidth)))
@@ -524,29 +519,17 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 		b.WriteString(text.Render(truncateRunes(tc.Args, innerWidth)))
 	}
 	b.WriteString("\n\n")
-	b.WriteString(muted.Render("Risk: "))
+	b.WriteString(riskLabelStyle.Copy().Background(panelBgColor).Render("Risk: "))
 	b.WriteString(text.Render(truncateRunes(riskText(tc), innerWidth)))
 	b.WriteString("\n\n")
-	b.WriteString(muted.Render(helpLine))
+	helpLine := key.Render("Enter") + muted.Render(" approve ") + key.Render("d") + muted.Render(" deny ") + key.Render("e") + muted.Render(" edit ") + key.Render("a") + muted.Render(" always")
+	b.WriteString(helpLine)
 	return b.String()
 }
 
-var bannerLogoStyle = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
-
 func renderWelcomeBanner(width int) string {
-	if width < 40 {
-		return mutedStyle.Render("marshal — local-first coding agent") + "\n"
-	}
-	logo := `  ███╗   ███╗ █████╗ ██████╗ ███████╗██╗  ██╗ █████╗ ██╗
-  ████╗ ████║██╔══██╗██╔══██╗██╔════╝██║  ██║██╔══██╗██║
-  ██╔████╔██║███████║██████╔╝███████╗███████║███████║██║
-  ██║╚██╔╝██║██╔══██║██╔══██╗╚════██║██╔══██║██╔══██║██║
-  ██║ ╚═╝ ██║██║  ██║██║  ██║███████║██║  ██║██║  ██║███████╗
-  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝`
-	var b strings.Builder
-	b.WriteString(bannerLogoStyle.Render(logo))
-	b.WriteString("\n\n")
-	b.WriteString(mutedStyle.Render("  local-first coding agent"))
-	b.WriteString("\n\n")
-	return b.String()
+	title := toolNameStyle.Copy().Bold(true).Render("marshal")
+	sep := dimSeparator
+	desc := mutedStyle.Render("local-first coding agent")
+	return "  " + title + sep + desc + "\n\n"
 }

@@ -801,6 +801,21 @@ var (
 				Background(panelBgColor).
 				Bold(true)
 
+	// Shared styles — used across transcript, swarm panel, and approval panel.
+	codeBorderStyle = lipgloss.NewStyle().
+			Foreground(dimColor).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(dimColor)
+	toolNameStyle = lipgloss.NewStyle().
+			Foreground(accentColor)
+	keyHintStyle = lipgloss.NewStyle().
+			Foreground(accentColor).
+			Bold(true)
+	riskLabelStyle = lipgloss.NewStyle().
+			Foreground(warningColor).
+			Bold(true)
+	dimSeparator = mutedStyle.Render(" · ")
+
 	transcriptFrameStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(panelBorderColor)

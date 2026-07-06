@@ -19,9 +19,11 @@ type SwarmRole struct {
 
 // SwarmProgress is the live state of a swarm run.
 type SwarmProgress struct {
-	Goal   string
-	Active bool
-	Roles  []SwarmRole
+	Goal       string
+	Active     bool
+	Roles      []SwarmRole
+	TokensUsed int
+	TokensMax  int
 }
 
 func (p SwarmProgress) clone() SwarmProgress {
@@ -52,6 +54,13 @@ func (s *State) UpdateSwarmRole(name string, status SwarmRoleStatus, detail stri
 			return
 		}
 	}
+}
+
+func (s *State) UpdateSwarmTokens(used, max int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.swarmProgress.TokensUsed = used
+	s.swarmProgress.TokensMax = max
 }
 
 func (s *State) ClearSwarmProgress() {

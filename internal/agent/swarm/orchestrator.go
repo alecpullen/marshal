@@ -83,6 +83,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 			{Name: "tester", Status: session.SwarmRolePending},
 			{Name: "reviewer", Status: session.SwarmRolePending},
 		},
+		TokensMax: o.MaxTotalTokens,
 	})
 	defer o.State.ClearSwarmProgress()
 
@@ -229,6 +230,7 @@ func (o *Orchestrator) runRole(ctx context.Context, meter TokenMeter, role agent
 	runner.UsageObserver = func(promptTokens, completionTokens int) {
 		hasRealUsage = true
 		meter.Observe(role, promptTokens, completionTokens)
+		o.State.UpdateSwarmTokens(meter.Total(), o.MaxTotalTokens)
 	}
 	task, err := runner.RunTask(ctx, prompt)
 	if err != nil {
@@ -242,6 +244,7 @@ func (o *Orchestrator) runRole(ctx context.Context, meter TokenMeter, role agent
 
 func (o *Orchestrator) observe(meter TokenMeter, role agent.AgentRole, prompt, answer string) {
 	meter.Observe(role, EstimateText(prompt), EstimateText(answer))
+	o.State.UpdateSwarmTokens(meter.Total(), o.MaxTotalTokens)
 }
 
 func (o *Orchestrator) focuses() []ScoutFocus {

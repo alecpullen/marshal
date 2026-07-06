@@ -21,6 +21,58 @@ type factoryCall struct {
 	scope RegistryScope
 }
 
+type scriptedOrchestrator struct {
+	*Orchestrator
+	mu    *sync.Mutex
+	calls *[]factoryCall
+}
+
+func newScriptedOrchestrator(t *testing.T, state *session.State, summaries map[agent.AgentRole][]string) *scriptedOrchestrator {
+	t.Helper()
+	var mu sync.Mutex
+	var calls []factoryCall
+	factory := func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error) {
+		mu.Lock()
+		calls = append(calls, factoryCall{role: role, scope: scope})
+		idx := 0
+		for _, c := range calls {
+			if c.role == role {
+				idx++
+			}
+		}
+		script := summaries[role]
+		summary := ""
+		if len(script) > 0 {
+			if idx <= len(script) {
+				summary = script[idx-1]
+			} else {
+				summary = script[len(script)-1]
+			}
+		}
+		mu.Unlock()
+
+		response := `{"rationale": "done", "action": {"type": "final", "content": "` + strings.ReplaceAll(summary, "\n", "\\n") + `"}}`
+		r := agent.NewRunner(&scriptedProvider{responses: []string{response}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r.Role = role
+		r.SetForceClass("question")
+		r.MaxRetries = 0
+		return r, nil
+	}
+	return &scriptedOrchestrator{Orchestrator: New(state, factory), mu: &mu, calls: &calls}
+}
+
+func (o *scriptedOrchestrator) callCount(role agent.AgentRole) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	n := 0
+	for _, c := range *o.calls {
+		if c.role == role {
+			n++
+		}
+	}
+	return n
+}
+
 // newScriptedFactory returns a RunnerFactory whose runners answer with a
 // single scripted final action per role, and records every factory call.
 func newScriptedFactory(state *session.State, finals map[agent.AgentRole]string, calls *[]factoryCall, mu *sync.Mutex) RunnerFactory {
@@ -44,6 +96,7 @@ func TestOrchestratorRunsRolesInSequenceAndPublishesTaskState(t *testing.T) {
 		agent.RolePlanner:     "1. reproduce\\n2. fix",
 		agent.RoleRepoScout:   "parser.go is the hot spot",
 		agent.RoleImplementer: "patched parser.go",
+		agent.RoleTester:      "VERDICT: PASS",
 		agent.RoleReviewer:    "APPROVE: change is minimal",
 	}
 	o := New(state, newScriptedFactory(state, finals, &calls, &mu))
@@ -58,6 +111,7 @@ func TestOrchestratorRunsRolesInSequenceAndPublishesTaskState(t *testing.T) {
 		{agent.RoleRepoScout, ScopeReadOnly},
 		{agent.RoleRepoScout, ScopeReadOnly},
 		{agent.RoleImplementer, ScopeFull},
+		{agent.RoleTester, ScopeTester},
 		{agent.RoleReviewer, ScopeReadOnly},
 	}
 	if len(calls) != len(wantOrder) {
@@ -69,8 +123,7 @@ func TestOrchestratorRunsRolesInSequenceAndPublishesTaskState(t *testing.T) {
 		}
 	}
 
-	messages := state.Messages()
-	final := messages[len(messages)-1]
+	final := swarmSummaryMessage(t, state)
 	for _, want := range []string{"Swarm complete", "1. reproduce", "parser.go is the hot spot", "patched parser.go", "APPROVE"} {
 		if !strings.Contains(final.Content, want) {
 			t.Fatalf("final swarm message missing %q:\n%s", want, final.Content)
@@ -183,11 +236,21 @@ func TestOrchestratorContinuesWhenAScoutFails(t *testing.T) {
 	if err := o.Run(context.Background(), "goal"); err != nil {
 		t.Fatalf("Run should tolerate scout failure, got: %v", err)
 	}
-	messages := state.Messages()
-	final := messages[len(messages)-1].Content
+	final := swarmSummaryMessage(t, state).Content
 	if !strings.Contains(final, "scout failed") {
 		t.Fatalf("final message should record the failed scout:\n%s", final)
 	}
+}
+
+func swarmSummaryMessage(t *testing.T, state *session.State) session.Message {
+	t.Helper()
+	for _, msg := range state.Messages() {
+		if strings.Contains(msg.Content, "Swarm complete") {
+			return msg
+		}
+	}
+	t.Fatal("missing swarm completion summary message")
+	return session.Message{}
 }
 
 func TestOrchestratorAbortsWhenPlannerFails(t *testing.T) {
@@ -214,5 +277,128 @@ func TestOrchestratorAbortsWhenPlannerFails(t *testing.T) {
 		if c.role != agent.RolePlanner {
 			t.Fatalf("no role beyond planner should run, but factory built %q", c.role)
 		}
+	}
+}
+
+func TestSwarmLoopStopsOnPass(t *testing.T) {
+	state := newLockTestState(t)
+	o := newScriptedOrchestrator(t, state, map[agent.AgentRole][]string{
+		agent.RolePlanner:     {"1. do the thing"},
+		agent.RoleRepoScout:   {"found files"},
+		agent.RoleImplementer: {"made the change"},
+		agent.RoleTester:      {"ran tests\nVERDICT: PASS"},
+		agent.RoleReviewer:    {"APPROVE looks good"},
+	})
+	o.MaxFixRounds = 3
+
+	if err := o.Run(context.Background(), "add a test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.callCount(agent.RoleImplementer); got != 1 {
+		t.Errorf("implementer ran %d times, want 1", got)
+	}
+	if got := o.callCount(agent.RoleTester); got != 1 {
+		t.Errorf("tester ran %d times, want 1", got)
+	}
+}
+
+func TestSwarmLoopRetriesOnFailThenPasses(t *testing.T) {
+	state := newLockTestState(t)
+	o := newScriptedOrchestrator(t, state, map[agent.AgentRole][]string{
+		agent.RolePlanner:     {"plan"},
+		agent.RoleRepoScout:   {"scout"},
+		agent.RoleImplementer: {"attempt 1", "attempt 2"},
+		agent.RoleTester:      {"fail\nVERDICT: FAIL", "pass\nVERDICT: PASS"},
+		agent.RoleReviewer:    {"APPROVE"},
+	})
+	o.MaxFixRounds = 3
+
+	if err := o.Run(context.Background(), "fix bug"); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.callCount(agent.RoleImplementer); got != 2 {
+		t.Errorf("implementer ran %d times, want 2", got)
+	}
+	if got := o.callCount(agent.RoleTester); got != 2 {
+		t.Errorf("tester ran %d times, want 2", got)
+	}
+}
+
+func TestSwarmLoopStopsAtMaxRounds(t *testing.T) {
+	state := newLockTestState(t)
+	o := newScriptedOrchestrator(t, state, map[agent.AgentRole][]string{
+		agent.RolePlanner:     {"plan"},
+		agent.RoleRepoScout:   {"scout"},
+		agent.RoleImplementer: {"a", "b", "c", "d"},
+		agent.RoleTester:      {"f\nVERDICT: FAIL", "f\nVERDICT: FAIL", "f\nVERDICT: FAIL", "f\nVERDICT: FAIL"},
+		agent.RoleReviewer:    {"APPROVE"},
+	})
+	o.MaxFixRounds = 2
+
+	if err := o.Run(context.Background(), "hopeless"); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.callCount(agent.RoleImplementer); got != 2 {
+		t.Errorf("implementer ran %d times, want 2", got)
+	}
+	if got := o.callCount(agent.RoleReviewer); got != 1 {
+		t.Errorf("reviewer ran %d times, want 1", got)
+	}
+}
+
+func TestSwarmUnparseableVerdictStopsLoop(t *testing.T) {
+	state := newLockTestState(t)
+	o := newScriptedOrchestrator(t, state, map[agent.AgentRole][]string{
+		agent.RolePlanner:     {"plan"},
+		agent.RoleRepoScout:   {"scout"},
+		agent.RoleImplementer: {"change"},
+		agent.RoleTester:      {"I could not tell"},
+		agent.RoleReviewer:    {"APPROVE"},
+	})
+	o.MaxFixRounds = 3
+
+	if err := o.Run(context.Background(), "ambiguous"); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.callCount(agent.RoleImplementer); got != 1 {
+		t.Errorf("implementer ran %d times, want 1", got)
+	}
+}
+
+func TestSwarmTokenCeilingStopsAfterCurrentRole(t *testing.T) {
+	state := newLockTestState(t)
+	o := newScriptedOrchestrator(t, state, map[agent.AgentRole][]string{
+		agent.RolePlanner:     {strings.Repeat("word ", 500)},
+		agent.RoleRepoScout:   {"scout"},
+		agent.RoleImplementer: {"change"},
+		agent.RoleTester:      {"pass\nVERDICT: PASS"},
+		agent.RoleReviewer:    {"APPROVE"},
+	})
+	o.MaxTotalTokens = 10
+
+	if err := o.Run(context.Background(), "big"); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.callCount(agent.RoleImplementer); got != 0 {
+		t.Errorf("implementer ran %d times, want 0", got)
+	}
+}
+
+func TestSwarmPublishesProgress(t *testing.T) {
+	state := newLockTestState(t)
+	o := newScriptedOrchestrator(t, state, map[agent.AgentRole][]string{
+		agent.RolePlanner:     {"plan"},
+		agent.RoleRepoScout:   {"scout"},
+		agent.RoleImplementer: {"change"},
+		agent.RoleTester:      {"pass\nVERDICT: PASS"},
+		agent.RoleReviewer:    {"APPROVE"},
+	})
+	o.MaxFixRounds = 1
+
+	if err := o.Run(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	if state.SwarmProgress().Active {
+		t.Error("progress should be cleared after run completes")
 	}
 }

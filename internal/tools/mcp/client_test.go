@@ -60,6 +60,12 @@ func mockServerMain() {
 					{Name: "hello", Description: "says hello", InputSchema: []byte(`{"type":"object"}`)},
 				},
 			}
+		case "tools/call":
+			result = CallToolResult{
+				Content: []MCPContent{
+					{Type: "text", Text: "hello world"},
+				},
+			}
 		}
 		res := Response{
 			JSONRPC: "2.0",

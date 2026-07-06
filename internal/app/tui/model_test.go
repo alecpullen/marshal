@@ -1210,6 +1210,7 @@ func TestSettingsNavigationWithDefaultConfig(t *testing.T) {
 func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.SetPendingApproval(&session.PendingToolCall{
+		Name:         "shell.run",
 		Command:      "go test ./internal/app/tui/...",
 		Reason:       "Validate layout bounds and modal capture.",
 		Risk:         "Low - test command, no destructive flags detected.",
@@ -1636,5 +1637,63 @@ func TestActiveToolCallClearsFromView(t *testing.T) {
 
 	if strings.Contains(viewWithoutTool, "/repo/main.go") && !strings.Contains(viewWithTool, "/repo/main.go") {
 		t.Fatalf("tool-call block did not clear from view")
+	}
+}
+
+func TestTUIRichMCPApprovalStates(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+
+	ch := make(chan session.UserApprovalDecision, 1)
+	tc := &session.PendingToolCall{
+		ID:           "call_1",
+		Name:         "mcp.github.create_issue",
+		Args:         `{"title":"some issue"}`,
+		Command:      "mcp.github.create_issue",
+		Risk:         "workspace_write",
+		Reason:       "requires confirmation",
+		Schema:       "creates a new github issue in the repo",
+		ResponseChan: ch,
+	}
+	state.SetPendingApproval(tc)
+
+	m.refreshViewport()
+	view := m.View()
+
+	if !strings.Contains(view, "mcp.github.create_issue") {
+		t.Fatalf("View() missing tool name:\n%s", view)
+	}
+	if !strings.Contains(view, "creates a new github issue") {
+		t.Fatalf("View() missing tool description:\n%s", view)
+	}
+	if !strings.Contains(view, `{"title":"some issue"}`) {
+		t.Fatalf("View() missing JSON arguments:\n%s", view)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
+
+	if !m.editingCommand {
+		t.Fatal("expected editingCommand to be true")
+	}
+	if m.input.Value() != `{"title":"some issue"}` {
+		t.Errorf("input value = %q, want JSON args", m.input.Value())
+	}
+
+	m.input.SetValue(`{"title":"edited issue"}`)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	select {
+	case dec := <-ch:
+		if !dec.Approved {
+			t.Fatal("expected decision to be approved")
+		}
+		if dec.Edited != `{"title":"edited issue"}` {
+			t.Errorf("dec.Edited = %q, want edited JSON", dec.Edited)
+		}
+	default:
+		t.Fatal("no decision sent on channel")
 	}
 }

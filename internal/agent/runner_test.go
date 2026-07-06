@@ -1577,3 +1577,53 @@ func TestWriteGateAcquiredForWriteToolsOnly(t *testing.T) {
 		t.Fatalf("gate acquired %d times, want 1 (write tool only)", gate.acquisitions)
 	}
 }
+
+func TestRunnerNonShellToolApprovalAndJSONEditing(t *testing.T) {
+	reg := registry.New()
+	var calledArgs string
+	if err := reg.Register(registry.Tool{
+		Name: "mcp.github.create_issue", Description: "creates a github issue", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			calledArgs = string(call.Args)
+			return registry.ToolResult{Summary: "created"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		`{"rationale": "call tool", "action": {"type": "tool_call", "tool": "mcp.github.create_issue", "args": {"title": "old title", "body": "old body"}}}`,
+		`{"rationale": "done", "action": {"type": "final", "content": "done"}}`,
+	}}
+
+	state := newTestState(t)
+
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.SetForceClass("question")
+
+	go func() {
+		for state.PendingApproval() == nil {
+			time.Sleep(10 * time.Millisecond)
+		}
+		tc := state.PendingApproval()
+		if tc.Name != "mcp.github.create_issue" {
+			t.Errorf("tc.Name = %q, want mcp.github.create_issue", tc.Name)
+		}
+		if tc.Schema != "creates a github issue" {
+			t.Errorf("tc.Schema = %q, want 'creates a github issue'", tc.Schema)
+		}
+		tc.ResponseChan <- session.UserApprovalDecision{
+			Approved: true,
+			Edited:   `{"title":"new title","body":"new body"}`,
+		}
+	}()
+
+	if err := runner.Run(context.Background(), "create issue"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	wantArgs := `{"title":"new title","body":"new body"}`
+	if calledArgs != wantArgs {
+		t.Errorf("calledArgs = %q, want %q", calledArgs, wantArgs)
+	}
+}

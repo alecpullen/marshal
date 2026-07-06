@@ -332,8 +332,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case "e":
 					m.editingCommand = true
-					m.input.SetValue(tc.Command)
-					m.input.Placeholder = "Edit command..."
+					if tc.Name == "shell.run" {
+						m.input.SetValue(tc.Command)
+						m.input.Placeholder = "Edit command..."
+					} else {
+						m.input.SetValue(tc.Args)
+						m.input.Placeholder = "Edit JSON arguments..."
+					}
 					m.input.Focus()
 					m.lastTranscriptHash = 0
 					return m, nil
@@ -455,8 +460,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) inputAreaRows() int {
 	rows := inputBorderRows + activityStripRows
-	if m.state.PendingApproval() != nil {
-		rows += 7 // approval panel: title + command + blank + risk + blank + help line + spacing
+	if tc := m.state.PendingApproval(); tc != nil {
+		content := ""
+		if m.editingCommand {
+			content = "❯ " + m.input.View()
+		} else {
+			inputInnerWidth := max(m.width-4, 1)
+			content = renderApprovalPanel(tc, inputInnerWidth)
+		}
+		rows += len(strings.Split(content, "\n"))
 	} else {
 		inputHeight := max(m.input.Height(), 1)
 		if inputHeight > m.input.MaxHeight {

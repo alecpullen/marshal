@@ -6,9 +6,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
+
+func init() {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+}
 
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}, 80)
@@ -216,5 +223,20 @@ func TestTranscriptLinesFitWidth(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestWelcomeBannerHasCoralDotAndName(t *testing.T) {
+	out := renderWelcomeBanner(80)
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "● marshal") {
+		t.Fatalf("banner missing '● marshal' icon+name: %q", plain)
+	}
+	if !strings.Contains(plain, "local-first coding agent") {
+		t.Fatalf("banner missing tagline: %q", plain)
+	}
+	// coral 209 must appear as the foreground SGR for the dot/name.
+	if !strings.Contains(out, "209") {
+		t.Fatalf("banner not styled with coral (209): %q", out)
 	}
 }

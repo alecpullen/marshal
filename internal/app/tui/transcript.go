@@ -528,8 +528,8 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 }
 
 func renderWelcomeBanner(width int) string {
-	title := toolNameStyle.Copy().Bold(true).Render("marshal")
-	sep := dimSeparator
+	dot := lipgloss.NewStyle().Foreground(coralColor).Render("●")
+	title := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")
 	desc := mutedStyle.Render("local-first coding agent")
-	return "  " + title + sep + desc + "\n\n"
+	return "  " + dot + " " + title + dimSeparator + desc + "\n\n"
 }

@@ -17,16 +17,16 @@ import (
 )
 
 type factoryCall struct {
-	role     agent.AgentRole
-	readOnly bool
+	role  agent.AgentRole
+	scope RegistryScope
 }
 
 // newScriptedFactory returns a RunnerFactory whose runners answer with a
 // single scripted final action per role, and records every factory call.
 func newScriptedFactory(state *session.State, finals map[agent.AgentRole]string, calls *[]factoryCall, mu *sync.Mutex) RunnerFactory {
-	return func(role agent.AgentRole, readOnly bool) (*agent.Runner, error) {
+	return func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error) {
 		mu.Lock()
-		*calls = append(*calls, factoryCall{role: role, readOnly: readOnly})
+		*calls = append(*calls, factoryCall{role: role, scope: scope})
 		mu.Unlock()
 		response := `{"rationale": "done", "action": {"type": "final", "content": "` + finals[role] + `"}}`
 		r := agent.NewRunner(&scriptedProvider{responses: []string{response}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
@@ -53,12 +53,12 @@ func TestOrchestratorRunsRolesInSequenceAndPublishesTaskState(t *testing.T) {
 	}
 
 	wantOrder := []factoryCall{
-		{agent.RolePlanner, true},
-		{agent.RoleRepoScout, true},
-		{agent.RoleRepoScout, true},
-		{agent.RoleRepoScout, true},
-		{agent.RoleImplementer, false},
-		{agent.RoleReviewer, true},
+		{agent.RolePlanner, ScopeReadOnly},
+		{agent.RoleRepoScout, ScopeReadOnly},
+		{agent.RoleRepoScout, ScopeReadOnly},
+		{agent.RoleRepoScout, ScopeReadOnly},
+		{agent.RoleImplementer, ScopeFull},
+		{agent.RoleReviewer, ScopeReadOnly},
 	}
 	if len(calls) != len(wantOrder) {
 		t.Fatalf("factory called %d times, want %d: %+v", len(calls), len(wantOrder), calls)
@@ -125,7 +125,7 @@ func TestOrchestratorRunsScoutsInParallel(t *testing.T) {
 		release: make(chan struct{}),
 		final:   `{"rationale": "done", "action": {"type": "final", "content": "found"}}`,
 	}
-	factory := func(role agent.AgentRole, readOnly bool) (*agent.Runner, error) {
+	factory := func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error) {
 		var r *agent.Runner
 		if role == agent.RoleRepoScout {
 			r = agent.NewRunner(scoutBarrier, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
@@ -158,7 +158,7 @@ func TestOrchestratorContinuesWhenAScoutFails(t *testing.T) {
 	state := newLockTestState(t)
 	scoutCount := 0
 	var mu sync.Mutex
-	factory := func(role agent.AgentRole, readOnly bool) (*agent.Runner, error) {
+	factory := func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error) {
 		response := `{"rationale": "done", "action": {"type": "final", "content": "ok"}}`
 		p := &scriptedProvider{responses: []string{response}}
 		if role == agent.RoleRepoScout {
@@ -194,9 +194,9 @@ func TestOrchestratorAbortsWhenPlannerFails(t *testing.T) {
 	state := newLockTestState(t)
 	var mu sync.Mutex
 	var calls []factoryCall
-	factory := func(role agent.AgentRole, readOnly bool) (*agent.Runner, error) {
+	factory := func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error) {
 		mu.Lock()
-		calls = append(calls, factoryCall{role: role, readOnly: readOnly})
+		calls = append(calls, factoryCall{role: role, scope: scope})
 		mu.Unlock()
 		r := agent.NewRunner(&scriptedProvider{responses: []string{"garbage"}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 		r.Role = role

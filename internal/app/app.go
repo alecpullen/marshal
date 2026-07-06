@@ -228,10 +228,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // for unconfigured roles).
 func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *swarm.Orchestrator {
 	readOnlyReg := registry.ReadOnlyView(reg)
+	testerReg := registry.TesterView(reg)
 	gate := &swarm.WriteLock{}
 	memory := &dbMemoryProvider{db: database}
 
-	factory := func(role agent.AgentRole, readOnly bool) (*agent.Runner, error) {
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
 		// agent.AgentRole and routing.AgentRole share string values
 		// ("planner", "repo_scout", "implementer", "reviewer").
 		route, p, err := resolver.ResolveRole(routing.AgentRole(role))
@@ -239,8 +240,11 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 			return nil, err
 		}
 		toolReg := reg
-		if readOnly {
+		switch scope {
+		case swarm.ScopeReadOnly:
 			toolReg = readOnlyReg
+		case swarm.ScopeTester:
+			toolReg = testerReg
 		}
 		r := agent.NewRunner(p, toolReg, pol, state, route.Preset.Model)
 		r.Role = role

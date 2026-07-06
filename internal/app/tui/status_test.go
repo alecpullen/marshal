@@ -151,3 +151,16 @@ func TestStatusLineShowsSwarmTokenBudget(t *testing.T) {
 		t.Fatalf("status line missing compacted max count:\n%s", line)
 	}
 }
+
+func TestStatusLineHasNoBackgroundFill(t *testing.T) {
+	forceColor(t)
+	m := newViewTestModel(t, 80, 24)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	out := m.renderStatusLine(80)
+	if strings.Contains(out, "48;5;237") || strings.Contains(out, ";237m") {
+		t.Fatalf("status line still emits statusBar background fill:\n%q", out)
+	}
+	if !strings.Contains(stripANSI(out), "qwen @ ollama") {
+		t.Fatalf("status line missing route:\n%q", stripANSI(out))
+	}
+}

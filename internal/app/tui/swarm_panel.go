@@ -49,5 +49,5 @@ func renderSwarmPanel(p session.SwarmProgress, spinnerFrame string, width int) s
 		b.WriteString(mutedStyle.Render(truncateRunes(line, inner)))
 	}
 
-	return inputBoxStyle.Width(max(width-2, 1)).Render(b.String())
+	return indentBlock(b.String(), "  ")
 }

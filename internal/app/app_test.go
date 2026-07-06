@@ -213,15 +213,18 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 	reloaded.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, swarmRunner, err := buildAgentRunner(ctx, initial, state, nil, 0, nil)
+	runner, _, swarmRunner, mcpMgr, err := buildAgentRunner(ctx, initial, state, nil, 0, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
+	}
+	if mcpMgr != nil {
+		defer mcpMgr.Close()
 	}
 	if swarmRunner.MaxFixRounds != 1 {
 		t.Fatalf("initial MaxFixRounds = %d, want 1", swarmRunner.MaxFixRounds)
 	}
 
-	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, runner, swarmRunner); err != nil {
+	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, runner, swarmRunner, &mcpMgr); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 	if swarmRunner.MaxFixRounds != 5 {
@@ -243,6 +246,93 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 	}
 	if tester.MaxToolIterations != 16 {
 		t.Fatalf("tester MaxToolIterations = %d, want 16", tester.MaxToolIterations)
+	}
+}
+
+func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
+	if os.Getenv("BE_MOCK_SERVER") == "1" {
+		mockMCPServer()
+		return
+	}
+
+	ctx := context.Background()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initial := reloadableAgentConfig("provider")
+	initial.MCP.Servers = map[string]config.MCPServerConfig{
+		"mock": {
+			Command: exe,
+			Args:    []string{"-test.run=TestReloadAgentRuntimeManagesMCP"},
+			Env:     map[string]string{"BE_MOCK_SERVER": "1"},
+		},
+	}
+
+	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, mcpMgr, err := buildAgentRunner(ctx, initial, state, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner initial: %v", err)
+	}
+	if mcpMgr == nil {
+		t.Fatal("MCP manager not initialized")
+	}
+	defer func() {
+		if mcpMgr != nil {
+			mcpMgr.Close()
+		}
+	}()
+
+	// Verify tool is registered
+	if _, ok := reg.Lookup("mcp.mock.hello"); !ok {
+		t.Fatal("MCP tool mcp.mock.hello not registered")
+	}
+
+	// Reload with empty MCP config (removes MCP server)
+	reloaded := reloadableAgentConfig("provider")
+	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, runner, swarmRunner, &mcpMgr); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+
+	if mcpMgr != nil {
+		t.Fatal("mcpMgr should be nil after reload removes servers")
+	}
+}
+
+func mockMCPServer() {
+	dec := json.NewDecoder(os.Stdin)
+	enc := json.NewEncoder(os.Stdout)
+	for {
+		var req struct {
+			Method string      `json:"method"`
+			ID     interface{} `json:"id"`
+		}
+		if err := dec.Decode(&req); err != nil {
+			return
+		}
+		var result interface{}
+		switch req.Method {
+		case "initialize":
+			result = map[string]interface{}{
+				"protocolVersion": "2024-11-05",
+				"serverInfo":      map[string]string{"name": "mock", "version": "1.0"},
+			}
+		case "tools/list":
+			result = map[string]interface{}{
+				"tools": []map[string]interface{}{
+					{"name": "hello", "description": "says hello", "inputSchema": map[string]interface{}{"type": "object"}},
+				},
+			}
+		}
+		res := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+		}
+		if result != nil {
+			res["result"] = result
+		}
+		_ = enc.Encode(res)
 	}
 }
 

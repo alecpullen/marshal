@@ -31,6 +31,7 @@ import (
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
+	"marshal/internal/tools/mcp"
 )
 
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
@@ -169,11 +170,11 @@ func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, 
 	return notes, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -184,10 +185,22 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		DB:            database,
 		ProjectID:     projectID,
 	}); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
+
+	var mcpMgr *mcp.Manager
+	if len(cfg.MCP.Servers) > 0 {
+		mcpMgr = mcp.NewManager(&cfg)
+		if err := mcpMgr.Start(ctx); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if err := mcpMgr.RegisterTools(reg); err != nil {
+			mcpMgr.Close()
+			return nil, nil, nil, nil, err
+		}
+	}
 
 	pol := policy.NewEngine(&cfg, state.SessionRules())
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
@@ -218,7 +231,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		Active:    true,
 	})
 	swarmRunner := buildSwarmRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
-	return runner, reg, swarmRunner, nil
+	return runner, reg, swarmRunner, mcpMgr, nil
 }
 
 // buildSwarmRunner wires the Milestone O swarm: every role runner shares
@@ -351,7 +364,15 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	var runner *agent.Runner
 	var toolReg *registry.Registry
 	var swarmRunner *swarm.Orchestrator
-	runner, toolReg, swarmRunner, err = buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
+	var mcpMgr *mcp.Manager
+	runner, toolReg, swarmRunner, mcpMgr, err = buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
+	if err == nil {
+		defer func() {
+			if mcpMgr != nil {
+				_ = mcpMgr.Close()
+			}
+		}()
+	}
 
 	cmdReg := commands.New()
 	if err == nil {
@@ -368,7 +389,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
-			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, runner, swarmRunner)
+			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, runner, swarmRunner, &mcpMgr)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	} else {
@@ -409,17 +430,25 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	return progErr
 }
 
-func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, runner *agent.Runner, swarmRunner *swarm.Orchestrator) error {
+func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, runner *agent.Runner, swarmRunner *swarm.Orchestrator, activeMCP **mcp.Manager) error {
 	if runner == nil {
 		return nil
 	}
-	newRunner, _, newSwarmRunner, err := buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
+	newRunner, _, newSwarmRunner, newMCP, err := buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
 	if err != nil {
 		return err
+	}
+	if activeMCP != nil && *activeMCP != nil {
+		_ = (*activeMCP).Close()
 	}
 	*runner = *newRunner
 	if swarmRunner != nil && newSwarmRunner != nil {
 		*swarmRunner = *newSwarmRunner
+	}
+	if activeMCP != nil {
+		*activeMCP = newMCP
+	} else if newMCP != nil {
+		_ = newMCP.Close()
 	}
 	return nil
 }

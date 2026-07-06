@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 )
@@ -22,7 +21,7 @@ const (
 	inputBorderRows       = 2
 	activityStripRows     = 1
 	commandSuggestionRows = 1
-	transcriptFrameRows   = 2
+	transcriptFrameRows   = 0
 	statusLineRows        = 1
 )
 
@@ -46,7 +45,7 @@ func (m Model) View() string {
 }
 
 func (m Model) renderTranscriptFrame() string {
-	return transcriptFrameStyle.
+	return lipgloss.NewStyle().
 		Width(max(m.width-2, 1)).
 		Height(max(m.viewport.Height, 1)).
 		Render(m.viewport.View())
@@ -82,11 +81,11 @@ func (m Model) renderInputArea() string {
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	// Pad every interior row to the box's inner width with the panel
-	// background so the dark fill reaches both vertical borders and no
-	// terminal-background gap is visible inside the box.
-	content = fillRowsToWidth(content, inputInnerWidth)
-	return inputBoxStyle.Render(content)
+	border := coralColor
+	if !m.input.Focused() {
+		border = mauveColor
+	}
+	return inputBoxStyle.Copy().BorderForeground(border).Width(inputInnerWidth).Render(content)
 }
 
 func (m Model) renderActivityStrip() string {
@@ -103,10 +102,7 @@ func (m Model) renderActivityStrip() string {
 		}
 		label = fmt.Sprintf("%s %s · %s", m.spinnerFrame, activity.Label, formatElapsed(elapsed))
 	}
-	return lipgloss.NewStyle().
-		Width(available).
-		Background(panelBgColor).
-		Render(statusBusyStyle.Render(truncateRunes(label, available)))
+	return statusBusyStyle.Render(truncateRunes(label, available))
 }
 
 func (m Model) renderCommandSuggestions() string {
@@ -127,15 +123,11 @@ func (m Model) renderCommandSuggestions() string {
 		if i == m.commandSuggestionIndex {
 			item = promptPrefixStyle.Render(item)
 		} else {
-			item = mutedStyle.Copy().Background(panelBgColor).Render(item)
+			item = mutedStyle.Render(item)
 		}
 		parts = append(parts, item)
 	}
-	line := strings.Join(parts, "  ")
-	return lipgloss.NewStyle().
-		Width(available).
-		Background(panelBgColor).
-		Render(line)
+	return strings.Join(parts, "  ")
 }
 
 func (m Model) fallbackView() string {
@@ -148,39 +140,4 @@ func (m Model) fallbackView() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		mutedStyle.Render("Marshal — waiting for terminal resize..."),
 	)
-}
-
-// contentWidth returns the visible width of a styled line after dropping any
-// trailing whitespace, i.e. the width of its real glyphs.
-func contentWidth(line string) int {
-	stripped := ansiRe.ReplaceAllString(line, "")
-	trimmed := strings.TrimRight(stripped, " ")
-	return ansi.StringWidth(trimmed)
-}
-
-// fillRowsToWidth pads every line of a multi-line block to width with
-// panelBg-styled spaces, first stripping any unstyled trailing pad the
-// children (notably the textarea) inserted so the fill is the only trailing
-// whitespace and therefore carries the input box's background colour.
-//
-// Bubbles' textarea pads short lines to its SetWidth via its embedded
-// viewport with raw, unstyled spaces, and its placeholder styling closes the
-// SGR with resets just before that pad. Neither the textarea's Base
-// background nor any enclosing lipgloss style can re-colour those naked
-// cells because the resets terminate the active background mid-line, so they
-// would render as the terminal's default background inside the input box.
-// Stripping the trailing pad and re-emitting a per-space-styled fill is the
-// only way to guarantee the dark fill reaches both vertical borders.
-func fillRowsToWidth(block string, width int) string {
-	lines := strings.Split(block, "\n")
-	for i, line := range lines {
-		w := contentWidth(line)
-		if w >= width {
-			continue
-		}
-		kept := ansi.Truncate(line, w, "")
-		pad := strings.Repeat(" ", width-w)
-		lines[i] = kept + inputFillStyle.Render(pad)
-	}
-	return strings.Join(lines, "\n")
 }

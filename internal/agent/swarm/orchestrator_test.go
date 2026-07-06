@@ -452,7 +452,9 @@ type usageScriptedProvider struct {
 }
 
 func (p *usageScriptedProvider) Name() string { return "usage-scripted" }
-func (p *usageScriptedProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) { return nil, nil }
+func (p *usageScriptedProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) {
+	return nil, nil
+}
 func (p *usageScriptedProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
 	return schema.EmbedResponse{}, nil
 }

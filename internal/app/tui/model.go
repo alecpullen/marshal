@@ -146,20 +146,16 @@ func New(state *session.State, opts ...Option) Model {
 	input.KeyMap = km
 	input.Focus()
 
-	input.FocusedStyle.Base = lipgloss.NewStyle().Background(panelBgColor)
-	input.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(panelBgColor)
-	input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(panelBgColor)
-	input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("247")).Background(panelBgColor)
-	input.BlurredStyle.Base = lipgloss.NewStyle().Background(panelBgColor)
-	input.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(panelBgColor)
-	input.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("247")).Background(panelBgColor)
+	input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
+	input.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	input.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
 
-	// Cursor lives on the embedded cursor.Model, not on textarea.Style.
-	// Style paints the visible (reverse) block; TextStyle paints the cell
-	// when the cursor is hidden mid-blink. Both carry panelBg so the block
-	// never leaves a default-bg seam inside the input box.
-	input.Cursor.Style = lipgloss.NewStyle().Foreground(accentColor).Background(panelBgColor)
-	input.Cursor.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(panelBgColor)
+	// Cursor lives on the embedded cursor.Model. Style paints the visible
+	// (reverse) block; TextStyle paints the cell mid-blink. Foreground only —
+	// no panel background to bleed.
+	input.Cursor.Style = lipgloss.NewStyle().Foreground(coralColor)
+	input.Cursor.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	m := Model{
 		state:          state,
@@ -196,7 +192,7 @@ func (m *Model) resize(width, height int) {
 	m.height = height
 
 	// Transcript viewport lives inside a subtle border frame.
-	m.viewport.Width = max(width-4, 1)
+	m.viewport.Width = max(width-2, 1)
 	m.viewport.Height = max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1)
 
 	// Input interior: width minus border (2) and padding (2) leaves the
@@ -788,19 +784,23 @@ func visibleRunes(s string) int {
 }
 
 var (
-	panelBorderColor = lipgloss.Color("240")
-	panelBgColor     = lipgloss.Color("235")
-	// statusBarBgColor is one shade lighter than the input panel so the
-	// status strip reads as distinct chrome rather than bleeding into the
-	// input box's background. The input box's accent border sits between
-	// the two, reinforcing the seam.
-	statusBarBgColor = lipgloss.Color("237")
-	accentColor      = lipgloss.Color("38")
-	violetColor      = lipgloss.Color("99")
-	dimColor         = lipgloss.Color("244")
-	successColor     = lipgloss.Color("71")
-	warningColor     = lipgloss.Color("178")
-	errorColor       = lipgloss.Color("167")
+	// Warm Sunset palette (256-color).
+	coralColor  = lipgloss.Color("209") // marshal, focused border, prompt
+	goldColor   = lipgloss.Color("214") // tool calls
+	tealColor   = lipgloss.Color("43")  // success
+	orangeColor = lipgloss.Color("172") // warning / risk
+	mauveColor  = lipgloss.Color("245") // blurred border
+	userColor   = lipgloss.Color("246") // user prompt
+
+	// accentColor is the primary accent (coral). Retained name because it is
+	// referenced widely; successColor/warningColor/errorColor are retuned to
+	// the warm palette.
+	accentColor  = coralColor
+	violetColor  = lipgloss.Color("175") // markdown headings (warm magenta)
+	dimColor     = lipgloss.Color("244")
+	successColor = tealColor
+	warningColor = orangeColor
+	errorColor   = lipgloss.Color("203")
 
 	mutedStyle      = lipgloss.NewStyle().Foreground(dimColor)
 	panelTitleStyle = lipgloss.NewStyle().
@@ -810,48 +810,30 @@ var (
 				Foreground(dimColor).
 				Italic(true)
 	inputPromptStyle = lipgloss.NewStyle().
-				Foreground(accentColor).
-				Background(panelBgColor).
+				Foreground(coralColor).
 				Bold(true)
 
-	// Shared styles — used across transcript, swarm panel, and approval panel.
 	codeBorderStyle = lipgloss.NewStyle().
 			Foreground(dimColor).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(dimColor)
 	toolNameStyle = lipgloss.NewStyle().
-			Foreground(accentColor)
+			Foreground(goldColor)
 	keyHintStyle = lipgloss.NewStyle().
-			Foreground(accentColor).
+			Foreground(coralColor).
 			Bold(true)
 	riskLabelStyle = lipgloss.NewStyle().
 			Foreground(warningColor).
 			Bold(true)
 	dimSeparator = " · "
 
-	transcriptFrameStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(panelBorderColor)
-
 	inputBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accentColor).
-			Background(panelBgColor).
+			BorderForeground(coralColor).
 			Padding(0, 1)
 
 	statusBarStyle = lipgloss.NewStyle().
-			Background(statusBarBgColor).
 			Foreground(lipgloss.Color("252"))
-
-	// inputFillStyle paints the trailing-pad spaces that
-	// fillRowsToWidth appends to each interior row of the input box so the
-	// dark panelBg reaches both vertical borders with no terminal-bg gap.
-	// It is applied per-pad-space, not as a per-line wrap, which is why it
-	// succeeds where the surrounding box background cannot: the textarea
-	// pads its viewport with raw, unstyled spaces and closes its SGR with
-	// resets just before that pad, so a whole-line background style cannot
-	// re-colour those cells — but styling the explicit pad we append does.
-	inputFillStyle = lipgloss.NewStyle().Background(panelBgColor)
 )
 
 func compactTokenCount(tokens int) string {

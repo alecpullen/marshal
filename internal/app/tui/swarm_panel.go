@@ -12,11 +12,11 @@ const swarmPanelRows = 9
 func statusGlyph(status session.SwarmRoleStatus, spinnerFrame string) string {
 	switch status {
 	case session.SwarmRoleDone:
-		return "✓"
+		return "✔"
 	case session.SwarmRoleActive:
 		return spinnerFrame
 	case session.SwarmRoleFailed:
-		return "✗"
+		return "✘"
 	default:
 		return "○"
 	}
@@ -26,7 +26,7 @@ func renderSwarmPanel(p session.SwarmProgress, spinnerFrame string, width int) s
 	if !p.Active {
 		return ""
 	}
-	inner := max(width-4, 1)
+	inner := max(width-2, 1)
 
 	var b strings.Builder
 	b.WriteString(promptPrefixStyle.Render(truncateRunes("Swarm: "+p.Goal, inner)))
@@ -49,5 +49,5 @@ func renderSwarmPanel(p session.SwarmProgress, spinnerFrame string, width int) s
 		b.WriteString(mutedStyle.Render(truncateRunes(line, inner)))
 	}
 
-	return inputBoxStyle.Width(max(width-2, 1)).Render(b.String())
+	return indentBlock(b.String(), "  ")
 }

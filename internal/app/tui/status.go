@@ -72,10 +72,9 @@ func (m Model) statusLeftSegments() []string {
 }
 
 var (
-	// These are foreground-only by design. They are used in two contexts
-	// with different backgrounds — the status strip (statusBarBgColor) and
-	// the in-transcript completed-tool line (default viewport bg) — so the
-	// background is supplied by the enclosing style at each render site.
+	// Foreground-only styles. No background is applied at either render site
+	// (the status strip and the in-transcript completed-tool line); both draw
+	// on the terminal's default background.
 	statusWarnStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
 	statusErrStyle  = lipgloss.NewStyle().Foreground(errorColor).Bold(true)
 	statusOkStyle   = lipgloss.NewStyle().Foreground(successColor)
@@ -104,10 +103,10 @@ func (m Model) statusRightSegment() string {
 		return statusBusyStyle.Render(label)
 	}
 	if m.state.ProviderError() != nil {
-		return statusErrStyle.Render("✗ error")
+		return statusErrStyle.Render("✘ error")
 	}
 	if m.lastActivityLabel != "" && m.now().Sub(m.lastActivityDone) < doneDisplayDuration {
-		return statusOkStyle.Render("✓ " + m.lastActivityLabel)
+		return statusOkStyle.Render("✔ " + m.lastActivityLabel)
 	}
 	return ""
 }

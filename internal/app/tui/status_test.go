@@ -60,7 +60,7 @@ func TestStatusLineShowsProviderError(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetProviderError(errors.New("connection refused"))
 	line := m.renderStatusLine(100)
-	if !strings.Contains(line, "✗ error") {
+	if !strings.Contains(line, "✘ error") {
 		t.Fatalf("status line missing error state:\n%s", line)
 	}
 }
@@ -149,5 +149,18 @@ func TestStatusLineShowsSwarmTokenBudget(t *testing.T) {
 	}
 	if !strings.Contains(line, "100k") {
 		t.Fatalf("status line missing compacted max count:\n%s", line)
+	}
+}
+
+func TestStatusLineHasNoBackgroundFill(t *testing.T) {
+	forceColor(t)
+	m := newViewTestModel(t, 80, 24)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	out := m.renderStatusLine(80)
+	if strings.Contains(out, "48;5;237") || strings.Contains(out, ";237m") {
+		t.Fatalf("status line still emits statusBar background fill:\n%q", out)
+	}
+	if !strings.Contains(stripANSI(out), "qwen @ ollama") {
+		t.Fatalf("status line missing route:\n%q", stripANSI(out))
 	}
 }

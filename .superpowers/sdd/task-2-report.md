@@ -1,97 +1,69 @@
-# Task 2 Report: Tester VERDICT Parser
+# Task 2: Drop Input-Box Background Fill Machinery — Report
 
-## Implementation Summary
+## Status: COMPLETE ✓
 
-Implemented `ParseVerdict(summary string) (pass bool, ok bool)` in the swarm package to extract and validate tester verdicts from orchestrator responses.
+## Commit Hash
+- `4caf0da` — refactor(tui): drop input-box background fill machinery
 
-## Files Changed
+## Changes Made
 
-- **Created:** `internal/agent/swarm/verdict.go` (25 lines)
-- **Created:** `internal/agent/swarm/verdict_test.go` (26 lines)
+### Modified Files
+1. **`internal/app/tui/view_test.go`**
+   - Added `TestInputAreaHasNoBackgroundFill()` test case that verifies:
+     - Input area no longer emits ANSI color code `48;5;235` (panel background fill)
+     - Input area still renders the prompt glyph "❯"
 
-## TDD Process
+2. **`internal/app/tui/view.go`**
+   - Rewrote `renderInputArea()` to remove `fillRowsToWidth()` call and apply dynamic border color:
+     - Border color is now `coralColor` when input is focused
+     - Border color switches to `mauveColor` when input is blurred
+     - Width constraint applied via `.Width(inputInnerWidth)`
+   - Simplified `renderActivityStrip()`:
+     - Removed wrapping `lipgloss.NewStyle().Width().Background(panelBgColor).Render()`
+     - Returns only `statusBusyStyle.Render(truncateRunes(label, available))`
+   - Simplified `renderCommandSuggestions()`:
+     - Removed `.Background(panelBgColor)` from selected/unselected item styles
+     - Selected items: `promptPrefixStyle.Render(item)`
+     - Unselected items: `mutedStyle.Render(item)` (removed `.Copy().Background()`)
+     - Removed wrapping style with background; returns `line` directly
+   - Deleted `contentWidth()` function (lines 153-159)
+   - Deleted `fillRowsToWidth()` function (lines 161-186)
+   - Removed unused import: `github.com/charmbracelet/x/ansi`
 
-### Step 1: Test (RED)
+## Test Results
+
+### Target Test (TestInputAreaHasNoBackgroundFill)
 ```
-$ go test ./internal/agent/swarm/ -run TestParseVerdict -v
-internal/agent/swarm/verdict_test.go:21:16: undefined: ParseVerdict
-FAIL    marshal/internal/agent/swarm [build failed]
-```
-
-### Step 2: Implementation
-Implemented `ParseVerdict` with:
-- Case-insensitive line-by-line scan for "VERDICT:" prefix
-- Returns `(true, true)` for explicit "VERDICT: PASS"
-- Returns `(false, true)` for explicit "VERDICT: FAIL"
-- Returns `(false, false)` for unrecognized verdicts or missing verdict line
-- Handles whitespace and case variations
-
-### Step 3: Test (GREEN)
-```
-$ go test ./internal/agent/swarm/ -run TestParseVerdict -v
-=== RUN   TestParseVerdict
-=== RUN   TestParseVerdict/pass
-=== RUN   TestParseVerdict/fail
-=== RUN   TestParseVerdict/lowercase
-=== RUN   TestParseVerdict/trailing_spaces
-=== RUN   TestParseVerdict/no_verdict
-=== RUN   TestParseVerdict/garbage_verdict
---- PASS: TestParseVerdict (0.00s)
-PASS
-ok  	marshal/internal/agent/swarm	0.595s
+go test ./internal/app/tui/ -run TestInputAreaHasNoBackgroundFill -v
+✓ PASS
 ```
 
-### Step 4: Full Package Tests
+### Full Package Test Suite
 ```
-$ go test ./internal/agent/swarm/ -v
-...
-=== RUN   TestParseVerdict
---- PASS: TestParseVerdict (0.00s)
-PASS
-ok  	marshal/internal/agent/swarm	0.287s
+go test ./internal/app/tui/ -v
+✓ PASS — All 115 tests passed
 ```
 
-All 11 existing package tests continue to pass. No regressions.
-
-## Commit
-
+### Build Verification
 ```
-[phase-5-swarm-polish 6d9e769] feat(swarm): add tester VERDICT parser
- 2 files changed, 55 insertions(+)
- create mode 100644 internal/agent/swarm/verdict.go
- create mode 100644 internal/agent/swarm/verdict_test.go
+CGO_ENABLED=1 go build ./...
+✓ BUILD SUCCESS
 ```
 
-## Test Coverage
+## Implementation Notes
 
-All 6 test cases pass:
-1. ✓ Standard uppercase VERDICT: PASS
-2. ✓ Standard uppercase VERDICT: FAIL
-3. ✓ Lowercase "verdict: pass" (case-insensitive)
-4. ✓ Trailing spaces around verdict value
-5. ✓ No verdict line present (returns ok=false)
-6. ✓ Unrecognized verdict value (returns pass=false, ok=false)
+- No background fills are now emitted in the input area, activity strip, or command suggestions
+- Input box border color dynamically responds to focus state (coral focused, mauve blurred)
+- All interior rows are rendered without background padding
+- The textarea's default background handling is respected (no re-styling needed)
+- All existing tests pass without modification
 
-## Self-Review
+## Verification Checklist
 
-**Correctness:** Implementation matches specification exactly. All edge cases from test suite handled correctly.
-
-**Code Quality:** 
-- Minimal, focused implementation (8 lines of logic)
-- Clear comments explaining return semantics
-- Efficient single-pass line scan
-- Follows Go conventions and package style
-
-**Safety:**
-- Pure function, no side effects
-- Handles empty input gracefully (returns false, false)
-- Case-insensitive matching prevents false negatives
-- Ambiguous verdicts correctly return ok=false for orchestrator halt
-
-**Integration:**
-- Compatible with orchestrator decision logic: pass=true + ok=true means "PASS", ok=false means "stop"
-- Ready for orchestrator loop control implementation
-
-## Concerns
-
-None. Implementation is straightforward, fully tested, and ready for use.
+- [x] New test `TestInputAreaHasNoBackgroundFill` passes
+- [x] New test correctly asserts absence of `48;5;235` (panelBgColor ANSI code)
+- [x] All 115 tui package tests pass
+- [x] Build succeeds with `CGO_ENABLED=1`
+- [x] No unused imports remain
+- [x] Code formatted with gofmt
+- [x] Commit created with correct message

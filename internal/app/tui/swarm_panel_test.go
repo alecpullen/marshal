@@ -103,3 +103,11 @@ func TestRenderSwarmPanelHidesTokensWhenZero(t *testing.T) {
 		t.Fatalf("panel should not show token line when both are zero:\n%s", out)
 	}
 }
+
+func TestSwarmPanelIsBorderless(t *testing.T) {
+	p := session.SwarmProgress{Active: true, Goal: "build", Roles: []session.SwarmRole{{Name: "coder", Status: session.SwarmRoleActive}}}
+	out := renderSwarmPanel(p, "⠋", 60)
+	if strings.Contains(out, "╭") || strings.Contains(out, "╰") {
+		t.Fatalf("swarm panel should have no border:\n%s", out)
+	}
+}

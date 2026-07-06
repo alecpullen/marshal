@@ -1,55 +1,92 @@
-# Task 4: [swarm.budget] config section
+# Task 4: Transcript Message Icons & Colors, Approval Panel De-fill — Report
 
 ## Status
-Completed.
+✅ COMPLETE
 
-## What changed
-- Added `Config.Swarm SwarmConfig`.
-- Added `SwarmConfig` and `SwarmBudgetConfig`.
-- Added defaults:
-  - `MaxFixRounds = 3`
-  - `MaxTotalTokens = 120000`
-  - `ToolIters = map[string]int{}`
-- Added TOML load/merge support for `[swarm.budget]` and `[swarm.budget.tool_iters]`.
-- Added focused tests for defaults and project config merge behavior.
+## Commit Hash
+`f08afa9` — style(tui): icon-prefixed transcript roles and de-filled approval panel
 
-## TDD evidence
+## Test Results
 
-RED:
+### Target Tests (All PASS)
 ```
-go test ./internal/app/config/ -run TestSwarmBudget -v
-```
-Failed as expected because `Config` had no `Swarm` field.
+CGO_ENABLED=1 go test ./internal/app/tui/ -run 'TestUserMessageUsesChevronPrefix|TestCompletedToolCallUsesCheckAndCross|TestApprovalPanelHasNoBackgroundFill|TestProviderErrorShowsInlineNotFullScreen' -v
 
-GREEN:
+=== RUN   TestUserMessageUsesChevronPrefix
+--- PASS: TestUserMessageUsesChevronPrefix (0.00s)
+=== RUN   TestCompletedToolCallUsesCheckAndCross
+--- PASS: TestCompletedToolCallUsesCheckAndCross (0.00s)
+=== RUN   TestApprovalPanelHasNoBackgroundFill
+--- PASS: TestApprovalPanelHasNoBackgroundFill (0.00s)
+=== RUN   TestProviderErrorShowsInlineNotFullScreen
+--- PASS: TestProviderErrorShowsInlineNotFullScreen (0.00s)
+PASS
+ok  	marshal/internal/app/tui	0.510s
 ```
-go test ./internal/app/config/ -run TestSwarmBudget -v
+
+### Full Package Suite (All PASS)
 ```
-Passed:
-- `TestSwarmBudgetDefaults`
-- `TestSwarmBudgetMergesFromFile`
-
-Regression:
+CGO_ENABLED=1 go test ./internal/app/tui/
+PASS
+ok  	marshal/internal/app/tui	0.875s
 ```
-go test ./internal/app/config/...
+
+### Build (SUCCESS)
 ```
-Passed.
-
-Additional pre-commit check:
+CGO_ENABLED=1 go build ./...
+Build successful
 ```
-go vet ./...
+
+## Changes Made
+
+1. **`internal/app/tui/transcript.go`:**
+   - `renderUserMessage()`: Changed prefix from `❯` to `›` in warm gray (`userColor`)
+   - `toolBulletStyle`: Changed from `warningColor` to `goldColor`
+   - `renderCompletedToolCall()`: Updated to use `✔` (teal/statusOkStyle) for success, `✘` (red/statusErrStyle) for failure
+   - `renderProviderError()`: Changed glyph from `✗` to `✘`
+   - `renderApprovalPanel()`: Removed all `.Background(panelBgColor)` calls (foreground-only rendering)
+
+2. **`internal/app/tui/transcript_test.go`:**
+   - Added `TestUserMessageUsesChevronPrefix()`, `TestCompletedToolCallUsesCheckAndCross()`, `TestApprovalPanelHasNoBackgroundFill()`
+   - Updated `TestRenderUserMessageUsesPromptPrefix()`: assertion from `❯` to `›`
+   - Updated `TestRenderProviderErrorInline()`: assertion from `✗` to `✘`
+
+3. **`internal/app/tui/view_test.go`:**
+   - Updated `TestViewIsSingleColumn()`: assertion from `❯` to `›`
+   - Updated `TestProviderErrorShowsInlineNotFullScreen()`: assertion from `✗ provider:` to `✘ provider:`
+
+## Pre-existing Tests Updated
+- `TestRenderUserMessageUsesPromptPrefix`: Updated to assert `›` instead of `❯`
+- `TestRenderProviderErrorInline`: Updated to assert `✘` instead of `✗`
+- `TestViewIsSingleColumn`: Updated to assert `›` instead of `❯`
+
+## Verification Checklist
+- ✅ All 4 target tests pass
+- ✅ Full TUI package suite passes (~130 tests)
+- ✅ Build succeeds (`CGO_ENABLED=1 go build ./...`)
+- ✅ Code formatted with `gofmt`
+- ✅ Commit created with correct message
+- ✅ All pre-existing tests updated to match new behavior
+
+---
+
+## Follow-up Fix: Test Assertion Revert
+
+**Commit Hash:** `6e7d52c`
+
+**Issue:** `TestViewIsSingleColumn` was incorrectly changed to assert `›` instead of the input prompt `❯`.
+
+**Fix:** Reverted assertion in `internal/app/tui/view_test.go` line 33 to check for `❯` (the actual input box prompt).
+
+**Test Results:**
 ```
-Passed.
+CGO_ENABLED=1 go test ./internal/app/tui/ -run TestViewIsSingleColumn -v
+=== RUN   TestViewIsSingleColumn
+--- PASS: TestViewIsSingleColumn (0.00s)
+PASS
+ok  	marshal/internal/app/tui	(cached)
 
-## Files changed
-- `internal/app/config/config.go`
-- `internal/app/config/config_test.go`
+Full suite: ok  	marshal/internal/app/tui	0.944s (all tests pass)
+```
 
-## Commit
-`c9c068b feat(config): add [swarm.budget] section`
-
-## Self-review
-The implementation follows the existing pointer-backed config-file merge pattern. The tests use the existing `.marshal/config.toml` project config layout via `writeFile` and `Load`.
-
-## Concerns
-None.
+**No concerns.** The test now correctly validates the input prompt presence as intended.

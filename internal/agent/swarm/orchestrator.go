@@ -91,14 +91,13 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 	// 1. Planner (read-only): produces the shared plan.
 	o.State.UpdateSwarmRole("planner", session.SwarmRoleActive, "")
 	planPrompt := plannerPrompt(ts)
-	plannerTask, err := o.runRole(ctx, agent.RolePlanner, ScopeReadOnly, planPrompt)
+	plannerTask, err := o.runRole(ctx, meter, agent.RolePlanner, ScopeReadOnly, planPrompt)
 	if err != nil {
 		o.State.UpdateSwarmRole("planner", session.SwarmRoleFailed, "")
 		o.announce("Swarm aborted: planner failed.")
 		return err
 	}
 	ts.SetPlan(planLines(plannerTask.Summary))
-	o.observe(meter, agent.RolePlanner, planPrompt, plannerTask.Summary)
 	o.State.UpdateSwarmRole("planner", session.SwarmRoleDone, "")
 
 	// 2. Repo scouts (read-only, parallel). Runners are constructed before
@@ -107,9 +106,10 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 		focuses := o.focuses()
 		o.State.UpdateSwarmRole("scouts", session.SwarmRoleActive, fmt.Sprintf("0/%d", len(focuses)))
 		type scoutJob struct {
-			focus  ScoutFocus
-			runner *agent.Runner
-			prompt string
+			focus        ScoutFocus
+			runner       *agent.Runner
+			prompt       string
+			hasRealUsage *bool
 		}
 		jobs := make([]scoutJob, 0, len(focuses))
 		for _, focus := range focuses {
@@ -119,7 +119,17 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 				o.announce("Swarm aborted: could not build repo scout.")
 				return err
 			}
-			jobs = append(jobs, scoutJob{focus: focus, runner: runner, prompt: scoutPrompt(ts, focus)})
+			var hasRealUsage bool
+			runner.UsageObserver = func(promptTokens, completionTokens int) {
+				hasRealUsage = true
+				meter.Observe(agent.RoleRepoScout, promptTokens, completionTokens)
+			}
+			jobs = append(jobs, scoutJob{
+				focus:        focus,
+				runner:       runner,
+				prompt:       scoutPrompt(ts, focus),
+				hasRealUsage: &hasRealUsage,
+			})
 		}
 		var wg sync.WaitGroup
 		var done int32
@@ -132,7 +142,9 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 					ts.AddFinding(Finding{Agent: "repo_scout", Area: j.focus.Area, Content: "scout failed: " + err.Error()})
 				} else {
 					ts.AddFinding(Finding{Agent: "repo_scout", Area: j.focus.Area, Content: task.Summary})
-					o.observe(meter, agent.RoleRepoScout, j.prompt, task.Summary)
+					if !*j.hasRealUsage {
+						o.observe(meter, agent.RoleRepoScout, j.prompt, task.Summary)
+					}
 				}
 				n := atomic.AddInt32(&done, 1)
 				o.State.UpdateSwarmRole("scouts", session.SwarmRoleActive, fmt.Sprintf("%d/%d", n, len(jobs)))
@@ -156,14 +168,13 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 		}
 		o.State.UpdateSwarmRole("implementer", session.SwarmRoleActive, fmt.Sprintf("round %d/%d", round, rounds))
 		implPrompt := implementerPrompt(ts)
-		implTask, err := o.runRole(ctx, agent.RoleImplementer, ScopeFull, implPrompt)
+		implTask, err := o.runRole(ctx, meter, agent.RoleImplementer, ScopeFull, implPrompt)
 		if err != nil {
 			o.State.UpdateSwarmRole("implementer", session.SwarmRoleFailed, "")
 			o.announce("Swarm aborted: implementer failed.")
 			return err
 		}
 		ts.AddPatchNote(implTask.Summary)
-		o.observe(meter, agent.RoleImplementer, implPrompt, implTask.Summary)
 		o.State.UpdateSwarmRole("implementer", session.SwarmRoleDone, fmt.Sprintf("round %d/%d", round, rounds))
 
 		if o.overBudget(meter) {
@@ -171,14 +182,13 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 		}
 		o.State.UpdateSwarmRole("tester", session.SwarmRoleActive, fmt.Sprintf("round %d/%d", round, rounds))
 		testPrompt := testerPrompt(ts)
-		testTask, err := o.runRole(ctx, agent.RoleTester, ScopeTester, testPrompt)
+		testTask, err := o.runRole(ctx, meter, agent.RoleTester, ScopeTester, testPrompt)
 		if err != nil {
 			ts.AddFinding(Finding{Agent: "tester", Area: "tests", Content: "tester failed: " + err.Error()})
 			o.State.UpdateSwarmRole("tester", session.SwarmRoleFailed, "")
 			break
 		}
 		ts.AddFinding(Finding{Agent: "tester", Area: "tests", Content: testTask.Summary})
-		o.observe(meter, agent.RoleTester, testPrompt, testTask.Summary)
 
 		pass, ok := ParseVerdict(testTask.Summary)
 		if pass || !ok {
@@ -192,13 +202,12 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 	// the implementer's work is already in the working tree.
 	o.State.UpdateSwarmRole("reviewer", session.SwarmRoleActive, "")
 	reviewPrompt := reviewerPrompt(ts)
-	reviewTask, err := o.runRole(ctx, agent.RoleReviewer, ScopeReadOnly, reviewPrompt)
+	reviewTask, err := o.runRole(ctx, meter, agent.RoleReviewer, ScopeReadOnly, reviewPrompt)
 	if err != nil {
 		ts.SetFinalSummary("Reviewer failed: " + err.Error())
 		o.State.UpdateSwarmRole("reviewer", session.SwarmRoleFailed, "")
 	} else {
 		ts.SetFinalSummary(reviewTask.Summary)
-		o.observe(meter, agent.RoleReviewer, reviewPrompt, reviewTask.Summary)
 		o.State.UpdateSwarmRole("reviewer", session.SwarmRoleDone, "")
 	}
 
@@ -211,12 +220,24 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 	return nil
 }
 
-func (o *Orchestrator) runRole(ctx context.Context, role agent.AgentRole, scope RegistryScope, prompt string) (*agent.Task, error) {
+func (o *Orchestrator) runRole(ctx context.Context, meter TokenMeter, role agent.AgentRole, scope RegistryScope, prompt string) (*agent.Task, error) {
 	runner, err := o.NewRunner(role, scope)
 	if err != nil {
 		return nil, err
 	}
-	return runner.RunTask(ctx, prompt)
+	var hasRealUsage bool
+	runner.UsageObserver = func(promptTokens, completionTokens int) {
+		hasRealUsage = true
+		meter.Observe(role, promptTokens, completionTokens)
+	}
+	task, err := runner.RunTask(ctx, prompt)
+	if err != nil {
+		return nil, err
+	}
+	if !hasRealUsage {
+		o.observe(meter, role, prompt, task.Summary)
+	}
+	return task, nil
 }
 
 func (o *Orchestrator) observe(meter TokenMeter, role agent.AgentRole, prompt, answer string) {

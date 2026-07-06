@@ -24,6 +24,28 @@
   - dim gray `244` — meta / separators
 - Run `gofmt -w .` and `go vet ./...` before the final commit.
 - Format each commit message as `style(tui): ...` or `refactor(tui): ...`.
+- **Color-assertion test helper (do NOT force the color profile globally).**
+  Lipgloss emits no SGR codes under the default test color profile, so any
+  test that asserts on ANSI color codes (presence OR absence of `209`,
+  `235`, `237`, `48;5;...`) must first force the profile locally and restore
+  it. Task 1 adds this helper to a shared test file; Tasks 2, 4, 5 call it at
+  the top of their color-asserting tests. Never add a package-level
+  `init()`/`TestMain` that forces color for the whole package — it breaks
+  existing tests that assert on contiguous styled text.
+
+  ```go
+  // forceColor makes lipgloss emit ANSI256 SGR codes for the duration of the
+  // test so color-code assertions are meaningful, then restores the prior
+  // profile. Requires the test not run in parallel (none in this package do).
+  func forceColor(t *testing.T) {
+  	t.Helper()
+  	prev := lipgloss.ColorProfile()
+  	lipgloss.SetColorProfile(termenv.ANSI256)
+  	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+  }
+  ```
+  Imports needed by whichever test file defines it:
+  `"github.com/charmbracelet/lipgloss"` and `"github.com/muesli/termenv"`.
 
 ---
 
@@ -53,10 +75,13 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `internal/app/tui/transcript_test.go`:
+Add the `forceColor` helper (from Global Constraints) to a shared test file
+such as `internal/app/tui/transcript_test.go`, then add this test to the same
+file:
 
 ```go
 func TestWelcomeBannerHasCoralDotAndName(t *testing.T) {
+	forceColor(t)
 	out := renderWelcomeBanner(80)
 	plain := stripANSI(out)
 	if !strings.Contains(plain, "● marshal") {
@@ -213,6 +238,7 @@ Add to `internal/app/tui/view_test.go`:
 
 ```go
 func TestInputAreaHasNoBackgroundFill(t *testing.T) {
+	forceColor(t)
 	m := newViewTestModel(t, 60, 20)
 	out := m.renderInputArea()
 	// panelBg 235 must never be emitted as a fill anymore.
@@ -449,6 +475,7 @@ func TestCompletedToolCallUsesCheckAndCross(t *testing.T) {
 }
 
 func TestApprovalPanelHasNoBackgroundFill(t *testing.T) {
+	forceColor(t)
 	tc := &session.PendingToolCall{Name: "shell.run", Command: "ls", Risk: "reads files"}
 	out := renderApprovalPanel(tc, 50)
 	if strings.Contains(out, ";235m") || strings.Contains(out, "48;5;235") {
@@ -587,6 +614,7 @@ Add to `internal/app/tui/status_test.go`:
 
 ```go
 func TestStatusLineHasNoBackgroundFill(t *testing.T) {
+	forceColor(t)
 	m := newViewTestModel(t, 80, 24)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
 	out := m.renderStatusLine(80)

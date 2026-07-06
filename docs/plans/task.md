@@ -1,6 +1,7 @@
 | # | Task | Status | Component |
 |---|------|--------|-----------|
-| 1 | Add regex command matching to matchRule and matchPattern in policy.go | [x] | Policy |
-| 2 | Implement matchMCPPolicy and flexible MCP rule routing in policy.go | [x] | Policy |
-| 3 | Write comprehensive tests in policy_test.go | [x] | Policy |
-| 4 | Verify integration and run Go test suite | [x] | Verification |
+| 1 | Add Schema field to PendingToolCall in session.go | [x] | Session |
+| 2 | Populate Schema and handle JSON editing in runner.go | [x] | Runner |
+| 3 | Support JSON args editing in TUI model.go | [x] | TUI |
+| 4 | Display Description and JSON arguments in TUI transcript.go | [x] | TUI |
+| 5 | Add tests and verify execution | [x] | Verification |

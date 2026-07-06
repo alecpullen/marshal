@@ -19,3 +19,4 @@ coverage.txt
 
 # Local project config and database
 .marshal/
+api.fish

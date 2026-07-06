@@ -132,3 +132,16 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height, wantHeight)
 	}
 }
+
+func TestInputAreaHasNoBackgroundFill(t *testing.T) {
+	forceColor(t)
+	m := newViewTestModel(t, 60, 20)
+	out := m.renderInputArea()
+	// panelBg 235 must never be emitted as a fill anymore.
+	if strings.Contains(out, "48;5;235") || strings.Contains(out, ";235m") {
+		t.Fatalf("input area still emits panel background fill:\n%q", out)
+	}
+	if !strings.Contains(stripANSI(out), "❯") {
+		t.Fatalf("input area missing prompt:\n%q", stripANSI(out))
+	}
+}

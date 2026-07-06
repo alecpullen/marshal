@@ -866,9 +866,49 @@ func TestRunMockRepoVerification(t *testing.T) {
 	}
 	defer os.Chdir(origWd)
 
-	mockRepoDir := filepath.Join(origWd, "..", "..", "mock-repo")
+	mockRepoDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mockRepoDir, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	configToml := `
+[project]
+name = "mock-project"
+
+[commands]
+test = "go test ./..."
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:9999/v1"
+api_key = "mock-key"
+
+[models.presets.mock_preset]
+provider = "mock"
+model = "mock-model"
+local_only = true
+
+[agent_profiles.mock_profile]
+router = "mock_preset"
+knowledge = "mock_preset"
+summarizer = "mock_preset"
+repo_scout = "mock_preset"
+tester = "mock_preset"
+planner = "mock_preset"
+implementer = "mock_preset"
+reviewer = "mock_preset"
+security_reviewer = "mock_preset"
+`
+
+	if err := os.WriteFile(filepath.Join(mockRepoDir, ".marshal", "config.toml"), []byte(configToml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := os.Chdir(mockRepoDir); err != nil {
-		t.Fatalf("chdir to mock-repo failed: %v, origWd=%s", err, origWd)
+		t.Fatalf("chdir to mockRepoDir failed: %v", err)
 	}
 
 	stdout := bytes.NewBuffer(nil)

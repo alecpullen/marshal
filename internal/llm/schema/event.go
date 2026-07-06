@@ -44,4 +44,13 @@ type ChatEvent struct {
 	// Err is populated only when Type == ChatEventError. The channel is
 	// always closed immediately after an error event.
 	Err error
+
+	// Usage is populated only when Type == ChatEventDone and token counts are known.
+	Usage *TokenUsage
+}
+
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }

@@ -12,6 +12,16 @@ type chatMessageBody struct {
 	Content string `json:"content"`
 }
 
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+type usageBody struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type chatCompletionRequestBody struct {
 	Model          string                 `json:"model"`
 	Messages       []chatMessageBody      `json:"messages"`
@@ -21,6 +31,7 @@ type chatCompletionRequestBody struct {
 	MaxTokens      *int                   `json:"max_tokens,omitempty"`
 	Stop           []string               `json:"stop,omitempty"`
 	ResponseFormat *schema.ResponseFormat `json:"response_format,omitempty"`
+	StreamOptions  *streamOptions         `json:"stream_options,omitempty"`
 }
 
 // chatCompletionChunk is a single SSE `data:` payload for streaming
@@ -35,7 +46,8 @@ type chatCompletionChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Error *apiError `json:"error"`
+	Error *apiError  `json:"error"`
+	Usage *usageBody `json:"usage,omitempty"`
 }
 
 // chatCompletionResponse is the full non-streaming response body:
@@ -45,7 +57,8 @@ type chatCompletionResponse struct {
 		Message      chatMessageBody `json:"message"`
 		FinishReason string          `json:"finish_reason"`
 	} `json:"choices"`
-	Error *apiError `json:"error"`
+	Error *apiError  `json:"error"`
+	Usage *usageBody `json:"usage,omitempty"`
 }
 
 type modelsResponseBody struct {

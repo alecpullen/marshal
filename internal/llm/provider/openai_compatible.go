@@ -164,6 +164,10 @@ func buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
 	for _, m := range req.Messages {
 		messages = append(messages, chatMessageBody{Role: string(m.Role), Content: m.Content})
 	}
+	var streamOpts *streamOptions
+	if req.Stream {
+		streamOpts = &streamOptions{IncludeUsage: true}
+	}
 	return json.Marshal(chatCompletionRequestBody{
 		Model:          req.Model,
 		Messages:       messages,
@@ -173,6 +177,7 @@ func buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
 		MaxTokens:      req.MaxTokens,
 		Stop:           req.Stop,
 		ResponseFormat: req.ResponseFormat,
+		StreamOptions:  streamOpts,
 	})
 }
 
@@ -181,14 +186,16 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	defer body.Close()
 
 	dec := streaming.NewDecoder(body)
+	var finishReason string
+	var usage *schema.TokenUsage
+
 	for dec.Next() {
 		data := strings.TrimSpace(dec.Event().Data)
 		if data == "" {
 			continue
 		}
 		if data == "[DONE]" {
-			events <- schema.ChatEvent{Type: schema.ChatEventDone}
-			return
+			break
 		}
 
 		var chunk chatCompletionChunk
@@ -199,6 +206,13 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 		if chunk.Error != nil {
 			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: errors.New(chunk.Error.Message)}
 			return
+		}
+		if chunk.Usage != nil {
+			usage = &schema.TokenUsage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -211,17 +225,14 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: choice.Delta.Content}
 		}
 		if choice.FinishReason != "" {
-			events <- schema.ChatEvent{Type: schema.ChatEventDone, FinishReason: choice.FinishReason}
-			return
+			finishReason = choice.FinishReason
 		}
 	}
 	if err := dec.Err(); err != nil {
 		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("read stream: %w", err)}
 		return
 	}
-	// Stream ended cleanly without an explicit [DONE] or finish_reason
-	// (some servers omit both) — still signal completion.
-	events <- schema.ChatEvent{Type: schema.ChatEventDone}
+	events <- schema.ChatEvent{Type: schema.ChatEventDone, FinishReason: finishReason, Usage: usage}
 }
 
 func readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
@@ -245,7 +256,15 @@ func readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	if choice.Message.Content != "" {
 		events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: choice.Message.Content}
 	}
-	events <- schema.ChatEvent{Type: schema.ChatEventDone, FinishReason: choice.FinishReason}
+	var usage *schema.TokenUsage
+	if parsed.Usage != nil {
+		usage = &schema.TokenUsage{
+			PromptTokens:     parsed.Usage.PromptTokens,
+			CompletionTokens: parsed.Usage.CompletionTokens,
+			TotalTokens:      parsed.Usage.TotalTokens,
+		}
+	}
+	events <- schema.ChatEvent{Type: schema.ChatEventDone, FinishReason: choice.FinishReason, Usage: usage}
 }
 
 // Embed requests embeddings via POST {base_url}/embeddings.

@@ -205,3 +205,71 @@ func TestMCPToolSafetyPolicies(t *testing.T) {
 		t.Errorf("unconfigured decision = %s, want confirm", dec)
 	}
 }
+
+func TestPolicyEngine_Evaluate_RegexCommandRules(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Allow.Commands = []string{"/^git status -s.*/", "/^go test .*/"}
+	cfg.Tools.Shell.Confirm.Commands = []string{"/^go get .*@latest$/"}
+	cfg.Tools.Shell.Deny.Patterns = []string{"/^delete \\/.*$/", "/destructive-[0-9]+/"}
+
+	pe := NewEngine(&cfg, nil)
+
+	tests := []struct {
+		cmd  string
+		want Decision
+	}{
+		{"git status -s", DecisionAllow},
+		{"git status -s -b", DecisionAllow},
+		{"git status", DecisionConfirm}, // Prefix mismatch without regex match
+		{"go test ./internal/app", DecisionAllow},
+		{"go get github.com/stretchr/testify@latest", DecisionConfirm},
+		{"go get github.com/stretchr/testify", DecisionConfirm}, // Default fallback (no regex match)
+		{"delete /usr/bin", DecisionDeny},
+		{"delete localdir", DecisionConfirm}, // Doesn't match deny regex pattern
+		{"run destructive-42 command", DecisionDeny},
+	}
+
+	for _, tc := range tests {
+		dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": tc.cmd})
+		if err != nil {
+			t.Fatalf("Evaluate(%q) error: %v", tc.cmd, err)
+		}
+		if dec != tc.want {
+			t.Errorf("Evaluate(%q) = %v, want %v", tc.cmd, dec, tc.want)
+		}
+	}
+}
+
+func TestPolicyEngine_Evaluate_MCPPatternMatching(t *testing.T) {
+	cfg := config.Default()
+	cfg.MCP.Policies = map[string]string{
+		"mcp.github.list_issues":   "allow",
+		"mcp.github":               "confirm",
+		"mcp.gitlab.*":             "allow",
+		"/^mcp\\.aws\\.delete_.*$/": "deny",
+	}
+
+	pe := NewEngine(&cfg, nil)
+
+	tests := []struct {
+		tool string
+		want Decision
+	}{
+		{"mcp.github.list_issues", DecisionAllow},   // Exact match wins
+		{"mcp.github.create_issue", DecisionConfirm}, // Prefix match
+		{"mcp.github", DecisionConfirm},             // Prefix match equal
+		{"mcp.gitlab.get_project", DecisionAllow},    // Wildcard match
+		{"mcp.aws.delete_bucket", DecisionDeny},      // Regex match
+		{"mcp.aws.get_bucket", DecisionConfirm},      // Default confirm fallback
+	}
+
+	for _, tc := range tests {
+		dec, _, err := pe.Evaluate(tc.tool, nil)
+		if err != nil {
+			t.Fatalf("Evaluate(%q) error: %v", tc.tool, err)
+		}
+		if dec != tc.want {
+			t.Errorf("Evaluate(%q) = %v, want %v", tc.tool, dec, tc.want)
+		}
+	}
+}

@@ -18,10 +18,14 @@ func TestEstimateMeterAccumulates(t *testing.T) {
 }
 
 func TestProviderUsageMeterIsDormantButUsable(t *testing.T) {
-	var m TokenMeter = NewProviderUsageMeter()
+	var m ProviderUsageMeter
 	m.Observe(agent.RoleTester, 10, 5)
-	if m.Total() != 15 {
-		t.Fatalf("stub meter Total = %d, want 15 (delegates to estimate)", m.Total())
+	if got := m.Total(); got != 15 {
+		t.Fatalf("zero-value provider meter Total = %d, want 15", got)
+	}
+
+	if got := NewProviderUsageMeter().Total(); got != 0 {
+		t.Fatalf("new provider meter Total = %d, want 0", got)
 	}
 }
 

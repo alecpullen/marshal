@@ -50,15 +50,15 @@ func (m *EstimateMeter) Total() int {
 // surfaces real usage, it delegates to estimation so behaviour is
 // unchanged. Do NOT add provider-usage parsing in this cycle.
 type ProviderUsageMeter struct {
-	fallback *EstimateMeter
+	EstimateMeter
 }
 
 func NewProviderUsageMeter() *ProviderUsageMeter {
-	return &ProviderUsageMeter{fallback: NewEstimateMeter()}
+	return &ProviderUsageMeter{}
 }
 
 func (m *ProviderUsageMeter) Observe(role agent.AgentRole, promptTokens, completionTokens int) {
-	m.fallback.Observe(role, promptTokens, completionTokens)
+	m.EstimateMeter.Observe(role, promptTokens, completionTokens)
 }
 
-func (m *ProviderUsageMeter) Total() int { return m.fallback.Total() }
+func (m *ProviderUsageMeter) Total() int { return m.EstimateMeter.Total() }

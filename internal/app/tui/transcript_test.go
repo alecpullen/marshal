@@ -249,9 +249,9 @@ func TestWelcomeBannerHasCoralDotAndName(t *testing.T) {
 }
 
 func TestUserMessageUsesChevronPrefix(t *testing.T) {
-	out := stripANSI(renderUserMessage("hi there", 40))
-	if !strings.HasPrefix(strings.TrimLeft(out, " "), "› ") && !strings.Contains(out, "› ") {
-		t.Fatalf("user message should use '›' prefix: %q", out)
+	out := strings.TrimLeft(stripANSI(renderUserMessage("hi there", 40)), " ")
+	if !strings.HasPrefix(out, "› ") {
+		t.Fatalf("user message should start with '› ' prefix: %q", out)
 	}
 }
 

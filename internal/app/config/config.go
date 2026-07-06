@@ -206,7 +206,7 @@ type configFile struct {
 		} `toml:"budget"`
 	} `toml:"swarm"`
 	MCP *struct {
-		Servers  map[string]struct {
+		Servers map[string]struct {
 			Command *string           `toml:"command"`
 			Args    []string          `toml:"args"`
 			Env     map[string]string `toml:"env"`

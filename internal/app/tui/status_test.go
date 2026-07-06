@@ -131,3 +131,23 @@ func TestStatusLineFitsVeryNarrowWidths(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusLineShowsSwarmTokenBudget(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetSwarmProgress(session.SwarmProgress{
+		Active:     true,
+		Goal:       "test goal",
+		TokensUsed: 5000,
+		TokensMax:  100000,
+	})
+	line := m.renderStatusLine(120)
+	if !strings.Contains(line, "tokens") {
+		t.Fatalf("status line missing token segment:\n%s", line)
+	}
+	if !strings.Contains(line, "5k") {
+		t.Fatalf("status line missing compacted used count:\n%s", line)
+	}
+	if !strings.Contains(line, "100k") {
+		t.Fatalf("status line missing compacted max count:\n%s", line)
+	}
+}

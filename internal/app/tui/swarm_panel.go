@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"marshal/internal/app/session"
 )
 
-const swarmPanelRows = 8
+const swarmPanelRows = 9
 
 func statusGlyph(status session.SwarmRoleStatus, spinnerFrame string) string {
 	switch status {
@@ -41,6 +42,12 @@ func renderSwarmPanel(p session.SwarmProgress, spinnerFrame string, width int) s
 			line += "   " + r.Detail
 		}
 		b.WriteString(truncateRunes(line, inner))
+	}
+
+	if p.TokensMax > 0 || p.TokensUsed > 0 {
+		b.WriteString("\n")
+		line := fmt.Sprintf("Tokens: %d / %d", p.TokensUsed, p.TokensMax)
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(truncateRunes(line, inner)))
 	}
 
 	return inputBoxStyle.Width(max(width-2, 1)).Render(b.String())

@@ -66,3 +66,12 @@ func TestSwarmProgressConcurrentUpdates(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateSwarmTokens(t *testing.T) {
+	s := newTestState()
+	s.UpdateSwarmTokens(1500, 10000)
+	got := s.SwarmProgress()
+	if got.TokensUsed != 1500 || got.TokensMax != 10000 {
+		t.Fatalf("TokensUsed=%d, TokensMax=%d, want 1500/10000", got.TokensUsed, got.TokensMax)
+	}
+}

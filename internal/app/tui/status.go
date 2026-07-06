@@ -62,6 +62,12 @@ func (m Model) statusLeftSegments() []string {
 			compactTokenCount(pack.TokenUsage.EstimatedTokens),
 			compactTokenCount(pack.TokenUsage.MaxTokens)))
 	}
+
+	if sp := m.state.SwarmProgress(); sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {
+		segments = append(segments, fmt.Sprintf("tokens %s/%s",
+			compactTokenCount(sp.TokensUsed),
+			compactTokenCount(sp.TokensMax)))
+	}
 	return segments
 }
 

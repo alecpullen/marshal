@@ -61,3 +61,45 @@ func TestAgentFinishedReleasesSwarmPanelReservation(t *testing.T) {
 		t.Fatalf("finished viewport height = %d, want restored %d", m.viewport.Height, fullHeight)
 	}
 }
+
+func TestRenderSwarmPanelShowsTokenBudget(t *testing.T) {
+	p := session.SwarmProgress{
+		Goal:   "refactor auth",
+		Active: true,
+		Roles: []session.SwarmRole{
+			{Name: "planner", Status: session.SwarmRoleDone},
+			{Name: "scouts", Status: session.SwarmRolePending},
+			{Name: "implementer", Status: session.SwarmRolePending},
+			{Name: "tester", Status: session.SwarmRolePending},
+			{Name: "reviewer", Status: session.SwarmRolePending},
+		},
+		TokensUsed: 4200,
+		TokensMax:  120000,
+	}
+	out := renderSwarmPanel(p, "*", 60)
+
+	if !strings.Contains(out, "Tokens:") {
+		t.Fatalf("panel missing token budget line:\n%s", out)
+	}
+	if !strings.Contains(out, "4200") {
+		t.Fatalf("panel missing used token count:\n%s", out)
+	}
+	if !strings.Contains(out, "120000") {
+		t.Fatalf("panel missing max token count:\n%s", out)
+	}
+}
+
+func TestRenderSwarmPanelHidesTokensWhenZero(t *testing.T) {
+	p := session.SwarmProgress{
+		Goal:   "refactor auth",
+		Active: true,
+		Roles: []session.SwarmRole{
+			{Name: "planner", Status: session.SwarmRolePending},
+		},
+	}
+	out := renderSwarmPanel(p, "*", 60)
+
+	if strings.Contains(out, "Tokens:") {
+		t.Fatalf("panel should not show token line when both are zero:\n%s", out)
+	}
+}

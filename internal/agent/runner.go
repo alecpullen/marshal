@@ -72,6 +72,8 @@ type MemoryProvider interface {
 // and PolicyEngine.Evaluate together — everything else (TUI, tools,
 // registry, policy) stays decoupled and is exercised independently by
 // Milestones C-G's own tests.
+type UsageObserver func(promptTokens, completionTokens int)
+
 type Runner struct {
 	Provider           provider.Provider
 	Registry           *registry.Registry
@@ -99,6 +101,8 @@ type Runner struct {
 	// WriteGate serialises non-read-only tool execution. When nil, no
 	// serialisation is performed (default single-agent behaviour).
 	WriteGate WriteGate
+
+	UsageObserver UsageObserver
 
 	forceClassMu sync.Mutex
 	tracker      *progressTracker
@@ -428,6 +432,7 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 
 	var sb strings.Builder
+	var usage *schema.TokenUsage
 	for event := range events {
 		switch event.Type {
 		case schema.ChatEventDelta:
@@ -439,8 +444,11 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 		case schema.ChatEventError:
 			return "", event.Err
 		case schema.ChatEventDone:
-			return sb.String(), nil
+			usage = event.Usage
 		}
+	}
+	if r.UsageObserver != nil && usage != nil {
+		r.UsageObserver(usage.PromptTokens, usage.CompletionTokens)
 	}
 	return sb.String(), nil
 }

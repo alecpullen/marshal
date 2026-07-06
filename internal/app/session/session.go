@@ -179,6 +179,7 @@ type State struct {
 	plan            []string
 	activeSkills    map[string]bool
 	toolBudget      ToolBudget
+	swarmProgress   SwarmProgress
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {

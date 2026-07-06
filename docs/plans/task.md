@@ -1,7 +1,6 @@
 | # | Task | Status | Component |
 |---|------|--------|-----------|
-| 1 | Implement HasConfig helper in config.go | [x] | Config |
-| 2 | Implement OnboardingModel Bubble Tea state machine | [x] | Onboarding |
-| 3 | Implement config file generation and writing | [x] | Onboarding |
-| 4 | Integrate Onboarding Wizard in app.go | [x] | App |
-| 5 | Add tests and verify execution | [x] | Verification |
+| 1 | Add regex command matching to matchRule and matchPattern in policy.go | [x] | Policy |
+| 2 | Implement matchMCPPolicy and flexible MCP rule routing in policy.go | [x] | Policy |
+| 3 | Write comprehensive tests in policy_test.go | [x] | Policy |
+| 4 | Verify integration and run Go test suite | [x] | Verification |

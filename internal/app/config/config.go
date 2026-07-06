@@ -22,6 +22,7 @@ type Config struct {
 	Agents        map[routing.AgentRole]AgentRoleConfig `toml:"agents"`
 	Tools         ToolsConfig                           `toml:"tools"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
+	MCP           MCPConfig                             `toml:"mcp"`
 }
 
 type ModelsConfig struct {
@@ -67,6 +68,17 @@ type SwarmBudgetConfig struct {
 	MaxFixRounds   int            `toml:"max_fix_rounds"`
 	MaxTotalTokens int            `toml:"max_total_tokens"`
 	ToolIters      map[string]int `toml:"tool_iters"`
+}
+
+type MCPConfig struct {
+	Servers  map[string]MCPServerConfig `toml:"servers"`
+	Policies map[string]string          `toml:"policies"`
+}
+
+type MCPServerConfig struct {
+	Command string            `toml:"command"`
+	Args    []string          `toml:"args"`
+	Env     map[string]string `toml:"env"`
 }
 
 type ShellToolConfig struct {
@@ -193,6 +205,14 @@ type configFile struct {
 			ToolIters      map[string]int `toml:"tool_iters"`
 		} `toml:"budget"`
 	} `toml:"swarm"`
+	MCP *struct {
+		Servers  map[string]struct {
+			Command *string           `toml:"command"`
+			Args    []string          `toml:"args"`
+			Env     map[string]string `toml:"env"`
+		} `toml:"servers"`
+		Policies map[string]string `toml:"policies"`
+	} `toml:"mcp"`
 	// Providers, unlike the other configFile fields above, is not a
 	// pointer-to-anonymous-struct: a nil map already distinguishes
 	// "providers section absent from this file" from "present", so no
@@ -268,6 +288,10 @@ func Default() Config {
 				MaxTotalTokens: 120000,
 				ToolIters:      map[string]int{},
 			},
+		},
+		MCP: MCPConfig{
+			Servers:  map[string]MCPServerConfig{},
+			Policies: map[string]string{},
 		},
 		// Providers is intentionally left nil: Marshal is local-first with no
 		// built-in provider assumptions, and provider URLs/keys are
@@ -526,6 +550,25 @@ func merge(cfg *Config, file configFile) {
 				cfg.Swarm.Budget.ToolIters = map[string]int{}
 			}
 			cfg.Swarm.Budget.ToolIters[role] = iters
+		}
+	}
+	if file.MCP != nil {
+		for name, srv := range file.MCP.Servers {
+			if cfg.MCP.Servers == nil {
+				cfg.MCP.Servers = map[string]MCPServerConfig{}
+			}
+			cfgSrv := MCPServerConfig{Env: srv.Env}
+			if srv.Command != nil {
+				cfgSrv.Command = *srv.Command
+			}
+			cfgSrv.Args = srv.Args
+			cfg.MCP.Servers[name] = cfgSrv
+		}
+		for k, v := range file.MCP.Policies {
+			if cfg.MCP.Policies == nil {
+				cfg.MCP.Policies = map[string]string{}
+			}
+			cfg.MCP.Policies[k] = v
 		}
 	}
 }

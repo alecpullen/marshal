@@ -531,3 +531,35 @@ max_repo_context_tokens = 48000
 		t.Fatalf("implementer budget = %#v", cfg.Agents[routing.RoleImplementer].Context)
 	}
 }
+
+func TestMCPConfigParsesAndMerges(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[mcp.servers.github]
+command = "node"
+args = ["server.js"]
+env = { KEY = "VALUE" }
+
+[mcp.policies]
+"mcp.github.list_issues" = "allow"
+"mcp.github.create_issue" = "confirm"
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	srv, ok := cfg.MCP.Servers["github"]
+	if !ok {
+		t.Fatal("github server config missing")
+	}
+	if srv.Command != "node" || len(srv.Args) != 1 || srv.Args[0] != "server.js" || srv.Env["KEY"] != "VALUE" {
+		t.Errorf("invalid server config: %+v", srv)
+	}
+
+	if cfg.MCP.Policies["mcp.github.list_issues"] != "allow" {
+		t.Errorf("policy list_issues = %q, want allow", cfg.MCP.Policies["mcp.github.list_issues"])
+	}
+}

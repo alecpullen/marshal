@@ -60,7 +60,7 @@ func TestStatusLineShowsProviderError(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetProviderError(errors.New("connection refused"))
 	line := m.renderStatusLine(100)
-	if !strings.Contains(line, "✗ error") {
+	if !strings.Contains(line, "✘ error") {
 		t.Fatalf("status line missing error state:\n%s", line)
 	}
 }

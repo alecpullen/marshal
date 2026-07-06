@@ -1287,14 +1287,14 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 	updated, _ = m.Update(agentFinishedMsg{})
 	m = updated.(Model)
 
-	if !strings.Contains(m.View(), "✓") {
+	if !strings.Contains(m.View(), "✔") {
 		t.Fatal("expected done badge immediately after finish")
 	}
 
 	m.lastActivityDone = m.lastActivityDone.Add(-doneDisplayDuration).Add(-time.Millisecond)
 
 	view := m.View()
-	if strings.Contains(view, "✓") {
+	if strings.Contains(view, "✔") {
 		t.Fatalf("done badge should have expired after %v:\n%s", doneDisplayDuration, view)
 	}
 	if !strings.Contains(view, "auto") {

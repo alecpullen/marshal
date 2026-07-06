@@ -52,7 +52,7 @@ func mockServerMain() {
 		case "initialize":
 			result = InitializeResult{
 				ProtocolVersion: "2024-11-05",
-				ServerInfo: Implementation{Name: "mock-server", Version: "1.0"},
+				ServerInfo:      Implementation{Name: "mock-server", Version: "1.0"},
 			}
 		case "tools/list":
 			result = ListToolsResult{

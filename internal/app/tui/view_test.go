@@ -144,3 +144,15 @@ func TestInputAreaHasNoBackgroundFill(t *testing.T) {
 		t.Fatalf("input area missing prompt:\n%q", stripANSI(out))
 	}
 }
+
+func TestInputBorderColorReflectsFocus(t *testing.T) {
+	forceColor(t)
+	m := newViewTestModel(t, 60, 20)
+	if !strings.Contains(m.renderInputArea(), "209") {
+		t.Fatal("focused input box should use coral (209) border")
+	}
+	m.input.Blur()
+	if !strings.Contains(m.renderInputArea(), "245") {
+		t.Fatal("blurred input box should use mauve (245) border")
+	}
+}

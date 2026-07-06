@@ -243,9 +243,9 @@ func TestPolicyEngine_Evaluate_RegexCommandRules(t *testing.T) {
 func TestPolicyEngine_Evaluate_MCPPatternMatching(t *testing.T) {
 	cfg := config.Default()
 	cfg.MCP.Policies = map[string]string{
-		"mcp.github.list_issues":   "allow",
-		"mcp.github":               "confirm",
-		"mcp.gitlab.*":             "allow",
+		"mcp.github.list_issues":    "allow",
+		"mcp.github":                "confirm",
+		"mcp.gitlab.*":              "allow",
 		"/^mcp\\.aws\\.delete_.*$/": "deny",
 	}
 
@@ -255,9 +255,9 @@ func TestPolicyEngine_Evaluate_MCPPatternMatching(t *testing.T) {
 		tool string
 		want Decision
 	}{
-		{"mcp.github.list_issues", DecisionAllow},   // Exact match wins
+		{"mcp.github.list_issues", DecisionAllow},    // Exact match wins
 		{"mcp.github.create_issue", DecisionConfirm}, // Prefix match
-		{"mcp.github", DecisionConfirm},             // Prefix match equal
+		{"mcp.github", DecisionConfirm},              // Prefix match equal
 		{"mcp.gitlab.get_project", DecisionAllow},    // Wildcard match
 		{"mcp.aws.delete_bucket", DecisionDeny},      // Regex match
 		{"mcp.aws.get_bucket", DecisionConfirm},      // Default confirm fallback

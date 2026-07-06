@@ -12,11 +12,11 @@ const swarmPanelRows = 9
 func statusGlyph(status session.SwarmRoleStatus, spinnerFrame string) string {
 	switch status {
 	case session.SwarmRoleDone:
-		return "✓"
+		return "✔"
 	case session.SwarmRoleActive:
 		return spinnerFrame
 	case session.SwarmRoleFailed:
-		return "✗"
+		return "✘"
 	default:
 		return "○"
 	}

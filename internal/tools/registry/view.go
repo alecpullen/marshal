@@ -16,3 +16,18 @@ func ReadOnlyView(src *Registry) *Registry {
 	}
 	return view
 }
+
+// TesterView returns a new Registry containing src's read-only and
+// command-risk tools: the swarm tester needs to run tests and shell
+// commands but must not modify source (docs/07 swarm safety). Write and
+// network tools are filtered out so "does not modify source" is enforced
+// structurally, not by prompt instruction.
+func TesterView(src *Registry) *Registry {
+	view := New()
+	for _, tool := range src.List() {
+		if tool.Risk == RiskReadOnly || tool.Risk == RiskCommand {
+			_ = view.Register(tool)
+		}
+	}
+	return view
+}

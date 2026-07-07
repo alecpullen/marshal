@@ -30,7 +30,7 @@ type rolePrompt struct {
 var roleAddenda = map[AgentRole]rolePrompt{
 	RoleGeneral: {
 		focus:          "You are the general agent. Handle the task end to end: plan, inspect the repository, make focused changes, validate them, and summarise the outcome.",
-		allowedActions: []string{"answer", "tool_call", "patch", "final"},
+		allowedActions: []string{"answer", "tool_call", "patch", "final", "ask_user"},
 		example:        `{"rationale": "Need to see the failing test output first.", "action": {"type": "tool_call", "tool": "shell.run", "args": {"command": "go test ./..."}}}`,
 	},
 	RolePlanner: {
@@ -75,7 +75,7 @@ const baseRules = `Rules:
 - Destructive or risky commands require explicit user approval.
 - Before editing, trace the relevant code path.
 - After editing, run the narrowest useful validation.
-- If stuck after a few attempts, stop and ask the user.
+- If the request is ambiguous, or a decision would materially change the outcome, ask the user with an "ask_user" action instead of guessing. Ask one specific question at a time.
 - Summarise results clearly.
 - Use tools only to obtain facts you don't already have in the transcript or context pack.
 - Once the requested change is made and validated, produce a final answer — do not keep exploring.
@@ -94,6 +94,8 @@ Examples:
 {"rationale": "Replace the placeholder patch example with a concrete search/replace block.", "action": {"type": "patch", "content": "File: path/to/file.go\n<<<<<<< SEARCH\nold line\n=======\nnew line\n>>>>>>> REPLACE"}}
 
 {"rationale": "The task is finished and all tests pass.", "action": {"type": "final", "content": "Updated the system prompt with few-shot examples for every action type."}}
+
+{"rationale": "Two valid interpretations with different implementations.", "action": {"type": "ask_user", "content": "Should deletion archive the record or remove it permanently?"}}
 
 For parallel read-only work, you may return multiple tool calls in one response using the "actions" array. Every entry must be a read-only "tool_call". Example:
 

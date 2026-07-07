@@ -115,6 +115,24 @@ func TestParseActionRejectsActionsWithMissingTool(t *testing.T) {
 	}
 }
 
+func TestParseActionAskUser(t *testing.T) {
+	raw := `{"rationale":"the request is ambiguous","action":{"type":"ask_user","content":"Should the cache be per-session or global?"}}`
+	action, err := ParseAction(raw)
+	if err != nil {
+		t.Fatalf("ParseAction err = %v", err)
+	}
+	if action.Type != ActionAskUser || action.Content != "Should the cache be per-session or global?" {
+		t.Fatalf("action = %+v", action)
+	}
+}
+
+func TestParseActionAskUserRequiresContent(t *testing.T) {
+	raw := `{"rationale":"r","action":{"type":"ask_user","content":"  "}}`
+	if _, err := ParseAction(raw); !errors.Is(err, ErrMissingQuestion) {
+		t.Fatalf("err = %v, want ErrMissingQuestion", err)
+	}
+}
+
 func TestParseActionBackwardCompatibleWithSingleAction(t *testing.T) {
 	raw := `{"rationale":"r","action":{"type":"final","content":"done"}}`
 

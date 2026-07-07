@@ -17,6 +17,19 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
 
+	// The agent persists messages and tool calls from parallel goroutines
+	// (parallel tool execution and the swarm runtime). SQLite permits only one
+	// writer at a time, so pin the pool to a single connection to serialize
+	// writers, and set a busy timeout so any residual contention (migrations,
+	// external handles) waits instead of returning SQLITE_BUSY. Without this,
+	// concurrent writes fail with "database is locked".
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	if _, err := sqlDB.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("set sqlite busy_timeout: %w", err)
+	}
+
 	if err := sqlDB.Ping(); err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("ping sqlite db: %w", err)

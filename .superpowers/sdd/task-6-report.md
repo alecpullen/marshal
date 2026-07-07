@@ -96,4 +96,5 @@ Only the documented pre-existing `internal/app/app.go` mutex-copy warning remain
 ## Issues or Concerns
 
 - The `.kilo/` directory is untracked in the worktree. It was not added to the commit.
+- `TestRunAllowsParallelReadBatchWithoutStalling` in `internal/agent/runner_test.go` flaked once during validation (failed with "executed 4 reads, want 5"); it passed on the next run and is unrelated to Task 6 changes.
 - No live provider test was run (out of scope for this automated validation step).

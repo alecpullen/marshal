@@ -11,4 +11,6 @@ Task 2: complete (commit d7764aa)
 Task 3: complete (commit 0491aca)
 Task 4: complete (commit e92cf29)
 Task 5: complete (commit 3558934)
-Task 6: complete
+Task 6: complete (commits 3558934..0658c52, review clean). Minor findings recorded for final review:
+  - `internal/agent/eval_scenarios_test.go:354`: `evalNativeRead` silently ignores `json.Marshal` error.
+  - `internal/agent/metrics.go:20`: comment says "consecutive" but field is cumulative.

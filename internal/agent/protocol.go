@@ -14,12 +14,14 @@ const (
 	ActionToolCall ActionType = "tool_call"
 	ActionPatch    ActionType = "patch"
 	ActionFinal    ActionType = "final"
+	ActionAskUser  ActionType = "ask_user"
 )
 
 var (
 	ErrNoActionFound     = errors.New("agent: no JSON action object found in model output")
 	ErrUnknownActionType = errors.New("agent: unknown action type")
 	ErrMissingTool       = errors.New("agent: tool_call action missing tool name")
+	ErrMissingQuestion   = errors.New("agent: ask_user action missing question content")
 )
 
 // ModelAction is the parsed form of the JSON action-protocol envelope
@@ -88,12 +90,15 @@ func ParseAction(raw string) (ModelAction, error) {
 
 func validatePayload(p actionPayload) (ModelAction, error) {
 	switch p.Type {
-	case ActionAnswer, ActionToolCall, ActionPatch, ActionFinal:
+	case ActionAnswer, ActionToolCall, ActionPatch, ActionFinal, ActionAskUser:
 	default:
 		return ModelAction{}, fmt.Errorf("%w: %q", ErrUnknownActionType, p.Type)
 	}
 	if p.Type == ActionToolCall && strings.TrimSpace(p.Tool) == "" {
 		return ModelAction{}, ErrMissingTool
+	}
+	if p.Type == ActionAskUser && strings.TrimSpace(p.Content) == "" {
+		return ModelAction{}, ErrMissingQuestion
 	}
 	return ModelAction{Type: p.Type, Tool: p.Tool, Args: p.Args, Content: p.Content}, nil
 }

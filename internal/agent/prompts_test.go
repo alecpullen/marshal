@@ -104,6 +104,7 @@ func TestBuildSystemPromptContainsActionExamples(t *testing.T) {
 		`"type": "tool_call"`,
 		`"type": "patch"`,
 		`"type": "final"`,
+		`"type": "ask_user"`,
 		"<<<<<<< SEARCH",
 		">>>>>>> REPLACE",
 		"Do not use unified diff syntax",
@@ -157,14 +158,14 @@ func TestBuildSystemPromptUnknownRoleFallsBackToGeneral(t *testing.T) {
 	if !strings.Contains(content, "You are the general agent") {
 		t.Error("unknown role should fall back to general agent addendum")
 	}
-	if !strings.Contains(content, "Allowed actions for this role: answer, tool_call, patch, final") {
+	if !strings.Contains(content, "Allowed actions for this role: answer, tool_call, patch, final, ask_user") {
 		t.Error("unknown role should fall back to general agent allowed actions")
 	}
 }
 
 func TestBuildSystemPromptEachRoleHasAllowedActions(t *testing.T) {
 	expected := map[AgentRole]string{
-		RoleGeneral:     "Allowed actions for this role: answer, tool_call, patch, final",
+		RoleGeneral:     "Allowed actions for this role: answer, tool_call, patch, final, ask_user",
 		RolePlanner:     "Allowed actions for this role: answer, final",
 		RoleImplementer: "Allowed actions for this role: tool_call, patch, final",
 		RoleTester:      "Allowed actions for this role: tool_call, final",

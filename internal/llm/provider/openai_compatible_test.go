@@ -601,3 +601,34 @@ func TestChatNonStreamingTokenUsage(t *testing.T) {
 
 	assertChannelClosed(t, events)
 }
+
+func TestResponseFormatWireShapes(t *testing.T) {
+	t.Run("json_object serializes without json_schema key", func(t *testing.T) {
+		b, err := json.Marshal(&schema.ResponseFormat{Type: "json_object"})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if string(b) != `{"type":"json_object"}` {
+			t.Fatalf("wire = %s, want back-compat shape", b)
+		}
+	})
+
+	t.Run("json_schema serializes the full structured-output shape", func(t *testing.T) {
+		rf := &schema.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &schema.JSONSchemaSpec{
+				Name:   "action_envelope",
+				Strict: true,
+				Schema: json.RawMessage(`{"type":"object"}`),
+			},
+		}
+		b, err := json.Marshal(rf)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		want := `{"type":"json_schema","json_schema":{"name":"action_envelope","strict":true,"schema":{"type":"object"}}}`
+		if string(b) != want {
+			t.Fatalf("wire = %s\nwant  %s", b, want)
+		}
+	})
+}

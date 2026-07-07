@@ -1,5 +1,7 @@
 package schema
 
+import "encoding/json"
+
 // Role identifies the speaker of a ChatMessage in the wire protocol sense.
 // This is intentionally a separate type from session.Role: session.Role is a
 // TUI/transcript concern, schema.Role is an LLM wire-protocol concern.
@@ -20,7 +22,15 @@ type ChatMessage struct {
 }
 
 type ResponseFormat struct {
-	Type string `json:"type"`
+	Type       string          `json:"type"`
+	JSONSchema *JSONSchemaSpec `json:"json_schema,omitempty"`
+}
+
+// JSONSchemaSpec is the json_schema payload of a ResponseFormat.
+type JSONSchemaSpec struct {
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict,omitempty"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 // ChatRequest is the provider-agnostic chat request shape. Pointer fields

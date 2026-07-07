@@ -71,6 +71,7 @@ const (
 	ActivityThinking ActivityKind = "thinking"
 	ActivityTool     ActivityKind = "tool"
 	ActivityApproval ActivityKind = "approval"
+	ActivityQuestion ActivityKind = "question"
 )
 
 type Activity struct {
@@ -104,6 +105,14 @@ type InProgressMessage struct {
 type UserApprovalDecision struct {
 	Approved bool
 	Edited   string
+}
+
+// PendingQuestion is a clarifying question from the agent awaiting the
+// user's free-text answer. The runner blocks on ResponseChan; the TUI sends
+// exactly one value ("" means the user declined to answer).
+type PendingQuestion struct {
+	Question     string
+	ResponseChan chan string
 }
 
 type PendingToolCall struct {
@@ -168,6 +177,7 @@ type State struct {
 	inProgress      InProgressMessage
 	providerErr     error
 	pendingApproval *PendingToolCall
+	pendingQuestion *PendingQuestion
 	activeToolCall  *ActiveToolCall
 	sessionRules    []string
 	auditLog        []registry.AuditEvent
@@ -398,6 +408,18 @@ func (s *State) PendingApproval() *PendingToolCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pendingApproval
+}
+
+func (s *State) SetPendingQuestion(q *PendingQuestion) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingQuestion = q
+}
+
+func (s *State) PendingQuestion() *PendingQuestion {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingQuestion
 }
 
 func (s *State) SetActiveToolCall(atc ActiveToolCall) {

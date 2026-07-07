@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -1625,5 +1626,52 @@ func TestRunnerNonShellToolApprovalAndJSONEditing(t *testing.T) {
 	wantArgs := `{"title":"new title","body":"new body"}`
 	if calledArgs != wantArgs {
 		t.Errorf("calledArgs = %q, want %q", calledArgs, wantArgs)
+	}
+}
+
+func TestRunNudgeNamesRepeatedCall(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "file.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "package main"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	read := func(path string) string {
+		return fmt.Sprintf(`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":%q}}}`, path)
+	}
+	// Three novel reads, then the same three again: the 6th call makes the
+	// trailing three all duplicates -> soft stall -> nudge; the model then
+	// answers normally on the 7th response.
+	p := &scriptedProvider{responses: []string{
+		read("a.go"), read("b.go"), read("c.go"),
+		read("a.go"), read("b.go"), read("c.go"),
+		`{"rationale":"done","action":{"type":"final","content":"Answer."}}`,
+	}}
+	state := newTestState(t)
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+
+	task, err := r.RunTask(context.Background(), "how does pkg work?")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.SalvagedReason != "" || task.Summary != "Answer." {
+		t.Fatalf("task = %+v, want un-salvaged completion with Summary=Answer.", task)
+	}
+	foundNudge := false
+	for _, m := range state.Messages() {
+		if m.Role == session.RoleSystem &&
+			strings.Contains(m.Content, "file.read") &&
+			strings.Contains(m.Content, "c.go") {
+			foundNudge = true
+		}
+	}
+	if !foundNudge {
+		t.Fatal("expected a soft-stall nudge naming the repeated call (file.read c.go)")
 	}
 }

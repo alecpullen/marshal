@@ -23,7 +23,6 @@ const (
 	DefaultMaxToolIterations  = 16
 	DefaultMaxRetries         = 2
 	DefaultMaxParallelActions = 4
-	loopNudgeMessage          = "You appear to be repeating the same step. Either produce a final answer or ask the user for clarification."
 	finalizePressureThreshold = 2
 	finalizePressureMessage   = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
 )
@@ -301,6 +300,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, nudge string) {
 	r.trackerMu.Lock()
 	a := r.tracker.assess()
+	dupName, dupArgs, _ := r.tracker.lastCall()
 	r.trackerMu.Unlock()
 
 	switch a {
@@ -308,9 +308,19 @@ func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, 
 		res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
 		return true, res, ferr, ""
 	case assessStalling:
-		return false, task, nil, loopNudgeMessage
+		return false, task, nil, buildLoopNudge(dupName, dupArgs)
 	}
 	return false, task, nil, ""
+}
+
+// buildLoopNudge tells the model exactly which call it is repeating. A
+// stalling assessment implies at least three recorded calls, the last of
+// which is a duplicate, so lastCall's result is always usable here.
+func buildLoopNudge(name, args string) string {
+	return fmt.Sprintf(
+		"You are repeating tool calls you already made — most recently %s with args %s. Those results are in the transcript above; use them instead of calling the tool again. Take a genuinely new action or produce a final answer.",
+		name, args,
+	)
 }
 
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {

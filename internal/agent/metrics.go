@@ -21,7 +21,7 @@ type TurnMetrics struct {
 	SoftStalls       int
 	HardStalls       int
 	Outcome          string
-	SalvageReason    string
+	SalvageReason    string // non-empty when Outcome is "salvaged": "exhausted", "stalled", or "malformed"
 	PromptTokens     int
 	CompletionTokens int
 }

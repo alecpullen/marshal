@@ -17,8 +17,22 @@ const (
 )
 
 type ChatMessage struct {
-	Role    Role
-	Content string
+	Role       Role
+	Content    string
+	ToolCalls  []ToolCall
+	ToolCallID string
+}
+
+type ToolCall struct {
+	ID   string
+	Name string
+	Args json.RawMessage
+}
+
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  json.RawMessage
 }
 
 type ResponseFormat struct {
@@ -46,4 +60,6 @@ type ChatRequest struct {
 	MaxTokens      *int
 	Stop           []string
 	ResponseFormat *ResponseFormat
+	Tools          []ToolDefinition
+	ToolChoice     string
 }

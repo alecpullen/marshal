@@ -408,6 +408,56 @@ func TestRunCreatesDatabase(t *testing.T) {
 	}
 }
 
+// TestRunLogsToFileNotTerminal guards against logs corrupting the Bubble Tea
+// alt-screen: the logger must write to .marshal/marshal.log, never to the
+// stdout/stderr writers the TUI paints to.
+func TestRunLogsToFileNotTerminal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte("[project]\nname = \"test\"\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	stdout := bytes.NewBuffer(nil)
+	stderr := bytes.NewBuffer(nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = Run(ctx, stdout, stderr, WithNow(func() time.Time {
+		return time.Unix(1000, 0)
+	}), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if strings.Contains(stdout.String(), "marshal started") || strings.Contains(stderr.String(), "marshal started") {
+		t.Fatalf("log output leaked to the terminal writers:\nstdout=%q\nstderr=%q", stdout.String(), stderr.String())
+	}
+
+	logPath := filepath.Join(dir, ".marshal", "marshal.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(data), "marshal started") {
+		t.Fatalf("expected startup log in %s, got %q", logPath, string(data))
+	}
+}
+
 func TestRunDisplaysInactiveRouteWhenNoProviderConfigured(t *testing.T) {
 	dir := t.TempDir()
 	origWd, err := os.Getwd()

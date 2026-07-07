@@ -200,6 +200,10 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *St
 	}
 }
 
+func (s *State) SessionID() string { return s.sessionID }
+
+func (s *State) Logger() *slog.Logger { return s.logger }
+
 func (s *State) persistenceEnabled() bool {
 	return s.db != nil && s.sessionID != "" && s.logger != nil
 }

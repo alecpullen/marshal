@@ -570,6 +570,9 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if execErr != nil {
 		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
 		r.State.LogToolCall(event)
+		r.trackerMu.Lock()
+		r.tracker.record(toolName, string(normalizedArgs))
+		r.trackerMu.Unlock()
 		return []schema.ChatMessage{BuildToolErrorMessage(toolName, execErr.Error())}, nil
 	}
 

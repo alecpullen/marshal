@@ -103,22 +103,27 @@ For parallel read-only work, you may return multiple tool calls in one response 
 
 For patch actions use search/replace blocks, one block per file. Do not use unified diff syntax.`
 
-func renderRoleAddendum(r rolePrompt) string {
+const nativeOutputFormat = `Use the available native tools when you need repository facts or need to make changes. When the task is complete, respond with a concise final answer in normal prose.`
+
+func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 	var b strings.Builder
 	b.WriteString("Role: ")
 	b.WriteString(r.focus)
 	b.WriteString("\n\nAllowed actions for this role: ")
 	b.WriteString(strings.Join(r.allowedActions, ", "))
-	b.WriteString("\n\nExample:\n")
-	b.WriteString(r.example)
+	if !nativeTools {
+		b.WriteString("\n\nExample:\n")
+		b.WriteString(r.example)
+	}
 	return b.String()
 }
 
-func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string) schema.ChatMessage {
+func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
 	}
+	nativeTools := len(nativeToolsOpt) > 0 && nativeToolsOpt[0]
 
 	var b strings.Builder
 	b.WriteString(baseIdentity)
@@ -157,9 +162,13 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 	}
 
 	b.WriteString("\n")
-	b.WriteString(baseOutputFormat)
+	if nativeTools {
+		b.WriteString(nativeOutputFormat)
+	} else {
+		b.WriteString(baseOutputFormat)
+	}
 	b.WriteString("\n\n")
-	b.WriteString(renderRoleAddendum(rp))
+	b.WriteString(renderRoleAddendum(rp, nativeTools))
 
 	return schema.ChatMessage{
 		Role:    schema.RoleSystem,

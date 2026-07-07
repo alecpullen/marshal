@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestCategorize(t *testing.T) {
 	cases := map[string]toolCategory{
@@ -35,8 +38,36 @@ func TestAssess(t *testing.T) {
 		}
 	})
 
-	t.Run("three distinct reads is stalling", func(t *testing.T) {
+	t.Run("sustained distinct reads are progressing", func(t *testing.T) {
+		// Regression: the old readOnlyChurn heuristic nudged after 3 and
+		// hard-stalled after 4 consecutive read/search calls even when every
+		// call targeted a different file.
 		tr := newProgressTracker()
+		for i := 0; i < 8; i++ {
+			tr.record("file.read", fmt.Sprintf(`{"path":"f%d.go"}`, i))
+			if got := tr.assess(); got != assessProgressing {
+				t.Fatalf("assess() after %d distinct reads = %v, want progressing", i+1, got)
+			}
+		}
+	})
+
+	t.Run("distinct mixed reads and searches are progressing", func(t *testing.T) {
+		tr := newProgressTracker()
+		tr.record("file.read", `{"path":"a.go"}`)
+		tr.record("repo.search", `{"query":"foo"}`)
+		tr.record("file.read", `{"path":"b.go"}`)
+		tr.record("repo.search", `{"query":"bar"}`)
+		if got := tr.assess(); got != assessProgressing {
+			t.Fatalf("assess() = %v, want progressing", got)
+		}
+	})
+
+	t.Run("three trailing duplicates is stalling", func(t *testing.T) {
+		tr := newProgressTracker()
+		tr.record("file.read", `{"path":"a.go"}`)
+		tr.record("repo.search", `{"query":"foo"}`)
+		tr.record("file.read", `{"path":"b.go"}`)
+		// Revisit all three previously seen calls.
 		tr.record("file.read", `{"path":"a.go"}`)
 		tr.record("repo.search", `{"query":"foo"}`)
 		tr.record("file.read", `{"path":"b.go"}`)
@@ -45,14 +76,30 @@ func TestAssess(t *testing.T) {
 		}
 	})
 
-	t.Run("stall persists to hard stall", func(t *testing.T) {
+	t.Run("five trailing duplicates is hard stall", func(t *testing.T) {
 		tr := newProgressTracker()
 		tr.record("file.read", `{"path":"a.go"}`)
-		tr.record("repo.search", `{"query":"foo"}`)
 		tr.record("file.read", `{"path":"b.go"}`)
-		tr.record("repo.search", `{"query":"bar"}`)
+		tr.record("file.read", `{"path":"c.go"}`)
+		tr.record("file.read", `{"path":"a.go"}`)
+		tr.record("file.read", `{"path":"b.go"}`)
+		tr.record("file.read", `{"path":"c.go"}`)
+		tr.record("file.read", `{"path":"a.go"}`)
+		tr.record("file.read", `{"path":"b.go"}`)
 		if got := tr.assess(); got != assessHardStall {
 			t.Fatalf("assess() = %v, want hardStall", got)
+		}
+	})
+
+	t.Run("mutation resets novelty so re-reads are progress", func(t *testing.T) {
+		// Re-reading a file after patching it is normal verification, not a
+		// loop: the write invalidates earlier observations.
+		tr := newProgressTracker()
+		tr.record("file.read", `{"path":"a.go"}`)
+		tr.record("file.write_patch", `{"patch":"..."}`)
+		tr.record("file.read", `{"path":"a.go"}`)
+		if got := tr.assess(); got != assessProgressing {
+			t.Fatalf("assess() = %v, want progressing", got)
 		}
 	})
 
@@ -65,4 +112,33 @@ func TestAssess(t *testing.T) {
 			t.Fatalf("assess() = %v, want progressing", got)
 		}
 	})
+}
+
+func TestMutating(t *testing.T) {
+	cases := map[toolCategory]bool{
+		catShell:  true,
+		catWrite:  true,
+		catPatch:  true,
+		catRead:   false,
+		catSearch: false,
+		catOther:  false,
+	}
+	for cat, want := range cases {
+		if got := mutating(cat); got != want {
+			t.Errorf("mutating(%q) = %v, want %v", cat, got, want)
+		}
+	}
+}
+
+func TestLastCall(t *testing.T) {
+	tr := newProgressTracker()
+	if _, _, ok := tr.lastCall(); ok {
+		t.Fatal("lastCall() on empty tracker reported ok")
+	}
+	tr.record("file.read", `{"path":"a.go"}`)
+	tr.record("repo.search", `{"query":"foo"}`)
+	name, args, ok := tr.lastCall()
+	if !ok || name != "repo.search" || args != `{"query":"foo"}` {
+		t.Fatalf("lastCall() = %q, %q, %v; want repo.search / query foo / true", name, args, ok)
+	}
 }

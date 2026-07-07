@@ -183,6 +183,9 @@ func BuildContextPackMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
 	return schema.ChatMessage{Role: schema.RoleUser, Content: rendered}, true
 }
 
+// BuildToolResultMessage formats a tool result for the model. The first line
+// "Tool <name> result:" is a load-bearing marker: compactMessages identifies
+// tool results by this prefix to decide which messages to shrink.
 func BuildToolResultMessage(name string, result registry.ToolResult) schema.ChatMessage {
 	content := fmt.Sprintf("Tool %s result: %s", name, result.Summary)
 	if result.Content != "" {

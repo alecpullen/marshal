@@ -263,6 +263,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if cfg.Agent.MaxRetries > 0 {
 		runner.MaxRetries = cfg.Agent.MaxRetries
 	}
+	if cfg.Agent.MaxTurnContextTokens > 0 {
+		runner.MaxTurnContextTokens = cfg.Agent.MaxTurnContextTokens
+	}
 	if runner.RequestTimeout == 0 {
 		runner.RequestTimeout = 60 * time.Second
 	}
@@ -324,6 +327,9 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		}
 		if cfg.Agent.MaxRetries > 0 {
 			r.MaxRetries = cfg.Agent.MaxRetries
+		}
+		if cfg.Agent.MaxTurnContextTokens > 0 {
+			r.MaxTurnContextTokens = cfg.Agent.MaxTurnContextTokens
 		}
 		return r, nil
 	}

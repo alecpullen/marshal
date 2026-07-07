@@ -530,6 +530,13 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 	return b.String()
 }
 
+func renderQuestionPanel(q *session.PendingQuestion, width int) string {
+	title := lipgloss.NewStyle().Bold(true).Render("Marshal asks:")
+	body := lipgloss.NewStyle().Width(max(width-2, 1)).Render(q.Question)
+	hint := lipgloss.NewStyle().Faint(true).Render("type your answer and press Enter · Esc to skip")
+	return lipgloss.JoinVertical(lipgloss.Left, title, body, hint)
+}
+
 func renderWelcomeBanner(width int) string {
 	dot := lipgloss.NewStyle().Foreground(coralColor).Render("●")
 	title := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")

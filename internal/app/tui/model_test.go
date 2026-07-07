@@ -1697,3 +1697,49 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 		t.Fatal("no decision sent on channel")
 	}
 }
+
+func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+
+	q := &session.PendingQuestion{Question: "Archive or delete?", ResponseChan: make(chan string, 1)}
+	state.SetPendingQuestion(q)
+
+	for _, r := range "archive" {
+		model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = model.(Model)
+	}
+	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = model.(Model)
+
+	select {
+	case got := <-q.ResponseChan:
+		if got != "archive" {
+			t.Fatalf("answer = %q, want archive", got)
+		}
+	default:
+		t.Fatal("no answer sent on Enter")
+	}
+	if state.PendingQuestion() != nil {
+		t.Fatal("pending question not cleared after submit")
+	}
+}
+
+func TestPendingQuestionEscDeclines(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	q := &session.PendingQuestion{Question: "Archive or delete?", ResponseChan: make(chan string, 1)}
+	state.SetPendingQuestion(q)
+
+	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_ = model
+
+	select {
+	case got := <-q.ResponseChan:
+		if got != "" {
+			t.Fatalf("answer = %q, want empty (declined)", got)
+		}
+	default:
+		t.Fatal("no decline sent on Esc")
+	}
+}

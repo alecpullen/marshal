@@ -254,6 +254,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if act.Kind != session.ActivityIdle && act.Label != "" {
 			m.lastActivityLabel = act.Label
 		}
+		if m.state.PendingQuestion() != nil && m.input.Placeholder != "Type your answer..." {
+			m.input.Placeholder = "Type your answer..."
+		}
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, tickCmd()
@@ -298,6 +301,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			updated, cmd := m.memoryModel.Update(msg)
 			m.memoryModel = updated.(memory.Model)
+			return m, cmd
+		}
+
+		if q := m.state.PendingQuestion(); q != nil {
+			switch msg.Type {
+			case tea.KeyEnter:
+				q.ResponseChan <- strings.TrimSpace(m.input.Value())
+				m.state.SetPendingQuestion(nil)
+				m.input.Reset()
+				m.input.Placeholder = "Ask Marshal..."
+				m.resizeInputHeight()
+				m.updateViewportHeight()
+				m.lastTranscriptHash = 0
+				return m, nil
+			case tea.KeyEsc:
+				q.ResponseChan <- ""
+				m.state.SetPendingQuestion(nil)
+				m.input.Reset()
+				m.input.Placeholder = "Ask Marshal..."
+				m.resizeInputHeight()
+				m.updateViewportHeight()
+				m.lastTranscriptHash = 0
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			m.resizeInputHeight()
+			m.updateViewportHeight()
 			return m, cmd
 		}
 
@@ -493,7 +524,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) inputAreaRows() int {
 	rows := inputBorderRows + activityStripRows
-	if tc := m.state.PendingApproval(); tc != nil {
+	if q := m.state.PendingQuestion(); q != nil {
+		inputInnerWidth := max(m.width-4, 1)
+		content := renderQuestionPanel(q, inputInnerWidth)
+		rows += len(strings.Split(content, "\n"))
+		inputHeight := max(m.input.Height(), 1)
+		if inputHeight > m.input.MaxHeight {
+			inputHeight = m.input.MaxHeight
+		}
+		rows += inputHeight
+	} else if tc := m.state.PendingApproval(); tc != nil {
 		content := ""
 		if m.editingCommand {
 			content = "❯ " + m.input.View()

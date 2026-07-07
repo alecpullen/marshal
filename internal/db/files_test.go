@@ -189,6 +189,57 @@ func TestSaveFileIndexClearsSummaryWhenHashChanges(t *testing.T) {
 	}
 }
 
+func TestFilesMatchingBasename(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+
+	indexedAt := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	files := []FileIndex{
+		{Path: "src/main.go", Language: "go", Hash: "a", SizeBytes: 1, LastIndexedAt: indexedAt},
+		{Path: "src/db/main_test.go", Language: "go", Hash: "b", SizeBytes: 2, LastIndexedAt: indexedAt},
+		{Path: "README.md", Language: "markdown", Hash: "c", SizeBytes: 3, LastIndexedAt: indexedAt},
+		{Path: "internal/db/files.go", Language: "go", Hash: "d", SizeBytes: 4, LastIndexedAt: indexedAt},
+		{Path: "cmd/server/main.go", Language: "go", Hash: "e", SizeBytes: 5, LastIndexedAt: indexedAt},
+	}
+	if err := database.SaveFileIndex(projectID, files); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+
+	got, err := database.FilesMatchingBasename(projectID, "main.go", 5)
+	if err != nil {
+		t.Fatalf("FilesMatchingBasename: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 matches, got %d: %v", len(got), got)
+	}
+
+	if got[0] != "src/main.go" {
+		t.Errorf("first result should be shortest match first, got %q", got[0])
+	}
+	if got[1] != "cmd/server/main.go" {
+		t.Errorf("second result = %q, want cmd/server/main.go", got[1])
+	}
+}
+
+func TestFilesMatchingBasenameNoResults(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+
+	indexedAt := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	if err := database.SaveFileIndex(projectID, []FileIndex{
+		{Path: "README.md", Language: "markdown", Hash: "a", SizeBytes: 1, LastIndexedAt: indexedAt},
+	}); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+
+	got, err := database.FilesMatchingBasename(projectID, "nonexistent.go", 5)
+	if err != nil {
+		t.Fatalf("FilesMatchingBasename: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 matches, got %d: %v", len(got), got)
+	}
+}
+
 func TestUpdateFileSummaryNoOpForMissingPath(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

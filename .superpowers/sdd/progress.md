@@ -1,24 +1,22 @@
-# TUI Single-Column Redesign — SDD Progress
+# Novelty-Aware Stall Detection — SDD Progress
 
-Plan: docs/superpowers/plans/2026-07-07-tui-single-column-redesign.md
-Branch: tui-single-column-redesign
-Base at start: 0b3f3218b0849944774bd2974b48c73978c9fbaf
+Plan: docs/superpowers/plans/2026-07-07-novelty-aware-stall-detection.md
+Branch: novelty-aware-stall-detection
+Base at start: 92a7e5e (plan doc commit on top of 4a19c95 main)
 
-(Reset 2026-07-07 for TUI redesign run; prior content was Phase 5 Swarm Polish.)
+(Reset 2026-07-07 for stall-detection run; prior content was TUI single-column redesign, merged.)
 
-Task 1: complete (commits 0b3f321..2d0acfb, review clean, spec ✅, quality approved)
-  Minor (defer to Task 6/final): run `go mod tidy` — termenv is now a direct test dep but still marked // indirect in go.mod.
+Tasks: 1=commit in-flight finalize+tui fixes, 2=novelty-aware tracker, 3=specific nudge, 4=e2e regression tests.
 
-Task 2: complete (commits 2a7eb05..4caf0da, review clean, spec ✅, quality approved)
+Task 1: complete (commits 92a7e5e..010bd8d + review-fix 9820b71). Review found 2 Important
+(cursor Background-vs-Foreground under reverse video; misnamed extractUsefulProse test case)
++ 1 Minor (dead correction computation) — all fixed in 9820b71. User switched execution to
+inline (no more subagents) from Task 2 onward.
 
-Task 3: complete (commits 4caf0da..40b9720, review clean, spec ✅, quality approved)
-
-Task 4: complete (commits 40b9720..6e7d52c, review found 1 Important test-hygiene issue [out-of-scope TestViewIsSingleColumn edit], fixed in 6e7d52c, spec ✅, quality approved after fix)
-  ⚠️ resolved: panelBgColor now unreferenced except its decl — plan-mandated removal in Task 6.
-
-Task 5: complete (commits 6e7d52c..74878e0, review clean, spec ✅, quality approved)
-  Minor (fold into Task 6): swarm_panel.go:29 inner := max(width-4,1) sized for old border; now uses 2-space indent, so should be max(width-2,1).
-
-Task 6: complete (commit 74878e0..cc401ee, spec ✅; deleted all 5 dead bg vars, swarm inner width-2 fix, go mod tidy; full repo go test ./... PASS)
-  NOTE: go vet app.go:463 (sync.Mutex copy) is PRE-EXISTING on base 0b3f3218 — unrelated to this branch.
-  Minor (for final review): status.go:76-78 comment still references deleted statusBarBgColor and describes old background behavior — now stale.
+Task 2: complete inline (adb3020, TDD red→green, full agent+swarm suites pass).
+Task 3: complete inline (2e5a8ab, TDD red→green; note: plan wrongly claimed runner_test.go
+  already imported fmt — added it).
+Task 4: complete inline (907974f, both regression tests passed first run; full repo suite
+  passes; gofmt clean; go vet: only pre-existing app.go:463 mutex-copy on main).
+All tasks done. Follow-up candidates: app.go:463 `*runner = *newRunner` copies mutexes/tracker
+  (pre-existing, latent race on config reload during an in-flight turn).

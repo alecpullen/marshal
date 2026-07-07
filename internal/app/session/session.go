@@ -161,6 +161,19 @@ type ToolBudget struct {
 	Max  int
 }
 
+// SandboxInfo is a plain (import-cycle-free) snapshot of the active Milestone
+// Q sandbox backend's advertised capabilities, set once by app.Run after the
+// sandbox is constructed. The TUI reads it to describe isolation honestly
+// (e.g. "network: blocked (container)" vs "sandbox: restricted · network not
+// isolated") during tool approval/exec rendering. Only the fields the TUI
+// actually consumes are captured here — ResourceLimits and FilesystemIsolation
+// are retained in the registry.SandboxMeta audit trail if future TUI surfaces
+// need them.
+type SandboxInfo struct {
+	Backend          string
+	NetworkIsolation bool
+}
+
 type State struct {
 	Config     config.Config
 	WorkingDir string
@@ -191,6 +204,7 @@ type State struct {
 	activeSkills    map[string]bool
 	toolBudget      ToolBudget
 	swarmProgress   SwarmProgress
+	sandbox         SandboxInfo
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
@@ -213,6 +227,23 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *St
 func (s *State) SessionID() string { return s.sessionID }
 
 func (s *State) Logger() *slog.Logger { return s.logger }
+
+// SetSandboxInfo records the active sandbox backend's capabilities snapshot.
+// Called once by app.Run after sandbox.New; the TUI reads it for honest
+// isolation rendering.
+func (s *State) SetSandboxInfo(info SandboxInfo) {
+	s.mu.Lock()
+	s.sandbox = info
+	s.mu.Unlock()
+}
+
+// SandboxInfo returns the recorded capability snapshot (zero-valued if no
+// sandbox was set, e.g. in tests).
+func (s *State) SandboxInfo() SandboxInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sandbox
+}
 
 func (s *State) persistenceEnabled() bool {
 	return s.db != nil && s.sessionID != "" && s.logger != nil

@@ -1,0 +1,189 @@
+package sandbox
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+
+	"marshal/internal/tools/native"
+)
+
+// defaultContainerImage is the fallback image when [tools.shell.sandbox].
+// container_image is empty. It is intentionally NOT in config.go's Default()
+// as a second source of truth — users see the configured value; this const
+// only fires when the configured value is empty after merge.
+const defaultContainerImage = "alpine:latest"
+
+// Container runs commands inside a Docker/Podman container with hard
+// isolation: private mount namespace (read-only root + rw workspace bind),
+// network policy (--network none when AllowNetwork=false), --memory limit,
+// capability dropping, no-new-privileges, and a per-command CPU-time kill
+// via the image's `timeout` utility (not --cpus, which is a core-quota).
+//
+// The runtime binary path is pinned at sandbox construction time (see
+// container_detect.go) so a later PATH-reorder or planted shim cannot
+// substitute a different binary at exec time.
+type Container struct {
+	cfg         Config
+	runtime     string // "docker" or "podman" (user-facing)
+	runtimePath string // absolute path pinned at detect time (exec uses this)
+	// EnvDenylist cached as a set so buildArgs doesn't rebuild it per Run.
+	// EnvDenylist is immutable after construction; this is safe to reuse
+	// across calls.
+	envDenySet  map[string]bool
+	logger      *slog.Logger
+}
+
+func (c *Container) Capabilities() Capabilities {
+	return Capabilities{
+		Backend:             "container",
+		ResourceLimits:      true,
+		NetworkIsolation:    true,
+		FilesystemIsolation: true,
+	}
+}
+
+// newContainer constructs a Container. The denySet is precomputed once and
+// reused across all Run calls; EnvDenylist / EnvAllowlist are immutable
+// after construction, so this is safe across Runs as long as Config isn't
+// mutated.
+func newContainer(cfg Config, runtime, runtimePath string, logger *slog.Logger) *Container {
+	return &Container{
+		cfg:         cfg,
+		runtime:     runtime,
+		runtimePath: runtimePath,
+		envDenySet:  denySet(cfg.EnvDenylist),
+		logger:      logger,
+	}
+}
+
+func (c *Container) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+	if strings.TrimSpace(req.Command) == "" {
+		return native.CommandResult{Meta: metaFor(c.Capabilities(), c.cfg)}, errEmptyCommand
+	}
+	if strings.TrimSpace(req.Dir) == "" {
+		return native.CommandResult{Meta: metaFor(c.Capabilities(), c.cfg)}, errEmptyDir
+	}
+	workdir, err := resolveConfinedDir(req.Dir)
+	if err != nil {
+		return native.CommandResult{Meta: metaFor(c.Capabilities(), c.cfg)}, err
+	}
+
+	image := c.cfg.ContainerImage
+	if strings.TrimSpace(image) == "" {
+		image = defaultContainerImage
+	}
+
+	args := c.buildArgs(req.Command, image, workdir)
+	runCtx, cancel := runWithTimeout(ctx, req)
+	defer cancel()
+
+	// Invoke the container runtime via the PINNED absolute path so a
+	// runtime-lookalike planted anywhere in the current PATH after
+	// detection cannot run under the sandbox. We pass a minimal env and
+	// no shell wrapping to avoid any argv-interpolation risk.
+	cmd := exec.CommandContext(runCtx, c.runtimePath, args...)
+	cmd.Env = c.buildContainerEnv()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	start := nowFn()
+	err = cmd.Run()
+	result := native.CommandResult{
+		Stdout: stdout.String(),
+		Stderr: stderr.String(),
+	}
+	if cmd.ProcessState != nil {
+		result.ExitCode = cmd.ProcessState.ExitCode()
+	}
+	meta := metaFor(c.Capabilities(), c.cfg)
+	meta.DurationMS = elapsedMS(start)
+	if err != nil {
+		if reason := killedReason(err, runCtx); reason != "" {
+			meta.KilledReason = reason
+		}
+	}
+	result.Meta = meta
+	return result, err
+}
+
+func (c *Container) buildContainerEnv() []string {
+	// Inherit parent env. The isolation boundary is the container itself
+	// (set via --user, --read-only, the -e flags in buildArgs); the host
+	// docker/podman CLI needs access to HOME (~/.docker/config.json for
+	// auth/image pull), DOCKER_HOST, DOCKER_TLS_VERIFY/DOCKER_CERT_PATH,
+	// HTTP_PROXY/HTTPS_PROXY, PATH (helper binaries), etc. Returning
+	// []string{} would wipe these and silently break non-trivial docker
+	// setups; return nil so exec inherits the parent env.
+	return nil
+}
+
+func (c *Container) buildArgs(command, image, workdir string) []string {
+	args := []string{"run", "--rm"}
+
+	// Network policy. --network none is enforced when AllowNetwork=false;
+	// --network bridge when allowed. Note: this is only honored for the
+	// container backend; restricted mode cannot block network.
+	if !c.cfg.AllowNetwork {
+		args = append(args, "--network", "none")
+	} else {
+		args = append(args, "--network", "bridge")
+	}
+	if c.cfg.MemoryLimitMB > 0 {
+		args = append(args, "--memory", fmt.Sprintf("%dm", c.cfg.MemoryLimitMB))
+	}
+
+	// Defense-in-depth: drop all capabilities and disallow new-privilege
+	// escalation. The container runs as 65534:65534 on a read-only root
+	// anyway; these flags harden the image's setuid helpers and any
+	// container escape attempt.
+	args = append(args, "--cap-drop=ALL")
+	args = append(args, "--security-opt", "no-new-privileges:true")
+
+	// read-only root filesystem + rw workspace bind mount: the command
+	// may write to the workspace but not anywhere else in the container.
+	args = append(args, "--read-only")
+	args = append(args, "-v", fmt.Sprintf("%s:%s:rw", workdir, workdir))
+	args = append(args, "-w", workdir)
+	args = append(args, "--user", "65534:65534") // nobody/nogroup: a non-root uid
+
+	// Pass through allowlisted env so the command has PATH/HOME/etc inside
+	// the container. Empty allowlist = no env (consistent with restricted
+	// mode's behavior for explicit-empty allowlist).
+	for _, key := range c.cfg.EnvAllowlist {
+		if c.envDenySet[key] {
+			continue
+		}
+		if v, ok := os.LookupEnv(key); ok {
+			args = append(args, "-e", fmt.Sprintf("%s=%s", key, v))
+		}
+	}
+
+	// Image + command. The image is the first positional arg to `run --rm`.
+	// The remainder becomes the entrypoint inside the container. If the
+	// user set CPUSeconds, we wrap the entrypoint in `timeout` so the
+	// sandboxed command is killed after N seconds of wall time — this is
+	// the CPU-RUNAWAY bound. Note that `--cpus` is NOT used here because
+	// `--cpus` is a CPU core-count quota without any wall-time guarantee,
+	// which misrepresents the `cpu_seconds` field.
+	args = append(args, image)
+	if c.cfg.CPUSeconds > 0 {
+		// timeout (from coreutils, present in alpine) -s KILL sends SIGKILL
+		// when the deadline passes; --preserve-status exits with 137 so the
+		// sandbox's killed-reason detection picks it up.
+		args = append(args,
+			"timeout", "--preserve-status", "-s", "KILL",
+			strconv.Itoa(c.cfg.CPUSeconds),
+			"/bin/sh", "-lc", command,
+		)
+	} else {
+		args = append(args, "/bin/sh", "-lc", command)
+	}
+	return args
+}

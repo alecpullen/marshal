@@ -254,3 +254,82 @@ func TestGetToolCalls_LegacyRows(t *testing.T) {
 		t.Errorf("expected empty error for legacy row, got %q", got.Error)
 	}
 }
+
+func TestSaveAndGetToolCalls_SandboxMeta(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+	sessionID := "session-sandbox-meta"
+	if err := db.CreateSession(sessionID, projectID, "sandbox meta test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	exitCode := 137
+	event := registry.AuditEvent{
+		Timestamp:       time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC),
+		AgentRole:       "implementer",
+		Model:           "test-model",
+		ToolName:        "shell.run",
+		Args:            argsJSON(`{"command":"go test ./..."}`),
+		Risk:            registry.RiskCommand,
+		Approval:        registry.ApprovalApproved,
+		ResultSummary:   "command \"go test ./...\" killed: timeout",
+		CommandExitCode: &exitCode,
+		Sandbox: registry.SandboxMeta{
+			Enabled:          true,
+			Backend:          "container",
+			NetworkIsolated:  true,
+			ResourceLimits:   true,
+			MemoryLimitBytes: 1024 * 1024 * 1024,
+			CPUSeconds:       2,
+			MaxProcesses:     128,
+			KilledReason:     "timeout",
+			DurationMS:       4012,
+		},
+	}
+	if err := db.SaveToolCall(sessionID, event); err != nil {
+		t.Fatalf("SaveToolCall failed: %v", err)
+	}
+	calls, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolCalls failed: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+	got := calls[0]
+	if !got.Sandbox.Enabled || got.Sandbox.Backend != "container" {
+		t.Errorf("sandbox backend not persisted: %+v", got.Sandbox)
+	}
+	if !got.Sandbox.NetworkIsolated {
+		t.Errorf("expected NetworkIsolated=true, got %+v", got.Sandbox)
+	}
+	if got.Sandbox.KilledReason != "timeout" {
+		t.Errorf("expected killed reason timeout, got %q", got.Sandbox.KilledReason)
+	}
+	if got.Sandbox.DurationMS != 4012 {
+		t.Errorf("expected duration 4012ms, got %d", got.Sandbox.DurationMS)
+	}
+	// Round-trip the structured limit/capability fields that were persisted
+	// inside sandbox_limits_json.
+	if got.Sandbox.MemoryLimitBytes != event.Sandbox.MemoryLimitBytes {
+		t.Errorf("expected MemoryLimitBytes %d, got %d", event.Sandbox.MemoryLimitBytes, got.Sandbox.MemoryLimitBytes)
+	}
+	if got.Sandbox.CPUSeconds != event.Sandbox.CPUSeconds {
+		t.Errorf("expected CPUSeconds %d, got %d", event.Sandbox.CPUSeconds, got.Sandbox.CPUSeconds)
+	}
+	if got.Sandbox.MaxProcesses != event.Sandbox.MaxProcesses {
+		t.Errorf("expected MaxProcesses %d, got %d", event.Sandbox.MaxProcesses, got.Sandbox.MaxProcesses)
+	}
+}
+
+func argsJSON(s string) []byte { return []byte(s) }

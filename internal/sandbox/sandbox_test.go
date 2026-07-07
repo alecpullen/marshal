@@ -1,0 +1,366 @@
+package sandbox
+
+import (
+	"context"
+	"fmt"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"marshal/internal/app/config"
+	"marshal/internal/tools/native"
+)
+
+// newTestSandbox builds a sandbox with the given resolved Config but a logger
+// nil (tests don't need logs).
+func newTestSandbox(t *testing.T, cfg Config) Sandbox {
+	t.Helper()
+	sb, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return sb
+}
+
+func TestNewUnknownBackendErrors(t *testing.T) {
+	if _, err := New(Config{Backend: "bogus"}, nil); err == nil {
+		t.Fatal("expected error for unknown backend, got nil")
+	}
+}
+
+func TestNewEmptyBackendDefaultsToRestricted(t *testing.T) {
+	t.Setenv("MARSHAL_TEST", "v")
+	sb := newTestSandbox(t, Config{Backend: "", EnvAllowlist: []string{"MARSHAL_TEST"}})
+	if sb.Capabilities().Backend != "restricted" {
+		t.Fatalf("backend = %q, want restricted", sb.Capabilities().Backend)
+	}
+}
+
+func TestNewPassthroughBackend(t *testing.T) {
+	sb := newTestSandbox(t, Config{Backend: "passthrough"})
+	caps := sb.Capabilities()
+	if caps.Backend != "passthrough" || caps.ResourceLimits || caps.NetworkIsolation {
+		t.Fatalf("passthrough caps wrong: %+v", caps)
+	}
+}
+
+func TestNewContainerBackendFallsBackToRestrictedWhenNoRuntime(t *testing.T) {
+	// Force a runtime choice that will never be found on the test host.
+	t.Setenv("PATH", "/nonexistent")
+	sb := newTestSandbox(t, Config{Backend: "container", ContainerRuntime: "definitely-not-a-runtime", AllowFallback: true})
+	if sb.Capabilities().Backend != "restricted" {
+		t.Fatalf("container with no runtime should fall back to restricted, got %q", sb.Capabilities().Backend)
+	}
+}
+
+func TestNewContainerBackendHardFailsWithoutAllowFallback(t *testing.T) {
+	// Force a runtime choice that will never be found on the test host.
+	t.Setenv("PATH", "/nonexistent")
+	_, err := New(Config{Backend: "container"}, nil)
+	if err == nil {
+		t.Fatal("expected hard error when container backend requested without allow_fallback, got nil")
+	}
+	if !strings.Contains(err.Error(), "container backend requested") {
+		t.Fatalf("error message wrong: %v", err)
+	}
+}
+
+func TestRestrictedRunExecutesAndRecordsMeta(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell echo differs on windows")
+	}
+	sb := newTestSandbox(t, Config{Backend: "restricted"})
+	dir := t.TempDir()
+	res, err := sb.Run(context.Background(), native.CommandRequest{
+		Command: "echo hello",
+		Dir:     dir,
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "hello") {
+		t.Fatalf("stdout = %q", res.Stdout)
+	}
+	if res.Meta.Backend != "restricted" || !res.Meta.Enabled {
+		t.Fatalf("meta = %+v", res.Meta)
+	}
+	if res.Meta.DurationMS < 0 {
+		t.Fatalf("negative duration: %d", res.Meta.DurationMS)
+	}
+}
+
+func TestRestrictedRejectsEmptyCommand(t *testing.T) {
+	sb := newTestSandbox(t, Config{Backend: "restricted"})
+	if _, err := sb.Run(context.Background(), native.CommandRequest{Command: "   ", Dir: t.TempDir()}); err == nil {
+		t.Fatal("expected error for empty command")
+	}
+}
+
+func TestRestrictedRejectsEmptyDir(t *testing.T) {
+	sb := newTestSandbox(t, Config{Backend: "restricted"})
+	if _, err := sb.Run(context.Background(), native.CommandRequest{Command: "echo hi", Dir: ""}); err == nil {
+		t.Fatal("expected error for empty dir")
+	}
+}
+
+func TestRestrictedEnvScrubbingDropsNotAllowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env scrub test relies on sh -c 'printenv'")
+	}
+	t.Setenv("MARSHAL_KEEP", "kept")
+	t.Setenv("MARSHAL_DROP", "dropped")
+	sb := newTestSandbox(t, Config{
+		Backend:      "restricted",
+		EnvAllowlist: []string{"MARSHAL_KEEP", "PATH"},
+		EnvDenylist:  []string{"MARSHAL_DROP"},
+	})
+	dir := t.TempDir()
+	// printenv prints allowed var; ensure MARSHAL_DROP is absent.
+	res, err := sb.Run(context.Background(), native.CommandRequest{
+		Command: "printenv MARSHAL_DROP || echo absent",
+		Dir:     dir,
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "absent") {
+		t.Fatalf("denylisted var leaked into child env: %q", res.Stdout)
+	}
+	res2, err := sb.Run(context.Background(), native.CommandRequest{
+		Command: "printenv MARSHAL_KEEP",
+		Dir:     dir,
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run keep: %v", err)
+	}
+	if !strings.Contains(res2.Stdout, "kept") {
+		t.Fatalf("allowlisted var not present: %q", res2.Stdout)
+	}
+}
+
+func TestRestrictedEmptyAllowlistDeniesEnvInversion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env scrub test relies on sh")
+	}
+	// Set a secret-looking var on the parent. With an explicit-empty
+	// allowlist the user is saying "deny all env" — it must not invert
+	// to full parent-env leak.
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "leaked")
+	t.Setenv("MARSHAL_RANDOM", "random")
+	sb := newTestSandbox(t, Config{
+		Backend:      "restricted",
+		EnvAllowlist: []string{}, // explicit empty: deny all
+	})
+	dir := t.TempDir()
+	res, err := sb.Run(context.Background(), native.CommandRequest{
+		Command: "printenv MARSHAL_RANDOM || echo absent; printenv AWS_SECRET_ACCESS_KEY || echo aws_absent",
+		Dir:     dir,
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "absent") {
+		t.Fatalf("explicit-empty allowlist still leaked parent env: %q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "aws_absent") {
+		t.Fatalf("AWS_SECRET_ACCESS_KEY leaked with empty allowlist: %q", res.Stdout)
+	}
+}
+
+func TestRestrictedNilAllowlistPassesParentButSrubbsSecrets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env scrub test relies on sh")
+	}
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "leak-me")
+	t.Setenv("MARSHAL_PLAIN", "ok")
+	sb := newTestSandbox(t, Config{
+		Backend:      "restricted",
+		EnvAllowlist: nil, // nil: pass parent env
+	})
+	dir := t.TempDir()
+	res, err := sb.Run(context.Background(), native.CommandRequest{
+		Command: "printenv AWS_SECRET_ACCESS_KEY || echo aws_scrubbed; printenv MARSHAL_PLAIN || echo plain_lost",
+		Dir:     dir,
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "aws_scrubbed") {
+		t.Fatalf("nil allowlist should scrub AWS_*: %q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "ok") {
+		t.Fatalf("nil allowlist should pass non-secret parent vars: %q", res.Stdout)
+	}
+}
+
+func TestRestrictedTimeoutKillsProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pgroup kill is unix-only")
+	}
+	sb := newTestSandbox(t, Config{Backend: "restricted"})
+	dir := t.TempDir()
+	// Spawn a child (`sleep 30`) that would outlive its parent if not killed
+	// as a group. If the group kill works, Run returns within the timeout
+	// instead of hanging ~30s waiting on `wait`.
+	start := time.Now()
+	_, _ = sb.Run(context.Background(), native.CommandRequest{
+		Command: `( sleep 30 ) & echo started; wait`,
+		Dir:     dir,
+		Timeout: 400 * time.Millisecond,
+	})
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Run did not kill process group; elapsed = %v", elapsed)
+	}
+}
+
+func TestRestrictedWrapCommandAppliesUlimitsOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ulimit is unix-only")
+	}
+	wrapped := restrictedWrapCommand("echo hi", Config{CPUSeconds: 10, MaxProcesses: 64, FileSizeLimitMB: 16})
+	if !strings.Contains(wrapped, "ulimit -t 10") {
+		t.Fatalf("cpu ulimit missing: %q", wrapped)
+	}
+	if !strings.Contains(wrapped, "ulimit -u 64") {
+		t.Fatalf("max-procs ulimit missing: %q", wrapped)
+	}
+	if !strings.Contains(wrapped, "ulimit -f ") {
+		t.Fatalf("file-size ulimit missing: %q", wrapped)
+	}
+	// 16 MB * 1024 * 1024 / blockSize per ulimitBlockSize().
+	var wantBlocks int
+	if runtime.GOOS == "linux" {
+		wantBlocks = (16 * 1024 * 1024) / 1024 // 16384 on Linux (1K-block)
+	} else {
+		wantBlocks = (16 * 1024 * 1024) / 512 // 32768 on darwin/BSD (512B block)
+	}
+	expected := fmt.Sprintf("ulimit -f %d", wantBlocks)
+	if !strings.Contains(wrapped, expected) {
+		t.Fatalf("expected %q in wrapped command: %q", expected, wrapped)
+	}
+	if !strings.HasSuffix(wrapped, "exec echo hi") {
+		t.Fatalf("missing exec tail: %q", wrapped)
+	}
+}
+
+func TestRestrictedWrapCommandNoOpWithoutLimits(t *testing.T) {
+	got := restrictedWrapCommand("echo hi", Config{})
+	if got != "echo hi" {
+		t.Fatalf("expected unchanged, got %q", got)
+	}
+}
+
+func TestContainerBuildArgsNetworkDisabled(t *testing.T) {
+	c := &Container{cfg: Config{AllowNetwork: false, MemoryLimitMB: 1024, CPUSeconds: 2, ContainerImage: "alpine:latest"}, runtime: "docker", runtimePath: "/usr/local/bin/docker"}
+	args := c.buildArgs("go test ./...", "alpine:latest", "/work")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--network none") {
+		t.Fatalf("network none missing: %s", joined)
+	}
+	if !strings.Contains(joined, "--memory 1024m") {
+		t.Fatalf("memory limit missing: %s", joined)
+	}
+	// CPU-seconds now maps to a wall-time timeout wrapper (not --cpus,
+	// which is a core quota). Check that the argv includes the timeout
+	// invocation with the right seconds and --preserve-status.
+	if strings.Contains(joined, "--cpus") {
+		t.Fatalf("--cpus should no longer appear in container argv: %s", joined)
+	}
+	if !strings.Contains(joined, "timeout --preserve-status -s KILL 2") {
+		t.Fatalf("timeout wrap missing: %s", joined)
+	}
+	if !strings.Contains(joined, "--read-only") {
+		t.Fatalf("read-only missing: %s", joined)
+	}
+	if !strings.Contains(joined, "--cap-drop=ALL") {
+		t.Fatalf("cap-drop=ALL missing: %s", joined)
+	}
+	if !strings.Contains(joined, "--security-opt no-new-privileges:true") {
+		t.Fatalf("no-new-privileges missing: %s", joined)
+	}
+	if !strings.Contains(joined, "-v /work:/work:rw") {
+		t.Fatalf("workspace mount missing: %s", joined)
+	}
+	if !strings.Contains(joined, "--user 65534:65534") {
+		t.Fatalf("non-root user missing: %s", joined)
+	}
+}
+
+func TestContainerBuildArgsNetworkAllowedUsesBridge(t *testing.T) {
+	c := &Container{cfg: Config{AllowNetwork: true, ContainerImage: "alpine:latest"}, runtime: "podman", runtimePath: "/usr/local/bin/podman"}
+	args := c.buildArgs("ping example.com", "alpine:latest", "/work")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--network bridge") {
+		t.Fatalf("network bridge missing when allowed: %s", joined)
+	}
+	if strings.Contains(joined, "--network none") {
+		t.Fatalf("network none should not appear when allowed: %s", joined)
+	}
+}
+
+func TestContainerCapabilitiesIsolateAll(t *testing.T) {
+	c := &Container{}
+	caps := c.Capabilities()
+	if !caps.NetworkIsolation || !caps.FilesystemIsolation || !caps.ResourceLimits {
+		t.Fatalf("container caps should all be true: %+v", caps)
+	}
+}
+
+func TestContainerRejectsEmptyCommandAndDir(t *testing.T) {
+	c := &Container{cfg: Config{ContainerRuntime: "docker", ContainerImage: "alpine:latest"}, runtime: "docker", runtimePath: "/usr/local/bin/docker"}
+	if _, err := c.Run(context.Background(), native.CommandRequest{Command: "", Dir: t.TempDir()}); err == nil {
+		t.Fatal("expected error for empty command")
+	}
+	if _, err := c.Run(context.Background(), native.CommandRequest{Command: "echo hi", Dir: ""}); err == nil {
+		t.Fatal("expected error for empty dir")
+	}
+}
+
+func TestFromConfigCarriesAllowNetwork(t *testing.T) {
+	sb := config.ShellToolConfig{
+		AllowNetwork: true,
+		Sandbox: config.SandboxConfig{
+			Backend:       "container",
+			MemoryLimitMB: 512,
+			CPUSeconds:    4,
+			MaxProcesses:  128,
+			AllowFallback: true,
+			EnvAllowlist:  []string{"PATH"},
+		},
+	}
+	cfg := FromConfig(sb)
+	if !cfg.AllowNetwork || cfg.Backend != "container" || cfg.MemoryLimitMB != 512 || cfg.CPUSeconds != 4 || !cfg.AllowFallback {
+		t.Fatalf("FromConfig wrong: %+v", cfg)
+	}
+	if len(cfg.EnvAllowlist) != 1 || cfg.EnvAllowlist[0] != "PATH" {
+		t.Fatalf("EnvAllowlist = %#v", cfg.EnvAllowlist)
+	}
+}
+
+func TestSandboxMetaPassthroughRunsAndCapturesMeta(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell echo differs on windows")
+	}
+	sb := newTestSandbox(t, Config{Backend: "passthrough"})
+	dir := t.TempDir()
+	res, err := sb.Run(context.Background(), native.CommandRequest{
+		Command: "echo hi",
+		Dir:     dir,
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "hi") {
+		t.Fatalf("stdout = %q", res.Stdout)
+	}
+	if res.Meta.Backend != "passthrough" || !res.Meta.Enabled {
+		t.Fatalf("meta = %+v", res.Meta)
+	}
+}

@@ -73,6 +73,14 @@ internal/skills
   loader.go                        — skill loader
   tool.go                          — skill.load tool registration
 
+internal/sandbox
+  sandbox.go                       — Sandbox interface, Capabilities, Config, factory
+  passthrough.go                   — no-isolation backend (pre-Milestone-Q behavior)
+  restricted.go + restricted_unix.go / restricted_windows.go — default in-process backend
+  container.go + container_detect.go                              — Docker/Podman backend
+  shell_unix.go / shell_windows.go — platform shell construction
+  timeout.go, clock.go             — shared timeout/clock helpers
+
 internal/tools
   registry/                        — tool registration and dispatch
   native/                          — file, search, shell, git, repo, symbols
@@ -87,7 +95,7 @@ Key design decisions:
 - `internal/commands/` is a flat package of slash-command handlers, not a sub-directory per command.
 - `internal/skills/` is a separate concern from tools — skills inject instruction sets, tools execute operations.
 - `internal/db/` is a flat package (no `sqlite/`, `migrations/`, `events/` sub-packages).
-- The planned `internal/sandbox/` (policy, approvals, command classifier) is not yet implemented — that is Milestone Q.
+- The `internal/sandbox/` package implements isolated command execution (Milestone Q, three backends: passthrough/restricted/container), injected as the `native.CommandRunner` at runtime. Default is `restricted`; `container` enforces network/no-host-access when a Docker/Podman runtime is available and falls back to `restricted` otherwise.
 
 ## Main runtime flow
 

@@ -77,10 +77,15 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 	result, err := t.runner.Run(ctx, CommandRequest{Command: command, Dir: t.root, Timeout: timeout})
 	exitCode := result.ExitCode
 	content := formatCommandOutput(result.Stdout, result.Stderr)
+	summary := fmt.Sprintf("command %q exited with code %d", command, result.ExitCode)
+	if result.Meta.Enabled && result.Meta.KilledReason != "" {
+		summary = fmt.Sprintf("command %q killed: %s", command, result.Meta.KilledReason)
+	}
 	return registry.ToolResult{
-		Summary:         fmt.Sprintf("command %q exited with code %d", command, result.ExitCode),
+		Summary:         summary,
 		Content:         limitOutput(content, t.maxOutputBytes),
 		CommandExitCode: &exitCode,
+		Sandbox:         result.Meta,
 	}, err
 }
 

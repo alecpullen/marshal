@@ -170,6 +170,24 @@
 - [x] Config policies (allow, confirm, deny) for MCP tools
 - [x] Lifecycle management in app runner
 
+## Milestone Q: Sandboxed Command Execution (Phase 7)
+
+- [x] Pluggable `Sandbox` abstraction implementing `native.CommandRunner`
+- [x] `passthrough` backend (pre-Milestone-Q behavior)
+- [x] `restricted` backend (default, in-process hardening)
+- [x] Env allowlist scrubbing + env denylist (restricted)
+- [x] ulimit/rlimit resource caps: cpu seconds, file size, max processes (unix)
+- [x] cwd confinement to the workspace root (restricted)
+- [x] Process-group kill on timeout/cancel (unix, fixes orphaned-child gap)
+- [x] `container` backend (Docker/Podman) with runtime detection
+- [x] `--network none|bridge` policy per `AllowNetwork` (container)
+- [x] `--memory`/`--cpus` limits, read-only root + rw workspace bind mount, non-root uid (container)
+- [x] Graceful container→restricted fallback when no runtime detected
+- [x] Per-command timeout, memory, and output caps
+- [x] Audit trail extension: `tool_calls` sandbox columns (backend, network-isolated, limits JSON, killed-reason, duration)
+- [x] Honest capability reporting in the TUI approval/exec line
+- [x] `[tools.shell.sandbox]` config section with defaults + merge + save round-trip
+
 ## First demo target
 
 The first useful demo should support this flow:

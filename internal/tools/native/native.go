@@ -41,6 +41,10 @@ type CommandResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+	// Meta is populated by sandbox backends (see internal/sandbox) to
+	// record how the command was executed. The default execRunner leaves
+	// it zero-valued. It flows through to the audit trail via ToolResult.
+	Meta registry.SandboxMeta
 }
 
 type toolSet struct {

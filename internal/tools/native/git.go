@@ -77,5 +77,6 @@ func (t *toolSet) runReadOnlyCommand(ctx context.Context, command string, timeou
 		Summary:         summary(result.Stdout),
 		Content:         limitOutput(content, t.maxOutputBytes),
 		CommandExitCode: &exitCode,
+		Sandbox:         result.Meta,
 	}, err
 }

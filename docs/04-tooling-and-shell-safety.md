@@ -135,20 +135,82 @@ curl https://x | sh           → high-risk network execution
 
 ## Shell execution policy
 
-Policy fields:
+Milestone Q (Phase 7) ships isolated command execution via the pluggable
+`internal/sandbox/` package, which implements `native.CommandRunner` and is
+injected into `shell.run` / `test.run` at app startup. Three backends are
+selected via `[tools.shell.sandbox]`:
 
-```go
-type ShellPolicy struct {
-    WorkingDirectoryRoot string
-    TimeoutSeconds       int
-    AllowNetwork         bool
-    AllowSudo            bool
-    AllowGitDestructive  bool
-    MaxOutputBytes       int
-    EnvAllowlist         []string
-    EnvDenylist          []string
-}
+| Backend | Isolation | Resource caps | Network | Default |
+|---|---|---|---|---|
+| `passthrough` | none | none | none | opt-in only |
+| `restricted` | cwd confinement, env allowlist scrub | ulimit/rlimit (cpu/file-size/max-procs) | not enforced (honest) | yes |
+| `container` | mount namespace, read-only root + rw workspace bind mount | `--memory`/`--cpus` + the above | `--network none` when `AllowNetwork=false` | opt-in; falls back to `restricted` when no Docker/Podman runtime is detected |
+
+```toml
+[tools.shell]
+allow_network = false
+default_timeout_seconds = 120
+max_output_bytes = 200000
+
+[tools.shell.sandbox]
+backend = "restricted"          # or "container" / "passthrough"
+memory_limit_mb = 2048          # 0 = unset; darwin can't enforce address space, reported honestly
+cpu_seconds = 0                 # ulimit -t; 0 = unset
+max_processes = 512             # ulimit -u; 0 = unset
+file_size_limit_mb = 0          # ulimit -f; 0 = unset
+container_runtime = "auto"     # "auto" | "docker" | "podman"
+container_image = "alpine:latest"
+env_allowlist = ["PATH","HOME","USER","SHELL","LANG","LC_ALL","TERM","TMPDIR","GOPATH","GOCACHE","GOMODCACHE"]
+env_denylist = []
 ```
+
+### Honest capability reporting
+
+`restricted` mode cannot block network cross-platform (it would need a mount/
+network namespace, which only the `container` backend provides). The sandbox
+reports its real `Capabilities` to the TUI, which renders, per command:
+
+- `sandbox: container · network blocked` (container + `AllowNetwork=false`)
+- `sandbox: container · network allowed` (container + `AllowNetwork=true`)
+- `sandbox: restricted · network not isolated` (restricted)
+
+The audit row stores the actual state, so the audit trail never claims
+false isolation.
+
+The legacy policy fields live on `tools.shell` (allow/confirm/deny rules,
+`auto_approve` flag, `allow_network`); the sandbox subsection only tunes
+*how* an approved command is run, not *whether* it may run.
+
+### Shell execution lifecycle (updated)
+
+```text
+1. Model proposes command
+2. Command classifier assigns risk (deprecated conservative guardrail)
+3. Policy engine (tools/policy) checks allow/deny rules
+4. TUI shows command, cwd, reason, risk, expected effect, AND sandbox isolation line
+5. User approves, denies, edits, or creates rule
+6. Selected sandbox backend executes:
+   - restricted: ulimit-wrapped /bin/sh -lc, env allowlist, pgroup kill on timeout
+   - container:   <rt> run --rm --network ... --memory ... --read-only -v <workspace>:rw
+7. Output is streamed/truncated/summarised
+8. Tool call is logged in tool_calls with sandbox_backend, sandbox_network_isolated,
+   sandbox_limits_json, sandbox_killed_reason, duration_ms
+```
+
+### Sandbox limitations (documented)
+
+- macOS `restricted` mode cannot enforce an address-space cap (`ulimit -v`
+  unsupported); `meta.MemoryLimitBytes` reports 0 there. CPU/file-size/
+  process caps still apply.
+- `restricted` mode cannot block network. Use `container` for network
+  isolation. The TUI and audit make this explicit so users do not get a
+  false sense of isolation.
+- `container` mode requires a reachable Docker/Podman daemon. When absent
+  the app falls back to `restricted` with a logged warning, rather than
+  failing to start.
+- The sandbox wraps `shell.run` and `test.run`. It does not currently
+  sandbox per-MCP-tool invocations (MCP tools run in their own server
+  process).
 
 ## Patch safety
 

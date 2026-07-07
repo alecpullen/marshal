@@ -28,6 +28,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/sandbox"
 	"marshal/internal/skills"
 	"marshal/internal/tools/mcp"
 	"marshal/internal/tools/native"
@@ -223,8 +224,28 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 
 	reg := registry.New()
+
+	// Milestone Q: construct the sandboxed command runner from the shell
+	// config. sandbox.New falls back gracefully (container -> restricted
+	// when no runtime is detected), so app startup never hard-fails because
+	// of a missing sandbox dependency. A nil sandbox leaves the default
+	// non-sandboxed execRunner in place (used by tests).
+	sbCfg := sandbox.FromConfig(cfg.Tools.Shell)
+	commandRunner, sbErr := sandbox.New(sbCfg, state.Logger())
+	if sbErr != nil {
+		// Unknown backend string: surface as a startup error rather than
+		// silently downgrading — the user should fix their config.
+		return nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+	}
+caps := commandRunner.Capabilities()
+	state.SetSandboxInfo(session.SandboxInfo{
+		Backend:          caps.Backend,
+		NetworkIsolation: caps.NetworkIsolation,
+	})
+
 	if err := native.RegisterAll(reg, native.Options{
 		WorkspaceRoot: state.WorkingDir,
+		CommandRunner: commandRunner,
 		TestCommand:   cfg.Commands.Test,
 		SessionState:  state,
 		DB:            database,

@@ -54,7 +54,12 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     command_exit_code INTEGER,
     files_changed TEXT,
     error TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    sandbox_backend TEXT,
+    sandbox_network_isolated INTEGER,
+    sandbox_limits_json TEXT,
+    sandbox_killed_reason TEXT,
+    duration_ms INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS symbols (

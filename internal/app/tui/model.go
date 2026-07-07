@@ -539,7 +539,7 @@ func (m Model) inputAreaRows() int {
 			content = "❯ " + m.input.View()
 		} else {
 			inputInnerWidth := max(m.width-4, 1)
-			content = renderApprovalPanel(tc, inputInnerWidth)
+			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth)
 		}
 		rows += len(strings.Split(content, "\n"))
 	} else {
@@ -673,7 +673,7 @@ func (m *Model) refreshViewport() {
 		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.spinnerFrame, m.viewport.Width))
 	}
 	if atc, ok := m.state.ActiveToolCall(); ok {
-		b.WriteString(renderActiveToolCall(atc, m.spinnerFrame, m.now(), m.viewport.Width))
+		b.WriteString(renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.spinnerFrame, m.now(), m.viewport.Width))
 	}
 	if err := m.state.ProviderError(); err != nil {
 		b.WriteString(renderProviderError(err, m.viewport.Width))

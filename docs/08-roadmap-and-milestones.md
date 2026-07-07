@@ -42,24 +42,29 @@ Goal: extensibility.
 
 Milestone P.
 
-## Next: Phase 7 — Sandboxed command execution
+## Phase 7: Sandboxed command execution ✅
 
 Goal: isolated, safe command execution with resource controls.
 
-Features planned:
+Milestone Q.
 
-- container or jail-based shell execution
+Features delivered:
+
+- pluggable `internal/sandbox/` execution backends: `passthrough`, `restricted` (default), `container`
+- in-process hardening in `restricted` mode: env allowlist scrubbing, ulimit/rlimit caps (cpu/file-size/max-procs), cwd confinement, process-group kill on timeout
+- `container` backend (Docker/Podman): `--network none|bridge` per `AllowNetwork`, `--memory`/`--cpus` limits, read-only root + rw workspace bind mount, non-root uid, graceful fallback to `restricted` when no runtime is detected
 - per-command timeouts and memory limits
-- network access policies
-- audit trail of all executed commands
-- no-host-access mode for untrusted operations
+- network access policies (container-enforced; restricted degrades honestly)
+- no-host-access mode (container, `--network none` + isolated mount namespace)
+- audit trail of all executed commands (extends `tool_calls` table with sandbox backend / network-isolated / limits JSON / killed-reason / duration)
+- honest capability per-row reporting in the TUI approval/exec line
 
 Success criteria:
 
-- commands run in an isolated environment
-- resource limits are enforced
-- network can be restricted per command
-- full audit trail is available
+- commands run in an isolated environment (container mode) or hardened in-process (restricted mode) ✅
+- resource limits are enforced ✅
+- network can be restricted per command (container) ✅
+- full audit trail is available ✅
 
 ## Suggested build order (already executed)
 
@@ -80,7 +85,7 @@ Success criteria:
 14. Knowledge agent             ✅ Milestone N
 15. Swarm runtime               ✅ Milestone O
 16. MCP/plugin support          ✅ Milestone P
-17. Sandboxed command execution   🔜 Milestone Q
+17. Sandboxed command execution   ✅ Milestone Q
 ```
 
 ## MVP demo scenario (working)

@@ -103,9 +103,16 @@ type Runner struct {
 
 	UsageObserver UsageObserver
 
+	// MetricsObserver, when set, receives one TurnMetrics per RunTask,
+	// emitted on every exit path (answer, salvage, failure). Nil disables
+	// collection output; counter bookkeeping still runs.
+	MetricsObserver func(TurnMetrics)
+
 	forceClassMu sync.Mutex
 	tracker      *progressTracker
 	trackerMu    sync.Mutex
+	stats        *turnStats
+	statsMu      sync.Mutex
 }
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
@@ -156,7 +163,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.tracker = newProgressTracker()
 	r.trackerMu.Unlock()
 
+	r.statsMu.Lock()
+	r.stats = &turnStats{m: TurnMetrics{
+		StartedAt: r.Now(),
+		Goal:      truncateGoal(goal, 200),
+		Role:      string(r.role()),
+	}}
+	r.statsMu.Unlock()
+
 	task := NewTask(goal, r.Now())
+	defer func() { r.emitMetrics(task) }()
 	r.forceClassMu.Lock()
 	fc := r.ForceClass
 	r.forceClassMu.Unlock()
@@ -166,6 +182,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		task.Class = Classify(goal)
 	}
 	turnProvider, turnModel, route := r.resolveRoute(task)
+	r.withStats(func(s *turnStats) {
+		s.m.Provider = turnProvider.Name()
+		s.m.Model = turnModel
+	})
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
 	messages := []schema.ChatMessage{
@@ -204,6 +224,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	producedValidAction := false
 	for iteration := 0; iteration < r.MaxToolIterations; iteration++ {
 		r.State.SetToolBudget(session.ToolBudget{Used: iteration, Max: r.MaxToolIterations})
+		r.withStats(func(s *turnStats) { s.m.Iterations = iteration + 1 })
 
 		if !pressureSent && r.MaxToolIterations-iteration <= finalizePressureThreshold {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: finalizePressureMessage})
@@ -226,6 +247,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		if parseErr != nil {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
 			messages = append(messages, BuildCorrectionMessage(parseErr))
+			r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
 			continue
 		}
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
@@ -305,9 +327,11 @@ func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, 
 
 	switch a {
 	case assessHardStall:
+		r.withStats(func(s *turnStats) { s.m.HardStalls++ })
 		res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
 		return true, res, ferr, ""
 	case assessStalling:
+		r.withStats(func(s *turnStats) { s.m.SoftStalls++ })
 		return false, task, nil, buildLoopNudge(dupName, dupArgs)
 	}
 	return false, task, nil, ""
@@ -460,6 +484,12 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	if r.UsageObserver != nil && usage != nil {
 		r.UsageObserver(usage.PromptTokens, usage.CompletionTokens)
 	}
+	if usage != nil {
+		r.withStats(func(s *turnStats) {
+			s.m.PromptTokens += usage.PromptTokens
+			s.m.CompletionTokens += usage.CompletionTokens
+		})
+	}
 	return sb.String(), nil
 }
 
@@ -476,6 +506,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 
 	tool, ok := r.Registry.Lookup(toolName)
 	if !ok {
+		r.countToolCall(true, false)
 		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "unknown tool")}, nil
 	}
 
@@ -483,6 +514,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if action.Type == ActionPatch {
 		encoded, err := json.Marshal(map[string]string{"patch": action.Content})
 		if err != nil {
+			r.countToolCall(true, false)
 			return []schema.ChatMessage{BuildToolErrorMessage(toolName, "failed to encode patch arguments")}, nil
 		}
 		args = encoded
@@ -491,12 +523,14 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	argsMap := map[string]interface{}{}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &argsMap); err != nil {
+			r.countToolCall(true, false)
 			return []schema.ChatMessage{BuildToolErrorMessage(toolName, "arguments are not a valid JSON object")}, nil
 		}
 	}
 
 	normalizedArgs, normErr := normalizeArgs(args)
 	if normErr != nil {
+		r.countToolCall(true, false)
 		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "failed to normalize arguments")}, nil
 	}
 
@@ -511,6 +545,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
 			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
 			r.State.LogToolCall(event)
+			r.countToolCall(false, true)
 			return []schema.ChatMessage{BuildCachedToolResultMessage(toolName, cached)}, nil
 		}
 	}
@@ -518,6 +553,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	r.Policy.SetSessionRules(r.State.SessionRules())
 	decision, reason, err := r.Policy.Evaluate(toolName, argsMap)
 	if err != nil {
+		r.countToolCall(true, false)
 		return []schema.ChatMessage{BuildToolErrorMessage(toolName, err.Error())}, nil
 	}
 
@@ -526,6 +562,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	case policy.DecisionDeny:
 		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
 		r.State.LogToolCall(event)
+		r.countToolCall(true, false)
 		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "denied by policy: "+reason)}, nil
 	case policy.DecisionConfirm:
 		approved, edited, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason)
@@ -535,6 +572,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		if !approved {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
 			r.State.LogToolCall(event)
+			r.countToolCall(true, false)
 			return []schema.ChatMessage{BuildToolErrorMessage(toolName, "denied by user")}, nil
 		}
 		approval = registry.ApprovalApproved
@@ -583,6 +621,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		r.trackerMu.Lock()
 		r.tracker.record(toolName, string(normalizedArgs))
 		r.trackerMu.Unlock()
+		r.countToolCall(true, false)
 		return []schema.ChatMessage{BuildToolErrorMessage(toolName, execErr.Error())}, nil
 	}
 
@@ -597,6 +636,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	r.trackerMu.Lock()
 	r.tracker.record(toolName, string(normalizedArgs))
 	r.trackerMu.Unlock()
+	r.countToolCall(false, false)
 	return msgs, nil
 }
 

@@ -38,6 +38,7 @@ type scriptedProvider struct {
 	responses []string
 	thinking  []string
 	errs      []error
+	usages    []*schema.TokenUsage
 	calls     int
 	requests  []schema.ChatRequest
 }
@@ -80,7 +81,11 @@ func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 		content = p.responses[len(p.responses)-1]
 	}
 	ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
-	ch <- schema.ChatEvent{Type: schema.ChatEventDone}
+	done := schema.ChatEvent{Type: schema.ChatEventDone}
+	if idx < len(p.usages) {
+		done.Usage = p.usages[idx]
+	}
+	ch <- done
 	close(ch)
 	return ch, nil
 }

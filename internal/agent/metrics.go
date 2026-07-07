@@ -56,3 +56,43 @@ func outcomeFor(task *Task) string {
 		return "failed"
 	}
 }
+
+// withStats runs f with the current turn's collector under statsMu. It is a
+// no-op before the first RunTask (stats nil), so direct calls to chatOnce or
+// executeToolCall in tests never panic.
+func (r *Runner) withStats(f func(*turnStats)) {
+	r.statsMu.Lock()
+	defer r.statsMu.Unlock()
+	if r.stats != nil {
+		f(r.stats)
+	}
+}
+
+// countToolCall records one tool message fed back to the model.
+func (r *Runner) countToolCall(errored, cached bool) {
+	r.withStats(func(s *turnStats) {
+		s.m.ToolCalls++
+		if errored {
+			s.m.ToolErrors++
+		}
+		if cached {
+			s.m.CacheHits++
+		}
+	})
+}
+
+// emitMetrics finalizes the turn's metrics from the finished task and hands
+// them to MetricsObserver. Called exactly once per RunTask via defer.
+func (r *Runner) emitMetrics(task *Task) {
+	if r.MetricsObserver == nil {
+		return
+	}
+	r.statsMu.Lock()
+	m := r.stats.m
+	r.statsMu.Unlock()
+	m.DurationMs = r.Now().Sub(m.StartedAt).Milliseconds()
+	m.Class = string(task.Class)
+	m.Outcome = outcomeFor(task)
+	m.SalvageReason = task.SalvagedReason
+	r.MetricsObserver(m)
+}

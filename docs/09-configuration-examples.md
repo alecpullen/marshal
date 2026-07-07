@@ -45,7 +45,7 @@ model = "qwen2.5-coder:1.5b"
 context_window = 8192
 temperature = 0.0
 max_output_tokens = 1024
-tool_calling = "json"        # requests response_format={"type":"json_object"} if provider supports JSON mode
+tool_calling = "json"        # unconstrained text decoding via Marshal's JSON action protocol
 local_only = true
 
 [models.presets.fast]
@@ -76,12 +76,15 @@ tool_calling = "native"
 local_only = false
 ```
 
-`tool_calling` controls how Marshal asks the model to return tool/actions:
+`tool_calling` controls how Marshal asks the model to return tools/actions:
 
 - A provider advertises native tool-calling support by setting `tool_calling = true` in its `[providers.<name>]` block.
 - `native` opts into provider-native OpenAI-compatible `tools[]` / `tool_calls[]` when the provider advertises tool-calling support.
-- If `native` is selected but the provider does not support native tool calls, Marshal degrades to `json_schema`, then `json`, then unconstrained text.
-- `json_schema` requests Marshal's strict JSON action envelope when structured output is supported, otherwise it degrades to `json`.
+- If `native` is selected but the provider does not support native tool calls, Marshal degrades through the first supported fallback:
+  1. `json_schema` — strict JSON action envelope when the provider supports structured output.
+  2. `json_object` — OpenAI-style `response_format={"type":"json_object"}` when the provider supports JSON mode.
+  3. Unconstrained text — Marshal's text JSON action protocol.
+- `json_schema` requests Marshal's strict JSON action envelope when structured output is supported; otherwise it degrades to `json_object` when JSON mode is supported; otherwise unconstrained text.
 - `json` leaves decoding unconstrained and uses Marshal's text JSON action protocol.
 - An empty value also leaves decoding unconstrained and uses Marshal's text JSON action protocol.
 

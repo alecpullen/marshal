@@ -308,6 +308,9 @@ func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	if runner.NativeTools {
 		t.Fatalf("runner.NativeTools = true, want false when provider lacks capability")
 	}
+	if runner.ResponseFormat == nil || runner.ResponseFormat.Type != "json_schema" {
+		t.Fatalf("runner.ResponseFormat = %+v, want json_schema fallback when provider lacks capability", runner.ResponseFormat)
+	}
 }
 
 func nativeToolAgentConfig(providerName string) config.Config {

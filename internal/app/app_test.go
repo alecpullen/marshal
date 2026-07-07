@@ -27,6 +27,7 @@ import (
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 func TestRunSkipsProgramAndConfigLoadWhenContextIsCancelled(t *testing.T) {
@@ -196,6 +197,31 @@ func TestRoleToolIterationsFallsBack(t *testing.T) {
 	}
 	if got := roleToolIterations(cfg, agent.RoleTester); got != 16 {
 		t.Errorf("tester cap = %d, want 16 (fallback to agent default)", got)
+	}
+}
+
+func TestActionResponseFormatFallsBackGracefully(t *testing.T) {
+	caps := schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true}
+	rf := actionResponseFormat("json_schema", caps)
+	if rf == nil || rf.Type != "json_schema" {
+		t.Fatalf("expected json_schema, got %v", rf)
+	}
+
+	caps = schema.ProviderCapabilities{StructuredOutput: false, JSONMode: true}
+	rf = actionResponseFormat("json_schema", caps)
+	if rf == nil || rf.Type != "json_object" {
+		t.Fatalf("expected fallback to json_object, got %v", rf)
+	}
+
+	caps = schema.ProviderCapabilities{StructuredOutput: false, JSONMode: false}
+	rf = actionResponseFormat("json_schema", caps)
+	if rf != nil {
+		t.Fatalf("expected nil fallback, got %v", rf)
+	}
+
+	rf = actionResponseFormat("json", schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true})
+	if rf != nil {
+		t.Fatalf("expected nil for non-json_schema tool calling, got %v", rf)
 	}
 }
 

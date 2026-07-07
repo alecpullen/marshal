@@ -254,9 +254,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
-	if route.Preset.ToolCalling == "json" && resolvedProvider.Capabilities(ctx).JSONMode {
-		runner.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
-	}
+	runner.ResponseFormat = actionResponseFormat(route.Preset.ToolCalling, resolvedProvider.Capabilities(ctx))
 	if cfg.Agent.MaxToolIterations > 0 {
 		runner.MaxToolIterations = cfg.Agent.MaxToolIterations
 	}
@@ -319,9 +317,7 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		// Swarm role prompts embed the shared plan, so skip the per-turn
 		// classify/plan pass (class "question" bypasses planning).
 		r.SetForceClass("question")
-		if route.Preset.ToolCalling == "json" && p.Capabilities(ctx).JSONMode {
-			r.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
-		}
+		r.ResponseFormat = actionResponseFormat(route.Preset.ToolCalling, p.Capabilities(ctx))
 		if cap := roleToolIterations(cfg, role); cap > 0 {
 			r.MaxToolIterations = cap
 		}
@@ -347,6 +343,21 @@ func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
 		return n
 	}
 	return cfg.Agent.MaxToolIterations
+}
+
+// actionResponseFormat builds the response format for JSON-constrained decoding.
+// Falls back gracefully: json_schema -> json_object -> nil
+func actionResponseFormat(toolCalling string, caps schema.ProviderCapabilities) *schema.ResponseFormat {
+	if toolCalling != "json_schema" {
+		return nil
+	}
+	if caps.StructuredOutput {
+		return agent.ActionEnvelopeResponseFormat()
+	}
+	if caps.JSONMode {
+		return &schema.ResponseFormat{Type: "json_object"}
+	}
+	return nil
 }
 
 func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option) error {

@@ -122,11 +122,12 @@ type ProfileConfig struct {
 // Providers' Default() comment) — the app runs with the agent loop disabled
 // until a user configures both a [providers.<name>] entry and this section.
 type AgentConfig struct {
-	Provider             string `toml:"provider"`
-	Model                string `toml:"model"`
-	MaxToolIterations    int    `toml:"max_tool_iterations"`
-	MaxRetries           int    `toml:"max_retries"`
-	MaxTurnContextTokens int    `toml:"max_turn_context_tokens"`
+	Provider                 string `toml:"provider"`
+	Model                    string `toml:"model"`
+	MaxToolIterations        int    `toml:"max_tool_iterations"`
+	MaxRetries               int    `toml:"max_retries"`
+	MaxTurnContextTokens     int    `toml:"max_turn_context_tokens"`
+	MaxStructuredOutputChars int    `toml:"max_structured_output_chars"`
 }
 
 type PrivacyConfig struct {
@@ -170,11 +171,12 @@ type configFile struct {
 		Default *string `toml:"default"`
 	} `toml:"profile"`
 	Agent *struct {
-		Provider             *string `toml:"provider"`
-		Model                *string `toml:"model"`
-		MaxToolIterations    *int    `toml:"max_tool_iterations"`
-		MaxRetries           *int    `toml:"max_retries"`
-		MaxTurnContextTokens *int    `toml:"max_turn_context_tokens"`
+		Provider                 *string `toml:"provider"`
+		Model                    *string `toml:"model"`
+		MaxToolIterations        *int    `toml:"max_tool_iterations"`
+		MaxRetries               *int    `toml:"max_retries"`
+		MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
+		MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
 	} `toml:"agent"`
 	Privacy *struct {
 		RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
@@ -449,6 +451,9 @@ func merge(cfg *Config, file configFile) {
 		}
 		if file.Agent.MaxTurnContextTokens != nil {
 			cfg.Agent.MaxTurnContextTokens = *file.Agent.MaxTurnContextTokens
+		}
+		if file.Agent.MaxStructuredOutputChars != nil {
+			cfg.Agent.MaxStructuredOutputChars = *file.Agent.MaxStructuredOutputChars
 		}
 	}
 	if file.Privacy != nil {

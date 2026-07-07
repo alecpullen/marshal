@@ -238,6 +238,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	pressureSent := false
 	producedValidAction := false
 	consecutiveParseFailures := 0
+	consecutiveEmpty := 0
 	iteration := 0
 	for {
 		if iteration >= r.MaxToolIterations {
@@ -268,7 +269,29 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		if r.NativeTools {
 			if len(res.ToolCalls) == 0 {
 				if strings.TrimSpace(res.Text) == "" {
+					// Empty response: the model went silent. Count this turn
+					// against the budget (MaxToolIterations is a turn budget,
+					// not just a tool-call budget) so a silent model cannot
+					// loop forever. Record an idle entry so the stall detector
+					// can see sustained silence, and short-circuit to finalize
+					// after a couple of consecutive empties rather than
+					// re-prompting indefinitely.
+					iteration++
+					r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+					consecutiveEmpty++
+					r.trackerMu.Lock()
+					r.tracker.recordIdle(res.FinishReason)
+					r.trackerMu.Unlock()
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: "Call a tool or give a final answer."})
+					if consecutiveEmpty >= 2 {
+						return r.finalize(ctx, turnProvider, turnModel, messages, task, reasonEmpty)
+					}
+					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+						return resTask, ferr
+					} else if nudge != "" {
+						messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
+						r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+					}
 					continue
 				}
 				task.Summary = res.Text
@@ -278,6 +301,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 
 			iteration++
+			consecutiveEmpty = 0
 			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 			producedValidAction = true
@@ -323,6 +347,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			continue
 		}
 		consecutiveParseFailures = 0
+		consecutiveEmpty = 0
 		iteration++
 		r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
@@ -382,9 +407,27 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if waitErr != nil {
 				return task, r.fail(task, waitErr)
 			}
+			// An ask_user round-trip consumes a turn of the budget: a model
+			// that re-asks the same (or a declined) question would otherwise
+			// loop ask→decline→ask without the budget ever decreasing. A
+			// declined answer is non-progress and is recorded as idle so the
+			// stall detector sees a repeated ask as churn too.
+			iteration++
+			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
 			if strings.TrimSpace(answer) == "" {
+				consecutiveEmpty++
+				r.trackerMu.Lock()
+				r.tracker.recordIdle("ask_user declined")
+				r.trackerMu.Unlock()
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."})
+				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+					return resTask, ferr
+				} else if nudge != "" {
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
+					r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+				}
 			} else {
+				consecutiveEmpty = 0
 				r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "User answered: " + answer})
 			}

@@ -17,6 +17,7 @@ const (
 	reasonExhausted finalizeReason = "exhausted"
 	reasonStalled   finalizeReason = "stalled"
 	reasonMalformed finalizeReason = "malformed"
+	reasonEmpty     finalizeReason = "empty"
 
 	// maxFinalizeAttempts bounds how many times finalize will ask the model
 	// to comply with FinalizationDirective (or NativeFinalizationDirective in
@@ -200,6 +201,8 @@ func synthesizeFallback(task *Task, raw string, reason finalizeReason) string {
 		b.WriteString("I appear to be stuck repeating the same kind of lookup without making progress. Here is my best summary of what I know so far.\n\n")
 	case reasonMalformed:
 		b.WriteString("The model kept producing output I could not parse. Here is the best answer I can construct from the work completed so far.\n\n")
+	case reasonEmpty:
+		b.WriteString("The model stopped producing output. Here is the best summary I can construct from the work completed so far.\n\n")
 	default:
 		b.WriteString("I ran out of tool budget before fully finishing. Here is my best summary of progress.\n\n")
 	}

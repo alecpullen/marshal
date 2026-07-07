@@ -370,6 +370,36 @@ func TestFinalizeNativeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 	}
 }
 
+// TestFinalizeReasonEmptySynthesizesFallback verifies that finalizing with
+// reasonEmpty produces a flagged completion whose synthesized fallback uses
+// the "model stopped producing output" preamble.
+func TestFinalizeReasonEmptySynthesizesFallback(t *testing.T) {
+	state := newTestState(t)
+	// The model ignores the finalize directive entirely across all attempts;
+	// finalize must synthesize a fallback rather than dump empty output.
+	prov := &scriptedProvider{responses: []string{""}}
+	r := NewRunner(prov, nil, nil, state, "test-model")
+
+	task := NewTask("do the thing", r.Now())
+	task.Plan = []string{"Read x.go"}
+	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
+
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonEmpty)
+	if err != nil {
+		t.Fatalf("finalize err = %v, want nil", err)
+	}
+	if got.Status != TaskStatusCompleted || got.SalvagedReason != "empty" {
+		t.Fatalf("task = %+v, want completed+empty", got)
+	}
+	if !strings.Contains(got.Summary, "stopped producing output") {
+		t.Fatalf("Summary = %q, want the reasonEmpty preamble", got.Summary)
+	}
+	last := state.Messages()[len(state.Messages())-1]
+	if !last.Salvaged || !strings.Contains(last.Content, "stopped producing output") {
+		t.Fatalf("final message = %+v, want salvaged empty-reason answer", last)
+	}
+}
+
 // TestFinalizeNativePairsToolCallsWithToolResults verifies that when a native
 // finalize attempt returns tool calls, the retry history contains the assistant
 // message with ToolCalls followed by exactly one role:tool result message for

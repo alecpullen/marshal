@@ -60,6 +60,16 @@ func newProgressTracker() *progressTracker {
 	return &progressTracker{seen: make(map[string]struct{})}
 }
 
+// idleEntryName is the sentinel name used for synthetic idle entries recorded
+// by recordIdle. It deliberately starts with "<" so it can never collide with
+// a real tool name.
+const idleEntryName = "<idle>"
+
+// idleStallThreshold consecutive <idle> entries escalate directly to a hard
+// stall. Three silent turns in a row means the model has gone unresponsive
+// and the finalize (salvage) path should run rather than re-prompting again.
+const idleStallThreshold = 3
+
 func (t *progressTracker) record(name, normalizedArgs string) {
 	cat := categorize(name)
 	if mutating(cat) {
@@ -74,6 +84,20 @@ func (t *progressTracker) record(name, normalizedArgs string) {
 		args:  normalizedArgs,
 		cat:   cat,
 		novel: !dup,
+	})
+}
+
+// recordIdle appends a synthetic idle entry so assess() can detect sustained
+// silence. Idle turns (empty responses, declined ask_user) never mutate state,
+// so they neither reset the seen set nor count as novel tool calls. The
+// reason string (e.g. the provider finish reason or "declined") is stored in
+// args for debugging.
+func (t *progressTracker) recordIdle(reason string) {
+	t.history = append(t.history, callEntry{
+		name:  idleEntryName,
+		args:  reason,
+		cat:   catOther,
+		novel: false,
 	})
 }
 
@@ -120,9 +144,31 @@ func (t *progressTracker) lastCall() (name, args string, ok bool) {
 	return last.name, last.args, true
 }
 
+// consecutiveIdle reports whether the last n entries are all idle (<idle>)
+// turns. Interleaved tool calls break the run: only unbroken silence counts
+// toward the hard-stall threshold.
+func (t *progressTracker) consecutiveIdle(n int) bool {
+	h := t.history
+	if len(h) < n {
+		return false
+	}
+	for i := len(h) - n; i < len(h); i++ {
+		if h[i].name != idleEntryName {
+			return false
+		}
+	}
+	return true
+}
+
 func (t *progressTracker) assess() assessment {
 	if len(t.history) < 3 {
 		return assessProgressing
+	}
+	// Sustained silence is a hard stall regardless of any prior tool churn:
+	// a model that has stopped producing output should be salvaged rather
+	// than re-prompted indefinitely.
+	if t.consecutiveIdle(idleStallThreshold) {
+		return assessHardStall
 	}
 	if t.exactRepeat(3) {
 		return assessHardStall

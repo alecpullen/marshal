@@ -1959,3 +1959,142 @@ func TestPersistentMalformedOutputFailsFastWithoutWork(t *testing.T) {
 		t.Fatalf("provider calls = %d, want 3 (fail fast, did not exhaust budget)", p.calls)
 	}
 }
+
+func answerPendingQuestion(state *session.State, answer string) <-chan string {
+	questionCh := make(chan string, 1)
+	go func() {
+		for {
+			if q := state.PendingQuestion(); q != nil {
+				questionCh <- q.Question
+				q.ResponseChan <- answer
+				state.SetPendingQuestion(nil)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	return questionCh
+}
+
+func TestRunHandlesAskUserAction(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Archive or delete?"}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Archived as requested."}}`,
+	}}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+
+	questionCh := answerPendingQuestion(state, "archive")
+
+	task, err := r.RunTask(context.Background(), "clean up old records")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if got := <-questionCh; got != "Archive or delete?" {
+		t.Fatalf("question = %q", got)
+	}
+	if task.Summary != "Archived as requested." {
+		t.Fatalf("Summary = %q", task.Summary)
+	}
+	second := p.requests[len(p.requests)-1]
+	found := false
+	for _, m := range second.Messages {
+		if strings.Contains(m.Content, "User answered: archive") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("answer not fed back to the model")
+	}
+	var sawQuestion, sawAnswer bool
+	for _, m := range state.Messages() {
+		if m.Role == session.RoleAssistant && strings.Contains(m.Content, "Archive or delete?") {
+			sawQuestion = true
+		}
+		if m.Role == session.RoleUser && m.Content == "archive" {
+			sawAnswer = true
+		}
+	}
+	if !sawQuestion || !sawAnswer {
+		t.Fatalf("transcript missing question(%v)/answer(%v)", sawQuestion, sawAnswer)
+	}
+}
+
+func TestRunAskUserDeclinedContinues(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Archive or delete?"}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Proceeded with best judgment."}}`,
+	}}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+
+	_ = answerPendingQuestion(state, "")
+
+	task, err := r.RunTask(context.Background(), "clean up old records")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.Summary != "Proceeded with best judgment." {
+		t.Fatalf("Summary = %q", task.Summary)
+	}
+	second := p.requests[len(p.requests)-1]
+	found := false
+	for _, m := range second.Messages {
+		if strings.Contains(m.Content, "declined to answer") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("declined marker not fed back to the model")
+	}
+}
+
+func TestRunAskUserCancelledByContext(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Archive or delete?"}}`,
+	}}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for state.PendingQuestion() == nil {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+	if _, err := r.RunTask(ctx, "clean up"); err == nil {
+		t.Fatal("expected error on cancelled question wait")
+	}
+	if state.PendingQuestion() != nil {
+		t.Fatal("pending question must be cleared on cancellation")
+	}
+}
+
+func TestSwarmRolesCannotAskUser(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Which file?"}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Findings reported."}}`,
+	}}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.Role = RoleRepoScout
+	r.SetForceClass(string(ClassQuestion))
+
+	if _, err := r.RunTask(context.Background(), "scout the repo"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	second := p.requests[len(p.requests)-1]
+	found := false
+	for _, m := range second.Messages {
+		if strings.Contains(m.Content, "ask_user is not available") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected a correction telling the role ask_user is unavailable")
+	}
+}

@@ -326,6 +326,21 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
 				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
 			}
+		case ActionAskUser:
+			if r.role() != RoleGeneral {
+				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available for the %s role; proceed with your best judgment or report findings", r.role())))
+				continue
+			}
+			answer, waitErr := r.requestAnswer(ctx, action.Content)
+			if waitErr != nil {
+				return task, r.fail(task, waitErr)
+			}
+			if strings.TrimSpace(answer) == "" {
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."})
+			} else {
+				r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "User answered: " + answer})
+			}
 		default:
 			messages = append(messages, BuildCorrectionMessage(fmt.Errorf("unsupported action type %q", action.Type)))
 		}
@@ -778,6 +793,27 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		r.State.SetPendingApproval(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return false, "", ctx.Err()
+	}
+}
+
+func (r *Runner) requestAnswer(ctx context.Context, question string) (string, error) {
+	r.State.AddMessage(session.RoleAssistant, question, session.ContentTypeMarkdown)
+	q := &session.PendingQuestion{
+		Question:     question,
+		ResponseChan: make(chan string, 1),
+	}
+	r.State.SetPendingQuestion(q)
+	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: "waiting for your answer", StartedAt: r.Now()})
+
+	select {
+	case answer := <-q.ResponseChan:
+		r.State.SetPendingQuestion(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		return answer, nil
+	case <-ctx.Done():
+		r.State.SetPendingQuestion(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		return "", ctx.Err()
 	}
 }
 

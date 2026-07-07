@@ -151,10 +151,24 @@ func New(state *session.State, opts ...Option) Model {
 	input.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	input.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
 
-	// Cursor lives on the embedded cursor.Model. Style paints the visible
-	// (reverse) block; TextStyle paints the cell mid-blink. Foreground only —
-	// no panel background to bleed.
-	input.Cursor.Style = lipgloss.NewStyle().Foreground(coralColor)
+	// CursorLine is the style wrapping the active text row. The upstream
+	// default adds a dark background ("0") that extends across the full
+	// line width (including padding spaces), producing a dark bar behind
+	// the cursor line. We override it to have no background so the input
+	// area stays on a single clean line.
+	input.FocusedStyle.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	input.BlurredStyle.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "245", Dark: "7"})
+
+	// EndOfBuffer is the filler row(s) below the last line of text. The
+	// upstream default applies a dark foreground ("0") that can leave a
+	// faint artifact row when the textarea height is 1.
+	input.FocusedStyle.EndOfBuffer = lipgloss.NewStyle()
+	input.BlurredStyle.EndOfBuffer = lipgloss.NewStyle()
+
+	// Cursor lives on the embedded cursor.Model. Style renders via
+	// .Reverse(true), which swaps fg↔bg — so Background here becomes the
+	// visible foreground character tint, not a filled block.
+	input.Cursor.Style = lipgloss.NewStyle().Background(coralColor)
 	input.Cursor.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	m := Model{

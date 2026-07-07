@@ -117,7 +117,7 @@ func TestExtractUsefulProseStripsToolCallEnvelope(t *testing.T) {
 			want: "Applying fix",
 		},
 		{
-			name: "final envelope returns full raw (not rationale)",
+			name: "final envelope also returns rationale only",
 			raw:  `{"rationale":"done","action":{"type":"final","content":"answer text"}}`,
 			want: "done",
 		},

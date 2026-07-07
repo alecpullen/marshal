@@ -166,9 +166,11 @@ func New(state *session.State, opts ...Option) Model {
 	input.BlurredStyle.EndOfBuffer = lipgloss.NewStyle()
 
 	// Cursor lives on the embedded cursor.Model. Style renders via
-	// .Reverse(true), which swaps fg↔bg — so Background here becomes the
-	// visible foreground character tint, not a filled block.
-	input.Cursor.Style = lipgloss.NewStyle().Background(coralColor)
+	// .Reverse(true), which swaps fg↔bg — the Foreground set here becomes
+	// the visible block fill. The glyph under a block cursor is usually a
+	// space, so a Background-only style would leave the block in the
+	// terminal's default colour and never show coral at all.
+	input.Cursor.Style = lipgloss.NewStyle().Foreground(coralColor)
 	input.Cursor.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	m := Model{

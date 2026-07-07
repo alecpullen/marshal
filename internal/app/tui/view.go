@@ -56,7 +56,15 @@ func (m Model) renderInputArea() string {
 
 	rows := make([]string, 0, 4)
 
-	if tc := m.state.PendingApproval(); tc != nil {
+	if q := m.state.PendingQuestion(); q != nil {
+		rows = append(rows, renderQuestionPanel(q, inputInnerWidth))
+		inputLine := lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			inputPromptStyle.Render("❯ "),
+			m.input.View(),
+		)
+		rows = append(rows, inputLine)
+	} else if tc := m.state.PendingApproval(); tc != nil {
 		if m.editingCommand {
 			editLine := lipgloss.JoinHorizontal(
 				lipgloss.Top,

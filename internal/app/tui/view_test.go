@@ -159,7 +159,7 @@ func TestInputBorderColorReflectsFocus(t *testing.T) {
 	}
 }
 
-func TestLongInputDoesNotExpandRows(t *testing.T) {
+func TestLongInputExpandsToMultipleRows(t *testing.T) {
 	m := newViewTestModel(t, 50, 20)
 	singleLineRows := m.inputAreaRows()
 
@@ -167,7 +167,13 @@ func TestLongInputDoesNotExpandRows(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(longInput)})
 	m = updated.(Model)
 
-	if m.inputAreaRows() != singleLineRows {
-		t.Fatalf("input area rows = %d, want %d (input box should remain single-line)", m.inputAreaRows(), singleLineRows)
+	if m.inputAreaRows() <= singleLineRows {
+		t.Fatalf("input area rows = %d, want more than single-line rows %d", m.inputAreaRows(), singleLineRows)
+	}
+
+	for _, line := range strings.Split(stripANSI(m.renderInputArea()), "\n") {
+		if visibleRunes(line) > m.width {
+			t.Fatalf("input line exceeds terminal width %d (%d): %q", m.width, visibleRunes(line), line)
+		}
 	}
 }

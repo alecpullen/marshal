@@ -137,12 +137,12 @@ func New(state *session.State, opts ...Option) Model {
 	input.ShowLineNumbers = false
 	input.Placeholder = "Ask Marshal..."
 	input.CharLimit = 4000
-	input.MaxHeight = 1
+	input.MaxHeight = 8
 	input.SetHeight(1)
 	input.SetWidth(80)
 
 	km := textarea.DefaultKeyMap
-	km.InsertNewline.SetKeys("")
+	km.InsertNewline.SetKeys("shift+enter")
 	input.KeyMap = km
 	input.Focus()
 
@@ -210,6 +210,7 @@ func (m *Model) resize(width, height int) {
 	// Input interior: width minus border (2) and padding (2) leaves the
 	// box's inner width (width-4); the "❯ " prompt occupies 2 cells of it.
 	m.input.SetWidth(max(width-6, 1))
+	m.resizeInputHeight()
 
 	// Transcript viewport lives inside a subtle border frame.
 	m.viewport.Width = max(width-2, 1)
@@ -310,7 +311,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state.SetPendingQuestion(nil)
 				m.input.Reset()
 				m.input.Placeholder = "Ask Marshal..."
-
+				m.resizeInputHeight()
 				m.updateViewportHeight()
 				m.lastTranscriptHash = 0
 				return m, nil
@@ -319,13 +320,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state.SetPendingQuestion(nil)
 				m.input.Reset()
 				m.input.Placeholder = "Ask Marshal..."
-
+				m.resizeInputHeight()
 				m.updateViewportHeight()
 				m.lastTranscriptHash = 0
 				return m, nil
 			}
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
+			m.resizeInputHeight()
 			m.updateViewportHeight()
 			return m, cmd
 		}
@@ -337,7 +339,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.editingCommand = false
 					m.input.Reset()
 					m.input.Placeholder = "Ask Marshal..."
-	
+					m.resizeInputHeight()
 					m.updateViewportHeight()
 					m.lastTranscriptHash = 0
 					return m, nil
@@ -348,7 +350,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.editingCommand = false
 						m.input.Reset()
 						m.input.Placeholder = "Ask Marshal..."
-		
+						m.resizeInputHeight()
 						m.updateViewportHeight()
 						m.state.SetPendingApproval(nil)
 					}
@@ -357,7 +359,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				var cmd tea.Cmd
 				m.input, cmd = m.input.Update(msg)
-
+				m.resizeInputHeight()
 				m.updateViewportHeight()
 				return m, cmd
 			}
@@ -395,7 +397,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.input.SetValue(tc.Args)
 						m.input.Placeholder = "Edit JSON arguments..."
 					}
-	
+					m.resizeInputHeight()
 					m.updateViewportHeight()
 					m.input.Focus()
 					m.lastTranscriptHash = 0
@@ -481,7 +483,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.input.Reset()
-
+				m.resizeInputHeight()
 				m.updateCommandSuggestions()
 				m.updateViewportHeight()
 
@@ -507,10 +509,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	inputHeightChanged := m.resizeInputHeight()
 	m.updateCommandSuggestions()
 
+	// Recalculate viewport if input area height changed
 	viewportHeightChanged := m.updateViewportHeight()
-	if viewportHeightChanged {
+	if inputHeightChanged || viewportHeightChanged {
 		m.lastTranscriptHash = 0
 		m.refreshViewport()
 	}
@@ -549,6 +553,38 @@ func (m Model) inputAreaRows() int {
 		rows += commandSuggestionRows
 	}
 	return rows
+}
+
+func (m *Model) resizeInputHeight() bool {
+	rows := wrappedInputRows(m.input.Value(), m.input.Width())
+	if m.input.MaxHeight > 0 && rows > m.input.MaxHeight {
+		rows = m.input.MaxHeight
+	}
+	if rows < 1 {
+		rows = 1
+	}
+	if rows == m.input.Height() {
+		return false
+	}
+	m.input.SetHeight(rows)
+	return true
+}
+
+func wrappedInputRows(value string, width int) int {
+	if width < 1 || value == "" {
+		return 1
+	}
+
+	rows := 0
+	for _, line := range strings.Split(value, "\n") {
+		if line == "" {
+			rows++
+			continue
+		}
+		wrapped := ansi.Wrap(line, width, "")
+		rows += max(len(strings.Split(wrapped, "\n")), 1)
+	}
+	return max(rows, 1)
 }
 
 func (m Model) swarmPanelRows() int {

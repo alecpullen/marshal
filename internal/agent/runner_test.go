@@ -35,12 +35,13 @@ func TestRunnerDefaultsAreSensible(t *testing.T) {
 // at that index); once the scripts run out, the last response is repeated
 // so tests exercising max-iteration limits do not need to script every turn.
 type scriptedProvider struct {
-	responses []string
-	thinking  []string
-	errs      []error
-	usages    []*schema.TokenUsage
-	calls     int
-	requests  []schema.ChatRequest
+	responses    []string
+	thinking     []string
+	errs         []error
+	usages       []*schema.TokenUsage
+	calls        int
+	requests     []schema.ChatRequest
+	capabilities schema.ProviderCapabilities
 }
 
 func (p *scriptedProvider) Name() string { return "scripted" }
@@ -54,7 +55,7 @@ func (p *scriptedProvider) Embed(ctx context.Context, req schema.EmbedRequest) (
 }
 
 func (p *scriptedProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
-	return schema.ProviderCapabilities{}
+	return p.capabilities
 }
 
 func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
@@ -1776,5 +1777,102 @@ func TestRunAllowsParallelReadBatchWithoutStalling(t *testing.T) {
 	}
 	if p.calls != 3 {
 		t.Fatalf("provider calls = %d, want 3 (batch, single read, final)", p.calls)
+	}
+}
+
+func TestParseFailuresDoNotConsumeToolIterations(t *testing.T) {
+	p := &scriptedProvider{
+		responses: []string{
+			"not a json action at all",
+			`{"rationale":"done","action":{"type":"final","content":"Answer."}}`,
+		},
+	}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 5
+	r.MaxRetries = 0
+
+	var got *TurnMetrics
+	r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	task, err := r.RunTask(context.Background(), "test goal")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.Status != TaskStatusCompleted {
+		t.Fatalf("task.Status = %q, want completed", task.Status)
+	}
+	if got == nil {
+		t.Fatal("no TurnMetrics emitted")
+	}
+	if got.Iterations != 1 {
+		t.Fatalf("Iterations = %d, want 1 (parse failure must not consume budget)", got.Iterations)
+	}
+	if got.ParseFailures != 1 {
+		t.Fatalf("ParseFailures = %d, want 1", got.ParseFailures)
+	}
+}
+
+func TestSecondConsecutiveParseFailureEscalatesToRepair(t *testing.T) {
+	p := &scriptedProvider{
+		responses: []string{
+			"not json 1",
+			"not json 2",
+			`{"rationale":"recovered","action":{"type":"final","content":"recovered"}}`,
+		},
+	}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 5
+	r.MaxRetries = 0
+
+	if _, err := r.RunTask(context.Background(), "test goal"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+
+	foundRepair := false
+	for _, m := range state.Messages() {
+		if m.Role == session.RoleSystem && strings.Contains(m.Content, "two consecutive") {
+			foundRepair = true
+			break
+		}
+	}
+	if !foundRepair {
+		msgs := state.Messages()
+		contents := make([]string, len(msgs))
+		for i, m := range msgs {
+			contents[i] = fmt.Sprintf("[%s] %s", m.Role, m.Content[:min(len(m.Content), 80)])
+		}
+		t.Fatalf("expected repair message in state.Messages() after 2 consecutive parse failures; got:\n%s", strings.Join(contents, "\n"))
+	}
+}
+
+func TestSecondConsecutiveParseFailureEnablesJSONMode(t *testing.T) {
+	p := &scriptedProvider{
+		capabilities: schema.ProviderCapabilities{JSONMode: true},
+		responses: []string{
+			"not json 1",
+			"not json 2",
+			`{"rationale":"recovered","action":{"type":"final","content":"recovered"}}`,
+		},
+	}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 5
+	r.MaxRetries = 0
+
+	if _, err := r.RunTask(context.Background(), "test goal"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+
+	if len(p.requests) < 3 {
+		t.Fatalf("expected at least 3 requests, got %d", len(p.requests))
+	}
+	req := p.requests[2]
+	if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_object" {
+		t.Fatalf("requests[2].ResponseFormat = %v, want {Type:\"json_object\"} after 2 consecutive parse failures", req.ResponseFormat)
 	}
 }

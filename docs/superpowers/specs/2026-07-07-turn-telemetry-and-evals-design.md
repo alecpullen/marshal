@@ -51,7 +51,7 @@ Appended to `internal/db/migrations.go` (idempotent, matching existing pattern):
 CREATE TABLE IF NOT EXISTS turn_metrics (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id        INTEGER NOT NULL REFERENCES projects(id),
-    session_id        INTEGER REFERENCES agent_sessions(id),
+    session_id        TEXT REFERENCES agent_sessions(id),
     started_at        TEXT NOT NULL,
     duration_ms       INTEGER NOT NULL,
     class             TEXT NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
 ```
 
 New `internal/db/turnmetrics.go` following the per-table-file pattern (`audits.go`, `memories.go`):
-- `type TurnMetricsRow struct` — a plain params/row struct defined in `internal/db` mirroring the table columns, with `ProjectID int64` and `SessionID *int64` (db must not import `internal/agent`; the app layer maps `agent.TurnMetrics` → `db.TurnMetricsRow`).
+- `type TurnMetricsRow struct` — a plain params/row struct defined in `internal/db` mirroring the table columns, with `ProjectID int64` and `SessionID string` (`agent_sessions.id` is TEXT; empty string stores NULL). db must not import `internal/agent`; the app layer maps `agent.TurnMetrics` → `db.TurnMetricsRow`.
 - `InsertTurnMetrics(row TurnMetricsRow) (int64, error)`.
 - `RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, error)` — newest first.
 - `turnmetrics_test.go` covering insert/read round-trip and nullable session_id.
@@ -90,7 +90,7 @@ Table-driven scenarios on the existing `scriptedProvider` + fake registry tools,
 | Scenario | Script | Asserted metrics |
 |---|---|---|
 | research turn | 5 distinct reads, then final | outcome=answered, ParseFailures=0, SoftStalls=0, HardStalls=0, Iterations=6, ToolCalls=5 |
-| edit + validate | read, patch, shell.run test, final | outcome=answered, ToolCalls=3, ToolErrors=0 |
+| edit + validate | read, patch, validation tool, final | outcome=answered, ToolCalls=3, ToolErrors=0 (validation uses a non-shell fake tool — shell.run would require approval plumbing) |
 | parse-failure recovery | garbage text, then valid final | outcome=answered, ParseFailures=1 |
 | exact-repeat stall | same read 3x, finalize answers | outcome=salvaged, SalvageReason=stalled, HardStalls=1 |
 | exhaustion salvage | distinct reads past MaxToolIterations, finalize answers | outcome=salvaged, SalvageReason=exhausted |

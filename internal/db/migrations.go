@@ -81,4 +81,29 @@ CREATE TABLE IF NOT EXISTS memories (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
+
+CREATE TABLE IF NOT EXISTS turn_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
+    started_at TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    class TEXT NOT NULL,
+    role TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    goal TEXT NOT NULL,
+    iterations INTEGER NOT NULL,
+    tool_calls INTEGER NOT NULL,
+    tool_errors INTEGER NOT NULL,
+    cache_hits INTEGER NOT NULL,
+    parse_failures INTEGER NOT NULL,
+    soft_stalls INTEGER NOT NULL,
+    hard_stalls INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    salvage_reason TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL,
+    completion_tokens INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_project ON turn_metrics(project_id, id);
 `

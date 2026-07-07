@@ -59,9 +59,14 @@ func (db *DB) Migrate() error {
 		return fmt.Errorf("inspect tool_calls columns: %w", err)
 	}
 	columnDefs := map[string]string{
-		"command_exit_code": "INTEGER",
-		"files_changed":     "TEXT",
-		"error":             "TEXT",
+		"command_exit_code":        "INTEGER",
+		"files_changed":            "TEXT",
+		"error":                    "TEXT",
+		"sandbox_backend":          "TEXT",
+		"sandbox_network_isolated": "INTEGER",
+		"sandbox_limits_json":      "TEXT",
+		"sandbox_killed_reason":    "TEXT",
+		"duration_ms":              "INTEGER",
 	}
 	for name, def := range columnDefs {
 		if columns[name] {

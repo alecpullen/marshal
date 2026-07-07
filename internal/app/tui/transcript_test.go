@@ -138,7 +138,7 @@ func TestRenderFinalAnswerNotSalvagedHasNoMarker(t *testing.T) {
 
 func TestRenderActiveToolCallIsBorderless(t *testing.T) {
 	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)}
-	out := renderActiveToolCall(atc, "⠋", time.Unix(104, 0), 80)
+	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(104, 0), 80)
 	if !strings.Contains(out, "shell.run") || !strings.Contains(out, "4s") {
 		t.Fatalf("active tool call missing name/elapsed:\n%s", out)
 	}
@@ -269,7 +269,7 @@ func TestCompletedToolCallUsesCheckAndCross(t *testing.T) {
 func TestApprovalPanelHasNoBackgroundFill(t *testing.T) {
 	forceColor(t)
 	tc := &session.PendingToolCall{Name: "shell.run", Command: "ls", Risk: "reads files"}
-	out := renderApprovalPanel(tc, 50)
+	out := renderApprovalPanel(tc, session.SandboxInfo{Backend: "restricted"}, false, 50)
 	if strings.Contains(out, ";235m") || strings.Contains(out, "48;5;235") {
 		t.Fatalf("approval panel still emits panel background fill:\n%q", out)
 	}

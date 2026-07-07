@@ -95,6 +95,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 				Allow                 *CommandRules `toml:"allow"`
 				Confirm               *CommandRules `toml:"confirm"`
 				Deny                  *PatternRules `toml:"deny"`
+				Sandbox               *sandboxFile  `toml:"sandbox"`
 			} `toml:"shell"`
 		}{}
 	}
@@ -109,6 +110,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 			Allow                 *CommandRules `toml:"allow"`
 			Confirm               *CommandRules `toml:"confirm"`
 			Deny                  *PatternRules `toml:"deny"`
+			Sandbox               *sandboxFile  `toml:"sandbox"`
 		}{}
 	}
 	shellTimeout := cfg.Tools.Shell.DefaultTimeoutSeconds
@@ -123,6 +125,32 @@ func SaveProjectConfig(path string, cfg Config) error {
 	file.Tools.Shell.AllowSudo = &allowSudo
 	file.Tools.Shell.AllowDestructive = &allowDestructive
 	file.Tools.Shell.AutoApprove = &autoApprove
+
+	if file.Tools.Shell.Sandbox == nil {
+		file.Tools.Shell.Sandbox = &sandboxFile{}
+	}
+	sandboxBackend := cfg.Tools.Shell.Sandbox.Backend
+	sandboxMemory := cfg.Tools.Shell.Sandbox.MemoryLimitMB
+	sandboxCPU := cfg.Tools.Shell.Sandbox.CPUSeconds
+	sandboxMaxProcs := cfg.Tools.Shell.Sandbox.MaxProcesses
+	sandboxFileSize := cfg.Tools.Shell.Sandbox.FileSizeLimitMB
+	sandboxRuntime := cfg.Tools.Shell.Sandbox.ContainerRuntime
+	sandboxImage := cfg.Tools.Shell.Sandbox.ContainerImage
+	sandboxAllowFallback := cfg.Tools.Shell.Sandbox.AllowFallback
+	file.Tools.Shell.Sandbox.Backend = &sandboxBackend
+	file.Tools.Shell.Sandbox.MemoryLimitMB = &sandboxMemory
+	file.Tools.Shell.Sandbox.CPUSeconds = &sandboxCPU
+	file.Tools.Shell.Sandbox.MaxProcesses = &sandboxMaxProcs
+	file.Tools.Shell.Sandbox.FileSizeLimitMB = &sandboxFileSize
+	file.Tools.Shell.Sandbox.ContainerRuntime = &sandboxRuntime
+	file.Tools.Shell.Sandbox.ContainerImage = &sandboxImage
+	file.Tools.Shell.Sandbox.AllowFallback = &sandboxAllowFallback
+	if cfg.Tools.Shell.Sandbox.EnvAllowlist != nil {
+		file.Tools.Shell.Sandbox.EnvAllowlist = cfg.Tools.Shell.Sandbox.EnvAllowlist
+	}
+	if cfg.Tools.Shell.Sandbox.EnvDenylist != nil {
+		file.Tools.Shell.Sandbox.EnvDenylist = cfg.Tools.Shell.Sandbox.EnvDenylist
+	}
 
 	data, err := toml.Marshal(&file)
 	if err != nil {

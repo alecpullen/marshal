@@ -73,7 +73,7 @@ func (m Model) renderInputArea() string {
 			)
 			rows = append(rows, editLine)
 		} else {
-			rows = append(rows, renderApprovalPanel(tc, inputInnerWidth))
+			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth))
 		}
 	} else {
 		rows = append(rows, m.renderActivityStrip())

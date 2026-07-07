@@ -430,6 +430,82 @@ patterns = ["rm -rf"]
 	}
 }
 
+func TestDefaultSandboxBackendIsRestricted(t *testing.T) {
+	cfg := Default()
+	sb := cfg.Tools.Shell.Sandbox
+	if sb.Backend != "restricted" {
+		t.Fatalf("default sandbox backend = %q, want restricted", sb.Backend)
+	}
+	if sb.MemoryLimitMB != 0 {
+		t.Fatalf("default memory limit = %d, want 0 (opt-in)", sb.MemoryLimitMB)
+	}
+	if sb.MaxProcesses != 0 {
+		t.Fatalf("default max processes = %d, want 0 (opt-in)", sb.MaxProcesses)
+	}
+	if sb.ContainerRuntime != "auto" {
+		t.Fatalf("default container runtime = %q, want auto", sb.ContainerRuntime)
+	}
+	if sb.ContainerImage != "" {
+		// Empty: the single source of truth for the default image lives
+		// in internal/sandbox/container.go (defaultContainerImage) so
+		// the fallback never drifts from the configured default.
+		t.Fatalf("default container image = %q, want empty", sb.ContainerImage)
+	}
+	if !reflect.DeepEqual(sb.EnvAllowlist, []string{"PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM", "TMPDIR", "GOPATH", "GOCACHE", "GOMODCACHE"}) {
+		t.Errorf("default env allowlist = %#v", sb.EnvAllowlist)
+	}
+}
+
+func TestLoadSandboxOverridesDefaults(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, home+"/.config/marshal/config.toml", `
+[tools.shell.sandbox]
+backend = "container"
+memory_limit_mb = 512
+cpu_seconds = 8
+max_processes = 64
+file_size_limit_mb = 100
+container_runtime = "podman"
+container_image = "golang:1.22"
+allow_fallback = true
+env_allowlist = ["PATH", "HOME", "GOPATH"]
+env_denylist = ["SECRET_TOKEN"]
+`)
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	sb := cfg.Tools.Shell.Sandbox
+	if sb.Backend != "container" {
+		t.Errorf("backend = %q, want container", sb.Backend)
+	}
+	if sb.MemoryLimitMB != 512 {
+		t.Errorf("memory = %d, want 512", sb.MemoryLimitMB)
+	}
+	if sb.CPUSeconds != 8 {
+		t.Errorf("cpu = %d, want 8", sb.CPUSeconds)
+	}
+	if sb.MaxProcesses != 64 {
+		t.Errorf("max processes = %d, want 64", sb.MaxProcesses)
+	}
+	if sb.FileSizeLimitMB != 100 {
+		t.Errorf("file size = %d, want 100", sb.FileSizeLimitMB)
+	}
+	if sb.ContainerRuntime != "podman" {
+		t.Errorf("runtime = %q, want podman", sb.ContainerRuntime)
+	}
+	if sb.ContainerImage != "golang:1.22" {
+		t.Errorf("image = %q, want golang:1.22", sb.ContainerImage)
+	}
+	if !reflect.DeepEqual(sb.EnvAllowlist, []string{"PATH", "HOME", "GOPATH"}) {
+		t.Errorf("allowlist = %#v", sb.EnvAllowlist)
+	}
+	if !reflect.DeepEqual(sb.EnvDenylist, []string{"SECRET_TOKEN"}) {
+		t.Errorf("denylist = %#v", sb.EnvDenylist)
+	}
+}
+
 func TestLoadParsesRoutingConfig(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

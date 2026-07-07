@@ -26,6 +26,7 @@ type AuditEvent struct {
 	FilesChanged    []string
 	CommandExitCode *int
 	Error           string
+	Sandbox         SandboxMeta
 }
 
 func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, approval ApprovalState, err error) AuditEvent {
@@ -37,6 +38,7 @@ func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, a
 		Approval:      approval,
 		ResultSummary: result.Summary,
 		FilesChanged:  append([]string(nil), result.FilesChanged...),
+		Sandbox:       result.Sandbox,
 	}
 	if event.ToolName == "" {
 		event.ToolName = tool.Name

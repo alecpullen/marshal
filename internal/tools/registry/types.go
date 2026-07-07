@@ -46,4 +46,52 @@ type ToolResult struct {
 	Content         string
 	FilesChanged    []string
 	CommandExitCode *int
+	Sandbox         SandboxMeta
+}
+
+// SandboxMeta records how a command was executed under the Milestone Q
+// sandbox. It is populated by sandbox backends (restricted, container,
+// passthrough) and persisted into the audit trail so users can see, per
+// command, which backend ran it and whether network/filesystem were
+// actually isolated. Honest capability reporting matters more than
+// claiming isolation that isn't enforced (e.g. restricted mode cannot
+// block network cross-platform).
+type SandboxMeta struct {
+	Enabled            bool
+	Backend            string
+	NetworkIsolated    bool
+	FilesystemIsolated bool
+	ResourceLimits     bool
+	MemoryLimitBytes   int64
+	CPUSeconds         int
+	MaxProcesses       int
+	KilledReason       string
+	DurationMS         int64
+}
+
+func (m SandboxMeta) LimitsJSON() string {
+	limits := map[string]any{"backend": m.Backend}
+	if m.MemoryLimitBytes > 0 {
+		limits["memory_limit_bytes"] = m.MemoryLimitBytes
+	}
+	if m.CPUSeconds > 0 {
+		limits["cpu_seconds"] = m.CPUSeconds
+	}
+	if m.MaxProcesses > 0 {
+		limits["max_processes"] = m.MaxProcesses
+	}
+	if m.NetworkIsolated {
+		limits["network_isolated"] = true
+	}
+	if m.FilesystemIsolated {
+		limits["filesystem_isolated"] = true
+	}
+	if m.KilledReason != "" {
+		limits["killed_reason"] = m.KilledReason
+	}
+	b, err := json.Marshal(limits)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }

@@ -184,9 +184,23 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 		return ""
 	}
 	contentWidth := max(width-4, 1)
-	tail := strings.ReplaceAll(tailRunes(reasoning, contentWidth*2), "\n", " ")
-	line := fmt.Sprintf("%s thinking  %s", spinnerFrame, tail)
-	return thinkingLineStyle.Render(truncateRunes(line, max(width-2, 1))) + "\n"
+	lines := strings.Split(reasoning, "\n")
+	tailLines := lines
+	if len(lines) > 3 {
+		tailLines = lines[len(lines)-3:]
+	}
+	var b strings.Builder
+	header := fmt.Sprintf("%s thinking", spinnerFrame)
+	b.WriteString(thinkingLineStyle.Render(header))
+	b.WriteString("\n")
+	for _, line := range tailLines {
+		wrapped := ansi.Wrap(line, contentWidth, "")
+		for _, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(thinkingLineStyle.Render("  " + wl))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 // renderThinkingSummary renders a finished message's captured reasoning,
@@ -425,8 +439,9 @@ func renderProviderError(err error, width int) string {
 }
 
 // renderActiveToolCall shows the in-flight tool as a spinner line — no
-// border, matching the ⏺ bullet style. Command tools get a second $ line.
-func renderActiveToolCall(atc session.ActiveToolCall, spinnerFrame string, now time.Time, width int) string {
+// border, matching the ⏺ bullet style. Command tools get a second $ line
+// and, when a sandbox backend is active, an isolation-status line.
+func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, width int) string {
 	elapsed := now.Sub(atc.StartedAt)
 	if elapsed < 0 {
 		elapsed = 0
@@ -438,6 +453,10 @@ func renderActiveToolCall(atc session.ActiveToolCall, spinnerFrame string, now t
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
 		b.WriteString(mutedStyle.Render(truncateRunes("  $ "+atc.Args, max(width-2, 1))))
 		b.WriteString("\n")
+		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
+			b.WriteString(mutedStyle.Render(truncateRunes("  "+iso, max(width-2, 1))))
+			b.WriteString("\n")
+		}
 	} else if atc.Args != "" {
 		b.WriteString(mutedStyle.Render(truncateRunes("  "+atc.Args, max(width-2, 1))))
 		b.WriteString("\n")
@@ -495,7 +514,32 @@ func riskText(tc *session.PendingToolCall) string {
 	return tc.Reason
 }
 
-func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
+// sandboxIsolationText renders an honest one-line description of the active
+// sandbox backend for shell/test commands. It combines the backend's
+// capability snapshot with the configured AllowNetwork flag so the user
+// never sees a false "isolated" claim (restricted mode cannot block network
+// cross-platform). Returns "" for backends with no isolation story (e.g.
+// passthrough).
+func sandboxIsolationText(sb session.SandboxInfo, allowNetwork bool) string {
+	switch sb.Backend {
+	case "", "passthrough":
+		return ""
+	case "container":
+		if sb.NetworkIsolation && !allowNetwork {
+			return "sandbox: container · network blocked"
+		}
+		return "sandbox: container · network allowed"
+	case "restricted":
+		if sb.NetworkIsolation {
+			return "sandbox: restricted"
+		}
+		return "sandbox: restricted · network not isolated"
+	default:
+		return "sandbox: " + sb.Backend
+	}
+}
+
+func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int) string {
 	innerWidth := max(width-2, 1)
 
 	titleStyle := panelTitleStyle.Copy().Foreground(warningColor)
@@ -524,6 +568,10 @@ func renderApprovalPanel(tc *session.PendingToolCall, width int) string {
 	b.WriteString("\n\n")
 	b.WriteString(riskLabelStyle.Render("Risk: "))
 	b.WriteString(text.Render(truncateRunes(riskText(tc), innerWidth)))
+	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
+		b.WriteString("\n")
+		b.WriteString(muted.Render(truncateRunes(iso, innerWidth)))
+	}
 	b.WriteString("\n\n")
 	helpLine := key.Render("Enter") + muted.Render(" approve ") + key.Render("d") + muted.Render(" deny ") + key.Render("e") + muted.Render(" edit ") + key.Render("a") + muted.Render(" always")
 	b.WriteString(helpLine)

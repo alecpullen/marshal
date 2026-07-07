@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"marshal/internal/llm/routing"
@@ -96,6 +97,15 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	cfg.Tools.Shell.AllowSudo = true
 	cfg.Tools.Shell.AllowDestructive = true
 	cfg.Tools.Shell.AutoApprove = true
+	cfg.Tools.Shell.Sandbox.Backend = "container"
+	cfg.Tools.Shell.Sandbox.MemoryLimitMB = 512
+	cfg.Tools.Shell.Sandbox.CPUSeconds = 4
+	cfg.Tools.Shell.Sandbox.MaxProcesses = 64
+	cfg.Tools.Shell.Sandbox.FileSizeLimitMB = 32
+	cfg.Tools.Shell.Sandbox.ContainerRuntime = "podman"
+	cfg.Tools.Shell.Sandbox.ContainerImage = "golang:1.22"
+	cfg.Tools.Shell.Sandbox.EnvAllowlist = []string{"PATH", "HOME", "GOPATH"}
+	cfg.Tools.Shell.Sandbox.EnvDenylist = []string{"SECRET"}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local_balanced": {
 			Name: "local_balanced",
@@ -124,6 +134,18 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	if shell.DefaultTimeoutSeconds != 45 || shell.MaxOutputBytes != 98765 ||
 		!shell.AllowNetwork || !shell.AllowSudo || !shell.AllowDestructive || !shell.AutoApprove {
 		t.Fatalf("shell settings = %+v", shell)
+	}
+	sb := shell.Sandbox
+	if sb.Backend != "container" || sb.MemoryLimitMB != 512 || sb.CPUSeconds != 4 ||
+		sb.MaxProcesses != 64 || sb.FileSizeLimitMB != 32 ||
+		sb.ContainerRuntime != "podman" || sb.ContainerImage != "golang:1.22" {
+		t.Fatalf("sandbox settings = %+v", sb)
+	}
+	if !reflect.DeepEqual(sb.EnvAllowlist, []string{"PATH", "HOME", "GOPATH"}) {
+		t.Fatalf("sandbox EnvAllowlist = %#v", sb.EnvAllowlist)
+	}
+	if !reflect.DeepEqual(sb.EnvDenylist, []string{"SECRET"}) {
+		t.Fatalf("sandbox EnvDenylist = %#v", sb.EnvDenylist)
 	}
 }
 

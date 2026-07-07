@@ -82,15 +82,43 @@ type MCPServerConfig struct {
 }
 
 type ShellToolConfig struct {
-	DefaultTimeoutSeconds int          `toml:"default_timeout_seconds"`
-	MaxOutputBytes        int          `toml:"max_output_bytes"`
-	AllowNetwork          bool         `toml:"allow_network"`
-	AllowSudo             bool         `toml:"allow_sudo"`
-	AllowDestructive      bool         `toml:"allow_destructive"`
-	AutoApprove           bool         `toml:"auto_approve"`
-	Allow                 CommandRules `toml:"allow"`
-	Confirm               CommandRules `toml:"confirm"`
-	Deny                  PatternRules `toml:"deny"`
+	DefaultTimeoutSeconds int           `toml:"default_timeout_seconds"`
+	MaxOutputBytes        int           `toml:"max_output_bytes"`
+	AllowNetwork          bool          `toml:"allow_network"`
+	AllowSudo             bool          `toml:"allow_sudo"`
+	AllowDestructive      bool          `toml:"allow_destructive"`
+	AutoApprove           bool          `toml:"auto_approve"`
+	Allow                 CommandRules  `toml:"allow"`
+	Confirm               CommandRules  `toml:"confirm"`
+	Deny                  PatternRules  `toml:"deny"`
+	Sandbox               SandboxConfig `toml:"sandbox"`
+}
+
+// SandboxConfig selects and tunes the Milestone Q execution backend for
+// shell.run / test.run. The default ("restricted") enables in-process
+// hardening (env allowlist scrubbing, resource limits via ulimit/rlimit,
+// cwd confinement, process-group kill on timeout). "container" requires a
+// Docker/Podman runtime and enforces network isolation, filesystem
+// isolation, and hard memory/cpu limits; it falls back to "restricted"
+// ONLY when AllowFallback=true AND no runtime is detected — otherwise
+// startup fails with a clear error so isolation is not silently waived.
+// "passthrough" disables all sandboxing (the pre-Milestone-Q behavior).
+type SandboxConfig struct {
+	Backend          string `toml:"backend"`
+	MemoryLimitMB    int    `toml:"memory_limit_mb"`
+	CPUSeconds       int    `toml:"cpu_seconds"`
+	MaxProcesses     int    `toml:"max_processes"`
+	FileSizeLimitMB  int    `toml:"file_size_limit_mb"`
+	ContainerRuntime string `toml:"container_runtime"`
+	ContainerImage   string `toml:"container_image"`
+	// AllowFallback controls whether a configured container backend that
+	// cannot be reached (no docker/podman on the host) may silently
+	// downgrade to the restricted backend. Default = false: failing to
+	// run the requested sandbox is a hard error, because a downgrade
+	// silently drops network/filesystem containment the user expected.
+	AllowFallback bool     `toml:"allow_fallback"`
+	EnvAllowlist  []string `toml:"env_allowlist"`
+	EnvDenylist   []string `toml:"env_denylist"`
 }
 
 type CommandRules struct {
@@ -99,6 +127,24 @@ type CommandRules struct {
 
 type PatternRules struct {
 	Patterns []string `toml:"patterns"`
+}
+
+// sandboxFile is the TOML-mirror nullable form of SandboxConfig, used both
+// by configFile (load path) and by SaveProjectConfig (save path) so all
+// mirror copies share a single definition — adding/renaming a SandboxConfig
+// field requires editing just this struct plus SandboxConfig itself, plus
+// the merge block.
+type sandboxFile struct {
+	Backend          *string  `toml:"backend"`
+	MemoryLimitMB    *int     `toml:"memory_limit_mb"`
+	CPUSeconds       *int     `toml:"cpu_seconds"`
+	MaxProcesses     *int     `toml:"max_processes"`
+	FileSizeLimitMB  *int     `toml:"file_size_limit_mb"`
+	ContainerRuntime *string  `toml:"container_runtime"`
+	ContainerImage   *string  `toml:"container_image"`
+	AllowFallback    *bool    `toml:"allow_fallback"`
+	EnvAllowlist     []string `toml:"env_allowlist"`
+	EnvDenylist      []string `toml:"env_denylist"`
 }
 
 type ProjectConfig struct {
@@ -201,6 +247,7 @@ type configFile struct {
 			Allow                 *CommandRules `toml:"allow"`
 			Confirm               *CommandRules `toml:"confirm"`
 			Deny                  *PatternRules `toml:"deny"`
+			Sandbox               *sandboxFile  `toml:"sandbox"`
 		} `toml:"shell"`
 	} `toml:"tools"`
 	Swarm *struct {
@@ -285,6 +332,26 @@ func Default() Config {
 				Allow:                 CommandRules{Commands: []string{"go test", "git status", "git diff"}},
 				Confirm:               CommandRules{Commands: []string{"go get", "npm install"}},
 				Deny:                  PatternRules{Patterns: []string{"rm -rf", "sudo", "curl * | sh"}},
+				Sandbox: SandboxConfig{
+					Backend:          "restricted",
+					MemoryLimitMB:    0,
+					CPUSeconds:       0,
+					MaxProcesses:     0,
+					FileSizeLimitMB:  0,
+					ContainerRuntime: "auto",
+					// ContainerImage intentionally empty here: the single
+					// source of truth for the default image lives in
+					// internal/sandbox/container.go (defaultContainerImage).
+					// If this field is empty at runtime, the container
+					// backend substitutes defaultContainerImage.
+					ContainerImage: "",
+					AllowFallback:  false,
+					EnvAllowlist: []string{
+						"PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL",
+						"TERM", "TMPDIR", "GOPATH", "GOCACHE", "GOMODCACHE",
+					},
+					EnvDenylist: nil,
+				},
 			},
 		},
 		Swarm: SwarmConfig{
@@ -546,6 +613,38 @@ func merge(cfg *Config, file configFile) {
 		}
 		if s.Deny != nil && s.Deny.Patterns != nil {
 			cfg.Tools.Shell.Deny.Patterns = s.Deny.Patterns
+		}
+		if s.Sandbox != nil {
+			if s.Sandbox.Backend != nil {
+				cfg.Tools.Shell.Sandbox.Backend = *s.Sandbox.Backend
+			}
+			if s.Sandbox.MemoryLimitMB != nil {
+				cfg.Tools.Shell.Sandbox.MemoryLimitMB = *s.Sandbox.MemoryLimitMB
+			}
+			if s.Sandbox.CPUSeconds != nil {
+				cfg.Tools.Shell.Sandbox.CPUSeconds = *s.Sandbox.CPUSeconds
+			}
+			if s.Sandbox.MaxProcesses != nil {
+				cfg.Tools.Shell.Sandbox.MaxProcesses = *s.Sandbox.MaxProcesses
+			}
+			if s.Sandbox.FileSizeLimitMB != nil {
+				cfg.Tools.Shell.Sandbox.FileSizeLimitMB = *s.Sandbox.FileSizeLimitMB
+			}
+			if s.Sandbox.ContainerRuntime != nil {
+				cfg.Tools.Shell.Sandbox.ContainerRuntime = *s.Sandbox.ContainerRuntime
+			}
+			if s.Sandbox.ContainerImage != nil {
+				cfg.Tools.Shell.Sandbox.ContainerImage = *s.Sandbox.ContainerImage
+			}
+			if s.Sandbox.AllowFallback != nil {
+				cfg.Tools.Shell.Sandbox.AllowFallback = *s.Sandbox.AllowFallback
+			}
+			if s.Sandbox.EnvAllowlist != nil {
+				cfg.Tools.Shell.Sandbox.EnvAllowlist = s.Sandbox.EnvAllowlist
+			}
+			if s.Sandbox.EnvDenylist != nil {
+				cfg.Tools.Shell.Sandbox.EnvDenylist = s.Sandbox.EnvDenylist
+			}
 		}
 	}
 	if file.Swarm != nil && file.Swarm.Budget != nil {

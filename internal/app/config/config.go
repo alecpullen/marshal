@@ -122,10 +122,11 @@ type ProfileConfig struct {
 // Providers' Default() comment) — the app runs with the agent loop disabled
 // until a user configures both a [providers.<name>] entry and this section.
 type AgentConfig struct {
-	Provider          string `toml:"provider"`
-	Model             string `toml:"model"`
-	MaxToolIterations int    `toml:"max_tool_iterations"`
-	MaxRetries        int    `toml:"max_retries"`
+	Provider             string `toml:"provider"`
+	Model                string `toml:"model"`
+	MaxToolIterations    int    `toml:"max_tool_iterations"`
+	MaxRetries           int    `toml:"max_retries"`
+	MaxTurnContextTokens int    `toml:"max_turn_context_tokens"`
 }
 
 type PrivacyConfig struct {
@@ -169,10 +170,11 @@ type configFile struct {
 		Default *string `toml:"default"`
 	} `toml:"profile"`
 	Agent *struct {
-		Provider          *string `toml:"provider"`
-		Model             *string `toml:"model"`
-		MaxToolIterations *int    `toml:"max_tool_iterations"`
-		MaxRetries        *int    `toml:"max_retries"`
+		Provider             *string `toml:"provider"`
+		Model                *string `toml:"model"`
+		MaxToolIterations    *int    `toml:"max_tool_iterations"`
+		MaxRetries           *int    `toml:"max_retries"`
+		MaxTurnContextTokens *int    `toml:"max_turn_context_tokens"`
 	} `toml:"agent"`
 	Privacy *struct {
 		RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
@@ -444,6 +446,9 @@ func merge(cfg *Config, file configFile) {
 		}
 		if file.Agent.MaxRetries != nil {
 			cfg.Agent.MaxRetries = *file.Agent.MaxRetries
+		}
+		if file.Agent.MaxTurnContextTokens != nil {
+			cfg.Agent.MaxTurnContextTokens = *file.Agent.MaxTurnContextTokens
 		}
 	}
 	if file.Privacy != nil {

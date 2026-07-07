@@ -23,6 +23,8 @@ const (
 	DefaultMaxToolIterations    = 16
 	DefaultMaxRetries           = 2
 	DefaultMaxParallelActions   = 4
+	DefaultMaxTurnContextTokens = 16384
+	compactKeepRecentMessages   = 6
 	finalizePressureThreshold   = 2
 	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
 	maxConsecutiveParseFailures = 3
@@ -77,23 +79,24 @@ type MemoryProvider interface {
 type UsageObserver func(promptTokens, completionTokens int)
 
 type Runner struct {
-	Provider           provider.Provider
-	Registry           *registry.Registry
-	Policy             *policy.PolicyEngine
-	State              *session.State
-	Model              string
-	RouteResolver      RouteResolver
-	MemoryProvider     MemoryProvider
-	ProjectID          int64
-	Now                func() time.Time
-	MaxToolIterations  int
-	MaxRetries         int
-	RequestTimeout     time.Duration
-	ResponseFormat     *schema.ResponseFormat
-	MaxParallelActions int
-	MaxToolResultChars int
-	ForceClass         string // if set, overrides Classify() in Run()
-	SkillIndex         *skills.Index
+	Provider             provider.Provider
+	Registry             *registry.Registry
+	Policy               *policy.PolicyEngine
+	State                *session.State
+	Model                string
+	RouteResolver        RouteResolver
+	MemoryProvider       MemoryProvider
+	ProjectID            int64
+	Now                  func() time.Time
+	MaxToolIterations    int
+	MaxRetries           int
+	MaxTurnContextTokens int
+	RequestTimeout       time.Duration
+	ResponseFormat       *schema.ResponseFormat
+	MaxParallelActions   int
+	MaxToolResultChars   int
+	ForceClass           string // if set, overrides Classify() in Run()
+	SkillIndex           *skills.Index
 
 	// Role selects the system-prompt role addendum. Zero value behaves as
 	// RoleGeneral, so existing single-agent construction is unchanged.
@@ -120,16 +123,17 @@ type Runner struct {
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
 	return &Runner{
-		Provider:           p,
-		Registry:           reg,
-		Policy:             pol,
-		State:              state,
-		Model:              model,
-		Now:                time.Now,
-		MaxToolIterations:  DefaultMaxToolIterations,
-		MaxRetries:         DefaultMaxRetries,
-		MaxParallelActions: DefaultMaxParallelActions,
-		MaxToolResultChars: DefaultMaxToolResultChars,
+		Provider:             p,
+		Registry:             reg,
+		Policy:               pol,
+		State:                state,
+		Model:                model,
+		Now:                  time.Now,
+		MaxToolIterations:    DefaultMaxToolIterations,
+		MaxRetries:           DefaultMaxRetries,
+		MaxParallelActions:   DefaultMaxParallelActions,
+		MaxToolResultChars:   DefaultMaxToolResultChars,
+		MaxTurnContextTokens: DefaultMaxTurnContextTokens,
 	}
 }
 
@@ -244,6 +248,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			messages[0] = BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, currentSkills)
 			lastRenderedSkills = currentSkills
 		}
+
+		messages = compactMessages(messages, r.MaxTurnContextTokens, compactKeepRecentMessages)
 
 		raw, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
 		if err != nil {

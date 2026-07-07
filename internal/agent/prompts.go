@@ -83,6 +83,13 @@ const baseRules = `Rules:
 
 const FinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a single action of type "final".`
 
+// NativeFinalizationDirective is the prose-oriented counterpart to
+// FinalizationDirective used when the runner is in native tool-calling mode.
+// It mirrors the constraint (stop using tools, conclude from existing
+// information) but instructs the model to emit plain text rather than a
+// JSON action envelope.
+const NativeFinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a concise final answer in normal prose.`
+
 const baseOutputFormat = `Respond with exactly one JSON object and nothing else.
 
 Examples:

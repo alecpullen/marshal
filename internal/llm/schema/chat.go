@@ -11,8 +11,8 @@ const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
-	// RoleTool is reserved for Milestone D tool-calling; not emitted or
-	// consumed by anything in this milestone.
+	// RoleTool is the speaker role for tool result messages fed back to the
+	// model after a native tool call. It is used in native tool-calling mode.
 	RoleTool Role = "tool"
 )
 

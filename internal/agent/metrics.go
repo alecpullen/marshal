@@ -17,7 +17,7 @@ type TurnMetrics struct {
 	ToolCalls  int
 	ToolErrors int
 	CacheHits  int
-	// ParseFailures counts consecutive unparseable JSON-envelope actions.
+	// ParseFailures counts unparseable JSON-envelope actions.
 	// In native tool-calling mode this is always 0 because the provider
 	// returns parsed tool_calls directly.
 	ParseFailures    int

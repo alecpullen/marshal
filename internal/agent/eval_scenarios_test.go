@@ -36,7 +36,10 @@ func evalRead(path string) string {
 }
 
 func evalNativeRead(id, path string) schema.ToolCall {
-	args, _ := json.Marshal(map[string]string{"path": path})
+	args, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		panic(err)
+	}
 	return schema.ToolCall{ID: id, Name: "file.read", Args: args}
 }
 
@@ -242,6 +245,84 @@ func TestEvalNativeScenarios(t *testing.T) {
 				t.Fatal("no TurnMetrics emitted")
 			}
 			tc.want(t, *got)
+		})
+	}
+}
+
+func TestEvalNativeFinalizeScenarios(t *testing.T) {
+	cases := []struct {
+		name      string
+		responses []string
+		toolCalls [][]schema.ToolCall
+		maxIters  int
+		want      func(t *testing.T, task *Task, m TurnMetrics)
+	}{
+		{
+			name:      "native exhaustion salvage returns prose",
+			responses: []string{"Read a.", "Read b.", "Salvaged prose."},
+			toolCalls: [][]schema.ToolCall{
+				{evalNativeRead("call_a", "a.go")},
+				{evalNativeRead("call_b", "b.go")},
+				nil,
+			},
+			maxIters: 2,
+			want: func(t *testing.T, task *Task, m TurnMetrics) {
+				if m.Outcome != "salvaged" || m.SalvageReason != "exhausted" {
+					t.Fatalf("metrics = %+v", m)
+				}
+				if task.Summary != "Salvaged prose." {
+					t.Fatalf("Summary = %q, want prose", task.Summary)
+				}
+				if m.ParseFailures != 0 {
+					t.Fatalf("ParseFailures = %d, want 0 in native mode", m.ParseFailures)
+				}
+			},
+		},
+		{
+			name:      "native hard stall salvage returns prose",
+			responses: []string{"Read a.", "Read a.", "Read a.", "Stalled prose."},
+			toolCalls: [][]schema.ToolCall{
+				{evalNativeRead("call_a", "a.go")},
+				{evalNativeRead("call_a", "a.go")},
+				{evalNativeRead("call_a", "a.go")},
+				nil,
+			},
+			maxIters: 8,
+			want: func(t *testing.T, task *Task, m TurnMetrics) {
+				if m.Outcome != "salvaged" || m.SalvageReason != "stalled" {
+					t.Fatalf("metrics = %+v", m)
+				}
+				if task.Summary != "Stalled prose." {
+					t.Fatalf("Summary = %q, want prose", task.Summary)
+				}
+				if m.ParseFailures != 0 {
+					t.Fatalf("ParseFailures = %d, want 0 in native mode", m.ParseFailures)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := evalRegistry(t)
+			p := &scriptedProvider{responses: tc.responses, toolCalls: tc.toolCalls}
+			state := newTestState(t)
+			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+			r.NativeTools = true
+			r.MaxToolIterations = tc.maxIters
+			r.SetForceClass(string(ClassQuestion))
+
+			var got *TurnMetrics
+			r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+			task, err := r.RunTask(context.Background(), "eval goal")
+			if err != nil {
+				t.Fatalf("RunTask err = %v", err)
+			}
+			if got == nil {
+				t.Fatal("no TurnMetrics emitted")
+			}
+			tc.want(t, task, *got)
 		})
 	}
 }

@@ -28,6 +28,12 @@ api_key = "lm-studio"
 type = "openai_compatible"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
+
+[providers.groq]
+type = "openai_compatible"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+tool_calling = true  # provider advertises native OpenAI-compatible tool support
 ```
 
 ## Model presets
@@ -72,11 +78,12 @@ local_only = false
 
 `tool_calling` controls how Marshal asks the model to return tool/actions:
 
+- A provider advertises native tool-calling support by setting `tool_calling = true` in its `[providers.<name>]` block.
 - `native` opts into provider-native OpenAI-compatible `tools[]` / `tool_calls[]` when the provider advertises tool-calling support.
 - If `native` is selected but the provider does not support native tool calls, Marshal degrades to `json_schema`, then `json`, then unconstrained text.
 - `json_schema` requests Marshal's strict JSON action envelope when structured output is supported, otherwise it degrades to `json`.
-- `json` requests `response_format={"type":"json_object"}` when JSON mode is supported.
-- An empty value leaves decoding unconstrained and uses Marshal's text JSON action protocol.
+- `json` leaves decoding unconstrained and uses Marshal's text JSON action protocol.
+- An empty value also leaves decoding unconstrained and uses Marshal's text JSON action protocol.
 
 ## Agent loop config
 

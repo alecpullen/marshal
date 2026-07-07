@@ -139,10 +139,15 @@ func TestBuildSystemPromptNativeModeOmitsJSONEnvelopeScaffolding(t *testing.T) {
 		"<<<<<<< SEARCH",
 		">>>>>>> REPLACE",
 		"Do not use unified diff syntax",
+		"Allowed actions for this role: tool_call, patch, final",
 	} {
 		if strings.Contains(content, unwanted) {
 			t.Errorf("native prompt contains JSON-envelope scaffolding %q\n%s", unwanted, content)
 		}
+	}
+
+	if !strings.Contains(content, "Allowed actions for this role: tool_call, final") {
+		t.Errorf("native implementer allowed actions incorrect; got:\n%s", content)
 	}
 }
 
@@ -209,6 +214,37 @@ func TestBuildSystemPromptEachRoleHasAllowedActions(t *testing.T) {
 
 		if !strings.Contains(content, want) {
 			t.Errorf("role %q missing allowed actions line %q\n%s", role, want, content)
+		}
+	}
+}
+
+func TestBuildSystemPromptNativeModeOmitsPatchFromAllowedActions(t *testing.T) {
+	expected := map[AgentRole]string{
+		RoleGeneral:     "Allowed actions for this role: answer, tool_call, final, ask_user",
+		RolePlanner:     "Allowed actions for this role: answer, final",
+		RoleImplementer: "Allowed actions for this role: tool_call, final",
+		RoleTester:      "Allowed actions for this role: tool_call, final",
+		RoleReviewer:    "Allowed actions for this role: tool_call, final",
+	}
+
+	for role, want := range expected {
+		msg := BuildSystemPrompt(role, dummyTools(), nil, nil, true)
+		content := msg.Content
+
+		if !strings.Contains(content, want) {
+			t.Errorf("native role %q missing allowed actions line %q\n%s", role, want, content)
+		}
+		idx := strings.Index(content, "Allowed actions for this role: ")
+		if idx == -1 {
+			t.Errorf("native role %q missing allowed actions line\n%s", role, content)
+			continue
+		}
+		actionsLine := content[idx:]
+		if nl := strings.Index(actionsLine, "\n"); nl != -1 {
+			actionsLine = actionsLine[:nl]
+		}
+		if strings.Contains(actionsLine, "patch") {
+			t.Errorf("native role %q should not list patch in allowed actions line %q", role, actionsLine)
 		}
 	}
 }

@@ -128,6 +128,50 @@ func TestNewFromConfigErrorsWhenAPIKeyEnvUnset(t *testing.T) {
 	}
 }
 
+func TestNewFromConfigPropagatesToolCallingCapability(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	pc := config.ProviderConfig{
+		Type:        "openai_compatible",
+		BaseURL:     server.URL,
+		APIKey:      "literal-key",
+		ToolCalling: true,
+	}
+	p, err := NewFromConfig("test", pc)
+	if err != nil {
+		t.Fatalf("NewFromConfig returned error: %v", err)
+	}
+	if !p.Capabilities(t.Context()).ToolCalling {
+		t.Fatalf("Capabilities().ToolCalling = false, want true")
+	}
+}
+
+func TestNewFromConfigToolCallingDefaultsToFalse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	pc := config.ProviderConfig{
+		Type:    "openai_compatible",
+		BaseURL: server.URL,
+	}
+	p, err := NewFromConfig("test", pc)
+	if err != nil {
+		t.Fatalf("NewFromConfig returned error: %v", err)
+	}
+	if p.Capabilities(t.Context()).ToolCalling {
+		t.Fatalf("Capabilities().ToolCalling = true, want false")
+	}
+}
+
 func TestNewFromConfigErrorsOnUnsupportedProviderType(t *testing.T) {
 	pc := config.ProviderConfig{
 		Type:    "native_anthropic",

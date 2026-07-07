@@ -198,24 +198,51 @@ func BuildContextPackMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
 // "Tool <name> result:" is a load-bearing marker: compactMessages identifies
 // tool results by this prefix to decide which messages to shrink.
 func BuildToolResultMessage(name string, result registry.ToolResult) schema.ChatMessage {
+	return buildToolResultMessage(name, result, "")
+}
+
+func BuildNativeToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
+	return buildToolResultMessage(name, result, toolCallID)
+}
+
+func buildToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
 	content := fmt.Sprintf("Tool %s result: %s", name, result.Summary)
 	if result.Content != "" {
 		content += "\n\n" + result.Content
+	}
+	if toolCallID != "" {
+		return schema.ChatMessage{Role: schema.RoleTool, Content: content, ToolCallID: toolCallID}
 	}
 	return schema.ChatMessage{Role: schema.RoleUser, Content: content}
 }
 
 func BuildToolErrorMessage(name string, reason string) schema.ChatMessage {
+	return buildToolErrorMessage(name, reason, "")
+}
+
+func BuildNativeToolErrorMessage(name string, reason string, toolCallID string) schema.ChatMessage {
+	return buildToolErrorMessage(name, reason, toolCallID)
+}
+
+func buildToolErrorMessage(name string, reason string, toolCallID string) schema.ChatMessage {
+	content := fmt.Sprintf("Tool %s failed: %s", name, reason)
+	if toolCallID != "" {
+		return schema.ChatMessage{Role: schema.RoleTool, Content: content, ToolCallID: toolCallID}
+	}
 	return schema.ChatMessage{
 		Role:    schema.RoleUser,
-		Content: fmt.Sprintf("Tool %s failed: %s", name, reason),
+		Content: content,
 	}
 }
 
 func BuildCachedToolResultMessage(name string, result registry.ToolResult) schema.ChatMessage {
+	return BuildCachedNativeToolResultMessage(name, result, "")
+}
+
+func BuildCachedNativeToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
 	cached := result
 	cached.Summary = "(cached) " + result.Summary
-	return BuildToolResultMessage(name, cached)
+	return buildToolResultMessage(name, cached, toolCallID)
 }
 
 func BuildCorrectionMessage(err error) schema.ChatMessage {

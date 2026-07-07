@@ -28,12 +28,13 @@ var (
 // described in docs/07-agent-runtime-and-swarm.md. When Actions is set,
 // the single-action fields are empty and vice-versa.
 type ModelAction struct {
-	Rationale string
-	Type      ActionType
-	Tool      string
-	Args      json.RawMessage
-	Content   string
-	Actions   []ModelAction // parallel read-only tool calls
+	Rationale  string
+	Type       ActionType
+	Tool       string
+	Args       json.RawMessage
+	Content    string
+	ToolCallID string
+	Actions    []ModelAction // parallel read-only tool calls
 }
 
 type actionEnvelope struct {

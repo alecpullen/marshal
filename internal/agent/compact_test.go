@@ -70,3 +70,22 @@ func TestCompactMessagesDoesNotMutateInput(t *testing.T) {
 		t.Error("compactMessages mutated the input slice")
 	}
 }
+
+func TestCompactMessagesShrinksRoleToolMessages(t *testing.T) {
+	msgs := []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "system"},
+		{Role: schema.RoleUser, Content: "goal"},
+		{Role: schema.RoleAssistant, Content: "calling tool"},
+		{Role: schema.RoleTool, ToolCallID: "call_1", Content: "Tool file.read result: summary\n\n" + strings.Repeat("x", 4000)},
+		{Role: schema.RoleAssistant, Content: "done"},
+	}
+
+	result := compactMessages(msgs, 20, 1)
+
+	if result[3].Role != schema.RoleTool || result[3].ToolCallID != "call_1" {
+		t.Fatalf("role/tool_call_id changed: %+v", result[3])
+	}
+	if !strings.Contains(result[3].Content, compactedNote) {
+		t.Fatalf("role:tool message was not compacted: %q", result[3].Content)
+	}
+}

@@ -40,7 +40,7 @@ func compactMessages(messages []schema.ChatMessage, budgetTokens, keepRecent int
 	}
 
 	for i := 2; i < cutoff; i++ {
-		if !strings.HasPrefix(out[i].Content, toolResultPrefix) {
+		if !isToolResultMessage(out[i]) {
 			continue
 		}
 		if strings.Contains(out[i].Content, compactedNote) {
@@ -56,4 +56,8 @@ func compactMessages(messages []schema.ChatMessage, budgetTokens, keepRecent int
 		}
 	}
 	return out
+}
+
+func isToolResultMessage(msg schema.ChatMessage) bool {
+	return msg.Role == schema.RoleTool || strings.HasPrefix(msg.Content, toolResultPrefix)
 }

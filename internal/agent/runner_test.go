@@ -36,6 +36,7 @@ func TestRunnerDefaultsAreSensible(t *testing.T) {
 // so tests exercising max-iteration limits do not need to script every turn.
 type scriptedProvider struct {
 	responses    []string
+	toolCalls    [][]schema.ToolCall
 	thinking     []string
 	errs         []error
 	usages       []*schema.TokenUsage
@@ -81,10 +82,15 @@ func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	case len(p.responses) > 0:
 		content = p.responses[len(p.responses)-1]
 	}
-	ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
+	if content != "" {
+		ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
+	}
 	done := schema.ChatEvent{Type: schema.ChatEventDone}
 	if idx < len(p.usages) {
 		done.Usage = p.usages[idx]
+	}
+	if idx < len(p.toolCalls) {
+		done.ToolCalls = p.toolCalls[idx]
 	}
 	ch <- done
 	close(ch)
@@ -144,13 +150,13 @@ func TestChatOnceRoutesThinkingDeltasToStateAndReturnsAnswerText(t *testing.T) {
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
-	text, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
+	res, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
 	if err != nil {
 		t.Fatalf("chatOnce returned error: %v", err)
 	}
 	wantText := `{"rationale":"r","action":{"type":"answer","content":"done"}}`
-	if text != wantText {
-		t.Fatalf("chatOnce returned %q, want %q", text, wantText)
+	if res.Text != wantText {
+		t.Fatalf("chatOnce returned %q, want %q", res.Text, wantText)
 	}
 	if got := state.InProgress().Reasoning; got != "considering the question" {
 		t.Fatalf("InProgress().Reasoning = %q, want %q", got, "considering the question")
@@ -250,6 +256,202 @@ func TestRunExecutesAllowedToolCallThenAnswers(t *testing.T) {
 	last := messages[len(messages)-1]
 	if last.Role != session.RoleAssistant || last.Content != "Read demo content successfully." {
 		t.Fatalf("final message = %#v", last)
+	}
+}
+
+func TestRunNativeToolCallFeedsRoleToolThenAnswers(t *testing.T) {
+	var gotArgs json.RawMessage
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name:        "demo.read",
+		Description: "reads a demo value",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}`),
+		Risk:        registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			gotArgs = call.Args
+			return registry.ToolResult{Summary: "read ok", Content: "demo content"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &scriptedProvider{
+		responses: []string{"Reading demo.", "Read demo content successfully."},
+		toolCalls: [][]schema.ToolCall{
+			{{ID: "call_1", Name: "demo.read", Args: json.RawMessage(`{"key":"value"}`)}},
+			nil,
+		},
+	}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.NativeTools = true
+	runner.SetForceClass(string(ClassQuestion))
+
+	var got *TurnMetrics
+	runner.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	task, err := runner.RunTask(context.Background(), "Read the demo value")
+	if err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
+	}
+	if task.Summary != "Read demo content successfully." {
+		t.Fatalf("Summary = %q", task.Summary)
+	}
+	if string(gotArgs) != `{"key":"value"}` {
+		t.Fatalf("tool handler args = %s", gotArgs)
+	}
+	if got == nil || got.ParseFailures != 0 || got.ToolCalls != 1 {
+		t.Fatalf("metrics = %+v, want ParseFailures=0 ToolCalls=1", got)
+	}
+	if len(p.requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(p.requests))
+	}
+	if len(p.requests[0].Tools) != 2 {
+		t.Fatalf("len(request tools) = %d, want demo.read + ask_user: %+v", len(p.requests[0].Tools), p.requests[0].Tools)
+	}
+	foundToolResult := false
+	for _, msg := range p.requests[1].Messages {
+		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_1" && strings.Contains(msg.Content, "demo content") {
+			foundToolResult = true
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("second request missing role:tool result for call_1: %#v", p.requests[1].Messages)
+	}
+}
+
+func TestRunNativeMultiCallBatchFeedsEachRoleToolInOrder(t *testing.T) {
+	var order []string
+	reg := registry.New()
+	for _, name := range []string{"demo.a", "demo.b"} {
+		toolName := name
+		if err := reg.Register(registry.Tool{
+			Name: toolName,
+			Risk: registry.RiskReadOnly,
+			Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+				order = append(order, call.Name)
+				return registry.ToolResult{Summary: call.Name + " ok", Content: call.Name + " content"}, nil
+			},
+		}); err != nil {
+			t.Fatalf("Register %s: %v", toolName, err)
+		}
+	}
+
+	p := &scriptedProvider{
+		responses: []string{"Reading both.", "Done."},
+		toolCalls: [][]schema.ToolCall{
+			{
+				{ID: "call_a", Name: "demo.a", Args: json.RawMessage(`{}`)},
+				{ID: "call_b", Name: "demo.b", Args: json.RawMessage(`{}`)},
+			},
+		},
+	}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.NativeTools = true
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "Read both"); err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
+	}
+	if strings.Join(order, ",") != "demo.a,demo.b" {
+		t.Fatalf("execution order = %v, want demo.a,demo.b", order)
+	}
+	var ids []string
+	for _, msg := range p.requests[1].Messages {
+		if msg.Role == schema.RoleTool {
+			ids = append(ids, msg.ToolCallID)
+		}
+	}
+	if strings.Join(ids, ",") != "call_a,call_b" {
+		t.Fatalf("role:tool ids = %v, want call_a,call_b", ids)
+	}
+}
+
+func TestRunNativeAskUserFeedsAnswerAsRoleTool(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{
+		responses: []string{"Need clarification.", "Archived as requested."},
+		toolCalls: [][]schema.ToolCall{
+			{{ID: "call_question", Name: "ask_user", Args: json.RawMessage(`{"question":"Archive or delete?"}`)}},
+		},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassQuestion))
+
+	questionCh := answerPendingQuestion(state, "archive")
+
+	task, err := r.RunTask(context.Background(), "clean up old records")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if got := <-questionCh; got != "Archive or delete?" {
+		t.Fatalf("question = %q", got)
+	}
+	if task.Summary != "Archived as requested." {
+		t.Fatalf("Summary = %q", task.Summary)
+	}
+	found := false
+	for _, msg := range p.requests[1].Messages {
+		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_question" && strings.Contains(msg.Content, "archive") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("answer not fed back as role:tool: %#v", p.requests[1].Messages)
+	}
+}
+
+func TestRunNativeUnknownToolAnswersToolCallIDWithError(t *testing.T) {
+	p := &scriptedProvider{
+		responses: []string{"Trying unknown.", "Recovered."},
+		toolCalls: [][]schema.ToolCall{
+			{{ID: "call_bad", Name: "missing.tool", Args: json.RawMessage(`{}`)}},
+		},
+	}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassQuestion))
+
+	if _, err := r.RunTask(context.Background(), "try a tool"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	found := false
+	for _, msg := range p.requests[1].Messages {
+		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_bad" && strings.Contains(msg.Content, "unknown tool") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("unknown tool error not fed back as role:tool: %#v", p.requests[1].Messages)
+	}
+}
+
+func TestBuildToolDefinitionsOmitsAskUserForSwarmRoles(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name:        "demo.read",
+		Description: "read",
+		Risk:        registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	r := NewRunner(&scriptedProvider{}, reg, policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	r.Role = RoleRepoScout
+
+	defs := r.buildToolDefinitions()
+	for _, def := range defs {
+		if def.Name == "ask_user" {
+			t.Fatalf("ask_user should be omitted for swarm role: %+v", defs)
+		}
+	}
+	if len(defs) != 1 || defs[0].Name != "demo.read" {
+		t.Fatalf("defs = %+v, want only demo.read", defs)
 	}
 }
 

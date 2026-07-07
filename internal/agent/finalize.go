@@ -55,10 +55,11 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 	content := ""
 	for attempt := 0; attempt < maxFinalizeAttempts; attempt++ {
 		var err error
-		raw, err = r.chatWithRetry(ctx, p, model, final)
+		res, err := r.chatWithRetryNoNativeTools(ctx, p, model, final)
 		if err != nil {
 			return task, err
 		}
+		raw = res.Text
 
 		if action, parseErr := ParseAction(raw); parseErr == nil &&
 			(action.Type == ActionAnswer || action.Type == ActionFinal) {

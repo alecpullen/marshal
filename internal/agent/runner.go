@@ -93,6 +93,7 @@ type Runner struct {
 	MaxTurnContextTokens int
 	RequestTimeout       time.Duration
 	ResponseFormat       *schema.ResponseFormat
+	NativeTools          bool
 	MaxParallelActions   int
 	MaxToolResultChars   int
 	ForceClass           string // if set, overrides Classify() in Run()
@@ -119,6 +120,12 @@ type Runner struct {
 	trackerMu    sync.Mutex
 	stats        *turnStats
 	statsMu      sync.Mutex
+}
+
+type chatResult struct {
+	Text         string
+	ToolCalls    []schema.ToolCall
+	FinishReason string
 }
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
@@ -196,7 +203,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
 	messages := []schema.ChatMessage{
-		BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills()),
+		BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
@@ -204,10 +211,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
-		planText, err := r.chatWithRetry(ctx, turnProvider, turnModel, planMessages)
+		planRes, err := r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages)
 		if err != nil {
 			return task, r.fail(task, err)
 		}
+		planText := planRes.Text
 		task.Plan = splitPlanLines(planText)
 		r.State.SetPlan(task.Plan)
 		if current := r.State.ContextPack(); !current.IsEmpty() {
@@ -217,7 +225,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
-			messages = []schema.ChatMessage{BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills())}
+			messages = []schema.ChatMessage{BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools)}
 			messages = appendContextPackMessage(messages, updatedPack)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}
@@ -245,15 +253,54 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		currentSkills := r.State.ActiveSkills()
 		if skillsChanged(lastRenderedSkills, currentSkills) {
-			messages[0] = BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, currentSkills)
+			messages[0] = BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, currentSkills, r.NativeTools)
 			lastRenderedSkills = currentSkills
 		}
 
 		messages = compactMessages(messages, r.MaxTurnContextTokens, compactKeepRecentMessages)
 
-		raw, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
+		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
 		if err != nil {
 			return task, r.fail(task, err)
+		}
+		raw := res.Text
+
+		if r.NativeTools {
+			if len(res.ToolCalls) == 0 {
+				if strings.TrimSpace(res.Text) == "" {
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: "Call a tool or give a final answer."})
+					continue
+				}
+				task.Summary = res.Text
+				task.Status = TaskStatusCompleted
+				r.State.AddMessageFinal(session.RoleAssistant, res.Text, session.ContentTypeMarkdown)
+				return task, nil
+			}
+
+			iteration++
+			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
+			producedValidAction = true
+			if inProgress := r.State.InProgress(); inProgress.Reasoning != "" {
+				r.State.LogThinking(session.ThinkingEntry{
+					Text:      inProgress.Reasoning,
+					Duration:  time.Since(inProgress.StartedAt),
+					StartedAt: inProgress.StartedAt,
+				})
+			}
+
+			resultMsgs, execErr := r.executeNativeToolCalls(ctx, res.ToolCalls)
+			if execErr != nil {
+				return task, r.fail(task, execErr)
+			}
+			messages = append(messages, resultMsgs...)
+			if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+				return resTask, ferr
+			} else if nudge != "" {
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
+				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+			}
+			continue
 		}
 
 		action, parseErr := ParseAction(raw)
@@ -484,34 +531,57 @@ func (r *Runner) fail(task *Task, err error) error {
 // model *output* is handled separately in Run via BuildCorrectionMessage; it
 // is not retried here because it is not a chatOnce failure — chatOnce
 // succeeded, the text just didn't parse as an action.
-func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (string, error) {
+func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (chatResult, error) {
+	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, true)
+}
+
+func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (chatResult, error) {
+	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, false)
+}
+
+func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, includeNativeTools bool) (chatResult, error) {
 	attempts := r.MaxRetries + 1
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		text, err := r.chatOnce(ctx, p, model, messages)
+		res, err := r.chatOnce(ctx, p, model, messages, includeNativeTools)
 		if err == nil {
-			return text, nil
+			return res, nil
 		}
 		lastErr = err
 	}
-	return "", lastErr
+	return chatResult{}, lastErr
 }
 
-func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (string, error) {
+func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, includeNativeToolsOpt ...bool) (chatResult, error) {
 	if r.RequestTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.RequestTimeout)
 		defer cancel()
 	}
 
+	includeNativeTools := true
+	if len(includeNativeToolsOpt) > 0 {
+		includeNativeTools = includeNativeToolsOpt[0]
+	}
+	var responseFormat *schema.ResponseFormat
+	var tools []schema.ToolDefinition
+	if r.NativeTools {
+		if includeNativeTools {
+			tools = r.buildToolDefinitions()
+		}
+	} else {
+		responseFormat = r.ResponseFormat
+	}
+
 	events, err := p.Chat(ctx, schema.ChatRequest{
 		Model:          model,
 		Messages:       messages,
 		Stream:         true,
-		ResponseFormat: r.ResponseFormat,
+		ResponseFormat: responseFormat,
+		Tools:          tools,
 	})
 	if err != nil {
-		return "", err
+		return chatResult{}, err
 	}
 
 	r.State.BeginStreaming()
@@ -521,6 +591,8 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 
 	var sb strings.Builder
 	var usage *schema.TokenUsage
+	var toolCalls []schema.ToolCall
+	var finishReason string
 	for event := range events {
 		switch event.Type {
 		case schema.ChatEventDelta:
@@ -530,9 +602,11 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 				sb.WriteString(event.Delta)
 			}
 		case schema.ChatEventError:
-			return "", event.Err
+			return chatResult{}, event.Err
 		case schema.ChatEventDone:
 			usage = event.Usage
+			toolCalls = event.ToolCalls
+			finishReason = event.FinishReason
 		}
 	}
 	if r.UsageObserver != nil && usage != nil {
@@ -544,7 +618,31 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 			s.m.CompletionTokens += usage.CompletionTokens
 		})
 	}
-	return sb.String(), nil
+	return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, nil
+}
+
+func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
+	tools := r.Registry.List()
+	defs := make([]schema.ToolDefinition, 0, len(tools)+1)
+	for _, tool := range tools {
+		parameters := tool.Schema
+		if len(parameters) == 0 {
+			parameters = json.RawMessage(`{"type":"object"}`)
+		}
+		defs = append(defs, schema.ToolDefinition{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  parameters,
+		})
+	}
+	if r.role() == RoleGeneral {
+		defs = append(defs, schema.ToolDefinition{
+			Name:        "ask_user",
+			Description: "Ask the user one specific clarifying question.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"question":{"type":"string"}},"required":["question"]}`),
+		})
+	}
+	return defs
 }
 
 // executeToolCall evaluates policy, blocks for user approval if required,
@@ -557,11 +655,12 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if action.Type == ActionPatch {
 		toolName = "file.write_patch"
 	}
+	toolCallID := action.ToolCallID
 
 	tool, ok := r.Registry.Lookup(toolName)
 	if !ok {
 		r.countToolCall(true, false)
-		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "unknown tool")}, nil
+		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "unknown tool", toolCallID)}, nil
 	}
 
 	args := action.Args
@@ -569,7 +668,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		encoded, err := json.Marshal(map[string]string{"patch": action.Content})
 		if err != nil {
 			r.countToolCall(true, false)
-			return []schema.ChatMessage{BuildToolErrorMessage(toolName, "failed to encode patch arguments")}, nil
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "failed to encode patch arguments", toolCallID)}, nil
 		}
 		args = encoded
 	}
@@ -578,14 +677,14 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &argsMap); err != nil {
 			r.countToolCall(true, false)
-			return []schema.ChatMessage{BuildToolErrorMessage(toolName, "arguments are not a valid JSON object")}, nil
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "arguments are not a valid JSON object", toolCallID)}, nil
 		}
 	}
 
 	normalizedArgs, normErr := normalizeArgs(args)
 	if normErr != nil {
 		r.countToolCall(true, false)
-		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "failed to normalize arguments")}, nil
+		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "failed to normalize arguments", toolCallID)}, nil
 	}
 
 	// Cacheable read-only cache lookup.
@@ -600,7 +699,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
 			r.State.LogToolCall(event)
 			r.countToolCall(false, true)
-			return []schema.ChatMessage{BuildCachedToolResultMessage(toolName, cached)}, nil
+			return []schema.ChatMessage{r.buildCachedToolResultMessage(toolName, cached, toolCallID)}, nil
 		}
 	}
 
@@ -608,7 +707,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	decision, reason, err := r.Policy.Evaluate(toolName, argsMap)
 	if err != nil {
 		r.countToolCall(true, false)
-		return []schema.ChatMessage{BuildToolErrorMessage(toolName, err.Error())}, nil
+		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, err.Error(), toolCallID)}, nil
 	}
 
 	approval := registry.ApprovalNotRequired
@@ -617,7 +716,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
 		r.State.LogToolCall(event)
 		r.countToolCall(true, false)
-		return []schema.ChatMessage{BuildToolErrorMessage(toolName, "denied by policy: "+reason)}, nil
+		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}, nil
 	case policy.DecisionConfirm:
 		approved, edited, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason)
 		if waitErr != nil {
@@ -627,7 +726,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
 			r.State.LogToolCall(event)
 			r.countToolCall(true, false)
-			return []schema.ChatMessage{BuildToolErrorMessage(toolName, "denied by user")}, nil
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by user", toolCallID)}, nil
 		}
 		approval = registry.ApprovalApproved
 		if edited != "" {
@@ -667,7 +766,11 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		defer release()
 	}
 
-	call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
+	callID := toolCallID
+	if callID == "" {
+		callID = fmt.Sprintf("call_%d", r.Now().UnixNano())
+	}
+	call := registry.ToolCall{ID: callID, Name: toolName, Args: args}
 	result, execErr := tool.Handler(ctx, call)
 	if execErr != nil {
 		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
@@ -676,7 +779,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		r.tracker.record(toolName, string(normalizedArgs))
 		r.trackerMu.Unlock()
 		r.countToolCall(true, false)
-		return []schema.ChatMessage{BuildToolErrorMessage(toolName, execErr.Error())}, nil
+		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, execErr.Error(), toolCallID)}, nil
 	}
 
 	summarized := SummarizeToolResult(toolName, result, r.MaxToolResultChars)
@@ -686,12 +789,81 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)
 	r.State.LogToolCall(event)
 
-	msgs := []schema.ChatMessage{BuildToolResultMessage(toolName, summarized)}
+	msgs := []schema.ChatMessage{r.buildToolResultMessage(toolName, summarized, toolCallID)}
 	r.trackerMu.Lock()
 	r.tracker.record(toolName, string(normalizedArgs))
 	r.trackerMu.Unlock()
 	r.countToolCall(false, false)
 	return msgs, nil
+}
+
+func (r *Runner) buildToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
+	if toolCallID != "" {
+		return BuildNativeToolResultMessage(name, result, toolCallID)
+	}
+	return BuildToolResultMessage(name, result)
+}
+
+func (r *Runner) buildCachedToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
+	if toolCallID != "" {
+		return BuildCachedNativeToolResultMessage(name, result, toolCallID)
+	}
+	return BuildCachedToolResultMessage(name, result)
+}
+
+func (r *Runner) buildToolErrorMessage(name, reason, toolCallID string) schema.ChatMessage {
+	if toolCallID != "" {
+		return BuildNativeToolErrorMessage(name, reason, toolCallID)
+	}
+	return BuildToolErrorMessage(name, reason)
+}
+
+func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.ToolCall) ([]schema.ChatMessage, error) {
+	msgs := make([]schema.ChatMessage, 0, len(calls))
+	for _, call := range calls {
+		if call.Name == "ask_user" {
+			msg, err := r.executeNativeAskUser(ctx, call)
+			if err != nil {
+				return nil, err
+			}
+			msgs = append(msgs, msg)
+			continue
+		}
+		resultMsgs, err := r.executeToolCall(ctx, ModelAction{
+			Type:       ActionToolCall,
+			Tool:       call.Name,
+			Args:       call.Args,
+			ToolCallID: call.ID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, resultMsgs...)
+	}
+	return msgs, nil
+}
+
+func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall) (schema.ChatMessage, error) {
+	if r.role() != RoleGeneral {
+		return BuildNativeToolErrorMessage("ask_user", fmt.Sprintf("ask_user is not available for the %s role", r.role()), call.ID), nil
+	}
+	var payload struct {
+		Question string `json:"question"`
+	}
+	if err := json.Unmarshal(call.Args, &payload); err != nil || strings.TrimSpace(payload.Question) == "" {
+		r.countToolCall(true, false)
+		return BuildNativeToolErrorMessage("ask_user", "arguments must include a question string", call.ID), nil
+	}
+	answer, waitErr := r.requestAnswer(ctx, payload.Question)
+	if waitErr != nil {
+		return schema.ChatMessage{}, waitErr
+	}
+	r.countToolCall(false, false)
+	if strings.TrimSpace(answer) == "" {
+		return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."}, nil
+	}
+	r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
+	return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "User answered: " + answer}, nil
 }
 
 func (r *Runner) allReadOnly(actions []ModelAction) error {

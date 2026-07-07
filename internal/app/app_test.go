@@ -200,28 +200,78 @@ func TestRoleToolIterationsFallsBack(t *testing.T) {
 	}
 }
 
-func TestActionResponseFormatFallsBackGracefully(t *testing.T) {
-	caps := schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true}
-	rf := actionResponseFormat("json_schema", caps)
-	if rf == nil || rf.Type != "json_schema" {
-		t.Fatalf("expected json_schema, got %v", rf)
+func TestResolveActionDecodingFallsBackGracefully(t *testing.T) {
+	tests := []struct {
+		name        string
+		toolCalling string
+		caps        schema.ProviderCapabilities
+		wantNative  bool
+		wantRF      string
+	}{
+		{
+			name:        "native when provider supports tool calling",
+			toolCalling: "native",
+			caps:        schema.ProviderCapabilities{ToolCalling: true, StructuredOutput: true, JSONMode: true},
+			wantNative:  true,
+		},
+		{
+			name:        "native falls back to json_schema",
+			toolCalling: "native",
+			caps:        schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true},
+			wantRF:      "json_schema",
+		},
+		{
+			name:        "native falls back to json_object",
+			toolCalling: "native",
+			caps:        schema.ProviderCapabilities{JSONMode: true},
+			wantRF:      "json_object",
+		},
+		{
+			name:        "native falls back to nil",
+			toolCalling: "native",
+			caps:        schema.ProviderCapabilities{},
+		},
+		{
+			name:        "json_schema preferred",
+			toolCalling: "json_schema",
+			caps:        schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true},
+			wantRF:      "json_schema",
+		},
+		{
+			name:        "json_schema falls back to json_object",
+			toolCalling: "json_schema",
+			caps:        schema.ProviderCapabilities{JSONMode: true},
+			wantRF:      "json_object",
+		},
+		{
+			name:        "json object explicit",
+			toolCalling: "json",
+			caps:        schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true},
+			wantRF:      "json_object",
+		},
+		{
+			name:        "empty leaves decoding unconstrained",
+			toolCalling: "",
+			caps:        schema.ProviderCapabilities{ToolCalling: true, StructuredOutput: true, JSONMode: true},
+		},
 	}
 
-	caps = schema.ProviderCapabilities{StructuredOutput: false, JSONMode: true}
-	rf = actionResponseFormat("json_schema", caps)
-	if rf == nil || rf.Type != "json_object" {
-		t.Fatalf("expected fallback to json_object, got %v", rf)
-	}
-
-	caps = schema.ProviderCapabilities{StructuredOutput: false, JSONMode: false}
-	rf = actionResponseFormat("json_schema", caps)
-	if rf != nil {
-		t.Fatalf("expected nil fallback, got %v", rf)
-	}
-
-	rf = actionResponseFormat("json", schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true})
-	if rf != nil {
-		t.Fatalf("expected nil for non-json_schema tool calling, got %v", rf)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveActionDecoding(tt.toolCalling, tt.caps)
+			if got.Native != tt.wantNative {
+				t.Fatalf("Native = %v, want %v", got.Native, tt.wantNative)
+			}
+			if tt.wantRF == "" {
+				if got.ResponseFormat != nil {
+					t.Fatalf("ResponseFormat = %+v, want nil", got.ResponseFormat)
+				}
+				return
+			}
+			if got.ResponseFormat == nil || got.ResponseFormat.Type != tt.wantRF {
+				t.Fatalf("ResponseFormat = %+v, want type %q", got.ResponseFormat, tt.wantRF)
+			}
+		})
 	}
 }
 

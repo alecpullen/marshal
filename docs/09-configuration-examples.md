@@ -70,6 +70,14 @@ tool_calling = "native"
 local_only = false
 ```
 
+`tool_calling` controls how Marshal asks the model to return tool/actions:
+
+- `native` opts into provider-native OpenAI-compatible `tools[]` / `tool_calls[]` when the provider advertises tool-calling support.
+- If `native` is selected but the provider does not support native tool calls, Marshal degrades to `json_schema`, then `json`, then unconstrained text.
+- `json_schema` requests Marshal's strict JSON action envelope when structured output is supported, otherwise it degrades to `json`.
+- `json` requests `response_format={"type":"json_object"}` when JSON mode is supported.
+- An empty value leaves decoding unconstrained and uses Marshal's text JSON action protocol.
+
 ## Agent loop config
 
 ```toml
@@ -182,10 +190,10 @@ include_summaries = true
 
 Milestone L parses and stores the following fields, but the current static runtime does not yet apply all of them:
 
-- In `[models.presets.<name>]`, `context_window`, `max_output_tokens`, `temperature`, `top_p`, `tool_calling`, and `reasoning_effort` are reserved for future milestones that will pass preset metadata to the provider factory and runner.
+- In `[models.presets.<name>]`, `context_window`, `max_output_tokens`, `temperature`, `top_p`, and `reasoning_effort` are reserved for future milestones that will pass preset metadata to the provider factory and runner. `tool_calling` is used today to select the decoding mode.
 - In `[agents.<role>.context]`, `max_conversation_tokens`, `include_raw_code`, `include_summaries`, `include_symbols`, `include_diff`, and `include_tests` are reserved for future context-pack filtering and conversation budget behavior.
 
-Only `provider`, `model`, `local_only`, and `max_repo_context_tokens` affect Milestone L runtime behavior.
+`provider`, `model`, `local_only`, `tool_calling`, and `max_repo_context_tokens` affect runtime behavior.
 
 ## Routing escalation
 

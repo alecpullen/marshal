@@ -254,7 +254,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
-	runner.ResponseFormat = actionResponseFormat(route.Preset.ToolCalling, resolvedProvider.Capabilities(ctx))
+	decoding := resolveActionDecoding(route.Preset.ToolCalling, resolvedProvider.Capabilities(ctx))
+	runner.NativeTools = decoding.Native
+	runner.ResponseFormat = decoding.ResponseFormat
 	if cfg.Agent.MaxToolIterations > 0 {
 		runner.MaxToolIterations = cfg.Agent.MaxToolIterations
 	}
@@ -317,7 +319,9 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		// Swarm role prompts embed the shared plan, so skip the per-turn
 		// classify/plan pass (class "question" bypasses planning).
 		r.SetForceClass("question")
-		r.ResponseFormat = actionResponseFormat(route.Preset.ToolCalling, p.Capabilities(ctx))
+		decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(ctx))
+		r.NativeTools = decoding.Native
+		r.ResponseFormat = decoding.ResponseFormat
 		if cap := roleToolIterations(cfg, role); cap > 0 {
 			r.MaxToolIterations = cap
 		}
@@ -345,12 +349,32 @@ func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
 	return cfg.Agent.MaxToolIterations
 }
 
-// actionResponseFormat builds the response format for JSON-constrained decoding.
-// Falls back gracefully: json_schema -> json_object -> nil
-func actionResponseFormat(toolCalling string, caps schema.ProviderCapabilities) *schema.ResponseFormat {
-	if toolCalling != "json_schema" {
-		return nil
+type actionDecodingConfig struct {
+	Native         bool
+	ResponseFormat *schema.ResponseFormat
+}
+
+// resolveActionDecoding builds the opt-in decoding mode for a model preset.
+// It never fails construction: unsupported preferences degrade to the next
+// provider-supported mode.
+func resolveActionDecoding(toolCalling string, caps schema.ProviderCapabilities) actionDecodingConfig {
+	switch toolCalling {
+	case "native":
+		if caps.ToolCalling {
+			return actionDecodingConfig{Native: true}
+		}
+		return actionDecodingConfig{ResponseFormat: fallbackResponseFormat(caps)}
+	case "json_schema":
+		return actionDecodingConfig{ResponseFormat: fallbackResponseFormat(caps)}
+	case "json":
+		if caps.JSONMode {
+			return actionDecodingConfig{ResponseFormat: &schema.ResponseFormat{Type: "json_object"}}
+		}
 	}
+	return actionDecodingConfig{}
+}
+
+func fallbackResponseFormat(caps schema.ProviderCapabilities) *schema.ResponseFormat {
 	if caps.StructuredOutput {
 		return agent.ActionEnvelopeResponseFormat()
 	}

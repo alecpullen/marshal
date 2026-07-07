@@ -1675,3 +1675,101 @@ func TestRunNudgeNamesRepeatedCall(t *testing.T) {
 		t.Fatal("expected a soft-stall nudge naming the repeated call (file.read c.go)")
 	}
 }
+
+func TestRunAllowsSustainedDistinctReadsBeforeAnswering(t *testing.T) {
+	// Regression for the "agent never produces an answer" bug: five distinct
+	// file reads used to trip readOnlyChurn(4) and force finalize after the
+	// 4th read, cutting research off before the model could answer.
+	reg := registry.New()
+	var executed []string
+	if err := reg.Register(registry.Tool{
+		Name: "file.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executed = append(executed, string(call.Args))
+			return registry.ToolResult{Summary: "ok", Content: "package main"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	responses := make([]string, 0, 6)
+	for i := 1; i <= 5; i++ {
+		responses = append(responses, fmt.Sprintf(
+			`{"rationale":"reading file %d of 5","action":{"type":"tool_call","tool":"file.read","args":{"path":"pkg/f%d.go"}}}`, i, i))
+	}
+	responses = append(responses,
+		`{"rationale":"done","action":{"type":"final","content":"THE REAL ANSWER after reading all five files."}}`)
+
+	p := &scriptedProvider{responses: responses}
+	state := newTestState(t)
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+
+	task, err := r.RunTask(context.Background(), "how does pkg work?")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if len(executed) != 5 {
+		t.Fatalf("executed %d reads, want all 5", len(executed))
+	}
+	if task.Status != TaskStatusCompleted || task.SalvagedReason != "" {
+		t.Fatalf("task = %+v, want normal (un-salvaged) completion", task)
+	}
+	if task.Summary != "THE REAL ANSWER after reading all five files." {
+		t.Fatalf("Summary = %q, want the model's own final answer", task.Summary)
+	}
+	if p.calls != 6 {
+		t.Fatalf("provider calls = %d, want 6 (5 reads + 1 final, no finalize calls)", p.calls)
+	}
+	for _, m := range state.Messages() {
+		if m.Role == session.RoleSystem && strings.Contains(m.Content, "repeating") {
+			t.Fatalf("distinct reads drew a repetition nudge: %q", m.Content)
+		}
+	}
+}
+
+func TestRunAllowsParallelReadBatchWithoutStalling(t *testing.T) {
+	// Regression: a single actions-array batch of four distinct reads — the
+	// exact pattern baseOutputFormat recommends — used to record four churn
+	// entries and hard-stall on the very first model response.
+	reg := registry.New()
+	var executed []string
+	if err := reg.Register(registry.Tool{
+		Name: "file.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executed = append(executed, string(call.Args))
+			return registry.ToolResult{Summary: "ok", Content: "package main"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"read all four relevant files at once","actions":[
+			{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}},
+			{"type":"tool_call","tool":"file.read","args":{"path":"b.go"}},
+			{"type":"tool_call","tool":"file.read","args":{"path":"c.go"}},
+			{"type":"tool_call","tool":"file.read","args":{"path":"d.go"}}]}`,
+		`{"rationale":"one more file","action":{"type":"tool_call","tool":"file.read","args":{"path":"e.go"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"REAL ANSWER."}}`,
+	}}
+	state := newTestState(t)
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+
+	task, err := r.RunTask(context.Background(), "how does pkg work?")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if len(executed) != 5 {
+		t.Fatalf("executed %d reads, want 5 (batch of 4 + 1 follow-up)", len(executed))
+	}
+	if task.SalvagedReason != "" || task.Summary != "REAL ANSWER." {
+		t.Fatalf("task = %+v, want un-salvaged completion with the model's answer", task)
+	}
+	if p.calls != 3 {
+		t.Fatalf("provider calls = %d, want 3 (batch, single read, final)", p.calls)
+	}
+}

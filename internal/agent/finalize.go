@@ -65,14 +65,17 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 			break
 		}
 
-		correction := finalizeCorrectionMessage
-		if attempt == maxFinalizeAttempts-2 {
-			correction = finalizeFinalWarning
+		// No correction after the last attempt — nothing reads it.
+		if attempt < maxFinalizeAttempts-1 {
+			correction := finalizeCorrectionMessage
+			if attempt == maxFinalizeAttempts-2 {
+				correction = finalizeFinalWarning
+			}
+			final = append(final,
+				schema.ChatMessage{Role: schema.RoleAssistant, Content: raw},
+				schema.ChatMessage{Role: schema.RoleSystem, Content: correction},
+			)
 		}
-		final = append(final,
-			schema.ChatMessage{Role: schema.RoleAssistant, Content: raw},
-			schema.ChatMessage{Role: schema.RoleSystem, Content: correction},
-		)
 	}
 	if strings.TrimSpace(content) == "" {
 		content = synthesizeFallback(task, raw, reason)
@@ -85,12 +88,12 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 	return task, nil
 }
 
-// extractUsefulProse tries to parse raw as a JSON action envelope. If it is
-// a tool_call or patch, it returns only the "rationale" field (which is the
-// model's own justification in human-readable prose) and discards the
-// action/payload. If raw is not a tool_call envelope, the trimmed raw string
-// is returned as-is. An empty string means nothing usable could be
-// extracted.
+// extractUsefulProse tries to parse raw as a JSON action envelope. For any
+// envelope that parses, it returns only the "rationale" field (the model's
+// own justification in human-readable prose) and discards the action
+// payload, regardless of action type. If raw does not parse as an envelope,
+// the trimmed raw string is returned as-is. An empty string means nothing
+// usable could be extracted.
 func extractUsefulProse(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

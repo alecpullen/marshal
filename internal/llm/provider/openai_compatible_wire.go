@@ -1,6 +1,10 @@
 package provider
 
-import "marshal/internal/llm/schema"
+import (
+	"encoding/json"
+
+	"marshal/internal/llm/schema"
+)
 
 type apiError struct {
 	Message string `json:"message"`
@@ -8,8 +12,10 @@ type apiError struct {
 }
 
 type chatMessageBody struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	ToolCalls  []toolCallBody `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
 
 type streamOptions struct {
@@ -31,7 +37,28 @@ type chatCompletionRequestBody struct {
 	MaxTokens      *int                   `json:"max_tokens,omitempty"`
 	Stop           []string               `json:"stop,omitempty"`
 	ResponseFormat *schema.ResponseFormat `json:"response_format,omitempty"`
+	Tools          []toolDefinitionBody   `json:"tools,omitempty"`
+	ToolChoice     string                 `json:"tool_choice,omitempty"`
 	StreamOptions  *streamOptions         `json:"stream_options,omitempty"`
+}
+
+type toolDefinitionBody struct {
+	Type     string           `json:"type"`
+	Function toolFunctionBody `json:"function"`
+}
+
+type toolFunctionBody struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Arguments   string          `json:"arguments,omitempty"`
+}
+
+type toolCallBody struct {
+	ID       string           `json:"id,omitempty"`
+	Index    int              `json:"index,omitempty"`
+	Type     string           `json:"type,omitempty"`
+	Function toolFunctionBody `json:"function"`
 }
 
 // chatCompletionChunk is a single SSE `data:` payload for streaming
@@ -41,8 +68,9 @@ type chatCompletionRequestBody struct {
 type chatCompletionChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
+			Content          string         `json:"content"`
+			ReasoningContent string         `json:"reasoning_content"`
+			ToolCalls        []toolCallBody `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`

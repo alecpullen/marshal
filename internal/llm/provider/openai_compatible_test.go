@@ -523,6 +523,156 @@ func TestBuildChatRequestBodyOmitsResponseFormatWhenNil(t *testing.T) {
 	}
 }
 
+func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
+	t.Run("omits tools for baseline request", func(t *testing.T) {
+		body, err := buildChatRequestBody(schema.ChatRequest{
+			Model:    "test-model",
+			Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+		})
+		if err != nil {
+			t.Fatalf("buildChatRequestBody returned error: %v", err)
+		}
+
+		want := `{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":false}`
+		if string(body) != want {
+			t.Fatalf("body = %s\nwant %s", body, want)
+		}
+	})
+
+	t.Run("serializes tool definitions", func(t *testing.T) {
+		body, err := buildChatRequestBody(schema.ChatRequest{
+			Model:    "test-model",
+			Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+			Tools: []schema.ToolDefinition{{
+				Name:        "file.read",
+				Description: "Read a file",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+			}},
+		})
+		if err != nil {
+			t.Fatalf("buildChatRequestBody returned error: %v", err)
+		}
+
+		var parsed map[string]json.RawMessage
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+		got := string(parsed["tools"])
+		want := `[{"type":"function","function":{"name":"file.read","description":"Read a file","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}}]`
+		if got != want {
+			t.Fatalf("tools = %s\nwant  %s", got, want)
+		}
+	})
+
+	t.Run("serializes assistant calls and tool results", func(t *testing.T) {
+		body, err := buildChatRequestBody(schema.ChatRequest{
+			Model: "test-model",
+			Messages: []schema.ChatMessage{
+				{
+					Role:    schema.RoleAssistant,
+					Content: "Reading now",
+					ToolCalls: []schema.ToolCall{{
+						ID:   "call_1",
+						Name: "file.read",
+						Args: json.RawMessage(`{"path":"README.md"}`),
+					}},
+				},
+				{Role: schema.RoleTool, ToolCallID: "call_1", Content: "contents"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("buildChatRequestBody returned error: %v", err)
+		}
+
+		var parsed struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+		if len(parsed.Messages) != 2 {
+			t.Fatalf("len(messages) = %d, want 2", len(parsed.Messages))
+		}
+		wantAssistant := `{"role":"assistant","content":"Reading now","tool_calls":[{"id":"call_1","type":"function","function":{"name":"file.read","arguments":"{\"path\":\"README.md\"}"}}]}`
+		if string(parsed.Messages[0]) != wantAssistant {
+			t.Fatalf("assistant message = %s\nwant             %s", parsed.Messages[0], wantAssistant)
+		}
+		wantTool := `{"role":"tool","content":"contents","tool_call_id":"call_1"}`
+		if string(parsed.Messages[1]) != wantTool {
+			t.Fatalf("tool message = %s\nwant         %s", parsed.Messages[1], wantTool)
+		}
+	})
+}
+
+func TestChatStreamingToolCallsOnDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"file.read","arguments":"{\"path\":\"READ"}},{"index":1,"id":"call_2","type":"function","function":{"name":"search.find","arguments":"{\"query\":\"to"}}]}}]}` + "\n\n" +
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ME.md\"}"}},{"index":1,"function":{"arguments":"ol\"}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDone {
+		t.Fatalf("event = %+v ok=%v, want Done", ev, ok)
+	}
+	if ev.FinishReason != "tool_calls" {
+		t.Fatalf("FinishReason = %q, want tool_calls", ev.FinishReason)
+	}
+	if len(ev.ToolCalls) != 2 {
+		t.Fatalf("len(ToolCalls) = %d, want 2: %+v", len(ev.ToolCalls), ev.ToolCalls)
+	}
+	if ev.ToolCalls[0].ID != "call_1" || ev.ToolCalls[0].Name != "file.read" || string(ev.ToolCalls[0].Args) != `{"path":"README.md"}` {
+		t.Fatalf("ToolCalls[0] = %+v", ev.ToolCalls[0])
+	}
+	if ev.ToolCalls[1].ID != "call_2" || ev.ToolCalls[1].Name != "search.find" || string(ev.ToolCalls[1].Args) != `{"query":"tool"}` {
+		t.Fatalf("ToolCalls[1] = %+v", ev.ToolCalls[1])
+	}
+
+	assertChannelClosed(t, events)
+}
+
+func TestChatNonStreamingToolCallsOnDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"file.read","arguments":"{\"path\":\"README.md\"}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(false))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDone {
+		t.Fatalf("event = %+v ok=%v, want Done", ev, ok)
+	}
+	if ev.FinishReason != "tool_calls" {
+		t.Fatalf("FinishReason = %q, want tool_calls", ev.FinishReason)
+	}
+	if len(ev.ToolCalls) != 1 {
+		t.Fatalf("len(ToolCalls) = %d, want 1: %+v", len(ev.ToolCalls), ev.ToolCalls)
+	}
+	if ev.ToolCalls[0].ID != "call_1" || ev.ToolCalls[0].Name != "file.read" || string(ev.ToolCalls[0].Args) != `{"path":"README.md"}` {
+		t.Fatalf("ToolCalls[0] = %+v", ev.ToolCalls[0])
+	}
+
+	assertChannelClosed(t, events)
+}
+
 func TestChatStreamingTokenUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

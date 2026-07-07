@@ -47,6 +47,10 @@ type ChatEvent struct {
 
 	// Usage is populated only when Type == ChatEventDone and token counts are known.
 	Usage *TokenUsage
+
+	// ToolCalls is populated only when Type == ChatEventDone and the provider
+	// returned complete native tool calls.
+	ToolCalls []ToolCall
 }
 
 type TokenUsage struct {

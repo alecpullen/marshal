@@ -30,6 +30,8 @@ const (
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
 
+var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
+
 // normalizeArgs returns a canonical JSON representation of a tool's
 // arguments so that {"b":1,"a":2} and {"a":2,"b":1} share the same
 // cache key. Empty arguments normalise to {}.
@@ -230,7 +232,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			break
 		}
 		r.State.SetToolBudget(session.ToolBudget{Used: iteration, Max: r.MaxToolIterations})
-		r.withStats(func(s *turnStats) { s.m.Iterations = iteration + 1 })
 
 		if !pressureSent && r.MaxToolIterations-iteration <= finalizePressureThreshold {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: finalizePressureMessage})
@@ -270,6 +271,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 		consecutiveParseFailures = 0
 		iteration++
+		r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
 		producedValidAction = true
 
@@ -321,6 +323,17 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		default:
 			messages = append(messages, BuildCorrectionMessage(fmt.Errorf("unsupported action type %q", action.Type)))
 		}
+	}
+
+	if consecutiveParseFailures >= maxConsecutiveParseFailures {
+		if producedValidAction {
+			if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonMalformed); ferr == nil {
+				return res, nil
+			}
+		}
+		task.Status = TaskStatusFailed
+		r.State.AddMessage(session.RoleSystem, "Agent stopped: model output could not be parsed after consecutive attempts.", session.ContentTypePlain)
+		return task, ErrModelOutputMalformed
 	}
 
 	if producedValidAction {

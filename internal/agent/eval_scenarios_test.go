@@ -125,6 +125,35 @@ func TestEvalScenarios(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "persistent malformed output salvages",
+			responses: []string{
+				evalRead("a.go"), evalRead("b.go"),
+				"garbage 1", "garbage 2", "garbage 3",
+				finalAnswer,
+			},
+			forceClass: ClassQuestion,
+			want: func(t *testing.T, m TurnMetrics) {
+				if m.Outcome != "salvaged" || m.SalvageReason != "malformed" || m.ParseFailures != 3 || m.ToolCalls != 2 {
+					t.Fatalf("metrics = %+v", m)
+				}
+			},
+		},
+		{
+			name: "escalated repair recovers",
+			responses: []string{
+				"not json 1",
+				"not json 2",
+				evalRead("a.go"),
+				finalAnswer,
+			},
+			forceClass: ClassQuestion,
+			want: func(t *testing.T, m TurnMetrics) {
+				if m.Outcome != "answered" || m.ParseFailures != 2 || m.Iterations != 2 {
+					t.Fatalf("metrics = %+v", m)
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {

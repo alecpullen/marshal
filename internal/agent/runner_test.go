@@ -442,8 +442,9 @@ func TestExhaustionSalvagesInsteadOfFailing(t *testing.T) {
 
 func TestExhaustionWithoutValidActionFailsHard(t *testing.T) {
 	// A model that never emits a parseable action produced nothing to
-	// salvage, so exhaustion must stay a hard ErrMaxIterationsExceeded
-	// failure (the swarm relies on this to detect a broken planner/scout).
+	// salvage. After maxConsecutiveParseFailures consecutive unparseable
+	// responses the loop exits via ErrModelOutputMalformed rather than
+	// ErrMaxIterationsExceeded (the model is broken, not merely slow).
 	state := newTestState(t)
 	prov := &scriptedProvider{responses: []string{"not json at all"}}
 	r := NewRunner(prov, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
@@ -452,8 +453,8 @@ func TestExhaustionWithoutValidActionFailsHard(t *testing.T) {
 	r.SetForceClass(string(ClassQuestion))
 
 	_, err := r.RunTask(context.Background(), "inspect a.go")
-	if !errors.Is(err, ErrMaxIterationsExceeded) {
-		t.Fatalf("err = %v, want ErrMaxIterationsExceeded", err)
+	if !errors.Is(err, ErrModelOutputMalformed) {
+		t.Fatalf("err = %v, want ErrModelOutputMalformed", err)
 	}
 }
 
@@ -1874,5 +1875,87 @@ func TestSecondConsecutiveParseFailureEnablesJSONMode(t *testing.T) {
 	req := p.requests[2]
 	if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_object" {
 		t.Fatalf("requests[2].ResponseFormat = %v, want {Type:\"json_object\"} after 2 consecutive parse failures", req.ResponseFormat)
+	}
+}
+
+func TestPersistentMalformedOutputSalvagesWhenWorkExists(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "file.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "contents"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	read := func(p string) string {
+		return fmt.Sprintf(`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":%q}}}`, p)
+	}
+	p := &scriptedProvider{responses: []string{
+		read("a.go"),
+		read("b.go"),
+		"garbage 1",
+		"garbage 2",
+		"garbage 3",
+		`{"rationale":"salvaged","action":{"type":"final","content":"Salvaged from partial work."}}`,
+	}}
+	state := newTestState(t)
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 10
+	r.MaxRetries = 0
+
+	var got *TurnMetrics
+	r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	task, err := r.RunTask(context.Background(), "inspect files")
+	if err != nil {
+		t.Fatalf("RunTask err = %v, want nil (salvaged)", err)
+	}
+	if task.Status != TaskStatusCompleted {
+		t.Fatalf("task.Status = %q, want completed", task.Status)
+	}
+	if task.SalvagedReason != "malformed" {
+		t.Fatalf("SalvagedReason = %q, want %q", task.SalvagedReason, "malformed")
+	}
+	if task.Summary != "Salvaged from partial work." {
+		t.Fatalf("Summary = %q, want salvaged content", task.Summary)
+	}
+	if got == nil {
+		t.Fatal("no TurnMetrics emitted")
+	}
+	if got.ParseFailures != 3 {
+		t.Fatalf("ParseFailures = %d, want 3", got.ParseFailures)
+	}
+	if got.SalvageReason != "malformed" {
+		t.Fatalf("SalvageReason = %q, want malformed", got.SalvageReason)
+	}
+}
+
+func TestPersistentMalformedOutputFailsFastWithoutWork(t *testing.T) {
+	p := &scriptedProvider{responses: []string{"not json at all"}}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 10
+	r.MaxRetries = 0
+
+	var got *TurnMetrics
+	r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	_, err := r.RunTask(context.Background(), "test goal")
+	if !errors.Is(err, ErrModelOutputMalformed) {
+		t.Fatalf("err = %v, want ErrModelOutputMalformed", err)
+	}
+	if got != nil && got.Iterations != 0 {
+		t.Fatalf("Iterations = %d, want 0 (no valid iterations consumed)", got.Iterations)
+	}
+	if got != nil && got.ParseFailures != 3 {
+		t.Fatalf("ParseFailures = %d, want 3 (hit maxConsecutiveParseFailures)", got.ParseFailures)
+	}
+	if p.calls != 3 {
+		t.Fatalf("provider calls = %d, want 3 (fail fast, did not exhaust budget)", p.calls)
 	}
 }

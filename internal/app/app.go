@@ -83,6 +83,10 @@ func dbPath(workingDir string) string {
 	return filepath.Join(workingDir, ".marshal", "marshal.db")
 }
 
+func logPath(workingDir string) string {
+	return filepath.Join(workingDir, ".marshal", "marshal.log")
+}
+
 func routingConfigFromAppConfig(cfg config.Config) routing.Config {
 	contextBudgets := make(map[routing.AgentRole]routing.ContextBudget, len(cfg.Agents))
 	for role, agentCfg := range cfg.Agents {
@@ -366,7 +370,16 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		return fmt.Errorf("create session: %w", err)
 	}
 
-	logger := logging.New(stderr, slog.LevelInfo)
+	// The TUI owns the terminal via Bubble Tea's alt-screen (both stdout and
+	// stderr point at the same TTY), so any log line written there corrupts the
+	// rendered frame. Send logs to a file instead; fall back to discarding them
+	// rather than ever writing to the live screen.
+	logWriter := io.Discard
+	if logFile, err := os.OpenFile(logPath(workingDir), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		defer logFile.Close()
+		logWriter = logFile
+	}
+	logger := logging.New(logWriter, slog.LevelInfo)
 	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
 
 	homeDir, err := os.UserHomeDir()

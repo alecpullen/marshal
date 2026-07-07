@@ -120,6 +120,44 @@ func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
 	return files, nil
 }
 
+// FilesMatchingBasename returns up to limit file paths for the given project
+// where the basename (e.g. "main.go") appears anywhere in the path. Results
+// are ordered with exact basename matches first, then by ascending path
+// length so the shortest candidate paths surface first.
+func (db *DB) FilesMatchingBasename(projectID int64, basename string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	pattern := "%" + basename + "%"
+	rows, err := db.sqlDB.Query(
+		`SELECT path
+		 FROM files
+		 WHERE project_id = ? AND path LIKE ?
+		 ORDER BY
+		   CASE WHEN path = ? OR substr(path, length(path) - length(?) + 1) = ? THEN 0 ELSE 1 END,
+		   LENGTH(path)
+		 LIMIT ?`,
+		projectID, pattern, basename, basename, basename, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query files matching basename: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, fmt.Errorf("scan file basename row: %w", err)
+		}
+		paths = append(paths, path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate file basename rows: %w", err)
+	}
+	return paths, nil
+}
+
 // UpdateFileSummary sets Summary for a single existing file row, without
 // touching hash/language/size/last_indexed_at. It is a no-op (not an error)
 // if no row matches project_id+path.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"marshal/internal/app/session"
@@ -43,7 +44,7 @@ func (t *toolSet) fileReadTool() registry.Tool {
 		}
 		info, err := os.Stat(path)
 		if err != nil {
-			return registry.ToolResult{}, fmt.Errorf("stat %s: %w", args.Path, err)
+			return registry.ToolResult{}, t.enrichMissingFileError(args.Path, err)
 		}
 		if !info.Mode().IsRegular() {
 			return registry.ToolResult{}, fmt.Errorf("%s is not a regular file", args.Path)
@@ -62,6 +63,29 @@ func (t *toolSet) fileReadTool() registry.Tool {
 		}, nil
 	}
 	return tool
+}
+
+func (t *toolSet) enrichMissingFileError(requestedPath string, origErr error) error {
+	baseErr := fmt.Errorf("stat %s: %w", requestedPath, origErr)
+	if t.db == nil || t.projectID == 0 {
+		return baseErr
+	}
+
+	basename := filepath.Base(requestedPath)
+	paths, err := t.db.FilesMatchingBasename(t.projectID, basename, 5)
+	if err != nil || len(paths) == 0 {
+		return baseErr
+	}
+
+	var sb strings.Builder
+	sb.WriteString(baseErr.Error())
+	sb.WriteString("\n\nclosest indexed paths:\n")
+	for _, p := range paths {
+		sb.WriteString("  ")
+		sb.WriteString(p)
+		sb.WriteString("\n")
+	}
+	return fmt.Errorf("%s", sb.String())
 }
 
 func selectLines(content string, startLine int, endLine int) (string, int, int) {

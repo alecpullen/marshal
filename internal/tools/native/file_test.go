@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -74,6 +75,54 @@ func TestFileReadRejectsInvalidRange(t *testing.T) {
 	_, err := invokeTool(t, reg, "file.read", `{"path":"notes.txt","start_line":3,"end_line":2}`)
 	if err == nil {
 		t.Fatal("file.read invalid range returned nil error")
+	}
+}
+
+func TestFileReadMissingFileSuggestsClosestPaths(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "README.md"), "hello\n")
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(root, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	indexedAt := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	files := []db.FileIndex{
+		{Path: "internal/app/main.go", Language: "go", Hash: "a", SizeBytes: 1, LastIndexedAt: indexedAt},
+		{Path: "internal/db/files.go", Language: "go", Hash: "b", SizeBytes: 2, LastIndexedAt: indexedAt},
+	}
+	if err := database.SaveFileIndex(projectID, files); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		DB:            database,
+		ProjectID:     projectID,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err = invokeTool(t, reg, "file.read", `{"path":"src/main.go"}`)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "closest indexed paths") {
+		t.Fatalf("error should mention closest indexed paths, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "internal/app/main.go") {
+		t.Fatalf("error should suggest internal/app/main.go, got: %s", errMsg)
 	}
 }
 

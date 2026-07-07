@@ -182,6 +182,39 @@ func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, 
 	return notes, nil
 }
 
+// metricsRecorder returns a MetricsObserver that persists each turn's
+// metrics. Failures are logged and swallowed: telemetry must never break a
+// turn.
+func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger *slog.Logger) func(agent.TurnMetrics) {
+	return func(m agent.TurnMetrics) {
+		_, err := database.InsertTurnMetrics(db.TurnMetricsRow{
+			ProjectID:        projectID,
+			SessionID:        sessionID,
+			StartedAt:        m.StartedAt,
+			DurationMs:       m.DurationMs,
+			Class:            m.Class,
+			Role:             m.Role,
+			Provider:         m.Provider,
+			Model:            m.Model,
+			Goal:             m.Goal,
+			Iterations:       m.Iterations,
+			ToolCalls:        m.ToolCalls,
+			ToolErrors:       m.ToolErrors,
+			CacheHits:        m.CacheHits,
+			ParseFailures:    m.ParseFailures,
+			SoftStalls:       m.SoftStalls,
+			HardStalls:       m.HardStalls,
+			Outcome:          m.Outcome,
+			SalvageReason:    m.SalvageReason,
+			PromptTokens:     m.PromptTokens,
+			CompletionTokens: m.CompletionTokens,
+		})
+		if err != nil && logger != nil {
+			logger.Warn("failed to persist turn metrics", "error", err)
+		}
+	}
+}
+
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
@@ -220,6 +253,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.RouteResolver = resolver
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
+	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
 	if route.Preset.ToolCalling == "json" && resolvedProvider.Capabilities(ctx).JSONMode {
 		runner.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
 	}
@@ -277,6 +311,7 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		r.SkillIndex = skillIndex
 		r.MemoryProvider = memory
 		r.ProjectID = projectID
+		r.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
 		r.RequestTimeout = 60 * time.Second
 		// Swarm role prompts embed the shared plan, so skip the per-turn
 		// classify/plan pass (class "question" bypasses planning).

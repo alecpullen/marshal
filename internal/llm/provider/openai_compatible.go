@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"marshal/internal/llm/schema"
@@ -162,7 +163,18 @@ func buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
 	}
 	messages := make([]chatMessageBody, 0, len(req.Messages))
 	for _, m := range req.Messages {
-		messages = append(messages, chatMessageBody{Role: string(m.Role), Content: m.Content})
+		messages = append(messages, chatMessageToBody(m))
+	}
+	tools := make([]toolDefinitionBody, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		tools = append(tools, toolDefinitionBody{
+			Type: "function",
+			Function: toolFunctionBody{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.Parameters,
+			},
+		})
 	}
 	var streamOpts *streamOptions
 	if req.Stream {
@@ -177,8 +189,86 @@ func buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
 		MaxTokens:      req.MaxTokens,
 		Stop:           req.Stop,
 		ResponseFormat: req.ResponseFormat,
+		Tools:          tools,
+		ToolChoice:     req.ToolChoice,
 		StreamOptions:  streamOpts,
 	})
+}
+
+func chatMessageToBody(m schema.ChatMessage) chatMessageBody {
+	body := chatMessageBody{
+		Role:       string(m.Role),
+		Content:    m.Content,
+		ToolCallID: m.ToolCallID,
+	}
+	if len(m.ToolCalls) > 0 {
+		body.ToolCalls = make([]toolCallBody, 0, len(m.ToolCalls))
+		for _, call := range m.ToolCalls {
+			body.ToolCalls = append(body.ToolCalls, toolCallBody{
+				ID:   call.ID,
+				Type: "function",
+				Function: toolFunctionBody{
+					Name:      call.Name,
+					Arguments: string(call.Args),
+				},
+			})
+		}
+	}
+	return body
+}
+
+type streamingToolCallBuffer struct {
+	id       string
+	name     string
+	argument strings.Builder
+}
+
+func (b *streamingToolCallBuffer) append(call toolCallBody) {
+	if call.ID != "" {
+		b.id = call.ID
+	}
+	if call.Function.Name != "" {
+		b.name = call.Function.Name
+	}
+	if call.Function.Arguments != "" {
+		b.argument.WriteString(call.Function.Arguments)
+	}
+}
+
+func toolCallsFromWire(calls []toolCallBody) []schema.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]schema.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, schema.ToolCall{
+			ID:   call.ID,
+			Name: call.Function.Name,
+			Args: json.RawMessage(call.Function.Arguments),
+		})
+	}
+	return out
+}
+
+func toolCallsFromStreamBuffers(buffers map[int]*streamingToolCallBuffer) []schema.ToolCall {
+	if len(buffers) == 0 {
+		return nil
+	}
+	indexes := make([]int, 0, len(buffers))
+	for index := range buffers {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	out := make([]schema.ToolCall, 0, len(indexes))
+	for _, index := range indexes {
+		buf := buffers[index]
+		out = append(out, schema.ToolCall{
+			ID:   buf.id,
+			Name: buf.name,
+			Args: json.RawMessage(buf.argument.String()),
+		})
+	}
+	return out
 }
 
 func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
@@ -188,6 +278,7 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	dec := streaming.NewDecoder(body)
 	var finishReason string
 	var usage *schema.TokenUsage
+	toolBuffers := make(map[int]*streamingToolCallBuffer)
 
 	for dec.Next() {
 		data := strings.TrimSpace(dec.Event().Data)
@@ -224,6 +315,14 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 		if choice.Delta.Content != "" {
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: choice.Delta.Content}
 		}
+		for _, call := range choice.Delta.ToolCalls {
+			buf := toolBuffers[call.Index]
+			if buf == nil {
+				buf = &streamingToolCallBuffer{}
+				toolBuffers[call.Index] = buf
+			}
+			buf.append(call)
+		}
 		if choice.FinishReason != "" {
 			finishReason = choice.FinishReason
 		}
@@ -232,7 +331,12 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("read stream: %w", err)}
 		return
 	}
-	events <- schema.ChatEvent{Type: schema.ChatEventDone, FinishReason: finishReason, Usage: usage}
+	events <- schema.ChatEvent{
+		Type:         schema.ChatEventDone,
+		FinishReason: finishReason,
+		Usage:        usage,
+		ToolCalls:    toolCallsFromStreamBuffers(toolBuffers),
+	}
 }
 
 func readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
@@ -264,7 +368,12 @@ func readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			TotalTokens:      parsed.Usage.TotalTokens,
 		}
 	}
-	events <- schema.ChatEvent{Type: schema.ChatEventDone, FinishReason: choice.FinishReason, Usage: usage}
+	events <- schema.ChatEvent{
+		Type:         schema.ChatEventDone,
+		FinishReason: choice.FinishReason,
+		Usage:        usage,
+		ToolCalls:    toolCallsFromWire(choice.Message.ToolCalls),
+	}
 }
 
 // Embed requests embeddings via POST {base_url}/embeddings.

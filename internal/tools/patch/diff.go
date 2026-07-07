@@ -11,7 +11,12 @@ func ValidatePatch(content string, fp FilePatch) (bool, error) {
 		normSearch := strings.ReplaceAll(chunk.Search, "\r\n", "\n")
 		count := strings.Count(normContent, normSearch)
 		if count == 0 {
-			return false, fmt.Errorf("search block not found in %s", fp.Path)
+			region := NearestRegion(normContent, normSearch, 5)
+			msg := fmt.Sprintf("search block not found in %s", fp.Path)
+			if region != "" {
+				msg += fmt.Sprintf("\n\nnearest region:\n%s", region)
+			}
+			return false, fmt.Errorf("%s", msg)
 		}
 		if count > 1 {
 			return false, fmt.Errorf("ambiguous match: search block matched %d locations in %s", count, fp.Path)
@@ -91,4 +96,96 @@ func ApplyPatch(content string, fp FilePatch) string {
 		normContent = strings.Replace(normContent, normSearch, strings.ReplaceAll(chunk.Replace, "\r\n", "\n"), 1)
 	}
 	return normContent
+}
+
+func NearestRegion(content, search string, windowLines int) string {
+	if content == "" || search == "" {
+		return ""
+	}
+	if windowLines <= 0 {
+		windowLines = 5
+	}
+	contentLines := strings.Split(content, "\n")
+	searchLines := strings.Split(search, "\n")
+	if len(contentLines) == 0 || len(searchLines) == 0 {
+		return ""
+	}
+
+	searchTokens := make([][]string, len(searchLines))
+	for i, sl := range searchLines {
+		trimmed := strings.TrimSpace(sl)
+		if trimmed == "" {
+			continue
+		}
+		searchTokens[i] = tokenize(trimmed)
+	}
+
+	bestScore := -1
+	bestStart := 0
+
+	for start := 0; start <= len(contentLines)-windowLines; start++ {
+		window := contentLines[start : start+windowLines]
+		windowTokenSets := make([][]string, len(window))
+		for i, wl := range window {
+			trimmed := strings.TrimSpace(wl)
+			if trimmed != "" {
+				windowTokenSets[i] = tokenize(trimmed)
+			}
+		}
+
+		score := 0
+		for _, sTokens := range searchTokens {
+			if len(sTokens) == 0 {
+				continue
+			}
+			bestLineOverlap := 0
+			for _, wTokens := range windowTokenSets {
+				if len(wTokens) == 0 {
+					continue
+				}
+				overlap := countOverlap(sTokens, wTokens)
+				if overlap > bestLineOverlap {
+					bestLineOverlap = overlap
+				}
+			}
+			score += bestLineOverlap
+		}
+		if score > bestScore {
+			bestScore = score
+			bestStart = start
+		}
+	}
+
+	end := bestStart + windowLines
+	if end > len(contentLines) {
+		end = len(contentLines)
+	}
+	return strings.Join(contentLines[bestStart:end], "\n")
+}
+
+func tokenize(s string) []string {
+	var tokens []string
+	for _, t := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '(' || r == ')' || r == '{' || r == '}' || r == ',' || r == ';'
+	}) {
+		t = strings.Trim(t, "\"'")
+		if t != "" {
+			tokens = append(tokens, t)
+		}
+	}
+	return tokens
+}
+
+func countOverlap(a, b []string) int {
+	count := 0
+	set := make(map[string]bool, len(b))
+	for _, s := range b {
+		set[s] = true
+	}
+	for _, s := range a {
+		if set[s] {
+			count++
+		}
+	}
+	return count
 }

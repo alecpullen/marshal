@@ -44,7 +44,7 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 	if client == nil {
 		client = &http.Client{}
 	}
-	caps := defaultCapabilities()
+	caps := DefaultCapabilities()
 	if opts.Capabilities != nil {
 		caps = *opts.Capabilities
 	}
@@ -57,7 +57,10 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 	}, nil
 }
 
-func defaultCapabilities() schema.ProviderCapabilities {
+// DefaultCapabilities returns the baseline capability set for an
+// OpenAI-compatible provider. Callers may override individual fields before
+// passing the struct to NewOpenAICompatible via Options.Capabilities.
+func DefaultCapabilities() schema.ProviderCapabilities {
 	return schema.ProviderCapabilities{
 		Streaming:        true,
 		Embeddings:       true,

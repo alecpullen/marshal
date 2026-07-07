@@ -147,6 +147,7 @@ api_key = "local-key"
 type = "openai_compatible"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
+tool_calling = true
 `)
 
 	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
@@ -176,9 +177,10 @@ api_key_env = "OPENROUTER_API_KEY"
 		t.Fatalf("Providers[openrouter] missing, got %#v", cfg.Providers)
 	}
 	wantOpenrouter := ProviderConfig{
-		Type:      "openai_compatible",
-		BaseURL:   "https://openrouter.ai/api/v1",
-		APIKeyEnv: "OPENROUTER_API_KEY",
+		Type:        "openai_compatible",
+		BaseURL:     "https://openrouter.ai/api/v1",
+		APIKeyEnv:   "OPENROUTER_API_KEY",
+		ToolCalling: true,
 	}
 	if !reflect.DeepEqual(openrouter, wantOpenrouter) {
 		t.Fatalf("Providers[openrouter] = %#v, want %#v", openrouter, wantOpenrouter)

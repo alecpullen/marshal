@@ -367,9 +367,7 @@ func resolveActionDecoding(toolCalling string, caps schema.ProviderCapabilities)
 	case "json_schema":
 		return actionDecodingConfig{ResponseFormat: fallbackResponseFormat(caps)}
 	case "json":
-		if caps.JSONMode {
-			return actionDecodingConfig{ResponseFormat: &schema.ResponseFormat{Type: "json_object"}}
-		}
+		return actionDecodingConfig{}
 	}
 	return actionDecodingConfig{}
 }

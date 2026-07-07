@@ -19,10 +19,13 @@ func NewFromConfig(name string, pc config.ProviderConfig) (Provider, error) {
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
+		caps := DefaultCapabilities()
+		caps.ToolCalling = pc.ToolCalling
 		return NewOpenAICompatible(Options{
-			Name:    name,
-			BaseURL: pc.BaseURL,
-			APIKey:  apiKey,
+			Name:         name,
+			BaseURL:      pc.BaseURL,
+			APIKey:       apiKey,
+			Capabilities: &caps,
 		})
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported type %q", name, pc.Type)

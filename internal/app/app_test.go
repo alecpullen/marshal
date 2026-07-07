@@ -244,10 +244,9 @@ func TestResolveActionDecodingFallsBackGracefully(t *testing.T) {
 			wantRF:      "json_object",
 		},
 		{
-			name:        "json object explicit",
+			name:        "json leaves decoding unconstrained",
 			toolCalling: "json",
 			caps:        schema.ProviderCapabilities{StructuredOutput: true, JSONMode: true},
-			wantRF:      "json_object",
 		},
 		{
 			name:        "empty leaves decoding unconstrained",
@@ -273,6 +272,77 @@ func TestResolveActionDecodingFallsBackGracefully(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("native-provider")
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if !runner.NativeTools {
+		t.Fatalf("runner.NativeTools = false, want true")
+	}
+	if runner.ResponseFormat != nil {
+		t.Fatalf("runner.ResponseFormat = %+v, want nil in native mode", runner.ResponseFormat)
+	}
+}
+
+func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("non-native-provider")
+	cfg.Providers["non-native-provider"] = config.ProviderConfig{
+		Type:    "openai_compatible",
+		BaseURL: "http://localhost:11434/v1",
+		APIKey:  "test-key",
+	}
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if runner.NativeTools {
+		t.Fatalf("runner.NativeTools = true, want false when provider lacks capability")
+	}
+}
+
+func nativeToolAgentConfig(providerName string) config.Config {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		providerName: {
+			Type:        "openai_compatible",
+			BaseURL:     "http://localhost:11434/v1",
+			APIKey:      "test-key",
+			ToolCalling: true,
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"native-coder": {
+			Name:        "native-coder",
+			Provider:    providerName,
+			Model:       "test-model",
+			ToolCalling: "native",
+			LocalOnly:   true,
+		},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		cfg.Profile.Default: {
+			Name: cfg.Profile.Default,
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: "native-coder",
+				routing.RolePlanner:     "native-coder",
+				routing.RoleRepoScout:   "native-coder",
+				routing.RoleTester:      "native-coder",
+				routing.RoleReviewer:    "native-coder",
+			},
+		},
+	}
+	return cfg
 }
 
 func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {

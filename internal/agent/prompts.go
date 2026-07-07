@@ -117,7 +117,17 @@ func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 	b.WriteString("Role: ")
 	b.WriteString(r.focus)
 	b.WriteString("\n\nAllowed actions for this role: ")
-	b.WriteString(strings.Join(r.allowedActions, ", "))
+	actions := r.allowedActions
+	if nativeTools {
+		filtered := make([]string, 0, len(r.allowedActions))
+		for _, a := range r.allowedActions {
+			if a != "patch" {
+				filtered = append(filtered, a)
+			}
+		}
+		actions = filtered
+	}
+	b.WriteString(strings.Join(actions, ", "))
 	if !nativeTools {
 		b.WriteString("\n\nExample:\n")
 		b.WriteString(r.example)

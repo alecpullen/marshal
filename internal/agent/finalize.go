@@ -40,6 +40,15 @@ const finalizeCorrectionMessage = `Tool calls are disabled for this step — tha
 // retry so that the model sees an escalation pattern.
 const finalizeFinalWarning = `STOP. Do NOT respond with a tool_call, patch, or actions envelope. The system will ignore it entirely. Respond RIGHT NOW with {"rationale": "...", "action": {"type": "final", "content": "<your best answer based on what you already know>"}} and nothing else. If you truly cannot answer, explain what you would check next inside "content".`
 
+// nativeFinalizeCorrectionMessage is appended when the model ignores the
+// native finalization directive and emits tool calls even though no tools
+// were offered. It restates the prose-only constraint in native vocabulary.
+const nativeFinalizeCorrectionMessage = `Do not call tools. Respond with a concise final answer in normal prose.`
+
+// nativeFinalizeFinalWarning is the escalated version of
+// nativeFinalizeCorrectionMessage for the penultimate retry.
+const nativeFinalizeFinalWarning = `STOP. Do NOT call tools. Respond RIGHT NOW with a concise final answer in normal prose based on what you already know.`
+
 // finalize repeatedly asks the model (up to maxFinalizeAttempts times) to
 // produce a final answer with tools disabled, then records the result as a
 // salvaged (flagged) completion. It never returns an
@@ -48,8 +57,12 @@ const finalizeFinalWarning = `STOP. Do NOT respond with a tool_call, patch, or a
 // after all attempts is handled by synthesizing a fallback answer instead of
 // surfacing its raw, unparsed tool-call output to the user.
 func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task, reason finalizeReason) (*Task, error) {
+	directive := FinalizationDirective
+	if r.NativeTools {
+		directive = NativeFinalizationDirective
+	}
 	final := append(append([]schema.ChatMessage{}, messages...),
-		schema.ChatMessage{Role: schema.RoleSystem, Content: FinalizationDirective})
+		schema.ChatMessage{Role: schema.RoleSystem, Content: directive})
 
 	var raw string
 	content := ""
@@ -60,6 +73,39 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 			return task, err
 		}
 		raw = res.Text
+
+		if r.NativeTools {
+			// In native mode a response that contains tool calls is a request to
+			// act, not a final answer, even if it also has accompanying text.
+			// Correct the model and retry.
+			if len(res.ToolCalls) > 0 {
+				if attempt < maxFinalizeAttempts-1 {
+					correction := nativeFinalizeCorrectionMessage
+					if attempt == maxFinalizeAttempts-2 {
+						correction = nativeFinalizeFinalWarning
+					}
+					final = append(final,
+						schema.ChatMessage{Role: schema.RoleAssistant, Content: raw, ToolCalls: res.ToolCalls},
+						schema.ChatMessage{Role: schema.RoleSystem, Content: correction},
+					)
+				}
+				continue
+			}
+
+			if trimmed := strings.TrimSpace(raw); trimmed != "" {
+				content = trimmed
+				break
+			}
+
+			// Empty response; ask for prose.
+			if attempt < maxFinalizeAttempts-1 {
+				final = append(final,
+					schema.ChatMessage{Role: schema.RoleAssistant, Content: raw},
+					schema.ChatMessage{Role: schema.RoleSystem, Content: "Please respond with a concise final answer in normal prose."},
+				)
+			}
+			continue
+		}
 
 		if action, parseErr := ParseAction(raw); parseErr == nil &&
 			(action.Type == ActionAnswer || action.Type == ActionFinal) {

@@ -223,3 +223,149 @@ func TestFinalizeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 		t.Fatalf("final-warning escalation not found in last request: %+v", lastReq)
 	}
 }
+
+func TestFinalizeNativeUsesProseDirectly(t *testing.T) {
+	state := newTestState(t)
+	prov := &scriptedProvider{responses: []string{"This is the native prose answer."}}
+	r := NewRunner(prov, nil, nil, state, "test-model")
+	r.NativeTools = true
+
+	task := NewTask("do the thing", r.Now())
+	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
+
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonExhausted)
+	if err != nil {
+		t.Fatalf("finalize err = %v, want nil", err)
+	}
+	if got.Status != TaskStatusCompleted {
+		t.Fatalf("status = %q, want completed", got.Status)
+	}
+	if got.SalvagedReason != "exhausted" {
+		t.Fatalf("SalvagedReason = %q, want exhausted", got.SalvagedReason)
+	}
+	if got.Summary != "This is the native prose answer." {
+		t.Fatalf("Summary = %q, want prose answer", got.Summary)
+	}
+	last := state.Messages()[len(state.Messages())-1]
+	if !last.Salvaged || last.Content != "This is the native prose answer." {
+		t.Fatalf("final message = %+v, want salvaged prose answer", last)
+	}
+	// Native mode must not have asked for a JSON envelope correction.
+	for _, req := range prov.requests {
+		for _, m := range req.Messages {
+			if strings.Contains(m.Content, `{"rationale"`) {
+				t.Fatalf("native finalize emitted JSON-envelope correction: %q", m.Content)
+			}
+		}
+	}
+}
+
+func TestFinalizeNativeRecoversAfterToolCall(t *testing.T) {
+	state := newTestState(t)
+	prov := &scriptedProvider{
+		responses: []string{"Trying one more tool.", "Recovered prose answer."},
+		toolCalls: [][]schema.ToolCall{
+			{{ID: "call_1", Name: "file.read", Args: nil}},
+			nil,
+		},
+	}
+	r := NewRunner(prov, nil, nil, state, "test-model")
+	r.NativeTools = true
+
+	task := NewTask("do the thing", r.Now())
+	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
+
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled)
+	if err != nil {
+		t.Fatalf("finalize err = %v, want nil", err)
+	}
+	if got.Summary != "Recovered prose answer." {
+		t.Fatalf("Summary = %q, want recovered prose answer", got.Summary)
+	}
+	if prov.calls != 2 {
+		t.Fatalf("calls = %d, want 2 (stop retrying once prose received)", prov.calls)
+	}
+	// The correction after the first tool-call attempt must be native vocabulary.
+	foundCorrection := false
+	for _, req := range prov.requests {
+		for _, m := range req.Messages {
+			if m.Role == schema.RoleSystem && strings.Contains(m.Content, "Do not call tools") {
+				foundCorrection = true
+			}
+		}
+	}
+	if !foundCorrection {
+		t.Fatal("native correction message not found")
+	}
+}
+
+func TestFinalizeNativeSynthesizesWhenModelKeepsCallingTools(t *testing.T) {
+	state := newTestState(t)
+	prov := &scriptedProvider{
+		responses: []string{"Need another read."},
+		toolCalls: [][]schema.ToolCall{
+			{{ID: "call_1", Name: "file.read", Args: nil}},
+			{{ID: "call_1", Name: "file.read", Args: nil}},
+			{{ID: "call_1", Name: "file.read", Args: nil}},
+		},
+	}
+	r := NewRunner(prov, nil, nil, state, "test-model")
+	r.NativeTools = true
+
+	task := NewTask("do the thing", r.Now())
+	task.Plan = []string{"Read the file"}
+	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
+
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled)
+	if err != nil {
+		t.Fatalf("finalize err = %v, want nil", err)
+	}
+	if got.Status != TaskStatusCompleted || got.SalvagedReason != "stalled" {
+		t.Fatalf("task = %+v, want completed+stalled", got)
+	}
+	last := state.Messages()[len(state.Messages())-1]
+	if !last.Salvaged || last.Content == "" {
+		t.Fatalf("expected non-empty synthesized salvage message, got %+v", last)
+	}
+	if strings.Contains(last.Content, `"file.read"`) {
+		t.Fatalf("synthesized output still contains raw tool name:\n%s", last.Content)
+	}
+	if prov.calls != maxFinalizeAttempts {
+		t.Fatalf("calls = %d, want %d (all retries exhausted before falling back)", prov.calls, maxFinalizeAttempts)
+	}
+}
+
+func TestFinalizeNativeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
+	state := newTestState(t)
+	prov := &scriptedProvider{
+		responses: []string{"Need another read."},
+		toolCalls: [][]schema.ToolCall{
+			{{ID: "call_1", Name: "file.read", Args: nil}},
+			{{ID: "call_1", Name: "file.read", Args: nil}},
+			{{ID: "call_1", Name: "file.read", Args: nil}},
+		},
+	}
+	r := NewRunner(prov, nil, nil, state, "test-model")
+	r.NativeTools = true
+
+	task := NewTask("go", r.Now())
+	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "go"}}
+
+	if _, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(prov.requests) < 3 {
+		t.Fatalf("expected >=3 chat calls, got %d", len(prov.requests))
+	}
+	lastReq := prov.requests[len(prov.requests)-1]
+	foundFinalWarn := false
+	for _, m := range lastReq.Messages {
+		if m.Role == schema.RoleSystem && strings.Contains(m.Content, "STOP.") {
+			foundFinalWarn = true
+			break
+		}
+	}
+	if !foundFinalWarn {
+		t.Fatalf("native final-warning escalation not found in last request: %+v", lastReq)
+	}
+}

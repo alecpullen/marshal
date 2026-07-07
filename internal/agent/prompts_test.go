@@ -115,6 +115,37 @@ func TestBuildSystemPromptContainsActionExamples(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptNativeModeOmitsJSONEnvelopeScaffolding(t *testing.T) {
+	msg := BuildSystemPrompt(RoleImplementer, dummyTools(), nil, nil, true)
+	content := msg.Content
+
+	for _, want := range []string{
+		"You are Marshal, a local-first coding assistant",
+		"Prefer small, verifiable changes",
+		"You are an implementer",
+		"Available tools:",
+		"file.read",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("native prompt missing expected content %q\n%s", want, content)
+		}
+	}
+
+	for _, unwanted := range []string{
+		"Respond with exactly one JSON object",
+		`"rationale"`,
+		`"action"`,
+		`"actions"`,
+		"<<<<<<< SEARCH",
+		">>>>>>> REPLACE",
+		"Do not use unified diff syntax",
+	} {
+		if strings.Contains(content, unwanted) {
+			t.Errorf("native prompt contains JSON-envelope scaffolding %q\n%s", unwanted, content)
+		}
+	}
+}
+
 func TestBuildSystemPromptImplementerIncludesPatchExample(t *testing.T) {
 	msg := BuildSystemPrompt(RoleImplementer, dummyTools(), nil, nil)
 	content := msg.Content

@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -631,4 +632,93 @@ func TestResponseFormatWireShapes(t *testing.T) {
 			t.Fatalf("wire = %s\nwant  %s", b, want)
 		}
 	})
+}
+
+func TestActionEnvelopeResponseFormatReachesWire(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		defer r.Body.Close()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"test\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(t, srv.URL)
+
+	actionRF := &schema.ResponseFormat{
+		Type: "json_schema",
+		JSONSchema: &schema.JSONSchemaSpec{
+			Name:   "marshal_action",
+			Schema: json.RawMessage(`{"type":"object","properties":{"rationale":{"type":"string"}},"required":["rationale"],"additionalProperties":false}`),
+		},
+	}
+
+	req := schema.ChatRequest{
+		Model:          "test-model",
+		Messages:       []schema.ChatMessage{{Role: schema.RoleUser, Content: "test"}},
+		Stream:         true,
+		ResponseFormat: actionRF,
+	}
+
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+	for range events {
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatalf("Failed to parse request body: %v", err)
+	}
+
+	rf, ok := body["response_format"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("response_format missing or wrong type: %v", body["response_format"])
+	}
+
+	if rf["type"] != "json_schema" {
+		t.Errorf("expected type=json_schema, got %v", rf["type"])
+	}
+
+	js, ok := rf["json_schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("json_schema missing or wrong type: %v", rf["json_schema"])
+	}
+
+	if js["name"] != "marshal_action" {
+		t.Errorf("expected name=marshal_action, got %v", js["name"])
+	}
+
+	if strict, exists := js["strict"]; exists {
+		t.Errorf("expected strict to be omitted (omitempty on false), got %v", strict)
+	}
+
+	inner, ok := js["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schema missing or wrong type: %v", js["schema"])
+	}
+
+	if inner["type"] != "object" {
+		t.Errorf("expected schema.type=object, got %v", inner["type"])
+	}
+
+	if inner["additionalProperties"] != false {
+		t.Errorf("expected additionalProperties=false, got %v", inner["additionalProperties"])
+	}
+
+	required, ok := inner["required"].([]interface{})
+	if !ok {
+		t.Fatalf("required missing or wrong type: %v", inner["required"])
+	}
+
+	if len(required) != 1 || required[0] != "rationale" {
+		t.Errorf("expected required=[rationale], got %v", required)
+	}
 }

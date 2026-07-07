@@ -79,7 +79,7 @@ func TestEvalScenarios(t *testing.T) {
 			responses:  []string{"not a json action at all", finalAnswer},
 			forceClass: ClassQuestion,
 			want: func(t *testing.T, m TurnMetrics) {
-				if m.Outcome != "answered" || m.ParseFailures != 1 || m.ToolCalls != 0 || m.Iterations != 2 {
+				if m.Outcome != "answered" || m.ParseFailures != 1 || m.ToolCalls != 0 || m.Iterations != 1 {
 					t.Fatalf("metrics = %+v", m)
 				}
 			},

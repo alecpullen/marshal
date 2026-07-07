@@ -213,3 +213,10 @@ func BuildCorrectionMessage(err error) schema.ChatMessage {
 		),
 	}
 }
+
+func BuildRepairMessage() schema.ChatMessage {
+	return schema.ChatMessage{
+		Role:    schema.RoleSystem,
+		Content: "You have produced two consecutive responses that could not be parsed as valid JSON actions. Your next response MUST be exactly one valid JSON object matching the required shape shown above. No other text is permitted.",
+	}
+}

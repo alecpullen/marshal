@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	DefaultMaxToolIterations  = 16
-	DefaultMaxRetries         = 2
-	DefaultMaxParallelActions = 4
-	finalizePressureThreshold = 2
-	finalizePressureMessage   = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
+	DefaultMaxToolIterations    = 16
+	DefaultMaxRetries           = 2
+	DefaultMaxParallelActions   = 4
+	finalizePressureThreshold   = 2
+	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
+	maxConsecutiveParseFailures = 3
 )
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
@@ -222,7 +223,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	lastRenderedSkills := r.State.ActiveSkills()
 	pressureSent := false
 	producedValidAction := false
-	for iteration := 0; iteration < r.MaxToolIterations; iteration++ {
+	consecutiveParseFailures := 0
+	iteration := 0
+	for {
+		if iteration >= r.MaxToolIterations {
+			break
+		}
 		r.State.SetToolBudget(session.ToolBudget{Used: iteration, Max: r.MaxToolIterations})
 		r.withStats(func(s *turnStats) { s.m.Iterations = iteration + 1 })
 
@@ -245,11 +251,25 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		action, parseErr := ParseAction(raw)
 		if parseErr != nil {
+			consecutiveParseFailures++
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
 			messages = append(messages, BuildCorrectionMessage(parseErr))
 			r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
+			if consecutiveParseFailures == 2 {
+				repairMsg := BuildRepairMessage()
+				messages = append(messages, repairMsg)
+				r.State.AddMessage(session.RoleSystem, repairMsg.Content, session.ContentTypePlain)
+				if turnProvider.Capabilities(ctx).JSONMode && r.ResponseFormat == nil {
+					r.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
+				}
+			}
+			if consecutiveParseFailures >= maxConsecutiveParseFailures {
+				break
+			}
 			continue
 		}
+		consecutiveParseFailures = 0
+		iteration++
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
 		producedValidAction = true
 

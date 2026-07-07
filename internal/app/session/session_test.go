@@ -666,3 +666,19 @@ func TestAddMessageSalvaged(t *testing.T) {
 		t.Fatalf("last message = %+v, want Final+Salvaged+reason=exhausted", last)
 	}
 }
+
+func TestPendingQuestionRoundTrip(t *testing.T) {
+	s := newTestState()
+	if s.PendingQuestion() != nil {
+		t.Fatal("expected no pending question initially")
+	}
+	q := &PendingQuestion{Question: "archive or delete?", ResponseChan: make(chan string, 1)}
+	s.SetPendingQuestion(q)
+	if got := s.PendingQuestion(); got == nil || got.Question != "archive or delete?" {
+		t.Fatalf("PendingQuestion = %+v", got)
+	}
+	s.SetPendingQuestion(nil)
+	if s.PendingQuestion() != nil {
+		t.Fatal("expected pending question cleared")
+	}
+}

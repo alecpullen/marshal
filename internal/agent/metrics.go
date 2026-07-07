@@ -6,17 +6,20 @@ import "time"
 // per turn via Runner.MetricsObserver, including on error exits, so every
 // turn is measurable: outcome, iterations, parse failures, stalls, tokens.
 type TurnMetrics struct {
-	StartedAt        time.Time
-	DurationMs       int64
-	Goal             string
-	Class            string
-	Role             string
-	Provider         string
-	Model            string
-	Iterations       int
-	ToolCalls        int
-	ToolErrors       int
-	CacheHits        int
+	StartedAt  time.Time
+	DurationMs int64
+	Goal       string
+	Class      string
+	Role       string
+	Provider   string
+	Model      string
+	Iterations int
+	ToolCalls  int
+	ToolErrors int
+	CacheHits  int
+	// ParseFailures counts consecutive unparseable JSON-envelope actions.
+	// In native tool-calling mode this is always 0 because the provider
+	// returns parsed tool_calls directly.
 	ParseFailures    int
 	SoftStalls       int
 	HardStalls       int

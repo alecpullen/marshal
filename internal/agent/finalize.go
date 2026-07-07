@@ -19,11 +19,12 @@ const (
 	reasonMalformed finalizeReason = "malformed"
 
 	// maxFinalizeAttempts bounds how many times finalize will ask the model
-	// to comply with FinalizationDirective before giving up and
-	// synthesizing a fallback answer. Weaker/local models frequently ignore
-	// a single "stop calling tools" directive and emit another tool_call;
-	// without a retry, that raw tool_call JSON gets dumped straight into
-	// the user-facing salvaged answer (see docs/07, "stalled" completions).
+	// to comply with FinalizationDirective (or NativeFinalizationDirective in
+	// native tool-calling mode) before giving up and synthesizing a fallback
+	// answer. Weaker/local models frequently ignore a single "stop calling
+	// tools" directive and emit another tool_call; without a retry, that raw
+	// tool_call JSON gets dumped straight into the user-facing salvaged answer
+	// (see docs/07, "stalled" completions).
 	maxFinalizeAttempts = 3
 )
 
@@ -48,6 +49,17 @@ const nativeFinalizeCorrectionMessage = `Do not call tools. Respond with a conci
 // nativeFinalizeFinalWarning is the escalated version of
 // nativeFinalizeCorrectionMessage for the penultimate retry.
 const nativeFinalizeFinalWarning = `STOP. Do NOT call tools. Respond RIGHT NOW with a concise final answer in normal prose based on what you already know.`
+
+// nativeFinalizeEmptyResponsePrompt is appended when the model returns an
+// empty response in native finalize mode. It asks for a concise prose answer.
+const nativeFinalizeEmptyResponsePrompt = `Please respond with a concise final answer in normal prose.`
+
+// nativeToolCallDisabledReply is the content used for the required role:tool
+// result message when a native finalize attempt returns tool calls even though
+// no tools were offered. Providers that enforce tool-result ordering reject
+// requests where an assistant message lists ToolCalls without matching tool
+// results, so we must answer every tool_call_id before the next model turn.
+const nativeToolCallDisabledReply = `Tool calls are disabled for this step. Respond with a concise final answer in normal prose.`
 
 // finalize repeatedly asks the model (up to maxFinalizeAttempts times) to
 // produce a final answer with tools disabled, then records the result as a
@@ -79,13 +91,24 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 			// act, not a final answer, even if it also has accompanying text.
 			// Correct the model and retry.
 			if len(res.ToolCalls) > 0 {
+				final = append(final,
+					schema.ChatMessage{Role: schema.RoleAssistant, Content: raw, ToolCalls: res.ToolCalls},
+				)
+				// Providers that enforce tool-result ordering require exactly one
+				// role:tool message per tool_call_id before the next model turn.
+				for _, call := range res.ToolCalls {
+					final = append(final, schema.ChatMessage{
+						Role:       schema.RoleTool,
+						ToolCallID: call.ID,
+						Content:    nativeToolCallDisabledReply,
+					})
+				}
 				if attempt < maxFinalizeAttempts-1 {
 					correction := nativeFinalizeCorrectionMessage
 					if attempt == maxFinalizeAttempts-2 {
 						correction = nativeFinalizeFinalWarning
 					}
 					final = append(final,
-						schema.ChatMessage{Role: schema.RoleAssistant, Content: raw, ToolCalls: res.ToolCalls},
 						schema.ChatMessage{Role: schema.RoleSystem, Content: correction},
 					)
 				}
@@ -101,7 +124,7 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 			if attempt < maxFinalizeAttempts-1 {
 				final = append(final,
 					schema.ChatMessage{Role: schema.RoleAssistant, Content: raw},
-					schema.ChatMessage{Role: schema.RoleSystem, Content: "Please respond with a concise final answer in normal prose."},
+					schema.ChatMessage{Role: schema.RoleSystem, Content: nativeFinalizeEmptyResponsePrompt},
 				)
 			}
 			continue

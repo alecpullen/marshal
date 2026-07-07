@@ -360,12 +360,82 @@ func TestFinalizeNativeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 	lastReq := prov.requests[len(prov.requests)-1]
 	foundFinalWarn := false
 	for _, m := range lastReq.Messages {
-		if m.Role == schema.RoleSystem && strings.Contains(m.Content, "STOP.") {
+		if m.Role == schema.RoleSystem && strings.Contains(m.Content, "STOP.") && strings.Contains(m.Content, "Do NOT call tools") {
 			foundFinalWarn = true
 			break
 		}
 	}
 	if !foundFinalWarn {
 		t.Fatalf("native final-warning escalation not found in last request: %+v", lastReq)
+	}
+}
+
+// TestFinalizeNativePairsToolCallsWithToolResults verifies that when a native
+// finalize attempt returns tool calls, the retry history contains the assistant
+// message with ToolCalls followed by exactly one role:tool result message for
+// each tool_call_id before the next model turn.
+func TestFinalizeNativePairsToolCallsWithToolResults(t *testing.T) {
+	state := newTestState(t)
+	prov := &scriptedProvider{
+		responses: []string{"Need another read.", "Recovered prose answer."},
+		toolCalls: [][]schema.ToolCall{
+			{
+				{ID: "call_1", Name: "file.read", Args: nil},
+				{ID: "call_2", Name: "repo.search", Args: nil},
+			},
+			nil,
+		},
+	}
+	r := NewRunner(prov, nil, nil, state, "test-model")
+	r.NativeTools = true
+
+	task := NewTask("do the thing", r.Now())
+	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
+
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled)
+	if err != nil {
+		t.Fatalf("finalize err = %v, want nil", err)
+	}
+	if got.Summary != "Recovered prose answer." {
+		t.Fatalf("Summary = %q, want recovered prose answer", got.Summary)
+	}
+	if len(prov.requests) < 2 {
+		t.Fatalf("expected >=2 chat calls, got %d", len(prov.requests))
+	}
+
+	// Inspect the second request (the retry after the non-compliant tool-call
+	// attempt). It should contain the assistant tool-call message, then one
+	// role:tool result per tool_call_id, then the correction system message.
+	retryReq := prov.requests[1]
+	for i, m := range retryReq.Messages {
+		if m.Role != schema.RoleAssistant || len(m.ToolCalls) == 0 {
+			continue
+		}
+		wantIDs := make(map[string]struct{})
+		for _, call := range m.ToolCalls {
+			wantIDs[call.ID] = struct{}{}
+		}
+		gotIDs := make(map[string]struct{})
+		for j := i + 1; j < len(retryReq.Messages); j++ {
+			next := retryReq.Messages[j]
+			if next.Role == schema.RoleTool {
+				gotIDs[next.ToolCallID] = struct{}{}
+				if next.Content != nativeToolCallDisabledReply {
+					t.Fatalf("role:tool result content = %q, want %q", next.Content, nativeToolCallDisabledReply)
+				}
+				continue
+			}
+			// Once we hit another assistant or system message, the tool results
+			// for this assistant turn must have already been emitted.
+			break
+		}
+		if len(gotIDs) != len(wantIDs) {
+			t.Fatalf("assistant message tool_call_ids %v but saw role:tool results for %v", wantIDs, gotIDs)
+		}
+		for id := range wantIDs {
+			if _, ok := gotIDs[id]; !ok {
+				t.Fatalf("missing role:tool result for tool_call_id %q in request: %+v", id, retryReq)
+			}
+		}
 	}
 }

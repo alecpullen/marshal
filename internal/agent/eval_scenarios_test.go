@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -31,6 +33,11 @@ func evalRegistry(t *testing.T) *registry.Registry {
 
 func evalRead(path string) string {
 	return fmt.Sprintf(`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":%q}}}`, path)
+}
+
+func evalNativeRead(id, path string) schema.ToolCall {
+	args, _ := json.Marshal(map[string]string{"path": path})
+	return schema.ToolCall{ID: id, Name: "file.read", Args: args}
 }
 
 func TestEvalScenarios(t *testing.T) {
@@ -166,6 +173,65 @@ func TestEvalScenarios(t *testing.T) {
 			if tc.maxIters > 0 {
 				r.MaxToolIterations = tc.maxIters
 			}
+			var got *TurnMetrics
+			r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+			if _, err := r.RunTask(context.Background(), "eval goal"); err != nil {
+				t.Fatalf("RunTask err = %v", err)
+			}
+			if got == nil {
+				t.Fatal("no TurnMetrics emitted")
+			}
+			tc.want(t, *got)
+		})
+	}
+}
+
+func TestEvalNativeScenarios(t *testing.T) {
+	cases := []struct {
+		name      string
+		responses []string
+		toolCalls [][]schema.ToolCall
+		want      func(t *testing.T, m TurnMetrics)
+	}{
+		{
+			name:      "native research turn answers after reads",
+			responses: []string{"Reading a.", "Reading b.", "Answer."},
+			toolCalls: [][]schema.ToolCall{
+				{evalNativeRead("call_a", "a.go")},
+				{evalNativeRead("call_b", "b.go")},
+				nil,
+			},
+			want: func(t *testing.T, m TurnMetrics) {
+				if m.Outcome != "answered" || m.Iterations != 2 || m.ToolCalls != 2 || m.ParseFailures != 0 {
+					t.Fatalf("metrics = %+v", m)
+				}
+			},
+		},
+		{
+			name:      "native tool error recovers to an answer",
+			responses: []string{"Trying missing tool.", "Answer."},
+			toolCalls: [][]schema.ToolCall{
+				{{ID: "call_bad", Name: "missing.tool", Args: json.RawMessage(`{}`)}},
+				nil,
+			},
+			want: func(t *testing.T, m TurnMetrics) {
+				if m.Outcome != "answered" || m.ToolErrors != 1 || m.ToolCalls != 1 || m.ParseFailures != 0 {
+					t.Fatalf("metrics = %+v", m)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := evalRegistry(t)
+			p := &scriptedProvider{responses: tc.responses, toolCalls: tc.toolCalls}
+			state := newTestState(t)
+			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+			r.NativeTools = true
+			r.SetForceClass(string(ClassQuestion))
+
 			var got *TurnMetrics
 			r.MetricsObserver = func(m TurnMetrics) { got = &m }
 

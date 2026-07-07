@@ -112,6 +112,33 @@ func TestAssess(t *testing.T) {
 			t.Fatalf("assess() = %v, want progressing", got)
 		}
 	})
+
+	t.Run("three consecutive idle turns is hard stall", func(t *testing.T) {
+		tr := newProgressTracker()
+		tr.recordIdle("stop")
+		tr.recordIdle("stop")
+		if got := tr.assess(); got != assessProgressing {
+			t.Fatalf("assess() after 2 idle = %v, want progressing", got)
+		}
+		tr.recordIdle("stop")
+		if got := tr.assess(); got != assessHardStall {
+			t.Fatalf("assess() after 3 idle = %v, want hardStall", got)
+		}
+	})
+
+	t.Run("idle interleaved with tool calls is not a stall", func(t *testing.T) {
+		// Two idle turns separated by a tool call do not form a run of 3
+		// consecutive idles, so the hard-stall path must not fire.
+		tr := newProgressTracker()
+		tr.recordIdle("stop")
+		tr.recordIdle("stop")
+		tr.record("file.read", `{"path":"a.go"}`)
+		tr.recordIdle("stop")
+		tr.recordIdle("stop")
+		if got := tr.assess(); got != assessProgressing {
+			t.Fatalf("assess() with interleaved tools = %v, want progressing", got)
+		}
+	})
 }
 
 func TestMutating(t *testing.T) {

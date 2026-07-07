@@ -39,7 +39,37 @@ func compactMessages(messages []schema.ChatMessage, budgetTokens, keepRecent int
 		cutoff = 2
 	}
 
+	// Phase 1: drop the oldest non-tool assistant/system/user messages first.
+	// Tool results are the facts the model needs to reason about its work, so
+	// they are preserved until prose compaction alone is insufficient. The
+	// first two messages (system prompt + initial user goal) are always kept
+	// so the model never loses its instructions or objective. An assistant
+	// message carrying ToolCalls is treated as tool-related here too: zeroing
+	// its ToolCalls would orphan the following role:tool results that
+	// reference those tool_call_ids, which OpenAI-compatible providers reject.
 	for i := 2; i < cutoff; i++ {
+		if isToolResultMessage(out[i]) || len(out[i].ToolCalls) > 0 {
+			continue
+		}
+		if estimateTokens(out) <= budgetTokens {
+			return out
+		}
+		// Replace the prose message with an empty placeholder so message
+		// ordering (and any tool_call_id pairing for role:tool results) is
+		// preserved. A zero-length message costs nothing and keeps indices
+		// stable for downstream compaction of tool results.
+		out[i].Content = ""
+		out[i].ToolCalls = nil
+	}
+
+	// Phase 2: only when dropping all old prose was still insufficient, compact
+	// the oldest tool results (keeping the most recent keepRecent, which the
+	// cutoff already excludes). Never compact a result that is already
+	// compacted.
+	for i := 2; i < cutoff; i++ {
+		if estimateTokens(out) <= budgetTokens {
+			return out
+		}
 		if !isToolResultMessage(out[i]) {
 			continue
 		}
@@ -51,9 +81,6 @@ func compactMessages(messages []schema.ChatMessage, budgetTokens, keepRecent int
 			firstLine = out[i].Content[:idx]
 		}
 		out[i].Content = firstLine + compactedNote
-		if estimateTokens(out) <= budgetTokens {
-			return out
-		}
 	}
 	return out
 }

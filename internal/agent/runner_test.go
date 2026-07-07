@@ -2300,3 +2300,108 @@ func TestSwarmRolesCannotAskUser(t *testing.T) {
 		t.Fatal("expected a correction telling the role ask_user is unavailable")
 	}
 }
+
+// TestRunNativeEmptyResponsesFinalizeWithReasonEmpty is the regression test
+// for the infinite empty-response loop: in native mode, a model that returns
+// no tool calls and empty text used to continue without incrementing
+// iteration or invoking the stall detector, looping forever. After the fix,
+// two consecutive empty responses short-circuit to finalize with reasonEmpty
+// and the task completes (salvaged) instead of hanging.
+func TestRunNativeEmptyResponsesFinalizeWithReasonEmpty(t *testing.T) {
+	state := newTestState(t)
+	// Two empty native responses (no text, no tool calls), then finalize's
+	// own forced call produces a real prose answer.
+	p := &scriptedProvider{
+		responses: []string{"", "", "Here is the salvaged answer."},
+		toolCalls: [][]schema.ToolCall{nil, nil, nil},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 16
+
+	var got *TurnMetrics
+	r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	task, err := r.RunTask(context.Background(), "vague goal")
+	if err != nil {
+		t.Fatalf("RunTask err = %v, want nil (salvaged)", err)
+	}
+	if task.Status != TaskStatusCompleted {
+		t.Fatalf("task.Status = %q, want completed", task.Status)
+	}
+	if task.SalvagedReason != "empty" {
+		t.Fatalf("SalvagedReason = %q, want %q", task.SalvagedReason, "empty")
+	}
+	if task.Summary != "Here is the salvaged answer." {
+		t.Fatalf("Summary = %q, want the finalize prose answer", task.Summary)
+	}
+	// Two empty turns consumed the budget before finalize fired.
+	if got == nil || got.Iterations != 2 {
+		t.Fatalf("Iterations = %v, want 2 (empty turns must consume budget)", got)
+	}
+}
+
+// TestRunNativeEmptyThenAnswerWins verifies that a single empty response
+// followed by a real final answer is honored — the loop must not over-eagerly
+// finalize after one silence.
+func TestRunNativeEmptyThenAnswerWins(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{
+		responses: []string{"", "The real answer after a moment of silence."},
+		toolCalls: [][]schema.ToolCall{nil, nil},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassQuestion))
+
+	task, err := r.RunTask(context.Background(), "what is 2+2?")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.SalvagedReason != "" {
+		t.Fatalf("SalvagedReason = %q, want empty (normal completion)", task.SalvagedReason)
+	}
+	if task.Summary != "The real answer after a moment of silence." {
+		t.Fatalf("Summary = %q", task.Summary)
+	}
+}
+
+// TestRunAskUserDeclinedCountsAgainstBudget ensures a declined ask_user
+// consumes a budget slot so repeated ask→decline→ask cannot loop unbounded.
+func TestRunAskUserDeclinedCountsAgainstBudget(t *testing.T) {
+	state := newTestState(t)
+	// Repeated ask_user, always declined, until the budget runs out. With a
+	// small budget the loop must terminate (via finalize/salvage or budget
+	// exhaustion) rather than looping ask→decline forever.
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Which one?"}}`,
+	}}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 3
+	r.MaxRetries = 0
+
+	// Drain every pending question with an empty (declined) answer.
+	go func() {
+		for {
+			if q := state.PendingQuestion(); q != nil {
+				q.ResponseChan <- ""
+				state.SetPendingQuestion(nil)
+			} else {
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = r.RunTask(context.Background(), "decide something")
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTask hung: declined ask_user did not consume the budget")
+	}
+}

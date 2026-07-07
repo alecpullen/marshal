@@ -1,182 +1,89 @@
 # 08. Roadmap and Milestones
 
-## Phase 0: Prototype
+## Phase 0: Prototype ✅
 
 Goal: prove the core loop.
 
-Features:
+Milestones A–B.
 
-- Go CLI app
-- simple TUI chat
-- one OpenAI-compatible provider
-- Ollama config example
-- streaming model responses
-- manual file read tool
-- shell command proposal
-- user approval prompt
-- basic patch proposal
-- test command execution
-
-Success criteria:
-
-- user can ask a question about repo files
-- agent can read files through tools
-- agent can propose a shell command
-- user can approve command
-- command output returns to agent
-
-## Phase 1: Useful single-agent MVP
+## Phase 1: Useful single-agent MVP ✅
 
 Goal: daily usable single-agent coding assistant.
 
-Features:
+Milestones C–G (provider abstraction, tool registry, native tools, approval system, patch workflow).
 
-- provider profiles
-- TUI panels for chat, plan, tools, diff
-- repo search tool
-- file read tool
-- patch apply tool
-- git status/diff tools
-- command approval rules
-- run tests
-- session persistence
-- simple project config
-
-Success criteria:
-
-- agent can inspect a repo
-- agent can make a small patch
-- agent can run tests
-- agent can summarise changes
-- user can inspect all actions
-
-## Phase 2: Repo intelligence
+## Phase 2: Repo intelligence ✅
 
 Goal: better context than grep.
 
-Features:
+Milestones H–K (agent loop, SQLite persistence, repo indexing, context pack builder).
 
-- SQLite project DB
-- repo scanner
-- file hashing
-- file summaries
-- Tree-sitter symbol index
-- symbol search
-- repo map generation
-- context pack builder
-- role-specific context budgets
-
-Success criteria:
-
-- agent can explain project structure
-- agent can find relevant files through symbols/summaries
-- context packs are compact and useful
-- repeated tasks do not require full rediscovery
-
-## Phase 3: Role-based model routing
+## Phase 3: Role-based model routing ✅
 
 Goal: different models for different agent roles.
 
-Features:
+Milestone L.
 
-- model presets
-- agent profiles
-- model router
-- local/remote flags
-- context budget per role
-- routing transparency in TUI
-- basic escalation rules
-
-Success criteria:
-
-- knowledge agent can use small model
-- implementer can use coder model
-- reviewer/planner can use stronger model
-- user can see and override model choices
-
-## Phase 4: Knowledge agent
+## Phase 4: Knowledge agent ✅
 
 Goal: persistent project brain.
 
-Features:
+Milestone N.
 
-- session summaries
-- durable project memories
-- memory confidence states
-- stale memory detection
-- file summary updates
-- architecture notes
-- test failure notes
-- onboarding brief generation
-
-Success criteria:
-
-- project knowledge improves across sessions
-- stale or contradicted memories are marked
-- knowledge writes are evidence-backed
-
-## Phase 5: Swarm runtime
+## Phase 5: Swarm runtime ✅
 
 Goal: coordinated specialist agents.
 
-Features:
+Milestone O, plus phase 5 polish (tester feedback loop, roster activity panel, run-level budgets, token metering).
 
-- shared task state
-- planner/repo scout/implementer/tester/reviewer roles
-- sequential swarm mode
-- parallel read-only repo scouts
-- write lock
-- agent activity panel
-- agent budgets
-
-Success criteria:
-
-- multiple agents can contribute to one task
-- only one write path exists
-- findings are merged into a coherent plan
-- reviewer can catch implementer issues
-
-## Phase 6: Plugin and MCP ecosystem
+## Phase 6: Plugin and MCP ecosystem ✅
 
 Goal: extensibility.
 
-Features:
+Milestone P.
 
-- MCP client support
-- external tool registration
-- project-level tool allowlist
-- plugin manifest
-- custom commands
-- tool audit UI
+## Next: Phase 7 — Sandboxed command execution
+
+Goal: isolated, safe command execution with resource controls.
+
+Features planned:
+
+- container or jail-based shell execution
+- per-command timeouts and memory limits
+- network access policies
+- audit trail of all executed commands
+- no-host-access mode for untrusted operations
 
 Success criteria:
 
-- users can connect external tools
-- MCP tools are permissioned and logged
-- native safety model still applies
+- commands run in an isolated environment
+- resource limits are enforced
+- network can be restricted per command
+- full audit trail is available
 
-## Suggested build order
+## Suggested build order (already executed)
 
 ```text
-1. Provider abstraction
-2. TUI streaming chat
-3. Tool registry
-4. Read/search/shell tools
-5. Approval system
-6. Patch tool
-7. Git diff integration
-8. SQLite session/project DB
-9. Repo scanner
-10. Tree-sitter symbol index
-11. Repo map
-12. Context pack builder
-13. Role-based model router
-14. Knowledge agent
-15. Swarm runtime
-16. MCP/plugin support
+ 1. Provider abstraction        ✅ Milestone C
+ 2. TUI streaming chat          ✅ Milestone B
+ 3. Tool registry               ✅ Milestone D
+ 4. Read/search/shell tools     ✅ Milestone E
+ 5. Approval system             ✅ Milestone F
+ 6. Patch tool                  ✅ Milestone G
+ 7. Git diff integration        ✅ Milestone G
+ 8. SQLite session/project DB   ✅ Milestone I
+ 9. Repo scanner                ✅ Milestone J
+10. Tree-sitter symbol index    ✅ Milestone M
+11. Repo map                    ✅ Milestone J
+12. Context pack builder        ✅ Milestone K
+13. Role-based model router     ✅ Milestone L
+14. Knowledge agent             ✅ Milestone N
+15. Swarm runtime               ✅ Milestone O
+16. MCP/plugin support          ✅ Milestone P
+17. Sandboxed command execution   🔜 Milestone Q
 ```
 
-## MVP demo scenario
+## MVP demo scenario (working)
 
 ```text
 1. User runs `marshal` in a Go repo.

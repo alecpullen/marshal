@@ -20,67 +20,74 @@ Repository Index / Project DB / Shell / Filesystem / Git
 
 ## Core modules
 
-Recommended Go layout:
+Current implementation layout:
 
 ```text
 cmd/marshal
-  main.go
+  main.go                          — thin entrypoint
 
 internal/app
-  tui/
-  config/
-  session/
-  logging/
-
-internal/llm
-  provider/
-  schema/
-  streaming/
-  toolcalling/
+  app.go                           — Run(), dependency wiring, signal handling
+  config/                          — TOML config loading, defaults, merge rules
+  session/                         — in-memory app state, message list
+  tui/                             — Bubble Tea model (View/Update/Init)
+  logging/                         — slog logger construction
 
 internal/agent
-  loop/
-  planner/
-  executor/
-  reviewer/
-  swarm/
-  prompts/
-  memory/
+  runner.go                        — single-agent loop (RunTask, execute tool calls, finalize)
+  finalize.go                      — salvaged completion / fallback answer synthesis
+  progress.go                      — stall detection (exact repeat, read-only churn)
+  protocol.go                      — JSON action envelope parsing
+  prompts.go                       — system prompts, planning prompt, correction messages
+  task.go                          — Task type and classification
+  swarm/                           — multi-agent orchestration, lock, state, verdict
 
-internal/tools
-  registry/
-  filesystem/
-  shell/
-  git/
-  search/
-  treesitter/
-  test_runner/
-  mcp/
+internal/commands
+  commands.go                      — slash commands (/plan, /test, /profile, …)
 
-internal/repo
-  scanner/
-  indexer/
-  repomap/
-  symbols/
-  graph/
-  summaries/
+internal/contextpack
+  pack.go                          — context pack builder, token budgets, memory merge
 
 internal/db
-  sqlite/
-  migrations/
-  embeddings/
-  events/
+  db.go                            — SQLite connection and migrations
+  symbols.go                       — symbol DB schema and queries
 
-internal/sandbox
-  policy/
-  approvals/
-  command_classifier/
+internal/knowledge
+  knowledge.go                     — durable project memory agent
+  prompts.go                       — knowledge agent prompts
+  protocol.go                      — knowledge protocol types
 
-internal/patch
-  diff/
-  apply/
-  rollback/
+internal/llm
+  provider/                        — Provider interface and implementations
+  schema/                          — ChatRequest, ChatMessage, ChatEvent types
+  streaming/                       — streaming response handling
+  routing/                         — route resolver, model presets, role profiles
+
+internal/repo
+  scanner.go                       — file scanning and gitignore
+  map.go                           — repo map and card generation
+  symbols.go                       — tree-sitter Go symbol extraction
+
+internal/skills
+  skill.go                         — skill type and index
+  loader.go                        — skill loader
+  tool.go                          — skill.load tool registration
+
+internal/tools
+  registry/                        — tool registration and dispatch
+  native/                          — file, search, shell, git, repo, symbols
+  patch/                           — diff apply, preview, and approval
+  policy/                          — command approval and risk policy
+  mcp/                             — MCP client, protocol, manager
 ```
+
+Key design decisions:
+- No separate `loop/`, `planner/`, `executor/`, `reviewer/` sub-packages — the single-agent loop lives in `runner.go` which handles planning, execution, and stall recovery.
+- `internal/agent/swarm/` reuses `Runner` from `internal/agent` with role-specific prompts and a shared `session.State`.
+- `internal/commands/` is a flat package of slash-command handlers, not a sub-directory per command.
+- `internal/skills/` is a separate concern from tools — skills inject instruction sets, tools execute operations.
+- `internal/db/` is a flat package (no `sqlite/`, `migrations/`, `events/` sub-packages).
+- The planned `internal/sandbox/` (policy, approvals, command classifier) is not yet implemented — that is Milestone Q.
 
 ## Main runtime flow
 

@@ -71,8 +71,10 @@ internal/tools/mcp/            — MCP plugin support
 - **Git integration** — automatically checkpoint the working tree before tooling.
 - **Persistent sessions** — project state, messages, and memory stored in SQLite.
 - **Knowledge agent** — durable project knowledge survives session boundaries.
+- **Skill system** — loadable skill-based instruction sets for specialised workflows.
 - **Slash commands** — `/plan`, `/review`, `/test`, `/memory`, `/profile`, etc.
-- **Swarm runtime** — multi-agent orchestration with specialist roles (under active development).
+- **Swarm runtime** — multi-agent orchestration with specialist roles (planner, repo scout, implementer, tester, reviewer).
+- **MCP/plugin ecosystem** — connect external tools via MCP protocol, namespaced and permissioned.
 
 ## Design commitments
 
@@ -103,9 +105,9 @@ go vet ./...                   # vet
 | Milestone | Status |
 |-----------|--------|
 | A–M: skeleton, TUI, config, tools, approval, git, DB, repo scan, symbols, context packs, role routing | Complete |
-| N: durable knowledge agent | Implemented |
-| O: swarm runtime & specialist roles | In progress |
-| P: MCP/plugin system | Planned |
+| N: durable knowledge agent | Complete |
+| O: swarm runtime & specialist roles | Complete |
+| P: MCP/plugin ecosystem | Complete |
 | Q: sandboxed command execution | Planned |
 
 ## License
@@ -114,5 +116,6 @@ MIT
 
 ## Project status
 
-Marshal is under active development. Core functionality is usable; swarm and
-plugin systems are in progress. Expect breaking changes as the APIs stabilise.
+Marshal is under active development. Core functionality is usable; the knowledge
+agent, swarm runtime, and MCP plugin system are implemented. The next milestone
+is sandboxed command execution. Expect breaking changes as the APIs stabilise.

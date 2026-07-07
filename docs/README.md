@@ -1,8 +1,8 @@
 # Marshal Documentation Pack
 
-Marshal is a proposed local-first TUI coding agent written in Go. It is designed for developers who want to supply their own inference backend, especially local providers such as Ollama, llama.cpp, vLLM, and LM Studio, while still allowing optional hosted API providers such as OpenRouter or other OpenAI-compatible APIs.
+Marshal is a local-first TUI coding agent written in Go. It is designed for developers who want to supply their own inference backend, especially local providers such as Ollama, llama.cpp, vLLM, and LM Studio, while still allowing optional hosted API providers such as OpenRouter or other OpenAI-compatible APIs.
 
-The project goal is to combine:
+Marshal combines:
 
 - terminal-native coding workflows
 - local-first model usage
@@ -10,7 +10,9 @@ The project goal is to combine:
 - controlled shell and tool execution
 - persistent project knowledge
 - role-based model presets
-- future swarm/multi-agent capabilities
+- swarm/multi-agent capabilities with specialist roles
+- MCP/plugin ecosystem for extensibility
+- loadable skill-based instruction sets
 
 ## Document index
 
@@ -24,16 +26,17 @@ The project goal is to combine:
 8. [Roadmap and Milestones](./08-roadmap-and-milestones.md)
 9. [Configuration Examples](./09-configuration-examples.md)
 10. [MVP Implementation Checklist](./10-mvp-implementation-checklist.md)
+11. [Roadmap and Future Enhancements](./11-roadmap-and-future-enhancements.md)
 
 ## Working assumptions
 
 - The app is written in Go.
-- The TUI uses Bubble Tea or a similar Go-native terminal UI framework.
-- The initial model transport is OpenAI-compatible chat completions.
+- The TUI uses Bubble Tea.
+- The model transport is OpenAI-compatible chat completions.
 - SQLite is used for local project/session state.
 - Tree-sitter is used for structural repository intelligence.
-- The MVP should be useful as a single-agent coding assistant before swarm features are added.
+- The MVP is a functional single-agent coding assistant; swarm features are built and stable.
 
 ## One-sentence vision
 
-Marshal is a local-first terminal coding agent that combines user-owned inference, safe tool execution, structural repository intelligence, and eventually specialist agent swarms for serious software work.
+Marshal is a local-first terminal coding agent that combines user-owned inference, safe tool execution, structural repository intelligence, specialist agent swarms, and an extensible plugin system for serious software work.

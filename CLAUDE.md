@@ -32,22 +32,28 @@ go vet ./...
 
 ## Architecture
 
-The current codebase is **Milestones A-M complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, and role-based model routing). Milestones N onward (knowledge agent, swarm runtime, MCP/plugin support) are not yet implemented.
+The current codebase is **Milestones A-P complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, and MCP/plugin ecosystem). Milestone Q (sandboxed command execution) is planned.
 
 ```
 cmd/marshal/main.go                   — thin entrypoint, delegates to internal/app
-internal/agent/                       — agent runtime and swarm orchestration
+internal/agent/                       — agent runtime (single-agent loop)
+internal/agent/swarm/                 — swarm orchestration, lock, state, verdict
 internal/app/app.go                   — Run(), dependency wiring, signal handling
 internal/app/config/                  — TOML config loading, defaults, merge rules
 internal/app/logging/                 — slog logger construction
 internal/app/session/                 — in-memory app state, message list, shutdown context
 internal/app/tui/                     — Bubble Tea model (View/Update/Init)
+internal/commands/                    — slash commands (/plan, /test, /profile, …)
 internal/contextpack/                 — context pack builder and budget logic
 internal/db/                          — SQLite project/session persistence
 internal/db/symbols.go                — symbol DB schema and queries
+internal/knowledge/                   — durable project memory agent
 internal/llm/                         — provider abstraction, schema, streaming
+internal/llm/routing/                 — route resolver, model presets, role profiles
 internal/repo/                        — repo scanner, file hashing, gitignore, repo map/card
 internal/repo/symbols.go              — tree-sitter Go symbol extraction
+internal/skills/                      — skill-based instruction sets
+internal/tools/mcp/                   — MCP client, protocol, manager
 internal/tools/native/                — native tools: file, search, shell, git, repo, symbols
 internal/tools/native/symbols_find.go — symbols.find tool implementation
 internal/tools/patch/                 — patch apply and approval

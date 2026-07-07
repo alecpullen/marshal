@@ -1,8 +1,11 @@
-# 07. Agent Runtime and Swarm Planning
+# 07. Agent Runtime and Swarm
+
+> **Status:** The single-agent loop and swarm runtime are both implemented.
+> This doc describes the architecture of both; the single-agent loop documentation
+> is the reference truth, while the swarm section records the original design
+> intent (now largely realised in `internal/agent/swarm/`).
 
 ## Agent loop
-
-The single-agent loop should be excellent before swarm features are built.
 
 ```text
 1. Receive user request
@@ -204,15 +207,26 @@ Small Repo Scout  Small Tester  Small Knowledge Agent
 
 This avoids trying to run five large models locally.
 
-## First swarm milestone
+## Implemented swarm architecture
 
-The first swarm feature should be read-heavy and safe:
+The swarm lives in `internal/agent/swarm/` and is driven by `internal/agent/swarm/orchestrator.go`.
 
-```text
-Planner creates subtasks
-Repo Scout agents inspect different areas
-Main agent merges findings
-Implementer proposes one patch
-Reviewer reviews the patch
-Tester runs validation
-```
+Current capabilities:
+
+- Sequential orchestration: Planner → Repo Scout → Implementer → Tester → Reviewer
+- Parallel read-only repo scouts
+- Shared task state via `swarm.State` (in `internal/agent/swarm/state.go`)
+- Write lock (`internal/agent/swarm/lock.go`) — only one agent writes at a time
+- Tester feedback loop — implementer can revise based on test failure
+- Run-level budgets — max fix rounds, per-role tool caps, token ceiling
+- Token metering via real provider `usage` response accumulation
+- Roster activity panel in the TUI shows each agent's status
+
+Each role runs its own `Runner` with a role-specific prompt ring and a shared
+`session.State` connected to the same TUI transcript.
+
+## Next swarm improvements (future)
+
+- Specialist routing (e.g. route SQL tasks to a dedicated DB agent)
+- Debate/review mode between implementer and reviewer
+- Escalation rules within swarm (auto-retry with stronger model on failure)

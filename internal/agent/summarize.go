@@ -10,12 +10,17 @@ import (
 // DefaultMaxToolResultChars is a rough 4-char-per-token budget for 2000 tokens.
 const DefaultMaxToolResultChars = 8000
 
-// SummarizeToolResult truncates oversized tool output before it reaches the
-// transcript. It preserves the original Summary unless truncation occurs.
+// SummarizeToolResult applies per-tool line limits and an optional character
+// cap to tool output before it reaches the transcript. It preserves the
+// original Summary unless truncation occurs.
+//
+// maxChars controls the character cap: negative values use the default cap,
+// zero skips the cap, and positive values apply that exact cap.
 func SummarizeToolResult(toolName string, result registry.ToolResult, maxChars int) registry.ToolResult {
-	if maxChars <= 0 {
+	if maxChars < 0 {
 		maxChars = DefaultMaxToolResultChars
 	}
+	skipCharCap := maxChars == 0
 
 	out := result
 	content := result.Content
@@ -30,7 +35,7 @@ func SummarizeToolResult(toolName string, result registry.ToolResult, maxChars i
 		content = limitLines(content, 200, "more diff lines omitted")
 	}
 
-	if len(content) > maxChars {
+	if !skipCharCap && len(content) > maxChars {
 		content = content[:maxChars] + "\n\n...[truncated]"
 	}
 

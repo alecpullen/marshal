@@ -1377,15 +1377,15 @@ func TestRunSummarizesLargeToolResults(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	foundTruncated := false
+	foundSpill := false
 	for _, ev := range state.AuditLog() {
-		if strings.Contains(ev.ResultSummary, "[truncated]") {
-			foundTruncated = true
+		if strings.Contains(ev.ResultSummary, "[output spilled to file]") {
+			foundSpill = true
 			break
 		}
 	}
-	if !foundTruncated {
-		t.Fatalf("large tool result was not truncated in audit log: %#v", state.AuditLog())
+	if !foundSpill {
+		t.Fatalf("large tool result was not spilled in audit log: %#v", state.AuditLog())
 	}
 }
 

@@ -237,7 +237,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		// silently downgrading — the user should fix their config.
 		return nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
-caps := commandRunner.Capabilities()
+	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
 		Backend:          caps.Backend,
 		NetworkIsolation: caps.NetworkIsolation,
@@ -502,10 +502,8 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	}
 
 	cmdReg := commands.New()
-	if err == nil {
-		if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
-			return fmt.Errorf("register commands: %w", err)
-		}
+	if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
+		return fmt.Errorf("register commands: %w", err)
 	}
 
 	var tuiOpts []tui.Option

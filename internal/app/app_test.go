@@ -25,6 +25,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -1136,5 +1137,56 @@ security_reviewer = "mock_preset"
 	}
 	if !called {
 		t.Fatal("program runner was not called")
+	}
+}
+
+func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"broken": {
+			Type:      "openai_compatible",
+			BaseURL:   "http://localhost:11434/v1",
+			APIKeyEnv: "MARSHAL_UNSET_VAR_THAT_DOES_NOT_EXIST",
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"broken-preset": {
+			Name:      "broken-preset",
+			Provider:  "broken",
+			Model:     "test-model",
+			LocalOnly: true,
+		},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		cfg.Profile.Default: {
+			Name: cfg.Profile.Default,
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: "broken-preset",
+				routing.RoleRepoScout:   "broken-preset",
+				routing.RoleKnowledge:   "broken-preset",
+			},
+		},
+	}
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	_, toolReg, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil)
+	if err == nil {
+		t.Fatal("buildAgentRunner should fail when api_key_env points at an unset var")
+	}
+	if toolReg != nil {
+		t.Fatal("toolReg should be nil when buildAgentRunner fails")
+	}
+
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
+		t.Fatalf("RegisterAll with nil toolReg: %v", err)
+	}
+	if _, ok := cmdReg.Lookup("exit"); !ok {
+		t.Fatal("exit command not registered — user cannot quit when agent fails to initialise")
+	}
+	if len(cmdReg.List()) < 10 {
+		t.Fatalf("expected at least 10 commands, got %d", len(cmdReg.List()))
 	}
 }

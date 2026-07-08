@@ -35,8 +35,8 @@ type Container struct {
 	// EnvDenylist cached as a set so buildArgs doesn't rebuild it per Run.
 	// EnvDenylist is immutable after construction; this is safe to reuse
 	// across calls.
-	envDenySet  map[string]bool
-	logger      *slog.Logger
+	envDenySet map[string]bool
+	logger     *slog.Logger
 }
 
 func (c *Container) Capabilities() Capabilities {

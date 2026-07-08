@@ -35,7 +35,7 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 			killedVal = event.Sandbox.KilledReason
 		}
 	}
-		var durVal any
+	var durVal any
 	if event.Sandbox.DurationMS > 0 {
 		durVal = event.Sandbox.DurationMS
 	}

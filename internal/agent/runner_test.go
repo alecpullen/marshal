@@ -22,8 +22,8 @@ import (
 )
 
 func TestRunnerDefaultsAreSensible(t *testing.T) {
-	if DefaultMaxToolIterations != 16 {
-		t.Fatalf("DefaultMaxToolIterations = %d, want 16", DefaultMaxToolIterations)
+	if DefaultMaxToolIterations != 100 {
+		t.Fatalf("DefaultMaxToolIterations = %d, want 100", DefaultMaxToolIterations)
 	}
 	if DefaultMaxRetries != 2 {
 		t.Fatalf("DefaultMaxRetries = %d, want 2", DefaultMaxRetries)
@@ -35,14 +35,15 @@ func TestRunnerDefaultsAreSensible(t *testing.T) {
 // at that index); once the scripts run out, the last response is repeated
 // so tests exercising max-iteration limits do not need to script every turn.
 type scriptedProvider struct {
-	responses    []string
-	toolCalls    [][]schema.ToolCall
-	thinking     []string
-	errs         []error
-	usages       []*schema.TokenUsage
-	calls        int
-	requests     []schema.ChatRequest
-	capabilities schema.ProviderCapabilities
+	responses     []string
+	toolCalls     [][]schema.ToolCall
+	finishReasons []string
+	thinking      []string
+	errs          []error
+	usages        []*schema.TokenUsage
+	calls         int
+	requests      []schema.ChatRequest
+	capabilities  schema.ProviderCapabilities
 }
 
 func (p *scriptedProvider) Name() string { return "scripted" }
@@ -92,6 +93,9 @@ func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	if idx < len(p.toolCalls) {
 		done.ToolCalls = p.toolCalls[idx]
 	}
+	if idx < len(p.finishReasons) {
+		done.FinishReason = p.finishReasons[idx]
+	}
 	ch <- done
 	close(ch)
 	return ch, nil
@@ -138,6 +142,48 @@ func (f *fakeMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote
 func newTestState(t *testing.T) *session.State {
 	t.Helper()
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+}
+
+func TestLengthTruncatedToolCallsAreFailedNotExecuted(t *testing.T) {
+	executed := false
+	p := &scriptedProvider{
+		responses:     []string{"", "all done"},
+		toolCalls:     [][]schema.ToolCall{{{ID: "tc1", Name: "risky.tool", Args: json.RawMessage(`{"partial":`)}}, nil},
+		finishReasons: []string{"length", "stop"},
+		capabilities:  schema.ProviderCapabilities{},
+	}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "risky.tool", Description: "must not run", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executed = true
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.NativeTools = true
+	runner.SetForceClass(string(ClassQuestion))
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if executed {
+		t.Fatal("tool call from a length-truncated response was executed")
+	}
+	// The model must have been told to re-issue: the second request carries a
+	// role:tool message for tc1 mentioning truncation.
+	second := p.requests[1]
+	found := false
+	for _, m := range second.Messages {
+		if m.Role == schema.RoleTool && m.ToolCallID == "tc1" && strings.Contains(m.Content, "truncated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no corrective tool result for the truncated tool call")
+	}
 }
 
 func TestChatOnceRoutesThinkingDeltasToStateAndReturnsAnswerText(t *testing.T) {
@@ -470,13 +516,7 @@ func TestRunRequiresApprovalForShellRunAndRespectsApproval(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// "Run echo hi" matches the "run" command keyword, so Classify returns
-	// ClassCommand and Run() issues one extra planning-phase provider call
-	// (freeform text, not JSON) before entering the tool-call loop. The
-	// first scripted response below satisfies that planning call; the
-	// second and third are consumed by the tool_call/final loop iterations.
 	p := &scriptedProvider{responses: []string{
-		"1. Run the requested command.",
 		`{"rationale":"check status","action":{"type":"tool_call","tool":"shell.run","args":{"command":"echo hi"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Command ran."}}`,
 	}}
@@ -878,6 +918,7 @@ func TestRunAddsPlanToContextPackForActionCalls(t *testing.T) {
 		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
 	})
 	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
 
 	if err := runner.Run(context.Background(), "Add a test"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -923,6 +964,7 @@ func TestRunAddsPlanToContextPackBeforeSnippetsAndToolOutput(t *testing.T) {
 		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 8},
 	})
 	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
 
 	if err := runner.Run(context.Background(), "Add a test"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -982,6 +1024,7 @@ func TestRunPreservesContextPackSectionMetadataWhenAddingPlan(t *testing.T) {
 		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 3},
 	})
 	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
 
 	if err := runner.Run(context.Background(), "Add a test"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -1105,6 +1148,7 @@ func TestRunAppliesRouteContextBudgetToExistingPack(t *testing.T) {
 	}
 	runner := NewRunner(p, reg, pol, state, "fallback-model")
 	runner.RouteResolver = resolver
+	runner.PlanFirst = true
 
 	if err := runner.Run(context.Background(), "Add a test"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -1246,7 +1290,6 @@ func TestRunCachesReadOnlyToolResults(t *testing.T) {
 	}
 
 	p := &scriptedProvider{responses: []string{
-		"1. Read the demo value twice.",
 		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{"key":"value"}}}`,
 		`{"rationale":"read again","action":{"type":"tool_call","tool":"demo.read","args":{"key":"value"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
@@ -1293,7 +1336,6 @@ func TestRunExecutesParallelReadOnlyActions(t *testing.T) {
 	}
 
 	p := &scriptedProvider{responses: []string{
-		"1. Read both demo values.",
 		`{"rationale":"read both","actions":[{"type":"tool_call","tool":"demo.a","args":{}},{"type":"tool_call","tool":"demo.b","args":{}}]}`,
 		`{"rationale":"done","action":{"type":"final","content":"Got alpha and beta."}}`,
 	}}
@@ -1324,21 +1366,22 @@ func TestRunDetectsRepeatedToolCalls(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
-		"1. Read the demo value.",
-		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
-		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
-		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
-		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
-	}}
+	read := `{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`
+	responses := make([]string, 0, repeatHardStall+1)
+	for i := 0; i < repeatHardStall; i++ {
+		responses = append(responses, read)
+	}
+	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"Done."}}`)
+	p := &scriptedProvider{responses: responses}
 	state := newTestState(t)
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	runner.MaxToolIterations = 5
+	runner.Role = RoleRepoScout
+	runner.MaxToolIterations = repeatHardStall + 1
 
-	// Three identical tool calls in a row is an exact-repeat hard stall (see
-	// progressTracker.assess), which now forces an immediate final answer
-	// via finalize rather than a soft nudge-and-continue. The 5th scripted
-	// response ("Done.") is what finalize's forced call receives.
+	// repeatHardStall identical tool calls in a row is an exact-repeat hard
+	// stall. For non-general (swarm) roles this forces an immediate final
+	// answer via finalize; the final scripted response ("Done.") is what
+	// finalize's forced call receives.
 	task, err := runner.RunTask(context.Background(), "Read the demo value")
 	if err != nil {
 		t.Fatalf("RunTask returned error: %v", err)
@@ -1364,7 +1407,6 @@ func TestRunSummarizesLargeToolResults(t *testing.T) {
 	}
 
 	p := &scriptedProvider{responses: []string{
-		"1. Read the big file.",
 		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
 	}}
@@ -1375,15 +1417,15 @@ func TestRunSummarizesLargeToolResults(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	foundTruncated := false
+	foundSpill := false
 	for _, ev := range state.AuditLog() {
-		if strings.Contains(ev.ResultSummary, "[truncated]") {
-			foundTruncated = true
+		if strings.Contains(ev.ResultSummary, "[output spilled to file]") {
+			foundSpill = true
 			break
 		}
 	}
-	if !foundTruncated {
-		t.Fatalf("large tool result was not truncated in audit log: %#v", state.AuditLog())
+	if !foundSpill {
+		t.Fatalf("large tool result was not spilled in audit log: %#v", state.AuditLog())
 	}
 }
 
@@ -1515,6 +1557,7 @@ func TestRunnerSetsPlanAfterPlanningPhase(t *testing.T) {
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
 	runner.MaxToolIterations = 2
 
 	err := runner.Run(context.Background(), "build a feature")
@@ -1531,6 +1574,50 @@ func TestRunnerSetsPlanAfterPlanningPhase(t *testing.T) {
 	}
 }
 
+func TestPlanningStepSkippedByDefault(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"done","action":{"type":"final","content":"edited"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassEdit)) // non-question class used to force planning
+
+	if err := runner.Run(context.Background(), "rename the function"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("provider called %d times, want 1 (no separate planning round-trip)", p.calls)
+	}
+	if len(state.Plan()) != 0 {
+		t.Fatalf("plan was set without PlanFirst: %v", state.Plan())
+	}
+}
+
+func TestPlanningStepRunsWhenPlanFirstEnabled(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		"1. Read the file\n2. Edit it",
+		`{"rationale":"done","action":{"type":"final","content":"edited"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
+	runner.SetForceClass(string(ClassEdit))
+
+	if err := runner.Run(context.Background(), "rename the function"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if p.calls != 2 {
+		t.Fatalf("provider called %d times, want 2 (plan + answer)", p.calls)
+	}
+	if len(state.Plan()) == 0 {
+		t.Fatal("PlanFirst=true did not set a plan")
+	}
+}
+
 func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{
@@ -1544,7 +1631,6 @@ func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 	}
 
 	p := &scriptedProvider{responses: []string{
-		"1. Try parallel write.",
 		`{"rationale":"bad parallel","actions":[{"type":"tool_call","tool":"demo.write","args":{}}]}`,
 		`{"rationale":"corrected","action":{"type":"final","content":"Done."}}`,
 	}}
@@ -1650,7 +1736,6 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	skills.RegisterTool(reg, idx, state)
 
 	p := &scriptedProvider{responses: []string{
-		"1. Load the debug skill.",
 		`{"rationale":"need debugging workflow","action":{"type":"tool_call","tool":"skill.load","args":{"name":"debug"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Debug skill loaded and used."}}`,
 	}}
@@ -1685,8 +1770,8 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 			}
 		}
 	}
-	if len(systemPromptMsgs) < 3 {
-		t.Fatalf("expected at least 3 provider requests with system messages, got %d", len(systemPromptMsgs))
+	if len(systemPromptMsgs) < 2 {
+		t.Fatalf("expected at least 2 provider requests with system messages, got %d", len(systemPromptMsgs))
 	}
 	if !strings.Contains(systemPromptMsgs[0], "`debug`") {
 		t.Fatal("first system prompt should list debug skill")
@@ -1694,8 +1779,8 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	if !strings.Contains(systemPromptMsgs[0], "Debugging workflow") {
 		t.Fatal("first system prompt should include skill description")
 	}
-	if !strings.Contains(systemPromptMsgs[2], "Active Skills") {
-		t.Fatal("third system prompt should show Active Skills")
+	if !strings.Contains(systemPromptMsgs[1], "Active Skills") {
+		t.Fatal("second system prompt should show Active Skills")
 	}
 }
 
@@ -1835,53 +1920,6 @@ func TestRunnerNonShellToolApprovalAndJSONEditing(t *testing.T) {
 	wantArgs := `{"title":"new title","body":"new body"}`
 	if calledArgs != wantArgs {
 		t.Errorf("calledArgs = %q, want %q", calledArgs, wantArgs)
-	}
-}
-
-func TestRunNudgeNamesRepeatedCall(t *testing.T) {
-	reg := registry.New()
-	if err := reg.Register(registry.Tool{
-		Name: "file.read",
-		Risk: registry.RiskReadOnly,
-		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return registry.ToolResult{Summary: "ok", Content: "package main"}, nil
-		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	read := func(path string) string {
-		return fmt.Sprintf(`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":%q}}}`, path)
-	}
-	// Three novel reads, then the same three again: the 6th call makes the
-	// trailing three all duplicates -> soft stall -> nudge; the model then
-	// answers normally on the 7th response.
-	p := &scriptedProvider{responses: []string{
-		read("a.go"), read("b.go"), read("c.go"),
-		read("a.go"), read("b.go"), read("c.go"),
-		`{"rationale":"done","action":{"type":"final","content":"Answer."}}`,
-	}}
-	state := newTestState(t)
-	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	r.SetForceClass(string(ClassQuestion))
-
-	task, err := r.RunTask(context.Background(), "how does pkg work?")
-	if err != nil {
-		t.Fatalf("RunTask err = %v", err)
-	}
-	if task.SalvagedReason != "" || task.Summary != "Answer." {
-		t.Fatalf("task = %+v, want un-salvaged completion with Summary=Answer.", task)
-	}
-	foundNudge := false
-	for _, m := range state.Messages() {
-		if m.Role == session.RoleSystem &&
-			strings.Contains(m.Content, "file.read") &&
-			strings.Contains(m.Content, "c.go") {
-			foundNudge = true
-		}
-	}
-	if !foundNudge {
-		t.Fatal("expected a soft-stall nudge naming the repeated call (file.read c.go)")
 	}
 }
 
@@ -2162,6 +2200,128 @@ func TestPersistentMalformedOutputFailsFastWithoutWork(t *testing.T) {
 	}
 }
 
+// scriptRepeats returns n copies of the same tool_call action envelope.
+func scriptRepeats(n int, resp string) []string {
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, resp)
+	}
+	return out
+}
+
+func TestHardStallAsksUserAndContinuesOnGuidance(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
+	responses := scriptRepeats(repeatHardStall, toolResp)
+	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"finished after guidance"}}`)
+	p := &scriptedProvider{responses: responses}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassQuestion))
+
+	go func() {
+		for {
+			if q := state.PendingQuestion(); q != nil {
+				q.ResponseChan <- "try reading the config file instead"
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	task, err := runner.RunTask(context.Background(), "investigate")
+	if err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
+	}
+	if task.SalvagedReason != "" {
+		t.Fatalf("task was salvaged (%s); guidance should have continued the loop", task.SalvagedReason)
+	}
+	if task.Summary != "finished after guidance" {
+		t.Fatalf("task.Summary = %q", task.Summary)
+	}
+	// The guidance must reach the model as a user message.
+	last := p.requests[len(p.requests)-1]
+	found := false
+	for _, m := range last.Messages {
+		if m.Role == schema.RoleUser && strings.Contains(m.Content, "try reading the config file instead") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("user guidance was not injected into the conversation")
+	}
+}
+
+func TestHardStallFinalizesWhenUserDeclines(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
+	responses := scriptRepeats(repeatHardStall, toolResp)
+	responses = append(responses, `{"rationale":"stopping","action":{"type":"final","content":"summary of progress"}}`)
+	p := &scriptedProvider{responses: responses}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassQuestion))
+
+	go func() {
+		for {
+			if q := state.PendingQuestion(); q != nil {
+				q.ResponseChan <- "" // decline
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	task, err := runner.RunTask(context.Background(), "investigate")
+	if err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
+	}
+	if task.SalvagedReason != string(reasonStalled) {
+		t.Fatalf("SalvagedReason = %q, want %q", task.SalvagedReason, reasonStalled)
+	}
+}
+
+func TestHardStallAutoFinalizesForNonGeneralRole(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
+	responses := scriptRepeats(repeatHardStall, toolResp)
+	responses = append(responses, `{"rationale":"stopping","action":{"type":"final","content":"scout findings"}}`)
+	p := &scriptedProvider{responses: responses}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.Role = RoleRepoScout
+	runner.SetForceClass(string(ClassQuestion))
+
+	task, err := runner.RunTask(context.Background(), "scout the repo")
+	if err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
+	}
+	if task.SalvagedReason != string(reasonStalled) {
+		t.Fatalf("SalvagedReason = %q, want stalled auto-finalize for swarm role", task.SalvagedReason)
+	}
+}
+
 func answerPendingQuestion(state *session.State, answer string) <-chan string {
 	questionCh := make(chan string, 1)
 	go func() {
@@ -2403,5 +2563,113 @@ func TestRunAskUserDeclinedCountsAgainstBudget(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunTask hung: declined ask_user did not consume the budget")
+	}
+}
+
+func TestRepeatedToolCallGetsReminderInResult(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
+	p := &scriptedProvider{responses: []string{
+		toolResp, toolResp, toolResp,
+		`{"rationale":"done","action":{"type":"final","content":"finished"}}`,
+	}}
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassQuestion))
+
+	if err := runner.Run(context.Background(), "check the thing"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	// The 3rd identical result must carry the gentle reminder; requests[3] is
+	// the model call after that result, so its message list contains it.
+	last := p.requests[len(p.requests)-1]
+	found := false
+	for _, m := range last.Messages {
+		if strings.Contains(m.Content, "repeating the exact same tool call") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("third identical tool result did not carry the repeat reminder")
+	}
+}
+
+func TestLoopCompactsViaSummaryWhenOverBudget(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"big.tool","args":{}}}`
+	p := &scriptedProvider{responses: []string{
+		toolResp,
+		"## Current State\nread the big file; ready to answer.", // handoff summary call
+		`{"rationale":"done","action":{"type":"final","content":"answer from summary"}}`,
+	}}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "big.tool", Description: "big output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			// Keep the output inline (under the 8000-char spill limit) while still
+			// exceeding the 1500-token context budget when included in the transcript.
+			return registry.ToolResult{Summary: "ok", Content: strings.Repeat("word ", 1400)}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassQuestion))
+	runner.MaxTurnContextTokens = 1500
+
+	task, err := runner.RunTask(context.Background(), "summarize the big file")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if task.Summary != "answer from summary" {
+		t.Fatalf("task.Summary = %q", task.Summary)
+	}
+	// Request 2 is the summarization call; request 3 must be the rebuilt
+	// transcript containing the summary but not the huge tool output.
+	final := p.requests[len(p.requests)-1]
+	for _, m := range final.Messages {
+		if strings.Count(m.Content, "word ") > 100 {
+			t.Fatal("rebuilt transcript still contains the oversized tool output")
+		}
+	}
+}
+
+func TestSecondTurnSeesFirstTurnHistory(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"a","action":{"type":"answer","content":"the parser lives in protocol.go"}}`,
+		`{"rationale":"b","action":{"type":"answer","content":"expanded answer"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "where is the parser?"); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if err := runner.Run(context.Background(), "tell me more about it"); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+
+	second := p.requests[len(p.requests)-1]
+	sawPriorQuestion, sawPriorAnswer := false, false
+	for _, m := range second.Messages {
+		if strings.Contains(m.Content, "where is the parser?") {
+			sawPriorQuestion = true
+		}
+		if strings.Contains(m.Content, "the parser lives in protocol.go") {
+			sawPriorAnswer = true
+		}
+	}
+	if !sawPriorQuestion || !sawPriorAnswer {
+		t.Fatalf("second turn missing history: question=%v answer=%v", sawPriorQuestion, sawPriorAnswer)
 	}
 }

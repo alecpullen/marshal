@@ -187,6 +187,28 @@ func TestSaveProjectConfigOmitsAgentWhenPresetActive(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRoundTripsPlanFirst(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Profile.Default = ""
+	cfg.AgentProfiles = nil
+	cfg.Agent.PlanFirst = true
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !loaded.Agent.PlanFirst {
+		t.Fatalf("Agent.PlanFirst = %v, want true", loaded.Agent.PlanFirst)
+	}
+}
+
 func TestSaveProjectConfigPreservesUnrelatedSections(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

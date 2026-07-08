@@ -287,6 +287,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if cfg.Agent.MaxTurnContextTokens > 0 {
 		runner.MaxTurnContextTokens = cfg.Agent.MaxTurnContextTokens
 	}
+	runner.PlanFirst = cfg.Agent.PlanFirst
 	if runner.RequestTimeout == 0 {
 		runner.RequestTimeout = 60 * time.Second
 	}
@@ -352,6 +353,7 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		if cfg.Agent.MaxTurnContextTokens > 0 {
 			r.MaxTurnContextTokens = cfg.Agent.MaxTurnContextTokens
 		}
+		r.PlanFirst = cfg.Agent.PlanFirst
 		return r, nil
 	}
 	o := swarm.New(state, factory)

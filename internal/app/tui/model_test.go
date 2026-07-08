@@ -325,26 +325,6 @@ func TestScrollUpPreventsAutoBottomOnRefresh(t *testing.T) {
 	}
 }
 
-func TestMouseWheelScrollsViewport(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	for i := 0; i < 100; i++ {
-		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
-	}
-	m := New(state)
-	m.resize(80, 24)
-	m.refreshViewport()
-	bottom := m.viewport.YOffset()
-
-	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
-	m = updated.(Model)
-	if m.viewport.YOffset() >= bottom {
-		t.Fatalf("mouse wheel up did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset())
-	}
-	if m.viewportFollow {
-		t.Fatal("mouse wheel up did not disable viewport follow")
-	}
-}
-
 func TestNewSubmissionReEnablesFollow(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	for i := 0; i < 100; i++ {

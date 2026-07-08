@@ -96,7 +96,9 @@ func (m Model) renderInputArea() string {
 			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth))
 		}
 	} else {
-		rows = append(rows, m.renderActivityStrip())
+		if strip := m.renderActivityStrip(); strip != "" {
+			rows = append(rows, strip)
+		}
 		if len(m.commandSuggestions) > 0 {
 			rows = append(rows, m.renderCommandSuggestions())
 		}
@@ -124,6 +126,8 @@ func (m Model) renderActivityStrip() string {
 			elapsed = 0
 		}
 		label = fmt.Sprintf("%s %s · %s", m.spinnerFrame, activity.Label, formatElapsed(elapsed))
+	default:
+		return ""
 	}
 	return statusBusyStyle.Render(truncateRunes(label, available))
 }

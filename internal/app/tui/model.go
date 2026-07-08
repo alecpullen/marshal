@@ -252,9 +252,11 @@ func (m *Model) resize(width, height int) {
 
 	// Input interior: the box border (1 each side) + padding (1 each side)
 	// = 4 horizontal frame cells. The textarea's SetWidth sets the text
-	// wrap width; the viewport (and thus View() output) is
-	// m.width + m.promptWidth, so subtract promptWidth (2) to fit the box.
-	m.input.SetWidth(max(width-6, 1))
+	// wrap width and internally subtracts promptWidth (2). Reserve 4 (box
+	// frame) + 2 (safety margin from box width clipping) + 2 (prompt,
+	// handled inside SetWidth) = 8 so rendered lines stay inside the box
+	// content area and avoid boundary-case trailing-space wrap artifacts.
+	m.input.SetWidth(max(width-8, 1))
 
 	// Transcript viewport lives inside a subtle border frame.
 	m.viewport.SetWidth(max(width-2, 1))
@@ -630,7 +632,10 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 }
 
 func (m Model) inputAreaRows() int {
-	rows := inputBorderRows + activityStripRows
+	rows := inputBorderRows
+	if m.state.Activity().Kind != session.ActivityIdle {
+		rows += activityStripRows
+	}
 	if q := m.state.PendingQuestion(); q != nil {
 		content := ""
 		if m.questionModel != nil {
@@ -724,6 +729,7 @@ func (m *Model) acceptCommandSuggestion() bool {
 }
 
 func (m *Model) refreshViewport() {
+	m.updateViewportHeight()
 	items := m.state.Transcript()
 	inProgress := m.state.InProgress()
 	streamLen := len(inProgress.Reasoning)

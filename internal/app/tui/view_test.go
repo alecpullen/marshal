@@ -71,8 +71,8 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	if len(busyLines) != 30 {
 		t.Fatalf("busy view height = %d, want fixed terminal height 30", len(busyLines))
 	}
-	if len(idleLines) != len(busyLines) {
-		t.Fatalf("view height changed from %d to %d when activity started", len(idleLines), len(busyLines))
+	if len(idleLines) != 30 {
+		t.Fatalf("idle view height = %d, want fixed terminal height 30", len(idleLines))
 	}
 	if idleLines[0] != busyLines[0] {
 		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
@@ -231,6 +231,110 @@ func TestMultilineInputAlignsContinuationLines(t *testing.T) {
 		if promptTextCol != contTextCol {
 			t.Fatalf("text column mismatch: prompt line 'a' at rune index %d, continuation line %d 'a' at rune index %d\nline0=%q\nline%d=%q",
 				promptTextCol, i, contTextCol, rawLines[0], i, line)
+		}
+	}
+}
+
+func TestInputAreaHasNoBlankRowsWhenIdle(t *testing.T) {
+	m := newViewTestModel(t, 60, 20)
+	m.input.SetValue("hello")
+	out := stripANSI(m.renderInputArea())
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+
+	if len(lines) < 3 {
+		t.Fatalf("expected at least 3 lines (border + content + border), got %d:\n%s", len(lines), out)
+	}
+
+	contentStart := -1
+	contentEnd := -1
+	for i, line := range lines {
+		if strings.Contains(line, "╭") {
+			contentStart = i + 1
+		}
+		if strings.Contains(line, "╰") && contentEnd < 0 {
+			contentEnd = i
+		}
+	}
+	if contentStart < 0 || contentEnd < 0 || contentStart >= contentEnd {
+		t.Fatalf("could not find content rows between borders:\n%s", out)
+	}
+
+	promptCount := 0
+	blankCount := 0
+	for i := contentStart; i < contentEnd; i++ {
+		line := lines[i]
+		if strings.Contains(line, "❯") {
+			promptCount++
+		}
+		inner := strings.TrimPrefix(line, "│")
+		inner = strings.TrimSuffix(inner, "│")
+		if strings.TrimSpace(inner) == "" {
+			blankCount++
+		}
+	}
+
+	if promptCount != 1 {
+		t.Fatalf("expected exactly 1 content row with ❯, got %d:\n%s", promptCount, out)
+	}
+	if blankCount != 0 {
+		t.Fatalf("expected 0 blank content rows, got %d:\n%s", blankCount, out)
+	}
+}
+
+func TestInputWrapsBeforeBoxContentWidth(t *testing.T) {
+	for _, w := range []int{50, 60, 80, 100} {
+		m := newViewTestModel(t, w, 20)
+		m.input.SetValue(strings.Repeat("a", 400))
+		out := stripANSI(m.renderInputArea())
+		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+
+		if len(lines) < 3 {
+			t.Fatalf("width=%d: expected at least 3 lines, got %d:\n%s", w, len(lines), out)
+		}
+
+		contentStart := -1
+		contentEnd := -1
+		contentWidth := 0
+		for i, line := range lines {
+			if strings.Contains(line, "╭") {
+				contentStart = i + 1
+				contentWidth = visibleRunes(line) - 2
+			}
+			if strings.Contains(line, "╰") && contentEnd < 0 {
+				contentEnd = i
+			}
+		}
+		if contentStart < 0 || contentEnd < 0 || contentStart >= contentEnd {
+			t.Fatalf("width=%d: could not find content rows between borders:\n%s", w, out)
+		}
+
+		promptOnOwnRow := false
+		for i := contentStart; i < contentEnd; i++ {
+			line := lines[i]
+			inner := strings.TrimPrefix(line, "│")
+			inner = strings.TrimSuffix(inner, "│")
+			trimmed := strings.TrimSpace(inner)
+			if trimmed == "❯" {
+				promptOnOwnRow = true
+			}
+			if visibleRunes(inner) > contentWidth {
+				t.Fatalf("width=%d: content row exceeds content width %d (%d): %q", w, contentWidth, visibleRunes(inner), line)
+			}
+		}
+
+		if promptOnOwnRow {
+			t.Fatalf("width=%d: ❯ is on its own row (prompt split from text):\n%s", w, out)
+		}
+
+		promptRow := ""
+		for i := contentStart; i < contentEnd; i++ {
+			if strings.Contains(lines[i], "❯") {
+				promptRow = lines[i]
+				break
+			}
+		}
+		if !strings.Contains(promptRow, "a") {
+			t.Fatalf("width=%d: prompt row has no text after ❯:\n%s", w, out)
 		}
 	}
 }

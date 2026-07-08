@@ -107,6 +107,12 @@ type Runner struct {
 	ForceClass           string // if set, overrides Classify() in Run()
 	SkillIndex           *skills.Index
 
+	// PlanFirst enables the legacy pre-loop planning round-trip. Default
+	// false: planning happens inside the loop like every mainstream agent
+	// (crush/kimi/opencode/pi), saving a model call and avoiding a pinned
+	// plan that mid-turn compaction can orphan.
+	PlanFirst bool
+
 	// Role selects the system-prompt role addendum. Zero value behaves as
 	// RoleGeneral, so existing single-agent construction is unchanged.
 	// Swarm sub-runners set this to planner/repo_scout/implementer/reviewer.
@@ -216,7 +222,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
-	if task.Class != ClassQuestion {
+	if r.PlanFirst && task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
 		planRes, err := r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages)

@@ -141,7 +141,24 @@ func New(state *session.State, opts ...Option) Model {
 	input.Placeholder = "Ask Marshal..."
 	input.CharLimit = 4000
 	input.MaxHeight = 8
+	input.MinHeight = 1
+	input.DynamicHeight = true
 	input.SetHeight(1)
+	input.SetWidth(80)
+
+	// The prompt is rendered inside the textarea on every display line via
+	// SetPromptFunc. promptWidth=2 reserves two cells on each line: line 0
+	// shows "❯ " (width 2) and continuation/wrapped lines show "  " (two
+	// spaces, width 2), so wrapped text aligns under the first line's text
+	// column. "❯" is rune-width 1, so "❯ " and "  " are both visible width 2.
+	input.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
+			return "❯ "
+		}
+		return "  "
+	})
+	// Re-apply width so the prompt's reserved cells are subtracted from
+	// the text wrap width.
 	input.SetWidth(80)
 
 	km := textarea.DefaultKeyMap()
@@ -155,6 +172,14 @@ func New(state *session.State, opts ...Option) Model {
 	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
 	styles.Blurred.Text = textStyle
 	styles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
+
+	// The prompt string from SetPromptFunc is re-rendered through
+	// computedPrompt() (the Prompt style). Set it to a plain style so the
+	// prompt keeps its default color — the ❯ glyph is visually distinct on
+	// its own. (If you want the ❯ coral, set these to
+	// lipgloss.NewStyle().Foreground(coralColor).Bold(true) instead.)
+	styles.Focused.Prompt = lipgloss.NewStyle()
+	styles.Blurred.Prompt = lipgloss.NewStyle()
 
 	// CursorLine is the style wrapping the active text row. The upstream
 	// default adds a dark background ("0") that extends across the full
@@ -225,10 +250,11 @@ func (m *Model) resize(width, height int) {
 	m.width = width
 	m.height = height
 
-	// Input interior: width minus border (2) and padding (2) leaves the
-	// box's inner width (width-4); the "❯ " prompt occupies 2 cells of it.
+	// Input interior: the box border (1 each side) + padding (1 each side)
+	// = 4 horizontal frame cells. The textarea's SetWidth sets the text
+	// wrap width; the viewport (and thus View() output) is
+	// m.width + m.promptWidth, so subtract promptWidth (2) to fit the box.
 	m.input.SetWidth(max(width-6, 1))
-	m.resizeInputHeight()
 
 	// Transcript viewport lives inside a subtle border frame.
 	m.viewport.SetWidth(max(width-2, 1))
@@ -360,18 +386,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, tickCmd()
-	case tea.MouseWheelMsg:
-		var vpCmd tea.Cmd
-		m.viewport, vpCmd = m.viewport.Update(msg)
-		switch msg.Button {
-		case tea.MouseWheelUp:
-			m.viewportFollow = false
-		case tea.MouseWheelDown:
-			if m.viewport.AtBottom() {
-				m.viewportFollow = true
-			}
-		}
-		return m, vpCmd
 	case tea.KeyPressMsg:
 		// Global hotkeys — input is always focused. (Approval and question
 		// pending states are routed above, before this switch.)
@@ -450,7 +464,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.input.Reset()
-			m.resizeInputHeight()
 			m.updateCommandSuggestions()
 			m.updateViewportHeight()
 			m.viewportFollow = true
@@ -476,12 +489,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	inputHeightChanged := m.resizeInputHeight()
 	m.updateCommandSuggestions()
 
-	// Recalculate viewport if input area height changed
+	// The textarea updates its own height (DynamicHeight); recalculate the
+	// viewport height and refresh if it changed.
 	viewportHeightChanged := m.updateViewportHeight()
-	if inputHeightChanged || viewportHeightChanged {
+	if viewportHeightChanged {
 		m.lastTranscriptHash = 0
 		m.refreshViewport()
 	}
@@ -502,7 +515,6 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 				m.editingCommand = false
 				m.input.Reset()
 				m.input.Placeholder = "Ask Marshal..."
-				m.resizeInputHeight()
 				m.updateViewportHeight()
 				m.lastTranscriptHash = 0
 				return m, nil
@@ -513,7 +525,6 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 					m.editingCommand = false
 					m.input.Reset()
 					m.input.Placeholder = "Ask Marshal..."
-					m.resizeInputHeight()
 					m.updateViewportHeight()
 					m.state.SetPendingApproval(nil)
 					m.approvalModel = nil
@@ -524,7 +535,6 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
-		m.resizeInputHeight()
 		m.updateViewportHeight()
 		return m, cmd
 	}
@@ -568,7 +578,6 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 			m.input.SetValue(tc.Args)
 			m.input.Placeholder = "Edit JSON arguments..."
 		}
-		m.resizeInputHeight()
 		m.updateViewportHeight()
 		m.input.Focus()
 		m.lastTranscriptHash = 0
@@ -615,7 +624,6 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 	m.questionModel = nil
 	m.input.Reset()
 	m.input.Placeholder = "Ask Marshal..."
-	m.resizeInputHeight()
 	m.updateViewportHeight()
 	m.lastTranscriptHash = 0
 	return m, nil
@@ -634,7 +642,9 @@ func (m Model) inputAreaRows() int {
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		content := ""
 		if m.editingCommand {
-			content = "❯ " + m.input.View()
+			// The ❯ prompt is rendered inside the textarea by SetPromptFunc,
+			// so m.input.View() already includes it — do not prepend it again.
+			content = m.input.View()
 		} else if m.approvalModel != nil {
 			content = m.approvalModel.View()
 		} else {
@@ -642,48 +652,14 @@ func (m Model) inputAreaRows() int {
 		}
 		rows += len(strings.Split(content, "\n"))
 	} else {
-		inputHeight := max(m.input.Height(), 1)
-		if inputHeight > m.input.MaxHeight {
-			inputHeight = m.input.MaxHeight
-		}
-		rows += inputHeight
+		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
+		// only guard needed is the max(..., 1) floor.
+		rows += max(m.input.Height(), 1)
 	}
 	if len(m.commandSuggestions) > 0 {
 		rows += commandSuggestionRows
 	}
 	return rows
-}
-
-func (m *Model) resizeInputHeight() bool {
-	rows := wrappedInputRows(m.input.Value(), m.input.Width())
-	if m.input.MaxHeight > 0 && rows > m.input.MaxHeight {
-		rows = m.input.MaxHeight
-	}
-	if rows < 1 {
-		rows = 1
-	}
-	if rows == m.input.Height() {
-		return false
-	}
-	m.input.SetHeight(rows)
-	return true
-}
-
-func wrappedInputRows(value string, width int) int {
-	if width < 1 || value == "" {
-		return 1
-	}
-
-	rows := 0
-	for _, line := range strings.Split(value, "\n") {
-		if line == "" {
-			rows++
-			continue
-		}
-		wrapped := ansi.Wrap(line, width, "")
-		rows += max(len(strings.Split(wrapped, "\n")), 1)
-	}
-	return max(rows, 1)
 }
 
 func (m Model) swarmPanelRows() int {
@@ -1011,9 +987,6 @@ var (
 	thinkingLineStyle = lipgloss.NewStyle().
 				Foreground(dimColor).
 				Italic(true)
-	inputPromptStyle = lipgloss.NewStyle().
-				Foreground(coralColor).
-				Bold(true)
 
 	codeBorderStyle = lipgloss.NewStyle().
 			Foreground(dimColor).

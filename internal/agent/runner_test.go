@@ -516,13 +516,7 @@ func TestRunRequiresApprovalForShellRunAndRespectsApproval(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// "Run echo hi" matches the "run" command keyword, so Classify returns
-	// ClassCommand and Run() issues one extra planning-phase provider call
-	// (freeform text, not JSON) before entering the tool-call loop. The
-	// first scripted response below satisfies that planning call; the
-	// second and third are consumed by the tool_call/final loop iterations.
 	p := &scriptedProvider{responses: []string{
-		"1. Run the requested command.",
 		`{"rationale":"check status","action":{"type":"tool_call","tool":"shell.run","args":{"command":"echo hi"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Command ran."}}`,
 	}}
@@ -924,6 +918,7 @@ func TestRunAddsPlanToContextPackForActionCalls(t *testing.T) {
 		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
 	})
 	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
 
 	if err := runner.Run(context.Background(), "Add a test"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -969,6 +964,7 @@ func TestRunAddsPlanToContextPackBeforeSnippetsAndToolOutput(t *testing.T) {
 		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 8},
 	})
 	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
 
 	if err := runner.Run(context.Background(), "Add a test"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -1028,6 +1024,7 @@ func TestRunPreservesContextPackSectionMetadataWhenAddingPlan(t *testing.T) {
 		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 3},
 	})
 	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
 
 	if err := runner.Run(context.Background(), "Add a test"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -1292,7 +1289,6 @@ func TestRunCachesReadOnlyToolResults(t *testing.T) {
 	}
 
 	p := &scriptedProvider{responses: []string{
-		"1. Read the demo value twice.",
 		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{"key":"value"}}}`,
 		`{"rationale":"read again","action":{"type":"tool_call","tool":"demo.read","args":{"key":"value"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
@@ -1339,7 +1335,6 @@ func TestRunExecutesParallelReadOnlyActions(t *testing.T) {
 	}
 
 	p := &scriptedProvider{responses: []string{
-		"1. Read both demo values.",
 		`{"rationale":"read both","actions":[{"type":"tool_call","tool":"demo.a","args":{}},{"type":"tool_call","tool":"demo.b","args":{}}]}`,
 		`{"rationale":"done","action":{"type":"final","content":"Got alpha and beta."}}`,
 	}}
@@ -1412,7 +1407,6 @@ func TestRunSummarizesLargeToolResults(t *testing.T) {
 	}
 
 	p := &scriptedProvider{responses: []string{
-		"1. Read the big file.",
 		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
 	}}
@@ -1563,6 +1557,7 @@ func TestRunnerSetsPlanAfterPlanningPhase(t *testing.T) {
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
 	runner.MaxToolIterations = 2
 
 	err := runner.Run(context.Background(), "build a feature")
@@ -1579,6 +1574,50 @@ func TestRunnerSetsPlanAfterPlanningPhase(t *testing.T) {
 	}
 }
 
+func TestPlanningStepSkippedByDefault(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"done","action":{"type":"final","content":"edited"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassEdit)) // non-question class used to force planning
+
+	if err := runner.Run(context.Background(), "rename the function"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("provider called %d times, want 1 (no separate planning round-trip)", p.calls)
+	}
+	if len(state.Plan()) != 0 {
+		t.Fatalf("plan was set without PlanFirst: %v", state.Plan())
+	}
+}
+
+func TestPlanningStepRunsWhenPlanFirstEnabled(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		"1. Read the file\n2. Edit it",
+		`{"rationale":"done","action":{"type":"final","content":"edited"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.PlanFirst = true
+	runner.SetForceClass(string(ClassEdit))
+
+	if err := runner.Run(context.Background(), "rename the function"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if p.calls != 2 {
+		t.Fatalf("provider called %d times, want 2 (plan + answer)", p.calls)
+	}
+	if len(state.Plan()) == 0 {
+		t.Fatal("PlanFirst=true did not set a plan")
+	}
+}
+
 func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{
@@ -1592,7 +1631,6 @@ func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 	}
 
 	p := &scriptedProvider{responses: []string{
-		"1. Try parallel write.",
 		`{"rationale":"bad parallel","actions":[{"type":"tool_call","tool":"demo.write","args":{}}]}`,
 		`{"rationale":"corrected","action":{"type":"final","content":"Done."}}`,
 	}}
@@ -1698,7 +1736,6 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	skills.RegisterTool(reg, idx, state)
 
 	p := &scriptedProvider{responses: []string{
-		"1. Load the debug skill.",
 		`{"rationale":"need debugging workflow","action":{"type":"tool_call","tool":"skill.load","args":{"name":"debug"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Debug skill loaded and used."}}`,
 	}}
@@ -1733,8 +1770,8 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 			}
 		}
 	}
-	if len(systemPromptMsgs) < 3 {
-		t.Fatalf("expected at least 3 provider requests with system messages, got %d", len(systemPromptMsgs))
+	if len(systemPromptMsgs) < 2 {
+		t.Fatalf("expected at least 2 provider requests with system messages, got %d", len(systemPromptMsgs))
 	}
 	if !strings.Contains(systemPromptMsgs[0], "`debug`") {
 		t.Fatal("first system prompt should list debug skill")
@@ -1742,8 +1779,8 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	if !strings.Contains(systemPromptMsgs[0], "Debugging workflow") {
 		t.Fatal("first system prompt should include skill description")
 	}
-	if !strings.Contains(systemPromptMsgs[2], "Active Skills") {
-		t.Fatal("third system prompt should show Active Skills")
+	if !strings.Contains(systemPromptMsgs[1], "Active Skills") {
+		t.Fatal("second system prompt should show Active Skills")
 	}
 }
 

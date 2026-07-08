@@ -78,7 +78,6 @@ func TestEvalScenarios(t *testing.T) {
 		{
 			name: "edit turn patches and validates",
 			responses: []string{
-				"1. Read the file. 2. Patch it. 3. Validate.",
 				evalRead("a.go"),
 				`{"rationale":"apply","action":{"type":"patch","content":"File: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}}`,
 				`{"rationale":"validate","action":{"type":"tool_call","tool":"demo.test","args":{}}}`,

@@ -46,6 +46,12 @@ func evalNativeRead(id, path string) schema.ToolCall {
 func TestEvalScenarios(t *testing.T) {
 	finalAnswer := `{"rationale":"done","action":{"type":"final","content":"Answer."}}`
 
+	exactRepeatResponses := make([]string, 0, repeatHardStall+1)
+	for i := 0; i < repeatHardStall; i++ {
+		exactRepeatResponses = append(exactRepeatResponses, evalRead("a.go"))
+	}
+	exactRepeatResponses = append(exactRepeatResponses, finalAnswer)
+
 	cases := []struct {
 		name       string
 		responses  []string
@@ -95,14 +101,11 @@ func TestEvalScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "exact repeat hard-stalls into salvage",
-			responses: []string{
-				evalRead("a.go"), evalRead("a.go"), evalRead("a.go"),
-				finalAnswer,
-			},
+			name:       "exact repeat hard-stalls into salvage",
+			responses:  exactRepeatResponses,
 			forceClass: ClassQuestion,
 			want: func(t *testing.T, m TurnMetrics) {
-				if m.Outcome != "salvaged" || m.SalvageReason != "stalled" || m.HardStalls != 1 || m.ToolCalls != 3 {
+				if m.Outcome != "salvaged" || m.SalvageReason != "stalled" || m.HardStalls != 1 || m.ToolCalls != repeatHardStall {
 					t.Fatalf("metrics = %+v", m)
 				}
 			},
@@ -279,15 +282,24 @@ func TestEvalNativeFinalizeScenarios(t *testing.T) {
 			},
 		},
 		{
-			name:      "native hard stall salvage returns prose",
-			responses: []string{"Read a.", "Read a.", "Read a.", "Stalled prose."},
-			toolCalls: [][]schema.ToolCall{
-				{evalNativeRead("call_a", "a.go")},
-				{evalNativeRead("call_a", "a.go")},
-				{evalNativeRead("call_a", "a.go")},
-				nil,
-			},
-			maxIters: 8,
+			name: "native hard stall salvage returns prose",
+			responses: func() []string {
+				rs := make([]string, 0, repeatHardStall+1)
+				for i := 0; i < repeatHardStall; i++ {
+					rs = append(rs, "Read a.")
+				}
+				rs = append(rs, "Stalled prose.")
+				return rs
+			}(),
+			toolCalls: func() [][]schema.ToolCall {
+				cs := make([][]schema.ToolCall, 0, repeatHardStall+1)
+				for i := 0; i < repeatHardStall; i++ {
+					cs = append(cs, []schema.ToolCall{evalNativeRead(fmt.Sprintf("call_%d", i), "a.go")})
+				}
+				cs = append(cs, nil)
+				return cs
+			}(),
+			maxIters: repeatHardStall + 1,
 			want: func(t *testing.T, task *Task, m TurnMetrics) {
 				if m.Outcome != "salvaged" || m.SalvageReason != "stalled" {
 					t.Fatalf("metrics = %+v", m)

@@ -1324,21 +1324,21 @@ func TestRunDetectsRepeatedToolCalls(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
-		"1. Read the demo value.",
-		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
-		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
-		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
-		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
-	}}
+	read := `{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`
+	responses := make([]string, 0, repeatHardStall+2)
+	responses = append(responses, "1. Read the demo value.")
+	for i := 0; i < repeatHardStall; i++ {
+		responses = append(responses, read)
+	}
+	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"Done."}}`)
+	p := &scriptedProvider{responses: responses}
 	state := newTestState(t)
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	runner.MaxToolIterations = 5
+	runner.MaxToolIterations = repeatHardStall + 1
 
-	// Three identical tool calls in a row is an exact-repeat hard stall (see
-	// progressTracker.assess), which now forces an immediate final answer
-	// via finalize rather than a soft nudge-and-continue. The 5th scripted
-	// response ("Done.") is what finalize's forced call receives.
+	// repeatHardStall identical tool calls in a row is an exact-repeat hard
+	// stall, which forces an immediate final answer via finalize. The final
+	// scripted response ("Done.") is what finalize's forced call receives.
 	task, err := runner.RunTask(context.Background(), "Read the demo value")
 	if err != nil {
 		t.Fatalf("RunTask returned error: %v", err)
@@ -1835,53 +1835,6 @@ func TestRunnerNonShellToolApprovalAndJSONEditing(t *testing.T) {
 	wantArgs := `{"title":"new title","body":"new body"}`
 	if calledArgs != wantArgs {
 		t.Errorf("calledArgs = %q, want %q", calledArgs, wantArgs)
-	}
-}
-
-func TestRunNudgeNamesRepeatedCall(t *testing.T) {
-	reg := registry.New()
-	if err := reg.Register(registry.Tool{
-		Name: "file.read",
-		Risk: registry.RiskReadOnly,
-		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return registry.ToolResult{Summary: "ok", Content: "package main"}, nil
-		},
-	}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	read := func(path string) string {
-		return fmt.Sprintf(`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":%q}}}`, path)
-	}
-	// Three novel reads, then the same three again: the 6th call makes the
-	// trailing three all duplicates -> soft stall -> nudge; the model then
-	// answers normally on the 7th response.
-	p := &scriptedProvider{responses: []string{
-		read("a.go"), read("b.go"), read("c.go"),
-		read("a.go"), read("b.go"), read("c.go"),
-		`{"rationale":"done","action":{"type":"final","content":"Answer."}}`,
-	}}
-	state := newTestState(t)
-	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	r.SetForceClass(string(ClassQuestion))
-
-	task, err := r.RunTask(context.Background(), "how does pkg work?")
-	if err != nil {
-		t.Fatalf("RunTask err = %v", err)
-	}
-	if task.SalvagedReason != "" || task.Summary != "Answer." {
-		t.Fatalf("task = %+v, want un-salvaged completion with Summary=Answer.", task)
-	}
-	foundNudge := false
-	for _, m := range state.Messages() {
-		if m.Role == session.RoleSystem &&
-			strings.Contains(m.Content, "file.read") &&
-			strings.Contains(m.Content, "c.go") {
-			foundNudge = true
-		}
-	}
-	if !foundNudge {
-		t.Fatal("expected a soft-stall nudge naming the repeated call (file.read c.go)")
 	}
 }
 
@@ -2403,5 +2356,42 @@ func TestRunAskUserDeclinedCountsAgainstBudget(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunTask hung: declined ask_user did not consume the budget")
+	}
+}
+
+func TestRepeatedToolCallGetsReminderInResult(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
+	p := &scriptedProvider{responses: []string{
+		toolResp, toolResp, toolResp,
+		`{"rationale":"done","action":{"type":"final","content":"finished"}}`,
+	}}
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassQuestion))
+
+	if err := runner.Run(context.Background(), "check the thing"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	// The 3rd identical result must carry the gentle reminder; requests[3] is
+	// the model call after that result, so its message list contains it.
+	last := p.requests[len(p.requests)-1]
+	found := false
+	for _, m := range last.Messages {
+		if strings.Contains(m.Content, "repeating the exact same tool call") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("third identical tool result did not carry the repeat reminder")
 	}
 }

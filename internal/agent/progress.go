@@ -1,5 +1,11 @@
 package agent
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+)
+
 type toolCategory string
 
 const (
@@ -28,7 +34,7 @@ func categorize(toolName string) toolCategory {
 
 // mutating reports whether a category of tool call can change repository or
 // system state. After a mutating call, previously gathered observations are
-// stale, so repeating an earlier read counts as fresh progress again.
+// stale, so repeating an earlier call counts as fresh progress again.
 func mutating(cat toolCategory) bool {
 	return cat == catShell || cat == catWrite || cat == catPatch
 }
@@ -37,28 +43,18 @@ type assessment int
 
 const (
 	assessProgressing assessment = iota
-	assessStalling
 	assessHardStall
 )
 
-type callEntry struct {
-	name string
-	args string
-	cat  toolCategory
-	// novel is true when this (name, args) pair had not been executed since
-	// the last mutating call. Novel work is progress by definition; only
-	// repeats of already-gathered results count toward churn.
-	novel bool
-}
-
-type progressTracker struct {
-	history []callEntry
-	seen    map[string]struct{}
-}
-
-func newProgressTracker() *progressTracker {
-	return &progressTracker{seen: make(map[string]struct{})}
-}
+// Escalation ladder for identical repeated calls (kimi-code's thresholds):
+// a gentle reminder at 3, an explicit one at 5, a "stop calling tools" one
+// at 8, and a hard stall — which asks the user how to proceed — at 12.
+const (
+	repeatRemindGentle = 3
+	repeatRemindStrong = 5
+	repeatRemindStop   = 8
+	repeatHardStall    = 12
+)
 
 // idleEntryName is the sentinel name used for synthetic idle entries recorded
 // by recordIdle. It deliberately starts with "<" so it can never collide with
@@ -66,118 +62,103 @@ func newProgressTracker() *progressTracker {
 const idleEntryName = "<idle>"
 
 // idleStallThreshold consecutive <idle> entries escalate directly to a hard
-// stall. Three silent turns in a row means the model has gone unresponsive
-// and the finalize (salvage) path should run rather than re-prompting again.
+// stall: a model that has gone silent should be handled rather than
+// re-prompted indefinitely.
 const idleStallThreshold = 3
 
-func (t *progressTracker) record(name, normalizedArgs string) {
-	cat := categorize(name)
-	if mutating(cat) {
-		// State changed: earlier reads are stale, future re-reads are novel.
-		t.seen = make(map[string]struct{})
+type callEntry struct {
+	name string
+	args string
+}
+
+// progressTracker counts repeats of identical (tool, args, output) signatures.
+// Including the output hash in the signature means re-running a command whose
+// result changed — e.g. a test that now passes — is never a repeat (crush's
+// loop-detection insight).
+type progressTracker struct {
+	history    []callEntry // real calls and idle sentinels, in order
+	counts     map[string]int
+	lastRepeat int // repeat count returned by the most recent record()
+	idleRun    int // consecutive recordIdle calls with no tool call between
+}
+
+func newProgressTracker() *progressTracker {
+	return &progressTracker{counts: make(map[string]int)}
+}
+
+func hashToolResult(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+// record notes one executed tool call and returns how many times this exact
+// (name, args, output) signature has now occurred since the last mutating
+// call.
+func (t *progressTracker) record(name, normalizedArgs, resultHash string) int {
+	if mutating(categorize(name)) {
+		// State changed: earlier observations are stale, future repeats are
+		// fresh progress.
+		t.counts = make(map[string]int)
 	}
-	key := name + "\x00" + normalizedArgs
-	_, dup := t.seen[key]
-	t.seen[key] = struct{}{}
-	t.history = append(t.history, callEntry{
-		name:  name,
-		args:  normalizedArgs,
-		cat:   cat,
-		novel: !dup,
-	})
+	key := name + "\x00" + normalizedArgs + "\x00" + resultHash
+	t.counts[key]++
+	t.lastRepeat = t.counts[key]
+	t.idleRun = 0
+	t.history = append(t.history, callEntry{name: name, args: normalizedArgs})
+	return t.lastRepeat
 }
 
 // recordIdle appends a synthetic idle entry so assess() can detect sustained
-// silence. Idle turns (empty responses, declined ask_user) never mutate state,
-// so they neither reset the seen set nor count as novel tool calls. The
-// reason string (e.g. the provider finish reason or "declined") is stored in
-// args for debugging.
+// silence (empty responses, declined ask_user).
 func (t *progressTracker) recordIdle(reason string) {
-	t.history = append(t.history, callEntry{
-		name:  idleEntryName,
-		args:  reason,
-		cat:   catOther,
-		novel: false,
-	})
+	t.idleRun++
+	t.history = append(t.history, callEntry{name: idleEntryName, args: reason})
 }
 
-// exactRepeat reports whether the last n entries are the same call
-// (name+args). Novelty is deliberately ignored here: in a 3x repeat the
-// first occurrence is novel and the rest are not, yet all three are the
-// same call.
-func (t *progressTracker) exactRepeat(n int) bool {
-	h := t.history
-	if len(h) < n {
-		return false
-	}
-	last := h[len(h)-1]
-	for i := len(h) - n; i < len(h)-1; i++ {
-		if h[i].name != last.name || h[i].args != last.args {
-			return false
-		}
-	}
-	return true
+// resetCounts clears repeat streaks after the user has given fresh guidance,
+// so the next identical call starts a new streak instead of instantly
+// re-tripping the hard stall.
+func (t *progressTracker) resetCounts() {
+	t.counts = make(map[string]int)
+	t.lastRepeat = 0
+	t.idleRun = 0
 }
 
-// duplicateChurn reports whether the last n entries all repeat calls whose
-// results were already gathered this turn (no novel work).
-func (t *progressTracker) duplicateChurn(n int) bool {
-	h := t.history
-	if len(h) < n {
-		return false
-	}
-	for i := len(h) - n; i < len(h); i++ {
-		if h[i].novel {
-			return false
-		}
-	}
-	return true
-}
-
-// lastCall returns the most recent recorded call so nudge messages can name
-// the specific repeated call. ok is false when nothing has been recorded.
+// lastCall returns the most recent recorded real call so stall messages can
+// name it. ok is false when nothing has been recorded.
 func (t *progressTracker) lastCall() (name, args string, ok bool) {
-	if len(t.history) == 0 {
-		return "", "", false
-	}
-	last := t.history[len(t.history)-1]
-	return last.name, last.args, true
-}
-
-// consecutiveIdle reports whether the last n entries are all idle (<idle>)
-// turns. Interleaved tool calls break the run: only unbroken silence counts
-// toward the hard-stall threshold.
-func (t *progressTracker) consecutiveIdle(n int) bool {
-	h := t.history
-	if len(h) < n {
-		return false
-	}
-	for i := len(h) - n; i < len(h); i++ {
-		if h[i].name != idleEntryName {
-			return false
+	for i := len(t.history) - 1; i >= 0; i-- {
+		if t.history[i].name != idleEntryName {
+			return t.history[i].name, t.history[i].args, true
 		}
 	}
-	return true
+	return "", "", false
 }
 
 func (t *progressTracker) assess() assessment {
-	if len(t.history) < 3 {
-		return assessProgressing
-	}
-	// Sustained silence is a hard stall regardless of any prior tool churn:
-	// a model that has stopped producing output should be salvaged rather
-	// than re-prompted indefinitely.
-	if t.consecutiveIdle(idleStallThreshold) {
+	if t.idleRun >= idleStallThreshold {
 		return assessHardStall
 	}
-	if t.exactRepeat(3) {
+	if t.lastRepeat >= repeatHardStall {
 		return assessHardStall
-	}
-	if t.duplicateChurn(5) {
-		return assessHardStall
-	}
-	if t.duplicateChurn(3) {
-		return assessStalling
 	}
 	return assessProgressing
+}
+
+// repeatReminder returns escalating guidance to append to a repeated call's
+// tool result. Putting the reminder in the result (not a separate system
+// message) keeps it adjacent to the evidence the model is ignoring.
+func repeatReminder(count int, name, args string) string {
+	switch {
+	case count >= repeatRemindStop:
+		return "\n\n<system-reminder>\nYou are stuck: this exact tool call has produced the identical result " +
+			fmt.Sprintf("%d times. Stop all tool calls in your next response. ", count) +
+			"Review what you have learned, then reply with a text-only summary of the problem, what you tried, and what decision or information you need.\n</system-reminder>"
+	case count >= repeatRemindStrong:
+		return fmt.Sprintf("\n\n<system-reminder>\nRepeated tool call detected:\n- tool: %s\n- repeated_times: %d\n- arguments: %s\nThese repeats made no progress. Do not issue this exact call again; choose a different action, different arguments, or finish the task with the evidence you already have.\n</system-reminder>", name, count, args)
+	case count >= repeatRemindGentle:
+		return "\n\n<system-reminder>\nYou are repeating the exact same tool call with identical arguments and identical output. Analyze the result above; if the task is not complete, take a different action instead of repeating this call.\n</system-reminder>"
+	default:
+		return ""
+	}
 }

@@ -29,6 +29,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"git.diff":         registry.RiskReadOnly,
 		"shell.run":        registry.RiskCommand,
 		"test.run":         registry.RiskCommand,
+		"todo.write":       registry.RiskWorkspaceWrite,
 	}
 	if got := reg.List(); len(got) != len(want) {
 		t.Fatalf("len(List()) = %d, want %d", len(got), len(want))

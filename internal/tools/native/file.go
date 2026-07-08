@@ -193,8 +193,8 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			}
 		}
 
-		if t.sessionState != nil {
-			t.sessionState.StoreBackup(backups)
+		if state, ok := t.sessionState.(*session.State); ok && state != nil {
+			state.StoreBackup(backups)
 		}
 
 		var paths []string

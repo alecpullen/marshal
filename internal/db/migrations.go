@@ -111,4 +111,11 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
     completion_tokens INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_project ON turn_metrics(project_id, id);
+
+CREATE TABLE IF NOT EXISTS session_state (
+    session_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (session_id, key)
+);
 `

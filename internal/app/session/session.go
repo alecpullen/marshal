@@ -201,6 +201,7 @@ type State struct {
 	turnToolCache   map[string]registry.ToolResult
 	activity        Activity
 	plan            []string
+	todos           []db.TodoItem
 	activeSkills    map[string]bool
 	toolBudget      ToolBudget
 	swarmProgress   SwarmProgress
@@ -538,6 +539,27 @@ func (s *State) Plan() []string {
 	p := make([]string, len(s.plan))
 	copy(p, s.plan)
 	return p
+}
+
+func (s *State) SetTodos(todos []db.TodoItem) error {
+	s.mu.Lock()
+	s.todos = make([]db.TodoItem, len(todos))
+	copy(s.todos, todos)
+	s.mu.Unlock()
+	if s.persistenceEnabled() {
+		if err := s.db.SaveTodos(s.sessionID, s.todos); err != nil {
+			s.logger.Warn("failed to persist todos", "error", err)
+		}
+	}
+	return nil
+}
+
+func (s *State) Todos() []db.TodoItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]db.TodoItem, len(s.todos))
+	copy(result, s.todos)
+	return result
 }
 
 func (s *State) AddSessionRule(prefix string) {

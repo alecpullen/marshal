@@ -81,6 +81,10 @@ const baseRules = `Rules:
 - Once the requested change is made and validated, produce a final answer — do not keep exploring.
 - Stop after validation succeeds; do not re-verify work that already passed.`
 
+const todoAddendum = `
+Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end.
+`
+
 const FinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a single action of type "final".`
 
 // NativeFinalizationDirective is the prose-oriented counterpart to
@@ -148,6 +152,7 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 	b.WriteString(baseEnvironment)
 	b.WriteString("\n\n")
 	b.WriteString(baseRules)
+	b.WriteString(todoAddendum)
 	b.WriteString("\n\nAvailable tools:\n")
 	for _, tool := range tools {
 		b.WriteString(fmt.Sprintf("- %s (%s): %s\n", tool.Name, tool.Risk, tool.Description))

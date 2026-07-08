@@ -175,3 +175,69 @@ func TestLongInputExpandsToMultipleRows(t *testing.T) {
 		}
 	}
 }
+
+func TestMultilineInputAlignsContinuationLines(t *testing.T) {
+	m := newViewTestModel(t, 50, 20)
+
+	// Type a line long enough to soft-wrap at the textarea's text width
+	// (50 - 4 box frame - 2 prompt = 44 text columns). Use 60 chars.
+	longInput := strings.Repeat("a", 60)
+	updated, _ := m.Update(tea.KeyPressMsg{Text: longInput})
+	m = updated.(Model)
+
+	// Check the raw textarea view (before box rendering) for alignment.
+	rawView := stripANSI(m.input.View())
+	rawLines := strings.Split(strings.TrimRight(rawView, "\n"), "\n")
+
+	if len(rawLines) < 2 {
+		t.Fatalf("expected at least 2 lines in textarea view, got %d:\n%s", len(rawLines), rawView)
+	}
+
+	// Line 0 should start with "❯ " (prompt for first line).
+	if !strings.HasPrefix(rawLines[0], "❯ ") {
+		t.Fatalf("first line should start with ❯ , got: %q", rawLines[0])
+	}
+
+	// Continuation lines should start with "  " (2-space indent).
+	for i := 1; i < len(rawLines); i++ {
+		line := rawLines[i]
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "  ") {
+			t.Fatalf("continuation line %d should start with 2-space indent, got: %q", i, line)
+		}
+		// The first 'a' on the continuation line should be at the same
+		// column as the first 'a' on the prompt line (after "❯ ").
+		promptRunes := []rune(rawLines[0])
+		contRunes := []rune(line)
+		promptTextCol := -1
+		for j, r := range promptRunes {
+			if r == 'a' {
+				promptTextCol = j
+				break
+			}
+		}
+		contTextCol := -1
+		for j, r := range contRunes {
+			if r == 'a' {
+				contTextCol = j
+				break
+			}
+		}
+		if promptTextCol < 0 || contTextCol < 0 {
+			t.Fatalf("could not find 'a' in lines\nline0=%q\nline%d=%q", rawLines[0], i, line)
+		}
+		if promptTextCol != contTextCol {
+			t.Fatalf("text column mismatch: prompt line 'a' at rune index %d, continuation line %d 'a' at rune index %d\nline0=%q\nline%d=%q",
+				promptTextCol, i, contTextCol, rawLines[0], i, line)
+		}
+	}
+}
+
+func TestMouseCaptureDisabled(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	if got := m.View().MouseMode; got != tea.MouseModeNone {
+		t.Fatalf("View().MouseMode = %v, want MouseModeNone (native selection enabled)", got)
+	}
+}

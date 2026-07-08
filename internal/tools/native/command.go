@@ -39,15 +39,15 @@ func (t *toolSet) shellRunTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
-		command := strings.TrimSpace(args.Command)
-		if command == "" {
-			return registry.ToolResult{}, fmt.Errorf("command is required")
-		}
-		if err := validateConservativeCommand(command); err != nil {
-			return registry.ToolResult{}, err
-		}
 		timeout := clampTimeout(args.TimeoutSeconds, defaultShellTimeout, maxShellTimeout)
 		if args.Background {
+			command := strings.TrimSpace(args.Command)
+			if command == "" {
+				return registry.ToolResult{}, fmt.Errorf("command is required")
+			}
+			if err := validateConservativeCommand(command); err != nil {
+				return registry.ToolResult{}, err
+			}
 			id, err := t.jobManager.Start(ctx, command, timeout)
 			if err != nil {
 				return registry.ToolResult{}, err
@@ -57,7 +57,7 @@ func (t *toolSet) shellRunTool() registry.Tool {
 				Content: fmt.Sprintf("job_id: %s", id),
 			}, nil
 		}
-		return t.runShellCommand(ctx, command, timeout)
+		return t.runShellCommand(ctx, args.Command, timeout)
 	}
 	return tool
 }

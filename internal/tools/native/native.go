@@ -127,7 +127,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		if retention <= 0 {
 			retention = 8 * time.Hour
 		}
-		jobManager = NewJobManager(execRunner{}, maxBg, retention)
+		jobManager = NewJobManager(execRunner{}, root, maxBg, retention)
 	}
 	if opts.SessionState != nil {
 		if counter, ok := any(opts.SessionState).(interface{ SetRunningJobsCount(int) }); ok {

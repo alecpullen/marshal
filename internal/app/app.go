@@ -250,6 +250,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		SessionState:  state,
 		DB:            database,
 		ProjectID:     projectID,
+		Config:        cfg,
 	}); err != nil {
 		return nil, nil, nil, nil, err
 	}

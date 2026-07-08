@@ -2641,3 +2641,35 @@ func TestLoopCompactsViaSummaryWhenOverBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestSecondTurnSeesFirstTurnHistory(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"a","action":{"type":"answer","content":"the parser lives in protocol.go"}}`,
+		`{"rationale":"b","action":{"type":"answer","content":"expanded answer"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "where is the parser?"); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if err := runner.Run(context.Background(), "tell me more about it"); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+
+	second := p.requests[len(p.requests)-1]
+	sawPriorQuestion, sawPriorAnswer := false, false
+	for _, m := range second.Messages {
+		if strings.Contains(m.Content, "where is the parser?") {
+			sawPriorQuestion = true
+		}
+		if strings.Contains(m.Content, "the parser lives in protocol.go") {
+			sawPriorAnswer = true
+		}
+	}
+	if !sawPriorQuestion || !sawPriorAnswer {
+		t.Fatalf("second turn missing history: question=%v answer=%v", sawPriorQuestion, sawPriorAnswer)
+	}
+}

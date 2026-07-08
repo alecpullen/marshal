@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -25,7 +25,7 @@ func TestViewIsSingleColumn(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m.refreshViewport()
-	view := m.View()
+	view := m.View().Content
 
 	for _, gone := range []string{"inspector", "1 Plan", "2 Context", "3 Log", "live transcript", "● ● ●", "MARSHAL"} {
 		if strings.Contains(view, gone) {
@@ -40,7 +40,7 @@ func TestViewIsSingleColumn(t *testing.T) {
 func TestViewContainsStatusLine(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "qwen @ ollama") {
 		t.Fatalf("view missing status line route info:\n%s", view)
 	}
@@ -60,13 +60,13 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, strings.Repeat("hello ", 120), session.ContentTypePlain)
 	m.refreshViewport()
-	idleLines := strings.Split(strings.TrimRight(m.View(), "\n"), "\n")
+	idleLines := strings.Split(strings.TrimRight(m.View().Content, "\n"), "\n")
 
 	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: time.Unix(100, 0)})
 	m.busy = true
 	m.spinnerFrame = "⠋"
 	m.refreshViewport()
-	busyLines := strings.Split(strings.TrimRight(m.View(), "\n"), "\n")
+	busyLines := strings.Split(strings.TrimRight(m.View().Content, "\n"), "\n")
 
 	if len(busyLines) != 30 {
 		t.Fatalf("busy view height = %d, want fixed terminal height 30", len(busyLines))
@@ -94,7 +94,7 @@ func TestViewFitsTerminalSizesSingleColumn(t *testing.T) {
 		m.state.AddMessage(session.RoleUser, strings.Repeat("wide input ", 30), session.ContentTypePlain)
 		m.state.AddMessage(session.RoleAssistant, strings.Repeat("wide answer ", 30), session.ContentTypeMarkdown)
 		m.refreshViewport()
-		view := m.View()
+		view := m.View().Content
 		lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 		if len(lines) > size[1] {
 			t.Fatalf("view has %d lines for height %d", len(lines), size[1])
@@ -113,7 +113,7 @@ func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
 	m.state.SetProviderError(errors.New("connection refused"))
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
-	view := m.View()
+	view := m.View().Content
 
 	if !strings.Contains(view, "✘ provider: connection refused") {
 		t.Fatalf("provider error not rendered inline:\n%s", view)
@@ -125,17 +125,16 @@ func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
 
 func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	if m.viewport.Width != 98 {
-		t.Fatalf("viewport.Width = %d, want 98 (width-2, borderless transcript)", m.viewport.Width)
+	if m.viewport.Width() != 98 {
+		t.Fatalf("viewport.Width = %d, want 98 (width-2, borderless transcript)", m.viewport.Width())
 	}
 	wantHeight := 30 - transcriptFrameRows - m.inputAreaRows() - statusLineRows
-	if m.viewport.Height != wantHeight {
-		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height, wantHeight)
+	if m.viewport.Height() != wantHeight {
+		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
 	}
 }
 
 func TestInputAreaHasNoBackgroundFill(t *testing.T) {
-	forceColor(t)
 	m := newViewTestModel(t, 60, 20)
 	out := m.renderInputArea()
 	// panelBg 235 must never be emitted as a fill anymore.
@@ -148,7 +147,6 @@ func TestInputAreaHasNoBackgroundFill(t *testing.T) {
 }
 
 func TestInputBorderColorReflectsFocus(t *testing.T) {
-	forceColor(t)
 	m := newViewTestModel(t, 60, 20)
 	if !strings.Contains(m.renderInputArea(), "209") {
 		t.Fatal("focused input box should use coral (209) border")
@@ -164,7 +162,7 @@ func TestLongInputExpandsToMultipleRows(t *testing.T) {
 	singleLineRows := m.inputAreaRows()
 
 	longInput := strings.Repeat("wrap me ", 10)
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(longInput)})
+	updated, _ := m.Update(tea.KeyPressMsg{Text: longInput})
 	m = updated.(Model)
 
 	if m.inputAreaRows() <= singleLineRows {

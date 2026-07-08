@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"marshal/internal/app/config"
 )
 
@@ -19,7 +19,7 @@ func TestOnboardingWizardTransitionsAndSaves(t *testing.T) {
 	}
 
 	// 1. Select provider (default is Ollama)
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = m2.(*OnboardingModel)
 	if m.state != stateConfigureURL {
 		t.Fatalf("after selecting provider, state = %d, want stateConfigureURL", m.state)
@@ -27,7 +27,7 @@ func TestOnboardingWizardTransitionsAndSaves(t *testing.T) {
 
 	// 2. Configure URL
 	m.textInput.SetValue("http://localhost:11434/v1")
-	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = m2.(*OnboardingModel)
 	if m.state != stateModelSelection {
 		t.Fatalf("after entering URL, state = %d, want stateModelSelection", m.state)
@@ -42,7 +42,7 @@ func TestOnboardingWizardTransitionsAndSaves(t *testing.T) {
 
 	// 3. Model selection (enter custom model name)
 	m.textInput.SetValue("my-test-model")
-	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = m2.(*OnboardingModel)
 	if m.state != stateDone {
 		t.Fatalf("after selecting model, state = %d, want stateDone", m.state)

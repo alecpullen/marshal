@@ -5,7 +5,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/session"
 )
@@ -25,7 +26,17 @@ const (
 	statusLineRows        = 1
 )
 
-func (m Model) View() string {
+// View assembles the full-screen frame. Alt screen and mouse mode are
+// declared here — in Bubble Tea v2 they are View fields rather than
+// program options.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.viewString())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+func (m Model) viewString() string {
 	if m.width == 0 || m.height == 0 {
 		return m.fallbackView()
 	}
@@ -45,9 +56,9 @@ func (m Model) View() string {
 }
 
 func (m Model) renderTranscriptFrame() string {
-	if !m.viewportFollow && m.viewport.TotalLineCount() > m.viewport.Height {
+	if !m.viewportFollow && m.viewport.TotalLineCount() > m.viewport.Height() {
 		hint := mutedStyle.Render("↑ scrolled — End to follow")
-		vpHeight := max(m.viewport.Height-1, 1)
+		vpHeight := max(m.viewport.Height()-1, 1)
 		vpView := lipgloss.NewStyle().
 			Width(max(m.width-2, 1)).
 			Height(vpHeight).
@@ -56,7 +67,7 @@ func (m Model) renderTranscriptFrame() string {
 	}
 	return lipgloss.NewStyle().
 		Width(max(m.width-2, 1)).
-		Height(max(m.viewport.Height, 1)).
+		Height(max(m.viewport.Height(), 1)).
 		Render(m.viewport.View())
 }
 
@@ -102,7 +113,7 @@ func (m Model) renderInputArea() string {
 	if !m.input.Focused() {
 		border = mauveColor
 	}
-	return inputBoxStyle.Copy().BorderForeground(border).Width(inputInnerWidth).Render(content)
+	return inputBoxStyle.BorderForeground(border).Width(inputInnerWidth).Render(content)
 }
 
 func (m Model) renderActivityStrip() string {

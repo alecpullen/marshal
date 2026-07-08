@@ -6,22 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
-
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
-
-// forceColor makes lipgloss emit ANSI256 SGR codes for the duration of the
-// test so color-code assertions are meaningful, then restores the prior
-// profile. Requires the test not run in parallel (none in this package do).
-func forceColor(t *testing.T) {
-	t.Helper()
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-}
 
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}, 80)
@@ -233,7 +220,6 @@ func TestTranscriptLinesFitWidth(t *testing.T) {
 }
 
 func TestWelcomeBannerHasCoralDotAndName(t *testing.T) {
-	forceColor(t)
 	out := renderWelcomeBanner(80)
 	plain := stripANSI(out)
 	if !strings.Contains(plain, "● marshal") {
@@ -267,7 +253,6 @@ func TestCompletedToolCallUsesCheckAndCross(t *testing.T) {
 }
 
 func TestApprovalPanelHasNoBackgroundFill(t *testing.T) {
-	forceColor(t)
 	tc := &session.PendingToolCall{Name: "shell.run", Command: "ls", Risk: "reads files"}
 	out := renderApprovalPanel(tc, session.SandboxInfo{Backend: "restricted"}, false, 50)
 	if strings.Contains(out, ";235m") || strings.Contains(out, "48;5;235") {

@@ -153,7 +153,6 @@ func TestStatusLineShowsSwarmTokenBudget(t *testing.T) {
 }
 
 func TestStatusLineHasNoBackgroundFill(t *testing.T) {
-	forceColor(t)
 	m := newViewTestModel(t, 80, 24)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
 	out := m.renderStatusLine(80)

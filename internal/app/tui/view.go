@@ -32,7 +32,10 @@ const (
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
+	// MouseModeNone (the zero value): do not capture mouse events. This lets
+	// the terminal emulator perform native click-drag text selection.
+	// Scrolling is keyboard-driven (PgUp/PgDn/Ctrl+U/Ctrl+D/End).
+	v.MouseMode = tea.MouseModeNone
 	return v
 }
 
@@ -81,21 +84,12 @@ func (m Model) renderInputArea() string {
 			rows = append(rows, m.questionModel.View())
 		} else {
 			rows = append(rows, renderQuestionPanel(q, inputInnerWidth))
-			inputLine := lipgloss.JoinHorizontal(
-				lipgloss.Top,
-				inputPromptStyle.Render("❯ "),
-				m.input.View(),
-			)
-			rows = append(rows, inputLine)
+			// The ❯ prompt is rendered inside the textarea by SetPromptFunc.
+			rows = append(rows, m.input.View())
 		}
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		if m.editingCommand {
-			editLine := lipgloss.JoinHorizontal(
-				lipgloss.Top,
-				inputPromptStyle.Render("❯ "),
-				m.input.View(),
-			)
-			rows = append(rows, editLine)
+			rows = append(rows, m.input.View())
 		} else if m.approvalModel != nil {
 			rows = append(rows, m.approvalModel.View())
 		} else {
@@ -106,12 +100,7 @@ func (m Model) renderInputArea() string {
 		if len(m.commandSuggestions) > 0 {
 			rows = append(rows, m.renderCommandSuggestions())
 		}
-		inputLine := lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			inputPromptStyle.Render("❯ "),
-			m.input.View(),
-		)
-		rows = append(rows, inputLine)
+		rows = append(rows, m.input.View())
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)

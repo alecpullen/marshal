@@ -1148,6 +1148,7 @@ func TestRunAppliesRouteContextBudgetToExistingPack(t *testing.T) {
 	}
 	runner := NewRunner(p, reg, pol, state, "fallback-model")
 	runner.RouteResolver = resolver
+	runner.PlanFirst = true
 
 	if err := runner.Run(context.Background(), "Add a test"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -1366,8 +1367,7 @@ func TestRunDetectsRepeatedToolCalls(t *testing.T) {
 	}
 
 	read := `{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`
-	responses := make([]string, 0, repeatHardStall+2)
-	responses = append(responses, "1. Read the demo value.")
+	responses := make([]string, 0, repeatHardStall+1)
 	for i := 0; i < repeatHardStall; i++ {
 		responses = append(responses, read)
 	}

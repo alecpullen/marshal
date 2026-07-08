@@ -2519,3 +2519,42 @@ func TestRepeatedToolCallGetsReminderInResult(t *testing.T) {
 		t.Fatal("third identical tool result did not carry the repeat reminder")
 	}
 }
+
+func TestLoopCompactsViaSummaryWhenOverBudget(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"big.tool","args":{}}}`
+	p := &scriptedProvider{responses: []string{
+		toolResp,
+		"## Current State\nread the big file; ready to answer.", // handoff summary call
+		`{"rationale":"done","action":{"type":"final","content":"answer from summary"}}`,
+	}}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "big.tool", Description: "big output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			// Keep the output inline (under the 8000-char spill limit) while still
+			// exceeding the 1500-token context budget when included in the transcript.
+			return registry.ToolResult{Summary: "ok", Content: strings.Repeat("word ", 1400)}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassQuestion))
+	runner.MaxTurnContextTokens = 1500
+
+	task, err := runner.RunTask(context.Background(), "summarize the big file")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if task.Summary != "answer from summary" {
+		t.Fatalf("task.Summary = %q", task.Summary)
+	}
+	// Request 2 is the summarization call; request 3 must be the rebuilt
+	// transcript containing the summary but not the huge tool output.
+	final := p.requests[len(p.requests)-1]
+	for _, m := range final.Messages {
+		if strings.Count(m.Content, "word ") > 100 {
+			t.Fatal("rebuilt transcript still contains the oversized tool output")
+		}
+	}
+}

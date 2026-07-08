@@ -466,29 +466,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, nudge string) {
 	r.trackerMu.Lock()
 	a := r.tracker.assess()
-	dupName, dupArgs, _ := r.tracker.lastCall()
 	r.trackerMu.Unlock()
 
-	switch a {
-	case assessHardStall:
+	if a == assessHardStall {
 		r.withStats(func(s *turnStats) { s.m.HardStalls++ })
 		res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
 		return true, res, ferr, ""
-	case assessStalling:
-		r.withStats(func(s *turnStats) { s.m.SoftStalls++ })
-		return false, task, nil, buildLoopNudge(dupName, dupArgs)
 	}
 	return false, task, nil, ""
-}
-
-// buildLoopNudge tells the model exactly which call it is repeating. A
-// stalling assessment implies at least three recorded calls, the last of
-// which is a duplicate, so lastCall's result is always usable here.
-func buildLoopNudge(name, args string) string {
-	return fmt.Sprintf(
-		"You are repeating tool calls you already made — most recently %s with args %s. Those results are in the transcript above; use them instead of calling the tool again. Take a genuinely new action or produce a final answer.",
-		name, args,
-	)
 }
 
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {
@@ -734,7 +719,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if tool.Cacheable {
 		if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
 			r.trackerMu.Lock()
-			r.tracker.record(toolName, string(normalizedArgs))
+			count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(cached.Content))
 			r.trackerMu.Unlock()
 			logged := cached
 			logged.Summary = "(cached) " + logged.Summary
@@ -742,7 +727,9 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
 			r.State.LogToolCall(event)
 			r.countToolCall(false, true)
-			return []schema.ChatMessage{r.buildCachedToolResultMessage(toolName, cached, toolCallID)}, nil
+			msg := r.buildCachedToolResultMessage(toolName, cached, toolCallID)
+			msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+			return []schema.ChatMessage{msg}, nil
 		}
 	}
 
@@ -819,10 +806,12 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
 		r.State.LogToolCall(event)
 		r.trackerMu.Lock()
-		r.tracker.record(toolName, string(normalizedArgs))
+		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()))
 		r.trackerMu.Unlock()
 		r.countToolCall(true, false)
-		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, execErr.Error(), toolCallID)}, nil
+		msg := r.buildToolErrorMessage(toolName, execErr.Error(), toolCallID)
+		msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+		return []schema.ChatMessage{msg}, nil
 	}
 
 	summarized := SummarizeToolResult(toolName, result, r.MaxToolResultChars)
@@ -832,12 +821,13 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)
 	r.State.LogToolCall(event)
 
-	msgs := []schema.ChatMessage{r.buildToolResultMessage(toolName, summarized, toolCallID)}
+	msg := r.buildToolResultMessage(toolName, summarized, toolCallID)
 	r.trackerMu.Lock()
-	r.tracker.record(toolName, string(normalizedArgs))
+	count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(summarized.Content))
 	r.trackerMu.Unlock()
+	msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
 	r.countToolCall(false, false)
-	return msgs, nil
+	return []schema.ChatMessage{msg}, nil
 }
 
 func (r *Runner) buildToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {

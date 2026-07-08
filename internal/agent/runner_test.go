@@ -1334,11 +1334,13 @@ func TestRunDetectsRepeatedToolCalls(t *testing.T) {
 	p := &scriptedProvider{responses: responses}
 	state := newTestState(t)
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.Role = RoleRepoScout
 	runner.MaxToolIterations = repeatHardStall + 1
 
 	// repeatHardStall identical tool calls in a row is an exact-repeat hard
-	// stall, which forces an immediate final answer via finalize. The final
-	// scripted response ("Done.") is what finalize's forced call receives.
+	// stall. For non-general (swarm) roles this forces an immediate final
+	// answer via finalize; the final scripted response ("Done.") is what
+	// finalize's forced call receives.
 	task, err := runner.RunTask(context.Background(), "Read the demo value")
 	if err != nil {
 		t.Fatalf("RunTask returned error: %v", err)
@@ -2112,6 +2114,128 @@ func TestPersistentMalformedOutputFailsFastWithoutWork(t *testing.T) {
 	}
 	if p.calls != 3 {
 		t.Fatalf("provider calls = %d, want 3 (fail fast, did not exhaust budget)", p.calls)
+	}
+}
+
+// scriptRepeats returns n copies of the same tool_call action envelope.
+func scriptRepeats(n int, resp string) []string {
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, resp)
+	}
+	return out
+}
+
+func TestHardStallAsksUserAndContinuesOnGuidance(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
+	responses := scriptRepeats(repeatHardStall, toolResp)
+	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"finished after guidance"}}`)
+	p := &scriptedProvider{responses: responses}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassQuestion))
+
+	go func() {
+		for {
+			if q := state.PendingQuestion(); q != nil {
+				q.ResponseChan <- "try reading the config file instead"
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	task, err := runner.RunTask(context.Background(), "investigate")
+	if err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
+	}
+	if task.SalvagedReason != "" {
+		t.Fatalf("task was salvaged (%s); guidance should have continued the loop", task.SalvagedReason)
+	}
+	if task.Summary != "finished after guidance" {
+		t.Fatalf("task.Summary = %q", task.Summary)
+	}
+	// The guidance must reach the model as a user message.
+	last := p.requests[len(p.requests)-1]
+	found := false
+	for _, m := range last.Messages {
+		if m.Role == schema.RoleUser && strings.Contains(m.Content, "try reading the config file instead") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("user guidance was not injected into the conversation")
+	}
+}
+
+func TestHardStallFinalizesWhenUserDeclines(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
+	responses := scriptRepeats(repeatHardStall, toolResp)
+	responses = append(responses, `{"rationale":"stopping","action":{"type":"final","content":"summary of progress"}}`)
+	p := &scriptedProvider{responses: responses}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassQuestion))
+
+	go func() {
+		for {
+			if q := state.PendingQuestion(); q != nil {
+				q.ResponseChan <- "" // decline
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	task, err := runner.RunTask(context.Background(), "investigate")
+	if err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
+	}
+	if task.SalvagedReason != string(reasonStalled) {
+		t.Fatalf("SalvagedReason = %q, want %q", task.SalvagedReason, reasonStalled)
+	}
+}
+
+func TestHardStallAutoFinalizesForNonGeneralRole(t *testing.T) {
+	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
+	responses := scriptRepeats(repeatHardStall, toolResp)
+	responses = append(responses, `{"rationale":"stopping","action":{"type":"final","content":"scout findings"}}`)
+	p := &scriptedProvider{responses: responses}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.Role = RoleRepoScout
+	runner.SetForceClass(string(ClassQuestion))
+
+	task, err := runner.RunTask(context.Background(), "scout the repo")
+	if err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
+	}
+	if task.SalvagedReason != string(reasonStalled) {
+		t.Fatalf("SalvagedReason = %q, want stalled auto-finalize for swarm role", task.SalvagedReason)
 	}
 }
 

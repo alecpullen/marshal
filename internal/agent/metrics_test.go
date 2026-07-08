@@ -179,6 +179,7 @@ func TestRunTaskMetricsCountsStalls(t *testing.T) {
 	p := &scriptedProvider{responses: responses}
 	state := newTestState(t)
 	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.Role = RoleRepoScout
 	r.SetForceClass(string(ClassQuestion))
 	m := captureMetrics(r)
 

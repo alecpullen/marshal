@@ -21,6 +21,45 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// drainCmds executes the returned command tree (up to a small bound) and
+// feeds each produced message back into the model. This is necessary whenever
+// a test drives a huh form, because huh advances fields and completes the form
+// by returning command-produced messages that must round-trip through Update
+// — exactly what the bubbletea runtime does in production.
+//
+// Cursor-blink ticks and other timed commands are skipped with a short timeout
+// so that tests do not block waiting for the next blink frame.
+func drainCmds(m Model, cmd tea.Cmd) Model {
+	for i := 0; i < 8 && cmd != nil; i++ {
+		var msg tea.Msg
+		done := make(chan struct{})
+		go func() {
+			msg = cmd()
+			close(done)
+		}()
+		select {
+		case <-done:
+			// message returned synchronously; keep draining.
+		case <-time.After(20 * time.Millisecond):
+			// timed command (e.g. cursor blink); stop draining.
+			return m
+		}
+		if msg == nil {
+			return m
+		}
+		updated, next := m.Update(msg)
+		m = updated.(Model)
+		cmd = next
+	}
+	return m
+}
+
+// sendKey sends a keypress to the model and drains the resulting command chain.
+func sendKey(m Model, key tea.KeyPressMsg) Model {
+	updated, cmd := m.Update(key)
+	return drainCmds(updated.(Model), cmd)
+}
+
 func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
@@ -421,9 +460,9 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 		"Agent wants to run",
 		"go test ./...",
 		"Risk",
-		"Enter approve",
-		"d deny",
-		"e edit",
+		"Approve",
+		"Deny",
+		"Edit",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing approval item %q:\n%s", want, view)
@@ -532,9 +571,9 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("View() missing proposed command")
 	}
 
-	// 1. Test Deny Keypress 'd'
-	updated, _ = m.Update(tea.KeyPressMsg{Text: "d"})
-	m = updated.(Model)
+	// 1. Test Deny: navigate to "Deny" (one Down) and submit.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case dec := <-respChan:
@@ -548,13 +587,14 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("expected pending approval to be cleared")
 	}
 
-	// Set up again for Enter key
+	// Set up again for Approve.
 	state.SetPendingApproval(tc)
 	m = New(state)
-
-	// 2. Test Approve Keypress 'enter'
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
+
+	// 2. Test Approve: the first option is already focused, submit with Enter.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case dec := <-respChan:
@@ -565,13 +605,16 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("timeout waiting for approve response")
 	}
 
-	// Set up again for Edit key
+	// Set up again for Edit.
 	state.SetPendingApproval(tc)
 	m = New(state)
-
-	// 3. Test Edit Keypress 'e'
-	updated, _ = m.Update(tea.KeyPressMsg{Text: "e"})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
+
+	// 3. Test Edit: navigate to "Edit" (two Down) and submit.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !m.editingCommand {
 		t.Fatal("expected model to enter editingCommand mode")
@@ -580,14 +623,14 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatalf("expected input value to be 'go test', got %q", m.input.Value())
 	}
 
-	// Simulate typing to edit command
+	// Simulate typing to edit command.
 	updated, _ = m.Update(tea.KeyPressMsg{Text: " -v"})
 	m = updated.(Model)
 	if m.input.Value() != "go test -v" {
 		t.Fatalf("expected edited input value to be 'go test -v', got %q", m.input.Value())
 	}
 
-	// Press Enter to confirm edited command
+	// Press Enter to confirm edited command.
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
@@ -600,13 +643,17 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("timeout waiting for edited response")
 	}
 
-	// Set up again for Always Allow key
+	// Set up again for Always Allow.
 	state.SetPendingApproval(tc)
 	m = New(state)
-
-	// 4. Test Always Allow Keypress 'a'
-	updated, _ = m.Update(tea.KeyPressMsg{Text: "a"})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
+
+	// 4. Test Always Allow: navigate to the last option (three Down) and submit.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case dec := <-respChan:
@@ -617,7 +664,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("timeout waiting for always allow response")
 	}
 
-	// Check if session rule was added
+	// Check if session rule was added.
 	rules := state.SessionRules()
 	if len(rules) != 1 || rules[0] != "go test" {
 		t.Fatalf("expected session rules to contain 'go test', got %#v", rules)
@@ -1200,17 +1247,14 @@ func TestSettingsNavigationThroughMainModel(t *testing.T) {
 		t.Fatal("expected settingsOpen")
 	}
 
-	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "> Default profile:") {
-		t.Fatalf("first settings field should be focused:\n%s", view)
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Default profile" {
+		t.Fatalf("first settings field should be focused, got %q", got)
 	}
 
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	m = updated.(Model)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
 
-	view = stripANSI(m.View().Content)
-	if !strings.Contains(view, "> Preset:") {
-		t.Fatalf("Tab should move focus to second field:\n%s", view)
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Preset" {
+		t.Fatalf("Tab should move focus to Preset field, got %q", got)
 	}
 }
 
@@ -1237,22 +1281,19 @@ func TestSettingsTypingThroughMainModel(t *testing.T) {
 	m = updated.(Model)
 
 	// Tab to Provider field (third field)
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	m = updated.(Model)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
 
-	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "> Provider:") {
-		t.Fatalf("expected Provider field focused:\n%s", view)
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Provider" {
+		t.Fatalf("expected Provider field focused, got %q", got)
 	}
 
 	updated, _ = m.Update(tea.KeyPressMsg{Text: "z"})
 	m = updated.(Model)
 
-	view = stripANSI(m.View().Content)
-	if !strings.Contains(view, "Provider: ollamaz") {
-		t.Fatalf("typing should append to Provider value, got:\n%s", view)
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "Provider") || !strings.Contains(view, "ollamaz") {
+		t.Fatalf("typing should append to Provider value, got:\n%s\nstate provider=%q", view, m.settingsModel.FocusedFieldTitle())
 	}
 
 	// Move cursor left inside the textinput and type in the middle.
@@ -1262,7 +1303,7 @@ func TestSettingsTypingThroughMainModel(t *testing.T) {
 	m = updated.(Model)
 
 	view = stripANSI(m.View().Content)
-	if !strings.Contains(view, "Provider: ollamaAz") {
+	if !strings.Contains(view, "Provider") || !strings.Contains(view, "ollamaAz") {
 		t.Fatalf("cursor movement should insert in the middle, got:\n%s", view)
 	}
 }
@@ -1291,24 +1332,21 @@ func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
 
 	// Tab to Remote providers allowed field (last field)
 	for i := 0; i < 5; i++ {
-		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-		m = updated.(Model)
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
 	}
 
-	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "> [ ] Remote providers allowed") {
-		t.Fatalf("expected Remote providers allowed field focused:\n%s", view)
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Remote providers allowed" {
+		t.Fatalf("expected Remote providers allowed field focused, got %q", got)
 	}
-	if !strings.Contains(view, "[ ] Remote providers allowed") {
-		t.Fatalf("expected bool to start false, got:\n%s", view)
+	if m.settingsModel.BoolValue("Remote providers allowed") {
+		t.Fatalf("expected bool to start false")
 	}
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	m = updated.(Model)
 
-	view = stripANSI(m.View().Content)
-	if !strings.Contains(view, "[x] Remote providers allowed") {
-		t.Fatalf("Space should toggle bool to true, got:\n%s", view)
+	if !m.settingsModel.BoolValue("Remote providers allowed") {
+		t.Fatalf("Space should toggle bool to true")
 	}
 }
 
@@ -1324,12 +1362,10 @@ func TestSettingsNavigationWithDefaultConfig(t *testing.T) {
 		t.Fatal("expected settingsOpen")
 	}
 
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	m = updated.(Model)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
 
-	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "> Preset:") {
-		t.Fatalf("Tab should move focus to second field with default config:\n%s", view)
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Preset" {
+		t.Fatalf("Tab should move focus to Preset field with default config, got %q", got)
 	}
 }
 
@@ -1351,11 +1387,11 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 	for _, want := range []string{
 		"Approval needed",
 		"Agent wants to run",
-		"go test ./internal/app/tui/...",
+		"go test",
 		"Risk",
-		"Enter approve",
-		"d deny",
-		"e edit",
+		"Approve",
+		"Deny",
+		"Edit",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing approval copy %q:\n%s", want, view)
@@ -1363,20 +1399,11 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 	}
 
 	// The risk label must show the actual risk classification, not the Reason text.
-	lines := strings.Split(view, "\n")
-	foundRiskLine := false
-	for i, line := range lines {
-		if strings.Contains(line, "Risk:") && i < len(lines) {
-			if strings.Contains(line, "Low - test command") {
-				foundRiskLine = true
-			}
-			if strings.Contains(line, "Validate layout bounds") {
-				t.Fatalf("Risk section shows Reason content instead of Risk content:\n%s", view)
-			}
-		}
-	}
-	if !foundRiskLine {
+	if !strings.Contains(view, "Low - test command") {
 		t.Fatalf("View() did not render the Risk classification text:\n%s", view)
+	}
+	if strings.Contains(view, "Validate layout bounds") {
+		t.Fatalf("Risk section shows Reason content instead of Risk content:\n%s", view)
 	}
 }
 
@@ -1615,8 +1642,7 @@ func TestApprovalKeyHandlingStillWorksInline(t *testing.T) {
 		ResponseChan: ch,
 	})
 
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(Model)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case decision := <-ch:
@@ -1797,8 +1823,11 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 		t.Fatalf("View() missing JSON arguments:\n%s", view)
 	}
 
-	updated, _ := m.Update(tea.KeyPressMsg{Text: "e"})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated.(Model)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !m.editingCommand {
 		t.Fatal("expected editingCommand to be true")
@@ -1835,8 +1864,7 @@ func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
 		model, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = model.(Model)
 	}
-	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = model.(Model)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case got := <-q.ResponseChan:
@@ -1857,8 +1885,7 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 	q := &session.PendingQuestion{Question: "Archive or delete?", ResponseChan: make(chan string, 1)}
 	state.SetPendingQuestion(q)
 
-	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	_ = model
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	select {
 	case got := <-q.ResponseChan:
@@ -1866,6 +1893,9 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 			t.Fatalf("answer = %q, want empty (declined)", got)
 		}
 	default:
-		t.Fatal("no decline sent on Esc")
+		t.Fatal("no answer sent on Esc")
+	}
+	if state.PendingQuestion() != nil {
+		t.Fatal("pending question not cleared after Esc")
 	}
 }

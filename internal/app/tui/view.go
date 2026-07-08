@@ -77,13 +77,17 @@ func (m Model) renderInputArea() string {
 	rows := make([]string, 0, 4)
 
 	if q := m.state.PendingQuestion(); q != nil {
-		rows = append(rows, renderQuestionPanel(q, inputInnerWidth))
-		inputLine := lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			inputPromptStyle.Render("❯ "),
-			m.input.View(),
-		)
-		rows = append(rows, inputLine)
+		if m.questionModel != nil {
+			rows = append(rows, m.questionModel.View())
+		} else {
+			rows = append(rows, renderQuestionPanel(q, inputInnerWidth))
+			inputLine := lipgloss.JoinHorizontal(
+				lipgloss.Top,
+				inputPromptStyle.Render("❯ "),
+				m.input.View(),
+			)
+			rows = append(rows, inputLine)
+		}
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		if m.editingCommand {
 			editLine := lipgloss.JoinHorizontal(
@@ -92,6 +96,8 @@ func (m Model) renderInputArea() string {
 				m.input.View(),
 			)
 			rows = append(rows, editLine)
+		} else if m.approvalModel != nil {
+			rows = append(rows, m.approvalModel.View())
 		} else {
 			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth))
 		}

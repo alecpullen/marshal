@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
@@ -582,8 +582,6 @@ func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {
 	program := tea.NewProgram(model,
 		tea.WithOutput(output),
 		tea.WithContext(ctx),
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 	)
 	_, err := program.Run()
 	return err

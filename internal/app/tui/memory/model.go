@@ -3,7 +3,7 @@ package memory
 import (
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/db"
 )
@@ -39,19 +39,19 @@ func (m *Model) SetSize(width, height int) {
 	m.height = height
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
 		return m, nil
-	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyEsc:
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "esc":
 			return m, func() tea.Msg { return ClosedMsg{} }
-		case tea.KeyUp:
+		case "up":
 			m.moveCursor(-1)
 			return m, nil
-		case tea.KeyDown:
+		case "down":
 			m.moveCursor(1)
 			return m, nil
 		}

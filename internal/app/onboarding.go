@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type onboardingState int
@@ -60,7 +60,7 @@ func NewOnboardingModel(workingDir string) *OnboardingModel {
 	ti := textinput.New()
 	ti.Focus()
 	ti.CharLimit = 156
-	ti.Width = 40
+	ti.SetWidth(40)
 
 	return &OnboardingModel{
 		state:            stateSelectProvider,
@@ -117,12 +117,12 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
 			return m, tea.Quit
 
-		case tea.KeyUp:
+		case "up":
 			if m.state == stateSelectProvider {
 				m.providerIndex--
 				if m.providerIndex < 0 {
@@ -136,7 +136,7 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-		case tea.KeyDown:
+		case "down":
 			if m.state == stateSelectProvider {
 				m.providerIndex++
 				if m.providerIndex >= len(m.providers) {
@@ -150,7 +150,7 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-		case tea.KeyEnter:
+		case "enter":
 			m.err = ""
 			switch m.state {
 			case stateSelectProvider:
@@ -280,7 +280,11 @@ func (m *OnboardingModel) saveConfig() error {
 	return os.WriteFile(filepath.Join(dir, "config.toml"), []byte(tomlContent.String()), 0644)
 }
 
-func (m *OnboardingModel) View() string {
+func (m *OnboardingModel) View() tea.View {
+	return tea.NewView(m.viewString())
+}
+
+func (m *OnboardingModel) viewString() string {
 	accentColor := lipgloss.Color("38")
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(accentColor).Bold(true).Padding(0, 1)
 	header := titleStyle.Render(" MARSHAL ONBOARDING WIZARD ")

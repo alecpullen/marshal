@@ -47,18 +47,18 @@ func TestSwarmPanelRowsReservedOnlyWhenActive(t *testing.T) {
 
 func TestAgentFinishedReleasesSwarmPanelReservation(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	fullHeight := m.viewport.Height
+	fullHeight := m.viewport.Height()
 	m.state.SetSwarmProgress(session.SwarmProgress{Active: true})
 	m.updateViewportHeight()
-	if m.viewport.Height != fullHeight-swarmPanelRows {
-		t.Fatalf("active viewport height = %d, want %d", m.viewport.Height, fullHeight-swarmPanelRows)
+	if m.viewport.Height() != fullHeight-swarmPanelRows {
+		t.Fatalf("active viewport height = %d, want %d", m.viewport.Height(), fullHeight-swarmPanelRows)
 	}
 
 	m.state.ClearSwarmProgress()
 	updated, _ := m.Update(agentFinishedMsg{})
 	m = updated.(Model)
-	if m.viewport.Height != fullHeight {
-		t.Fatalf("finished viewport height = %d, want restored %d", m.viewport.Height, fullHeight)
+	if m.viewport.Height() != fullHeight {
+		t.Fatalf("finished viewport height = %d, want restored %d", m.viewport.Height(), fullHeight)
 	}
 }
 

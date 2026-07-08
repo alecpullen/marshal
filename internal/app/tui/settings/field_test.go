@@ -3,7 +3,7 @@ package settings
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 )
@@ -14,7 +14,7 @@ func TestBoolFieldToggle(t *testing.T) {
 	if f.Value() != false {
 		t.Fatalf("initial value = %v", f.Value())
 	}
-	f.Update(tea.KeyMsg{Type: tea.KeySpace})
+	f.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	if f.Value() != true {
 		t.Fatalf("toggled value = %v", f.Value())
 	}
@@ -27,7 +27,7 @@ func TestIntFieldStoresValue(t *testing.T) {
 		t.Fatalf("initial value = %d, want 8", f.Value())
 	}
 	f.Focus()
-	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	f.Update(tea.KeyPressMsg{Code: '2', Text: "2"})
 	if got != 82 {
 		t.Fatalf("onChange value = %d, want 82", got)
 	}
@@ -39,7 +39,7 @@ func TestIntFieldStoresValue(t *testing.T) {
 func TestIntFieldRejectsNonDigits(t *testing.T) {
 	f := newIntField("Max tool iterations", 8, nil)
 	f.Focus()
-	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	f.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
 	if f.Value() != 8 {
 		t.Fatalf("value = %d after invalid input, want 8", f.Value())
 	}
@@ -52,7 +52,7 @@ func TestIntFieldWithBoundsClampsValue(t *testing.T) {
 	// Typing '2' makes 82, which exceeds max 100? No — 82 < 100. Use max 50.
 	f = newIntFieldWithBounds("Max tool iterations", 8, func(v int) { got = v }, 1, 50)
 	f.Focus()
-	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	f.Update(tea.KeyPressMsg{Code: '2', Text: "2"})
 	if f.Value() != 50 {
 		t.Fatalf("value = %d, want 50 (clamped to max)", f.Value())
 	}

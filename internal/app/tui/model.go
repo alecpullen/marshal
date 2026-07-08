@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
@@ -142,44 +142,47 @@ func New(state *session.State, opts ...Option) Model {
 	input.SetHeight(1)
 	input.SetWidth(80)
 
-	km := textarea.DefaultKeyMap
+	km := textarea.DefaultKeyMap()
 	km.InsertNewline.SetKeys("shift+enter")
 	input.KeyMap = km
 	input.Focus()
 
-	input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
-	input.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	input.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
+	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	styles := textarea.DefaultDarkStyles()
+	styles.Focused.Text = textStyle
+	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
+	styles.Blurred.Text = textStyle
+	styles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
 
 	// CursorLine is the style wrapping the active text row. The upstream
 	// default adds a dark background ("0") that extends across the full
 	// line width (including padding spaces), producing a dark bar behind
 	// the cursor line. We override it to have no background so the input
 	// area stays on a single clean line.
-	input.FocusedStyle.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	input.BlurredStyle.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "245", Dark: "7"})
+	styles.Focused.CursorLine = textStyle
+	styles.Blurred.CursorLine = lipgloss.NewStyle().Foreground(compat.AdaptiveColor{
+		Light: lipgloss.Color("245"),
+		Dark:  lipgloss.Color("7"),
+	})
 
 	// EndOfBuffer is the filler row(s) below the last line of text. The
 	// upstream default applies a dark foreground ("0") that can leave a
 	// faint artifact row when the textarea height is 1.
-	input.FocusedStyle.EndOfBuffer = lipgloss.NewStyle()
-	input.BlurredStyle.EndOfBuffer = lipgloss.NewStyle()
+	styles.Focused.EndOfBuffer = lipgloss.NewStyle()
+	styles.Blurred.EndOfBuffer = lipgloss.NewStyle()
 
-	// Cursor lives on the embedded cursor.Model. Style renders via
-	// .Reverse(true), which swaps fg↔bg — the Foreground set here becomes
-	// the visible block fill. The glyph under a block cursor is usually a
-	// space, so a Background-only style would leave the block in the
-	// terminal's default colour and never show coral at all.
-	input.Cursor.Style = lipgloss.NewStyle().Foreground(coralColor)
-	input.Cursor.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	// The textarea keeps its virtual cursor (the v2 default); the coral
+	// colour fills the rendered cursor block.
+	styles.Cursor.Color = coralColor
+	styles.Cursor.Blink = true
+	input.SetStyles(styles)
 
 	m := Model{
 		state:          state,
 		input:          input,
 		editingCommand: false,
 		ctx:            context.Background(),
-		viewport:       viewport.New(0, 0),
+		viewport:       viewport.New(),
 		spinner:        NewSpinner(),
 		now:            time.Now,
 		viewportFollow: true,
@@ -215,8 +218,8 @@ func (m *Model) resize(width, height int) {
 	m.resizeInputHeight()
 
 	// Transcript viewport lives inside a subtle border frame.
-	m.viewport.Width = max(width-2, 1)
-	m.viewport.Height = max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1)
+	m.viewport.SetWidth(max(width-2, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -280,47 +283,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case memory.ClosedMsg:
 		m.memoryOpen = false
 		return m, nil
-	case tea.MouseMsg:
+	case tea.MouseWheelMsg:
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		switch msg.Button {
-		case tea.MouseButtonWheelUp:
+		case tea.MouseWheelUp:
 			m.viewportFollow = false
-		case tea.MouseButtonWheelDown:
+		case tea.MouseWheelDown:
 			if m.viewport.AtBottom() {
 				m.viewportFollow = true
 			}
 		}
 		return m, vpCmd
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// Always allow Ctrl+C to quit
-		if msg.Type == tea.KeyCtrlC {
+		if msg.String() == "ctrl+c" {
 			m.state.Shutdown()
 			return m, tea.Quit
 		}
 
 		if m.settingsOpen {
-			if msg.Type == tea.KeyCtrlO {
+			if msg.String() == "ctrl+o" {
 				m.settingsOpen = false
 				return m, nil
 			}
-			updated, cmd := m.settingsModel.Update(msg)
-			m.settingsModel = updated.(settings.Model)
+			var cmd tea.Cmd
+			m.settingsModel, cmd = m.settingsModel.Update(msg)
 			return m, cmd
 		}
 		if m.memoryOpen {
-			if msg.Type == tea.KeyCtrlK {
+			if msg.String() == "ctrl+k" {
 				m.memoryOpen = false
 				return m, nil
 			}
-			updated, cmd := m.memoryModel.Update(msg)
-			m.memoryModel = updated.(memory.Model)
+			var cmd tea.Cmd
+			m.memoryModel, cmd = m.memoryModel.Update(msg)
 			return m, cmd
 		}
 
 		if q := m.state.PendingQuestion(); q != nil {
-			switch msg.Type {
-			case tea.KeyEnter:
+			switch msg.String() {
+			case "enter":
 				q.ResponseChan <- strings.TrimSpace(m.input.Value())
 				m.state.SetPendingQuestion(nil)
 				m.input.Reset()
@@ -329,7 +332,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateViewportHeight()
 				m.lastTranscriptHash = 0
 				return m, nil
-			case tea.KeyEsc:
+			case "esc":
 				q.ResponseChan <- ""
 				m.state.SetPendingQuestion(nil)
 				m.input.Reset()
@@ -348,8 +351,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if tc != nil {
 			if m.editingCommand {
-				switch msg.Type {
-				case tea.KeyEsc:
+				switch msg.String() {
+				case "esc":
 					m.editingCommand = false
 					m.input.Reset()
 					m.input.Placeholder = "Ask Marshal..."
@@ -357,7 +360,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateViewportHeight()
 					m.lastTranscriptHash = 0
 					return m, nil
-				case tea.KeyEnter:
+				case "enter":
 					value := strings.TrimSpace(m.input.Value())
 					if value != "" {
 						tc.ResponseChan <- session.UserApprovalDecision{Approved: true, Edited: value}
@@ -378,71 +381,70 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 
-			switch msg.Type {
-			case tea.KeyEnter:
+			switch msg.String() {
+			case "enter":
 				tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
 				m.state.SetPendingApproval(nil)
 				m.lastTranscriptHash = 0
 				return m, nil
-			case tea.KeyEsc:
+			case "esc":
 				tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
 				m.state.SetPendingApproval(nil)
 				m.lastTranscriptHash = 0
 				return m, nil
-			default:
-				switch msg.String() {
-				case "d":
-					tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
-					m.state.SetPendingApproval(nil)
-					m.lastTranscriptHash = 0
-					return m, nil
-				case "a":
-					m.state.AddSessionRule(tc.Command)
-					tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
-					m.state.SetPendingApproval(nil)
-					m.lastTranscriptHash = 0
-					return m, nil
-				case "e":
-					m.editingCommand = true
-					if tc.Name == "shell.run" {
-						m.input.SetValue(tc.Command)
-						m.input.Placeholder = "Edit command..."
-					} else {
-						m.input.SetValue(tc.Args)
-						m.input.Placeholder = "Edit JSON arguments..."
-					}
-					m.resizeInputHeight()
-					m.updateViewportHeight()
-					m.input.Focus()
-					m.lastTranscriptHash = 0
-					return m, nil
-				case "r":
-					if m.state.HasBackup() {
-						_ = m.state.RollbackBackup()
-						m.state.LogToolCall(registry.AuditEvent{
-							Timestamp:     time.Now(),
-							ToolName:      "rollback",
-							ResultSummary: "Rollback applied successfully",
-						})
-						m.lastTranscriptHash = 0
-						m.refreshViewport()
-						return m, nil
-					}
+			case "d":
+				tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
+				m.state.SetPendingApproval(nil)
+				m.lastTranscriptHash = 0
+				return m, nil
+			case "a":
+				m.state.AddSessionRule(tc.Command)
+				tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+				m.state.SetPendingApproval(nil)
+				m.lastTranscriptHash = 0
+				return m, nil
+			case "e":
+				m.editingCommand = true
+				if tc.Name == "shell.run" {
+					m.input.SetValue(tc.Command)
+					m.input.Placeholder = "Edit command..."
+				} else {
+					m.input.SetValue(tc.Args)
+					m.input.Placeholder = "Edit JSON arguments..."
 				}
+				m.resizeInputHeight()
+				m.updateViewportHeight()
+				m.input.Focus()
+				m.lastTranscriptHash = 0
+				return m, nil
+			case "r":
+				if m.state.HasBackup() {
+					_ = m.state.RollbackBackup()
+					m.state.LogToolCall(registry.AuditEvent{
+						Timestamp:     time.Now(),
+						ToolName:      "rollback",
+						ResultSummary: "Rollback applied successfully",
+					})
+					m.lastTranscriptHash = 0
+					m.refreshViewport()
+					return m, nil
+				}
+				return m, nil
+			default:
 				return m, nil
 			}
 		} else {
 			// Global hotkeys — input is always focused.
-			switch msg.Type {
-			case tea.KeyEsc:
+			switch msg.String() {
+			case "esc":
 				m.cancelTurn()
 				return m, nil
-			case tea.KeyCtrlO:
+			case "ctrl+o":
 				m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
 				m.settingsModel.SetSize(m.width, m.height)
 				m.settingsOpen = true
 				return m, nil
-			case tea.KeyCtrlK:
+			case "ctrl+k":
 				if m.memoryDB == nil {
 					return m, nil
 				}
@@ -450,12 +452,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.memoryModel.SetSize(m.width, m.height)
 				m.memoryOpen = true
 				return m, nil
-			case tea.KeyCtrlG:
+			case "ctrl+g":
 				m.thinkingExpanded = !m.thinkingExpanded
 				m.lastTranscriptHash = 0
 				m.refreshViewport()
 				return m, nil
-			case tea.KeyCtrlR:
+			case "ctrl+r":
 				if m.state.HasBackup() {
 					_ = m.state.RollbackBackup()
 					m.state.LogToolCall(registry.AuditEvent{
@@ -466,46 +468,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshViewport()
 				}
 				return m, nil
-			case tea.KeyPgUp, tea.KeyPgDown:
+			case "pgup", "pgdown":
 				var vpCmd tea.Cmd
 				m.viewport, vpCmd = m.viewport.Update(msg)
-				if msg.Type == tea.KeyPgUp {
+				if msg.String() == "pgup" {
 					m.viewportFollow = false
 				}
-				if msg.Type == tea.KeyPgDown && m.viewport.AtBottom() {
+				if msg.String() == "pgdown" && m.viewport.AtBottom() {
 					m.viewportFollow = true
 				}
 				return m, vpCmd
-			case tea.KeyCtrlU:
-				m.viewport.HalfViewUp()
+			case "ctrl+u":
+				m.viewport.HalfPageUp()
 				m.viewportFollow = false
 				return m, nil
-			case tea.KeyCtrlD:
-				m.viewport.HalfViewDown()
+			case "ctrl+d":
+				m.viewport.HalfPageDown()
 				if m.viewport.AtBottom() {
 					m.viewportFollow = true
 				}
 				return m, nil
-			case tea.KeyEnd:
+			case "end":
 				m.viewport.GotoBottom()
 				m.viewportFollow = true
 				return m, nil
-			case tea.KeyUp:
+			case "up":
 				if m.moveCommandSuggestion(-1) {
 					return m, nil
 				}
-			case tea.KeyDown:
+			case "down":
 				if m.moveCommandSuggestion(1) {
 					return m, nil
 				}
-			case tea.KeyTab:
+			case "tab":
 				if m.acceptCommandSuggestion() {
 					return m, nil
 				}
-			case tea.KeyEnter:
-				if key.Matches(msg, m.input.KeyMap.InsertNewline) {
-					break
-				}
+			case "enter":
 				value := strings.TrimSpace(m.input.Value())
 				if value == "" {
 					return m, nil
@@ -625,10 +624,10 @@ func (m Model) swarmPanelRows() int {
 
 func (m *Model) updateViewportHeight() bool {
 	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1)
-	if newViewportHeight == m.viewport.Height {
+	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
-	m.viewport.Height = newViewportHeight
+	m.viewport.SetHeight(newViewportHeight)
 	return true
 }
 
@@ -684,7 +683,7 @@ func (m *Model) refreshViewport() {
 	_, activeTool := m.state.ActiveToolCall()
 	busy := m.busy || activeTool || streamLen > 0
 
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width)
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width())
 	if hash == m.lastTranscriptHash {
 		return
 	}
@@ -692,20 +691,20 @@ func (m *Model) refreshViewport() {
 
 	var b strings.Builder
 	if len(items) == 0 {
-		b.WriteString(renderWelcomeBanner(m.viewport.Width))
+		b.WriteString(renderWelcomeBanner(m.viewport.Width()))
 	}
 	for _, item := range items {
-		b.WriteString(renderTranscriptItem(item, m.thinkingExpanded, m.viewport.Width))
+		b.WriteString(renderTranscriptItem(item, m.thinkingExpanded, m.viewport.Width()))
 	}
 
 	if inProgress.Active && inProgress.Reasoning != "" {
-		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.spinnerFrame, m.viewport.Width))
+		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.spinnerFrame, m.viewport.Width()))
 	}
 	if atc, ok := m.state.ActiveToolCall(); ok {
-		b.WriteString(renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.spinnerFrame, m.now(), m.viewport.Width))
+		b.WriteString(renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.spinnerFrame, m.now(), m.viewport.Width()))
 	}
 	if err := m.state.ProviderError(); err != nil {
-		b.WriteString(renderProviderError(err, m.viewport.Width))
+		b.WriteString(renderProviderError(err, m.viewport.Width()))
 	}
 
 	m.viewport.SetContent(b.String())

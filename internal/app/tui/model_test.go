@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -25,9 +25,9 @@ func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
 	model = updated.(Model)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(Model)
 
 	messages := state.Messages()
@@ -46,9 +46,9 @@ func TestEnterOnWhitespaceDoesNotAppendMessage(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	model = updated.(Model)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(Model)
 
 	if got := len(state.Messages()); got != 0 {
@@ -60,7 +60,7 @@ func TestCtrlCQuits(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 
-	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("quit command is nil")
 	}
@@ -80,7 +80,7 @@ func TestEscCancelsInFlightTurn(t *testing.T) {
 	cancelled := false
 	m.agentCancel = func() { cancelled = true }
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = updated.(Model)
 
 	if !cancelled {
@@ -96,7 +96,7 @@ func TestEscWhenIdleDoesNotQuit(t *testing.T) {
 	m := New(state)
 	m.resize(80, 24)
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if cmd != nil {
 		t.Fatal("Esc when idle must be a no-op (no quit command)")
 	}
@@ -113,7 +113,7 @@ func TestTypingIsAlwaysCaptured(t *testing.T) {
 	m.resize(80, 24)
 
 	for _, r := range "123r" {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = updated.(Model)
 	}
 	if got := m.input.Value(); got != "123r" {
@@ -134,11 +134,11 @@ func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 	m.resize(80, 24)
 
 	for _, r := range "/se" {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = updated.(Model)
 	}
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "/settings") {
 		t.Fatalf("View() missing command suggestion:\n%s", view)
 	}
@@ -146,7 +146,7 @@ func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 		t.Fatalf("View() should filter suggestions by prefix:\n%s", view)
 	}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = updated.(Model)
 	if got := m.input.Value(); got != "/settings " {
 		t.Fatalf("input after Tab = %q, want %q", got, "/settings ")
@@ -161,12 +161,12 @@ func TestPageKeysScrollViewport(t *testing.T) {
 	m := New(state)
 	m.resize(80, 24)
 	m.refreshViewport()
-	bottom := m.viewport.YOffset
+	bottom := m.viewport.YOffset()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	m = updated.(Model)
-	if m.viewport.YOffset >= bottom {
-		t.Fatalf("PgUp did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset)
+	if m.viewport.YOffset() >= bottom {
+		t.Fatalf("PgUp did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset())
 	}
 	if m.input.Value() != "" {
 		t.Fatalf("PgUp leaked into the input: %q", m.input.Value())
@@ -184,22 +184,22 @@ func TestCtrlUCtrlDScrollViewport(t *testing.T) {
 	m := New(state)
 	m.resize(80, 24)
 	m.refreshViewport()
-	bottom := m.viewport.YOffset
+	bottom := m.viewport.YOffset()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
 	m = updated.(Model)
-	if m.viewport.YOffset >= bottom {
-		t.Fatalf("Ctrl+U did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset)
+	if m.viewport.YOffset() >= bottom {
+		t.Fatalf("Ctrl+U did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset())
 	}
-	upOffset := m.viewport.YOffset
+	upOffset := m.viewport.YOffset()
 	if m.viewportFollow {
 		t.Fatalf("Ctrl+U did not disable viewport follow")
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	m = updated.(Model)
-	if m.viewport.YOffset <= upOffset {
-		t.Fatalf("Ctrl+D did not scroll down: offset %d -> %d", upOffset, m.viewport.YOffset)
+	if m.viewport.YOffset() <= upOffset {
+		t.Fatalf("Ctrl+D did not scroll down: offset %d -> %d", upOffset, m.viewport.YOffset())
 	}
 	if m.input.Value() != "" {
 		t.Fatalf("scroll keys leaked into the input: %q", m.input.Value())
@@ -214,11 +214,11 @@ func TestCtrlDAtBottomReEnablesFollow(t *testing.T) {
 	m := New(state)
 	m.resize(80, 60)
 	m.refreshViewport()
-	bottom := m.viewport.YOffset
+	bottom := m.viewport.YOffset()
 
 	// Scroll up several pages so we're definitely not at the bottom.
 	for i := 0; i < 5; i++ {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+		updated, _ := m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
 		m = updated.(Model)
 	}
 	if m.viewport.AtBottom() {
@@ -229,12 +229,12 @@ func TestCtrlDAtBottomReEnablesFollow(t *testing.T) {
 	}
 
 	// Scroll down to the bottom.
-	for m.viewport.YOffset < bottom {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	for m.viewport.YOffset() < bottom {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 		m = updated.(Model)
 	}
 	if !m.viewport.AtBottom() {
-		t.Fatalf("expected to be at bottom after scrolling down, got offset %d", m.viewport.YOffset)
+		t.Fatalf("expected to be at bottom after scrolling down, got offset %d", m.viewport.YOffset())
 	}
 	if !m.viewportFollow {
 		t.Fatal("Ctrl+D at bottom should re-enable follow")
@@ -252,13 +252,13 @@ func TestEndKeyReEnablesFollow(t *testing.T) {
 
 	m.viewportFollow = false
 	m.viewport.SetYOffset(0)
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 	m = updated.(Model)
 	if !m.viewportFollow {
 		t.Fatal("End key did not re-enable viewport follow")
 	}
 	if !m.viewport.AtBottom() {
-		t.Fatalf("End key did not jump to bottom: offset %d", m.viewport.YOffset)
+		t.Fatalf("End key did not jump to bottom: offset %d", m.viewport.YOffset())
 	}
 }
 
@@ -271,15 +271,15 @@ func TestScrollUpPreventsAutoBottomOnRefresh(t *testing.T) {
 	m.resize(80, 24)
 	m.refreshViewport()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	m = updated.(Model)
-	upOffset := m.viewport.YOffset
+	upOffset := m.viewport.YOffset()
 
 	// New content arrives while the user is scrolled up.
 	state.AddMessage(session.RoleSystem, "new line", session.ContentTypePlain)
 	m.refreshViewport()
-	if m.viewport.YOffset != upOffset {
-		t.Fatalf("refreshViewport snapped to bottom while scrolled up: offset %d -> %d", upOffset, m.viewport.YOffset)
+	if m.viewport.YOffset() != upOffset {
+		t.Fatalf("refreshViewport snapped to bottom while scrolled up: offset %d -> %d", upOffset, m.viewport.YOffset())
 	}
 	if m.viewportFollow {
 		t.Fatal("viewportFollow should still be false after scroll-up + refresh")
@@ -294,12 +294,12 @@ func TestMouseWheelScrollsViewport(t *testing.T) {
 	m := New(state)
 	m.resize(80, 24)
 	m.refreshViewport()
-	bottom := m.viewport.YOffset
+	bottom := m.viewport.YOffset()
 
-	updated, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	m = updated.(Model)
-	if m.viewport.YOffset >= bottom {
-		t.Fatalf("mouse wheel up did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset)
+	if m.viewport.YOffset() >= bottom {
+		t.Fatalf("mouse wheel up did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset())
 	}
 	if m.viewportFollow {
 		t.Fatal("mouse wheel up did not disable viewport follow")
@@ -319,7 +319,7 @@ func TestNewSubmissionReEnablesFollow(t *testing.T) {
 
 	// Simulate typing and submitting a message.
 	m.input.SetValue("hello")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 	if !m.viewportFollow {
 		t.Fatal("submitting a message did not re-enable viewport follow")
@@ -342,13 +342,13 @@ func TestCtrlKOpensMemoryBrowser(t *testing.T) {
 	}
 
 	m := New(state, WithMemoryStore(database, projectID))
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	m = updated.(Model)
 	if !m.memoryOpen {
 		t.Fatal("expected memoryOpen to be true")
 	}
-	if !strings.Contains(m.View(), "Project Memories") {
-		t.Fatalf("View() missing memory browser:\n%s", m.View())
+	if !strings.Contains(stripANSI(m.View().Content), "Project Memories") {
+		t.Fatalf("View() missing memory browser:\n%s", stripANSI(m.View().Content))
 	}
 }
 
@@ -368,7 +368,7 @@ func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
 	}
 
 	m := New(state, WithMemoryStore(database, projectID))
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	m = updated.(Model)
 	if !m.memoryOpen {
 		t.Fatal("expected memoryOpen")
@@ -390,13 +390,13 @@ func TestCtrlKWithoutMemoryStoreDoesNothing(t *testing.T) {
 		}
 	}()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	m = updated.(Model)
 	if m.memoryOpen {
 		t.Fatal("expected memoryOpen to remain false without memory store")
 	}
-	if strings.Contains(m.View(), "Project Memories") {
-		t.Fatalf("View() should not show memory browser without memory store:\n%s", m.View())
+	if strings.Contains(stripANSI(m.View().Content), "Project Memories") {
+		t.Fatalf("View() should not show memory browser without memory store:\n%s", stripANSI(m.View().Content))
 	}
 }
 
@@ -415,7 +415,7 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = updated.(Model)
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	for _, want := range []string{
 		"Approval needed",
 		"Agent wants to run",
@@ -444,12 +444,12 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	m = updated.(Model)
 	m.busy = true
 	m.refreshViewport()
-	wideView := m.View()
+	wideView := stripANSI(m.View().Content)
 
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	narrowView := m.View()
-	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width) + renderThinkingBox(thinking, m.spinnerFrame, m.viewport.Width)
+	narrowView := stripANSI(m.View().Content)
+	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width()) + renderThinkingBox(thinking, m.spinnerFrame, m.viewport.Width())
 
 	// viewport.View() pads every line to the viewport's fixed width/height
 	// with trailing spaces and blank lines; strip that padding before
@@ -492,7 +492,7 @@ func TestPolishedTranscriptShowsRolesThinkingAndInput(t *testing.T) {
 	m.busy = true
 	m.refreshViewport()
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	for _, want := range []string{
 		"❯",
 		"fix the layout",
@@ -524,7 +524,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "Approval") {
 		t.Fatal("View() missing Approval panel")
 	}
@@ -533,7 +533,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	}
 
 	// 1. Test Deny Keypress 'd'
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "d"})
 	m = updated.(Model)
 
 	select {
@@ -553,7 +553,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	m = New(state)
 
 	// 2. Test Approve Keypress 'enter'
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
 	select {
@@ -570,7 +570,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	m = New(state)
 
 	// 3. Test Edit Keypress 'e'
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "e"})
 	m = updated.(Model)
 
 	if !m.editingCommand {
@@ -581,14 +581,14 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	}
 
 	// Simulate typing to edit command
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" -v")})
+	updated, _ = m.Update(tea.KeyPressMsg{Text: " -v"})
 	m = updated.(Model)
 	if m.input.Value() != "go test -v" {
 		t.Fatalf("expected edited input value to be 'go test -v', got %q", m.input.Value())
 	}
 
 	// Press Enter to confirm edited command
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
 	select {
@@ -605,7 +605,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	m = New(state)
 
 	// 4. Test Always Allow Keypress 'a'
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "a"})
 	m = updated.(Model)
 
 	select {
@@ -634,14 +634,14 @@ func TestTUIRollbackFlow(t *testing.T) {
 	model := New(state)
 
 	// Update with Ctrl+R to trigger rollback
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	model = updated.(Model)
 
 	if state.HasBackup() {
 		t.Fatal("expected backup to be cleared after rollback")
 	}
 
-	view := model.View()
+	view := stripANSI(model.View().Content)
 	if !strings.Contains(view, "[r] Rollback Last Patch") {
 		// should be removed after backup is cleared
 	}
@@ -739,9 +739,9 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	model := New(state, WithRunner(context.Background(), runner))
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
 	model = updated.(Model)
-	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(Model)
 
 	if !model.busy {
@@ -810,9 +810,9 @@ func TestEnterWithoutRunnerFallsBackToPlainAppend(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
+	updated, _ := model.Update(tea.KeyPressMsg{Text: "hi"})
 	model = updated.(Model)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(Model)
 
 	if model.busy {
@@ -830,9 +830,9 @@ func TestEnterWhileBusyIsIgnored(t *testing.T) {
 	model := New(state, WithRunner(context.Background(), runner))
 	model.busy = true
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
 	model = updated.(Model)
-	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(Model)
 
 	if cmd != nil {
@@ -850,7 +850,7 @@ func TestEnterWhileBusyIsIgnored(t *testing.T) {
 func TestCtrlOOpensSettings(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 	if !m.settingsOpen {
 		t.Fatal("expected settingsOpen to be true")
@@ -860,7 +860,7 @@ func TestCtrlOOpensSettings(t *testing.T) {
 func TestSettingsCancelClosesOverlay(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 	if !m.settingsOpen {
 		t.Fatal("expected settingsOpen")
@@ -887,13 +887,13 @@ func TestGlobalKeysDoNotLeakDuringApproval(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyTab},
-		{Type: tea.KeyShiftTab},
-		{Type: tea.KeyCtrlP},
-		{Type: tea.KeyCtrlX},
-		{Type: tea.KeyCtrlT},
-		{Type: tea.KeyCtrlR},
+	for _, key := range []tea.KeyPressMsg{
+		{Code: tea.KeyTab},
+		{Code: tea.KeyTab, Mod: tea.ModShift},
+		{Code: 'p', Mod: tea.ModCtrl},
+		{Code: 'x', Mod: tea.ModCtrl},
+		{Code: 't', Mod: tea.ModCtrl},
+		{Code: 'r', Mod: tea.ModCtrl},
 	} {
 		updated, _ := model.Update(key)
 		model = updated.(Model)
@@ -915,7 +915,7 @@ func TestEscDuringApprovalDenies(t *testing.T) {
 	}
 	state.SetPendingApproval(tc)
 	model := New(state)
-	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m := updated.(Model)
 
 	if cmd != nil {
@@ -950,12 +950,12 @@ func TestCtrlKTogglesMemory(t *testing.T) {
 	}
 
 	model := New(state, WithMemoryStore(db, pid))
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	model = updated.(Model)
 	if !model.memoryOpen {
 		t.Fatal("Ctrl+K did not open memory")
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	model = updated.(Model)
 	if model.memoryOpen {
 		t.Fatal("Ctrl+K did not close memory")
@@ -969,9 +969,9 @@ func TestBusyTickRefreshesViewport(t *testing.T) {
 	model = updated.(Model)
 
 	// Start a turn.
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	updated, _ = model.Update(tea.KeyPressMsg{Text: "hello"})
 	model = updated.(Model)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(Model)
 
 	// Simulate the agent adding a message mid-turn.
@@ -981,7 +981,7 @@ func TestBusyTickRefreshesViewport(t *testing.T) {
 	updated, _ = model.Update(agentTickMsg{})
 	model = updated.(Model)
 
-	view := model.View()
+	view := stripANSI(model.View().Content)
 	if !strings.Contains(view, "working...") {
 		t.Fatalf("viewport not refreshed during busy tick:\n%s", view)
 	}
@@ -997,9 +997,9 @@ func TestChatMessagesWrapWithinViewportWidth(t *testing.T) {
 	state.AddMessage(session.RoleUser, longContent, session.ContentTypePlain)
 	model.refreshViewport()
 
-	viewport := model.viewport.View()
+	viewport := stripANSI(model.viewport.View())
 	lines := strings.Split(viewport, "\n")
-	maxWidth := model.viewport.Width
+	maxWidth := model.viewport.Width()
 
 	wrapped := false
 	for i, line := range lines {
@@ -1033,7 +1033,7 @@ func TestApprovalBannerHasSingleBorder(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
-	view := model.View()
+	view := stripANSI(model.View().Content)
 	// With an empty diff there should be a single inline approval block,
 	// not a split Diff+Approval layout.
 	if strings.Count(view, "Diff") > 0 {
@@ -1063,7 +1063,7 @@ func TestRenderWhileStateMutatedDoesNotRace(t *testing.T) {
 	}()
 
 	for i := 0; i < 200; i++ {
-		_ = model.View()
+		_ = stripANSI(model.View().Content)
 		updated, _ := model.Update(agentTickMsg{})
 		model = updated.(Model)
 	}
@@ -1081,7 +1081,7 @@ func TestThinkingBoxRendersWhileStreaming(t *testing.T) {
 	model.busy = true
 	model.refreshViewport()
 
-	view := model.View()
+	view := stripANSI(model.View().Content)
 	if !strings.Contains(view, "thinking") {
 		t.Fatalf("view missing thinking box:\n%s", view)
 	}
@@ -1100,7 +1100,7 @@ func TestThinkingDoesNotRenderBeforeReasoningStreams(t *testing.T) {
 	model.busy = true
 	model.refreshViewport()
 
-	view := model.View()
+	view := stripANSI(model.View().Content)
 	if strings.Contains(view, "thinking") {
 		t.Fatalf("view should not show a thinking panel before reasoning arrives:\n%s", view)
 	}
@@ -1118,7 +1118,7 @@ func TestFinishedMessageShowsCollapsedThinkingSummary(t *testing.T) {
 	state.AddMessage(session.RoleAssistant, "Here's the fix.", session.ContentTypePlain)
 	model.refreshViewport()
 
-	view := model.View()
+	view := stripANSI(model.View().Content)
 	if !strings.Contains(view, "thought for") {
 		t.Fatalf("view missing collapsed thinking summary:\n%s", view)
 	}
@@ -1139,16 +1139,16 @@ func TestCtrlGTogglesThinkingExpansion(t *testing.T) {
 	state.AddMessage(session.RoleAssistant, "Here's the fix.", session.ContentTypePlain)
 	model.refreshViewport()
 
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	model = updated.(Model)
-	if !strings.Contains(model.View(), "checking the auth flow") {
-		t.Fatalf("expected expanded reasoning after Ctrl+G:\n%s", model.View())
+	if !strings.Contains(stripANSI(model.View().Content), "checking the auth flow") {
+		t.Fatalf("expected expanded reasoning after Ctrl+G:\n%s", stripANSI(model.View().Content))
 	}
 
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	model = updated.(Model)
-	if strings.Contains(model.View(), "checking the auth flow") {
-		t.Fatalf("expected collapsed reasoning after second Ctrl+G:\n%s", model.View())
+	if strings.Contains(stripANSI(model.View().Content), "checking the auth flow") {
+		t.Fatalf("expected collapsed reasoning after second Ctrl+G:\n%s", stripANSI(model.View().Content))
 	}
 }
 
@@ -1163,15 +1163,15 @@ func TestBusyTickRefreshesViewportOnReasoningGrowthAlone(t *testing.T) {
 	state.AppendThinking("step one")
 	updated, _ = model.Update(agentTickMsg{})
 	model = updated.(Model)
-	if !strings.Contains(model.View(), "step one") {
+	if !strings.Contains(stripANSI(model.View().Content), "step one") {
 		t.Fatal("expected viewport to show reasoning after first tick")
 	}
 
 	state.AppendThinking(" step two")
 	updated, _ = model.Update(agentTickMsg{})
 	model = updated.(Model)
-	if !strings.Contains(model.View(), "step one step two") {
-		t.Fatalf("expected viewport to refresh on reasoning growth alone (message count unchanged):\n%s", model.View())
+	if !strings.Contains(stripANSI(model.View().Content), "step one step two") {
+		t.Fatalf("expected viewport to refresh on reasoning growth alone (message count unchanged):\n%s", stripANSI(model.View().Content))
 	}
 }
 
@@ -1194,21 +1194,21 @@ func TestSettingsNavigationThroughMainModel(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 	if !m.settingsOpen {
 		t.Fatal("expected settingsOpen")
 	}
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "> Default profile:") {
 		t.Fatalf("first settings field should be focused:\n%s", view)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = updated.(Model)
 
-	view = m.View()
+	view = stripANSI(m.View().Content)
 	if !strings.Contains(view, "> Preset:") {
 		t.Fatalf("Tab should move focus to second field:\n%s", view)
 	}
@@ -1233,35 +1233,35 @@ func TestSettingsTypingThroughMainModel(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
 	// Tab to Provider field (third field)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = updated.(Model)
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "> Provider:") {
 		t.Fatalf("expected Provider field focused:\n%s", view)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "z"})
 	m = updated.(Model)
 
-	view = m.View()
+	view = stripANSI(m.View().Content)
 	if !strings.Contains(view, "Provider: ollamaz") {
 		t.Fatalf("typing should append to Provider value, got:\n%s", view)
 	}
 
 	// Move cursor left inside the textinput and type in the middle.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
 	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "A"})
 	m = updated.(Model)
 
-	view = m.View()
+	view = stripANSI(m.View().Content)
 	if !strings.Contains(view, "Provider: ollamaAz") {
 		t.Fatalf("cursor movement should insert in the middle, got:\n%s", view)
 	}
@@ -1286,16 +1286,16 @@ func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
 	// Tab to Remote providers allowed field (last field)
 	for i := 0; i < 5; i++ {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		m = updated.(Model)
 	}
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "> [ ] Remote providers allowed") {
 		t.Fatalf("expected Remote providers allowed field focused:\n%s", view)
 	}
@@ -1303,10 +1303,10 @@ func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
 		t.Fatalf("expected bool to start false, got:\n%s", view)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	m = updated.(Model)
 
-	view = m.View()
+	view = stripANSI(m.View().Content)
 	if !strings.Contains(view, "[x] Remote providers allowed") {
 		t.Fatalf("Space should toggle bool to true, got:\n%s", view)
 	}
@@ -1318,16 +1318,16 @@ func TestSettingsNavigationWithDefaultConfig(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 	if !m.settingsOpen {
 		t.Fatal("expected settingsOpen")
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = updated.(Model)
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "> Preset:") {
 		t.Fatalf("Tab should move focus to second field with default config:\n%s", view)
 	}
@@ -1347,7 +1347,7 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = updated.(Model)
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	for _, want := range []string{
 		"Approval needed",
 		"Agent wants to run",
@@ -1389,7 +1389,7 @@ func TestStatusBarShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = updated.(Model)
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "⠋") {
 		t.Fatalf("View() missing spinner frame in status bar:\n%s", view)
 	}
@@ -1413,13 +1413,13 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 	updated, _ = m.Update(agentFinishedMsg{})
 	m = updated.(Model)
 
-	if !strings.Contains(m.View(), "✔") {
+	if !strings.Contains(stripANSI(m.View().Content), "✔") {
 		t.Fatal("expected done badge immediately after finish")
 	}
 
 	m.lastActivityDone = m.lastActivityDone.Add(-doneDisplayDuration).Add(-time.Millisecond)
 
-	view := m.View()
+	view := stripANSI(m.View().Content)
 	if strings.Contains(view, "✔") {
 		t.Fatalf("done badge should have expired after %v:\n%s", doneDisplayDuration, view)
 	}
@@ -1436,7 +1436,7 @@ func TestFinalAnswerRendersWithResponseLabel(t *testing.T) {
 	state.AddMessageFinal(session.RoleAssistant, "here is the answer", session.ContentTypeMarkdown)
 
 	m.refreshViewport()
-	view := m.View()
+	view := stripANSI(m.View().Content)
 
 	if !strings.Contains(view, "Response") {
 		t.Fatalf("View() does not show Response label for final answer:\n%s", view)
@@ -1451,7 +1451,7 @@ func TestSlashCommandExit(t *testing.T) {
 	model = updated.(Model)
 
 	model.input.SetValue("/exit")
-	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if cmd == nil {
 		t.Error("expected quit command from /exit, got nil")
@@ -1466,7 +1466,7 @@ func TestSlashCommandHelp(t *testing.T) {
 	model = updated.(Model)
 
 	model.input.SetValue("/help")
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
 	msgs := m.state.Messages()
@@ -1486,7 +1486,7 @@ func TestSlashCommandUnknown(t *testing.T) {
 	model = updated.(Model)
 
 	model.input.SetValue("/nonexistent")
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
 	msgs := m.state.Messages()
@@ -1507,7 +1507,7 @@ func TestSlashCommandNotSentToAgent(t *testing.T) {
 	model = updated.(Model)
 
 	model.input.SetValue("/help")
-	model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case <-runner.called:
@@ -1525,7 +1525,7 @@ func TestSlashCommandClearMessages(t *testing.T) {
 
 	model.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	model.input.SetValue("/new")
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
 	msgs := m.state.Messages()
@@ -1546,7 +1546,7 @@ func TestSlashCommandBusyStillDispatched(t *testing.T) {
 	model.busy = true
 
 	model.input.SetValue("/help")
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
 	msgs := m.state.Messages()
@@ -1587,7 +1587,7 @@ func TestApprovalRendersInlineInChat(t *testing.T) {
 	})
 
 	m.refreshViewport()
-	view := m.View()
+	view := stripANSI(m.View().Content)
 
 	if !strings.Contains(view, "go test ./...") {
 		t.Fatalf("View() does not contain the approval command:\n%s", view)
@@ -1615,7 +1615,7 @@ func TestApprovalKeyHandlingStillWorksInline(t *testing.T) {
 		ResponseChan: ch,
 	})
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
 	select {
@@ -1645,7 +1645,7 @@ func TestActiveToolCallRendersInline(t *testing.T) {
 	})
 
 	m.refreshViewport()
-	view := m.View()
+	view := stripANSI(m.View().Content)
 
 	if !strings.Contains(view, "shell.run") {
 		t.Fatalf("View() does not show active tool name:\n%s", view)
@@ -1669,7 +1669,7 @@ func TestRecentToolCallRendersInlineAfterFastToolCompletes(t *testing.T) {
 	})
 
 	m.refreshViewport()
-	view := m.View()
+	view := stripANSI(m.View().Content)
 
 	if !strings.Contains(view, "file.read") {
 		t.Fatalf("View() does not show recent tool name:\n%s", view)
@@ -1698,7 +1698,7 @@ func TestCompletedToolCallsRemainInTranscriptLog(t *testing.T) {
 	})
 
 	m.refreshViewport()
-	view := m.View()
+	view := stripANSI(m.View().Content)
 
 	for _, want := range []string{"file.read", "/repo/main.go", "shell.run", "go test ./..."} {
 		if !strings.Contains(view, want) {
@@ -1729,7 +1729,7 @@ func TestCompletedToolCallsRenderInMessageTimeline(t *testing.T) {
 	})
 
 	m.refreshViewport()
-	view := m.View()
+	view := stripANSI(m.View().Content)
 
 	userIdx := strings.Index(view, "USER: inspect auth flow")
 	toolIdx := strings.Index(view, "file.read")
@@ -1754,12 +1754,12 @@ func TestActiveToolCallClearsFromView(t *testing.T) {
 		StartedAt: time.Unix(100, 0),
 	})
 	m.refreshViewport()
-	viewWithTool := m.View()
+	viewWithTool := stripANSI(m.View().Content)
 
 	state.ClearActiveToolCall()
 	m.lastTranscriptHash = 0
 	m.refreshViewport()
-	viewWithoutTool := m.View()
+	viewWithoutTool := stripANSI(m.View().Content)
 
 	if strings.Contains(viewWithoutTool, "/repo/main.go") && !strings.Contains(viewWithTool, "/repo/main.go") {
 		t.Fatalf("tool-call block did not clear from view")
@@ -1785,7 +1785,7 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 	state.SetPendingApproval(tc)
 
 	m.refreshViewport()
-	view := m.View()
+	view := stripANSI(m.View().Content)
 
 	if !strings.Contains(view, "mcp.github.create_issue") {
 		t.Fatalf("View() missing tool name:\n%s", view)
@@ -1797,7 +1797,7 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 		t.Fatalf("View() missing JSON arguments:\n%s", view)
 	}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "e"})
 	m = updated.(Model)
 
 	if !m.editingCommand {
@@ -1808,7 +1808,7 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 	}
 
 	m.input.SetValue(`{"title":"edited issue"}`)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
 	select {
@@ -1832,10 +1832,10 @@ func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
 	state.SetPendingQuestion(q)
 
 	for _, r := range "archive" {
-		model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = model.(Model)
 	}
-	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = model.(Model)
 
 	select {
@@ -1857,7 +1857,7 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 	q := &session.PendingQuestion{Question: "Archive or delete?", ResponseChan: make(chan string, 1)}
 	state.SetPendingQuestion(q)
 
-	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	_ = model
 
 	select {

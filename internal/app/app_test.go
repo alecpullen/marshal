@@ -17,7 +17,7 @@ import (
 	"time"
 	"unsafe"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
@@ -627,7 +627,7 @@ func TestRunDisplaysInactiveRouteWhenNoProviderConfigured(t *testing.T) {
 		}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 			updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-			view = updated.View()
+			view = updated.View().Content
 			return nil
 		}),
 	)
@@ -665,7 +665,7 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 		}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 			updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-			view = updated.View()
+			view = updated.View().Content
 			return nil
 		}),
 	)
@@ -741,9 +741,9 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 		}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 			m := model.(tui.Model)
-			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+			updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 			m = updated.(tui.Model)
-			view = m.View()
+			view = m.View().Content
 			return nil
 		}),
 	)

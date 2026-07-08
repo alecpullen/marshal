@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/db"
 )
@@ -46,7 +46,7 @@ func TestEscReturnsClosedMsg(t *testing.T) {
 	database, projectID := newTestDB(t)
 	m := New(database, projectID)
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if cmd == nil {
 		t.Fatal("expected a command")
 	}
@@ -64,20 +64,20 @@ func TestCursorMovesWithinBounds(t *testing.T) {
 	}
 	m := New(database, projectID)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	m = updated.(Model)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	m = updated
 	if m.cursor != 0 {
 		t.Fatalf("cursor = %d, want 0 (clamped at top)", m.cursor)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated
 	if m.cursor != 1 {
 		t.Fatalf("cursor = %d, want 1", m.cursor)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated
 	if m.cursor != 1 {
 		t.Fatalf("cursor = %d, want 1 (clamped at bottom)", m.cursor)
 	}
@@ -90,8 +90,8 @@ func TestSKeyMarksSelectedMemoryStale(t *testing.T) {
 	}
 	m := New(database, projectID)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-	m = updated.(Model)
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "s"})
+	m = updated
 
 	if m.memories[0].Confidence != db.MemoryConfidenceStale {
 		t.Fatalf("in-memory confidence = %q, want stale", m.memories[0].Confidence)
@@ -113,8 +113,8 @@ func TestCKeyMarksSelectedMemoryConfirmed(t *testing.T) {
 	}
 	m := New(database, projectID)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "c"})
+	m = updated
 
 	if m.memories[0].Confidence != db.MemoryConfidenceConfirmed {
 		t.Fatalf("in-memory confidence = %q, want confirmed", m.memories[0].Confidence)
@@ -130,8 +130,8 @@ func TestCKeyRefreshesUpdatedAtInMemory(t *testing.T) {
 	m := New(database, projectID)
 	before := m.memories[0].UpdatedAt
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "c"})
+	m = updated
 
 	if !m.memories[0].UpdatedAt.After(before) {
 		t.Fatalf("in-memory UpdatedAt = %s, want after %s", m.memories[0].UpdatedAt, before)
@@ -251,8 +251,8 @@ func TestMemoryViewportScrollsAndClamps(t *testing.T) {
 
 	// Move cursor to bottom.
 	for i := 0; i < 60; i++ {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-		m = updated.(Model)
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		m = updated
 	}
 	if m.cursor != 49 {
 		t.Fatalf("cursor = %d, want 49", m.cursor)

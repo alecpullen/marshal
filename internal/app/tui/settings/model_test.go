@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
@@ -64,7 +64,7 @@ func TestSettingsExposeAgentAndToolFields(t *testing.T) {
 
 func TestCancelReturnsCancelledMsg(t *testing.T) {
 	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if cmd == nil {
 		t.Fatal("expected command")
 	}

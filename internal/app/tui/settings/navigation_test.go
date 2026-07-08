@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestTabNavigatesBetweenFields(t *testing.T) {
@@ -17,8 +17,8 @@ func TestTabNavigatesBetweenFields(t *testing.T) {
 		t.Fatalf("first field should be focused on open:\n%s", view)
 	}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = updated
 
 	view = m.View()
 	if !strings.Contains(view, "> Preset:") {
@@ -32,20 +32,20 @@ func TestTypingUpdatesStringField(t *testing.T) {
 	m.SetSize(80, 24)
 
 	// Tab to Provider field (third field: Default profile, Preset, Provider)
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = updated
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = updated
 
-	view := m.View()
+	view := stripANSI(m.View())
 	if !strings.Contains(view, "> Provider:") {
 		t.Fatalf("expected Provider field to be focused:\n%s", view)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "x"})
+	m = updated
 
-	view = m.View()
+	view = stripANSI(m.View())
 	if !strings.Contains(view, "Provider: ollamax") {
 		t.Fatalf("typing 'x' should append to Provider value, got:\n%s", view)
 	}
@@ -57,8 +57,8 @@ func TestArrowChangesSelectField(t *testing.T) {
 	m.SetSize(80, 24)
 
 	// Default profile field is focused initially
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
-	m = updated.(Model)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = updated
 
 	view := m.View()
 	if !strings.Contains(view, "local_balanced") {
@@ -71,16 +71,16 @@ func TestUpDownNavigatesBetweenFields(t *testing.T) {
 	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
 	m.SetSize(80, 24)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = updated.(Model)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated
 
 	view := m.View()
 	if !strings.Contains(view, "> Preset:") {
 		t.Fatalf("Down should move focus to second field:\n%s", view)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	m = updated
 
 	view = m.View()
 	if !strings.Contains(view, "> Default profile:") {
@@ -94,8 +94,8 @@ func TestDownOnLastFieldWrapsToFirst(t *testing.T) {
 	m.SetSize(80, 24)
 
 	for i := 0; i < len(m.fields)-1; i++ {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-		m = updated.(Model)
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		m = updated
 	}
 
 	view := m.View()
@@ -103,8 +103,8 @@ func TestDownOnLastFieldWrapsToFirst(t *testing.T) {
 		t.Fatalf("expected last field focused, got:\n%s", view)
 	}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = updated.(Model)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated
 
 	view = m.View()
 	if !strings.Contains(view, "> Default profile:") {

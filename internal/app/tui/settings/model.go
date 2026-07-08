@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
@@ -211,18 +211,18 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyEsc:
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "esc":
 			return m, func() tea.Msg { return CancelledMsg{} }
-		case tea.KeyCtrlS:
+		case "ctrl+s":
 			return m, m.saveCmd()
-		case tea.KeyTab, tea.KeyDown:
+		case "tab", "down":
 			m.nextField()
 			return m, nil
-		case tea.KeyShiftTab, tea.KeyUp:
+		case "shift+tab", "up":
 			m.prevField()
 			return m, nil
 		default:

@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 )
 
 type field interface {
@@ -42,7 +42,7 @@ func (f *stringField) Blur() {
 
 func (f *stringField) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		var cmd tea.Cmd
 		f.input, cmd = f.input.Update(msg)
 		if f.onChange != nil {
@@ -59,7 +59,7 @@ func (f *stringField) View(width int) string {
 	if available < 1 {
 		available = 1
 	}
-	f.input.Width = available
+	f.input.SetWidth(available)
 	return label + f.input.View()
 }
 
@@ -102,8 +102,8 @@ func (f *boolField) Focus() {}
 func (f *boolField) Blur() {}
 
 func (f *boolField) Update(msg tea.Msg) tea.Cmd {
-	if key, ok := msg.(tea.KeyMsg); ok {
-		switch key.Type {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		switch key.Code {
 		case tea.KeySpace, tea.KeyEnter:
 			*f.value = !*f.value
 			if f.onChange != nil {
@@ -153,8 +153,8 @@ func (f *selectField) Focus() {}
 func (f *selectField) Blur() {}
 
 func (f *selectField) Update(msg tea.Msg) tea.Cmd {
-	if key, ok := msg.(tea.KeyMsg); ok {
-		switch key.Type {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		switch key.Code {
 		case tea.KeyLeft:
 			if f.selected > 0 {
 				f.selected--
@@ -236,7 +236,7 @@ func (f *intField) clamp(v int) int {
 
 func (f *intField) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		var cmd tea.Cmd
 		f.input, cmd = f.input.Update(msg)
 		if v, err := strconv.Atoi(f.input.Value()); err == nil {
@@ -260,7 +260,7 @@ func (f *intField) View(width int) string {
 	if available < 1 {
 		available = 1
 	}
-	f.input.Width = available
+	f.input.SetWidth(available)
 	return label + f.input.View()
 }
 

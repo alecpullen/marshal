@@ -70,6 +70,7 @@ type Model struct {
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
 	thinkingExpanded   bool
+	viewportFollow     bool
 
 	spinner           Spinner
 	spinnerFrame      string
@@ -181,6 +182,7 @@ func New(state *session.State, opts ...Option) Model {
 		viewport:       viewport.New(0, 0),
 		spinner:        NewSpinner(),
 		now:            time.Now,
+		viewportFollow: true,
 	}
 	for _, opt := range opts {
 		opt(&m)
@@ -278,6 +280,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case memory.ClosedMsg:
 		m.memoryOpen = false
 		return m, nil
+	case tea.MouseMsg:
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.viewportFollow = false
+		case tea.MouseButtonWheelDown:
+			if m.viewport.AtBottom() {
+				m.viewportFollow = true
+			}
+		}
+		return m, vpCmd
 	case tea.KeyMsg:
 		// Always allow Ctrl+C to quit
 		if msg.Type == tea.KeyCtrlC {
@@ -455,12 +469,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyPgUp, tea.KeyPgDown:
 				var vpCmd tea.Cmd
 				m.viewport, vpCmd = m.viewport.Update(msg)
+				if msg.Type == tea.KeyPgUp {
+					m.viewportFollow = false
+				}
+				if msg.Type == tea.KeyPgDown && m.viewport.AtBottom() {
+					m.viewportFollow = true
+				}
 				return m, vpCmd
 			case tea.KeyCtrlU:
 				m.viewport.HalfViewUp()
+				m.viewportFollow = false
 				return m, nil
 			case tea.KeyCtrlD:
 				m.viewport.HalfViewDown()
+				if m.viewport.AtBottom() {
+					m.viewportFollow = true
+				}
+				return m, nil
+			case tea.KeyEnd:
+				m.viewport.GotoBottom()
+				m.viewportFollow = true
 				return m, nil
 			case tea.KeyUp:
 				if m.moveCommandSuggestion(-1) {
@@ -486,6 +514,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.resizeInputHeight()
 				m.updateCommandSuggestions()
 				m.updateViewportHeight()
+				m.viewportFollow = true
 
 				if strings.HasPrefix(value, "/") {
 					return m.dispatchCommand(value)
@@ -680,7 +709,9 @@ func (m *Model) refreshViewport() {
 	}
 
 	m.viewport.SetContent(b.String())
-	m.viewport.GotoBottom()
+	if m.viewportFollow {
+		m.viewport.GotoBottom()
+	}
 }
 
 type agentFinishedMsg struct{ err error }

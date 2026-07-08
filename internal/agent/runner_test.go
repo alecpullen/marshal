@@ -22,8 +22,8 @@ import (
 )
 
 func TestRunnerDefaultsAreSensible(t *testing.T) {
-	if DefaultMaxToolIterations != 16 {
-		t.Fatalf("DefaultMaxToolIterations = %d, want 16", DefaultMaxToolIterations)
+	if DefaultMaxToolIterations != 100 {
+		t.Fatalf("DefaultMaxToolIterations = %d, want 100", DefaultMaxToolIterations)
 	}
 	if DefaultMaxRetries != 2 {
 		t.Fatalf("DefaultMaxRetries = %d, want 2", DefaultMaxRetries)

@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	DefaultMaxToolIterations    = 16
+	DefaultMaxToolIterations    = 100
 	DefaultMaxRetries           = 2
 	DefaultMaxParallelActions   = 4
 	DefaultMaxTurnContextTokens = 16384

@@ -57,6 +57,7 @@ func TestEvalScenarios(t *testing.T) {
 		responses  []string
 		forceClass TaskClass
 		maxIters   int
+		role       AgentRole
 		want       func(t *testing.T, m TurnMetrics)
 	}{
 		{
@@ -104,6 +105,7 @@ func TestEvalScenarios(t *testing.T) {
 			name:       "exact repeat hard-stalls into salvage",
 			responses:  exactRepeatResponses,
 			forceClass: ClassQuestion,
+			role:       RoleRepoScout,
 			want: func(t *testing.T, m TurnMetrics) {
 				if m.Outcome != "salvaged" || m.SalvageReason != "stalled" || m.HardStalls != 1 || m.ToolCalls != repeatHardStall {
 					t.Fatalf("metrics = %+v", m)
@@ -176,6 +178,9 @@ func TestEvalScenarios(t *testing.T) {
 			state := newTestState(t)
 			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 			r.SetForceClass(string(tc.forceClass))
+			if tc.role != "" {
+				r.Role = tc.role
+			}
 			if tc.maxIters > 0 {
 				r.MaxToolIterations = tc.maxIters
 			}
@@ -258,6 +263,7 @@ func TestEvalNativeFinalizeScenarios(t *testing.T) {
 		responses []string
 		toolCalls [][]schema.ToolCall
 		maxIters  int
+		role      AgentRole
 		want      func(t *testing.T, task *Task, m TurnMetrics)
 	}{
 		{
@@ -300,6 +306,7 @@ func TestEvalNativeFinalizeScenarios(t *testing.T) {
 				return cs
 			}(),
 			maxIters: repeatHardStall + 1,
+			role:     RoleRepoScout,
 			want: func(t *testing.T, task *Task, m TurnMetrics) {
 				if m.Outcome != "salvaged" || m.SalvageReason != "stalled" {
 					t.Fatalf("metrics = %+v", m)
@@ -322,6 +329,9 @@ func TestEvalNativeFinalizeScenarios(t *testing.T) {
 			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 			r.NativeTools = true
 			r.MaxToolIterations = tc.maxIters
+			if tc.role != "" {
+				r.Role = tc.role
+			}
 			r.SetForceClass(string(ClassQuestion))
 
 			var got *TurnMetrics

@@ -289,8 +289,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 						return resTask, ferr
 					} else if nudge != "" {
-						messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-						r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+						messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 					}
 					continue
 				}
@@ -321,8 +320,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 				return resTask, ferr
 			} else if nudge != "" {
-				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 			}
 			continue
 		}
@@ -374,8 +372,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 				return res, ferr
 			} else if nudge != "" {
-				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 			}
 			continue
 		}
@@ -395,8 +392,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 				return res, ferr
 			} else if nudge != "" {
-				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 			}
 		case ActionAskUser:
 			if r.role() != RoleGeneral {
@@ -423,8 +419,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 					return resTask, ferr
 				} else if nudge != "" {
-					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-					r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 				}
 			} else {
 				consecutiveEmpty = 0
@@ -457,21 +452,43 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	return task, ErrMaxIterationsExceeded
 }
 
-// maybeFinalizeOnStall inspects the tracker after a tool execution. If the
-// tracker reports a hard stall it forces a final answer via finalize and
-// reports finalized so the caller returns immediately. Otherwise it returns
-// no error and no nudge.
-func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, nudge string) {
+// maybeFinalizeOnStall handles a hard stall. For the interactive general
+// role it asks the user how to proceed (opencode's doom-loop permission
+// pattern): a non-empty answer is returned as guidance for the caller to
+// append as a user message, and repeat counts are reset so the loop gets a
+// fresh start. An empty answer, or any non-general (swarm) role, falls back
+// to finalize, which produces a flagged salvaged summary.
+func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, guidance string) {
 	r.trackerMu.Lock()
 	a := r.tracker.assess()
+	name, args, _ := r.tracker.lastCall()
 	r.trackerMu.Unlock()
 
-	if a == assessHardStall {
-		r.withStats(func(s *turnStats) { s.m.HardStalls++ })
-		res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
-		return true, res, ferr, ""
+	if a != assessHardStall {
+		return false, task, nil, ""
 	}
-	return false, task, nil, ""
+	r.withStats(func(s *turnStats) { s.m.HardStalls++ })
+
+	if r.role() == RoleGeneral {
+		question := fmt.Sprintf(
+			"I appear to be stuck: I have repeated %s with args %s without making progress. Reply with guidance on how to proceed, or send an empty reply to stop and get a summary of progress so far.",
+			name, args,
+		)
+		answer, waitErr := r.requestAnswer(ctx, question)
+		if waitErr != nil {
+			return true, task, r.fail(task, waitErr), ""
+		}
+		if strings.TrimSpace(answer) != "" {
+			r.trackerMu.Lock()
+			r.tracker.resetCounts()
+			r.trackerMu.Unlock()
+			r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
+			return false, task, nil, "User guidance: " + answer
+		}
+	}
+
+	res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
+	return true, res, ferr, ""
 }
 
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {

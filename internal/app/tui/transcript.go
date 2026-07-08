@@ -5,6 +5,9 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/glamour/v2"
+	gansi "charm.land/glamour/v2/ansi"
+	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
@@ -12,80 +15,68 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-type mdBlock struct {
-	kind string
-	text string
+// marshalStyleConfig adapts glamour's dark style to the Warm Sunset
+// palette: coral H1 instead of the banner-style default, violet section
+// headings. Document text (252) and the 2-space margin already match the
+// transcript's prose treatment.
+func marshalStyleConfig() gansi.StyleConfig {
+	cfg := styles.DarkStyleConfig
+	cfg.Heading.StylePrimitive.Color = ptr("175") // violetColor
+	cfg.H1.StylePrimitive = gansi.StylePrimitive{
+		Color: ptr("209"), // coralColor
+		Bold:  ptr(true),
+	}
+	return cfg
 }
 
-func splitFencedBlocks(content string) []mdBlock {
-	lines := strings.Split(content, "\n")
-	var blocks []mdBlock
-	inFence := false
-	var current mdBlock
+func ptr[T any](v T) *T { return &v }
 
-	if len(lines) > 0 {
-		current.kind = "prose"
+// mdRenderers caches glamour renderers by wrap width; building one parses
+// the full style config, which is too slow to repeat per message. The TUI
+// renders on Bubble Tea's single Update/View goroutine, so no locking.
+var mdRenderers = map[int]*glamour.TermRenderer{}
+
+// renderMarkdown renders content as ANSI-styled markdown wrapped to
+// width. ok is false when glamour is unavailable (renderer construction
+// or rendering failed); callers fall back to plain text.
+func renderMarkdown(content string, width int) (out string, ok bool) {
+	r, cached := mdRenderers[width]
+	if !cached {
+		var err error
+		r, err = glamour.NewTermRenderer(
+			glamour.WithStyles(marshalStyleConfig()),
+			glamour.WithWordWrap(width),
+		)
+		if err != nil {
+			return "", false
+		}
+		mdRenderers[width] = r
 	}
+	rendered, err := r.Render(content)
+	if err != nil {
+		return "", false
+	}
+	return rendered, true
+}
 
-	for _, line := range lines {
-		if strings.HasPrefix(line, "```") {
-			if inFence {
-				blocks = append(blocks, current)
-				current = mdBlock{kind: "prose"}
-				inFence = false
+// renderPlainProse is the fallback prose treatment when markdown
+// rendering fails: wrapped text with the transcript's 2-space indent.
+func renderPlainProse(content string, width int) string {
+	contentWidth := max(width-4, 1)
+	var b strings.Builder
+	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
+		wrapped := ansi.Wrap(line, contentWidth, "")
+		for i, wl := range strings.Split(wrapped, "\n") {
+			if i == 0 {
+				b.WriteString("  ")
 			} else {
-				if current.text != "" || current.kind == "prose" {
-					blocks = append(blocks, current)
-				}
-				current = mdBlock{kind: "code"}
-				inFence = true
+				b.WriteString("    ")
 			}
-			continue
-		}
-		if current.text != "" {
-			current.text += "\n"
-		}
-		if inFence && line == "" {
-			current.text += " "
-		} else {
-			current.text += line
+			b.WriteString(wl)
+			b.WriteString("\n")
 		}
 	}
-	if current.text != "" || (current.kind == "prose" && len(blocks) == 0) {
-		blocks = append(blocks, current)
-	}
-
-	return blocks
-}
-
-func parseMarkdownLine(line string) (lipgloss.Style, string) {
-	if strings.HasPrefix(line, "### ") {
-		return lipgloss.NewStyle().Foreground(violetColor).Bold(true), strings.TrimPrefix(line, "### ")
-	}
-	if strings.HasPrefix(line, "## ") {
-		return lipgloss.NewStyle().Foreground(violetColor).Bold(true), strings.TrimPrefix(line, "## ")
-	}
-	if strings.HasPrefix(line, "# ") {
-		return lipgloss.NewStyle().Foreground(accentColor).Bold(true), strings.TrimPrefix(line, "# ")
-	}
-
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "---" || trimmed == "***" || trimmed == "___" {
-		return mutedStyle, "─────────────────────────────────────"
-	}
-
-	if strings.HasPrefix(line, "> ") {
-		return mutedStyle, "│ " + strings.TrimPrefix(line, "> ")
-	}
-
-	if strings.HasPrefix(line, "- ") {
-		return lipgloss.NewStyle(), "  • " + strings.TrimPrefix(line, "- ")
-	}
-	if strings.HasPrefix(line, "* ") {
-		return lipgloss.NewStyle(), "  • " + strings.TrimPrefix(line, "* ")
-	}
-
-	return lipgloss.NewStyle(), line
+	return b.String()
 }
 
 func renderCodeBlock(content string, width int) string {
@@ -93,74 +84,35 @@ func renderCodeBlock(content string, width int) string {
 		width = 1
 	}
 	trimmed := strings.TrimSpace(content)
-	return codeBorderStyle.Copy().Width(width).Render(trimmed)
+	return codeBorderStyle.Width(width).Render(trimmed)
 }
 
 func renderFinalAnswer(msg session.Message, width int) string {
 	if width < 10 {
 		width = 10
 	}
-	prefixWidth := 10
-	contentWidth := max(width-prefixWidth-4, 1)
 	labelText := "Response"
 	if msg.Salvaged {
 		labelText = "Response · salvaged"
 	}
 	label := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(labelText)
 
-	blocks := splitFencedBlocks(strings.TrimRight(msg.Content, "\n"))
 	var b strings.Builder
 	b.WriteString(label)
-	b.WriteString("  ")
-	firstBlock := true
 	if msg.Salvaged && msg.SalvageReason != "" {
+		b.WriteString("  ")
 		b.WriteString(mutedStyle.Render(msg.SalvageReason))
-		b.WriteString("\n")
-		firstBlock = false
 	}
+	b.WriteString("\n")
 
-	for _, block := range blocks {
-		switch block.kind {
-		case "code":
-			rendered := renderCodeBlock(block.text, contentWidth)
-			codeLines := strings.Split(rendered, "\n")
-			for _, line := range codeLines {
-				if line == "" {
-					continue
-				}
-				if firstBlock {
-					b.WriteString(line)
-					b.WriteString("\n")
-					firstBlock = false
-				} else {
-					b.WriteString(strings.Repeat(" ", prefixWidth+2))
-					b.WriteString(line)
-					b.WriteString("\n")
-				}
-			}
-		case "prose":
-			proseLines := strings.Split(block.text, "\n")
-			if len(proseLines) == 1 && proseLines[0] == "" {
-				continue
-			}
-			for _, pLine := range proseLines {
-				style, transformed := parseMarkdownLine(pLine)
-				wrapped := ansi.Wrap(transformed, contentWidth, "")
-				wrappedLines := strings.Split(wrapped, "\n")
-				for _, wl := range wrappedLines {
-					if firstBlock {
-						b.WriteString(style.Render(wl))
-						b.WriteString("\n")
-						firstBlock = false
-					} else {
-						b.WriteString(strings.Repeat(" ", prefixWidth+2))
-						b.WriteString(style.Render(wl))
-						b.WriteString("\n")
-					}
-				}
-			}
-		}
+	// Border (1) + padding (1) sit left of the body; glamour's own
+	// 2-space margin indents the prose inside that.
+	contentWidth := max(width-6, 1)
+	body, ok := renderMarkdown(msg.Content, contentWidth)
+	if !ok {
+		body = renderPlainProse(msg.Content, contentWidth)
 	}
+	b.WriteString(strings.Trim(body, "\n"))
 
 	borderStyle := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).
@@ -273,35 +225,14 @@ func renderUserMessage(content string, width int) string {
 }
 
 func renderAgentMarkdown(content string, width int) string {
-	contentWidth := max(width-4, 1)
-	blocks := splitFencedBlocks(strings.TrimRight(content, "\n"))
-	var b strings.Builder
-	for _, block := range blocks {
-		switch block.kind {
-		case "code":
-			b.WriteString(indentBlock(renderCodeBlock(block.text, max(contentWidth-2, 1)), "  "))
-			b.WriteString("\n")
-		case "prose":
-			for _, pLine := range strings.Split(block.text, "\n") {
-				if strings.TrimSpace(pLine) == "" {
-					b.WriteString("\n")
-					continue
-				}
-				style, transformed := parseMarkdownLine(pLine)
-				wrapped := ansi.Wrap(transformed, contentWidth, "")
-				for i, wl := range strings.Split(wrapped, "\n") {
-					if i == 0 {
-						b.WriteString("  ")
-					} else {
-						b.WriteString("    ")
-					}
-					b.WriteString(style.Render(wl))
-					b.WriteString("\n")
-				}
-			}
-		}
+	// Glamour's document margin provides the transcript's 2-space prose
+	// indent; wrap to width-2 so rendered lines stay inside the viewport.
+	contentWidth := max(width-2, 1)
+	out, ok := renderMarkdown(content, contentWidth)
+	if !ok {
+		out = renderPlainProse(content, width)
 	}
-	return strings.TrimRight(b.String(), "\n") + "\n"
+	return strings.Trim(out, "\n") + "\n"
 }
 
 func renderTranscriptItem(item session.TranscriptItem, thinkingExpanded bool, width int) string {
@@ -542,7 +473,7 @@ func sandboxIsolationText(sb session.SandboxInfo, allowNetwork bool) string {
 func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int) string {
 	innerWidth := max(width-2, 1)
 
-	titleStyle := panelTitleStyle.Copy().Foreground(warningColor)
+	titleStyle := panelTitleStyle.Foreground(warningColor)
 	muted := mutedStyle
 	text := lipgloss.NewStyle()
 	key := keyHintStyle

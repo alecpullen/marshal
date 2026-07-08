@@ -68,6 +68,10 @@ func (m Model) statusLeftSegments() []string {
 			compactTokenCount(sp.TokensUsed),
 			compactTokenCount(sp.TokensMax)))
 	}
+
+	if n := m.state.RunningJobsCount(); n > 0 {
+		segments = append(segments, fmt.Sprintf("jobs %d", n))
+	}
 	return segments
 }
 

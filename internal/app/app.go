@@ -516,7 +516,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
-			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, runner, swarmRunner, &mcpMgr)
+			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, &runner, &swarmRunner, &mcpMgr)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	} else {
@@ -557,8 +557,8 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	return progErr
 }
 
-func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, runner *agent.Runner, swarmRunner *swarm.Orchestrator, activeMCP **mcp.Manager) error {
-	if runner == nil {
+func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, runner **agent.Runner, swarmRunner **swarm.Orchestrator, activeMCP **mcp.Manager) error {
+	if runner == nil || *runner == nil {
 		return nil
 	}
 	newRunner, _, newSwarmRunner, newMCP, err := buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
@@ -568,9 +568,9 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.S
 	if activeMCP != nil && *activeMCP != nil {
 		_ = (*activeMCP).Close()
 	}
-	*runner = *newRunner
-	if swarmRunner != nil && newSwarmRunner != nil {
-		*swarmRunner = *newSwarmRunner
+	*runner = newRunner
+	if swarmRunner != nil && *swarmRunner != nil && newSwarmRunner != nil {
+		*swarmRunner = newSwarmRunner
 	}
 	if activeMCP != nil {
 		*activeMCP = newMCP

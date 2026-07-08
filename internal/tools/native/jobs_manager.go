@@ -18,7 +18,6 @@ const (
 	StatusFailed    JobStatus = "failed"
 	StatusTimedOut  JobStatus = "timed_out"
 	StatusKilled    JobStatus = "killed"
-	StatusLost      JobStatus = "lost"
 )
 
 // JobInfo is a snapshot of a background job's metadata.
@@ -43,6 +42,7 @@ type ProcessRunner interface {
 // limit, and provides buffered output, status queries, and kill semantics.
 type JobManager struct {
 	runner    ProcessRunner
+	dir       string
 	maxJobs   int
 	retention time.Duration
 	mu        sync.Mutex
@@ -52,11 +52,12 @@ type JobManager struct {
 }
 
 type job struct {
-	mu     sync.Mutex
-	info   JobInfo
-	cmd    *runningCmd
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu          sync.Mutex
+	info        JobInfo
+	cmd         *runningCmd
+	cancel      context.CancelFunc
+	done        chan struct{}
+	completedAt time.Time
 }
 
 // runningCmd is defined in the platform-specific files (jobs_unix.go,
@@ -84,7 +85,7 @@ func (s *safeBuffer) String() string {
 
 // NewJobManager creates a job manager with the given runner and limits.
 // Non-positive maxJobs defaults to 25; non-positive retention defaults to 8h.
-func NewJobManager(runner ProcessRunner, maxJobs int, retention time.Duration) *JobManager {
+func NewJobManager(runner ProcessRunner, dir string, maxJobs int, retention time.Duration) *JobManager {
 	if maxJobs <= 0 {
 		maxJobs = 25
 	}
@@ -93,6 +94,7 @@ func NewJobManager(runner ProcessRunner, maxJobs int, retention time.Duration) *
 	}
 	return &JobManager{
 		runner:    runner,
+		dir:       dir,
 		maxJobs:   maxJobs,
 		retention: retention,
 		jobs:      make(map[string]*job),
@@ -109,6 +111,8 @@ func (m *JobManager) SetOnChange(fn func(int)) {
 
 // Start launches command as a background job and returns its job ID.
 func (m *JobManager) Start(ctx context.Context, command string, timeout time.Duration) (string, error) {
+	m.evictCompleted()
+
 	m.mu.Lock()
 	if len(m.jobs) >= m.maxJobs {
 		m.mu.Unlock()
@@ -126,7 +130,7 @@ func (m *JobManager) Start(ctx context.Context, command string, timeout time.Dur
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	j.cancel = cancel
 
-	req := CommandRequest{Command: command, Timeout: timeout}
+	req := CommandRequest{Command: command, Dir: m.dir, Timeout: timeout}
 	rc, err := m.runner.Start(req)
 	if err != nil {
 		j.mu.Lock()
@@ -165,6 +169,7 @@ func (m *JobManager) wait(j *job, ctx context.Context, rc *runningCmd) {
 		if j.info.Status == StatusRunning {
 			j.info.Status = StatusTimedOut
 		}
+		j.completedAt = time.Now()
 		j.mu.Unlock()
 	case err := <-done:
 		j.mu.Lock()
@@ -179,6 +184,7 @@ func (m *JobManager) wait(j *job, ctx context.Context, rc *runningCmd) {
 				j.info.ExitCode = &code
 			}
 		}
+		j.completedAt = time.Now()
 		j.mu.Unlock()
 	}
 	m.notifyChange()
@@ -187,6 +193,8 @@ func (m *JobManager) wait(j *job, ctx context.Context, rc *runningCmd) {
 // Output returns the current metadata and buffered stdout/stderr for a job.
 // tailLines, when positive, limits the returned output to the last N lines.
 func (m *JobManager) Output(id string, tailLines int) (JobInfo, string, error) {
+	m.evictCompleted()
+
 	m.mu.Lock()
 	j, ok := m.jobs[id]
 	m.mu.Unlock()
@@ -207,6 +215,8 @@ func (m *JobManager) Output(id string, tailLines int) (JobInfo, string, error) {
 
 // Kill terminates a running background job.
 func (m *JobManager) Kill(id string) error {
+	m.evictCompleted()
+
 	m.mu.Lock()
 	j, ok := m.jobs[id]
 	m.mu.Unlock()
@@ -227,6 +237,8 @@ func (m *JobManager) Kill(id string) error {
 
 // List returns a snapshot of all tracked jobs.
 func (m *JobManager) List() []JobInfo {
+	m.evictCompleted()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]JobInfo, 0, len(m.jobs))
@@ -240,6 +252,8 @@ func (m *JobManager) List() []JobInfo {
 
 // RunningCount returns the number of jobs currently in the running state.
 func (m *JobManager) RunningCount() int {
+	m.evictCompleted()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	count := 0
@@ -251,6 +265,25 @@ func (m *JobManager) RunningCount() int {
 		j.mu.Unlock()
 	}
 	return count
+}
+
+// evictCompleted removes terminal jobs whose completedAt timestamp is older
+// than the configured retention duration.
+func (m *JobManager) evictCompleted() {
+	if m.retention <= 0 {
+		return
+	}
+	cutoff := time.Now().Add(-m.retention)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, j := range m.jobs {
+		j.mu.Lock()
+		completedAt := j.completedAt
+		j.mu.Unlock()
+		if !completedAt.IsZero() && completedAt.Before(cutoff) {
+			delete(m.jobs, id)
+		}
+	}
 }
 
 // Shutdown cancels and kills every tracked job. It does not wait for them to

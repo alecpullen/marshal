@@ -175,6 +175,7 @@ type AgentConfig struct {
 	MaxRetries               int    `toml:"max_retries"`
 	MaxTurnContextTokens     int    `toml:"max_turn_context_tokens"`
 	MaxStructuredOutputChars int    `toml:"max_structured_output_chars"`
+	PlanFirst                bool   `toml:"plan_first"`
 }
 
 type PrivacyConfig struct {
@@ -225,6 +226,7 @@ type configFile struct {
 		MaxRetries               *int    `toml:"max_retries"`
 		MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
 		MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
+		PlanFirst                *bool   `toml:"plan_first"`
 	} `toml:"agent"`
 	Privacy *struct {
 		RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
@@ -525,6 +527,9 @@ func merge(cfg *Config, file configFile) {
 		}
 		if file.Agent.MaxStructuredOutputChars != nil {
 			cfg.Agent.MaxStructuredOutputChars = *file.Agent.MaxStructuredOutputChars
+		}
+		if file.Agent.PlanFirst != nil {
+			cfg.Agent.PlanFirst = *file.Agent.PlanFirst
 		}
 	}
 	if file.Privacy != nil {

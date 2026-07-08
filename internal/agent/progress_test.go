@@ -1,171 +1,130 @@
 package agent
 
 import (
-	"fmt"
+	"strings"
 	"testing"
 )
 
-func TestCategorize(t *testing.T) {
-	cases := map[string]toolCategory{
-		"file.read":        catRead,
-		"symbols.find":     catRead,
-		"repo.search":      catSearch,
-		"shell.run":        catShell,
-		"file.write_patch": catPatch,
-		"mystery.tool":     catOther,
+func TestRecordReturnsRepeatCountForIdenticalSignature(t *testing.T) {
+	tr := newProgressTracker()
+	h := hashToolResult("same output")
+	if got := tr.record("file.read", `{"path":"a.go"}`, h); got != 1 {
+		t.Fatalf("first record count = %d, want 1", got)
 	}
-	for name, want := range cases {
-		if got := categorize(name); got != want {
-			t.Errorf("categorize(%q) = %q, want %q", name, got, want)
-		}
+	if got := tr.record("file.read", `{"path":"a.go"}`, h); got != 2 {
+		t.Fatalf("second record count = %d, want 2", got)
+	}
+	if got := tr.record("file.read", `{"path":"a.go"}`, h); got != 3 {
+		t.Fatalf("third record count = %d, want 3", got)
 	}
 }
 
-func TestAssess(t *testing.T) {
-	t.Run("empty is progressing", func(t *testing.T) {
-		if got := newProgressTracker().assess(); got != assessProgressing {
-			t.Fatalf("assess() = %v, want progressing", got)
-		}
-	})
-
-	t.Run("exact repeat 3x is hard stall", func(t *testing.T) {
-		tr := newProgressTracker()
-		for i := 0; i < 3; i++ {
-			tr.record("file.read", `{"path":"a.go"}`)
-		}
-		if got := tr.assess(); got != assessHardStall {
-			t.Fatalf("assess() = %v, want hardStall", got)
-		}
-	})
-
-	t.Run("sustained distinct reads are progressing", func(t *testing.T) {
-		// Regression: the old readOnlyChurn heuristic nudged after 3 and
-		// hard-stalled after 4 consecutive read/search calls even when every
-		// call targeted a different file.
-		tr := newProgressTracker()
-		for i := 0; i < 8; i++ {
-			tr.record("file.read", fmt.Sprintf(`{"path":"f%d.go"}`, i))
-			if got := tr.assess(); got != assessProgressing {
-				t.Fatalf("assess() after %d distinct reads = %v, want progressing", i+1, got)
-			}
-		}
-	})
-
-	t.Run("distinct mixed reads and searches are progressing", func(t *testing.T) {
-		tr := newProgressTracker()
-		tr.record("file.read", `{"path":"a.go"}`)
-		tr.record("repo.search", `{"query":"foo"}`)
-		tr.record("file.read", `{"path":"b.go"}`)
-		tr.record("repo.search", `{"query":"bar"}`)
-		if got := tr.assess(); got != assessProgressing {
-			t.Fatalf("assess() = %v, want progressing", got)
-		}
-	})
-
-	t.Run("three trailing duplicates is stalling", func(t *testing.T) {
-		tr := newProgressTracker()
-		tr.record("file.read", `{"path":"a.go"}`)
-		tr.record("repo.search", `{"query":"foo"}`)
-		tr.record("file.read", `{"path":"b.go"}`)
-		// Revisit all three previously seen calls.
-		tr.record("file.read", `{"path":"a.go"}`)
-		tr.record("repo.search", `{"query":"foo"}`)
-		tr.record("file.read", `{"path":"b.go"}`)
-		if got := tr.assess(); got != assessStalling {
-			t.Fatalf("assess() = %v, want stalling", got)
-		}
-	})
-
-	t.Run("five trailing duplicates is hard stall", func(t *testing.T) {
-		tr := newProgressTracker()
-		tr.record("file.read", `{"path":"a.go"}`)
-		tr.record("file.read", `{"path":"b.go"}`)
-		tr.record("file.read", `{"path":"c.go"}`)
-		tr.record("file.read", `{"path":"a.go"}`)
-		tr.record("file.read", `{"path":"b.go"}`)
-		tr.record("file.read", `{"path":"c.go"}`)
-		tr.record("file.read", `{"path":"a.go"}`)
-		tr.record("file.read", `{"path":"b.go"}`)
-		if got := tr.assess(); got != assessHardStall {
-			t.Fatalf("assess() = %v, want hardStall", got)
-		}
-	})
-
-	t.Run("mutation resets novelty so re-reads are progress", func(t *testing.T) {
-		// Re-reading a file after patching it is normal verification, not a
-		// loop: the write invalidates earlier observations.
-		tr := newProgressTracker()
-		tr.record("file.read", `{"path":"a.go"}`)
-		tr.record("file.write_patch", `{"patch":"..."}`)
-		tr.record("file.read", `{"path":"a.go"}`)
-		if got := tr.assess(); got != assessProgressing {
-			t.Fatalf("assess() = %v, want progressing", got)
-		}
-	})
-
-	t.Run("recent write is progressing", func(t *testing.T) {
-		tr := newProgressTracker()
-		tr.record("file.read", `{"path":"a.go"}`)
-		tr.record("file.write_patch", `{"patch":"..."}`)
-		tr.record("shell.run", `{"command":"go test ./..."}`)
-		if got := tr.assess(); got != assessProgressing {
-			t.Fatalf("assess() = %v, want progressing", got)
-		}
-	})
-
-	t.Run("three consecutive idle turns is hard stall", func(t *testing.T) {
-		tr := newProgressTracker()
-		tr.recordIdle("stop")
-		tr.recordIdle("stop")
-		if got := tr.assess(); got != assessProgressing {
-			t.Fatalf("assess() after 2 idle = %v, want progressing", got)
-		}
-		tr.recordIdle("stop")
-		if got := tr.assess(); got != assessHardStall {
-			t.Fatalf("assess() after 3 idle = %v, want hardStall", got)
-		}
-	})
-
-	t.Run("idle interleaved with tool calls is not a stall", func(t *testing.T) {
-		// Two idle turns separated by a tool call do not form a run of 3
-		// consecutive idles, so the hard-stall path must not fire.
-		tr := newProgressTracker()
-		tr.recordIdle("stop")
-		tr.recordIdle("stop")
-		tr.record("file.read", `{"path":"a.go"}`)
-		tr.recordIdle("stop")
-		tr.recordIdle("stop")
-		if got := tr.assess(); got != assessProgressing {
-			t.Fatalf("assess() with interleaved tools = %v, want progressing", got)
-		}
-	})
-}
-
-func TestMutating(t *testing.T) {
-	cases := map[toolCategory]bool{
-		catShell:  true,
-		catWrite:  true,
-		catPatch:  true,
-		catRead:   false,
-		catSearch: false,
-		catOther:  false,
-	}
-	for cat, want := range cases {
-		if got := mutating(cat); got != want {
-			t.Errorf("mutating(%q) = %v, want %v", cat, got, want)
-		}
+func TestDifferentOutputIsNotARepeat(t *testing.T) {
+	tr := newProgressTracker()
+	tr.record("shell.run", `{"command":"go test"}`, hashToolResult("FAIL: TestX"))
+	got := tr.record("shell.run", `{"command":"go test"}`, hashToolResult("ok"))
+	if got != 1 {
+		t.Fatalf("same call with different output counted as repeat: count = %d, want 1", got)
 	}
 }
 
-func TestLastCall(t *testing.T) {
+func TestMutatingCallResetsRepeatCounts(t *testing.T) {
+	tr := newProgressTracker()
+	h := hashToolResult("x")
+	tr.record("file.read", `{"path":"a.go"}`, h)
+	tr.record("file.read", `{"path":"a.go"}`, h)
+	tr.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"))
+	if got := tr.record("file.read", `{"path":"a.go"}`, h); got != 1 {
+		t.Fatalf("count after mutating call = %d, want 1 (state changed, re-read is fresh)", got)
+	}
+}
+
+func TestAssessHardStallOnlyAtThreshold(t *testing.T) {
+	tr := newProgressTracker()
+	h := hashToolResult("out")
+	for i := 0; i < repeatHardStall-1; i++ {
+		tr.record("repo.search", `{"query":"q"}`, h)
+		if a := tr.assess(); a != assessProgressing {
+			t.Fatalf("assess after %d repeats = %v, want assessProgressing", i+1, a)
+		}
+	}
+	tr.record("repo.search", `{"query":"q"}`, h)
+	if a := tr.assess(); a != assessHardStall {
+		t.Fatalf("assess at %d repeats = %v, want assessHardStall", repeatHardStall, a)
+	}
+}
+
+func TestResetCountsClearsStreakButKeepsIdleHistory(t *testing.T) {
+	tr := newProgressTracker()
+	h := hashToolResult("out")
+	for i := 0; i < repeatHardStall; i++ {
+		tr.record("repo.search", `{"query":"q"}`, h)
+	}
+	tr.resetCounts()
+	if a := tr.assess(); a != assessProgressing {
+		t.Fatalf("assess after resetCounts = %v, want assessProgressing", a)
+	}
+	if got := tr.record("repo.search", `{"query":"q"}`, h); got != 1 {
+		t.Fatalf("count after resetCounts = %d, want 1", got)
+	}
+}
+
+func TestConsecutiveIdleStillHardStalls(t *testing.T) {
+	tr := newProgressTracker()
+	tr.recordIdle("empty")
+	tr.recordIdle("empty")
+	if a := tr.assess(); a == assessHardStall {
+		t.Fatal("2 idles should not hard stall")
+	}
+	tr.recordIdle("empty")
+	if a := tr.assess(); a != assessHardStall {
+		t.Fatalf("assess after 3 idles = %v, want assessHardStall", a)
+	}
+}
+
+func TestToolCallBreaksIdleRun(t *testing.T) {
+	tr := newProgressTracker()
+	tr.recordIdle("empty")
+	tr.recordIdle("empty")
+	tr.record("file.read", `{"path":"a.go"}`, hashToolResult("x"))
+	tr.recordIdle("empty")
+	if a := tr.assess(); a == assessHardStall {
+		t.Fatal("idle run interrupted by a tool call must not hard stall")
+	}
+}
+
+func TestRepeatReminderLadder(t *testing.T) {
+	if got := repeatReminder(1, "file.read", "{}"); got != "" {
+		t.Fatalf("reminder at count 1 = %q, want empty", got)
+	}
+	if got := repeatReminder(2, "file.read", "{}"); got != "" {
+		t.Fatalf("reminder at count 2 = %q, want empty", got)
+	}
+	gentle := repeatReminder(3, "file.read", "{}")
+	if !strings.Contains(gentle, "repeating the exact same tool call") {
+		t.Fatalf("gentle reminder missing expected text: %q", gentle)
+	}
+	strong := repeatReminder(5, "file.read", `{"path":"a.go"}`)
+	if !strings.Contains(strong, "repeated_times: 5") || !strings.Contains(strong, `{"path":"a.go"}`) {
+		t.Fatalf("strong reminder missing count/args: %q", strong)
+	}
+	stop := repeatReminder(8, "file.read", "{}")
+	if !strings.Contains(stop, "Stop all tool calls") {
+		t.Fatalf("stop reminder missing expected text: %q", stop)
+	}
+	if got := repeatReminder(9, "file.read", "{}"); !strings.Contains(got, "Stop all tool calls") {
+		t.Fatalf("counts above 8 keep the stop reminder, got %q", got)
+	}
+}
+
+func TestLastCallReportsMostRecent(t *testing.T) {
 	tr := newProgressTracker()
 	if _, _, ok := tr.lastCall(); ok {
-		t.Fatal("lastCall() on empty tracker reported ok")
+		t.Fatal("lastCall on empty tracker reported ok")
 	}
-	tr.record("file.read", `{"path":"a.go"}`)
-	tr.record("repo.search", `{"query":"foo"}`)
+	tr.record("repo.search", `{"query":"q"}`, hashToolResult("x"))
 	name, args, ok := tr.lastCall()
-	if !ok || name != "repo.search" || args != `{"query":"foo"}` {
-		t.Fatalf("lastCall() = %q, %q, %v; want repo.search / query foo / true", name, args, ok)
+	if !ok || name != "repo.search" || args != `{"query":"q"}` {
+		t.Fatalf("lastCall = (%q, %q, %v)", name, args, ok)
 	}
 }

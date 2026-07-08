@@ -171,12 +171,15 @@ func TestRunTaskMetricsCountsStalls(t *testing.T) {
 	reg := registry.New()
 	registerFakeRead(t, reg, false)
 	read := `{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`
-	p := &scriptedProvider{responses: []string{
-		read, read, read,
-		`{"rationale":"done","action":{"type":"final","content":"Forced."}}`,
-	}}
+	responses := make([]string, 0, repeatHardStall+1)
+	for i := 0; i < repeatHardStall; i++ {
+		responses = append(responses, read)
+	}
+	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"Forced."}}`)
+	p := &scriptedProvider{responses: responses}
 	state := newTestState(t)
 	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.Role = RoleRepoScout
 	r.SetForceClass(string(ClassQuestion))
 	m := captureMetrics(r)
 

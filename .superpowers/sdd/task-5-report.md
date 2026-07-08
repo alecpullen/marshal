@@ -1,62 +1,116 @@
-# Task 5 Report: Status Row & Swarm Panel — Borderless, Warm Colors
+# Task 5 Report: Summarize-and-continue instead of destructive compaction
 
-## Status: COMPLETE
+## What was implemented
 
-**Commit Hash:** `74878e0`
+- Created `internal/agent/handoff.go` with:
+  - `handoffSummaryDirective` — a structured prompt asking the model for a self-contained mid-task handoff summary (current state, files & changes, technical context, exact next steps).
+  - `errEmptyHandoffSummary` — returned when the summary call produces only whitespace so the caller can fall back.
+  - `(r *Runner) summarizeAndContinue(...)` — requests the summary via `chatWithRetryNoNativeTools`, then rebuilds the working message list as: system prompt + context pack + original goal + summary + "continue" instruction. Records a system message on `r.State` noting the compaction.
 
-## Test Results
+- Created `internal/agent/handoff_test.go` with the two unit tests from the brief:
+  - `TestSummarizeAndContinueRebuildsMessages`
+  - `TestSummarizeAndContinueErrorsOnEmptySummary`
 
-### Target Tests (Task 5)
-```bash
-CGO_ENABLED=1 go test ./internal/app/tui/ -run 'TestStatusLineHasNoBackgroundFill|TestSwarmPanelIsBorderless' -v
+- Modified `internal/agent/runner.go`:
+  - Raised `DefaultMaxTurnContextTokens` from `16384` to `60000`.
+  - Replaced the unconditional loop-top `messages = compactMessages(...)` call with the new `summarizeAndContinue` / `compactMessages` fallback logic. `compactMessages` is preserved as the fallback when summarization fails or returns empty text.
+
+- Added `TestLoopCompactsViaSummaryWhenOverBudget` to `internal/agent/runner_test.go`.
+
+## TDD / test evidence
+
+Step 1 — compile failure with missing method:
+
 ```
-Result: **PASS** ✓
-
-### Full Package Test Suite
-```bash
-CGO_ENABLED=1 go test ./internal/app/tui/
+$ go test ./internal/agent/ -run TestSummarizeAndContinue -v
+# marshal/internal/agent [marshal/internal/agent.test]
+internal/agent/handoff_test.go:26:23: runner.summarizeAndContinue undefined (type *Runner has no field or method summarizeAndContinue)
+FAIL
 ```
-Result: **PASS** (99 tests) ✓
 
-### Build Verification
-```bash
-CGO_ENABLED=1 go build ./...
+Step 2 — handoff unit tests pass after implementation:
+
 ```
-Result: **SUCCESS** ✓
+$ go test ./internal/agent/ -run TestSummarizeAndContinue -v
+=== RUN   TestSummarizeAndContinueRebuildsMessages
+--- PASS: TestSummarizeAndContinueRebuildsMessages (0.00s)
+=== RUN   TestSummarizeAndContinueErrorsOnEmptySummary
+--- PASS: TestSummarizeAndContinueErrorsOnEmptySummary (0.00s)
+PASS
+ok  	marshal/internal/agent	0.569s
+```
 
-## Implementation Summary
+Step 3 — full package tests pass:
 
-### Tests Added
-- **`TestStatusLineHasNoBackgroundFill`** (status_test.go): Verifies status line emits no background color codes (48;5;237)
-- **`TestSwarmPanelIsBorderless`** (swarm_panel_test.go): Verifies swarm panel contains no border characters (╭, ╰)
+```
+$ go test ./internal/agent/...
+ok  	marshal/internal/agent	0.687s
+ok  	marshal/internal/agent/swarm	(cached)
+```
 
-### Changes Made
+Step 4 — formatting and vetting:
 
-1. **status_test.go**: Added `TestStatusLineHasNoBackgroundFill` test
-   - Uses `forceColor(t)` helper to enable 256-color output for ANSI inspection
-   - Confirms no `statusBarBgColor` (code 237) background codes present
-   - Verifies route info is still rendered
+```
+$ gofmt -w . && go vet ./internal/agent/...
+# no output (success)
+```
 
-2. **swarm_panel.go**: Removed border styling (line 52)
-   - Changed from: `return inputBoxStyle.Width(max(width-2, 1)).Render(b.String())`
-   - Changed to: `return indentBlock(b.String(), "  ")`
-   - Uses `indentBlock` helper (defined in transcript.go) for simple 2-space indentation
+## Files changed
 
-3. **swarm_panel_test.go**: Added `TestSwarmPanelIsBorderless` test
-   - Confirms panel does not contain rounded border characters
-   - Tests with active swarm progress
+- `internal/agent/handoff.go` (created)
+- `internal/agent/handoff_test.go` (created)
+- `internal/agent/runner.go` (modified)
+- `internal/agent/runner_test.go` (modified)
 
-### Pre-existing Tests Modified
-None. All pre-existing tests continue to pass without modification.
+## Self-review findings
 
-## Verification Checklist
-- [x] `TestStatusLineHasNoBackgroundFill` passes (status already foreground-only from Task 1)
-- [x] `TestSwarmPanelIsBorderless` passes (swarm panel now uses borderless indentation)
-- [x] Full tui package test suite passes (99/99 tests)
-- [x] Build succeeds with CGO_ENABLED=1
-- [x] Code formatted with `gofmt -w internal/app/tui/`
-- [x] Commit created with message "style(tui): borderless status row and swarm panel"
+- The handoff implementation follows the brief exactly and uses existing helpers (`BuildSystemPrompt`, `appendContextPackMessage`, `chatWithRetryNoNativeTools`).
+- The loop-top wiring runs immediately before the next model call, where the last message is always a completed result or prose message, so the rebuilt list cannot orphan a `tool_call_id`.
+- `pressureSent` is reset after a successful handoff so the fresh transcript can approach the budget again without premature finalize pressure.
+- `compactMessages` remains available as the fallback path.
+- All existing agent tests pass with the new default budget; no test required adjustment for the 16k→60k change.
 
-## Notes
-- Status line background removal was already complete from Task 1; `statusBarStyle` definition in model.go (line 846-847) contains only foreground styling, no background color.
-- Swarm panel now renders with simple 2-space indentation instead of a rounded border box, maintaining content alignment while removing the border decoration.
+## Issues / concerns
+
+- The brief's integration test set `runner.MaxTurnContextTokens = 1500` and used `strings.Repeat("word ", 2000)` to force a budget trip. In the current codebase, tool output larger than `DefaultMaxToolResultChars` (8000 chars) is spilled to disk and only a 2000-char preview is kept inline. With the current system prompt, the post-tool-loop token count is ~1475, so the 1500 threshold never trips and `summarizeAndContinue` is never invoked. I adjusted the test threshold to `1000` so the budget actually triggers and the test verifies the handoff path. This is a test calibration, not a production behavior change.
+
+## Fix applied during review
+
+### Finding
+
+`internal/agent/runner_test.go:248` — `runner.MaxTurnContextTokens` was changed from the brief's specified `1500` to `1000`. This deviated from the task spec.
+
+### Root cause
+
+The original test used `strings.Repeat("word ", 2000)` (~10000 chars). Task 4's `spillToolResult` spills tool output above `DefaultMaxToolResultChars` (8000 chars) to disk, leaving only a ~2000-char preview inline. With the inline preview plus the rest of the transcript, the estimated token count fell just under the brief's 1500-token threshold, so the test never tripped the budget.
+
+### Fix
+
+- Reduced the tool output to `strings.Repeat("word ", 1400)` (7000 chars). This stays under the 8000-character spill limit, so the full output remains inline in the transcript.
+- Restored `runner.MaxTurnContextTokens = 1500` to match the brief.
+- With 7000 inline characters, the tool result alone contributes ~1750 estimated tokens, so the 1500-token budget is exceeded after a single tool call and `summarizeAndContinue` is invoked as intended.
+
+### Files changed
+
+- `internal/agent/runner_test.go`
+
+### Tests run
+
+```
+$ go test ./internal/agent/ -run TestLoopCompactsViaSummaryWhenOverBudget -v
+=== RUN   TestLoopCompactsViaSummaryWhenOverBudget
+--- PASS: TestLoopCompactsViaSummaryWhenOverBudget (0.00s)
+PASS
+ok  	marshal/internal/agent	0.545s
+```
+
+```
+$ go test ./internal/agent/...
+ok  	marshal/internal/agent	0.661s
+ok  	marshal/internal/agent/swarm	(cached)
+```
+
+```
+$ gofmt -w . && go vet ./internal/agent/...
+# no output (success)
+```

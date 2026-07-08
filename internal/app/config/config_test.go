@@ -325,6 +325,36 @@ func TestDefaultAgentLimitsAreZero(t *testing.T) {
 	}
 }
 
+func TestLoadParsesPlanFirst(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	dir := filepath.Join(home, ".config", "marshal")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := `[agent]
+plan_first = true
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Agent.PlanFirst {
+		t.Fatalf("Agent.PlanFirst = %v, want true", cfg.Agent.PlanFirst)
+	}
+}
+
+func TestDefaultPlanFirstIsFalse(t *testing.T) {
+	cfg := Default()
+	if cfg.Agent.PlanFirst {
+		t.Fatal("Agent.PlanFirst = true, want false by default")
+	}
+}
+
 func TestSwarmBudgetDefaults(t *testing.T) {
 	cfg := Default()
 	if cfg.Swarm.Budget.MaxFixRounds != 3 {

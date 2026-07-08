@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	DefaultMaxToolIterations    = 16
+	DefaultMaxToolIterations    = 100
 	DefaultMaxRetries           = 2
 	DefaultMaxParallelActions   = 4
-	DefaultMaxTurnContextTokens = 16384
+	DefaultMaxTurnContextTokens = 60000
 	compactKeepRecentMessages   = 6
 	finalizePressureThreshold   = 2
 	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
@@ -33,6 +33,14 @@ const (
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
 
 var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
+
+// isLengthFinish reports whether the provider cut the response off at the
+// output-token limit ("length" for OpenAI-compatible providers, "max_tokens"
+// for Anthropic-style ones). Tool calls in such a response may carry
+// silently truncated arguments and must not be executed (pi's guard).
+func isLengthFinish(reason string) bool {
+	return reason == "length" || reason == "max_tokens"
+}
 
 // normalizeArgs returns a canonical JSON representation of a tool's
 // arguments so that {"b":1,"a":2} and {"a":2,"b":1} share the same
@@ -98,6 +106,15 @@ type Runner struct {
 	MaxToolResultChars   int
 	ForceClass           string // if set, overrides Classify() in Run()
 	SkillIndex           *skills.Index
+
+	// PlanFirst enables the legacy pre-loop planning round-trip. Default
+	// false: planning happens inside the loop like every mainstream agent
+	// (crush/kimi/opencode/pi), saving a model call and avoiding a pinned
+	// plan that mid-turn compaction can orphan.
+	PlanFirst bool
+
+	// HistoryBudgetTokens caps replayed prior-turn history (0 = default).
+	HistoryBudgetTokens int
 
 	// Role selects the system-prompt role addendum. Zero value behaves as
 	// RoleGeneral, so existing single-agent construction is unchanged.
@@ -171,6 +188,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 // the session transcript.
 func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	priorTranscript := r.State.Messages()
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	r.State.ClearTurnToolCache()
 	r.trackerMu.Lock()
@@ -206,9 +224,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
+	if r.role() == RoleGeneral {
+		messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
+	}
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
-	if task.Class != ClassQuestion {
+	if r.PlanFirst && task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
 		planRes, err := r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages)
@@ -227,6 +248,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			r.State.SetContextPack(updatedPack)
 			messages = []schema.ChatMessage{BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools)}
 			messages = appendContextPackMessage(messages, updatedPack)
+			if r.role() == RoleGeneral {
+				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
+			}
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}
 		r.State.AddMessage(session.RoleAssistant, planText, session.ContentTypePlan)
@@ -258,7 +282,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			lastRenderedSkills = currentSkills
 		}
 
-		messages = compactMessages(messages, r.MaxTurnContextTokens, compactKeepRecentMessages)
+		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
+			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal); serr == nil {
+				messages = fresh
+				pressureSent = false // the fresh transcript may legitimately approach the budget again
+			} else {
+				// Summarization failed (transport error or empty text): fall
+				// back to lossy in-place compaction rather than aborting the turn.
+				messages = compactMessages(messages, r.MaxTurnContextTokens, compactKeepRecentMessages)
+			}
+		}
 
 		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
 		if err != nil {
@@ -289,8 +322,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 						return resTask, ferr
 					} else if nudge != "" {
-						messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-						r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+						messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 					}
 					continue
 				}
@@ -298,6 +330,20 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				task.Status = TaskStatusCompleted
 				r.State.AddMessageFinal(session.RoleAssistant, res.Text, session.ContentTypeMarkdown)
 				return task, nil
+			}
+
+			if isLengthFinish(res.FinishReason) {
+				iteration++
+				r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
+				for _, call := range res.ToolCalls {
+					messages = append(messages, schema.ChatMessage{
+						Role:       schema.RoleTool,
+						ToolCallID: call.ID,
+						Content:    fmt.Sprintf("Tool call %s was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the call with complete arguments.", call.Name),
+					})
+				}
+				continue
 			}
 
 			iteration++
@@ -321,8 +367,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 				return resTask, ferr
 			} else if nudge != "" {
-				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 			}
 			continue
 		}
@@ -374,8 +419,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 				return res, ferr
 			} else if nudge != "" {
-				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 			}
 			continue
 		}
@@ -395,8 +439,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 				return res, ferr
 			} else if nudge != "" {
-				messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-				r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 			}
 		case ActionAskUser:
 			if r.role() != RoleGeneral {
@@ -423,8 +466,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
 					return resTask, ferr
 				} else if nudge != "" {
-					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: nudge})
-					r.State.AddMessage(session.RoleSystem, nudge, session.ContentTypePlain)
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
 				}
 			} else {
 				consecutiveEmpty = 0
@@ -457,38 +499,43 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	return task, ErrMaxIterationsExceeded
 }
 
-// maybeFinalizeOnStall inspects the tracker after a tool execution. On a
-// hard stall it forces a final answer via finalize and reports finalized so
-// the caller returns immediately. On a soft stall it returns a nudge message
-// for the caller to append to its own messages slice (messages is passed by
-// value here, so appending inside this helper would not propagate back to
-// the loop's slice).
-func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, nudge string) {
+// maybeFinalizeOnStall handles a hard stall. For the interactive general
+// role it asks the user how to proceed (opencode's doom-loop permission
+// pattern): a non-empty answer is returned as guidance for the caller to
+// append as a user message, and repeat counts are reset so the loop gets a
+// fresh start. An empty answer, or any non-general (swarm) role, falls back
+// to finalize, which produces a flagged salvaged summary.
+func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, guidance string) {
 	r.trackerMu.Lock()
 	a := r.tracker.assess()
-	dupName, dupArgs, _ := r.tracker.lastCall()
+	name, args, _ := r.tracker.lastCall()
 	r.trackerMu.Unlock()
 
-	switch a {
-	case assessHardStall:
-		r.withStats(func(s *turnStats) { s.m.HardStalls++ })
-		res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
-		return true, res, ferr, ""
-	case assessStalling:
-		r.withStats(func(s *turnStats) { s.m.SoftStalls++ })
-		return false, task, nil, buildLoopNudge(dupName, dupArgs)
+	if a != assessHardStall {
+		return false, task, nil, ""
 	}
-	return false, task, nil, ""
-}
+	r.withStats(func(s *turnStats) { s.m.HardStalls++ })
 
-// buildLoopNudge tells the model exactly which call it is repeating. A
-// stalling assessment implies at least three recorded calls, the last of
-// which is a duplicate, so lastCall's result is always usable here.
-func buildLoopNudge(name, args string) string {
-	return fmt.Sprintf(
-		"You are repeating tool calls you already made — most recently %s with args %s. Those results are in the transcript above; use them instead of calling the tool again. Take a genuinely new action or produce a final answer.",
-		name, args,
-	)
+	if r.role() == RoleGeneral {
+		question := fmt.Sprintf(
+			"I appear to be stuck: I have repeated %s with args %s without making progress. Reply with guidance on how to proceed, or send an empty reply to stop and get a summary of progress so far.",
+			name, args,
+		)
+		answer, waitErr := r.requestAnswer(ctx, question)
+		if waitErr != nil {
+			return true, task, r.fail(task, waitErr), ""
+		}
+		if strings.TrimSpace(answer) != "" {
+			r.trackerMu.Lock()
+			r.tracker.resetCounts()
+			r.trackerMu.Unlock()
+			r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
+			return false, task, nil, "User guidance: " + answer
+		}
+	}
+
+	res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
+	return true, res, ferr, ""
 }
 
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {
@@ -734,7 +781,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if tool.Cacheable {
 		if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
 			r.trackerMu.Lock()
-			r.tracker.record(toolName, string(normalizedArgs))
+			count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(cached.Content))
 			r.trackerMu.Unlock()
 			logged := cached
 			logged.Summary = "(cached) " + logged.Summary
@@ -742,7 +789,9 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
 			r.State.LogToolCall(event)
 			r.countToolCall(false, true)
-			return []schema.ChatMessage{r.buildCachedToolResultMessage(toolName, cached, toolCallID)}, nil
+			msg := r.buildCachedToolResultMessage(toolName, cached, toolCallID)
+			msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+			return []schema.ChatMessage{msg}, nil
 		}
 	}
 
@@ -819,25 +868,29 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
 		r.State.LogToolCall(event)
 		r.trackerMu.Lock()
-		r.tracker.record(toolName, string(normalizedArgs))
+		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()))
 		r.trackerMu.Unlock()
 		r.countToolCall(true, false)
-		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, execErr.Error(), toolCallID)}, nil
+		msg := r.buildToolErrorMessage(toolName, execErr.Error(), toolCallID)
+		msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+		return []schema.ChatMessage{msg}, nil
 	}
 
-	summarized := SummarizeToolResult(toolName, result, r.MaxToolResultChars)
+	summarized := SummarizeToolResult(toolName, result, 0) // per-tool line limits only; 0 keeps the default char cap out of play here
+	summarized = spillToolResult(r.State.WorkingDir, toolName, summarized, r.MaxToolResultChars)
 	if tool.Cacheable {
 		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)
 	}
 	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)
 	r.State.LogToolCall(event)
 
-	msgs := []schema.ChatMessage{r.buildToolResultMessage(toolName, summarized, toolCallID)}
+	msg := r.buildToolResultMessage(toolName, summarized, toolCallID)
 	r.trackerMu.Lock()
-	r.tracker.record(toolName, string(normalizedArgs))
+	count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(summarized.Content))
 	r.trackerMu.Unlock()
+	msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
 	r.countToolCall(false, false)
-	return msgs, nil
+	return []schema.ChatMessage{msg}, nil
 }
 
 func (r *Runner) buildToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {

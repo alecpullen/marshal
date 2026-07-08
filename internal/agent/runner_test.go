@@ -35,14 +35,15 @@ func TestRunnerDefaultsAreSensible(t *testing.T) {
 // at that index); once the scripts run out, the last response is repeated
 // so tests exercising max-iteration limits do not need to script every turn.
 type scriptedProvider struct {
-	responses    []string
-	toolCalls    [][]schema.ToolCall
-	thinking     []string
-	errs         []error
-	usages       []*schema.TokenUsage
-	calls        int
-	requests     []schema.ChatRequest
-	capabilities schema.ProviderCapabilities
+	responses     []string
+	toolCalls     [][]schema.ToolCall
+	finishReasons []string
+	thinking      []string
+	errs          []error
+	usages        []*schema.TokenUsage
+	calls         int
+	requests      []schema.ChatRequest
+	capabilities  schema.ProviderCapabilities
 }
 
 func (p *scriptedProvider) Name() string { return "scripted" }
@@ -92,6 +93,9 @@ func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	if idx < len(p.toolCalls) {
 		done.ToolCalls = p.toolCalls[idx]
 	}
+	if idx < len(p.finishReasons) {
+		done.FinishReason = p.finishReasons[idx]
+	}
 	ch <- done
 	close(ch)
 	return ch, nil
@@ -138,6 +142,48 @@ func (f *fakeMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote
 func newTestState(t *testing.T) *session.State {
 	t.Helper()
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+}
+
+func TestLengthTruncatedToolCallsAreFailedNotExecuted(t *testing.T) {
+	executed := false
+	p := &scriptedProvider{
+		responses:     []string{"", "all done"},
+		toolCalls:     [][]schema.ToolCall{{{ID: "tc1", Name: "risky.tool", Args: json.RawMessage(`{"partial":`)}}, nil},
+		finishReasons: []string{"length", "stop"},
+		capabilities:  schema.ProviderCapabilities{},
+	}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "risky.tool", Description: "must not run", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executed = true
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.NativeTools = true
+	runner.SetForceClass(string(ClassQuestion))
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if executed {
+		t.Fatal("tool call from a length-truncated response was executed")
+	}
+	// The model must have been told to re-issue: the second request carries a
+	// role:tool message for tc1 mentioning truncation.
+	second := p.requests[1]
+	found := false
+	for _, m := range second.Messages {
+		if m.Role == schema.RoleTool && m.ToolCallID == "tc1" && strings.Contains(m.Content, "truncated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no corrective tool result for the truncated tool call")
+	}
 }
 
 func TestChatOnceRoutesThinkingDeltasToStateAndReturnsAnswerText(t *testing.T) {

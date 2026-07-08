@@ -34,6 +34,14 @@ var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations w
 
 var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
 
+// isLengthFinish reports whether the provider cut the response off at the
+// output-token limit ("length" for OpenAI-compatible providers, "max_tokens"
+// for Anthropic-style ones). Tool calls in such a response may carry
+// silently truncated arguments and must not be executed (pi's guard).
+func isLengthFinish(reason string) bool {
+	return reason == "length" || reason == "max_tokens"
+}
+
 // normalizeArgs returns a canonical JSON representation of a tool's
 // arguments so that {"b":1,"a":2} and {"a":2,"b":1} share the same
 // cache key. Empty arguments normalise to {}.
@@ -306,6 +314,20 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				task.Status = TaskStatusCompleted
 				r.State.AddMessageFinal(session.RoleAssistant, res.Text, session.ContentTypeMarkdown)
 				return task, nil
+			}
+
+			if isLengthFinish(res.FinishReason) {
+				iteration++
+				r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
+				for _, call := range res.ToolCalls {
+					messages = append(messages, schema.ChatMessage{
+						Role:       schema.RoleTool,
+						ToolCallID: call.ID,
+						Content:    fmt.Sprintf("Tool call %s was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the call with complete arguments.", call.Name),
+					})
+				}
+				continue
 			}
 
 			iteration++

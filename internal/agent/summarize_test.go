@@ -9,7 +9,7 @@ import (
 
 func TestSummarizeToolResultTruncatesGenericContent(t *testing.T) {
 	long := strings.Repeat("x", DefaultMaxToolResultChars+100)
-	result := SummarizeToolResult("file.read", registry.ToolResult{Summary: "read ok", Content: long}, 0)
+	result := SummarizeToolResult("file.read", registry.ToolResult{Summary: "read ok", Content: long}, -1)
 
 	if len(result.Content) >= len(long) {
 		t.Fatalf("content was not truncated")
@@ -19,6 +19,14 @@ func TestSummarizeToolResultTruncatesGenericContent(t *testing.T) {
 	}
 	if !strings.Contains(result.Summary, "[truncated]") {
 		t.Fatalf("summary should note truncation: %q", result.Summary)
+	}
+}
+
+func TestSummarizeToolResultZeroMaxCharsSkipsCharCap(t *testing.T) {
+	big := strings.Repeat("x", DefaultMaxToolResultChars+1000)
+	out := SummarizeToolResult("shell.run", registry.ToolResult{Summary: "s", Content: big}, 0)
+	if len(out.Content) != len(big) {
+		t.Fatalf("maxChars=0 must skip the char cap: got %d chars, want %d", len(out.Content), len(big))
 	}
 }
 

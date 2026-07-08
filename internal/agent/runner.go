@@ -829,7 +829,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		return []schema.ChatMessage{msg}, nil
 	}
 
-	summarized := SummarizeToolResult(toolName, result, r.MaxToolResultChars)
+	summarized := SummarizeToolResult(toolName, result, 0) // per-tool line limits only; 0 keeps the default char cap out of play here
+	summarized = spillToolResult(r.State.WorkingDir, toolName, summarized, r.MaxToolResultChars)
 	if tool.Cacheable {
 		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)
 	}

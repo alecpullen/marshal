@@ -1,10 +1,13 @@
 package policy
 
 import (
+	"log/slog"
 	"marshal/internal/app/config"
 	"regexp"
 	"strings"
 	"sync"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 type Decision string
@@ -97,9 +100,14 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		return DecisionConfirm, "empty command", nil
 	}
 
-	// 1. Conservative Safety Guardrails
-	if isBlockedByGuardrail(normCmd) {
-		return DecisionDeny, "blocked by conservative guardrail safety checks", nil
+	// 1. Conservative Safety Guardrails (AST-based; legacy fallback on parse error)
+	dynSetting := "deny"
+	if pe.config != nil && pe.config.Tools.Shell.GuardrailDynamicArgv0 != "" {
+		dynSetting = pe.config.Tools.Shell.GuardrailDynamicArgv0
+	}
+	dec, reason := evaluateGuardrails(normCmd, dynSetting)
+	if dec != "" {
+		return dec, reason, nil
 	}
 
 	// 2. Config Deny Rules
@@ -141,7 +149,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	return DecisionConfirm, "requires approval (default secure configuration)", nil
 }
 
-func isBlockedByGuardrail(cmd string) bool {
+func isBlockedByGuardrailLegacy(cmd string) bool {
 	blocked := []string{
 		"sudo",
 		"rm -rf",
@@ -176,6 +184,140 @@ func isBlockedByGuardrail(cmd string) bool {
 		}
 	}
 	return false
+}
+
+// stage is one pipeline stage: argv0 word + the full printed stage text.
+type stage struct {
+	argv0    string
+	fullText string
+	dynamic  bool
+}
+
+// parseStages parses cmd with mvdan.cc/sh and returns one stage per
+// *syntax.CallExpr, in Walk order. Returns an error if the command is not
+// valid shell — the caller MUST fall back to isBlockedByGuardrailLegacy.
+func parseStages(cmd string) ([]stage, error) {
+	f, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
+	if err != nil {
+		return nil, err
+	}
+	var stages []stage
+	syntax.Walk(f, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		var b strings.Builder
+		syntax.NewPrinter().Print(&b, call.Args[0])
+		var full strings.Builder
+		for i, w := range call.Args {
+			if i > 0 {
+				full.WriteString(" ")
+			}
+			syntax.NewPrinter().Print(&full, w)
+		}
+		dyn := false
+		syntax.Walk(call.Args[0], func(nn syntax.Node) bool {
+			switch nn.(type) {
+			case *syntax.CmdSubst, *syntax.ParamExp, *syntax.ArithmExp:
+				dyn = true
+				return false
+			}
+			return true
+		})
+		stages = append(stages, stage{argv0: b.String(), fullText: full.String(), dynamic: dyn})
+		return true
+	})
+	return stages, nil
+}
+
+// guardrailVerdict is the result of the AST-based guardrail analysis.
+type guardrailVerdict struct {
+	blocked      bool
+	reason       string
+	dynamicArgv0 bool
+}
+
+// analyzeCommand parses cmd and classifies it against the hardcoded guardrail
+// set. On parse error it returns a non-nil error; the caller falls back to
+// isBlockedByGuardrailLegacy.
+func analyzeCommand(cmd string) (guardrailVerdict, error) {
+	stages, err := parseStages(cmd)
+	if err != nil {
+		return guardrailVerdict{}, err
+	}
+	if len(stages) == 0 {
+		return guardrailVerdict{}, nil
+	}
+
+	blockedPatterns := []string{
+		"sudo", "rm -rf", "git reset --hard", "git clean -fd",
+		"mkfs", "shutdown", "reboot", "chmod -r", "chown -r",
+	}
+
+	shellNames := map[string]bool{"sh": true, "bash": true, "zsh": true}
+	hasFetch := false
+	hasShell := false
+
+	for _, st := range stages {
+		if st.dynamic {
+			return guardrailVerdict{dynamicArgv0: true, reason: "dynamic command name unclassifiable"}, nil
+		}
+		ft := strings.ToLower(st.fullText)
+		for _, p := range blockedPatterns {
+			if strings.Contains(ft, p) {
+				return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: " + p}, nil
+			}
+		}
+		name := basenameLower(st.argv0)
+		if name == "curl" || name == "wget" {
+			hasFetch = true
+		}
+		if shellNames[name] {
+			hasShell = true
+		}
+	}
+	if hasFetch && hasShell {
+		return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: network installer (curl/wget to shell)"}, nil
+	}
+	return guardrailVerdict{}, nil
+}
+
+// basenameLower returns the lowercased last path component of argv0.
+func basenameLower(argv0 string) string {
+	name := argv0
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.ToLower(name)
+}
+
+// evaluateGuardrails runs the AST-based guardrail analysis and returns the
+// resulting Decision + reason. Returns Decision("") (empty) to signal
+// "not blocked — continue to rule matching".
+func evaluateGuardrails(cmd, dynSetting string) (Decision, string) {
+	verdict, err := analyzeCommand(cmd)
+	if err != nil {
+		slog.Default().Debug("policy guardrail parse failed, falling back to legacy", "cmd", cmd, "err", err)
+		if isBlockedByGuardrailLegacy(cmd) {
+			return DecisionDeny, "blocked by conservative guardrail safety checks (legacy)"
+		}
+		return "", ""
+	}
+	if verdict.blocked {
+		return DecisionDeny, verdict.reason
+	}
+	if verdict.dynamicArgv0 {
+		switch dynSetting {
+		case "off":
+			return "", ""
+		case "confirm":
+			return DecisionConfirm, "requires approval: " + verdict.reason
+		default:
+			return DecisionDeny, verdict.reason
+		}
+	}
+	return "", ""
 }
 
 func normalizeCommand(s string) string {

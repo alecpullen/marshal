@@ -23,7 +23,7 @@ const (
 	DefaultMaxToolIterations    = 100
 	DefaultMaxRetries           = 2
 	DefaultMaxParallelActions   = 4
-	DefaultMaxTurnContextTokens = 16384
+	DefaultMaxTurnContextTokens = 60000
 	compactKeepRecentMessages   = 6
 	finalizePressureThreshold   = 2
 	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
@@ -258,7 +258,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			lastRenderedSkills = currentSkills
 		}
 
-		messages = compactMessages(messages, r.MaxTurnContextTokens, compactKeepRecentMessages)
+		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
+			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal); serr == nil {
+				messages = fresh
+				pressureSent = false // the fresh transcript may legitimately approach the budget again
+			} else {
+				// Summarization failed (transport error or empty text): fall
+				// back to lossy in-place compaction rather than aborting the turn.
+				messages = compactMessages(messages, r.MaxTurnContextTokens, compactKeepRecentMessages)
+			}
+		}
 
 		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
 		if err != nil {

@@ -61,6 +61,8 @@ type Model struct {
 	cmdRegistry            *commands.Registry
 	agentCancel            context.CancelFunc
 	forceMode              string // reserved for future status-bar display
+	approvalModel          *approvalModel
+	questionModel          *questionModel
 
 	// New Layout State
 	width    int
@@ -190,6 +192,17 @@ func New(state *session.State, opts ...Option) Model {
 	for _, opt := range opts {
 		opt(&m)
 	}
+
+	// Eagerly build inline approval/question forms if the session already
+	// has a pending request, so the first render shows the huh surface
+	// instead of the legacy fallback panels.
+	if tc := m.state.PendingApproval(); tc != nil {
+		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.width-4, 30))
+	}
+	if q := m.state.PendingQuestion(); q != nil {
+		m.questionModel = newQuestionModel(q, max(m.width-4, 30))
+	}
+
 	return m
 }
 
@@ -223,14 +236,96 @@ func (m *Model) resize(width, height int) {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	tc := m.state.PendingApproval()
+	// Ctrl+C always quits, even while a settings/memory overlay or huh form
+	// is open. Check it before any overlay routing so it can never be
+	// captured by a form's keymap.
+	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+c" {
+		m.state.Shutdown()
+		return m, tea.Quit
+	}
+
+	// WindowSizeMsg must always resize the underlying layout (and the
+	// settings/memory overlays) regardless of which overlay is open.
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.resize(ws.Width, ws.Height)
+		m.settingsModel.SetSize(m.width, m.height)
+		m.memoryModel.SetSize(m.width, m.height)
+		if m.approvalModel != nil {
+			m.approvalModel.SetSize(max(m.width-4, 30))
+		}
+		if m.questionModel != nil {
+			m.questionModel.SetSize(max(m.width-4, 30))
+		}
+		m.refreshViewport()
+		return m, nil
+	}
+
+	// SavedMsg/CancelledMsg close the settings overlay; handle them before
+	// the settings-open guard so they aren't fed back into the form.
+	switch msg := msg.(type) {
+	case settings.SavedMsg:
+		m.state.Config = msg.Cfg
+		if m.configReloader != nil {
+			if err := m.configReloader(msg.Cfg); err != nil {
+				m.state.SetProviderError(err)
+				m.settingsModel = settings.New(msg.Cfg, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+				m.settingsModel.SetSize(m.width, m.height)
+				return m, nil
+			}
+		}
+		m.settingsOpen = false
+		return m, nil
+	case settings.CancelledMsg:
+		m.settingsOpen = false
+		return m, nil
+	case memory.ClosedMsg:
+		m.memoryOpen = false
+		return m, nil
+	}
+
+	// When the settings overlay is open, route every remaining message
+	// (keypresses AND huh's internal navigation messages such as
+	// nextFieldMsg/prevFieldMsg) to the settings form. huh drives field
+	// advancement via command-produced messages that round-trip through
+	// Update, so the form must see them all — not just KeyPressMsg.
+	if m.settingsOpen {
+		// Ctrl+O toggles the overlay closed.
+		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+o" {
+			m.settingsOpen = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.settingsModel, cmd = m.settingsModel.Update(msg)
+		return m, cmd
+	}
+	if m.memoryOpen {
+		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+k" {
+			m.memoryOpen = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.memoryModel, cmd = m.memoryModel.Update(msg)
+		return m, cmd
+	}
+
+	// Inline approval chooser: when a tool call is pending, route every
+	// message (keypresses AND huh's internal nextField/nextGroup messages)
+	// to the approval form so selection navigation round-trips correctly.
+	// The edit sub-mode captures the edited command/args in the main
+	// textarea before the decision is sent.
+	if tc := m.state.PendingApproval(); tc != nil {
+		return m.handleApproval(msg, tc)
+	}
+
+	// Inline question prompt: when a clarifying question is pending, route
+	// messages to the question form.
+	if q := m.state.PendingQuestion(); q != nil {
+		return m.handleQuestion(msg, q)
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.resize(msg.Width, msg.Height)
-		m.settingsModel.SetSize(m.width, m.height)
-		m.memoryModel.SetSize(m.width, m.height)
-		m.refreshViewport()
+		// Handled above; kept for exhaustiveness but unreachable.
 		return m, nil
 	case agentFinishedMsg:
 		m.busy = false
@@ -265,24 +360,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, tickCmd()
-	case settings.SavedMsg:
-		m.state.Config = msg.Cfg
-		if m.configReloader != nil {
-			if err := m.configReloader(msg.Cfg); err != nil {
-				m.state.SetProviderError(err)
-				m.settingsModel = settings.New(msg.Cfg, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-				m.settingsModel.SetSize(m.width, m.height)
-				return m, nil
-			}
-		}
-		m.settingsOpen = false
-		return m, nil
-	case settings.CancelledMsg:
-		m.settingsOpen = false
-		return m, nil
-	case memory.ClosedMsg:
-		m.memoryOpen = false
-		return m, nil
 	case tea.MouseWheelMsg:
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
@@ -296,242 +373,104 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, vpCmd
 	case tea.KeyPressMsg:
-		// Always allow Ctrl+C to quit
-		if msg.String() == "ctrl+c" {
-			m.state.Shutdown()
-			return m, tea.Quit
-		}
-
-		if m.settingsOpen {
-			if msg.String() == "ctrl+o" {
-				m.settingsOpen = false
+		// Global hotkeys — input is always focused. (Approval and question
+		// pending states are routed above, before this switch.)
+		switch msg.String() {
+		case "esc":
+			m.cancelTurn()
+			return m, nil
+		case "ctrl+o":
+			m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
+			m.settingsModel.SetSize(m.width, m.height)
+			m.settingsOpen = true
+			return m, nil
+		case "ctrl+k":
+			if m.memoryDB == nil {
 				return m, nil
 			}
-			var cmd tea.Cmd
-			m.settingsModel, cmd = m.settingsModel.Update(msg)
-			return m, cmd
-		}
-		if m.memoryOpen {
-			if msg.String() == "ctrl+k" {
-				m.memoryOpen = false
+			m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
+			m.memoryModel.SetSize(m.width, m.height)
+			m.memoryOpen = true
+			return m, nil
+		case "ctrl+g":
+			m.thinkingExpanded = !m.thinkingExpanded
+			m.lastTranscriptHash = 0
+			m.refreshViewport()
+			return m, nil
+		case "ctrl+r":
+			if m.state.HasBackup() {
+				_ = m.state.RollbackBackup()
+				m.state.LogToolCall(registry.AuditEvent{
+					Timestamp:     time.Now(),
+					ToolName:      "rollback",
+					ResultSummary: "Rollback applied successfully",
+				})
+				m.refreshViewport()
+			}
+			return m, nil
+		case "pgup", "pgdown":
+			var vpCmd tea.Cmd
+			m.viewport, vpCmd = m.viewport.Update(msg)
+			if msg.String() == "pgup" {
+				m.viewportFollow = false
+			}
+			if msg.String() == "pgdown" && m.viewport.AtBottom() {
+				m.viewportFollow = true
+			}
+			return m, vpCmd
+		case "ctrl+u":
+			m.viewport.HalfPageUp()
+			m.viewportFollow = false
+			return m, nil
+		case "ctrl+d":
+			m.viewport.HalfPageDown()
+			if m.viewport.AtBottom() {
+				m.viewportFollow = true
+			}
+			return m, nil
+		case "end":
+			m.viewport.GotoBottom()
+			m.viewportFollow = true
+			return m, nil
+		case "up":
+			if m.moveCommandSuggestion(-1) {
 				return m, nil
 			}
-			var cmd tea.Cmd
-			m.memoryModel, cmd = m.memoryModel.Update(msg)
-			return m, cmd
-		}
-
-		if q := m.state.PendingQuestion(); q != nil {
-			switch msg.String() {
-			case "enter":
-				q.ResponseChan <- strings.TrimSpace(m.input.Value())
-				m.state.SetPendingQuestion(nil)
-				m.input.Reset()
-				m.input.Placeholder = "Ask Marshal..."
-				m.resizeInputHeight()
-				m.updateViewportHeight()
-				m.lastTranscriptHash = 0
-				return m, nil
-			case "esc":
-				q.ResponseChan <- ""
-				m.state.SetPendingQuestion(nil)
-				m.input.Reset()
-				m.input.Placeholder = "Ask Marshal..."
-				m.resizeInputHeight()
-				m.updateViewportHeight()
-				m.lastTranscriptHash = 0
+		case "down":
+			if m.moveCommandSuggestion(1) {
 				return m, nil
 			}
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
+		case "tab":
+			if m.acceptCommandSuggestion() {
+				return m, nil
+			}
+		case "enter":
+			value := strings.TrimSpace(m.input.Value())
+			if value == "" {
+				return m, nil
+			}
+			m.input.Reset()
 			m.resizeInputHeight()
+			m.updateCommandSuggestions()
 			m.updateViewportHeight()
-			return m, cmd
-		}
+			m.viewportFollow = true
 
-		if tc != nil {
-			if m.editingCommand {
-				switch msg.String() {
-				case "esc":
-					m.editingCommand = false
-					m.input.Reset()
-					m.input.Placeholder = "Ask Marshal..."
-					m.resizeInputHeight()
-					m.updateViewportHeight()
-					m.lastTranscriptHash = 0
-					return m, nil
-				case "enter":
-					value := strings.TrimSpace(m.input.Value())
-					if value != "" {
-						tc.ResponseChan <- session.UserApprovalDecision{Approved: true, Edited: value}
-						m.editingCommand = false
-						m.input.Reset()
-						m.input.Placeholder = "Ask Marshal..."
-						m.resizeInputHeight()
-						m.updateViewportHeight()
-						m.state.SetPendingApproval(nil)
-					}
-					m.lastTranscriptHash = 0
-					return m, nil
-				}
-				var cmd tea.Cmd
-				m.input, cmd = m.input.Update(msg)
-				m.resizeInputHeight()
-				m.updateViewportHeight()
-				return m, cmd
+			if strings.HasPrefix(value, "/") {
+				return m.dispatchCommand(value)
 			}
 
-			switch msg.String() {
-			case "enter":
-				tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
-				m.state.SetPendingApproval(nil)
-				m.lastTranscriptHash = 0
-				return m, nil
-			case "esc":
-				tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
-				m.state.SetPendingApproval(nil)
-				m.lastTranscriptHash = 0
-				return m, nil
-			case "d":
-				tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
-				m.state.SetPendingApproval(nil)
-				m.lastTranscriptHash = 0
-				return m, nil
-			case "a":
-				m.state.AddSessionRule(tc.Command)
-				tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
-				m.state.SetPendingApproval(nil)
-				m.lastTranscriptHash = 0
-				return m, nil
-			case "e":
-				m.editingCommand = true
-				if tc.Name == "shell.run" {
-					m.input.SetValue(tc.Command)
-					m.input.Placeholder = "Edit command..."
-				} else {
-					m.input.SetValue(tc.Args)
-					m.input.Placeholder = "Edit JSON arguments..."
-				}
-				m.resizeInputHeight()
-				m.updateViewportHeight()
-				m.input.Focus()
-				m.lastTranscriptHash = 0
-				return m, nil
-			case "r":
-				if m.state.HasBackup() {
-					_ = m.state.RollbackBackup()
-					m.state.LogToolCall(registry.AuditEvent{
-						Timestamp:     time.Now(),
-						ToolName:      "rollback",
-						ResultSummary: "Rollback applied successfully",
-					})
-					m.lastTranscriptHash = 0
-					m.refreshViewport()
-					return m, nil
-				}
-				return m, nil
-			default:
+			if m.busy {
 				return m, nil
 			}
-		} else {
-			// Global hotkeys — input is always focused.
-			switch msg.String() {
-			case "esc":
-				m.cancelTurn()
-				return m, nil
-			case "ctrl+o":
-				m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-				m.settingsModel.SetSize(m.width, m.height)
-				m.settingsOpen = true
-				return m, nil
-			case "ctrl+k":
-				if m.memoryDB == nil {
-					return m, nil
-				}
-				m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
-				m.memoryModel.SetSize(m.width, m.height)
-				m.memoryOpen = true
-				return m, nil
-			case "ctrl+g":
-				m.thinkingExpanded = !m.thinkingExpanded
-				m.lastTranscriptHash = 0
+			if m.runner == nil {
+				m.state.AddMessage(session.RoleUser, value, session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
-			case "ctrl+r":
-				if m.state.HasBackup() {
-					_ = m.state.RollbackBackup()
-					m.state.LogToolCall(registry.AuditEvent{
-						Timestamp:     time.Now(),
-						ToolName:      "rollback",
-						ResultSummary: "Rollback applied successfully",
-					})
-					m.refreshViewport()
-				}
-				return m, nil
-			case "pgup", "pgdown":
-				var vpCmd tea.Cmd
-				m.viewport, vpCmd = m.viewport.Update(msg)
-				if msg.String() == "pgup" {
-					m.viewportFollow = false
-				}
-				if msg.String() == "pgdown" && m.viewport.AtBottom() {
-					m.viewportFollow = true
-				}
-				return m, vpCmd
-			case "ctrl+u":
-				m.viewport.HalfPageUp()
-				m.viewportFollow = false
-				return m, nil
-			case "ctrl+d":
-				m.viewport.HalfPageDown()
-				if m.viewport.AtBottom() {
-					m.viewportFollow = true
-				}
-				return m, nil
-			case "end":
-				m.viewport.GotoBottom()
-				m.viewportFollow = true
-				return m, nil
-			case "up":
-				if m.moveCommandSuggestion(-1) {
-					return m, nil
-				}
-			case "down":
-				if m.moveCommandSuggestion(1) {
-					return m, nil
-				}
-			case "tab":
-				if m.acceptCommandSuggestion() {
-					return m, nil
-				}
-			case "enter":
-				value := strings.TrimSpace(m.input.Value())
-				if value == "" {
-					return m, nil
-				}
-				m.input.Reset()
-				m.resizeInputHeight()
-				m.updateCommandSuggestions()
-				m.updateViewportHeight()
-				m.viewportFollow = true
-
-				if strings.HasPrefix(value, "/") {
-					return m.dispatchCommand(value)
-				}
-
-				if m.busy {
-					return m, nil
-				}
-				if m.runner == nil {
-					m.state.AddMessage(session.RoleUser, value, session.ContentTypePlain)
-					m.refreshViewport()
-					return m, nil
-				}
-				m.busy = true
-				agentCtx, cancel := context.WithCancel(m.ctx)
-				m.agentCancel = cancel
-				return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd())
 			}
+			m.busy = true
+			agentCtx, cancel := context.WithCancel(m.ctx)
+			m.agentCancel = cancel
+			return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd())
 		}
 	}
 
@@ -550,24 +489,156 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// handleApproval routes messages to the inline approval chooser (or the
+// edit-command textarea sub-mode) while a tool-call approval is pending. It
+// is called before the main keypress switch so huh's internal navigation
+// messages (nextFieldMsg/nextGroupMsg) round-trip back to the form.
+func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Model, tea.Cmd) {
+	// Edit sub-mode: the main textarea captures the edited command/args.
+	if m.editingCommand {
+		if k, ok := msg.(tea.KeyPressMsg); ok {
+			switch k.String() {
+			case "esc":
+				m.editingCommand = false
+				m.input.Reset()
+				m.input.Placeholder = "Ask Marshal..."
+				m.resizeInputHeight()
+				m.updateViewportHeight()
+				m.lastTranscriptHash = 0
+				return m, nil
+			case "enter":
+				value := strings.TrimSpace(m.input.Value())
+				if value != "" {
+					tc.ResponseChan <- session.UserApprovalDecision{Approved: true, Edited: value}
+					m.editingCommand = false
+					m.input.Reset()
+					m.input.Placeholder = "Ask Marshal..."
+					m.resizeInputHeight()
+					m.updateViewportHeight()
+					m.state.SetPendingApproval(nil)
+					m.approvalModel = nil
+				}
+				m.lastTranscriptHash = 0
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.resizeInputHeight()
+		m.updateViewportHeight()
+		return m, cmd
+	}
+
+	// Lazily build the inline approval chooser the first time a message
+	// arrives for a pending tool call.
+	if m.approvalModel == nil {
+		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.width-4, 30))
+	}
+	am, cmd := m.approvalModel.Update(msg)
+	m.approvalModel = am
+	if !m.approvalModel.IsDone() {
+		return m, cmd
+	}
+
+	choice := m.approvalModel.Choice()
+	m.approvalModel = nil
+	switch choice {
+	case choiceApprove:
+		tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+		m.state.SetPendingApproval(nil)
+		m.lastTranscriptHash = 0
+		return m, nil
+	case choiceDeny:
+		tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
+		m.state.SetPendingApproval(nil)
+		m.lastTranscriptHash = 0
+		return m, nil
+	case choiceAlways:
+		m.state.AddSessionRule(tc.Command)
+		tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+		m.state.SetPendingApproval(nil)
+		m.lastTranscriptHash = 0
+		return m, nil
+	case choiceEdit:
+		m.editingCommand = true
+		if tc.Name == "shell.run" {
+			m.input.SetValue(tc.Command)
+			m.input.Placeholder = "Edit command..."
+		} else {
+			m.input.SetValue(tc.Args)
+			m.input.Placeholder = "Edit JSON arguments..."
+		}
+		m.resizeInputHeight()
+		m.updateViewportHeight()
+		m.input.Focus()
+		m.lastTranscriptHash = 0
+		return m, nil
+	case choiceRollback:
+		if m.state.HasBackup() {
+			_ = m.state.RollbackBackup()
+			m.state.LogToolCall(registry.AuditEvent{
+				Timestamp:     time.Now(),
+				ToolName:      "rollback",
+				ResultSummary: "Rollback applied successfully",
+			})
+			m.lastTranscriptHash = 0
+			m.refreshViewport()
+			// Keep the approval open so the user can then approve/deny the
+			// original tool.
+			return m, nil
+		}
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+// handleQuestion routes messages to the inline question form while a
+// clarifying question is pending. On completion it sends the answer (or an
+// empty string on abort) to the runner's response channel.
+func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
+	if m.questionModel == nil {
+		m.questionModel = newQuestionModel(q, max(m.width-4, 30))
+	}
+	qm, cmd := m.questionModel.Update(msg)
+	m.questionModel = qm
+	if !m.questionModel.IsDone() {
+		return m, cmd
+	}
+
+	if m.questionModel.Aborted() {
+		q.ResponseChan <- ""
+	} else {
+		q.ResponseChan <- strings.TrimSpace(m.questionModel.Answer())
+	}
+	m.state.SetPendingQuestion(nil)
+	m.questionModel = nil
+	m.input.Reset()
+	m.input.Placeholder = "Ask Marshal..."
+	m.resizeInputHeight()
+	m.updateViewportHeight()
+	m.lastTranscriptHash = 0
+	return m, nil
+}
+
 func (m Model) inputAreaRows() int {
 	rows := inputBorderRows + activityStripRows
 	if q := m.state.PendingQuestion(); q != nil {
-		inputInnerWidth := max(m.width-4, 1)
-		content := renderQuestionPanel(q, inputInnerWidth)
-		rows += len(strings.Split(content, "\n"))
-		inputHeight := max(m.input.Height(), 1)
-		if inputHeight > m.input.MaxHeight {
-			inputHeight = m.input.MaxHeight
+		content := ""
+		if m.questionModel != nil {
+			content = m.questionModel.View()
+		} else {
+			content = renderQuestionPanel(q, max(m.width-4, 1))
 		}
-		rows += inputHeight
+		rows += len(strings.Split(content, "\n"))
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		content := ""
 		if m.editingCommand {
 			content = "❯ " + m.input.View()
+		} else if m.approvalModel != nil {
+			content = m.approvalModel.View()
 		} else {
-			inputInnerWidth := max(m.width-4, 1)
-			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth)
+			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.width-4, 1))
 		}
 		rows += len(strings.Split(content, "\n"))
 	} else {

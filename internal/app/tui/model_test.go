@@ -171,6 +171,9 @@ func TestPageKeysScrollViewport(t *testing.T) {
 	if m.input.Value() != "" {
 		t.Fatalf("PgUp leaked into the input: %q", m.input.Value())
 	}
+	if m.viewportFollow {
+		t.Fatalf("PgUp did not disable viewport follow")
+	}
 }
 
 func TestCtrlUCtrlDScrollViewport(t *testing.T) {
@@ -189,6 +192,9 @@ func TestCtrlUCtrlDScrollViewport(t *testing.T) {
 		t.Fatalf("Ctrl+U did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset)
 	}
 	upOffset := m.viewport.YOffset
+	if m.viewportFollow {
+		t.Fatalf("Ctrl+U did not disable viewport follow")
+	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	m = updated.(Model)
@@ -197,6 +203,126 @@ func TestCtrlUCtrlDScrollViewport(t *testing.T) {
 	}
 	if m.input.Value() != "" {
 		t.Fatalf("scroll keys leaked into the input: %q", m.input.Value())
+	}
+}
+
+func TestCtrlDAtBottomReEnablesFollow(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	m := New(state)
+	m.resize(80, 60)
+	m.refreshViewport()
+	bottom := m.viewport.YOffset
+
+	// Scroll up several pages so we're definitely not at the bottom.
+	for i := 0; i < 5; i++ {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+		m = updated.(Model)
+	}
+	if m.viewport.AtBottom() {
+		t.Fatal("expected to be scrolled up before testing re-enable")
+	}
+	if m.viewportFollow {
+		t.Fatal("scroll up should have disabled follow")
+	}
+
+	// Scroll down to the bottom.
+	for m.viewport.YOffset < bottom {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+		m = updated.(Model)
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected to be at bottom after scrolling down, got offset %d", m.viewport.YOffset)
+	}
+	if !m.viewportFollow {
+		t.Fatal("Ctrl+D at bottom should re-enable follow")
+	}
+}
+
+func TestEndKeyReEnablesFollow(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	m.viewportFollow = false
+	m.viewport.SetYOffset(0)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(Model)
+	if !m.viewportFollow {
+		t.Fatal("End key did not re-enable viewport follow")
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatalf("End key did not jump to bottom: offset %d", m.viewport.YOffset)
+	}
+}
+
+func TestScrollUpPreventsAutoBottomOnRefresh(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = updated.(Model)
+	upOffset := m.viewport.YOffset
+
+	// New content arrives while the user is scrolled up.
+	state.AddMessage(session.RoleSystem, "new line", session.ContentTypePlain)
+	m.refreshViewport()
+	if m.viewport.YOffset != upOffset {
+		t.Fatalf("refreshViewport snapped to bottom while scrolled up: offset %d -> %d", upOffset, m.viewport.YOffset)
+	}
+	if m.viewportFollow {
+		t.Fatal("viewportFollow should still be false after scroll-up + refresh")
+	}
+}
+
+func TestMouseWheelScrollsViewport(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+	bottom := m.viewport.YOffset
+
+	updated, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.viewport.YOffset >= bottom {
+		t.Fatalf("mouse wheel up did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset)
+	}
+	if m.viewportFollow {
+		t.Fatal("mouse wheel up did not disable viewport follow")
+	}
+}
+
+func TestNewSubmissionReEnablesFollow(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+	m.viewportFollow = false
+	m.viewport.SetYOffset(0)
+
+	// Simulate typing and submitting a message.
+	m.input.SetValue("hello")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !m.viewportFollow {
+		t.Fatal("submitting a message did not re-enable viewport follow")
 	}
 }
 

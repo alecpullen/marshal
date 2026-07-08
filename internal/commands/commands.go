@@ -56,6 +56,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "tools",
 			Description: "List available tools",
 			Handler: func(state *session.State, args []string) string {
+				if toolReg == nil {
+					return "Tools unavailable (agent failed to initialise). Fix the provider config and restart, or use /settings."
+				}
 				var b strings.Builder
 				b.WriteString("Available tools:\n\n")
 				for _, tool := range toolReg.List() {

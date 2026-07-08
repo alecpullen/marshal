@@ -371,3 +371,34 @@ func TestContextCommandListsPackSections(t *testing.T) {
 		}
 	}
 }
+
+func TestRegisterAllWithNilToolRegistry(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, nil); err != nil {
+		t.Fatalf("RegisterAll(nil toolReg) error = %v, want nil", err)
+	}
+	cmds := cmdReg.List()
+	if len(cmds) < 10 {
+		t.Errorf("expected at least 10 commands with nil toolReg, got %d", len(cmds))
+	}
+	// /exit must be available so the user can quit even when the agent
+	// failed to initialise.
+	if _, ok := cmdReg.Lookup("exit"); !ok {
+		t.Fatal("exit command not registered with nil toolReg")
+	}
+}
+
+func TestToolsCommandWithNilToolRegistry(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, nil); err != nil {
+		t.Fatalf("RegisterAll(nil toolReg) error = %v", err)
+	}
+	cmd, ok := cmdReg.Lookup("tools")
+	if !ok {
+		t.Fatal("tools command not registered with nil toolReg")
+	}
+	result := cmd.Handler(newTestState(), nil)
+	if !strings.Contains(result, "Tools unavailable") {
+		t.Fatalf("tools output with nil toolReg = %q, want 'Tools unavailable'", result)
+	}
+}

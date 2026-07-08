@@ -92,6 +92,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 				AllowSudo             *bool         `toml:"allow_sudo"`
 				AllowDestructive      *bool         `toml:"allow_destructive"`
 				AutoApprove           *bool         `toml:"auto_approve"`
+				GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
 				Allow                 *CommandRules `toml:"allow"`
 				Confirm               *CommandRules `toml:"confirm"`
 				Deny                  *PatternRules `toml:"deny"`
@@ -107,6 +108,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 			AllowSudo             *bool         `toml:"allow_sudo"`
 			AllowDestructive      *bool         `toml:"allow_destructive"`
 			AutoApprove           *bool         `toml:"auto_approve"`
+			GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
 			Allow                 *CommandRules `toml:"allow"`
 			Confirm               *CommandRules `toml:"confirm"`
 			Deny                  *PatternRules `toml:"deny"`
@@ -125,6 +127,9 @@ func SaveProjectConfig(path string, cfg Config) error {
 	file.Tools.Shell.AllowSudo = &allowSudo
 	file.Tools.Shell.AllowDestructive = &allowDestructive
 	file.Tools.Shell.AutoApprove = &autoApprove
+
+	guardrailDyn := cfg.Tools.Shell.GuardrailDynamicArgv0
+	file.Tools.Shell.GuardrailDynamicArgv0 = &guardrailDyn
 
 	if file.Tools.Shell.Sandbox == nil {
 		file.Tools.Shell.Sandbox = &sandboxFile{}

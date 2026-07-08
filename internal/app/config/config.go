@@ -91,6 +91,7 @@ type ShellToolConfig struct {
 	Allow                 CommandRules  `toml:"allow"`
 	Confirm               CommandRules  `toml:"confirm"`
 	Deny                  PatternRules  `toml:"deny"`
+	GuardrailDynamicArgv0 string        `toml:"guardrail_dynamic_argv0"`
 	Sandbox               SandboxConfig `toml:"sandbox"`
 }
 
@@ -244,6 +245,7 @@ type configFile struct {
 			AllowSudo             *bool         `toml:"allow_sudo"`
 			AllowDestructive      *bool         `toml:"allow_destructive"`
 			AutoApprove           *bool         `toml:"auto_approve"`
+			GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
 			Allow                 *CommandRules `toml:"allow"`
 			Confirm               *CommandRules `toml:"confirm"`
 			Deny                  *PatternRules `toml:"deny"`
@@ -329,6 +331,7 @@ func Default() Config {
 				AllowSudo:             false,
 				AllowDestructive:      false,
 				AutoApprove:           false,
+				GuardrailDynamicArgv0: "deny",
 				Allow:                 CommandRules{Commands: []string{"go test", "git status", "git diff"}},
 				Confirm:               CommandRules{Commands: []string{"go get", "npm install"}},
 				Deny:                  PatternRules{Patterns: []string{"rm -rf", "sudo", "curl * | sh"}},
@@ -604,6 +607,9 @@ func merge(cfg *Config, file configFile) {
 		}
 		if s.AutoApprove != nil {
 			cfg.Tools.Shell.AutoApprove = *s.AutoApprove
+		}
+		if s.GuardrailDynamicArgv0 != nil {
+			cfg.Tools.Shell.GuardrailDynamicArgv0 = *s.GuardrailDynamicArgv0
 		}
 		if s.Allow != nil && s.Allow.Commands != nil {
 			cfg.Tools.Shell.Allow.Commands = s.Allow.Commands

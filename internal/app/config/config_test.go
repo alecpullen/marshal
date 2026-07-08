@@ -399,6 +399,7 @@ patterns = ["sudo"]
 [tools.shell]
 auto_approve = true
 allow_destructive = true
+guardrail_dynamic_argv0 = "off"
 [tools.shell.allow]
 commands = ["go test", "git status"]
 [tools.shell.confirm]
@@ -428,6 +429,9 @@ patterns = ["rm -rf"]
 	if !reflect.DeepEqual(s.Deny.Patterns, []string{"rm -rf"}) {
 		t.Errorf("Deny.Patterns = %#v", s.Deny.Patterns)
 	}
+	if s.GuardrailDynamicArgv0 != "off" {
+		t.Fatalf("GuardrailDynamicArgv0 not merged, want off, got %q", s.GuardrailDynamicArgv0)
+	}
 }
 
 func TestDefaultSandboxBackendIsRestricted(t *testing.T) {
@@ -453,6 +457,9 @@ func TestDefaultSandboxBackendIsRestricted(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sb.EnvAllowlist, []string{"PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM", "TMPDIR", "GOPATH", "GOCACHE", "GOMODCACHE"}) {
 		t.Errorf("default env allowlist = %#v", sb.EnvAllowlist)
+	}
+	if cfg.Tools.Shell.GuardrailDynamicArgv0 != "deny" {
+		t.Fatalf("default guardrail_dynamic_argv0 = %q, want deny", cfg.Tools.Shell.GuardrailDynamicArgv0)
 	}
 }
 

@@ -12,6 +12,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.2
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	modernc.org/sqlite v1.53.0
+	mvdan.cc/sh/v3 v3.13.1
 )
 
 require (
@@ -52,5 +53,4 @@ require (
 	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	mvdan.cc/sh/v3 v3.13.1 // indirect
 )

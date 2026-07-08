@@ -27,7 +27,7 @@ import (
 // Network isolation is NOT enforced here — restricted cannot block network
 // cross-platform. Only the container backend reports NetworkIsolated=true.
 type Restricted struct {
-	cfg    Config
+	cfg Config
 	// Cached, immutable-after-construction env filter sets. buildEnv uses
 	// these on every Run without rebuild; EnvAllowlist/EnvDenylist are
 	// immutable once Config is copied into the struct.

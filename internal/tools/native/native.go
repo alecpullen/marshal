@@ -52,7 +52,7 @@ type toolSet struct {
 	runner         CommandRunner
 	testCommand    string
 	maxOutputBytes int
-	sessionState   *session.State
+	sessionState   any
 	db             *db.DB
 	projectID      int64
 }
@@ -75,6 +75,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.repoMapTool(),
 		tools.repoCardTool(),
 		tools.symbolsFindTool(),
+		tools.todoWriteTool(),
 	} {
 		if err := reg.Register(tool); err != nil {
 			return err

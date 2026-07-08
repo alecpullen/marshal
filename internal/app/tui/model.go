@@ -21,6 +21,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
+	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 )
 
@@ -736,13 +737,18 @@ func (m *Model) refreshViewport() {
 	_, activeTool := m.state.ActiveToolCall()
 	busy := m.busy || activeTool || streamLen > 0
 
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width())
+	todos := m.state.Todos()
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos)
 	if hash == m.lastTranscriptHash {
 		return
 	}
 	m.lastTranscriptHash = hash
 
 	var b strings.Builder
+	if todoPanel := renderTodos(todos, m.viewport.Width()); todoPanel != "" {
+		b.WriteString(todoPanel)
+		b.WriteString("\n")
+	}
 	if len(items) == 0 {
 		b.WriteString(renderWelcomeBanner(m.viewport.Width()))
 	}
@@ -1024,11 +1030,14 @@ func compactTokenCount(tokens int) string {
 	return fmt.Sprintf("%d", tokens)
 }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem) uint64 {
 	var h uint64
-	h = uint64(len(items)) ^ (uint64(streamLen) << 20) ^ (uint64(width) << 40)
+	h = uint64(len(items)) ^ (uint64(streamLen) << 20) ^ (uint64(width) << 40) ^ (uint64(len(todos)) << 50)
 	for i, item := range items {
 		h ^= uint64(item.Timestamp.UnixNano()) * uint64(i+1)
+	}
+	for i, todo := range todos {
+		h ^= uint64(len(todo.Content)+len(todo.Status)) * uint64(i+7)
 	}
 	if busy {
 		h ^= 0xDEADBEEF

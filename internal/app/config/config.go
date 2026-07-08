@@ -5,6 +5,7 @@ import (
 	"marshal/internal/llm/routing"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -84,6 +85,8 @@ type MCPServerConfig struct {
 type ShellToolConfig struct {
 	DefaultTimeoutSeconds int           `toml:"default_timeout_seconds"`
 	MaxOutputBytes        int           `toml:"max_output_bytes"`
+	MaxBackgroundJobs     int           `toml:"max_background_jobs"`
+	BackgroundRetention   time.Duration `toml:"background_retention"`
 	AllowNetwork          bool          `toml:"allow_network"`
 	AllowSudo             bool          `toml:"allow_sudo"`
 	AllowDestructive      bool          `toml:"allow_destructive"`
@@ -243,6 +246,8 @@ type configFile struct {
 		Shell *struct {
 			DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
 			MaxOutputBytes        *int          `toml:"max_output_bytes"`
+			MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
+			BackgroundRetention   *string       `toml:"background_retention"`
 			AllowNetwork          *bool         `toml:"allow_network"`
 			AllowSudo             *bool         `toml:"allow_sudo"`
 			AllowDestructive      *bool         `toml:"allow_destructive"`
@@ -329,6 +334,8 @@ func Default() Config {
 			Shell: ShellToolConfig{
 				DefaultTimeoutSeconds: 120,
 				MaxOutputBytes:        200000,
+				MaxBackgroundJobs:     25,
+				BackgroundRetention:   8 * time.Hour,
 				AllowNetwork:          false,
 				AllowSudo:             false,
 				AllowDestructive:      false,
@@ -405,7 +412,9 @@ func Load(opts LoadOptions) (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
-		merge(&cfg, next)
+		if err := merge(&cfg, next); err != nil {
+			return Config{}, err
+		}
 	}
 
 	return cfg, nil
@@ -486,7 +495,7 @@ func contextBudgetFromConfig(in contextBudgetConfig) routing.ContextBudget {
 	}
 }
 
-func merge(cfg *Config, file configFile) {
+func merge(cfg *Config, file configFile) error {
 	if file.Project != nil {
 		if file.Project.Name != nil {
 			cfg.Project.Name = *file.Project.Name
@@ -601,6 +610,16 @@ func merge(cfg *Config, file configFile) {
 		if s.MaxOutputBytes != nil {
 			cfg.Tools.Shell.MaxOutputBytes = *s.MaxOutputBytes
 		}
+		if s.MaxBackgroundJobs != nil {
+			cfg.Tools.Shell.MaxBackgroundJobs = *s.MaxBackgroundJobs
+		}
+		if s.BackgroundRetention != nil && *s.BackgroundRetention != "" {
+			d, err := time.ParseDuration(*s.BackgroundRetention)
+			if err != nil {
+				return fmt.Errorf("parse background_retention: %w", err)
+			}
+			cfg.Tools.Shell.BackgroundRetention = d
+		}
 		if s.AllowNetwork != nil {
 			cfg.Tools.Shell.AllowNetwork = *s.AllowNetwork
 		}
@@ -692,6 +711,7 @@ func merge(cfg *Config, file configFile) {
 			cfg.MCP.Policies[k] = v
 		}
 	}
+	return nil
 }
 
 func HasConfig(opts LoadOptions) bool {

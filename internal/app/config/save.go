@@ -91,6 +91,8 @@ func SaveProjectConfig(path string, cfg Config) error {
 			Shell *struct {
 				DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
 				MaxOutputBytes        *int          `toml:"max_output_bytes"`
+				MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
+				BackgroundRetention   *string       `toml:"background_retention"`
 				AllowNetwork          *bool         `toml:"allow_network"`
 				AllowSudo             *bool         `toml:"allow_sudo"`
 				AllowDestructive      *bool         `toml:"allow_destructive"`
@@ -107,6 +109,8 @@ func SaveProjectConfig(path string, cfg Config) error {
 		file.Tools.Shell = &struct {
 			DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
 			MaxOutputBytes        *int          `toml:"max_output_bytes"`
+			MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
+			BackgroundRetention   *string       `toml:"background_retention"`
 			AllowNetwork          *bool         `toml:"allow_network"`
 			AllowSudo             *bool         `toml:"allow_sudo"`
 			AllowDestructive      *bool         `toml:"allow_destructive"`
@@ -120,12 +124,16 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 	shellTimeout := cfg.Tools.Shell.DefaultTimeoutSeconds
 	maxOutputBytes := cfg.Tools.Shell.MaxOutputBytes
+	maxBackgroundJobs := cfg.Tools.Shell.MaxBackgroundJobs
+	backgroundRetention := cfg.Tools.Shell.BackgroundRetention.String()
 	allowNetwork := cfg.Tools.Shell.AllowNetwork
 	allowSudo := cfg.Tools.Shell.AllowSudo
 	allowDestructive := cfg.Tools.Shell.AllowDestructive
 	autoApprove := cfg.Tools.Shell.AutoApprove
 	file.Tools.Shell.DefaultTimeoutSeconds = &shellTimeout
 	file.Tools.Shell.MaxOutputBytes = &maxOutputBytes
+	file.Tools.Shell.MaxBackgroundJobs = &maxBackgroundJobs
+	file.Tools.Shell.BackgroundRetention = &backgroundRetention
 	file.Tools.Shell.AllowNetwork = &allowNetwork
 	file.Tools.Shell.AllowSudo = &allowSudo
 	file.Tools.Shell.AllowDestructive = &allowDestructive

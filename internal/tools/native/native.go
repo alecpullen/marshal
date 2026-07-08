@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
@@ -25,6 +26,8 @@ type Options struct {
 	SessionState   *session.State
 	DB             *db.DB
 	ProjectID      int64
+	Config         config.Config
+	JobManager     *JobManager
 }
 
 type CommandRunner interface {
@@ -55,6 +58,7 @@ type toolSet struct {
 	sessionState   any
 	db             *db.DB
 	projectID      int64
+	jobManager     *JobManager
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -76,6 +80,9 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.repoCardTool(),
 		tools.symbolsFindTool(),
 		tools.todoWriteTool(),
+		tools.jobOutputTool(),
+		tools.jobKillTool(),
+		tools.jobListTool(),
 	} {
 		if err := reg.Register(tool); err != nil {
 			return err
@@ -110,6 +117,24 @@ func newToolSet(opts Options) (*toolSet, error) {
 		maxOutputBytes = defaultMaxOutputBytes
 	}
 
+	jobManager := opts.JobManager
+	if jobManager == nil {
+		maxBg := opts.Config.Tools.Shell.MaxBackgroundJobs
+		retention := opts.Config.Tools.Shell.BackgroundRetention
+		if maxBg <= 0 {
+			maxBg = 25
+		}
+		if retention <= 0 {
+			retention = 8 * time.Hour
+		}
+		jobManager = NewJobManager(execRunner{}, maxBg, retention)
+	}
+	if opts.SessionState != nil {
+		if counter, ok := any(opts.SessionState).(interface{ SetRunningJobsCount(int) }); ok {
+			jobManager.SetOnChange(counter.SetRunningJobsCount)
+		}
+	}
+
 	return &toolSet{
 		root:           root,
 		runner:         runner,
@@ -118,5 +143,6 @@ func newToolSet(opts Options) (*toolSet, error) {
 		sessionState:   opts.SessionState,
 		db:             opts.DB,
 		projectID:      opts.ProjectID,
+		jobManager:     jobManager,
 	}, nil
 }

@@ -206,6 +206,7 @@ type State struct {
 	toolBudget      ToolBudget
 	swarmProgress   SwarmProgress
 	sandbox         SandboxInfo
+	runningJobs     int
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
@@ -244,6 +245,22 @@ func (s *State) SandboxInfo() SandboxInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sandbox
+}
+
+// SetRunningJobsCount records how many background shell jobs are currently
+// running. Updated by the native toolset's JobManager via OnChange.
+func (s *State) SetRunningJobsCount(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runningJobs = n
+}
+
+// RunningJobsCount returns the number of background shell jobs currently
+// marked as running.
+func (s *State) RunningJobsCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runningJobs
 }
 
 func (s *State) persistenceEnabled() bool {

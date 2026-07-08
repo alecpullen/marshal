@@ -374,7 +374,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 		t.Fatalf("initial MaxFixRounds = %d, want 1", swarmRunner.MaxFixRounds)
 	}
 
-	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, runner, swarmRunner, &mcpMgr); err != nil {
+	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, &runner, &swarmRunner, &mcpMgr); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 	if swarmRunner.MaxFixRounds != 5 {
@@ -441,7 +441,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 
 	// Reload with empty MCP config (removes MCP server)
 	reloaded := reloadableAgentConfig("provider")
-	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, runner, swarmRunner, &mcpMgr); err != nil {
+	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, &runner, &swarmRunner, &mcpMgr); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 

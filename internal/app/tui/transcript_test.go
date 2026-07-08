@@ -21,7 +21,7 @@ func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 }
 
 func TestRenderAgentProseHasNoRoleLabel(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "I found the bug.", ContentType: session.ContentTypeMarkdown}, 80)
+	out := stripANSI(renderMessage(session.Message{Role: session.RoleAssistant, Content: "I found the bug.", ContentType: session.ContentTypeMarkdown}, 80))
 	if !strings.Contains(out, "I found the bug.") {
 		t.Fatalf("agent prose missing content:\n%s", out)
 	}
@@ -258,4 +258,25 @@ func TestApprovalPanelHasNoBackgroundFill(t *testing.T) {
 	if strings.Contains(out, ";235m") || strings.Contains(out, "48;5;235") {
 		t.Fatalf("approval panel still emits panel background fill:\n%q", out)
 	}
+}
+
+func TestAgentMarkdownRendersRichBlocksWithinWidth(t *testing.T) {
+	content := "# Fix summary\n\nThe bug was in `parse`:\n\n```go\nfunc parse(s string) error {\n\treturn errors.New(\"a deliberately long line to exercise wrapping behavior in code blocks\")\n}\n```\n\n- first point\n- second point\n\n| col | val |\n|-----|-----|\n| a   | 1   |\n"
+	width := 60
+	out := renderAgentMarkdown(content, width)
+	plain := stripANSI(out)
+	for i, line := range strings.Split(plain, "\n") {
+		if got := visibleRunes(line); got > width {
+			t.Errorf("line %d width %d exceeds %d: %q", i, got, width, line)
+		}
+	}
+	for _, want := range []string{"Fix summary", "first point", "second point", "col", "val"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("rendered markdown missing %q:\n%s", want, plain)
+		}
+	}
+	if !strings.Contains(out, "\x1b[") {
+		t.Error("rendered markdown should carry ANSI styling")
+	}
+	t.Logf("rendered:\n%s", out)
 }

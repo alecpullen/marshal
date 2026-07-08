@@ -457,12 +457,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	return task, ErrMaxIterationsExceeded
 }
 
-// maybeFinalizeOnStall inspects the tracker after a tool execution. On a
-// hard stall it forces a final answer via finalize and reports finalized so
-// the caller returns immediately. On a soft stall it returns a nudge message
-// for the caller to append to its own messages slice (messages is passed by
-// value here, so appending inside this helper would not propagate back to
-// the loop's slice).
+// maybeFinalizeOnStall inspects the tracker after a tool execution. If the
+// tracker reports a hard stall it forces a final answer via finalize and
+// reports finalized so the caller returns immediately. Otherwise it returns
+// no error and no nudge.
 func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, nudge string) {
 	r.trackerMu.Lock()
 	a := r.tracker.assess()

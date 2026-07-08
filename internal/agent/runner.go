@@ -113,6 +113,9 @@ type Runner struct {
 	// plan that mid-turn compaction can orphan.
 	PlanFirst bool
 
+	// HistoryBudgetTokens caps replayed prior-turn history (0 = default).
+	HistoryBudgetTokens int
+
 	// Role selects the system-prompt role addendum. Zero value behaves as
 	// RoleGeneral, so existing single-agent construction is unchanged.
 	// Swarm sub-runners set this to planner/repo_scout/implementer/reviewer.
@@ -185,6 +188,7 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 // the session transcript.
 func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	priorTranscript := r.State.Messages()
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	r.State.ClearTurnToolCache()
 	r.trackerMu.Lock()
@@ -220,6 +224,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
+	if r.role() == RoleGeneral {
+		messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
+	}
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
 	if r.PlanFirst && task.Class != ClassQuestion {
@@ -241,6 +248,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			r.State.SetContextPack(updatedPack)
 			messages = []schema.ChatMessage{BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools)}
 			messages = appendContextPackMessage(messages, updatedPack)
+			if r.role() == RoleGeneral {
+				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
+			}
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}
 		r.State.AddMessage(session.RoleAssistant, planText, session.ContentTypePlan)

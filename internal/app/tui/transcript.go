@@ -511,9 +511,19 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, al
 
 func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 	title := lipgloss.NewStyle().Bold(true).Render("Marshal asks:")
-	body := lipgloss.NewStyle().Width(max(width-2, 1)).Render(q.Question)
-	hint := lipgloss.NewStyle().Faint(true).Render("type your answer and press Enter · Esc to skip")
-	return lipgloss.JoinVertical(lipgloss.Left, title, body, hint)
+	var b strings.Builder
+	for _, qs := range q.Questions {
+		b.WriteString("• ")
+		b.WriteString(qs.Question)
+		if len(qs.Options) > 0 {
+			b.WriteString("  (")
+			b.WriteString(strings.Join(qs.Options, " / "))
+			b.WriteString(")")
+		}
+		b.WriteString("\n")
+	}
+	hint := lipgloss.NewStyle().Faint(true).Render("answer each question and press Enter · Esc to skip the rest")
+	return lipgloss.JoinVertical(lipgloss.Left, title, lipgloss.NewStyle().Width(max(width-2, 1)).Render(b.String()), hint)
 }
 
 func renderWelcomeBanner(width int) string {

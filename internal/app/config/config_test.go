@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/llm/routing"
 )
@@ -696,5 +697,37 @@ func TestHasConfig(t *testing.T) {
 
 	if !HasConfig(LoadOptions{HomeDir: home, WorkingDir: work}) {
 		t.Error("expected HasConfig to return true when project config exists")
+	}
+}
+
+func TestDefaultConfigHasBackgroundJobDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Tools.Shell.MaxBackgroundJobs != 25 {
+		t.Fatalf("MaxBackgroundJobs = %d, want 25", cfg.Tools.Shell.MaxBackgroundJobs)
+	}
+	if cfg.Tools.Shell.BackgroundRetention != 8*time.Hour {
+		t.Fatalf("BackgroundRetention = %s, want 8h", cfg.Tools.Shell.BackgroundRetention)
+	}
+}
+
+func TestLoadParsesBackgroundJobConfig(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+
+	writeFile(t, work+"/.marshal/config.toml", `
+[tools.shell]
+max_background_jobs = 10
+background_retention = "30m"
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Tools.Shell.MaxBackgroundJobs != 10 {
+		t.Fatalf("MaxBackgroundJobs = %d, want 10", cfg.Tools.Shell.MaxBackgroundJobs)
+	}
+	if cfg.Tools.Shell.BackgroundRetention != 30*time.Minute {
+		t.Fatalf("BackgroundRetention = %s, want 30m", cfg.Tools.Shell.BackgroundRetention)
 	}
 }

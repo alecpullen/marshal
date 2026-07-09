@@ -152,6 +152,15 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		}
 	}
 
+	// Network tools always require explicit approval by default regardless of
+	// any later auto-allow path. MUST stay above the generic low-risk fallback
+	// below; TestPolicyEngine_Evaluate_WebToolsAlwaysConfirm pins behavior.
+	// Users can opt into specific URLs/commands by writing an F4 rule with
+	// matching subject (subjectsForTool returns {"web.fetch"} / {"web.search"}).
+	if toolName == "web.fetch" || toolName == "web.search" {
+		return DecisionConfirm, "network access requires approval", nil
+	}
+
 	if toolName != "shell.run" && toolName != "test.run" {
 		return DecisionAllow, "low-risk read tool", nil
 	}

@@ -229,8 +229,8 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			}
 		}
 
-		if t.sessionState != nil {
-			t.sessionState.StoreBackup(backups)
+		if state, ok := t.sessionState.(*session.State); ok && state != nil {
+			state.StoreBackup(backups)
 		}
 
 		var paths []string
@@ -238,9 +238,17 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			paths = append(paths, fp.Path)
 		}
 
+		content := strings.Join(diffs, "\n\n")
+		if t.diagnostics != nil {
+			diag, _ := t.diagnostics.Check(paths, languageOf(paths))
+			if diag != "" {
+				content += "\n\n" + diag
+			}
+		}
+
 		return registry.ToolResult{
 			Summary:      fmt.Sprintf("Applied patches to: %s", strings.Join(paths, ", ")),
-			Content:      strings.Join(diffs, "\n\n"),
+			Content:      content,
 			FilesChanged: append([]string(nil), paths...),
 		}, nil
 	}

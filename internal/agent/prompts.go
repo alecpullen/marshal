@@ -19,6 +19,7 @@ const (
 	RoleTester      AgentRole = "tester"
 	RoleReviewer    AgentRole = "reviewer"
 	RoleRepoScout   AgentRole = "repo_scout"
+	RoleSubtask     AgentRole = "subtask"
 )
 
 type rolePrompt struct {
@@ -58,6 +59,11 @@ var roleAddenda = map[AgentRole]rolePrompt{
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Locate the parser implementation before reporting findings.", "action": {"type": "tool_call", "tool": "repo.search", "args": {"query": "func Parse"}}}`,
 	},
+	RoleSubtask: {
+		focus:          "You are running an ad-hoc read-only subtask delegated by the parent agent. You only have read-only and network tools (file.read, repo.search, web.fetch, etc.). You MUST NOT attempt to write, modify, patch, or run arbitrary commands. You also MUST NOT prompt the user (ask_user is unavailable in your role). Produce a concise final answer describing what you found; the parent agent will use your summary to continue the main task.",
+		allowedActions: []string{"tool_call", "final"},
+		example:        `{"rationale": "Confirm the symbol exists before reporting.", "action": {"type": "tool_call", "tool": "symbols.find", "args": {"query": "Parse"}}}`,
+	},
 }
 
 const baseIdentity = `You are Marshal, a local-first coding assistant operating inside the user's repository.`
@@ -75,11 +81,15 @@ const baseRules = `Rules:
 - Destructive or risky commands require explicit user approval.
 - Before editing, trace the relevant code path.
 - After editing, run the narrowest useful validation.
-- If the request is ambiguous, or a decision would materially change the outcome, ask the user with an "ask_user" action instead of guessing. Ask one specific question at a time.
+- If the request is ambiguous, or a decision would materially change the outcome, ask the user with the question.ask native tool (or the ask_user envelope action) instead of guessing. Prefer question.ask when you have multiple related questions, optional choices, or multi-select needs; it presents them all in a single round-trip.
 - Summarise results clearly.
 - Use tools only to obtain facts you don't already have in the transcript or context pack.
 - Once the requested change is made and validated, produce a final answer — do not keep exploring.
 - Stop after validation succeeds; do not re-verify work that already passed.`
+
+const todoAddendum = `
+Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end.
+`
 
 const FinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a single action of type "final".`
 
@@ -136,6 +146,22 @@ func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 }
 
 func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeToolsOpt...)
+}
+
+// BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
+// list of deferred MCP tools appended as a compact announcement. The
+// runner passes the registry's ListDeferred() so the agent can see what
+// it might want to opt into via tools.select.
+func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeToolsOpt...)
+}
+
+// buildSystemPrompt accepts an additional deferredTools list (used by the
+// runner to advertise MCP tools the agent hasn't loaded yet but may want
+// to opt into). Tests that pass nil get the old behavior with no
+// announcement appended.
+func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
@@ -148,10 +174,12 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 	b.WriteString(baseEnvironment)
 	b.WriteString("\n\n")
 	b.WriteString(baseRules)
+	b.WriteString(todoAddendum)
 	b.WriteString("\n\nAvailable tools:\n")
 	for _, tool := range tools {
 		b.WriteString(fmt.Sprintf("- %s (%s): %s\n", tool.Name, tool.Risk, tool.Description))
 	}
+	writeDeferredAnnouncement(&b, deferredTools)
 	activeMap := make(map[string]bool, len(activeSkills))
 	for _, name := range activeSkills {
 		activeMap[name] = true
@@ -191,6 +219,60 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 		Role:    schema.RoleSystem,
 		Content: b.String(),
 	}
+}
+
+// deferredAnnouncementCap caps the number of deferred MCP tools listed
+// in the system prompt so a single huge MCP server doesn't drown the
+// agent's available context. Once exceeded, an "and N more" suffix tells
+// the agent it can call tools.select with a specific name to opt in to
+// any of the remaining tools.
+const deferredAnnouncementCap = 40
+
+func writeDeferredAnnouncement(b *strings.Builder, deferred []registry.Tool) {
+	if len(deferred) == 0 {
+		return
+	}
+	b.WriteString("\nAdditional tools are available but not loaded. To use one, call tools.select with its exact name:\n")
+	limit := len(deferred)
+	if limit > deferredAnnouncementCap {
+		limit = deferredAnnouncementCap
+	}
+	for _, tool := range deferred[:limit] {
+		b.WriteString("- ")
+		b.WriteString(tool.Name)
+		if tool.Description != "" {
+			b.WriteString(": ")
+			b.WriteString(oneLineDescription(tool.Description))
+		}
+		b.WriteString("\n")
+	}
+	if len(deferred) > deferredAnnouncementCap {
+		fmt.Fprintf(b, "- and %d more (call tools.select with exact names to load any of them)\n", len(deferred)-deferredAnnouncementCap)
+	}
+}
+
+// oneLineDescription collapses an MCP tool description to a single line
+// so the deferred-tools announcement stays compact in context.
+func oneLineDescription(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range desc {
+		if r == '\n' || r == '\r' {
+			if b.Len() == 0 {
+				continue
+			}
+			break
+		}
+		b.WriteRune(r)
+	}
+	result := b.String()
+	if len(result) > 200 {
+		result = result[:200] + "…"
+	}
+	return result
 }
 
 func BuildPlanningPrompt(goal string) schema.ChatMessage {

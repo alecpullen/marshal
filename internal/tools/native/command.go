@@ -20,6 +20,7 @@ const (
 type shellRunArgs struct {
 	Command        string `json:"command"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
+	Background     bool   `json:"background"`
 }
 
 type testRunArgs struct {
@@ -30,7 +31,7 @@ func (t *toolSet) shellRunTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "shell.run",
 		Description: "Run a shell command in the workspace with conservative guardrails.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer"}},"required":["command"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer"},"background":{"type":"boolean"}},"required":["command"]}`),
 		Risk:        registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -39,6 +40,23 @@ func (t *toolSet) shellRunTool() registry.Tool {
 			return registry.ToolResult{}, err
 		}
 		timeout := clampTimeout(args.TimeoutSeconds, defaultShellTimeout, maxShellTimeout)
+		if args.Background {
+			command := strings.TrimSpace(args.Command)
+			if command == "" {
+				return registry.ToolResult{}, fmt.Errorf("command is required")
+			}
+			if err := validateConservativeCommand(command); err != nil {
+				return registry.ToolResult{}, err
+			}
+			id, err := t.jobManager.Start(ctx, command, timeout)
+			if err != nil {
+				return registry.ToolResult{}, err
+			}
+			return registry.ToolResult{
+				Summary: fmt.Sprintf("started background job %s", id),
+				Content: fmt.Sprintf("job_id: %s", id),
+			}, nil
+		}
 		return t.runShellCommand(ctx, args.Command, timeout)
 	}
 	return tool

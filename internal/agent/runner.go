@@ -292,7 +292,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
 	messages := []schema.ChatMessage{
-		BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
+		BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
 	if r.role() == RoleGeneral {
@@ -317,7 +317,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
-			messages = []schema.ChatMessage{BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools)}
+			messages = []schema.ChatMessage{BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools)}
 			messages = appendContextPackMessage(messages, updatedPack)
 			if r.role() == RoleGeneral {
 				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
@@ -349,7 +349,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		currentSkills := r.State.ActiveSkills()
 		if skillsChanged(lastRenderedSkills, currentSkills) {
-			messages[0] = BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, currentSkills, r.NativeTools)
+			messages[0] = BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools)
 			lastRenderedSkills = currentSkills
 		}
 
@@ -543,6 +543,48 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				consecutiveEmpty = 0
 				r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "User answered: " + answer})
+			}
+		case ActionQuestionAsk:
+			if r.role() != RoleGeneral {
+				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available for the %s role; proceed with your best judgment or report findings", r.role())))
+				continue
+			}
+			if len(action.Questions) == 0 {
+				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask requires a non-empty questions array")))
+				continue
+			}
+			answers, waitErr := r.requestQuestions(ctx, action.Questions)
+			if waitErr != nil {
+				return task, r.fail(task, waitErr)
+			}
+			iteration++
+			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+			allUnanswered := true
+			for _, a := range answers {
+				if a.Answer != session.AnswerUnanswered {
+					allUnanswered = false
+					break
+				}
+			}
+			if allUnanswered {
+				consecutiveEmpty++
+				r.trackerMu.Lock()
+				r.tracker.recordIdle("question.ask declined")
+				r.trackerMu.Unlock()
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer every question. Proceed with your best judgment and state the assumptions you made."})
+				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+					return resTask, ferr
+				} else if nudge != "" {
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
+				}
+			} else {
+				consecutiveEmpty = 0
+				parts := make([]string, 0, len(answers))
+				for _, a := range answers {
+					parts = append(parts, fmt.Sprintf("%q: %q", a.Question, a.Answer))
+				}
+				r.State.AddMessage(session.RoleUser, "User answers: "+strings.Join(parts, ", "), session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "User answers: " + strings.Join(parts, ", ")})
 			}
 		default:
 			messages = append(messages, BuildCorrectionMessage(fmt.Errorf("unsupported action type %q", action.Type)))
@@ -784,8 +826,24 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 
 func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 	tools := r.Registry.List()
+	deferred := make(map[string]bool)
+	for _, t := range r.Registry.ListDeferred() {
+		deferred[t.Name] = true
+	}
+	loaded := make(map[string]bool)
+	if r.State != nil {
+		for _, name := range r.State.LoadedToolNames() {
+			loaded[name] = true
+		}
+	}
 	defs := make([]schema.ToolDefinition, 0, len(tools)+1)
 	for _, tool := range tools {
+		// Deferred MCP tools are hidden from the agent's prompt by default
+		// and only revealed once the agent explicitly opts in via
+		// tools.select. Native tools are never deferred.
+		if deferred[tool.Name] && !loaded[tool.Name] {
+			continue
+		}
 		parameters := tool.Schema
 		if len(parameters) == 0 {
 			parameters = json.RawMessage(`{"type":"object"}`)
@@ -1007,6 +1065,14 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			msgs = append(msgs, msg)
 			continue
 		}
+		if call.Name == "question.ask" {
+			msg, err := r.executeNativeQuestionAsk(ctx, call)
+			if err != nil {
+				return nil, err
+			}
+			msgs = append(msgs, msg)
+			continue
+		}
 		resultMsgs, err := r.executeToolCall(ctx, ModelAction{
 			Type:       ActionToolCall,
 			Tool:       call.Name,
@@ -1023,14 +1089,14 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 
 func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall) (schema.ChatMessage, error) {
 	if r.role() != RoleGeneral {
-		return BuildNativeToolErrorMessage("ask_user", fmt.Sprintf("ask_user is not available for the %s role", r.role()), call.ID), nil
+		return BuildNativeToolErrorMessage(call.Name, fmt.Sprintf("%s is not available for the %s role", call.Name, r.role()), call.ID), nil
 	}
 	var payload struct {
 		Question string `json:"question"`
 	}
 	if err := json.Unmarshal(call.Args, &payload); err != nil || strings.TrimSpace(payload.Question) == "" {
 		r.countToolCall(true, false)
-		return BuildNativeToolErrorMessage("ask_user", "arguments must include a question string", call.ID), nil
+		return BuildNativeToolErrorMessage(call.Name, "arguments must include a question string", call.ID), nil
 	}
 	answer, waitErr := r.requestAnswer(ctx, payload.Question)
 	if waitErr != nil {
@@ -1042,6 +1108,39 @@ func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall)
 	}
 	r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
 	return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "User answered: " + answer}, nil
+}
+
+// executeNativeQuestionAsk handles the new structured question.ask tool,
+// which accepts one or more questions with optional options/multi/other.
+func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolCall) (schema.ChatMessage, error) {
+	if r.role() != RoleGeneral {
+		return BuildNativeToolErrorMessage(call.Name, fmt.Sprintf("%s is not available for the %s role", call.Name, r.role()), call.ID), nil
+	}
+	var payload struct {
+		Questions []session.Question `json:"questions"`
+	}
+	if err := json.Unmarshal(call.Args, &payload); err != nil || len(payload.Questions) == 0 {
+		r.countToolCall(true, false)
+		return BuildNativeToolErrorMessage(call.Name, "arguments must include a non-empty questions array", call.ID), nil
+	}
+	answers, waitErr := r.requestQuestions(ctx, payload.Questions)
+	if waitErr != nil {
+		return schema.ChatMessage{}, waitErr
+	}
+	r.countToolCall(false, false)
+	parts := []string{"User answers:"}
+	allUnanswered := true
+	for _, a := range answers {
+		if a.Answer != "Unanswered" {
+			allUnanswered = false
+		}
+		parts = append(parts, fmt.Sprintf("- %q: %q", a.Question, a.Answer))
+	}
+	r.State.AddMessage(session.RoleUser, strings.Join(parts[1:], "\n"), session.ContentTypePlain)
+	if allUnanswered {
+		return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "The user declined to answer every question. Proceed with your best judgment."}, nil
+	}
+	return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: strings.Join(parts, "\n")}, nil
 }
 
 func (r *Runner) allReadOnly(actions []ModelAction) error {
@@ -1060,35 +1159,72 @@ func (r *Runner) allReadOnly(actions []ModelAction) error {
 	return nil
 }
 
+// requiresSerialTool is the deny list of tools that share a single
+// process-wide slot (today: State.PendingQuestion). They must never run
+// concurrently inside executeActions, or two calls will clobber each
+// other and leak the inner ResponseChan. They are still admitted by
+// allReadOnly; executeActions is responsible for ordering them.
+//
+// If future question tool aliases are added (for example a renamed
+// "question.ask.v2"), every spelling must be added to this switch.
+// Adding a new alias without listing it here will reintroduce the
+// parallel-batch race on the single PendingQuestion slot.
+func requiresSerialTool(name string) bool {
+	switch name {
+	case "question.ask", "ask_user":
+		return true
+	}
+	return false
+}
+
 func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]schema.ChatMessage, error) {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-	sem := make(chan struct{}, r.MaxParallelActions)
 	results := make([][]schema.ChatMessage, len(actions))
 
+	// Phase 1: run any question.ask / ask_user calls one at a time so they
+	// can't race on the single PendingQuestion slot. First error from this
+	// phase short-circuits the rest of the batch.
+	var parallelIdx []int
 	for i, a := range actions {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, act ModelAction) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			msgs, err := r.executeToolCall(ctx, act)
-			if err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
-				return
-			}
-			results[idx] = msgs
-		}(i, a)
+		if !requiresSerialTool(a.Tool) {
+			parallelIdx = append(parallelIdx, i)
+			continue
+		}
+		msgs, err := r.executeToolCall(ctx, a)
+		if err != nil {
+			return nil, err
+		}
+		results[i] = msgs
 	}
-	wg.Wait()
 
-	if firstErr != nil {
-		return nil, firstErr
+	// Phase 2: run the remaining read-only tools concurrently as before.
+	if len(parallelIdx) > 0 {
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var firstErr error
+		sem := make(chan struct{}, r.MaxParallelActions)
+		for _, idx := range parallelIdx {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int, act ModelAction) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				msgs, err := r.executeToolCall(ctx, act)
+				if err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					return
+				}
+				results[i] = msgs
+			}(idx, actions[idx])
+		}
+		wg.Wait()
+
+		if firstErr != nil {
+			return nil, firstErr
+		}
 	}
 
 	var flat []schema.ChatMessage
@@ -1147,23 +1283,38 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 }
 
 func (r *Runner) requestAnswer(ctx context.Context, question string) (string, error) {
-	r.State.AddMessage(session.RoleAssistant, question, session.ContentTypeMarkdown)
+	answers, err := r.requestQuestions(ctx, []session.Question{{Question: question}})
+	if err != nil {
+		return "", err
+	}
+	if len(answers) == 0 {
+		return "", nil
+	}
+	return answers[0].Answer, nil
+}
+
+// requestQuestions blocks on the TUI for one or more structured Answers.
+// It produces the same shape the native question.ask tool produces.
+func (r *Runner) requestQuestions(ctx context.Context, questions []session.Question) ([]session.Answer, error) {
+	for _, q := range questions {
+		r.State.AddMessage(session.RoleAssistant, q.Question, session.ContentTypeMarkdown)
+	}
 	q := &session.PendingQuestion{
-		Question:     question,
-		ResponseChan: make(chan string, 1),
+		Questions:    questions,
+		ResponseChan: make(chan []session.Answer, 1),
 	}
 	r.State.SetPendingQuestion(q)
 	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: "waiting for your answer", StartedAt: r.Now()})
 
 	select {
-	case answer := <-q.ResponseChan:
+	case answers := <-q.ResponseChan:
 		r.State.SetPendingQuestion(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		return answer, nil
+		return answers, nil
 	case <-ctx.Done():
 		r.State.SetPendingQuestion(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		return "", ctx.Err()
+		return nil, ctx.Err()
 	}
 }
 

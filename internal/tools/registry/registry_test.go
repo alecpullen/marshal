@@ -201,6 +201,49 @@ func TestListReturnsToolsSortedByName(t *testing.T) {
 	}
 }
 
+func TestListDeferredReturnsOnlyDeferredToolsSortedByName(t *testing.T) {
+	reg := New()
+	a := testTool("example.alpha")
+	a.Deferred = true
+	b := testTool("example.beta")
+	c := testTool("example.gamma")
+	c.Deferred = true
+	for _, tool := range []Tool{a, b, c} {
+		if err := reg.Register(tool); err != nil {
+			t.Fatalf("Register(%q): %v", tool.Name, err)
+		}
+	}
+
+	got := reg.ListDeferred()
+	if len(got) != 2 {
+		t.Fatalf("len(ListDeferred()) = %d, want 2", len(got))
+	}
+	if got[0].Name != "example.alpha" || got[1].Name != "example.gamma" {
+		t.Fatalf("ListDeferred() order = %s, %s; want example.alpha,example.gamma", got[0].Name, got[1].Name)
+	}
+}
+
+func TestListLoadedReturnsOnlyMatchingRegisteredTools(t *testing.T) {
+	reg := New()
+	for _, name := range []string{"example.alpha", "example.beta", "example.gamma"} {
+		if err := reg.Register(testTool(name)); err != nil {
+			t.Fatalf("Register(%q): %v", name, err)
+		}
+	}
+
+	got := reg.ListLoaded([]string{"example.beta", "missing", "example.alpha"})
+	if len(got) != 2 {
+		t.Fatalf("len(ListLoaded()) = %d, want 2", len(got))
+	}
+	if got[0].Name != "example.alpha" || got[1].Name != "example.beta" {
+		t.Fatalf("ListLoaded() order = %s, %s; want example.alpha,example.beta", got[0].Name, got[1].Name)
+	}
+
+	if reg.ListLoaded(nil) != nil {
+		t.Fatalf("ListLoaded(nil) should be nil")
+	}
+}
+
 func TestListReturnsSchemaCopies(t *testing.T) {
 	reg := New()
 	for _, name := range []string{"example.zed", "example.alpha"} {

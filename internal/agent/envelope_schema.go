@@ -16,7 +16,7 @@ const actionEnvelopeSchema = `{
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["answer", "tool_call", "patch", "final", "ask_user"]
+          "enum": ["answer", "tool_call", "patch", "final", "ask_user", "question.ask"]
         },
         "tool": { "type": "string" },
         "args": { "type": "object" },

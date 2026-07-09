@@ -25,7 +25,7 @@ func TestActionEnvelopeResponseFormatShape(t *testing.T) {
 }
 
 func TestActionEnvelopeSchemaEnumMatchesProtocol(t *testing.T) {
-	protocolTypes := []ActionType{ActionAnswer, ActionToolCall, ActionPatch, ActionFinal, ActionAskUser}
+	protocolTypes := []ActionType{ActionAnswer, ActionToolCall, ActionPatch, ActionFinal, ActionAskUser, ActionQuestionAsk}
 
 	schemaText := string(ActionEnvelopeResponseFormat().JSONSchema.Schema)
 	for _, at := range protocolTypes {

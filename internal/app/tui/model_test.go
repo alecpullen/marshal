@@ -1861,7 +1861,10 @@ func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 
-	q := &session.PendingQuestion{Question: "Archive or delete?", ResponseChan: make(chan string, 1)}
+	q := &session.PendingQuestion{
+		Questions:    []session.Question{{Question: "Archive or delete?"}},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
 	state.SetPendingQuestion(q)
 
 	for _, r := range "archive" {
@@ -1872,8 +1875,8 @@ func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
 
 	select {
 	case got := <-q.ResponseChan:
-		if got != "archive" {
-			t.Fatalf("answer = %q, want archive", got)
+		if len(got) != 1 || got[0].Answer != "archive" || got[0].Question != "Archive or delete?" {
+			t.Fatalf("answer = %+v, want archive for Archive or delete?", got)
 		}
 	default:
 		t.Fatal("no answer sent on Enter")
@@ -1886,15 +1889,18 @@ func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
 func TestPendingQuestionEscDeclines(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
-	q := &session.PendingQuestion{Question: "Archive or delete?", ResponseChan: make(chan string, 1)}
+	q := &session.PendingQuestion{
+		Questions:    []session.Question{{Question: "Archive or delete?"}},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
 	state.SetPendingQuestion(q)
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	select {
 	case got := <-q.ResponseChan:
-		if got != "" {
-			t.Fatalf("answer = %q, want empty (declined)", got)
+		if len(got) != 1 || got[0].Answer != session.AnswerUnanswered {
+			t.Fatalf("answer = %+v, want single [Unanswered]", got)
 		}
 	default:
 		t.Fatal("no answer sent on Esc")

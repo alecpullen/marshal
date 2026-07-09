@@ -1,103 +1,70 @@
-# Task 2 Report: Output-aware repeat tracking with escalating reminders
+# Task 2 Report: Background Shell Jobs
 
-## What was implemented
+## Status
 
-Replaced the old stall detector in `internal/agent/progress.go` with an output-aware repeat tracker based on the crush/kimi pattern:
+DONE
 
-- `progressTracker.record(name, normalizedArgs, resultHash)` now returns the repeat count for the exact `(tool, args, output)` signature.
-- `hashToolResult` produces the SHA-256 hex of a tool result's content so that a command whose output changed (e.g., a test that now passes) is **not** counted as a repeat.
-- Mutating calls (`shell.run`, writes, patches) reset repeat counts, so re-reading after a state change is fresh progress again.
-- `repeatReminder(count, name, args)` appends escalating `<system-reminder>` text inside repeated tool results at counts 3 (gentle), 5 (explicit), and 8+ (stop calling tools).
-- `assess()` now returns only `assessProgressing` or `assessHardStall`. The old `assessStalling` value, `duplicateChurn`, `exactRepeat`, and `buildLoopNudge` were removed.
-- `repeatHardStall = 12` is the new hard-stall threshold.
+## Commits
 
-Updated `internal/agent/runner.go`:
-- All three `tracker.record` call sites in `executeToolCall` (cached hit, execution error, success) now pass the result hash and append `repeatReminder` to the outgoing result message content.
-- `maybeFinalizeOnStall` was simplified to handle only `assessHardStall` and no longer emits soft-stall nudges.
-- `buildLoopNudge` was deleted.
+- `767c834` feat(tools): background shell jobs with job.output/kill/list
 
-Added integration test `TestRepeatedToolCallGetsReminderInResult` to `internal/agent/runner_test.go`, verifying that the third identical tool result carries the gentle repeat reminder in the next request's messages.
+## Summary
 
-Updated existing tests whose expectations were tied to the old thresholds/behavior:
-- `internal/agent/metrics_test.go:TestRunTaskMetricsCountsStalls` now scripts `repeatHardStall` identical reads before the salvage final answer.
-- `internal/agent/runner_test.go:TestRunDetectsRepeatedToolCalls` now scripts `repeatHardStall` identical reads and sets `MaxToolIterations` accordingly.
-- Deleted `internal/agent/runner_test.go:TestRunNudgeNamesRepeatedCall` (soft-stall nudge behavior is gone).
-- `internal/agent/eval_scenarios_test.go` exact-repeat and native hard-stall cases now loop to `repeatHardStall`.
+Implemented background shell jobs for Marshal as specified in the task brief:
 
-## TDD/test evidence
+- Added `JobManager` (`internal/tools/native/jobs_manager.go`) with `Start`, `Output`, `Kill`, `List`, `RunningCount`, and `Shutdown`.
+- Added platform-specific process control (`internal/tools/native/jobs_unix.go`, `internal/tools/native/jobs_windows.go`) using process groups on Unix and best-effort kill on Windows.
+- Extended `execRunner` (`internal/tools/native/runner.go`) with a `Start` method so it satisfies the new `ProcessRunner` interface used by `JobManager`.
+- Added `job.output`, `job.kill`, and `job.list` tools (`internal/tools/native/jobs.go`).
+- Extended `shell.run` (`internal/tools/native/command.go`) with a `background: bool` argument; background jobs are validated by the same conservative guardrails as foreground commands.
+- Wired the job manager into `toolSet` and `Options` (`internal/tools/native/native.go`), with defaults from config (`max_background_jobs = 25`, `background_retention = "8h"`).
+- Added `ShellToolConfig` fields and pointer-typed TOML overlays (`internal/app/config/config.go`, `internal/app/config/save.go`).
+- Added `RunningJobsCount`/`SetRunningJobsCount` to `session.State` (`internal/app/session/session.go`) and rendered the count in the TUI status line (`internal/app/tui/status.go`).
+- Added tests (`internal/tools/native/jobs_test.go`, `internal/app/config/config_test.go`).
 
-Progress-unit tests driven by the brief:
+Also fixed a pre-existing `go vet` failure in `internal/app/app.go`: `reloadAgentRuntime` was copying a `sync.Mutex` via `*runner = *newRunner`. Changed the signature to use `**agent.Runner` and `**swarm.Orchestrator` so the function reassigns pointers instead of copying structs. Updated the two call sites in `internal/app/app_test.go`.
+
+## Verification
 
 ```bash
-go test ./internal/agent/ -run 'TestRecord|TestDifferentOutput|TestMutating|TestAssess|TestResetCounts|TestConsecutiveIdle|TestToolCallBreaks|TestRepeatReminder|TestLastCall' -v
+gofmt -w .
+go vet ./...              # clean
+CGO_ENABLED=1 go build ./cmd/marshal   # builds
+go test ./internal/...    # PASS
+go test ./...             # PASS
+go test -race ./internal/tools/native/ -run 'TestJobManager|TestShellRunBackground|TestJobOutputAndList'  # PASS
 ```
 
-Result: PASS.
+Focused native tool tests all pass, including the failing-test-first `TestJobManagerStartAndKill` and `TestJobManagerEnforcesMaxJobs`.
 
-Full package tests:
+## Concerns
+
+- Background jobs use a plain `execRunner` rather than the configured sandbox runner (`sandbox.Sandbox` does not implement `ProcessRunner`). This matches the brief’s scope (process groups / best-effort kill) but means background jobs are not sandboxed. Future work could extend the sandbox backends with `Start`.
+- The job manager stores a `retention` duration but does not yet evict old completed jobs; the map only grows until `Shutdown` or process exit.
+
+## Fix Review Round
+
+Addressed the review findings in the following files:
+
+- `internal/app/app.go`: passed `Config: cfg` to `native.RegisterAll` so user `max_background_jobs` and `background_retention` values are honored.
+- `internal/tools/native/jobs_manager.go`:
+  - Added a `dir` field to `JobManager` and updated `NewJobManager` to accept it.
+  - `Start` now builds `CommandRequest{Command: command, Dir: m.dir, Timeout: timeout}` so background jobs execute in the workspace root.
+  - Implemented retention enforcement via `evictCompleted()`, called on `Start`, `Output`, `Kill`, `List`, and `RunningCount`; terminal jobs older than `retention` are removed.
+  - Added per-job `completedAt` tracking and removed the unused `StatusLost` constant.
+- `internal/tools/native/native.go`: updated the fallback `NewJobManager` call to pass the resolved workspace root.
+- `internal/tools/native/command.go`: removed the duplicate `validateConservativeCommand` call on the foreground `shell.run` path (the background path still validates before launching).
+- `internal/tools/native/jobs_test.go`: updated existing tests for the new `NewJobManager` signature and added tests for workspace directory, retention eviction, and config wiring.
+
+### Verification
 
 ```bash
-go test ./internal/agent/...
+gofmt -w .
+go vet ./...
+CGO_ENABLED=1 go build ./cmd/marshal
+go test ./internal/...
+go test ./...
+go test -race ./internal/tools/native/ -run 'TestJobManager|TestShellRunBackground|TestJobOutputAndList|TestRegisterAllHonors' -v
 ```
 
-Result:
-
-```
-ok  	marshal/internal/agent	0.926s
-ok  	marshal/internal/agent/swarm	(cached)
-```
-
-`go vet` on the agent package:
-
-```bash
-go vet ./internal/agent/...
-```
-
-Result: PASS (no output).
-
-`gofmt -w .` was run before committing.
-
-## Files changed
-
-- `internal/agent/progress.go` — rewritten with output-aware repeat tracker.
-- `internal/agent/progress_test.go` — rewritten with new semantics.
-- `internal/agent/runner.go` — updated tracker call sites, simplified `maybeFinalizeOnStall`, removed `buildLoopNudge`.
-- `internal/agent/runner_test.go` — added `TestRepeatedToolCallGetsReminderInResult`, updated hard-stall threshold test, removed obsolete soft-stall nudge test.
-- `internal/agent/metrics_test.go` — updated stall-counting test to `repeatHardStall`.
-- `internal/agent/eval_scenarios_test.go` — updated exact-repeat/native hard-stall scenarios to `repeatHardStall`.
-
-## Self-review findings
-
-- The new `record` API is used consistently in all three tool-result paths, including cache hits and error results.
-- Reminders are appended to result content, keeping them adjacent to the repeated evidence rather than as separate system messages.
-- No references to `assessStalling`, `duplicateChurn`, `exactRepeat`, or `buildLoopNudge` remain in `internal/agent`.
-- `TurnMetrics.SoftStalls` field is preserved (exported/persisted) but is no longer incremented.
-- All `internal/agent/...` tests pass after the threshold changes.
-
-## Issues or concerns
-
-- `go vet ./...` reports a pre-existing issue in `internal/app/app.go:569` (`assignment copies lock value to *runner: marshal/internal/agent.Runner contains sync.Mutex`). This file was not modified by this task, and `go vet ./internal/agent/...` passes cleanly.
-
-## Review fix: `maybeFinalizeOnStall` doc comment
-
-**Finding:** `internal/agent/runner.go:460-465` — `maybeFinalizeOnStall`'s doc comment still described the removed soft-stall/nudge behavior.
-
-**Fix:** Updated the comment to describe current behavior:
-
-```go
-// maybeFinalizeOnStall inspects the tracker after a tool execution. If the
-// tracker reports a hard stall it forces a final answer via finalize and
-// reports finalized so the caller returns immediately. Otherwise it returns
-// no error and no nudge.
-```
-
-**Tests run:**
-- `gofmt -w .` — PASS.
-- `go vet ./internal/agent/...` — PASS.
-- `go test ./internal/agent/...` — FAIL (pre-existing, unrelated).
-  - Failing test: `TestRunAllowsParallelReadBatchWithoutStalling` — `executed 4 reads, want 5`.
-  - This failure is unrelated to the doc-comment change; no code behavior was modified.
-
-**Files changed:**
-- `internal/agent/runner.go` — updated `maybeFinalizeOnStall` doc comment.
-- `.superpowers/sdd/task-2-report.md` — added this fix report.
+All focused job tests and the full `./internal/...` and `./...` suites pass.

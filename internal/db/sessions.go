@@ -75,6 +75,18 @@ func (db *DB) GetSession(sessionID string) (Session, error) {
 	return s, nil
 }
 
+// UpdateSessionTitle sets the title on an existing session row (F13).
+func (db *DB) UpdateSessionTitle(sessionID string, title string) error {
+	_, err := db.exec(
+		`UPDATE agent_sessions SET title = ? WHERE id = ?`,
+		title, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("update session title: %w", err)
+	}
+	return nil
+}
+
 // EndSession sets ended_at and summary on an existing session row.
 func (db *DB) EndSession(sessionID string, endedAt time.Time, summary string) error {
 	_, err := db.exec(

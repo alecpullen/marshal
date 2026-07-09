@@ -218,6 +218,8 @@ type State struct {
 	turnIndex       int
 	snapshotter     Snapshotter
 	turnUsage       turnUsage
+	title           string
+	titleSet        bool
 }
 
 type turnUsage struct {
@@ -241,6 +243,31 @@ func (s *State) TurnUsage() (used, window int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.turnUsage.used, s.turnUsage.window
+}
+
+func (s *State) SetTitle(title string) {
+	s.mu.Lock()
+	s.title = title
+	s.mu.Unlock()
+}
+
+func (s *State) SetTitleManual(title string) {
+	s.mu.Lock()
+	s.title = title
+	s.titleSet = true
+	s.mu.Unlock()
+}
+
+func (s *State) Title() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.title
+}
+
+func (s *State) TitleManuallySet() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.titleSet
 }
 
 func (s *State) SetTrusted(trusted bool) {

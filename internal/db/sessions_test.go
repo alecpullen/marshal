@@ -231,3 +231,23 @@ func TestSaveMessageWithoutFinalFlag(t *testing.T) {
 		t.Fatal("Final = true, want false")
 	}
 }
+
+func TestUpdateSessionTitle(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	projectID, _ := db.GetOrCreateProject("/r", "r")
+	sid := "sess-title"
+	if err := db.CreateSession(sid, projectID, "", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateSessionTitle(sid, "Fix parser bug"); err != nil {
+		t.Fatalf("UpdateSessionTitle: %v", err)
+	}
+	s, err := db.GetSession(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Title != "Fix parser bug" {
+		t.Fatalf("title = %q, want %q", s.Title, "Fix parser bug")
+	}
+}

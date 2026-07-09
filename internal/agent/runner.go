@@ -1082,6 +1082,11 @@ func (r *Runner) allReadOnly(actions []ModelAction) error {
 // concurrently inside executeActions, or two calls will clobber each
 // other and leak the inner ResponseChan. They are still admitted by
 // allReadOnly; executeActions is responsible for ordering them.
+//
+// If future question tool aliases are added (for example a renamed
+// "question.ask.v2"), every spelling must be added to this switch.
+// Adding a new alias without listing it here will reintroduce the
+// parallel-batch race on the single PendingQuestion slot.
 func requiresSerialTool(name string) bool {
 	switch name {
 	case "question.ask", "ask_user":

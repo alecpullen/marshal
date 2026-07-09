@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
+	"marshal/internal/permissions"
+	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
 )
 
@@ -32,6 +35,7 @@ import (
 type AgentRunner interface {
 	Run(ctx context.Context, goal string) error
 	SetForceClass(class string)
+	SetPolicyRules(rules []config.PermissionRule)
 }
 
 const (
@@ -566,6 +570,33 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 		m.lastTranscriptHash = 0
 		return m, nil
 	case choiceAlways:
+		rule := permissions.Rule{
+			Permission: permissions.PermissionForTool(tc.Name),
+			Pattern:    patternForApproval(tc),
+			Action:     permissions.ActionAllow,
+		}
+		userConfigPath := filepath.Join(userConfigDir(), "config.toml")
+		if err := config.SaveUserConfigRule(userConfigPath, config.PermissionRule{
+			Permission: rule.Permission,
+			Pattern:    rule.Pattern,
+			Action:     string(rule.Action),
+		}); err != nil {
+			m.state.AddSessionRule(tc.Command)
+		} else {
+			m.state.Config.Permissions.Rules = append(m.state.Config.Permissions.Rules, config.PermissionRule{
+				Permission: rule.Permission,
+				Pattern:    rule.Pattern,
+				Action:     string(rule.Action),
+			})
+			if m.runner != nil {
+				m.runner.SetPolicyRules(m.state.Config.Permissions.Rules)
+			}
+		}
+		tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+		m.state.SetPendingApproval(nil)
+		m.lastTranscriptHash = 0
+		return m, nil
+	case choiceSessionAllow:
 		m.state.AddSessionRule(tc.Command)
 		tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
 		m.state.SetPendingApproval(nil)
@@ -1034,4 +1065,80 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 		h ^= 0xDEADBEEF
 	}
 	return h
+}
+
+func permissionForTool(toolName string) string {
+	switch toolName {
+	case "shell.run", "test.run":
+		return "shell"
+	case "file.write_patch":
+		return "file.write_patch"
+	default:
+		return toolName
+	}
+}
+
+func patternForApproval(tc *session.PendingToolCall) string {
+	if tc.Name == "shell.run" || tc.Name == "test.run" {
+		words := strings.Fields(tc.Command)
+		if len(words) > 0 {
+			return words[0] + " *"
+		}
+		return "*"
+	}
+	if tc.Name == "file.write_patch" {
+		patches, err := patch.Parse(tc.Args)
+		if err != nil || len(patches) == 0 {
+			return "**"
+		}
+		dir := commonDir(patches)
+		if dir == "" || dir == "." {
+			return "**"
+		}
+		return dir + "/**"
+	}
+	return "*"
+}
+
+func commonDir(patches []patch.FilePatch) string {
+	if len(patches) == 0 {
+		return ""
+	}
+	var dirs []string
+	for _, p := range patches {
+		dirs = append(dirs, filepath.Dir(p.Path))
+	}
+	if len(dirs) == 1 {
+		return dirs[0]
+	}
+	common := dirs[0]
+	for _, d := range dirs[1:] {
+		common = longestCommonPrefix(common, d, string(filepath.Separator))
+		if common == "" {
+			return ""
+		}
+	}
+	return common
+}
+
+func longestCommonPrefix(a, b, sep string) string {
+	partsA := strings.Split(a, sep)
+	partsB := strings.Split(b, sep)
+	var common []string
+	for i := 0; i < len(partsA) && i < len(partsB); i++ {
+		if partsA[i] == partsB[i] {
+			common = append(common, partsA[i])
+		} else {
+			break
+		}
+	}
+	return strings.Join(common, sep)
+}
+
+func userConfigDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "marshal")
 }

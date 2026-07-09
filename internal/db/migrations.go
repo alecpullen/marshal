@@ -111,4 +111,33 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
     completion_tokens INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_project ON turn_metrics(project_id, id);
+
+CREATE TABLE IF NOT EXISTS file_reads (
+    session_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY(session_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS file_writes (
+    session_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    written_at TEXT NOT NULL,
+    PRIMARY KEY(session_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    turn_index INTEGER NOT NULL,
+    hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_session ON snapshots(session_id, turn_index);
+
+CREATE TABLE IF NOT EXISTS snapshot_files (
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    PRIMARY KEY(snapshot_id, path)
+);
 `

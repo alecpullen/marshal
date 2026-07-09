@@ -38,6 +38,8 @@ func Open(path string) (*DB, error) {
 	return &DB{sqlDB: sqlDB}, nil
 }
 
+func (db *DB) SQLDB() *sql.DB { return db.sqlDB }
+
 func (db *DB) Close() error {
 	if db.sqlDB == nil {
 		return nil

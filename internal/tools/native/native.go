@@ -17,6 +17,14 @@ const (
 	defaultTestCommand    = "go test ./..."
 )
 
+type FileTracker interface {
+	RecordRead(path string, at time.Time) error
+	LastReadTime(path string) (time.Time, bool, error)
+	RecordWrite(path string, at time.Time) error
+	ListReadFiles() ([]string, error)
+	ListWrittenFiles() ([]string, error)
+}
+
 type Options struct {
 	WorkspaceRoot  string
 	CommandRunner  CommandRunner
@@ -25,6 +33,7 @@ type Options struct {
 	SessionState   *session.State
 	DB             *db.DB
 	ProjectID      int64
+	FileTracker    FileTracker
 }
 
 type CommandRunner interface {
@@ -55,6 +64,7 @@ type toolSet struct {
 	sessionState   *session.State
 	db             *db.DB
 	projectID      int64
+	fileTracker    FileTracker
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -117,5 +127,6 @@ func newToolSet(opts Options) (*toolSet, error) {
 		sessionState:   opts.SessionState,
 		db:             opts.DB,
 		projectID:      opts.ProjectID,
+		fileTracker:    opts.FileTracker,
 	}, nil
 }

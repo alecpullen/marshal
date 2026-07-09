@@ -311,6 +311,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	})
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
+	// F18: extract @file references from the goal and pin them into the
+	// context pack before it is appended to the model messages. Unknown
+	// paths and unreadable files are silently skipped (see
+	// extractPinnedFiles); the TUI only inserts the literal "@path" text.
+	if pinned := extractPinnedFiles(goal, r.State, r.ProjectID); len(pinned) > 0 {
+		pack := r.State.ContextPack()
+		pack = contextpack.PinFiles(pack, pinned)
+		r.State.SetContextPack(pack)
+	}
+
 	messages := []schema.ChatMessage{
 		BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
 	}

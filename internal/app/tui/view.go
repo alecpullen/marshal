@@ -19,11 +19,11 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 const (
-	inputBorderRows       = 2
-	activityStripRows     = 1
-	commandSuggestionRows = 1
-	transcriptFrameRows   = 0
-	statusLineRows        = 1
+	inputBorderRows     = 2
+	activityStripRows   = 1
+	transcriptFrameRows = 0
+	statusLineRows      = 1
+	completionPopupMax  = 8
 )
 
 // View assembles the full-screen frame. Alt screen and mouse mode are
@@ -99,8 +99,8 @@ func (m Model) renderInputArea() string {
 		if strip := m.renderActivityStrip(); strip != "" {
 			rows = append(rows, strip)
 		}
-		if len(m.commandSuggestions) > 0 {
-			rows = append(rows, m.renderCommandSuggestions())
+		if popup := m.renderCompletionPopup(); popup != "" {
+			rows = append(rows, popup)
 		}
 		rows = append(rows, m.input.View())
 	}
@@ -132,29 +132,39 @@ func (m Model) renderActivityStrip() string {
 	return statusBusyStyle.Render(truncateRunes(label, available))
 }
 
-func (m Model) renderCommandSuggestions() string {
-	available := max(m.width-4, 1)
-	parts := make([]string, 0, len(m.commandSuggestions))
-	separatorWidth := 2 * max(len(m.commandSuggestions)-1, 0)
-	itemWidth := max((available-separatorWidth)/max(len(m.commandSuggestions), 1), 8)
-	for i, cmd := range m.commandSuggestions {
-		name := "/" + cmd.Name
-		if cmd.Args != "" {
-			name += " " + cmd.Args
-		}
-		item := name
-		if cmd.Description != "" {
-			item += " - " + cmd.Description
-		}
-		item = truncateRunes(item, itemWidth)
-		if i == m.commandSuggestionIndex {
-			item = promptPrefixStyle.Render(item)
-		} else {
-			item = mutedStyle.Render(item)
-		}
-		parts = append(parts, item)
+// renderCompletionPopup renders the active F18 completion popup as a
+// multi-line block above the input area. Returns "" when no popup is
+// visible. Capped at completionPopupMax rows.
+func (m Model) renderCompletionPopup() string {
+	p := m.activeCompletionPopup()
+	if p == nil {
+		return ""
 	}
-	return strings.Join(parts, "  ")
+	matches := p.matches()
+	if len(matches) == 0 {
+		return ""
+	}
+	available := max(m.width-4, 1)
+	rows := make([]string, 0, completionPopupMax)
+	max := completionPopupMax
+	if len(matches) < max {
+		max = len(matches)
+	}
+	for i := 0; i < max; i++ {
+		marker := "  "
+		style := mutedStyle
+		if i == p.index {
+			marker = "▸ "
+			style = promptPrefixStyle
+		}
+		row := marker + matches[i].Text
+		if matches[i].Description != "" {
+			row += "  " + matches[i].Description
+		}
+		row = truncateRunes(row, available)
+		rows = append(rows, style.Render(row))
+	}
+	return strings.Join(rows, "\n")
 }
 
 func (m Model) fallbackView() string {

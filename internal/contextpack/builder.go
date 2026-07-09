@@ -38,6 +38,36 @@ func (b Builder) Build(input BuildInput) Pack {
 	return buildPackFromSections(candidates, maxTokens, now().UTC())
 }
 
+// PinFiles adds the given snippets as pinned sections that bypass the
+// token-budget gate (F18 R2: accepted @file references are injected as
+// context, budget permitting — but pinning means they are not dropped by
+// the greedy rebudget pass). Each pinned snippet is appended to
+// pack.Sections with Priority 100 (higher than the 30/40 of normal
+// file-snippet/tool-output sections) and tracked on pack.Pinned for
+// downstream visibility.
+func PinFiles(pack Pack, snippets []FileSnippet) Pack {
+	for _, snip := range snippets {
+		content := snip.Content
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		source := snip.Path
+		if snip.StartLine > 0 && snip.EndLine > 0 {
+			source = fmt.Sprintf("%s:%d-%d", snip.Path, snip.StartLine, snip.EndLine)
+		}
+		pack.Sections = append(pack.Sections, Section{
+			Kind:            SectionFileSnippet,
+			Title:           snip.Path,
+			Content:         content,
+			Source:          source,
+			Priority:        100, // higher than normal snippets (30/40)
+			EstimatedTokens: EstimateTokens(content),
+		})
+	}
+	pack.Pinned = append(pack.Pinned, snippets...)
+	return pack
+}
+
 func RefreshPlan(pack Pack, plan []string, now func() time.Time) Pack {
 	maxTokens := pack.TokenUsage.MaxTokens
 	if maxTokens <= 0 {

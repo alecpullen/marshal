@@ -642,6 +642,12 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	var tuiOpts []tui.Option
 	tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
 	tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
+	// F18: eager-seed the @file completion popup with the repo file
+	// index. Failures (no DB, empty index) are non-fatal — the TUI
+	// falls back to a lazy load on the first @-keystroke.
+	if filePaths, ferr := loadFileIndexPaths(database, projectID); ferr == nil && len(filePaths) > 0 {
+		tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
+	}
 	if err == nil {
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
@@ -721,4 +727,22 @@ func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {
 	)
 	_, err := program.Run()
 	return err
+}
+
+// loadFileIndexPaths fetches the repo's known file paths for the
+// completion popup. Returns nil on any error (no DB, no rows, query
+// failure) so callers can treat absence as "skip the eager seed".
+func loadFileIndexPaths(database *db.DB, projectID int64) ([]string, error) {
+	if database == nil || projectID == 0 {
+		return nil, fmt.Errorf("no database or project id")
+	}
+	index, err := database.GetFileIndex(projectID)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(index))
+	for _, f := range index {
+		paths = append(paths, f.Path)
+	}
+	return paths, nil
 }

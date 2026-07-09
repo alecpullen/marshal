@@ -18,6 +18,13 @@ type Pack struct {
 	Sections    []Section
 	TokenUsage  TokenUsage
 	GeneratedAt time.Time
+
+	// Pinned tracks @file references accepted by the F18 editor
+	// completion popup. The runner extracts these from the user's goal
+	// and adds them via PinFiles; the pinned sections are appended to
+	// pack.Sections with a high Priority so they survive a token-budget
+	// rebudget (the user explicitly asked for the file's content).
+	Pinned []FileSnippet
 }
 
 type Section struct {

@@ -341,3 +341,51 @@ func TestMergeMemoriesRespectsMaxTokensAndMarksTruncated(t *testing.T) {
 		t.Fatal("TokenUsage.Truncated = false, want true")
 	}
 }
+
+func TestPinFilesAppendsSections(t *testing.T) {
+	pack := Pack{}
+	pack = PinFiles(pack, []FileSnippet{{Path: "a.go", Content: "package a\n"}})
+	if len(pack.Sections) != 1 {
+		t.Fatalf("sections len = %d, want 1", len(pack.Sections))
+	}
+	if pack.Sections[0].Source != "a.go" {
+		t.Fatalf("section source = %q, want a.go", pack.Sections[0].Source)
+	}
+	if pack.Sections[0].Priority != 100 {
+		t.Fatalf("section priority = %d, want 100", pack.Sections[0].Priority)
+	}
+	if pack.Sections[0].EstimatedTokens == 0 {
+		t.Fatal("pinned section should have non-zero EstimatedTokens")
+	}
+	if len(pack.Pinned) != 1 || pack.Pinned[0].Path != "a.go" {
+		t.Fatalf("pinned = %+v", pack.Pinned)
+	}
+}
+
+func TestPinFilesSurvivesRebudget(t *testing.T) {
+	// A small budget that would normally drop a high-token file snippet
+	// should NOT drop a pinned section. Pinned sections are appended
+	// after the budget gate and tracked separately.
+	pack := Pack{}
+	big := strings.Repeat("a", 4000)
+	pack = PinFiles(pack, []FileSnippet{{Path: "big.go", Content: big}})
+	if len(pack.Pinned) != 1 {
+		t.Fatalf("pinned len = %d, want 1", len(pack.Pinned))
+	}
+	// The pack has 0 token usage (PinFiles is post-budget); sections
+	// carry the full content.
+	if len(pack.Sections) != 1 {
+		t.Fatalf("sections len = %d, want 1", len(pack.Sections))
+	}
+	if pack.Sections[0].Content != big {
+		t.Fatal("pinned section content was modified")
+	}
+}
+
+func TestPinFilesSkipsEmptyContent(t *testing.T) {
+	pack := Pack{}
+	pack = PinFiles(pack, []FileSnippet{{Path: "empty.go", Content: "  \n\t"}})
+	if len(pack.Sections) != 0 {
+		t.Fatalf("sections len = %d, want 0 (empty content should be skipped)", len(pack.Sections))
+	}
+}

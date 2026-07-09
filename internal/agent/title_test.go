@@ -15,6 +15,8 @@ import (
 type recordingProvider struct {
 	responses []string
 	calls     int
+	// block, if non-nil, is closed by the test to release a pending Chat.
+	block chan struct{}
 }
 
 func (r *recordingProvider) Name() string { return "rec" }
@@ -29,6 +31,12 @@ func (r *recordingProvider) Chat(ctx context.Context, req schema.ChatRequest) (<
 		resp = r.responses[idx]
 	}
 	ch := make(chan schema.ChatEvent, 2)
+	if r.block != nil {
+		// Block until the test closes `block` so the test can race a
+		// SetTitleManual call in between the early-return check and
+		// the pre-write re-check.
+		<-r.block
+	}
 	ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: resp}
 	ch <- schema.ChatEvent{Type: schema.ChatEventDone}
 	close(ch)
@@ -79,6 +87,46 @@ func TestGenerateTitleTruncatesOverlong(t *testing.T) {
 	tg.generate(context.Background(), "q")
 	if got := state.Title(); len(got) > 50 {
 		t.Fatalf("title not truncated: %d chars", len(got))
+	}
+}
+
+func TestGenerateTitleDoesNotOverwriteConcurrentRename(t *testing.T) {
+	block := make(chan struct{})
+	p := &recordingProvider{responses: []string{"auto title"}, block: block}
+	state := newTestState(t)
+
+	tg := &titleGenerator{
+		provider: p,
+		model:    "tiny",
+		state:    state,
+		timeout:  2 * time.Second,
+	}
+
+	// generate() runs synchronously in the test goroutine. The provider
+	// blocks inside Chat, so we can race a /rename between the early-return
+	// check (line 45 of title.go) and the SetTitle call. The only thing
+	// protecting the manual title is the new pre-write re-check.
+	done := make(chan struct{})
+	go func() {
+		tg.generate(context.Background(), "q")
+		close(done)
+	}()
+
+	// Wait until the provider has been entered (so we know we are past the
+	// early-return check), then issue the rename and release the provider.
+	for p.calls == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	state.SetTitleManual("manual")
+	close(block)
+
+	<-done
+
+	if got := state.Title(); got != "manual" {
+		t.Fatalf("title = %q, want %q (manual title overwritten by auto-title)", got, "manual")
+	}
+	if p.calls != 1 {
+		t.Fatalf("provider calls = %d, want 1 (test should have passed the early-return guard)", p.calls)
 	}
 }
 

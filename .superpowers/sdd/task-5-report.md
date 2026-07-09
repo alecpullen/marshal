@@ -1,116 +1,52 @@
-# Task 5 Report: Summarize-and-continue instead of destructive compaction
+# Task 5 Report: F18 Editor Completions
+## Status: DONE
+## Commits
+- 4419659 feat(tui): /command and @file fuzzy completion popups + pinned context (F18)
+## Summary
+- internal/app/tui/completions.go: new file. `fuzzyScore(query, target) (int, bool)` is an in-package subsequence scorer that rewards consecutive matches (1+consecutive) and prefix matches (+5 for qi==0, +2 for ti==0) so "/pl" ranks "/plan" above "/help"; empty query matches with a non-zero tie-breaker score. `completionItem{Text, Description, Kind}` and `completionPopup{items, filtered, index, visible, acceptedText}`. `completionKind` constants `completionCommand` / `completionFile`. Popup methods: `update(query)`, `matches()`, `isVisible()`, `dismiss()`, `moveDown()`, `moveUp()`, `accept()`. `accept()` writes the chosen text into `acceptedText` (commands get a trailing space, file paths get a trailing space iff no whitespace inside) and dismisses.
+- internal/app/tui/completions_test.go: 9 tests covering subsequence matching, ranking, empty-query, filter/select, no-match hidden, empty query hides, esc dismiss, navigation wraparound, and file-kind accepted text.
+- internal/app/tui/model.go: replaced the legacy `commandSuggestions` / `commandSuggestionIndex` strip (and the `commandSuggestionRows` constant in view.go) with `cmdPopup` and `filePopup`. New fields on `Model` (cmdPopup, filePopup, fileIndex, fileIndexLoaded). New `WithFileIndex(paths)` option for eager seeding. New helpers: `updateCompletionPopups()` (inspects the current input value on every keystroke and routes to the appropriate popup), `commandTrigger(value)` and `fileTrigger(value)` (substring/word-boundary detection; `commandTrigger` requires no whitespace inside the value, `fileTrigger` requires the `@` to be at start-of-input or after a word-boundary byte and no whitespace after it), `populateFileIndexIfNeeded()` (lazy load from `m.memoryDB.GetFileIndex(m.memoryProject)` on the first `@`-keystroke), `activeCompletionPopup()`, `dismissCompletionPopups()`, `acceptCompletion()` (replaces the trigger token in `m.input` and calls `m.input.MoveToEnd()`), and `replaceTriggerToken(value, replacement)` (matches the leading `/cmd` run or the last `<sep>@<path>` run). Keystroke routing: Up/Down navigate the active popup; Tab/Enter accepts (and Enter on a popup is a selection, not a submit); Esc dismisses the active popup before falling through to `cancelTurn()`. After `m.input.Reset()` the popups are dismissed. The post-input `updateCommandSuggestions` call is replaced with `updateCompletionPopups`.
+- internal/app/tui/view.go: `commandSuggestionRows` constant removed. `renderInputArea()` now calls `m.renderCompletionPopup()` instead of the legacy strip. New `renderCompletionPopup(p, width)` renders up to 8 rows, each prefixed with "▸ " (selected) or "  " (unselected), using `promptPrefixStyle` / `mutedStyle`. `inputAreaRows` accounts for the popup height.
+- internal/app/tui/view_test.go: three new helpers `newViewTestModelWithRegistry`, `newViewTestModelWithFileIndex`, `newViewTestModelWithRegistryAndFileIndex` plus a `mustRegister` helper. These mirror the existing `newViewTestModel` shape and are used by the F18 integration tests.
+- internal/app/tui/model_test.go: 6 new F18 tests — `TestSlashCompletionAcceptsPlan`, `TestAtFileCompletionMatchesRepoFiles`, `TestAtInsideWordDoesNotTrigger`, `TestEscDismissesPopupBeforeCancelTurn`, `TestSlashCompletionListsAllCommandsOnBareSlash`, `TestCommandTriggerDismissesFilePopup`. The pre-existing `TestSlashCommandBusyStillDispatched` was updated to use the new "Enter accepts the popup, then Enter dispatches" flow (the popup intercepts the first Enter; a second Enter dispatches the command). `TestSlashCommandHelp` / `TestSlashCommandUnknown` / `TestSlashCommandClearMessages` assertions switched back to `*Model` (the form bubbletea's interface boxing produced for those particular Update paths after the new pointer-receiver helpers were introduced).
+- internal/contextpack/contextpack.go: `Pack` gains a `Pinned []FileSnippet` field that tracks accepted @file references without altering the budget-gated Sections.
+- internal/contextpack/builder.go: new `PinFiles(pack, snippets)` appends each snippet as a `SectionFileSnippet` with `Priority: 100` (higher than the 30/40 of normal sections so it survives any future `Rebudget` pass) and `EstimatedTokens` set via the existing `EstimateTokens` helper. Skips empty content. Tracks the snippets on `pack.Pinned` for downstream visibility.
+- internal/contextpack/contextpack_test.go: 3 new tests — `TestPinFilesAppendsSections` (section/source/priority/populated pinned list), `TestPinFilesSurvivesRebudget` (Pinned survives and full content is preserved on the appended section), `TestPinFilesSkipsEmptyContent`.
+- internal/agent/runner.go: `RunTask` calls `extractPinnedFiles(goal, r.State, r.ProjectID)` after `r.mergeMemories(...)` and updates `r.State`'s context pack with `contextpack.PinFiles(pack, pinned)` before the pack is appended to the model messages. The TUI only inserts the literal "@path" text; the runner does the extraction and pinning.
+- internal/agent/atfile.go: new file. Regex `(?:^|\s)@(\S+)` matches @path tokens. `extractPinnedFiles` resolves each against `state.DB().GetFileIndex(projectID)`, reads the file content from `state.WorkingDir`, dedupes by path, and silently skips unknown / unreadable references. The runner integration is the only caller.
+- internal/agent/atfile_test.go: 6 tests — `TestExtractPinnedFilesFindsAndReadsKnownPaths`, `TestExtractPinnedFilesIgnoresUnknownPaths`, `TestExtractPinnedFilesNoTokensReturnsNil`, `TestExtractPinnedFilesIgnoresAtInsideEmail` (the `@` in `user@example.com` is preceded by `r`, not whitespace, so it must not match), `TestExtractPinnedFilesDeduplicates`, and the end-to-end `TestRunTaskPinsAtFileReferences` that drives a full `RunTask` and asserts the resulting `state.ContextPack().Pinned` and the Priority-100 section.
+- internal/app/app.go: new `loadFileIndexPaths(database, projectID)` helper eagerly fetches the repo's file paths from the DB and is wired into the TUI model via `tui.WithFileIndex(...)` so production usage has the file index seeded at startup; failures (no DB, no project id, query error) are non-fatal — the TUI falls back to lazy population on the first @-keystroke.
+## Verification
+- gofmt: clean
+- go vet ./...: clean
+- go test -count=1 ./internal/app/tui/ -v -run 'TestFuzzy|TestCompletion|TestSlash|TestAtFile|TestEscDismiss|TestAtInsideWord|TestCommandTrigger': PASS (22 tests)
+- go test -count=1 ./internal/contextpack/ -v: PASS (14 tests, including 3 new PinFiles tests)
+- go test -count=1 ./internal/agent/ -run 'TestPin|TestAtFile|TestExtract|TestRunTaskPin' -v: PASS (6 tests)
+- go test -race -count=1 ./internal/app/tui/ ./internal/contextpack/: PASS (no race warnings)
+- go test ./...: PASS
+- go build ./cmd/marshal: success
+## Concerns
+- The completion popup intercepts Enter (Enter is "accept" while a popup is visible). To dispatch a fully-typed command like `/help`, the user presses Enter once to accept the popup (which expands `/help` to `/help `) and Enter again to dispatch. This is a small UX shift from the legacy strip — the test `TestSlashCommandBusyStillDispatched` was updated to reflect the new two-step flow. Documented in the test comment.
+- The fuzzy scorer is intentionally simple (subsequence + consecutive + prefix bonuses). It rewards prefix matches and consecutive runs; it does not understand word boundaries inside the target. Good enough for the small command set and the medium-sized repo file index. A future "smarter" scorer (e.g. fzf-style) is a follow-up.
+- The `filePopup` source paths are the bare `Path` strings stored in the DB (relative to `WorkingDir`). Accepting a path inserts the literal text into the input — the runner resolves and reads the file. If the repo index contains a path the user has since deleted, the runner silently skips it; the input still carries the literal `@path` text.
+- Pre-existing race in `TestGenerateTitleDoesNotOverwriteConcurrentRename` (unrelated to this task) — not introduced by F18.
+- The new methods (`updateCompletionPopups`, `acceptCompletion`, etc.) are pointer-receiver. Combined with the existing `resize` and `refreshViewport` pointer-receiver methods, `Update`'s return value (typed `tea.Model` interface) sometimes boxes as `*Model` and sometimes as `Model` depending on which path through the switch was taken. The handful of pre-existing tests that asserted the now-changed form were updated to use the matching assertion (`*Model` where boxing produces a pointer). All TUI tests pass.
 
-## What was implemented
+## Fix: preserve @ on file completion acceptance
 
-- Created `internal/agent/handoff.go` with:
-  - `handoffSummaryDirective` — a structured prompt asking the model for a self-contained mid-task handoff summary (current state, files & changes, technical context, exact next steps).
-  - `errEmptyHandoffSummary` — returned when the summary call produces only whitespace so the caller can fall back.
-  - `(r *Runner) summarizeAndContinue(...)` — requests the summary via `chatWithRetryNoNativeTools`, then rebuilds the working message list as: system prompt + context pack + original goal + summary + "continue" instruction. Records a system message on `r.State` noting the compaction.
+### Summary
 
-- Created `internal/agent/handoff_test.go` with the two unit tests from the brief:
-  - `TestSummarizeAndContinueRebuildsMessages`
-  - `TestSummarizeAndContinueErrorsOnEmptySummary`
-
-- Modified `internal/agent/runner.go`:
-  - Raised `DefaultMaxTurnContextTokens` from `16384` to `60000`.
-  - Replaced the unconditional loop-top `messages = compactMessages(...)` call with the new `summarizeAndContinue` / `compactMessages` fallback logic. `compactMessages` is preserved as the fallback when summarization fails or returns empty text.
-
-- Added `TestLoopCompactsViaSummaryWhenOverBudget` to `internal/agent/runner_test.go`.
-
-## TDD / test evidence
-
-Step 1 — compile failure with missing method:
-
-```
-$ go test ./internal/agent/ -run TestSummarizeAndContinue -v
-# marshal/internal/agent [marshal/internal/agent.test]
-internal/agent/handoff_test.go:26:23: runner.summarizeAndContinue undefined (type *Runner has no field or method summarizeAndContinue)
-FAIL
-```
-
-Step 2 — handoff unit tests pass after implementation:
-
-```
-$ go test ./internal/agent/ -run TestSummarizeAndContinue -v
-=== RUN   TestSummarizeAndContinueRebuildsMessages
---- PASS: TestSummarizeAndContinueRebuildsMessages (0.00s)
-=== RUN   TestSummarizeAndContinueErrorsOnEmptySummary
---- PASS: TestSummarizeAndContinueErrorsOnEmptySummary (0.00s)
-PASS
-ok  	marshal/internal/agent	0.569s
-```
-
-Step 3 — full package tests pass:
-
-```
-$ go test ./internal/agent/...
-ok  	marshal/internal/agent	0.687s
-ok  	marshal/internal/agent/swarm	(cached)
-```
-
-Step 4 — formatting and vetting:
-
-```
-$ gofmt -w . && go vet ./internal/agent/...
-# no output (success)
-```
-
-## Files changed
-
-- `internal/agent/handoff.go` (created)
-- `internal/agent/handoff_test.go` (created)
-- `internal/agent/runner.go` (modified)
-- `internal/agent/runner_test.go` (modified)
-
-## Self-review findings
-
-- The handoff implementation follows the brief exactly and uses existing helpers (`BuildSystemPrompt`, `appendContextPackMessage`, `chatWithRetryNoNativeTools`).
-- The loop-top wiring runs immediately before the next model call, where the last message is always a completed result or prose message, so the rebuilt list cannot orphan a `tool_call_id`.
-- `pressureSent` is reset after a successful handoff so the fresh transcript can approach the budget again without premature finalize pressure.
-- `compactMessages` remains available as the fallback path.
-- All existing agent tests pass with the new default budget; no test required adjustment for the 16k→60k change.
-
-## Issues / concerns
-
-- The brief's integration test set `runner.MaxTurnContextTokens = 1500` and used `strings.Repeat("word ", 2000)` to force a budget trip. In the current codebase, tool output larger than `DefaultMaxToolResultChars` (8000 chars) is spilled to disk and only a 2000-char preview is kept inline. With the current system prompt, the post-tool-loop token count is ~1475, so the 1500 threshold never trips and `summarizeAndContinue` is never invoked. I adjusted the test threshold to `1000` so the budget actually triggers and the test verifies the handoff path. This is a test calibration, not a production behavior change.
-
-## Fix applied during review
-
-### Finding
-
-`internal/agent/runner_test.go:248` — `runner.MaxTurnContextTokens` was changed from the brief's specified `1500` to `1000`. This deviated from the task spec.
-
-### Root cause
-
-The original test used `strings.Repeat("word ", 2000)` (~10000 chars). Task 4's `spillToolResult` spills tool output above `DefaultMaxToolResultChars` (8000 chars) to disk, leaving only a ~2000-char preview inline. With the inline preview plus the rest of the transcript, the estimated token count fell just under the brief's 1500-token threshold, so the test never tripped the budget.
-
-### Fix
-
-- Reduced the tool output to `strings.Repeat("word ", 1400)` (7000 chars). This stays under the 8000-character spill limit, so the full output remains inline in the transcript.
-- Restored `runner.MaxTurnContextTokens = 1500` to match the brief.
-- With 7000 inline characters, the tool result alone contributes ~1750 estimated tokens, so the 1500-token budget is exceeded after a single tool call and `summarizeAndContinue` is invoked as intended.
-
-### Files changed
-
-- `internal/agent/runner_test.go`
+- Tightened `TestAtFileCompletionMatchesRepoFiles` first so accepting `@run` must produce the literal input token `@internal/agent/runner.go ` instead of merely containing `runner.go`.
+- Updated `TestCompletionPopupFileKindAcceptedText` to document the same popup-level contract.
+- Verified the focused model test failed before the production change with `input = "internal/agent/runner.go ", want "@internal/agent/runner.go "`.
+- Fixed `completionPopup.accept` for `completionFile` by prepending `@` to the accepted path while preserving the existing trailing-space convenience for paths without spaces. Slash-command completion behavior remains unchanged.
 
 ### Tests run
 
-```
-$ go test ./internal/agent/ -run TestLoopCompactsViaSummaryWhenOverBudget -v
-=== RUN   TestLoopCompactsViaSummaryWhenOverBudget
---- PASS: TestLoopCompactsViaSummaryWhenOverBudget (0.00s)
-PASS
-ok  	marshal/internal/agent	0.545s
-```
+- `go test -count=1 ./internal/app/tui/ -run 'TestAtFileCompletionMatchesRepoFiles|TestSlashCompletionAcceptsPlan' -v`: FAIL before fix as expected, then PASS after fix.
+- `go test -count=1 ./internal/app/tui/ -run 'TestCompletionPopupFileKindAcceptedText' -v`: PASS.
+- `gofmt -w internal/app/tui/completions.go internal/app/tui/completions_test.go internal/app/tui/model_test.go`: PASS.
 
-```
-$ go test ./internal/agent/...
-ok  	marshal/internal/agent	0.661s
-ok  	marshal/internal/agent/swarm	(cached)
-```
+### Commit hash
 
-```
-$ gofmt -w . && go vet ./internal/agent/...
-# no output (success)
-```
+- `22c7c1f` fix(tui): preserve at-file completion trigger

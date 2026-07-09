@@ -320,3 +320,109 @@ func TestPolicyEngine_Evaluate_ParseErrorFallback(t *testing.T) {
 		t.Errorf("got %v, want Confirm (legacy fallback then default)", dec)
 	}
 }
+
+func TestPolicyEngine_F4PermissionRuleAllow(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Rules = []config.PermissionRule{
+		{Permission: "shell", Pattern: "git *", Action: "allow"},
+	}
+	pe := NewEngine(&cfg, []string{})
+
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "git status"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionAllow {
+		t.Errorf("git status should be allowed by F4 rule, got %v", dec)
+	}
+
+	dec, _, err = pe.Evaluate("shell.run", map[string]interface{}{"command": "git push"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionAllow {
+		t.Errorf("git push should be allowed by F4 rule, got %v", dec)
+	}
+}
+
+func TestPolicyEngine_F4PermissionRuleAsk(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Rules = []config.PermissionRule{
+		{Permission: "shell", Pattern: "git *", Action: "allow"},
+		{Permission: "shell", Pattern: "git push*", Action: "ask"},
+	}
+	pe := NewEngine(&cfg, []string{})
+
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "git push --force"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Errorf("git push should be ask/confirm by F4 rule, got %v", dec)
+	}
+
+	dec, _, err = pe.Evaluate("shell.run", map[string]interface{}{"command": "git status"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionAllow {
+		t.Errorf("git status should still be allowed, got %v", dec)
+	}
+}
+
+func TestPolicyEngine_F4PermissionRuleDeny(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Rules = []config.PermissionRule{
+		{Permission: "file.write_patch", Pattern: "secrets/**", Action: "deny"},
+	}
+	pe := NewEngine(&cfg, []string{})
+
+	patch := "File: secrets/key.txt\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n"
+	dec, reason, err := pe.Evaluate("file.write_patch", map[string]interface{}{"patch": patch})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("secrets/** should be denied, got %v", dec)
+	}
+	if reason == "" {
+		t.Error("deny should have a reason")
+	}
+}
+
+func TestPolicyEngine_F4SafeCommands(t *testing.T) {
+	cfg := config.Default()
+	pe := NewEngine(&cfg, []string{})
+
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "ls"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionAllow {
+		t.Errorf("ls should be allowed by safe commands, got %v", dec)
+	}
+
+	dec, _, err = pe.Evaluate("shell.run", map[string]interface{}{"command": "ls -la"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec == DecisionAllow {
+		t.Errorf("ls -la should NOT be allowed by safe commands (bare only), got %v", dec)
+	}
+}
+
+func TestPolicyEngine_F4GuardrailOverridesAllow(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Rules = []config.PermissionRule{
+		{Permission: "shell", Pattern: "sudo *", Action: "allow"},
+	}
+	pe := NewEngine(&cfg, []string{})
+
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "sudo apt-get install"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("sudo should still be denied by guardrails despite F4 allow, got %v", dec)
+	}
+}

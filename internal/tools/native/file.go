@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/tools/patch"
@@ -57,6 +58,11 @@ func (t *toolSet) fileReadTool() registry.Tool {
 
 		content, start, end := selectLines(string(data), args.StartLine, args.EndLine)
 		content = limitOutput(content, t.maxOutputBytes)
+
+		if t.fileTracker != nil {
+			_ = t.fileTracker.RecordRead(path, time.Now())
+		}
+
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("read %s lines %d-%d", args.Path, start, end),
 			Content: content,
@@ -140,6 +146,31 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
+
+			if t.fileTracker != nil {
+				lastRead, hasRead, err := t.fileTracker.LastReadTime(path)
+				if err != nil {
+					return registry.ToolResult{}, fmt.Errorf(
+						"cannot verify read state for %s: %w; re-read it before editing", fp.Path, err)
+				}
+				info, statErr := os.Stat(path)
+				if statErr != nil {
+					if os.IsNotExist(statErr) {
+						// New file creation: no on-disk version to be stale against.
+						continue
+					}
+					return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
+				}
+				if hasRead && info.ModTime().After(lastRead) {
+					return registry.ToolResult{}, fmt.Errorf(
+						"file %s changed on disk since last read; re-read it before editing", fp.Path)
+				}
+				if !hasRead {
+					return registry.ToolResult{}, fmt.Errorf(
+						"file %s was never read this session; read it before editing", fp.Path)
+				}
+			}
+
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, err)
@@ -190,6 +221,11 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 
 			if err := os.WriteFile(path, []byte(patched), mode); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("write file %s: %w", fp.Path, err)
+			}
+
+			if t.fileTracker != nil {
+				_ = t.fileTracker.RecordWrite(path, time.Now())
+				_ = t.fileTracker.RecordRead(path, time.Now())
 			}
 		}
 

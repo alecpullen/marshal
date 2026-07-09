@@ -29,7 +29,20 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/trust"
 )
+
+type fakeTrustResolver struct {
+	decision trust.Decision
+}
+
+func (f *fakeTrustResolver) Resolve(workingDir string, hasProjectConfig bool) (trust.Decision, error) {
+	return f.decision, nil
+}
+
+func (f *fakeTrustResolver) Record(workingDir string, decision trust.Decision) error {
+	return nil
+}
 
 func TestRunSkipsProgramAndConfigLoadWhenContextIsCancelled(t *testing.T) {
 	dir := t.TempDir()
@@ -280,7 +293,7 @@ func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
 	cfg := nativeToolAgentConfig("native-provider")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil)
+	runner, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -302,7 +315,7 @@ func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil)
+	runner, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -363,7 +376,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 	reloaded.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, swarmRunner, mcpMgr, err := buildAgentRunner(ctx, initial, state, nil, 0, nil)
+	runner, _, swarmRunner, mcpMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -374,7 +387,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 		t.Fatalf("initial MaxFixRounds = %d, want 1", swarmRunner.MaxFixRounds)
 	}
 
-	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, runner, swarmRunner, &mcpMgr); err != nil {
+	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, "", runner, swarmRunner, &mcpMgr); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 	if swarmRunner.MaxFixRounds != 5 {
@@ -421,7 +434,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 	}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, mcpMgr, err := buildAgentRunner(ctx, initial, state, nil, 0, nil)
+	runner, reg, swarmRunner, mcpMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -441,7 +454,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 
 	// Reload with empty MCP config (removes MCP server)
 	reloaded := reloadableAgentConfig("provider")
-	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, runner, swarmRunner, &mcpMgr); err != nil {
+	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, "", runner, swarmRunner, &mcpMgr); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 
@@ -543,7 +556,7 @@ func TestRunCreatesDatabase(t *testing.T) {
 
 	err = Run(ctx, bytes.NewBuffer(nil), bytes.NewBuffer(nil), WithNow(func() time.Time {
 		return time.Unix(1000, 0)
-	}), WithProgramRunner(runner))
+	}), WithProgramRunner(runner), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -589,7 +602,7 @@ func TestRunLogsToFileNotTerminal(t *testing.T) {
 		return time.Unix(1000, 0)
 	}), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 		return nil
-	}))
+	}), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1117,6 +1130,7 @@ security_reviewer = "mock_preset"
 	called := false
 	err = Run(context.Background(), stdout, stderr,
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 			called = true
 			state := modelState(t, model)
@@ -1171,7 +1185,7 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, toolReg, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil)
+	_, toolReg, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "")
 	if err == nil {
 		t.Fatal("buildAgentRunner should fail when api_key_env points at an unset var")
 	}

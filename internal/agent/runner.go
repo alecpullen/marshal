@@ -9,12 +9,15 @@ import (
 	"sync"
 	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/permissions"
 	"marshal/internal/skills"
+	"marshal/internal/tools/patch"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -58,6 +61,21 @@ func normalizeArgs(args json.RawMessage) ([]byte, error) {
 
 type RouteResolver interface {
 	Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error)
+}
+
+// Snapshotter tracks and restores shadow-git snapshots of the working tree.
+// It is defined here so the agent package can use snapshots without importing
+// internal/snapshot.
+type Snapshotter interface {
+	Track(ctx context.Context) (string, error)
+	Diff(ctx context.Context, hash string) (string, error)
+	Restore(ctx context.Context, hash string) error
+	Revert(ctx context.Context, fromHash, toHash string) error
+}
+
+// SnapshotRecorder persists snapshot metadata to durable storage.
+type SnapshotRecorder interface {
+	SaveSnapshot(sessionID string, turnIndex int, hash string, files []string, at time.Time) (int64, error)
 }
 
 // WriteGate serialises non-read-only tool execution across concurrently
@@ -132,6 +150,9 @@ type Runner struct {
 	// collection output; counter bookkeeping still runs.
 	MetricsObserver func(TurnMetrics)
 
+	Snapshotter      Snapshotter
+	SnapshotRecorder SnapshotRecorder
+
 	forceClassMu sync.Mutex
 	tracker      *progressTracker
 	trackerMu    sync.Mutex
@@ -167,6 +188,49 @@ func (r *Runner) SetForceClass(class string) {
 	r.forceClassMu.Unlock()
 }
 
+func (r *Runner) SetPolicyRules(rules []config.PermissionRule) {
+	prules := make([]permissions.Rule, 0, len(rules))
+	for _, rl := range rules {
+		prules = append(prules, permissions.Rule{
+			Permission: rl.Permission,
+			Pattern:    rl.Pattern,
+			Action:     permissions.Action(rl.Action),
+		})
+	}
+	r.Policy.SetRules(prules)
+}
+
+func (r *Runner) CopyFrom(other *Runner) {
+	if other == nil {
+		return
+	}
+	r.Provider = other.Provider
+	r.Registry = other.Registry
+	r.Policy = other.Policy
+	r.State = other.State
+	r.Model = other.Model
+	r.RouteResolver = other.RouteResolver
+	r.MemoryProvider = other.MemoryProvider
+	r.ProjectID = other.ProjectID
+	r.Now = other.Now
+	r.MaxToolIterations = other.MaxToolIterations
+	r.MaxRetries = other.MaxRetries
+	r.MaxTurnContextTokens = other.MaxTurnContextTokens
+	r.RequestTimeout = other.RequestTimeout
+	r.ResponseFormat = other.ResponseFormat
+	r.NativeTools = other.NativeTools
+	r.MaxParallelActions = other.MaxParallelActions
+	r.MaxToolResultChars = other.MaxToolResultChars
+	r.ForceClass = other.ForceClass
+	r.SkillIndex = other.SkillIndex
+	r.Role = other.Role
+	r.WriteGate = other.WriteGate
+	r.UsageObserver = other.UsageObserver
+	r.MetricsObserver = other.MetricsObserver
+	r.Snapshotter = other.Snapshotter
+	r.SnapshotRecorder = other.SnapshotRecorder
+}
+
 func (r *Runner) role() AgentRole {
 	if r.Role == "" {
 		return RoleGeneral
@@ -191,6 +255,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	priorTranscript := r.State.Messages()
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	r.State.ClearTurnToolCache()
+	r.State.IncrementTurnIndex()
+	if r.Snapshotter != nil {
+		if _, err := r.Snapshotter.Track(ctx); err != nil {
+			r.State.Logger().Warn("turn-start snapshot failed", "error", err)
+		}
+	}
+
 	r.trackerMu.Lock()
 	r.tracker = newProgressTracker()
 	r.trackerMu.Unlock()
@@ -853,6 +924,17 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	defer r.State.ClearActiveToolCall()
 
+	if r.Snapshotter != nil && r.SnapshotRecorder != nil && tool.Risk != registry.RiskReadOnly {
+		files := changedFilesForTool(toolName, argsMap)
+		if hash, snapErr := r.Snapshotter.Track(ctx); snapErr == nil && hash != "" {
+			if _, saveErr := r.SnapshotRecorder.SaveSnapshot(r.State.SessionID(), r.State.TurnIndex(), hash, files, r.Now()); saveErr != nil {
+				r.State.Logger().Warn("failed to record pre-write snapshot", "error", saveErr)
+			}
+		} else if snapErr != nil {
+			r.State.Logger().Warn("pre-write snapshot failed", "error", snapErr)
+		}
+	}
+
 	if r.WriteGate != nil && tool.Risk != registry.RiskReadOnly {
 		release := r.WriteGate.Acquire()
 		defer release()
@@ -1099,4 +1181,27 @@ func skillsChanged(prev, curr []string) bool {
 		}
 	}
 	return false
+}
+
+func changedFilesForTool(toolName string, argsMap map[string]interface{}) []string {
+	if toolName != "file.write_patch" {
+		return nil
+	}
+	patchArg, ok := argsMap["patch"]
+	if !ok {
+		return nil
+	}
+	patchStr, ok := patchArg.(string)
+	if !ok {
+		return nil
+	}
+	patches, err := patch.Parse(patchStr)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, p := range patches {
+		files = append(files, p.Path)
+	}
+	return files
 }

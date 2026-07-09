@@ -629,7 +629,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 
-	// 4. Test Always Allow: navigate to the last option (three Down) and submit.
+	// 4. Test Always Allow: navigate to the 4th option (three Down) and submit.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
@@ -642,6 +642,28 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for always allow response")
+	}
+
+	// Set up again for Allow this session.
+	state.SetPendingApproval(tc)
+	m = New(state)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// 5. Test Allow this session: navigate to the 5th option (four Down) and submit.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	select {
+	case dec := <-respChan:
+		if !dec.Approved {
+			t.Fatal("expected decision to be approved via session allow")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for session allow response")
 	}
 
 	// Check if session rule was added.
@@ -685,6 +707,7 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 }
 
 func (f *fakeAgentRunner) SetForceClass(string) {}
+func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
 
 type fakeSwarmRunner struct {
 	mu    sync.Mutex
@@ -699,6 +722,7 @@ func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
 }
 
 func (f *fakeSwarmRunner) SetForceClass(string) {}
+func (f *fakeSwarmRunner) SetPolicyRules([]config.PermissionRule) {}
 
 func TestSwarmCommandDispatchesGoalToSwarmRunner(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})

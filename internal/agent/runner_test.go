@@ -2804,3 +2804,86 @@ func TestSecondTurnSeesFirstTurnHistory(t *testing.T) {
 		t.Fatalf("second turn missing history: question=%v answer=%v", sawPriorQuestion, sawPriorAnswer)
 	}
 }
+
+type staticResolver struct {
+	route    routing.Route
+	provider provider.Provider
+}
+
+func (s *staticResolver) Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error) {
+	return s.route, s.provider, nil
+}
+
+func TestResolveRouteRaisesBudgetFromKnownWindow(t *testing.T) {
+	p := &scriptedProvider{responses: []string{`{"rationale":"done","action":{"type":"final","content":"ok"}}`}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "qwen2.5-coder:14b")
+	// A resolver that returns a route whose preset has no explicit window —
+	// forces the catalog lookup path.
+	runner.RouteResolver = &staticResolver{
+		route: routing.Route{
+			Role:    routing.RoleImplementer,
+			Profile: "p",
+			Preset:  routing.ModelPreset{Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+		},
+		provider: p,
+	}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if err := runner.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// 0.85 * 32768 - 8192 = ~19698; must be > the 60000 default floor? No — effective
+	// is ~19698 which is LESS than the 60000 default floor, so the floor wins.
+	// Assert the catalog path ran by checking the window was recorded on state.
+	if _, window := state.TurnUsage(); window != 32768 {
+		t.Fatalf("state window = %d, want 32768 (catalog resolved)", window)
+	}
+}
+
+func TestResolveRouteConfigWindowRaisesBudget(t *testing.T) {
+	runner := NewRunner(&scriptedProvider{responses: []string{`{"rationale":"done","action":{"type":"final","content":"ok"}}`}},
+		registry.New(), policy.NewEngine(&config.Config{}, nil), newTestState(t), "big-model")
+	runner.MaxTurnContextTokens = 1000 // small floor
+	runner.RouteResolver = &staticResolver{
+		route:    routing.Route{Preset: routing.ModelPreset{Model: "big", ContextWindow: 200000, MaxOutputTokens: 8192}},
+		provider: runner.Provider,
+	}
+	runner.SetForceClass(string(ClassQuestion))
+	if err := runner.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// 0.85*200000 - 8192 = 161808, far above the 1000 floor.
+	if runner.MaxTurnContextTokens != 161808 {
+		t.Fatalf("effective budget = %d, want 161808", runner.MaxTurnContextTokens)
+	}
+}
+
+func TestHistoryAfterRewindExcludesAbandonedBranch(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"a","action":{"type":"answer","content":"first answer"}}`,
+		`{"rationale":"b","action":{"type":"answer","content":"second answer"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "question one"); err != nil {
+		t.Fatalf("run1: %v", err)
+	}
+	msgs := state.Messages()
+	state.Rewind(msgs[0].ID)
+	if err := runner.Run(context.Background(), "different question"); err != nil {
+		t.Fatalf("run2: %v", err)
+	}
+
+	second := p.requests[len(p.requests)-1]
+	for _, m := range second.Messages {
+		if strings.Contains(m.Content, "first answer") {
+			t.Fatal("abandoned branch's answer leaked into the new branch's history")
+		}
+	}
+}

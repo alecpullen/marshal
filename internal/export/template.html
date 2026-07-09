@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{.Title}}</title>
+<style>
+  body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; margin: 2em auto; max-width: 900px; color: #1a1a1a; }
+  h1 { font-size: 1.2em; }
+  .msg { margin: 1em 0; padding: 0.75em 1em; border-radius: 6px; }
+  .user { background: #eef4ff; }
+  .assistant { background: #f6f6f6; }
+  .role { font-weight: 600; font-size: 0.8em; text-transform: uppercase; color: #666; }
+  .tool { margin: 0.5em 0; }
+  details { background: #fafafa; padding: 0.5em 0.75em; border-radius: 4px; margin: 0.4em 0; }
+  summary { cursor: pointer; font-weight: 600; font-size: 0.9em; }
+  pre { background: #f0f0f0; padding: 0.5em; overflow-x: auto; border-radius: 4px; }
+  .usage { color: #888; font-size: 0.8em; }
+  .thinking { color: #555; font-style: italic; }
+  code { background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h1>{{.Title}}</h1>
+{{range .Items}}
+  {{if .IsMessage}}
+  <div class="msg {{.MessageClass}}">
+    <div class="role">{{.RoleLabel}}</div>
+    <div>{{.ContentHTML}}</div>
+    {{if .Reasoning}}<details class="thinking"><summary>thinking</summary><div>{{.Reasoning}}</div></details>{{end}}
+    {{if .Usage}}<div class="usage">{{.Usage}}</div>{{end}}
+  </div>
+  {{else if .IsTool}}
+  <details class="tool"><summary>{{.ToolName}} — {{.ResultSummary}}</summary>
+    <pre>{{.ToolArgs}}</pre>
+    {{if .ToolError}}<pre style="color:#a00">{{.ToolError}}</pre>{{end}}
+  </details>
+  {{end}}
+{{end}}
+</body>
+</html>

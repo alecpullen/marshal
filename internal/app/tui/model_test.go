@@ -706,7 +706,7 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 	return f.err
 }
 
-func (f *fakeAgentRunner) SetForceClass(string) {}
+func (f *fakeAgentRunner) SetForceClass(string)                   {}
 func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
 
 type fakeSwarmRunner struct {
@@ -721,7 +721,7 @@ func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
 	return nil
 }
 
-func (f *fakeSwarmRunner) SetForceClass(string) {}
+func (f *fakeSwarmRunner) SetForceClass(string)                   {}
 func (f *fakeSwarmRunner) SetPolicyRules([]config.PermissionRule) {}
 
 func TestSwarmCommandDispatchesGoalToSwarmRunner(t *testing.T) {

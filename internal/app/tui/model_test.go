@@ -1578,9 +1578,37 @@ func TestSlashCommandBusyStillDispatched(t *testing.T) {
 	model = updated.(Model)
 	model.busy = true
 
+	// F18: with the completion popup, typing "/help" and pressing Enter
+	// once accepts the popup (replaces "/help" with "/help " and keeps
+	// editing). A second Enter dispatches the now-complete command.
+	// Verify the command still fires after the popup is accepted.
+	//
+	// In production the popup is updated automatically on every
+	// keystroke. SetValue() bypasses Update, so we manually run the
+	// popup trigger once to mirror that.
+	//
+	// AsModel normalizes the *Model-vs-Model return from Update so the
+	// helper accepts whichever form the interface boxing produced for
+	// this particular keystroke path.
+	asModel := func(v tea.Model) *Model {
+		if p, ok := v.(*Model); ok {
+			return p
+		}
+		mv := v.(Model)
+		return &mv
+	}
 	model.input.SetValue("/help")
+	model.updateCompletionPopups()
+	if !model.cmdPopup.isVisible() {
+		t.Fatalf("expected cmd popup to be visible for /help, got filtered=%d", len(model.cmdPopup.filtered))
+	}
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m := updated.(*Model)
+	m := asModel(updated)
+	if val := m.input.Value(); val != "/help " {
+		t.Fatalf("first Enter should accept the popup: input = %q, want %q", val, "/help ")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(updated)
 
 	msgs := m.state.Messages()
 	if len(msgs) == 0 {
@@ -2017,5 +2045,117 @@ func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	}
 	if m.queuedCount != 0 {
 		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	}
+}
+
+// F18: /command completion popup is triggered by "/" at position 0 and
+// accepting a suggestion replaces the trigger token with the full
+// command name (and a trailing space for arg typing).
+func TestSlashCompletionAcceptsPlan(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 80, 24)
+	m.input.SetValue("/pl")
+	m.updateCompletionPopups()
+	if m.cmdPopup == nil || !m.cmdPopup.isVisible() {
+		t.Fatal("command popup not visible after /pl")
+	}
+	if got := m.acceptCompletion(); !got {
+		t.Fatal("acceptCompletion returned false")
+	}
+	if val := m.input.Value(); !strings.HasPrefix(val, "/plan") {
+		t.Fatalf("input = %q, want /plan prefix", val)
+	}
+}
+
+// F18: @file completion popup is triggered by "@" at a word start and
+// accepting a suggestion replaces the trigger token with the matched
+// file path. Requires a model with a seeded file index — see
+// newViewTestModelWithFileIndex.
+func TestAtFileCompletionMatchesRepoFiles(t *testing.T) {
+	m := newViewTestModelWithFileIndex(t, 80, 24, []string{
+		"internal/agent/runner.go",
+		"cmd/marshal/main.go",
+	})
+	m.input.SetValue("@run")
+	m.updateCompletionPopups()
+	if m.filePopup == nil || !m.filePopup.isVisible() {
+		t.Fatal("file popup not visible after @run")
+	}
+	if got := m.acceptCompletion(); !got {
+		t.Fatal("acceptCompletion returned false")
+	}
+	if val := m.input.Value(); !strings.Contains(val, "runner.go") {
+		t.Fatalf("input = %q, want runner.go", val)
+	}
+}
+
+// F18: @ inside a word (e.g. an email) does not trigger the file popup.
+func TestAtInsideWordDoesNotTrigger(t *testing.T) {
+	m := newViewTestModelWithFileIndex(t, 80, 24, []string{"a.go", "b.go"})
+	m.input.SetValue("user@example.com")
+	m.updateCompletionPopups()
+	if m.filePopup != nil && m.filePopup.isVisible() {
+		t.Fatal("file popup should not be visible for email-style @")
+	}
+	if m.cmdPopup != nil && m.cmdPopup.isVisible() {
+		t.Fatal("cmd popup should not be visible either")
+	}
+}
+
+// F18: Esc dismisses the active popup without cancelling the in-flight
+// turn. A subsequent Esc with no popup cancels the turn as before.
+func TestEscDismissesPopupBeforeCancelTurn(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 80, 24)
+	m.busy = true
+	m.input.SetValue("/p")
+	m.updateCompletionPopups()
+	if !m.cmdPopup.isVisible() {
+		t.Fatal("popup should be visible")
+	}
+	cancelled := false
+	m.agentCancel = func() { cancelled = true }
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(Model)
+	if cancelled {
+		t.Fatal("first Esc should dismiss the popup, not cancel the turn")
+	}
+	if m.cmdPopup.isVisible() {
+		t.Fatal("popup should be hidden after first Esc")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(Model)
+	if !cancelled {
+		t.Fatal("second Esc with no popup should cancel the turn")
+	}
+}
+
+// F18: empty / shows the full command list; filtering narrows it.
+func TestSlashCompletionListsAllCommandsOnBareSlash(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 80, 24)
+	m.input.SetValue("/")
+	m.updateCompletionPopups()
+	if m.cmdPopup == nil || !m.cmdPopup.isVisible() {
+		t.Fatal("bare / should make the popup visible with all commands")
+	}
+	if len(m.cmdPopup.matches()) < 2 {
+		t.Fatalf("matches = %d, want at least 2 (plan + help)", len(m.cmdPopup.matches()))
+	}
+}
+
+// F18: the file popup is mutually exclusive with the cmd popup; typing
+// /something after @something dismisses the file popup.
+func TestCommandTriggerDismissesFilePopup(t *testing.T) {
+	m := newViewTestModelWithRegistryAndFileIndex(t, 80, 24, []string{"a.go"})
+	m.input.SetValue("@a")
+	m.updateCompletionPopups()
+	if !m.filePopup.isVisible() {
+		t.Fatal("file popup should be visible for @a")
+	}
+	m.input.SetValue("/pl")
+	m.updateCompletionPopups()
+	if m.filePopup.isVisible() {
+		t.Fatal("file popup should be dismissed by command trigger")
+	}
+	if !m.cmdPopup.isVisible() {
+		t.Fatal("cmd popup should be visible for /pl")
 	}
 }

@@ -48,27 +48,36 @@ const (
 )
 
 type Model struct {
-	state                  *session.State
-	input                  textarea.Model
-	editingCommand         bool
-	commandSuggestions     []commands.Command
-	commandSuggestionIndex int
-	runner                 AgentRunner
-	swarmRunner            AgentRunner
-	ctx                    context.Context
-	busy                   bool
-	settingsOpen           bool
-	settingsModel          settings.Model
-	configReloader         ConfigReloader
-	memoryOpen             bool
-	memoryModel            memory.Model
-	memoryDB               *db.DB
-	memoryProject          int64
-	cmdRegistry            *commands.Registry
-	agentCancel            context.CancelFunc
-	forceMode              string // reserved for future status-bar display
-	approvalModel          *approvalModel
-	questionModel          *questionModel
+	state          *session.State
+	input          textarea.Model
+	editingCommand bool
+	runner         AgentRunner
+	swarmRunner    AgentRunner
+	ctx            context.Context
+	busy           bool
+	settingsOpen   bool
+	settingsModel  settings.Model
+	configReloader ConfigReloader
+	memoryOpen     bool
+	memoryModel    memory.Model
+	memoryDB       *db.DB
+	memoryProject  int64
+	cmdRegistry    *commands.Registry
+	agentCancel    context.CancelFunc
+	forceMode      string // reserved for future status-bar display
+	approvalModel  *approvalModel
+	questionModel  *questionModel
+
+	// F18: editor completions. cmdPopup is fed by the commands registry
+	// (triggered by `/` at position 0) and filePopup is fed by the repo
+	// file index (triggered by `@` at a word start). fileIndex holds the
+	// repo file paths used to build filePopup, loaded once at startup via
+	// WithFileIndex (or lazy on first `@` keystroke — see
+	// updateCompletionPopups).
+	cmdPopup        *completionPopup
+	filePopup       *completionPopup
+	fileIndex       []completionItem
+	fileIndexLoaded bool
 
 	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
 	// cmd returned from Init (and re-armed from Update on each
@@ -120,6 +129,27 @@ func WithCommandRegistry(reg *commands.Registry) Option {
 	return func(m *Model) {
 		m.cmdRegistry = reg
 	}
+}
+
+// WithFileIndex seeds the F18 @file completion popup with a snapshot of
+// the repo's file paths. Eager seeding is preferred when the model is
+// constructed in a context that already holds a db.DB (avoids a
+// per-keystroke DB hit on the first `@`); if the model is constructed
+// without it, the popup falls back to a lazy load on the first `@`
+// keystroke (see updateCompletionPopups).
+func WithFileIndex(paths []string) Option {
+	return func(m *Model) {
+		m.fileIndex = buildFileIndexItems(paths)
+		m.fileIndexLoaded = true
+	}
+}
+
+func buildFileIndexItems(paths []string) []completionItem {
+	items := make([]completionItem, 0, len(paths))
+	for _, p := range paths {
+		items = append(items, completionItem{Text: p, Kind: completionFile})
+	}
+	return items
 }
 
 // WithMemoryStore configures the memory browser overlay (Ctrl+K) with the
@@ -264,6 +294,18 @@ func New(state *session.State, opts ...Option) Model {
 	}
 	for _, opt := range opts {
 		opt(&m)
+	}
+
+	// F18: build the completion popups eagerly from whatever source data
+	// was wired by options. The cmd popup is built empty and the
+	// registry is queried lazily inside updateCompletionPopups (avoids
+	// duplicating the registry snapshot and lets the registry be
+	// registered in any order).
+	if m.cmdPopup == nil {
+		m.cmdPopup = newCompletionPopup(nil)
+	}
+	if m.filePopup == nil {
+		m.filePopup = newCompletionPopup(m.fileIndex)
 	}
 
 	// Eagerly build inline approval/question forms if the session already
@@ -470,6 +512,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// pending states are routed above, before this switch.)
 		switch msg.String() {
 		case "esc":
+			// F18: dismiss the active completion popup first. Only if
+			// nothing is up do we fall through to cancelling the in-flight
+			// turn.
+			if m.activeCompletionPopup() != nil {
+				m.activeCompletionPopup().dismiss()
+				return m, nil
+			}
 			m.cancelTurn()
 			return m, nil
 		case "ctrl+o":
@@ -526,15 +575,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewportFollow = true
 			return m, nil
 		case "up":
-			if m.moveCommandSuggestion(-1) {
+			if m.activeCompletionPopup() != nil {
+				m.activeCompletionPopup().moveUp()
 				return m, nil
 			}
 		case "down":
-			if m.moveCommandSuggestion(1) {
+			if m.activeCompletionPopup() != nil {
+				m.activeCompletionPopup().moveDown()
 				return m, nil
 			}
 		case "tab":
-			if m.acceptCommandSuggestion() {
+			if m.acceptCompletion() {
 				return m, nil
 			}
 		case "ctrl+x":
@@ -547,6 +598,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "enter":
+			// F18: if a popup is visible, accept it (replaces the trigger
+			// token) and keep editing — Enter on a popup is a selection,
+			// not a submit. Esc is the way to dismiss without accepting.
+			if m.acceptCompletion() {
+				return m, nil
+			}
 			value := strings.TrimSpace(m.input.Value())
 			// F16 R2 follow-up turn: when the agent has finished and the
 			// user presses Enter with no new input, pop the oldest queued
@@ -564,7 +621,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.input.Reset()
-			m.updateCommandSuggestions()
+			m.dismissCompletionPopups()
 			m.updateViewportHeight()
 			m.viewportFollow = true
 
@@ -592,7 +649,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	m.updateCommandSuggestions()
+	m.updateCompletionPopups()
 
 	// The textarea updates its own height (DynamicHeight); recalculate the
 	// viewport height and refresh if it changed.
@@ -786,8 +843,9 @@ func (m Model) inputAreaRows() int {
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)
 	}
-	if len(m.commandSuggestions) > 0 {
-		rows += commandSuggestionRows
+	if p := m.activeCompletionPopup(); p != nil {
+		// Cap the popup at 8 visible rows (matches the renderer in view.go).
+		rows += min(len(p.matches()), 8)
 	}
 	return rows
 }
@@ -808,49 +866,216 @@ func (m *Model) updateViewportHeight() bool {
 	return true
 }
 
-func (m *Model) updateCommandSuggestions() {
-	m.commandSuggestions = nil
-	m.commandSuggestionIndex = 0
-	if m.cmdRegistry == nil {
+// updateCompletionPopups inspects the current input value and updates the
+// cmdPopup and filePopup state. Called from every keystroke.
+//
+// Triggers (F18 R1, R4):
+//   - `/` at position 0 with no space in the typed value → cmdPopup filters
+//     against the commands registry.
+//   - `@` at a word start (preceded by start-of-input or whitespace) with
+//     no whitespace after the `@` → filePopup filters against the repo
+//     file index.
+//
+// The popups are mutually exclusive: the file popup takes precedence when
+// both could match (e.g. "/@" would show commands; "@" at start shows
+// files). When the input doesn't match either trigger, both popups are
+// dismissed.
+func (m *Model) updateCompletionPopups() {
+	if m.cmdPopup == nil || m.filePopup == nil {
 		return
 	}
 	value := m.input.Value()
-	if !strings.HasPrefix(value, "/") || strings.Contains(strings.TrimPrefix(value, "/"), " ") {
+
+	cmdTrigger, cmdQuery := m.commandTrigger(value)
+	if cmdTrigger {
+		if m.cmdPopup.items == nil && m.cmdRegistry != nil {
+			// Lazily build the command items from the registry the first
+			// time the user starts typing "/". Registry contents can
+			// change at runtime; we re-build on every trigger so /help
+			// always reflects the current registry.
+			items := make([]completionItem, 0, len(m.cmdRegistry.List()))
+			for _, c := range m.cmdRegistry.List() {
+				text := "/" + c.Name
+				items = append(items, completionItem{
+					Text:        text,
+					Description: c.Description,
+					Kind:        completionCommand,
+				})
+			}
+			m.cmdPopup.items = items
+		}
+		if cmdQuery == "" {
+			// Bare "/" → show every command, unfiltered, so the user can
+			// see what's available before typing.
+			m.cmdPopup.filtered = append([]completionItem(nil), m.cmdPopup.items...)
+			m.cmdPopup.index = 0
+			m.cmdPopup.acceptedText = ""
+			m.cmdPopup.visible = len(m.cmdPopup.filtered) > 0
+		} else {
+			m.cmdPopup.update(cmdQuery)
+		}
+		m.filePopup.dismiss()
 		return
 	}
-	prefix := strings.ToLower(strings.TrimPrefix(value, "/"))
-	for _, cmd := range m.cmdRegistry.List() {
-		if prefix == "" || strings.HasPrefix(strings.ToLower(cmd.Name), prefix) {
-			m.commandSuggestions = append(m.commandSuggestions, cmd)
-			if len(m.commandSuggestions) == 5 {
-				break
-			}
+
+	fileTrigger, fileQuery := m.fileTrigger(value)
+	if fileTrigger {
+		m.populateFileIndexIfNeeded()
+		if m.filePopup.items == nil {
+			m.filePopup.items = m.fileIndex
+		}
+		m.filePopup.update(fileQuery)
+		m.cmdPopup.dismiss()
+		return
+	}
+
+	m.cmdPopup.dismiss()
+	m.filePopup.dismiss()
+}
+
+// commandTrigger returns (true, query) when value is a slash command in
+// progress: starts with "/", has no whitespace (so we're still typing
+// the command name, not its arguments), and is non-empty after the "/".
+func (m *Model) commandTrigger(value string) (bool, string) {
+	if !strings.HasPrefix(value, "/") {
+		return false, ""
+	}
+	// "/plan " is committed — no longer a trigger.
+	if strings.Contains(value, " ") || strings.Contains(value, "\n") {
+		return false, ""
+	}
+	rest := strings.TrimPrefix(value, "/")
+	if rest == "" {
+		// A bare "/" shows the full command list (query "").
+		return true, ""
+	}
+	return true, rest
+}
+
+// fileTrigger returns (true, query) when value contains an @-reference
+// at a word start (preceded by start-of-input or whitespace) and the
+// current word after "@" has no whitespace.
+func (m *Model) fileTrigger(value string) (bool, string) {
+	idx := strings.LastIndex(value, "@")
+	if idx < 0 {
+		return false, ""
+	}
+	// "@" must be at a word start.
+	if idx > 0 {
+		prev := value[idx-1]
+		if !isWordBoundary(prev) {
+			return false, ""
 		}
 	}
+	// No whitespace between the "@" and end of value (otherwise the
+	// user has already moved past the trigger and onto the next word).
+	after := value[idx+1:]
+	if strings.ContainsAny(after, " \t\n") {
+		return false, ""
+	}
+	return true, after
 }
 
-func (m *Model) moveCommandSuggestion(delta int) bool {
-	if len(m.commandSuggestions) == 0 {
+func isWordBoundary(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '(', '[', '{', ',', ';':
+		return true
+	}
+	return false
+}
+
+// populateFileIndexIfNeeded lazy-loads the repo file index on the first
+// @-keystroke. Skipped when the model was constructed with WithFileIndex
+// (eager seed) or when there is no DB / project id wired.
+func (m *Model) populateFileIndexIfNeeded() {
+	if m.fileIndexLoaded {
+		return
+	}
+	if m.memoryDB == nil || m.memoryProject == 0 {
+		// No way to populate; mark loaded so we don't keep retrying.
+		m.fileIndexLoaded = true
+		return
+	}
+	index, err := m.memoryDB.GetFileIndex(m.memoryProject)
+	if err != nil {
+		m.fileIndexLoaded = true
+		return
+	}
+	paths := make([]string, 0, len(index))
+	for _, f := range index {
+		paths = append(paths, f.Path)
+	}
+	m.fileIndex = buildFileIndexItems(paths)
+	m.fileIndexLoaded = true
+}
+
+// activeCompletionPopup returns whichever popup is currently visible
+// (cmd takes precedence when both somehow show), or nil when none is up.
+// Used by the keypress switch to route Up/Down/Tab/Esc.
+func (m *Model) activeCompletionPopup() *completionPopup {
+	if m.cmdPopup != nil && m.cmdPopup.isVisible() {
+		return m.cmdPopup
+	}
+	if m.filePopup != nil && m.filePopup.isVisible() {
+		return m.filePopup
+	}
+	return nil
+}
+
+func (m *Model) dismissCompletionPopups() {
+	if m.cmdPopup != nil {
+		m.cmdPopup.dismiss()
+	}
+	if m.filePopup != nil {
+		m.filePopup.dismiss()
+	}
+}
+
+// acceptCompletion accepts the active popup's current selection, replacing
+// the trigger token in the input with the popup's acceptedText. Returns
+// true when a popup was visible (and is now dismissed).
+func (m *Model) acceptCompletion() bool {
+	p := m.activeCompletionPopup()
+	if p == nil {
 		return false
 	}
-	m.commandSuggestionIndex += delta
-	if m.commandSuggestionIndex < 0 {
-		m.commandSuggestionIndex = len(m.commandSuggestions) - 1
-	}
-	if m.commandSuggestionIndex >= len(m.commandSuggestions) {
-		m.commandSuggestionIndex = 0
-	}
+	p.accept()
+	accepted := p.acceptedText
+	value := m.input.Value()
+	newValue := replaceTriggerToken(value, accepted)
+	m.input.SetValue(newValue)
+	// Move the cursor to the end of the inserted text so the user can
+	// keep typing args / a trailing space directly.
+	m.input.MoveToEnd()
+	m.dismissCompletionPopups()
+	m.updateViewportHeight()
 	return true
 }
 
-func (m *Model) acceptCommandSuggestion() bool {
-	if len(m.commandSuggestions) == 0 {
-		return false
+// replaceTriggerToken finds the most recent trigger token in value
+// (either the leading "/<cmd...>" word or the last "<sep>@<path...>"
+// word at a word boundary) and replaces it with replacement. The cursor
+// stays in the same word after replacement.
+func replaceTriggerToken(value, replacement string) string {
+	if value == "" {
+		return replacement
 	}
-	cmd := m.commandSuggestions[m.commandSuggestionIndex]
-	m.input.SetValue("/" + cmd.Name + " ")
-	m.updateCommandSuggestions()
-	return true
+	// Command trigger: value starts with "/".
+	if strings.HasPrefix(value, "/") && !strings.ContainsAny(value, " \t\n") {
+		return replacement
+	}
+	// File trigger: find the last "@<...>" at a word start.
+	idx := strings.LastIndex(value, "@")
+	if idx < 0 {
+		return value
+	}
+	if idx > 0 {
+		prev := value[idx-1]
+		if !isWordBoundary(prev) {
+			return value
+		}
+	}
+	return value[:idx] + replacement
 }
 
 // popOldestSteering returns and removes the oldest queued steering

@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/commands"
 )
 
 func newViewTestModel(t *testing.T, width, height int) Model {
@@ -344,4 +345,69 @@ func TestMouseCaptureDisabled(t *testing.T) {
 	if got := m.View().MouseMode; got != tea.MouseModeNone {
 		t.Fatalf("View().MouseMode = %v, want MouseModeNone (native selection enabled)", got)
 	}
+}
+
+// newViewTestModelWithRegistry builds a model with a small in-memory
+// commands registry. Used by F18 completion tests that need a real
+// /command source to fuzzy-filter against.
+func newViewTestModelWithRegistry(t *testing.T, width, height int) Model {
+	t.Helper()
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	mustRegister(t, reg, commands.Command{
+		Name: "plan", Description: "Plan a task", Args: "<goal>",
+		Handler: func(s *session.State, args []string) string { return "" },
+	})
+	mustRegister(t, reg, commands.Command{
+		Name: "help", Description: "Show help", Args: "",
+		Handler: func(s *session.State, args []string) string { return "" },
+	})
+	mustRegister(t, reg, commands.Command{
+		Name: "tools", Description: "List tools", Args: "",
+		Handler: func(s *session.State, args []string) string { return "" },
+	})
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(width, height)
+	m.refreshViewport()
+	return m
+}
+
+// newViewTestModelWithFileIndex builds a model with a seeded repo file
+// index for F18 @file completion tests. The paths are loaded eagerly via
+// WithFileIndex; no DB is required.
+func newViewTestModelWithFileIndex(t *testing.T, width, height int, paths []string) Model {
+	t.Helper()
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state, WithFileIndex(paths))
+	m.resize(width, height)
+	m.refreshViewport()
+	return m
+}
+
+func mustRegister(t *testing.T, reg *commands.Registry, c commands.Command) {
+	t.Helper()
+	if err := reg.Register(c); err != nil {
+		t.Fatalf("register %s: %v", c.Name, err)
+	}
+}
+
+// newViewTestModelWithRegistryAndFileIndex builds a model with both a
+// commands registry and a seeded repo file index — used for tests that
+// exercise the mutual exclusion between the F18 cmd and file popups.
+func newViewTestModelWithRegistryAndFileIndex(t *testing.T, width, height int, paths []string) Model {
+	t.Helper()
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	mustRegister(t, reg, commands.Command{
+		Name: "plan", Description: "Plan a task", Args: "<goal>",
+		Handler: func(s *session.State, args []string) string { return "" },
+	})
+	mustRegister(t, reg, commands.Command{
+		Name: "help", Description: "Show help", Args: "",
+		Handler: func(s *session.State, args []string) string { return "" },
+	})
+	m := New(state, WithCommandRegistry(reg), WithFileIndex(paths))
+	m.resize(width, height)
+	m.refreshViewport()
+	return m
 }

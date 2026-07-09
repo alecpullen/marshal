@@ -147,9 +147,16 @@ func WithFileIndex(paths []string) Option {
 func buildFileIndexItems(paths []string) []completionItem {
 	items := make([]completionItem, 0, len(paths))
 	for _, p := range paths {
+		if containsRunnerWhitespace(p) {
+			continue
+		}
 		items = append(items, completionItem{Text: p, Kind: completionFile})
 	}
 	return items
+}
+
+func containsRunnerWhitespace(s string) bool {
+	return strings.ContainsAny(s, " \t\n\r\f")
 }
 
 // WithMemoryStore configures the memory browser overlay (Ctrl+K) with the
@@ -960,25 +967,25 @@ func (m *Model) fileTrigger(value string) (bool, string) {
 	if idx < 0 {
 		return false, ""
 	}
-	// "@" must be at a word start.
+	// "@" must be at a runner-compatible trigger boundary.
 	if idx > 0 {
 		prev := value[idx-1]
-		if !isWordBoundary(prev) {
+		if !isAtFileBoundary(prev) {
 			return false, ""
 		}
 	}
 	// No whitespace between the "@" and end of value (otherwise the
 	// user has already moved past the trigger and onto the next word).
 	after := value[idx+1:]
-	if strings.ContainsAny(after, " \t\n") {
+	if containsRunnerWhitespace(after) {
 		return false, ""
 	}
 	return true, after
 }
 
-func isWordBoundary(b byte) bool {
+func isAtFileBoundary(b byte) bool {
 	switch b {
-	case ' ', '\t', '\n', '\r', '(', '[', '{', ',', ';':
+	case ' ', '\t', '\n', '\r', '\f':
 		return true
 	}
 	return false
@@ -1071,7 +1078,7 @@ func replaceTriggerToken(value, replacement string) string {
 	}
 	if idx > 0 {
 		prev := value[idx-1]
-		if !isWordBoundary(prev) {
+		if !isAtFileBoundary(prev) {
 			return value
 		}
 	}

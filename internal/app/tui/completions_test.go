@@ -144,3 +144,24 @@ func TestCompletionPopupFileKindAcceptedText(t *testing.T) {
 		t.Fatalf("acceptedText = %q, want %q", p.acceptedText, "@internal/agent/runner.go ")
 	}
 }
+
+func TestCompletionPopupFileKindOmitsWhitespaceText(t *testing.T) {
+	items := []completionItem{
+		{Text: "docs/has space.md", Description: "", Kind: completionFile},
+		{Text: "internal/agent/runner.go", Description: "", Kind: completionFile},
+	}
+	p := newCompletionPopup(items)
+	p.update("space")
+	if p.isVisible() {
+		t.Fatalf("popup should not offer whitespace paths, got %#v", p.matches())
+	}
+
+	p.update("run")
+	if !p.isVisible() {
+		t.Fatal("popup should still offer normal paths")
+	}
+	matches := p.matches()
+	if len(matches) != 1 || matches[0].Text != "internal/agent/runner.go" {
+		t.Fatalf("matches = %#v, want only internal/agent/runner.go", matches)
+	}
+}

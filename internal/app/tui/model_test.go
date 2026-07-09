@@ -2088,6 +2088,39 @@ func TestAtFileCompletionMatchesRepoFiles(t *testing.T) {
 	}
 }
 
+func TestAtFileAfterPunctuationDoesNotTrigger(t *testing.T) {
+	m := newViewTestModelWithFileIndex(t, 80, 24, []string{
+		"internal/agent/runner.go",
+	})
+	m.input.SetValue("see (@run")
+	m.updateCompletionPopups()
+	if m.filePopup != nil && m.filePopup.isVisible() {
+		t.Fatal("file popup should not be visible when @ is preceded by punctuation")
+	}
+}
+
+func TestAtFileCompletionOmitsWhitespacePaths(t *testing.T) {
+	m := newViewTestModelWithFileIndex(t, 80, 24, []string{
+		"docs/has space.md",
+		"internal/agent/runner.go",
+	})
+	m.input.SetValue("@space")
+	m.updateCompletionPopups()
+	if m.filePopup != nil && m.filePopup.isVisible() {
+		t.Fatalf("file popup should not offer whitespace paths, got %#v", m.filePopup.matches())
+	}
+
+	m.input.SetValue("@run")
+	m.updateCompletionPopups()
+	if m.filePopup == nil || !m.filePopup.isVisible() {
+		t.Fatal("file popup should still offer normal paths")
+	}
+	matches := m.filePopup.matches()
+	if len(matches) != 1 || matches[0].Text != "internal/agent/runner.go" {
+		t.Fatalf("matches = %#v, want only internal/agent/runner.go", matches)
+	}
+}
+
 // F18: @ inside a word (e.g. an email) does not trigger the file popup.
 func TestAtInsideWordDoesNotTrigger(t *testing.T) {
 	m := newViewTestModelWithFileIndex(t, 80, 24, []string{"a.go", "b.go"})

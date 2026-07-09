@@ -217,6 +217,30 @@ type State struct {
 	trusted         bool
 	turnIndex       int
 	snapshotter     Snapshotter
+	turnUsage       turnUsage
+}
+
+type turnUsage struct {
+	used   int
+	window int
+}
+
+func (s *State) SetTurnUsage(used int) {
+	s.mu.Lock()
+	s.turnUsage.used = used
+	s.mu.Unlock()
+}
+
+func (s *State) SetTurnContextWindow(window int) {
+	s.mu.Lock()
+	s.turnUsage.window = window
+	s.mu.Unlock()
+}
+
+func (s *State) TurnUsage() (used, window int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnUsage.used, s.turnUsage.window
 }
 
 func (s *State) SetTrusted(trusted bool) {

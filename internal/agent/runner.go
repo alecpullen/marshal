@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/catalog"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -644,6 +645,29 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 			pack = contextpack.Rebudget(pack, route.ContextBudget.MaxRepoContextTokens, r.Now)
 			r.State.SetContextPack(pack)
 		}
+	}
+
+	// F12: resolve the model's context window, preferring explicit config on
+	// the preset, falling back to the curated catalog. Unknown (0) leaves the
+	// configured turn budget untouched — never guess.
+	window := route.Preset.ContextWindow
+	maxOut := route.Preset.MaxOutputTokens
+	if window == 0 {
+		window, maxOut = catalog.Lookup(route.Preset.Model)
+	}
+	if window > 0 {
+		reserved := maxOut
+		effective := int(float64(window)*0.85) - reserved
+		if effective < 0 {
+			effective = 0
+		}
+		// configured value is the floor (max(configured, 0.85*window - reserved)).
+		if effective > r.MaxTurnContextTokens {
+			r.MaxTurnContextTokens = effective
+		}
+		r.State.SetTurnContextWindow(window)
+	} else {
+		r.State.SetTurnContextWindow(0)
 	}
 	return turnProvider, turnModel, route
 }

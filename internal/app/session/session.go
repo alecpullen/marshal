@@ -222,6 +222,7 @@ type State struct {
 	plan            []string
 	todos           []db.TodoItem
 	activeSkills    map[string]bool
+	loadedTools     map[string]bool
 	toolBudget      ToolBudget
 	swarmProgress   SwarmProgress
 	sandbox         SandboxInfo
@@ -242,6 +243,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *St
 		turnToolCache: make(map[string]registry.ToolResult),
 		activity:      Activity{Kind: ActivityIdle},
 		activeSkills:  make(map[string]bool),
+		loadedTools:   make(map[string]bool),
 	}
 }
 
@@ -773,4 +775,37 @@ func (s *State) HasActiveSkill(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activeSkills[name]
+}
+
+// LoadedToolNames returns a sorted copy of the MCP tool names the agent
+// has explicitly opted into via tools.select during this session. The
+// agent prompt builder uses this to expand the deferred tool list back
+// into the prompt once the agent confirms it needs a particular tool.
+func (s *State) LoadedToolNames() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := make([]string, 0, len(s.loadedTools))
+	for name := range s.loadedTools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// AddLoadedToolNames records that the agent has opted into the given MCP
+// tool names for the remainder of the session. Names are de-duplicated;
+// unknown names are accepted without error so callers can pass through
+// the full requested set.
+func (s *State) AddLoadedToolNames(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		s.loadedTools[name] = true
+	}
 }

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -208,6 +209,63 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					return fmt.Sprintf("Rollback failed: %v", err)
 				}
 				return "Rolled back last patch. All modified files reverted."
+			},
+		},
+		{
+			Name:        "undo",
+			Description: "Restore the working tree to the snapshot before the current turn",
+			Handler: func(state *session.State, args []string) string {
+				sp := state.Snapshotter()
+				if sp == nil {
+					return "Snapshot service is not available."
+				}
+				database := state.DB()
+				if database == nil {
+					return "No database available to look up snapshots."
+				}
+				hash, err := database.SnapshotBefore(state.SessionID(), state.TurnIndex())
+				if err != nil {
+					return fmt.Sprintf("Failed to find snapshot to undo: %v", err)
+				}
+				if hash == "" {
+					return "No snapshot to undo to."
+				}
+				if err := sp.Restore(context.Background(), hash); err != nil {
+					return fmt.Sprintf("Failed to restore snapshot: %v", err)
+				}
+				return fmt.Sprintf("Restored working tree to snapshot %s.", hash)
+			},
+		},
+		{
+			Name:        "redo",
+			Description: "Redo the last undo by restoring the latest snapshot (experimental)",
+			Handler: func(state *session.State, args []string) string {
+				sp := state.Snapshotter()
+				if sp == nil {
+					return "Snapshot service is not available."
+				}
+				database := state.DB()
+				if database == nil {
+					return "No database available to look up snapshots."
+				}
+				_, hash, _, err := database.LatestSnapshot(state.SessionID())
+				if err != nil {
+					return fmt.Sprintf("Failed to find snapshot to redo: %v", err)
+				}
+				if hash == "" {
+					return "No snapshot to redo."
+				}
+				if err := sp.Restore(context.Background(), hash); err != nil {
+					return fmt.Sprintf("Failed to restore snapshot: %v", err)
+				}
+				return fmt.Sprintf("Redone to latest snapshot %s (experimental).", hash)
+			},
+		},
+		{
+			Name:        "trust",
+			Description: "Re-open the project trust decision",
+			Handler: func(state *session.State, args []string) string {
+				return "Use --trust (permanent) or restart to re-prompt. Project trust is set at startup."
 			},
 		},
 	}

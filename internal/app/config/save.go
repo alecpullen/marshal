@@ -182,3 +182,29 @@ func activePresetName(cfg Config) string {
 	}
 	return presetName
 }
+
+func SaveUserConfigRule(path string, rule PermissionRule) error {
+	file, err := loadFile(path)
+	if err != nil {
+		return fmt.Errorf("load user config: %w", err)
+	}
+	if file.Permissions == nil {
+		file.Permissions = &struct {
+			Rules []PermissionRule `toml:"rules"`
+		}{}
+	}
+	for _, existing := range file.Permissions.Rules {
+		if existing.Permission == rule.Permission && existing.Pattern == rule.Pattern && existing.Action == rule.Action {
+			return nil
+		}
+	}
+	file.Permissions.Rules = append(file.Permissions.Rules, rule)
+	data, err := toml.Marshal(&file)
+	if err != nil {
+		return fmt.Errorf("marshal user config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}

@@ -16,11 +16,12 @@ import (
 type approvalChoice string
 
 const (
-	choiceApprove  approvalChoice = "approve"
-	choiceDeny     approvalChoice = "deny"
-	choiceEdit     approvalChoice = "edit"
-	choiceAlways   approvalChoice = "always"
-	choiceRollback approvalChoice = "rollback"
+	choiceApprove      approvalChoice = "approve"
+	choiceDeny         approvalChoice = "deny"
+	choiceEdit         approvalChoice = "edit"
+	choiceAlways       approvalChoice = "always"
+	choiceSessionAllow approvalChoice = "session_allow"
+	choiceRollback     approvalChoice = "rollback"
 )
 
 // approvalModel wraps a *huh.Form that lets the user choose how to respond
@@ -46,7 +47,8 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 		huh.NewOption("Approve", choiceApprove),
 		huh.NewOption("Deny", choiceDeny),
 		huh.NewOption("Edit", choiceEdit),
-		huh.NewOption("Always allow", choiceAlways),
+		huh.NewOption("Always allow (save to config)", choiceAlways),
+		huh.NewOption("Allow this session", choiceSessionAllow),
 	}
 	if hasBackup {
 		opts = append(opts, huh.NewOption("Rollback last change", choiceRollback))

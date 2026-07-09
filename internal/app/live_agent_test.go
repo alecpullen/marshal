@@ -64,7 +64,7 @@ func newLiveAgentRunner(t *testing.T) (*agent.Runner, *session.State, context.Co
 	})
 
 	ctx := context.Background()
-	runner, _, _, mcpMgr, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil)
+	runner, _, _, mcpMgr, _, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil, "")
 	if err != nil {
 		t.Fatalf("build agent runner: %v", err)
 	}

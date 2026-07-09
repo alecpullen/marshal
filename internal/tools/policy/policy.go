@@ -3,6 +3,8 @@ package policy
 import (
 	"log/slog"
 	"marshal/internal/app/config"
+	"marshal/internal/permissions"
+	"marshal/internal/tools/patch"
 	"regexp"
 	"strings"
 	"sync"
@@ -18,28 +20,58 @@ const (
 	DecisionDeny    Decision = "deny"
 )
 
+// guardrailPatterns are conservative hard-coded command patterns that are
+// always blocked regardless of user allow rules.
+var guardrailPatterns = []string{
+	"sudo", "rm -rf", "git reset --hard", "git clean -fd",
+	"mkfs", "shutdown", "reboot", "chmod -r", "chown -r",
+}
+
 type PolicyEngine struct {
 	config       *config.Config
 	sessionRules []string
+	rules        []permissions.Rule
 	mu           sync.RWMutex
 }
 
 func NewEngine(cfg *config.Config, sessionRules []string) *PolicyEngine {
+	var rules []permissions.Rule
+	rules = append(rules, permissions.SafeCommands...)
+	if cfg != nil {
+		for _, r := range cfg.Permissions.Rules {
+			action := permissions.Action(r.Action)
+			if action != permissions.ActionAllow && action != permissions.ActionAsk && action != permissions.ActionDeny {
+				continue
+			}
+			rules = append(rules, permissions.Rule{
+				Permission: r.Permission,
+				Pattern:    r.Pattern,
+				Action:     action,
+			})
+		}
+	}
 	return &PolicyEngine{
 		config:       cfg,
 		sessionRules: sessionRules,
+		rules:        rules,
 	}
 }
 
 // SetSessionRules replaces the engine's in-memory session allow-list.
 // PolicyEngine is normally constructed once per app run and lives for the
-// whole session, but session rules (added via the TUI's "Always Allow"
-// action) accrue after construction — callers with a long-lived engine
-// must call this before Evaluate to see rules added since the last call.
+// duration of the process; SetSessionRules is safe for concurrent use with
+// Evaluate.
 func (pe *PolicyEngine) SetSessionRules(rules []string) {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
 	pe.sessionRules = rules
+}
+
+// SetRules replaces the engine's F4 permission rules. Safe for concurrent use.
+func (pe *PolicyEngine) SetRules(rules []permissions.Rule) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	pe.rules = rules
 }
 
 func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {
@@ -75,39 +107,53 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		return DecisionConfirm, "requires approval (unconfigured MCP tool secure default)", nil
 	}
 
+	var normCmd string
+	if toolName == "shell.run" || toolName == "test.run" {
+		var cmd string
+		cmdRaw, ok := args["command"]
+		if !ok {
+			if toolName == "test.run" {
+				cmd = pe.config.Commands.Test
+			} else {
+				return DecisionConfirm, "missing command arg", nil
+			}
+		} else {
+			var typeOk bool
+			cmd, typeOk = cmdRaw.(string)
+			if !typeOk {
+				return DecisionConfirm, "invalid command arg type", nil
+			}
+		}
+
+		normCmd = normalizeCommand(cmd)
+		if normCmd == "" {
+			return DecisionConfirm, "empty command", nil
+		}
+
+		// 1. Conservative Safety Guardrails (AST-based; legacy fallback on parse error)
+		dynSetting := "deny"
+		if pe.config != nil && pe.config.Tools.Shell.GuardrailDynamicArgv0 != "" {
+			dynSetting = pe.config.Tools.Shell.GuardrailDynamicArgv0
+		}
+		dec, reason := evaluateGuardrails(normCmd, dynSetting)
+		if dec != "" {
+			return dec, reason, nil
+		}
+	}
+
+	// 1b. F4 pattern rules (last-matching-rule-wins). Applied AFTER intrinsic
+	// guardrails so a structural deny is never overridden by an allow rule.
+	// An allow rule here can downgrade an ask to allow; a deny rule forces deny.
+	subjects := subjectsForTool(toolName, args, normCmd)
+	if len(subjects) > 0 {
+		decision, matched := evaluateSubjects(pe.rules, permissions.PermissionForTool(toolName), subjects)
+		if matched {
+			return decision, "resolved by permission rule", nil
+		}
+	}
+
 	if toolName != "shell.run" && toolName != "test.run" {
 		return DecisionAllow, "low-risk read tool", nil
-	}
-
-	var cmd string
-	cmdRaw, ok := args["command"]
-	if !ok {
-		if toolName == "test.run" {
-			cmd = pe.config.Commands.Test
-		} else {
-			return DecisionConfirm, "missing command arg", nil
-		}
-	} else {
-		var typeOk bool
-		cmd, typeOk = cmdRaw.(string)
-		if !typeOk {
-			return DecisionConfirm, "invalid command arg type", nil
-		}
-	}
-
-	normCmd := normalizeCommand(cmd)
-	if normCmd == "" {
-		return DecisionConfirm, "empty command", nil
-	}
-
-	// 1. Conservative Safety Guardrails (AST-based; legacy fallback on parse error)
-	dynSetting := "deny"
-	if pe.config != nil && pe.config.Tools.Shell.GuardrailDynamicArgv0 != "" {
-		dynSetting = pe.config.Tools.Shell.GuardrailDynamicArgv0
-	}
-	dec, reason := evaluateGuardrails(normCmd, dynSetting)
-	if dec != "" {
-		return dec, reason, nil
 	}
 
 	// 2. Config Deny Rules
@@ -150,19 +196,9 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 }
 
 func isBlockedByGuardrailLegacy(cmd string) bool {
-	blocked := []string{
-		"sudo",
-		"rm -rf",
-		"git reset --hard",
-		"git clean -fd",
-		"mkfs",
-		"shutdown",
-		"reboot",
-		"chmod -r",
-		"chown -r",
-	}
-	for _, b := range blocked {
-		if matchPattern(b, cmd) {
+	cmd = strings.ToLower(cmd)
+	for _, b := range guardrailPatterns {
+		if strings.Contains(cmd, b) {
 			return true
 		}
 	}
@@ -250,11 +286,6 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 		return guardrailVerdict{}, nil
 	}
 
-	blockedPatterns := []string{
-		"sudo", "rm -rf", "git reset --hard", "git clean -fd",
-		"mkfs", "shutdown", "reboot", "chmod -r", "chown -r",
-	}
-
 	shellNames := map[string]bool{"sh": true, "bash": true, "zsh": true}
 	hasFetch := false
 	hasShell := false
@@ -264,7 +295,7 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 			return guardrailVerdict{dynamicArgv0: true, reason: "dynamic command name unclassifiable"}, nil
 		}
 		ft := strings.ToLower(st.fullText)
-		for _, p := range blockedPatterns {
+		for _, p := range guardrailPatterns {
 			if strings.Contains(ft, p) {
 				return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: " + p}, nil
 			}
@@ -327,12 +358,8 @@ func normalizeCommand(s string) string {
 }
 
 func matchRule(command, prefix string) bool {
-	if strings.HasPrefix(prefix, "/") && strings.HasSuffix(prefix, "/") && len(prefix) > 2 {
-		reStr := prefix[1 : len(prefix)-1]
-		re, err := regexp.Compile(reStr)
-		if err == nil {
-			return re.MatchString(command)
-		}
+	if regexMatch(prefix, command) {
+		return true
 	}
 	command = normalizeCommand(command)
 	prefix = normalizeCommand(prefix)
@@ -342,34 +369,56 @@ func matchRule(command, prefix string) bool {
 	return strings.HasPrefix(command, prefix+" ")
 }
 
-func matchPattern(pattern, command string) bool {
+func regexMatch(pattern, subject string) bool {
 	if strings.HasPrefix(pattern, "/") && strings.HasSuffix(pattern, "/") && len(pattern) > 2 {
 		reStr := pattern[1 : len(pattern)-1]
 		re, err := regexp.Compile(reStr)
 		if err == nil {
-			return re.MatchString(command)
+			return re.MatchString(subject)
 		}
+	}
+	return false
+}
+
+func matchPattern(pattern, command string) bool {
+	if regexMatch(pattern, command) {
+		return true
 	}
 	command = normalizeCommand(command)
 	pattern = normalizeCommand(pattern)
 	if !strings.Contains(pattern, "*") {
 		return strings.Contains(command, pattern)
 	}
+	return globMatch(pattern, command)
+}
 
+func matchMCPPolicy(pattern, toolName string) bool {
+	if regexMatch(pattern, toolName) {
+		return true
+	}
+	if strings.Contains(pattern, "*") {
+		return globMatch(pattern, toolName)
+	}
+	if strings.HasPrefix(toolName, pattern+".") || toolName == pattern {
+		return true
+	}
+	return false
+}
+
+func globMatch(pattern, subject string) bool {
 	parts := strings.Split(pattern, "*")
-	if parts[0] != "" && !strings.HasPrefix(command, parts[0]) {
+	if parts[0] != "" && !strings.HasPrefix(subject, parts[0]) {
 		return false
 	}
-	if parts[len(parts)-1] != "" && !strings.HasSuffix(command, parts[len(parts)-1]) {
+	if parts[len(parts)-1] != "" && !strings.HasSuffix(subject, parts[len(parts)-1]) {
 		return false
 	}
-
 	idx := 0
 	for _, part := range parts {
 		if part == "" {
 			continue
 		}
-		found := strings.Index(command[idx:], part)
+		found := strings.Index(subject[idx:], part)
 		if found == -1 {
 			return false
 		}
@@ -378,41 +427,54 @@ func matchPattern(pattern, command string) bool {
 	return true
 }
 
-func matchMCPPolicy(pattern, toolName string) bool {
-	if strings.HasPrefix(pattern, "/") && strings.HasSuffix(pattern, "/") && len(pattern) > 2 {
-		reStr := pattern[1 : len(pattern)-1]
-		re, err := regexp.Compile(reStr)
-		if err == nil {
-			return re.MatchString(toolName)
-		}
-	}
-
-	if strings.Contains(pattern, "*") {
-		parts := strings.Split(pattern, "*")
-		if parts[0] != "" && !strings.HasPrefix(toolName, parts[0]) {
-			return false
-		}
-		if parts[len(parts)-1] != "" && !strings.HasSuffix(toolName, parts[len(parts)-1]) {
-			return false
-		}
-
-		idx := 0
-		for _, part := range parts {
-			if part == "" {
-				continue
+func subjectsForTool(toolName string, args map[string]interface{}, normCmd string) []string {
+	switch toolName {
+	case "shell.run", "test.run":
+		return []string{normCmd}
+	case "file.write_patch":
+		if patchArg, ok := args["patch"]; ok {
+			if patchStr, ok := patchArg.(string); ok {
+				patches, err := patch.Parse(patchStr)
+				if err == nil {
+					var paths []string
+					for _, p := range patches {
+						paths = append(paths, p.Path)
+					}
+					return paths
+				}
 			}
-			found := strings.Index(toolName[idx:], part)
-			if found == -1 {
-				return false
-			}
-			idx += found + len(part)
 		}
-		return true
+		return nil
+	default:
+		return []string{toolName}
 	}
+}
 
-	if strings.HasPrefix(toolName, pattern+".") || toolName == pattern {
-		return true
+func evaluateSubjects(rules []permissions.Rule, permissionName string, subjects []string) (Decision, bool) {
+	var matched bool
+	var result Decision
+
+	for _, subject := range subjects {
+		action, found := permissions.Evaluate(rules, permissionName, subject)
+		if !found {
+			continue
+		}
+		matched = true
+		// Most restrictive wins: deny > confirm/ask > allow
+		if action == permissions.ActionDeny {
+			return DecisionDeny, true
+		}
+		if action == permissions.ActionAsk && result != DecisionDeny {
+			result = DecisionConfirm
+		} else if action == permissions.ActionAllow && result == "" {
+			result = DecisionAllow
+		}
 	}
-
-	return false
+	if !matched {
+		return "", false
+	}
+	if result == "" {
+		result = DecisionConfirm
+	}
+	return result, true
 }

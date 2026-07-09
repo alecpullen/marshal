@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"marshal/internal/llm/routing"
+	"marshal/internal/trust"
 	"os"
 	"path/filepath"
 
@@ -23,6 +24,8 @@ type Config struct {
 	Tools         ToolsConfig                           `toml:"tools"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	MCP           MCPConfig                             `toml:"mcp"`
+	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
+	Permissions   PermissionsConfig                     `toml:"permissions"`
 }
 
 type ModelsConfig struct {
@@ -79,6 +82,22 @@ type MCPServerConfig struct {
 	Command string            `toml:"command"`
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
+}
+
+type SnapshotsConfig struct {
+	Enabled       bool `toml:"enabled"`
+	RetentionDays int  `toml:"retention_days"`
+	MaxFileBytes  int  `toml:"max_file_bytes"`
+}
+
+type PermissionsConfig struct {
+	Rules []PermissionRule `toml:"rules"`
+}
+
+type PermissionRule struct {
+	Permission string `toml:"permission"`
+	Pattern    string `toml:"pattern"`
+	Action     string `toml:"action"`
 }
 
 type ShellToolConfig struct {
@@ -201,8 +220,10 @@ type ProviderConfig struct {
 }
 
 type LoadOptions struct {
-	HomeDir    string
-	WorkingDir string
+	HomeDir       string
+	WorkingDir    string
+	TrustResolver trust.Resolver
+	Trusted       *bool
 }
 
 type configFile struct {
@@ -267,6 +288,14 @@ type configFile struct {
 		} `toml:"servers"`
 		Policies map[string]string `toml:"policies"`
 	} `toml:"mcp"`
+	Snapshots *struct {
+		Enabled       *bool `toml:"enabled"`
+		RetentionDays *int  `toml:"retention_days"`
+		MaxFileBytes  *int  `toml:"max_file_bytes"`
+	} `toml:"snapshots"`
+	Permissions *struct {
+		Rules []PermissionRule `toml:"rules"`
+	} `toml:"permissions"`
 	// Providers, unlike the other configFile fields above, is not a
 	// pointer-to-anonymous-struct: a nil map already distinguishes
 	// "providers section absent from this file" from "present", so no
@@ -368,6 +397,14 @@ func Default() Config {
 			Servers:  map[string]MCPServerConfig{},
 			Policies: map[string]string{},
 		},
+		Snapshots: SnapshotsConfig{
+			Enabled:       true,
+			RetentionDays: 7,
+			MaxFileBytes:  2_000_000,
+		},
+		Permissions: PermissionsConfig{
+			Rules: nil,
+		},
 		// Providers is intentionally left nil: Marshal is local-first with no
 		// built-in provider assumptions, and provider URLs/keys are
 		// user-specific (see docs/09-configuration-examples.md).
@@ -395,17 +432,37 @@ func Load(opts LoadOptions) (Config, error) {
 		}
 	}
 
-	for _, path := range []string{
-		filepath.Join(home, ".config", "marshal", "config.toml"),
-		filepath.Join(work, ".marshal", "config.toml"),
-	} {
-		next, err := loadFile(path)
+	userPath := filepath.Join(home, ".config", "marshal", "config.toml")
+	userFile, err := loadFile(userPath)
+	if err != nil {
+		return Config{}, err
+	}
+	merge(&cfg, userFile)
+
+	projectPath := filepath.Join(work, ".marshal", "config.toml")
+	hasProject := trust.HasProjectConfig(work)
+	applyProject := true
+	if hasProject && opts.TrustResolver != nil {
+		decision, derr := opts.TrustResolver.Resolve(work, true)
+		if derr != nil {
+			return Config{}, fmt.Errorf("resolve project trust: %w", derr)
+		}
+		if decision == trust.DecisionDontTrust {
+			applyProject = false
+		} else if decision == trust.DecisionTrustPermanent {
+			_ = opts.TrustResolver.Record(work, decision)
+		}
+	}
+	if applyProject {
+		projectFile, err := loadFile(projectPath)
 		if err != nil {
 			return Config{}, err
 		}
-		merge(&cfg, next)
+		merge(&cfg, projectFile)
 	}
-
+	if opts.Trusted != nil {
+		*opts.Trusted = applyProject
+	}
 	return cfg, nil
 }
 
@@ -686,6 +743,20 @@ func merge(cfg *Config, file configFile) {
 			}
 			cfg.MCP.Policies[k] = v
 		}
+	}
+	if file.Snapshots != nil {
+		if file.Snapshots.Enabled != nil {
+			cfg.Snapshots.Enabled = *file.Snapshots.Enabled
+		}
+		if file.Snapshots.RetentionDays != nil {
+			cfg.Snapshots.RetentionDays = *file.Snapshots.RetentionDays
+		}
+		if file.Snapshots.MaxFileBytes != nil {
+			cfg.Snapshots.MaxFileBytes = *file.Snapshots.MaxFileBytes
+		}
+	}
+	if file.Permissions != nil && file.Permissions.Rules != nil {
+		cfg.Permissions.Rules = file.Permissions.Rules
 	}
 }
 

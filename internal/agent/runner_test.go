@@ -2228,8 +2228,9 @@ func TestHardStallAsksUserAndContinuesOnGuidance(t *testing.T) {
 
 	go func() {
 		for {
-			if q := state.PendingQuestion(); q != nil {
-				q.ResponseChan <- "try reading the config file instead"
+			if q := state.PendingQuestion(); q != nil && len(q.Questions) > 0 {
+				canonical := q.Questions[0].Question
+				q.ResponseChan <- []session.Answer{{Question: canonical, Answer: "try reading the config file instead"}}
 				return
 			}
 			time.Sleep(time.Millisecond)
@@ -2278,8 +2279,9 @@ func TestHardStallFinalizesWhenUserDeclines(t *testing.T) {
 
 	go func() {
 		for {
-			if q := state.PendingQuestion(); q != nil {
-				q.ResponseChan <- "" // decline
+			if q := state.PendingQuestion(); q != nil && len(q.Questions) > 0 {
+				canonical := q.Questions[0].Question
+				q.ResponseChan <- []session.Answer{{Question: canonical, Answer: ""}} // decline
 				return
 			}
 			time.Sleep(time.Millisecond)
@@ -2326,9 +2328,10 @@ func answerPendingQuestion(state *session.State, answer string) <-chan string {
 	questionCh := make(chan string, 1)
 	go func() {
 		for {
-			if q := state.PendingQuestion(); q != nil {
-				questionCh <- q.Question
-				q.ResponseChan <- answer
+			if q := state.PendingQuestion(); q != nil && len(q.Questions) > 0 {
+				canonical := q.Questions[0].Question
+				questionCh <- canonical
+				q.ResponseChan <- []session.Answer{{Question: canonical, Answer: answer}}
 				state.SetPendingQuestion(nil)
 				return
 			}
@@ -2545,8 +2548,9 @@ func TestRunAskUserDeclinedCountsAgainstBudget(t *testing.T) {
 	// Drain every pending question with an empty (declined) answer.
 	go func() {
 		for {
-			if q := state.PendingQuestion(); q != nil {
-				q.ResponseChan <- ""
+			if q := state.PendingQuestion(); q != nil && len(q.Questions) > 0 {
+				canonical := q.Questions[0].Question
+				q.ResponseChan <- []session.Answer{{Question: canonical, Answer: ""}}
 				state.SetPendingQuestion(nil)
 			} else {
 				time.Sleep(time.Millisecond)

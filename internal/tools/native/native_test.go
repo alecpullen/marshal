@@ -33,6 +33,8 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"job.output":        registry.RiskReadOnly,
 		"job.kill":          registry.RiskCommand,
 		"job.list":          registry.RiskReadOnly,
+		"question.ask":      registry.RiskReadOnly,
+		"ask_user":          registry.RiskReadOnly,
 		"diagnostics.check": registry.RiskReadOnly,
 	}
 	if got := reg.List(); len(got) != len(want) {

@@ -473,6 +473,48 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "User answered: " + answer})
 			}
+		case ActionQuestionAsk:
+			if r.role() != RoleGeneral {
+				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available for the %s role; proceed with your best judgment or report findings", r.role())))
+				continue
+			}
+			if len(action.Questions) == 0 {
+				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask requires a non-empty questions array")))
+				continue
+			}
+			answers, waitErr := r.requestQuestions(ctx, action.Questions)
+			if waitErr != nil {
+				return task, r.fail(task, waitErr)
+			}
+			iteration++
+			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+			allUnanswered := true
+			for _, a := range answers {
+				if a.Answer != "Unanswered" {
+					allUnanswered = false
+					break
+				}
+			}
+			if allUnanswered {
+				consecutiveEmpty++
+				r.trackerMu.Lock()
+				r.tracker.recordIdle("question.ask declined")
+				r.trackerMu.Unlock()
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer every question. Proceed with your best judgment and state the assumptions you made."})
+				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+					return resTask, ferr
+				} else if nudge != "" {
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
+				}
+			} else {
+				consecutiveEmpty = 0
+				parts := make([]string, 0, len(answers))
+				for _, a := range answers {
+					parts = append(parts, fmt.Sprintf("%q: %q", a.Question, a.Answer))
+				}
+				r.State.AddMessage(session.RoleUser, "User answers: "+strings.Join(parts, ", "), session.ContentTypePlain)
+				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "User answers: " + strings.Join(parts, ", ")})
+			}
 		default:
 			messages = append(messages, BuildCorrectionMessage(fmt.Errorf("unsupported action type %q", action.Type)))
 		}
@@ -925,6 +967,14 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			msgs = append(msgs, msg)
 			continue
 		}
+		if call.Name == "question.ask" {
+			msg, err := r.executeNativeQuestionAsk(ctx, call)
+			if err != nil {
+				return nil, err
+			}
+			msgs = append(msgs, msg)
+			continue
+		}
 		resultMsgs, err := r.executeToolCall(ctx, ModelAction{
 			Type:       ActionToolCall,
 			Tool:       call.Name,
@@ -941,14 +991,14 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 
 func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall) (schema.ChatMessage, error) {
 	if r.role() != RoleGeneral {
-		return BuildNativeToolErrorMessage("ask_user", fmt.Sprintf("ask_user is not available for the %s role", r.role()), call.ID), nil
+		return BuildNativeToolErrorMessage(call.Name, fmt.Sprintf("%s is not available for the %s role", call.Name, r.role()), call.ID), nil
 	}
 	var payload struct {
 		Question string `json:"question"`
 	}
 	if err := json.Unmarshal(call.Args, &payload); err != nil || strings.TrimSpace(payload.Question) == "" {
 		r.countToolCall(true, false)
-		return BuildNativeToolErrorMessage("ask_user", "arguments must include a question string", call.ID), nil
+		return BuildNativeToolErrorMessage(call.Name, "arguments must include a question string", call.ID), nil
 	}
 	answer, waitErr := r.requestAnswer(ctx, payload.Question)
 	if waitErr != nil {
@@ -960,6 +1010,39 @@ func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall)
 	}
 	r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
 	return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "User answered: " + answer}, nil
+}
+
+// executeNativeQuestionAsk handles the new structured question.ask tool,
+// which accepts one or more questions with optional options/multi/other.
+func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolCall) (schema.ChatMessage, error) {
+	if r.role() != RoleGeneral {
+		return BuildNativeToolErrorMessage(call.Name, fmt.Sprintf("%s is not available for the %s role", call.Name, r.role()), call.ID), nil
+	}
+	var payload struct {
+		Questions []session.Question `json:"questions"`
+	}
+	if err := json.Unmarshal(call.Args, &payload); err != nil || len(payload.Questions) == 0 {
+		r.countToolCall(true, false)
+		return BuildNativeToolErrorMessage(call.Name, "arguments must include a non-empty questions array", call.ID), nil
+	}
+	answers, waitErr := r.requestQuestions(ctx, payload.Questions)
+	if waitErr != nil {
+		return schema.ChatMessage{}, waitErr
+	}
+	r.countToolCall(false, false)
+	parts := []string{"User answers:"}
+	allUnanswered := true
+	for _, a := range answers {
+		if a.Answer != "Unanswered" {
+			allUnanswered = false
+		}
+		parts = append(parts, fmt.Sprintf("- %q: %q", a.Question, a.Answer))
+	}
+	r.State.AddMessage(session.RoleUser, strings.Join(parts[1:], "\n"), session.ContentTypePlain)
+	if allUnanswered {
+		return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "The user declined to answer every question. Proceed with your best judgment."}, nil
+	}
+	return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: strings.Join(parts, "\n")}, nil
 }
 
 func (r *Runner) allReadOnly(actions []ModelAction) error {
@@ -1065,23 +1148,38 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 }
 
 func (r *Runner) requestAnswer(ctx context.Context, question string) (string, error) {
-	r.State.AddMessage(session.RoleAssistant, question, session.ContentTypeMarkdown)
+	answers, err := r.requestQuestions(ctx, []session.Question{{Question: question}})
+	if err != nil {
+		return "", err
+	}
+	if len(answers) == 0 {
+		return "", nil
+	}
+	return answers[0].Answer, nil
+}
+
+// requestQuestions blocks on the TUI for one or more structured Answers.
+// It produces the same shape the native question.ask tool produces.
+func (r *Runner) requestQuestions(ctx context.Context, questions []session.Question) ([]session.Answer, error) {
+	for _, q := range questions {
+		r.State.AddMessage(session.RoleAssistant, q.Question, session.ContentTypeMarkdown)
+	}
 	q := &session.PendingQuestion{
-		Question:     question,
-		ResponseChan: make(chan string, 1),
+		Questions:    questions,
+		ResponseChan: make(chan []session.Answer, 1),
 	}
 	r.State.SetPendingQuestion(q)
 	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: "waiting for your answer", StartedAt: r.Now()})
 
 	select {
-	case answer := <-q.ResponseChan:
+	case answers := <-q.ResponseChan:
 		r.State.SetPendingQuestion(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		return answer, nil
+		return answers, nil
 	case <-ctx.Done():
 		r.State.SetPendingQuestion(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		return "", ctx.Err()
+		return nil, ctx.Err()
 	}
 }
 

@@ -107,12 +107,31 @@ type UserApprovalDecision struct {
 	Edited   string
 }
 
-// PendingQuestion is a clarifying question from the agent awaiting the
-// user's free-text answer. The runner blocks on ResponseChan; the TUI sends
-// exactly one value ("" means the user declined to answer).
+// Question is a single clarifying question presented to the user. Options
+// triggers select/multi-select rendering in the TUI; Multi selects between
+// NewSelect and NewMultiSelect. AllowOther enables the "Other" affordance
+// that lets the user type a free-text answer that's not in the option list.
+type Question struct {
+	Question   string   `json:"question"`
+	Options    []string `json:"options,omitempty"`
+	Multi      bool     `json:"multi,omitempty"`
+	AllowOther bool     `json:"allow_other,omitempty"`
+}
+
+// Answer is the user's response to one Question. When the user hits Esc on
+// a question, the TUI records the literal string "Unanswered" so the agent
+// can see exactly which questions were skipped.
+type Answer struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
+// PendingQuestion carries one or more Questions from the agent awaiting
+// user response. The runner blocks on ResponseChan; the TUI sends exactly
+// one value, one Answer per Question (in the same order).
 type PendingQuestion struct {
-	Question     string
-	ResponseChan chan string
+	Questions    []Question
+	ResponseChan chan []Answer
 }
 
 type PendingToolCall struct {

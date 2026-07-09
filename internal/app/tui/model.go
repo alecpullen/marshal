@@ -606,8 +606,9 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 }
 
 // handleQuestion routes messages to the inline question form while a
-// clarifying question is pending. On completion it sends the answer (or an
-// empty string on abort) to the runner's response channel.
+// clarifying question is pending. On completion it sends the answers (or
+// every question marked "Unanswered" on abort) to the runner's response
+// channel.
 func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
 	if m.questionModel == nil {
 		m.questionModel = newQuestionModel(q, max(m.width-4, 30))
@@ -618,11 +619,7 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 		return m, cmd
 	}
 
-	if m.questionModel.Aborted() {
-		q.ResponseChan <- ""
-	} else {
-		q.ResponseChan <- strings.TrimSpace(m.questionModel.Answer())
-	}
+	q.ResponseChan <- m.questionModel.Answers()
 	m.state.SetPendingQuestion(nil)
 	m.questionModel = nil
 	m.input.Reset()

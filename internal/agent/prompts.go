@@ -75,7 +75,7 @@ const baseRules = `Rules:
 - Destructive or risky commands require explicit user approval.
 - Before editing, trace the relevant code path.
 - After editing, run the narrowest useful validation.
-- If the request is ambiguous, or a decision would materially change the outcome, ask the user with an "ask_user" action instead of guessing. Ask one specific question at a time.
+- If the request is ambiguous, or a decision would materially change the outcome, ask the user with the question.ask native tool (or the ask_user envelope action) instead of guessing. Prefer question.ask when you have multiple related questions, optional choices, or multi-select needs; it presents them all in a single round-trip.
 - Summarise results clearly.
 - Use tools only to obtain facts you don't already have in the transcript or context pack.
 - Once the requested change is made and validated, produce a final answer — do not keep exploring.

@@ -29,6 +29,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 	maxRetries := cfg.Agent.MaxRetries
 	maxTurnContextTokens := cfg.Agent.MaxTurnContextTokens
 	planFirst := cfg.Agent.PlanFirst
+	subtaskIterations := cfg.Agent.SubtaskIterations
 	if activePresetName == "" {
 		agentProvider := cfg.Agent.Provider
 		agentModel := cfg.Agent.Model
@@ -40,7 +41,8 @@ func SaveProjectConfig(path string, cfg Config) error {
 			MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
 			MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
 			PlanFirst                *bool   `toml:"plan_first"`
-		}{Provider: &agentProvider, Model: &agentModel, MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst}
+			SubtaskIterations        *int    `toml:"subtask_iterations"`
+		}{Provider: &agentProvider, Model: &agentModel, MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst, SubtaskIterations: &subtaskIterations}
 	} else {
 		file.Agent = &struct {
 			Provider                 *string `toml:"provider"`
@@ -50,7 +52,8 @@ func SaveProjectConfig(path string, cfg Config) error {
 			MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
 			MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
 			PlanFirst                *bool   `toml:"plan_first"`
-		}{MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst}
+			SubtaskIterations        *int    `toml:"subtask_iterations"`
+		}{MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst, SubtaskIterations: &subtaskIterations}
 	}
 
 	remoteAllowed := cfg.Privacy.RemoteProvidersAllowed

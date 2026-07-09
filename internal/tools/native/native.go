@@ -103,6 +103,9 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
 	}
+	// agent.run is registered separately by app.Run after the policy engine
+	// is constructed; the native toolset does not have access to the engine
+	// until then. See internal/app/app.go.
 	if tools.webEnabled {
 		all = append(all, tools.webFetchTool())
 		if tools.webSearchURL != "" {

@@ -227,6 +227,8 @@ type State struct {
 	swarmProgress   SwarmProgress
 	sandbox         SandboxInfo
 	runningJobs     int
+	subagentDepth   int
+	subagentConcurr int
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
@@ -282,6 +284,85 @@ func (s *State) RunningJobsCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.runningJobs
+}
+
+// Subagent depth/concurrency bookkeeping. agent.run uses these to enforce the
+// hard limits documented in Milestone P (depth 1, concurrency 2). They live
+// on the shared session state so any agent.run invocation — even concurrent
+// ones from different Go routines — sees the same counters.
+const (
+	subagentMaxDepth       = 1
+	subagentMaxConcurrency = 2
+)
+
+var (
+	ErrSubagentDepthLimit       = fmt.Errorf("session: subagent depth limit exceeded (max %d)", subagentMaxDepth)
+	ErrSubagentConcurrencyLimit = fmt.Errorf("session: subagent concurrency limit exceeded (max %d)", subagentMaxConcurrency)
+)
+
+// EnterSubagent validates the depth and concurrency guards against the
+// session's current counters and, on success, increments them. The caller
+// MUST pair every successful EnterSubagent with an ExitSubagent (typically
+// via defer) so the counters return to their prior values when the subtask
+// returns.
+func (s *State) EnterSubagent() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subagentDepth >= subagentMaxDepth {
+		return ErrSubagentDepthLimit
+	}
+	if s.subagentConcurr >= subagentMaxConcurrency {
+		return ErrSubagentConcurrencyLimit
+	}
+	s.subagentDepth++
+	s.subagentConcurr++
+	return nil
+}
+
+// ExitSubagent decrements the depth and concurrency counters added by a
+// prior successful EnterSubagent. Calling ExitSubagent without a matching
+// EnterSubagent is a programming error and would emit negative counters;
+// callers must always pair the calls.
+func (s *State) ExitSubagent() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subagentDepth > 0 {
+		s.subagentDepth--
+	}
+	if s.subagentConcurr > 0 {
+		s.subagentConcurr--
+	}
+}
+
+// SubagentDepth returns the current nested-subagent depth counter. Exposed
+// for diagnostics and tests.
+func (s *State) SubagentDepth() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subagentDepth
+}
+
+// SubagentConcurrency returns the number of agent.run invocations currently
+// in flight on this session. Exposed for diagnostics and tests.
+func (s *State) SubagentConcurrency() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subagentConcurr
+}
+
+// SetSubagentDepth and SetSubagentConcurrency are test-only overrides that
+// let unit tests simulate prior subagent entries from outside the goroutine
+// that would normally hold the lock. Production code uses EnterSubagent.
+func (s *State) SetSubagentDepth(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subagentDepth = n
+}
+
+func (s *State) SetSubagentConcurrency(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subagentConcurr = n
 }
 
 func (s *State) persistenceEnabled() bool {

@@ -199,6 +199,11 @@ type AgentConfig struct {
 	MaxTurnContextTokens     int    `toml:"max_turn_context_tokens"`
 	MaxStructuredOutputChars int    `toml:"max_structured_output_chars"`
 	PlanFirst                bool   `toml:"plan_first"`
+	// SubtaskIterations caps tool iterations for an ad-hoc agent.run child.
+	// The child gets a fresh Runner with this cap (defaults to 12 when zero).
+	// A subtask that exhausts its budget is salvaged: the parent receives
+	// whatever partial answer the child produced instead of a hard error.
+	SubtaskIterations int `toml:"subtask_iterations"`
 }
 
 type PrivacyConfig struct {
@@ -250,6 +255,7 @@ type configFile struct {
 		MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
 		MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
 		PlanFirst                *bool   `toml:"plan_first"`
+		SubtaskIterations        *int    `toml:"subtask_iterations"`
 	} `toml:"agent"`
 	Privacy *struct {
 		RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
@@ -578,6 +584,9 @@ func merge(cfg *Config, file configFile) error {
 		}
 		if file.Agent.PlanFirst != nil {
 			cfg.Agent.PlanFirst = *file.Agent.PlanFirst
+		}
+		if file.Agent.SubtaskIterations != nil {
+			cfg.Agent.SubtaskIterations = *file.Agent.SubtaskIterations
 		}
 	}
 	if file.Privacy != nil {

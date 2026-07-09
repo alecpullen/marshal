@@ -19,6 +19,7 @@ const (
 	RoleTester      AgentRole = "tester"
 	RoleReviewer    AgentRole = "reviewer"
 	RoleRepoScout   AgentRole = "repo_scout"
+	RoleSubtask     AgentRole = "subtask"
 )
 
 type rolePrompt struct {
@@ -57,6 +58,11 @@ var roleAddenda = map[AgentRole]rolePrompt{
 		focus:          "You are a repo scout. Inspect the repository with read-only tools and report findings for your assigned focus area: relevant file paths, symbols, code paths, and risks. Do not modify anything. Be concise and concrete.",
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Locate the parser implementation before reporting findings.", "action": {"type": "tool_call", "tool": "repo.search", "args": {"query": "func Parse"}}}`,
+	},
+	RoleSubtask: {
+		focus:          "You are running an ad-hoc read-only subtask delegated by the parent agent. You only have read-only and network tools (file.read, repo.search, web.fetch, etc.). You MUST NOT attempt to write, modify, patch, or run arbitrary commands. You also MUST NOT prompt the user (ask_user is unavailable in your role). Produce a concise final answer describing what you found; the parent agent will use your summary to continue the main task.",
+		allowedActions: []string{"tool_call", "final"},
+		example:        `{"rationale": "Confirm the symbol exists before reporting.", "action": {"type": "tool_call", "tool": "symbols.find", "args": {"query": "Parse"}}}`,
 	},
 }
 

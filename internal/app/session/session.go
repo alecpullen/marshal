@@ -570,9 +570,14 @@ func (s *State) SteeringQueue() []string {
 // model context.
 func (s *State) DrainSteering() []string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	out := s.steeringQueue
 	s.steeringQueue = nil
+	broker := s.steeringBroker
+	queueLen := len(s.steeringQueue)
+	s.mu.Unlock()
+	if broker != nil {
+		broker.Publish("steering", SteeringEvent{QueueLen: queueLen})
+	}
 	return out
 }
 
@@ -581,12 +586,18 @@ func (s *State) DrainSteering() []string {
 // at a time; DrainSteering handles the rest when the next turn starts.
 func (s *State) PopSteering() (string, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.steeringQueue) == 0 {
+		s.mu.Unlock()
 		return "", false
 	}
 	oldest := s.steeringQueue[0]
 	s.steeringQueue = s.steeringQueue[1:]
+	broker := s.steeringBroker
+	queueLen := len(s.steeringQueue)
+	s.mu.Unlock()
+	if broker != nil {
+		broker.Publish("steering", SteeringEvent{QueueLen: queueLen})
+	}
 	return oldest, true
 }
 
@@ -595,7 +606,12 @@ func (s *State) PopSteering() (string, bool) {
 func (s *State) ClearSteering() {
 	s.mu.Lock()
 	s.steeringQueue = nil
+	broker := s.steeringBroker
+	queueLen := len(s.steeringQueue)
 	s.mu.Unlock()
+	if broker != nil {
+		broker.Publish("steering", SteeringEvent{QueueLen: queueLen})
+	}
 }
 
 // SetSteeringBroker wires the pub/sub broker so PushSteering publishes.

@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/diffview"
 	"marshal/internal/tools/registry"
 )
 
@@ -353,31 +354,14 @@ func renderPlanBlock(content string, width int) string {
 }
 
 func renderDiffBlock(content string, width int) string {
-	addStyle := lipgloss.NewStyle().Foreground(successColor)
-	delStyle := lipgloss.NewStyle().Foreground(errorColor)
-	contentWidth := max(width-2, 1)
-	var b strings.Builder
-	for _, line := range strings.Split(content, "\n") {
-		var lineStyle lipgloss.Style
-		switch {
-		case strings.HasPrefix(line, "@@"):
-			lineStyle = mutedStyle
-		case strings.HasPrefix(line, "+"):
-			lineStyle = addStyle
-		case strings.HasPrefix(line, "-"):
-			lineStyle = delStyle
-		default:
-			lineStyle = lipgloss.NewStyle()
-		}
-		wrapped := ansi.Wrap(line, contentWidth, "")
-		for _, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString("  ")
-			b.WriteString(lineStyle.Render(wl))
-			b.WriteString("\n")
-		}
+	rendered := diffview.Render(content, diffview.Options{Width: max(width-2, 1), Mode: diffview.ModeAuto, Highlight: true})
+	if rendered == "" && content != "" {
+		rendered = content
 	}
-	b.WriteString("\n")
-	return b.String()
+	if rendered != "" && !strings.HasSuffix(rendered, "\n") {
+		rendered += "\n"
+	}
+	return rendered + "\n"
 }
 
 var providerErrorStyle = lipgloss.NewStyle().Foreground(errorColor).Bold(true)

@@ -44,6 +44,7 @@ type scriptedProvider struct {
 	calls         int
 	requests      []schema.ChatRequest
 	capabilities  schema.ProviderCapabilities
+	onChat        func(idx int, req schema.ChatRequest)
 }
 
 func (p *scriptedProvider) Name() string { return "scripted" }
@@ -64,6 +65,9 @@ func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	idx := p.calls
 	p.requests = append(p.requests, req)
 	p.calls++
+	if p.onChat != nil {
+		p.onChat(idx, req)
+	}
 
 	ch := make(chan schema.ChatEvent, 3)
 	if idx < len(p.thinking) && p.thinking[idx] != "" {

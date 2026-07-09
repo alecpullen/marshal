@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -162,6 +163,66 @@ func TestRunTaskPinsAtFileReferences(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("pinned file_snippet section with Priority 100 not found in pack sections")
+	}
+}
+
+func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "steered.go"), []byte("package steered\n\n// MARKER: steered-go-file\n"), 0o644); err != nil {
+		t.Fatalf("write steered.go: %v", err)
+	}
+	database := openTestDB(t)
+	projectID := int64(1)
+	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "steered.go", Language: "go"}}); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
+
+	p := &scriptedProvider{
+		responses: []string{
+			`{"rationale":"inspect","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
+			`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
+		},
+	}
+	p.onChat = func(idx int, req schema.ChatRequest) {
+		if idx == 0 {
+			state.PushSteering("also inspect @steered.go")
+		}
+	}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name:        "file.read",
+		Description: "stub",
+		Risk:        registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Content: "ok", Summary: "ok"}, nil
+		},
+	})
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.SteeringProvider = state
+	runner.ProjectID = projectID
+	runner.MaxToolIterations = 5
+
+	_, err := runner.RunTask(context.Background(), "do the thing")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if len(p.requests) < 2 {
+		t.Fatalf("provider saw %d chat calls, want >= 2", len(p.requests))
+	}
+	var sawPinnedContent bool
+	for _, msg := range p.requests[1].Messages {
+		if strings.Contains(msg.Content, "MARKER: steered-go-file") {
+			sawPinnedContent = true
+			break
+		}
+	}
+	if !sawPinnedContent {
+		t.Fatalf("second provider request missing steered file content:\n%v", p.requests[1].Messages)
+	}
+	pack := state.ContextPack()
+	if len(pack.Pinned) != 1 || pack.Pinned[0].Path != "steered.go" {
+		t.Fatalf("pack.Pinned = %+v, want steered.go", pack.Pinned)
 	}
 }
 

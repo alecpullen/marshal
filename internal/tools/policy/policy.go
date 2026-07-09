@@ -75,6 +75,10 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		return DecisionConfirm, "requires approval (unconfigured MCP tool secure default)", nil
 	}
 
+	if toolName == "web.fetch" || toolName == "web.search" {
+		return DecisionConfirm, "network access requires approval", nil
+	}
+
 	if toolName != "shell.run" && toolName != "test.run" {
 		return DecisionAllow, "low-risk read tool", nil
 	}

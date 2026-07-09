@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"path/filepath"
 	"time"
 
@@ -62,6 +64,15 @@ type toolSet struct {
 	jobManager     *JobManager
 	diagnostics    *diagnostics.Checker
 	registry       *registry.Registry
+
+	webEnabled      bool
+	webFetchTimeout time.Duration
+	webSearchURL    string
+	webSearchKey    string
+
+	// Test-only hooks. nil in production.
+	webHTTPClient *http.Client
+	ssrfCheck     func(*url.URL) bool
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -71,7 +82,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	}
 	tools.registry = reg
 
-	for _, tool := range []registry.Tool{
+	all := []registry.Tool{
 		tools.fileReadTool(),
 		tools.fileWritePatchTool(),
 		tools.repoSearchTool(),
@@ -91,7 +102,14 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.askUserTool(),
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
-	} {
+	}
+	if tools.webEnabled {
+		all = append(all, tools.webFetchTool())
+		if tools.webSearchURL != "" {
+			all = append(all, tools.webSearchTool())
+		}
+	}
+	for _, tool := range all {
 		if err := reg.Register(tool); err != nil {
 			return err
 		}
@@ -153,5 +171,11 @@ func newToolSet(opts Options) (*toolSet, error) {
 		projectID:      opts.ProjectID,
 		jobManager:     jobManager,
 		diagnostics:    diagnostics.NewChecker(opts.Config.Diagnostics.Commands),
+
+		webEnabled:      opts.Config.Web.Enabled,
+		webFetchTimeout: opts.Config.Web.FetchTimeout,
+		webSearchURL:    opts.Config.Web.SearchURL,
+		webSearchKey:    opts.Config.Web.SearchKey,
+		ssrfCheck:       isPrivateURL,
 	}, nil
 }

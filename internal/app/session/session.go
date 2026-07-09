@@ -231,9 +231,24 @@ type State struct {
 	subagentConcurr int
 }
 
-func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
+// Option configures a State at construction time. Use WithDepth to override
+// the default subagent nesting level (depth 0 = top-level agent) when
+// building a child session.
+type Option func(*State)
+
+// WithDepth sets the subagent nesting depth for a new State. The default
+// (zero value) is a top-level agent; a child subagent session passes its
+// parent's depth + 1. The depth is fixed at construction and is consulted
+// unchanged by EnterSubagent/ExitSubagent.
+func WithDepth(d int) Option {
+	return func(s *State) {
+		s.subagentDepth = d
+	}
+}
+
+func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opts ...Option) *State {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &State{
+	s := &State{
 		Config:        cfg,
 		WorkingDir:    workingDir,
 		StartedAt:     now,
@@ -247,6 +262,10 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *St
 		activeSkills:  make(map[string]bool),
 		loadedTools:   make(map[string]bool),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *State) SessionID() string { return s.sessionID }
@@ -290,6 +309,18 @@ func (s *State) RunningJobsCount() int {
 // hard limits documented in Milestone P (depth 1, concurrency 2). They live
 // on the shared session state so any agent.run invocation — even concurrent
 // ones from different Go routines — sees the same counters.
+//
+// Depth is a property of the session itself (set at construction via
+// WithDepth): a top-level agent has depth 0; a child subagent launched from
+// a depth-0 parent has depth 1; nested subsubagents would have depth 2.
+// The depth guard rejects EnterSubagent when this session's depth has
+// already hit the cap — defense in depth alongside SubtaskScopeView's
+// filtering of agent.run out of the child's registry.
+//
+// Concurrency is a runtime counter on the parent session: the number of
+// in-flight agent.run children the parent has launched. EnterSubagent
+// increments it; ExitSubagent decrements it. The concurrency guard caps
+// parallel sibling subagents the same parent may have running at once.
 const (
 	subagentMaxDepth       = 1
 	subagentMaxConcurrency = 2
@@ -300,11 +331,12 @@ var (
 	ErrSubagentConcurrencyLimit = fmt.Errorf("session: subagent concurrency limit exceeded (max %d)", subagentMaxConcurrency)
 )
 
-// EnterSubagent validates the depth and concurrency guards against the
-// session's current counters and, on success, increments them. The caller
-// MUST pair every successful EnterSubagent with an ExitSubagent (typically
-// via defer) so the counters return to their prior values when the subtask
-// returns.
+// EnterSubagent validates the depth and concurrency guards for spawning a
+// new subagent from this session. On success, the in-flight concurrency
+// counter is incremented; depth is fixed at construction and never changes
+// here. The caller MUST pair every successful EnterSubagent with an
+// ExitSubagent (typically via defer) so the counter returns to its prior
+// value when the subtask returns.
 func (s *State) EnterSubagent() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -314,28 +346,24 @@ func (s *State) EnterSubagent() error {
 	if s.subagentConcurr >= subagentMaxConcurrency {
 		return ErrSubagentConcurrencyLimit
 	}
-	s.subagentDepth++
 	s.subagentConcurr++
 	return nil
 }
 
-// ExitSubagent decrements the depth and concurrency counters added by a
-// prior successful EnterSubagent. Calling ExitSubagent without a matching
-// EnterSubagent is a programming error and would emit negative counters;
-// callers must always pair the calls.
+// ExitSubagent decrements the in-flight concurrency counter added by a prior
+// successful EnterSubagent. Calling ExitSubagent without a matching
+// EnterSubagent is a programming error and would emit a negative counter;
+// callers must always pair the calls. Depth is unaffected.
 func (s *State) ExitSubagent() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.subagentDepth > 0 {
-		s.subagentDepth--
-	}
 	if s.subagentConcurr > 0 {
 		s.subagentConcurr--
 	}
 }
 
-// SubagentDepth returns the current nested-subagent depth counter. Exposed
-// for diagnostics and tests.
+// SubagentDepth returns the session's nesting depth — set once at
+// construction via WithDepth. Exposed for diagnostics and tests.
 func (s *State) SubagentDepth() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -350,15 +378,10 @@ func (s *State) SubagentConcurrency() int {
 	return s.subagentConcurr
 }
 
-// SetSubagentDepth and SetSubagentConcurrency are test-only overrides that
-// let unit tests simulate prior subagent entries from outside the goroutine
+// SetSubagentConcurrency is a test-only override that lets unit tests
+// simulate prior in-flight subagent entries from outside the goroutine
 // that would normally hold the lock. Production code uses EnterSubagent.
-func (s *State) SetSubagentDepth(n int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.subagentDepth = n
-}
-
+// Depth is no longer settable here — use WithDepth at construction time.
 func (s *State) SetSubagentConcurrency(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

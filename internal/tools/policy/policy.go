@@ -75,6 +75,9 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		return DecisionConfirm, "requires approval (unconfigured MCP tool secure default)", nil
 	}
 
+	// Network tools always require explicit approval regardless of any
+	// later auto-allow path. MUST stay above the generic low-risk fallback
+	// below; TestPolicyEngine_Evaluate_WebToolsAlwaysConfirm pins behavior.
 	if toolName == "web.fetch" || toolName == "web.search" {
 		return DecisionConfirm, "network access requires approval", nil
 	}

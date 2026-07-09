@@ -17,6 +17,8 @@ import (
 	"marshal/internal/redact"
 
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/util"
 )
 
 //go:embed template.html
@@ -56,7 +58,7 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 
 	transcript := state.Transcript()
 	items := make([]item, 0, len(transcript))
-	md := goldmark.New()
+	md := goldmark.New(goldmark.WithParser(safeParser()))
 	for _, t := range transcript {
 		switch t.Kind {
 		case session.KindMessage:
@@ -120,6 +122,46 @@ func Write(state *session.State, path string, redactOn bool) error {
 		return err
 	}
 	return os.WriteFile(path, htmlBytes, 0o644)
+}
+
+// safeParser returns a goldmark parser configured to drop raw HTML
+// (block-level and inline) so that exported sessions cannot smuggle
+// <script>, <iframe>, or other script-execution vectors into the
+// shared HTML artifact. Goldmark v1.7.x does not expose a high-level
+// "disable raw HTML" toggle, so we rebuild the block/inline parser
+// lists with the raw-HTML parsers excluded.
+func safeParser() parser.Parser {
+	return parser.NewParser(
+		parser.WithBlockParsers(safeBlockParsers()...),
+		parser.WithInlineParsers(safeInlineParsers()...),
+		parser.WithParagraphTransformers(parser.DefaultParagraphTransformers()...),
+	)
+}
+
+func safeBlockParsers() []util.PrioritizedValue {
+	rawHTML := parser.NewHTMLBlockParser()
+	defaults := parser.DefaultBlockParsers()
+	out := make([]util.PrioritizedValue, 0, len(defaults))
+	for _, p := range defaults {
+		if p.Value == rawHTML {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func safeInlineParsers() []util.PrioritizedValue {
+	rawHTML := parser.NewRawHTMLParser()
+	defaults := parser.DefaultInlineParsers()
+	out := make([]util.PrioritizedValue, 0, len(defaults))
+	for _, p := range defaults {
+		if p.Value == rawHTML {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func contentToHTML(md goldmark.Markdown, content string, ct session.ContentType) template.HTML {

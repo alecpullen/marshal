@@ -24,6 +24,7 @@ type Config struct {
 	Tools         ToolsConfig                           `toml:"tools"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	MCP           MCPConfig                             `toml:"mcp"`
+	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
 }
 
 type ModelsConfig struct {
@@ -80,6 +81,10 @@ type MCPServerConfig struct {
 	Command string            `toml:"command"`
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
+}
+
+type DiagnosticsConfig struct {
+	Commands map[string]string `toml:"commands"`
 }
 
 type ShellToolConfig struct {
@@ -274,6 +279,9 @@ type configFile struct {
 		} `toml:"servers"`
 		Policies map[string]string `toml:"policies"`
 	} `toml:"mcp"`
+	Diagnostics *struct {
+		Commands map[string]string `toml:"commands"`
+	} `toml:"diagnostics"`
 	// Providers, unlike the other configFile fields above, is not a
 	// pointer-to-anonymous-struct: a nil map already distinguishes
 	// "providers section absent from this file" from "present", so no
@@ -376,6 +384,9 @@ func Default() Config {
 		MCP: MCPConfig{
 			Servers:  map[string]MCPServerConfig{},
 			Policies: map[string]string{},
+		},
+		Diagnostics: DiagnosticsConfig{
+			Commands: map[string]string{"go": "go vet {package}"},
 		},
 		// Providers is intentionally left nil: Marshal is local-first with no
 		// built-in provider assumptions, and provider URLs/keys are
@@ -709,6 +720,14 @@ func merge(cfg *Config, file configFile) error {
 				cfg.MCP.Policies = map[string]string{}
 			}
 			cfg.MCP.Policies[k] = v
+		}
+	}
+	if file.Diagnostics != nil && file.Diagnostics.Commands != nil {
+		if cfg.Diagnostics.Commands == nil {
+			cfg.Diagnostics.Commands = map[string]string{}
+		}
+		for k, v := range file.Diagnostics.Commands {
+			cfg.Diagnostics.Commands[k] = v
 		}
 	}
 	return nil

@@ -294,3 +294,60 @@ func TestUpdateSessionTitle(t *testing.T) {
 		t.Fatalf("title = %q, want %q", s.Title, "Fix parser bug")
 	}
 }
+
+func TestGetLeafMessageIDFallsBackToMax(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	pid, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	sid := "leaf-fallback"
+	if err := db.CreateSession(sid, pid, "t", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// No messages yet → 0.
+	got, err := db.GetLeafMessageID(sid)
+	if err != nil {
+		t.Fatalf("GetLeafMessageID: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("empty session leaf = %d, want 0", got)
+	}
+
+	// Add a few messages but never call SetBranchLeaf — leaf_message_id
+	// stays NULL. Fallback should return MAX(id).
+	if _, err := db.SaveMessage(sid, "user", "a", "plain", time.Now().UTC(), "", 0, false, 0); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	if _, err := db.SaveMessage(sid, "assistant", "b", "plain", time.Now().UTC(), "", 0, false, 0); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	got, err = db.GetLeafMessageID(sid)
+	if err != nil {
+		t.Fatalf("GetLeafMessageID: %v", err)
+	}
+	all, _ := db.GetMessages(sid)
+	if got != all[len(all)-1].ID {
+		t.Fatalf("fallback leaf = %d, want MAX id %d", got, all[len(all)-1].ID)
+	}
+
+	// After SetBranchLeaf, returns the explicit value.
+	if err := db.SetBranchLeaf(sid, all[0].ID); err != nil {
+		t.Fatalf("SetBranchLeaf: %v", err)
+	}
+	got, err = db.GetLeafMessageID(sid)
+	if err != nil {
+		t.Fatalf("GetLeafMessageID: %v", err)
+	}
+	if got != all[0].ID {
+		t.Fatalf("explicit leaf = %d, want %d", got, all[0].ID)
+	}
+}

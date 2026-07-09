@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/huhtheme"
+	"marshal/internal/diffview"
 )
 
 // approvalChoice is the set of actions the inline approval chooser offers.
@@ -126,7 +127,18 @@ func (am *approvalModel) View() string {
 	if am.form == nil {
 		return ""
 	}
-	return am.form.View()
+	var b strings.Builder
+	if am.tc != nil && am.tc.Diff != "" && am.width > 0 {
+		diff := diffview.Render(am.tc.Diff, diffview.Options{
+			Width:     am.width,
+			Mode:      diffview.ModeAuto,
+			Highlight: true,
+		})
+		b.WriteString(diff)
+		b.WriteString("\n")
+	}
+	b.WriteString(am.form.View())
+	return b.String()
 }
 
 func (am *approvalModel) Choice() approvalChoice { return am.choice }

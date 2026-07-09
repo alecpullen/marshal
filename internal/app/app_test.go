@@ -293,7 +293,7 @@ func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
 	cfg := nativeToolAgentConfig("native-provider")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "")
+	runner, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "")
+	runner, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 	reloaded.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, swarmRunner, mcpMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "")
+	runner, _, swarmRunner, mcpMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 		t.Fatalf("initial MaxFixRounds = %d, want 1", swarmRunner.MaxFixRounds)
 	}
 
-	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, "", runner, swarmRunner, &mcpMgr); err != nil {
+	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, "", runner, swarmRunner, &mcpMgr, nil, nil); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 	if swarmRunner.MaxFixRounds != 5 {
@@ -434,7 +434,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 	}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, mcpMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "")
+	runner, reg, swarmRunner, mcpMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 
 	// Reload with empty MCP config (removes MCP server)
 	reloaded := reloadableAgentConfig("provider")
-	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, "", runner, swarmRunner, &mcpMgr); err != nil {
+	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, "", runner, swarmRunner, &mcpMgr, nil, nil); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 
@@ -1185,7 +1185,7 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, toolReg, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "")
+	_, toolReg, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
 	if err == nil {
 		t.Fatal("buildAgentRunner should fail when api_key_env points at an unset var")
 	}

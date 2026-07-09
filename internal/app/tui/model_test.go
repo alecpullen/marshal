@@ -18,6 +18,8 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
+	"marshal/internal/pubsub"
+	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 )
 
@@ -1907,5 +1909,46 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 	}
 	if state.PendingQuestion() != nil {
 		t.Fatal("pending question not cleared after Esc")
+	}
+}
+
+// TestStatusLineJobCountFromBroker exercises the F19 broker-sourced job
+// count: when a jobBroker is wired, the status line reads m.jobCount
+// instead of m.state.RunningJobsCount().
+func TestStatusLineJobCountFromBroker(t *testing.T) {
+	b := pubsub.NewBroker[native.JobEvent]()
+	m := newViewTestModel(t, 80, 24)
+	m.jobBroker = b
+	m.jobCount = 5
+	line := m.renderStatusLine(80)
+	if !strings.Contains(stripANSI(line), "jobs 5") {
+		t.Fatalf("status line missing broker job count:\n%s", line)
+	}
+}
+
+// TestStatusLineJobCountFallbackWhenNoBroker verifies the polled fallback
+// is used when no broker is wired (e.g. test harnesses).
+func TestStatusLineJobCountFallbackWhenNoBroker(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.state.SetRunningJobsCount(3)
+	line := m.renderStatusLine(80)
+	if !strings.Contains(stripANSI(line), "jobs 3") {
+		t.Fatalf("status line missing polled job count:\n%s", line)
+	}
+}
+
+// TestJobCountMsgUpdatesModel verifies the jobCountMsg handler updates
+// the cached count and re-arms the pump.
+func TestJobCountMsgUpdatesModel(t *testing.T) {
+	b := pubsub.NewBroker[native.JobEvent]()
+	m := newViewTestModel(t, 80, 24)
+	m.jobBroker = b
+	updated, cmd := m.Update(jobCountMsg{count: 7})
+	um := updated.(Model)
+	if um.jobCount != 7 {
+		t.Fatalf("jobCount = %d, want 7", um.jobCount)
+	}
+	if cmd == nil {
+		t.Fatal("expected pump re-arm cmd, got nil")
 	}
 }

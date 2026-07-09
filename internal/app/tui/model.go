@@ -23,6 +23,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/permissions"
+	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
@@ -68,6 +69,15 @@ type Model struct {
 	forceMode              string // reserved for future status-bar display
 	approvalModel          *approvalModel
 	questionModel          *questionModel
+
+	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
+	// cmd returned from Init (and re-armed from Update on each
+	// jobCountMsg) bridges it into jobCountMsg values. jobCount is the
+	// cached value the status line renders. When jobBroker is nil
+	// (tests, fallback), the status line reads m.state.RunningJobsCount()
+	// as the polled fallback.
+	jobBroker *pubsub.Broker[native.JobEvent]
+	jobCount  int
 
 	// New Layout State
 	width    int
@@ -132,6 +142,18 @@ func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
 	return func(m *Model) {
 		m.ctx = ctx
 		m.swarmRunner = runner
+	}
+}
+
+// WithJobBroker wires the F19 pub/sub broker for F5 job-state changes.
+// The model subscribes via pumpJobEvents from Init and re-arms the pump
+// on each jobCountMsg. When broker is nil the model falls back to the
+// polled m.state.RunningJobsCount() for tests that don't construct a
+// broker.
+func WithJobBroker(ctx context.Context, broker *pubsub.Broker[native.JobEvent]) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.jobBroker = broker
 	}
 }
 
@@ -241,6 +263,9 @@ func blinkCmd() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
+	if m.jobBroker != nil {
+		return tea.Batch(blinkCmd(), pumpJobEvents(m.ctx, m.jobBroker))
+	}
 	return blinkCmd()
 }
 
@@ -374,6 +399,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
+	case jobCountMsg:
+		m.jobCount = msg.count
+		// Re-arm the pump: exactly one in-flight subscription at a time
+		// (F19 R2). Return nil if no broker is wired so the cmd chain
+		// terminates (this should not happen when the pump is sourced
+		// from Init, but keeps Update safe under tests that wire msgs
+		// directly).
+		if m.jobBroker == nil {
+			return m, nil
+		}
+		return m, pumpJobEvents(m.ctx, m.jobBroker)
 	case agentTickMsg:
 		if !m.busy {
 			return m, nil

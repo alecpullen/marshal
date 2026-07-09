@@ -50,3 +50,31 @@
 ### Commit hash
 
 - `22c7c1f` fix(tui): preserve at-file completion trigger
+
+## Fix: align @file completion triggers with runner extraction
+
+### Test-first failures observed
+
+- `go test -count=1 ./internal/app/tui/ -run 'TestAtFile|TestCompletionPopupFileKindAcceptedText|TestSlashCompletionAcceptsPlan' -v`: FAIL before fix as expected. `TestAtFileAfterPunctuationDoesNotTrigger` showed `see (@run` still opened the file popup, and `TestAtFileCompletionOmitsWhitespacePaths` showed `docs/has space.md` was offered.
+- `go test -count=1 ./internal/app/tui/ -run 'TestCompletionPopupFileKindOmitsWhitespaceText' -v`: FAIL before the popup filter as expected. The popup offered `docs/has space.md`.
+
+### Code changes
+
+- Added model coverage proving `@` after punctuation does not trigger file completion and paths with whitespace are omitted while normal paths still match.
+- Added popup coverage proving file completion items with whitespace are not offered, while normal file items remain available.
+- Changed TUI `@` boundary handling to match the runner extraction contract: start-of-input or whitespace only.
+- Filtered whitespace-containing file paths when building the file completion index and when updating the popup.
+- Left slash command completion behavior unchanged and preserved normal non-whitespace file completion acceptance.
+
+### Tests run
+
+- `go test -count=1 ./internal/app/tui/ -run 'TestAtFile|TestCompletionPopupFileKindAcceptedText|TestSlashCompletionAcceptsPlan' -v`: FAIL before fix as expected, then PASS after fix.
+- `go test -count=1 ./internal/app/tui/ -run 'TestCompletionPopupFileKindOmitsWhitespaceText' -v`: FAIL before popup filter as expected, then PASS via the expanded focused run.
+- `gofmt -w internal/app/tui/model.go internal/app/tui/model_test.go internal/app/tui/completions.go internal/app/tui/completions_test.go`: PASS.
+- `go test -count=1 ./internal/app/tui/ -run 'TestAtFile|TestCompletionPopupFileKind|TestSlashCompletionAcceptsPlan' -v`: PASS.
+- `go test -count=1 ./internal/app/tui/`: PASS.
+- `go test ./...`: PASS.
+
+### Commit hash
+
+- `28adb8e` fix(tui): align at-file completions with runner extraction

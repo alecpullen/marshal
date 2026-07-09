@@ -1,0 +1,136 @@
+// Package export renders a session transcript as a single self-contained HTML
+// file (docs/12 F15). It reads session.State messages and the audit log,
+// converts assistant markdown to HTML via goldmark, and optionally redacts
+// secret-bearing values via internal/redact. No external assets; no network.
+package export
+
+import (
+	_ "embed"
+	"fmt"
+	"html"
+	"html/template"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"marshal/internal/app/session"
+	"marshal/internal/redact"
+
+	"github.com/yuin/goldmark"
+)
+
+//go:embed template.html
+var templateHTML string
+
+type item struct {
+	IsMessage     bool
+	IsTool        bool
+	MessageClass  string
+	RoleLabel     string
+	ContentHTML   template.HTML
+	Reasoning     string
+	Usage         string
+	ToolName      string
+	ResultSummary string
+	ToolArgs      string
+	ToolError     string
+}
+
+type data struct {
+	Title string
+	Items []item
+}
+
+// Render produces the self-contained HTML for the session's active branch.
+// When redactOn is true, secret-bearing values are masked before rendering.
+func Render(state *session.State, redactOn bool) ([]byte, error) {
+	tmpl, err := template.New("session").Parse(templateHTML)
+	if err != nil {
+		return nil, fmt.Errorf("parse template: %w", err)
+	}
+
+	title := state.Title()
+	if title == "" {
+		title = "Marshal session " + state.SessionID()
+	}
+
+	transcript := state.Transcript()
+	items := make([]item, 0, len(transcript))
+	md := goldmark.New()
+	for _, t := range transcript {
+		switch t.Kind {
+		case session.KindMessage:
+			if t.Message == nil {
+				continue
+			}
+			content := t.Message.Content
+			if redactOn {
+				content = redact.Secrets(content)
+			}
+			contentHTML := contentToHTML(md, content, t.Message.ContentType)
+			cls := "user"
+			role := "user"
+			if t.Message.Role == session.RoleAssistant {
+				cls = "assistant"
+				role = "assistant"
+			} else if t.Message.Role == session.RoleSystem {
+				cls = "assistant"
+				role = "system"
+			}
+			items = append(items, item{
+				IsMessage:    true,
+				MessageClass: cls,
+				RoleLabel:    role,
+				ContentHTML:  contentHTML,
+				Reasoning:    t.Message.Reasoning,
+			})
+		case session.KindAudit:
+			if t.Audit == nil {
+				continue
+			}
+			args := string(t.Audit.Args)
+			if redactOn {
+				args = redact.Secrets(args)
+			}
+			items = append(items, item{
+				IsTool:        true,
+				ToolName:      t.Audit.ToolName,
+				ResultSummary: t.Audit.ResultSummary,
+				ToolArgs:      args,
+				ToolError:     t.Audit.Error,
+			})
+		}
+	}
+
+	var b strings.Builder
+	if err := tmpl.Execute(&b, data{Title: title, Items: items}); err != nil {
+		return nil, fmt.Errorf("execute template: %w", err)
+	}
+	return []byte(b.String()), nil
+}
+
+// Write renders and writes the file to path (defaulting to the working dir
+// when path is empty).
+func Write(state *session.State, path string, redactOn bool) error {
+	if path == "" {
+		path = filepath.Join(state.WorkingDir, "marshal-session-"+state.SessionID()+".html")
+	}
+	htmlBytes, err := Render(state, redactOn)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, htmlBytes, 0o644)
+}
+
+func contentToHTML(md goldmark.Markdown, content string, ct session.ContentType) template.HTML {
+	if ct == session.ContentTypeMarkdown ||
+		strings.Contains(content, "\n") ||
+		strings.ContainsAny(content, "*`#") {
+		var sb strings.Builder
+		if err := md.Convert([]byte(content), &sb); err != nil {
+			return template.HTML(html.EscapeString(content))
+		}
+		return template.HTML(sb.String())
+	}
+	return template.HTML(html.EscapeString(content))
+}

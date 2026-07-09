@@ -3,10 +3,12 @@ package commands
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"marshal/internal/app/session"
+	"marshal/internal/export"
 	"marshal/internal/tools/registry"
 )
 
@@ -355,6 +357,22 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				}
 				state.SwitchBranch(leaves[k-1])
 				return fmt.Sprintf("Switched to branch %d (leaf %d).", k, leaves[k-1])
+			},
+		},
+		{
+			Name:        "export",
+			Description: "Export this session to a self-contained HTML file",
+			Args:        "[path]",
+			Handler: func(state *session.State, args []string) string {
+				path := strings.Join(args, " ")
+				redactOn := state.Config.Privacy.RedactSecrets
+				if err := export.Write(state, path, redactOn); err != nil {
+					return fmt.Sprintf("Export failed: %v", err)
+				}
+				if path == "" {
+					path = filepath.Join(state.WorkingDir, "marshal-session-"+state.SessionID()+".html")
+				}
+				return "Exported to " + path
 			},
 		},
 	}

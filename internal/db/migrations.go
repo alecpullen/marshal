@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     title TEXT,
     started_at TEXT NOT NULL,
     ended_at TEXT,
-    summary TEXT
+    summary TEXT,
+    leaf_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -38,7 +39,8 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning TEXT,
     think_duration_ms INTEGER,
     created_at TEXT NOT NULL,
-    final INTEGER DEFAULT 0
+    final INTEGER DEFAULT 0,
+    parent_id INTEGER REFERENCES messages(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS tool_calls (

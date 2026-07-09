@@ -58,7 +58,7 @@ func TestConcurrentWritesDoNotLock(t *testing.T) {
 			if err := db.SaveToolCall(sessionID, event); err != nil {
 				errCh <- err
 			}
-			if err := db.SaveMessage(sessionID, "assistant", "hello", "markdown", time.Now().UTC(), "", 0, true); err != nil {
+			if _, err := db.SaveMessage(sessionID, "assistant", "hello", "markdown", time.Now().UTC(), "", 0, true, 0); err != nil {
 				errCh <- err
 			}
 		}(i)

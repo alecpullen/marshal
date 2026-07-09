@@ -667,6 +667,49 @@ func TestAddMessageSalvaged(t *testing.T) {
 	}
 }
 
+func TestRewindStartsNewBranch(t *testing.T) {
+	state := newTestState()
+	state.AddMessage(RoleUser, "turn1", ContentTypePlain)
+	state.AddMessage(RoleAssistant, "a1", ContentTypeMarkdown)
+	state.AddMessage(RoleUser, "turn2", ContentTypePlain)
+	state.AddMessage(RoleAssistant, "a2", ContentTypeMarkdown)
+
+	msgs := state.Messages()
+	turn2ID := msgs[2].ID
+	newLeaf := state.Rewind(turn2ID)
+	if newLeaf != msgs[1].ID {
+		t.Fatalf("rewind leaf = %d, want a1 id %d", newLeaf, msgs[1].ID)
+	}
+	state.AddMessage(RoleUser, "turn3", ContentTypePlain)
+	state.AddMessage(RoleAssistant, "a3", ContentTypeMarkdown)
+
+	active := state.Messages()
+	if len(active) != 4 || active[3].Content != "a3" {
+		t.Fatalf("active branch = %+v, want turn1->a1->turn3->a3", active)
+	}
+	branches := state.Branches()
+	if len(branches) != 2 {
+		t.Fatalf("branches = %v, want 2", branches)
+	}
+}
+
+func TestSwitchBranchRestoresOriginalPath(t *testing.T) {
+	state := newTestState()
+	state.AddMessage(RoleUser, "turn1", ContentTypePlain)
+	state.AddMessage(RoleAssistant, "a1", ContentTypeMarkdown)
+	state.AddMessage(RoleUser, "turn2", ContentTypePlain)
+	state.AddMessage(RoleAssistant, "a2", ContentTypeMarkdown)
+	origLeaf := state.LeafID()
+	state.Rewind(state.Messages()[2].ID)
+	state.AddMessage(RoleUser, "turn3", ContentTypePlain)
+
+	state.SwitchBranch(origLeaf)
+	active := state.Messages()
+	if len(active) != 4 || active[3].Content != "a2" {
+		t.Fatalf("switch back = %+v, want original 4-msg branch", active)
+	}
+}
+
 func TestPendingQuestionRoundTrip(t *testing.T) {
 	s := newTestState()
 	if s.PendingQuestion() != nil {

@@ -320,3 +320,20 @@ func TestPolicyEngine_Evaluate_ParseErrorFallback(t *testing.T) {
 		t.Errorf("got %v, want Confirm (legacy fallback then default)", dec)
 	}
 }
+
+func TestPolicyEngine_Evaluate_WebToolsAlwaysConfirm(t *testing.T) {
+	cfg := config.Default()
+	// Even with shell auto_approve, web tools stay confirm-by-default.
+	cfg.Tools.Shell.AutoApprove = true
+	pe := NewEngine(&cfg, []string{})
+
+	for _, name := range []string{"web.fetch", "web.search"} {
+		dec, reason, err := pe.Evaluate(name, map[string]interface{}{"url": "http://example.com"})
+		if err != nil {
+			t.Fatalf("Evaluate(%q) err: %v", name, err)
+		}
+		if dec != DecisionConfirm {
+			t.Errorf("Evaluate(%q) = %v, want Confirm (%s)", name, dec, reason)
+		}
+	}
+}

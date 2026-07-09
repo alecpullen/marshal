@@ -22,6 +22,7 @@ type Config struct {
 	AgentProfiles map[string]routing.AgentProfile       `toml:"agent_profiles"`
 	Agents        map[routing.AgentRole]AgentRoleConfig `toml:"agents"`
 	Tools         ToolsConfig                           `toml:"tools"`
+	Web           WebConfig                             `toml:"web"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	MCP           MCPConfig                             `toml:"mcp"`
 	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
@@ -86,6 +87,19 @@ type MCPServerConfig struct {
 
 type DiagnosticsConfig struct {
 	Commands map[string]string `toml:"commands"`
+}
+
+// WebConfig gates outbound network access from agent-side tools (web.fetch
+// and web.search). It is disabled by default — Marshal is local-first and
+// opt-in for anytying that talks to the public internet. Search is further
+// conditional on SearchURL being set; web.fetch is available whenever
+// Enabled is true.
+type WebConfig struct {
+	Enabled        bool          `toml:"enabled"`
+	FetchTimeout   time.Duration `toml:"fetch_timeout"`
+	SearchProvider string        `toml:"search_provider"`
+	SearchURL      string        `toml:"search_url"`
+	SearchKey      string        `toml:"search_key"`
 }
 
 type ShellToolConfig struct {
@@ -265,6 +279,13 @@ type configFile struct {
 			Sandbox               *sandboxFile  `toml:"sandbox"`
 		} `toml:"shell"`
 	} `toml:"tools"`
+	Web *struct {
+		Enabled        *bool   `toml:"enabled"`
+		FetchTimeout   *string `toml:"fetch_timeout"`
+		SearchProvider *string `toml:"search_provider"`
+		SearchURL      *string `toml:"search_url"`
+		SearchKey      *string `toml:"search_key"`
+	} `toml:"web"`
 	Swarm *struct {
 		Budget *struct {
 			MaxFixRounds   *int           `toml:"max_fix_rounds"`
@@ -382,6 +403,10 @@ func Default() Config {
 				MaxTotalTokens: 120000,
 				ToolIters:      map[string]int{},
 			},
+		},
+		Web: WebConfig{
+			Enabled:      false,
+			FetchTimeout: 30 * time.Second,
 		},
 		MCP: MCPConfig{
 			Servers:                  map[string]MCPServerConfig{},
@@ -734,6 +759,27 @@ func merge(cfg *Config, file configFile) error {
 		}
 		for k, v := range file.Diagnostics.Commands {
 			cfg.Diagnostics.Commands[k] = v
+		}
+	}
+	if file.Web != nil {
+		if file.Web.Enabled != nil {
+			cfg.Web.Enabled = *file.Web.Enabled
+		}
+		if file.Web.FetchTimeout != nil && *file.Web.FetchTimeout != "" {
+			d, err := time.ParseDuration(*file.Web.FetchTimeout)
+			if err != nil {
+				return fmt.Errorf("parse web.fetch_timeout: %w", err)
+			}
+			cfg.Web.FetchTimeout = d
+		}
+		if file.Web.SearchProvider != nil {
+			cfg.Web.SearchProvider = *file.Web.SearchProvider
+		}
+		if file.Web.SearchURL != nil {
+			cfg.Web.SearchURL = *file.Web.SearchURL
+		}
+		if file.Web.SearchKey != nil {
+			cfg.Web.SearchKey = *file.Web.SearchKey
 		}
 	}
 	return nil

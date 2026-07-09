@@ -35,13 +35,14 @@ func WithBufferSize[T any](n int) Option[T] {
 	}
 }
 
-// WithTerminal marks the subscriber as a must-receive receiver. Every event
-// (whether published via Publish or PublishTerminal) is delivered without
-// dropping — a slow reader blocks the publisher until the subscriber
-// delivers or its context is cancelled (the channel is closed, unblocking
-// any blocked send). This is the F19 R1 "must-deliver terminal events"
-// rule keyed on the subscriber rather than the event type: types stay
-// opaque strings; the subscriber opts into "I can't miss anything".
+// WithTerminal marks the subscriber as a must-receive receiver. Every
+// event published to this subscriber is delivered without dropping — a
+// slow reader blocks the publisher until the subscriber delivers or its
+// context is cancelled (the channel is closed, unblocking any blocked
+// send). The must-deliver rule is keyed on the subscriber rather than the
+// event type: types stay opaque strings; the subscriber opts into "I
+// can't miss anything", and any Publish to a terminal subscriber uses
+// bounded-blocking semantics regardless of how the publisher was called.
 func WithTerminal[T any]() Option[T] {
 	return func(s *subscription[T]) {
 		s.terminal = true
@@ -217,22 +218,27 @@ func (b *Broker[T]) Subscribe(ctx context.Context, opts ...Option[T]) <-chan Eve
 	return s.ch
 }
 
-// Publish broadcasts a non-terminal event. A full subscriber buffer drops
-// the oldest event (drop-head) and continues; the publisher never blocks.
-// Terminal subscribers must receive their copy.
+// Publish broadcasts an event to every current subscriber. Delivery
+// semantics are determined entirely by the subscriber's subscription
+// options, not by how the publisher invokes this method:
+//
+//   - Subscribers registered without WithTerminal receive events on a
+//     best-effort basis: a full subscriber buffer drops the oldest event
+//     (drop-head) and the publisher never blocks.
+//   - Subscribers registered with WithTerminal receive events with
+//     must-deliver (bounded-blocking) semantics: every event is delivered
+//     without dropping, and a slow reader blocks the publisher until
+//     either the subscriber delivers the event or its context is
+//     cancelled (which closes the channel and unblocks the send).
+//
+// In other words, WithTerminal opts a subscriber into must-receive
+// regardless of the publish call site; there is no separate "publish a
+// terminal event" method.
 func (b *Broker[T]) Publish(typ string, payload T) {
-	b.publish(typ, payload, false)
+	b.publish(typ, payload)
 }
 
-// PublishTerminal broadcasts an event the publisher has marked critical.
-// Delivery semantics are identical to Publish: terminal subscribers must
-// receive and block until delivered; non-terminal subscribers receive
-// best-effort. Event types are agreed out-of-band in the owning service.
-func (b *Broker[T]) PublishTerminal(typ string, payload T) {
-	b.publish(typ, payload, true)
-}
-
-func (b *Broker[T]) publish(typ string, payload T, terminal bool) {
+func (b *Broker[T]) publish(typ string, payload T) {
 	b.mu.RLock()
 	if b.closed {
 		b.mu.RUnlock()

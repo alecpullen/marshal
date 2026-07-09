@@ -23,7 +23,8 @@ const questionOtherSentinel = "other"
 //     "Other" sentinel option followed by a NewInput that captures the
 //     custom answer when the sentinel is picked.
 //
-// Pressing Esc on any question marks every remaining question as "Unanswered".
+// Pressing Esc on any question marks every remaining question as
+// session.AnswerUnanswered.
 type questionModel struct {
 	form    *huh.Form
 	q       *session.PendingQuestion
@@ -49,7 +50,7 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 		others:  make([]*string, len(q.Questions)),
 	}
 	for i := range qm.answers {
-		qm.answers[i] = session.Answer{Question: q.Questions[i].Question, Answer: "Unanswered"}
+		qm.answers[i] = session.Answer{Question: q.Questions[i].Question, Answer: session.AnswerUnanswered}
 	}
 
 	var fields []huh.Field

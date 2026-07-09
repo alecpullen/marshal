@@ -46,7 +46,7 @@ func TestQuestionAskBuildsPendingQuestion(t *testing.T) {
 
 	pq.ResponseChan <- []session.Answer{
 		{Question: "Which auth?", Answer: "JWT"},
-		{Question: "Keep legacy?", Answer: "Unanswered"},
+		{Question: "Keep legacy?", Answer: session.AnswerUnanswered},
 	}
 
 	res := <-resultCh

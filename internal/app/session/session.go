@@ -119,12 +119,18 @@ type Question struct {
 }
 
 // Answer is the user's response to one Question. When the user hits Esc on
-// a question, the TUI records the literal string "Unanswered" so the agent
-// can see exactly which questions were skipped.
+// a question, the TUI records the literal string AnswerUnanswered so the
+// agent can see exactly which questions were skipped.
 type Answer struct {
 	Question string `json:"question"`
 	Answer   string `json:"answer"`
 }
+
+// AnswerUnanswered is the sentinel Answer.Answer value recorded when the
+// user hits Esc on a question without picking a value. The runner detects
+// this sentinel and treats the question as skipped (see runner.go's
+// allUnanswered tracking).
+const AnswerUnanswered = "Unanswered"
 
 // PendingQuestion carries one or more Questions from the agent awaiting
 // user response. The runner blocks on ResponseChan; the TUI sends exactly

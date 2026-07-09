@@ -44,9 +44,6 @@ func (t *toolSet) toolsSelectTool() registry.Tool {
 		var unknown []string
 		var found []string
 		for _, name := range args.Names {
-			if name == "" {
-				continue
-			}
 			registered, exists := t.registry.Lookup(name)
 			if !exists || !registered.Deferred {
 				unknown = append(unknown, name)

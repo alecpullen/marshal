@@ -490,7 +490,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
 			allUnanswered := true
 			for _, a := range answers {
-				if a.Answer != "Unanswered" {
+				if a.Answer != session.AnswerUnanswered {
 					allUnanswered = false
 					break
 				}

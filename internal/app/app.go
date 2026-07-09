@@ -266,6 +266,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		DB:            database,
 		ProjectID:     projectID,
 		FileTracker:   fileTracker,
+		Config:        cfg,
 	}); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
@@ -285,6 +286,14 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 
 	pol := policy.NewEngine(&cfg, state.SessionRules())
+	if err := reg.Register(agent.NewSubagentTool(
+		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model),
+		reg,
+		state,
+		2,
+	)); err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.SkillIndex = skillIndex
 	runner.RouteResolver = resolver
@@ -395,6 +404,37 @@ func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
 		return n
 	}
 	return cfg.Agent.MaxToolIterations
+}
+
+// defaultSubtaskIterations is the tool-iteration cap for an ad-hoc agent.run
+// child when the user has not set [agent] subtask_iterations in config.
+// Kept lower than DefaultMaxToolIterations so a misbehaving child does not
+// burn tokens on an out-of-scope subtask while still leaving headroom for
+// real research work.
+const defaultSubtaskIterations = 12
+
+// buildSubagentFactory returns a closure that constructs a fresh child
+// Runner for an agent.run invocation. The closure captures the parent's
+// provider, policy engine, and base registry; per call it spins up a new
+// session.State (so the child's transcript does not pollute the parent's
+// message log), a filtered registry view (read-only + network, no nested
+// agent.run), and binds RoleSubtask so the system prompt enforces the
+// appropriate scope. The child session's depth is parent+1 so its own
+// depth guard rejects any attempt to spawn nested subagents.
+func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string) agent.SubagentRunnerFactory {
+	subtaskIters := cfg.Agent.SubtaskIterations
+	if subtaskIters <= 0 {
+		subtaskIters = defaultSubtaskIterations
+	}
+	return func() (*agent.Runner, error) {
+		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
+		roReg := agent.SubtaskScopeView(parentReg)
+		child := agent.NewRunner(parentProvider, roReg, pol, childState, defaultModel)
+		child.Role = agent.RoleSubtask
+		child.MaxToolIterations = subtaskIters
+		child.NativeTools = true
+		return child, nil
+	}
 }
 
 type actionDecodingConfig struct {

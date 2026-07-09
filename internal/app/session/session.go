@@ -116,12 +116,37 @@ type UserApprovalDecision struct {
 	Edited   string
 }
 
-// PendingQuestion is a clarifying question from the agent awaiting the
-// user's free-text answer. The runner blocks on ResponseChan; the TUI sends
-// exactly one value ("" means the user declined to answer).
+// Question is a single clarifying question presented to the user. Options
+// triggers select/multi-select rendering in the TUI; Multi selects between
+// NewSelect and NewMultiSelect. AllowOther enables the "Other" affordance
+// that lets the user type a free-text answer that's not in the option list.
+type Question struct {
+	Question   string   `json:"question"`
+	Options    []string `json:"options,omitempty"`
+	Multi      bool     `json:"multi,omitempty"`
+	AllowOther bool     `json:"allow_other,omitempty"`
+}
+
+// Answer is the user's response to one Question. When the user hits Esc on
+// a question, the TUI records the literal string AnswerUnanswered so the
+// agent can see exactly which questions were skipped.
+type Answer struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
+// AnswerUnanswered is the sentinel Answer.Answer value recorded when the
+// user hits Esc on a question without picking a value. The runner detects
+// this sentinel and treats the question as skipped (see runner.go's
+// allUnanswered tracking).
+const AnswerUnanswered = "Unanswered"
+
+// PendingQuestion carries one or more Questions from the agent awaiting
+// user response. The runner blocks on ResponseChan; the TUI sends exactly
+// one value, one Answer per Question (in the same order).
 type PendingQuestion struct {
-	Question     string
-	ResponseChan chan string
+	Questions    []Question
+	ResponseChan chan []Answer
 }
 
 type PendingToolCall struct {
@@ -210,14 +235,61 @@ type State struct {
 	turnToolCache   map[string]registry.ToolResult
 	activity        Activity
 	plan            []string
+	todos           []db.TodoItem
 	activeSkills    map[string]bool
+	loadedTools     map[string]bool
 	toolBudget      ToolBudget
 	swarmProgress   SwarmProgress
 	sandbox         SandboxInfo
 	trusted         bool
 	turnIndex       int
 	snapshotter     Snapshotter
+
+	runningJobs     int
+	subagentDepth   int
+	subagentConcurr int
 }
+
+// Option configures a State at construction time. Use WithDepth to override
+// the default subagent nesting level (depth 0 = top-level agent) when
+// building a child session.
+type Option func(*State)
+
+// WithDepth sets the subagent nesting depth for a new State. The default
+// (zero value) is a top-level agent; a child subagent session passes its
+// parent's depth + 1. The depth is fixed at construction and is consulted
+// unchanged by EnterSubagent/ExitSubagent.
+func WithDepth(d int) Option {
+	return func(s *State) {
+		s.subagentDepth = d
+	}
+}
+
+func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opts ...Option) *State {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &State{
+		Config:        cfg,
+		WorkingDir:    workingDir,
+		StartedAt:     now,
+		db:            p.DB,
+		sessionID:     p.SessionID,
+		logger:        p.Logger,
+		ctx:           ctx,
+		cancel:        cancel,
+		turnToolCache: make(map[string]registry.ToolResult),
+		activity:      Activity{Kind: ActivityIdle},
+		activeSkills:  make(map[string]bool),
+		loadedTools:   make(map[string]bool),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+func (s *State) SessionID() string { return s.sessionID }
+
+func (s *State) Logger() *slog.Logger { return s.logger }
 
 func (s *State) SetTrusted(trusted bool) {
 	s.mu.Lock()
@@ -262,27 +334,6 @@ func (s *State) DB() *db.DB {
 	return s.db
 }
 
-func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &State{
-		Config:        cfg,
-		WorkingDir:    workingDir,
-		StartedAt:     now,
-		db:            p.DB,
-		sessionID:     p.SessionID,
-		logger:        p.Logger,
-		ctx:           ctx,
-		cancel:        cancel,
-		turnToolCache: make(map[string]registry.ToolResult),
-		activity:      Activity{Kind: ActivityIdle},
-		activeSkills:  make(map[string]bool),
-	}
-}
-
-func (s *State) SessionID() string { return s.sessionID }
-
-func (s *State) Logger() *slog.Logger { return s.logger }
-
 // SetSandboxInfo records the active sandbox backend's capabilities snapshot.
 // Called once by app.Run after sandbox.New; the TUI reads it for honest
 // isolation rendering.
@@ -298,6 +349,105 @@ func (s *State) SandboxInfo() SandboxInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sandbox
+}
+
+// SetRunningJobsCount records how many background shell jobs are currently
+// running. Updated by the native toolset's JobManager via OnChange.
+func (s *State) SetRunningJobsCount(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runningJobs = n
+}
+
+// RunningJobsCount returns the number of background shell jobs currently
+// marked as running.
+func (s *State) RunningJobsCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runningJobs
+}
+
+// Subagent depth/concurrency bookkeeping. agent.run uses these to enforce the
+// hard limits documented in Milestone P (depth 1, concurrency 2). They live
+// on the shared session state so any agent.run invocation — even concurrent
+// ones from different Go routines — sees the same counters.
+//
+// Depth is a property of the session itself (set at construction via
+// WithDepth): a top-level agent has depth 0; a child subagent launched from
+// a depth-0 parent has depth 1; nested subsubagents would have depth 2.
+// The depth guard rejects EnterSubagent when this session's depth has
+// already hit the cap — defense in depth alongside SubtaskScopeView's
+// filtering of agent.run out of the child's registry.
+//
+// Concurrency is a runtime counter on the parent session: the number of
+// in-flight agent.run children the parent has launched. EnterSubagent
+// increments it; ExitSubagent decrements it. The concurrency guard caps
+// parallel sibling subagents the same parent may have running at once.
+const (
+	subagentMaxDepth       = 1
+	subagentMaxConcurrency = 2
+)
+
+var (
+	ErrSubagentDepthLimit       = fmt.Errorf("session: subagent depth limit exceeded (max %d)", subagentMaxDepth)
+	ErrSubagentConcurrencyLimit = fmt.Errorf("session: subagent concurrency limit exceeded (max %d)", subagentMaxConcurrency)
+)
+
+// EnterSubagent validates the depth and concurrency guards for spawning a
+// new subagent from this session. On success, the in-flight concurrency
+// counter is incremented; depth is fixed at construction and never changes
+// here. The caller MUST pair every successful EnterSubagent with an
+// ExitSubagent (typically via defer) so the counter returns to its prior
+// value when the subtask returns.
+func (s *State) EnterSubagent() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subagentDepth >= subagentMaxDepth {
+		return ErrSubagentDepthLimit
+	}
+	if s.subagentConcurr >= subagentMaxConcurrency {
+		return ErrSubagentConcurrencyLimit
+	}
+	s.subagentConcurr++
+	return nil
+}
+
+// ExitSubagent decrements the in-flight concurrency counter added by a prior
+// successful EnterSubagent. Calling ExitSubagent without a matching
+// EnterSubagent is a programming error and would emit a negative counter;
+// callers must always pair the calls. Depth is unaffected.
+func (s *State) ExitSubagent() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subagentConcurr > 0 {
+		s.subagentConcurr--
+	}
+}
+
+// SubagentDepth returns the session's nesting depth — set once at
+// construction via WithDepth. Exposed for diagnostics and tests.
+func (s *State) SubagentDepth() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subagentDepth
+}
+
+// SubagentConcurrency returns the number of agent.run invocations currently
+// in flight on this session. Exposed for diagnostics and tests.
+func (s *State) SubagentConcurrency() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subagentConcurr
+}
+
+// SetSubagentConcurrency is a test-only override that lets unit tests
+// simulate prior in-flight subagent entries from outside the goroutine
+// that would normally hold the lock. Production code uses EnterSubagent.
+// Depth is no longer settable here — use WithDepth at construction time.
+func (s *State) SetSubagentConcurrency(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subagentConcurr = n
 }
 
 func (s *State) persistenceEnabled() bool {
@@ -595,6 +745,27 @@ func (s *State) Plan() []string {
 	return p
 }
 
+func (s *State) SetTodos(todos []db.TodoItem) error {
+	s.mu.Lock()
+	s.todos = make([]db.TodoItem, len(todos))
+	copy(s.todos, todos)
+	s.mu.Unlock()
+	if s.persistenceEnabled() {
+		if err := s.db.SaveTodos(s.sessionID, s.todos); err != nil {
+			s.logger.Warn("failed to persist todos", "error", err)
+		}
+	}
+	return nil
+}
+
+func (s *State) Todos() []db.TodoItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]db.TodoItem, len(s.todos))
+	copy(result, s.todos)
+	return result
+}
+
 func (s *State) AddSessionRule(prefix string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -770,4 +941,37 @@ func (s *State) HasActiveSkill(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activeSkills[name]
+}
+
+// LoadedToolNames returns a sorted copy of the MCP tool names the agent
+// has explicitly opted into via tools.select during this session. The
+// agent prompt builder uses this to expand the deferred tool list back
+// into the prompt once the agent confirms it needs a particular tool.
+func (s *State) LoadedToolNames() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := make([]string, 0, len(s.loadedTools))
+	for name := range s.loadedTools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// AddLoadedToolNames records that the agent has opted into the given MCP
+// tool names for the remainder of the session. Names are de-duplicated;
+// unknown names are accepted without error so callers can pass through
+// the full requested set.
+func (s *State) AddLoadedToolNames(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		s.loadedTools[name] = true
+	}
 }

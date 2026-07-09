@@ -6,6 +6,7 @@ import (
 	"marshal/internal/trust"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -22,10 +23,12 @@ type Config struct {
 	AgentProfiles map[string]routing.AgentProfile       `toml:"agent_profiles"`
 	Agents        map[routing.AgentRole]AgentRoleConfig `toml:"agents"`
 	Tools         ToolsConfig                           `toml:"tools"`
+	Web           WebConfig                             `toml:"web"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
 	Permissions   PermissionsConfig                     `toml:"permissions"`
+	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
 }
 
 type ModelsConfig struct {
@@ -74,8 +77,9 @@ type SwarmBudgetConfig struct {
 }
 
 type MCPConfig struct {
-	Servers  map[string]MCPServerConfig `toml:"servers"`
-	Policies map[string]string          `toml:"policies"`
+	Servers                  map[string]MCPServerConfig `toml:"servers"`
+	Policies                 map[string]string          `toml:"policies"`
+	DisclosureThresholdTools int                        `toml:"disclosure_threshold_tools"`
 }
 
 type MCPServerConfig struct {
@@ -100,9 +104,28 @@ type PermissionRule struct {
 	Action     string `toml:"action"`
 }
 
+type DiagnosticsConfig struct {
+	Commands map[string]string `toml:"commands"`
+}
+
+// WebConfig gates outbound network access from agent-side tools (web.fetch
+// and web.search). It is disabled by default — Marshal is local-first and
+// opt-in for anytying that talks to the public internet. Search is further
+// conditional on SearchURL being set; web.fetch is available whenever
+// Enabled is true.
+type WebConfig struct {
+	Enabled        bool          `toml:"enabled"`
+	FetchTimeout   time.Duration `toml:"fetch_timeout"`
+	SearchProvider string        `toml:"search_provider"`
+	SearchURL      string        `toml:"search_url"`
+	SearchKey      string        `toml:"search_key"`
+}
+
 type ShellToolConfig struct {
 	DefaultTimeoutSeconds int           `toml:"default_timeout_seconds"`
 	MaxOutputBytes        int           `toml:"max_output_bytes"`
+	MaxBackgroundJobs     int           `toml:"max_background_jobs"`
+	BackgroundRetention   time.Duration `toml:"background_retention"`
 	AllowNetwork          bool          `toml:"allow_network"`
 	AllowSudo             bool          `toml:"allow_sudo"`
 	AllowDestructive      bool          `toml:"allow_destructive"`
@@ -195,6 +218,11 @@ type AgentConfig struct {
 	MaxTurnContextTokens     int    `toml:"max_turn_context_tokens"`
 	MaxStructuredOutputChars int    `toml:"max_structured_output_chars"`
 	PlanFirst                bool   `toml:"plan_first"`
+	// SubtaskIterations caps tool iterations for an ad-hoc agent.run child.
+	// The child gets a fresh Runner with this cap (defaults to 12 when zero).
+	// A subtask that exhausts its budget is salvaged: the parent receives
+	// whatever partial answer the child produced instead of a hard error.
+	SubtaskIterations int `toml:"subtask_iterations"`
 }
 
 type PrivacyConfig struct {
@@ -248,6 +276,7 @@ type configFile struct {
 		MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
 		MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
 		PlanFirst                *bool   `toml:"plan_first"`
+		SubtaskIterations        *int    `toml:"subtask_iterations"`
 	} `toml:"agent"`
 	Privacy *struct {
 		RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
@@ -264,6 +293,8 @@ type configFile struct {
 		Shell *struct {
 			DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
 			MaxOutputBytes        *int          `toml:"max_output_bytes"`
+			MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
+			BackgroundRetention   *string       `toml:"background_retention"`
 			AllowNetwork          *bool         `toml:"allow_network"`
 			AllowSudo             *bool         `toml:"allow_sudo"`
 			AllowDestructive      *bool         `toml:"allow_destructive"`
@@ -275,6 +306,13 @@ type configFile struct {
 			Sandbox               *sandboxFile  `toml:"sandbox"`
 		} `toml:"shell"`
 	} `toml:"tools"`
+	Web *struct {
+		Enabled        *bool   `toml:"enabled"`
+		FetchTimeout   *string `toml:"fetch_timeout"`
+		SearchProvider *string `toml:"search_provider"`
+		SearchURL      *string `toml:"search_url"`
+		SearchKey      *string `toml:"search_key"`
+	} `toml:"web"`
 	Swarm *struct {
 		Budget *struct {
 			MaxFixRounds   *int           `toml:"max_fix_rounds"`
@@ -288,7 +326,8 @@ type configFile struct {
 			Args    []string          `toml:"args"`
 			Env     map[string]string `toml:"env"`
 		} `toml:"servers"`
-		Policies map[string]string `toml:"policies"`
+		Policies                 map[string]string `toml:"policies"`
+		DisclosureThresholdTools *int              `toml:"disclosure_threshold_tools"`
 	} `toml:"mcp"`
 	Snapshots *struct {
 		Enabled       *bool `toml:"enabled"`
@@ -298,6 +337,9 @@ type configFile struct {
 	Permissions *struct {
 		Rules []PermissionRule `toml:"rules"`
 	} `toml:"permissions"`
+	Diagnostics *struct {
+		Commands map[string]string `toml:"commands"`
+	} `toml:"diagnostics"`
 	// Providers, unlike the other configFile fields above, is not a
 	// pointer-to-anonymous-struct: a nil map already distinguishes
 	// "providers section absent from this file" from "present", so no
@@ -358,6 +400,8 @@ func Default() Config {
 			Shell: ShellToolConfig{
 				DefaultTimeoutSeconds: 120,
 				MaxOutputBytes:        200000,
+				MaxBackgroundJobs:     25,
+				BackgroundRetention:   8 * time.Hour,
 				AllowNetwork:          false,
 				AllowSudo:             false,
 				AllowDestructive:      false,
@@ -395,9 +439,17 @@ func Default() Config {
 				ToolIters:      map[string]int{},
 			},
 		},
+		Web: WebConfig{
+			Enabled:      false,
+			FetchTimeout: 30 * time.Second,
+		},
 		MCP: MCPConfig{
-			Servers:  map[string]MCPServerConfig{},
-			Policies: map[string]string{},
+			Servers:                  map[string]MCPServerConfig{},
+			Policies:                 map[string]string{},
+			DisclosureThresholdTools: 40,
+		},
+		Diagnostics: DiagnosticsConfig{
+			Commands: map[string]string{"go": "go vet {package}"},
 		},
 		Snapshots: SnapshotsConfig{
 			Enabled:       true,
@@ -460,10 +512,9 @@ func Load(opts LoadOptions) (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
-		merge(&cfg, projectFile)
-	}
-	if opts.Trusted != nil {
-		*opts.Trusted = applyProject
+		if err := merge(&cfg, projectFile); err != nil {
+			return Config{}, err
+		}
 	}
 	return cfg, nil
 }
@@ -543,7 +594,7 @@ func contextBudgetFromConfig(in contextBudgetConfig) routing.ContextBudget {
 	}
 }
 
-func merge(cfg *Config, file configFile) {
+func merge(cfg *Config, file configFile) error {
 	if file.Project != nil {
 		if file.Project.Name != nil {
 			cfg.Project.Name = *file.Project.Name
@@ -587,6 +638,9 @@ func merge(cfg *Config, file configFile) {
 		}
 		if file.Agent.PlanFirst != nil {
 			cfg.Agent.PlanFirst = *file.Agent.PlanFirst
+		}
+		if file.Agent.SubtaskIterations != nil {
+			cfg.Agent.SubtaskIterations = *file.Agent.SubtaskIterations
 		}
 	}
 	if file.Privacy != nil {
@@ -657,6 +711,16 @@ func merge(cfg *Config, file configFile) {
 		}
 		if s.MaxOutputBytes != nil {
 			cfg.Tools.Shell.MaxOutputBytes = *s.MaxOutputBytes
+		}
+		if s.MaxBackgroundJobs != nil {
+			cfg.Tools.Shell.MaxBackgroundJobs = *s.MaxBackgroundJobs
+		}
+		if s.BackgroundRetention != nil && *s.BackgroundRetention != "" {
+			d, err := time.ParseDuration(*s.BackgroundRetention)
+			if err != nil {
+				return fmt.Errorf("parse background_retention: %w", err)
+			}
+			cfg.Tools.Shell.BackgroundRetention = d
 		}
 		if s.AllowNetwork != nil {
 			cfg.Tools.Shell.AllowNetwork = *s.AllowNetwork
@@ -748,6 +812,9 @@ func merge(cfg *Config, file configFile) {
 			}
 			cfg.MCP.Policies[k] = v
 		}
+		if file.MCP.DisclosureThresholdTools != nil {
+			cfg.MCP.DisclosureThresholdTools = *file.MCP.DisclosureThresholdTools
+		}
 	}
 	if file.Snapshots != nil {
 		if file.Snapshots.Enabled != nil {
@@ -763,6 +830,36 @@ func merge(cfg *Config, file configFile) {
 	if file.Permissions != nil && file.Permissions.Rules != nil {
 		cfg.Permissions.Rules = file.Permissions.Rules
 	}
+	if file.Diagnostics != nil && file.Diagnostics.Commands != nil {
+		if cfg.Diagnostics.Commands == nil {
+			cfg.Diagnostics.Commands = map[string]string{}
+		}
+		for k, v := range file.Diagnostics.Commands {
+			cfg.Diagnostics.Commands[k] = v
+		}
+	}
+	if file.Web != nil {
+		if file.Web.Enabled != nil {
+			cfg.Web.Enabled = *file.Web.Enabled
+		}
+		if file.Web.FetchTimeout != nil && *file.Web.FetchTimeout != "" {
+			d, err := time.ParseDuration(*file.Web.FetchTimeout)
+			if err != nil {
+				return fmt.Errorf("parse web.fetch_timeout: %w", err)
+			}
+			cfg.Web.FetchTimeout = d
+		}
+		if file.Web.SearchProvider != nil {
+			cfg.Web.SearchProvider = *file.Web.SearchProvider
+		}
+		if file.Web.SearchURL != nil {
+			cfg.Web.SearchURL = *file.Web.SearchURL
+		}
+		if file.Web.SearchKey != nil {
+			cfg.Web.SearchKey = *file.Web.SearchKey
+		}
+	}
+	return nil
 }
 
 func HasConfig(opts LoadOptions) bool {

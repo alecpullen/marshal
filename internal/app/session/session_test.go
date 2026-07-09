@@ -672,13 +672,83 @@ func TestPendingQuestionRoundTrip(t *testing.T) {
 	if s.PendingQuestion() != nil {
 		t.Fatal("expected no pending question initially")
 	}
-	q := &PendingQuestion{Question: "archive or delete?", ResponseChan: make(chan string, 1)}
+	qs := []Question{{Question: "archive or delete?"}}
+	q := &PendingQuestion{Questions: qs, ResponseChan: make(chan []Answer, 1)}
 	s.SetPendingQuestion(q)
-	if got := s.PendingQuestion(); got == nil || got.Question != "archive or delete?" {
+	got := s.PendingQuestion()
+	if got == nil || len(got.Questions) != 1 || got.Questions[0].Question != "archive or delete?" {
 		t.Fatalf("PendingQuestion = %+v", got)
 	}
 	s.SetPendingQuestion(nil)
 	if s.PendingQuestion() != nil {
 		t.Fatal("expected pending question cleared")
+	}
+}
+
+func TestStateTodosRoundTrip(t *testing.T) {
+	state := newTestState()
+
+	if len(state.Todos()) != 0 {
+		t.Fatal("initial Todos() should be empty")
+	}
+
+	todos := []db.TodoItem{
+		{Content: "read spec", Status: "completed"},
+		{Content: "write plan", Status: "in_progress"},
+		{Content: "implement", Status: "pending"},
+	}
+	if err := state.SetTodos(todos); err != nil {
+		t.Fatalf("SetTodos error: %v", err)
+	}
+
+	got := state.Todos()
+	if len(got) != 3 || got[0].Content != "read spec" || got[1].Status != "in_progress" {
+		t.Fatalf("Todos() = %+v", got)
+	}
+
+	todos[0].Content = "mutated"
+	gotAgain := state.Todos()
+	if gotAgain[0].Content != "read spec" {
+		t.Fatalf("Todos() returned mutable internal slice: %+v", gotAgain)
+	}
+}
+
+func TestStateTodosPersistToDB(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	sessionID := "sess-todos"
+	if err := dbConn.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+
+	todos := []db.TodoItem{
+		{Content: "step one", Status: "completed"},
+		{Content: "step two", Status: "in_progress"},
+	}
+	if err := s.SetTodos(todos); err != nil {
+		t.Fatalf("SetTodos error: %v", err)
+	}
+
+	loaded, err := dbConn.LoadTodos(sessionID)
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(loaded) != 2 || loaded[0].Content != "step one" || loaded[1].Status != "in_progress" {
+		t.Fatalf("LoadTodos = %+v", loaded)
 	}
 }

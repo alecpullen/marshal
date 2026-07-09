@@ -18,17 +18,25 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 	}
 
 	want := map[string]registry.RiskLevel{
-		"file.read":        registry.RiskReadOnly,
-		"file.write_patch": registry.RiskWorkspaceWrite,
-		"repo.search":      registry.RiskReadOnly,
-		"repo.index":       registry.RiskReadOnly,
-		"repo.map":         registry.RiskReadOnly,
-		"repo.card":        registry.RiskReadOnly,
-		"symbols.find":     registry.RiskReadOnly,
-		"git.status":       registry.RiskReadOnly,
-		"git.diff":         registry.RiskReadOnly,
-		"shell.run":        registry.RiskCommand,
-		"test.run":         registry.RiskCommand,
+		"file.read":         registry.RiskReadOnly,
+		"file.write_patch":  registry.RiskWorkspaceWrite,
+		"repo.search":       registry.RiskReadOnly,
+		"repo.index":        registry.RiskReadOnly,
+		"repo.map":          registry.RiskReadOnly,
+		"repo.card":         registry.RiskReadOnly,
+		"symbols.find":      registry.RiskReadOnly,
+		"git.status":        registry.RiskReadOnly,
+		"git.diff":          registry.RiskReadOnly,
+		"shell.run":         registry.RiskCommand,
+		"test.run":          registry.RiskCommand,
+		"todo.write":        registry.RiskWorkspaceWrite,
+		"job.output":        registry.RiskReadOnly,
+		"job.kill":          registry.RiskCommand,
+		"job.list":          registry.RiskReadOnly,
+		"question.ask":      registry.RiskReadOnly,
+		"ask_user":          registry.RiskReadOnly,
+		"diagnostics.check": registry.RiskReadOnly,
+		"tools.select":      registry.RiskReadOnly,
 	}
 	if got := reg.List(); len(got) != len(want) {
 		t.Fatalf("len(List()) = %d, want %d", len(got), len(want))

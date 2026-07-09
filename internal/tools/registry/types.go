@@ -30,6 +30,7 @@ type Tool struct {
 	Schema      json.RawMessage
 	Risk        RiskLevel
 	Cacheable   bool
+	Deferred    bool
 	Handler     ToolHandler
 }
 

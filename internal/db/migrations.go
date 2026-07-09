@@ -140,4 +140,10 @@ CREATE TABLE IF NOT EXISTS snapshot_files (
     path TEXT NOT NULL,
     PRIMARY KEY(snapshot_id, path)
 );
+CREATE TABLE IF NOT EXISTS session_state (
+    session_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (session_id, key)
+);
 `

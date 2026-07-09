@@ -140,6 +140,22 @@ func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 }
 
 func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeToolsOpt...)
+}
+
+// BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
+// list of deferred MCP tools appended as a compact announcement. The
+// runner passes the registry's ListDeferred() so the agent can see what
+// it might want to opt into via tools.select.
+func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeToolsOpt...)
+}
+
+// buildSystemPrompt accepts an additional deferredTools list (used by the
+// runner to advertise MCP tools the agent hasn't loaded yet but may want
+// to opt into). Tests that pass nil get the old behavior with no
+// announcement appended.
+func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
@@ -157,6 +173,7 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 	for _, tool := range tools {
 		b.WriteString(fmt.Sprintf("- %s (%s): %s\n", tool.Name, tool.Risk, tool.Description))
 	}
+	writeDeferredAnnouncement(&b, deferredTools)
 	activeMap := make(map[string]bool, len(activeSkills))
 	for _, name := range activeSkills {
 		activeMap[name] = true
@@ -196,6 +213,60 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 		Role:    schema.RoleSystem,
 		Content: b.String(),
 	}
+}
+
+// deferredAnnouncementCap caps the number of deferred MCP tools listed
+// in the system prompt so a single huge MCP server doesn't drown the
+// agent's available context. Once exceeded, an "and N more" suffix tells
+// the agent it can call tools.select with a specific name to opt in to
+// any of the remaining tools.
+const deferredAnnouncementCap = 40
+
+func writeDeferredAnnouncement(b *strings.Builder, deferred []registry.Tool) {
+	if len(deferred) == 0 {
+		return
+	}
+	b.WriteString("\nAdditional tools are available but not loaded. To use one, call tools.select with its exact name:\n")
+	limit := len(deferred)
+	if limit > deferredAnnouncementCap {
+		limit = deferredAnnouncementCap
+	}
+	for _, tool := range deferred[:limit] {
+		b.WriteString("- ")
+		b.WriteString(tool.Name)
+		if tool.Description != "" {
+			b.WriteString(": ")
+			b.WriteString(oneLineDescription(tool.Description))
+		}
+		b.WriteString("\n")
+	}
+	if len(deferred) > deferredAnnouncementCap {
+		fmt.Fprintf(b, "- and %d more (call tools.select with exact names to load any of them)\n", len(deferred)-deferredAnnouncementCap)
+	}
+}
+
+// oneLineDescription collapses an MCP tool description to a single line
+// so the deferred-tools announcement stays compact in context.
+func oneLineDescription(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range desc {
+		if r == '\n' || r == '\r' {
+			if b.Len() == 0 {
+				continue
+			}
+			break
+		}
+		b.WriteRune(r)
+	}
+	result := b.String()
+	if len(result) > 200 {
+		result = result[:200] + "…"
+	}
+	return result
 }
 
 func BuildPlanningPrompt(goal string) schema.ChatMessage {

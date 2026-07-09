@@ -61,6 +61,7 @@ type toolSet struct {
 	projectID      int64
 	jobManager     *JobManager
 	diagnostics    *diagnostics.Checker
+	registry       *registry.Registry
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -68,6 +69,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	if err != nil {
 		return err
 	}
+	tools.registry = reg
 
 	for _, tool := range []registry.Tool{
 		tools.fileReadTool(),
@@ -88,6 +90,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.questionAskTool(),
 		tools.askUserTool(),
 		tools.diagnosticsCheckTool(),
+		tools.toolsSelectTool(),
 	} {
 		if err := reg.Register(tool); err != nil {
 			return err

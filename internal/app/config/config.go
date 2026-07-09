@@ -73,8 +73,9 @@ type SwarmBudgetConfig struct {
 }
 
 type MCPConfig struct {
-	Servers  map[string]MCPServerConfig `toml:"servers"`
-	Policies map[string]string          `toml:"policies"`
+	Servers                  map[string]MCPServerConfig `toml:"servers"`
+	Policies                 map[string]string          `toml:"policies"`
+	DisclosureThresholdTools int                        `toml:"disclosure_threshold_tools"`
 }
 
 type MCPServerConfig struct {
@@ -277,7 +278,8 @@ type configFile struct {
 			Args    []string          `toml:"args"`
 			Env     map[string]string `toml:"env"`
 		} `toml:"servers"`
-		Policies map[string]string `toml:"policies"`
+		Policies                 map[string]string `toml:"policies"`
+		DisclosureThresholdTools *int              `toml:"disclosure_threshold_tools"`
 	} `toml:"mcp"`
 	Diagnostics *struct {
 		Commands map[string]string `toml:"commands"`
@@ -382,8 +384,9 @@ func Default() Config {
 			},
 		},
 		MCP: MCPConfig{
-			Servers:  map[string]MCPServerConfig{},
-			Policies: map[string]string{},
+			Servers:                  map[string]MCPServerConfig{},
+			Policies:                 map[string]string{},
+			DisclosureThresholdTools: 40,
 		},
 		Diagnostics: DiagnosticsConfig{
 			Commands: map[string]string{"go": "go vet {package}"},
@@ -720,6 +723,9 @@ func merge(cfg *Config, file configFile) error {
 				cfg.MCP.Policies = map[string]string{}
 			}
 			cfg.MCP.Policies[k] = v
+		}
+		if file.MCP.DisclosureThresholdTools != nil {
+			cfg.MCP.DisclosureThresholdTools = *file.MCP.DisclosureThresholdTools
 		}
 	}
 	if file.Diagnostics != nil && file.Diagnostics.Commands != nil {

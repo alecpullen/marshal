@@ -221,7 +221,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
 	messages := []schema.ChatMessage{
-		BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
+		BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
 	if r.role() == RoleGeneral {
@@ -246,7 +246,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
-			messages = []schema.ChatMessage{BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools)}
+			messages = []schema.ChatMessage{BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools)}
 			messages = appendContextPackMessage(messages, updatedPack)
 			if r.role() == RoleGeneral {
 				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
@@ -278,7 +278,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		currentSkills := r.State.ActiveSkills()
 		if skillsChanged(lastRenderedSkills, currentSkills) {
-			messages[0] = BuildSystemPrompt(r.role(), r.Registry.List(), r.SkillIndex, currentSkills, r.NativeTools)
+			messages[0] = BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools)
 			lastRenderedSkills = currentSkills
 		}
 
@@ -755,8 +755,24 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 
 func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 	tools := r.Registry.List()
+	deferred := make(map[string]bool)
+	for _, t := range r.Registry.ListDeferred() {
+		deferred[t.Name] = true
+	}
+	loaded := make(map[string]bool)
+	if r.State != nil {
+		for _, name := range r.State.LoadedToolNames() {
+			loaded[name] = true
+		}
+	}
 	defs := make([]schema.ToolDefinition, 0, len(tools)+1)
 	for _, tool := range tools {
+		// Deferred MCP tools are hidden from the agent's prompt by default
+		// and only revealed once the agent explicitly opts in via
+		// tools.select. Native tools are never deferred.
+		if deferred[tool.Name] && !loaded[tool.Name] {
+			continue
+		}
 		parameters := tool.Schema
 		if len(parameters) == 0 {
 			parameters = json.RawMessage(`{"type":"object"}`)

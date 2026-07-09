@@ -32,6 +32,11 @@ func (t *toolSet) diagnosticsCheckTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
+		// Empty string means no checker is configured for this language; tell
+		// the caller explicitly rather than returning a blank result.
+		if out == "" {
+			out = "diagnostics: none"
+		}
 		return registry.ToolResult{Summary: "diagnostics check complete", Content: out}, nil
 	}
 	return tool

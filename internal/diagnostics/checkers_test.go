@@ -26,13 +26,27 @@ func TestGoCheckerFindsVetError(t *testing.T) {
 	}
 }
 
-func TestMissingCheckerReturnsNone(t *testing.T) {
+func TestMissingCheckerReturnsEmptyString(t *testing.T) {
 	e := NewChecker(map[string]string{})
 	out, err := e.Check([]string{"foo.rs"}, "rust")
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
+	if out != "" {
+		t.Fatalf("got %q, want empty string when no checker is configured", out)
+	}
+}
+
+func TestConfiguredCheckerRunsCleanReportsNone(t *testing.T) {
+	c := NewChecker(map[string]string{"go": "go vet {package}"})
+	c.runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return nil, nil
+	}
+	out, err := c.Check([]string{"x.go"}, "go")
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
 	if out != "diagnostics: none" {
-		t.Fatalf("got %q", out)
+		t.Fatalf("got %q, want 'diagnostics: none' when configured checker finds nothing", out)
 	}
 }

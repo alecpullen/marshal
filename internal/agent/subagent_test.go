@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,14 +12,17 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// TestSubagentDepthLimit verifies that a session whose own nesting depth
+// has already hit the cap is rejected by the depth guard before any child
+// runner is constructed. We construct a depth-2 session directly (the
+// factory never gets a chance to "build" it into a parent).
 func TestSubagentDepthLimit(t *testing.T) {
 	called := false
 	factory := func() (*Runner, error) {
 		called = true
 		return &Runner{}, nil
 	}
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	state.SetSubagentDepth(1)
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(2))
 
 	tool := NewSubagentTool(factory, registry.New(), state, 2)
 	if tool.Name != "agent.run" {
@@ -37,15 +41,47 @@ func TestSubagentDepthLimit(t *testing.T) {
 	}
 }
 
+// TestSubagentConcurrencyLimit exercises the concurrency guard end-to-end:
+// a parent at depth=0 admits two in-flight subagents, then rejects a third
+// with ErrSubagentConcurrencyLimit (not ErrSubagentDepthLimit). We spawn
+// the first two via direct EnterSubagent/ExitSubagent calls in goroutines
+// blocked on a release channel, then attempt a third admission via the
+// normal agent.run handler.
 func TestSubagentConcurrencyLimit(t *testing.T) {
-	called := 0
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	if got := state.SubagentDepth(); got != 0 {
+		t.Fatalf("initial depth = %d, want 0", got)
+	}
+
+	release := make(chan struct{})
+	entered := make(chan struct{}, 2)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			if err := state.EnterSubagent(); err != nil {
+				t.Errorf("first/second EnterSubagent returned %v, want nil", err)
+				return
+			}
+			defer state.ExitSubagent()
+			entered <- struct{}{}
+			<-release
+		}()
+	}
+
+	<-entered
+	<-entered
+	if got := state.SubagentConcurrency(); got != 2 {
+		t.Fatalf("concurrency after 2 admissions = %d, want 2", got)
+	}
+
+	factoryCalls := 0
 	factory := func() (*Runner, error) {
-		called++
+		factoryCalls++
 		return &Runner{}, nil
 	}
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	state.SetSubagentConcurrency(2)
-
 	tool := NewSubagentTool(factory, registry.New(), state, 2)
 	_, err := tool.Handler(t.Context(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
 	if err == nil {
@@ -54,26 +90,46 @@ func TestSubagentConcurrencyLimit(t *testing.T) {
 	if !errors.Is(err, session.ErrSubagentConcurrencyLimit) {
 		t.Fatalf("error = %v, want session.ErrSubagentConcurrencyLimit", err)
 	}
-	if called != 0 {
-		t.Fatalf("factory invocations = %d, want 0", called)
+	if errors.Is(err, session.ErrSubagentDepthLimit) {
+		t.Fatalf("error = %v leaked depth-limit sentinel inside a concurrency-limit test", err)
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("factory invocations = %d, want 0", factoryCalls)
+	}
+
+	close(release)
+	wg.Wait()
+	if got := state.SubagentConcurrency(); got != 0 {
+		t.Fatalf("concurrency after release = %d, want 0", got)
 	}
 }
 
 func TestSubagentGuardCountersRoundTrip(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	if got := state.SubagentDepth(); got != 0 {
-		t.Fatalf("initial depth = %d, want 0", got)
+	top := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(0))
+	if got := top.SubagentDepth(); got != 0 {
+		t.Fatalf("top depth = %d, want 0", got)
 	}
-	if got := state.SubagentConcurrency(); got != 0 {
-		t.Fatalf("initial concurrency = %d, want 0", got)
+	if got := top.SubagentConcurrency(); got != 0 {
+		t.Fatalf("top concurrency = %d, want 0", got)
 	}
-	state.SetSubagentDepth(1)
-	state.SetSubagentConcurrency(1)
-	if got := state.SubagentDepth(); got != 1 {
-		t.Fatalf("after set depth = %d, want 1", got)
+	top.SetSubagentConcurrency(1)
+	if got := top.SubagentConcurrency(); got != 1 {
+		t.Fatalf("after SetSubagentConcurrency(1) = %d, want 1", got)
 	}
-	if got := state.SubagentConcurrency(); got != 1 {
-		t.Fatalf("after set concurrency = %d, want 1", got)
+
+	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(1))
+	if got := child.SubagentDepth(); got != 1 {
+		t.Fatalf("child depth = %d, want 1", got)
+	}
+	if got := child.SubagentConcurrency(); got != 0 {
+		t.Fatalf("child concurrency = %d, want 0", got)
+	}
+
+	if err := child.EnterSubagent(); !errors.Is(err, session.ErrSubagentDepthLimit) {
+		t.Fatalf("child EnterSubagent = %v, want ErrSubagentDepthLimit (depth guard, not concurrency)", err)
+	}
+	if got := child.SubagentConcurrency(); got != 0 {
+		t.Fatalf("child concurrency after rejected EnterSubagent = %d, want 0", got)
 	}
 }
 

@@ -79,8 +79,7 @@ func TestAgentRunToolRegistersAndDispatchesToChild(t *testing.T) {
 
 func TestAgentRunToolRejectsWhenDepthLimitReached(t *testing.T) {
 	reg := registry.New()
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	state.SetSubagentDepth(1)
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(2))
 
 	factoryCalls := 0
 	factory := func() (*agent.Runner, error) {

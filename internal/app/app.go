@@ -394,14 +394,15 @@ const defaultSubtaskIterations = 12
 // session.State (so the child's transcript does not pollute the parent's
 // message log), a filtered registry view (read-only + network, no nested
 // agent.run), and binds RoleSubtask so the system prompt enforces the
-// appropriate scope.
+// appropriate scope. The child session's depth is parent+1 so its own
+// depth guard rejects any attempt to spawn nested subagents.
 func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string) agent.SubagentRunnerFactory {
 	subtaskIters := cfg.Agent.SubtaskIterations
 	if subtaskIters <= 0 {
 		subtaskIters = defaultSubtaskIterations
 	}
 	return func() (*agent.Runner, error) {
-		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{})
+		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
 		roReg := agent.SubtaskScopeView(parentReg)
 		child := agent.NewRunner(parentProvider, roReg, pol, childState, defaultModel)
 		child.Role = agent.RoleSubtask

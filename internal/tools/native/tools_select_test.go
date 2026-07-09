@@ -61,6 +61,25 @@ func TestToolsSelectRejectsUnknownOrNonDeferred(t *testing.T) {
 	}
 }
 
+func TestToolsSelectRejectsEmptyName(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{Name: "mcp.foo", Description: "foo", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Deferred: true, Handler: stubHandler}); err != nil {
+		t.Fatalf("Register mcp.foo: %v", err)
+	}
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	tools := &toolSet{registry: reg, sessionState: state}
+	tool := tools.toolsSelectTool()
+
+	args, _ := json.Marshal(map[string]any{"names": []string{""}})
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: args})
+	if err == nil {
+		t.Fatal("expected error for empty name")
+	}
+	if loaded := state.LoadedToolNames(); len(loaded) != 0 {
+		t.Fatalf("loaded = %v, want none", loaded)
+	}
+}
+
 func stubHandler(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 	return registry.ToolResult{}, nil
 }

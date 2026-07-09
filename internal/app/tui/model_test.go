@@ -1875,7 +1875,7 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 
 	select {
 	case got := <-q.ResponseChan:
-		if len(got) != 1 || got[0].Answer != "Unanswered" {
+		if len(got) != 1 || got[0].Answer != session.AnswerUnanswered {
 			t.Fatalf("answer = %+v, want single [Unanswered]", got)
 		}
 	default:

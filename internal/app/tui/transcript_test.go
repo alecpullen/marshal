@@ -96,6 +96,17 @@ func TestRenderDiffBlockColorsWithoutPanel(t *testing.T) {
 	}
 }
 
+func TestRenderDiffBlockUsesDiffviewAtWideWidth(t *testing.T) {
+	diff := "--- a/main.go\n+++ b/main.go\n@@ -1,3 +1,3 @@\n package main\n-func old() {}\n+func new() {}\n"
+	out := stripANSI(renderMessage(session.Message{Role: session.RoleAssistant, Content: diff, ContentType: session.ContentTypeDiff}, 140))
+	if !strings.Contains(out, " │ ") {
+		t.Fatalf("wide unified diff should render through diffview side-by-side layout:\n%s", out)
+	}
+	if !strings.Contains(out, "old()") || !strings.Contains(out, "new()") {
+		t.Fatalf("diffview output missing changed lines:\n%s", out)
+	}
+}
+
 func TestRenderFinalAnswerKeepsResponseTreatment(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true}, 80)
 	if !strings.Contains(out, "Response") {

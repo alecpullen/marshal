@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
+	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 )
 
@@ -915,6 +917,48 @@ func TestSteeringQueuePushDrainClear(t *testing.T) {
 	state.ClearSteering()
 	if len(state.SteeringQueue()) != 0 {
 		t.Fatal("queue not empty after clear")
+	}
+}
+
+func TestSteeringQueuePublishesQueueLenAfterDrainPopAndClear(t *testing.T) {
+	state := newTestState()
+	broker := pubsub.NewBroker[SteeringEvent]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := broker.Subscribe(ctx)
+	state.SetSteeringBroker(broker)
+
+	state.PushSteering("one")
+	expectSteeringQueueLen(t, ch, 1)
+	state.PushSteering("two")
+	expectSteeringQueueLen(t, ch, 2)
+	if drained := state.DrainSteering(); len(drained) != 2 {
+		t.Fatalf("DrainSteering = %v, want two messages", drained)
+	}
+	expectSteeringQueueLen(t, ch, 0)
+
+	state.PushSteering("three")
+	expectSteeringQueueLen(t, ch, 1)
+	if _, ok := state.PopSteering(); !ok {
+		t.Fatal("PopSteering returned ok=false")
+	}
+	expectSteeringQueueLen(t, ch, 0)
+
+	state.PushSteering("four")
+	expectSteeringQueueLen(t, ch, 1)
+	state.ClearSteering()
+	expectSteeringQueueLen(t, ch, 0)
+}
+
+func expectSteeringQueueLen(t *testing.T, ch <-chan pubsub.Event[SteeringEvent], want int) {
+	t.Helper()
+	select {
+	case ev := <-ch:
+		if ev.Payload.QueueLen != want {
+			t.Fatalf("QueueLen = %d, want %d (event=%+v)", ev.Payload.QueueLen, want, ev.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for steering QueueLen %d", want)
 	}
 }
 

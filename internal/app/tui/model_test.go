@@ -1969,8 +1969,11 @@ func TestStatusLineJobCountFallbackWhenNoBroker(t *testing.T) {
 // the cached count and re-arms the pump.
 func TestJobCountMsgUpdatesModel(t *testing.T) {
 	b := pubsub.NewBroker[native.JobEvent]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	m := newViewTestModel(t, 80, 24)
 	m.jobBroker = b
+	m.jobEvents = b.Subscribe(ctx)
 	updated, cmd := m.Update(jobCountMsg{count: 7})
 	um := updated.(Model)
 	if um.jobCount != 7 {

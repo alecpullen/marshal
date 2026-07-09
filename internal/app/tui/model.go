@@ -86,6 +86,7 @@ type Model struct {
 	// (tests, fallback), the status line reads m.state.RunningJobsCount()
 	// as the polled fallback.
 	jobBroker *pubsub.Broker[native.JobEvent]
+	jobEvents <-chan pubsub.Event[native.JobEvent]
 	jobCount  int
 
 	// F16: steering broker pump. steeringBroker is the F16 message broker;
@@ -95,6 +96,7 @@ type Model struct {
 	// steeringBroker is nil, m.queuedCount is driven by direct
 	// state.SteeringQueue() reads.
 	steeringBroker *pubsub.Broker[session.SteeringEvent]
+	steeringEvents <-chan pubsub.Event[session.SteeringEvent]
 	queuedCount    int
 
 	// New Layout State
@@ -314,6 +316,12 @@ func New(state *session.State, opts ...Option) Model {
 	if m.filePopup == nil {
 		m.filePopup = newCompletionPopup(m.fileIndex)
 	}
+	if m.jobBroker != nil && m.jobEvents == nil {
+		m.jobEvents = m.jobBroker.Subscribe(m.ctx)
+	}
+	if m.steeringBroker != nil && m.steeringEvents == nil {
+		m.steeringEvents = m.steeringBroker.Subscribe(m.ctx)
+	}
 
 	// Eagerly build inline approval/question forms if the session already
 	// has a pending request, so the first render shows the huh surface
@@ -334,11 +342,11 @@ func blinkCmd() tea.Cmd {
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{blinkCmd()}
-	if m.jobBroker != nil {
-		cmds = append(cmds, pumpJobEvents(m.ctx, m.jobBroker))
+	if m.jobEvents != nil {
+		cmds = append(cmds, pumpJobEvents(m.jobEvents))
 	}
-	if m.steeringBroker != nil {
-		cmds = append(cmds, pumpSteeringEvents(m.ctx, m.steeringBroker))
+	if m.steeringEvents != nil {
+		cmds = append(cmds, pumpSteeringEvents(m.steeringEvents))
 	}
 	return tea.Batch(cmds...)
 }
@@ -480,21 +488,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// terminates (this should not happen when the pump is sourced
 		// from Init, but keeps Update safe under tests that wire msgs
 		// directly).
-		if m.jobBroker == nil {
+		if m.jobEvents == nil {
 			return m, nil
 		}
-		return m, pumpJobEvents(m.ctx, m.jobBroker)
+		return m, pumpJobEvents(m.jobEvents)
 	case steeringMsg:
 		// F16: cache the queued count so the status line and transcript
 		// render without polling, then re-arm the pump. The transcript
 		// re-renders via the viewport dirty hash on the next refresh.
 		m.queuedCount = msg.queueLen
-		if m.steeringBroker == nil {
+		if m.steeringEvents == nil {
 			m.refreshViewport()
 			return m, nil
 		}
 		m.refreshViewport()
-		return m, pumpSteeringEvents(m.ctx, m.steeringBroker)
+		return m, pumpSteeringEvents(m.steeringEvents)
 	case agentTickMsg:
 		if !m.busy {
 			return m, nil

@@ -379,9 +379,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// intervened, the loop is no longer auto-iterating.
 		steeringArrived := false
 		if r.SteeringProvider != nil {
+			var steeringPins []contextpack.FileSnippet
 			for _, msg := range r.SteeringProvider.DrainSteering() {
+				steeringPins = append(steeringPins, extractPinnedFiles(msg, r.State, r.ProjectID)...)
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 				steeringArrived = true
+			}
+			if len(steeringPins) > 0 {
+				pack := contextpack.PinFiles(r.State.ContextPack(), steeringPins)
+				r.State.SetContextPack(pack)
+				messages = appendContextPackMessage(messages, pack)
 			}
 		}
 

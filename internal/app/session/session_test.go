@@ -895,3 +895,35 @@ func TestStateTodosPersistToDB(t *testing.T) {
 		t.Fatalf("LoadTodos = %+v", loaded)
 	}
 }
+
+func TestSteeringQueuePushDrainClear(t *testing.T) {
+	state := newTestState()
+	state.PushSteering("also update the README")
+	state.PushSteering("and add a test")
+	got := state.SteeringQueue()
+	if len(got) != 2 || got[0] != "also update the README" {
+		t.Fatalf("SteeringQueue = %v", got)
+	}
+	drained := state.DrainSteering()
+	if len(drained) != 2 {
+		t.Fatalf("DrainSteering = %v", drained)
+	}
+	if len(state.SteeringQueue()) != 0 {
+		t.Fatal("queue not empty after drain")
+	}
+	state.PushSteering("x")
+	state.ClearSteering()
+	if len(state.SteeringQueue()) != 0 {
+		t.Fatal("queue not empty after clear")
+	}
+}
+
+func TestSteeringQueueIsCopy(t *testing.T) {
+	state := newTestState()
+	state.PushSteering("a")
+	got := state.SteeringQueue()
+	got[0] = "mutated"
+	if state.SteeringQueue()[0] != "a" {
+		t.Fatal("SteeringQueue did not return a copy")
+	}
+}

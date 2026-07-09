@@ -6,3 +6,11 @@ package tui
 type jobCountMsg struct {
 	count int
 }
+
+// steeringMsg is the tea.Msg the steering broker pump emits when a
+// SteeringEvent lands (F16). Handling it updates the cached queued
+// count so the status line shows "queued <n>" and re-arms the pump.
+type steeringMsg struct {
+	queueLen int
+	message  string
+}

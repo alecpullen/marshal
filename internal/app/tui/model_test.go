@@ -1952,3 +1952,70 @@ func TestJobCountMsgUpdatesModel(t *testing.T) {
 		t.Fatal("expected pump re-arm cmd, got nil")
 	}
 }
+
+func TestEnterWhileBusyEnqueuesSteering(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.busy = true
+	m.input.SetValue("also update the README")
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(m.state.SteeringQueue()) != 1 {
+		t.Fatalf("queue = %v, want 1 item", m.state.SteeringQueue())
+	}
+}
+
+func TestCtrlXClearsSteering(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.busy = true
+	m.state.PushSteering("a")
+	m.state.PushSteering("b")
+	m.queuedCount = 2
+	m = sendKey(m, tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if len(m.state.SteeringQueue()) != 0 {
+		t.Fatalf("queue not cleared: %v", m.state.SteeringQueue())
+	}
+	if m.queuedCount != 0 {
+		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	}
+}
+
+func TestEnterOnEmptyDrainsQueuedFollowUp(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	// runner is nil, so submitTurn just appends the message to state.
+	// We pre-seed the queue and verify Enter pops the oldest.
+	m.state.PushSteering("first follow-up")
+	m.state.PushSteering("second follow-up")
+	m.queuedCount = 2
+	// Busy must be false for the follow-up path to fire.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(m.state.SteeringQueue()) != 1 {
+		t.Fatalf("queue = %v, want 1 remaining", m.state.SteeringQueue())
+	}
+	if m.state.SteeringQueue()[0] != "second follow-up" {
+		t.Fatalf("remaining = %q, want %q", m.state.SteeringQueue()[0], "second follow-up")
+	}
+	messages := m.state.Messages()
+	if len(messages) != 1 || messages[0].Content != "first follow-up" {
+		t.Fatalf("follow-up not submitted; messages = %v", messages)
+	}
+}
+
+func TestCancelTurnDropsSteeringQueue(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.busy = true
+	m.state.PushSteering("a")
+	m.state.PushSteering("b")
+	m.queuedCount = 2
+	cancelled := false
+	m.agentCancel = func() { cancelled = true }
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(Model)
+	if !cancelled {
+		t.Fatal("Esc should cancel the in-flight agent turn")
+	}
+	if len(m.state.SteeringQueue()) != 0 {
+		t.Fatalf("queue not dropped on cancel: %v", m.state.SteeringQueue())
+	}
+	if m.queuedCount != 0 {
+		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	}
+}

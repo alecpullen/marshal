@@ -44,6 +44,10 @@ func (m Model) statusLeftSegments() []string {
 	}
 	segments := []string{mode}
 
+	if !m.state.Trusted() {
+		segments = append(segments, "untrusted")
+	}
+
 	route := m.state.ActiveRoute()
 	if route.Active {
 		segments = append(segments, fmt.Sprintf("%s @ %s", route.Model, route.Provider))

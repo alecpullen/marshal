@@ -24,16 +24,19 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/filetrack"
 	"marshal/internal/knowledge"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/sandbox"
 	"marshal/internal/skills"
+	"marshal/internal/snapshot"
 	"marshal/internal/tools/mcp"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
+	"marshal/internal/trust"
 )
 
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
@@ -44,6 +47,7 @@ type options struct {
 	configLoader   configLoader
 	programRunner  ProgramRunner
 	skipOnboarding bool
+	trustResolver  trust.Resolver
 }
 
 type Option func(*options)
@@ -77,6 +81,12 @@ func WithConfigLoader(loader configLoader) Option {
 			return
 		}
 		opts.configLoader = loader
+	}
+}
+
+func WithTrustResolver(r trust.Resolver) Option {
+	return func(opts *options) {
+		opts.trustResolver = r
 	}
 }
 
@@ -216,11 +226,11 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 	}
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -235,13 +245,18 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
 		Backend:          caps.Backend,
 		NetworkIsolation: caps.NetworkIsolation,
 	})
+
+	var fileTracker native.FileTracker
+	if database != nil {
+		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
+	}
 
 	if err := native.RegisterAll(reg, native.Options{
 		WorkspaceRoot: state.WorkingDir,
@@ -250,8 +265,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		SessionState:  state,
 		DB:            database,
 		ProjectID:     projectID,
+		FileTracker:   fileTracker,
 	}); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -260,11 +276,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if len(cfg.MCP.Servers) > 0 {
 		mcpMgr = mcp.NewManager(&cfg)
 		if err := mcpMgr.Start(ctx); err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			mcpMgr.Close()
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 	}
 
@@ -291,6 +307,15 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if runner.RequestTimeout == 0 {
 		runner.RequestTimeout = 60 * time.Second
 	}
+
+	var snapSvc *snapshot.Service
+	if dataDir != "" && cfg.Snapshots.Enabled {
+		snapSvc = snapshot.New(dataDir, state.WorkingDir, int64(cfg.Snapshots.MaxFileBytes), cfg.Indexing.Ignore, state.Logger())
+		state.SetSnapshotter(snapSvc)
+		runner.Snapshotter = snapSvc
+		runner.SnapshotRecorder = database
+	}
+
 	state.SetActiveRoute(session.RouteInfo{
 		Role:      route.Role,
 		Profile:   route.Profile,
@@ -302,7 +327,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		Active:    true,
 	})
 	swarmRunner := buildSwarmRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
-	return runner, reg, swarmRunner, mcpMgr, nil
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, nil
 }
 
 // buildSwarmRunner wires the Milestone O swarm: every role runner shares
@@ -438,7 +463,22 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		}
 	}
 
-	cfg, err := runOpts.configLoader(config.LoadOptions{WorkingDir: workingDir})
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("find home directory: %w", err)
+	}
+
+	dataDir := filepath.Join(homeDir, ".local", "share", "marshal")
+	resolver := runOpts.trustResolver
+	if resolver == nil {
+		resolver = trust.NewTerminalResolver(trust.NewStore(dataDir))
+	}
+	loader := func(lo config.LoadOptions) (config.Config, error) {
+		lo.TrustResolver = resolver
+		return runOpts.configLoader(lo)
+	}
+	var projectTrusted bool
+	cfg, err := loader(config.LoadOptions{WorkingDir: workingDir, Trusted: &projectTrusted})
 	if err != nil {
 		return err
 	}
@@ -478,11 +518,8 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	}
 	logger := logging.New(logWriter, slog.LevelInfo)
 	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
+	state.SetTrusted(projectTrusted)
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = ""
-	}
 	globalSkillsDir := filepath.Join(homeDir, ".config", "marshal", "skills")
 	projectSkillsDir := filepath.Join(workingDir, ".marshal", "skills")
 	skillIndex, err := skills.LoadSkills(globalSkillsDir, projectSkillsDir)
@@ -494,7 +531,22 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	var toolReg *registry.Registry
 	var swarmRunner *swarm.Orchestrator
 	var mcpMgr *mcp.Manager
-	runner, toolReg, swarmRunner, mcpMgr, err = buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
+	var snapSvc *snapshot.Service
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, err = buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex, dataDir)
+	if snapSvc != nil {
+		defer func() {
+			pruneCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if perr := snapSvc.Prune(pruneCtx, cfg.Snapshots.RetentionDays); perr != nil && state.Logger() != nil {
+				state.Logger().Warn("snapshot prune failed", "error", perr)
+			}
+			if database != nil {
+				if perr := database.PruneSnapshotsOlderThan(cfg.Snapshots.RetentionDays); perr != nil && state.Logger() != nil {
+					state.Logger().Warn("snapshot DB prune failed", "error", perr)
+				}
+			}
+		}()
+	}
 	if err == nil {
 		defer func() {
 			if mcpMgr != nil {
@@ -516,7 +568,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
-			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, runner, swarmRunner, &mcpMgr)
+			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, dataDir, runner, swarmRunner, &mcpMgr)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	} else {
@@ -557,18 +609,18 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	return progErr
 }
 
-func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, runner *agent.Runner, swarmRunner *swarm.Orchestrator, activeMCP **mcp.Manager) error {
+func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, runner *agent.Runner, swarmRunner *swarm.Orchestrator, activeMCP **mcp.Manager) error {
 	if runner == nil {
 		return nil
 	}
-	newRunner, _, newSwarmRunner, newMCP, err := buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex)
+	newRunner, _, newSwarmRunner, newMCP, newSnapSvc, err := buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex, dataDir)
 	if err != nil {
 		return err
 	}
 	if activeMCP != nil && *activeMCP != nil {
 		_ = (*activeMCP).Close()
 	}
-	*runner = *newRunner
+	runner.CopyFrom(newRunner)
 	if swarmRunner != nil && newSwarmRunner != nil {
 		*swarmRunner = *newSwarmRunner
 	}
@@ -577,6 +629,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.S
 	} else if newMCP != nil {
 		_ = newMCP.Close()
 	}
+	_ = newSnapSvc
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"marshal/internal/agent"
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 )
 
@@ -49,7 +50,8 @@ func New(state *session.State, factory RunnerFactory) *Orchestrator {
 
 // SetForceClass satisfies tui.AgentRunner. Swarm roles fix their own task
 // classes, so forcing has no effect.
-func (o *Orchestrator) SetForceClass(string) {}
+func (o *Orchestrator) SetForceClass(string)                   {}
+func (o *Orchestrator) SetPolicyRules([]config.PermissionRule) {}
 
 func (o *Orchestrator) maxRounds() int {
 	if o.MaxFixRounds < 1 {

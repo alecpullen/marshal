@@ -18,6 +18,15 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
+// service without importing internal/snapshot.
+type Snapshotter interface {
+	Track(ctx context.Context) (string, error)
+	Diff(ctx context.Context, hash string) (string, error)
+	Restore(ctx context.Context, hash string) error
+	Revert(ctx context.Context, fromHash, toHash string) error
+}
+
 type Role string
 
 const (
@@ -205,6 +214,52 @@ type State struct {
 	toolBudget      ToolBudget
 	swarmProgress   SwarmProgress
 	sandbox         SandboxInfo
+	trusted         bool
+	turnIndex       int
+	snapshotter     Snapshotter
+}
+
+func (s *State) SetTrusted(trusted bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trusted = trusted
+}
+
+func (s *State) Trusted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trusted
+}
+
+func (s *State) TurnIndex() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnIndex
+}
+
+func (s *State) IncrementTurnIndex() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turnIndex++
+	return s.turnIndex
+}
+
+func (s *State) SetSnapshotter(sp Snapshotter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshotter = sp
+}
+
+func (s *State) Snapshotter() Snapshotter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshotter
+}
+
+func (s *State) DB() *db.DB {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence) *State {

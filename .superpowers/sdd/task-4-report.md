@@ -1,92 +1,20 @@
-# Task 4: Transcript Message Icons & Colors, Approval Panel De-fill — Report
-
-## Status
-✅ COMPLETE
-
-## Commit Hash
-`f08afa9` — style(tui): icon-prefixed transcript roles and de-filled approval panel
-
-## Test Results
-
-### Target Tests (All PASS)
-```
-CGO_ENABLED=1 go test ./internal/app/tui/ -run 'TestUserMessageUsesChevronPrefix|TestCompletedToolCallUsesCheckAndCross|TestApprovalPanelHasNoBackgroundFill|TestProviderErrorShowsInlineNotFullScreen' -v
-
-=== RUN   TestUserMessageUsesChevronPrefix
---- PASS: TestUserMessageUsesChevronPrefix (0.00s)
-=== RUN   TestCompletedToolCallUsesCheckAndCross
---- PASS: TestCompletedToolCallUsesCheckAndCross (0.00s)
-=== RUN   TestApprovalPanelHasNoBackgroundFill
---- PASS: TestApprovalPanelHasNoBackgroundFill (0.00s)
-=== RUN   TestProviderErrorShowsInlineNotFullScreen
---- PASS: TestProviderErrorShowsInlineNotFullScreen (0.00s)
-PASS
-ok  	marshal/internal/app/tui	0.510s
-```
-
-### Full Package Suite (All PASS)
-```
-CGO_ENABLED=1 go test ./internal/app/tui/
-PASS
-ok  	marshal/internal/app/tui	0.875s
-```
-
-### Build (SUCCESS)
-```
-CGO_ENABLED=1 go build ./...
-Build successful
-```
-
-## Changes Made
-
-1. **`internal/app/tui/transcript.go`:**
-   - `renderUserMessage()`: Changed prefix from `❯` to `›` in warm gray (`userColor`)
-   - `toolBulletStyle`: Changed from `warningColor` to `goldColor`
-   - `renderCompletedToolCall()`: Updated to use `✔` (teal/statusOkStyle) for success, `✘` (red/statusErrStyle) for failure
-   - `renderProviderError()`: Changed glyph from `✗` to `✘`
-   - `renderApprovalPanel()`: Removed all `.Background(panelBgColor)` calls (foreground-only rendering)
-
-2. **`internal/app/tui/transcript_test.go`:**
-   - Added `TestUserMessageUsesChevronPrefix()`, `TestCompletedToolCallUsesCheckAndCross()`, `TestApprovalPanelHasNoBackgroundFill()`
-   - Updated `TestRenderUserMessageUsesPromptPrefix()`: assertion from `❯` to `›`
-   - Updated `TestRenderProviderErrorInline()`: assertion from `✗` to `✘`
-
-3. **`internal/app/tui/view_test.go`:**
-   - Updated `TestViewIsSingleColumn()`: assertion from `❯` to `›`
-   - Updated `TestProviderErrorShowsInlineNotFullScreen()`: assertion from `✗ provider:` to `✘ provider:`
-
-## Pre-existing Tests Updated
-- `TestRenderUserMessageUsesPromptPrefix`: Updated to assert `›` instead of `❯`
-- `TestRenderProviderErrorInline`: Updated to assert `✘` instead of `✗`
-- `TestViewIsSingleColumn`: Updated to assert `›` instead of `❯`
-
-## Verification Checklist
-- ✅ All 4 target tests pass
-- ✅ Full TUI package suite passes (~130 tests)
-- ✅ Build succeeds (`CGO_ENABLED=1 go build ./...`)
-- ✅ Code formatted with `gofmt`
-- ✅ Commit created with correct message
-- ✅ All pre-existing tests updated to match new behavior
-
----
-
-## Follow-up Fix: Test Assertion Revert
-
-**Commit Hash:** `6e7d52c`
-
-**Issue:** `TestViewIsSingleColumn` was incorrectly changed to assert `›` instead of the input prompt `❯`.
-
-**Fix:** Reverted assertion in `internal/app/tui/view_test.go` line 33 to check for `❯` (the actual input box prompt).
-
-**Test Results:**
-```
-CGO_ENABLED=1 go test ./internal/app/tui/ -run TestViewIsSingleColumn -v
-=== RUN   TestViewIsSingleColumn
---- PASS: TestViewIsSingleColumn (0.00s)
-PASS
-ok  	marshal/internal/app/tui	(cached)
-
-Full suite: ok  	marshal/internal/app/tui	0.944s (all tests pass)
-```
-
-**No concerns.** The test now correctly validates the input prompt presence as intended.
+# Task 4 Report: F17 Diff View + /diff
+## Status: DONE
+## Commits
+- 0b2f375 feat(tui): syntax-highlighted side-by-side diff view + /diff (F17)
+## Summary
+- internal/diffview: new package with `Render(diff, Options)`, `Mode` (Auto ≥120 cols / SideBySide / Unified), `Options{Width, Mode, Highlight, Theme, Language}`, `Hunk`/`Line` types. Parser handles `--- / +++ / @@` headers + `+/-/space` body. Renderers: `renderUnified` (added/removed/context styled, optionally chroma-highlighted) and `renderSideBySide` (paired removed+added columns with intraline emphasis via `diffmatchpatch.DiffMain` finding the byte-offset runs that differ). Plain-text fallback below width floor or on parse/highlight failure; 500-line cap with truncation note. `detectLanguage` reads the `+++ b/...` path (or `Options.Language` override) and resolves to a chroma lexer (default Go). `highlightCode` (renamed from `highlight` to avoid shadowing `Options.Highlight`) wraps chroma tokens in lipgloss styles.
+- approval integration: `approvalModel.View()` now renders `tc.Diff` via `diffview.Render(..., ModeAuto, Highlight=true)` above the `huh.Form`. The existing `width` field on `approvalModel` is reused. `internal/app/tui/approval_test.go` adds coverage for the diff-in-view path and the no-diff path.
+- /diff command: added to `RegisterAll` in `internal/commands/commands.go`. Looks up `state.Snapshotter()` → `state.DB().SnapshotBefore(SessionID, TurnIndex)` → `sp.Diff(ctx, hash)` → emits the result via `state.AddMessage(RoleSystem, diff, ContentTypeDiff)` (the existing `renderDiffBlock` handles transcript rendering; the plan's `diffview.Render` call inside the transcript is a follow-up for full-width viewer). Friendly messages for "no snapshotter / no DB / no snapshot / no changes / diff error". Tests in `commands_test.go` cover the no-snapshot case and the registration.
+- deps: `go get github.com/sergi/go-diff@latest` (v1.4.0) added; `chroma/v2 v2.14.0` promoted from `// indirect` to direct (resolved via `go mod tidy` after diffview started importing it). Clean-room provenance comment in `diffview.go`.
+## Verification
+- gofmt: clean
+- go vet ./...: clean
+- go test -count=1 ./internal/diffview/ -v: PASS (14 tests)
+- go test -count=1 -race ./internal/diffview/ -v: PASS
+- go test ./...: PASS
+- go build ./cmd/marshal: success
+## Concerns
+- The transcript's `renderDiffBlock` in `internal/app/tui/transcript.go` was intentionally left as-is (plain colorized +/- lines, no chroma, no side-by-side, no intraline emphasis). Wiring the full `diffview.Render` into the transcript is a follow-up — the message is emitted with `ContentTypeDiff` so the existing path renders it. The approval dialog gets the rich renderer; the `/diff` transcript path gets a quick scroll-friendly view. Both share the same parser and styling primitives.
+- 500-line cap with truncation note (per plan F17 R3 "Gaps and notes"); full virtualization is a follow-up.
+- chroma v2.14.0 has no `chroma.Type` token type — used `chroma.NameClass`/`NameBuiltin` for type coloring in `highlightCode`.

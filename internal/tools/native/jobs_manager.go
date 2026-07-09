@@ -7,7 +7,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/internal/pubsub"
 )
+
+// JobEvent is the broker payload published by JobManager whenever the
+// running-job count changes. The TUI's pump converts it into a jobCountMsg
+// to drive the status line without polling. Per F19 R4 the type lives next
+// to the service that publishes it; the tui package imports this native
+// type directly.
+type JobEvent struct {
+	Count int
+	Delta int
+}
 
 // JobStatus describes the lifecycle state of a background shell job.
 type JobStatus string
@@ -41,14 +53,16 @@ type ProcessRunner interface {
 // JobManager tracks background shell jobs, enforces a maximum concurrency
 // limit, and provides buffered output, status queries, and kill semantics.
 type JobManager struct {
-	runner    ProcessRunner
-	dir       string
-	maxJobs   int
-	retention time.Duration
-	mu        sync.Mutex
-	jobs      map[string]*job
-	nextID    int
-	onChange  func(int)
+	runner       ProcessRunner
+	dir          string
+	maxJobs      int
+	retention    time.Duration
+	mu           sync.Mutex
+	jobs         map[string]*job
+	nextID       int
+	onChange     func(int)
+	jobBroker    *pubsub.Broker[JobEvent]
+	lastNotified int
 }
 
 type job struct {
@@ -103,9 +117,21 @@ func NewJobManager(runner ProcessRunner, dir string, maxJobs int, retention time
 
 // SetOnChange registers a callback that is invoked whenever the number of
 // running jobs changes. The callback must not call back into the JobManager.
+// Retained alongside the broker publish in SetBroker until the second
+// consumer (F16 steering) lands; then the callback is removed.
 func (m *JobManager) SetOnChange(fn func(int)) {
 	m.mu.Lock()
 	m.onChange = fn
+	m.mu.Unlock()
+}
+
+// SetBroker wires the F19 pub/sub broker so every change in the running-job
+// count publishes a JobEvent. Subscribers (currently the TUI) get the
+// notification without polling. Safe to call before any jobs are started.
+// Replaces nil safely; a nil broker disables publishing only.
+func (m *JobManager) SetBroker(b *pubsub.Broker[JobEvent]) {
+	m.mu.Lock()
+	m.jobBroker = b
 	m.mu.Unlock()
 }
 
@@ -314,10 +340,16 @@ func (m *JobManager) notifyChange() {
 		}
 		j.mu.Unlock()
 	}
+	delta := count - m.lastNotified
+	m.lastNotified = count
 	onChange := m.onChange
+	broker := m.jobBroker
 	m.mu.Unlock()
 	if onChange != nil {
 		onChange(count)
+	}
+	if broker != nil {
+		broker.Publish("jobs", JobEvent{Count: count, Delta: delta})
 	}
 }
 

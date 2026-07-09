@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/diagnostics"
+	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 )
 
@@ -40,6 +41,9 @@ type Options struct {
 	FileTracker    FileTracker
 	Config         config.Config
 	JobManager     *JobManager
+	// JobBroker, when non-nil, is wired into the JobManager so every change
+	// in the running-job count publishes a JobEvent. F19 broker wiring.
+	JobBroker *pubsub.Broker[JobEvent]
 }
 
 type CommandRunner interface {
@@ -172,6 +176,9 @@ func newToolSet(opts Options) (*toolSet, error) {
 		if counter, ok := any(opts.SessionState).(interface{ SetRunningJobsCount(int) }); ok {
 			jobManager.SetOnChange(counter.SetRunningJobsCount)
 		}
+	}
+	if opts.JobBroker != nil {
+		jobManager.SetBroker(opts.JobBroker)
 	}
 
 	return &toolSet{

@@ -29,6 +29,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/pubsub"
 	"marshal/internal/sandbox"
 	"marshal/internal/skills"
 	"marshal/internal/snapshot"
@@ -226,7 +227,7 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 	}
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
@@ -267,6 +268,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		ProjectID:     projectID,
 		FileTracker:   fileTracker,
 		Config:        cfg,
+		JobBroker:     jobBroker,
 	}); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
@@ -587,7 +589,17 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	var swarmRunner *swarm.Orchestrator
 	var mcpMgr *mcp.Manager
 	var snapSvc *snapshot.Service
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, err = buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex, dataDir)
+
+	// F19: typed pub/sub broker for F5 job-state changes. Constructed once
+	// for the program lifetime and shared between the native JobManager
+	// (publisher) and the TUI pump (subscriber). The program context
+	// cancels subscriptions on shutdown.
+	jobBroker := pubsub.NewBroker[native.JobEvent]()
+	jobBrokerCtx, jobBrokerCancel := context.WithCancel(ctx)
+	defer jobBrokerCancel()
+	defer jobBroker.Close()
+
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, err = buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
 	if snapSvc != nil {
 		defer func() {
 			pruneCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -621,9 +633,10 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	if err == nil {
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
+		tuiOpts = append(tuiOpts, tui.WithJobBroker(jobBrokerCtx, jobBroker))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
-			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, dataDir, runner, swarmRunner, &mcpMgr)
+			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, dataDir, runner, swarmRunner, &mcpMgr, jobBroker, jobBrokerCtx)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	} else {
@@ -664,11 +677,11 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	return progErr
 }
 
-func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, runner *agent.Runner, swarmRunner *swarm.Orchestrator, activeMCP **mcp.Manager) error {
+func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, runner *agent.Runner, swarmRunner *swarm.Orchestrator, activeMCP **mcp.Manager, jobBroker *pubsub.Broker[native.JobEvent], jobBrokerCtx context.Context) error {
 	if runner == nil {
 		return nil
 	}
-	newRunner, _, newSwarmRunner, newMCP, newSnapSvc, err := buildAgentRunner(ctx, cfg, state, database, projectID, skillIndex, dataDir)
+	newRunner, _, newSwarmRunner, newMCP, newSnapSvc, err := buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
 	if err != nil {
 		return err
 	}

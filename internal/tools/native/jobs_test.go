@@ -12,6 +12,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 )
 
@@ -47,6 +48,37 @@ func TestJobManagerEnforcesMaxJobs(t *testing.T) {
 	_, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
 	if err == nil {
 		t.Fatal("expected too many jobs error")
+	}
+}
+
+func TestJobManagerPublishesViaBroker(t *testing.T) {
+	jm := NewJobManager(defaultCommandRunner(), "", 25, 8*time.Hour)
+	t.Cleanup(jm.Shutdown)
+	broker := pubsub.NewBroker[JobEvent]()
+	t.Cleanup(broker.Close)
+	subCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch := broker.Subscribe(subCtx)
+	jm.SetBroker(broker)
+
+	// Start a long-running job; the first notifyChange publishes a
+	// +1 delta. Read it from the subscription and assert the count + delta.
+	id, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = jm.Kill(id) })
+
+	select {
+	case ev := <-ch:
+		if ev.Type != "jobs" {
+			t.Fatalf("type = %q, want jobs", ev.Type)
+		}
+		if ev.Payload.Count != 1 || ev.Payload.Delta != 1 {
+			t.Fatalf("payload = %+v, want count=1 delta=+1", ev.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no job-event published within 1s")
 	}
 }
 

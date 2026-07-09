@@ -279,6 +279,31 @@ func renderSystemNotice(content string, width int) string {
 
 var toolBulletStyle = lipgloss.NewStyle().Foreground(goldColor)
 
+var queuedStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
+
+// renderQueuedMessages renders the F16 steering queue as a footer
+// beneath the live transcript so the user can see what they typed
+// while the agent was working. width is informational (no wrapping
+// here yet — each queued line stays short in practice).
+func renderQueuedMessages(q []string, width int) string {
+	if len(q) == 0 {
+		return ""
+	}
+	_ = width
+	var b strings.Builder
+	b.WriteString(queuedStyle.Render(" Queued (Ctrl+X to clear):"))
+	b.WriteString("\n")
+	for _, msg := range q {
+		b.WriteString("  ")
+		b.WriteString(mutedStyle.Render("›"))
+		b.WriteString(" ")
+		b.WriteString(msg)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 func renderToolResultLine(content string, width int) string {
 	lines := strings.Split(content, "\n")
 	if len(lines) == 0 {

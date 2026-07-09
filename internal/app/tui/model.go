@@ -79,6 +79,15 @@ type Model struct {
 	jobBroker *pubsub.Broker[native.JobEvent]
 	jobCount  int
 
+	// F16: steering broker pump. steeringBroker is the F16 message broker;
+	// the pump cmd returned from Init (and re-armed from Update on each
+	// steeringMsg) bridges it into steeringMsg values. queuedCount is the
+	// cached count the status line and transcript render. When
+	// steeringBroker is nil, m.queuedCount is driven by direct
+	// state.SteeringQueue() reads.
+	steeringBroker *pubsub.Broker[session.SteeringEvent]
+	queuedCount    int
+
 	// New Layout State
 	width    int
 	height   int
@@ -154,6 +163,18 @@ func WithJobBroker(ctx context.Context, broker *pubsub.Broker[native.JobEvent]) 
 	return func(m *Model) {
 		m.ctx = ctx
 		m.jobBroker = broker
+	}
+}
+
+// WithSteeringBroker wires the F19 pub/sub broker for the F16 steering
+// queue. The model subscribes via pumpSteeringEvents from Init and
+// re-arms the pump on each steeringMsg. When broker is nil the status
+// line and transcript still read the queue from session.State directly
+// (used by tests that don't construct a broker).
+func WithSteeringBroker(ctx context.Context, broker *pubsub.Broker[session.SteeringEvent]) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.steeringBroker = broker
 	}
 }
 
@@ -263,10 +284,14 @@ func blinkCmd() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
+	cmds := []tea.Cmd{blinkCmd()}
 	if m.jobBroker != nil {
-		return tea.Batch(blinkCmd(), pumpJobEvents(m.ctx, m.jobBroker))
+		cmds = append(cmds, pumpJobEvents(m.ctx, m.jobBroker))
 	}
-	return blinkCmd()
+	if m.steeringBroker != nil {
+		cmds = append(cmds, pumpSteeringEvents(m.ctx, m.steeringBroker))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) resize(width, height int) {
@@ -410,6 +435,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, pumpJobEvents(m.ctx, m.jobBroker)
+	case steeringMsg:
+		// F16: cache the queued count so the status line and transcript
+		// render without polling, then re-arm the pump. The transcript
+		// re-renders via the viewport dirty hash on the next refresh.
+		m.queuedCount = msg.queueLen
+		if m.steeringBroker == nil {
+			m.refreshViewport()
+			return m, nil
+		}
+		m.refreshViewport()
+		return m, pumpSteeringEvents(m.ctx, m.steeringBroker)
 	case agentTickMsg:
 		if !m.busy {
 			return m, nil
@@ -501,8 +537,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.acceptCommandSuggestion() {
 				return m, nil
 			}
+		case "ctrl+x":
+			// F16 R3: clear the steering queue while the agent is
+			// working. Out-of-band so /clear semantics don't collide.
+			if m.busy {
+				m.state.ClearSteering()
+				m.queuedCount = 0
+				m.refreshViewport()
+				return m, nil
+			}
 		case "enter":
 			value := strings.TrimSpace(m.input.Value())
+			// F16 R2 follow-up turn: when the agent has finished and the
+			// user presses Enter with no new input, pop the oldest queued
+			// steering message and submit it as the next turn. This must
+			// happen BEFORE the empty-input short-circuit so a blank
+			// prompt still drains the queue.
+			if value == "" && !m.busy {
+				if followUp, ok := m.popOldestSteering(); ok {
+					value = followUp
+				} else {
+					return m, nil
+				}
+			}
 			if value == "" {
 				return m, nil
 			}
@@ -516,6 +573,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if m.busy {
+				// F16: turn is running — enqueue as a steering message
+				// instead of dropping the input.
+				m.state.PushSteering(value)
 				return m, nil
 			}
 			if m.runner == nil {
@@ -793,6 +853,19 @@ func (m *Model) acceptCommandSuggestion() bool {
 	return true
 }
 
+// popOldestSteering returns and removes the oldest queued steering
+// message. Used by the F16 R2 follow-up path so each Enter pops one
+// item at a time; the runner's loop-top drain handles any remainder.
+func (m *Model) popOldestSteering() (string, bool) {
+	msg, ok := m.state.PopSteering()
+	if ok {
+		// Mirror the cached count; the broker is the source of truth in
+		// production, but tests construct models without a broker.
+		m.queuedCount = len(m.state.SteeringQueue())
+	}
+	return msg, ok
+}
+
 func (m *Model) refreshViewport() {
 	m.updateViewportHeight()
 	items := m.state.Transcript()
@@ -802,7 +875,8 @@ func (m *Model) refreshViewport() {
 	busy := m.busy || activeTool || streamLen > 0
 
 	todos := m.state.Todos()
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos)
+	queued := m.state.SteeringQueue()
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued)
 	if hash == m.lastTranscriptHash {
 		return
 	}
@@ -829,6 +903,9 @@ func (m *Model) refreshViewport() {
 	if err := m.state.ProviderError(); err != nil {
 		b.WriteString(renderProviderError(err, m.viewport.Width()))
 	}
+	if len(queued) > 0 {
+		b.WriteString(renderQueuedMessages(queued, m.viewport.Width()))
+	}
 
 	m.viewport.SetContent(b.String())
 	if m.viewportFollow {
@@ -853,13 +930,17 @@ func tickCmd() tea.Cmd {
 }
 
 // cancelTurn cancels the in-flight agent turn, if any. Shared by Esc and
-// the /stop command.
+// the /stop command. F16 R5: also drops any messages queued before the
+// interrupt — they were enqueued for the turn we just killed, and
+// keeping them would re-fire on the next follow-up.
 func (m *Model) cancelTurn() bool {
 	if m.agentCancel == nil {
 		return false
 	}
 	m.agentCancel()
 	m.agentCancel = nil
+	m.state.ClearSteering()
+	m.queuedCount = 0
 	m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
 	m.refreshViewport()
 	return true
@@ -1094,14 +1175,17 @@ func compactTokenCount(tokens int) string {
 	return fmt.Sprintf("%d", tokens)
 }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string) uint64 {
 	var h uint64
-	h = uint64(len(items)) ^ (uint64(streamLen) << 20) ^ (uint64(width) << 40) ^ (uint64(len(todos)) << 50)
+	h = uint64(len(items)) ^ (uint64(streamLen) << 20) ^ (uint64(width) << 40) ^ (uint64(len(todos)) << 50) ^ (uint64(len(queued)) << 60)
 	for i, item := range items {
 		h ^= uint64(item.Timestamp.UnixNano()) * uint64(i+1)
 	}
 	for i, todo := range todos {
 		h ^= uint64(len(todo.Content)+len(todo.Status)) * uint64(i+7)
+	}
+	for i, q := range queued {
+		h ^= uint64(len(q)) * uint64(i+13)
 	}
 	if busy {
 		h ^= 0xDEADBEEF

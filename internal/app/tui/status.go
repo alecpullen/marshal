@@ -97,6 +97,10 @@ func (m Model) statusLeftSegments() []string {
 	} else if n := m.state.RunningJobsCount(); n > 0 {
 		segments = append(segments, fmt.Sprintf("jobs %d", n))
 	}
+
+	if n := m.queuedCount; n > 0 {
+		segments = append(segments, statusWarnStyle.Render(fmt.Sprintf("queued %d", n)))
+	}
 	return segments
 }
 

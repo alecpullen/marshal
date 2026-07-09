@@ -305,6 +305,10 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.UsageObserver = func(promptTokens, completionTokens int) {
 		state.SetTurnUsage(promptTokens + completionTokens)
 	}
+	// F16: the session itself is the SteeringProvider — its DrainSteering
+	// is called by the runner at every loop-top to inject user-typed
+	// follow-up messages into the live model context.
+	runner.SteeringProvider = state
 	decoding := resolveActionDecoding(route.Preset.ToolCalling, resolvedProvider.Capabilities(ctx))
 	runner.NativeTools = decoding.Native
 	runner.ResponseFormat = decoding.ResponseFormat
@@ -599,6 +603,14 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	defer jobBrokerCancel()
 	defer jobBroker.Close()
 
+	// F16: typed pub/sub broker for the steering queue. Constructed once
+	// and shared between session.State (publisher on PushSteering) and
+	// the TUI pump (subscriber). Uses the same cancellable context as
+	// the job broker so they shut down together.
+	steeringBroker := pubsub.NewBroker[session.SteeringEvent]()
+	state.SetSteeringBroker(steeringBroker)
+	defer steeringBroker.Close()
+
 	runner, toolReg, swarmRunner, mcpMgr, snapSvc, err = buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
 	if snapSvc != nil {
 		defer func() {
@@ -634,6 +646,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 		tuiOpts = append(tuiOpts, tui.WithJobBroker(jobBrokerCtx, jobBroker))
+		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(jobBrokerCtx, steeringBroker))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
 			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, dataDir, runner, swarmRunner, &mcpMgr, jobBroker, jobBrokerCtx)

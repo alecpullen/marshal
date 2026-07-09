@@ -66,6 +66,14 @@ func (t *titleGenerator) generate(ctx context.Context, firstUserMessage string) 
 	if len(title) > titleMaxChars {
 		title = title[:titleMaxChars]
 	}
+	// Re-check the manual-title guard immediately before persisting.
+	// A /rename issued after the early-return check at the top of
+	// generate() but before the LLM call returns must not be silently
+	// overwritten by the auto-title. Use the same mutex-locked check as
+	// SetTitleManual so the read is race-free with concurrent renames.
+	if t.state.TitleManuallySet() {
+		return
+	}
 	t.state.SetTitle(title)
 	if db := t.state.DB(); db != nil {
 		_ = db.UpdateSessionTitle(t.state.SessionID(), title)

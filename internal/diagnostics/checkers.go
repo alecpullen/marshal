@@ -33,7 +33,7 @@ func (c *Checker) Check(files []string, language string) (string, error) {
 		if language == "go" {
 			tmpl = "go vet {package}"
 		} else {
-			return "diagnostics: none", nil
+			return "", nil
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

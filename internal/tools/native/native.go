@@ -10,6 +10,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/diagnostics"
 	"marshal/internal/tools/registry"
 )
 
@@ -59,6 +60,7 @@ type toolSet struct {
 	db             *db.DB
 	projectID      int64
 	jobManager     *JobManager
+	diagnostics    *diagnostics.Checker
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -83,6 +85,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.jobOutputTool(),
 		tools.jobKillTool(),
 		tools.jobListTool(),
+		tools.diagnosticsCheckTool(),
 	} {
 		if err := reg.Register(tool); err != nil {
 			return err
@@ -144,5 +147,6 @@ func newToolSet(opts Options) (*toolSet, error) {
 		db:             opts.DB,
 		projectID:      opts.ProjectID,
 		jobManager:     jobManager,
+		diagnostics:    diagnostics.NewChecker(opts.Config.Diagnostics.Commands),
 	}, nil
 }

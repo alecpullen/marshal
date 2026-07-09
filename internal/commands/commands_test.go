@@ -391,14 +391,45 @@ func TestRegisterAllWithNilToolRegistry(t *testing.T) {
 func TestToolsCommandWithNilToolRegistry(t *testing.T) {
 	cmdReg := New()
 	if err := RegisterAll(cmdReg, nil); err != nil {
-		t.Fatalf("RegisterAll(nil toolReg) error = %v", err)
+		t.Fatalf("RegisterAll(nil toolReg) error = %v, want nil", err)
 	}
 	cmd, ok := cmdReg.Lookup("tools")
 	if !ok {
-		t.Fatal("tools command not registered with nil toolReg")
+		t.Fatal("tools command not registered")
 	}
 	result := cmd.Handler(newTestState(), nil)
 	if !strings.Contains(result, "Tools unavailable") {
 		t.Fatalf("tools output with nil toolReg = %q, want 'Tools unavailable'", result)
+	}
+}
+
+func TestDiffCommandNoSnapshot(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	state := newTestState()
+	// No snapshotter, no DB → friendly message, no crash.
+	cmd, ok := cmdReg.Lookup("diff")
+	if !ok {
+		t.Fatal("diff command not registered")
+	}
+	out := cmd.Handler(state, nil)
+	if out == "" {
+		t.Fatal("expected a message for /diff with no snapshot")
+	}
+}
+
+func TestDiffCommandRegistered(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	cmd, ok := cmdReg.Lookup("diff")
+	if !ok {
+		t.Fatal("diff command not registered")
+	}
+	if !strings.Contains(cmd.Description, "cumulative changes") {
+		t.Fatalf("diff command description wrong: %q", cmd.Description)
 	}
 }

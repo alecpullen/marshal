@@ -265,6 +265,33 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			},
 		},
 		{
+			Name:        "diff",
+			Description: "Show the current turn's cumulative changes from the last snapshot",
+			Handler: func(state *session.State, args []string) string {
+				sp := state.Snapshotter()
+				if sp == nil {
+					return "Snapshots unavailable (git not installed or disabled)."
+				}
+				database := state.DB()
+				if database == nil {
+					return "No database available to look up snapshots."
+				}
+				hash, err := database.SnapshotBefore(state.SessionID(), state.TurnIndex())
+				if err != nil || hash == "" {
+					return "No snapshot to diff against yet — make some changes first."
+				}
+				diff, err := sp.Diff(context.Background(), hash)
+				if err != nil {
+					return fmt.Sprintf("Diff failed: %v", err)
+				}
+				if diff == "" {
+					return "No changes since the last snapshot."
+				}
+				state.AddMessage(session.RoleSystem, diff, session.ContentTypeDiff)
+				return ""
+			},
+		},
+		{
 			Name:        "trust",
 			Description: "Re-open the project trust decision",
 			Handler: func(state *session.State, args []string) string {

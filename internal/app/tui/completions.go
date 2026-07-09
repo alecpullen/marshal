@@ -150,13 +150,13 @@ func (p *completionPopup) accept() {
 		// Commands get a trailing space so args can be typed immediately.
 		p.acceptedText = chosen.Text + " "
 	case completionFile:
-		// File paths are inserted verbatim; the user adds a trailing space
-		// (or another word) themselves. We add a space for convenience
-		// when the path has no spaces, matching the slash-command UX.
+		// File paths are inserted as literal @path tokens so the agent
+		// runner can extract and pin them into the context pack.
+		accepted := "@" + chosen.Text
 		if !strings.ContainsAny(chosen.Text, " \t") {
-			p.acceptedText = chosen.Text + " "
+			p.acceptedText = accepted + " "
 		} else {
-			p.acceptedText = chosen.Text
+			p.acceptedText = accepted
 		}
 	}
 	p.visible = false

@@ -2068,7 +2068,7 @@ func TestSlashCompletionAcceptsPlan(t *testing.T) {
 
 // F18: @file completion popup is triggered by "@" at a word start and
 // accepting a suggestion replaces the trigger token with the matched
-// file path. Requires a model with a seeded file index — see
+// @file path. Requires a model with a seeded file index — see
 // newViewTestModelWithFileIndex.
 func TestAtFileCompletionMatchesRepoFiles(t *testing.T) {
 	m := newViewTestModelWithFileIndex(t, 80, 24, []string{
@@ -2083,8 +2083,8 @@ func TestAtFileCompletionMatchesRepoFiles(t *testing.T) {
 	if got := m.acceptCompletion(); !got {
 		t.Fatal("acceptCompletion returned false")
 	}
-	if val := m.input.Value(); !strings.Contains(val, "runner.go") {
-		t.Fatalf("input = %q, want runner.go", val)
+	if val := m.input.Value(); val != "@internal/agent/runner.go " {
+		t.Fatalf("input = %q, want %q", val, "@internal/agent/runner.go ")
 	}
 }
 

@@ -2021,6 +2021,133 @@ func TestRunAllowsParallelReadBatchWithoutStalling(t *testing.T) {
 	}
 }
 
+// TestParallelActionsSerializesQuestionTools is a regression test for the
+// bug in which the parallel-actions path (executeActions) raced two
+// ask_user / question.ask calls on the single State.PendingQuestion
+// slot, clobbering queue state and leaking ResponseChans. The fix
+// partitions the batch: question tools run sequentially while the rest
+// still parallelize.
+func TestParallelActionsSerializesQuestionTools(t *testing.T) {
+	var (
+		mu                       sync.Mutex
+		liveQA, liveAU, liveRead int
+		maxQA, maxAU, maxRead    int
+		ranQA, ranAU, ranRead    int
+	)
+	note := func(kind string) func() {
+		mu.Lock()
+		switch kind {
+		case "question.ask":
+			liveQA++
+			if liveQA > maxQA {
+				maxQA = liveQA
+			}
+		case "ask_user":
+			liveAU++
+			if liveAU > maxAU {
+				maxAU = liveAU
+			}
+		case "file.read":
+			liveRead++
+			if liveRead > maxRead {
+				maxRead = liveRead
+			}
+		}
+		mu.Unlock()
+		return func() {
+			mu.Lock()
+			defer mu.Unlock()
+			switch kind {
+			case "question.ask":
+				liveQA--
+			case "ask_user":
+				liveAU--
+			case "file.read":
+				liveRead--
+			}
+		}
+	}
+
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "file.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			defer note("file.read")()
+			time.Sleep(15 * time.Millisecond)
+			mu.Lock()
+			ranRead++
+			mu.Unlock()
+			return registry.ToolResult{Summary: "ok", Content: "package main"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register file.read: %v", err)
+	}
+	if err := reg.Register(registry.Tool{
+		Name: "question.ask",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			defer note("question.ask")()
+			// Long enough that any overlap with another question handler
+			// would be observed by the live-count assertion.
+			time.Sleep(40 * time.Millisecond)
+			mu.Lock()
+			ranQA++
+			mu.Unlock()
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register question.ask: %v", err)
+	}
+	if err := reg.Register(registry.Tool{
+		Name: "ask_user",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			defer note("ask_user")()
+			time.Sleep(40 * time.Millisecond)
+			mu.Lock()
+			ranAU++
+			mu.Unlock()
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register ask_user: %v", err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"two questions needing user input plus one parallel read","actions":[
+			{"type":"tool_call","tool":"question.ask","args":{"questions":[{"question":"auth?","options":["JWT","OAuth"]}]}},
+			{"type":"tool_call","tool":"ask_user","args":{"question":"which backend?"}},
+			{"type":"tool_call","tool":"file.read","args":{"path":"x.go"}}]}`,
+		`{"rationale":"done","action":{"type":"final","content":"handled"}}`,
+	}}
+	state := newTestState(t)
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+
+	if _, err := r.RunTask(context.Background(), "mix question tools with a parallel read"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if ranQA != 1 {
+		t.Fatalf("question.ask handler ran %d times, want 1", ranQA)
+	}
+	if ranAU != 1 {
+		t.Fatalf("ask_user handler ran %d times, want 1", ranAU)
+	}
+	if ranRead != 1 {
+		t.Fatalf("file.read handler ran %d times, want 1 (read must still execute from the batch)", ranRead)
+	}
+	if maxQA > 1 {
+		t.Fatalf("two question.ask handlers overlapped; maxQA = %d, want <= 1", maxQA)
+	}
+	if maxAU > 1 {
+		t.Fatalf("two ask_user handlers overlapped; maxAU = %d, want <= 1", maxAU)
+	}
+}
+
 func TestParseFailuresDoNotConsumeToolIterations(t *testing.T) {
 	p := &scriptedProvider{
 		responses: []string{

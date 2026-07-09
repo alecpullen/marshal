@@ -1077,35 +1077,67 @@ func (r *Runner) allReadOnly(actions []ModelAction) error {
 	return nil
 }
 
+// requiresSerialTool is the deny list of tools that share a single
+// process-wide slot (today: State.PendingQuestion). They must never run
+// concurrently inside executeActions, or two calls will clobber each
+// other and leak the inner ResponseChan. They are still admitted by
+// allReadOnly; executeActions is responsible for ordering them.
+func requiresSerialTool(name string) bool {
+	switch name {
+	case "question.ask", "ask_user":
+		return true
+	}
+	return false
+}
+
 func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]schema.ChatMessage, error) {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-	sem := make(chan struct{}, r.MaxParallelActions)
 	results := make([][]schema.ChatMessage, len(actions))
 
+	// Phase 1: run any question.ask / ask_user calls one at a time so they
+	// can't race on the single PendingQuestion slot. First error from this
+	// phase short-circuits the rest of the batch.
+	var parallelIdx []int
 	for i, a := range actions {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, act ModelAction) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			msgs, err := r.executeToolCall(ctx, act)
-			if err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
-				return
-			}
-			results[idx] = msgs
-		}(i, a)
+		if !requiresSerialTool(a.Tool) {
+			parallelIdx = append(parallelIdx, i)
+			continue
+		}
+		msgs, err := r.executeToolCall(ctx, a)
+		if err != nil {
+			return nil, err
+		}
+		results[i] = msgs
 	}
-	wg.Wait()
 
-	if firstErr != nil {
-		return nil, firstErr
+	// Phase 2: run the remaining read-only tools concurrently as before.
+	if len(parallelIdx) > 0 {
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var firstErr error
+		sem := make(chan struct{}, r.MaxParallelActions)
+		for _, idx := range parallelIdx {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int, act ModelAction) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				msgs, err := r.executeToolCall(ctx, act)
+				if err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					return
+				}
+				results[i] = msgs
+			}(idx, actions[idx])
+		}
+		wg.Wait()
+
+		if firstErr != nil {
+			return nil, firstErr
+		}
 	}
 
 	var flat []schema.ChatMessage

@@ -13,6 +13,7 @@ const (
 	RoleReviewer         AgentRole = "reviewer"
 	RoleSecurityReviewer AgentRole = "security_reviewer"
 	RoleSubtask          AgentRole = "subtask"
+	RoleTitle            AgentRole = "title"
 )
 
 type ModelPreset struct {

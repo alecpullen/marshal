@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/catalog"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -153,6 +154,10 @@ type Runner struct {
 	Snapshotter      Snapshotter
 	SnapshotRecorder SnapshotRecorder
 
+	// TitleGenerator, when set, is invoked once per session at the end of the
+	// first user turn to produce a short session title (F13). Fire-and-forget.
+	TitleGenerator TitleGenerator
+
 	forceClassMu sync.Mutex
 	tracker      *progressTracker
 	trackerMu    sync.Mutex
@@ -253,6 +258,14 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	priorTranscript := r.State.Messages()
+	firstTurn := len(priorTranscript) <= 1
+	if r.TitleGenerator != nil && firstTurn {
+		defer func(g string) {
+			if r.State.Title() == "" && !r.State.TitleManuallySet() {
+				r.TitleGenerator.Generate(context.Background(), g)
+			}
+		}(goal)
+	}
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	r.State.ClearTurnToolCache()
 	r.State.IncrementTurnIndex()
@@ -686,6 +699,29 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 			pack = contextpack.Rebudget(pack, route.ContextBudget.MaxRepoContextTokens, r.Now)
 			r.State.SetContextPack(pack)
 		}
+	}
+
+	// F12: resolve the model's context window, preferring explicit config on
+	// the preset, falling back to the curated catalog. Unknown (0) leaves the
+	// configured turn budget untouched — never guess.
+	window := route.Preset.ContextWindow
+	maxOut := route.Preset.MaxOutputTokens
+	if window == 0 {
+		window, maxOut = catalog.Lookup(route.Preset.Model)
+	}
+	if window > 0 {
+		reserved := maxOut
+		effective := int(float64(window)*0.85) - reserved
+		if effective < 0 {
+			effective = 0
+		}
+		// configured value is the floor (max(configured, 0.85*window - reserved)).
+		if effective > r.MaxTurnContextTokens {
+			r.MaxTurnContextTokens = effective
+		}
+		r.State.SetTurnContextWindow(window)
+	} else {
+		r.State.SetTurnContextWindow(0)
 	}
 	return turnProvider, turnModel, route
 }

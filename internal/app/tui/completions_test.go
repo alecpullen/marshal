@@ -140,7 +140,7 @@ func TestCompletionPopupFileKindAcceptedText(t *testing.T) {
 	p := newCompletionPopup(items)
 	p.update("runner")
 	p.accept()
-	if p.acceptedText != "internal/agent/runner.go " {
-		t.Fatalf("acceptedText = %q, want %q", p.acceptedText, "internal/agent/runner.go ")
+	if p.acceptedText != "@internal/agent/runner.go " {
+		t.Fatalf("acceptedText = %q, want %q", p.acceptedText, "@internal/agent/runner.go ")
 	}
 }

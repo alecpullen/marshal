@@ -72,6 +72,18 @@ func (m Model) statusLeftSegments() []string {
 			compactTokenCount(used), compactTokenCount(window)))
 	}
 
+	if leaves := m.state.Branches(); len(leaves) > 1 {
+		cur := m.state.LeafID()
+		idx := 1
+		for i, id := range leaves {
+			if id == cur {
+				idx = i + 1
+				break
+			}
+		}
+		segments = append(segments, fmt.Sprintf("branch %d/%d", idx, len(leaves)))
+	}
+
 	if sp := m.state.SwarmProgress(); sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {
 		segments = append(segments, fmt.Sprintf("tokens %s/%s",
 			compactTokenCount(sp.TokensUsed),

@@ -27,10 +27,10 @@ func TestCreateSessionAndMessages(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	if err := db.SaveMessage(sessionID, "user", "hello", "plain", now.Add(time.Second), "", 0, false); err != nil {
+	if _, err := db.SaveMessage(sessionID, "user", "hello", "plain", now.Add(time.Second), "", 0, false, 0); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
-	if err := db.SaveMessage(sessionID, "assistant", "hi there", "markdown", now.Add(2*time.Second), "considering the greeting", 4*time.Second, false); err != nil {
+	if _, err := db.SaveMessage(sessionID, "assistant", "hi there", "markdown", now.Add(2*time.Second), "considering the greeting", 4*time.Second, false, 0); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestSaveMessageWithFinalFlag(t *testing.T) {
 	sessionID := createTestSession(t, db)
 
 	now := time.Now().UTC()
-	if err := db.SaveMessage(sessionID, "assistant", "the answer", "markdown", now, "", 0, true); err != nil {
+	if _, err := db.SaveMessage(sessionID, "assistant", "the answer", "markdown", now, "", 0, true, 0); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestSaveMessageWithoutFinalFlag(t *testing.T) {
 	sessionID := createTestSession(t, db)
 
 	now := time.Now().UTC()
-	if err := db.SaveMessage(sessionID, "user", "hello", "plain", now, "", 0, false); err != nil {
+	if _, err := db.SaveMessage(sessionID, "user", "hello", "plain", now, "", 0, false, 0); err != nil {
 		t.Fatalf("SaveMessage failed: %v", err)
 	}
 
@@ -229,6 +229,49 @@ func TestSaveMessageWithoutFinalFlag(t *testing.T) {
 	}
 	if msgs[0].Final {
 		t.Fatal("Final = true, want false")
+	}
+}
+
+func TestMessageTreeBranching(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	projectID, _ := db.GetOrCreateProject("/r", "r")
+	sid := "sess-tree"
+	if err := db.CreateSession(sid, projectID, "", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	id1, _ := db.SaveMessage(sid, "user", "turn1", "plain", time.Now().UTC(), "", 0, false, 0)
+	id2, _ := db.SaveMessage(sid, "assistant", "a1", "markdown", time.Now().UTC(), "", 0, true, id1)
+	id3, _ := db.SaveMessage(sid, "user", "turn2", "plain", time.Now().UTC(), "", 0, false, id2)
+	id4, _ := db.SaveMessage(sid, "assistant", "a2", "markdown", time.Now().UTC(), "", 0, true, id3)
+	id5, _ := db.SaveMessage(sid, "user", "turn3", "plain", time.Now().UTC(), "", 0, false, id2)
+	if err := db.SetBranchLeaf(sid, id5); err != nil {
+		t.Fatal(err)
+	}
+
+	branches, err := db.ListBranches(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branches) != 2 {
+		t.Fatalf("branches = %v, want 2 leaves (id4, id5)", branches)
+	}
+
+	branchMsgs, err := db.MessagesOnBranch(sid, id5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branchMsgs) != 3 || branchMsgs[2].Content != "turn3" {
+		t.Fatalf("branch path = %+v, want turn1->a1->turn3", branchMsgs)
+	}
+
+	orig, err := db.MessagesOnBranch(sid, id4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orig) != 4 || orig[3].Content != "a2" {
+		t.Fatalf("original branch = %+v, want 4 msgs ending a2", orig)
 	}
 }
 

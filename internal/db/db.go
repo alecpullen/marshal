@@ -110,6 +110,46 @@ func (db *DB) Migrate() error {
 		}
 	}
 
+	// F14: message tree + session leaf.
+	messageTreeCols, err := db.tableColumns("messages")
+	if err != nil {
+		return fmt.Errorf("inspect messages columns for parent_id: %w", err)
+	}
+	if !messageTreeCols["parent_id"] {
+		if _, err := db.sqlDB.Exec(`ALTER TABLE messages ADD COLUMN parent_id INTEGER REFERENCES messages(id) ON DELETE SET NULL`); err != nil {
+			return fmt.Errorf("add column parent_id to messages: %w", err)
+		}
+	}
+	sessionCols, err := db.tableColumns("agent_sessions")
+	if err != nil {
+		return fmt.Errorf("inspect agent_sessions columns for leaf: %w", err)
+	}
+	if !sessionCols["leaf_message_id"] {
+		if _, err := db.sqlDB.Exec(`ALTER TABLE agent_sessions ADD COLUMN leaf_message_id INTEGER`); err != nil {
+			return fmt.Errorf("add column leaf_message_id to agent_sessions: %w", err)
+		}
+	}
+	// Backfill existing linear rows: parent = previous row in the same session.
+	if _, err := db.sqlDB.Exec(`
+		UPDATE messages SET parent_id = (
+			SELECT m2.id FROM messages m2
+			WHERE m2.session_id = messages.session_id AND m2.id < messages.id
+			ORDER BY m2.id DESC LIMIT 1
+		) WHERE parent_id IS NULL
+	`); err != nil {
+		return fmt.Errorf("backfill parent_id: %w", err)
+	}
+	// Set each session's leaf to its max message id.
+	if _, err := db.sqlDB.Exec(`
+		UPDATE agent_sessions SET leaf_message_id = (
+			SELECT MAX(id) FROM messages WHERE messages.session_id = agent_sessions.id
+		) WHERE leaf_message_id IS NULL AND EXISTS (
+			SELECT 1 FROM messages WHERE messages.session_id = agent_sessions.id
+		)
+	`); err != nil {
+		return fmt.Errorf("backfill leaf_message_id: %w", err)
+	}
+
 	return nil
 }
 

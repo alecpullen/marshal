@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"marshal/internal/app/session"
@@ -289,6 +290,73 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				return "Session renamed."
 			},
 		},
+		{
+			Name:        "rewind",
+			Description: "Rewind the conversation to before a prior user turn (starts a new branch)",
+			Args:        "[turn-number]",
+			Handler: func(state *session.State, args []string) string {
+				msgs := state.Messages()
+				var turns []session.Message
+				for _, m := range msgs {
+					if m.Role == session.RoleUser {
+						turns = append(turns, m)
+					}
+				}
+				if len(turns) == 0 {
+					return "No user turns to rewind to."
+				}
+				n := 0
+				if len(args) > 0 {
+					if k, err := strconv.Atoi(args[0]); err == nil && k >= 1 && k <= len(turns) {
+						n = k - 1
+					} else {
+						return fmt.Sprintf("Invalid turn number. Pick 1..%d.", len(turns))
+					}
+				} else {
+					n = len(turns) - 1
+				}
+				target := turns[n]
+				newLeaf := state.Rewind(target.ID)
+
+				if sp := state.Snapshotter(); sp != nil {
+					if database := state.DB(); database != nil {
+						if hash, err := database.SnapshotBefore(state.SessionID(), state.TurnIndex()); err == nil && hash != "" {
+							_ = sp.Restore(context.Background(), hash)
+						}
+					}
+				}
+				return fmt.Sprintf("Rewound to before: %q. Your next message starts a new branch (leaf %d).", truncateForDisplay(target.Content, 60), newLeaf)
+			},
+		},
+		{
+			Name:        "branches",
+			Description: "List branches and switch to one (e.g. /branches 2)",
+			Args:        "[branch-number]",
+			Handler: func(state *session.State, args []string) string {
+				leaves := state.Branches()
+				if len(leaves) == 0 {
+					return "No branches."
+				}
+				if len(args) == 0 {
+					var b strings.Builder
+					cur := state.LeafID()
+					for i, id := range leaves {
+						marker := "  "
+						if id == cur {
+							marker = "* "
+						}
+						fmt.Fprintf(&b, "%s%d. leaf %d\n", marker, i+1, id)
+					}
+					return strings.TrimRight(b.String(), "\n")
+				}
+				k, err := strconv.Atoi(args[0])
+				if err != nil || k < 1 || k > len(leaves) {
+					return fmt.Sprintf("Invalid branch. Pick 1..%d.", len(leaves))
+				}
+				state.SwitchBranch(leaves[k-1])
+				return fmt.Sprintf("Switched to branch %d (leaf %d).", k, leaves[k-1])
+			},
+		},
 	}
 
 	for _, cmd := range commands {
@@ -305,4 +373,11 @@ func compactTokens(n int) string {
 		return fmt.Sprintf("%dk", n/1000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+func truncateForDisplay(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

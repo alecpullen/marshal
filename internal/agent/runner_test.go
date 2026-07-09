@@ -2729,3 +2729,30 @@ func TestResolveRouteConfigWindowRaisesBudget(t *testing.T) {
 		t.Fatalf("effective budget = %d, want 161808", runner.MaxTurnContextTokens)
 	}
 }
+
+func TestHistoryAfterRewindExcludesAbandonedBranch(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"a","action":{"type":"answer","content":"first answer"}}`,
+		`{"rationale":"b","action":{"type":"answer","content":"second answer"}}`,
+	}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "question one"); err != nil {
+		t.Fatalf("run1: %v", err)
+	}
+	msgs := state.Messages()
+	state.Rewind(msgs[0].ID)
+	if err := runner.Run(context.Background(), "different question"); err != nil {
+		t.Fatalf("run2: %v", err)
+	}
+
+	second := p.requests[len(p.requests)-1]
+	for _, m := range second.Messages {
+		if strings.Contains(m.Content, "first answer") {
+			t.Fatal("abandoned branch's answer leaked into the new branch's history")
+		}
+	}
+}

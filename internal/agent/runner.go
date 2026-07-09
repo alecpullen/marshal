@@ -154,6 +154,10 @@ type Runner struct {
 	Snapshotter      Snapshotter
 	SnapshotRecorder SnapshotRecorder
 
+	// TitleGenerator, when set, is invoked once per session at the end of the
+	// first user turn to produce a short session title (F13). Fire-and-forget.
+	TitleGenerator TitleGenerator
+
 	forceClassMu sync.Mutex
 	tracker      *progressTracker
 	trackerMu    sync.Mutex
@@ -254,6 +258,14 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	priorTranscript := r.State.Messages()
+	firstTurn := len(priorTranscript) <= 1
+	if r.TitleGenerator != nil && firstTurn {
+		defer func(g string) {
+			if r.State.Title() == "" && !r.State.TitleManuallySet() {
+				r.TitleGenerator.Generate(context.Background(), g)
+			}
+		}(goal)
+	}
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
 	r.State.ClearTurnToolCache()
 	r.State.IncrementTurnIndex()

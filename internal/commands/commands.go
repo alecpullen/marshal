@@ -268,6 +268,27 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				return "Use --trust (permanent) or restart to re-prompt. Project trust is set at startup."
 			},
 		},
+		{
+			Name:        "rename",
+			Description: "Rename the current session (overrides auto-title)",
+			Args:        "<title>",
+			Handler: func(state *session.State, args []string) string {
+				title := strings.Join(args, " ")
+				if title == "" {
+					return "Usage: /rename <title>"
+				}
+				if len(title) > 200 {
+					title = title[:200]
+				}
+				state.SetTitleManual(title)
+				if db := state.DB(); db != nil {
+					if err := db.UpdateSessionTitle(state.SessionID(), title); err != nil {
+						return fmt.Sprintf("Renamed locally, but failed to persist: %v", err)
+					}
+				}
+				return "Session renamed."
+			},
+		},
 	}
 
 	for _, cmd := range commands {

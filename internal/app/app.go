@@ -329,6 +329,18 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		Legacy:    route.Legacy,
 		Active:    true,
 	})
+
+	// F13: wire the fire-and-forget title generator. Route through the title
+	// role (falls back to implementer preset when unconfigured), but skip the
+	// generator if it would target the same provider+model as the active turn
+	// route — a single-model local backend cannot serve two concurrent calls.
+	if titleRoute, titleProvider, titleErr := resolver.ResolveRole(routing.RoleTitle); titleErr == nil && titleRoute.Preset.Model != "" {
+		if titleRoute.Preset.Provider == route.Preset.Provider && titleRoute.Preset.Model == route.Preset.Model {
+			runner.TitleGenerator = nil
+		} else if titleProvider != nil {
+			runner.TitleGenerator = agent.NewTitleGenerator(titleProvider, titleRoute.Preset.Model, state)
+		}
+	}
 	swarmRunner := buildSwarmRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, nil
 }

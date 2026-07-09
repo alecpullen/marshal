@@ -85,6 +85,8 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.jobOutputTool(),
 		tools.jobKillTool(),
 		tools.jobListTool(),
+		tools.questionAskTool(),
+		tools.askUserTool(),
 		tools.diagnosticsCheckTool(),
 	} {
 		if err := reg.Register(tool); err != nil {

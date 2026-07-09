@@ -5,16 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"marshal/internal/app/session"
 )
 
 type ActionType string
 
 const (
-	ActionAnswer   ActionType = "answer"
-	ActionToolCall ActionType = "tool_call"
-	ActionPatch    ActionType = "patch"
-	ActionFinal    ActionType = "final"
-	ActionAskUser  ActionType = "ask_user"
+	ActionAnswer      ActionType = "answer"
+	ActionToolCall    ActionType = "tool_call"
+	ActionPatch       ActionType = "patch"
+	ActionFinal       ActionType = "final"
+	ActionAskUser     ActionType = "ask_user"
+	ActionQuestionAsk ActionType = "question.ask"
 )
 
 var (
@@ -34,7 +37,8 @@ type ModelAction struct {
 	Args       json.RawMessage
 	Content    string
 	ToolCallID string
-	Actions    []ModelAction // parallel read-only tool calls
+	Actions    []ModelAction      // parallel read-only tool calls
+	Questions  []session.Question // structured question payload (question.ask)
 }
 
 type actionEnvelope struct {
@@ -44,10 +48,11 @@ type actionEnvelope struct {
 }
 
 type actionPayload struct {
-	Type    ActionType      `json:"type"`
-	Tool    string          `json:"tool,omitempty"`
-	Args    json.RawMessage `json:"args,omitempty"`
-	Content string          `json:"content,omitempty"`
+	Type      ActionType         `json:"type"`
+	Tool      string             `json:"tool,omitempty"`
+	Args      json.RawMessage    `json:"args,omitempty"`
+	Content   string             `json:"content,omitempty"`
+	Questions []session.Question `json:"questions,omitempty"`
 }
 
 // ParseAction extracts and validates the JSON action envelope. It tolerates a
@@ -86,12 +91,13 @@ func ParseAction(raw string) (ModelAction, error) {
 		Tool:      ma.Tool,
 		Args:      ma.Args,
 		Content:   ma.Content,
+		Questions: envelope.Action.Questions,
 	}, nil
 }
 
 func validatePayload(p actionPayload) (ModelAction, error) {
 	switch p.Type {
-	case ActionAnswer, ActionToolCall, ActionPatch, ActionFinal, ActionAskUser:
+	case ActionAnswer, ActionToolCall, ActionPatch, ActionFinal, ActionAskUser, ActionQuestionAsk:
 	default:
 		return ModelAction{}, fmt.Errorf("%w: %q", ErrUnknownActionType, p.Type)
 	}
@@ -101,7 +107,10 @@ func validatePayload(p actionPayload) (ModelAction, error) {
 	if p.Type == ActionAskUser && strings.TrimSpace(p.Content) == "" {
 		return ModelAction{}, ErrMissingQuestion
 	}
-	return ModelAction{Type: p.Type, Tool: p.Tool, Args: p.Args, Content: p.Content}, nil
+	if p.Type == ActionQuestionAsk && len(p.Questions) == 0 {
+		return ModelAction{}, fmt.Errorf("agent: question.ask action requires at least one question")
+	}
+	return ModelAction{Type: p.Type, Tool: p.Tool, Args: p.Args, Content: p.Content, Questions: p.Questions}, nil
 }
 
 func extractJSONObject(raw string) (string, error) {

@@ -672,9 +672,11 @@ func TestPendingQuestionRoundTrip(t *testing.T) {
 	if s.PendingQuestion() != nil {
 		t.Fatal("expected no pending question initially")
 	}
-	q := &PendingQuestion{Question: "archive or delete?", ResponseChan: make(chan string, 1)}
+	qs := []Question{{Question: "archive or delete?"}}
+	q := &PendingQuestion{Questions: qs, ResponseChan: make(chan []Answer, 1)}
 	s.SetPendingQuestion(q)
-	if got := s.PendingQuestion(); got == nil || got.Question != "archive or delete?" {
+	got := s.PendingQuestion()
+	if got == nil || len(got.Questions) != 1 || got.Questions[0].Question != "archive or delete?" {
 		t.Fatalf("PendingQuestion = %+v", got)
 	}
 	s.SetPendingQuestion(nil)

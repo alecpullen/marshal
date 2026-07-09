@@ -147,3 +147,27 @@ func TestParseActionBackwardCompatibleWithSingleAction(t *testing.T) {
 		t.Fatalf("Actions should be empty for single-action envelope")
 	}
 }
+
+func TestParseActionQuestionAsk(t *testing.T) {
+	raw := `{"rationale":"ambiguous","action":{"type":"question.ask","questions":[{"question":"Auth?","options":["JWT","OAuth"]},{"question":"Keep legacy?"}]}}`
+	action, err := ParseAction(raw)
+	if err != nil {
+		t.Fatalf("ParseAction err = %v", err)
+	}
+	if action.Type != ActionQuestionAsk {
+		t.Fatalf("action.Type = %q, want question.ask", action.Type)
+	}
+	if len(action.Questions) != 2 {
+		t.Fatalf("len(action.Questions) = %d, want 2", len(action.Questions))
+	}
+	if action.Questions[0].Question != "Auth?" || len(action.Questions[0].Options) != 2 {
+		t.Fatalf("Questions[0] = %+v", action.Questions[0])
+	}
+}
+
+func TestParseActionQuestionAskRejectsEmpty(t *testing.T) {
+	raw := `{"rationale":"r","action":{"type":"question.ask","questions":[]}}`
+	if _, err := ParseAction(raw); err == nil {
+		t.Fatal("expected error for empty questions array")
+	}
+}

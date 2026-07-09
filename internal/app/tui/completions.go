@@ -93,6 +93,9 @@ func (p *completionPopup) update(query string) {
 	}
 	hits := make([]scored, 0, len(p.items))
 	for _, it := range p.items {
+		if it.Kind == completionFile && containsRunnerWhitespace(it.Text) {
+			continue
+		}
 		s, ok := fuzzyScore(query, it.Text)
 		if ok {
 			hits = append(hits, scored{it, s})

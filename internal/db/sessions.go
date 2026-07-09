@@ -139,6 +139,34 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 	return id, nil
 }
 
+// GetLeafMessageID returns the session's current active-branch leaf id.
+// If leaf_message_id was never recorded (e.g. a session created in the
+// same process where SetBranchLeaf was never called), falls back to
+// MAX(id) of the session's messages so cold-start reconstruction still
+// finds the right tip. Returns 0 if the session has no messages.
+func (db *DB) GetLeafMessageID(sessionID string) (int64, error) {
+	var leaf sql.NullInt64
+	row := db.queryRow(`SELECT leaf_message_id FROM agent_sessions WHERE id = ?`, sessionID)
+	if err := row.Scan(&leaf); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("get leaf message id: %w", err)
+	}
+	if leaf.Valid && leaf.Int64 > 0 {
+		return leaf.Int64, nil
+	}
+	// Fallback: newest message id in the session.
+	var maxID sql.NullInt64
+	if err := db.queryRow(`SELECT MAX(id) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxID); err != nil {
+		return 0, fmt.Errorf("get max message id: %w", err)
+	}
+	if !maxID.Valid {
+		return 0, nil
+	}
+	return maxID.Int64, nil
+}
+
 // SetBranchLeaf records leafID as the session's current active branch tip.
 func (db *DB) SetBranchLeaf(sessionID string, leafID int64) error {
 	if _, err := db.exec(`UPDATE agent_sessions SET leaf_message_id = ? WHERE id = ?`, leafID, sessionID); err != nil {

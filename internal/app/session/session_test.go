@@ -239,6 +239,106 @@ func TestStateBackups(t *testing.T) {
 	}
 }
 
+func TestSessionNewLoadsExistingTree(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	sessionID := "cold-start-sess"
+	if err := dbConn.CreateSession(sessionID, projectID, "cold", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	cfg := config.Default()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// First state: persist a few messages on the default branch.
+	first := New(cfg, "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+	first.AddMessage(RoleUser, "hello", ContentTypePlain)
+	first.AddMessage(RoleAssistant, "hi", ContentTypePlain)
+	first.AddMessage(RoleUser, "bye", ContentTypePlain)
+
+	persistedLeaf := first.LeafID()
+	if persistedLeaf == 0 {
+		t.Fatal("first state leaf is 0, want a real db id")
+	}
+	persistedMessages := first.Messages()
+	if len(persistedMessages) != 3 {
+		t.Fatalf("persisted messages = %d, want 3", len(persistedMessages))
+	}
+
+	// Second state: simulate cold start — brand new in-memory struct, same DB + session.
+	second := New(cfg, "/repo", time.Unix(200, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+
+	gotMessages := second.Messages()
+	if len(gotMessages) != len(persistedMessages) {
+		t.Fatalf("cold-start messages = %d, want %d", len(gotMessages), len(persistedMessages))
+	}
+	for i, m := range gotMessages {
+		if m.Content != persistedMessages[i].Content || m.Role != persistedMessages[i].Role {
+			t.Fatalf("cold-start msg[%d] = %+v, want %+v", i, m, persistedMessages[i])
+		}
+	}
+	if got := second.LeafID(); got != persistedLeaf {
+		t.Fatalf("cold-start LeafID = %d, want %d", got, persistedLeaf)
+	}
+
+	// Adding another message after cold start should continue the branch
+	// (parent in the DB) and the next new message must get a fresh
+	// in-memory id (not collide with a loaded one).
+	second.AddMessage(RoleUser, "after restart", ContentTypePlain)
+	after := second.Messages()
+	if len(after) != 4 {
+		t.Fatalf("after restart messages = %d, want 4", len(after))
+	}
+	if after[3].Content != "after restart" {
+		t.Fatalf("after restart last content = %q", after[3].Content)
+	}
+	if after[3].ParentID != persistedLeaf {
+		t.Fatalf("after restart parent = %d, want %d", after[3].ParentID, persistedLeaf)
+	}
+}
+
+func TestSessionNewWithEmptyDBStaysEmpty(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	sessionID := "empty-sess"
+	if err := dbConn.CreateSession(sessionID, projectID, "empty", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	cfg := config.Default()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	state := New(cfg, "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+
+	if got := state.Messages(); len(got) != 0 {
+		t.Fatalf("messages = %d, want 0 (empty db)", len(got))
+	}
+	if got := state.LeafID(); got != 0 {
+		t.Fatalf("LeafID = %d, want 0 for empty db", got)
+	}
+}
+
 func TestStatePersistsMessagesAndAudits(t *testing.T) {
 	dbConn, err := db.Open(":memory:")
 	if err != nil {

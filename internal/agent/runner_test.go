@@ -3045,3 +3045,39 @@ func TestTurnEndHookDoesNotContinueTwice(t *testing.T) {
 		t.Fatalf("injected continuation count = %d, want 1", count)
 	}
 }
+
+func TestTurnEndHookContinuesNativePath(t *testing.T) {
+	// Drives the native-tools final-return site (runner.go: NativeTools &&
+	// len(res.ToolCalls) == 0 && strings.TrimSpace(res.Text) != ""). The
+	// existing two turn-end tests both use the JSON ActionAnswer/ActionFinal
+	// site, so this test guards the other hook wiring against regressions.
+	p := &scriptedProvider{
+		responses: []string{"first native answer", "final native answer"},
+		toolCalls: [][]schema.ToolCall{nil, nil},
+	}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.NativeTools = true
+	runner.HookRunner = fakeHookRunner{turnOut: hooks.Output{Continue: true, Message: "Verify native path hook fired."}}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "finish"); err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	msgs := state.Messages()
+	var injected, final bool
+	for _, msg := range msgs {
+		if msg.Role == session.RoleUser && msg.Content == "Verify native path hook fired." {
+			injected = true
+		}
+		if msg.Role == session.RoleAssistant && msg.Final && msg.Content == "final native answer" {
+			final = true
+		}
+	}
+	if !injected {
+		t.Fatalf("turn-end hook message was not injected on the native-tools final-return path: %+v", msgs)
+	}
+	if !final {
+		t.Fatalf("second native answer never reached Final state: %+v", msgs)
+	}
+}

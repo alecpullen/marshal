@@ -92,6 +92,32 @@ func TestServerNotificationNoResponse(t *testing.T) {
 	}
 }
 
+func TestServerParseErrorEmitsNullID(t *testing.T) {
+	// Malformed JSON: not a valid JSON-RPC request. The server must
+	// emit a parse-error response with id: null per JSON-RPC 2.0.
+	in := strings.NewReader("{not valid json}\n")
+	out := &bytes.Buffer{}
+	srv := NewServer(in, out)
+	if err := srv.Serve(context.Background()); err != nil {
+		t.Fatalf("Serve() error = %v", err)
+	}
+	line := strings.TrimSpace(out.String())
+	if line == "" {
+		t.Fatal("expected a parse-error response line")
+	}
+	// The response must contain "id":null literally (not omit id).
+	if !strings.Contains(line, `"id":null`) {
+		t.Fatalf("parse-error response missing id:null: %q", line)
+	}
+	var resp Response
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		t.Fatalf("unmarshal: %v; line=%q", err, line)
+	}
+	if resp.Error == nil || resp.Error.Code != parseError {
+		t.Fatalf("expected parse error, got %+v", resp)
+	}
+}
+
 func TestServerUnknownMethod(t *testing.T) {
 	in := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"nope"}` + "\n")
 	out := &bytes.Buffer{}

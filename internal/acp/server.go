@@ -16,6 +16,12 @@ const (
 	internalError  = -32603
 )
 
+// nullID is the JSON-RPC "id: null" sentinel used for responses where
+// the request id could not be determined (parse errors). JSON-RPC 2.0
+// §4.6 requires id to be present and null in that case, but
+// *json.RawMessage with omitempty would omit it.
+var nullID = json.RawMessage("null")
+
 type Handler func(ctx context.Context, params json.RawMessage) (any, error)
 
 type Server struct {
@@ -221,6 +227,9 @@ func (s *Server) writeResponse(ctx context.Context, req Request) error {
 }
 
 func (s *Server) writeError(id *json.RawMessage, code int, message string) error {
+	if id == nil {
+		id = &nullID
+	}
 	resp := Response{JSONRPC: "2.0", ID: id, Error: &Error{Code: code, Message: message}}
 	s.outMu.Lock()
 	defer s.outMu.Unlock()

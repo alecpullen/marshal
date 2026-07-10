@@ -36,6 +36,9 @@ func newProvidersPane(s *state) sectionPane {
 			if _, ok := s.cfg.Providers[key]; ok {
 				return fmt.Errorf("entry already exists")
 			}
+			if s.cfg.Providers == nil {
+				s.cfg.Providers = make(map[string]config.ProviderConfig)
+			}
 			s.cfg.Providers[key] = config.ProviderConfig{Type: "openai_compatible"}
 			return nil
 		},

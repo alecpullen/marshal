@@ -413,6 +413,7 @@ type configFile struct {
 	Permissions *filePermissions `toml:"permissions"`
 	Diagnostics *fileDiagnostics `toml:"diagnostics"`
 	Hooks       *fileHooks       `toml:"hooks"`
+	// Providers stays a plain map: nil already distinguishes absent/present.
 	Providers     map[string]ProviderConfig            `toml:"providers"`
 	Models        *fileModels                          `toml:"models"`
 	AgentProfiles map[string]agentProfileConfig        `toml:"agent_profiles"`

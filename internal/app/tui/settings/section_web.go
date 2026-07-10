@@ -11,6 +11,9 @@ func newWebPane(s *state) sectionPane {
 	buf := &struct{ timeout string }{}
 	return newScalarPane(func() *huh.Form {
 		buf.timeout = s.cfg.Web.FetchTimeout.String()
+		keyInput, keyClear := secretField("Search key",
+			func() string { return s.cfg.Web.SearchKey },
+			func(v string) { s.cfg.Web.SearchKey = v })
 		return newSectionForm(
 			huh.NewConfirm().Key("Enabled").Title("Enabled").
 				Description("allow web.fetch / web.search tools").Value(&s.cfg.Web.Enabled),
@@ -25,9 +28,8 @@ func newWebPane(s *state) sectionPane {
 				}),
 			huh.NewInput().Key("Search provider").Title("Search provider").Value(&s.cfg.Web.SearchProvider),
 			huh.NewInput().Key("Search URL").Title("Search URL").Value(&s.cfg.Web.SearchURL),
-			secretField("Search key",
-				func() string { return s.cfg.Web.SearchKey },
-				func(v string) { s.cfg.Web.SearchKey = v }),
+			keyInput,
+			keyClear,
 		)
 	})
 }

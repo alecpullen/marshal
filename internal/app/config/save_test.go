@@ -210,7 +210,10 @@ timeout_ms = 2500
 		t.Fatalf("seed: %v", err)
 	}
 
-	cfg := Default()
+	cfg, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if err := SaveProjectConfig(path, cfg); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
@@ -270,7 +273,10 @@ use_treesitter = true
 		t.Fatalf("write existing config: %v", err)
 	}
 
-	cfg := Default()
+	cfg, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
 	cfg.Profile.Default = "local_balanced"
 	if err := SaveProjectConfig(path, cfg); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
@@ -362,6 +368,59 @@ func TestSaveProjectConfigFullSurfaceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigEditExistingSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := `
+[project]
+name = "acme"
+languages = ["go"]
+
+[commands]
+test = "go test ./..."
+format = "gofmt -w ."
+vet = "go vet ./..."
+`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Project.Name != "acme" {
+		t.Fatalf("seeded project.name = %q, want acme", loaded.Project.Name)
+	}
+	if loaded.Commands.Test != "go test ./..." {
+		t.Fatalf("seeded commands.test = %q", loaded.Commands.Test)
+	}
+
+	loaded.Project.Name = "newname"
+	loaded.Commands.Test = "make test"
+
+	if err := SaveProjectConfig(path, loaded); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+
+	reloaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Project.Name != "newname" {
+		t.Errorf("project.name = %q, want newname (edit to existing section was dropped)", reloaded.Project.Name)
+	}
+	if reloaded.Commands.Test != "make test" {
+		t.Errorf("commands.test = %q, want make test (edit to existing section was dropped)", reloaded.Commands.Test)
+	}
+	if reloaded.Commands.Format != "gofmt -w ." {
+		t.Errorf("commands.format = %q, want gofmt -w . (untouched field was clobbered)", reloaded.Commands.Format)
+	}
+}
+
 func TestSaveProjectConfigOmitsDefaultNewSections(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".marshal", "config.toml")
@@ -378,6 +437,14 @@ func TestSaveProjectConfigOmitsDefaultNewSections(t *testing.T) {
 			t.Errorf("default-valued section %s should be omitted from a pristine file:\n%s", section, data)
 		}
 	}
+	// Positive lower bound: the always-written profile/agent/privacy/shell/sandbox
+	// sections must be present on a pristine file. A regression that drops any of
+	// them from SaveProjectConfig would silently disable user config.
+	for _, section := range []string{"[profile]", "[agent]", "[privacy]", "[tools.shell]", "[tools.shell.sandbox]"} {
+		if !strings.Contains(string(data), section) {
+			t.Errorf("always-written section %s missing from a pristine file:\n%s", section, data)
+		}
+	}
 }
 
 func TestSaveProjectConfigPreservesAgentProfiles(t *testing.T) {
@@ -391,7 +458,11 @@ func TestSaveProjectConfigPreservesAgentProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := SaveProjectConfig(path, Default()); err != nil {
+	cfg, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := SaveProjectConfig(path, cfg); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	loadedFile, err := loadFile(path)

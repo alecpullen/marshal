@@ -34,9 +34,37 @@ func keyPress(m Model, keys ...string) Model {
 		default:
 			msg = tea.KeyPressMsg{Code: rune(k[0]), Text: k}
 		}
-		m, _ = m.Update(msg)
+		updated, cmd := m.Update(msg)
+		m = updated
+		// Drain the command chain so huh's NextField / focus-shift cmds
+		// are observed. Mirrors what a real bubbletea runtime does on the
+		// program's tick. Bound the drain to avoid hanging on async cmds.
+		for i := 0; i < 4 && cmd != nil; i++ {
+			var produced tea.Msg
+			produced, cmd = drainCmd(cmd)
+			if produced == nil {
+				break
+			}
+			updated, cmd = m.Update(produced)
+			m = updated
+		}
 	}
 	return m
+}
+
+func drainCmd(cmd tea.Cmd) (tea.Msg, tea.Cmd) {
+	msg := cmd()
+	if msg == nil {
+		return nil, nil
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var combined tea.Cmd
+		for _, sub := range batch {
+			combined = tea.Batch(combined, sub)
+		}
+		return nil, combined
+	}
+	return msg, nil
 }
 
 func TestSidebarListsAllSections(t *testing.T) {

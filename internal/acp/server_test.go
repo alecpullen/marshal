@@ -7,9 +7,33 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedBuffer) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Len()
+}
+
+func (l *lockedBuffer) Bytes() []byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]byte(nil), l.buf.Bytes()...)
+}
 
 func TestServerInitialize(t *testing.T) {
 	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}` + "\n")
@@ -97,7 +121,7 @@ func TestServerUnknownMethod(t *testing.T) {
 // outbound id map.
 func TestServerOutboundRequestReceivesResponse(t *testing.T) {
 	pr, pw := io.Pipe()
-	out := &bytes.Buffer{}
+	out := &lockedBuffer{}
 	srv := NewServer(pr, out)
 
 	serveErr := make(chan error, 1)

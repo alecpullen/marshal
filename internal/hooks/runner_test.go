@@ -57,3 +57,22 @@ func TestHookTimeoutFailOpen(t *testing.T) {
 	}
 	_ = time.Second
 }
+
+func TestTurnEndContinuePropagated(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "hook.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' '{\"continue\":true,\"message\":\"Check tests before final.\"}'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(Config{Entries: []HookEntry{{Event: EventTurnEnd, Command: script, TimeoutMS: 1000}}})
+	out, err := r.RunTurnEnd(context.Background(), TurnEndInput{SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("RunTurnEnd() error = %v", err)
+	}
+	if !out.Continue || out.Message != "Check tests before final." {
+		t.Fatalf("out = %+v, want Continue=true Message=\"Check tests before final.\"", out)
+	}
+	if out.HookCount != 1 {
+		t.Fatalf("HookCount = %d, want 1", out.HookCount)
+	}
+}

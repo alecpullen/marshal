@@ -21,6 +21,12 @@ func TestPermissionsPaneAddAndEdit(t *testing.T) {
 }
 
 func TestPermissionsPaneActionSelect(t *testing.T) {
+	// Slow huh-driven test (~20s) because the action selector rebuilds
+	// its form repeatedly during navigation.
+	if testing.Short() {
+		t.Skip("slow huh-driven test")
+	}
+
 	cfg := config.Default()
 	cfg.Permissions.Rules = []config.PermissionRule{{Permission: "shell", Pattern: "go *", Action: "allow"}}
 	m := New(cfg, t.TempDir(), "")

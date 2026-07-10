@@ -7,6 +7,12 @@ import (
 )
 
 func TestDiagnosticsPaneMapEdit(t *testing.T) {
+	// Slow huh-driven test (~6s) because the diagnostics pane rebuilds
+	// the command map form during keypress processing.
+	if testing.Short() {
+		t.Skip("slow huh-driven test")
+	}
+
 	m := New(config.Default(), t.TempDir(), "")
 	m.SetSize(100, 40)
 	m = enterSection(t, m, "diagnostics")

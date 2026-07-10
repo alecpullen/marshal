@@ -40,6 +40,11 @@ func TestPresetsPaneAddEntry(t *testing.T) {
 }
 
 func TestPresetsPaneEditTemperature(t *testing.T) {
+	// Slow huh-driven test: each huh.Form.Update() call costs ~10s of
+	// terminal teardown. Skipped under -short so CI stays fast.
+	if testing.Short() {
+		t.Skip("slow huh-driven test")
+	}
 	m := New(presetsTestConfig(), t.TempDir(), "")
 	m.SetSize(100, 40)
 	m = enterSection(t, m, "presets")

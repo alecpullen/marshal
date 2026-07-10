@@ -26,6 +26,12 @@ func TestProvidersPaneMasksApiKey(t *testing.T) {
 }
 
 func TestProvidersPaneAddAndEdit(t *testing.T) {
+	// Slow huh-driven test (~5s) because provider sub-form rebuilds
+	// incur heavy huh state churn.
+	if testing.Short() {
+		t.Skip("slow huh-driven test")
+	}
+
 	m := New(providersTestConfig(), t.TempDir(), "")
 	m.SetSize(100, 40)
 	m = enterSection(t, m, "providers")

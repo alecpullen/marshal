@@ -2993,3 +2993,55 @@ func TestPreToolUseHookErrorBlocksWhenFailClosed(t *testing.T) {
 		t.Fatal("shell handler executed when hook returned an error")
 	}
 }
+
+func TestTurnEndHookContinuesExactlyOnce(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
+		`{"rationale":"r","action":{"type":"answer","content":"checked"}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.HookRunner = fakeHookRunner{turnOut: hooks.Output{Continue: true, Message: "Check tests before final."}}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "finish"); err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	msgs := state.Messages()
+	var injected, final bool
+	for _, msg := range msgs {
+		if msg.Role == session.RoleUser && msg.Content == "Check tests before final." {
+			injected = true
+		}
+		if msg.Role == session.RoleAssistant && msg.Final && msg.Content == "checked" {
+			final = true
+		}
+	}
+	if !injected || !final {
+		t.Fatalf("messages = %+v", msgs)
+	}
+}
+
+func TestTurnEndHookDoesNotContinueTwice(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"r","action":{"type":"answer","content":"one"}}`,
+		`{"rationale":"r","action":{"type":"answer","content":"two"}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.HookRunner = fakeHookRunner{turnOut: hooks.Output{Continue: true, Message: "continue once"}}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "finish"); err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	count := 0
+	for _, msg := range state.Messages() {
+		if msg.Role == session.RoleUser && msg.Content == "continue once" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("injected continuation count = %d, want 1", count)
+	}
+}

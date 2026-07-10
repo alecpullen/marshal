@@ -381,6 +381,30 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	consecutiveParseFailures := 0
 	consecutiveEmpty := 0
 	iteration := 0
+	turnEndContinued := false
+	runTurnEnd := func(messages []schema.ChatMessage, task *Task) ([]schema.ChatMessage, bool, error) {
+		if r.HookRunner == nil || turnEndContinued {
+			return messages, false, nil
+		}
+		out, err := r.HookRunner.RunTurnEnd(ctx, hooks.TurnEndInput{
+			Event:     hooks.EventTurnEnd,
+			SessionID: r.State.SessionID(),
+			TurnIndex: r.State.TurnIndex(),
+			WorkDir:   r.State.WorkingDir,
+		})
+		if err != nil {
+			return messages, false, err
+		}
+		if out.Continue && strings.TrimSpace(out.Message) != "" {
+			turnEndContinued = true
+			msg := strings.TrimSpace(out.Message)
+			r.State.AddMessage(session.RoleUser, msg, session.ContentTypePlain)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
+			task.Status = TaskStatusExecuting
+			return messages, true, nil
+		}
+		return messages, false, nil
+	}
 	for {
 		if iteration >= r.MaxToolIterations {
 			break
@@ -468,6 +492,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				}
 				task.Summary = res.Text
 				task.Status = TaskStatusCompleted
+				if next, continued, err := runTurnEnd(messages, task); err != nil {
+					return task, r.fail(task, err)
+				} else if continued {
+					messages = next
+					continue
+				}
 				r.State.AddMessageFinal(session.RoleAssistant, res.Text, session.ContentTypeMarkdown)
 				return task, nil
 			}
@@ -572,6 +602,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		case ActionAnswer, ActionFinal:
 			task.Summary = action.Content
 			task.Status = TaskStatusCompleted
+			if next, continued, err := runTurnEnd(messages, task); err != nil {
+				return task, r.fail(task, err)
+			} else if continued {
+				messages = next
+				continue
+			}
 			r.State.AddMessageFinal(session.RoleAssistant, action.Content, session.ContentTypeMarkdown)
 			return task, nil
 		case ActionToolCall, ActionPatch:

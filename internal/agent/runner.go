@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/hooks"
 	"marshal/internal/llm/catalog"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
@@ -88,6 +89,15 @@ type WriteGate interface {
 	Acquire() (release func())
 }
 
+// HookRunner executes user-configured pre_tool_use and turn_end lifecycle
+// hooks. The interface is declared package-local so unit tests can supply a
+// fake without depending on internal/hooks. A nil HookRunner on a Runner
+// disables hook execution entirely.
+type HookRunner interface {
+	RunPreToolUse(ctx context.Context, input hooks.PreToolUseInput) (hooks.Output, error)
+	RunTurnEnd(ctx context.Context, input hooks.TurnEndInput) (hooks.Output, error)
+}
+
 // MemoryProvider supplies durable project memories for injection into the
 // context pack at the start of each turn. It returns contextpack.MemoryNote
 // (not a type from internal/knowledge) so that internal/agent never needs
@@ -159,6 +169,12 @@ type Runner struct {
 
 	Snapshotter      Snapshotter
 	SnapshotRecorder SnapshotRecorder
+
+	// HookRunner, when set, runs pre_tool_use and turn_end lifecycle hooks
+	// against every tool call. The interface is kept package-local so tests
+	// can substitute a fake without depending on internal/hooks internals.
+	// nil disables hook execution.
+	HookRunner HookRunner
 
 	// TitleGenerator, when set, is invoked once per session at the end of the
 	// first user turn to produce a short session title (F13). Fire-and-forget.
@@ -950,6 +966,109 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 	return defs
 }
 
+// parseToolArgs splits a tool's raw JSON argument bytes into a Go map and
+// the canonical normalized JSON used as the cache key. An empty / null
+// argument normalises to {} and produces an empty map.
+func parseToolArgs(args json.RawMessage) (map[string]interface{}, json.RawMessage, error) {
+	argsMap := map[string]interface{}{}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &argsMap); err != nil {
+			return nil, nil, fmt.Errorf("arguments are not a valid JSON object")
+		}
+	}
+	normalizedArgs, err := normalizeArgs(args)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to normalize arguments")
+	}
+	return argsMap, normalizedArgs, nil
+}
+
+// runPreToolUseHook runs the configured pre_tool_use hooks for toolName.
+// The returned args are either the original (when the hook has nothing to
+// say) or the rewritten JSON the hook wants the caller to use instead.
+// When the hook signals block/halt the original args are still returned so
+// the caller can record an accurate audit event for the original call.
+func (r *Runner) runPreToolUseHook(ctx context.Context, toolName string, args json.RawMessage) (json.RawMessage, hooks.Output, error) {
+	if r.HookRunner == nil {
+		return args, hooks.Output{}, nil
+	}
+	out, err := r.HookRunner.RunPreToolUse(ctx, hooks.PreToolUseInput{
+		Event:     hooks.EventPreToolUse,
+		ToolName:  toolName,
+		Args:      append(json.RawMessage(nil), args...),
+		SessionID: r.State.SessionID(),
+		TurnIndex: r.State.TurnIndex(),
+		WorkDir:   r.State.WorkingDir,
+	})
+	if err != nil {
+		return args, out, err
+	}
+	if len(out.Rewrite) > 0 {
+		return append(json.RawMessage(nil), out.Rewrite...), out, nil
+	}
+	return args, out, nil
+}
+
+// policyLoopResult carries the result of running policy + approval for one
+// iteration of the pre_tool_use rewrite loop. Messages is non-empty when the
+// caller should return immediately (deny, user-declined, hook error, etc).
+type policyLoopResult struct {
+	Args           json.RawMessage
+	NormalizedArgs json.RawMessage
+	Approval       registry.ApprovalState
+	Messages       []schema.ChatMessage
+}
+
+// handlePolicyDecision runs one iteration of policy + approval for the
+// (possibly rewritten) args. The two early-return cases (deny /
+// user-declined) are returned as Messages so the caller can short-circuit.
+// On an error from approval (context cancel, etc.) it is returned to the
+// caller. When the decision is allow, Approval is set to ApprovalNotRequired.
+func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, normalizedArgs json.RawMessage, decision policy.Decision, reason, toolCallID string) (policyLoopResult, error) {
+	approval := registry.ApprovalNotRequired
+	switch decision {
+	case policy.DecisionDeny:
+		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
+		r.State.LogToolCall(event)
+		r.countToolCall(true, false)
+		return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}}, nil
+	case policy.DecisionConfirm:
+		approved, edited, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason)
+		if waitErr != nil {
+			return policyLoopResult{}, waitErr
+		}
+		if !approved {
+			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
+			r.State.LogToolCall(event)
+			r.countToolCall(true, false)
+			return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by user", toolCallID)}}, nil
+		}
+		approval = registry.ApprovalApproved
+		if edited != "" {
+			if toolName == "shell.run" {
+				argsMap["command"] = edited
+				if remarshalled, merr := json.Marshal(argsMap); merr == nil {
+					args = remarshalled
+					normalizedArgs, _ = normalizeArgs(args)
+				}
+			} else {
+				if json.Valid([]byte(edited)) {
+					args = json.RawMessage(edited)
+					normalizedArgs, _ = normalizeArgs(args)
+					_ = json.Unmarshal(args, &argsMap)
+				}
+			}
+		}
+	case policy.DecisionAllow:
+		approval = registry.ApprovalNotRequired
+	}
+	return policyLoopResult{
+		Args:           args,
+		NormalizedArgs: normalizedArgs,
+		Approval:       approval,
+	}, nil
+}
+
 // executeToolCall evaluates policy, blocks for user approval if required,
 // executes the tool, logs an audit event, and returns one or more
 // schema.ChatMessages to feed the result (or failure reason) back to the
@@ -1010,49 +1129,64 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 	}
 
-	r.Policy.SetSessionRules(r.State.SessionRules())
-	decision, reason, err := r.Policy.Evaluate(toolName, argsMap)
-	if err != nil {
-		r.countToolCall(true, false)
-		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, err.Error(), toolCallID)}, nil
-	}
-
-	approval := registry.ApprovalNotRequired
-	switch decision {
-	case policy.DecisionDeny:
-		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
-		r.State.LogToolCall(event)
-		r.countToolCall(true, false)
-		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}, nil
-	case policy.DecisionConfirm:
-		approved, edited, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason)
-		if waitErr != nil {
-			return nil, waitErr
+	// Bounded pre_tool_use rewrite loop. The hook runs AFTER policy +
+	// user approval so the user is always in control of the original call
+	// before any silent rewrite takes effect; a Rewrite value forces the
+	// next iteration to re-parse, re-evaluate policy, and re-prompt the
+	// user. The loop is hard-bounded at one rewrite to prevent a hostile
+	// hook from thrashing the tool budget.
+	var approval registry.ApprovalState
+	for rewriteCount := 0; ; rewriteCount++ {
+		if rewriteCount > 1 {
+			r.countToolCall(true, false)
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "pre_tool_use hook rewrote arguments more than once", toolCallID)}, nil
 		}
-		if !approved {
-			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
+
+		argsMap, normalizedArgs, parseErr := parseToolArgs(args)
+		if parseErr != nil {
+			r.countToolCall(true, false)
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, parseErr.Error(), toolCallID)}, nil
+		}
+
+		r.Policy.SetSessionRules(r.State.SessionRules())
+		decision, reason, evalErr := r.Policy.Evaluate(toolName, argsMap)
+		if evalErr != nil {
+			r.countToolCall(true, false)
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, evalErr.Error(), toolCallID)}, nil
+		}
+
+		policyResult, err := r.handlePolicyDecision(ctx, tool, toolName, args, argsMap, normalizedArgs, decision, reason, toolCallID)
+		if err != nil {
+			return nil, err
+		}
+		if len(policyResult.Messages) > 0 {
+			return policyResult.Messages, nil
+		}
+		args = policyResult.Args
+		normalizedArgs = policyResult.NormalizedArgs
+		approval = policyResult.Approval
+
+		rewrittenArgs, hookOut, hookErr := r.runPreToolUseHook(ctx, toolName, args)
+		if hookErr != nil {
+			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookErr.Error()))
 			r.State.LogToolCall(event)
 			r.countToolCall(true, false)
-			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by user", toolCallID)}, nil
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookErr.Error(), toolCallID)}, nil
 		}
-		approval = registry.ApprovalApproved
-		if edited != "" {
-			if toolName == "shell.run" {
-				argsMap["command"] = edited
-				if remarshalled, merr := json.Marshal(argsMap); merr == nil {
-					args = remarshalled
-					normalizedArgs, _ = normalizeArgs(args)
-				}
-			} else {
-				if json.Valid([]byte(edited)) {
-					args = json.RawMessage(edited)
-					normalizedArgs, _ = normalizeArgs(args)
-					_ = json.Unmarshal(args, &argsMap)
-				}
-			}
+		if hookOut.Decision == hooks.DecisionBlock {
+			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookOut.Reason))
+			r.State.LogToolCall(event)
+			r.countToolCall(true, false)
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookOut.Reason, toolCallID)}, nil
 		}
-	case policy.DecisionAllow:
-		approval = registry.ApprovalNotRequired
+		if hookOut.Decision == hooks.DecisionHalt {
+			return nil, fmt.Errorf("halted by pre_tool_use hook: %s", hookOut.Reason)
+		}
+		if len(hookOut.Rewrite) > 0 {
+			args = rewrittenArgs
+			continue
+		}
+		break
 	}
 
 	label := toolName

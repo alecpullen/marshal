@@ -25,6 +25,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
+	"marshal/internal/hooks"
 	"marshal/internal/knowledge"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
@@ -612,6 +613,15 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	defer steeringBroker.Close()
 
 	runner, toolReg, swarmRunner, mcpMgr, snapSvc, err = buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
+	// F20: project-local pre_tool_use / turn_end hooks run only when the
+	// project is trusted AND the user has configured entries. The wiring
+	// here is the single place agent-level hook execution is enabled at
+	// startup; the agent runner itself decides nothing about trust. Task
+	// 7 will hoist this assignment into StartRuntime so the TUI and any
+	// future ACP transport share one wiring site.
+	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
+		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
+	}
 	if snapSvc != nil {
 		defer func() {
 			pruneCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

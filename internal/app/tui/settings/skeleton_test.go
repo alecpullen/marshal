@@ -31,6 +31,8 @@ func keyPress(m Model, keys ...string) Model {
 			msg = tea.KeyPressMsg{Code: tea.KeyEnter}
 		case "space":
 			msg = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+		case "backspace":
+			msg = tea.KeyPressMsg{Code: tea.KeyBackspace}
 		default:
 			msg = tea.KeyPressMsg{Code: rune(k[0]), Text: k}
 		}

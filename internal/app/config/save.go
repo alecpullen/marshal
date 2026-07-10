@@ -20,9 +20,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 
 	defaultProfile := cfg.Profile.Default
-	file.Profile = &struct {
-		Default *string `toml:"default"`
-	}{Default: &defaultProfile}
+	file.Profile = &fileProfile{Default: &defaultProfile}
 
 	activePresetName := activePresetName(cfg)
 	maxToolIterations := cfg.Agent.MaxToolIterations
@@ -33,44 +31,20 @@ func SaveProjectConfig(path string, cfg Config) error {
 	if activePresetName == "" {
 		agentProvider := cfg.Agent.Provider
 		agentModel := cfg.Agent.Model
-		file.Agent = &struct {
-			Provider                 *string `toml:"provider"`
-			Model                    *string `toml:"model"`
-			MaxToolIterations        *int    `toml:"max_tool_iterations"`
-			MaxRetries               *int    `toml:"max_retries"`
-			MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
-			MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
-			PlanFirst                *bool   `toml:"plan_first"`
-			SubtaskIterations        *int    `toml:"subtask_iterations"`
-		}{Provider: &agentProvider, Model: &agentModel, MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst, SubtaskIterations: &subtaskIterations}
+		file.Agent = &fileAgent{Provider: &agentProvider, Model: &agentModel, MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst, SubtaskIterations: &subtaskIterations}
 	} else {
-		file.Agent = &struct {
-			Provider                 *string `toml:"provider"`
-			Model                    *string `toml:"model"`
-			MaxToolIterations        *int    `toml:"max_tool_iterations"`
-			MaxRetries               *int    `toml:"max_retries"`
-			MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
-			MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
-			PlanFirst                *bool   `toml:"plan_first"`
-			SubtaskIterations        *int    `toml:"subtask_iterations"`
-		}{MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst, SubtaskIterations: &subtaskIterations}
+		file.Agent = &fileAgent{MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst, SubtaskIterations: &subtaskIterations}
 	}
 
 	remoteAllowed := cfg.Privacy.RemoteProvidersAllowed
 	if file.Privacy == nil {
-		file.Privacy = &struct {
-			RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
-			RedactSecrets          *bool `toml:"redact_secrets"`
-			IncludeGitignoredFiles *bool `toml:"include_gitignored_files"`
-		}{}
+		file.Privacy = &filePrivacy{}
 	}
 	file.Privacy.RemoteProvidersAllowed = &remoteAllowed
 	if activePresetName != "" {
 		if preset, ok := cfg.Models.Presets[activePresetName]; ok {
 			if file.Models == nil {
-				file.Models = &struct {
-					Presets map[string]modelPresetConfig `toml:"presets"`
-				}{Presets: map[string]modelPresetConfig{}}
+				file.Models = &fileModels{Presets: map[string]modelPresetConfig{}}
 			}
 			if file.Models.Presets == nil {
 				file.Models.Presets = map[string]modelPresetConfig{}
@@ -90,40 +64,10 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 
 	if file.Tools == nil {
-		file.Tools = &struct {
-			Shell *struct {
-				DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
-				MaxOutputBytes        *int          `toml:"max_output_bytes"`
-				MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
-				BackgroundRetention   *string       `toml:"background_retention"`
-				AllowNetwork          *bool         `toml:"allow_network"`
-				AllowSudo             *bool         `toml:"allow_sudo"`
-				AllowDestructive      *bool         `toml:"allow_destructive"`
-				AutoApprove           *bool         `toml:"auto_approve"`
-				GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
-				Allow                 *CommandRules `toml:"allow"`
-				Confirm               *CommandRules `toml:"confirm"`
-				Deny                  *PatternRules `toml:"deny"`
-				Sandbox               *sandboxFile  `toml:"sandbox"`
-			} `toml:"shell"`
-		}{}
+		file.Tools = &fileTools{}
 	}
 	if file.Tools.Shell == nil {
-		file.Tools.Shell = &struct {
-			DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
-			MaxOutputBytes        *int          `toml:"max_output_bytes"`
-			MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
-			BackgroundRetention   *string       `toml:"background_retention"`
-			AllowNetwork          *bool         `toml:"allow_network"`
-			AllowSudo             *bool         `toml:"allow_sudo"`
-			AllowDestructive      *bool         `toml:"allow_destructive"`
-			AutoApprove           *bool         `toml:"auto_approve"`
-			GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
-			Allow                 *CommandRules `toml:"allow"`
-			Confirm               *CommandRules `toml:"confirm"`
-			Deny                  *PatternRules `toml:"deny"`
-			Sandbox               *sandboxFile  `toml:"sandbox"`
-		}{}
+		file.Tools.Shell = &fileShell{}
 	}
 	shellTimeout := cfg.Tools.Shell.DefaultTimeoutSeconds
 	maxOutputBytes := cfg.Tools.Shell.MaxOutputBytes
@@ -203,9 +147,7 @@ func SaveUserConfigRule(path string, rule PermissionRule) error {
 		return fmt.Errorf("load user config: %w", err)
 	}
 	if file.Permissions == nil {
-		file.Permissions = &struct {
-			Rules []PermissionRule `toml:"rules"`
-		}{}
+		file.Permissions = &filePermissions{}
 	}
 	for _, existing := range file.Permissions.Rules {
 		if existing.Permission == rule.Permission && existing.Pattern == rule.Pattern && existing.Action == rule.Action {

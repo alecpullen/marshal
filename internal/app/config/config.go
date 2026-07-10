@@ -275,112 +275,148 @@ type LoadOptions struct {
 	Trusted       *bool
 }
 
+type fileProject struct {
+	Name      *string  `toml:"name"`
+	Languages []string `toml:"languages"`
+}
+
+type fileCommands struct {
+	Test   *string `toml:"test"`
+	Format *string `toml:"format"`
+	Vet    *string `toml:"vet"`
+}
+
+type fileProfile struct {
+	Default *string `toml:"default"`
+}
+
+type fileAgent struct {
+	Provider                 *string `toml:"provider"`
+	Model                    *string `toml:"model"`
+	MaxToolIterations        *int    `toml:"max_tool_iterations"`
+	MaxRetries               *int    `toml:"max_retries"`
+	MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
+	MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
+	PlanFirst                *bool   `toml:"plan_first"`
+	SubtaskIterations        *int    `toml:"subtask_iterations"`
+}
+
+type filePrivacy struct {
+	RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
+	RedactSecrets          *bool `toml:"redact_secrets"`
+	IncludeGitignoredFiles *bool `toml:"include_gitignored_files"`
+}
+
+type fileIndexing struct {
+	UseTreesitter  *bool    `toml:"use_treesitter"`
+	UseEmbeddings  *bool    `toml:"use_embeddings"`
+	SummariseFiles *bool    `toml:"summarise_files"`
+	Ignore         []string `toml:"ignore"`
+}
+
+type fileShell struct {
+	DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
+	MaxOutputBytes        *int          `toml:"max_output_bytes"`
+	MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
+	BackgroundRetention   *string       `toml:"background_retention"`
+	AllowNetwork          *bool         `toml:"allow_network"`
+	AllowSudo             *bool         `toml:"allow_sudo"`
+	AllowDestructive      *bool         `toml:"allow_destructive"`
+	AutoApprove           *bool         `toml:"auto_approve"`
+	GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
+	Allow                 *CommandRules `toml:"allow"`
+	Confirm               *CommandRules `toml:"confirm"`
+	Deny                  *PatternRules `toml:"deny"`
+	Sandbox               *sandboxFile  `toml:"sandbox"`
+}
+
+type fileTools struct {
+	Shell *fileShell `toml:"shell"`
+}
+
+type fileWeb struct {
+	Enabled        *bool   `toml:"enabled"`
+	FetchTimeout   *string `toml:"fetch_timeout"`
+	SearchProvider *string `toml:"search_provider"`
+	SearchURL      *string `toml:"search_url"`
+	SearchKey      *string `toml:"search_key"`
+}
+
+type fileSwarmBudget struct {
+	MaxFixRounds   *int           `toml:"max_fix_rounds"`
+	MaxTotalTokens *int           `toml:"max_total_tokens"`
+	ToolIters      map[string]int `toml:"tool_iters"`
+}
+
+type fileSwarm struct {
+	Budget *fileSwarmBudget `toml:"budget"`
+}
+
+type fileMCPServer struct {
+	Command *string           `toml:"command"`
+	Args    []string          `toml:"args"`
+	Env     map[string]string `toml:"env"`
+}
+
+type fileMCP struct {
+	Servers                  map[string]fileMCPServer `toml:"servers"`
+	Policies                 map[string]string        `toml:"policies"`
+	DisclosureThresholdTools *int                     `toml:"disclosure_threshold_tools"`
+}
+
+type fileSnapshots struct {
+	Enabled       *bool `toml:"enabled"`
+	RetentionDays *int  `toml:"retention_days"`
+	MaxFileBytes  *int  `toml:"max_file_bytes"`
+}
+
+type filePermissions struct {
+	Rules []PermissionRule `toml:"rules"`
+}
+
+type fileDiagnostics struct {
+	Commands map[string]string `toml:"commands"`
+}
+
+type fileHookEntry struct {
+	Event     *string `toml:"event"`
+	Matcher   *string `toml:"matcher"`
+	Command   *string `toml:"command"`
+	TimeoutMS *int    `toml:"timeout_ms"`
+}
+
+type fileHooks struct {
+	FailClosed *bool           `toml:"fail_closed"`
+	Entries    []fileHookEntry `toml:"entries"`
+}
+
+type fileModels struct {
+	Presets map[string]modelPresetConfig `toml:"presets"`
+}
+
+type fileAgentEntry struct {
+	Context contextBudgetConfig `toml:"context"`
+}
+
 type configFile struct {
-	Project *struct {
-		Name      *string  `toml:"name"`
-		Languages []string `toml:"languages"`
-	} `toml:"project"`
-	Commands *struct {
-		Test   *string `toml:"test"`
-		Format *string `toml:"format"`
-		Vet    *string `toml:"vet"`
-	} `toml:"commands"`
-	Profile *struct {
-		Default *string `toml:"default"`
-	} `toml:"profile"`
-	Agent *struct {
-		Provider                 *string `toml:"provider"`
-		Model                    *string `toml:"model"`
-		MaxToolIterations        *int    `toml:"max_tool_iterations"`
-		MaxRetries               *int    `toml:"max_retries"`
-		MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
-		MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
-		PlanFirst                *bool   `toml:"plan_first"`
-		SubtaskIterations        *int    `toml:"subtask_iterations"`
-	} `toml:"agent"`
-	Privacy *struct {
-		RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
-		RedactSecrets          *bool `toml:"redact_secrets"`
-		IncludeGitignoredFiles *bool `toml:"include_gitignored_files"`
-	} `toml:"privacy"`
-	Indexing *struct {
-		UseTreesitter  *bool    `toml:"use_treesitter"`
-		UseEmbeddings  *bool    `toml:"use_embeddings"`
-		SummariseFiles *bool    `toml:"summarise_files"`
-		Ignore         []string `toml:"ignore"`
-	} `toml:"indexing"`
-	Tools *struct {
-		Shell *struct {
-			DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
-			MaxOutputBytes        *int          `toml:"max_output_bytes"`
-			MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
-			BackgroundRetention   *string       `toml:"background_retention"`
-			AllowNetwork          *bool         `toml:"allow_network"`
-			AllowSudo             *bool         `toml:"allow_sudo"`
-			AllowDestructive      *bool         `toml:"allow_destructive"`
-			AutoApprove           *bool         `toml:"auto_approve"`
-			GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
-			Allow                 *CommandRules `toml:"allow"`
-			Confirm               *CommandRules `toml:"confirm"`
-			Deny                  *PatternRules `toml:"deny"`
-			Sandbox               *sandboxFile  `toml:"sandbox"`
-		} `toml:"shell"`
-	} `toml:"tools"`
-	Web *struct {
-		Enabled        *bool   `toml:"enabled"`
-		FetchTimeout   *string `toml:"fetch_timeout"`
-		SearchProvider *string `toml:"search_provider"`
-		SearchURL      *string `toml:"search_url"`
-		SearchKey      *string `toml:"search_key"`
-	} `toml:"web"`
-	Swarm *struct {
-		Budget *struct {
-			MaxFixRounds   *int           `toml:"max_fix_rounds"`
-			MaxTotalTokens *int           `toml:"max_total_tokens"`
-			ToolIters      map[string]int `toml:"tool_iters"`
-		} `toml:"budget"`
-	} `toml:"swarm"`
-	MCP *struct {
-		Servers map[string]struct {
-			Command *string           `toml:"command"`
-			Args    []string          `toml:"args"`
-			Env     map[string]string `toml:"env"`
-		} `toml:"servers"`
-		Policies                 map[string]string `toml:"policies"`
-		DisclosureThresholdTools *int              `toml:"disclosure_threshold_tools"`
-	} `toml:"mcp"`
-	Snapshots *struct {
-		Enabled       *bool `toml:"enabled"`
-		RetentionDays *int  `toml:"retention_days"`
-		MaxFileBytes  *int  `toml:"max_file_bytes"`
-	} `toml:"snapshots"`
-	Permissions *struct {
-		Rules []PermissionRule `toml:"rules"`
-	} `toml:"permissions"`
-	Diagnostics *struct {
-		Commands map[string]string `toml:"commands"`
-	} `toml:"diagnostics"`
-	Hooks *struct {
-		FailClosed *bool `toml:"fail_closed"`
-		Entries    []struct {
-			Event     *string `toml:"event"`
-			Matcher   *string `toml:"matcher"`
-			Command   *string `toml:"command"`
-			TimeoutMS *int    `toml:"timeout_ms"`
-		} `toml:"entries"`
-	} `toml:"hooks"`
-	// Providers, unlike the other configFile fields above, is not a
-	// pointer-to-anonymous-struct: a nil map already distinguishes
-	// "providers section absent from this file" from "present", so no
-	// pointer wrapping is needed.
-	Providers map[string]ProviderConfig `toml:"providers"`
-	Models    *struct {
-		Presets map[string]modelPresetConfig `toml:"presets"`
-	} `toml:"models"`
-	AgentProfiles map[string]agentProfileConfig `toml:"agent_profiles"`
-	Agents        map[routing.AgentRole]struct {
-		Context contextBudgetConfig `toml:"context"`
-	} `toml:"agents"`
+	Project     *fileProject     `toml:"project"`
+	Commands    *fileCommands    `toml:"commands"`
+	Profile     *fileProfile     `toml:"profile"`
+	Agent       *fileAgent       `toml:"agent"`
+	Privacy     *filePrivacy     `toml:"privacy"`
+	Indexing    *fileIndexing    `toml:"indexing"`
+	Tools       *fileTools       `toml:"tools"`
+	Web         *fileWeb         `toml:"web"`
+	Swarm       *fileSwarm       `toml:"swarm"`
+	MCP         *fileMCP         `toml:"mcp"`
+	Snapshots   *fileSnapshots   `toml:"snapshots"`
+	Permissions *filePermissions `toml:"permissions"`
+	Diagnostics *fileDiagnostics `toml:"diagnostics"`
+	Hooks       *fileHooks       `toml:"hooks"`
+	Providers     map[string]ProviderConfig            `toml:"providers"`
+	Models        *fileModels                          `toml:"models"`
+	AgentProfiles map[string]agentProfileConfig        `toml:"agent_profiles"`
+	Agents        map[routing.AgentRole]fileAgentEntry `toml:"agents"`
 }
 
 type agentProfileConfig struct {

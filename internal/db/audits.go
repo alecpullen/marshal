@@ -23,6 +23,14 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		return fmt.Errorf("marshal files changed: %w", err)
 	}
 
+	hooksJSON, err := json.Marshal(event.Hooks)
+	if err != nil {
+		return fmt.Errorf("marshal hooks: %w", err)
+	}
+	if len(hooksJSON) == 0 {
+		hooksJSON = []byte("[]")
+	}
+
 	var networkIsolated sql.NullInt64
 	if event.Sandbox.Enabled {
 		networkIsolated = sql.NullInt64{Int64: boolToInt(event.Sandbox.NetworkIsolated), Valid: true}
@@ -49,8 +57,8 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 
 	_, err = db.exec(
 		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
-		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID,
 		event.AgentRole,
 		event.Model,
@@ -68,6 +76,7 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		limitsJSON,
 		killedVal,
 		durVal,
+		string(hooksJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("save tool call: %w", err)
@@ -86,7 +95,7 @@ func boolToInt(b bool) int64 {
 func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 	rows, err := db.sqlDB.Query(
 		`SELECT agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
-		        sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms
+		        sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json
 		 FROM tool_calls
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,
@@ -112,8 +121,9 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		var sbLimits sql.NullString
 		var sbKilled sql.NullString
 		var durMS sql.NullInt64
+		var hooksJSON sql.NullString
 		if err := rows.Scan(&e.AgentRole, &e.Model, &e.ToolName, &args, &e.ResultSummary, &risk, &approval, &exitCode, &filesChanged, &errorString, &created,
-			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS); err != nil {
+			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS, &hooksJSON); err != nil {
 			return nil, fmt.Errorf("scan tool call row: %w", err)
 		}
 		e.Args = []byte(args)
@@ -148,6 +158,11 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		}
 		if durMS.Valid {
 			e.Sandbox.DurationMS = durMS.Int64
+		}
+		if hooksJSON.Valid && hooksJSON.String != "" && hooksJSON.String != "[]" {
+			if err := json.Unmarshal([]byte(hooksJSON.String), &e.Hooks); err != nil {
+				return nil, fmt.Errorf("unmarshal hooks: %w", err)
+			}
 		}
 		if sbLimits.Valid && sbLimits.String != "" {
 			// Parse the JSON blob the SandboxMeta.LimitsJSON writer

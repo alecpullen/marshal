@@ -45,6 +45,9 @@ func (l *listStrings) clampCursor() {
 	}
 }
 
+func (l *listStrings) Label() string                       { return l.title }
+func (l *listStrings) updateKey(k tea.KeyPressMsg) tea.Cmd { return l.Update(k) }
+
 func (l *listStrings) Update(msg tea.KeyPressMsg) tea.Cmd {
 	if l.Editing() {
 		switch msg.String() {

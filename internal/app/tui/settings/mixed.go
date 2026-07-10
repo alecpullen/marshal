@@ -6,20 +6,36 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// mixedPane stacks a scalar form above one or more string lists, cycling
-// focus with Tab. Section files compose it (shell, sandbox, indexing,
-// commands).
+// focusableList is the small contract mixedPane needs from each list-like
+// widget it embeds: listStrings, mapEditor, and mapIntEditor all satisfy
+// it. Methods mirror the listStrings surface; updateKey forwards a key
+// press directly to the widget's own Update so the widget decides how to
+// route to its text inputs.
+type focusableList interface {
+	Focus(bool)
+	Focused() bool
+	Editing() bool
+	CancelEdit()
+	View(int) string
+	Label() string
+	updateKey(tea.KeyPressMsg) tea.Cmd
+}
+
+// mixedPane stacks a scalar form above one or more list-like widgets,
+// cycling focus with Tab. Section files compose it (shell, sandbox,
+// indexing, commands, swarm). The list slot is polymorphic via
+// focusableList, so list strings and map editors are interchangeable.
 type mixedPane struct {
 	form     *scalarPane
-	lists    []*listStrings
+	lists    []focusableList
 	focusIdx int // 0 = form, 1..n = lists[focusIdx-1]
 }
 
-func newMixedPane(form *scalarPane, lists ...*listStrings) *mixedPane {
+func newMixedPane(form *scalarPane, lists ...focusableList) *mixedPane {
 	return &mixedPane{form: form, lists: lists}
 }
 
-func (p *mixedPane) activeList() *listStrings {
+func (p *mixedPane) activeList() focusableList {
 	if p.focusIdx == 0 {
 		return nil
 	}
@@ -45,7 +61,7 @@ func (p *mixedPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 	}
 	if l := p.activeList(); l != nil {
 		if isKey {
-			return p, l.Update(k)
+			return p, l.updateKey(k)
 		}
 		return p, nil
 	}
@@ -84,7 +100,7 @@ func (p *mixedPane) CloseInner() {
 
 func (p *mixedPane) FocusedFieldTitle() string {
 	if l := p.activeList(); l != nil {
-		return l.title
+		return l.Label()
 	}
 	return p.form.FocusedFieldTitle()
 }

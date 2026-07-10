@@ -6,12 +6,10 @@ type section struct {
 	build func(s *state) sectionPane
 }
 
-// sectionList is the ordered sidebar registry. Later tasks replace the
-// staticPane factories with real editors section by section.
+// sectionList is the ordered sidebar registry. Each entry maps the
+// sidebar id to a factory that builds the section's pane against the
+// shared working-copy state.
 func sectionList() []section {
-	placeholder := func(s *state) sectionPane {
-		return &staticPane{text: "Editor coming soon — edit .marshal/config.toml directly."}
-	}
 	return []section{
 		{id: "agent", title: "Agent", build: newAgentPane},
 		{id: "providers", title: "Providers", build: newProvidersPane},
@@ -21,12 +19,12 @@ func sectionList() []section {
 		{id: "sandbox", title: "Sandbox", build: newSandboxPane},
 		{id: "indexing", title: "Indexing", build: newIndexingPane},
 		{id: "web", title: "Web", build: newWebPane},
-		{id: "swarm", title: "Swarm", build: placeholder},
+		{id: "swarm", title: "Swarm", build: newSwarmPane},
 		{id: "mcp", title: "MCP", build: newMCPPane},
 		{id: "snapshots", title: "Snapshots", build: newSnapshotsPane},
 		{id: "hooks", title: "Hooks", build: newHooksPane},
 		{id: "permissions", title: "Permissions", build: newPermissionsPane},
-		{id: "diagnostics", title: "Diagnostics", build: placeholder},
+		{id: "diagnostics", title: "Diagnostics", build: newDiagnosticsPane},
 		{id: "commands", title: "Commands", build: newCommandsPane},
 	}
 }

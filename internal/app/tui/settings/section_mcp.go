@@ -2,11 +2,10 @@ package settings
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
-	"strings"
 
 	"charm.land/huh/v2"
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 )
@@ -20,6 +19,46 @@ func (m mcpServerEntry) Title() string {
 	return m.key + "  (" + m.server.Command + ")"
 }
 func (m mcpServerEntry) Key() string { return m.key }
+
+// mcpServerEditPane is a composite sub-pane for editing a single MCP server.
+// Args is a listStrings (one row per arg, so paths with spaces survive) and
+// Env is a mapEditor (KEY=VAL pairs, one per row). The Command field is a
+// scalar huh form. Edits mutate a local copy; the commit callback writes
+// the local copy back into the working config.
+type mcpServerEditPane struct {
+	inner *mixedPane
+	local *config.MCPServerConfig
+}
+
+func newMCPServerEditPane(local *config.MCPServerConfig) *mcpServerEditPane {
+	form := newScalarPane(func() *huh.Form {
+		return newSectionForm(
+			huh.NewInput().Key("Command").Title("Command").Value(&local.Command),
+		)
+	})
+	args := newListStrings("Args", &local.Args)
+	env := newMapEditor("Env", &local.Env)
+	return &mcpServerEditPane{
+		inner: newMixedPane(form, args, env),
+		local: local,
+	}
+}
+
+func (p *mcpServerEditPane) Init() tea.Cmd { return p.inner.Init() }
+
+func (p *mcpServerEditPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
+	updated, cmd := p.inner.Update(msg)
+	if mp, ok := updated.(*mixedPane); ok {
+		p.inner = mp
+	}
+	return p, cmd
+}
+
+func (p *mcpServerEditPane) View(width int) string         { return p.inner.View(width) }
+func (p *mcpServerEditPane) SetWidth(w int)                { p.inner.SetWidth(w) }
+func (p *mcpServerEditPane) HasInnerFocus() bool           { return p.inner.HasInnerFocus() }
+func (p *mcpServerEditPane) CloseInner()                   { p.inner.CloseInner() }
+func (p *mcpServerEditPane) FocusedFieldTitle() string     { return p.inner.FocusedFieldTitle() }
 
 func newMCPPane(s *state) sectionPane {
 	form := newScalarPane(func() *huh.Form {
@@ -50,55 +89,17 @@ func newMCPPane(s *state) sectionPane {
 			s.cfg.MCP.Servers[key] = config.MCPServerConfig{Env: map[string]string{}}
 			return nil
 		},
-		editForm: func(s *state, key string) (*huh.Form, func()) {
+		editSubPane: func(s *state, key string) (sectionPane, func()) {
 			local := s.cfg.MCP.Servers[key]
-			argsBuf := strings.Join(local.Args, " ")
-			envBuf := joinEnv(local.Env)
-			form := newSectionForm(
-				huh.NewInput().Key("Command").Title("Command").Value(&local.Command),
-				huh.NewInput().Key("Args (space-separated)").Title("Args (space-separated)").Value(&argsBuf),
-				huh.NewInput().Key("Env (KEY=VAL, comma-separated)").Title("Env (KEY=VAL, comma-separated)").Value(&envBuf),
-			)
-			return form, func() {
-				local.Args = splitArgs(argsBuf)
-				local.Env = splitEnv(envBuf)
-				s.cfg.MCP.Servers[key] = local
+			if local.Env == nil {
+				local.Env = map[string]string{}
 			}
+			pane := newMCPServerEditPane(&local)
+			return pane, func() { s.cfg.MCP.Servers[key] = local }
 		},
 		delete: func(s *state, key string) { delete(s.cfg.MCP.Servers, key) },
 	}
 	collection := newCollectionPane(s, serversSpec)
 	policies := newMapEditor("Policies", &s.cfg.MCP.Policies)
 	return newCompositePane(form, collection, policies)
-}
-
-func joinEnv(env map[string]string) string {
-	parts := make([]string, 0, len(env))
-	for k, v := range env {
-		parts = append(parts, k+"="+v)
-	}
-	sort.Strings(parts)
-	return strings.Join(parts, ", ")
-}
-
-func splitArgs(s string) []string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	return strings.Fields(s)
-}
-
-func splitEnv(s string) map[string]string {
-	out := map[string]string{}
-	for _, pair := range strings.Split(s, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		if k, v, ok := strings.Cut(pair, "="); ok {
-			out[k] = v
-		}
-	}
-	return out
 }

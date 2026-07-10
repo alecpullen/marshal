@@ -19,12 +19,13 @@ type collectionEntry interface {
 
 // collectionSpec describes a map-keyed section's list+sub-form behavior.
 type collectionSpec struct {
-	heading   string
-	keyPrompt string
-	entries   func(s *state) []collectionEntry
-	add       func(s *state, key string) error
-	editForm  func(s *state, key string) (form *huh.Form, onSubmit func())
-	delete    func(s *state, key string)
+	heading     string
+	keyPrompt   string
+	entries     func(s *state) []collectionEntry
+	add         func(s *state, key string) error
+	editForm    func(s *state, key string) (form *huh.Form, onSubmit func())
+	editSubPane func(s *state, key string) (pane sectionPane, onCommit func())
+	delete      func(s *state, key string)
 }
 
 // collectionPane is the generic list + sub-form editor. It owns three
@@ -40,6 +41,8 @@ type collectionPane struct {
 	addErr     string
 	nameInput  textinput.Model
 	form       *huh.Form
+	subPane    sectionPane
+	onCommit   func()
 	editingKey string
 	onSubmit   func()
 	width      int
@@ -108,6 +111,11 @@ func (p *collectionPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 				}
 			}
 			p.checkFormDone()
+			return p, cmd
+		}
+		if p.subPane != nil {
+			updated, cmd := p.subPane.Update(msg)
+			p.subPane = updated
 			return p, cmd
 		}
 		return p, nil
@@ -185,6 +193,17 @@ func (p *collectionPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 		return p, cmd
 	}
 
+	// Sub-pane state (custom edit widget; e.g. MCP server editor).
+	if p.subPane != nil {
+		if k.String() == "esc" && !p.subPane.HasInnerFocus() {
+			p.closeSubPane(true)
+			return p, nil
+		}
+		updated, cmd := p.subPane.Update(k)
+		p.subPane = updated
+		return p, cmd
+	}
+
 	// List state.
 	switch k.String() {
 	case "up", "k":
@@ -207,10 +226,17 @@ func (p *collectionPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 		es := p.sortedEntries()
 		if len(es) > 0 {
 			p.editingKey = es[p.cursor].Key()
-			p.form, p.onSubmit = p.spec.editForm(p.s, p.editingKey)
-			p.form.WithWidth(p.width)
-			if c := p.form.Init(); c != nil {
-				_ = c()
+			if p.spec.editSubPane != nil {
+				p.subPane, p.onCommit = p.spec.editSubPane(p.s, p.editingKey)
+				if c := p.subPane.Init(); c != nil {
+					_ = c()
+				}
+			} else {
+				p.form, p.onSubmit = p.spec.editForm(p.s, p.editingKey)
+				p.form.WithWidth(p.width)
+				if c := p.form.Init(); c != nil {
+					_ = c()
+				}
 			}
 		}
 	case "d":
@@ -221,6 +247,18 @@ func (p *collectionPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 		}
 	}
 	return p, nil
+}
+
+func (p *collectionPane) closeSubPane(commit bool) {
+	if p.subPane == nil {
+		return
+	}
+	if commit && p.onCommit != nil {
+		p.onCommit()
+	}
+	p.subPane = nil
+	p.onCommit = nil
+	p.editingKey = ""
 }
 
 // checkFormDone closes the sub-form when huh reaches a terminal state.
@@ -252,9 +290,15 @@ func (p *collectionPane) SetWidth(w int) {
 	if p.form != nil {
 		p.form.WithWidth(w)
 	}
+	if p.subPane != nil {
+		p.subPane.SetWidth(w)
+	}
 }
 
-func (p *collectionPane) HasInnerFocus() bool { return p.adding || p.pendingAdd || p.form != nil }
+func (p *collectionPane) HasInnerFocus() bool {
+	return p.adding || p.pendingAdd || p.form != nil ||
+		(p.subPane != nil && p.subPane.HasInnerFocus())
+}
 
 func (p *collectionPane) CloseInner() {
 	if p.adding {
@@ -265,6 +309,10 @@ func (p *collectionPane) CloseInner() {
 	if p.pendingAdd {
 		p.pendingAdd = false
 		p.addErr = ""
+		return
+	}
+	if p.subPane != nil {
+		p.subPane.CloseInner()
 		return
 	}
 	p.form = nil
@@ -285,12 +333,18 @@ func (p *collectionPane) FocusedFieldTitle() string {
 		}
 		return p.spec.heading
 	}
+	if p.subPane != nil {
+		return p.subPane.FocusedFieldTitle()
+	}
 	return p.spec.heading
 }
 
 func (p *collectionPane) View(width int) string {
 	if p.form != nil {
 		return p.form.View()
+	}
+	if p.subPane != nil {
+		return p.subPane.View(width)
 	}
 	if p.adding {
 		return p.spec.keyPrompt + "\n▸ " + p.nameInput.View() +

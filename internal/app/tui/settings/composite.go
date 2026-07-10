@@ -33,7 +33,7 @@ func (p *compositePane) activeMap() *mapEditor {
 
 func (p *compositePane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 	k, isKey := msg.(tea.KeyPressMsg)
-	if isKey && !p.HasInnerFocus() {
+	if isKey && !p.HasInnerFocus() && !p.inSubPane() {
 		switch k.String() {
 		case "tab":
 			p.setFocus((p.focusIdx + 1) % (2 + len(p.mapEditors)))
@@ -95,12 +95,25 @@ func (p *compositePane) View(width int) string {
 
 func (p *compositePane) HasInnerFocus() bool {
 	return p.collection.HasInnerFocus() ||
-		(p.activeMap() != nil && p.activeMap().Editing())
+		(p.activeMap() != nil && p.activeMap().Editing()) ||
+		p.inSubPane()
+}
+
+// inSubPane reports whether the collection is currently showing a custom
+// sub-pane (e.g. MCP server editor). While that sub-pane is open, tab
+// should stay inside the collection rather than cycling out to map
+// editors.
+func (p *compositePane) inSubPane() bool {
+	return p.collection.subPane != nil
 }
 
 func (p *compositePane) CloseInner() {
 	switch p.focusIdx {
 	case 1:
+		if p.collection.subPane != nil {
+			p.collection.closeSubPane(true)
+			return
+		}
 		p.collection.CloseInner()
 	default:
 		if me := p.activeMap(); me != nil {

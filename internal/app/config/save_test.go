@@ -187,6 +187,48 @@ func TestSaveProjectConfigOmitsAgentWhenPresetActive(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigPreservesHooks(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	original := `
+[hooks]
+fail_closed = true
+
+[[hooks.entries]]
+event = "pre_tool_use"
+matcher = "file.write_patch"
+command = "./scripts/check-patch.sh"
+timeout_ms = 2500
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cfg := Default()
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !loaded.Hooks.FailClosed {
+		t.Fatal("Hooks.FailClosed = false, want true (preserved across save)")
+	}
+	if len(loaded.Hooks.Entries) != 1 {
+		t.Fatalf("len(Hooks.Entries) = %d, want 1 (preserved across save)", len(loaded.Hooks.Entries))
+	}
+	got := loaded.Hooks.Entries[0]
+	if got.Event != "pre_tool_use" || got.Matcher != "file.write_patch" || got.Command != "./scripts/check-patch.sh" || got.TimeoutMS != 2500 {
+		t.Fatalf("hook entry not preserved: %+v", got)
+	}
+}
+
 func TestSaveProjectConfigRoundTripsPlanFirst(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

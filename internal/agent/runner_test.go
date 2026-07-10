@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/hooks"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -2889,5 +2890,194 @@ func TestHistoryAfterRewindExcludesAbandonedBranch(t *testing.T) {
 		if strings.Contains(m.Content, "first answer") {
 			t.Fatal("abandoned branch's answer leaked into the new branch's history")
 		}
+	}
+}
+
+type fakeHookRunner struct {
+	preOut  hooks.Output
+	turnOut hooks.Output
+	preErr  error
+}
+
+func (f fakeHookRunner) RunPreToolUse(ctx context.Context, in hooks.PreToolUseInput) (hooks.Output, error) {
+	return f.preOut, f.preErr
+}
+
+func (f fakeHookRunner) RunTurnEnd(ctx context.Context, in hooks.TurnEndInput) (hooks.Output, error) {
+	return f.turnOut, nil
+}
+
+func TestPreToolUseHookBlocksPatch(t *testing.T) {
+	executed := false
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "file.write_patch", Description: "patch", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executed = true
+			return registry.ToolResult{Summary: "patched"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := &scriptedProvider{responses: []string{`{"rationale":"r","action":{"type":"patch","content":"*** Begin Patch\n*** End Patch"}}`, `{"rationale":"r","action":{"type":"answer","content":"stopped"}}`}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.HookRunner = fakeHookRunner{preOut: hooks.Output{Decision: hooks.DecisionBlock, Reason: "patch blocked"}}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "patch"); err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	if executed {
+		t.Fatal("patch handler executed despite hook block")
+	}
+	log := state.AuditLog()
+	if len(log) == 0 {
+		t.Fatalf("audit log empty; want at least one block event")
+	}
+	if !strings.Contains(log[0].Error, "patch blocked") {
+		t.Fatalf("audit log[0].Error = %q, want contains %q", log[0].Error, "patch blocked")
+	}
+}
+
+func TestPreToolUseRewriteReentersPolicy(t *testing.T) {
+	executed := false
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "shell.run", Description: "shell", Risk: registry.RiskCommand,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executed = true
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Permissions.Rules = []config.PermissionRule{{Permission: "shell.run", Pattern: "rm*", Action: "deny"}}
+	p := &scriptedProvider{responses: []string{`{"rationale":"r","action":{"type":"tool_call","tool":"shell.run","args":{"command":"date"}}}`, `{"rationale":"r","action":{"type":"answer","content":"done"}}`}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&cfg, nil), state, "test-model")
+	runner.HookRunner = fakeHookRunner{preOut: hooks.Output{Rewrite: json.RawMessage(`{"command":"rm -rf ."}`)}}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "run date"); err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	if executed {
+		t.Fatal("shell handler executed after rewritten args were denied")
+	}
+}
+
+func TestPreToolUseHookErrorBlocksWhenFailClosed(t *testing.T) {
+	executed := false
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "shell.run", Description: "shell", Risk: registry.RiskCommand,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executed = true
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := &scriptedProvider{responses: []string{`{"rationale":"r","action":{"type":"tool_call","tool":"shell.run","args":{"command":"date"}}}`, `{"rationale":"r","action":{"type":"answer","content":"done"}}`}}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.HookRunner = fakeHookRunner{preOut: hooks.Output{Decision: hooks.DecisionBlock, Reason: "boom"}, preErr: fmt.Errorf("boom")}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "run"); err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	if executed {
+		t.Fatal("shell handler executed when hook returned an error")
+	}
+}
+
+func TestTurnEndHookContinuesExactlyOnce(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
+		`{"rationale":"r","action":{"type":"answer","content":"checked"}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.HookRunner = fakeHookRunner{turnOut: hooks.Output{Continue: true, Message: "Check tests before final."}}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "finish"); err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	msgs := state.Messages()
+	var injected, final bool
+	for _, msg := range msgs {
+		if msg.Role == session.RoleUser && msg.Content == "Check tests before final." {
+			injected = true
+		}
+		if msg.Role == session.RoleAssistant && msg.Final && msg.Content == "checked" {
+			final = true
+		}
+	}
+	if !injected || !final {
+		t.Fatalf("messages = %+v", msgs)
+	}
+}
+
+func TestTurnEndHookDoesNotContinueTwice(t *testing.T) {
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"r","action":{"type":"answer","content":"one"}}`,
+		`{"rationale":"r","action":{"type":"answer","content":"two"}}`,
+	}}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.HookRunner = fakeHookRunner{turnOut: hooks.Output{Continue: true, Message: "continue once"}}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "finish"); err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	count := 0
+	for _, msg := range state.Messages() {
+		if msg.Role == session.RoleUser && msg.Content == "continue once" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("injected continuation count = %d, want 1", count)
+	}
+}
+
+func TestTurnEndHookContinuesNativePath(t *testing.T) {
+	// Drives the native-tools final-return site (runner.go: NativeTools &&
+	// len(res.ToolCalls) == 0 && strings.TrimSpace(res.Text) != ""). The
+	// existing two turn-end tests both use the JSON ActionAnswer/ActionFinal
+	// site, so this test guards the other hook wiring against regressions.
+	p := &scriptedProvider{
+		responses: []string{"first native answer", "final native answer"},
+		toolCalls: [][]schema.ToolCall{nil, nil},
+	}
+	state := newTestState(t)
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.NativeTools = true
+	runner.HookRunner = fakeHookRunner{turnOut: hooks.Output{Continue: true, Message: "Verify native path hook fired."}}
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "finish"); err != nil {
+		t.Fatalf("RunTask() error = %v", err)
+	}
+	msgs := state.Messages()
+	var injected, final bool
+	for _, msg := range msgs {
+		if msg.Role == session.RoleUser && msg.Content == "Verify native path hook fired." {
+			injected = true
+		}
+		if msg.Role == session.RoleAssistant && msg.Final && msg.Content == "final native answer" {
+			final = true
+		}
+	}
+	if !injected {
+		t.Fatalf("turn-end hook message was not injected on the native-tools final-return path: %+v", msgs)
+	}
+	if !final {
+		t.Fatalf("second native answer never reached Final state: %+v", msgs)
 	}
 }

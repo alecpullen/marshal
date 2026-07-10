@@ -29,6 +29,7 @@ type Config struct {
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
 	Permissions   PermissionsConfig                     `toml:"permissions"`
 	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
+	Hooks         HooksConfig                           `toml:"hooks"`
 }
 
 type ModelsConfig struct {
@@ -106,6 +107,25 @@ type PermissionRule struct {
 
 type DiagnosticsConfig struct {
 	Commands map[string]string `toml:"commands"`
+}
+
+// HooksConfig holds the lifecycle-hook subsystem settings: the global
+// fail-closed policy and the per-event hook entries. Hooks are local
+// process execution only (no network, no remote) and are gated on project
+// trust when the project-local config defines them.
+type HooksConfig struct {
+	FailClosed bool         `toml:"fail_closed"`
+	Entries    []HookConfig `toml:"entries"`
+}
+
+// HookConfig is one lifecycle hook entry. Event names are validated by the
+// hook runtime (see internal/hooks), not here, so the config layer only
+// parses shape.
+type HookConfig struct {
+	Event     string `toml:"event"`
+	Matcher   string `toml:"matcher"`
+	Command   string `toml:"command"`
+	TimeoutMS int    `toml:"timeout_ms"`
 }
 
 // WebConfig gates outbound network access from agent-side tools (web.fetch
@@ -340,6 +360,15 @@ type configFile struct {
 	Diagnostics *struct {
 		Commands map[string]string `toml:"commands"`
 	} `toml:"diagnostics"`
+	Hooks *struct {
+		FailClosed *bool `toml:"fail_closed"`
+		Entries    []struct {
+			Event     *string `toml:"event"`
+			Matcher   *string `toml:"matcher"`
+			Command   *string `toml:"command"`
+			TimeoutMS *int    `toml:"timeout_ms"`
+		} `toml:"entries"`
+	} `toml:"hooks"`
 	// Providers, unlike the other configFile fields above, is not a
 	// pointer-to-anonymous-struct: a nil map already distinguishes
 	// "providers section absent from this file" from "present", so no
@@ -459,6 +488,10 @@ func Default() Config {
 		Permissions: PermissionsConfig{
 			Rules: nil,
 		},
+		Hooks: HooksConfig{
+			FailClosed: false,
+			Entries:    nil,
+		},
 		// Providers is intentionally left nil: Marshal is local-first with no
 		// built-in provider assumptions, and provider URLs/keys are
 		// user-specific (see docs/09-configuration-examples.md).
@@ -505,6 +538,9 @@ func Load(opts LoadOptions) (Config, error) {
 			applyProject = false
 		} else if decision == trust.DecisionTrustPermanent {
 			_ = opts.TrustResolver.Record(work, decision)
+		}
+		if opts.Trusted != nil {
+			*opts.Trusted = decision == trust.DecisionTrustPermanent || decision == trust.DecisionTrustSession
 		}
 	}
 	if applyProject {
@@ -857,6 +893,30 @@ func merge(cfg *Config, file configFile) error {
 		}
 		if file.Web.SearchKey != nil {
 			cfg.Web.SearchKey = *file.Web.SearchKey
+		}
+	}
+	if file.Hooks != nil {
+		if file.Hooks.FailClosed != nil {
+			cfg.Hooks.FailClosed = *file.Hooks.FailClosed
+		}
+		if file.Hooks.Entries != nil {
+			cfg.Hooks.Entries = nil
+			for _, entry := range file.Hooks.Entries {
+				var hc HookConfig
+				if entry.Event != nil {
+					hc.Event = *entry.Event
+				}
+				if entry.Matcher != nil {
+					hc.Matcher = *entry.Matcher
+				}
+				if entry.Command != nil {
+					hc.Command = *entry.Command
+				}
+				if entry.TimeoutMS != nil {
+					hc.TimeoutMS = *entry.TimeoutMS
+				}
+				cfg.Hooks.Entries = append(cfg.Hooks.Entries, hc)
+			}
 		}
 	}
 	return nil

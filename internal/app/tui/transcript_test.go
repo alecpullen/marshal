@@ -263,6 +263,63 @@ func TestCompletedToolCallUsesCheckAndCross(t *testing.T) {
 	}
 }
 
+func TestRenderCompletedToolCallShowsHookBlockedIndicator(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName: "file.write_patch",
+		Error:    "blocked by pre_tool_use hook: lint gate",
+		Hooks: []registry.HookMetadata{{
+			Event:    "pre_tool_use",
+			Decision: "block",
+			Reason:   "lint gate",
+		}},
+	}, 80))
+	if !strings.Contains(out, "hook blocked") {
+		t.Fatalf("rendered tool call missing hook blocked indicator: %q", out)
+	}
+}
+
+func TestRenderCompletedToolCallShowsHookRewroteIndicator(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "shell.run",
+		ResultSummary: "ok",
+		Hooks: []registry.HookMetadata{{
+			Event:   "pre_tool_use",
+			Rewrote: true,
+		}},
+	}, 80))
+	if !strings.Contains(out, "hook rewrote") {
+		t.Fatalf("rendered tool call missing hook rewrote indicator: %q", out)
+	}
+}
+
+func TestRenderCompletedToolCallShowsHookFailedOpenIndicator(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "shell.run",
+		ResultSummary: "ok",
+		Hooks: []registry.HookMetadata{{
+			Event:      "pre_tool_use",
+			FailedOpen: true,
+		}},
+	}, 80))
+	if !strings.Contains(out, "hook failed-open") {
+		t.Fatalf("rendered tool call missing hook failed-open indicator: %q", out)
+	}
+}
+
+func TestRenderCompletedToolCallShowsHookCountIndicator(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "shell.run",
+		ResultSummary: "ok",
+		Hooks: []registry.HookMetadata{
+			{Event: "pre_tool_use"},
+			{Event: "pre_tool_use"},
+		},
+	}, 80))
+	if !strings.Contains(out, "hooks 2") {
+		t.Fatalf("rendered tool call missing hooks 2 indicator: %q", out)
+	}
+}
+
 func TestApprovalPanelHasNoBackgroundFill(t *testing.T) {
 	tc := &session.PendingToolCall{Name: "shell.run", Command: "ls", Risk: "reads files"}
 	out := renderApprovalPanel(tc, session.SandboxInfo{Backend: "restricted"}, false, 50)

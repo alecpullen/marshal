@@ -9,7 +9,20 @@ import (
 	"time"
 
 	"marshal/internal/llm/routing"
+	"marshal/internal/trust"
 )
+
+type staticTrustResolver struct {
+	decision trust.Decision
+}
+
+func (s staticTrustResolver) Resolve(workingDir string, hasProjectConfig bool) (trust.Decision, error) {
+	return s.decision, nil
+}
+
+func (s staticTrustResolver) Record(workingDir string, decision trust.Decision) error {
+	return nil
+}
 
 func TestDefaultConfigValues(t *testing.T) {
 	cfg := Default()
@@ -729,5 +742,56 @@ background_retention = "30m"
 	}
 	if cfg.Tools.Shell.BackgroundRetention != 30*time.Minute {
 		t.Fatalf("BackgroundRetention = %s, want 30m", cfg.Tools.Shell.BackgroundRetention)
+	}
+}
+
+func TestLoadHooksConfig(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, filepath.Join(tmp, ".marshal", "config.toml"), `
+[hooks]
+fail_closed = true
+
+[[hooks.entries]]
+event = "pre_tool_use"
+matcher = "file.write_patch"
+command = "./scripts/check-patch.sh"
+timeout_ms = 2500
+`)
+
+	cfg, err := Load(LoadOptions{
+		WorkingDir:    tmp,
+		TrustResolver: staticTrustResolver{decision: trust.DecisionTrustPermanent},
+	})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Hooks.FailClosed {
+		t.Fatal("Hooks.FailClosed = false, want true")
+	}
+	if len(cfg.Hooks.Entries) != 1 {
+		t.Fatalf("len(Hooks.Entries) = %d, want 1", len(cfg.Hooks.Entries))
+	}
+	entry := cfg.Hooks.Entries[0]
+	if entry.Event != "pre_tool_use" || entry.Matcher != "file.write_patch" || entry.Command != "./scripts/check-patch.sh" || entry.TimeoutMS != 2500 {
+		t.Fatalf("entry = %+v", entry)
+	}
+}
+
+func TestLoadReportsTrustedDecision(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, filepath.Join(tmp, ".marshal", "config.toml"), `[project]
+name = "trusted"
+`)
+	trusted := false
+	_, err := Load(LoadOptions{
+		WorkingDir:    tmp,
+		TrustResolver: staticTrustResolver{decision: trust.DecisionTrustSession},
+		Trusted:       &trusted,
+	})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !trusted {
+		t.Fatal("Trusted = false, want true for session trust")
 	}
 }

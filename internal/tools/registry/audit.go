@@ -27,6 +27,19 @@ type AuditEvent struct {
 	CommandExitCode *int
 	Error           string
 	Sandbox         SandboxMeta
+	Hooks           []HookMetadata
+}
+
+// HookMetadata captures the per-tool audit trail for F20 lifecycle hooks.
+// One entry per matched hook command (or per rewrite iteration); the TUI
+// surfaces only the highest-signal decision from this slice.
+type HookMetadata struct {
+	Event      string `json:"event"`
+	Command    string `json:"command,omitempty"`
+	Decision   string `json:"decision,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Rewrote    bool   `json:"rewrote,omitempty"`
+	FailedOpen bool   `json:"failed_open,omitempty"`
 }
 
 func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, approval ApprovalState, err error) AuditEvent {

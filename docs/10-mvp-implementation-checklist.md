@@ -161,6 +161,18 @@
 - [x] Run-level budgets (max fix rounds, per-role tool caps, token ceiling)
 - [x] Real provider `usage` token metering (replacing the dormant ProviderUsageMeter stub with real count accumulation)
 
+## Phase 5: Extensibility (F20 hooks + F21 ACP)
+
+- [x] F20 R1: TOML hook config shape (`[hooks]` + `[[hooks.entries]]`) with `fail_closed` and per-entry `event`/`matcher`/`command`/`timeout_ms`
+- [x] F20 R2: `pre_tool_use` hook runner with allow/block/halt/rewrite verdicts
+- [x] F20 R3: `turn_end` hook runs exactly once on normal final answers
+- [x] F20 R4: trusted-project gating for project hooks, audit logging, fail-open by default
+- [x] F20 R5: TUI hook indicator (status line) showing the most recent hook event
+- [x] F21 R1: `marshal acp` subcommand with stdio JSON-RPC 2.0 transport implementing `initialize`, `session/new`, `session/load`, `session/prompt`, `session/cancel`
+- [x] F21 R2: tool permission requests surfaced as ACP `session/request_permission` with the same allow/deny/always semantics as the TUI approval flow
+- [x] F21 R3: agent core is ACP-independent; ACP lives under `internal/acp` and consumes the existing app/session seams
+- [x] F21 R4: headless operation via the extracted runtime, with on-disk session creation and loading
+
 ## Milestone P: Plugin and MCP Ecosystem (Phase 6)
 
 - [x] MCP client stdio connection

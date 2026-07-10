@@ -21,6 +21,7 @@ type Model struct {
 	cursor         int
 	paneFocused    bool
 	helpOpen       bool
+	pendingCancel  bool
 	workingDir     string
 	projectCfgPath string
 	footer         string
@@ -75,8 +76,15 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.activePane().CloseInner()
 				return *m, nil
 			}
+			if m.dirty() && !m.pendingCancel {
+				m.pendingCancel = true
+				return *m, nil
+			}
+			m.pendingCancel = false
 			return *m, func() tea.Msg { return CancelledMsg{} }
 		case "ctrl+s":
+			m.pendingCancel = false
+			return *m, m.saveCmd()
 			return *m, m.saveCmd()
 		case "?":
 			if !m.activePane().HasInnerFocus() {
@@ -196,6 +204,9 @@ func (m Model) View() string {
 	footer := "Ctrl+S save · Esc cancel · ? help"
 	if m.dirty() {
 		footer = "* modified · " + footer
+	}
+	if m.pendingCancel {
+		footer = "⚠ unsaved changes — press Esc again to discard, or save with Ctrl+S"
 	}
 	if m.footer != "" {
 		footer = m.footer

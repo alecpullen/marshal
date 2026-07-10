@@ -51,6 +51,54 @@ func TestCancelReturnsCancelledMsg(t *testing.T) {
 	}
 }
 
+func TestDirtyEscRequiresConfirmation(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 24)
+	// Make the working copy dirty.
+	m.state.cfg.Privacy.RemoteProvidersAllowed = true
+	if !m.dirty() {
+		t.Fatal("setup: model must be dirty")
+	}
+	// First Esc: should NOT cancel; should set pendingCancel.
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil {
+		t.Fatalf("first Esc on dirty model must not emit a command, got %v", cmd())
+	}
+	if !m.pendingCancel {
+		t.Fatal("first Esc on dirty model must set pendingCancel")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "unsaved changes") {
+		t.Error("pending-cancel footer should mention unsaved changes")
+	}
+	// Second Esc: should emit CancelledMsg.
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd == nil {
+		t.Fatal("second Esc must emit CancelledMsg")
+	}
+	if _, ok := cmd().(CancelledMsg); !ok {
+		t.Fatalf("second Esc should emit CancelledMsg, got %T", cmd())
+	}
+	// After cancel, pendingCancel is cleared.
+	if m.pendingCancel {
+		t.Error("pendingCancel must clear after confirmed cancel")
+	}
+}
+
+func TestDirtyCtrlSClearsPendingCancel(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 24)
+	m.state.cfg.Privacy.RemoteProvidersAllowed = true
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !m.pendingCancel {
+		t.Fatal("setup: pendingCancel should be set")
+	}
+	_, _ = m.Update(tea.KeyPressMsg{Code: rune('s'), Mod: tea.ModCtrl})
+	if m.pendingCancel {
+		t.Error("Ctrl+S must clear pendingCancel")
+	}
+}
+
 func TestSettingsViewKeepsFrameBounded(t *testing.T) {
 	cfg := config.Default()
 	cfg.AgentProfiles = map[string]routing.AgentProfile{

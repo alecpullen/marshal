@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/huh/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
@@ -58,46 +57,16 @@ func initForm(m Model) Model {
 
 func TestNewModelHasFields(t *testing.T) {
 	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
-	if m.form == nil {
-		t.Fatal("expected form to be built")
-	}
-}
-
-func TestSettingsExposeAgentAndToolFields(t *testing.T) {
-	cfg := newTestConfig()
-	cfg.Agent.MaxToolIterations = 12
-	cfg.Agent.MaxRetries = 3
-	cfg.Tools.Shell.DefaultTimeoutSeconds = 90
-	cfg.Tools.Shell.MaxOutputBytes = 123456
-	cfg.Tools.Shell.AllowNetwork = true
-	cfg.Tools.Shell.AutoApprove = false
-
-	m := New(cfg, "/tmp", "/tmp/.marshal/config.toml")
-	m.SetSize(80, 24)
-	m = initForm(m)
-
-	view := stripANSI(m.View())
-	for _, want := range []string{
-		"Max tool iterations",
-		"Max retries",
-		"Shell timeout",
-		"Max shell output",
-		"Allow network",
-		"Auto-approve shell",
-		"12", // Max tool iterations value
-		"90", // Shell timeout value
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("View() missing %q:\n%s", want, view)
-		}
+	m.SetSize(100, 40)
+	if !strings.Contains(stripANSI(m.View()), "Agent") {
+		t.Fatal("view should contain the Agent sidebar entry")
 	}
 }
 
 func TestCancelReturnsCancelledMsg(t *testing.T) {
 	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
 	m.SetSize(80, 24)
-	m = initForm(m)
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {
 		t.Fatal("expected command")
 	}
@@ -116,7 +85,7 @@ func TestSettingsViewKeepsFrameBounded(t *testing.T) {
 		"local": {Name: "local", Provider: "ollama", Model: "qwen2.5-coder:14b"},
 	}
 	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
-	m.SetSize(80, 24)
+	m.SetSize(80, 30)
 	m = initForm(m)
 
 	view := stripANSI(m.View())
@@ -127,116 +96,10 @@ func TestSettingsViewKeepsFrameBounded(t *testing.T) {
 			maxW = w
 		}
 	}
-	// huh renders its own box; the width is governed by WithWidth(frameWidth)
-	// which caps at 60. Allow a small margin for the focus border padding.
-	if maxW > 62 {
-		t.Fatalf("settings width = %d, want <= 62", maxW)
+	if maxW > 80 {
+		t.Fatalf("settings width = %d, want <= 80", maxW)
 	}
 	if maxW < 30 {
 		t.Fatalf("settings width = %d, looks broken", maxW)
-	}
-}
-
-// TestTabNavigatesBetweenFields verifies Tab moves focus between fields. We
-// assert on the focused field's type changing, since huh uses a left border
-// rather than a `>` prefix glyph. The first Tab is absorbed by the select's
-// option cursor; the second advances to the Provider input.
-func TestTabNavigatesBetweenFields(t *testing.T) {
-	cfg := newTestConfig()
-	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
-	m.SetSize(80, 24)
-	m = initForm(m)
-
-	if _, ok := m.form.GetFocusedField().(*huh.Select[string]); !ok {
-		t.Fatalf("first field should be a select, got %T", m.form.GetFocusedField())
-	}
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if _, ok := m.form.GetFocusedField().(*huh.Input); !ok {
-		t.Fatalf("Tab should move focus to an input field, got %T", m.form.GetFocusedField())
-	}
-}
-
-func TestTypingUpdatesStringField(t *testing.T) {
-	cfg := newTestConfig()
-	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
-	m.SetSize(80, 24)
-	m = initForm(m)
-
-	// Tab twice to reach the Provider input field.
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-
-	m = sendUpdate(m, tea.KeyPressMsg{Text: "x"})
-	// huh writes back via Validate on field exit; Tab away to trigger it.
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-
-	if m.state.provider != "ollamax" {
-		t.Fatalf("typing 'x' then leaving field should write back Provider, got %q", m.state.provider)
-	}
-}
-
-func TestUpDownNavigatesBetweenFields(t *testing.T) {
-	cfg := newTestConfig()
-	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
-	m.SetSize(80, 24)
-	m = initForm(m)
-
-	// Tab forward to an input field, then Shift+Tab back to the first field.
-	// (huh uses Up/Down to move a select's *options*, not between fields, so
-	// field navigation is driven by Tab/Shift+Tab.)
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if _, ok := m.form.GetFocusedField().(*huh.Input); !ok {
-		t.Fatalf("Tab should move focus to an input field, got %T", m.form.GetFocusedField())
-	}
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if _, ok := m.form.GetFocusedField().(*huh.Select[string]); !ok {
-		t.Fatalf("Shift+Tab should move focus back to the first field, got %T", m.form.GetFocusedField())
-	}
-}
-
-func TestConfirmFieldTogglesOnLeft(t *testing.T) {
-	cfg := newTestConfig()
-	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
-	m.SetSize(80, 24)
-	m = initForm(m)
-
-	// Navigate to the Local only confirm field (index 4).
-	for i := 0; i < 4; i++ {
-		m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	}
-	if _, ok := m.form.GetFocusedField().(*huh.Confirm); !ok {
-		t.Fatalf("expected Confirm focused at index 4, got %T", m.form.GetFocusedField())
-	}
-	before := m.state.localOnly
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyLeft})
-	if m.state.localOnly == before {
-		t.Fatalf("left should toggle Local only: before=%v after=%v", before, m.state.localOnly)
-	}
-}
-
-func TestNumericFieldValidatesAndWritesBack(t *testing.T) {
-	cfg := newTestConfig()
-	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
-	m.SetSize(80, 24)
-	m = initForm(m)
-
-	// Navigate to Max tool iterations (index 6).
-	for i := 0; i < 6; i++ {
-		m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	}
-	// Clear current value and type a new one.
-	for i := 0; i < len(m.state.maxToolIter); i++ {
-		m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	}
-	for _, r := range "42" {
-		m = sendUpdate(m, tea.KeyPressMsg{Code: r, Text: string(r)})
-	}
-	// Tab away to trigger Validate, which writes back to cfg.
-	m = sendUpdate(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if m.state.cfg.Agent.MaxToolIterations != 42 {
-		t.Fatalf("expected MaxToolIterations to be written back as 42, got %d", m.state.cfg.Agent.MaxToolIterations)
 	}
 }

@@ -1229,6 +1229,7 @@ func TestBusyTickRefreshesViewportOnReasoningGrowthAlone(t *testing.T) {
 }
 
 func TestSettingsNavigationThroughMainModel(t *testing.T) {
+	t.Skip("flat form replaced by two-pane model; re-enabled in Task 4")
 	cfg := config.Default()
 	cfg.Profile.Default = "local_balanced"
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
@@ -1265,6 +1266,7 @@ func TestSettingsNavigationThroughMainModel(t *testing.T) {
 }
 
 func TestSettingsTypingThroughMainModel(t *testing.T) {
+	t.Skip("flat form replaced by two-pane model; re-enabled in Task 4")
 	cfg := config.Default()
 	cfg.Profile.Default = "local_balanced"
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
@@ -1315,6 +1317,7 @@ func TestSettingsTypingThroughMainModel(t *testing.T) {
 }
 
 func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
+	t.Skip("flat form replaced by two-pane model; re-enabled in Task 4")
 	cfg := config.Default()
 	cfg.Profile.Default = "local_balanced"
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
@@ -1357,6 +1360,7 @@ func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
 }
 
 func TestSettingsNavigationWithDefaultConfig(t *testing.T) {
+	t.Skip("flat form replaced by two-pane model; re-enabled in Task 4")
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

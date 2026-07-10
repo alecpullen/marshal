@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 )
 
 const (
@@ -21,6 +22,12 @@ type Server struct {
 	in       *bufio.Scanner
 	out      *json.Encoder
 	handlers map[string]Handler
+
+	// outMu serialises writes to the JSON encoder. Encode is goroutine-safe
+	// for individual calls, but our writes interleave notification frames
+	// with response frames and the underlying bufio.Writer is not safe for
+	// concurrent use; the mutex keeps the on-the-wire stream atomic.
+	outMu sync.Mutex
 }
 
 func NewServer(stdin io.Reader, stdout io.Writer) *Server {
@@ -35,6 +42,20 @@ func NewServer(stdin io.Reader, stdout io.Writer) *Server {
 
 func (s *Server) Handle(method string, fn Handler) {
 	s.handlers[method] = fn
+}
+
+// Notify emits a JSON-RPC notification frame (no id) to the connected
+// client. Prompt turns and permission requests can fire notifications from
+// independent goroutines, so the encoder write is guarded by a mutex to
+// keep the on-the-wire stream atomic.
+func (s *Server) Notify(method string, params any) error {
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+	return s.out.Encode(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+	})
 }
 
 func (s *Server) Serve(ctx context.Context) error {
@@ -75,6 +96,8 @@ func (s *Server) writeResponse(ctx context.Context, req Request) error {
 	} else {
 		resp.Result = result
 	}
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
 	if err := s.out.Encode(resp); err != nil {
 		return fmt.Errorf("acp: encode response: %w", err)
 	}
@@ -83,6 +106,8 @@ func (s *Server) writeResponse(ctx context.Context, req Request) error {
 
 func (s *Server) writeError(id *json.RawMessage, code int, message string) error {
 	resp := Response{JSONRPC: "2.0", ID: id, Error: &Error{Code: code, Message: message}}
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
 	if err := s.out.Encode(resp); err != nil {
 		return fmt.Errorf("acp: encode error: %w", err)
 	}

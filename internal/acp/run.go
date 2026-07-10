@@ -27,5 +27,31 @@ func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
 	srv.Handle("session/new", manager.Create)
 	srv.Handle("session/load", manager.Load)
 
+	// F21 v1: turn execution and event streaming. The Lookup adapter
+	// converts the *app.Runtime the SessionManager stores into the
+	// TurnRuntime the turn manager needs. The agent package exposes
+	// Runner.Run(ctx, prompt), so we wrap it with a RunnerFunc rather
+	// than depending on *agent.Runner directly in the turn package.
+	turns := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			rt, ok := manager.Get(sessionID)
+			if !ok || rt == nil {
+				return nil, false
+			}
+			var run RunnerFunc
+			if rt.Runner != nil {
+				run = rt.Runner.Run
+			}
+			return &TurnRuntime{
+				SessionID: sessionID,
+				Run:       run,
+				Events:    rt.EventBroker,
+			}, true
+		},
+		Notify: srv.Notify,
+	})
+	srv.Handle("session/prompt", turns.PromptTurn)
+	srv.Handle("session/cancel", turns.Cancel)
+
 	return srv.Serve(ctx)
 }

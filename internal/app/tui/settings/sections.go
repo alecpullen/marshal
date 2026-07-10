@@ -24,8 +24,8 @@ func sectionList() []section {
 		{id: "swarm", title: "Swarm", build: placeholder},
 		{id: "mcp", title: "MCP", build: placeholder},
 		{id: "snapshots", title: "Snapshots", build: newSnapshotsPane},
-		{id: "hooks", title: "Hooks", build: placeholder},
-		{id: "permissions", title: "Permissions", build: placeholder},
+		{id: "hooks", title: "Hooks", build: newHooksPane},
+		{id: "permissions", title: "Permissions", build: newPermissionsPane},
 		{id: "diagnostics", title: "Diagnostics", build: placeholder},
 		{id: "commands", title: "Commands", build: newCommandsPane},
 	}

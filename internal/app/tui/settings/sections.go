@@ -13,7 +13,7 @@ func sectionList() []section {
 		return &staticPane{text: "Editor coming soon — edit .marshal/config.toml directly."}
 	}
 	return []section{
-		{id: "agent", title: "Agent", build: placeholder},
+		{id: "agent", title: "Agent", build: newAgentPane},
 		{id: "providers", title: "Providers", build: placeholder},
 		{id: "presets", title: "Model Presets", build: placeholder},
 		{id: "privacy", title: "Privacy", build: placeholder},

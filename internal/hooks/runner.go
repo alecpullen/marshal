@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/sandbox/envutil"
 )
 
 type Runner struct {
@@ -144,17 +146,25 @@ func match(pattern, value string) bool {
 	return err == nil && ok
 }
 
+// maxHookOutputBytes caps the bytes captured from a single hook's
+// stdout. A hook that exceeds the cap is treated as a hook error
+// (subject to fail-open/fail-closed), preventing an unbounded buffer
+// from OOMing the Marshal process. 1 MiB is generous for a JSON
+// decision payload while bounding the worst case.
+const maxHookOutputBytes = 1 << 20
+
 func runHook(ctx context.Context, command string, payload any) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Env = scrubHookEnv(os.Environ())
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
 
-	stdout := &bytes.Buffer{}
+	stdout := &limitedBuffer{max: maxHookOutputBytes}
 	cmd.Stdout = stdout
-	cmd.Stderr = &bytes.Buffer{}
+	cmd.Stderr = &limitedBuffer{max: maxHookOutputBytes}
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -168,8 +178,57 @@ func runHook(ctx context.Context, command string, payload any) ([]byte, error) {
 	_ = stdin.Close()
 
 	if err := cmd.Wait(); err != nil {
-		return stdout.Bytes(), err
+		return stdout.bytes(), err
 	}
 
-	return stdout.Bytes(), nil
+	if stdout.truncated {
+		return stdout.bytes(), fmt.Errorf("hook output exceeded %d bytes", maxHookOutputBytes)
+	}
+	return stdout.bytes(), nil
+}
+
+// scrubHookEnv returns a copy of parentEnv with secret-bearing vars
+// removed. Mirrors the sandbox's nil-allowlist scrub so hooks and
+// sandboxed shell commands agree on what counts as a secret. Hooks are
+// project-config files that may be committed to a repo, so they are not
+// necessarily authored by the user running Marshal — scrubbing prevents
+// a hook from reading provider API keys via $OPENAI_API_KEY etc.
+func scrubHookEnv(parentEnv []string) []string {
+	out := make([]string, 0, len(parentEnv))
+	for _, kv := range parentEnv {
+		key := envutil.EnvKey(kv)
+		if envutil.IsSecretBearer(key) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// limitedBuffer is a bytes.Buffer wrapper that stops accepting bytes
+// once max is reached, recording that it was truncated. Write calls
+// after the cap are silently dropped (the subprocess keeps running but
+// its output is bounded).
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	remaining := l.max - l.buf.Len()
+	if remaining <= 0 {
+		l.truncated = true
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		l.buf.Write(p[:remaining])
+		l.truncated = true
+		return len(p), nil
+	}
+	return l.buf.Write(p)
+}
+
+func (l *limitedBuffer) bytes() []byte {
+	return l.buf.Bytes()
 }

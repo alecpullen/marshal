@@ -27,9 +27,6 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 	if err != nil {
 		return fmt.Errorf("marshal hooks: %w", err)
 	}
-	if len(hooksJSON) == 0 {
-		hooksJSON = []byte("[]")
-	}
 
 	var networkIsolated sql.NullInt64
 	if event.Sandbox.Enabled {

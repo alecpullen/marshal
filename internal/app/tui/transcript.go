@@ -441,7 +441,7 @@ func hookIndicatorText(hooks []registry.HookMetadata) string {
 		return ""
 	}
 	for _, h := range hooks {
-		if h.Decision == string(registry.ApprovalDenied) || h.Decision == "block" || h.Decision == "halt" {
+		if h.Decision == "block" || h.Decision == "halt" {
 			return "hook blocked"
 		}
 	}

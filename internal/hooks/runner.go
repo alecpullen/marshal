@@ -109,6 +109,11 @@ func (r *Runner) runEvent(ctx context.Context, event, matcherValue string, paylo
 				FailedOpen: out.FailedOpen,
 			}, nil
 		}
+
+		if parsed.Continue {
+			out.Continue = true
+			out.Message = parsed.Message
+		}
 	}
 
 	return out, nil

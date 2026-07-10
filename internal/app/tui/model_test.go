@@ -1301,7 +1301,7 @@ func TestSettingsTypingThroughMainModel(t *testing.T) {
 	m = updated.(Model)
 
 	if !m.settingsModel.BoolValue("Local only") {
-		// typing into Provider; just check no panic and field still focused
+		t.Fatal("typing into Provider must not toggle Local only off")
 	}
 	if got := m.settingsModel.FocusedFieldTitle(); got != "Provider" {
 		t.Fatalf("focused field = %q, want Provider", got)

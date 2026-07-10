@@ -99,6 +99,7 @@ func (p *scalarPane) SetWidth(w int) {
 
 func (p *scalarPane) HasInnerFocus() bool { return false }
 func (p *scalarPane) CloseInner()         {}
+func (p *scalarPane) AtFirstFocus() bool  { return true }
 
 func (p *scalarPane) FocusedFieldTitle() string {
 	if f := p.form.GetFocusedField(); f != nil {

@@ -19,7 +19,7 @@ func sectionList() []section {
 		{id: "privacy", title: "Privacy", build: newPrivacyPane},
 		{id: "shell", title: "Shell", build: placeholder},
 		{id: "sandbox", title: "Sandbox", build: placeholder},
-		{id: "indexing", title: "Indexing", build: placeholder},
+		{id: "indexing", title: "Indexing", build: newIndexingPane},
 		{id: "web", title: "Web", build: newWebPane},
 		{id: "swarm", title: "Swarm", build: placeholder},
 		{id: "mcp", title: "MCP", build: placeholder},
@@ -27,6 +27,6 @@ func sectionList() []section {
 		{id: "hooks", title: "Hooks", build: placeholder},
 		{id: "permissions", title: "Permissions", build: placeholder},
 		{id: "diagnostics", title: "Diagnostics", build: placeholder},
-		{id: "commands", title: "Commands", build: placeholder},
+		{id: "commands", title: "Commands", build: newCommandsPane},
 	}
 }

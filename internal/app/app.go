@@ -18,14 +18,12 @@ import (
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
-	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
-	"marshal/internal/hooks"
 	"marshal/internal/knowledge"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
@@ -50,6 +48,8 @@ type options struct {
 	programRunner  ProgramRunner
 	skipOnboarding bool
 	trustResolver  trust.Resolver
+	workingDir     string
+	sessionID      string
 }
 
 type Option func(*options)
@@ -89,6 +89,26 @@ func WithConfigLoader(loader configLoader) Option {
 func WithTrustResolver(r trust.Resolver) Option {
 	return func(opts *options) {
 		opts.trustResolver = r
+	}
+}
+
+// WithWorkingDir overrides the working directory used for .marshal, the
+// database, and config loading. The default is the process's current
+// working directory. Intended for tests and headless transports (e.g. ACP)
+// that bootstrap from a caller-supplied project path.
+func WithWorkingDir(dir string) Option {
+	return func(opts *options) {
+		opts.workingDir = dir
+	}
+}
+
+// WithSessionID pins the session identifier used when the runtime creates a
+// new database session. When empty, StartRuntime generates a sess_<unixnano>
+// id. Useful for headless transports that want a stable id derived from
+// the client (e.g. ACP session id).
+func WithSessionID(id string) Option {
+	return func(opts *options) {
+		opts.sessionID = id
 	}
 }
 
@@ -509,9 +529,9 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	workingDir, err := os.Getwd()
+	workingDir, err := resolveWorkingDir(runOpts.workingDir)
 	if err != nil {
-		return fmt.Errorf("find working directory: %w", err)
+		return err
 	}
 
 	if !runOpts.skipOnboarding && flag.Lookup("test.v") == nil && !config.HasConfig(config.LoadOptions{WorkingDir: workingDir}) {
@@ -525,130 +545,46 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		}
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("find home directory: %w", err)
-	}
-
-	dataDir := filepath.Join(homeDir, ".local", "share", "marshal")
-	resolver := runOpts.trustResolver
-	if resolver == nil {
-		resolver = trust.NewTerminalResolver(trust.NewStore(dataDir))
-	}
-	loader := func(lo config.LoadOptions) (config.Config, error) {
-		lo.TrustResolver = resolver
-		return runOpts.configLoader(lo)
-	}
-	var projectTrusted bool
-	cfg, err := loader(config.LoadOptions{WorkingDir: workingDir, Trusted: &projectTrusted})
+	rt, err := StartRuntime(ctx, opts...)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		_ = rt.Close(context.Background())
+	}()
 
-	if err := os.MkdirAll(filepath.Join(workingDir, ".marshal"), 0755); err != nil {
-		return fmt.Errorf("create .marshal directory: %w", err)
+	cfg := rt.Config
+	workingDir = rt.WorkingDir
+	database := rt.DB
+	projectID := rt.ProjectID
+	sessionID := rt.SessionID
+	runner := rt.Runner
+	swarmRunner := rt.SwarmRunner
+	toolReg := rt.ToolRegistry
+	mcpMgr := rt.MCPManager
+	jobBroker := rt.JobBroker
+	steeringBroker := rt.SteeringBroker
+	state := rt.State
+	logger := rt.Logger
+	dataDir := rt.DataDir
+	skillIndex, skillErr := skills.LoadSkills(
+		filepath.Join(rt.HomeDir, ".config", "marshal", "skills"),
+		filepath.Join(rt.WorkingDir, ".marshal", "skills"),
+	)
+	if skillErr != nil {
+		// Runtime already loaded skills; reuse its index if the second
+		// load fails. Fall through with the index we already have via
+		// the runtime's loaded tools.
+		skillIndex = nil
 	}
-
-	database, err := db.Open(dbPath(workingDir))
-	if err != nil {
-		return fmt.Errorf("open database: %w", err)
-	}
-	defer database.Close()
-
-	if err := database.Migrate(); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
-	}
-
-	projectID, err := database.GetOrCreateProject(workingDir, cfg.Project.Name)
-	if err != nil {
-		return fmt.Errorf("get or create project: %w", err)
-	}
-
-	sessionID := fmt.Sprintf("sess_%d", runOpts.now().UnixNano())
-	if err := database.CreateSession(sessionID, projectID, "", runOpts.now()); err != nil {
-		return fmt.Errorf("create session: %w", err)
-	}
-
-	// The TUI owns the terminal via Bubble Tea's alt-screen (both stdout and
-	// stderr point at the same TTY), so any log line written there corrupts the
-	// rendered frame. Send logs to a file instead; fall back to discarding them
-	// rather than ever writing to the live screen.
-	logWriter := io.Discard
-	if logFile, err := os.OpenFile(logPath(workingDir), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
-		defer logFile.Close()
-		logWriter = logFile
-	}
-	logger := logging.New(logWriter, slog.LevelInfo)
-	state := session.New(cfg, workingDir, runOpts.now(), session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
-	state.SetTrusted(projectTrusted)
-
-	globalSkillsDir := filepath.Join(homeDir, ".config", "marshal", "skills")
-	projectSkillsDir := filepath.Join(workingDir, ".marshal", "skills")
-	skillIndex, err := skills.LoadSkills(globalSkillsDir, projectSkillsDir)
-	if err != nil {
-		return fmt.Errorf("load skills: %w", err)
-	}
-
-	var runner *agent.Runner
-	var toolReg *registry.Registry
-	var swarmRunner *swarm.Orchestrator
-	var mcpMgr *mcp.Manager
-	var snapSvc *snapshot.Service
-
-	// F19: typed pub/sub broker for F5 job-state changes. Constructed once
-	// for the program lifetime and shared between the native JobManager
-	// (publisher) and the TUI pump (subscriber). The program context
-	// cancels subscriptions on shutdown.
-	jobBroker := pubsub.NewBroker[native.JobEvent]()
-	jobBrokerCtx, jobBrokerCancel := context.WithCancel(ctx)
-	defer jobBrokerCancel()
-	defer jobBroker.Close()
-
-	// F16: typed pub/sub broker for the steering queue. Constructed once
-	// and shared between session.State (publisher on PushSteering) and
-	// the TUI pump (subscriber). Uses the same cancellable context as
-	// the job broker so they shut down together.
-	steeringBroker := pubsub.NewBroker[session.SteeringEvent]()
-	state.SetSteeringBroker(steeringBroker)
-	defer steeringBroker.Close()
-
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, err = buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
-	// F20: project-local pre_tool_use / turn_end hooks run only when the
-	// project is trusted AND the user has configured entries. The wiring
-	// here is the single place agent-level hook execution is enabled at
-	// startup; the agent runner itself decides nothing about trust. Task
-	// 7 will hoist this assignment into StartRuntime so the TUI and any
-	// future ACP transport share one wiring site.
-	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
-		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
-	}
-	if snapSvc != nil {
-		defer func() {
-			pruneCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if perr := snapSvc.Prune(pruneCtx, cfg.Snapshots.RetentionDays); perr != nil && state.Logger() != nil {
-				state.Logger().Warn("snapshot prune failed", "error", perr)
-			}
-			if database != nil {
-				if perr := database.PruneSnapshotsOlderThan(cfg.Snapshots.RetentionDays); perr != nil && state.Logger() != nil {
-					state.Logger().Warn("snapshot DB prune failed", "error", perr)
-				}
-			}
-		}()
-	}
-	if err == nil {
-		defer func() {
-			if mcpMgr != nil {
-				_ = mcpMgr.Close()
-			}
-		}()
-	}
+	_ = skillIndex
 
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
 		return fmt.Errorf("register commands: %w", err)
 	}
 
+	jobBrokerCtx := ctx
 	var tuiOpts []tui.Option
 	tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
 	tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
@@ -658,22 +594,20 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	if filePaths, ferr := loadFileIndexPaths(database, projectID); ferr == nil && len(filePaths) > 0 {
 		tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
 	}
-	if err == nil {
+	if state.ProviderError() == nil {
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 		tuiOpts = append(tuiOpts, tui.WithJobBroker(jobBrokerCtx, jobBroker))
 		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(jobBrokerCtx, steeringBroker))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
-			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, dataDir, runner, swarmRunner, &mcpMgr, jobBroker, jobBrokerCtx)
+			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, nil, dataDir, runner, swarmRunner, &mcpMgr, jobBroker, jobBrokerCtx)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
-	} else {
-		state.SetProviderError(err)
 	}
+
 	done := make(chan struct{})
 	defer close(done)
-	defer state.Shutdown()
 	go func() {
 		select {
 		case <-ctx.Done():

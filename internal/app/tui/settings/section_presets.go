@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 
 	"charm.land/huh/v2"
@@ -24,9 +25,14 @@ func newPresetsPane(s *state) sectionPane {
 		heading:   "Model Presets",
 		keyPrompt: "New preset name",
 		entries: func(s *state) []collectionEntry {
-			out := make([]collectionEntry, 0, len(s.cfg.Models.Presets))
-			for k, p := range s.cfg.Models.Presets {
-				out = append(out, presetEntry{key: k, preset: p})
+			keys := make([]string, 0, len(s.cfg.Models.Presets))
+			for k := range s.cfg.Models.Presets {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			out := make([]collectionEntry, 0, len(keys))
+			for _, k := range keys {
+				out = append(out, presetEntry{key: k, preset: s.cfg.Models.Presets[k]})
 			}
 			return out
 		},

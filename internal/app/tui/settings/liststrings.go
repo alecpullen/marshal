@@ -69,6 +69,12 @@ func (l *listStrings) Update(msg tea.KeyPressMsg) tea.Cmd {
 		return cmd
 	}
 
+	// Not editing: only consume keys when this list is the focused widget
+	// inside its parent. Otherwise forward the key to siblings.
+	if !l.focused {
+		return nil
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		l.cursor--

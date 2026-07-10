@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestPreToolUseBlockDecision(t *testing.T) {
@@ -55,7 +54,6 @@ func TestHookTimeoutFailOpen(t *testing.T) {
 	if out.Decision != DecisionAllow || !out.FailedOpen {
 		t.Fatalf("out = %+v", out)
 	}
-	_ = time.Second
 }
 
 func TestHookScrubSecretEnv(t *testing.T) {

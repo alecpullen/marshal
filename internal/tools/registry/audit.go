@@ -34,14 +34,12 @@ type AuditEvent struct {
 // One entry per matched hook command (or per rewrite iteration); the TUI
 // surfaces only the highest-signal decision from this slice.
 type HookMetadata struct {
-	Event      string        `json:"event"`
-	Matcher    string        `json:"matcher,omitempty"`
-	Command    string        `json:"command,omitempty"`
-	Decision   string        `json:"decision,omitempty"`
-	Reason     string        `json:"reason,omitempty"`
-	Rewrote    bool          `json:"rewrote,omitempty"`
-	FailedOpen bool          `json:"failed_open,omitempty"`
-	Duration   time.Duration `json:"duration,omitempty"`
+	Event      string `json:"event"`
+	Command    string `json:"command,omitempty"`
+	Decision   string `json:"decision,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Rewrote    bool   `json:"rewrote,omitempty"`
+	FailedOpen bool   `json:"failed_open,omitempty"`
 }
 
 func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, approval ApprovalState, err error) AuditEvent {

@@ -14,7 +14,7 @@ func sectionList() []section {
 	}
 	return []section{
 		{id: "agent", title: "Agent", build: newAgentPane},
-		{id: "providers", title: "Providers", build: placeholder},
+		{id: "providers", title: "Providers", build: newProvidersPane},
 		{id: "presets", title: "Model Presets", build: placeholder},
 		{id: "privacy", title: "Privacy", build: newPrivacyPane},
 		{id: "shell", title: "Shell", build: newShellPane},

@@ -63,7 +63,7 @@ func (p *compositePane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 			return p, nil
 		}
 		if isKey {
-			return p, me.Update(k)
+			return p, me.Update(msg)
 		}
 		return p, nil
 	}

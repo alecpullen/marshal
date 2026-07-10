@@ -16,18 +16,6 @@ type sectionPane interface {
 	FocusedFieldTitle() string
 }
 
-// staticPane is a read-only placeholder pane (also used for hints).
-type staticPane struct{ text string }
-
-func (p *staticPane) Init() tea.Cmd                         { return nil }
-func (p *staticPane) Update(tea.Msg) (sectionPane, tea.Cmd) { return p, nil }
-func (p *staticPane) View(width int) string                 { return p.text }
-func (p *staticPane) SetWidth(int)                          {}
-func (p *staticPane) HasInnerFocus() bool                   { return false }
-func (p *staticPane) CloseInner()                           {}
-func (p *staticPane) FocusedFieldTitle() string             { return "" }
-func (p *staticPane) AtFirstFocus() bool                    { return true }
-
 // firstFocuser is an optional interface implemented by panes that need to
 // participate in "return to sidebar" decisions. When the pane is not at its
 // first internal focus, sidebar-return keys (shift+tab, h, left) are

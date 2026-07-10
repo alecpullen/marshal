@@ -70,6 +70,22 @@ func numField(label string, value *string, min int, set func(int)) *huh.Input {
 		})
 }
 
+func floatField(label string, value *string, set func(float64)) *huh.Input {
+	return huh.NewInput().
+		Key(label).
+		Title(label).
+		Value(value).
+		Validate(func(s string) error {
+			v, err := strconv.ParseFloat(s, 64)
+			if err != nil {
+				return fmt.Errorf("must be a number")
+			}
+			*value = strconv.FormatFloat(v, 'f', -1, 64)
+			set(v)
+			return nil
+		})
+}
+
 func (p *scalarPane) Init() tea.Cmd { return nil }
 
 func (p *scalarPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {

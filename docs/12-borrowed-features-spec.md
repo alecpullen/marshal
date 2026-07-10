@@ -47,3 +47,39 @@ trusted (permanent or session) by the user. The trust decision is
 propagated to callers via `config.LoadOptions.Trusted` (a `*bool`
 out-parameter that `Load` sets to `true` for both
 `DecisionTrustPermanent` and `DecisionTrustSession`).
+
+### R3: Hook config example
+
+A minimal `shell.run` policy hook:
+
+```toml
+[hooks]
+fail_closed = false
+
+[[hooks.entries]]
+event = "pre_tool_use"
+matcher = "shell.run"
+command = "./scripts/marshal-shell-policy.sh"
+timeout_ms = 2000
+```
+
+Project hooks only run in trusted projects, and failures default to
+allow unless `fail_closed = true`.
+
+## F21: Agent Client Protocol (ACP)
+
+Marshal exposes a headless subcommand that speaks the Agent Client
+Protocol (ACP) so external editors and reference clients can drive the
+agent loop over a standard transport.
+
+### Usage
+
+```bash
+marshal acp
+```
+
+The `marshal acp` subcommand speaks ACP over **stdio** (JSON-RPC 2.0
+framing, one message per line on stdin/stdout) and is intended for
+editors and reference clients, **not direct terminal use**. It is not
+an interactive TUI mode — running it from a terminal will block
+waiting for JSON-RPC frames on stdin.

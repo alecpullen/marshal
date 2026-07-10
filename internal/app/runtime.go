@@ -41,6 +41,7 @@ type Runtime struct {
 	SessionID      string
 	JobBroker      *pubsub.Broker[native.JobEvent]
 	SteeringBroker *pubsub.Broker[session.SteeringEvent]
+	EventBroker    *pubsub.Broker[session.Event]
 	MCPManager     *mcp.Manager
 	Snapshot       *snapshot.Service
 	Logger         *slog.Logger
@@ -68,6 +69,9 @@ func (rt *Runtime) Close(ctx context.Context) error {
 	}
 	if rt.SteeringBroker != nil {
 		rt.SteeringBroker.Close()
+	}
+	if rt.EventBroker != nil {
+		rt.EventBroker.Close()
 	}
 	if rt.MCPManager != nil {
 		_ = rt.MCPManager.Close()
@@ -196,7 +200,9 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	jobBrokerCtx, jobBrokerCancel := context.WithCancel(ctx)
 	jobBroker := pubsub.NewBroker[native.JobEvent]()
 	steeringBroker := pubsub.NewBroker[session.SteeringEvent]()
+	eventBroker := pubsub.NewBroker[session.Event]()
 	state.SetSteeringBroker(steeringBroker)
+	state.SetEventBroker(eventBroker)
 
 	runner, toolReg, swarmRunner, mcpMgr, snapSvc, err := buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
@@ -217,6 +223,7 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		SessionID:       sessionID,
 		JobBroker:       jobBroker,
 		SteeringBroker:  steeringBroker,
+		EventBroker:     eventBroker,
 		MCPManager:      mcpMgr,
 		Snapshot:        snapSvc,
 		Logger:          logger,

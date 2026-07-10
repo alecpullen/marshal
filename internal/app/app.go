@@ -567,17 +567,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	state := rt.State
 	logger := rt.Logger
 	dataDir := rt.DataDir
-	skillIndex, skillErr := skills.LoadSkills(
-		filepath.Join(rt.HomeDir, ".config", "marshal", "skills"),
-		filepath.Join(rt.WorkingDir, ".marshal", "skills"),
-	)
-	if skillErr != nil {
-		// Runtime already loaded skills; reuse its index if the second
-		// load fails. Fall through with the index we already have via
-		// the runtime's loaded tools.
-		skillIndex = nil
-	}
-	_ = skillIndex
+	skillIndex := rt.SkillIndex
 
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
@@ -601,7 +591,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(jobBrokerCtx, steeringBroker))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
-			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, nil, dataDir, runner, swarmRunner, &mcpMgr, jobBroker, jobBrokerCtx)
+			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, dataDir, runner, swarmRunner, &mcpMgr, jobBroker, jobBrokerCtx)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	}

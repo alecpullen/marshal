@@ -75,21 +75,25 @@ func (m *mapEditor) clamp() {
 	}
 }
 
-func (m *mapEditor) Update(msg tea.KeyPressMsg) tea.Cmd {
+func (m *mapEditor) Update(msg tea.Msg) tea.Cmd {
+	kp, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return nil
+	}
 	if m.adding {
-		switch msg.String() {
+		switch kp.String() {
 		case "enter":
-			k := strings.TrimSpace(m.keyInput.Value())
+			key := strings.TrimSpace(m.keyInput.Value())
 			v := strings.TrimSpace(m.valInput.Value())
-			if k == "" {
+			if key == "" {
 				m.addErr = "key cannot be empty"
 				return nil
 			}
-			if _, ok := (*m.items)[k]; ok {
+			if _, exists := (*m.items)[key]; exists {
 				m.addErr = "key already exists"
 				return nil
 			}
-			(*m.items)[k] = v
+			(*m.items)[key] = v
 			m.CancelEdit()
 			return nil
 		case "esc":
@@ -105,7 +109,7 @@ func (m *mapEditor) Update(msg tea.KeyPressMsg) tea.Cmd {
 		return cmd
 	}
 	if m.editingKey != "" {
-		switch msg.String() {
+		switch kp.String() {
 		case "enter":
 			(*m.items)[m.editingKey] = strings.TrimSpace(m.valInput.Value())
 			m.CancelEdit()
@@ -121,7 +125,7 @@ func (m *mapEditor) Update(msg tea.KeyPressMsg) tea.Cmd {
 	if !m.focused {
 		return nil
 	}
-	switch msg.String() {
+	switch kp.String() {
 	case "up", "k":
 		m.cursor--
 		m.clamp()

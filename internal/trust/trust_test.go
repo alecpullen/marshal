@@ -3,6 +3,7 @@ package trust
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -112,5 +113,131 @@ func TestStoreMultipleProjects(t *testing.T) {
 	trusted, _ = store.IsTrusted("/proj/c")
 	if trusted {
 		t.Fatal("expected /proj/c not trusted")
+	}
+}
+
+func TestConfigHashForMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	hash, err := ConfigHashFor(dir)
+	if err != nil {
+		t.Fatalf("ConfigHashFor missing file: %v", err)
+	}
+	if hash != "" {
+		t.Fatalf("expected empty hash for missing config, got %q", hash)
+	}
+}
+
+func TestConfigHashForStableAndDistinct(t *testing.T) {
+	dir := t.TempDir()
+	marshalDir := filepath.Join(dir, ".marshal")
+	if err := os.MkdirAll(marshalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(marshalDir, "config.toml")
+	if err := os.WriteFile(path, []byte("[project]\nname = \"a\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	hash1, err := ConfigHashFor(dir)
+	if err != nil {
+		t.Fatalf("ConfigHashFor: %v", err)
+	}
+	if hash1 == "" {
+		t.Fatal("expected non-empty hash for present config")
+	}
+	// Same content yields the same hash.
+	hash1b, err := ConfigHashFor(dir)
+	if err != nil {
+		t.Fatalf("ConfigHashFor repeat: %v", err)
+	}
+	if hash1b != hash1 {
+		t.Fatalf("hash not stable: %q vs %q", hash1, hash1b)
+	}
+	// Modified content yields a different hash.
+	if err := os.WriteFile(path, []byte("[project]\nname = \"b\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	hash2, err := ConfigHashFor(dir)
+	if err != nil {
+		t.Fatalf("ConfigHashFor modified: %v", err)
+	}
+	if hash2 == hash1 {
+		t.Fatalf("expected distinct hash after content change, both = %q", hash1)
+	}
+}
+
+func TestStoreStoredConfigHash(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	abs, _ := filepath.Abs(dir)
+
+	// Empty before any SetTrust.
+	hash, err := store.StoredConfigHash(abs)
+	if err != nil {
+		t.Fatalf("StoredConfigHash empty: %v", err)
+	}
+	if hash != "" {
+		t.Fatalf("expected empty hash for missing record, got %q", hash)
+	}
+
+	if err := store.SetTrust(abs, true, "abc123"); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
+	hash, err = store.StoredConfigHash(abs)
+	if err != nil {
+		t.Fatalf("StoredConfigHash after set: %v", err)
+	}
+	if hash != "abc123" {
+		t.Fatalf("StoredConfigHash = %q, want abc123", hash)
+	}
+}
+
+func TestTerminalResolverRePromptsOnConfigChange(t *testing.T) {
+	dir := t.TempDir()
+	marshalDir := filepath.Join(dir, ".marshal")
+	if err := os.MkdirAll(marshalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(marshalDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("[project]\nname = \"v1\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	dataDir := t.TempDir()
+	store := NewStore(dataDir)
+	in := strings.NewReader("")
+	resolver := NewTerminalResolver(store)
+	resolver.SetIn(in)
+
+	// First resolution: no record exists, the prompt is needed but
+	// stdin is empty so we get DontTrust. Record the trust via the
+	// store directly to simulate a prior trust-grant.
+	abs, _ := filepath.Abs(dir)
+	currentHash, _ := ConfigHashFor(dir)
+	if err := store.SetTrust(abs, true, currentHash); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second resolution with the same config: should return
+	// TrustPermanent without prompting (hash matches).
+	decision, err := resolver.Resolve(dir, true)
+	if err != nil {
+		t.Fatalf("Resolve unchanged: %v", err)
+	}
+	if decision != DecisionTrustPermanent {
+		t.Fatalf("decision = %s, want TrustPermanent", decision)
+	}
+
+	// Modify the config: the stored hash no longer matches, so
+	// Resolve must fall through to the prompt path. With an empty
+	// stdin the prompt returns DontTrust.
+	if err := os.WriteFile(configPath, []byte("[project]\nname = \"v2\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	decision, err = resolver.Resolve(dir, true)
+	if err != nil {
+		t.Fatalf("Resolve changed: %v", err)
+	}
+	if decision != DecisionDontTrust {
+		t.Fatalf("decision = %s, want DontTrust after config change (re-prompt fell through to empty stdin)", decision)
 	}
 }

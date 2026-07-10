@@ -971,3 +971,39 @@ func TestSteeringQueueIsCopy(t *testing.T) {
 		t.Fatal("SteeringQueue did not return a copy")
 	}
 }
+
+func TestStatePublishesMessageEvent(t *testing.T) {
+	state := newTestState()
+	broker := pubsub.NewBroker[Event]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := broker.Subscribe(ctx)
+	state.SetEventBroker(broker)
+	state.AddMessage(RoleUser, "hello", ContentTypePlain)
+	select {
+	case ev := <-ch:
+		if ev.Type != EventMessageAdded || ev.Payload.Message == nil || ev.Payload.Message.Content != "hello" {
+			t.Fatalf("event = %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for message event")
+	}
+}
+
+func TestStatePublishesApprovalEvent(t *testing.T) {
+	state := newTestState()
+	broker := pubsub.NewBroker[Event]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := broker.Subscribe(ctx)
+	state.SetEventBroker(broker)
+	state.SetPendingApproval(&PendingToolCall{Name: "shell.run"})
+	select {
+	case ev := <-ch:
+		if ev.Type != EventPendingApprovalChanged || ev.Payload.PendingApproval == nil {
+			t.Fatalf("event = %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for approval event")
+	}
+}

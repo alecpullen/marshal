@@ -44,6 +44,48 @@ func (f *fakeTrustResolver) Record(workingDir string, decision trust.Decision) e
 	return nil
 }
 
+func TestStartRuntimeDoesNotRunTUI(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[project]
+name = "runtime-test"
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+
+[models.presets.mock_preset]
+provider = "mock"
+model = "mock-model"
+local_only = true
+
+[agent_profiles.mock_profile]
+implementer = "mock_preset"
+planner = "mock_preset"
+repo_scout = "mock_preset"
+tester = "mock_preset"
+reviewer = "mock_preset"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	if err != nil {
+		t.Fatalf("StartRuntime() error = %v", err)
+	}
+	defer rt.Close(context.Background())
+	if rt.State == nil || rt.SessionID == "" {
+		t.Fatalf("runtime not initialized: %+v", rt)
+	}
+}
+
 func TestRunSkipsProgramAndConfigLoadWhenContextIsCancelled(t *testing.T) {
 	dir := t.TempDir()
 	origWd, err := os.Getwd()

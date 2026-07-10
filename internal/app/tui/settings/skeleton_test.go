@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -8,6 +9,12 @@ import (
 
 	"marshal/internal/app/config"
 )
+
+// ansiRe strips ANSI escape sequences so view-text assertions can compare
+// against plain substrings.
+var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 // keyMsg constructs a KeyPressMsg for the named key. The switch mirrors
 // keyPress so both helpers stay in sync.
@@ -33,6 +40,8 @@ func keyMsg(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	case "backspace":
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
+	case "ctrl+s":
+		return tea.KeyPressMsg{Code: rune('s'), Mod: tea.ModCtrl}
 	}
 	return tea.KeyPressMsg{Code: rune(k[0]), Text: k}
 }
@@ -71,6 +80,21 @@ func drainCmd(cmd tea.Cmd) (tea.Msg, tea.Cmd) {
 		return nil, combined
 	}
 	return msg, nil
+}
+
+// enterSection moves the sidebar cursor to the section with the given id
+// and focuses its pane. Shared by every per-section test file.
+func enterSection(t *testing.T, m Model, id string) Model {
+	t.Helper()
+	for i, sec := range m.sections {
+		if sec.id == id {
+			m.cursor = i
+			m.paneFocused = true
+			return m
+		}
+	}
+	t.Fatalf("no section %q", id)
+	return m
 }
 
 func TestSidebarListsAllSections(t *testing.T) {

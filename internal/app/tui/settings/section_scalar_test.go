@@ -8,21 +8,6 @@ import (
 	"marshal/internal/app/config"
 )
 
-// enterSection moves the sidebar cursor to the section with the given id
-// and focuses its pane.
-func enterSection(t *testing.T, m Model, id string) Model {
-	t.Helper()
-	for i, sec := range m.sections {
-		if sec.id == id {
-			m.cursor = i
-			m.paneFocused = true
-			return m
-		}
-	}
-	t.Fatalf("no section %q", id)
-	return m
-}
-
 func TestPrivacyPaneToggles(t *testing.T) {
 	m := New(config.Default(), t.TempDir(), "")
 	m.SetSize(100, 40)

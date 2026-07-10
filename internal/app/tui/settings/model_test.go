@@ -1,7 +1,6 @@
 package settings
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 
@@ -28,38 +27,14 @@ func newTestConfig() config.Config {
 	return cfg
 }
 
-var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
-
-func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
-
-// sendUpdate applies msg to the model and, if the returned command produces a
-// message synchronously, feeds that single message back. This is enough to
-// dispatch huh's NextField navigation commands (which return a func producing
-// nextFieldMsg). Async cmds (cursor blink, window-size requests) are not
-// drained — the bubbletea runtime owns those.
-func sendUpdate(m Model, msg tea.Msg) Model {
-	updated, cmd := m.Update(msg)
-	m = updated
-	if cmd != nil {
-		if nextMsg := cmd(); nextMsg != nil {
-			updated, _ = m.Update(nextMsg)
-			m = updated
-		}
-	}
-	return m
-}
-
-func initForm(m Model) Model {
-	// The parent TUI never calls settings.Init(); the form focuses its first
-	// field during construction. We follow the same path here.
-	return m
-}
-
 func TestNewModelHasFields(t *testing.T) {
 	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
 	m.SetSize(100, 40)
-	if !strings.Contains(stripANSI(m.View()), "Agent") {
-		t.Fatal("view should contain the Agent sidebar entry")
+	view := stripANSI(m.View())
+	for _, title := range []string{"Agent", "Providers"} {
+		if !strings.Contains(view, title) {
+			t.Errorf("view should contain sidebar entry %q", title)
+		}
 	}
 }
 
@@ -86,7 +61,6 @@ func TestSettingsViewKeepsFrameBounded(t *testing.T) {
 	}
 	m := New(cfg, "/repo", "/repo/.marshal/config.toml")
 	m.SetSize(80, 30)
-	m = initForm(m)
 
 	view := stripANSI(m.View())
 	lines := strings.Split(view, "\n")
@@ -96,8 +70,8 @@ func TestSettingsViewKeepsFrameBounded(t *testing.T) {
 			maxW = w
 		}
 	}
-	if maxW > 80 {
-		t.Fatalf("settings width = %d, want <= 80", maxW)
+	if maxW > m.width {
+		t.Fatalf("settings width = %d, want <= %d", maxW, m.width)
 	}
 	if maxW < 30 {
 		t.Fatalf("settings width = %d, looks broken", maxW)

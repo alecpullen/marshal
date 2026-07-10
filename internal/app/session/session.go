@@ -27,6 +27,33 @@ type SteeringEvent struct {
 	Message  string
 }
 
+// Session event types (F21). Defined next to the owning service per F19
+// R4. Type strings are opaque identifiers agreed between the session
+// publisher and the ACP / external subscribers.
+const (
+	EventMessageAdded           = "message_added"
+	EventThinkingChanged        = "thinking_changed"
+	EventActivityChanged        = "activity_changed"
+	EventActiveToolChanged      = "active_tool_changed"
+	EventAuditAdded             = "audit_added"
+	EventPendingApprovalChanged = "pending_approval_changed"
+	EventPendingQuestionChanged = "pending_question_changed"
+)
+
+// Event is the union payload published on the session event broker
+// (F21). Only the field relevant to Type is populated; the others remain
+// nil. Payloads passed to Publish must be safe copies (no shared pointers
+// to internal state that may be mutated by concurrent writers).
+type Event struct {
+	Message         *Message
+	Thinking        *InProgressMessage
+	Activity        *Activity
+	ActiveTool      *ActiveToolCall
+	Audit           *registry.AuditEvent
+	PendingApproval *PendingToolCall
+	PendingQuestion *PendingQuestion
+}
+
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
 // service without importing internal/snapshot.
 type Snapshotter interface {
@@ -267,6 +294,13 @@ type State struct {
 	// so the TUI transcript and status line update without polling.
 	steeringQueue  []string
 	steeringBroker *pubsub.Broker[SteeringEvent]
+
+	// F21: session event surface. Publishes message, streaming/thinking,
+	// activity, tool lifecycle, audit, approval, and question events to
+	// external subscribers (e.g. the ACP transport in a later task).
+	// Publishing happens with State.mu released to avoid lock inversions
+	// with subscribers; see publishEvent.
+	eventBroker *pubsub.Broker[Event]
 
 	// F14: append-only message tree.
 	leafID     int64
@@ -621,6 +655,29 @@ func (s *State) SetSteeringBroker(b *pubsub.Broker[SteeringEvent]) {
 	s.mu.Unlock()
 }
 
+// SetEventBroker wires the F21 session event broker. Setter calls made
+// before this returns have no broker to publish to and are silently
+// dropped (see publishEvent).
+func (s *State) SetEventBroker(b *pubsub.Broker[Event]) {
+	s.mu.Lock()
+	s.eventBroker = b
+	s.mu.Unlock()
+}
+
+// publishEvent reads the broker pointer under State.mu and releases the
+// mutex before calling Publish. Holding the mutex across a Publish would
+// create a lock inversion: subscribers may run synchronously under their
+// own locks and could attempt to call back into State, deadlocking the
+// publisher. Payloads must be safe copies; see Event.
+func (s *State) publishEvent(typ string, payload Event) {
+	s.mu.Lock()
+	b := s.eventBroker
+	s.mu.Unlock()
+	if b != nil {
+		b.Publish(typ, payload)
+	}
+}
+
 // Subagent depth/concurrency bookkeeping. agent.run uses these to enforce the
 // hard limits documented in Milestone P (depth 1, concurrency 2). They live
 // on the shared session state so any agent.run invocation — even concurrent
@@ -757,7 +814,10 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 	ptr := &s.messages[len(s.messages)-1]
 	s.msgByID[id] = ptr
 	s.leafID = id
+	published := *ptr
 	s.mu.Unlock()
+
+	s.publishEvent(EventMessageAdded, Event{Message: &published})
 
 	if s.persistenceEnabled() {
 		dbID, err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), msg.CreatedAt, reasoning, thinkDuration, final, parentDBID)
@@ -910,7 +970,9 @@ func (s *State) ClearMessages() int {
 func (s *State) BeginStreaming() {
 	s.mu.Lock()
 	s.inProgress = InProgressMessage{StartedAt: time.Now(), Active: true}
+	snap := s.inProgress
 	s.mu.Unlock()
+	s.publishEvent(EventThinkingChanged, Event{Thinking: &snap})
 }
 
 // AppendThinking appends a chunk of reasoning/thinking text to the
@@ -918,7 +980,9 @@ func (s *State) BeginStreaming() {
 func (s *State) AppendThinking(delta string) {
 	s.mu.Lock()
 	s.inProgress.Reasoning += delta
+	snap := s.inProgress
 	s.mu.Unlock()
+	s.publishEvent(EventThinkingChanged, Event{Thinking: &snap})
 }
 
 // EndStreaming marks the in-progress message inactive. Reasoning captured so
@@ -927,7 +991,9 @@ func (s *State) AppendThinking(delta string) {
 func (s *State) EndStreaming() {
 	s.mu.Lock()
 	s.inProgress.Active = false
+	snap := s.inProgress
 	s.mu.Unlock()
+	s.publishEvent(EventThinkingChanged, Event{Thinking: &snap})
 }
 
 func (s *State) LogThinking(entry ThinkingEntry) {
@@ -971,8 +1037,14 @@ func (s *State) ProviderError() error {
 
 func (s *State) SetPendingApproval(tc *PendingToolCall) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.pendingApproval = tc
+	var snap *PendingToolCall
+	if tc != nil {
+		copy := *tc
+		snap = &copy
+	}
+	s.mu.Unlock()
+	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: snap})
 }
 
 func (s *State) PendingApproval() *PendingToolCall {
@@ -983,8 +1055,14 @@ func (s *State) PendingApproval() *PendingToolCall {
 
 func (s *State) SetPendingQuestion(q *PendingQuestion) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.pendingQuestion = q
+	var snap *PendingQuestion
+	if q != nil {
+		copy := *q
+		snap = &copy
+	}
+	s.mu.Unlock()
+	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: snap})
 }
 
 func (s *State) PendingQuestion() *PendingQuestion {
@@ -995,8 +1073,10 @@ func (s *State) PendingQuestion() *PendingQuestion {
 
 func (s *State) SetActiveToolCall(atc ActiveToolCall) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.activeToolCall = &atc
+	copy := atc
+	s.mu.Unlock()
+	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: &copy})
 }
 
 func (s *State) ActiveToolCall() (ActiveToolCall, bool) {
@@ -1010,8 +1090,9 @@ func (s *State) ActiveToolCall() (ActiveToolCall, bool) {
 
 func (s *State) ClearActiveToolCall() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.activeToolCall = nil
+	s.mu.Unlock()
+	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: nil})
 }
 
 func (s *State) SetContextPack(pack contextpack.Pack) {
@@ -1040,11 +1121,12 @@ func (s *State) ActiveRoute() RouteInfo {
 
 func (s *State) SetActivity(a Activity) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if a.Kind == "" {
 		a.Kind = ActivityIdle
 	}
 	s.activity = a
+	s.mu.Unlock()
+	s.publishEvent(EventActivityChanged, Event{Activity: &a})
 }
 
 func (s *State) Activity() Activity {
@@ -1121,7 +1203,10 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 		event.Timestamp = time.Now()
 	}
 	s.auditLog = append(s.auditLog, event)
+	published := event
 	s.mu.Unlock()
+
+	s.publishEvent(EventAuditAdded, Event{Audit: &published})
 
 	if s.persistenceEnabled() {
 		if err := s.db.SaveToolCall(s.sessionID, event); err != nil {

@@ -1,0 +1,49 @@
+# Borrowed Features Spec
+
+This document captures the user-facing configuration shape for features
+adapted from external projects (Claude Code, OpenAI Codex CLI, etc.) so
+the TOML surface is documented in one place.
+
+## F20: Lifecycle Hooks
+
+Lifecycle hooks let users run local shell commands at well-defined
+points in the agent loop (before/after a tool call, end of a turn).
+Hooks are **local process execution only** — there is no remote/network
+transport — and project-local hook entries only run when the project
+has been explicitly trusted (see `internal/trust`).
+
+### R1: TOML shape
+
+The hook configuration is grouped under a single `[hooks]` table with a
+list of entries under `[[hooks.entries]]`. The earlier draft that used
+`[[hooks]]` is **invalid TOML** (mixing an array of tables with a
+non-array `[hooks]` section in the same key), so the resolved shape is:
+
+```toml
+[hooks]
+fail_closed = false
+
+[[hooks.entries]]
+event = "pre_tool_use"
+matcher = "file.write_patch"
+command = "./scripts/check-patch.sh"
+timeout_ms = 2000
+
+[[hooks.entries]]
+event = "turn_end"
+command = "./scripts/turn-end.sh"
+timeout_ms = 1000
+```
+
+- `fail_closed` (bool, default `false`): when true, a hook that exits
+  non-zero or times out is treated as a deny/decision by the agent loop.
+- `entries` (array of tables): each entry binds an `event` name to a
+  shell `command` with an optional `matcher` and a `timeout_ms` cap.
+
+### R2: Trust
+
+Project-local hook entries only run when the project has been marked
+trusted (permanent or session) by the user. The trust decision is
+propagated to callers via `config.LoadOptions.Trusted` (a `*bool`
+out-parameter that `Load` sets to `true` for both
+`DecisionTrustPermanent` and `DecisionTrustSession`).

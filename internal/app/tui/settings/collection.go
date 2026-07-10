@@ -222,6 +222,7 @@ func (p *collectionPane) CloseInner() {
 	}
 	p.form = nil
 	p.editingKey = ""
+	p.onSubmit = nil
 }
 
 func (p *collectionPane) FocusedFieldTitle() string {

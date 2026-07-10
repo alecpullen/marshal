@@ -22,7 +22,7 @@ func sectionList() []section {
 		{id: "indexing", title: "Indexing", build: newIndexingPane},
 		{id: "web", title: "Web", build: newWebPane},
 		{id: "swarm", title: "Swarm", build: placeholder},
-		{id: "mcp", title: "MCP", build: placeholder},
+		{id: "mcp", title: "MCP", build: newMCPPane},
 		{id: "snapshots", title: "Snapshots", build: newSnapshotsPane},
 		{id: "hooks", title: "Hooks", build: newHooksPane},
 		{id: "permissions", title: "Permissions", build: newPermissionsPane},

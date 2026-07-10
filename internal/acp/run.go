@@ -49,6 +49,7 @@ func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
 			}, true
 		},
 		Notify: srv.Notify,
+		Perms:  &serverPermissionClient{server: srv},
 	})
 	srv.Handle("session/prompt", turns.PromptTurn)
 	srv.Handle("session/cancel", turns.Cancel)

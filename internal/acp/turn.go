@@ -61,6 +61,7 @@ type NotifyFunc func(method string, params any) error
 type TurnManagerConfig struct {
 	Lookup Lookup
 	Notify NotifyFunc
+	Perms  PermissionClient
 }
 
 // TurnManager dispatches session/prompt and session/cancel. Prompt turns
@@ -70,6 +71,8 @@ type TurnManagerConfig struct {
 type TurnManager struct {
 	lookup Lookup
 	notify NotifyFunc
+	perms  PermissionClient
+	bridge *PermissionBridge
 
 	activeTurnsMu sync.Mutex
 	activeTurns   map[string]context.CancelFunc
@@ -82,11 +85,16 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 	if cfg.Notify == nil {
 		panic("acp: TurnManagerConfig.Notify is required")
 	}
-	return &TurnManager{
+	tm := &TurnManager{
 		lookup:      cfg.Lookup,
 		notify:      cfg.Notify,
+		perms:       cfg.Perms,
 		activeTurns: map[string]context.CancelFunc{},
 	}
+	if cfg.Perms != nil {
+		tm.bridge = NewPermissionBridge(cfg.Perms)
+	}
+	return tm
 }
 
 // sessionEventToNotification maps the session-publisher event type to the
@@ -232,6 +240,18 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 				continue
 			}
 			_ = m.notify(method, eventToParams(ev.Payload))
+			// When a pending approval appears, drive the editor's
+			// decision through the permission bridge. The bridge writes
+			// the resulting decision to the pending tool call's
+			// ResponseChan, which the runner is blocked on. Done
+			// synchronously here so we don't lose the turn context
+			// before delivery; a nil PendingApproval is a clear signal
+			// (no second bridge call per approval).
+			if ev.Type == session.EventPendingApprovalChanged &&
+				ev.Payload.PendingApproval != nil &&
+				m.bridge != nil {
+				_ = m.bridge.Request(turnCtx, ev.Payload.PendingApproval)
+			}
 		}
 	}
 	// Drain any remaining buffered events the runner emitted just before
@@ -252,6 +272,11 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 				continue
 			}
 			_ = m.notify(method, eventToParams(ev.Payload))
+			if ev.Type == session.EventPendingApprovalChanged &&
+				ev.Payload.PendingApproval != nil &&
+				m.bridge != nil {
+				_ = m.bridge.Request(turnCtx, ev.Payload.PendingApproval)
+			}
 		default:
 			if runErrVal != nil {
 				return nil, runErrVal

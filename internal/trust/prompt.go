@@ -27,6 +27,16 @@ func NewTerminalResolver(store *Store) *TerminalResolver {
 	}
 }
 
+// SetIn overrides the stdin reader used by the trust prompt. Test-only.
+func (r *TerminalResolver) SetIn(in io.Reader) {
+	r.in = bufio.NewReader(in)
+}
+
+// SetOut overrides the stdout writer used by the trust prompt. Test-only.
+func (r *TerminalResolver) SetOut(out io.Writer) {
+	r.out = out
+}
+
 func (r *TerminalResolver) Resolve(workingDir string, hasProjectConfig bool) (Decision, error) {
 	abs, _ := filepath.Abs(workingDir)
 	if !hasProjectConfig {
@@ -37,7 +47,21 @@ func (r *TerminalResolver) Resolve(workingDir string, hasProjectConfig bool) (De
 		return DecisionDontTrust, err
 	}
 	if trusted {
-		return DecisionTrustPermanent, nil
+		// Re-validate the stored trust against the current on-disk
+		// project config. The trust record stores a hash of the config
+		// that was trusted; if the config has changed since (e.g. a
+		// malicious commit added [[hooks.entries]]), we must re-prompt
+		// rather than silently extend trust to the new content.
+		currentHash, hashErr := ConfigHashFor(workingDir)
+		if hashErr != nil {
+			return DecisionDontTrust, hashErr
+		}
+		storedHash, _ := r.store.StoredConfigHash(abs)
+		if storedHash == currentHash {
+			return DecisionTrustPermanent, nil
+		}
+		// Config changed since trust was recorded: fall through to the
+		// trust prompt as if the project were newly seen.
 	}
 	if r.session[abs] {
 		return DecisionTrustSession, nil
@@ -70,5 +94,11 @@ func (r *TerminalResolver) Resolve(workingDir string, hasProjectConfig bool) (De
 
 func (r *TerminalResolver) Record(workingDir string, decision Decision) error {
 	abs, _ := filepath.Abs(workingDir)
-	return r.store.SetTrust(abs, decision == DecisionTrustPermanent, "")
+	// Persist the current config hash alongside the trust decision so
+	// future Resolve calls can detect config changes and re-prompt.
+	// Hash errors fall back to empty string (treated as "no hash" by
+	// Resolve, which still re-prompts because the stored hash will
+	// not match the current one).
+	configHash, _ := ConfigHashFor(workingDir)
+	return r.store.SetTrust(abs, decision == DecisionTrustPermanent, configHash)
 }

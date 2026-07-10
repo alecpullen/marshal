@@ -157,13 +157,11 @@ func TestCancelNoActiveTurnSucceeds(t *testing.T) {
 
 func TestCancelInvokesActiveTurnCancel(t *testing.T) {
 	cancelCalled := make(chan struct{})
-	started := make(chan struct{})
 	manager := NewTurnManager(TurnManagerConfig{
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			return &TurnRuntime{
 				SessionID: sessionID,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
-					close(started)
 					<-ctx.Done()
 					return ctx.Err()
 				}),
@@ -188,7 +186,6 @@ func TestCancelInvokesActiveTurnCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("cancel func not invoked")
 	}
-	_ = started
 }
 
 func TestPromptTurnCompletesAfterBrokerCloseAndRunnerRelease(t *testing.T) {

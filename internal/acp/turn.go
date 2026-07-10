@@ -219,9 +219,34 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		runErr <- rt.Run(turnCtx, p.Prompt)
 	}()
 
-	forward := true
+	// forward dispatches one session event to the ACP client: emit the
+	// matching notification and, when a pending approval appears, drive
+	// it through the permission bridge. Defined once and called from
+	// both the main forwarding loop and the post-run drain so the two
+	// sites cannot drift.
+	forward := func(ev pubsub.Event[session.Event]) {
+		method := sessionEventToNotification(ev.Type)
+		if method == "" {
+			return
+		}
+		_ = m.notify(method, eventToParams(ev.Payload))
+		// When a pending approval appears, drive the editor's
+		// decision through the permission bridge. The bridge writes
+		// the resulting decision to the pending tool call's
+		// ResponseChan, which the runner is blocked on. Done
+		// synchronously here so we don't lose the turn context
+		// before delivery; a nil PendingApproval is a clear signal
+		// (no second bridge call per approval).
+		if ev.Type == session.EventPendingApprovalChanged &&
+			ev.Payload.PendingApproval != nil &&
+			m.bridge != nil {
+			_ = m.bridge.Request(turnCtx, ev.Payload.PendingApproval)
+		}
+	}
+
+	forwarding := true
 	var runErrVal error
-	for forward {
+	for forwarding {
 		select {
 		case <-ctx.Done():
 			cancel()
@@ -229,29 +254,18 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 			<-runErr
 			return nil, ctx.Err()
 		case err := <-runErr:
-			forward = false
+			forwarding = false
 			runErrVal = err
 		case ev, ok := <-sub:
 			if !ok {
+				// The subscription channel closed (broker shutdown
+				// or subCtx cancelled). Nil the channel to disable
+				// this select case; otherwise a closed channel is
+				// always ready and the loop would busy-wait.
+				sub = nil
 				continue
 			}
-			method := sessionEventToNotification(ev.Type)
-			if method == "" {
-				continue
-			}
-			_ = m.notify(method, eventToParams(ev.Payload))
-			// When a pending approval appears, drive the editor's
-			// decision through the permission bridge. The bridge writes
-			// the resulting decision to the pending tool call's
-			// ResponseChan, which the runner is blocked on. Done
-			// synchronously here so we don't lose the turn context
-			// before delivery; a nil PendingApproval is a clear signal
-			// (no second bridge call per approval).
-			if ev.Type == session.EventPendingApprovalChanged &&
-				ev.Payload.PendingApproval != nil &&
-				m.bridge != nil {
-				_ = m.bridge.Request(turnCtx, ev.Payload.PendingApproval)
-			}
+			forward(ev)
 		}
 	}
 	// Drain any remaining buffered events the runner emitted just before
@@ -267,16 +281,7 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 				}
 				return PromptTurnResult{StopReason: "end_turn"}, nil
 			}
-			method := sessionEventToNotification(ev.Type)
-			if method == "" {
-				continue
-			}
-			_ = m.notify(method, eventToParams(ev.Payload))
-			if ev.Type == session.EventPendingApprovalChanged &&
-				ev.Payload.PendingApproval != nil &&
-				m.bridge != nil {
-				_ = m.bridge.Request(turnCtx, ev.Payload.PendingApproval)
-			}
+			forward(ev)
 		default:
 			if runErrVal != nil {
 				return nil, runErrVal

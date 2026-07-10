@@ -26,3 +26,10 @@ func (p *staticPane) SetWidth(int)                          {}
 func (p *staticPane) HasInnerFocus() bool                   { return false }
 func (p *staticPane) CloseInner()                           {}
 func (p *staticPane) FocusedFieldTitle() string             { return "" }
+func (p *staticPane) AtFirstFocus() bool                    { return true }
+
+// firstFocuser is an optional interface implemented by panes that need to
+// participate in "return to sidebar" decisions. When the pane is not at its
+// first internal focus, sidebar-return keys (shift+tab, h, left) are
+// forwarded into the pane instead of stealing focus back to the sidebar.
+type firstFocuser interface{ AtFirstFocus() bool }

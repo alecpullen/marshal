@@ -111,12 +111,21 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 		// Pane focused: sidebar-return keys are handled here only when the
-		// pane has no inner edit open (so typing "h" into a text input works).
+		// pane has no inner edit open (so typing "h" into a text input works)
+		// and the pane is at its first internal focus (otherwise the key is
+		// forwarded to the pane, e.g. mixedPane moving to the previous list).
 		if !m.activePane().HasInnerFocus() {
 			switch k.String() {
-			case "shift+tab", "h", "left":
-				m.paneFocused = false
-				return *m, nil
+			case "shift+tab":
+				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
+					m.paneFocused = false
+					return *m, nil
+				}
+			case "h", "left":
+				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
+					m.paneFocused = false
+					return *m, nil
+				}
 			}
 		}
 	}

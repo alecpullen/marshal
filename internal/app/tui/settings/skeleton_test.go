@@ -9,33 +9,37 @@ import (
 	"marshal/internal/app/config"
 )
 
+// keyMsg constructs a KeyPressMsg for the named key. The switch mirrors
+// keyPress so both helpers stay in sync.
+func keyMsg(k string) tea.KeyPressMsg {
+	switch k {
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "left":
+		return tea.KeyPressMsg{Code: tea.KeyLeft}
+	case "right":
+		return tea.KeyPressMsg{Code: tea.KeyRight}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+	case "esc":
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "enter":
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
+	case "space":
+		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+	case "backspace":
+		return tea.KeyPressMsg{Code: tea.KeyBackspace}
+	}
+	return tea.KeyPressMsg{Code: rune(k[0]), Text: k}
+}
+
 func keyPress(m Model, keys ...string) Model {
 	for _, k := range keys {
-		var msg tea.Msg
-		switch k {
-		case "up":
-			msg = tea.KeyPressMsg{Code: tea.KeyUp}
-		case "down":
-			msg = tea.KeyPressMsg{Code: tea.KeyDown}
-		case "left":
-			msg = tea.KeyPressMsg{Code: tea.KeyLeft}
-		case "right":
-			msg = tea.KeyPressMsg{Code: tea.KeyRight}
-		case "tab":
-			msg = tea.KeyPressMsg{Code: tea.KeyTab}
-		case "shift+tab":
-			msg = tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
-		case "esc":
-			msg = tea.KeyPressMsg{Code: tea.KeyEscape}
-		case "enter":
-			msg = tea.KeyPressMsg{Code: tea.KeyEnter}
-		case "space":
-			msg = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
-		case "backspace":
-			msg = tea.KeyPressMsg{Code: tea.KeyBackspace}
-		default:
-			msg = tea.KeyPressMsg{Code: rune(k[0]), Text: k}
-		}
+		msg := keyMsg(k)
 		updated, cmd := m.Update(msg)
 		m = updated
 		// Drain the command chain so huh's NextField / focus-shift cmds

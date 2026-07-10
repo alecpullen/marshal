@@ -1045,6 +1045,23 @@ func (r *Runner) runPreToolUseHook(ctx context.Context, toolName string, args js
 	return args, out, nil
 }
 
+// hookAuditMetadata converts a hooks.Output into a single-element slice
+// suitable for AuditEvent.Hooks. Returns nil when no hook actually ran
+// (HookCount == 0 and no decision came back), so the audit event is
+// indistinguishable from a pre-hooks baseline record.
+func hookAuditMetadata(out hooks.Output) []registry.HookMetadata {
+	if out.HookCount == 0 && out.Decision == "" && !out.FailedOpen && len(out.Rewrite) == 0 {
+		return nil
+	}
+	return []registry.HookMetadata{{
+		Event:      hooks.EventPreToolUse,
+		Decision:   string(out.Decision),
+		Reason:     out.Reason,
+		Rewrote:    len(out.Rewrite) > 0,
+		FailedOpen: out.FailedOpen,
+	}}
+}
+
 // policyLoopResult carries the result of running policy + approval for one
 // iteration of the pre_tool_use rewrite loop. Messages is non-empty when the
 // caller should return immediately (deny, user-declined, hook error, etc).
@@ -1172,6 +1189,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	// user. The loop is hard-bounded at one rewrite to prevent a hostile
 	// hook from thrashing the tool budget.
 	var approval registry.ApprovalState
+	var lastHookOut hooks.Output
 	for rewriteCount := 0; ; rewriteCount++ {
 		if rewriteCount > 1 {
 			r.countToolCall(true, false)
@@ -1203,14 +1221,17 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		approval = policyResult.Approval
 
 		rewrittenArgs, hookOut, hookErr := r.runPreToolUseHook(ctx, toolName, args)
+		lastHookOut = hookOut
 		if hookErr != nil {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookErr.Error()))
+			event.Hooks = hookAuditMetadata(hookOut)
 			r.State.LogToolCall(event)
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookErr.Error(), toolCallID)}, nil
 		}
 		if hookOut.Decision == hooks.DecisionBlock {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookOut.Reason))
+			event.Hooks = hookAuditMetadata(hookOut)
 			r.State.LogToolCall(event)
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookOut.Reason, toolCallID)}, nil
@@ -1262,6 +1283,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	result, execErr := tool.Handler(ctx, call)
 	if execErr != nil {
 		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
+		event.Hooks = hookAuditMetadata(lastHookOut)
 		r.State.LogToolCall(event)
 		r.trackerMu.Lock()
 		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()))
@@ -1278,6 +1300,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)
 	}
 	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)
+	event.Hooks = hookAuditMetadata(lastHookOut)
 	r.State.LogToolCall(event)
 
 	msg := r.buildToolResultMessage(toolName, summarized, toolCallID)

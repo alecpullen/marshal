@@ -415,6 +415,9 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 		state = "failed"
 	}
 	head := fmt.Sprintf("%s %s %s", glyph, event.ToolName, state)
+	if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
+		head += " · " + hookHint
+	}
 	var b strings.Builder
 	b.WriteString(style.Render(truncateRunes(head, max(width-2, 1))))
 	b.WriteString("\n")
@@ -427,6 +430,32 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// hookIndicatorText picks the single highest-signal hook event from the
+// metadata slice for the tool summary line. Priority (most specific first):
+// block > rewrote > failed-open > generic count. Returns "" when there are
+// no hooks to summarize.
+func hookIndicatorText(hooks []registry.HookMetadata) string {
+	if len(hooks) == 0 {
+		return ""
+	}
+	for _, h := range hooks {
+		if h.Decision == string(registry.ApprovalDenied) || h.Decision == "block" || h.Decision == "halt" {
+			return "hook blocked"
+		}
+	}
+	for _, h := range hooks {
+		if h.Rewrote {
+			return "hook rewrote"
+		}
+	}
+	for _, h := range hooks {
+		if h.FailedOpen {
+			return "hook failed-open"
+		}
+	}
+	return fmt.Sprintf("hooks %d", len(hooks))
 }
 
 // indentBlock prefixes every non-empty line of a rendered block.

@@ -30,9 +30,15 @@ func settingsKeyMap() *huh.KeyMap {
 	km := huh.NewDefaultKeyMap()
 	km.Quit = key.NewBinding(key.WithKeys("ctrl+c"))
 	km.Input.Submit = key.NewBinding(key.WithKeys("ctrl+s"))
+	km.Input.Next = key.NewBinding(key.WithKeys("enter", "tab", "down"))
+	km.Input.Prev = key.NewBinding(key.WithKeys("shift+tab", "up"))
 	km.Confirm.Submit = key.NewBinding(key.WithKeys("ctrl+s"))
+	km.Confirm.Next = key.NewBinding(key.WithKeys("enter", "tab", "down"))
+	km.Confirm.Prev = key.NewBinding(key.WithKeys("shift+tab", "up"))
 	km.Select.Submit = key.NewBinding(key.WithKeys("ctrl+s"))
 	km.Text.Submit = key.NewBinding(key.WithKeys("ctrl+s"))
+	km.Text.Next = key.NewBinding(key.WithKeys("enter", "tab", "down"))
+	km.Text.Prev = key.NewBinding(key.WithKeys("shift+tab", "up"))
 	// h/l are sidebar-return keys in the two-pane layout; keep arrows+space
 	// for confirm toggling.
 	km.Confirm.Toggle = key.NewBinding(key.WithKeys("right", "left", "space"))

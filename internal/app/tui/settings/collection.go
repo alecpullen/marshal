@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -35,6 +36,7 @@ type collectionPane struct {
 	s          *state
 	cursor     int
 	adding     bool
+	pendingAdd bool
 	addErr     string
 	nameInput  textinput.Model
 	form       *huh.Form
@@ -47,6 +49,20 @@ func newCollectionPane(s *state, spec collectionSpec) *collectionPane {
 	ti := textinput.New()
 	ti.SetVirtualCursor(true)
 	return &collectionPane{spec: spec, s: s, nameInput: ti}
+}
+
+// sliceIndexFromKey parses a synthetic slice key ("hook-3", "rule-7") and
+// returns the trailing index. Returns -1, false if the key does not have
+// the given prefix or the suffix is not an integer.
+func sliceIndexFromKey(key, prefix string) (int, bool) {
+	if !strings.HasPrefix(key, prefix) {
+		return -1, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(key, prefix))
+	if err != nil {
+		return -1, false
+	}
+	return n, true
 }
 
 func (p *collectionPane) Init() tea.Cmd { return nil }
@@ -120,6 +136,27 @@ func (p *collectionPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 		return p, cmd
 	}
 
+	// Pending-add state for slice collections (no name prompt). `a` enters
+	// this state; `enter` triggers the add; `esc` cancels.
+	if p.pendingAdd {
+		switch k.String() {
+		case "enter":
+			if err := p.spec.add(p.s, ""); err != nil {
+				p.addErr = err.Error()
+				return p, nil
+			}
+			p.pendingAdd = false
+			p.addErr = ""
+			p.cursor = len(p.sortedEntries()) - 1
+			return p, nil
+		case "esc":
+			p.pendingAdd = false
+			p.addErr = ""
+			return p, nil
+		}
+		return p, nil
+	}
+
 	// Sub-form state.
 	if p.form != nil {
 		if k.String() == "esc" {
@@ -157,6 +194,11 @@ func (p *collectionPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 		p.cursor++
 		p.clamp()
 	case "a":
+		if p.spec.keyPrompt == "" {
+			p.pendingAdd = true
+			p.addErr = ""
+			return p, nil
+		}
 		p.adding = true
 		p.addErr = ""
 		p.nameInput.SetValue("")
@@ -212,11 +254,16 @@ func (p *collectionPane) SetWidth(w int) {
 	}
 }
 
-func (p *collectionPane) HasInnerFocus() bool { return p.adding || p.form != nil }
+func (p *collectionPane) HasInnerFocus() bool { return p.adding || p.pendingAdd || p.form != nil }
 
 func (p *collectionPane) CloseInner() {
 	if p.adding {
 		p.adding = false
+		p.addErr = ""
+		return
+	}
+	if p.pendingAdd {
+		p.pendingAdd = false
 		p.addErr = ""
 		return
 	}
@@ -228,6 +275,9 @@ func (p *collectionPane) CloseInner() {
 func (p *collectionPane) FocusedFieldTitle() string {
 	if p.adding {
 		return p.spec.keyPrompt
+	}
+	if p.pendingAdd {
+		return p.spec.heading
 	}
 	if p.form != nil {
 		if f := p.form.GetFocusedField(); f != nil {
@@ -244,6 +294,10 @@ func (p *collectionPane) View(width int) string {
 	}
 	if p.adding {
 		return p.spec.keyPrompt + "\n▸ " + p.nameInput.View() +
+			renderAddErr(p.addErr)
+	}
+	if p.pendingAdd {
+		return "Press enter to add a new entry (esc to cancel)" +
 			renderAddErr(p.addErr)
 	}
 	var b strings.Builder

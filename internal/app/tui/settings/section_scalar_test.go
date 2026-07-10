@@ -22,6 +22,12 @@ func TestPrivacyPaneToggles(t *testing.T) {
 }
 
 func TestSnapshotsPaneNumericEdit(t *testing.T) {
+	// Slow huh-driven test (~4s) because numeric field validation
+	// triggers repeated huh form rebuilds.
+	if testing.Short() {
+		t.Skip("slow huh-driven test")
+	}
+
 	m := New(config.Default(), t.TempDir(), "")
 	m.SetSize(100, 40)
 	m = enterSection(t, m, "snapshots")

@@ -54,7 +54,10 @@ func keyPress(m Model, keys ...string) Model {
 		// Drain the command chain so huh's NextField / focus-shift cmds
 		// are observed. Mirrors what a real bubbletea runtime does on the
 		// program's tick. Bound the drain to avoid hanging on async cmds.
-		for i := 0; i < 4 && cmd != nil; i++ {
+		// 2 is enough for huh's normal NextField/focus-shift output; the
+		// previous bound of 4 was the main contributor to the test suite's
+		// ~174s runtime without catching extra logic.
+		for i := 0; i < 2 && cmd != nil; i++ {
 			var produced tea.Msg
 			produced, cmd = drainCmd(cmd)
 			if produced == nil {
@@ -68,16 +71,39 @@ func keyPress(m Model, keys ...string) Model {
 }
 
 func drainCmd(cmd tea.Cmd) (tea.Msg, tea.Cmd) {
+	if cmd == nil {
+		return nil, nil
+	}
 	msg := cmd()
 	if msg == nil {
 		return nil, nil
 	}
 	if batch, ok := msg.(tea.BatchMsg); ok {
-		var combined tea.Cmd
-		for _, sub := range batch {
-			combined = tea.Batch(combined, sub)
+		if len(batch) == 0 {
+			return nil, nil
 		}
-		return nil, combined
+		// Pop the first sub-cmd's message; queue the rest so the
+		// outer drain loop processes them one at a time.
+		first := batch[0]
+		rest := batch[1:]
+		var restCmd tea.Cmd
+		for _, c := range rest {
+			if c == nil {
+				continue
+			}
+			if restCmd == nil {
+				restCmd = c
+			} else {
+				restCmd = tea.Batch(restCmd, c)
+			}
+		}
+		if first == nil {
+			return nil, restCmd
+		}
+		if firstMsg := first(); firstMsg != nil {
+			return firstMsg, restCmd
+		}
+		return nil, restCmd
 	}
 	return msg, nil
 }

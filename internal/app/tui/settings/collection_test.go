@@ -118,6 +118,12 @@ func TestCollectionPaneEscClosesFormNotOverlay(t *testing.T) {
 }
 
 func TestCollectionPaneSubFormCommit(t *testing.T) {
+	// Slow huh-driven test (~4s) because the sub-form commit path
+	// walks the huh form state machine end-to-end.
+	if testing.Short() {
+		t.Skip("slow huh-driven test")
+	}
+
 	st := newState(config.Default())
 	st.cfg.Providers = map[string]config.ProviderConfig{"a": {}}
 	p := newCollectionPane(st, fakeSpec(st))

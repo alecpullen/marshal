@@ -47,10 +47,10 @@ type Runtime struct {
 	WorkingDir     string
 	HomeDir        string
 	DataDir        string
+	SkillIndex     *skills.Index
 
-	jobBrokerCancel  context.CancelFunc
-	steeringAttached bool
-	closeFns         []func()
+	jobBrokerCancel context.CancelFunc
+	closeFns        []func()
 }
 
 // Close tears down resources owned by the runtime in reverse order. It is
@@ -207,24 +207,24 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	}
 
 	rt := &Runtime{
-		Config:           cfg,
-		State:            state,
-		Runner:           runner,
-		ToolRegistry:     toolReg,
-		SwarmRunner:      swarmRunner,
-		DB:               database,
-		ProjectID:        projectID,
-		SessionID:        sessionID,
-		JobBroker:        jobBroker,
-		SteeringBroker:   steeringBroker,
-		MCPManager:       mcpMgr,
-		Snapshot:         snapSvc,
-		Logger:           logger,
-		WorkingDir:       workingDir,
-		HomeDir:          homeDir,
-		DataDir:          dataDir,
-		jobBrokerCancel:  jobBrokerCancel,
-		steeringAttached: true,
+		Config:          cfg,
+		State:           state,
+		Runner:          runner,
+		ToolRegistry:    toolReg,
+		SwarmRunner:     swarmRunner,
+		DB:              database,
+		ProjectID:       projectID,
+		SessionID:       sessionID,
+		JobBroker:       jobBroker,
+		SteeringBroker:  steeringBroker,
+		MCPManager:      mcpMgr,
+		Snapshot:        snapSvc,
+		Logger:          logger,
+		WorkingDir:      workingDir,
+		HomeDir:         homeDir,
+		DataDir:         dataDir,
+		SkillIndex:      skillIndex,
+		jobBrokerCancel: jobBrokerCancel,
 	}
 	if logFile != nil {
 		rt.closeFns = append(rt.closeFns, func() { _ = logFile.Close() })

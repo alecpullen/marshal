@@ -54,3 +54,28 @@ func TestProvidersPaneSubFormMasksKey(t *testing.T) {
 		t.Error("masked key should render in the sub-form description")
 	}
 }
+
+// TestProvidersPaneClearKeyEmptiesSecret asserts that toggling the "Clear"
+// confirm inside the provider sub-form writes an empty string back to the
+// working config. The huh validator on the Clear field sets the local
+// copy's key to ""; the form's onSubmit callback then writes the local
+// copy back into the working config.
+func TestProvidersPaneClearKeyEmptiesSecret(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow huh-driven test")
+	}
+	m := New(providersTestConfig(), t.TempDir(), "")
+	m.SetSize(100, 40)
+	m = enterSection(t, m, "providers")
+	m = keyPress(m, "enter") // edit the existing ollama entry
+	// Fields in order: Type, Base URL, API key env, API key, Clear, Tool calling.
+	m = keyPress(m, "tab", "tab", "tab", "tab") // reach Clear
+	m = keyPress(m, "space")                    // toggle Clear on
+	// Advance to the last field (Tool calling) and submit. The form's
+	// onSubmit writes the local copy (APIKey="") back into the working
+	// config.
+	m = keyPress(m, "enter", "enter")
+	if got := m.state.cfg.Providers["ollama"].APIKey; got != "" {
+		t.Fatalf("Clear should empty the API key after submit, got %q", got)
+	}
+}

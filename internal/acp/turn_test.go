@@ -190,3 +190,35 @@ func TestCancelInvokesActiveTurnCancel(t *testing.T) {
 	}
 	_ = started
 }
+
+func TestPromptTurnCompletesAfterBrokerCloseAndRunnerRelease(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	runnerDone := make(chan struct{})
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					<-runnerDone
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":"hi"}`))
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	broker.Close()
+	close(runnerDone)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("PromptTurn did not return within 3s after broker close + runner release")
+	}
+}

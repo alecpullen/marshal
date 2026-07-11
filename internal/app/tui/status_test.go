@@ -183,6 +183,28 @@ func TestStatusLineShowsCompletingModeWhenPopupIsVisible(t *testing.T) {
 	}
 }
 
+func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
+	m := newViewTestModel(t, 50, 24)
+	m.state.SetTrusted(true)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder-7b", Provider: "ollama", LocalOnly: true})
+	m.state.SetContextPack(contextpack.Pack{
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 1000, MaxTokens: 8000},
+		Sections:   []contextpack.Section{{Title: "ctx", EstimatedTokens: 1000}},
+	})
+	line := m.renderStatusLine(50)
+	// mode + route must remain; ctx segment should be dropped (priority 3 vs 0/1/2)
+	if !strings.Contains(line, "qwen") || !strings.Contains(line, "ollama") {
+		t.Fatalf("route dropped on narrow line:\n%s", line)
+	}
+	if strings.Contains(line, "ctx") {
+		t.Fatalf("low-priority ctx segment should have been dropped:\n%s", line)
+	}
+	// Nothing mid-truncated with a dangling partial token:
+	if strings.Contains(line, "ol") && !strings.Contains(line, "ollama") {
+		t.Fatalf("route was mid-truncated:\n%s", line)
+	}
+}
+
 func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -1421,37 +1422,23 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(runAgentCmd(agentCtx, m.swarmRunner, goal), tickCmd(), spinnerTickCmd())
 
 	case "model":
-		if len(args) == 0 {
-			m.state.AddMessage(session.RoleSystem, "Usage: /model <preset-name>. Available presets are listed in your config.toml.", session.ContentTypePlain)
+		presets := m.state.Config.Models.Presets
+		if len(presets) == 0 {
+			m.state.AddMessage(session.RoleSystem, "No model presets configured. Add one in /settings → Model Presets.", session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		}
-		if m.configReloader != nil {
-			presetName := args[0]
-			newCfg := m.state.Config
-			preset, ok := newCfg.Models.Presets[presetName]
-			if !ok {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown preset: %s", presetName), session.ContentTypePlain)
+		if len(args) > 0 {
+			if _, ok := presets[args[0]]; ok {
+				m.switchModelPreset(args[0])
 				m.refreshViewport()
 				return m, nil
 			}
-			newCfg.Profile.Default = "switched"
-			newCfg.AgentProfiles = map[string]routing.AgentProfile{
-				"switched": {
-					Name: "switched",
-					Roles: map[routing.AgentRole]string{
-						routing.RoleImplementer: presetName,
-						routing.RoleRepoScout:   presetName,
-						routing.RoleKnowledge:   presetName,
-					},
-				},
-			}
-			if err := m.configReloader(newCfg); err != nil {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
-			} else {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
-			}
 		}
+		// bare, or an argument that doesn't resolve: open the picker,
+		// pre-filtered with whatever was typed
+		m.openPicker("model", "Switch model", "session only — /settings to persist",
+			m.modelPickerItems(), strings.Join(args, " "))
 		m.refreshViewport()
 		return m, nil
 
@@ -1473,9 +1460,72 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	m.pickerCommand = cmdName
 }
 
-// switchModelPreset is a temporary stub for the PickedMsg handler's model
-// case. Task 6 replaces it with the real extraction from dispatchCommand.
-func (m *Model) switchModelPreset(presetName string) {}
+// switchModelPreset applies a session-only model switch by routing every
+// role of a synthetic "switched" profile at the preset. Nothing is written
+// to config files; /settings owns persistence.
+func (m *Model) switchModelPreset(presetName string) {
+	if m.configReloader == nil {
+		return
+	}
+	newCfg := m.state.Config
+	preset, ok := newCfg.Models.Presets[presetName]
+	if !ok {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown preset: %s", presetName), session.ContentTypePlain)
+		return
+	}
+	newCfg.Profile.Default = "switched"
+	newCfg.AgentProfiles = map[string]routing.AgentProfile{
+		"switched": {
+			Name: "switched",
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: presetName,
+				routing.RoleRepoScout:   presetName,
+				routing.RoleKnowledge:   presetName,
+			},
+		},
+	}
+	if err := m.configReloader(newCfg); err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
+	} else {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
+	}
+}
+
+// modelPickerItems builds sorted picker items from configured model presets.
+func (m *Model) modelPickerItems() []picker.Item {
+	presets := m.state.Config.Models.Presets
+	names := make([]string, 0, len(presets))
+	for n := range presets {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		pi, pj := presets[names[i]], presets[names[j]]
+		if pi.Provider != pj.Provider {
+			return pi.Provider < pj.Provider
+		}
+		return names[i] < names[j]
+	})
+	current := m.state.ActiveRoute().Preset
+	items := make([]picker.Item, 0, len(names))
+	for _, n := range names {
+		p := presets[n]
+		var badges []string
+		if n == current {
+			badges = append(badges, "● now")
+		}
+		if p.LocalOnly {
+			badges = append(badges, "local")
+		}
+		items = append(items, picker.Item{
+			Group:  p.Provider,
+			Label:  n,
+			Detail: p.Provider + "/" + p.Model,
+			Badge:  strings.Join(badges, " "),
+			Value:  n,
+		})
+	}
+	return items
+}
 
 func truncateRunes(s string, limit int) string {
 	if limit <= 0 {

@@ -2420,6 +2420,92 @@ func TestPickerRoutingOpenPickCancel(t *testing.T) {
 	}
 }
 
+// ── /model picker routing (Task 6) ──────────────────────────────────────
+
+func modelTestState(t *testing.T) *session.State {
+	t.Helper()
+	cfg := config.Default()
+	if cfg.Models.Presets == nil {
+		cfg.Models.Presets = map[string]routing.ModelPreset{}
+	}
+	cfg.Models.Presets["test-a"] = routing.ModelPreset{Name: "test-a", Provider: "ollama", Model: "qwen2.5", LocalOnly: true}
+	cfg.Models.Presets["test-b"] = routing.ModelPreset{Name: "test-b", Provider: "anthropic", Model: "sonnet-5"}
+	return session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+}
+
+func TestModelBareOpensPicker(t *testing.T) {
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model")
+	m = *(updated.(*Model))
+	if m.pickerModel == nil || m.pickerCommand != "model" {
+		t.Fatal("bare /model should open the picker")
+	}
+	view := stripANSI(m.View().Content)
+	for _, want := range []string{"test-a", "test-b", "ollama/qwen2.5", "local", "session only"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("picker view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestModelExactArgBypassesPicker(t *testing.T) {
+	var reloaded *config.Config
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model test-b")
+	m = *(updated.(*Model))
+	if m.pickerModel != nil {
+		t.Fatal("exact preset arg must switch directly, no picker")
+	}
+	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-b" {
+		t.Fatalf("direct switch should reload with test-b, got %+v", reloaded)
+	}
+}
+
+func TestModelUnknownArgOpensPrefilteredPicker(t *testing.T) {
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model test-a-typo-b")
+	m = *(updated.(*Model))
+	if m.pickerModel == nil {
+		t.Fatal("unknown arg should open the picker instead of erroring")
+	}
+}
+
+func TestModelPickAppliesSessionSwitch(t *testing.T) {
+	var reloaded *config.Config
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model")
+	m = *(updated.(*Model))
+	updated, _ = m.Update(picker.PickedMsg{Value: "test-a"})
+	m = updated.(Model)
+	if m.pickerModel != nil {
+		t.Fatal("pick should close the modal")
+	}
+	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-a" {
+		t.Fatalf("pick should reload with test-a, got %+v", reloaded)
+	}
+}
+
+func TestModelNoPresetsPointsAtSettings(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state, WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model")
+	m = *(updated.(*Model))
+	if m.pickerModel != nil {
+		t.Fatal("no presets: picker must not open")
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "/settings") {
+		t.Fatal("should add a system message pointing at /settings")
+	}
+}
+
 func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	th := theme.LoadFor(false, "xterm-256color")

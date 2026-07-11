@@ -223,3 +223,69 @@ func TestEnumPickerSelectsOption(t *testing.T) {
 		t.Fatal("picker should close after apply")
 	}
 }
+
+func TestFieldListCursorAfterListDrillAdd(t *testing.T) {
+	items := []string{"alpha", "beta"}
+	root := newFrame("Test", func() []*field {
+		return []*field{listDrill("t.list", "Items", &items)}
+	})
+	ps := newPaneStack(root)
+	ps.top().list.SetSize(60, 20)
+	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill
+
+	// cursor starts on row 0 ("alpha")
+	if got := ps.top().list.CursorRow().title; got != "alpha" {
+		t.Fatalf("expected cursor on 'alpha', got %q", got)
+	}
+
+	// add "gamma" via prompt path
+	ps.Update(kp("a"))
+	for _, r := range "gamma" {
+		ps.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	// cursor should be on the new last row
+	rows := ps.top().list.Rows()
+	want := len(rows) - 1
+	if got := ps.top().list.Cursor(); got != want {
+		t.Fatalf("cursor after list add: want %d (last), got %d", want, got)
+	}
+	if got := ps.top().list.CursorRow().title; got != "gamma" {
+		t.Fatalf("cursor row after list add: want 'gamma', got %q", got)
+	}
+}
+
+func TestFieldListCursorAfterMapIntDrillAdd(t *testing.T) {
+	m := map[string]int{"reviewer": 4}
+	root := newFrame("Swarm", func() []*field {
+		return []*field{mapIntDrill("swarm.tool_iters", "Tool iters", &m)}
+	})
+	ps := newPaneStack(root)
+	ps.top().list.SetSize(60, 20)
+	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill
+
+	// cursor starts on row 0 ("reviewer")
+	if got := ps.top().list.CursorRow().title; got != "reviewer" {
+		t.Fatalf("expected cursor on 'reviewer', got %q", got)
+	}
+
+	// add "zebra" (sorts after "reviewer", so cursor must jump from 0 to 1)
+	ps.Update(kp("a"))
+	for _, r := range "zebra" {
+		ps.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if _, ok := m["zebra"]; !ok {
+		t.Fatalf("add should create the key, got %v", m)
+	}
+
+	// cursor should be on "zebra" (row 1, after "reviewer")
+	if got := ps.top().list.CursorRow().title; got != "zebra" {
+		t.Fatalf("cursor row after map add: want 'zebra', got %q", got)
+	}
+	if got := ps.top().list.Cursor(); got != 1 {
+		t.Fatalf("cursor index after map add: want 1, got %d", got)
+	}
+}

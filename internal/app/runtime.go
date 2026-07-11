@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"marshal/internal/agent"
@@ -49,9 +50,12 @@ type Runtime struct {
 	HomeDir        string
 	DataDir        string
 	SkillIndex     *skills.Index
+	JobManager     *native.JobManager
 
-	jobBrokerCancel context.CancelFunc
-	closeFns        []func()
+	workCtx    context.Context
+	workCancel context.CancelFunc
+	mu         sync.Mutex
+	closeFns   []func()
 }
 
 // Close tears down resources owned by the runtime in reverse order. It is
@@ -61,8 +65,13 @@ func (rt *Runtime) Close(ctx context.Context) error {
 	for i := len(rt.closeFns) - 1; i >= 0; i-- {
 		rt.closeFns[i]()
 	}
-	if rt.jobBrokerCancel != nil {
-		rt.jobBrokerCancel()
+	if rt.workCancel != nil {
+		rt.workCancel()
+	}
+	if rt.JobManager != nil {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.JobManager.Shutdown(sc)
 	}
 	if rt.JobBroker != nil {
 		rt.JobBroker.Close()
@@ -197,14 +206,14 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		return nil, fmt.Errorf("load skills: %w", err)
 	}
 
-	jobBrokerCtx, jobBrokerCancel := context.WithCancel(ctx)
+	workCtx, workCancel := context.WithCancel(ctx)
 	jobBroker := pubsub.NewBroker[native.JobEvent]()
 	steeringBroker := pubsub.NewBroker[session.SteeringEvent]()
 	eventBroker := pubsub.NewBroker[session.Event]()
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, err := buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -213,25 +222,27 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	}
 
 	rt := &Runtime{
-		Config:          cfg,
-		State:           state,
-		Runner:          runner,
-		ToolRegistry:    toolReg,
-		SwarmRunner:     swarmRunner,
-		DB:              database,
-		ProjectID:       projectID,
-		SessionID:       sessionID,
-		JobBroker:       jobBroker,
-		SteeringBroker:  steeringBroker,
-		EventBroker:     eventBroker,
-		MCPManager:      mcpMgr,
-		Snapshot:        snapSvc,
-		Logger:          logger,
-		WorkingDir:      workingDir,
-		HomeDir:         homeDir,
-		DataDir:         dataDir,
-		SkillIndex:      skillIndex,
-		jobBrokerCancel: jobBrokerCancel,
+		Config:         cfg,
+		State:          state,
+		Runner:         runner,
+		ToolRegistry:   toolReg,
+		SwarmRunner:    swarmRunner,
+		DB:             database,
+		ProjectID:      projectID,
+		SessionID:      sessionID,
+		JobBroker:      jobBroker,
+		SteeringBroker: steeringBroker,
+		EventBroker:    eventBroker,
+		MCPManager:     mcpMgr,
+		Snapshot:       snapSvc,
+		JobManager:     jobMgr,
+		Logger:         logger,
+		WorkingDir:     workingDir,
+		HomeDir:        homeDir,
+		DataDir:        dataDir,
+		SkillIndex:     skillIndex,
+		workCtx:        workCtx,
+		workCancel:     workCancel,
 	}
 	if logFile != nil {
 		rt.closeFns = append(rt.closeFns, func() { _ = logFile.Close() })

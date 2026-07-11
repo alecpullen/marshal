@@ -59,7 +59,7 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 	specs := sectionList()
 	panes := make([]*paneStack, len(specs))
 	for i, sp := range specs {
-		panes[i] = newPaneStack(sp.root(st))
+		panes[i] = newPaneStack(withResetRow(st, sp.id, sp.title, sp.root(st)))
 	}
 	return Model{
 		state:          st,
@@ -184,6 +184,7 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.activePane().top().list.CancelEdit()
 			return *m, nil
 		}
+		m.activePane().top().list.DisarmCurrent()
 		if m.activePane().pop() {
 			return *m, nil
 		}

@@ -112,6 +112,9 @@ type Model struct {
 	thinkingExpanded   bool
 	viewportFollow     bool
 
+	// Help overlay (triggered by ?).
+	helpOpen bool
+
 	spinner           Spinner
 	spinnerFrame      string
 	lastActivityLabel string
@@ -453,6 +456,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Help overlay: when open, only ? and Esc close it; everything else
+	// is blocked so the overlay stays visible until dismissed.
+	if m.helpOpen {
+		if k, ok := msg.(tea.KeyPressMsg); ok {
+			if k.String() == "?" || k.String() == "esc" {
+				m.helpOpen = false
+				return m, nil
+			}
+		}
+		return m, nil
+	}
+
 	// Inline approval chooser: when a tool call is pending, route every
 	// message (keypresses AND huh's internal nextField/nextGroup messages)
 	// to the approval form so selection navigation round-trips correctly.
@@ -531,6 +546,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Global hotkeys — input is always focused. (Approval and question
 		// pending states are routed above, before this switch.)
 		switch msg.String() {
+		case "?":
+			m.helpOpen = true
+			return m, nil
 		case "esc":
 			// F18: dismiss the active completion popup first. Only if
 			// nothing is up do we fall through to cancelling the in-flight

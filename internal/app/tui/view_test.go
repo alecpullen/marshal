@@ -389,6 +389,18 @@ func TestTooSmallViewUsesRawTerminalBounds(t *testing.T) {
 	}
 }
 
+func TestCompletionPopupANSITruncationStaysRenderable(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 24, 24)
+	m.input.SetValue("/pl")
+	m.updateCompletionPopups()
+	out := m.renderCompletionPopup()
+	if strings.Contains(out, "\x1b[") {
+		if strings.Count(out, "\x1b[") != strings.Count(out, "m") {
+			t.Fatalf("completion popup appears to contain truncated ANSI sequence: %q", out)
+		}
+	}
+}
+
 func TestTooSmallGateFiresOnActualResize(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	m.resize(60, 20) // user resizes to a small terminal — production path

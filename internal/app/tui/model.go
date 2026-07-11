@@ -456,16 +456,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Help overlay: when open, only ? and Esc close it; everything else
-	// is blocked so the overlay stays visible until dismissed.
+	// Help overlay: when open, only ? and Esc close it; other keypresses are
+	// blocked so the overlay stays visible until dismissed. Non-key runtime
+	// messages must continue through Update so background state cannot freeze.
 	if m.helpOpen {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			if k.String() == "?" || k.String() == "esc" {
 				m.helpOpen = false
 				return m, nil
 			}
+			return m, nil
 		}
-		return m, nil
 	}
 
 	// Inline approval chooser: when a tool call is pending, route every

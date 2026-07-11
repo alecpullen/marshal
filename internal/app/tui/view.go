@@ -43,6 +43,9 @@ func (m Model) viewString() string {
 	if m.width == 0 || m.height == 0 {
 		return m.fallbackView()
 	}
+	if m.width < minTerminalWidth || m.height < minTerminalHeight {
+		return m.tooSmallView()
+	}
 	if m.settingsOpen {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.settingsModel.View())
 	}
@@ -165,6 +168,13 @@ func (m Model) renderCompletionPopup() string {
 		rows = append(rows, style.Render(row))
 	}
 	return strings.Join(rows, "\n")
+}
+
+func (m Model) tooSmallView() string {
+	msg := fmt.Sprintf("Terminal too small — resize to at least %d×%d", minTerminalWidth, minTerminalHeight)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		mutedStyle.Render(msg),
+	)
 }
 
 func (m Model) fallbackView() string {

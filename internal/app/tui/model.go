@@ -42,8 +42,8 @@ type AgentRunner interface {
 }
 
 const (
-	minTerminalWidth  = 40
-	minTerminalHeight = 10
+	minTerminalWidth  = 80
+	minTerminalHeight = 24
 
 	doneDisplayDuration = 2 * time.Second
 )

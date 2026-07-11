@@ -2276,6 +2276,25 @@ func TestQuestionMarkTypesLiterallyInNonEmptyInput(t *testing.T) {
 	}
 }
 
+func TestHelpOverlayDoesNotSwallowAgentFinishedMsg(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	m.helpOpen = true
+	m.busy = true
+	m.lastActivityKind = session.ActivityThinking
+
+	updated, _ := m.Update(agentFinishedMsg{})
+	m = updated.(Model)
+
+	if m.busy {
+		t.Fatal("help overlay should not swallow agentFinishedMsg")
+	}
+	if !m.helpOpen {
+		t.Fatal("non-key runtime messages should not close the help overlay")
+	}
+}
+
 func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	th := theme.LoadFor(false, "xterm-256color")

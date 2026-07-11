@@ -9,8 +9,11 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
 )
+
+var settingsTheme = theme.Load()
 
 const (
 	sidebarWidth      = 18
@@ -188,7 +191,7 @@ var (
 	sidebarActiveStyle = lipgloss.NewStyle().Bold(true).Reverse(true)
 	sidebarItemStyle   = lipgloss.NewStyle()
 	paneTitleStyle     = lipgloss.NewStyle().Bold(true)
-	warnStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	warnStyle          = lipgloss.NewStyle().Foreground(settingsTheme.StatusWarning)
 )
 
 func (m Model) View() string {

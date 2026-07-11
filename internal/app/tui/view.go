@@ -210,7 +210,7 @@ func (m Model) renderCompletionPopup() string {
 		if matches[i].Description != "" {
 			row += "  " + matches[i].Description
 		}
-		row = truncateRunes(row, available)
+		row = ansi.Cut(row, 0, available)
 		rows = append(rows, style.Render(row))
 	}
 	return strings.Join(rows, "\n")

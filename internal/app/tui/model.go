@@ -101,9 +101,11 @@ type Model struct {
 	queuedCount    int
 
 	// New Layout State
-	width    int
-	height   int
-	viewport viewport.Model
+	rawWidth  int // unclamped terminal dimensions (gate check)
+	rawHeight int
+	width     int // clamped to ≥ minTerminalWidth/Height (internal geometry)
+	height    int
+	viewport  viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
@@ -353,6 +355,8 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m *Model) resize(width, height int) {
+	m.rawWidth = width
+	m.rawHeight = height
 	if width < minTerminalWidth {
 		width = minTerminalWidth
 	}

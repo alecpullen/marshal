@@ -43,7 +43,7 @@ func (m Model) viewString() string {
 	if m.width == 0 || m.height == 0 {
 		return m.fallbackView()
 	}
-	if m.width < minTerminalWidth || m.height < minTerminalHeight {
+	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
 	if m.settingsOpen {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -682,16 +683,21 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	rt.mu.Unlock()
 
 	// Cleanup old resources outside the lock.
+	var cleanupErr error
 	if oldMCP != nil {
-		_ = oldMCP.Close()
+		if err := oldMCP.Close(); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
 	}
 	if oldJobMgr != nil {
 		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = oldJobMgr.Shutdown(sc)
+		if err := oldJobMgr.Shutdown(sc); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
 	}
 	_ = oldSnap
-	return nil
+	return cleanupErr
 }
 
 func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {

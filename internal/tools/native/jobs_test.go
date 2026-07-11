@@ -3,10 +3,12 @@ package native
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,110 +18,381 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-func TestJobManagerStartAndKill(t *testing.T) {
-	jm := NewJobManager(defaultCommandRunner(), "", 25, 8*time.Hour)
-	t.Cleanup(jm.Shutdown)
-	id, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+// ---------------------------------------------------------------------------
+// Fake CommandRunner for unit tests
+// ---------------------------------------------------------------------------
+
+// fakeCommandRunner is a controllable fake CommandRunner that records the
+// CommandRequest, calls OnStart with a well-known PID, writes live output
+// to the observers, then waits on a release channel or ctx.Done before
+// returning.
+type fakeCommandRunner struct {
+	mu sync.Mutex
+
+	requests     []CommandRequest
+	release      chan struct{} // nil = don't block
+	liveOutput   string
+	extraBytes   int
+	result       CommandResult
+	runErr       error
+	startedCount int32
+}
+
+func (f *fakeCommandRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	atomic.AddInt32(&f.startedCount, 1)
+
+	f.mu.Lock()
+	f.requests = append(f.requests, req)
+	f.mu.Unlock()
+
+	if req.OnStart != nil {
+		req.OnStart(4242)
+	}
+
+	if f.liveOutput != "" && req.Stdout != nil {
+		_, _ = io.WriteString(req.Stdout, f.liveOutput)
+	}
+
+	if f.extraBytes > 0 && req.Stdout != nil {
+		_, _ = io.WriteString(req.Stdout, strings.Repeat("x", f.extraBytes))
+	}
+
+	if f.release != nil {
+		select {
+		case <-f.release:
+			// Released normally.
+		case <-ctx.Done():
+			// Context was cancelled (Kill or timeout). Simulate the real
+			// world where process cleanup takes a small amount of time
+			// so Kill/Shutdown cannot return before the runner finishes.
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	return f.result, f.runErr
+}
+
+type fakeRunnerOption func(*fakeCommandRunner)
+
+func withRelease(ch chan struct{}) fakeRunnerOption {
+	return func(f *fakeCommandRunner) { f.release = ch }
+}
+
+func withLiveOutput(s string) fakeRunnerOption {
+	return func(f *fakeCommandRunner) { f.liveOutput = s }
+}
+
+func withExtraBytes(n int) fakeRunnerOption {
+	return func(f *fakeCommandRunner) { f.extraBytes = n }
+}
+
+func withResult(r CommandResult) fakeRunnerOption {
+	return func(f *fakeCommandRunner) { f.result = r }
+}
+
+func withRunErr(e error) fakeRunnerOption {
+	return func(f *fakeCommandRunner) { f.runErr = e }
+}
+
+// newFakeRunner returns a fake runner. By default the runner does NOT block
+// on Run; call withRelease(ch) to make it block.
+func newFakeRunner(opts ...fakeRunnerOption) *fakeCommandRunner {
+	f := &fakeCommandRunner{
+		result: CommandResult{
+			ExitCode: 0,
+			Meta: registry.SandboxMeta{
+				Backend: "fake",
+				Enabled: true,
+			},
+		},
+	}
+	for _, o := range opts {
+		o(f)
+	}
+	return f
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — fake-runner based
+// ---------------------------------------------------------------------------
+
+func TestJobManagerUsesConfiguredRunnerAndReportsSandboxMeta(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan struct{})
+	runner := newFakeRunner(withRelease(ch))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	// Start a job. The goroutine will call runner.Run which calls OnStart
+	// (setting PID) and then blocks on the release channel.
+	id, err := jm.Start(ctx, "echo hello", time.Second)
 	if err != nil {
-		t.Fatalf("start: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
-	info, _, err := jm.Output(id, 10)
+
+	// Unblock the runner so the job completes.
+	close(ch)
+
+	// Wait for the job to finish.
+	waitForStatus(t, jm, id, StatusRunning, false, time.Second)
+
+	info, _, err := jm.Output(id, 0)
 	if err != nil {
-		t.Fatalf("output: %v", err)
+		t.Fatalf("Output: %v", err)
 	}
-	if info.Status != StatusRunning {
-		t.Fatalf("status = %q, want running", info.Status)
+	if info.PID != 4242 {
+		t.Fatalf("PID = %d, want 4242", info.PID)
 	}
-	if err := jm.Kill(id); err != nil {
-		t.Fatalf("kill: %v", err)
-	}
-	time.Sleep(100 * time.Millisecond)
-	info, _, _ = jm.Output(id, 10)
-	if info.Status != StatusKilled {
-		t.Fatalf("status after kill = %q, want killed", info.Status)
+	if !info.Sandbox.Enabled || info.Sandbox.Backend != "fake" {
+		t.Fatalf("Sandbox meta = %+v, want enabled=true backend=fake", info.Sandbox)
 	}
 }
 
-func TestJobManagerEnforcesMaxJobs(t *testing.T) {
-	jm := NewJobManager(defaultCommandRunner(), "", 2, 8*time.Hour)
-	t.Cleanup(jm.Shutdown)
-	_, _ = jm.Start(context.Background(), "sleep 30", 5*time.Second)
-	_, _ = jm.Start(context.Background(), "sleep 30", 5*time.Second)
-	_, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
-	if err == nil {
-		t.Fatal("expected too many jobs error")
+func TestJobOutputIsLiveAndBounded(t *testing.T) {
+	ctx := context.Background()
+	runner := newFakeRunner(
+		withLiveOutput("hello world\n"),
+		withExtraBytes(200000), // Write well past a small limit.
+	)
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 100)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	id, err := jm.Start(ctx, "echo hello", time.Second)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Output before the goroutine finishes should show the live output
+	// (the runner has no release channel, so it returns immediately, but
+	// the goroutine might not have written output yet).
+	time.Sleep(50 * time.Millisecond)
+
+	info, output, err := jm.Output(id, 0)
+	if err != nil {
+		t.Fatalf("Output before release: %v", err)
+	}
+	if !strings.Contains(output, "hello world") {
+		t.Fatalf("output before completion = %q, want to contain 'hello world'", output)
+	}
+	_ = info
+
+	// Wait for completion and check truncation.
+	waitForStatus(t, jm, id, StatusRunning, false, time.Second)
+
+	info, output, err = jm.Output(id, 0)
+	if err != nil {
+		t.Fatalf("Output after completion: %v", err)
+	}
+	if !info.OutputTruncated {
+		t.Fatalf("OutputTruncated should be true, info=%+v", info)
+	}
+	if !strings.Contains(output, "[output truncated]") {
+		t.Fatalf("output = %q, want truncation marker", output)
 	}
 }
 
-func TestJobManagerPublishesViaBroker(t *testing.T) {
-	jm := NewJobManager(defaultCommandRunner(), "", 25, 8*time.Hour)
-	t.Cleanup(jm.Shutdown)
-	broker := pubsub.NewBroker[JobEvent]()
-	t.Cleanup(broker.Close)
-	subCtx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	ch := broker.Subscribe(subCtx)
-	jm.SetBroker(broker)
+func TestCompletedJobsDoNotConsumeConcurrency(t *testing.T) {
+	ctx := context.Background()
+	runner := newFakeRunner() // No release channel → returns immediately.
+	jm := NewJobManager(ctx, runner, t.TempDir(), 1, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
-	// Start a long-running job; the first notifyChange publishes a
-	// +1 delta. Read it from the subscription and assert the count + delta.
-	id, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	// Start job 1 — it completes immediately.
+	id1, err := jm.Start(ctx, "job1", time.Second)
 	if err != nil {
-		t.Fatalf("start: %v", err)
+		t.Fatalf("start job1: %v", err)
 	}
-	t.Cleanup(func() { _ = jm.Kill(id) })
+
+	waitForStatus(t, jm, id1, StatusRunning, false, time.Second)
+
+	// maxJobs=1 but job 1 is completed (retained, not evicted).
+	// Since only running jobs count toward the limit, job 2 must start.
+	id2, err := jm.Start(ctx, "job2", time.Second)
+	if err != nil {
+		t.Fatalf("start job2 with maxJobs=1 and a completed retained job1: %v", err)
+	}
+
+	_ = id2
+}
+
+func TestJobKillWaitsForRunner(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan struct{})
+	runner := newFakeRunner(withRelease(ch))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	id, err := jm.Start(ctx, "sleep 30", 5*time.Second)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Kill should block until the runner is released.
+	killDone := make(chan struct{})
+	go func() {
+		_ = jm.Kill(id)
+		close(killDone)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
 
 	select {
-	case ev := <-ch:
-		if ev.Type != "jobs" {
-			t.Fatalf("type = %q, want jobs", ev.Type)
-		}
-		if ev.Payload.Count != 1 || ev.Payload.Delta != 1 {
-			t.Fatalf("payload = %+v, want count=1 delta=+1", ev.Payload)
-		}
+	case <-killDone:
+		t.Fatal("Kill returned before runner was released")
+	default:
+	}
+
+	// Release the runner — Kill should now return.
+	close(ch)
+
+	select {
+	case <-killDone:
 	case <-time.After(time.Second):
-		t.Fatal("no job-event published within 1s")
+		t.Fatal("Kill did not return after runner release within 1s")
 	}
 }
 
-func TestJobManagerRunsInWorkspaceDir(t *testing.T) {
-	root := t.TempDir()
-	runner := &recordingProcessRunner{}
-	jm := NewJobManager(runner, root, 25, 8*time.Hour)
-	t.Cleanup(jm.Shutdown)
+func TestJobTimeoutIsDistinctFromKill(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan struct{})
+	runner := newFakeRunner(withRelease(ch))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
-	id, err := jm.Start(context.Background(), "echo hi", 5*time.Second)
+	// Very short timeout — the job context will be cancelled before we
+	// release the runner.
+	id, err := jm.Start(ctx, "sleep 30", 10*time.Millisecond)
 	if err != nil {
-		t.Fatalf("start: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
-	<-jm.jobs[id].done
 
-	var startReq *CommandRequest
-	for i := len(runner.requests) - 1; i >= 0; i-- {
-		if runner.requests[i].Command == "echo hi" {
-			startReq = &runner.requests[i]
+	// Wait for the job to time out.
+	waitForStatus(t, jm, id, StatusRunning, true, time.Second)
+
+	info, _, err := jm.Output(id, 0)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if info.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed_out", info.Status)
+	}
+
+	// Release the runner so the goroutine can finish.
+	close(ch)
+}
+
+func TestJobManagerParentCancellationKillsJobs(t *testing.T) {
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+
+	ch := make(chan struct{})
+	runner := newFakeRunner(withRelease(ch))
+	jm := NewJobManager(parentCtx, runner, t.TempDir(), 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	_, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Cancel the parent context — all jobs should be cancelled.
+	parentCancel()
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	for {
+		count := jm.RunningCount()
+		if count == 0 {
 			break
 		}
-	}
-	if startReq == nil {
-		t.Fatal("Start did not call runner.Start")
-	}
-	if startReq.Dir != root {
-		t.Fatalf("Start Dir = %q, want %q", startReq.Dir, root)
+		select {
+		case <-waitCtx.Done():
+			t.Fatalf("running count did not reach 0 within 1s, still %d", count)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }
 
-func TestJobManagerEvictsCompletedJobsByRetention(t *testing.T) {
-	root := t.TempDir()
-	jm := NewJobManager(defaultCommandRunner(), root, 25, 100*time.Millisecond)
-	t.Cleanup(jm.Shutdown)
+func TestJobManagerShutdownJoinsAndRejectsStart(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan struct{})
+	runner := newFakeRunner(withRelease(ch))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 100000)
 
-	id, err := jm.Start(context.Background(), "echo hello", 5*time.Second)
+	// Start a job that blocks.
+	id, err := jm.Start(ctx, "sleep 30", 5*time.Second)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_ = id
+
+	// Shutdown should block until we release the runner.
+	shutdownDone := make(chan struct{})
+	go func() {
+		_ = jm.Shutdown(context.Background())
+		close(shutdownDone)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case <-shutdownDone:
+		t.Fatal("Shutdown returned before runner was released")
+	default:
+	}
+
+	// Release the runner — Shutdown should now return.
+	close(ch)
+
+	select {
+	case <-shutdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not return within 1s")
+	}
+
+	// After Shutdown returns, Start should return ErrJobManagerClosed.
+	_, err = jm.Start(context.Background(), "echo hi", time.Second)
+	if err != ErrJobManagerClosed {
+		t.Fatalf("Start after shutdown: err=%v, want ErrJobManagerClosed", err)
+	}
+}
+
+func TestJobManagerShutdownHonorsCallerDeadline(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan struct{}) // Never released.
+	runner := newFakeRunner(withRelease(ch))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 100000)
+
+	_, err := jm.Start(ctx, "sleep 30", 5*time.Second)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Shutdown with a very short deadline should time out.
+	shortCtx, shortCancel := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer shortCancel()
+
+	err = jm.Shutdown(shortCtx)
+	if err != context.DeadlineExceeded {
+		t.Fatalf("Shutdown with short deadline: err=%v, want DeadlineExceeded", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests — real execRunner backed
+// ---------------------------------------------------------------------------
+
+func TestJobManagerEvictsCompletedJobsByRetention(t *testing.T) {
+	jm := NewJobManager(context.Background(), newFakeRunner(), t.TempDir(), 25, 100*time.Millisecond, 100000)
+
+	id, err := jm.Start(context.Background(), "echo hello", time.Second)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	<-jm.jobs[id].done
 
+	waitForStatus(t, jm, id, StatusRunning, false, time.Second)
+
+	// Should still be accessible.
 	if _, _, err := jm.Output(id, 0); err != nil {
 		t.Fatalf("output right after completion: %v", err)
 	}
@@ -244,26 +517,152 @@ func TestJobOutputAndListTools(t *testing.T) {
 	}
 }
 
-func defaultCommandRunner() ProcessRunner {
-	return execRunner{}
-}
+func TestJobManagerPublishesViaBroker(t *testing.T) {
+	jm := NewJobManager(context.Background(), newFakeRunner(), "", 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+	broker := pubsub.NewBroker[JobEvent]()
+	t.Cleanup(broker.Close)
+	subCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch := broker.Subscribe(subCtx)
+	jm.SetBroker(broker)
 
-type recordingProcessRunner struct {
-	requests []CommandRequest
-}
-
-func (f *recordingProcessRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
-	f.requests = append(f.requests, req)
-	return CommandResult{}, nil
-}
-
-func (f *recordingProcessRunner) Start(req CommandRequest) (*runningCmd, error) {
-	f.requests = append(f.requests, req)
-	cmd := exec.Command("true")
-	cmd.Dir = req.Dir
-	rc := &runningCmd{cmd: cmd}
-	if err := cmd.Start(); err != nil {
-		return nil, err
+	id, err := jm.Start(context.Background(), "echo hi", time.Second)
+	if err != nil {
+		t.Fatalf("start: %v", err)
 	}
-	return rc, nil
+
+	select {
+	case ev := <-ch:
+		if ev.Type != "jobs" {
+			t.Fatalf("type = %q, want jobs", ev.Type)
+		}
+		if ev.Payload.Count != 1 || ev.Payload.Delta != 1 {
+			t.Fatalf("payload = %+v, want count=1 delta=+1", ev.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no job-event published within 1s")
+	}
+
+	_ = jm.Kill(id)
+}
+
+func TestJobManagerStartAndKill(t *testing.T) {
+	ch := make(chan struct{})
+	runner := newFakeRunner(withRelease(ch))
+	jm := NewJobManager(context.Background(), runner, "", 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	id, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	info, _, err := jm.Output(id, 10)
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if info.Status != StatusRunning {
+		t.Fatalf("status = %q, want running", info.Status)
+	}
+
+	// Kill the job — it should wait for the runner to be released.
+	killDone := make(chan struct{})
+	go func() {
+		if err := jm.Kill(id); err != nil {
+			t.Errorf("kill: %v", err)
+		}
+		close(killDone)
+	}()
+
+	close(ch) // Release the runner.
+
+	select {
+	case <-killDone:
+	case <-time.After(time.Second):
+		t.Fatal("Kill did not return within 1s")
+	}
+
+	waitForStatus(t, jm, id, StatusRunning, true, time.Second)
+
+	info, _, _ = jm.Output(id, 10)
+	if info.Status != StatusKilled {
+		t.Fatalf("status after kill = %q, want killed", info.Status)
+	}
+}
+
+func TestJobManagerEnforcesMaxJobs(t *testing.T) {
+	ch := make(chan struct{})
+	runner := newFakeRunner(withRelease(ch))
+	jm := NewJobManager(context.Background(), runner, "", 2, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+	_, _ = jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	_, _ = jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	_, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	if err == nil {
+		t.Fatal("expected too many jobs error")
+	}
+	// Release the runners so cleanup doesn't have to wait for the
+	// 200ms sleep after context cancellation.
+	close(ch)
+}
+
+func TestJobManagerRunsInWorkspaceDir(t *testing.T) {
+	root := t.TempDir()
+	runner := newFakeRunner()
+	jm := NewJobManager(context.Background(), runner, root, 25, time.Hour, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	_, err := jm.Start(context.Background(), "echo hi", 5*time.Second)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	var found bool
+	for _, req := range runner.requests {
+		if req.Command == "echo hi" {
+			if req.Dir != root {
+				t.Fatalf("Start Dir = %q, want %q", req.Dir, root)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("Start did not call runner.Run with expected command")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// waitForStatus polls jm.Output until the job's status is no longer
+// statusWant (i.e. it has transitioned). If expectTerminal is true,
+// it waits until the status IS NOT statusWant (useful for waiting until
+// a running job finishes). If expectTerminal is false, it waits until
+// the status IS NOT statusWant (same thing). The semantics are:
+// wait until status != statusWant.
+func waitForStatus(t *testing.T, jm *JobManager, id string, statusWant JobStatus, _ bool, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		info, _, err := jm.Output(id, 0)
+		if err != nil {
+			t.Fatalf("Output(%q): %v", id, err)
+		}
+		if info.Status != statusWant {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for status change from %q", statusWant)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 }

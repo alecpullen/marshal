@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -42,6 +43,20 @@ import (
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
 type configLoader func(config.LoadOptions) (config.Config, error)
 
+// mustDB panics with a clear message if raw is a non-nil value that is not
+// *db.DB. Nil is accepted (returned as nil) since the original type assertion
+// produced nil for a nil interface value.
+func mustDB(raw DBCloser) *db.DB {
+	if raw == nil {
+		return nil
+	}
+	d, ok := raw.(*db.DB)
+	if !ok {
+		panic(fmt.Sprintf("runtime: DBCloser is %T, want *db.DB", raw))
+	}
+	return d
+}
+
 type options struct {
 	now            func() time.Time
 	configLoader   configLoader
@@ -50,6 +65,7 @@ type options struct {
 	trustResolver  trust.Resolver
 	workingDir     string
 	sessionID      string
+	knowledgeHook  func(ctx context.Context, state *session.State, database *db.DB)
 }
 
 type Option func(*options)
@@ -99,6 +115,16 @@ func WithTrustResolver(r trust.Resolver) Option {
 func WithWorkingDir(dir string) Option {
 	return func(opts *options) {
 		opts.workingDir = dir
+	}
+}
+
+// WithKnowledgeHook registers a callback that is invoked after knowledge
+// EndSession completes but before runtime Close. Tests use this hook to
+// observe session state and database availability during the knowledge
+// finalization window.
+func WithKnowledgeHook(hook func(ctx context.Context, state *session.State, database *db.DB)) Option {
+	return func(opts *options) {
+		opts.knowledgeHook = hook
 	}
 }
 
@@ -248,11 +274,11 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 	}
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -267,7 +293,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -275,23 +301,46 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		NetworkIsolation: caps.NetworkIsolation,
 	})
 
+	// Milestone Q: construct the JobManager from the sandboxed command
+	// runner so background jobs honour the configured sandbox backend,
+	// output limit, and concurrency limits.
+	jobManager := native.NewJobManager(
+		ctx,
+		commandRunner,
+		state.WorkingDir,
+		cfg.Tools.Shell.MaxBackgroundJobs,
+		cfg.Tools.Shell.BackgroundRetention,
+		cfg.Tools.Shell.MaxOutputBytes,
+	)
+	var jmErr error
+	defer func() {
+		if jmErr != nil {
+			sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			jobManager.Shutdown(sc)
+		}
+	}()
+
 	var fileTracker native.FileTracker
 	if database != nil {
 		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
 	}
 
 	if err := native.RegisterAll(reg, native.Options{
-		WorkspaceRoot: state.WorkingDir,
-		CommandRunner: commandRunner,
-		TestCommand:   cfg.Commands.Test,
-		SessionState:  state,
-		DB:            database,
-		ProjectID:     projectID,
-		FileTracker:   fileTracker,
-		Config:        cfg,
-		JobBroker:     jobBroker,
+		WorkspaceRoot:  state.WorkingDir,
+		CommandRunner:  commandRunner,
+		TestCommand:    cfg.Commands.Test,
+		MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
+		SessionState:   state,
+		DB:             database,
+		ProjectID:      projectID,
+		FileTracker:    fileTracker,
+		Config:         cfg,
+		JobManager:     jobManager,
+		JobBroker:      jobBroker,
 	}); err != nil {
-		return nil, nil, nil, nil, nil, err
+		jmErr = err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -300,11 +349,13 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if len(cfg.MCP.Servers) > 0 {
 		mcpMgr = mcp.NewManager(&cfg)
 		if err := mcpMgr.Start(ctx); err != nil {
-			return nil, nil, nil, nil, nil, err
+			jmErr = err
+			return nil, nil, nil, nil, nil, nil, err
 		}
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			mcpMgr.Close()
-			return nil, nil, nil, nil, nil, err
+			jmErr = err
+			return nil, nil, nil, nil, nil, nil, err
 		}
 	}
 
@@ -315,7 +366,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		state,
 		2,
 	)); err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		jmErr = err
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.SkillIndex = skillIndex
@@ -378,7 +430,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		}
 	}
 	swarmRunner := buildSwarmRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, nil
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, nil
 }
 
 // buildSwarmRunner wires the Milestone O swarm: every role runner shares
@@ -555,19 +607,22 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 
 	cfg := rt.Config
 	workingDir = rt.WorkingDir
-	database := rt.DB
+	database := mustDB(rt.DB)
 	projectID := rt.ProjectID
 	sessionID := rt.SessionID
 	runner := rt.Runner
 	swarmRunner := rt.SwarmRunner
 	toolReg := rt.ToolRegistry
-	mcpMgr := rt.MCPManager
-	jobBroker := rt.JobBroker
-	steeringBroker := rt.SteeringBroker
+	jobBroker, ok := rt.JobBroker.(*pubsub.Broker[native.JobEvent])
+	if !ok && rt.JobBroker != nil {
+		panic(fmt.Sprintf("runtime: JobBroker is %T, want *pubsub.Broker[native.JobEvent]", rt.JobBroker))
+	}
+	steeringBroker, ok := rt.SteeringBroker.(*pubsub.Broker[session.SteeringEvent])
+	if !ok && rt.SteeringBroker != nil {
+		panic(fmt.Sprintf("runtime: SteeringBroker is %T, want *pubsub.Broker[session.SteeringEvent]", rt.SteeringBroker))
+	}
 	state := rt.State
 	logger := rt.Logger
-	dataDir := rt.DataDir
-	skillIndex := rt.SkillIndex
 
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
@@ -591,20 +646,10 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(jobBrokerCtx, steeringBroker))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
-			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, dataDir, runner, swarmRunner, &mcpMgr, jobBroker, jobBrokerCtx)
+			return reloadAgentRuntime(ctx, newCfg, rt)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	}
-
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			state.Shutdown()
-		case <-done:
-		}
-	}()
 
 	logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
@@ -615,8 +660,16 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	}
 
 	progErr := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
+
+	// Phase 1: quiesce — cancel and join active work/jobs without
+	// closing persistence so knowledge finalization can use the DB.
+	quiesceCtx, cancelQuiesce := context.WithTimeout(context.Background(), jobShutdownTimeout)
+	quiesceErr := rt.Quiesce(quiesceCtx)
+	cancelQuiesce()
+
+	// Phase 2: knowledge — finalize the session while DB and logger
+	// are still open.
 	knowledgeCtx, cancelKnowledge := context.WithTimeout(context.Background(), shutdownKnowledgeTimeout)
-	defer cancelKnowledge()
 	knowledge.EndSession(knowledgeCtx, knowledge.EndSessionInput{
 		DB:            database,
 		ProjectID:     projectID,
@@ -627,31 +680,75 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		Now:           runOpts.now,
 		Logger:        logger,
 	})
-	return progErr
+	cancelKnowledge()
+
+	if runOpts.knowledgeHook != nil {
+		runOpts.knowledgeHook(knowledgeCtx, state, database)
+	}
+
+	// Phase 3: close — tear down MCP, brokers, snapshots, DB, logger.
+	closeErr := rt.Close(context.Background())
+	return errors.Join(progErr, quiesceErr, closeErr)
 }
 
-func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, runner *agent.Runner, swarmRunner *swarm.Orchestrator, activeMCP **mcp.Manager, jobBroker *pubsub.Broker[native.JobEvent], jobBrokerCtx context.Context) error {
-	if runner == nil {
+func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {
+	if rt.Runner == nil {
 		return nil
 	}
-	newRunner, _, newSwarmRunner, newMCP, newSnapSvc, err := buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
+	db := mustDB(rt.DB)
+	jb, ok := rt.JobBroker.(*pubsub.Broker[native.JobEvent])
+	if !ok && rt.JobBroker != nil {
+		panic(fmt.Sprintf("runtime: JobBroker is %T, want *pubsub.Broker[native.JobEvent]", rt.JobBroker))
+	}
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, jb)
 	if err != nil {
 		return err
 	}
-	if activeMCP != nil && *activeMCP != nil {
-		_ = (*activeMCP).Close()
+
+	// Capture old values for cleanup under the pointer mutex.
+	rt.mu.Lock()
+	oldMCP := rt.MCPManager
+	oldJobMgr := rt.JobManager
+	oldSnap := rt.Snapshot
+
+	// Copy in-place fields.
+	rt.Runner.CopyFrom(newRunner)
+	if rt.SwarmRunner != nil && newSwarmRunner != nil {
+		*rt.SwarmRunner = *newSwarmRunner
 	}
-	runner.CopyFrom(newRunner)
-	if swarmRunner != nil && newSwarmRunner != nil {
-		*swarmRunner = *newSwarmRunner
+
+	// Swap reload-owned pointers.
+	rt.ToolRegistry = newReg
+	if newMCP != nil {
+		rt.MCPManager = newMCP
+	} else {
+		rt.MCPManager = nil
 	}
-	if activeMCP != nil {
-		*activeMCP = newMCP
-	} else if newMCP != nil {
-		_ = newMCP.Close()
+	if newSnap != nil {
+		rt.Snapshot = newSnap
+	} else {
+		rt.Snapshot = nil
 	}
-	_ = newSnapSvc
-	return nil
+	rt.JobManager = newJobMgr
+	rt.mu.Unlock()
+
+	// Cleanup old resources outside the lock.
+	var cleanupErr error
+	if oldMCP != nil {
+		// Check that the old interface holds a non-nil concrete pointer.
+		if err := oldMCP.Close(); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	if oldJobMgr != nil {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := oldJobMgr.Shutdown(sc); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	_ = oldSnap
+	return cleanupErr
 }
 
 func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {

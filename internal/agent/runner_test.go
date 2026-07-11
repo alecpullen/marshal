@@ -1986,12 +1986,15 @@ func TestRunAllowsParallelReadBatchWithoutStalling(t *testing.T) {
 	// exact pattern baseOutputFormat recommends — used to record four churn
 	// entries and hard-stall on the very first model response.
 	reg := registry.New()
+	var executedMu sync.Mutex
 	var executed []string
 	if err := reg.Register(registry.Tool{
 		Name: "file.read",
 		Risk: registry.RiskReadOnly,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executedMu.Lock()
 			executed = append(executed, string(call.Args))
+			executedMu.Unlock()
 			return registry.ToolResult{Summary: "ok", Content: "package main"}, nil
 		},
 	}); err != nil {
@@ -2015,8 +2018,11 @@ func TestRunAllowsParallelReadBatchWithoutStalling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTask err = %v", err)
 	}
-	if len(executed) != 5 {
-		t.Fatalf("executed %d reads, want 5 (batch of 4 + 1 follow-up)", len(executed))
+	executedMu.Lock()
+	executedCount := len(executed)
+	executedMu.Unlock()
+	if executedCount != 5 {
+		t.Fatalf("executed %d reads, want 5 (batch of 4 + 1 follow-up)", executedCount)
 	}
 	if task.SalvagedReason != "" || task.Summary != "REAL ANSWER." {
 		t.Fatalf("task = %+v, want un-salvaged completion with the model's answer", task)

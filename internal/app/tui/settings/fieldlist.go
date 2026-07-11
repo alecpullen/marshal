@@ -272,7 +272,6 @@ func (fl *fieldList) updateAdd(k tea.KeyPressMsg) tea.Cmd {
 		}
 		fl.CancelEdit()
 		fl.Refresh()
-		fl.cursor = len(fl.rows) - 1
 		return nil
 	case "esc":
 		fl.CancelEdit()

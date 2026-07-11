@@ -89,7 +89,7 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 }
 
 func TestViewFitsTerminalSizesSingleColumn(t *testing.T) {
-	sizes := [][2]int{{40, 10}, {80, 24}, {100, 30}, {120, 40}}
+	sizes := [][2]int{{80, 24}, {100, 30}, {120, 40}}
 	for _, size := range sizes {
 		m := newViewTestModel(t, size[0], size[1])
 		m.state.AddMessage(session.RoleUser, strings.Repeat("wide input ", 30), session.ContentTypePlain)
@@ -136,7 +136,7 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 }
 
 func TestInputAreaHasNoBackgroundFill(t *testing.T) {
-	m := newViewTestModel(t, 60, 20)
+	m := newViewTestModel(t, 80, 24)
 	out := m.renderInputArea()
 	// panelBg 235 must never be emitted as a fill anymore.
 	if strings.Contains(out, "48;5;235") || strings.Contains(out, ";235m") {
@@ -148,7 +148,7 @@ func TestInputAreaHasNoBackgroundFill(t *testing.T) {
 }
 
 func TestInputBorderColorReflectsFocus(t *testing.T) {
-	m := newViewTestModel(t, 60, 20)
+	m := newViewTestModel(t, 80, 24)
 	focused := m.renderInputArea()
 	m.input.Blur()
 	blurred := m.renderInputArea()
@@ -162,10 +162,10 @@ func TestInputBorderColorReflectsFocus(t *testing.T) {
 }
 
 func TestLongInputExpandsToMultipleRows(t *testing.T) {
-	m := newViewTestModel(t, 50, 20)
+	m := newViewTestModel(t, 80, 24)
 	singleLineRows := m.inputAreaRows()
 
-	longInput := strings.Repeat("wrap me ", 10)
+	longInput := strings.Repeat("wrap me ", 15)
 	updated, _ := m.Update(tea.KeyPressMsg{Text: longInput})
 	m = updated.(Model)
 
@@ -181,11 +181,11 @@ func TestLongInputExpandsToMultipleRows(t *testing.T) {
 }
 
 func TestMultilineInputAlignsContinuationLines(t *testing.T) {
-	m := newViewTestModel(t, 50, 20)
+	m := newViewTestModel(t, 80, 24)
 
 	// Type a line long enough to soft-wrap at the textarea's text width
-	// (50 - 4 box frame - 2 prompt = 44 text columns). Use 60 chars.
-	longInput := strings.Repeat("a", 60)
+	// (80 - 4 box frame - 2 prompt = 74 text columns). Use 90 chars.
+	longInput := strings.Repeat("a", 90)
 	updated, _ := m.Update(tea.KeyPressMsg{Text: longInput})
 	m = updated.(Model)
 
@@ -240,7 +240,7 @@ func TestMultilineInputAlignsContinuationLines(t *testing.T) {
 }
 
 func TestInputAreaHasNoBlankRowsWhenIdle(t *testing.T) {
-	m := newViewTestModel(t, 60, 20)
+	m := newViewTestModel(t, 80, 24)
 	m.input.SetValue("hello")
 	out := stripANSI(m.renderInputArea())
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
@@ -286,8 +286,8 @@ func TestInputAreaHasNoBlankRowsWhenIdle(t *testing.T) {
 }
 
 func TestInputWrapsBeforeBoxContentWidth(t *testing.T) {
-	for _, w := range []int{50, 60, 80, 100} {
-		m := newViewTestModel(t, w, 20)
+	for _, w := range []int{80, 100} {
+		m := newViewTestModel(t, w, 24)
 		m.input.SetValue(strings.Repeat("a", 400))
 		out := stripANSI(m.renderInputArea())
 		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
@@ -347,6 +347,36 @@ func TestMouseCaptureDisabled(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	if got := m.View().MouseMode; got != tea.MouseModeNone {
 		t.Fatalf("View().MouseMode = %v, want MouseModeNone (native selection enabled)", got)
+	}
+}
+
+func TestTooSmallShowsResizeMessage(t *testing.T) {
+	// Create a model at a valid size, then manually set width/height below
+	// the minimum to simulate a terminal that is too small. (The resize()
+	// clamp would otherwise prevent sub-minimum values, so we override
+	// directly to exercise the view gate.)
+	m := newViewTestModel(t, 80, 24)
+	m.width = 70
+	m.height = 23
+	view := m.View().Content
+	if !strings.Contains(view, "Terminal too small") {
+		t.Fatalf("too-small terminal should show resize message:\n%s", view)
+	}
+	if !strings.Contains(view, "80") || !strings.Contains(view, "24") {
+		t.Fatalf("resize message should mention required dimensions:\n%s", view)
+	}
+}
+
+func TestNormalViewRendersAtMinSize(t *testing.T) {
+	m := newViewTestModel(t, minTerminalWidth, minTerminalHeight)
+	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	m.refreshViewport()
+	view := m.View().Content
+	if strings.Contains(view, "Terminal too small") {
+		t.Fatalf("at min size %dx%d, normal view should render:\n%s", minTerminalWidth, minTerminalHeight, view)
+	}
+	if !strings.Contains(view, "❯") {
+		t.Fatal("normal view at min size should show input prompt")
 	}
 }
 

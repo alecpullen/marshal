@@ -351,19 +351,29 @@ func TestMouseCaptureDisabled(t *testing.T) {
 }
 
 func TestTooSmallShowsResizeMessage(t *testing.T) {
-	// Create a model at a valid size, then manually set width/height below
-	// the minimum to simulate a terminal that is too small. (The resize()
-	// clamp would otherwise prevent sub-minimum values, so we override
-	// directly to exercise the view gate.)
+	// Defense-in-depth: sets rawWidth/rawHeight directly (bypassing resize)
+	// to confirm the gate condition still fires on the raw fields.
 	m := newViewTestModel(t, 80, 24)
-	m.width = 70
-	m.height = 23
+	m.rawWidth = 70
+	m.rawHeight = 23
 	view := m.View().Content
 	if !strings.Contains(view, "Terminal too small") {
 		t.Fatalf("too-small terminal should show resize message:\n%s", view)
 	}
 	if !strings.Contains(view, "80") || !strings.Contains(view, "24") {
 		t.Fatalf("resize message should mention required dimensions:\n%s", view)
+	}
+}
+
+func TestTooSmallGateFiresOnActualResize(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.resize(60, 20) // user resizes to a small terminal — production path
+	view := m.View().Content
+	if !strings.Contains(strings.ToLower(view), "resize") {
+		t.Fatalf("expected resize message after m.resize(60,20), got:\n%s", view)
+	}
+	if strings.Contains(view, "❯") {
+		t.Fatalf("input prompt should not render in too-small terminal:\n%s", view)
 	}
 }
 

@@ -273,8 +273,9 @@ interface. The sandbox backend selected in `[tools.shell.sandbox]` —
 - The `JobManager` receives the same `CommandRunner` instance that `shell.run`
   uses at construction time.
 - Resource caps (memory, CPU, process count), environment scrubbing, working
-  directory confinement, and network policy are the same regardless of whether
-  the model flags `background: true`.
+  directory confinement, and any network policy enforced by the selected
+  backend (e.g., `--network=none` in container mode) apply identically to
+  both paths.
 - The TUI displays the same sandbox isolation line for both paths.
 
 ### Bounded output
@@ -300,6 +301,10 @@ The same `BoundedOutput` writer is used for both foreground and background
 commands. Background jobs additionally wrap bounded writers inside a
 `safeBuffer` (mutex + `bytes.Buffer`) for concurrent read access by
 `job.output` while the job goroutine is still writing.
+
+Completed background jobs are evicted after a configurable retention period
+(`BackgroundRetention`, default 8 hours), preventing completed records from
+occupying concurrency slots indefinitely.
 
 ### Unix termination: SIGTERM → grace → SIGKILL
 

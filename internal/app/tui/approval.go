@@ -41,7 +41,7 @@ type approvalModel struct {
 }
 
 func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int) *approvalModel {
-	am := &approvalModel{tc: tc, width: width}
+	am := &approvalModel{tc: tc, width: width, choice: choiceApprove}
 
 	summary := approvalSummary(tc, sb, allowNetwork)
 

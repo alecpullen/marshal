@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -39,6 +41,68 @@ type fakeCloser struct {
 func (f *fakeCloser) close() error {
 	f.called.Add(1)
 	return f.err
+}
+
+// ---- fakes for Runtime.Close cleanup stages ----
+
+// recordingMCP satisfies MCPCloser and records the stage name.
+type recordingMCP struct {
+	name   string
+	record func(string)
+	err    error
+}
+
+func (m *recordingMCP) Close() error {
+	if m.record != nil {
+		m.record(m.name)
+	}
+	return m.err
+}
+
+// recordingBroker satisfies BrokerCloser and records the stage name.
+type recordingBroker struct {
+	name   string
+	record func(string)
+}
+
+func (b *recordingBroker) Close() {
+	if b.record != nil {
+		b.record(b.name)
+	}
+}
+
+// recordingSnapshot satisfies SnapshotCloser and records the stage name.
+type recordingSnapshot struct {
+	record func(string)
+	err    error
+}
+
+func (s *recordingSnapshot) Prune(_ context.Context, _ int) error {
+	if s.record != nil {
+		s.record("snapshot")
+	}
+	return s.err
+}
+
+// recordingDB satisfies DBCloser and records separate close and prune events.
+type recordingDB struct {
+	record    func(string)
+	closeErr  error
+	pruneErr  error
+}
+
+func (d *recordingDB) Close() error {
+	if d.record != nil {
+		d.record("dbClose")
+	}
+	return d.closeErr
+}
+
+func (d *recordingDB) PruneSnapshotsOlderThan(_ int) error {
+	if d.record != nil {
+		d.record("dbPrune")
+	}
+	return d.pruneErr
 }
 
 func TestRuntimeQuiesceCancelsAndJoinsTurnBeforeReturning(t *testing.T) {
@@ -179,21 +243,35 @@ func TestRuntimeCloseClosesResourcesAfterQuiesce(t *testing.T) {
 		orderMu.Unlock()
 	}
 
-	// Simulate closeFns (reverse-ordered).
-	fn1 := func() { record("closeFn-1") }
-	fn2 := func() { record("closeFn-2") }
+	// Fake every cleanup stage so we can verify the full prescribed order:
+	//   Quiesce → MCP → jobBroker → steeringBroker → eventBroker →
+	//   dbPrune → snapshot → dbClose → closeFns (reversed) → state shutdown.
+	mcp := &recordingMCP{name: "mcp", record: record}
+	jobBroker := &recordingBroker{name: "jobBroker", record: record}
+	steeringBroker := &recordingBroker{name: "steeringBroker", record: record}
+	eventBroker := &recordingBroker{name: "eventBroker", record: record}
+	snap := &recordingSnapshot{record: record}
+	database := &recordingDB{record: record}
+
+	closeFn1 := func() { record("closeFn-1") }
+	closeFn2 := func() { record("closeFn-2") }
 
 	workCtx, workCancel := context.WithCancel(ctx)
 	rt := &Runtime{
-		State:      state,
-		workCtx:    workCtx,
-		workCancel: workCancel,
-		closeFns:   []func(){fn1, fn2},
+		Config:         config.Default(),
+		State:          state,
+		workCtx:        workCtx,
+		workCancel:     workCancel,
+		MCPManager:     mcp,
+		JobBroker:      jobBroker,
+		SteeringBroker: steeringBroker,
+		EventBroker:    eventBroker,
+		Snapshot:       snap,
+		DB:             database,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		closeFns:       []func(){closeFn1, closeFn2},
 	}
 
-	// We cannot easily fake MCP, brokers, DB, snapshot without heavy
-	// setup. But we can verify that Close calls Quiesce first (work
-	// is joined) and that closeFns and state shutdown run.
 	if err := state.BeginWork(); err != nil {
 		t.Fatalf("BeginWork: %v", err)
 	}
@@ -208,20 +286,41 @@ func TestRuntimeCloseClosesResourcesAfterQuiesce(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
+	// 1. Quiesce must cancel and join work.
 	select {
 	case <-workEnded:
 	default:
 		t.Fatal("work was not completed before Close returned (Quiesce not called)")
 	}
 
-	// Verify closeFns ran in reverse order (fn2 before fn1).
+	// 9. State must be shut down (position at end is inferred from code).
+	select {
+	case <-state.Done():
+	default:
+		t.Error("session state was not shut down after Close")
+	}
+
+	// Verify the recorded order of stages 2-8.
 	orderMu.Lock()
 	defer orderMu.Unlock()
-	if len(order) != 2 {
-		t.Fatalf("expected 2 closeFn calls, got %d: %v", len(order), order)
+	expected := []string{
+		"mcp",           // 2. MCP manager
+		"jobBroker",     // 3. job broker
+		"steeringBroker", // 4. steering broker
+		"eventBroker",   // 5. event broker
+		"dbPrune",       // 6a. DB prune (inside snapshot stage)
+		"snapshot",      // 6b. snapshot filesystem prune
+		"dbClose",       // 7. database
+		"closeFn-2",     // 8. closeFns reversed (fn2 before fn1)
+		"closeFn-1",
 	}
-	if order[0] != "closeFn-2" || order[1] != "closeFn-1" {
-		t.Fatalf("closeFn order = %v, want [closeFn-2 closeFn-1]", order)
+	if len(order) != len(expected) {
+		t.Fatalf("close order = %v (len %d), want %v (len %d)", order, len(order), expected, len(expected))
+	}
+	for i := range expected {
+		if order[i] != expected[i] {
+			t.Fatalf("close order[%d] = %q, want %q; full order: %v", i, order[i], expected[i], order)
+		}
 	}
 }
 
@@ -308,14 +407,12 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 
 	workCtx, workCancel := context.WithCancel(ctx)
 
-	// Create a job manager with a job that delays responding to
-	// cancellation so Shutdown times out returning DeadlineExceeded.
+	// Quiesce-stage error: a background job that times out on shutdown
+	// so Quiesce returns DeadlineExceeded.
 	jobStarted := make(chan struct{})
 	fr := &fakeRunner{
 		run: func(runCtx context.Context, req native.CommandRequest) (native.CommandResult, error) {
 			close(jobStarted)
-			// Wait for cancellation, then delay so Shutdown times out
-			// and returns DeadlineExceeded instead of nil.
 			<-runCtx.Done()
 			time.Sleep(200 * time.Millisecond)
 			return native.CommandResult{}, runCtx.Err()
@@ -328,18 +425,37 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 	}
 	<-jobStarted
 
-	// Track that later close steps ran despite earlier errors.
-	closeStep2 := atomic.Bool{}
-	closeStep3 := atomic.Bool{}
+	// Close-stage errors: inject failures into MCP and DB
+	// (broker Close() has no return value so it cannot produce an error).
+	// Verify each is surfaced and later stages (closeFns, state shutdown)
+	// still ran.
+	mcpErr := errors.New("mcp failure")
+	dbErr := errors.New("db close failure")
+
+	mcp := &recordingMCP{name: "mcp", err: mcpErr}
+	db := &recordingDB{closeErr: dbErr}
+
+	// Mark that later stages (closeFns, state shutdown) ran despite errors.
+	var orderMu sync.Mutex
+	var order []string
+	record := func(s string) {
+		orderMu.Lock()
+		order = append(order, s)
+		orderMu.Unlock()
+	}
 
 	rt := &Runtime{
-		State:      state,
-		workCtx:    workCtx,
-		workCancel: workCancel,
-		JobManager: jobManager,
+		Config:         config.Default(),
+		State:          state,
+		workCtx:        workCtx,
+		workCancel:     workCancel,
+		JobManager:     jobManager,
+		MCPManager: mcp,
+		DB:         db,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		closeFns: []func(){
-			func() { closeStep2.Store(true) },
-			func() { closeStep3.Store(true) },
+			func() { record("closeFn-2") },
+			func() { record("closeFn-3") },
 		},
 	}
 
@@ -348,15 +464,30 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 		t.Fatal("expected Close to return errors, got nil")
 	}
 
-	// Verify at least one error is the expected DeadlineExceeded.
+	// (a) errors.Is for each injected failure.
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Close error = %v, want DeadlineExceeded", err)
+		t.Errorf("Close error should contain DeadlineExceeded, got %v", err)
+	}
+	if !errors.Is(err, mcpErr) {
+		t.Errorf("Close error should contain %q, got %v", mcpErr, err)
+	}
+	// steering broker has no Close() return value, so no error.
+	if !errors.Is(err, dbErr) {
+		t.Errorf("Close error should contain %q, got %v", dbErr, err)
 	}
 
-	if !closeStep2.Load() {
-		t.Error("closeFn step 2 did not run")
+	// (b) Later stages (closeFns, state shutdown) still ran.
+	if len(order) != 2 {
+		t.Errorf("expected 2 closeFn calls, got %d: %v", len(order), order)
+	} else {
+		if order[0] != "closeFn-3" || order[1] != "closeFn-2" {
+			t.Errorf("closeFn order = %v, want [closeFn-3 closeFn-2]", order)
+		}
 	}
-	if !closeStep3.Load() {
-		t.Error("closeFn step 3 did not run")
+
+	select {
+	case <-state.Done():
+	default:
+		t.Error("session state was not shut down after Close")
 	}
 }

@@ -593,14 +593,14 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 
 	cfg := rt.Config
 	workingDir = rt.WorkingDir
-	database := rt.DB
+	database, _ := rt.DB.(*db.DB)
 	projectID := rt.ProjectID
 	sessionID := rt.SessionID
 	runner := rt.Runner
 	swarmRunner := rt.SwarmRunner
 	toolReg := rt.ToolRegistry
-	jobBroker := rt.JobBroker
-	steeringBroker := rt.SteeringBroker
+	jobBroker, _ := rt.JobBroker.(*pubsub.Broker[native.JobEvent])
+	steeringBroker, _ := rt.SteeringBroker.(*pubsub.Broker[session.SteeringEvent])
 	state := rt.State
 	logger := rt.Logger
 
@@ -675,7 +675,9 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if rt.Runner == nil {
 		return nil
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, rt.DB, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.JobBroker)
+	db, _ := rt.DB.(*db.DB)
+	jb, _ := rt.JobBroker.(*pubsub.Broker[native.JobEvent])
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, jb)
 	if err != nil {
 		return err
 	}
@@ -694,14 +696,23 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 
 	// Swap reload-owned pointers.
 	rt.ToolRegistry = newReg
-	rt.MCPManager = newMCP
-	rt.Snapshot = newSnap
+	if newMCP != nil {
+		rt.MCPManager = newMCP
+	} else {
+		rt.MCPManager = nil
+	}
+	if newSnap != nil {
+		rt.Snapshot = newSnap
+	} else {
+		rt.Snapshot = nil
+	}
 	rt.JobManager = newJobMgr
 	rt.mu.Unlock()
 
 	// Cleanup old resources outside the lock.
 	var cleanupErr error
 	if oldMCP != nil {
+		// Check that the old interface holds a non-nil concrete pointer.
 		if err := oldMCP.Close(); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}

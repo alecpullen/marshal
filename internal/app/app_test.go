@@ -520,7 +520,7 @@ func TestReloadAgentRuntimeReplacesReachableManagerWhenIdle(t *testing.T) {
 	reloadedCfg := nativeToolAgentConfig("test-provider")
 
 	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, mcpMgr, _, jobMgr, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil)
+	runner, reg, swarmRunner, _, _, jobMgr, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil)
 	if err != nil {
 		t.Fatalf("initial buildAgentRunner: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestReloadAgentRuntimeReplacesReachableManagerWhenIdle(t *testing.T) {
 		Runner:       runner,
 		ToolRegistry: reg,
 		SwarmRunner:  swarmRunner,
-		MCPManager:   mcpMgr,
+		MCPManager:   nil, // no MCP servers configured; use nil interface
 		Snapshot:     nil,
 		JobManager:   jobMgr,
 		State:        state,
@@ -641,7 +641,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 		Runner:       runner,
 		ToolRegistry: reg,
 		SwarmRunner:  swarmRunner,
-		MCPManager:   mcpMgr,
+		MCPManager:   nil, // no MCP servers configured; use nil interface
 		Snapshot:     nil,
 		JobManager:   jobMgr,
 		State:        state,
@@ -712,7 +712,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 		Runner:       runner,
 		ToolRegistry: reg,
 		SwarmRunner:  swarmRunner,
-		MCPManager:   mcpMgr,
+		MCPManager:   nil, // no MCP servers configured; use nil interface
 		Snapshot:     nil,
 		JobManager:   jobMgr,
 		State:        state,

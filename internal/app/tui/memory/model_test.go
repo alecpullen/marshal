@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/db"
 )
@@ -185,13 +186,13 @@ func assertBoundedFrame(t *testing.T, view string) {
 		t.Fatal("View() returned no lines")
 	}
 
-	expectedWidth := utf8.RuneCountInString(lines[0])
+	expectedWidth := ansi.StringWidth(lines[0])
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if got := utf8.RuneCountInString(line); got != expectedWidth {
-			t.Fatalf("line width = %d, want %d:\n%q\nfull view:\n%s", got, expectedWidth, line, view)
+		if got := ansi.StringWidth(line); got != expectedWidth {
+			t.Fatalf("line display width = %d, want %d:\n%q\nfull view:\n%s", got, expectedWidth, line, view)
 		}
 		first, _ := utf8.DecodeRuneInString(line)
 		last, _ := utf8.DecodeLastRuneInString(line)
@@ -200,19 +201,29 @@ func assertBoundedFrame(t *testing.T, view string) {
 			if last != '│' {
 				t.Fatalf("content line missing right border:\n%q\nfull view:\n%s", line, view)
 			}
-		case '├':
-			if last != '┤' {
-				t.Fatalf("separator line missing right border:\n%q\nfull view:\n%s", line, view)
-			}
-		case '┌':
-			if last != '┐' {
+		case '╭':
+			if last != '╮' {
 				t.Fatalf("top border missing right corner:\n%q\nfull view:\n%s", line, view)
 			}
-		case '└':
-			if last != '┘' {
+		case '╰':
+			if last != '╯' {
 				t.Fatalf("bottom border missing right corner:\n%q\nfull view:\n%s", line, view)
 			}
 		}
+	}
+}
+
+func TestViewAlignsWithWideRunes(t *testing.T) {
+	database, projectID := newTestDB(t)
+	if err := database.SaveMemory(projectID, "fact", "支持中文 CJK characters", "sess-1", time.Unix(100, 0)); err != nil {
+		t.Fatalf("SaveMemory failed: %v", err)
+	}
+	m := New(database, projectID)
+	view := m.View()
+	assertBoundedFrame(t, view)
+
+	if !strings.Contains(view, "支持中文") {
+		t.Fatalf("View() missing CJK content:\n%s", view)
 	}
 }
 

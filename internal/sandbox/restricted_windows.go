@@ -20,5 +20,3 @@ func restrictedResourceLimitsSupported() bool {
 func restrictedWrapCommand(command string, cfg Config) string {
 	return command
 }
-
-

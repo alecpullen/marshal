@@ -86,9 +86,9 @@ func (s *recordingSnapshot) Prune(_ context.Context, _ int) error {
 
 // recordingDB satisfies DBCloser and records separate close and prune events.
 type recordingDB struct {
-	record    func(string)
-	closeErr  error
-	pruneErr  error
+	record   func(string)
+	closeErr error
+	pruneErr error
 }
 
 func (d *recordingDB) Close() error {
@@ -210,11 +210,11 @@ func TestRuntimeQuiesceLeavesDatabaseOpen(t *testing.T) {
 
 	workCtx, workCancel := context.WithCancel(ctx)
 	rt := &Runtime{
-		Config:    config.Default(),
-		State:     state,
-		DB:        database,
-		ProjectID: projectID,
-		workCtx:   workCtx,
+		Config:     config.Default(),
+		State:      state,
+		DB:         database,
+		ProjectID:  projectID,
+		workCtx:    workCtx,
 		workCancel: workCancel,
 	}
 
@@ -304,14 +304,14 @@ func TestRuntimeCloseClosesResourcesAfterQuiesce(t *testing.T) {
 	orderMu.Lock()
 	defer orderMu.Unlock()
 	expected := []string{
-		"mcp",           // 2. MCP manager
-		"jobBroker",     // 3. job broker
+		"mcp",            // 2. MCP manager
+		"jobBroker",      // 3. job broker
 		"steeringBroker", // 4. steering broker
-		"eventBroker",   // 5. event broker
-		"dbPrune",       // 6a. DB prune (inside snapshot stage)
-		"snapshot",      // 6b. snapshot filesystem prune
-		"dbClose",       // 7. database
-		"closeFn-2",     // 8. closeFns reversed (fn2 before fn1)
+		"eventBroker",    // 5. event broker
+		"dbPrune",        // 6a. DB prune (inside snapshot stage)
+		"snapshot",       // 6b. snapshot filesystem prune
+		"dbClose",        // 7. database
+		"closeFn-2",      // 8. closeFns reversed (fn2 before fn1)
 		"closeFn-1",
 	}
 	if len(order) != len(expected) {
@@ -445,14 +445,14 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 	}
 
 	rt := &Runtime{
-		Config:         config.Default(),
-		State:          state,
-		workCtx:        workCtx,
-		workCancel:     workCancel,
-		JobManager:     jobManager,
+		Config:     config.Default(),
+		State:      state,
+		workCtx:    workCtx,
+		workCancel: workCancel,
+		JobManager: jobManager,
 		MCPManager: mcp,
 		DB:         db,
-		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		closeFns: []func(){
 			func() { record("closeFn-2") },
 			func() { record("closeFn-3") },

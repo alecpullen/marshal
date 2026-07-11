@@ -81,5 +81,3 @@ func restrictedWrapCommand(command string, cfg Config) string {
 	pre.WriteString(command)
 	return pre.String()
 }
-
-

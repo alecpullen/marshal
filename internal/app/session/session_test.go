@@ -1113,6 +1113,40 @@ func expectSteeringQueueLen(t *testing.T, ch <-chan pubsub.Event[SteeringEvent],
 	}
 }
 
+// ── Task 3: LoadError ──────────────────────────────────────────────────
+
+func TestStateLoadErrorReportsColdLoadFailure(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	sessionID := "loaderr-sess"
+	if err := dbConn.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	// Close the DB so loadFromDB will fail.
+	dbConn.Close()
+
+	cfg := config.Default()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	state := New(cfg, "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+
+	if err := state.LoadError(); err == nil {
+		t.Fatal("LoadError() = nil, want non-nil after closed DB load")
+	}
+}
+
+// ── end Task 3 tests ────────────────────────────────────────────────────
+
 func TestSteeringQueueIsCopy(t *testing.T) {
 	state := newTestState()
 	state.PushSteering("a")

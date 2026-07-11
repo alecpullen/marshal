@@ -38,6 +38,30 @@ func (db *DB) GetProject(id int64) (Project, error) {
 	return p, nil
 }
 
+// GetProjectByRoot returns the project row for the given root path.
+// Returns a "project not found" error if no row exists. Never creates a row.
+func (db *DB) GetProjectByRoot(rootPath string) (Project, error) {
+	var p Project
+	var createdAt, updatedAt string
+	row := db.queryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE root_path = ?`, rootPath)
+	if err := row.Scan(&p.ID, &p.RootPath, &p.Name, &createdAt, &updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Project{}, fmt.Errorf("project not found: %s", rootPath)
+		}
+		return Project{}, fmt.Errorf("load project by root: %w", err)
+	}
+	var parseErr error
+	p.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
+	if parseErr != nil {
+		return Project{}, fmt.Errorf("parse created_at: %w", parseErr)
+	}
+	p.UpdatedAt, parseErr = time.Parse(time.RFC3339, updatedAt)
+	if parseErr != nil {
+		return Project{}, fmt.Errorf("parse updated_at: %w", parseErr)
+	}
+	return p, nil
+}
+
 // GetOrCreateProject returns the project ID for rootPath, creating the row
 // if it does not exist. The root_path column is UNIQUE and is the identity
 // key; name is updated on conflict so later calls can refresh metadata.

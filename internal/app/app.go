@@ -58,14 +58,15 @@ func mustDB(raw DBCloser) *db.DB {
 }
 
 type options struct {
-	now            func() time.Time
-	configLoader   configLoader
-	programRunner  ProgramRunner
-	skipOnboarding bool
-	trustResolver  trust.Resolver
-	workingDir     string
-	sessionID      string
-	knowledgeHook  func(ctx context.Context, state *session.State, database *db.DB)
+	now                func() time.Time
+	configLoader       configLoader
+	programRunner      ProgramRunner
+	skipOnboarding     bool
+	trustResolver      trust.Resolver
+	workingDir         string
+	sessionID          string
+	existingSessionID  string
+	knowledgeHook      func(ctx context.Context, state *session.State, database *db.DB)
 }
 
 type Option func(*options)
@@ -135,6 +136,17 @@ func WithKnowledgeHook(hook func(ctx context.Context, state *session.State, data
 func WithSessionID(id string) Option {
 	return func(opts *options) {
 		opts.sessionID = id
+	}
+}
+
+// WithExistingSession loads an existing agent session instead of creating a
+// new one. The runtime will open the database, locate the project by the
+// working directory, verify that the session belongs to that project, load
+// the persisted transcript, and abort startup if the state reports a
+// LoadError. WithExistingSession is mutually exclusive with WithSessionID.
+func WithExistingSession(id string) Option {
+	return func(opts *options) {
+		opts.existingSessionID = id
 	}
 }
 

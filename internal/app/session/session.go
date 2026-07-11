@@ -298,6 +298,11 @@ type State struct {
 	workWG    sync.WaitGroup
 	quiescing bool
 
+	// loadErr captures a cold-load error from loadFromDB (Task 3).
+	// Exposed via LoadError() so StartRuntime can abort existing-session
+	// startup when the persisted transcript cannot be reconstructed.
+	loadErr error
+
 	// F16: steering queue (mid-turn user messages). Published to the broker
 	// so the TUI transcript and status line update without polling.
 	steeringQueue  []string
@@ -438,6 +443,7 @@ func (s *State) loadFromDB() {
 	leafDBID, err := s.db.GetLeafMessageID(s.sessionID)
 	if err != nil {
 		s.logger.Error("loadFromDB: get leaf", "error", err, "session_id", s.sessionID)
+		s.loadErr = err
 		return
 	}
 	if leafDBID == 0 {
@@ -447,6 +453,7 @@ func (s *State) loadFromDB() {
 	dbMessages, err := s.db.MessagesOnBranch(s.sessionID, leafDBID)
 	if err != nil {
 		s.logger.Error("loadFromDB: messages on branch", "error", err, "session_id", s.sessionID, "leaf", leafDBID)
+		s.loadErr = err
 		return
 	}
 	if len(dbMessages) == 0 {
@@ -1129,6 +1136,17 @@ func (s *State) Shutdown() {
 
 func (s *State) Done() <-chan struct{} {
 	return s.ctx.Done()
+}
+
+// LoadError returns any error that occurred during the cold-load of
+// persisted state from the database (loadFromDB). A nil return means
+// the in-memory state was reconstructed successfully or the session
+// had no persisted messages. StartRuntime uses this to detect a broken
+// existing session and abort startup.
+func (s *State) LoadError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadErr
 }
 
 // SetProviderError records the most recent provider-level failure (HTTP

@@ -389,6 +389,10 @@ func (m *JobManager) evictCompleted() {
 // to finish. It respects the caller's context deadline: if Shutdown's
 // context is cancelled before all goroutines finish it returns the
 // context error.
+//
+// Shutdown is idempotent — safe to call multiple times. Concurrent calls
+// are safe; later calls block on the same wg and return the same outcome.
+// After the first call returns, the manager is permanently closed.
 func (m *JobManager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	m.closed = true

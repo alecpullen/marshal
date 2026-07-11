@@ -43,6 +43,20 @@ import (
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
 type configLoader func(config.LoadOptions) (config.Config, error)
 
+// mustDB panics with a clear message if raw is a non-nil value that is not
+// *db.DB. Nil is accepted (returned as nil) since the original type assertion
+// produced nil for a nil interface value.
+func mustDB(raw DBCloser) *db.DB {
+	if raw == nil {
+		return nil
+	}
+	d, ok := raw.(*db.DB)
+	if !ok {
+		panic(fmt.Sprintf("runtime: DBCloser is %T, want *db.DB", raw))
+	}
+	return d
+}
+
 type options struct {
 	now            func() time.Time
 	configLoader   configLoader
@@ -593,14 +607,20 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 
 	cfg := rt.Config
 	workingDir = rt.WorkingDir
-	database, _ := rt.DB.(*db.DB)
+	database := mustDB(rt.DB)
 	projectID := rt.ProjectID
 	sessionID := rt.SessionID
 	runner := rt.Runner
 	swarmRunner := rt.SwarmRunner
 	toolReg := rt.ToolRegistry
-	jobBroker, _ := rt.JobBroker.(*pubsub.Broker[native.JobEvent])
-	steeringBroker, _ := rt.SteeringBroker.(*pubsub.Broker[session.SteeringEvent])
+	jobBroker, ok := rt.JobBroker.(*pubsub.Broker[native.JobEvent])
+	if !ok && rt.JobBroker != nil {
+		panic(fmt.Sprintf("runtime: JobBroker is %T, want *pubsub.Broker[native.JobEvent]", rt.JobBroker))
+	}
+	steeringBroker, ok := rt.SteeringBroker.(*pubsub.Broker[session.SteeringEvent])
+	if !ok && rt.SteeringBroker != nil {
+		panic(fmt.Sprintf("runtime: SteeringBroker is %T, want *pubsub.Broker[session.SteeringEvent]", rt.SteeringBroker))
+	}
 	state := rt.State
 	logger := rt.Logger
 
@@ -675,8 +695,11 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if rt.Runner == nil {
 		return nil
 	}
-	db, _ := rt.DB.(*db.DB)
-	jb, _ := rt.JobBroker.(*pubsub.Broker[native.JobEvent])
+	db := mustDB(rt.DB)
+	jb, ok := rt.JobBroker.(*pubsub.Broker[native.JobEvent])
+	if !ok && rt.JobBroker != nil {
+		panic(fmt.Sprintf("runtime: JobBroker is %T, want *pubsub.Broker[native.JobEvent]", rt.JobBroker))
+	}
 	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, jb)
 	if err != nil {
 		return err

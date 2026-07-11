@@ -353,9 +353,6 @@ func (m Model) renderFooter(fw int) string {
 	return ansi.Cut(" "+strings.Join(parts, " "), 0, max(fw, 1))
 }
 
-// helpOverlay is completed in Task 12.
-func (m Model) helpOverlay(fw, fh int) string { return "" }
-
 func (m Model) FocusedFieldTitle() string {
 	if m.paneFocused || m.sidebarHidden {
 		if row := m.activePane().top().list.CursorRow(); row != nil {

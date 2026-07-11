@@ -33,27 +33,43 @@ type approvalModel struct {
 	form   *huh.Form
 	tc     *session.PendingToolCall
 	choice approvalChoice
-	width  int
+	// candidates is the ordered list of approval choices the user can pick.
+	// Tracked locally so we can update am.choice from j/k navigation
+	// without forwarding to huh (which we don't, because we intercept
+	// Enter to drive the explicit two-step submit flow).
+	candidates    []approvalChoice
+	selected      int
+	width         int
+	submitPending bool
 	// done is set once the form reaches a terminal state, so the parent can
 	// read Choice without re-dispatching the form.
 	done bool
 }
 
 func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int) *approvalModel {
-	am := &approvalModel{tc: tc, width: width}
-
-	summary := approvalSummary(tc, sb, allowNetwork)
-
 	opts := []huh.Option[approvalChoice]{
 		huh.NewOption("Approve", choiceApprove),
 		huh.NewOption("Deny", choiceDeny),
-		huh.NewOption("Edit", choiceEdit),
+		huh.NewOption("Edit command/args", choiceEdit),
 		huh.NewOption("Always allow (save to config)", choiceAlways),
 		huh.NewOption("Allow this session", choiceSessionAllow),
 	}
 	if hasBackup {
 		opts = append(opts, huh.NewOption("Rollback last change", choiceRollback))
 	}
+	candidates := make([]approvalChoice, len(opts))
+	for i, o := range opts {
+		candidates[i] = o.Value
+	}
+	am := &approvalModel{
+		tc:         tc,
+		width:      width,
+		choice:     choiceApprove,
+		candidates: candidates,
+		selected:   0,
+	}
+
+	summary := approvalSummary(tc, sb, allowNetwork)
 
 	sel := huh.NewSelect[approvalChoice]().
 		Title(summary).
@@ -73,9 +89,8 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 	// to our explicit handling in the parent.
 	km.Quit = key.NewBinding(key.WithKeys())
 	km.Select.Submit = key.NewBinding(key.WithKeys("enter"))
-	// Enter both navigates options and submits on the last one; keep the
-	// default Next binding (enter, tab) so Enter moves through options and
-	// submits when on the last.
+	// Enter is handled in approvalModel.Update: first Enter arms the explicit
+	// submit step, second Enter confirms the selected action.
 
 	am.form = huh.NewForm(group).
 		WithTheme(huhtheme.WarmSunset()).
@@ -102,10 +117,35 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 		return am, nil
 	}
 	// Esc denies (aborts the form). Ctrl+C is intercepted by the parent.
-	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "esc" {
-		am.done = true
-		am.choice = choiceDeny
-		return am, nil
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		switch k.String() {
+		case "esc":
+			am.done = true
+			am.choice = choiceDeny
+			return am, nil
+		case "enter":
+			if am.submitPending {
+				am.choice = am.candidates[am.selected]
+				am.done = true
+				return am, nil
+			}
+			am.submitPending = true
+			return am, nil
+		case "up", "k":
+			if am.selected > 0 {
+				am.selected--
+				am.choice = am.candidates[am.selected]
+				am.submitPending = false
+			}
+			return am, nil
+		case "down", "j":
+			if am.selected < len(am.candidates)-1 {
+				am.selected++
+				am.choice = am.candidates[am.selected]
+				am.submitPending = false
+			}
+			return am, nil
+		}
 	}
 	updated, cmd := am.form.Update(msg)
 	if f, ok := updated.(*huh.Form); ok {
@@ -138,6 +178,13 @@ func (am *approvalModel) View() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(am.form.View())
+	if am.submitPending {
+		b.WriteString("\n")
+		b.WriteString(promptPrefixStyle.Render("▸ Submit selected action"))
+	} else {
+		b.WriteString("\n")
+		b.WriteString(mutedStyle.Render("  Submit selected action"))
+	}
 	return b.String()
 }
 
@@ -153,7 +200,7 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 	text := lipgloss.NewStyle()
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⚠ Approval needed"))
+	b.WriteString(titleStyle.Render("⚠ Approval needed (j/k, enter to select)"))
 	b.WriteString("\n")
 
 	if tc.Name == "shell.run" {

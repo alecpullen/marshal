@@ -152,6 +152,72 @@ func TestStatusLineShowsSwarmTokenBudget(t *testing.T) {
 	}
 }
 
+func TestStatusLineShowsEditCmdModeWhenEditingCommand(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.editingCommand = true
+
+	line := m.renderStatusLine(100)
+	if !strings.Contains(line, "edit cmd") {
+		t.Fatalf("status line missing 'edit cmd' mode:\n%s", line)
+	}
+}
+
+func TestStatusLineShowsHelpOpenModeWhenHelpIsOpen(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.helpOpen = true
+
+	line := m.renderStatusLine(100)
+	if !strings.Contains(line, "help open") {
+		t.Fatalf("status line missing 'help open' mode:\n%s", line)
+	}
+}
+
+func TestStatusLineShowsCompletingModeWhenPopupIsVisible(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.cmdPopup = newCompletionPopup([]completionItem{{Text: "/plan", Kind: completionCommand}})
+	m.cmdPopup.update("pl") // triggers filtering and sets visible=true
+
+	line := m.renderStatusLine(100)
+	if !strings.Contains(line, "completing") {
+		t.Fatalf("status line missing 'completing' mode:\n%s", line)
+	}
+}
+
+func TestStatusLinePreservesModeSegmentUnderCollapse(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.helpOpen = true
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: strings.Repeat("model", 8), Provider: strings.Repeat("provider", 6), LocalOnly: true})
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("very-long-activity ", 3), StartedAt: time.Unix(100, 0)})
+	m.now = func() time.Time { return time.Unix(105, 0) }
+	m.spinnerFrame = "⠋"
+	line := stripANSI(m.renderStatusLine(80))
+	if !strings.Contains(line, "help open") {
+		t.Fatalf("status line dropped mode segment under collapse:\n%s", line)
+	}
+}
+
+func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
+	m := newViewTestModel(t, 50, 24)
+	m.state.SetTrusted(true)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder-7b", Provider: "ollama", LocalOnly: true})
+	m.state.SetContextPack(contextpack.Pack{
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 1000, MaxTokens: 8000},
+		Sections:   []contextpack.Section{{Title: "ctx", EstimatedTokens: 1000}},
+	})
+	line := m.renderStatusLine(50)
+	// mode + route must remain; ctx segment should be dropped (priority 3 vs 0/1/2)
+	if !strings.Contains(line, "qwen") || !strings.Contains(line, "ollama") {
+		t.Fatalf("route dropped on narrow line:\n%s", line)
+	}
+	if strings.Contains(line, "ctx") {
+		t.Fatalf("low-priority ctx segment should have been dropped:\n%s", line)
+	}
+	// Nothing mid-truncated with a dangling partial token:
+	if strings.Contains(line, "ol") && !strings.Contains(line, "ollama") {
+		t.Fatalf("route was mid-truncated:\n%s", line)
+	}
+}
+
 func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})

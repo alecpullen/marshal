@@ -7,8 +7,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/help"
 )
 
 // ansiRe matches SGR (and empty) escape sequences that lipgloss emits.
@@ -22,6 +24,7 @@ const (
 	inputBorderRows     = 2
 	activityStripRows   = 1
 	transcriptFrameRows = 0
+	footerRows          = help.Rows
 	statusLineRows      = 1
 	completionPopupMax  = 8
 )
@@ -43,18 +46,26 @@ func (m Model) viewString() string {
 	if m.width == 0 || m.height == 0 {
 		return m.fallbackView()
 	}
+	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
+		return m.tooSmallView()
+	}
 	if m.settingsOpen {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.settingsModel.View())
 	}
 	if m.memoryOpen {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
 	}
+	if m.helpOpen {
+		return help.Overlay(m.width, m.height)
+	}
 
 	rows := []string{m.renderTranscriptFrame()}
-	if panel := renderSwarmPanel(m.state.SwarmProgress(), m.spinnerFrame, m.width); panel != "" {
+	// Swarm roles are tool-driven; use ActivityTool as the gating kind.
+	swarmSpinner := m.activeSpinnerFrame(session.ActivityTool)
+	if panel := renderSwarmPanel(m.state.SwarmProgress(), swarmSpinner, m.width); panel != "" {
 		rows = append(rows, panel)
 	}
-	rows = append(rows, m.renderInputArea(), m.renderStatusLine(m.width))
+	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
@@ -116,20 +127,58 @@ func (m Model) renderInputArea() string {
 func (m Model) renderActivityStrip() string {
 	available := max(m.width-4, 1)
 	activity := m.state.Activity()
+	spinner := m.activeSpinnerFrame(activity.Kind)
 	label := ""
 	switch activity.Kind {
 	case session.ActivityThinking:
-		label = fmt.Sprintf("%s thinking", m.spinnerFrame)
+		label = spinnerLabel(spinner, "thinking")
 	case session.ActivityTool:
 		elapsed := m.now().Sub(activity.StartedAt)
 		if elapsed < 0 {
 			elapsed = 0
 		}
-		label = fmt.Sprintf("%s %s · %s", m.spinnerFrame, activity.Label, formatElapsed(elapsed))
+		label = spinnerLabel(spinner, fmt.Sprintf("%s · %s", activity.Label, formatElapsed(elapsed)))
 	default:
 		return ""
 	}
 	return statusBusyStyle.Render(truncateRunes(label, available))
+}
+
+// renderHelpFooter returns the persistent keybinding hint bar shown below
+// the input area and above the status line.
+func (m Model) renderHelpFooter() string {
+	hints := help.FooterHints{
+		Busy:            m.busy,
+		EditingCommand:  m.editingCommand,
+		ApprovalPending: m.state.PendingApproval() != nil,
+		QuestionPending: m.state.PendingQuestion() != nil,
+		PopupOpen:       m.activeCompletionPopup() != nil,
+	}
+	return mutedStyle.Width(max(m.width, 1)).Render(help.Footer(hints))
+}
+
+// highlightMatches bolds runes at the given byte indices using the
+// active theme's AccentPrimary color. The indices are byte positions in
+// the (ASCII-dominated) text. For non-ASCII text the highlight may
+// misalign on multi-byte runes — acceptable for file paths/commands.
+func highlightMatches(text string, idxs []int) string {
+	if len(idxs) == 0 {
+		return text
+	}
+	iSet := make(map[int]bool, len(idxs))
+	for _, i := range idxs {
+		iSet[i] = true
+	}
+	var b strings.Builder
+	hl := lipgloss.NewStyle().Bold(true).Foreground(activeTheme.AccentPrimary)
+	for i, r := range []rune(text) {
+		if iSet[i] {
+			b.WriteString(hl.Render(string(r)))
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // renderCompletionPopup renders the active F18 completion popup as a
@@ -157,14 +206,31 @@ func (m Model) renderCompletionPopup() string {
 			marker = "▸ "
 			style = promptPrefixStyle
 		}
-		row := marker + matches[i].Text
+		row := marker + highlightMatches(matches[i].Text, matches[i].matchedIdxs)
 		if matches[i].Description != "" {
 			row += "  " + matches[i].Description
 		}
-		row = truncateRunes(row, available)
+		row = ansi.Cut(row, 0, available)
 		rows = append(rows, style.Render(row))
 	}
 	return strings.Join(rows, "\n")
+}
+
+func (m Model) tooSmallView() string {
+	boxW := max(m.rawWidth, 1)
+	boxH := max(m.rawHeight, 1)
+	msg := fmt.Sprintf("Terminal too small\nResize to at least %d×%d", minTerminalWidth, minTerminalHeight)
+	wrapped := ansi.Wrap(msg, boxW, "")
+	trimmedLines := strings.Split(wrapped, "\n")
+	if len(trimmedLines) > boxH {
+		trimmedLines = trimmedLines[:boxH]
+	}
+	for i, line := range trimmedLines {
+		trimmedLines[i] = ansi.Cut(line, 0, boxW)
+	}
+	return lipgloss.Place(boxW, boxH, lipgloss.Center, lipgloss.Center,
+		mutedStyle.Render(strings.Join(trimmedLines, "\n")),
+	)
 }
 
 func (m Model) fallbackView() string {

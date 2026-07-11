@@ -19,6 +19,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
@@ -41,8 +42,8 @@ type AgentRunner interface {
 }
 
 const (
-	minTerminalWidth  = 40
-	minTerminalHeight = 10
+	minTerminalWidth  = 80
+	minTerminalHeight = 24
 
 	doneDisplayDuration = 2 * time.Second
 )
@@ -100,14 +101,19 @@ type Model struct {
 	queuedCount    int
 
 	// New Layout State
-	width    int
-	height   int
-	viewport viewport.Model
+	rawWidth  int // unclamped terminal dimensions (gate check)
+	rawHeight int
+	width     int // clamped to ≥ minTerminalWidth/Height (internal geometry)
+	height    int
+	viewport  viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
 	thinkingExpanded   bool
 	viewportFollow     bool
+
+	// Help overlay (triggered by ?).
+	helpOpen bool
 
 	spinner           Spinner
 	spinnerFrame      string
@@ -253,7 +259,7 @@ func New(state *session.State, opts ...Option) Model {
 	input.KeyMap = km
 	input.Focus()
 
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	textStyle := lipgloss.NewStyle().Foreground(activeTheme.FGDefault)
 	styles := textarea.DefaultDarkStyles()
 	styles.Focused.Text = textStyle
 	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
@@ -275,8 +281,8 @@ func New(state *session.State, opts ...Option) Model {
 	// area stays on a single clean line.
 	styles.Focused.CursorLine = textStyle
 	styles.Blurred.CursorLine = lipgloss.NewStyle().Foreground(compat.AdaptiveColor{
-		Light: lipgloss.Color("245"),
-		Dark:  lipgloss.Color("7"),
+		Light: activeTheme.FGMuted,
+		Dark:  activeTheme.FGDefault,
 	})
 
 	// EndOfBuffer is the filler row(s) below the last line of text. The
@@ -352,6 +358,8 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m *Model) resize(width, height int) {
+	m.rawWidth = width
+	m.rawHeight = height
 	if width < minTerminalWidth {
 		width = minTerminalWidth
 	}
@@ -372,7 +380,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport lives inside a subtle border frame.
 	m.viewport.SetWidth(max(width-2, 1))
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-footerRows-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -448,6 +456,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Help overlay: when open, only ? and Esc close it; other keypresses are
+	// blocked so the overlay stays visible until dismissed. Non-key runtime
+	// messages must continue through Update so background state cannot freeze.
+	if m.helpOpen {
+		if k, ok := msg.(tea.KeyPressMsg); ok {
+			if k.String() == "?" || k.String() == "esc" {
+				m.helpOpen = false
+				return m, nil
+			}
+			return m, nil
+		}
+	}
+
 	// Inline approval chooser: when a tool call is pending, route every
 	// message (keypresses AND huh's internal nextField/nextGroup messages)
 	// to the approval form so selection navigation round-trips correctly.
@@ -507,7 +528,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.busy {
 			return m, nil
 		}
-		m.spinnerFrame = m.spinner.Next()
 		act := m.state.Activity()
 		if act.Kind == session.ActivityIdle && m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
 			m.lastActivityDone = m.now()
@@ -522,10 +542,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, tickCmd()
+	case spinnerTickMsg:
+		if !m.busy {
+			return m, nil
+		}
+		m.spinnerFrame = m.spinner.Next()
+		// The spinner tick is at 80ms (smoother than the 150ms layout tick);
+		// the activity strip and the in-progress thinking/tool rows read
+		// m.spinnerFrame via activeSpinnerFrame, so the viewport must
+		// re-render here or the animation stays at the 150ms cadence.
+		m.refreshViewport()
+		return m, spinnerTickCmd()
 	case tea.KeyPressMsg:
 		// Global hotkeys — input is always focused. (Approval and question
 		// pending states are routed above, before this switch.)
 		switch msg.String() {
+		case "?":
+			// Close-handler is in the helpOpen guard near the top of Update.
+			// Here we only handle the open path: open the overlay when the
+			// textarea is empty and we are not in the middle of an approval,
+			// question, or command edit. Otherwise the trailing
+			// m.input.Update(msg) below inserts ? as a literal char.
+			if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && m.state.PendingApproval() == nil {
+				m.helpOpen = true
+				return m, nil
+			}
 		case "esc":
 			// F18: dismiss the active completion popup first. Only if
 			// nothing is up do we fall through to cancelling the in-flight
@@ -658,7 +699,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			agentCtx, cancel := context.WithCancel(m.ctx)
 			m.agentCancel = cancel
-			return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd())
+			return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd(), spinnerTickCmd())
 		}
 	}
 
@@ -873,7 +914,7 @@ func (m Model) swarmPanelRows() int {
 }
 
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-footerRows-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -1135,10 +1176,10 @@ func (m *Model) refreshViewport() {
 	}
 
 	if inProgress.Active && inProgress.Reasoning != "" {
-		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.spinnerFrame, m.viewport.Width()))
+		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()))
 	}
 	if atc, ok := m.state.ActiveToolCall(); ok {
-		b.WriteString(renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.spinnerFrame, m.now(), m.viewport.Width()))
+		b.WriteString(renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.viewport.Width()))
 	}
 	if err := m.state.ProviderError(); err != nil {
 		b.WriteString(renderProviderError(err, m.viewport.Width()))
@@ -1155,6 +1196,7 @@ func (m *Model) refreshViewport() {
 
 type agentFinishedMsg struct{ err error }
 type agentTickMsg struct{}
+type spinnerTickMsg struct{}
 
 func runAgentCmd(ctx context.Context, runner AgentRunner, goal string) tea.Cmd {
 	return func() tea.Msg {
@@ -1167,6 +1209,37 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
 		return agentTickMsg{}
 	})
+}
+
+func spinnerTickCmd() tea.Cmd {
+	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+		return spinnerTickMsg{}
+	})
+}
+
+// spinnerLabel returns the formatted label with a leading spinner glyph, or
+// just the label when the spinner frame is empty. This avoids leading-space
+// jitter during the 200ms gate window when activeSpinnerFrame returns "".
+func spinnerLabel(spinner, label string) string {
+	if spinner == "" {
+		return label
+	}
+	return spinner + " " + label
+}
+
+// activeSpinnerFrame returns the current spinner frame glyph if the activity
+// has been running for at least 200ms, or "" when the activity just started.
+// This avoids a flash of the spinner glyph before the user can perceive the
+// activity. For ActivityIdle it always returns "".
+func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
+	if kind == session.ActivityIdle {
+		return ""
+	}
+	act := m.state.Activity()
+	if m.now().Sub(act.StartedAt) < 200*time.Millisecond {
+		return ""
+	}
+	return m.spinnerFrame
 }
 
 // cancelTurn cancels the in-flight agent turn, if any. Shared by Esc and
@@ -1287,7 +1360,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		m.busy = true
 		agentCtx, cancel := context.WithCancel(m.ctx)
 		m.agentCancel = cancel
-		return m, tea.Batch(runAgentCmd(agentCtx, m.swarmRunner, goal), tickCmd())
+		return m, tea.Batch(runAgentCmd(agentCtx, m.swarmRunner, goal), tickCmd(), spinnerTickCmd())
 
 	case "model":
 		if len(args) == 0 {
@@ -1358,54 +1431,56 @@ func visibleRunes(s string) int {
 	return ansi.StringWidth(s)
 }
 
+var activeTheme = theme.Load()
+
 var (
-	// Warm Sunset palette (256-color).
-	coralColor  = lipgloss.Color("209") // marshal, focused border, prompt
-	goldColor   = lipgloss.Color("214") // tool calls
-	tealColor   = lipgloss.Color("43")  // success
-	orangeColor = lipgloss.Color("172") // warning / risk
-	mauveColor  = lipgloss.Color("245") // blurred border
-	userColor   = lipgloss.Color("246") // user prompt
+	// Warm Sunset palette, sourced from the active theme.
+	coralColor  = activeTheme.AccentPrimary  // marshal, focused border, prompt
+	goldColor   = activeTheme.AccentTertiary // tool-call names (amber/gold 214)
+	tealColor   = activeTheme.StatusSuccess  // success state
+	orangeColor = activeTheme.StatusWarning  // warning/risk labels
+	mauveColor  = activeTheme.BorderMuted    // blurred input border / muted chrome
+	userColor   = activeTheme.UserPrompt     // user message prefix (medium grey)
 
 	// accentColor is the primary accent (coral). Retained name because it is
 	// referenced widely; successColor/warningColor/errorColor are retuned to
 	// the warm palette.
-	accentColor  = coralColor
-	violetColor  = lipgloss.Color("175") // markdown headings (warm magenta)
-	dimColor     = lipgloss.Color("244")
-	successColor = tealColor
-	warningColor = orangeColor
-	errorColor   = lipgloss.Color("203")
+	accentColor  = activeTheme.AccentPrimary
+	violetColor  = activeTheme.AccentSecondary
+	dimColor     = activeTheme.FGMuted
+	successColor = activeTheme.StatusSuccess
+	warningColor = activeTheme.StatusWarning
+	errorColor   = activeTheme.StatusError
 
-	mutedStyle      = lipgloss.NewStyle().Foreground(dimColor)
+	mutedStyle      = lipgloss.NewStyle().Foreground(activeTheme.FGMuted)
 	panelTitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")).
+			Foreground(activeTheme.FGEmphasis).
 			Bold(true)
 	thinkingLineStyle = lipgloss.NewStyle().
-				Foreground(dimColor).
+				Foreground(activeTheme.FGMuted).
 				Italic(true)
 
 	codeBorderStyle = lipgloss.NewStyle().
-			Foreground(dimColor).
+			Foreground(activeTheme.FGMuted).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(dimColor)
+			BorderForeground(activeTheme.FGMuted)
 	toolNameStyle = lipgloss.NewStyle().
-			Foreground(goldColor)
+			Foreground(activeTheme.AccentTertiary)
 	keyHintStyle = lipgloss.NewStyle().
-			Foreground(coralColor).
+			Foreground(activeTheme.AccentPrimary).
 			Bold(true)
 	riskLabelStyle = lipgloss.NewStyle().
-			Foreground(warningColor).
+			Foreground(activeTheme.StatusWarning).
 			Bold(true)
 	dimSeparator = " · "
 
 	inputBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(coralColor).
+			BorderForeground(activeTheme.AccentPrimary).
 			Padding(0, 1)
 
 	statusBarStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+			Foreground(activeTheme.FGDefault)
 )
 
 func compactTokenCount(tokens int) string {

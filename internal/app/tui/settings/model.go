@@ -7,12 +7,19 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
 )
 
-const sidebarWidth = 18
+var settingsTheme = theme.Load()
+
+const (
+	sidebarWidth      = 18
+	sidebarBreakpoint = 70
+)
 
 type Model struct {
 	state          *state
@@ -27,6 +34,7 @@ type Model struct {
 	footer         string
 	width          int
 	height         int
+	sidebarHidden  bool
 }
 
 func New(cfg config.Config, workingDir, projectCfgPath string) Model {
@@ -53,7 +61,11 @@ func (m Model) Init() tea.Cmd { return nil }
 func (m *Model) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	pw := width - sidebarWidth - 6
+	m.sidebarHidden = width > 0 && width < sidebarBreakpoint
+	pw := width - 6
+	if !m.sidebarHidden {
+		pw = width - sidebarWidth - 6
+	}
 	if pw < 30 {
 		pw = 30
 	}
@@ -110,9 +122,21 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			case "G":
 				m.cursor = len(m.sections) - 1
 				return *m, nil
-			case "tab", "l", "right":
+			case "tab":
 				m.paneFocused = true
 				return *m, nil
+			case "l", "right":
+				if m.sidebarHidden {
+					m.cursor = (m.cursor + 1) % len(m.sections)
+				} else {
+					m.paneFocused = true
+				}
+				return *m, nil
+			case "h", "left":
+				if m.sidebarHidden {
+					m.cursor = (m.cursor - 1 + len(m.sections)) % len(m.sections)
+					return *m, nil
+				}
 			}
 			return *m, nil
 		}
@@ -125,11 +149,26 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			switch k.String() {
 			case "shift+tab":
 				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
+					if m.sidebarHidden {
+						m.cursor = (m.cursor - 1 + len(m.sections)) % len(m.sections)
+						return *m, nil
+					}
 					m.paneFocused = false
 					return *m, nil
 				}
+			case "tab", "l", "right":
+				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
+					if m.sidebarHidden {
+						m.cursor = (m.cursor + 1) % len(m.sections)
+						return *m, nil
+					}
+				}
 			case "h", "left":
 				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
+					if m.sidebarHidden {
+						m.cursor = (m.cursor - 1 + len(m.sections)) % len(m.sections)
+						return *m, nil
+					}
 					m.paneFocused = false
 					return *m, nil
 				}
@@ -164,41 +203,50 @@ var (
 	sidebarActiveStyle = lipgloss.NewStyle().Bold(true).Reverse(true)
 	sidebarItemStyle   = lipgloss.NewStyle()
 	paneTitleStyle     = lipgloss.NewStyle().Bold(true)
-	warnStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	warnStyle          = lipgloss.NewStyle().Foreground(settingsTheme.StatusWarning)
 )
 
 func (m Model) View() string {
 	if m.helpOpen {
 		return m.helpView()
 	}
-	var sb strings.Builder
-	for i, sec := range m.sections {
-		label := " " + sec.title
-		if i == m.cursor {
-			marker := " "
-			if m.paneFocused {
-				marker = "▸"
-			}
-			label = sidebarActiveStyle.Render(marker + sec.title)
-		} else {
-			label = sidebarItemStyle.Render(label)
-		}
-		sb.WriteString(lipgloss.NewStyle().Width(sidebarWidth).Render(label))
-		sb.WriteString("\n")
-	}
-	sidebar := strings.TrimRight(sb.String(), "\n")
 
-	paneWidth := m.width - sidebarWidth - 6
+	paneWidth := m.width - 6
+	if !m.sidebarHidden {
+		paneWidth = m.width - sidebarWidth - 6
+	}
 	if paneWidth < 30 {
 		paneWidth = 30
 	}
+
 	header := paneTitleStyle.Render(m.sections[m.cursor].title)
 	if warns := warningsFor(m.sections[m.cursor].id, m.state.cfg); len(warns) > 0 {
 		header += "\n" + warnStyle.Render("⚠ "+strings.Join(warns, " · "))
 	}
 	pane := header + "\n\n" + m.activePane().View(paneWidth)
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "  ", pane)
+	var body string
+	if m.sidebarHidden {
+		body = pane
+	} else {
+		var sb strings.Builder
+		for i, sec := range m.sections {
+			label := " " + sec.title
+			if i == m.cursor {
+				marker := " "
+				if m.paneFocused {
+					marker = "▸"
+				}
+				label = sidebarActiveStyle.Render(marker + sec.title)
+			} else {
+				label = sidebarItemStyle.Render(label)
+			}
+			sb.WriteString(lipgloss.NewStyle().Width(sidebarWidth).Render(label))
+			sb.WriteString("\n")
+		}
+		sidebar := strings.TrimRight(sb.String(), "\n")
+		body = lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "  ", pane)
+	}
 
 	footer := "Ctrl+S save · Esc cancel · ? help"
 	if m.dirty() {
@@ -210,16 +258,23 @@ func (m Model) View() string {
 	if m.footer != "" {
 		footer = m.footer
 	}
+	footer = ansi.Cut(footer, 0, max(m.width, 1))
 	return body + "\n\n" + footer
 }
 
 func (m Model) helpView() string {
+	enterSection := "  Tab / l / →   enter section"
+	leaveSection := "  Shift+Tab / h back to sidebar"
+	if m.sidebarHidden {
+		enterSection = "  Tab           enter pane"
+		leaveSection = "  h / ←         previous section"
+	}
 	return strings.Join([]string{
 		"Settings keys",
 		"",
 		"  ↑/↓ or k/j    move (sidebar or list)",
-		"  Tab / l / →   enter section",
-		"  Shift+Tab / h back to sidebar",
+		enterSection,
+		leaveSection,
 		"  g / G         first / last section",
 		"  a             add entry (lists)",
 		"  e / Enter     edit entry (lists)",

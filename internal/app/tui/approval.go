@@ -30,9 +30,15 @@ const (
 // area (the transcript stays visible above). The form's select title carries
 // the command/risk/sandbox summary that renderApprovalPanel used to show.
 type approvalModel struct {
-	form          *huh.Form
-	tc            *session.PendingToolCall
-	choice        approvalChoice
+	form   *huh.Form
+	tc     *session.PendingToolCall
+	choice approvalChoice
+	// candidates is the ordered list of approval choices the user can pick.
+	// Tracked locally so we can update am.choice from j/k navigation
+	// without forwarding to huh (which we don't, because we intercept
+	// Enter to drive the explicit two-step submit flow).
+	candidates    []approvalChoice
+	selected      int
 	width         int
 	submitPending bool
 	// done is set once the form reaches a terminal state, so the parent can
@@ -41,10 +47,6 @@ type approvalModel struct {
 }
 
 func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int) *approvalModel {
-	am := &approvalModel{tc: tc, width: width, choice: choiceApprove}
-
-	summary := approvalSummary(tc, sb, allowNetwork)
-
 	opts := []huh.Option[approvalChoice]{
 		huh.NewOption("Approve", choiceApprove),
 		huh.NewOption("Deny", choiceDeny),
@@ -55,6 +57,19 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 	if hasBackup {
 		opts = append(opts, huh.NewOption("Rollback last change", choiceRollback))
 	}
+	candidates := make([]approvalChoice, len(opts))
+	for i, o := range opts {
+		candidates[i] = o.Value
+	}
+	am := &approvalModel{
+		tc:         tc,
+		width:      width,
+		choice:     choiceApprove,
+		candidates: candidates,
+		selected:   0,
+	}
+
+	summary := approvalSummary(tc, sb, allowNetwork)
 
 	sel := huh.NewSelect[approvalChoice]().
 		Title(summary).
@@ -110,13 +125,26 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 			return am, nil
 		case "enter":
 			if am.submitPending {
+				am.choice = am.candidates[am.selected]
 				am.done = true
 				return am, nil
 			}
 			am.submitPending = true
 			return am, nil
-		case "up", "down", "j", "k":
-			am.submitPending = false
+		case "up", "k":
+			if am.selected > 0 {
+				am.selected--
+				am.choice = am.candidates[am.selected]
+				am.submitPending = false
+			}
+			return am, nil
+		case "down", "j":
+			if am.selected < len(am.candidates)-1 {
+				am.selected++
+				am.choice = am.candidates[am.selected]
+				am.submitPending = false
+			}
+			return am, nil
 		}
 	}
 	updated, cmd := am.form.Update(msg)

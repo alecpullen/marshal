@@ -76,6 +76,12 @@ func (m Model) modeSegment() string {
 	if m.activeCompletionPopup() != nil {
 		return "completing"
 	}
+	if m.state.PendingApproval() != nil {
+		return "approval"
+	}
+	if m.state.PendingQuestion() != nil {
+		return "answering"
+	}
 	mode := m.forceMode
 	if mode == "" {
 		mode = "auto"

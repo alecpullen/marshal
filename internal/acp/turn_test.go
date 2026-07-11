@@ -11,7 +11,6 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
-	"marshal/internal/tools/registry"
 )
 
 // identityBeginWork is a TurnRuntime.BeginWork gate that passes through
@@ -416,12 +415,14 @@ func TestSessionCancelMakesPromptReturnCancelled(t *testing.T) {
 		Notify: func(method string, params any) error { return nil },
 	})
 
-	resultCh := make(chan any, 1)
-	errCh := make(chan error, 1)
+	type promptResult struct {
+		result any
+		err    error
+	}
+	promptRes := make(chan promptResult, 1)
 	go func() {
 		result, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
-		resultCh <- result
-		errCh <- err
+		promptRes <- promptResult{result: result, err: err}
 	}()
 	time.Sleep(50 * time.Millisecond)
 
@@ -431,13 +432,13 @@ func TestSessionCancelMakesPromptReturnCancelled(t *testing.T) {
 	}
 
 	select {
-	case result := <-resultCh:
-		if err := <-errCh; err != nil {
-			t.Fatalf("PromptTurn() error = %v, want nil", err)
+	case pr := <-promptRes:
+		if pr.err != nil {
+			t.Fatalf("PromptTurn() error = %v, want nil", pr.err)
 		}
-		r, ok := result.(PromptTurnResult)
+		r, ok := pr.result.(PromptTurnResult)
 		if !ok {
-			t.Fatalf("result type = %T, want PromptTurnResult", result)
+			t.Fatalf("result type = %T, want PromptTurnResult", pr.result)
 		}
 		if r.StopReason != "cancelled" {
 			t.Fatalf("StopReason = %q, want %q", r.StopReason, "cancelled")
@@ -651,9 +652,7 @@ func TestPromptTurnSuppressesInternalCustomEvents(t *testing.T) {
 					broker.Publish(session.EventActivityChanged, session.Event{Activity: &session.Activity{
 						Kind: session.ActivityThinking,
 					}})
-					broker.Publish(session.EventAuditAdded, session.Event{Audit: &registry.AuditEvent{
-						ToolName: "test",
-					}})
+					broker.Publish(session.EventAuditAdded, session.Event{Audit: auditEvent("test")})
 					broker.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{
 						Name: "test_tool",
 					}})

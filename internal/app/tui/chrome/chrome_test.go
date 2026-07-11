@@ -67,10 +67,13 @@ func TestOverlayCentersPanelOverBackground(t *testing.T) {
 	}
 }
 
-func TestOverlaySurvivesStyledBackground(t *testing.T) {
+func TestOverlayPreservesLineWidthOverStyledBackground(t *testing.T) {
 	styled := "\x1b[31m" + strings.Repeat("r", 40) + "\x1b[0m"
 	bg := strings.Join([]string{styled, styled, styled}, "\n")
 	out := Overlay(bg, "OK", 40, 3)
+	if !strings.Contains(out, "\x1b[31m") {
+		t.Fatalf("SGR sequence from background should survive overlay:\n%s", out)
+	}
 	plain := ansi.Strip(out)
 	if !strings.Contains(plain, "OK") {
 		t.Fatalf("panel missing over styled bg:\n%s", plain)

@@ -99,3 +99,55 @@ func TestArrowsMoveCursorAndSkipHeaders(t *testing.T) {
 		t.Fatalf("up should clamp at 0, got %d", m.cursor)
 	}
 }
+
+func TestAllowCustomPicksFilterValue(t *testing.T) {
+	items := []Item{
+		{Label: "Ollama", Value: "ollama"},
+		{Label: "OpenRouter", Value: "openrouter"},
+	}
+	m := New("Pick", "", items)
+	m.SetAllowCustom(true)
+
+	m.filter.SetValue("custom-model-id")
+	m.refilter()
+
+	msg := m.Update(tea.KeyPressMsg{Text: "enter"})
+	picked, ok := msg().(PickedMsg)
+	if !ok {
+		t.Fatalf("expected PickedMsg, got %T", msg())
+	}
+	if picked.Value != "custom-model-id" {
+		t.Fatalf("PickedMsg.Value = %q, want custom-model-id", picked.Value)
+	}
+}
+
+func TestAllowCustomExactMatchNoCustomItem(t *testing.T) {
+	items := []Item{
+		{Label: "Ollama", Value: "ollama"},
+	}
+	m := New("Pick", "", items)
+	m.SetAllowCustom(true)
+
+	m.filter.SetValue("ollama")
+	m.refilter()
+
+	for _, idx := range m.matches {
+		if idx == -1 {
+			t.Fatal("exact match should not show custom item")
+		}
+	}
+}
+
+func TestAllowCustomDisabledNoSentinel(t *testing.T) {
+	items := []Item{{Label: "Ollama", Value: "ollama"}}
+	m := New("Pick", "", items)
+
+	m.filter.SetValue("nonexistent")
+	m.refilter()
+
+	for _, idx := range m.matches {
+		if idx == -1 {
+			t.Fatal("allowCustom=false should never produce sentinel -1")
+		}
+	}
+}

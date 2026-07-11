@@ -118,7 +118,10 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			case "G":
 				m.cursor = len(m.sections) - 1
 				return *m, nil
-			case "tab", "l", "right":
+			case "tab":
+				m.paneFocused = true
+				return *m, nil
+			case "l", "right":
 				if m.sidebarHidden {
 					if m.cursor < len(m.sections)-1 {
 						m.cursor++
@@ -244,12 +247,18 @@ func (m Model) View() string {
 }
 
 func (m Model) helpView() string {
+	enterSection := "  Tab / l / →   enter section"
+	leaveSection := "  Shift+Tab / h back to sidebar"
+	if m.sidebarHidden {
+		enterSection = "  Tab           enter pane"
+		leaveSection = "  h / ←         previous section"
+	}
 	return strings.Join([]string{
 		"Settings keys",
 		"",
 		"  ↑/↓ or k/j    move (sidebar or list)",
-		"  Tab / l / →   enter section",
-		"  Shift+Tab / h back to sidebar",
+		enterSection,
+		leaveSection,
 		"  g / G         first / last section",
 		"  a             add entry (lists)",
 		"  e / Enter     edit entry (lists)",

@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/help"
@@ -216,9 +217,19 @@ func (m Model) renderCompletionPopup() string {
 }
 
 func (m Model) tooSmallView() string {
-	msg := fmt.Sprintf("Terminal too small — resize to at least %d×%d", minTerminalWidth, minTerminalHeight)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		mutedStyle.Render(msg),
+	boxW := max(m.rawWidth, 1)
+	boxH := max(m.rawHeight, 1)
+	msg := fmt.Sprintf("Terminal too small\nResize to at least %d×%d", minTerminalWidth, minTerminalHeight)
+	wrapped := ansi.Wrap(msg, boxW, "")
+	trimmedLines := strings.Split(wrapped, "\n")
+	if len(trimmedLines) > boxH {
+		trimmedLines = trimmedLines[:boxH]
+	}
+	for i, line := range trimmedLines {
+		trimmedLines[i] = ansi.Cut(line, 0, boxW)
+	}
+	return lipgloss.Place(boxW, boxH, lipgloss.Center, lipgloss.Center,
+		mutedStyle.Render(strings.Join(trimmedLines, "\n")),
 	)
 }
 

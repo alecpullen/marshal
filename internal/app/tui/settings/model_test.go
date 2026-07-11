@@ -171,6 +171,31 @@ func TestLeftRightCycleSectionsWhenSidebarHidden(t *testing.T) {
 	}
 }
 
+func TestTabFocusesPaneWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	if !m.sidebarHidden {
+		t.Fatal("setup: sidebar should be hidden")
+	}
+	m = keyPress(m, "tab")
+	if !m.paneFocused {
+		t.Fatal("tab should focus the active pane when the sidebar is hidden")
+	}
+}
+
+func TestHelpViewAdaptsWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.helpOpen = true
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Tab           enter pane") {
+		t.Fatalf("hidden-sidebar help should explain Tab enters pane:\n%s", view)
+	}
+	if strings.Contains(view, "back to sidebar") {
+		t.Fatalf("hidden-sidebar help should not mention a sidebar that is hidden:\n%s", view)
+	}
+}
+
 func TestSettingsViewKeepsFrameBounded(t *testing.T) {
 	cfg := config.Default()
 	cfg.AgentProfiles = map[string]routing.AgentProfile{

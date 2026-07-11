@@ -373,6 +373,22 @@ func TestTooSmallShowsResizeMessage(t *testing.T) {
 	}
 }
 
+func TestTooSmallViewUsesRawTerminalBounds(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.rawWidth = 20
+	m.rawHeight = 3
+	view := stripANSI(m.View().Content)
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	if len(lines) > m.rawHeight {
+		t.Fatalf("too-small view line count = %d, want <= raw height %d:\n%s", len(lines), m.rawHeight, view)
+	}
+	for _, line := range lines {
+		if visibleRunes(line) > m.rawWidth {
+			t.Fatalf("too-small view width = %d, want <= raw width %d: %q", visibleRunes(line), m.rawWidth, line)
+		}
+	}
+}
+
 func TestTooSmallGateFiresOnActualResize(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	m.resize(60, 20) // user resizes to a small terminal — production path

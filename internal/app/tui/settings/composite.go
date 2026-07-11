@@ -11,12 +11,12 @@ import (
 type compositePane struct {
 	form       *scalarPane
 	collection *collectionPane
-	mapEditors []*mapEditor
+	mapEditors []*mapEditor[string]
 	focusIdx   int
 	width      int
 }
 
-func newCompositePane(form *scalarPane, collection *collectionPane, maps ...*mapEditor) *compositePane {
+func newCompositePane(form *scalarPane, collection *collectionPane, maps ...*mapEditor[string]) *compositePane {
 	return &compositePane{form: form, collection: collection, mapEditors: maps}
 }
 
@@ -24,7 +24,7 @@ func (p *compositePane) AtFirstFocus() bool { return p.focusIdx == 0 }
 
 func (p *compositePane) Init() tea.Cmd { return p.form.Init() }
 
-func (p *compositePane) activeMap() *mapEditor {
+func (p *compositePane) activeMap() *mapEditor[string] {
 	if p.focusIdx < 2 {
 		return nil
 	}

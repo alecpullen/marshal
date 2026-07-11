@@ -152,6 +152,37 @@ func TestStatusLineShowsSwarmTokenBudget(t *testing.T) {
 	}
 }
 
+func TestStatusLineShowsEditCmdModeWhenEditingCommand(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.editingCommand = true
+
+	line := m.renderStatusLine(100)
+	if !strings.Contains(line, "edit cmd") {
+		t.Fatalf("status line missing 'edit cmd' mode:\n%s", line)
+	}
+}
+
+func TestStatusLineShowsHelpOpenModeWhenHelpIsOpen(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.helpOpen = true
+
+	line := m.renderStatusLine(100)
+	if !strings.Contains(line, "help open") {
+		t.Fatalf("status line missing 'help open' mode:\n%s", line)
+	}
+}
+
+func TestStatusLineShowsCompletingModeWhenPopupIsVisible(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.cmdPopup = newCompletionPopup([]completionItem{{Text: "/plan", Kind: completionCommand}})
+	m.cmdPopup.update("pl") // triggers filtering and sets visible=true
+
+	line := m.renderStatusLine(100)
+	if !strings.Contains(line, "completing") {
+		t.Fatalf("status line missing 'completing' mode:\n%s", line)
+	}
+}
+
 func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})

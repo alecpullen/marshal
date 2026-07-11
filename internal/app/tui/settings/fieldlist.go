@@ -6,6 +6,8 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"marshal/internal/app/tui/chrome"
 )
 
 var (
@@ -16,7 +18,6 @@ var (
 	flErrStyle    = lipgloss.NewStyle().Foreground(settingsTheme.StatusError)
 	flOnStyle     = lipgloss.NewStyle().Foreground(settingsTheme.StatusSuccess)
 	flOffStyle    = lipgloss.NewStyle().Foreground(settingsTheme.FGMuted)
-	flMoreStyle   = lipgloss.NewStyle().Foreground(settingsTheme.FGMuted)
 )
 
 // fieldList renders and edits a vertical list of typed rows. It is the one
@@ -419,32 +420,5 @@ func (fl *fieldList) View() string {
 // clipLines windows lines to at most height rows, keeping focusLine visible,
 // with ↑/↓ more indicators occupying the first/last row when clipped.
 func clipLines(lines []string, focusLine, height int) string {
-	if height <= 0 || len(lines) <= height {
-		return strings.Join(lines, "\n")
-	}
-	inner := height - 2 // reserve rows for the two indicators
-	if inner < 1 {
-		inner = 1
-	}
-	start := focusLine - inner/2
-	if start < 0 {
-		start = 0
-	}
-	if start+inner > len(lines) {
-		start = len(lines) - inner
-	}
-	out := make([]string, 0, height)
-	if start > 0 {
-		out = append(out, flMoreStyle.Render("  ↑ more"))
-	} else {
-		out = append(out, "")
-	}
-	out = append(out, lines[start:start+inner]...)
-	if start+inner < len(lines) {
-		out = append(out, flMoreStyle.Render("  ↓ more"))
-	}
-	if len(out) > height {
-		out = out[:height]
-	}
-	return strings.Join(out, "\n")
+	return chrome.ClipLines(lines, focusLine, height, settingsTheme)
 }

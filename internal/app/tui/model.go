@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
@@ -117,6 +120,10 @@ type Model struct {
 
 	// Help overlay (triggered by ?).
 	helpOpen bool
+
+	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
+	pickerModel   *picker.Model
+	pickerCommand string // which command opened the modal: "model", "mode", "branches", "rewind"
 
 	spinner           Spinner
 	spinnerFrame      string
@@ -449,6 +456,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.memoryModel, cmd = m.memoryModel.Update(msg)
 		return m, cmd
+	}
+
+	// Picker modal: handle PickedMsg/CancelledMsg first, then route key
+	// messages to the picker while it's open (focus trap). Non-key messages
+	// (ticks, agent events) keep flowing to normal handlers so background
+	// work continues.
+	switch pm := msg.(type) {
+	case picker.PickedMsg:
+		cmdName := m.pickerCommand
+		m.pickerModel = nil
+		m.pickerCommand = ""
+		switch {
+		case cmdName == "" || pm.Value == "":
+			m.refreshViewport()
+			return m, nil
+		case cmdName == "model":
+			// preset names may contain spaces; apply directly instead of
+			// round-tripping through the arg splitter
+			m.switchModelPreset(pm.Value)
+			m.refreshViewport()
+			return m, nil
+		case cmdName == "mode":
+			return m.dispatchCommand("/" + pm.Value)
+		default:
+			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
+		}
+	case picker.CancelledMsg:
+		m.pickerModel = nil
+		m.pickerCommand = ""
+		m.refreshViewport()
+		return m, nil
+	}
+	if m.pickerModel != nil {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			return m, m.pickerModel.Update(msg)
+		}
+		// non-key messages (ticks, agent events) keep flowing to the
+		// normal handlers below so background work continues.
 	}
 
 	// Help overlay: when open, only ? and Esc close it; other keypresses are
@@ -1297,6 +1342,26 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Bare picker-backed commands open a modal instead of running the
+	// handler; with arguments (or when there is nothing to pick) they fall
+	// through to the handler unchanged.
+	if len(args) == 0 {
+		switch cmd.Name {
+		case "rewind":
+			if items := m.rewindPickerItems(); len(items) > 0 {
+				m.openPicker("rewind", "Rewind to turn", "starts a new branch", items, "")
+				m.refreshViewport()
+				return m, nil
+			}
+		case "branches":
+			if items := m.branchesPickerItems(); len(items) > 1 {
+				m.openPicker("branches", "Switch branch", "", items, "")
+				m.refreshViewport()
+				return m, nil
+			}
+		}
+	}
+
 	msg := cmd.Handler(m.state, args)
 
 	if msg != "" {
@@ -1357,6 +1422,17 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 
+	case "mode":
+		if len(args) > 0 {
+			switch v := strings.ToLower(args[0]); v {
+			case "ask", "edit", "auto":
+				return m.dispatchCommand("/" + v)
+			}
+		}
+		m.openPicker("mode", "Interaction mode", "", m.modePickerItems(), "")
+		m.refreshViewport()
+		return m, nil
+
 	case "swarm":
 		goal := strings.TrimSpace(strings.Join(args, " "))
 		if goal == "" {
@@ -1378,43 +1454,172 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(runAgentCmd(agentCtx, m.swarmRunner, goal), tickCmd(), spinnerTickCmd())
 
 	case "model":
-		if len(args) == 0 {
-			m.state.AddMessage(session.RoleSystem, "Usage: /model <preset-name>. Available presets are listed in your config.toml.", session.ContentTypePlain)
+		presets := m.state.Config.Models.Presets
+		if len(presets) == 0 {
+			m.state.AddMessage(session.RoleSystem, "No model presets configured. Add one in /settings → Model Presets.", session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		}
-		if m.configReloader != nil {
-			presetName := args[0]
-			newCfg := m.state.Config
-			preset, ok := newCfg.Models.Presets[presetName]
-			if !ok {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown preset: %s", presetName), session.ContentTypePlain)
+		if len(args) > 0 {
+			if _, ok := presets[args[0]]; ok {
+				m.switchModelPreset(args[0])
 				m.refreshViewport()
 				return m, nil
 			}
-			newCfg.Profile.Default = "switched"
-			newCfg.AgentProfiles = map[string]routing.AgentProfile{
-				"switched": {
-					Name: "switched",
-					Roles: map[routing.AgentRole]string{
-						routing.RoleImplementer: presetName,
-						routing.RoleRepoScout:   presetName,
-						routing.RoleKnowledge:   presetName,
-					},
-				},
-			}
-			if err := m.configReloader(newCfg); err != nil {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
-			} else {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
-			}
 		}
+		// bare, or an argument that doesn't resolve: open the picker,
+		// pre-filtered with whatever was typed
+		m.openPicker("model", "Switch model", "session only — /settings to persist",
+			m.modelPickerItems(), strings.Join(args, " "))
 		m.refreshViewport()
 		return m, nil
 
 	default:
 		m.refreshViewport()
 		return m, nil
+	}
+}
+
+// openPicker opens a command modal. The picked value is delivered as
+// picker.PickedMsg and re-enters dispatchCommand for pickerCommand, so
+// command semantics stay in one place.
+func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, prefilter string) {
+	p := picker.New(title, footer, items)
+	if prefilter != "" {
+		p.SetFilter(prefilter)
+	}
+	m.pickerModel = p
+	m.pickerCommand = cmdName
+}
+
+// switchModelPreset applies a session-only model switch by routing every
+// role of a synthetic "switched" profile at the preset. Nothing is written
+// to config files; /settings owns persistence.
+func (m *Model) switchModelPreset(presetName string) {
+	if m.configReloader == nil {
+		return
+	}
+	newCfg := m.state.Config
+	preset, ok := newCfg.Models.Presets[presetName]
+	if !ok {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown preset: %s", presetName), session.ContentTypePlain)
+		return
+	}
+	newCfg.Profile.Default = "switched"
+	newCfg.AgentProfiles = map[string]routing.AgentProfile{
+		"switched": {
+			Name: "switched",
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: presetName,
+				routing.RoleRepoScout:   presetName,
+				routing.RoleKnowledge:   presetName,
+			},
+		},
+	}
+	if err := m.configReloader(newCfg); err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
+	} else {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
+	}
+}
+
+// modelPickerItems builds sorted picker items from configured model presets.
+func (m *Model) modelPickerItems() []picker.Item {
+	presets := m.state.Config.Models.Presets
+	names := make([]string, 0, len(presets))
+	for n := range presets {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		pi, pj := presets[names[i]], presets[names[j]]
+		if pi.Provider != pj.Provider {
+			return pi.Provider < pj.Provider
+		}
+		return names[i] < names[j]
+	})
+	current := m.state.ActiveRoute().Preset
+	items := make([]picker.Item, 0, len(names))
+	for _, n := range names {
+		p := presets[n]
+		var badges []string
+		if n == current {
+			badges = append(badges, "● now")
+		}
+		if p.LocalOnly {
+			badges = append(badges, "local")
+		}
+		items = append(items, picker.Item{
+			Group:  p.Provider,
+			Label:  n,
+			Detail: p.Provider + "/" + p.Model,
+			Badge:  strings.Join(badges, " "),
+			Value:  n,
+		})
+	}
+	return items
+}
+
+// rewindPickerItems builds picker items from user turns, newest first.
+// The most recent turn carries a "● last" badge and is the default cursor target.
+func (m *Model) rewindPickerItems() []picker.Item {
+	var turns []session.Message
+	for _, msg := range m.state.Messages() {
+		if msg.Role == session.RoleUser {
+			turns = append(turns, msg)
+		}
+	}
+	items := make([]picker.Item, 0, len(turns))
+	for i := len(turns) - 1; i >= 0; i-- {
+		badge := ""
+		if i == len(turns)-1 {
+			badge = "● last"
+		}
+		items = append(items, picker.Item{
+			Label:  fmt.Sprintf("turn %d", i+1),
+			Detail: truncateRunes(strings.ReplaceAll(turns[i].Content, "\n", " "), 50),
+			Badge:  badge,
+			Value:  strconv.Itoa(i + 1),
+		})
+	}
+	return items
+}
+
+// branchesPickerItems builds picker items from session branches.
+// The current branch carries a "● now" badge; the picker only opens when
+// there are at least two branches (a meaningful switching target).
+func (m *Model) branchesPickerItems() []picker.Item {
+	leaves := m.state.Branches()
+	cur := m.state.LeafID()
+	items := make([]picker.Item, 0, len(leaves))
+	for i, id := range leaves {
+		badge := ""
+		if id == cur {
+			badge = "● now"
+		}
+		items = append(items, picker.Item{
+			Label:  fmt.Sprintf("branch %d", i+1),
+			Detail: fmt.Sprintf("leaf %d", id),
+			Badge:  badge,
+			Value:  strconv.Itoa(i + 1),
+		})
+	}
+	return items
+}
+
+// modePickerItems builds picker items for the three interaction modes.
+// The current mode (or "auto" when forceMode is empty) carries a "● now" badge.
+func (m *Model) modePickerItems() []picker.Item {
+	current := m.forceMode // "ask", "edit", or "" (auto)
+	badge := func(v string) string {
+		if v == current || (v == "auto" && current == "") {
+			return "● now"
+		}
+		return ""
+	}
+	return []picker.Item{
+		{Label: "Ask", Detail: "read-only, no planning", Badge: badge("ask"), Value: "ask"},
+		{Label: "Edit", Detail: "planning + full tools", Badge: badge("edit"), Value: "edit"},
+		{Label: "Auto", Detail: "classify each turn", Badge: badge("auto"), Value: "auto"},
 	}
 }
 

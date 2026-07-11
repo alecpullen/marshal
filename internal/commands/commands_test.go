@@ -433,3 +433,13 @@ func TestDiffCommandRegistered(t *testing.T) {
 		t.Fatalf("diff command description wrong: %q", cmd.Description)
 	}
 }
+
+func TestModeCommandRegistered(t *testing.T) {
+	reg := New()
+	if err := RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	if _, ok := reg.Lookup("mode"); !ok {
+		t.Fatal("/mode should be registered")
+	}
+}

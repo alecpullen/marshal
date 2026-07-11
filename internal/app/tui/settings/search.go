@@ -6,6 +6,8 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"marshal/internal/app/tui/fuzzy"
 )
 
 type searchHit struct {
@@ -40,33 +42,19 @@ func buildRegistry(specs []sectionSpec, panes []*paneStack) []searchHit {
 	return out
 }
 
-// fuzzyFilter matches query case-insensitively against "section field
-// keywords". Substring hits rank before subsequence hits.
+// fuzzyFilter matches query against "section field keywords" via the shared
+// fuzzy.Rank matcher.
 func fuzzyFilter(hits []searchHit, query string) []searchHit {
-	q := strings.ToLower(strings.TrimSpace(query))
-	if q == "" {
-		return hits
+	hay := make([]string, len(hits))
+	for i, h := range hits {
+		hay[i] = h.sectionTitle + " " + h.fieldTitle + " " + strings.Join(h.keywords, " ")
 	}
-	var sub, seq []searchHit
-	for _, h := range hits {
-		hay := strings.ToLower(h.sectionTitle + " " + h.fieldTitle + " " + strings.Join(h.keywords, " "))
-		if strings.Contains(hay, q) {
-			sub = append(sub, h)
-		} else if isSubsequence(q, hay) {
-			seq = append(seq, h)
-		}
+	idx := fuzzy.Rank(query, hay)
+	out := make([]searchHit, 0, len(idx))
+	for _, i := range idx {
+		out = append(out, hits[i])
 	}
-	return append(sub, seq...)
-}
-
-func isSubsequence(needle, hay string) bool {
-	i := 0
-	for _, c := range hay {
-		if i < len(needle) && rune(needle[i]) == c {
-			i++
-		}
-	}
-	return i == len(needle)
+	return out
 }
 
 type searchState struct {

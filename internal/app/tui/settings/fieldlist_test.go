@@ -180,3 +180,46 @@ func TestFieldListScrollsToKeepCursorVisible(t *testing.T) {
 		t.Fatalf("expected ↑ more indicator when scrolled down, got:\n%s", view)
 	}
 }
+
+func TestEnumCycleWithArrows(t *testing.T) {
+	v := "deny"
+	fl := newFieldList(func() []*field {
+		return []*field{enumField("t.e", "Guardrail", []string{"deny", "confirm", "allow"},
+			func() string { return v }, func(s string) { v = s })}
+	})
+	fl.SetSize(60, 20)
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if v != "confirm" {
+		t.Fatalf("right should cycle deny→confirm, got %q", v)
+	}
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	if v != "deny" {
+		t.Fatalf("left should cycle back to deny, got %q", v)
+	}
+}
+
+func TestEnumPickerSelectsOption(t *testing.T) {
+	v := "deny"
+	fl := newFieldList(func() []*field {
+		return []*field{enumField("t.e", "Guardrail", []string{"deny", "confirm", "allow"},
+			func() string { return v }, func(s string) { v = s })}
+	})
+	fl.SetSize(60, 20)
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open picker
+	if !fl.Editing() {
+		t.Fatal("enter should open the picker")
+	}
+	view := fl.View()
+	if !strings.Contains(view, "confirm") || !strings.Contains(view, "allow") {
+		t.Fatalf("picker should list all options, got:\n%s", view)
+	}
+	fl.Update(kp("j"))
+	fl.Update(kp("j"))
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if v != "allow" {
+		t.Fatalf("picker should apply allow, got %q", v)
+	}
+	if fl.Editing() {
+		t.Fatal("picker should close after apply")
+	}
+}

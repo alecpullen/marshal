@@ -544,7 +544,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	state.SetPendingApproval(tc)
 
 	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
 	view := stripANSI(m.View().Content)
@@ -555,8 +555,9 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("View() missing proposed command")
 	}
 
-	// 1. Test Deny: navigate to "Deny" (one Down) and submit.
+	// 1. Test Deny: navigate to "Deny", then press Enter twice to confirm.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
@@ -574,10 +575,11 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// Set up again for Approve.
 	state.SetPendingApproval(tc)
 	m = New(state)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 2. Test Approve: the first option is already focused, submit with Enter.
+	// 2. Test Approve: press Enter twice to confirm.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
@@ -592,12 +594,13 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// Set up again for Edit.
 	state.SetPendingApproval(tc)
 	m = New(state)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 3. Test Edit: navigate to "Edit" (two Down) and submit.
+	// 3. Test Edit: navigate to "Edit", then press Enter twice to confirm.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !m.editingCommand {
@@ -630,13 +633,14 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// Set up again for Always Allow.
 	state.SetPendingApproval(tc)
 	m = New(state)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 4. Test Always Allow: navigate to the 4th option (three Down) and submit.
+	// 4. Test Always Allow: navigate to the 4th option, then press Enter twice.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
@@ -651,14 +655,15 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// Set up again for Allow this session.
 	state.SetPendingApproval(tc)
 	m = New(state)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 5. Test Allow this session: navigate to the 5th option (four Down) and submit.
+	// 5. Test Allow this session: navigate to the 5th option, then press Enter twice.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
@@ -1248,7 +1253,7 @@ func TestSettingsNavigationThroughMainModel(t *testing.T) {
 	}
 	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
@@ -1347,6 +1352,8 @@ func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
 	}
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if m.settingsModel.BoolValue("Local only") {
@@ -1674,17 +1681,18 @@ func TestApprovalKeyHandlingStillWorksInline(t *testing.T) {
 	})
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case decision := <-ch:
 		if !decision.Approved {
-			t.Fatal("approval decision = false, want true (Enter should approve)")
+			t.Fatal("approval decision = false, want true (Enter twice should approve)")
 		}
 	default:
-		t.Fatal("no decision sent on ResponseChan after Enter")
+		t.Fatal("no decision sent on ResponseChan after Enter twice")
 	}
 	if state.PendingApproval() != nil {
-		t.Fatal("PendingApproval still set after Enter, want nil")
+		t.Fatal("PendingApproval still set after Enter twice, want nil")
 	}
 }
 
@@ -1858,6 +1866,7 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = updated.(Model)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !m.editingCommand {

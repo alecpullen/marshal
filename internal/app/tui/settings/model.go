@@ -153,6 +153,12 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			switch k.String() {
 			case "shift+tab":
 				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
+					if m.sidebarHidden {
+						if m.cursor > 0 {
+							m.cursor--
+						}
+						return *m, nil
+					}
 					m.paneFocused = false
 					return *m, nil
 				}

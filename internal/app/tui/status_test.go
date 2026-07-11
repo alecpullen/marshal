@@ -183,6 +183,19 @@ func TestStatusLineShowsCompletingModeWhenPopupIsVisible(t *testing.T) {
 	}
 }
 
+func TestStatusLinePreservesModeSegmentUnderCollapse(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.helpOpen = true
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: strings.Repeat("model", 8), Provider: strings.Repeat("provider", 6), LocalOnly: true})
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("very-long-activity ", 3), StartedAt: time.Unix(100, 0)})
+	m.now = func() time.Time { return time.Unix(105, 0) }
+	m.spinnerFrame = "⠋"
+	line := stripANSI(m.renderStatusLine(80))
+	if !strings.Contains(line, "help open") {
+		t.Fatalf("status line dropped mode segment under collapse:\n%s", line)
+	}
+}
+
 func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
 	m := newViewTestModel(t, 50, 24)
 	m.state.SetTrusted(true)

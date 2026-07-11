@@ -211,6 +211,20 @@ func TestPaneFocusedLeftMovesPreviousSectionWhenSidebarHidden(t *testing.T) {
 	}
 }
 
+func TestPaneFocusedShiftTabMovesPreviousSectionWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.cursor = 2
+	m.paneFocused = true
+	m = keyPress(m, "shift+tab")
+	if m.cursor != 1 {
+		t.Fatalf("shift+tab in pane-focused hidden-sidebar mode should move to previous section, got %d", m.cursor)
+	}
+	if !m.paneFocused {
+		t.Fatal("shift+tab in pane-focused hidden-sidebar mode should keep pane focus")
+	}
+}
+
 func TestPendingCancelFooterStaysBoundedWhenSidebarHidden(t *testing.T) {
 	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
 	m.SetSize(50, 40)

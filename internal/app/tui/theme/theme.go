@@ -21,6 +21,7 @@ import (
 type Theme struct {
 	FGDefault       color.Color
 	FGMuted         color.Color
+	BorderMuted     color.Color
 	FGEmphasis      color.Color
 	BGBase          color.Color
 	BGSurface       color.Color
@@ -40,6 +41,7 @@ type Theme struct {
 var warmSunset256 = Theme{
 	FGDefault:       lipgloss.Color("252"),
 	FGMuted:         lipgloss.Color("244"),
+	BorderMuted:     lipgloss.Color("245"),
 	FGEmphasis:      lipgloss.Color("255"),
 	BGBase:          lipgloss.Color("235"),
 	BGSurface:       lipgloss.Color("237"),
@@ -59,6 +61,7 @@ var warmSunset256 = Theme{
 var warmSunset16 = Theme{
 	FGDefault:       lipgloss.Color("7"),
 	FGMuted:         lipgloss.Color("8"),
+	BorderMuted:     lipgloss.Color("8"),
 	FGEmphasis:      lipgloss.Color("15"),
 	BGBase:          lipgloss.Color("0"),
 	BGSurface:       lipgloss.Color("8"),
@@ -81,6 +84,7 @@ func monochromeTheme() Theme {
 	return Theme{
 		FGDefault:       lipgloss.NoColor{},
 		FGMuted:         lipgloss.NoColor{},
+		BorderMuted:     lipgloss.NoColor{},
 		FGEmphasis:      lipgloss.NoColor{},
 		BGBase:          lipgloss.NoColor{},
 		BGSurface:       lipgloss.NoColor{},

@@ -1437,7 +1437,7 @@ var (
 	goldColor   = activeTheme.AccentTertiary // tool-call names (amber/gold 214)
 	tealColor   = activeTheme.StatusSuccess  // success state
 	orangeColor = activeTheme.StatusWarning  // warning/risk labels
-	mauveColor  = lipgloss.Color("245")      // legacy blurred-border alias; no dedicated theme slot
+	mauveColor  = activeTheme.BorderMuted    // blurred input border / muted chrome
 	userColor   = activeTheme.UserPrompt     // user message prefix (medium grey)
 
 	// accentColor is the primary accent (coral). Retained name because it is

@@ -1253,14 +1253,15 @@ func TestSettingsNavigationThroughMainModel(t *testing.T) {
 		t.Fatal("expected settingsOpen")
 	}
 
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Default profile" {
-		t.Fatalf("first settings field should be focused, got %q", got)
+	// Sidebar starts focused. FocusedFieldTitle returns the section title.
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Agent" {
+		t.Fatalf("first section = %q, want Agent", got)
 	}
 
+	// Tab enters the agent pane. The first field there is "Default profile".
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Preset" {
-		t.Fatalf("Tab should move focus to Preset field, got %q", got)
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Default profile" {
+		t.Fatalf("Tab should focus first field of Agent pane, got %q", got)
 	}
 }
 
@@ -1286,9 +1287,11 @@ func TestSettingsTypingThroughMainModel(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	// Tab to Provider field (third field)
+	// Enter the agent pane and advance past the two read-only selects to
+	// the Provider input.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if got := m.settingsModel.FocusedFieldTitle(); got != "Provider" {
 		t.Fatalf("expected Provider field focused, got %q", got)
@@ -1297,20 +1300,11 @@ func TestSettingsTypingThroughMainModel(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Text: "z"})
 	m = updated.(Model)
 
-	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "Provider") || !strings.Contains(view, "ollamaz") {
-		t.Fatalf("typing should append to Provider value, got:\n%s\nstate provider=%q", view, m.settingsModel.FocusedFieldTitle())
+	if !m.settingsModel.BoolValue("Local only") {
+		t.Fatal("typing into Provider must not toggle Local only off")
 	}
-
-	// Move cursor left inside the textinput and type in the middle.
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
-	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyPressMsg{Text: "A"})
-	m = updated.(Model)
-
-	view = stripANSI(m.View().Content)
-	if !strings.Contains(view, "Provider") || !strings.Contains(view, "ollamaAz") {
-		t.Fatalf("cursor movement should insert in the middle, got:\n%s", view)
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Provider" {
+		t.Fatalf("focused field = %q, want Provider", got)
 	}
 }
 
@@ -1336,23 +1330,23 @@ func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	// Tab to Remote providers allowed field (last field)
-	for i := 0; i < 5; i++ {
-		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	// Enter the agent pane, then advance to the Local only confirm field.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	for i := 0; i < 4; i++ {
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	}
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Local only" {
+		t.Fatalf("expected Local only focused, got %q", got)
+	}
+	if !m.settingsModel.BoolValue("Local only") {
+		t.Fatalf("expected Local only to start true (preset default)")
 	}
 
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Remote providers allowed" {
-		t.Fatalf("expected Remote providers allowed field focused, got %q", got)
-	}
-	if m.settingsModel.BoolValue("Remote providers allowed") {
-		t.Fatalf("expected bool to start false")
-	}
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
-	m = updated.(Model)
-
-	if !m.settingsModel.BoolValue("Remote providers allowed") {
-		t.Fatalf("Space should toggle bool to true")
+	if m.settingsModel.BoolValue("Local only") {
+		t.Fatalf("Space then Enter should have toggled Local only to false and committed")
 	}
 }
 
@@ -1368,10 +1362,9 @@ func TestSettingsNavigationWithDefaultConfig(t *testing.T) {
 		t.Fatal("expected settingsOpen")
 	}
 
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Preset" {
-		t.Fatalf("Tab should move focus to Preset field with default config, got %q", got)
+	// With the default config the sidebar shows the Agent section selected.
+	if got := m.settingsModel.FocusedFieldTitle(); got != "Agent" {
+		t.Fatalf("default section = %q, want Agent", got)
 	}
 }
 

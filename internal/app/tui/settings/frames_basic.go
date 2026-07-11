@@ -1,6 +1,10 @@
 package settings
 
-import "time"
+import (
+	"fmt"
+	"strconv"
+	"time"
+)
 
 func privacyFrame(s *state) *frame {
 	return newFrame("Privacy", func() []*field {
@@ -53,7 +57,7 @@ func commandsFrame(s *state) *frame {
 			scalarField("project.name", "Project name",
 				func() string { return s.cfg.Project.Name },
 				func(v string) error { s.cfg.Project.Name = v; return nil }),
-			listDrill("project.languages", "Languages", &s.cfg.Project.Languages),
+			listDrillExt("project.languages", "Languages", &s.cfg.Project.Languages, listStringOpts(&s.cfg.Project.Languages)),
 		}
 	})
 }
@@ -70,7 +74,7 @@ func indexingFrame(s *state) *frame {
 			{id: "indexing.summarise", title: "Summarise files", kind: kindToggle,
 				getBool: func() bool { return s.cfg.Indexing.SummariseFiles },
 				setBool: func(v bool) { s.cfg.Indexing.SummariseFiles = v }},
-			listDrill("indexing.ignore", "Ignore patterns", &s.cfg.Indexing.Ignore),
+			listDrillExt("indexing.ignore", "Ignore patterns", &s.cfg.Indexing.Ignore, listStringOpts(&s.cfg.Indexing.Ignore)),
 		}
 	})
 }
@@ -117,4 +121,53 @@ func swarmFrame(s *state) *frame {
 func diagnosticsFrame(s *state) *frame {
 	drill := mapStringDrill("diagnostics.commands", "Commands", &s.cfg.Diagnostics.Commands)
 	return rootDrillFrame("Diagnostics", drill)
+}
+
+func listStringOpts(items *[]string) entriesOpts {
+	return entriesOpts{
+		moveUp: func(k string) {
+			i, _ := strconv.Atoi(k)
+			if i <= 0 {
+				return
+			}
+			(*items)[i-1], (*items)[i] = (*items)[i], (*items)[i-1]
+		},
+		moveDown: func(k string) {
+			i, _ := strconv.Atoi(k)
+			if i >= len(*items)-1 {
+				return
+			}
+			(*items)[i+1], (*items)[i] = (*items)[i], (*items)[i+1]
+		},
+		yank: func(k string) any {
+			i, _ := strconv.Atoi(k)
+			if i >= len(*items) {
+				return nil
+			}
+			return (*items)[i]
+		},
+		paste: func(k string, data any) error {
+			s, ok := data.(string)
+			if !ok {
+				return fmt.Errorf("nothing yanked")
+			}
+			i, _ := strconv.Atoi(k)
+			*items = insertString(*items, i+1, s)
+			return nil
+		},
+	}
+}
+
+func insertString(s []string, at int, v string) []string {
+	if at < 0 {
+		at = 0
+	}
+	if at > len(s) {
+		at = len(s)
+	}
+	out := make([]string, 0, len(s)+1)
+	out = append(out, s[:at]...)
+	out = append(out, v)
+	out = append(out, s[at:]...)
+	return out
 }

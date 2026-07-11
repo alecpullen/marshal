@@ -133,6 +133,44 @@ func TestCompletionPopupNavigation(t *testing.T) {
 	}
 }
 
+func TestCompletionPopupScrollsToKeepIndexVisible(t *testing.T) {
+	// Build a list longer than the visible window so the scroll offset
+	// has somewhere to go.
+	items := make([]completionItem, 0, 20)
+	for i := 0; i < 20; i++ {
+		items = append(items, completionItem{
+			Text: "/cmd" + string(rune('a'+i)),
+			Kind: completionCommand,
+		})
+	}
+	p := newCompletionPopup(items)
+	p.update("/cmd")
+	if p.index != 0 || p.viewOffset != 0 {
+		t.Fatalf("initial state index=%d offset=%d, want 0/0", p.index, p.viewOffset)
+	}
+	// Move past the visible window (completionPopupMax == 8). The
+	// selected index should remain in view via the viewOffset.
+	for i := 0; i < 12; i++ {
+		p.moveDown()
+	}
+	if p.index != 12 {
+		t.Fatalf("index = %d, want 12", p.index)
+	}
+	if p.viewOffset+completionPopupMax <= p.index {
+		t.Fatalf("viewOffset %d does not include index %d (max=%d)", p.viewOffset, p.index, completionPopupMax)
+	}
+	// Move back up — viewOffset should retreat with the index.
+	for i := 0; i < 12; i++ {
+		p.moveUp()
+	}
+	if p.index != 0 {
+		t.Fatalf("index = %d, want 0", p.index)
+	}
+	if p.viewOffset != 0 {
+		t.Fatalf("viewOffset = %d, want 0 after moving back to top", p.viewOffset)
+	}
+}
+
 func TestCompletionPopupFileKindAcceptedText(t *testing.T) {
 	items := []completionItem{
 		{Text: "internal/agent/runner.go", Description: "", Kind: completionFile},

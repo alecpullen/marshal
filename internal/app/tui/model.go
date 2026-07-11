@@ -74,11 +74,14 @@ type Model struct {
 	// file index (triggered by `@` at a word start). fileIndex holds the
 	// repo file paths used to build filePopup, loaded once at startup via
 	// WithFileIndex (or lazy on first `@` keystroke — see
-	// updateCompletionPopups).
-	cmdPopup        *completionPopup
-	filePopup       *completionPopup
-	fileIndex       []completionItem
-	fileIndexLoaded bool
+	// updateCompletionPopups). lastInputForPopups caches the value seen
+	// by updateCompletionPopups so non-key events (mouse, paste, ticks)
+	// don't re-evaluate and clobber the popup's index/offset.
+	cmdPopup           *completionPopup
+	filePopup          *completionPopup
+	fileIndex          []completionItem
+	fileIndexLoaded    bool
+	lastInputForPopups string
 
 	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
 	// cmd returned from Init (and re-armed from Update on each
@@ -482,6 +485,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// messages to the question form.
 	if q := m.state.PendingQuestion(); q != nil {
 		return m.handleQuestion(msg, q)
+	}
+
+	// Bubble Tea v2 emits a KeyReleaseMsg alongside every KeyPressMsg.
+	// Nothing in the model cares about release events, and letting them
+	// fall through to the default path would re-run
+	// updateCompletionPopups() and snap the popup selection back to
+	// index 0 after every arrow-key press.
+	if _, ok := msg.(tea.KeyReleaseMsg); ok {
+		return m, nil
 	}
 
 	switch msg := msg.(type) {
@@ -941,6 +953,16 @@ func (m *Model) updateCompletionPopups() {
 		return
 	}
 	value := m.input.Value()
+	// Idempotency guard: the default Update path calls this on every
+	// non-handled message (mouse, spinner tick, KeyReleaseMsg, paste
+	// echo, etc.) and the popup's update() always resets index to 0.
+	// Without this, holding the down arrow would visibly snap the
+	// selector back to the top between every key repeat. Skip when the
+	// input hasn't actually changed.
+	if value == m.lastInputForPopups {
+		return
+	}
+	m.lastInputForPopups = value
 
 	cmdTrigger, cmdQuery := m.commandTrigger(value)
 	if cmdTrigger {
@@ -965,6 +987,7 @@ func (m *Model) updateCompletionPopups() {
 			// see what's available before typing.
 			m.cmdPopup.filtered = append([]completionItem(nil), m.cmdPopup.items...)
 			m.cmdPopup.index = 0
+			m.cmdPopup.viewOffset = 0
 			m.cmdPopup.acceptedText = ""
 			m.cmdPopup.visible = len(m.cmdPopup.filtered) > 0
 		} else {

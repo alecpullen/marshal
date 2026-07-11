@@ -183,7 +183,8 @@ func highlightMatches(text string, idxs []int) string {
 
 // renderCompletionPopup renders the active F18 completion popup as a
 // multi-line block above the input area. Returns "" when no popup is
-// visible. Capped at completionPopupMax rows.
+// visible. Capped at completionPopupMax rows. The popup scrolls so the
+// selected item (p.index) is always visible.
 func (m Model) renderCompletionPopup() string {
 	p := m.activeCompletionPopup()
 	if p == nil {
@@ -199,16 +200,33 @@ func (m Model) renderCompletionPopup() string {
 	if len(matches) < max {
 		max = len(matches)
 	}
+	// Clamp the view window to keep p.index visible. The popup keeps its
+	// own viewOffset that moves with moveUp/moveDown, but a smaller
+	// filtered list (after typing) can leave the offset past the end.
+	offset := p.viewOffset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(matches)-max {
+		offset = len(matches) - max
+	}
+	if p.index < offset {
+		offset = p.index
+	}
+	if p.index >= offset+max {
+		offset = p.index - max + 1
+	}
 	for i := 0; i < max; i++ {
+		mi := offset + i
 		marker := "  "
 		style := mutedStyle
-		if i == p.index {
+		if mi == p.index {
 			marker = "▸ "
 			style = promptPrefixStyle
 		}
-		row := marker + highlightMatches(matches[i].Text, matches[i].matchedIdxs)
-		if matches[i].Description != "" {
-			row += "  " + matches[i].Description
+		row := marker + highlightMatches(matches[mi].Text, matches[mi].matchedIdxs)
+		if matches[mi].Description != "" {
+			row += "  " + matches[mi].Description
 		}
 		row = ansi.Cut(row, 0, available)
 		rows = append(rows, style.Render(row))

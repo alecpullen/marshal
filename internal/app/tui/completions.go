@@ -103,6 +103,7 @@ type completionPopup struct {
 	items        []completionItem
 	filtered     []completionItem
 	index        int
+	viewOffset   int
 	visible      bool
 	acceptedText string
 }
@@ -116,6 +117,7 @@ func (p *completionPopup) update(query string) {
 		p.visible = false
 		p.filtered = nil
 		p.index = 0
+		p.viewOffset = 0
 		p.acceptedText = ""
 		return
 	}
@@ -150,6 +152,7 @@ func (p *completionPopup) update(query string) {
 		p.filtered[i] = h.item
 	}
 	p.index = 0
+	p.viewOffset = 0
 	p.acceptedText = ""
 	p.visible = len(p.filtered) > 0
 }
@@ -161,6 +164,7 @@ func (p *completionPopup) dismiss() {
 	p.visible = false
 	p.filtered = nil
 	p.index = 0
+	p.viewOffset = 0
 	p.acceptedText = ""
 }
 
@@ -169,6 +173,7 @@ func (p *completionPopup) moveDown() {
 		return
 	}
 	p.index = (p.index + 1) % len(p.filtered)
+	p.reconcileOffset()
 }
 
 func (p *completionPopup) moveUp() {
@@ -176,6 +181,23 @@ func (p *completionPopup) moveUp() {
 		return
 	}
 	p.index = (p.index - 1 + len(p.filtered)) % len(p.filtered)
+	p.reconcileOffset()
+}
+
+// reconcileOffset keeps p.viewOffset positioned so p.index is visible
+// within completionPopupMax rows. The renderer also clamps the offset, so
+// this is the authoritative scroll position used at draw time.
+func (p *completionPopup) reconcileOffset() {
+	max := completionPopupMax
+	if len(p.filtered) < max {
+		max = len(p.filtered)
+	}
+	if p.index < p.viewOffset {
+		p.viewOffset = p.index
+	}
+	if p.index >= p.viewOffset+max {
+		p.viewOffset = p.index - max + 1
+	}
 }
 
 func (p *completionPopup) accept() {

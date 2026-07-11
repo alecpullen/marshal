@@ -156,6 +156,30 @@ func (m Model) renderHelpFooter() string {
 	return mutedStyle.Width(max(m.width, 1)).Render(help.Footer(hints))
 }
 
+// highlightMatches bolds runes at the given byte indices using the
+// active theme's AccentPrimary color. The indices are byte positions in
+// the (ASCII-dominated) text. For non-ASCII text the highlight may
+// misalign on multi-byte runes — acceptable for file paths/commands.
+func highlightMatches(text string, idxs []int) string {
+	if len(idxs) == 0 {
+		return text
+	}
+	iSet := make(map[int]bool, len(idxs))
+	for _, i := range idxs {
+		iSet[i] = true
+	}
+	var b strings.Builder
+	hl := lipgloss.NewStyle().Bold(true).Foreground(activeTheme.AccentPrimary)
+	for i, r := range []rune(text) {
+		if iSet[i] {
+			b.WriteString(hl.Render(string(r)))
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // renderCompletionPopup renders the active F18 completion popup as a
 // multi-line block above the input area. Returns "" when no popup is
 // visible. Capped at completionPopupMax rows.
@@ -181,7 +205,7 @@ func (m Model) renderCompletionPopup() string {
 			marker = "▸ "
 			style = promptPrefixStyle
 		}
-		row := marker + matches[i].Text
+		row := marker + highlightMatches(matches[i].Text, matches[i].matchedIdxs)
 		if matches[i].Description != "" {
 			row += "  " + matches[i].Description
 		}

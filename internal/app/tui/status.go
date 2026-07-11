@@ -37,12 +37,28 @@ func (m Model) renderStatusLine(width int) string {
 	return statusBarStyle.Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
 }
 
-func (m Model) statusLeftSegments() []string {
+// modeSegment returns the current mode label for the status line.
+// It prioritises transient UI modes that answer "what will Esc do?",
+// falling back to the persistent mode (/ask, /edit, /auto).
+func (m Model) modeSegment() string {
+	if m.helpOpen {
+		return "help open"
+	}
+	if m.editingCommand {
+		return "edit cmd"
+	}
+	if m.activeCompletionPopup() != nil {
+		return "completing"
+	}
 	mode := m.forceMode
 	if mode == "" {
 		mode = "auto"
 	}
-	segments := []string{mode}
+	return mode
+}
+
+func (m Model) statusLeftSegments() []string {
+	segments := []string{m.modeSegment()}
 
 	if !m.state.Trusted() {
 		segments = append(segments, "untrusted")

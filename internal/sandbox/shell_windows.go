@@ -2,11 +2,10 @@
 
 package sandbox
 
-import (
-	"context"
-	"os/exec"
-)
+import "os/exec"
 
-func shellContextCommand(ctx context.Context, command string) *exec.Cmd {
-	return exec.CommandContext(ctx, "cmd", "/C", command)
+// shellCommand returns a cmd.exe command that is NOT bound to any
+// context — executeCommand handles both start and cancellation.
+func shellCommand(command string) *exec.Cmd {
+	return exec.Command("cmd", "/C", command)
 }

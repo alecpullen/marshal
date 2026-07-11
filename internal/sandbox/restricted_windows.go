@@ -4,7 +4,6 @@ package sandbox
 
 import (
 	"errors"
-	"os/exec"
 )
 
 var (
@@ -22,5 +21,4 @@ func restrictedWrapCommand(command string, cfg Config) string {
 	return command
 }
 
-// applyProcmgmt is a no-op on windows (no setpgid analogue for this build).
-func applyProcmgmt(cmd *exec.Cmd) {}
+

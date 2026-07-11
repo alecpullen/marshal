@@ -195,6 +195,67 @@ func TestProvidersFrameHasAddWizard(t *testing.T) {
 	}
 }
 
+func TestProviderNameFieldRenamesKey(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "secret"},
+	}
+	st := newState(cfg)
+
+	drill := providersFrame(st).list.Rows()[0]
+	detail := drill.build()
+
+	var nameRow *field
+	for _, r := range detail.list.Rows() {
+		if r.title == "Name" {
+			nameRow = r
+			break
+		}
+	}
+	if nameRow == nil {
+		t.Fatal("provider detail must have a Name row")
+	}
+	if nameRow.getStr() != "ollama" {
+		t.Fatalf("Name = %q, want ollama", nameRow.getStr())
+	}
+	if err := nameRow.setStr("my-ollama"); err != nil {
+		t.Fatalf("rename err = %v", err)
+	}
+	if _, ok := st.cfg.Providers["ollama"]; ok {
+		t.Fatal("old key should be deleted after rename")
+	}
+	pc, ok := st.cfg.Providers["my-ollama"]
+	if !ok {
+		t.Fatal("new key should exist after rename")
+	}
+	if pc.BaseURL != "http://localhost:11434/v1" {
+		t.Fatalf("renamed provider BaseURL = %q, want preserved", pc.BaseURL)
+	}
+}
+
+func TestProviderNameFieldRejectsCollision(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama":     {Type: "openai_compatible"},
+		"openrouter": {Type: "openai_compatible"},
+	}
+	st := newState(cfg)
+
+	drill := providersFrame(st).list.Rows()[0]
+	detail := drill.build()
+
+	var nameRow *field
+	for _, r := range detail.list.Rows() {
+		if r.title == "Name" {
+			nameRow = r
+			break
+		}
+	}
+	if err := nameRow.setStr("openrouter"); err == nil {
+		t.Fatal("rename to existing key should error")
+	}
+}
+
 func TestHooksAddWithoutPromptAndDelete(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(hooksFrame(s))

@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -48,6 +49,26 @@ func providersFrame(s *state) *frame {
 			}
 			return newFrame(k, func() []*field {
 				return []*field{
+					scalarField("providers."+k+".name", "Name",
+						func() string { return k },
+						func(v string) error {
+							v = strings.TrimSpace(v)
+							if v == "" {
+								return fmt.Errorf("name cannot be empty")
+							}
+							if v == k {
+								return nil
+							}
+							if _, ok := s.cfg.Providers[v]; ok {
+								return fmt.Errorf("name already exists")
+							}
+							pc := s.cfg.Providers[k]
+							delete(s.cfg.Providers, k)
+							s.cfg.Providers[v] = pc
+							delete(s.discovered, k)
+							k = v
+							return nil
+						}),
 					scalarField("providers."+k+".type", "Type",
 						func() string { return s.cfg.Providers[k].Type },
 						func(v string) error { mut(func(p *config.ProviderConfig) { p.Type = v }); return nil }),

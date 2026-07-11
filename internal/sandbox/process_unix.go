@@ -46,8 +46,9 @@ func terminateProcessTree(cmd *exec.Cmd, grace time.Duration) error {
 	}
 
 	// Step 3: grace expired — force kill.
-	if err := syscall.Kill(negPID, syscall.SIGKILL); err == syscall.ESRCH {
+	err := syscall.Kill(negPID, syscall.SIGKILL)
+	if err == syscall.ESRCH {
 		return nil
 	}
-	return nil
+	return err
 }

@@ -51,13 +51,13 @@ func TestExecuteCommandBoundedOutput(t *testing.T) {
 func TestExecuteCommandCallsOnStartOnce(t *testing.T) {
 	cmd := exec.Command("/bin/sh", "-lc", "echo hello")
 
-	var called bool
+	var calls int
 	var calledPid int
 
 	ctx := context.Background()
 	req := native.CommandRequest{
 		OnStart: func(pid int) {
-			called = true
+			calls++
 			calledPid = pid
 		},
 	}
@@ -66,8 +66,8 @@ func TestExecuteCommandCallsOnStartOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeCommand: %v", err)
 	}
-	if !called {
-		t.Fatal("OnStart was not called")
+	if calls != 1 {
+		t.Fatalf("OnStart called %d times, want 1", calls)
 	}
 	if calledPid <= 0 {
 		t.Fatalf("OnStart called with invalid pid %d", calledPid)

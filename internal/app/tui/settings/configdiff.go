@@ -30,14 +30,70 @@ func diffValue(path string, b, a reflect.Value, lines *[]diffLine) {
 		return
 	}
 	if !b.IsValid() {
+		if a.Kind() == reflect.Struct {
+			t := a.Type()
+			for i := 0; i < t.NumField(); i++ {
+				f := t.Field(i)
+				if !f.IsExported() {
+					continue
+				}
+				diffValue(joinPath(path, f.Name), reflect.Value{}, a.Field(i), lines)
+			}
+			return
+		}
+		if a.Kind() == reflect.Map {
+			for _, k := range a.MapKeys() {
+				diffValue(joinPath(path, k.String()), reflect.Value{}, a.MapIndex(k), lines)
+			}
+			return
+		}
 		*lines = append(*lines, diffLine{Prefix: "+", Path: path, Detail: ": " + fmtScalar(path, a)})
 		return
 	}
 	if !a.IsValid() {
+		if b.Kind() == reflect.Struct {
+			t := b.Type()
+			for i := 0; i < t.NumField(); i++ {
+				f := t.Field(i)
+				if !f.IsExported() {
+					continue
+				}
+				diffValue(joinPath(path, f.Name), b.Field(i), reflect.Value{}, lines)
+			}
+			return
+		}
+		if b.Kind() == reflect.Map {
+			for _, k := range b.MapKeys() {
+				diffValue(joinPath(path, k.String()), b.MapIndex(k), reflect.Value{}, lines)
+			}
+			return
+		}
 		*lines = append(*lines, diffLine{Prefix: "-", Path: path, Detail: ": " + fmtScalar(path, b)})
 		return
 	}
 	if b.Kind() != a.Kind() {
+		if a.Kind() == reflect.Struct {
+			t := a.Type()
+			for i := 0; i < t.NumField(); i++ {
+				f := t.Field(i)
+				if !f.IsExported() {
+					continue
+				}
+				diffValue(joinPath(path, f.Name), reflect.Value{}, a.Field(i), lines)
+			}
+			return
+		}
+		if b.Kind() == reflect.Struct {
+			t := b.Type()
+			for i := 0; i < t.NumField(); i++ {
+				f := t.Field(i)
+				if !f.IsExported() {
+					continue
+				}
+				diffValue(joinPath(path, f.Name), b.Field(i), reflect.Value{}, lines)
+			}
+			return
+		}
 		*lines = append(*lines, diffLine{Prefix: "~", Path: path, Detail: ": " + fmtScalar(path, b) + " → " + fmtScalar(path, a)})
 		return
 	}

@@ -51,9 +51,9 @@ func TestConfigDiffAddedProvider(t *testing.T) {
 	}
 
 	lines := configDiff(before, after)
-	l, ok := findDiff(lines, "Providers.ollama")
+	l, ok := findDiff(lines, "Providers.ollama.BaseURL")
 	if !ok {
-		t.Fatalf("missing Providers.ollama in %v", lines)
+		t.Fatalf("missing Providers.ollama.BaseURL in %v", lines)
 	}
 	if l.Prefix != "+" {
 		t.Fatalf("prefix = %q, want +", l.Prefix)
@@ -68,9 +68,9 @@ func TestConfigDiffRemovedPreset(t *testing.T) {
 	after := config.Default()
 
 	lines := configDiff(before, after)
-	l, ok := findDiff(lines, "Models.Presets.coder")
+	l, ok := findDiff(lines, "Models.Presets.coder.Name")
 	if !ok {
-		t.Fatalf("missing Models.Presets.coder in %v", lines)
+		t.Fatalf("missing Models.Presets.coder.Name in %v", lines)
 	}
 	if l.Prefix != "-" {
 		t.Fatalf("prefix = %q, want -", l.Prefix)
@@ -85,15 +85,25 @@ func TestConfigDiffMasksAPIKey(t *testing.T) {
 	}
 
 	lines := configDiff(before, after)
+
+	// No plaintext secret appears anywhere in the diff.
+	for _, l := range lines {
+		if strings.Contains(l.Detail, "supersecret") {
+			t.Fatalf("diff leaked plaintext secret in line %s%s: %q", l.Prefix, l.Path, l.Detail)
+		}
+	}
+
+	// The APIKey field is present in the diff and its detail is masked.
+	foundMasked := false
 	for _, l := range lines {
 		if strings.Contains(l.Path, "APIKey") {
-			if strings.Contains(l.Detail, "supersecret") {
-				t.Fatalf("APIKey diff leaked plaintext: %q", l.Detail)
-			}
-			if !strings.Contains(l.Detail, "••••") {
-				t.Fatalf("APIKey diff not masked: %q", l.Detail)
+			if strings.Contains(l.Detail, "••••") {
+				foundMasked = true
 			}
 		}
+	}
+	if !foundMasked {
+		t.Fatalf("expected masked APIKey field in diff lines: %+v", lines)
 	}
 }
 

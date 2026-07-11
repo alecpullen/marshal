@@ -88,6 +88,14 @@ func (m Model) frameSize() (int, int) {
 	return w, h
 }
 
+// State returns the model's working state. Exposed for parent-package tests
+// that need to mutate cfg before driving Update.
+func (m *Model) State() *state { return m.state }
+
+// SetWorkingConfig replaces the working copy of the config. Used by
+// parent-package tests that need to dirty the diff overlay.
+func (m *Model) SetWorkingConfig(cfg config.Config) { m.state.cfg = cfg }
+
 func (m *Model) SetSize(width, height int) {
 	m.width, m.height = width, height
 	m.sidebarHidden = width > 0 && width < sidebarBreakpoint

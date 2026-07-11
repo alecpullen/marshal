@@ -68,6 +68,7 @@ type SandboxMeta struct {
 	MaxProcesses       int
 	KilledReason       string
 	DurationMS         int64
+	OutputTruncated    bool
 }
 
 func (m SandboxMeta) LimitsJSON() string {
@@ -89,6 +90,9 @@ func (m SandboxMeta) LimitsJSON() string {
 	}
 	if m.KilledReason != "" {
 		limits["killed_reason"] = m.KilledReason
+	}
+	if m.OutputTruncated {
+		limits["output_truncated"] = true
 	}
 	b, err := json.Marshal(limits)
 	if err != nil {

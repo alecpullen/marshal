@@ -1,9 +1,10 @@
 package native
 
 import (
-	"bytes"
 	"context"
 	"os/exec"
+
+	"marshal/internal/tools/registry"
 )
 
 type execRunner struct{}
@@ -12,15 +13,25 @@ func (execRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, e
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", req.Command)
 	cmd.Dir = req.Dir
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := NewBoundedOutput(OutputLimit(req.MaxOutputBytes), req.Stdout)
+	stderr := NewBoundedOutput(OutputLimit(req.MaxOutputBytes), req.Stderr)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return CommandResult{}, err
+	}
+	if req.OnStart != nil {
+		req.OnStart(cmd.Process.Pid)
+	}
+
+	err := cmd.Wait()
 	result := CommandResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
+		Meta: registry.SandboxMeta{
+			OutputTruncated: stdout.Truncated() || stderr.Truncated(),
+		},
 	}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()

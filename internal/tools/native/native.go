@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -51,9 +52,13 @@ type CommandRunner interface {
 }
 
 type CommandRequest struct {
-	Command string
-	Dir     string
-	Timeout time.Duration
+	Command        string
+	Dir            string
+	Timeout        time.Duration
+	MaxOutputBytes int
+	Stdout         io.Writer
+	Stderr         io.Writer
+	OnStart        func(pid int)
 }
 
 type CommandResult struct {

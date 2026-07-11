@@ -446,6 +446,15 @@ func (m Model) renderFooter(fw int) string {
 			case kindPicker:
 				parts = append(parts, seg("\u21b5", "pick"))
 			}
+			if row.yank != nil {
+				parts = append(parts, seg("y", "yank"))
+			}
+			if row.paste != nil && fl.yankedData != nil {
+				parts = append(parts, seg("p", "paste"))
+			}
+			if row.moveUp != nil || row.moveDown != nil {
+				parts = append(parts, seg("shift↑↓", "move"))
+			}
 		}
 		if fl.onAdd != nil {
 			parts = append(parts, seg("a", "add"))

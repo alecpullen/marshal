@@ -53,6 +53,9 @@ type fieldList struct {
 
 	// add-wizard picker for collection frames (set by frame.addWizard)
 	addWizard func() *pickerRequest
+
+	yankedID   string
+	yankedData any
 }
 
 func newFieldList(fields func() []*field) *fieldList {
@@ -95,6 +98,18 @@ func (fl *fieldList) CursorRow() *field {
 
 func (fl *fieldList) SetSize(w, h int) { fl.width, fl.height = w, h }
 
+func (fl *fieldList) disarmRow(i int) {
+	fl.Refresh()
+	if i >= 0 && i < len(fl.rows) && fl.rows[i].disarm != nil {
+		fl.rows[i].disarm()
+	}
+}
+
+func (fl *fieldList) DisarmCurrent() {
+	fl.Refresh()
+	fl.disarmRow(fl.cursor)
+}
+
 func (fl *fieldList) Editing() bool { return fl.editing || fl.picking || fl.adding }
 
 func (fl *fieldList) CancelEdit() {
@@ -133,15 +148,19 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 	switch k.String() {
 	case "up", "k":
 		if fl.cursor > 0 {
+			fl.disarmRow(fl.cursor)
 			fl.cursor--
 		}
 	case "down", "j":
 		if fl.cursor < len(fl.rows)-1 {
+			fl.disarmRow(fl.cursor)
 			fl.cursor++
 		}
 	case "g":
+		fl.disarmRow(fl.cursor)
 		fl.cursor = 0
 	case "G":
+		fl.disarmRow(fl.cursor)
 		fl.cursor = len(fl.rows) - 1
 	case "space":
 		if row != nil && row.kind == kindToggle {
@@ -173,6 +192,35 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 			fl.keyInput.SetValue("")
 			fl.keyInput.Focus()
 		}
+	case "y":
+		if row != nil && row.yank != nil {
+			fl.yankedID = row.id
+			fl.yankedData = row.yank()
+		}
+		return nil
+	case "p":
+		if fl.yankedData != nil && row != nil && row.paste != nil {
+			if err := row.paste(fl.yankedData); err != nil {
+				fl.errMsg = err.Error()
+			} else {
+				fl.yankedID = ""
+				fl.yankedData = nil
+				fl.Refresh()
+			}
+		}
+		return nil
+	case "shift+up":
+		if row != nil && row.moveUp != nil {
+			row.moveUp()
+			fl.Refresh()
+		}
+		return nil
+	case "shift+down":
+		if row != nil && row.moveDown != nil {
+			row.moveDown()
+			fl.Refresh()
+		}
+		return nil
 	case "d":
 		if row != nil && row.del != nil {
 			row.del()

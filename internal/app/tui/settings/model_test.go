@@ -186,8 +186,14 @@ func TestSaveBlockedDoesNotWrite(t *testing.T) {
 	const busyMsg = "Stop the active turn and background jobs before applying settings."
 	m.SetSaveBlocked(busyMsg)
 
+	m.state.cfg.Privacy.RemoteProvidersAllowed = true
+
 	var cmd tea.Cmd
 	m, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatal("ctrl+s should open the diff overlay, not save directly")
+	}
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatal("expected nil command when save is blocked")
 	}

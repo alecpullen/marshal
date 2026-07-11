@@ -6,10 +6,11 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/app/tui/theme"
 )
 
-// borderColor is the muted grey used for the frame border and separator.
-var borderColor = lipgloss.Color("244")
+var memTheme = theme.Load()
 
 func (m Model) View() string {
 	frameWidth := 61
@@ -54,7 +55,7 @@ func (m Model) View() string {
 	lines = append(lines, "[↑/k ↓/j] Move  [c] Confirm  [s] Mark Stale  [Esc] Close")
 
 	// Truncate and pad each line to inner display width.
-	contentStyle := lipgloss.NewStyle().Width(inner).Foreground(lipgloss.Color("252"))
+	contentStyle := lipgloss.NewStyle().Width(inner).Foreground(memTheme.FGDefault)
 	for i, l := range lines {
 		if lipgloss.Width(l) > inner {
 			l = ansi.Cut(l, 0, inner)
@@ -67,7 +68,7 @@ func (m Model) View() string {
 	// Wrap the entire content in a rounded border.
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
+		BorderForeground(memTheme.FGMuted).
 		Padding(0, 1)
 
 	return style.Render(innerContent)

@@ -13,18 +13,18 @@ func TestProvidersAddAndEditType(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(providersFrame(s))
 	ps.SetSize(80, 24)
-	// providers root IS the collection frame; add an entry
-	ps.Update(kp("a"))
-	for _, r := range "local" {
-		ps.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	// Use the wizard to add a provider instead of the old bare 'a' prompt
+	req := providersWizard(s)()
+	if err := req.onPick("ollama"); err != nil {
+		t.Fatalf("wizard onPick(ollama) = %v", err)
 	}
-	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	pc, ok := s.cfg.Providers["local"]
+	ps.top().list.Refresh()
+	pc, ok := s.cfg.Providers["ollama"]
 	if !ok {
-		t.Fatalf("add should create provider, got %v", s.cfg.Providers)
+		t.Fatalf("wizard should create provider, got %v", s.cfg.Providers)
 	}
 	if pc.Type != "openai_compatible" {
-		t.Fatalf("new provider should default to openai_compatible, got %q", pc.Type)
+		t.Fatalf("new provider from ollama template should default to openai_compatible, got %q", pc.Type)
 	}
 	// drill into it and edit Type
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -34,8 +34,8 @@ func TestProvidersAddAndEditType(t *testing.T) {
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // edit first row (Type)
 	ps.top().list.input.SetValue("anthropic")
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if s.cfg.Providers["local"].Type != "anthropic" {
-		t.Fatalf("type edit should apply immediately, got %q", s.cfg.Providers["local"].Type)
+	if s.cfg.Providers["ollama"].Type != "anthropic" {
+		t.Fatalf("type edit should apply immediately, got %q", s.cfg.Providers["ollama"].Type)
 	}
 }
 
@@ -132,6 +132,66 @@ func TestLocalProviderTestConnectionNotBlocked(t *testing.T) {
 	}
 	if strings.Contains(tc.actLabel(), "blocked") {
 		t.Fatal("local provider should not be blocked")
+	}
+}
+
+func TestWizardCreatesProviderFromTemplate(t *testing.T) {
+	cfg := config.Default()
+	st := newState(cfg)
+
+	req := providersWizard(st)()
+	if req == nil {
+		t.Fatal("providersWizard should return a pickerRequest")
+	}
+
+	var foundOllama bool
+	for _, item := range req.items {
+		if item.Value == "ollama" {
+			foundOllama = true
+		}
+	}
+	if !foundOllama {
+		t.Fatal("wizard items should include the ollama template")
+	}
+
+	if err := req.onPick("ollama"); err != nil {
+		t.Fatalf("wizard onPick(ollama) = %v", err)
+	}
+	pc, ok := st.cfg.Providers["ollama"]
+	if !ok {
+		t.Fatal("wizard should have created providers.ollama")
+	}
+	if pc.BaseURL != "http://localhost:11434/v1" {
+		t.Fatalf("created provider BaseURL = %q, want http://localhost:11434/v1", pc.BaseURL)
+	}
+}
+
+func TestWizardCollisionAppendsSuffix(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama":   {Type: "openai_compatible"},
+		"ollama-2": {Type: "openai_compatible"},
+	}
+	st := newState(cfg)
+
+	req := providersWizard(st)()
+	if err := req.onPick("ollama"); err != nil {
+		t.Fatalf("wizard onPick = %v", err)
+	}
+	if _, ok := st.cfg.Providers["ollama-3"]; !ok {
+		t.Fatal("wizard should have created providers.ollama-3 on collision")
+	}
+}
+
+func TestProvidersFrameHasAddWizard(t *testing.T) {
+	st := newState(config.Default())
+	f := providersFrame(st)
+	if f.addWizard == nil {
+		t.Fatal("providers root frame must have addWizard set")
+	}
+	req := f.addWizard()
+	if req == nil || req.title != "Add provider" {
+		t.Fatalf("addWizard request = %+v, want title 'Add provider'", req)
 	}
 }
 

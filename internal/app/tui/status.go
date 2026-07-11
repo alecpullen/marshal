@@ -124,13 +124,13 @@ func (m Model) statusRightSegment() string {
 	spinner := m.activeSpinnerFrame(activity.Kind)
 	switch activity.Kind {
 	case session.ActivityThinking:
-		return statusBusyStyle.Render(fmt.Sprintf("%s thinking", spinner))
+		return statusBusyStyle.Render(spinnerLabel(spinner, "thinking"))
 	case session.ActivityTool:
 		elapsed := m.now().Sub(activity.StartedAt)
 		if elapsed < 0 {
 			elapsed = 0
 		}
-		label := fmt.Sprintf("%s %s · %s", spinner, activity.Label, formatElapsed(elapsed))
+		label := spinnerLabel(spinner, fmt.Sprintf("%s · %s", activity.Label, formatElapsed(elapsed)))
 		if b := m.state.ToolBudget(); b.Max > 0 {
 			label = fmt.Sprintf("%s · tools %d/%d", label, b.Used, b.Max)
 		}

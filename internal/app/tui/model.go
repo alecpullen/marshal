@@ -1214,6 +1214,16 @@ func spinnerTickCmd() tea.Cmd {
 	})
 }
 
+// spinnerLabel returns the formatted label with a leading spinner glyph, or
+// just the label when the spinner frame is empty. This avoids leading-space
+// jitter during the 200ms gate window when activeSpinnerFrame returns "".
+func spinnerLabel(spinner, label string) string {
+	if spinner == "" {
+		return label
+	}
+	return spinner + " " + label
+}
+
 // activeSpinnerFrame returns the current spinner frame glyph if the activity
 // has been running for at least 200ms, or "" when the activity just started.
 // This avoids a flash of the spinner glyph before the user can perceive the

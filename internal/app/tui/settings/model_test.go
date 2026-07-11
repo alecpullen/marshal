@@ -99,6 +99,78 @@ func TestDirtyCtrlSClearsPendingCancel(t *testing.T) {
 	}
 }
 
+func TestSidebarHiddenAtNarrowWidth(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	if !m.sidebarHidden {
+		t.Fatal("sidebar should be hidden at width 50 (< 70)")
+	}
+	view := stripANSI(m.View())
+	// Sidebar items are rendered with a leading space (" Model Presets").
+	// When the sidebar is hidden, no sidebar items should appear.
+	if strings.Contains(view, " Model Presets") {
+		t.Error("narrow view should not contain sidebar item")
+	}
+	// Verify the pane header still shows the active section title.
+	if !strings.Contains(view, "Agent") {
+		t.Error("narrow view should still show active pane header")
+	}
+}
+
+func TestNarrowViewDoesNotOverflow(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 30)
+	view := stripANSI(m.View())
+	lines := strings.Split(view, "\n")
+	for _, line := range lines {
+		if w := len([]rune(line)); w > m.width {
+			t.Errorf("line width = %d, exceeds terminal width %d: %q", w, m.width, line)
+		}
+	}
+}
+
+func TestSidebarVisibleAboveBreakpoint(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(100, 40)
+	if m.sidebarHidden {
+		t.Fatal("sidebar should be visible at width 100")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Agent") {
+		t.Error("wide view should contain sidebar title 'Agent'")
+	}
+}
+
+func TestLeftRightCycleSectionsWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.cursor = 2 // start at "Model Presets"
+
+	// right should advance cursor
+	m = keyPress(m, "right")
+	if m.cursor != 3 {
+		t.Errorf("right with sidebar hidden should advance cursor to 3, got %d", m.cursor)
+	}
+
+	// left should go back
+	m = keyPress(m, "left")
+	if m.cursor != 2 {
+		t.Errorf("left with sidebar hidden should move cursor back to 2, got %d", m.cursor)
+	}
+
+	// l (lowercase L) should also advance
+	m = keyPress(m, "l")
+	if m.cursor != 3 {
+		t.Errorf("l with sidebar hidden should advance cursor to 3, got %d", m.cursor)
+	}
+
+	// h should go back
+	m = keyPress(m, "h")
+	if m.cursor != 2 {
+		t.Errorf("h with sidebar hidden should move cursor back to 2, got %d", m.cursor)
+	}
+}
+
 func TestSettingsViewKeepsFrameBounded(t *testing.T) {
 	cfg := config.Default()
 	cfg.AgentProfiles = map[string]routing.AgentProfile{

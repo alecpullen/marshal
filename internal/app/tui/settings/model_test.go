@@ -170,6 +170,20 @@ func TestLeftRightCycleSectionsWhenSidebarHidden(t *testing.T) {
 	if m.cursor != 2 {
 		t.Errorf("h with sidebar hidden should move cursor back to 2, got %d", m.cursor)
 	}
+
+	// right should wrap from last to first
+	m.cursor = len(m.sections) - 1
+	m = keyPress(m, "right")
+	if m.cursor != 0 {
+		t.Errorf("right with sidebar hidden should wrap to 0, got %d", m.cursor)
+	}
+
+	// left should wrap from first to last
+	m.cursor = 0
+	m = keyPress(m, "left")
+	if m.cursor != len(m.sections)-1 {
+		t.Errorf("left with sidebar hidden should wrap to last, got %d", m.cursor)
+	}
 }
 
 func TestTabFocusesPaneWhenSidebarHidden(t *testing.T) {
@@ -222,6 +236,20 @@ func TestPaneFocusedShiftTabMovesPreviousSectionWhenSidebarHidden(t *testing.T) 
 	}
 	if !m.paneFocused {
 		t.Fatal("shift+tab in pane-focused hidden-sidebar mode should keep pane focus")
+	}
+}
+
+func TestPaneFocusedRightMovesNextSectionWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.cursor = len(m.sections) - 1
+	m.paneFocused = true
+	m = keyPress(m, "right")
+	if m.cursor != 0 {
+		t.Fatalf("right in pane-focused hidden-sidebar mode should wrap to first section, got %d", m.cursor)
+	}
+	if !m.paneFocused {
+		t.Fatal("right in pane-focused hidden-sidebar mode should keep pane focus")
 	}
 }
 

@@ -553,18 +553,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// pending states are routed above, before this switch.)
 		switch msg.String() {
 		case "?":
-			// Only toggle when the textarea is empty or not actively editing
-			// (so ? inside a query is still a literal char). When the overlay
-			// is already open, ? or Esc close it.
-			if m.helpOpen {
-				m.helpOpen = false
-				return m, nil
-			}
+			// Close-handler is in the helpOpen guard near the top of Update.
+			// Here we only handle the open path: open the overlay when the
+			// textarea is empty and we are not in the middle of an approval,
+			// question, or command edit. Otherwise the trailing
+			// m.input.Update(msg) below inserts ? as a literal char.
 			if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && m.state.PendingApproval() == nil {
 				m.helpOpen = true
 				return m, nil
 			}
-			// Otherwise fall through (insert ? as a normal char).
 		case "esc":
 			// F18: dismiss the active completion popup first. Only if
 			// nothing is up do we fall through to cancelling the in-flight

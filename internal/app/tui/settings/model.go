@@ -127,18 +127,14 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				return *m, nil
 			case "l", "right":
 				if m.sidebarHidden {
-					if m.cursor < len(m.sections)-1 {
-						m.cursor++
-					}
+					m.cursor = (m.cursor + 1) % len(m.sections)
 				} else {
 					m.paneFocused = true
 				}
 				return *m, nil
 			case "h", "left":
 				if m.sidebarHidden {
-					if m.cursor > 0 {
-						m.cursor--
-					}
+					m.cursor = (m.cursor - 1 + len(m.sections)) % len(m.sections)
 					return *m, nil
 				}
 			}
@@ -154,20 +150,23 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			case "shift+tab":
 				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
 					if m.sidebarHidden {
-						if m.cursor > 0 {
-							m.cursor--
-						}
+						m.cursor = (m.cursor - 1 + len(m.sections)) % len(m.sections)
 						return *m, nil
 					}
 					m.paneFocused = false
 					return *m, nil
 				}
+			case "tab", "l", "right":
+				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
+					if m.sidebarHidden {
+						m.cursor = (m.cursor + 1) % len(m.sections)
+						return *m, nil
+					}
+				}
 			case "h", "left":
 				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
 					if m.sidebarHidden {
-						if m.cursor > 0 {
-							m.cursor--
-						}
+						m.cursor = (m.cursor - 1 + len(m.sections)) % len(m.sections)
 						return *m, nil
 					}
 					m.paneFocused = false

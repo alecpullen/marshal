@@ -10,6 +10,37 @@ import (
 // (`@`). It filters items via a simple in-package subsequence scorer
 // (fuzzyScore) and is rendered above the input area by view.go.
 
+// fuzzyMatchIndices returns the byte positions of the query runes as they
+// appear sequentially in the target string (subsequence match). Returns
+// (indices, true) on match or (nil, true) for empty query.
+func fuzzyMatchIndices(query, target string) ([]int, bool) {
+	q := strings.ToLower(query)
+	tt := strings.ToLower(target)
+	if len(q) == 0 {
+		return nil, true
+	}
+	if len(q) > len(tt) {
+		return nil, false
+	}
+	idxs := make([]int, 0, len(q))
+	ti := 0
+	for qi := 0; qi < len(q); qi++ {
+		matched := false
+		for ; ti < len(tt); ti++ {
+			if q[qi] == tt[ti] {
+				idxs = append(idxs, ti)
+				matched = true
+				ti++
+				break
+			}
+		}
+		if !matched {
+			return nil, false
+		}
+	}
+	return idxs, true
+}
+
 // fuzzyScore returns a subsequence-match score for query against target
 // (higher is better). A non-match returns (0, false). The scorer rewards
 // consecutive matches and prefix matches so "/pl" ranks "/plan" above
@@ -65,6 +96,7 @@ type completionItem struct {
 	Text        string
 	Description string
 	Kind        completionKind
+	matchedIdxs []int
 }
 
 type completionPopup struct {
@@ -98,7 +130,10 @@ func (p *completionPopup) update(query string) {
 		}
 		s, ok := fuzzyScore(query, it.Text)
 		if ok {
-			hits = append(hits, scored{it, s})
+			idxs, _ := fuzzyMatchIndices(query, it.Text)
+			hit := it
+			hit.matchedIdxs = idxs
+			hits = append(hits, scored{hit, s})
 		}
 	}
 	// Sort by score desc, then text asc.

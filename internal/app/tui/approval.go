@@ -45,9 +45,9 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 	summary := approvalSummary(tc, sb, allowNetwork)
 
 	opts := []huh.Option[approvalChoice]{
-		huh.NewOption("Approve", choiceApprove),
+		huh.NewOption("▸ Approve & proceed", choiceApprove),
 		huh.NewOption("Deny", choiceDeny),
-		huh.NewOption("Edit", choiceEdit),
+		huh.NewOption("Edit command/args", choiceEdit),
 		huh.NewOption("Always allow (save to config)", choiceAlways),
 		huh.NewOption("Allow this session", choiceSessionAllow),
 	}
@@ -153,7 +153,7 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 	text := lipgloss.NewStyle()
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⚠ Approval needed"))
+	b.WriteString(titleStyle.Render("⚠ Approval needed (j/k, enter to select)"))
 	b.WriteString("\n")
 
 	if tc.Name == "shell.run" {

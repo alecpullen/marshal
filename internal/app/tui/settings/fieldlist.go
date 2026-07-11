@@ -192,7 +192,11 @@ func (fl *fieldList) openRow(row *field) {
 		fl.input.Focus()
 	case kindEnum:
 		fl.picking = true
-		fl.pickIdx = indexOf(row.options(), row.getStr())
+		i := indexOf(row.options(), row.getStr())
+		if i < 0 {
+			i = 0
+		}
+		fl.pickIdx = i
 	case kindDrill:
 		fl.pushRequest = row.build()
 	}
@@ -204,6 +208,9 @@ func (fl *fieldList) cycleEnum(row *field, forward bool) {
 		return
 	}
 	i := indexOf(opts, row.getStr())
+	if i < 0 {
+		i = 0
+	}
 	if forward {
 		i = (i + 1) % len(opts)
 	} else {
@@ -216,6 +223,10 @@ func (fl *fieldList) cycleEnum(row *field, forward bool) {
 
 func (fl *fieldList) updateEdit(k tea.KeyPressMsg) tea.Cmd {
 	row := fl.CursorRow()
+	if row == nil {
+		fl.CancelEdit()
+		return nil
+	}
 	switch k.String() {
 	case "enter":
 		val := strings.TrimSpace(fl.input.Value())
@@ -240,6 +251,10 @@ func (fl *fieldList) updateEdit(k tea.KeyPressMsg) tea.Cmd {
 
 func (fl *fieldList) updatePick(k tea.KeyPressMsg) {
 	row := fl.CursorRow()
+	if row == nil {
+		fl.CancelEdit()
+		return
+	}
 	opts := row.options()
 	switch k.String() {
 	case "up", "k":
@@ -314,7 +329,7 @@ func indexOf(ss []string, s string) int {
 			return i
 		}
 	}
-	return 0
+	return -1
 }
 
 // valueCell renders the right-hand value for a row.

@@ -16,7 +16,7 @@ func TestViewUsableWhenColorStripped(t *testing.T) {
 	v := m.View()
 	plain := ansi.Strip(v)
 	for _, want := range []string{"▸", "╭", "on", "off"} {
-		if !strings.Contains(plain, want) && !strings.Contains(plain, "●") {
+		if !strings.Contains(plain, want) {
 			t.Fatalf("structure marker %q must survive color stripping:\n%s", want, plain)
 		}
 	}

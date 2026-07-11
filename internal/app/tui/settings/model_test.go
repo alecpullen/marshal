@@ -277,6 +277,56 @@ func TestTruncateErrPreservesUTF8AndAddsEllipsis(t *testing.T) {
 	}
 }
 
+func TestCtrlSOpensDiffOverlay(t *testing.T) {
+	m := New(config.Default(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 30)
+	m.paneFocused = true
+
+	m, _ = m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	if m.overlay != overlayDiff {
+		t.Fatalf("overlay = %v, want overlayDiff", m.overlay)
+	}
+}
+
+func TestDiffOverlayShowsNoChangesWhenClean(t *testing.T) {
+	m := New(config.Default(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 30)
+	m.paneFocused = true
+
+	m, _ = m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	view := m.View()
+	if !strings.Contains(view, "no changes") {
+		t.Fatalf("clean diff view should say 'no changes':\n%s", view)
+	}
+}
+
+func TestDiffOverlayShowsChangeWhenDirty(t *testing.T) {
+	cfg := config.Default()
+	m := New(cfg, "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 30)
+	m.paneFocused = true
+
+	m.state.cfg.Privacy.RemoteProvidersAllowed = true
+
+	m, _ = m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	view := m.View()
+	if !strings.Contains(view, "RemoteProvidersAllowed") {
+		t.Fatalf("dirty diff view should mention the changed field:\n%s", view)
+	}
+}
+
+func TestDiffOverlayEscReturnsToEditing(t *testing.T) {
+	m := New(config.Default(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 30)
+	m.paneFocused = true
+
+	m, _ = m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	m, _ = m.Update(tea.KeyPressMsg{Text: "esc"})
+	if m.overlay != overlayNone {
+		t.Fatalf("overlay = %v, want overlayNone after Esc", m.overlay)
+	}
+}
+
 func TestDrillIntoNewestProviderClearedOnNoWizard(t *testing.T) {
 	// When drillIntoNewestProvider is called without a wizard-created
 	// provider, it should be a no-op (wizardCreatedProvider is empty).

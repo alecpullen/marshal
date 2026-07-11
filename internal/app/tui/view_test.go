@@ -47,6 +47,14 @@ func TestViewContainsStatusLine(t *testing.T) {
 	}
 }
 
+func TestViewContainsFooter(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	view := m.View().Content
+	if !strings.Contains(view, "send") || !strings.Contains(view, "help") {
+		t.Fatalf("view missing keybinding footer:\n%s", view)
+	}
+}
+
 func TestTranscriptIsBorderless(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
@@ -78,7 +86,7 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	if idleLines[0] != busyLines[0] {
 		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
 	}
-	inputTop := 30 - m.inputAreaRows() - statusLineRows
+	inputTop := 30 - m.inputAreaRows() - footerRows - statusLineRows
 	if !strings.HasPrefix(stripANSI(busyLines[inputTop]), "╭") {
 		t.Fatalf("input box top moved; line %d = %q", inputTop, busyLines[inputTop])
 	}
@@ -129,7 +137,7 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	if m.viewport.Width() != 98 {
 		t.Fatalf("viewport.Width = %d, want 98 (width-2, borderless transcript)", m.viewport.Width())
 	}
-	wantHeight := 30 - transcriptFrameRows - m.inputAreaRows() - statusLineRows
+	wantHeight := 30 - transcriptFrameRows - m.inputAreaRows() - footerRows - statusLineRows
 	if m.viewport.Height() != wantHeight {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
 	}

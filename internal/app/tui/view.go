@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/help"
 )
 
 // ansiRe matches SGR (and empty) escape sequences that lipgloss emits.
@@ -22,6 +23,7 @@ const (
 	inputBorderRows     = 2
 	activityStripRows   = 1
 	transcriptFrameRows = 0
+	footerRows          = 1
 	statusLineRows      = 1
 	completionPopupMax  = 8
 )
@@ -57,7 +59,7 @@ func (m Model) viewString() string {
 	if panel := renderSwarmPanel(m.state.SwarmProgress(), m.spinnerFrame, m.width); panel != "" {
 		rows = append(rows, panel)
 	}
-	rows = append(rows, m.renderInputArea(), m.renderStatusLine(m.width))
+	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
@@ -133,6 +135,19 @@ func (m Model) renderActivityStrip() string {
 		return ""
 	}
 	return statusBusyStyle.Render(truncateRunes(label, available))
+}
+
+// renderHelpFooter returns the persistent keybinding hint bar shown below
+// the input area and above the status line.
+func (m Model) renderHelpFooter() string {
+	hints := help.FooterHints{
+		Busy:            m.busy,
+		EditingCommand:  m.editingCommand,
+		ApprovalPending: m.state.PendingApproval() != nil,
+		QuestionPending: m.state.PendingQuestion() != nil,
+		PopupOpen:       m.activeCompletionPopup() != nil,
+	}
+	return mutedStyle.Width(max(m.width, 1)).Render(help.Footer(hints))
 }
 
 // renderCompletionPopup renders the active F18 completion popup as a

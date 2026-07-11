@@ -19,6 +19,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
@@ -253,7 +254,7 @@ func New(state *session.State, opts ...Option) Model {
 	input.KeyMap = km
 	input.Focus()
 
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	textStyle := lipgloss.NewStyle().Foreground(activeTheme.FGDefault)
 	styles := textarea.DefaultDarkStyles()
 	styles.Focused.Text = textStyle
 	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
@@ -275,8 +276,8 @@ func New(state *session.State, opts ...Option) Model {
 	// area stays on a single clean line.
 	styles.Focused.CursorLine = textStyle
 	styles.Blurred.CursorLine = lipgloss.NewStyle().Foreground(compat.AdaptiveColor{
-		Light: lipgloss.Color("245"),
-		Dark:  lipgloss.Color("7"),
+		Light: activeTheme.FGMuted,
+		Dark:  activeTheme.FGDefault,
 	})
 
 	// EndOfBuffer is the filler row(s) below the last line of text. The
@@ -1358,54 +1359,56 @@ func visibleRunes(s string) int {
 	return ansi.StringWidth(s)
 }
 
+var activeTheme = theme.Load()
+
 var (
-	// Warm Sunset palette (256-color).
-	coralColor  = lipgloss.Color("209") // marshal, focused border, prompt
-	goldColor   = lipgloss.Color("214") // tool calls
-	tealColor   = lipgloss.Color("43")  // success
-	orangeColor = lipgloss.Color("172") // warning / risk
-	mauveColor  = lipgloss.Color("245") // blurred border
-	userColor   = lipgloss.Color("246") // user prompt
+	// Warm Sunset palette, sourced from the active theme.
+	coralColor  = activeTheme.AccentPrimary
+	goldColor   = activeTheme.StatusWarning
+	tealColor   = activeTheme.StatusSuccess
+	orangeColor = activeTheme.StatusWarning
+	mauveColor  = activeTheme.FGMuted
+	userColor   = activeTheme.FGDefault
 
 	// accentColor is the primary accent (coral). Retained name because it is
 	// referenced widely; successColor/warningColor/errorColor are retuned to
 	// the warm palette.
-	accentColor  = coralColor
-	violetColor  = lipgloss.Color("175") // markdown headings (warm magenta)
-	dimColor     = lipgloss.Color("244")
-	successColor = tealColor
-	warningColor = orangeColor
-	errorColor   = lipgloss.Color("203")
+	accentColor  = activeTheme.AccentPrimary
+	violetColor  = activeTheme.AccentSecondary
+	dimColor     = activeTheme.FGMuted
+	successColor = activeTheme.StatusSuccess
+	warningColor = activeTheme.StatusWarning
+	errorColor   = activeTheme.StatusError
 
-	mutedStyle      = lipgloss.NewStyle().Foreground(dimColor)
+	mutedStyle      = lipgloss.NewStyle().Foreground(activeTheme.FGMuted)
 	panelTitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")).
+			Foreground(activeTheme.FGEmphasis).
 			Bold(true)
 	thinkingLineStyle = lipgloss.NewStyle().
-				Foreground(dimColor).
+				Foreground(activeTheme.FGMuted).
 				Italic(true)
 
 	codeBorderStyle = lipgloss.NewStyle().
-			Foreground(dimColor).
+			Foreground(activeTheme.FGMuted).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(dimColor)
+			BorderForeground(activeTheme.FGMuted)
 	toolNameStyle = lipgloss.NewStyle().
-			Foreground(goldColor)
+			Foreground(activeTheme.StatusWarning)
 	keyHintStyle = lipgloss.NewStyle().
-			Foreground(coralColor).
+			Foreground(activeTheme.AccentPrimary).
 			Bold(true)
 	riskLabelStyle = lipgloss.NewStyle().
-			Foreground(warningColor).
+			Foreground(activeTheme.StatusWarning).
 			Bold(true)
 	dimSeparator = " · "
 
 	inputBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(coralColor).
+			BorderForeground(activeTheme.AccentPrimary).
 			Padding(0, 1)
 
 	statusBarStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+			Foreground(activeTheme.FGDefault)
 )
 
 func compactTokenCount(tokens int) string {

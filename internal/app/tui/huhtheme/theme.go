@@ -7,19 +7,12 @@ package huhtheme
 import (
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+
+	"marshal/internal/app/tui/theme"
 )
 
-// Palette mirrors the Warm Sunset colours declared in the tui package.
-const (
-	Coral  = "209"
-	Gold   = "214"
-	Teal   = "43"
-	Dim    = "244"
-	Mauve  = "245"
-	Orange = "172"
-	Normal = "252"
-	Error  = "203"
-)
+// warmSunsetTheme is loaded once at startup and shared by all huh surfaces.
+var warmSunsetTheme = theme.Load()
 
 // WarmSunset returns a huh.Theme that retunes the Charm theme to the Warm
 // Sunset palette used across the marshal transcript: coral for titles and
@@ -32,12 +25,12 @@ func WarmSunset() huh.ThemeFunc {
 	return func(isDark bool) *huh.Styles {
 		t := huh.ThemeCharm(isDark)
 
-		coral := lipgloss.Color(Coral)
-		gold := lipgloss.Color(Gold)
-		teal := lipgloss.Color(Teal)
-		dim := lipgloss.Color(Dim)
-		err := lipgloss.Color(Error)
-		normal := lipgloss.Color(Normal)
+		coral := warmSunsetTheme.AccentPrimary
+		gold := warmSunsetTheme.StatusWarning
+		teal := warmSunsetTheme.StatusSuccess
+		dim := warmSunsetTheme.FGMuted
+		err := warmSunsetTheme.StatusError
+		normal := warmSunsetTheme.FGDefault
 
 		// Focused field styling.
 		t.Focused.Base = t.Focused.Base.BorderForeground(dim)

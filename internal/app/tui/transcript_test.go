@@ -239,9 +239,9 @@ func TestWelcomeBannerHasCoralDotAndName(t *testing.T) {
 	if !strings.Contains(plain, "local-first coding agent") {
 		t.Fatalf("banner missing tagline: %q", plain)
 	}
-	// coral 209 must appear as the foreground SGR for the dot/name.
-	if !strings.Contains(out, "209") {
-		t.Fatalf("banner not styled with coral (209): %q", out)
+	// The dot/name must be styled (not terminal default colour).
+	if out == stripANSI(out) {
+		t.Fatalf("banner not styled with accent colour:\n%q", out)
 	}
 }
 

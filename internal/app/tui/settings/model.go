@@ -307,19 +307,23 @@ func (m *Model) handlePickerPicked(value string) (Model, tea.Cmd) {
 }
 
 func (m *Model) drillIntoNewestProvider() {
+	name := m.state.wizardCreatedProvider
+	m.state.wizardCreatedProvider = "" // consumed
+	if name == "" {
+		return
+	}
 	pane := m.activePane()
 	for pane.pop() {
 	}
 	rows := pane.top().list.Rows()
-	if len(rows) == 0 {
-		return
-	}
-	pane.top().list.SetCursor(len(rows) - 1)
-	row := pane.top().list.CursorRow()
-	if row != nil && row.kind == kindDrill {
-		_ = pane.top().list.openRow(row)
-		if f := pane.top().list.TakePushRequest(); f != nil {
-			pane.push(f)
+	for i, row := range rows {
+		if row != nil && row.id == "providers."+name && row.kind == kindDrill {
+			pane.top().list.SetCursor(i)
+			_ = pane.top().list.openRow(row)
+			if f := pane.top().list.TakePushRequest(); f != nil {
+				pane.push(f)
+			}
+			return
 		}
 	}
 }

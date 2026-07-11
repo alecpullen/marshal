@@ -291,12 +291,12 @@ type State struct {
 	title           string
 	titleSet        bool
 
-		// Task 5: work gate for shutdown sequencing. workMu protects
+	// Task 5: work gate for shutdown sequencing. workMu protects
 	// quiescing and is paired with workWG so BeginQuiesce can set the
 	// gate before WaitForWork begins polling the waitgroup.
-	workMu     sync.Mutex
-	workWG     sync.WaitGroup
-	quiescing  bool
+	workMu    sync.Mutex
+	workWG    sync.WaitGroup
+	quiescing bool
 
 	// F16: steering queue (mid-turn user messages). Published to the broker
 	// so the TUI transcript and status line update without polling.
@@ -850,7 +850,7 @@ func (s *State) ResolvePendingForShutdown() {
 }
 
 // SubagentDepth returns the session's nesting depth — set once at
-	// construction via WithDepth. Exposed for diagnostics and tests.
+// construction via WithDepth. Exposed for diagnostics and tests.
 func (s *State) SubagentDepth() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

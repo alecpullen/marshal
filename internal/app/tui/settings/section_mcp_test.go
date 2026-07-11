@@ -80,11 +80,11 @@ func TestMCPPaneServerEditPreservesSpacesInArgs(t *testing.T) {
 	m = keyPress(m, "enter")
 	// Args are now an editable list: tab to reach them, add a new arg
 	// with a space, then esc out to commit.
-	m = keyPress(m, "tab")                                  // form -> args listStrings
-	m = keyPress(m, "a")                                    // enter add mode
+	m = keyPress(m, "tab") // form -> args listStrings
+	m = keyPress(m, "a")   // enter add mode
 	m = keyPress(m, "-", "-", "p", "a", "t", "h", "space", "/", "a", " ", "b", "/", "c")
-	m = keyPress(m, "enter")                                // commit add
-	m = keyPress(m, "esc")                                  // close sub-pane (commit)
+	m = keyPress(m, "enter") // commit add
+	m = keyPress(m, "esc")   // close sub-pane (commit)
 	if !reflect.DeepEqual(m.state.cfg.MCP.Servers["fs"].Args,
 		[]string{"--root", "/Users/me/My Project", "--flag", "--path /a b/c"}) {
 		t.Fatalf("args round-trip lost spaces: %v", m.state.cfg.MCP.Servers["fs"].Args)

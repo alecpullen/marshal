@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"charm.land/huh/v2"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 
 	"marshal/internal/app/config"
 )
@@ -54,11 +54,11 @@ func (p *mcpServerEditPane) Update(msg tea.Msg) (sectionPane, tea.Cmd) {
 	return p, cmd
 }
 
-func (p *mcpServerEditPane) View(width int) string         { return p.inner.View(width) }
-func (p *mcpServerEditPane) SetWidth(w int)                { p.inner.SetWidth(w) }
-func (p *mcpServerEditPane) HasInnerFocus() bool           { return p.inner.HasInnerFocus() }
-func (p *mcpServerEditPane) CloseInner()                   { p.inner.CloseInner() }
-func (p *mcpServerEditPane) FocusedFieldTitle() string     { return p.inner.FocusedFieldTitle() }
+func (p *mcpServerEditPane) View(width int) string     { return p.inner.View(width) }
+func (p *mcpServerEditPane) SetWidth(w int)            { p.inner.SetWidth(w) }
+func (p *mcpServerEditPane) HasInnerFocus() bool       { return p.inner.HasInnerFocus() }
+func (p *mcpServerEditPane) CloseInner()               { p.inner.CloseInner() }
+func (p *mcpServerEditPane) FocusedFieldTitle() string { return p.inner.FocusedFieldTitle() }
 
 func newMCPPane(s *state) sectionPane {
 	form := newScalarPane(func() *huh.Form {

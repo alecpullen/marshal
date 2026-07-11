@@ -85,7 +85,6 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case "ctrl+s":
 			m.pendingCancel = false
 			return *m, m.saveCmd()
-			return *m, m.saveCmd()
 		case "?":
 			if !m.activePane().HasInnerFocus() {
 				m.helpOpen = !m.helpOpen

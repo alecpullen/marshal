@@ -98,10 +98,12 @@ func (m *Model) keepCursorInView() {
 
 // visibleCount uses a value receiver because it does not mutate state.
 func (m Model) visibleCount() int {
-	// title(1) + separator(1) + help(1) + bottom(1), plus optional footer(1)
-	overhead := 5
+	// Content lines inside the border: title(1) + separator(1) + help(1),
+	// plus optional footer(1). The border top/bottom are rendered by
+	// lipgloss and are not counted here.
+	overhead := 4
 	if m.footer == "" {
-		overhead = 4
+		overhead = 3
 	}
 	available := m.height - overhead
 	if available < 1 {

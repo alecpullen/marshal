@@ -3,7 +3,13 @@ package memory
 import (
 	"fmt"
 	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
+
+// borderColor is the muted grey used for the frame border and separator.
+var borderColor = lipgloss.Color("244")
 
 func (m Model) View() string {
 	frameWidth := 61
@@ -24,10 +30,11 @@ func (m Model) View() string {
 		end = len(m.memories)
 	}
 
-	var b strings.Builder
-	b.WriteString(frameTitle("Project Memories", frameWidth))
+	var lines []string
+	lines = append(lines, "Project Memories")
+
 	if len(m.memories) == 0 {
-		b.WriteString(frameLine("No memories yet.", inner))
+		lines = append(lines, "No memories yet.")
 	}
 	for i := m.offset; i < end; i++ {
 		mem := m.memories[i]
@@ -36,51 +43,32 @@ func (m Model) View() string {
 			cursor = "> "
 		}
 		line := fmt.Sprintf("%s[%s] (%s) %s", cursor, mem.Kind, mem.Confidence, mem.Content)
-		b.WriteString(frameLine(line, inner))
+		lines = append(lines, line)
 	}
-	b.WriteString(frameSeparator(inner))
+	// Separator line drawn inside the border.
+	lines = append(lines, strings.Repeat("─", inner))
+
 	if m.footer != "" {
-		b.WriteString(frameLine(m.footer, inner))
+		lines = append(lines, m.footer)
 	}
-	b.WriteString(frameLine("[↑/k ↓/j] Move  [c] Confirm  [s] Mark Stale  [Esc] Close", inner))
-	b.WriteString(frameBottom(frameWidth))
-	return b.String()
-}
+	lines = append(lines, "[↑/k ↓/j] Move  [c] Confirm  [s] Mark Stale  [Esc] Close")
 
-func frameTitle(title string, w int) string {
-	inner := w - 4
-	t := truncateRunes(title, inner-1)
-	pad := inner - 1 - len([]rune(t))
-	if pad < 0 {
-		pad = 0
+	// Truncate and pad each line to inner display width.
+	contentStyle := lipgloss.NewStyle().Width(inner).Foreground(lipgloss.Color("252"))
+	for i, l := range lines {
+		if lipgloss.Width(l) > inner {
+			l = ansi.Cut(l, 0, inner)
+		}
+		lines[i] = contentStyle.Render(l)
 	}
-	return "┌─ " + t + " " + strings.Repeat("─", pad) + "┐\n"
-}
 
-func frameSeparator(inner int) string {
-	return "├" + strings.Repeat("─", inner+2) + "┤\n"
-}
+	innerContent := strings.Join(lines, "\n")
 
-func frameBottom(w int) string {
-	return "└" + strings.Repeat("─", w-2) + "┘\n"
-}
+	// Wrap the entire content in a rounded border.
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1)
 
-func frameLine(content string, inner int) string {
-	t := truncateRunes(content, inner)
-	pad := inner - len([]rune(t))
-	if pad < 0 {
-		pad = 0
-	}
-	return "│ " + t + strings.Repeat(" ", pad) + " │\n"
-}
-
-func truncateRunes(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= limit {
-		return s
-	}
-	return string(runes[:limit])
+	return style.Render(innerContent)
 }

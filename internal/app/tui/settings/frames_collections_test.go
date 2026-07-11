@@ -7,7 +7,35 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/routing"
 )
+
+func TestPresetProviderFieldIsKindPicker(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b"},
+	}
+	st := newState(cfg)
+	drill := presetsFrame(st).list.Rows()[0]
+	detail := drill.build()
+
+	var providerRow *field
+	for _, r := range detail.list.Rows() {
+		if r.title == "Provider" {
+			providerRow = r
+			break
+		}
+	}
+	if providerRow == nil {
+		t.Fatal("preset detail must have a Provider row")
+	}
+	if providerRow.kind != kindPicker {
+		t.Fatalf("preset Provider row kind = %v, want kindPicker", providerRow.kind)
+	}
+}
 
 func TestProvidersAddAndEditType(t *testing.T) {
 	s := newState(config.Default())

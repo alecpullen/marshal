@@ -107,7 +107,7 @@ func LoadFor(noColor bool, term string) Theme {
 	if noColor {
 		return monochromeTheme()
 	}
-	if strings.Contains(term, "256color") {
+	if strings.Contains(term, "256color") || strings.Contains(term, "kitty") || strings.Contains(term, "wezterm") {
 		return warmSunset256
 	}
 	return warmSunset16

@@ -298,17 +298,17 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		select {
 		case ev, ok := <-sub:
 			if !ok {
-				return m.resultOrError(runErrVal, slot)
+				return resultOrError(runErrVal, slot)
 			}
 			forward(ev)
 		default:
-			return m.resultOrError(runErrVal, slot)
+			return resultOrError(runErrVal, slot)
 		}
 	}
 }
 
 // resultOrError maps the finished-turn state to a return value.
-func (m *TurnManager) resultOrError(runErr error, slot *activeTurn) (any, error) {
+func resultOrError(runErr error, slot *activeTurn) (any, error) {
 	if slot.clientCancelled.Load() {
 		return PromptTurnResult{StopReason: "cancelled"}, nil
 	}
@@ -321,6 +321,9 @@ func (m *TurnManager) resultOrError(runErr error, slot *activeTurn) (any, error)
 // Cancel is the notification handler for session/cancel. It marks the
 // active turn for the named session as client-cancelled, cancels its
 // context, and returns immediately without waiting for the runner.
+//
+// Returns nil, nil. The caller dispatches this as a JSON-RPC notification;
+// the return value is discarded and no response is sent to the client.
 func (m *TurnManager) Cancel(ctx context.Context, params json.RawMessage) (any, error) {
 	var p struct {
 		SessionID string `json:"sessionId"`

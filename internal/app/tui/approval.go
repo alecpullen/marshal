@@ -30,10 +30,11 @@ const (
 // area (the transcript stays visible above). The form's select title carries
 // the command/risk/sandbox summary that renderApprovalPanel used to show.
 type approvalModel struct {
-	form   *huh.Form
-	tc     *session.PendingToolCall
-	choice approvalChoice
-	width  int
+	form          *huh.Form
+	tc            *session.PendingToolCall
+	choice        approvalChoice
+	width         int
+	submitPending bool
 	// done is set once the form reaches a terminal state, so the parent can
 	// read Choice without re-dispatching the form.
 	done bool
@@ -45,7 +46,7 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 	summary := approvalSummary(tc, sb, allowNetwork)
 
 	opts := []huh.Option[approvalChoice]{
-		huh.NewOption("▸ Approve & proceed", choiceApprove),
+		huh.NewOption("Approve", choiceApprove),
 		huh.NewOption("Deny", choiceDeny),
 		huh.NewOption("Edit command/args", choiceEdit),
 		huh.NewOption("Always allow (save to config)", choiceAlways),
@@ -73,9 +74,8 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 	// to our explicit handling in the parent.
 	km.Quit = key.NewBinding(key.WithKeys())
 	km.Select.Submit = key.NewBinding(key.WithKeys("enter"))
-	// Enter both navigates options and submits on the last one; keep the
-	// default Next binding (enter, tab) so Enter moves through options and
-	// submits when on the last.
+	// Enter is handled in approvalModel.Update: first Enter arms the explicit
+	// submit step, second Enter confirms the selected action.
 
 	am.form = huh.NewForm(group).
 		WithTheme(huhtheme.WarmSunset()).
@@ -102,10 +102,22 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 		return am, nil
 	}
 	// Esc denies (aborts the form). Ctrl+C is intercepted by the parent.
-	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "esc" {
-		am.done = true
-		am.choice = choiceDeny
-		return am, nil
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		switch k.String() {
+		case "esc":
+			am.done = true
+			am.choice = choiceDeny
+			return am, nil
+		case "enter":
+			if am.submitPending {
+				am.done = true
+				return am, nil
+			}
+			am.submitPending = true
+			return am, nil
+		case "up", "down", "j", "k":
+			am.submitPending = false
+		}
 	}
 	updated, cmd := am.form.Update(msg)
 	if f, ok := updated.(*huh.Form); ok {
@@ -138,6 +150,13 @@ func (am *approvalModel) View() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(am.form.View())
+	if am.submitPending {
+		b.WriteString("\n")
+		b.WriteString(promptPrefixStyle.Render("▸ Submit selected action"))
+	} else {
+		b.WriteString("\n")
+		b.WriteString(mutedStyle.Render("  Submit selected action"))
+	}
 	return b.String()
 }
 

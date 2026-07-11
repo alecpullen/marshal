@@ -42,9 +42,9 @@ func TestApprovalDialogLabelsContainSubmitIndicator(t *testing.T) {
 	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
 	view := am.View()
 
-	// The approve option should show the submit indicator.
-	if !strings.Contains(view, "▸") {
-		t.Errorf("approval view missing submit indicator (▸):\n%s", view)
+	// The explicit submit row should be present.
+	if !strings.Contains(view, "Submit selected action") {
+		t.Errorf("approval view missing explicit submit row:\n%s", view)
 	}
 
 	// The edit option should show its descriptive label.

@@ -550,72 +550,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handled above; kept for exhaustiveness but unreachable.
 		return m, nil
 	case agentFinishedMsg:
-		m.busy = false
-		m.agentCancel = nil
-		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-			m.state.SetProviderError(msg.err)
-		}
-		m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
-			m.lastActivityDone = m.now()
-			m.lastActivityKind = session.ActivityIdle
-		}
-		m.updateViewportHeight()
-		m.refreshViewport()
-		m.syncSettingsSaveBlock()
-		return m, nil
+		return m.handleAgentFinished(msg)
 	case jobCountMsg:
-		m.jobCount = msg.count
-		m.syncSettingsSaveBlock()
-		// Re-arm the pump: exactly one in-flight subscription at a time
-		// (F19 R2). Return nil if no broker is wired so the cmd chain
-		// terminates (this should not happen when the pump is sourced
-		// from Init, but keeps Update safe under tests that wire msgs
-		// directly).
-		if m.jobEvents == nil {
-			return m, nil
-		}
-		return m, pumpJobEvents(m.jobEvents)
+		return m.handleJobCount(msg)
 	case steeringMsg:
-		// F16: cache the queued count so the status line and transcript
-		// render without polling, then re-arm the pump. The transcript
-		// re-renders via the viewport dirty hash on the next refresh.
-		m.queuedCount = msg.queueLen
-		if m.steeringEvents == nil {
-			m.refreshViewport()
-			return m, nil
-		}
-		m.refreshViewport()
-		return m, pumpSteeringEvents(m.steeringEvents)
+		return m.handleSteering(msg)
 	case agentTickMsg:
-		if !m.busy {
-			return m, nil
-		}
-		act := m.state.Activity()
-		if act.Kind == session.ActivityIdle && m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
-			m.lastActivityDone = m.now()
-		}
-		m.lastActivityKind = act.Kind
-		if act.Kind != session.ActivityIdle && act.Label != "" {
-			m.lastActivityLabel = act.Label
-		}
-		if m.state.PendingQuestion() != nil && m.input.Placeholder != "Type your answer..." {
-			m.input.Placeholder = "Type your answer..."
-		}
-		m.updateViewportHeight()
-		m.refreshViewport()
-		return m, tickCmd()
+		return m.handleAgentTick(msg)
 	case spinnerTickMsg:
-		if !m.busy {
-			return m, nil
-		}
-		m.spinnerFrame = m.spinner.Next()
-		// The spinner tick is at 80ms (smoother than the 150ms layout tick);
-		// the activity strip and the in-progress thinking/tool rows read
-		// m.spinnerFrame via activeSpinnerFrame, so the viewport must
-		// re-render here or the animation stays at the 150ms cadence.
-		m.refreshViewport()
-		return m, spinnerTickCmd()
+		return m.handleSpinnerTick(msg)
 	case tea.KeyPressMsg:
 		// Global hotkeys — input is always focused. (Approval and question
 		// pending states are routed above, before this switch.)
@@ -1378,12 +1321,91 @@ func (m *Model) syncSettingsSaveBlock() {
 	m.settingsModel.SetSaveBlocked(m.settingsBlockReason())
 }
 
-// SetSaveBlocked is the external API for testing; production code uses
-// syncSettingsSaveBlock.
-func (m *Model) SetSaveBlocked(reason string) {
-	if m.settingsOpen {
-		m.settingsModel.SetSaveBlocked(reason)
+// handleAgentFinished handles an agentFinishedMsg, shared by Update and
+// handleRuntimeMessage.
+func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
+	m.busy = false
+	m.agentCancel = nil
+	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+		m.state.SetProviderError(msg.err)
 	}
+	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
+		m.lastActivityDone = m.now()
+		m.lastActivityKind = session.ActivityIdle
+	}
+	m.updateViewportHeight()
+	m.refreshViewport()
+	m.syncSettingsSaveBlock()
+	return m, nil
+}
+
+// handleJobCount handles a jobCountMsg, shared by Update and
+// handleRuntimeMessage.
+func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
+	m.jobCount = msg.count
+	m.syncSettingsSaveBlock()
+	// Re-arm the pump: exactly one in-flight subscription at a time
+	// (F19 R2). Return nil if no broker is wired so the cmd chain
+	// terminates (this should not happen when the pump is sourced
+	// from Init, but keeps Update safe under tests that wire msgs
+	// directly).
+	if m.jobEvents == nil {
+		return m, nil
+	}
+	return m, pumpJobEvents(m.jobEvents)
+}
+
+// handleSteering handles a steeringMsg, shared by Update and
+// handleRuntimeMessage.
+func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
+	// F16: cache the queued count so the status line and transcript
+	// render without polling, then re-arm the pump. The transcript
+	// re-renders via the viewport dirty hash on the next refresh.
+	m.queuedCount = msg.queueLen
+	if m.steeringEvents == nil {
+		m.refreshViewport()
+		return m, nil
+	}
+	m.refreshViewport()
+	return m, pumpSteeringEvents(m.steeringEvents)
+}
+
+// handleAgentTick handles an agentTickMsg, shared by Update and
+// handleRuntimeMessage.
+func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
+	if !m.busy {
+		return m, nil
+	}
+	act := m.state.Activity()
+	if act.Kind == session.ActivityIdle && m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
+		m.lastActivityDone = m.now()
+	}
+	m.lastActivityKind = act.Kind
+	if act.Kind != session.ActivityIdle && act.Label != "" {
+		m.lastActivityLabel = act.Label
+	}
+	if m.state.PendingQuestion() != nil && m.input.Placeholder != "Type your answer..." {
+		m.input.Placeholder = "Type your answer..."
+	}
+	m.updateViewportHeight()
+	m.refreshViewport()
+	return m, tickCmd()
+}
+
+// handleSpinnerTick handles a spinnerTickMsg, shared by Update and
+// handleRuntimeMessage.
+func (m Model) handleSpinnerTick(msg spinnerTickMsg) (Model, tea.Cmd) {
+	if !m.busy {
+		return m, nil
+	}
+	m.spinnerFrame = m.spinner.Next()
+	// The spinner tick is at 80ms (smoother than the 150ms layout tick);
+	// the activity strip and the in-progress thinking/tool rows read
+	// m.spinnerFrame via activeSpinnerFrame, so the viewport must
+	// re-render here or the animation stays at the 150ms cadence.
+	m.refreshViewport()
+	return m, spinnerTickCmd()
 }
 
 // handleRuntimeMessage processes agent/steering/tick messages so they
@@ -1393,60 +1415,15 @@ func (m *Model) SetSaveBlocked(reason string) {
 func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case agentFinishedMsg:
-		m.busy = false
-		m.agentCancel = nil
-		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-			m.state.SetProviderError(msg.err)
-		}
-		m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
-			m.lastActivityDone = m.now()
-			m.lastActivityKind = session.ActivityIdle
-		}
-		m.updateViewportHeight()
-		m.refreshViewport()
-		m.syncSettingsSaveBlock()
-		return m, nil
+		return m.handleAgentFinished(msg)
 	case jobCountMsg:
-		m.jobCount = msg.count
-		m.syncSettingsSaveBlock()
-		if m.jobEvents == nil {
-			return m, nil
-		}
-		return m, pumpJobEvents(m.jobEvents)
+		return m.handleJobCount(msg)
 	case steeringMsg:
-		m.queuedCount = msg.queueLen
-		if m.steeringEvents == nil {
-			m.refreshViewport()
-			return m, nil
-		}
-		m.refreshViewport()
-		return m, pumpSteeringEvents(m.steeringEvents)
+		return m.handleSteering(msg)
 	case agentTickMsg:
-		if !m.busy {
-			return m, nil
-		}
-		act := m.state.Activity()
-		if act.Kind == session.ActivityIdle && m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
-			m.lastActivityDone = m.now()
-		}
-		m.lastActivityKind = act.Kind
-		if act.Kind != session.ActivityIdle && act.Label != "" {
-			m.lastActivityLabel = act.Label
-		}
-		if m.state.PendingQuestion() != nil && m.input.Placeholder != "Type your answer..." {
-			m.input.Placeholder = "Type your answer..."
-		}
-		m.updateViewportHeight()
-		m.refreshViewport()
-		return m, tickCmd()
+		return m.handleAgentTick(msg)
 	case spinnerTickMsg:
-		if !m.busy {
-			return m, nil
-		}
-		m.spinnerFrame = m.spinner.Next()
-		m.refreshViewport()
-		return m, spinnerTickCmd()
+		return m.handleSpinnerTick(msg)
 	}
 	return m, nil
 }

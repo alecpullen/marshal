@@ -729,6 +729,22 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 func (f *fakeAgentRunner) SetForceClass(string)                   {}
 func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
 
+// blockingAgentRunner blocks on a channel in Run until the channel is
+// closed. Used by TestAgentCommandRegistersAndReleasesSessionWork to
+// verify that session work is tracked and released.
+type blockingAgentRunner struct {
+	block chan struct{}
+	err   error
+}
+
+func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
+	<-b.block
+	return b.err
+}
+
+func (b *blockingAgentRunner) SetForceClass(string)                   {}
+func (b *blockingAgentRunner) SetPolicyRules([]config.PermissionRule) {}
+
 type fakeSwarmRunner struct {
 	mu    sync.Mutex
 	goals []string
@@ -876,6 +892,71 @@ func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
 	}
 	if err := state.ProviderError(); err == nil || err.Error() != "boom" {
 		t.Fatalf("ProviderError() = %v, want an error wrapping %q", err, "boom")
+	}
+}
+
+func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
+	block := make(chan struct{})
+	runner := &blockingAgentRunner{block: block}
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	model := New(state, WithRunner(context.Background(), runner))
+	model.resize(80, 24)
+
+	// Submit a turn. The runner blocks in Run, so the runAgentCmd
+	// command will block until we close(block).
+	model.input.SetValue("hello")
+	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("cmd is nil")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	if len(batch) != 3 {
+		t.Fatalf("len(batch) = %d, want 3", len(batch))
+	}
+
+	// Execute the runAgentCmd (batch[0]) in a goroutine; it will block.
+	runDone := make(chan tea.Msg, 1)
+	go func() {
+		runDone <- batch[0]()
+	}()
+
+	// Give the goroutine a moment to block inside Run.
+	time.Sleep(10 * time.Millisecond)
+
+	// BeginQuiesce and wait for work. WaitForWork should block because
+	// the runner hasn't finished.
+	state.BeginQuiesce()
+	waitDone := make(chan struct{})
+	go func() {
+		state.WaitForWork(context.Background())
+		close(waitDone)
+	}()
+
+	select {
+	case <-waitDone:
+		t.Fatal("WaitForWork returned before runner finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Unblock the runner.
+	close(block)
+
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("WaitForWork did not return after runner unblocked")
+	}
+
+	select {
+	case msg := <-runDone:
+		if _, ok := msg.(agentFinishedMsg); !ok {
+			t.Fatalf("runAgentCmd returned %T, want agentFinishedMsg", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner command did not complete")
 	}
 }
 
@@ -2660,5 +2741,244 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	}
 	if m.forceMode != "edit" {
 		t.Fatalf("forceMode = %q, want edit", m.forceMode)
+	}
+}
+
+// ── Task 8: Turn-cancellation on quit paths ──────────────────────────────
+
+func TestCtrlCCancelsTurn(t *testing.T) {
+	tests := []struct {
+		name    string
+		trigger func(m *Model) tea.Cmd
+	}{
+		{
+			name: "ctrl+c",
+			trigger: func(m *Model) tea.Cmd {
+				updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+				*m = updated.(Model)
+				return cmd
+			},
+		},
+		{
+			name: "/quit",
+			trigger: func(m *Model) tea.Cmd {
+				_, cmd := m.dispatchCommand("/quit")
+				return cmd
+			},
+		},
+		{
+			name: "/exit",
+			trigger: func(m *Model) tea.Cmd {
+				_, cmd := m.dispatchCommand("/exit")
+				return cmd
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+
+			approvalCh := make(chan session.UserApprovalDecision, 1)
+			state.SetPendingApproval(&session.PendingToolCall{
+				ID: "test-1", Name: "shell.run", Command: "echo test",
+				Risk: "low", Reason: "testing", ResponseChan: approvalCh,
+			})
+			questionCh := make(chan []session.Answer, 1)
+			state.SetPendingQuestion(&session.PendingQuestion{
+				Questions:    []session.Question{{Question: "Continue?"}},
+				ResponseChan: questionCh,
+			})
+
+			cancelled := false
+			opts := []Option{}
+			if tt.name != "ctrl+c" {
+				opts = append(opts, WithCommandRegistry(setupCmdReg(t)))
+			}
+			m := New(state, opts...)
+			m.busy = true
+			m.agentCancel = func() { cancelled = true }
+			m.state.PushSteering("pending")
+			m.queuedCount = 1
+
+			cmd := tt.trigger(&m)
+
+			if !cancelled {
+				t.Fatal("should cancel the agent turn")
+			}
+			if m.agentCancel != nil {
+				t.Fatal("agentCancel should be cleared")
+			}
+			if len(m.state.SteeringQueue()) != 0 {
+				t.Fatal("steering queue should be cleared")
+			}
+			if m.queuedCount != 0 {
+				t.Fatal("queuedCount should be 0")
+			}
+			if state.PendingApproval() != nil {
+				t.Fatal("pending approval should be cleared")
+			}
+			if state.PendingQuestion() != nil {
+				t.Fatal("pending question should be cleared")
+			}
+			select {
+			case dec := <-approvalCh:
+				if dec.Approved {
+					t.Fatal("approval should be denied")
+				}
+			default:
+				t.Fatal("approval denial not sent")
+			}
+			select {
+			case answers := <-questionCh:
+				if len(answers) != 1 || answers[0].Answer != session.AnswerUnanswered {
+					t.Fatalf("question should be unanswered, got %+v", answers)
+				}
+			default:
+				t.Fatal("question not answered")
+			}
+			if cmd == nil {
+				t.Fatal("should return a quit command")
+			}
+			select {
+			case <-state.Done():
+			case <-time.After(time.Second):
+				t.Fatal("state was not shut down")
+			}
+		})
+	}
+}
+
+func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	model.busy = true
+
+	updated, _ := model.Update(agentFinishedMsg{err: context.Canceled})
+	model = updated.(Model)
+
+	if model.busy {
+		t.Fatal("model.busy = true, want false after agentFinishedMsg")
+	}
+	if err := state.ProviderError(); err != nil {
+		t.Fatalf("ProviderError() = %v, want nil for context.Canceled", err)
+	}
+}
+
+// ── Task 8: Settings save guard ──────────────────────────────────────────
+
+func TestSettingsSaveBlockedDuringAgentTurn(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 40)
+	m.busy = true
+
+	// Open settings while busy.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	// Press Ctrl+S — should be blocked.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("expected nil cmd when save is blocked by busy turn")
+	}
+	if m.settingsModel.Footer() != settingsBusyMessage {
+		t.Fatalf("footer = %q, want %q", m.settingsModel.Footer(), settingsBusyMessage)
+	}
+}
+
+func TestSettingsSaveBlockedDuringBackgroundJob(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 40)
+	m.state.SetRunningJobsCount(1)
+
+	// Open settings while jobs are running.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	// Press Ctrl+S — should be blocked.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("expected nil cmd when save is blocked by background jobs")
+	}
+	if m.settingsModel.Footer() != settingsBusyMessage {
+		t.Fatalf("footer = %q, want %q", m.settingsModel.Footer(), settingsBusyMessage)
+	}
+}
+
+func TestSettingsSaveAllowedWhenIdle(t *testing.T) {
+	var reloaded bool
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state, WithConfigReloader(func(cfg config.Config) error {
+		reloaded = true
+		return nil
+	}))
+	m.resize(100, 40)
+
+	// Open settings while idle.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	// Press Ctrl+S — should succeed.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd when save is allowed")
+	}
+
+	// Execute the command to get SavedMsg, then feed it back to trigger the reloader.
+	msg := cmd()
+	sm, ok := msg.(settings.SavedMsg)
+	if !ok {
+		t.Fatalf("expected SavedMsg, got %T", msg)
+	}
+	updated, _ = m.Update(sm)
+	_ = updated.(Model)
+
+	if !reloaded {
+		t.Fatal("configReloader should have been called")
+	}
+}
+
+func TestSettingsOverlayDoesNotSwallowAgentFinishedOrJobCount(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 40)
+	m.busy = true
+	m.lastActivityKind = session.ActivityThinking
+
+	// Open settings.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if !m.settingsOpen {
+		t.Fatal("expected settingsOpen")
+	}
+
+	// Feed agentFinishedMsg while settings is open.
+	updated, _ = m.Update(agentFinishedMsg{err: nil})
+	m = updated.(Model)
+
+	if m.busy {
+		t.Fatal("busy should be cleared after agentFinishedMsg even with settings open")
+	}
+	if !m.settingsOpen {
+		t.Fatal("settings should stay open after agentFinishedMsg")
+	}
+
+	// Feed jobCountMsg while settings is open.
+	updated, _ = m.Update(jobCountMsg{count: 3})
+	m = updated.(Model)
+
+	if m.jobCount != 3 {
+		t.Fatalf("jobCount = %d, want 3", m.jobCount)
+	}
+	if !m.settingsOpen {
+		t.Fatal("settings should stay open after jobCountMsg")
 	}
 }

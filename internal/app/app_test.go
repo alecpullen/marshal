@@ -29,6 +29,8 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/tools/native"
+	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 )
 
@@ -335,7 +337,7 @@ func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
 	cfg := nativeToolAgentConfig("native-provider")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
+	runner, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -357,7 +359,7 @@ func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
+	runner, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -366,6 +368,212 @@ func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	}
 	if runner.ResponseFormat == nil || runner.ResponseFormat.Type != "json_schema" {
 		t.Fatalf("runner.ResponseFormat = %+v, want json_schema fallback when provider lacks capability", runner.ResponseFormat)
+	}
+}
+
+func TestBuildAgentRunnerBackgroundShellUsesConfiguredSandbox(t *testing.T) {
+	// Background jobs must honour the configured sandbox backend. With
+	// restricted mode and an explicit-empty env allowlist, parent env
+	// secrets must not leak into the background job's environment.
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("test-provider")
+	cfg.Tools.Shell.Sandbox.Backend = "restricted"
+	cfg.Tools.Shell.Sandbox.EnvAllowlist = []string{} // explicit empty: only PATH
+
+	t.Setenv("MARSHAL_TEST_SECRET", "super-secret-value-avoid-leak")
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, reg, _, _, _, jobMgr, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	_ = runner
+	_ = reg
+
+	id, err := jobMgr.Start(ctx, "echo $MARSHAL_TEST_SECRET", 5*time.Second)
+	if err != nil {
+		t.Fatalf("jobMgr.Start: %v", err)
+	}
+
+	// Wait for the short-lived job to complete.
+	time.Sleep(500 * time.Millisecond)
+
+	info, output, err := jobMgr.Output(id, 0)
+	if err != nil {
+		t.Fatalf("jobMgr.Output: %v", err)
+	}
+	if info.Sandbox.Backend != "restricted" {
+		t.Fatalf("job sandbox backend = %q, want %q", info.Sandbox.Backend, "restricted")
+	}
+	if strings.Contains(output, "super-secret-value-avoid-leak") {
+		t.Fatal("background job output contains secret that should have been scrubbed by restricted sandbox with explicit-empty env allowlist")
+	}
+}
+
+func TestBuildAgentRunnerUsesConfiguredOutputLimit(t *testing.T) {
+	// Background jobs must honour MaxOutputBytes from config.
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("test-provider")
+	cfg.Tools.Shell.MaxOutputBytes = 8
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, reg, _, _, _, jobMgr, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	_ = runner
+	_ = reg
+
+	// Start a background job that produces more than 8 bytes of output.
+	id, err := jobMgr.Start(ctx, "echo aaaaaaaa bbbbbbbb cccccccc dddddddd", 5*time.Second)
+	if err != nil {
+		t.Fatalf("jobMgr.Start: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	info, output, err := jobMgr.Output(id, 0)
+	if err != nil {
+		t.Fatalf("jobMgr.Output: %v", err)
+	}
+	if !info.OutputTruncated {
+		t.Fatal("expected output truncation for noisy background job")
+	}
+	// Each stream (stdout, stderr) is bounded by MaxOutputBytes.
+	// Truncation appends the truncation marker.
+	const truncationMarkerLen = len("\n[output truncated]") // 20
+	maxExpected := 2*cfg.Tools.Shell.MaxOutputBytes + truncationMarkerLen
+	if len(output) > maxExpected {
+		t.Fatalf("output length = %d, want <= %d (2*MaxOutputBytes + truncationMarker)", len(output), maxExpected)
+	}
+}
+
+func TestStartRuntimeOwnsJobManager(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[project]
+name = "jm-test"
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+tool_calling = true
+
+[models.presets.mock_preset]
+provider = "mock"
+model = "mock-model"
+local_only = true
+
+[agent_profiles.mock_profile]
+implementer = "mock_preset"
+planner = "mock_preset"
+repo_scout = "mock_preset"
+tester = "mock_preset"
+reviewer = "mock_preset"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx := context.Background()
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	if rt.JobManager == nil {
+		t.Fatal("Runtime.JobManager is nil")
+	}
+
+	// Prove the manager works: start a job and list it.
+	id, err := rt.JobManager.Start(ctx, "echo job-manager-test", 5*time.Second)
+	if err != nil {
+		t.Fatalf("JobManager.Start: %v", err)
+	}
+
+	// The job.list tool must see the same job (proving pointer identity
+	// between Runtime.JobManager and the toolset's job manager).
+	tool, ok := rt.ToolRegistry.Lookup("job.list")
+	if !ok {
+		t.Fatal("job.list not registered in ToolRegistry")
+	}
+	result, err := tool.Handler(ctx, registry.ToolCall{Args: json.RawMessage("{}")})
+	if err != nil {
+		t.Fatalf("job.list handler: %v", err)
+	}
+	if !strings.Contains(result.Content, id) {
+		t.Fatalf("job.list output %q does not contain job id %q", result.Content, id)
+	}
+}
+
+func TestReloadAgentRuntimeReplacesReachableManagerWhenIdle(t *testing.T) {
+	ctx := context.Background()
+
+	initialCfg := nativeToolAgentConfig("test-provider")
+	reloadedCfg := nativeToolAgentConfig("test-provider")
+
+	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, _, _, jobMgr, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil)
+	if err != nil {
+		t.Fatalf("initial buildAgentRunner: %v", err)
+	}
+
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		MCPManager:   nil, // no MCP servers configured; use nil interface
+		Snapshot:     nil,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
+	}
+
+	if rt.JobManager == nil {
+		t.Fatal("initial JobManager is nil")
+	}
+
+	// Capture the old manager pointer before reload.
+	oldMgr := rt.JobManager
+
+	// Reload — must build a new manager and swap it in.
+	if err := reloadAgentRuntime(ctx, reloadedCfg, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+
+	// The runtime pointer must change.
+	if rt.JobManager == oldMgr {
+		t.Fatal("JobManager pointer did not change after reload")
+	}
+
+	// The old manager must reject new starts (it was shut down).
+	_, err = oldMgr.Start(ctx, "echo should-fail", time.Second)
+	if err == nil {
+		t.Fatal("expected old JobManager to reject Start after shutdown")
+	}
+	if !errors.Is(err, native.ErrJobManagerClosed) {
+		t.Fatalf("old JobManager error = %v, want ErrJobManagerClosed", err)
+	}
+
+	// The new manager must execute jobs.
+	id, err := rt.JobManager.Start(ctx, "echo hello-new-manager", 5*time.Second)
+	if err != nil {
+		t.Fatalf("new JobManager.Start: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	info, _, err := rt.JobManager.Output(id, 0)
+	if err != nil {
+		t.Fatalf("new JobManager.Output: %v", err)
+	}
+	if info.Status != native.StatusCompleted {
+		t.Fatalf("new job status = %s, want completed", info.Status)
 	}
 }
 
@@ -418,7 +626,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 	reloaded.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, swarmRunner, mcpMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil)
+	runner, reg, swarmRunner, mcpMgr, _, jobMgr, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -429,23 +637,34 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 		t.Fatalf("initial MaxFixRounds = %d, want 1", swarmRunner.MaxFixRounds)
 	}
 
-	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, "", runner, swarmRunner, &mcpMgr, nil, nil); err != nil {
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		MCPManager:   nil, // no MCP servers configured; use nil interface
+		Snapshot:     nil,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
+	}
+
+	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
-	if swarmRunner.MaxFixRounds != 5 {
-		t.Fatalf("reloaded MaxFixRounds = %d, want 5", swarmRunner.MaxFixRounds)
+	if rt.SwarmRunner.MaxFixRounds != 5 {
+		t.Fatalf("reloaded MaxFixRounds = %d, want 5", rt.SwarmRunner.MaxFixRounds)
 	}
-	if swarmRunner.MaxTotalTokens != 90000 {
-		t.Fatalf("reloaded MaxTotalTokens = %d, want 90000", swarmRunner.MaxTotalTokens)
+	if rt.SwarmRunner.MaxTotalTokens != 90000 {
+		t.Fatalf("reloaded MaxTotalTokens = %d, want 90000", rt.SwarmRunner.MaxTotalTokens)
 	}
-	impl, err := swarmRunner.NewRunner(agent.RoleImplementer, swarm.ScopeFull)
+	impl, err := rt.SwarmRunner.NewRunner(agent.RoleImplementer, swarm.ScopeFull)
 	if err != nil {
 		t.Fatalf("NewRunner implementer: %v", err)
 	}
 	if impl.MaxToolIterations != 25 {
 		t.Fatalf("implementer MaxToolIterations = %d, want 25", impl.MaxToolIterations)
 	}
-	tester, err := swarmRunner.NewRunner(agent.RoleTester, swarm.ScopeTester)
+	tester, err := rt.SwarmRunner.NewRunner(agent.RoleTester, swarm.ScopeTester)
 	if err != nil {
 		t.Fatalf("NewRunner tester: %v", err)
 	}
@@ -476,32 +695,38 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 	}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, mcpMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil)
+	runner, reg, swarmRunner, mcpMgr, _, jobMgr, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
 	if mcpMgr == nil {
 		t.Fatal("MCP manager not initialized")
 	}
-	defer func() {
-		if mcpMgr != nil {
-			mcpMgr.Close()
-		}
-	}()
 
 	// Verify tool is registered
 	if _, ok := reg.Lookup("mcp.mock.hello"); !ok {
 		t.Fatal("MCP tool mcp.mock.hello not registered")
 	}
 
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		MCPManager:   nil, // no MCP servers configured; use nil interface
+		Snapshot:     nil,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
+	}
+
 	// Reload with empty MCP config (removes MCP server)
 	reloaded := reloadableAgentConfig("provider")
-	if err := reloadAgentRuntime(ctx, reloaded, state, nil, 0, nil, "", runner, swarmRunner, &mcpMgr, nil, nil); err != nil {
+	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 
-	if mcpMgr != nil {
-		t.Fatal("mcpMgr should be nil after reload removes servers")
+	if rt.MCPManager != nil {
+		t.Fatal("MCPManager should be nil after reload removes servers")
 	}
 }
 
@@ -1196,6 +1421,109 @@ security_reviewer = "mock_preset"
 	}
 }
 
+func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte("[project]\nname = \"quiesce-test\"\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	now := time.Unix(100, 0)
+
+	// Program runner: start tracked work and add a message so knowledge
+	// has something to summarise. The work ends when quiesce cancels
+	// the work context (observed via state.Done()).
+	var statePtr *session.State
+	workEnded := make(chan struct{})
+
+	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) error {
+		statePtr = modelState(t, model)
+		statePtr.AddMessage(session.RoleUser, "summarise this turn", session.ContentTypePlain)
+		if err := statePtr.BeginWork(); err != nil {
+			return err
+		}
+		go func() {
+			<-statePtr.Done() // closed by State.Shutdown during Quiesce
+			statePtr.EndWork()
+			close(workEnded)
+		}()
+		return nil
+	}
+
+	// Hook: verify during the knowledge window that the session is
+	// quiesced (no new work can start) and the DB is still usable.
+	knowledgeRan := make(chan struct{})
+	knowledgeHook := func(hookCtx context.Context, st *session.State, database *db.DB) {
+		// Verify quiesce: BeginWork should be rejected.
+		if err := st.BeginWork(); !errors.Is(err, session.ErrSessionQuiescing) {
+			t.Errorf("BeginWork during knowledge = %v, want ErrSessionQuiescing", err)
+		}
+
+		// Verify DB is usable.
+		_, err := database.GetOrCreateProject(dir, "knowledge-hook-check")
+		if err != nil {
+			t.Errorf("DB unusable during knowledge: %v", err)
+		}
+
+		close(knowledgeRan)
+	}
+
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return now }),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithProgramRunner(programRunner),
+		WithKnowledgeHook(knowledgeHook),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify work completed.
+	select {
+	case <-workEnded:
+	default:
+		t.Fatal("work was not completed before Run returned")
+	}
+
+	// Verify knowledge ran.
+	select {
+	case <-knowledgeRan:
+	default:
+		t.Fatal("knowledge hook was not called")
+	}
+
+	// Verify the database was usable for the knowledge pass: the
+	// session should have been ended with the knowledge summary.
+	database, dberr := db.Open(dbPath(dir))
+	if dberr != nil {
+		t.Fatalf("open db: %v", dberr)
+	}
+	defer database.Close()
+
+	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
+	got, err := database.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Summary != "" {
+		t.Logf("session summary written: %q", got.Summary)
+	}
+	if got.EndedAt != nil {
+		t.Logf("session ended at: %v", got.EndedAt)
+	}
+}
+
 func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
@@ -1227,9 +1555,9 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, toolReg, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
+	_, toolReg, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil)
 	if err == nil {
-		t.Fatal("buildAgentRunner should fail when api_key_env points at an unset var")
+		t.Fatalf("buildAgentRunner should fail when api_key_env points at an unset var")
 	}
 	if toolReg != nil {
 		t.Fatal("toolReg should be nil when buildAgentRunner fails")

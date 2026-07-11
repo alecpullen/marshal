@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -51,9 +52,13 @@ type CommandRunner interface {
 }
 
 type CommandRequest struct {
-	Command string
-	Dir     string
-	Timeout time.Duration
+	Command        string
+	Dir            string
+	Timeout        time.Duration
+	MaxOutputBytes int
+	Stdout         io.Writer
+	Stderr         io.Writer
+	OnStart        func(pid int)
 }
 
 type CommandResult struct {
@@ -170,7 +175,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		if retention <= 0 {
 			retention = 8 * time.Hour
 		}
-		jobManager = NewJobManager(execRunner{}, root, maxBg, retention)
+		jobManager = NewJobManager(context.Background(), runner, root, maxBg, retention, maxOutputBytes)
 	}
 	if opts.SessionState != nil {
 		if counter, ok := any(opts.SessionState).(interface{ SetRunningJobsCount(int) }); ok {

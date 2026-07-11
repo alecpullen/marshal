@@ -898,6 +898,157 @@ func TestStateTodosPersistToDB(t *testing.T) {
 	}
 }
 
+// ── Work gate and shutdown resolution (Task 5) ─────────────────────────
+
+func TestWorkGateWaitsForActiveWork(t *testing.T) {
+	s := newTestState()
+
+	// Begin some work, then start a goroutine that waits for it.
+	err := s.BeginWork()
+	if err != nil {
+		t.Fatalf("BeginWork() = %v, want nil before quiesce", err)
+	}
+
+	waitReturned := make(chan struct{})
+	go func() {
+		s.BeginQuiesce()
+		_ = s.WaitForWork(context.Background())
+		close(waitReturned)
+	}()
+
+	// Prove it blocks: the waiter should not return within a short time.
+	select {
+	case <-waitReturned:
+		t.Fatal("WaitForWork returned before EndWork was called")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// End the work and prove the waiter returns.
+	s.EndWork()
+
+	select {
+	case <-waitReturned:
+	case <-time.After(time.Second):
+		t.Fatal("WaitForWork did not return after EndWork")
+	}
+}
+
+func TestWorkGateRejectsAfterQuiesce(t *testing.T) {
+	s := newTestState()
+	s.BeginQuiesce()
+	if !errors.Is(s.BeginWork(), ErrSessionQuiescing) {
+		t.Fatalf("BeginWork() after quiesce should return ErrSessionQuiescing")
+	}
+}
+
+func TestResolvePendingForShutdownReleasesWaiters(t *testing.T) {
+	s := newTestState()
+
+	// Install a buffered approval channel.
+	approvalCh := make(chan UserApprovalDecision, 1)
+	s.SetPendingApproval(&PendingToolCall{
+		ID:           "tc1",
+		Name:         "shell.run",
+		Command:      "echo hi",
+		ResponseChan: approvalCh,
+	})
+
+	// Install a buffered question channel.
+	questionCh := make(chan []Answer, 1)
+	s.SetPendingQuestion(&PendingQuestion{
+		Questions:    []Question{{Question: "Proceed?"}, {Question: "Really?"}},
+		ResponseChan: questionCh,
+	})
+
+	// Queue steering messages.
+	s.PushSteering("msg1")
+	s.PushSteering("msg2")
+
+	s.ResolvePendingForShutdown()
+
+	// Approval should produce a denied decision.
+	select {
+	case dec := <-approvalCh:
+		if dec.Approved {
+			t.Fatal("approval should be denied during shutdown")
+		}
+	default:
+		t.Fatal("approval channel was not written to")
+	}
+
+	// Question should produce one AnswerUnanswered per question, in order.
+	select {
+	case answers := <-questionCh:
+		if len(answers) != 2 {
+			t.Fatalf("answers = %d, want 2", len(answers))
+		}
+		if answers[0].Answer != AnswerUnanswered {
+			t.Fatalf("answers[0].Answer = %q, want %q", answers[0].Answer, AnswerUnanswered)
+		}
+		if answers[1].Answer != AnswerUnanswered {
+			t.Fatalf("answers[1].Answer = %q, want %q", answers[1].Answer, AnswerUnanswered)
+		}
+	default:
+		t.Fatal("question channel was not written to")
+	}
+
+	// Pending pointers should be nil.
+	if s.PendingApproval() != nil {
+		t.Fatal("PendingApproval should be nil after ResolvePendingForShutdown")
+	}
+	if s.PendingQuestion() != nil {
+		t.Fatal("PendingQuestion should be nil after ResolvePendingForShutdown")
+	}
+
+	// Steering queue should be empty.
+	if q := s.SteeringQueue(); len(q) != 0 {
+		t.Fatalf("steering queue = %v, want empty", q)
+	}
+}
+
+func TestResolvePendingForShutdownNeverBlocks(t *testing.T) {
+	s := newTestState()
+
+	// Install UNBUFFERED channels with no receivers — ResolvePending
+	// must not block on these sends.
+	s.SetPendingApproval(&PendingToolCall{
+		ID:           "tc2",
+		Name:         "file.read",
+		Command:      "cat x",
+		ResponseChan: make(chan UserApprovalDecision), // unbuffered
+	})
+	s.SetPendingQuestion(&PendingQuestion{
+		Questions:    []Question{{Question: "Go?"}},
+		ResponseChan: make(chan []Answer), // unbuffered
+	})
+	s.PushSteering("steer")
+
+	done := make(chan struct{})
+	go func() {
+		s.ResolvePendingForShutdown()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ResolvePendingForShutdown blocked on unbuffered channels")
+	}
+
+	// State must still be cleared even when sends were dropped.
+	if s.PendingApproval() != nil {
+		t.Fatal("PendingApproval should be nil after ResolvePendingForShutdown (unbuffered)")
+	}
+	if s.PendingQuestion() != nil {
+		t.Fatal("PendingQuestion should be nil after ResolvePendingForShutdown (unbuffered)")
+	}
+	if q := s.SteeringQueue(); len(q) != 0 {
+		t.Fatalf("steering queue = %v, want empty after ResolvePendingForShutdown", q)
+	}
+}
+
+// ── end Task 5 tests ────────────────────────────────────────────────────
+
 func TestSteeringQueuePushDrainClear(t *testing.T) {
 	state := newTestState()
 	state.PushSteering("also update the README")

@@ -47,6 +47,7 @@ type Model struct {
 	pendingCancel  bool
 	savedFlash     bool
 	footerMsg      string // error/status text; cleared on next keypress
+	saveBlocked    string // non-empty when the parent forbids saving
 	workingDir     string
 	projectCfgPath string
 	width          int
@@ -260,7 +261,18 @@ func (m *Model) requestClose() tea.Cmd {
 	return func() tea.Msg { return CancelledMsg{} }
 }
 
+// SetSaveBlocked sets (or clears) the reason settings cannot be saved.
+// When non-empty, saveCmd returns nil and sets footerMsg instead of
+// writing or reloading config.
+func (m *Model) SetSaveBlocked(reason string) {
+	m.saveBlocked = reason
+}
+
 func (m *Model) saveCmd() tea.Cmd {
+	if m.saveBlocked != "" {
+		m.footerMsg = m.saveBlocked
+		return nil
+	}
 	if err := config.SaveProjectConfig(m.projectCfgPath, m.state.cfg); err != nil {
 		m.footerMsg = fmt.Sprintf("Save failed: %v", err)
 		return nil

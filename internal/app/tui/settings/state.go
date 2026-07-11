@@ -12,13 +12,30 @@ import (
 // dirty detection. It is heap-allocated (Model stores *state) so pointer
 // bindings survive Model value copies.
 type state struct {
-	cfg      config.Config
-	snapshot config.Config
+	cfg                   config.Config
+	snapshot              config.Config
+	discovered            map[string][]string
+	actionState           map[string]actionState
+	wizardCreatedProvider string
+}
+
+type actionState struct {
+	pending bool
+	label   string
 }
 
 func newState(cfg config.Config) *state {
 	working := cloneConfig(cfg)
-	return &state{cfg: working, snapshot: cloneConfig(working)}
+	return &state{
+		cfg:         working,
+		snapshot:    cloneConfig(working),
+		discovered:  map[string][]string{},
+		actionState: map[string]actionState{},
+	}
+}
+
+func (s *state) applyActionResult(fieldID, label string) {
+	s.actionState[fieldID] = actionState{pending: false, label: label}
 }
 
 // cloneConfig deep-copies every map and slice reachable from cfg that the

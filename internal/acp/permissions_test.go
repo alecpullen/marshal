@@ -20,6 +20,9 @@ type fakePermissionClient struct {
 func (f *fakePermissionClient) RequestPermission(ctx context.Context, req PermissionRequest) (PermissionDecision, error) {
 	f.calls++
 	f.gotReq = req
+	if f.err != nil {
+		return PermissionDecision{}, f.err
+	}
 	return f.decision, f.err
 }
 
@@ -141,6 +144,7 @@ func TestPromptTurnBridgesPendingApprovalToPermissionClient(t *testing.T) {
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			return &TurnRuntime{
 				SessionID: sessionID,
+				BeginWork: identityBeginWork,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
 					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: pending})
 					// Wait for the bridge to deliver the decision.
@@ -157,7 +161,7 @@ func TestPromptTurnBridgesPendingApprovalToPermissionClient(t *testing.T) {
 		Notify: func(method string, params any) error { return nil },
 		Perms:  client,
 	})
-	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":"hi"}`)); err != nil {
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
 		t.Fatalf("PromptTurn() error = %v", err)
 	}
 	if client.calls != 1 {

@@ -65,6 +65,16 @@ func sendKey(m Model, key tea.KeyPressMsg) Model {
 	return drainCmds(updated.(Model), cmd)
 }
 
+// asModel normalises the *Model-vs-Model return from Update/dispatchCommand
+// so that picker tests can use a single helper regardless of receiver type.
+func asModel(t *testing.T, updated tea.Model) Model {
+	t.Helper()
+	if p, ok := updated.(*Model); ok {
+		return *p
+	}
+	return updated.(Model)
+}
+
 func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
@@ -2409,12 +2419,12 @@ func TestPickerRoutingOpenPickCancel(t *testing.T) {
 
 	// keys route to the picker: esc → CancelledMsg → closes
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	m = updated.(Model)
+	m = asModel(t, updated)
 	if cmd == nil {
 		t.Fatal("esc should produce the picker's cancel command")
 	}
 	updated, _ = m.Update(cmd())
-	m = updated.(Model)
+	m = asModel(t, updated)
 	if m.pickerModel != nil || m.pickerCommand != "" {
 		t.Fatal("CancelledMsg should close the picker")
 	}
@@ -2437,7 +2447,7 @@ func TestModelBareOpensPicker(t *testing.T) {
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel == nil || m.pickerCommand != "model" {
 		t.Fatal("bare /model should open the picker")
 	}
@@ -2454,7 +2464,7 @@ func TestModelExactArgBypassesPicker(t *testing.T) {
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model test-b")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel != nil {
 		t.Fatal("exact preset arg must switch directly, no picker")
 	}
@@ -2467,7 +2477,7 @@ func TestModelUnknownArgOpensPrefilteredPicker(t *testing.T) {
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model test-a-typo-b")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel == nil {
 		t.Fatal("unknown arg should open the picker instead of erroring")
 	}
@@ -2478,9 +2488,9 @@ func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	updated, _ = m.Update(picker.PickedMsg{Value: "test-a"})
-	m = updated.(Model)
+	m = asModel(t, updated)
 	if m.pickerModel != nil {
 		t.Fatal("pick should close the modal")
 	}
@@ -2496,7 +2506,7 @@ func TestModelNoPresetsPointsAtSettings(t *testing.T) {
 	m := New(state, WithCommandRegistry(setupCmdReg(t)))
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel != nil {
 		t.Fatal("no presets: picker must not open")
 	}
@@ -2525,7 +2535,7 @@ func TestRewindBareOpensPickerNewestFirst(t *testing.T) {
 	state.AddMessage(session.RoleUser, "second question about parsing", session.ContentTypePlain)
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel == nil || m.pickerCommand != "rewind" {
 		t.Fatal("bare /rewind should open the picker, not rewind immediately")
 	}
@@ -2546,7 +2556,7 @@ func TestRewindWithArgSkipsPicker(t *testing.T) {
 	state.AddMessage(session.RoleUser, "only turn", session.ContentTypePlain)
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind 1")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel != nil {
 		t.Fatal("/rewind 1 must run directly")
 	}
@@ -2560,7 +2570,7 @@ func TestBranchesBareOpensPickerWithCurrentBadge(t *testing.T) {
 	// Now there are 2 branches (messages 1 and 2 are both leaves).
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/branches")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel == nil || m.pickerCommand != "branches" {
 		t.Fatal("bare /branches should open the picker")
 	}
@@ -2573,7 +2583,7 @@ func TestRewindNoTurnsFallsThroughToHandler(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel != nil {
 		t.Fatal("no turns: picker must not open")
 	}
@@ -2613,7 +2623,7 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 	m.forceMode = "edit"
 
 	updated, _ := m.dispatchCommand("/mode")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel == nil || m.pickerCommand != "mode" {
 		t.Fatal("/mode should open the picker")
 	}
@@ -2625,7 +2635,7 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 	}
 
 	updated, _ = m.Update(picker.PickedMsg{Value: "ask"})
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.forceMode != "ask" {
 		t.Fatalf("picking Ask should set forceMode, got %q", m.forceMode)
 	}
@@ -2644,7 +2654,7 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	m := New(state, WithCommandRegistry(reg))
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/mode edit")
-	m = *(updated.(*Model))
+	m = asModel(t, updated)
 	if m.pickerModel != nil {
 		t.Fatal("/mode edit must not open the picker")
 	}

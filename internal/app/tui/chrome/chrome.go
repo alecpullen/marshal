@@ -108,6 +108,9 @@ func Overlay(bg, panel string, width, height int) string {
 			pw = w
 		}
 	}
+	if pw > width {
+		pw = width
+	}
 	x := max((width-pw)/2, 0)
 	y := max((height-len(pLines))/2, 0)
 

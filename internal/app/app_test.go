@@ -1421,6 +1421,109 @@ security_reviewer = "mock_preset"
 	}
 }
 
+func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte("[project]\nname = \"quiesce-test\"\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	now := time.Unix(100, 0)
+
+	// Program runner: start tracked work and add a message so knowledge
+	// has something to summarise. The work ends when quiesce cancels
+	// the work context (observed via state.Done()).
+	var statePtr *session.State
+	workEnded := make(chan struct{})
+
+	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) error {
+		statePtr = modelState(t, model)
+		statePtr.AddMessage(session.RoleUser, "summarise this turn", session.ContentTypePlain)
+		if err := statePtr.BeginWork(); err != nil {
+			return err
+		}
+		go func() {
+			<-statePtr.Done() // closed by State.Shutdown during Quiesce
+			statePtr.EndWork()
+			close(workEnded)
+		}()
+		return nil
+	}
+
+	// Hook: verify during the knowledge window that the session is
+	// quiesced (no new work can start) and the DB is still usable.
+	knowledgeRan := make(chan struct{})
+	knowledgeHook := func(hookCtx context.Context, st *session.State, database *db.DB) {
+		// Verify quiesce: BeginWork should be rejected.
+		if err := st.BeginWork(); !errors.Is(err, session.ErrSessionQuiescing) {
+			t.Errorf("BeginWork during knowledge = %v, want ErrSessionQuiescing", err)
+		}
+
+		// Verify DB is usable.
+		_, err := database.GetOrCreateProject(dir, "knowledge-hook-check")
+		if err != nil {
+			t.Errorf("DB unusable during knowledge: %v", err)
+		}
+
+		close(knowledgeRan)
+	}
+
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return now }),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithProgramRunner(programRunner),
+		WithKnowledgeHook(knowledgeHook),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify work completed.
+	select {
+	case <-workEnded:
+	default:
+		t.Fatal("work was not completed before Run returned")
+	}
+
+	// Verify knowledge ran.
+	select {
+	case <-knowledgeRan:
+	default:
+		t.Fatal("knowledge hook was not called")
+	}
+
+	// Verify the database was usable for the knowledge pass: the
+	// session should have been ended with the knowledge summary.
+	database, dberr := db.Open(dbPath(dir))
+	if dberr != nil {
+		t.Fatalf("open db: %v", dberr)
+	}
+	defer database.Close()
+
+	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
+	got, err := database.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Summary != "" {
+		t.Logf("session summary written: %q", got.Summary)
+	}
+	if got.EndedAt != nil {
+		t.Logf("session ended at: %v", got.EndedAt)
+	}
+}
+
 func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()

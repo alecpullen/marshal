@@ -145,6 +145,26 @@ func TestCompletionPopupFileKindAcceptedText(t *testing.T) {
 	}
 }
 
+func TestFuzzyScoreRecordsMatchIndices(t *testing.T) {
+	idxs, ok := fuzzyMatchIndices("pl", "/plan")
+	if !ok {
+		t.Fatal("expected match")
+	}
+	if len(idxs) != 2 || idxs[0] != 1 || idxs[1] != 2 { // positions of p,l in "/plan"
+		t.Fatalf("match indices = %v, want [1 2]", idxs)
+	}
+}
+
+func TestFuzzyMatchIndicesUseRunePositions(t *testing.T) {
+	idxs, ok := fuzzyMatchIndices("pl", "λ/plan")
+	if !ok {
+		t.Fatal("expected match")
+	}
+	if len(idxs) != 2 || idxs[0] != 2 || idxs[1] != 3 {
+		t.Fatalf("match indices = %v, want [2 3]", idxs)
+	}
+}
+
 func TestCompletionPopupFileKindOmitsWhitespaceText(t *testing.T) {
 	items := []completionItem{
 		{Text: "docs/has space.md", Description: "", Kind: completionFile},

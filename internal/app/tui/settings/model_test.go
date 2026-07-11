@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
@@ -96,6 +97,172 @@ func TestDirtyCtrlSClearsPendingCancel(t *testing.T) {
 	_, _ = m.Update(tea.KeyPressMsg{Code: rune('s'), Mod: tea.ModCtrl})
 	if m.pendingCancel {
 		t.Error("Ctrl+S must clear pendingCancel")
+	}
+}
+
+func TestSidebarHiddenAtNarrowWidth(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	if !m.sidebarHidden {
+		t.Fatal("sidebar should be hidden at width 50 (< 70)")
+	}
+	view := stripANSI(m.View())
+	// Sidebar items are rendered with a leading space (" Model Presets").
+	// When the sidebar is hidden, no sidebar items should appear.
+	if strings.Contains(view, " Model Presets") {
+		t.Error("narrow view should not contain sidebar item")
+	}
+	// Verify the pane header still shows the active section title.
+	if !strings.Contains(view, "Agent") {
+		t.Error("narrow view should still show active pane header")
+	}
+}
+
+func TestNarrowViewDoesNotOverflow(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 30)
+	view := stripANSI(m.View())
+	lines := strings.Split(view, "\n")
+	for _, line := range lines {
+		if w := len([]rune(line)); w > m.width {
+			t.Errorf("line width = %d, exceeds terminal width %d: %q", w, m.width, line)
+		}
+	}
+}
+
+func TestSidebarVisibleAboveBreakpoint(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(100, 40)
+	if m.sidebarHidden {
+		t.Fatal("sidebar should be visible at width 100")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Agent") {
+		t.Error("wide view should contain sidebar title 'Agent'")
+	}
+}
+
+func TestLeftRightCycleSectionsWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.cursor = 2 // start at "Model Presets"
+
+	// right should advance cursor
+	m = keyPress(m, "right")
+	if m.cursor != 3 {
+		t.Errorf("right with sidebar hidden should advance cursor to 3, got %d", m.cursor)
+	}
+
+	// left should go back
+	m = keyPress(m, "left")
+	if m.cursor != 2 {
+		t.Errorf("left with sidebar hidden should move cursor back to 2, got %d", m.cursor)
+	}
+
+	// l (lowercase L) should also advance
+	m = keyPress(m, "l")
+	if m.cursor != 3 {
+		t.Errorf("l with sidebar hidden should advance cursor to 3, got %d", m.cursor)
+	}
+
+	// h should go back
+	m = keyPress(m, "h")
+	if m.cursor != 2 {
+		t.Errorf("h with sidebar hidden should move cursor back to 2, got %d", m.cursor)
+	}
+
+	// right should wrap from last to first
+	m.cursor = len(m.sections) - 1
+	m = keyPress(m, "right")
+	if m.cursor != 0 {
+		t.Errorf("right with sidebar hidden should wrap to 0, got %d", m.cursor)
+	}
+
+	// left should wrap from first to last
+	m.cursor = 0
+	m = keyPress(m, "left")
+	if m.cursor != len(m.sections)-1 {
+		t.Errorf("left with sidebar hidden should wrap to last, got %d", m.cursor)
+	}
+}
+
+func TestTabFocusesPaneWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	if !m.sidebarHidden {
+		t.Fatal("setup: sidebar should be hidden")
+	}
+	m = keyPress(m, "tab")
+	if !m.paneFocused {
+		t.Fatal("tab should focus the active pane when the sidebar is hidden")
+	}
+}
+
+func TestHelpViewAdaptsWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.helpOpen = true
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Tab           enter pane") {
+		t.Fatalf("hidden-sidebar help should explain Tab enters pane:\n%s", view)
+	}
+	if strings.Contains(view, "back to sidebar") {
+		t.Fatalf("hidden-sidebar help should not mention a sidebar that is hidden:\n%s", view)
+	}
+}
+
+func TestPaneFocusedLeftMovesPreviousSectionWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.cursor = 2
+	m.paneFocused = true
+	m = keyPress(m, "left")
+	if m.cursor != 1 {
+		t.Fatalf("left in pane-focused hidden-sidebar mode should move to previous section, got %d", m.cursor)
+	}
+	if !m.paneFocused {
+		t.Fatal("left in pane-focused hidden-sidebar mode should keep pane focus")
+	}
+}
+
+func TestPaneFocusedShiftTabMovesPreviousSectionWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.cursor = 2
+	m.paneFocused = true
+	m = keyPress(m, "shift+tab")
+	if m.cursor != 1 {
+		t.Fatalf("shift+tab in pane-focused hidden-sidebar mode should move to previous section, got %d", m.cursor)
+	}
+	if !m.paneFocused {
+		t.Fatal("shift+tab in pane-focused hidden-sidebar mode should keep pane focus")
+	}
+}
+
+func TestPaneFocusedRightMovesNextSectionWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.cursor = len(m.sections) - 1
+	m.paneFocused = true
+	m = keyPress(m, "right")
+	if m.cursor != 0 {
+		t.Fatalf("right in pane-focused hidden-sidebar mode should wrap to first section, got %d", m.cursor)
+	}
+	if !m.paneFocused {
+		t.Fatal("right in pane-focused hidden-sidebar mode should keep pane focus")
+	}
+}
+
+func TestPendingCancelFooterStaysBoundedWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.pendingCancel = true
+	view := stripANSI(m.View())
+	lines := strings.Split(view, "\n")
+	for _, line := range lines {
+		if w := ansi.StringWidth(line); w > m.width {
+			t.Fatalf("line width = %d exceeds terminal width %d: %q", w, m.width, line)
+		}
 	}
 }
 

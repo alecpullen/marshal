@@ -19,57 +19,112 @@ const (
 	statusMinGap = 1
 )
 
+// statusSeg is a single left-side status segment with a priority value.
+// Lower priority numbers are kept first when the status line is too narrow;
+// higher numbers are dropped first.
+type statusSeg struct {
+	text     string
+	priority int
+}
+
 // renderStatusLine is the single row of persistent chrome below the input:
 // left cluster identifies the session (mode · model @ provider · locality
 // · ctx usage), right cluster shows what the agent is doing right now.
 func (m Model) renderStatusLine(width int) string {
-	left := strings.Join(m.statusLeftSegments(), dimSeparator)
+	segs := m.statusLeftSegments()
+	left := joinSegs(segs)
 	right := m.statusRightSegment()
-
+	for len(segs) > 1 && visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
+		// drop the lowest-priority segment (highest priority number), but
+		// always preserve the first segment (the mode cue).
+		worst := 1
+		for i := 2; i < len(segs); i++ {
+			if segs[i].priority > segs[worst].priority {
+				worst = i
+			}
+		}
+		segs = append(segs[:worst], segs[worst+1:]...)
+		left = joinSegs(segs)
+	}
 	gap := width - visibleRunes(left) - visibleRunes(right) - statusHorizontalPadding
 	if gap < statusMinGap {
-		// Not enough room: prioritise the activity cluster. The truncation
-		// budget reserves both padding cells plus the minimum inter-cluster gap.
-		left = truncateRunes(left, max(width-visibleRunes(right)-statusHorizontalPadding-statusMinGap, 0))
-		gap = max(width-visibleRunes(left)-visibleRunes(right)-statusHorizontalPadding, statusMinGap)
+		gap = statusMinGap
 	}
 	line := " " + left + strings.Repeat(" ", gap) + right + " "
 	return statusBarStyle.Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
 }
 
-func (m Model) statusLeftSegments() []string {
+// joinSegs joins status segments with the dim separator.
+func joinSegs(segs []statusSeg) string {
+	parts := make([]string, 0, len(segs))
+	for _, s := range segs {
+		parts = append(parts, s.text)
+	}
+	return strings.Join(parts, dimSeparator)
+}
+
+// modeSegment returns the current mode label for the status line.
+// It prioritises transient UI modes that answer "what will Esc do?",
+// falling back to the persistent mode (/ask, /edit, /auto).
+func (m Model) modeSegment() string {
+	if m.helpOpen {
+		return "help open"
+	}
+	if m.editingCommand {
+		return "edit cmd"
+	}
+	if m.activeCompletionPopup() != nil {
+		return "completing"
+	}
+	if m.state.PendingApproval() != nil {
+		return "approval"
+	}
+	if m.state.PendingQuestion() != nil {
+		return "answering"
+	}
 	mode := m.forceMode
 	if mode == "" {
 		mode = "auto"
 	}
-	segments := []string{mode}
+	return mode
+}
+
+// statusLeftSegments returns the left-side status segments with priorities.
+// Priorities (lower = higher priority, kept first when collapsing):
+//
+//	mode=0, untrusted=0, route=1, local=2, ctx=3, turn=4, branch=5,
+//	swarm tokens=6, jobs=7, queued=8
+func (m Model) statusLeftSegments() []statusSeg {
+	segs := []statusSeg{
+		{text: m.modeSegment(), priority: 0},
+	}
 
 	if !m.state.Trusted() {
-		segments = append(segments, "untrusted")
+		segs = append(segs, statusSeg{text: "untrusted", priority: 0})
 	}
 
 	route := m.state.ActiveRoute()
 	if route.Active {
-		segments = append(segments, fmt.Sprintf("%s @ %s", route.Model, route.Provider))
+		segs = append(segs, statusSeg{text: fmt.Sprintf("%s @ %s", route.Model, route.Provider), priority: 1})
 		if route.LocalOnly {
-			segments = append(segments, "local")
+			segs = append(segs, statusSeg{text: "local", priority: 2})
 		}
 	} else {
-		segments = append(segments, "no model")
+		segs = append(segs, statusSeg{text: "no model", priority: 1})
 		if !m.state.Config.Privacy.RemoteProvidersAllowed {
-			segments = append(segments, "local")
+			segs = append(segs, statusSeg{text: "local", priority: 2})
 		}
 	}
 
 	if pack := m.state.ContextPack(); !pack.IsEmpty() {
-		segments = append(segments, fmt.Sprintf("ctx %s/%s",
+		segs = append(segs, statusSeg{text: fmt.Sprintf("ctx %s/%s",
 			compactTokenCount(pack.TokenUsage.EstimatedTokens),
-			compactTokenCount(pack.TokenUsage.MaxTokens)))
+			compactTokenCount(pack.TokenUsage.MaxTokens)), priority: 3})
 	}
 
 	if used, window := m.state.TurnUsage(); window > 0 {
-		segments = append(segments, fmt.Sprintf("turn %s/%s",
-			compactTokenCount(used), compactTokenCount(window)))
+		segs = append(segs, statusSeg{text: fmt.Sprintf("turn %s/%s",
+			compactTokenCount(used), compactTokenCount(window)), priority: 4})
 	}
 
 	if leaves := m.state.Branches(); len(leaves) > 1 {
@@ -81,27 +136,27 @@ func (m Model) statusLeftSegments() []string {
 				break
 			}
 		}
-		segments = append(segments, fmt.Sprintf("branch %d/%d", idx, len(leaves)))
+		segs = append(segs, statusSeg{text: fmt.Sprintf("branch %d/%d", idx, len(leaves)), priority: 5})
 	}
 
 	if sp := m.state.SwarmProgress(); sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {
-		segments = append(segments, fmt.Sprintf("tokens %s/%s",
+		segs = append(segs, statusSeg{text: fmt.Sprintf("tokens %s/%s",
 			compactTokenCount(sp.TokensUsed),
-			compactTokenCount(sp.TokensMax)))
+			compactTokenCount(sp.TokensMax)), priority: 6})
 	}
 
 	if n := m.jobCount; m.jobBroker != nil {
 		if n > 0 {
-			segments = append(segments, fmt.Sprintf("jobs %d", n))
+			segs = append(segs, statusSeg{text: fmt.Sprintf("jobs %d", n), priority: 7})
 		}
 	} else if n := m.state.RunningJobsCount(); n > 0 {
-		segments = append(segments, fmt.Sprintf("jobs %d", n))
+		segs = append(segs, statusSeg{text: fmt.Sprintf("jobs %d", n), priority: 7})
 	}
 
 	if n := m.queuedCount; n > 0 {
-		segments = append(segments, statusWarnStyle.Render(fmt.Sprintf("queued %d", n)))
+		segs = append(segs, statusSeg{text: statusWarnStyle.Render(fmt.Sprintf("queued %d", n)), priority: 8})
 	}
-	return segments
+	return segs
 }
 
 var (
@@ -121,15 +176,16 @@ func (m Model) statusRightSegment() string {
 		return statusWarnStyle.Render("⚠ approval")
 	}
 	activity := m.state.Activity()
+	spinner := m.activeSpinnerFrame(activity.Kind)
 	switch activity.Kind {
 	case session.ActivityThinking:
-		return statusBusyStyle.Render(fmt.Sprintf("%s thinking", m.spinnerFrame))
+		return statusBusyStyle.Render(spinnerLabel(spinner, "thinking"))
 	case session.ActivityTool:
 		elapsed := m.now().Sub(activity.StartedAt)
 		if elapsed < 0 {
 			elapsed = 0
 		}
-		label := fmt.Sprintf("%s %s · %s", m.spinnerFrame, activity.Label, formatElapsed(elapsed))
+		label := spinnerLabel(spinner, fmt.Sprintf("%s · %s", activity.Label, formatElapsed(elapsed)))
 		if b := m.state.ToolBudget(); b.Max > 0 {
 			label = fmt.Sprintf("%s · tools %d/%d", label, b.Used, b.Max)
 		}

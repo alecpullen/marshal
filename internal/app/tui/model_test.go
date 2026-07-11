@@ -10,11 +10,13 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
@@ -542,7 +544,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	state.SetPendingApproval(tc)
 
 	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
 	view := stripANSI(m.View().Content)
@@ -553,8 +555,9 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("View() missing proposed command")
 	}
 
-	// 1. Test Deny: navigate to "Deny" (one Down) and submit.
+	// 1. Test Deny: navigate to "Deny", then press Enter twice to confirm.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
@@ -572,10 +575,11 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// Set up again for Approve.
 	state.SetPendingApproval(tc)
 	m = New(state)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 2. Test Approve: the first option is already focused, submit with Enter.
+	// 2. Test Approve: press Enter twice to confirm.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
@@ -590,12 +594,13 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// Set up again for Edit.
 	state.SetPendingApproval(tc)
 	m = New(state)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 3. Test Edit: navigate to "Edit" (two Down) and submit.
+	// 3. Test Edit: navigate to "Edit", then press Enter twice to confirm.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !m.editingCommand {
@@ -628,13 +633,14 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// Set up again for Always Allow.
 	state.SetPendingApproval(tc)
 	m = New(state)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 4. Test Always Allow: navigate to the 4th option (three Down) and submit.
+	// 4. Test Always Allow: navigate to the 4th option, then press Enter twice.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
@@ -649,14 +655,15 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// Set up again for Allow this session.
 	state.SetPendingApproval(tc)
 	m = New(state)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 5. Test Allow this session: navigate to the 5th option (four Down) and submit.
+	// 5. Test Allow this session: navigate to the 5th option, then press Enter twice.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
@@ -808,11 +815,11 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
 	}
-	if len(batch) != 2 {
-		t.Fatalf("len(batch) = %d, want 2", len(batch))
+	if len(batch) != 3 {
+		t.Fatalf("len(batch) = %d, want 3 (runAgentCmd, tickCmd, spinnerTickCmd)", len(batch))
 	}
 
-	var sawFinished, sawTick bool
+	var sawFinished, sawTick, sawSpinnerTick bool
 	for _, sub := range batch {
 		switch msg := sub().(type) {
 		case agentFinishedMsg:
@@ -822,12 +829,14 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 			}
 		case agentTickMsg:
 			sawTick = true
+		case spinnerTickMsg:
+			sawSpinnerTick = true
 		default:
 			t.Fatalf("unexpected message type %T", msg)
 		}
 	}
-	if !sawFinished || !sawTick {
-		t.Fatalf("sawFinished=%v sawTick=%v, want both true", sawFinished, sawTick)
+	if !sawFinished || !sawTick || !sawSpinnerTick {
+		t.Fatalf("sawFinished=%v sawTick=%v sawSpinnerTick=%v, want all true", sawFinished, sawTick, sawSpinnerTick)
 	}
 
 	select {
@@ -1244,7 +1253,7 @@ func TestSettingsNavigationThroughMainModel(t *testing.T) {
 	}
 	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
@@ -1344,6 +1353,8 @@ func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if m.settingsModel.BoolValue("Local only") {
 		t.Fatalf("Space then Enter should have toggled Local only to false and committed")
@@ -1408,7 +1419,7 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 
 func TestStatusBarShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: time.Now()})
+	state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: time.Now().Add(-time.Second)})
 	m := New(state)
 	m.spinnerFrame = "⠋"
 	m.busy = true
@@ -1670,17 +1681,18 @@ func TestApprovalKeyHandlingStillWorksInline(t *testing.T) {
 	})
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case decision := <-ch:
 		if !decision.Approved {
-			t.Fatal("approval decision = false, want true (Enter should approve)")
+			t.Fatal("approval decision = false, want true (Enter twice should approve)")
 		}
 	default:
-		t.Fatal("no decision sent on ResponseChan after Enter")
+		t.Fatal("no decision sent on ResponseChan after Enter twice")
 	}
 	if state.PendingApproval() != nil {
-		t.Fatal("PendingApproval still set after Enter, want nil")
+		t.Fatal("PendingApproval still set after Enter twice, want nil")
 	}
 }
 
@@ -1854,6 +1866,7 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = updated.(Model)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !m.editingCommand {
@@ -2186,5 +2199,124 @@ func TestCommandTriggerDismissesFilePopup(t *testing.T) {
 	}
 	if !m.cmdPopup.isVisible() {
 		t.Fatal("cmd popup should be visible for /pl")
+	}
+}
+
+func TestHelpOpenWithQuestionMarkKey(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+
+	// Press ? to open help overlay.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
+	m = updated.(Model)
+
+	if !m.helpOpen {
+		t.Fatal("expected helpOpen to be true after pressing ?")
+	}
+
+	view := m.View().Content
+	if !strings.Contains(view, "marshal keys") {
+		t.Fatalf("help overlay missing title:\n%s", view)
+	}
+
+	// Press Esc to close help overlay.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(Model)
+
+	if m.helpOpen {
+		t.Fatal("expected helpOpen to be false after pressing Esc")
+	}
+
+	view = m.View().Content
+	if strings.Contains(view, "marshal keys") {
+		t.Fatalf("help overlay should be closed after Esc:\n%s", view)
+	}
+}
+
+func TestQuestionMarkDoesNotLeakIntoInput(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+
+	// Press ? — it should toggle help, not type ? into the textarea.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
+	m = updated.(Model)
+	if !m.helpOpen {
+		t.Fatal("expected helpOpen to be true")
+	}
+	if m.input.Value() != "" {
+		t.Fatalf("expected empty input after ?, got %q", m.input.Value())
+	}
+}
+
+func TestHelpToggleWithQuestionMark(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+
+	// Press ? to open.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
+	m = updated.(Model)
+	if !m.helpOpen {
+		t.Fatal("expected helpOpen after first ?")
+	}
+
+	// Press ? again to close.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: '?'})
+	m = updated.(Model)
+	if m.helpOpen {
+		t.Fatal("expected helpOpen to be false after second ?")
+	}
+}
+
+// TestQuestionMarkTypesLiterallyInNonEmptyInput verifies that ? is inserted
+// as a literal character when the textarea has content — the help overlay
+// should NOT open in that case, because ? is a very common character in
+// chat prompts (e.g. "What is X? How do I Y?").
+func TestQuestionMarkTypesLiterallyInNonEmptyInput(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+
+	// Type some text first.
+	m = sendKey(m, tea.KeyPressMsg{Text: "hello"})
+
+	// Press ? — should append to the input, NOT open help.
+	m = sendKey(m, tea.KeyPressMsg{Text: "?"})
+
+	if m.helpOpen {
+		t.Fatal("? should not open help overlay when input has content")
+	}
+	if !strings.Contains(m.input.Value(), "?") {
+		t.Fatalf("? should be a literal char in input, got %q", m.input.Value())
+	}
+}
+
+func TestHelpOverlayDoesNotSwallowAgentFinishedMsg(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	m.helpOpen = true
+	m.busy = true
+	m.lastActivityKind = session.ActivityThinking
+
+	updated, _ := m.Update(agentFinishedMsg{})
+	m = updated.(Model)
+
+	if m.busy {
+		t.Fatal("help overlay should not swallow agentFinishedMsg")
+	}
+	if !m.helpOpen {
+		t.Fatal("non-key runtime messages should not close the help overlay")
+	}
+}
+
+func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	th := theme.LoadFor(false, "xterm-256color")
+	if th.AccentPrimary != lipgloss.Color("209") {
+		t.Fatalf("AccentPrimary = %#v, want 209", th.AccentPrimary)
+	}
+	if th.AccentTertiary != lipgloss.Color("214") {
+		t.Fatalf("AccentTertiary = %#v, want 214 (gold)", th.AccentTertiary)
+	}
+	if th.UserPrompt != lipgloss.Color("246") {
+		t.Fatalf("UserPrompt = %#v, want 246 (medium grey)", th.UserPrompt)
+	}
+	if th.StatusSuccess != lipgloss.Color("43") {
+		t.Fatalf("StatusSuccess = %#v, want 43", th.StatusSuccess)
 	}
 }

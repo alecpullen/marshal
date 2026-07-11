@@ -227,6 +227,22 @@ func TestViewAlignsWithWideRunes(t *testing.T) {
 	}
 }
 
+func TestViewRespectsTerminalHeightBudget(t *testing.T) {
+	database, projectID := newTestDB(t)
+	for i := 0; i < 50; i++ {
+		if err := database.SaveMemory(projectID, "fact", fmt.Sprintf("memory %d", i), "sess-1", time.Unix(int64(i), 0)); err != nil {
+			t.Fatalf("SaveMemory failed: %v", err)
+		}
+	}
+	m := New(database, projectID)
+	m.SetSize(61, 24)
+	view := strings.TrimSuffix(m.View(), "\n")
+	lines := strings.Split(view, "\n")
+	if len(lines) > m.height {
+		t.Fatalf("rendered %d lines, want <= terminal height %d:\n%s", len(lines), m.height, view)
+	}
+}
+
 func openTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	database, err := db.Open(":memory:")

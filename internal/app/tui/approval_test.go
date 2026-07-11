@@ -33,3 +33,27 @@ func TestApprovalDialogNoDiffWhenEmpty(t *testing.T) {
 		t.Fatalf("view should not contain diff artifacts when tc.Diff is empty:\n%s", view)
 	}
 }
+
+func TestApprovalDialogLabelsContainSubmitIndicator(t *testing.T) {
+	tc := &session.PendingToolCall{
+		Name: "file.write_patch",
+		Args: `{"path":"a.go"}`,
+	}
+	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	view := am.View()
+
+	// The explicit submit row should be present.
+	if !strings.Contains(view, "Submit selected action") {
+		t.Errorf("approval view missing explicit submit row:\n%s", view)
+	}
+
+	// The edit option should show its descriptive label.
+	if !strings.Contains(view, "Edit command/args") {
+		t.Errorf("approval view missing descriptive 'Edit command/args' label:\n%s", view)
+	}
+
+	// The title should include a j/k navigation hint.
+	if !strings.Contains(view, "j/k") {
+		t.Errorf("approval view missing j/k navigation hint:\n%s", view)
+	}
+}

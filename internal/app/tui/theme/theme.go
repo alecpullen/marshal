@@ -21,12 +21,15 @@ import (
 type Theme struct {
 	FGDefault       color.Color
 	FGMuted         color.Color
+	BorderMuted     color.Color
 	FGEmphasis      color.Color
 	BGBase          color.Color
 	BGSurface       color.Color
 	BGSelection     color.Color
 	AccentPrimary   color.Color
 	AccentSecondary color.Color
+	AccentTertiary  color.Color // amber/gold (214/3) — tool-call names, tertiary accents
+	UserPrompt      color.Color // medium grey (246/7) — user message prefix
 	StatusError     color.Color
 	StatusWarning   color.Color
 	StatusSuccess   color.Color
@@ -38,12 +41,15 @@ type Theme struct {
 var warmSunset256 = Theme{
 	FGDefault:       lipgloss.Color("252"),
 	FGMuted:         lipgloss.Color("244"),
+	BorderMuted:     lipgloss.Color("245"),
 	FGEmphasis:      lipgloss.Color("255"),
 	BGBase:          lipgloss.Color("235"),
 	BGSurface:       lipgloss.Color("237"),
 	BGSelection:     lipgloss.Color("60"),
 	AccentPrimary:   lipgloss.Color("209"),
 	AccentSecondary: lipgloss.Color("175"),
+	AccentTertiary:  lipgloss.Color("214"),
+	UserPrompt:      lipgloss.Color("246"),
 	StatusError:     lipgloss.Color("203"),
 	StatusWarning:   lipgloss.Color("172"),
 	StatusSuccess:   lipgloss.Color("43"),
@@ -55,9 +61,15 @@ var warmSunset256 = Theme{
 var warmSunset16 = Theme{
 	FGDefault:       lipgloss.Color("7"),
 	FGMuted:         lipgloss.Color("8"),
+	BorderMuted:     lipgloss.Color("8"),
 	FGEmphasis:      lipgloss.Color("15"),
+	BGBase:          lipgloss.Color("0"),
+	BGSurface:       lipgloss.Color("8"),
+	BGSelection:     lipgloss.Color("4"),
 	AccentPrimary:   lipgloss.Color("5"),
 	AccentSecondary: lipgloss.Color("5"),
+	AccentTertiary:  lipgloss.Color("3"),
+	UserPrompt:      lipgloss.Color("7"),
 	StatusError:     lipgloss.Color("1"),
 	StatusWarning:   lipgloss.Color("3"),
 	StatusSuccess:   lipgloss.Color("2"),
@@ -72,12 +84,15 @@ func monochromeTheme() Theme {
 	return Theme{
 		FGDefault:       lipgloss.NoColor{},
 		FGMuted:         lipgloss.NoColor{},
+		BorderMuted:     lipgloss.NoColor{},
 		FGEmphasis:      lipgloss.NoColor{},
 		BGBase:          lipgloss.NoColor{},
 		BGSurface:       lipgloss.NoColor{},
 		BGSelection:     lipgloss.NoColor{},
 		AccentPrimary:   lipgloss.NoColor{},
 		AccentSecondary: lipgloss.NoColor{},
+		AccentTertiary:  lipgloss.NoColor{},
+		UserPrompt:      lipgloss.NoColor{},
 		StatusError:     lipgloss.NoColor{},
 		StatusWarning:   lipgloss.NoColor{},
 		StatusSuccess:   lipgloss.NoColor{},
@@ -92,7 +107,7 @@ func LoadFor(noColor bool, term string) Theme {
 	if noColor {
 		return monochromeTheme()
 	}
-	if strings.Contains(term, "256color") {
+	if strings.Contains(term, "256color") || strings.Contains(term, "kitty") || strings.Contains(term, "wezterm") {
 		return warmSunset256
 	}
 	return warmSunset16

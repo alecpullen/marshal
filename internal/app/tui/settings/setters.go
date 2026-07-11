@@ -57,6 +57,15 @@ func intField2(id, title string, get func() int, min int, apply func(int)) *fiel
 	}
 }
 
+func enumField(id, title string, opts []string, get func() string, set func(string)) *field {
+	return &field{
+		id: id, title: title, kind: kindEnum,
+		options: func() []string { return opts },
+		getStr:  get,
+		setStr:  func(v string) error { set(v); return nil },
+	}
+}
+
 // secretRow is a masked scalar: displays via maskKey, Enter replaces (empty
 // keeps), d clears the stored value.
 func secretRow(id, title string, get func() string, set func(string)) *field {

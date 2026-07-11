@@ -250,17 +250,3 @@ func (s *Server) dispatch(ctx context.Context, req Request) (any, error) {
 	}
 	return result, nil
 }
-
-func codeFor(err error) int {
-	if jre, ok := err.(*jsonRPCError); ok {
-		return jre.Code
-	}
-	return internalError
-}
-
-type jsonRPCError struct {
-	Code    int
-	Message string
-}
-
-func (e *jsonRPCError) Error() string { return e.Message }

@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/llm/routing"
 )
@@ -208,7 +210,10 @@ timeout_ms = 2500
 		t.Fatalf("seed: %v", err)
 	}
 
-	cfg := Default()
+	cfg, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if err := SaveProjectConfig(path, cfg); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
@@ -268,7 +273,10 @@ use_treesitter = true
 		t.Fatalf("write existing config: %v", err)
 	}
 
-	cfg := Default()
+	cfg, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
 	cfg.Profile.Default = "local_balanced"
 	if err := SaveProjectConfig(path, cfg); err != nil {
 		t.Fatalf("SaveProjectConfig failed: %v", err)
@@ -283,5 +291,185 @@ use_treesitter = true
 	}
 	if !loaded.Indexing.UseTreesitter {
 		t.Fatal("indexing.use_treesitter was not preserved")
+	}
+}
+
+func fullEditedConfig() Config {
+	cfg := Default()
+	cfg.Project = ProjectConfig{Name: "acme", Languages: []string{"go", "python"}}
+	cfg.Commands = CommandsConfig{Test: "make test", Format: "make fmt", Vet: "make vet"}
+	cfg.Indexing = IndexingConfig{UseTreesitter: true, UseEmbeddings: true, SummariseFiles: true, Ignore: []string{"build/**"}}
+	cfg.Web = WebConfig{Enabled: true, FetchTimeout: 45 * time.Second, SearchProvider: "searx", SearchURL: "http://localhost:8888", SearchKey: "sk-live-1234"}
+	cfg.Swarm.Budget = SwarmBudgetConfig{MaxFixRounds: 5, MaxTotalTokens: 99000, ToolIters: map[string]int{"tester": 9}}
+	cfg.MCP = MCPConfig{
+		Servers:                  map[string]MCPServerConfig{"fs": {Command: "mcp-fs", Args: []string{"--root", "."}, Env: map[string]string{"A": "1"}}},
+		Policies:                 map[string]string{"fs": "confirm"},
+		DisclosureThresholdTools: 25,
+	}
+	cfg.Snapshots = SnapshotsConfig{Enabled: false, RetentionDays: 14, MaxFileBytes: 1000}
+	cfg.Permissions.Rules = []PermissionRule{{Permission: "shell", Pattern: "go *", Action: "allow"}}
+	cfg.Diagnostics.Commands = map[string]string{"go": "go vet ./...", "py": "ruff check"}
+	cfg.Hooks = HooksConfig{FailClosed: true, Entries: []HookConfig{{Event: "pre_tool", Matcher: "shell.*", Command: "echo hi", TimeoutMS: 500}}}
+	cfg.Providers = map[string]ProviderConfig{"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "real-key", APIKeyEnv: "OLLAMA_KEY", ToolCalling: true}}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Name: "fast", Provider: "ollama", Model: "qwen3", ContextWindow: 32768, MaxOutputTokens: 4096, Temperature: 0.2, TopP: 0.9, ToolCalling: "native", ReasoningEffort: "low", LocalOnly: true},
+	}
+	return cfg
+}
+
+func TestSaveProjectConfigFullSurfaceRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	cfg := fullEditedConfig()
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: filepath.Join(dir, "no-home"), WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if !reflect.DeepEqual(loaded.Project, cfg.Project) {
+		t.Errorf("project: got %+v want %+v", loaded.Project, cfg.Project)
+	}
+	if loaded.Commands != cfg.Commands {
+		t.Errorf("commands: got %+v want %+v", loaded.Commands, cfg.Commands)
+	}
+	if !reflect.DeepEqual(loaded.Indexing, cfg.Indexing) {
+		t.Errorf("indexing: got %+v want %+v", loaded.Indexing, cfg.Indexing)
+	}
+	if loaded.Web != cfg.Web {
+		t.Errorf("web: got %+v want %+v", loaded.Web, cfg.Web)
+	}
+	if !reflect.DeepEqual(loaded.Swarm, cfg.Swarm) {
+		t.Errorf("swarm: got %+v want %+v", loaded.Swarm, cfg.Swarm)
+	}
+	if !reflect.DeepEqual(loaded.MCP, cfg.MCP) {
+		t.Errorf("mcp: got %+v want %+v", loaded.MCP, cfg.MCP)
+	}
+	if loaded.Snapshots != cfg.Snapshots {
+		t.Errorf("snapshots: got %+v want %+v", loaded.Snapshots, cfg.Snapshots)
+	}
+	if !reflect.DeepEqual(loaded.Permissions, cfg.Permissions) {
+		t.Errorf("permissions: got %+v want %+v", loaded.Permissions, cfg.Permissions)
+	}
+	if !reflect.DeepEqual(loaded.Diagnostics.Commands, cfg.Diagnostics.Commands) {
+		t.Errorf("diagnostics: got %+v want %+v", loaded.Diagnostics.Commands, cfg.Diagnostics.Commands)
+	}
+	if !reflect.DeepEqual(loaded.Hooks, cfg.Hooks) {
+		t.Errorf("hooks: got %+v want %+v", loaded.Hooks, cfg.Hooks)
+	}
+	if !reflect.DeepEqual(loaded.Providers, cfg.Providers) {
+		t.Errorf("providers: got %+v want %+v", loaded.Providers, cfg.Providers)
+	}
+	if !reflect.DeepEqual(loaded.Models.Presets["fast"], cfg.Models.Presets["fast"]) {
+		t.Errorf("preset fast: got %+v want %+v", loaded.Models.Presets["fast"], cfg.Models.Presets["fast"])
+	}
+}
+
+func TestSaveProjectConfigEditExistingSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := `
+[project]
+name = "acme"
+languages = ["go"]
+
+[commands]
+test = "go test ./..."
+format = "gofmt -w ."
+vet = "go vet ./..."
+`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Project.Name != "acme" {
+		t.Fatalf("seeded project.name = %q, want acme", loaded.Project.Name)
+	}
+	if loaded.Commands.Test != "go test ./..." {
+		t.Fatalf("seeded commands.test = %q", loaded.Commands.Test)
+	}
+
+	loaded.Project.Name = "newname"
+	loaded.Commands.Test = "make test"
+
+	if err := SaveProjectConfig(path, loaded); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+
+	reloaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Project.Name != "newname" {
+		t.Errorf("project.name = %q, want newname (edit to existing section was dropped)", reloaded.Project.Name)
+	}
+	if reloaded.Commands.Test != "make test" {
+		t.Errorf("commands.test = %q, want make test (edit to existing section was dropped)", reloaded.Commands.Test)
+	}
+	if reloaded.Commands.Format != "gofmt -w ." {
+		t.Errorf("commands.format = %q, want gofmt -w . (untouched field was clobbered)", reloaded.Commands.Format)
+	}
+}
+
+func TestSaveProjectConfigOmitsDefaultNewSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+
+	if err := SaveProjectConfig(path, Default()); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	for _, section := range []string{"[web]", "[mcp]", "[hooks]", "[permissions]", "[snapshots]", "[diagnostics]", "[project]", "[commands]", "[indexing]", "[swarm.budget]", "[providers"} {
+		if strings.Contains(string(data), section) {
+			t.Errorf("default-valued section %s should be omitted from a pristine file:\n%s", section, data)
+		}
+	}
+	// Positive lower bound: the always-written profile/agent/privacy/shell/sandbox
+	// sections must be present on a pristine file. A regression that drops any of
+	// them from SaveProjectConfig would silently disable user config.
+	for _, section := range []string{"[profile]", "[agent]", "[privacy]", "[tools.shell]", "[tools.shell.sandbox]"} {
+		if !strings.Contains(string(data), section) {
+			t.Errorf("always-written section %s missing from a pristine file:\n%s", section, data)
+		}
+	}
+}
+
+func TestSaveProjectConfigPreservesAgentProfiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	seed := "[agent_profiles.local_balanced]\nimplementer = \"fast\"\n"
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loadedFile, err := loadFile(path)
+	if err != nil {
+		t.Fatalf("loadFile: %v", err)
+	}
+	if got := loadedFile.AgentProfiles["local_balanced"].Implementer; got != "fast" {
+		t.Errorf("agent_profiles dropped by save: implementer=%q want %q", got, "fast")
 	}
 }

@@ -116,7 +116,5 @@ func swarmFrame(s *state) *frame {
 // map frame (no pointless single-row drill).
 func diagnosticsFrame(s *state) *frame {
 	drill := mapStringDrill("diagnostics.commands", "Commands", &s.cfg.Diagnostics.Commands)
-	f := drill.build()
-	f.title = "Diagnostics"
-	return f
+	return rootDrillFrame("Diagnostics", drill)
 }

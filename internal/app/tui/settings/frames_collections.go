@@ -7,6 +7,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/picker"
+	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 )
 
@@ -78,7 +80,59 @@ func providersFrame(s *state) *frame {
 			})
 		},
 		func(k string) { delete(s.cfg.Providers, k) })
-	return rootDrillFrame("Providers", drill)
+	f := rootDrillFrame("Providers", drill)
+	f.addWizard = providersWizard(s)
+	f.list.addWizard = f.addWizard
+	return f
+}
+
+func providersWizard(s *state) func() *pickerRequest {
+	return func() *pickerRequest {
+		all := provider.All()
+		items := make([]picker.Item, 0, len(all))
+		for _, tpl := range all {
+			items = append(items, picker.Item{
+				Label:  tpl.Label,
+				Detail: tpl.BaseURL,
+				Badge:  badgeForTemplate(tpl),
+				Value:  tpl.ID,
+			})
+		}
+		return &pickerRequest{
+			fieldID: "__wizard__",
+			items:   items,
+			title:   "Add provider",
+			footer:  "pick a template",
+			onPick: func(tplID string) error {
+				tpl, ok := provider.Lookup(tplID)
+				if !ok {
+					return fmt.Errorf("unknown template %q", tplID)
+				}
+				existing := map[string]bool{}
+				for k := range s.cfg.Providers {
+					existing[k] = true
+				}
+				name := provider.UniqueName(tpl.ID, existing)
+				if s.cfg.Providers == nil {
+					s.cfg.Providers = map[string]config.ProviderConfig{}
+				}
+				s.cfg.Providers[name] = config.ProviderConfig{
+					Type:        tpl.Type,
+					BaseURL:     tpl.BaseURL,
+					APIKeyEnv:   tpl.KeyEnv,
+					ToolCalling: tpl.ToolCalling,
+				}
+				return nil
+			},
+		}
+	}
+}
+
+func badgeForTemplate(tpl provider.ProviderTemplate) string {
+	if tpl.Local {
+		return "local"
+	}
+	return "remote"
 }
 
 func presetsFrame(s *state) *frame {

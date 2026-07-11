@@ -1847,7 +1847,7 @@ func TestRuntimeBeginWorkCancelledByRuntimeQuiesce(t *testing.T) {
 	select {
 	case <-quiesceDone:
 		t.Fatal("Quiesce returned before finish was called")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 	}
 
 	finish()

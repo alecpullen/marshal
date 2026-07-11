@@ -59,7 +59,9 @@ func (m Model) viewString() string {
 	}
 
 	rows := []string{m.renderTranscriptFrame()}
-	if panel := renderSwarmPanel(m.state.SwarmProgress(), m.spinnerFrame, m.width); panel != "" {
+	// Swarm roles are tool-driven; use ActivityTool as the gating kind.
+	swarmSpinner := m.activeSpinnerFrame(session.ActivityTool)
+	if panel := renderSwarmPanel(m.state.SwarmProgress(), swarmSpinner, m.width); panel != "" {
 		rows = append(rows, panel)
 	}
 	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
@@ -128,13 +130,13 @@ func (m Model) renderActivityStrip() string {
 	label := ""
 	switch activity.Kind {
 	case session.ActivityThinking:
-		label = fmt.Sprintf("%s thinking", spinner)
+		label = spinnerLabel(spinner, "thinking")
 	case session.ActivityTool:
 		elapsed := m.now().Sub(activity.StartedAt)
 		if elapsed < 0 {
 			elapsed = 0
 		}
-		label = fmt.Sprintf("%s %s · %s", spinner, activity.Label, formatElapsed(elapsed))
+		label = spinnerLabel(spinner, fmt.Sprintf("%s · %s", activity.Label, formatElapsed(elapsed)))
 	default:
 		return ""
 	}

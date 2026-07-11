@@ -143,7 +143,7 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 		tailLines = lines[len(lines)-3:]
 	}
 	var b strings.Builder
-	header := fmt.Sprintf("%s thinking", spinnerFrame)
+	header := spinnerLabel(spinnerFrame, "thinking")
 	b.WriteString(thinkingLineStyle.Render(header))
 	b.WriteString("\n")
 	for _, line := range tailLines {
@@ -386,7 +386,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	head := fmt.Sprintf("%s %s · %s", spinnerFrame, atc.Name, formatElapsed(elapsed))
+	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", atc.Name, formatElapsed(elapsed)))
 	var b strings.Builder
 	b.WriteString(toolBulletStyle.Render(truncateRunes(head, max(width-2, 1))))
 	b.WriteString("\n")

@@ -6,6 +6,8 @@ import (
 	"io"
 
 	"marshal/internal/app"
+	"marshal/internal/app/session"
+	"marshal/internal/pubsub"
 )
 
 func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -42,10 +44,11 @@ func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
 			if rt.Runner != nil {
 				run = rt.Runner.Run
 			}
+			evBroker, _ := rt.EventBroker.(*pubsub.Broker[session.Event])
 			return &TurnRuntime{
 				SessionID: sessionID,
 				Run:       run,
-				Events:    rt.EventBroker,
+				Events:    evBroker,
 			}, true
 		},
 		Notify: srv.Notify,

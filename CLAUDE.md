@@ -32,7 +32,7 @@ go vet ./...
 
 ## Architecture
 
-The current codebase is **Milestones A-P complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, and MCP/plugin ecosystem). Milestone Q (sandboxed command execution) is planned.
+The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, MCP/plugin ecosystem, and sandboxed command execution with restricted/container/passthrough backends). See [docs/04-tooling-and-shell-safety.md](docs/04-tooling-and-shell-safety.md) for sandbox details.
 
 ```
 cmd/marshal/main.go                   — thin entrypoint, delegates to internal/app
@@ -78,13 +78,13 @@ Config is merged in order (later wins):
 
 `app.Run()` accepts functional options (`WithConfigLoader`, `WithProgramRunner`, `WithNow`) so tests can inject fakes without spinning up a real TUI. Tests in `app_test.go` use this pattern exclusively.
 
-### Planned package layout
+### Implemented package layout
 
-See `docs/02-system-architecture.md` for the full intended layout. Implemented packages are listed above. Remaining future packages include `internal/sandbox/` (isolated command execution) and plugin/MCP support.
+Implemented packages are listed above. See `docs/02-system-architecture.md` for the full intended layout. The `internal/sandbox/` package is implemented with restricted, container, and passthrough backends. MCP/plugin support is in `internal/tools/mcp/`.
 
 ## Design constraints
 
 - **Local-first**: default config has `remote_providers_allowed = false`. Don't assume a hosted model.
 - **Provider-flexible**: the model layer is swappable without TUI changes.
-- **Tool-safe**: shell execution will require classification and user approval before running.
+- **Tool-safe**: shell execution is classified and requires user approval before running.
 - The TUI is responsible for rendering only — no routing, policy, or prompt logic should live there.

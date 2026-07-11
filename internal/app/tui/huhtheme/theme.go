@@ -49,7 +49,7 @@ func WarmSunset() huh.ThemeFunc {
 		t.Focused.SelectedPrefix = lipgloss.NewStyle().Foreground(teal).SetString("✓ ")
 		t.Focused.UnselectedPrefix = lipgloss.NewStyle().Foreground(dim).SetString("• ")
 		t.Focused.UnselectedOption = t.Focused.UnselectedOption.Foreground(normal)
-		t.Focused.FocusedButton = t.Focused.FocusedButton.Foreground(lipgloss.Color("0")).Background(coral)
+		t.Focused.FocusedButton = t.Focused.FocusedButton.Foreground(normal).Background(coral)
 		t.Focused.Next = t.Focused.FocusedButton
 		t.Focused.BlurredButton = t.Focused.BlurredButton.Foreground(normal).Background(dim)
 

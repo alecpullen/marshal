@@ -87,6 +87,47 @@ type Runtime struct {
 	closeErr    error
 }
 
+// BeginWork registers a unit of transport-visible work with the runtime and
+// returns a child context that is cancelled when the runtime quiesces or the
+// parent context is cancelled. The returned finish function is idempotent and
+// MUST be called exactly once (typically deferred) to signal work completion
+// to the shutdown gate.
+//
+// If the runtime is already quiescing, BeginWork returns
+// session.ErrSessionQuiescing and does NOT increment the work counter.
+// Nil parent, State, or runtime root context are rejected with a concrete
+// error. If runtime cancellation races with registration, the child context
+// is cancelled immediately; the caller still owns finish.
+func (rt *Runtime) BeginWork(parent context.Context) (context.Context, func(), error) {
+	if parent == nil {
+		return nil, nil, fmt.Errorf("runtime: BeginWork parent context is nil")
+	}
+	if rt.State == nil {
+		return nil, nil, fmt.Errorf("runtime: BeginWork called with nil State")
+	}
+	if rt.workCtx == nil {
+		return nil, nil, fmt.Errorf("runtime: BeginWork called with nil runtime work context")
+	}
+
+	if err := rt.State.BeginWork(); err != nil {
+		return nil, nil, err
+	}
+
+	workCtx, cancel := context.WithCancel(parent)
+	stopRuntimeCancel := context.AfterFunc(rt.workCtx, cancel)
+
+	var finishOnce sync.Once
+	finish := func() {
+		finishOnce.Do(func() {
+			stopRuntimeCancel()
+			cancel()
+			rt.State.EndWork()
+		})
+	}
+
+	return workCtx, finish, nil
+}
+
 // Quiesce cancels and joins active turns and background jobs without closing
 // persistence (database, logger). After Quiesce returns the session is
 // quiesced: no new work can begin, all in-flight work has completed, and all
@@ -245,6 +286,10 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		return nil, err
 	}
 
+	if runOpts.sessionID != "" && runOpts.existingSessionID != "" {
+		return nil, fmt.Errorf("app: WithSessionID and WithExistingSession are mutually exclusive")
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("find home directory: %w", err)
@@ -279,20 +324,48 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
 
-	projectID, err := database.GetOrCreateProject(workingDir, cfg.Project.Name)
-	if err != nil {
-		_ = database.Close()
-		return nil, fmt.Errorf("get or create project: %w", err)
-	}
-
-	now := runOpts.now()
+	var projectID int64
+	var now time.Time
 	sessionID := runOpts.sessionID
-	if sessionID == "" {
-		sessionID = fmt.Sprintf("sess_%d", now.UnixNano())
-	}
-	if err := database.CreateSession(sessionID, projectID, "", now); err != nil {
-		_ = database.Close()
-		return nil, fmt.Errorf("create session: %w", err)
+
+	if runOpts.existingSessionID != "" {
+		// ── Existing-session mode ────────────────────────────────────
+		project, err := database.GetProjectByRoot(workingDir)
+		if err != nil {
+			_ = database.Close()
+			return nil, fmt.Errorf("get project by root: %w", err)
+		}
+		projectID = project.ID
+
+		storedSession, err := database.GetSession(runOpts.existingSessionID)
+		if err != nil {
+			_ = database.Close()
+			return nil, fmt.Errorf("get existing session: %w", err)
+		}
+		if storedSession.ProjectID != projectID {
+			_ = database.Close()
+			return nil, fmt.Errorf("session project mismatch: session belongs to project %d, but working directory resolves to project %d", storedSession.ProjectID, projectID)
+		}
+
+		sessionID = runOpts.existingSessionID
+		now = storedSession.StartedAt
+	} else {
+		// ── New-session mode ────────────────────────────────────────
+		var err error
+		projectID, err = database.GetOrCreateProject(workingDir, cfg.Project.Name)
+		if err != nil {
+			_ = database.Close()
+			return nil, fmt.Errorf("get or create project: %w", err)
+		}
+
+		now = runOpts.now()
+		if sessionID == "" {
+			sessionID = fmt.Sprintf("sess_%d", now.UnixNano())
+		}
+		if err := database.CreateSession(sessionID, projectID, "", now); err != nil {
+			_ = database.Close()
+			return nil, fmt.Errorf("create session: %w", err)
+		}
 	}
 
 	logWriter := io.Discard
@@ -305,6 +378,17 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	logger := logging.New(logWriter, slog.LevelInfo)
 	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
 	state.SetTrusted(projectTrusted)
+
+	// Abort startup if an existing session's transcript cannot be loaded.
+	if runOpts.existingSessionID != "" {
+		if loadErr := state.LoadError(); loadErr != nil {
+			if logFile != nil {
+				_ = logFile.Close()
+			}
+			_ = database.Close()
+			return nil, fmt.Errorf("load existing session state: %w", loadErr)
+		}
+	}
 
 	globalSkillsDir := filepath.Join(homeDir, ".config", "marshal", "skills")
 	projectSkillsDir := filepath.Join(workingDir, ".marshal", "skills")

@@ -50,6 +50,15 @@ func TestLoad(t *testing.T) {
 			t.Fatalf("AccentPrimary = %#v, want 5 in 16-color mode", th.AccentPrimary)
 		}
 	})
+
+	t.Run("kitty_term_uses_256_palette", func(t *testing.T) {
+		t.Setenv("NO_COLOR", "")
+		t.Setenv("TERM", "xterm-kitty")
+		th := Load()
+		if th.AccentPrimary != lipgloss.Color("209") {
+			t.Fatalf("AccentPrimary = %#v, want 209 in kitty terminal", th.AccentPrimary)
+		}
+	})
 }
 
 func TestNoColorYieldsMonochrome(t *testing.T) {

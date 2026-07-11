@@ -2253,6 +2253,27 @@ func TestHelpToggleWithQuestionMark(t *testing.T) {
 	}
 }
 
+// TestQuestionMarkTypesLiterallyInNonEmptyInput verifies that ? is inserted
+// as a literal character when the textarea has content — the help overlay
+// should NOT open in that case, because ? is a very common character in
+// chat prompts (e.g. "What is X? How do I Y?").
+func TestQuestionMarkTypesLiterallyInNonEmptyInput(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+
+	// Type some text first.
+	m = sendKey(m, tea.KeyPressMsg{Text: "hello"})
+
+	// Press ? — should append to the input, NOT open help.
+	m = sendKey(m, tea.KeyPressMsg{Text: "?"})
+
+	if m.helpOpen {
+		t.Fatal("? should not open help overlay when input has content")
+	}
+	if !strings.Contains(m.input.Value(), "?") {
+		t.Fatalf("? should be a literal char in input, got %q", m.input.Value())
+	}
+}
+
 func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	th := theme.LoadFor(false, "xterm-256color")

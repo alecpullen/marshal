@@ -136,10 +136,17 @@ func TestNarrowModePagesSections(t *testing.T) {
 
 func TestCtrlSSavesAndFlashes(t *testing.T) {
 	m := newTestModel(t)
+	// Make a change so the diff overlay has something to save.
+	m.state.cfg.Privacy.RemoteProvidersAllowed = true
 	var cmd tea.Cmd
 	m, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	// ctrl+s opens the diff overlay; press Enter to confirm the save.
+	if cmd != nil {
+		t.Fatal("ctrl+s should open diff overlay (nil cmd), not save directly")
+	}
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("ctrl+s should produce a save command")
+		t.Fatal("ctrl+s then Enter should produce a save command")
 	}
 	msg := cmd()
 	if _, ok := msg.(SavedMsg); !ok {
@@ -179,8 +186,14 @@ func TestSaveBlockedDoesNotWrite(t *testing.T) {
 	const busyMsg = "Stop the active turn and background jobs before applying settings."
 	m.SetSaveBlocked(busyMsg)
 
+	m.state.cfg.Privacy.RemoteProvidersAllowed = true
+
 	var cmd tea.Cmd
 	m, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatal("ctrl+s should open the diff overlay, not save directly")
+	}
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatal("expected nil command when save is blocked")
 	}
@@ -307,6 +320,56 @@ func TestTruncateErrPreservesUTF8AndAddsEllipsis(t *testing.T) {
 		if !utf8.ValidString(got) {
 			t.Errorf("truncateErr(%q) produced invalid UTF-8: %q", tc.input, got)
 		}
+	}
+}
+
+func TestCtrlSOpensDiffOverlay(t *testing.T) {
+	m := New(config.Default(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 30)
+	m.paneFocused = true
+
+	m, _ = m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	if m.overlay != overlayDiff {
+		t.Fatalf("overlay = %v, want overlayDiff", m.overlay)
+	}
+}
+
+func TestDiffOverlayShowsNoChangesWhenClean(t *testing.T) {
+	m := New(config.Default(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 30)
+	m.paneFocused = true
+
+	m, _ = m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	view := m.View()
+	if !strings.Contains(view, "no changes") {
+		t.Fatalf("clean diff view should say 'no changes':\n%s", view)
+	}
+}
+
+func TestDiffOverlayShowsChangeWhenDirty(t *testing.T) {
+	cfg := config.Default()
+	m := New(cfg, "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 30)
+	m.paneFocused = true
+
+	m.state.cfg.Privacy.RemoteProvidersAllowed = true
+
+	m, _ = m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	view := m.View()
+	if !strings.Contains(view, "RemoteProvidersAllowed") {
+		t.Fatalf("dirty diff view should mention the changed field:\n%s", view)
+	}
+}
+
+func TestDiffOverlayEscReturnsToEditing(t *testing.T) {
+	m := New(config.Default(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(80, 30)
+	m.paneFocused = true
+
+	m, _ = m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	m, _ = m.Update(tea.KeyPressMsg{Text: "esc"})
+	if m.overlay != overlayNone {
+		t.Fatalf("overlay = %v, want overlayNone after Esc", m.overlay)
 	}
 }
 

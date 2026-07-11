@@ -60,6 +60,15 @@ type field struct {
 	pickOnPick      func(string) error
 	pickPending     func() bool
 	pickAllowCustom bool
+
+	// collection ops (Phase 2)
+	yank     func() any
+	paste    func(any) error
+	moveUp   func()
+	moveDown func()
+	// disarm is called by the fieldList when the cursor leaves this row
+	// (used by the reset-to-defaults confirm idiom).
+	disarm   func()
 }
 
 // frame is one level of a pane's drill-down stack: a titled fieldList plus

@@ -16,10 +16,12 @@ func (m Model) helpOverlay(fw, fh int) string {
 		"  Space          toggle on/off",
 		"  ←/→            cycle enum values",
 		"  a / d          add / delete entry",
+		"  y / p          yank / paste (duplicate)",
+		"  Shift+↑/↓      reorder entry",
 		"  h / Shift+Tab  back to sidebar",
 		"  Esc            up one level · discard edit",
 		"  /              search all settings",
-		"  Ctrl+S         save",
+		"  Ctrl+S         review changes, then save",
 		"  ?              close this help",
 	}
 	if m.sidebarHidden {

@@ -31,6 +31,7 @@ const (
 	overlaySearch
 	overlayHelp
 	overlayPicker
+	overlayDiff
 )
 
 type Model struct {
@@ -44,6 +45,7 @@ type Model struct {
 	pickerModel    *picker.Model
 	pickerOnPick   func(string) error
 	pickerFieldID  string
+	diffLines      []diffLine
 	pendingCancel  bool
 	savedFlash     bool
 	footerMsg      string // error/status text; cleared on next keypress
@@ -60,7 +62,7 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 	specs := sectionList()
 	panes := make([]*paneStack, len(specs))
 	for i, sp := range specs {
-		panes[i] = newPaneStack(sp.root(st))
+		panes[i] = newPaneStack(withResetRow(st, sp.id, sp.title, sp.root(st)))
 	}
 	return Model{
 		state:          st,
@@ -85,6 +87,14 @@ func (m Model) frameSize() (int, int) {
 	}
 	return w, h
 }
+
+// State returns the model's working state. Exposed for parent-package tests
+// that need to mutate cfg before driving Update.
+func (m *Model) State() *state { return m.state }
+
+// SetWorkingConfig replaces the working copy of the config. Used by
+// parent-package tests that need to dirty the diff overlay.
+func (m *Model) SetWorkingConfig(cfg config.Config) { m.state.cfg = cfg }
 
 func (m *Model) SetSize(width, height int) {
 	m.width, m.height = width, height
@@ -148,7 +158,8 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return *m, nil
 	}
 	if m.overlay == overlaySearch {
-		return *m, m.updateSearch(k)
+		cmd := m.updateSearch(k)
+		return *m, cmd
 	}
 	if m.overlay == overlayPicker {
 		if m.pickerModel == nil {
@@ -158,15 +169,20 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		cmd := m.pickerModel.Update(msg)
 		return *m, cmd
 	}
+	if m.overlay == overlayDiff {
+		return m.updateDiffOverlay(k)
+	}
 
 	editing := m.activePane().top().list.Editing()
 
 	// Global keys (never while an inline edit wants the characters).
 	switch ks {
 	case "ctrl+s":
-		return *m, m.saveCmd()
+		cmd := m.openDiff()
+		return *m, cmd
 	case "ctrl+o": // parent toggle key behaves like Esc-at-top: close request
-		return *m, m.requestClose()
+		cmd := m.requestClose()
+		return *m, cmd
 	}
 	if !editing {
 		switch ks {
@@ -185,6 +201,7 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.activePane().top().list.CancelEdit()
 			return *m, nil
 		}
+		m.activePane().top().list.DisarmCurrent()
 		if m.activePane().pop() {
 			return *m, nil
 		}
@@ -192,7 +209,8 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.paneFocused = false
 			return *m, nil
 		}
-		return *m, m.requestClose()
+		cmd := m.requestClose()
+		return *m, cmd
 	}
 
 	if m.sidebarHidden {
@@ -303,6 +321,28 @@ func (m *Model) closePicker() {
 	m.pickerFieldID = ""
 }
 
+func (m *Model) openDiff() tea.Cmd {
+	m.diffLines = configDiff(m.state.snapshot, m.state.cfg)
+	m.overlay = overlayDiff
+	return nil
+}
+
+func (m *Model) updateDiffOverlay(k tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch k.String() {
+	case "esc":
+		m.overlay = overlayNone
+		return *m, nil
+	case "enter":
+		if len(m.diffLines) == 0 {
+			return *m, nil
+		}
+		m.overlay = overlayNone
+		cmd := m.saveCmd()
+		return *m, cmd
+	}
+	return *m, nil
+}
+
 func (m *Model) handlePickerPicked(value string) (Model, tea.Cmd) {
 	if m.pickerOnPick != nil {
 		if err := m.pickerOnPick(value); err != nil {
@@ -371,6 +411,9 @@ func (m Model) View() string {
 	}
 	if m.overlay == overlayPicker && m.pickerModel != nil {
 		return m.pickerModel.View(fw, fh)
+	}
+	if m.overlay == overlayDiff {
+		return m.diffOverlay(fw, fh)
 	}
 	return out
 }
@@ -458,6 +501,15 @@ func (m Model) renderFooter(fw int) string {
 			case kindPicker:
 				parts = append(parts, seg("\u21b5", "pick"))
 			}
+			if row.yank != nil {
+				parts = append(parts, seg("y", "yank"))
+			}
+			if row.paste != nil && fl.yankedData != nil {
+				parts = append(parts, seg("p", "paste"))
+			}
+			if row.moveUp != nil || row.moveDown != nil {
+				parts = append(parts, seg("shift↑↓", "move"))
+			}
 		}
 		if fl.onAdd != nil {
 			parts = append(parts, seg("a", "add"))
@@ -473,6 +525,38 @@ func (m Model) renderFooter(fw int) string {
 		parts = append([]string{warnStyle.Render("● unsaved")}, parts...)
 	}
 	return ansi.Cut(" "+strings.Join(parts, " "), 0, max(fw, 1))
+}
+
+func (m Model) diffOverlay(fw, fh int) string {
+	var b strings.Builder
+	if len(m.diffLines) == 0 {
+		b.WriteString(flDescStyle.Render("no changes"))
+		b.WriteString("\n")
+	} else {
+		for _, d := range m.diffLines {
+			line := d.Prefix + " " + d.Path + d.Detail
+			switch d.Prefix {
+			case "+":
+				line = flOnStyle.Render(line)
+			case "-":
+				line = flErrStyle.Render(line)
+			default:
+				line = flDescStyle.Render(line)
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	footer := "[\u21b5] save  [Esc] cancel"
+	if len(m.diffLines) == 0 {
+		footer = "[Esc] close"
+	}
+	content := strings.TrimRight(b.String(), "\n") + "\n" + footerTextStyle.Render(footer)
+	h := min(fh, len(m.diffLines)+5)
+	if h < 6 {
+		h = 6
+	}
+	return renderPanel("Save changes?", content, fw, h, true)
 }
 
 func (m Model) FocusedFieldTitle() string {

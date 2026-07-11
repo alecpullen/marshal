@@ -407,3 +407,96 @@ func TestKindActionResultUpdatesState(t *testing.T) {
 		t.Fatalf("after result, actionState = %+v, want pending=false label=ok", as)
 	}
 }
+
+func TestYankPasteDuplicates(t *testing.T) {
+	got := ""
+	fl := newFieldList(func() []*field {
+		return []*field{
+			{id: "x.a", title: "A", kind: kindScalar,
+				getStr: func() string { return "a" },
+				setStr: func(v string) error { got = v; return nil },
+				yank:   func() any { return "a-data" },
+				paste:  func(data any) error { got = data.(string) + "-pasted"; return nil },
+			},
+		}
+	})
+	fl.SetSize(40, 10)
+	fl.Refresh()
+
+	fl.Update(tea.KeyPressMsg{Text: "y"})
+	if fl.yankedData != "a-data" {
+		t.Fatalf("yank: yankedData = %v, want a-data", fl.yankedData)
+	}
+	fl.Update(tea.KeyPressMsg{Text: "p"})
+	if got != "a-data-pasted" {
+		t.Fatalf("paste: got = %q, want a-data-pasted", got)
+	}
+	if fl.yankedData != nil {
+		t.Fatal("paste should clear the yank buffer")
+	}
+}
+
+func TestMoveUpDownCallsClosures(t *testing.T) {
+	calls := []string{}
+	fl := newFieldList(func() []*field {
+		return []*field{
+			{id: "x.a", title: "A", kind: kindScalar,
+				getStr: func() string { return "a" }, setStr: func(string) error { return nil },
+				moveUp:   func() { calls = append(calls, "up") },
+				moveDown: func() { calls = append(calls, "down") },
+			},
+		}
+	})
+	fl.SetSize(40, 10)
+	fl.Refresh()
+
+	fl.Update(tea.KeyPressMsg{Text: "shift+up"})
+	fl.Update(tea.KeyPressMsg{Text: "shift+down"})
+	want := []string{"up", "down"}
+	if len(calls) != 2 || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
+func TestDisarmCalledOnCursorMove(t *testing.T) {
+	disarmed := false
+	fl := newFieldList(func() []*field {
+		return []*field{
+			{id: "x.a", title: "A", kind: kindScalar,
+				getStr: func() string { return "a" }, setStr: func(string) error { return nil },
+				disarm: func() { disarmed = true },
+			},
+			{id: "x.b", title: "B", kind: kindScalar,
+				getStr: func() string { return "b" }, setStr: func(string) error { return nil },
+			},
+		}
+	})
+	fl.SetSize(40, 10)
+	fl.Refresh()
+	fl.SetCursor(0)
+
+	fl.Update(tea.KeyPressMsg{Text: "j"})
+	if !disarmed {
+		t.Fatal("leaving row A via j should call its disarm")
+	}
+}
+
+func TestDisarmCurrent(t *testing.T) {
+	disarmed := false
+	fl := newFieldList(func() []*field {
+		return []*field{
+			{id: "x.a", title: "A", kind: kindScalar,
+				getStr: func() string { return "a" }, setStr: func(string) error { return nil },
+				disarm: func() { disarmed = true },
+			},
+		}
+	})
+	fl.SetSize(40, 10)
+	fl.Refresh()
+	fl.SetCursor(0)
+
+	fl.DisarmCurrent()
+	if !disarmed {
+		t.Fatal("DisarmCurrent should call the cursor row's disarm")
+	}
+}

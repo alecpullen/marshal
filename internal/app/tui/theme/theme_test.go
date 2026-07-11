@@ -57,6 +57,7 @@ func TestNoColorYieldsMonochrome(t *testing.T) {
 	for name, c := range map[string]color.Color{
 		"AccentPrimary": th.AccentPrimary,
 		"FGMuted":       th.FGMuted,
+		"BorderMuted":   th.BorderMuted,
 		"StatusError":   th.StatusError,
 	} {
 		if _, ok := c.(lipgloss.NoColor); !ok {
@@ -88,6 +89,9 @@ func Test16ColorFallback(t *testing.T) {
 	if th.BGSelection != lipgloss.Color("4") {
 		t.Fatalf("BGSelection = %#v, want 16-color blue 4", th.BGSelection)
 	}
+	if th.BorderMuted != lipgloss.Color("8") {
+		t.Fatalf("BorderMuted = %#v, want 16-color bright black 8", th.BorderMuted)
+	}
 }
 
 func Test256ColorPaletteHasNewThemeSlots(t *testing.T) {
@@ -97,6 +101,9 @@ func Test256ColorPaletteHasNewThemeSlots(t *testing.T) {
 	}
 	if th.UserPrompt != lipgloss.Color("246") {
 		t.Fatalf("UserPrompt = %#v, want 246 (medium grey)", th.UserPrompt)
+	}
+	if th.BorderMuted != lipgloss.Color("245") {
+		t.Fatalf("BorderMuted = %#v, want 245", th.BorderMuted)
 	}
 }
 
@@ -108,6 +115,9 @@ func Test16ColorPaletteHasNewThemeSlots(t *testing.T) {
 	if th.UserPrompt != lipgloss.Color("7") {
 		t.Fatalf("UserPrompt = %#v, want 7 (white)", th.UserPrompt)
 	}
+	if th.BorderMuted != lipgloss.Color("8") {
+		t.Fatalf("BorderMuted = %#v, want 8 (bright black)", th.BorderMuted)
+	}
 }
 
 func TestMonochromeHasNewThemeSlots(t *testing.T) {
@@ -117,5 +127,8 @@ func TestMonochromeHasNewThemeSlots(t *testing.T) {
 	}
 	if _, ok := th.UserPrompt.(lipgloss.NoColor); !ok {
 		t.Fatalf("UserPrompt = %#v, want NoColor{} in NO_COLOR mode", th.UserPrompt)
+	}
+	if _, ok := th.BorderMuted.(lipgloss.NoColor); !ok {
+		t.Fatalf("BorderMuted = %#v, want NoColor{} in NO_COLOR mode", th.BorderMuted)
 	}
 }

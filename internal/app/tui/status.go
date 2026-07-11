@@ -34,10 +34,11 @@ func (m Model) renderStatusLine(width int) string {
 	segs := m.statusLeftSegments()
 	left := joinSegs(segs)
 	right := m.statusRightSegment()
-	for len(segs) > 0 && visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
-		// drop the lowest-priority segment (highest priority number)
-		worst := 0
-		for i := 1; i < len(segs); i++ {
+	for len(segs) > 1 && visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
+		// drop the lowest-priority segment (highest priority number), but
+		// always preserve the first segment (the mode cue).
+		worst := 1
+		for i := 2; i < len(segs); i++ {
 			if segs[i].priority > segs[worst].priority {
 				worst = i
 			}

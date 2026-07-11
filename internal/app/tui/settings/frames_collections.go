@@ -124,10 +124,11 @@ func providersWizard(s *state) func() *pickerRequest {
 			})
 		}
 		return &pickerRequest{
-			fieldID: "__wizard__",
-			items:   items,
-			title:   "Add provider",
-			footer:  "pick a template",
+			fieldID:     wizardFieldID,
+			items:       items,
+			title:       "Add provider",
+			footer:      "pick a template",
+			allowCustom: true,
 			onPick: func(tplID string) error {
 				tpl, ok := provider.Lookup(tplID)
 				if !ok {
@@ -194,11 +195,12 @@ func providerPickerField(s *state, id string, getProvider func() string, setProv
 
 func modelPickerField(s *state, id string, providerName func() string, getModel func() string, setModel func(string) error) *field {
 	return &field{
-		id:     id,
-		title:  "Model",
-		kind:   kindPicker,
-		desc:   "model id for this role",
-		getStr: func() string { return getModel() },
+		id:              id,
+		title:           "Model",
+		kind:            kindPicker,
+		desc:            "model id for this role",
+		pickAllowCustom: true,
+		getStr:          func() string { return getModel() },
 		pickOptions: func() []picker.Item {
 			pn := providerName()
 			current := getModel()

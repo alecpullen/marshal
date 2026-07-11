@@ -3,6 +3,7 @@ package settings
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -241,6 +242,38 @@ func TestDrillIntoNewestProviderWithCollision(t *testing.T) {
 	}
 	if pane.top().title != "ollama-2" {
 		t.Fatalf("drilled into provider %q, want 'ollama-2'", pane.top().title)
+	}
+}
+
+func TestTruncateErrPreservesUTF8AndAddsEllipsis(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"short err", "short err"},
+		{"", ""},
+		// Exactly 40 chars: no truncation
+		{"1234567890123456789012345678901234567890", "1234567890123456789012345678901234567890"},
+		// 41 chars: truncate to 37 + ellipsis
+		{"12345678901234567890123456789012345678901", "1234567890123456789012345678901234567\u2026"},
+		// Multi-byte chars (é is 2 bytes)
+		{"ééééééééééééééééééééé", "ééééééééééééééééééééé"},
+		// Multi-byte that would split: 38 runes, 41+ bytes
+		{"éééééééééééééééééééééé", "éééééééééééééééééééééé"},
+		// 41-rune multi-byte string (each é is 2 bytes) that should be truncated
+		{"éééééééééééééééééééééééééééééééééééééééééé", "ééééééééééééééééééééééééééééééééééééé\u2026"},
+		// Mixed single and multi-byte, 42 runes → truncate to 37 runes + ellipsis
+		{"abcdeééééééééééééééééééééééééééééééééééééé", "abcdeéééééééééééééééééééééééééééééééé\u2026"},
+	}
+	for _, tc := range tests {
+		got := truncateErr(tc.input)
+		if got != tc.want {
+			t.Errorf("truncateErr(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+		// Verify valid UTF-8
+		if !utf8.ValidString(got) {
+			t.Errorf("truncateErr(%q) produced invalid UTF-8: %q", tc.input, got)
+		}
 	}
 }
 

@@ -1,6 +1,9 @@
 package provider
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 type ProviderTemplate struct {
 	ID          string
@@ -78,6 +81,7 @@ func All() []ProviderTemplate {
 	for _, tpl := range templates {
 		out = append(out, tpl)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 

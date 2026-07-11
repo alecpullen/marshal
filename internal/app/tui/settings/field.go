@@ -56,9 +56,10 @@ type field struct {
 	actLabel func() string
 
 	// kindPicker
-	pickOptions func() []picker.Item
-	pickOnPick  func(string) error
-	pickPending func() bool
+	pickOptions     func() []picker.Item
+	pickOnPick      func(string) error
+	pickPending     func() bool
+	pickAllowCustom bool
 }
 
 // frame is one level of a pane's drill-down stack: a titled fieldList plus

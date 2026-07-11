@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/picker"
 )
 
 // kp is a single-rune key helper. Special keys (Space, etc.) are constructed
@@ -258,6 +259,52 @@ func TestFieldListCursorAfterListDrillAdd(t *testing.T) {
 	}
 }
 
+func TestKindPickerRowPassesAllowCustomAndTitleToPickerRequest(t *testing.T) {
+	t.Run("default allowCustom is false", func(t *testing.T) {
+		f := &field{
+			id:          "test.picker",
+			title:       "My Picker",
+			kind:        kindPicker,
+			pickOptions: func() []picker.Item { return nil },
+			pickOnPick:  func(string) error { return nil },
+			// pickAllowCustom defaults to false
+		}
+		fl := newFieldList(func() []*field { return []*field{f} })
+		fl.SetSize(60, 20)
+		fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open row
+		req := fl.TakePushPicker()
+		if req == nil {
+			t.Fatal("kindPicker Enter should produce a pickerRequest")
+		}
+		if req.allowCustom {
+			t.Error("default pickAllowCustom=false should produce allowCustom=false")
+		}
+		if req.title != "My Picker" {
+			t.Errorf("pickerRequest title = %q, want %q", req.title, "My Picker")
+		}
+	})
+	t.Run("allowCustom=true is passed through", func(t *testing.T) {
+		f := &field{
+			id:              "test.picker",
+			title:           "My Picker",
+			kind:            kindPicker,
+			pickAllowCustom: true,
+			pickOptions:     func() []picker.Item { return nil },
+			pickOnPick:      func(string) error { return nil },
+		}
+		fl := newFieldList(func() []*field { return []*field{f} })
+		fl.SetSize(60, 20)
+		fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open row
+		req := fl.TakePushPicker()
+		if req == nil {
+			t.Fatal("kindPicker Enter should produce a pickerRequest")
+		}
+		if !req.allowCustom {
+			t.Error("pickAllowCustom=true should produce allowCustom=true")
+		}
+	})
+}
+
 func TestFieldListCursorAfterMapIntDrillAdd(t *testing.T) {
 	m := map[string]int{"reviewer": 4}
 	root := newFrame("Swarm", func() []*field {
@@ -330,9 +377,9 @@ func TestKindActionResultUpdatesState(t *testing.T) {
 	fl := newFieldList(func() []*field {
 		return []*field{
 			{
-				id:       "test.action",
-				title:    "Run",
-				kind:     kindAction,
+				id:    "test.action",
+				title: "Run",
+				kind:  kindAction,
 				actLabel: func() string {
 					if as, ok := st.actionState["test.action"]; ok && as.label != "" {
 						return as.label

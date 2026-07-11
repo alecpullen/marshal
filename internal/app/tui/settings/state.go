@@ -16,7 +16,7 @@ type state struct {
 	snapshot              config.Config
 	discovered            map[string][]string
 	actionState           map[string]actionState
-	wizardCreatedProvider string // set by providersWizard.onPick, consumed by drillIntoNewestProvider
+	wizardCreatedProvider string
 }
 
 type actionState struct {

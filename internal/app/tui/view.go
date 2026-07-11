@@ -54,6 +54,9 @@ func (m Model) viewString() string {
 	if m.memoryOpen {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
 	}
+	if m.helpOpen {
+		return help.Overlay(m.width, m.height)
+	}
 
 	rows := []string{m.renderTranscriptFrame()}
 	if panel := renderSwarmPanel(m.state.SwarmProgress(), m.spinnerFrame, m.width); panel != "" {

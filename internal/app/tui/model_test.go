@@ -2191,6 +2191,68 @@ func TestCommandTriggerDismissesFilePopup(t *testing.T) {
 	}
 }
 
+func TestHelpOpenWithQuestionMarkKey(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+
+	// Press ? to open help overlay.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
+	m = updated.(Model)
+
+	if !m.helpOpen {
+		t.Fatal("expected helpOpen to be true after pressing ?")
+	}
+
+	view := m.View().Content
+	if !strings.Contains(view, "marshal keys") {
+		t.Fatalf("help overlay missing title:\n%s", view)
+	}
+
+	// Press Esc to close help overlay.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(Model)
+
+	if m.helpOpen {
+		t.Fatal("expected helpOpen to be false after pressing Esc")
+	}
+
+	view = m.View().Content
+	if strings.Contains(view, "marshal keys") {
+		t.Fatalf("help overlay should be closed after Esc:\n%s", view)
+	}
+}
+
+func TestQuestionMarkDoesNotLeakIntoInput(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+
+	// Press ? — it should toggle help, not type ? into the textarea.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
+	m = updated.(Model)
+	if !m.helpOpen {
+		t.Fatal("expected helpOpen to be true")
+	}
+	if m.input.Value() != "" {
+		t.Fatalf("expected empty input after ?, got %q", m.input.Value())
+	}
+}
+
+func TestHelpToggleWithQuestionMark(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+
+	// Press ? to open.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
+	m = updated.(Model)
+	if !m.helpOpen {
+		t.Fatal("expected helpOpen after first ?")
+	}
+
+	// Press ? again to close.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: '?'})
+	m = updated.(Model)
+	if m.helpOpen {
+		t.Fatal("expected helpOpen to be false after second ?")
+	}
+}
+
 func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	th := theme.LoadFor(false, "xterm-256color")

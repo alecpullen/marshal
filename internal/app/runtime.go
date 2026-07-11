@@ -190,7 +190,7 @@ func (rt *Runtime) Close(ctx context.Context) error {
 			}
 			if rt.Logger != nil {
 				pruneCtx, pruneCancel := context.WithTimeout(ctx, 30*time.Second)
-				defer pruneCancel()
+				defer pruneCancel() // defer is scoped to this closeOnce.Do closure, not to Close itself
 				if perr := rt.Snapshot.Prune(pruneCtx, rt.Config.Snapshots.RetentionDays); perr != nil {
 					rt.Logger.Warn("snapshot prune failed", "error", perr)
 				}

@@ -1290,6 +1290,10 @@ func (m *Model) cancelTurn() bool {
 
 // beginShutdown cancels the in-flight turn, clears pending state, and
 // returns tea.Quit. Used by Ctrl+C, /quit, and /exit.
+//
+// m.busy is intentionally not reset here — tea.Quit is returned immediately
+// and the program is exiting, so the agentFinishedMsg path that normally
+// clears busy via state.EndWork() will not run.
 func (m *Model) beginShutdown() tea.Cmd {
 	if m.agentCancel != nil {
 		m.agentCancel()

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -62,6 +63,7 @@ type Runtime struct {
 // safe to call exactly once after StartRuntime returns successfully; the
 // TUI's Run also calls Close on its way out.
 func (rt *Runtime) Close(ctx context.Context) error {
+	var closeErr error
 	for i := len(rt.closeFns) - 1; i >= 0; i-- {
 		rt.closeFns[i]()
 	}
@@ -71,7 +73,9 @@ func (rt *Runtime) Close(ctx context.Context) error {
 	if rt.JobManager != nil {
 		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = rt.JobManager.Shutdown(sc)
+		if err := rt.JobManager.Shutdown(sc); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
 	}
 	if rt.JobBroker != nil {
 		rt.JobBroker.Close()
@@ -105,7 +109,7 @@ func (rt *Runtime) Close(ctx context.Context) error {
 	if rt.State != nil {
 		rt.State.Shutdown()
 	}
-	return nil
+	return closeErr
 }
 
 // StartRuntime builds a Runtime from the supplied options. It performs every

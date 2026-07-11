@@ -439,9 +439,12 @@ func TestBuildAgentRunnerUsesConfiguredOutputLimit(t *testing.T) {
 	if !info.OutputTruncated {
 		t.Fatal("expected output truncation for noisy background job")
 	}
-	const maxExpected = 200 // bounded per-stream limit * 2 + truncation marker
+	// Each stream (stdout, stderr) is bounded by MaxOutputBytes.
+	// Truncation appends the truncation marker.
+	const truncationMarkerLen = len("\n[output truncated]") // 20
+	maxExpected := 2*cfg.Tools.Shell.MaxOutputBytes + truncationMarkerLen
 	if len(output) > maxExpected {
-		t.Fatalf("output length = %d, want <= %d", len(output), maxExpected)
+		t.Fatalf("output length = %d, want <= %d (2*MaxOutputBytes + truncationMarker)", len(output), maxExpected)
 	}
 }
 

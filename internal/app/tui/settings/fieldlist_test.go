@@ -267,7 +267,6 @@ func TestKindPickerRowPassesAllowCustomAndTitleToPickerRequest(t *testing.T) {
 			kind:        kindPicker,
 			pickOptions: func() []picker.Item { return nil },
 			pickOnPick:  func(string) error { return nil },
-			// pickAllowCustom defaults to false
 		}
 		fl := newFieldList(func() []*field { return []*field{f} })
 		fl.SetSize(60, 20)

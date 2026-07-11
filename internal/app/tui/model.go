@@ -434,17 +434,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// When the settings overlay is open, route every remaining message
-	// (keypresses AND huh's internal navigation messages such as
-	// nextFieldMsg/prevFieldMsg) to the settings form. huh drives field
-	// advancement via command-produced messages that round-trip through
-	// Update, so the form must see them all — not just KeyPressMsg.
+	// When the settings overlay is open, route every remaining message to
+	// the settings model, which consumes key messages only.
 	if m.settingsOpen {
-		// Ctrl+O toggles the overlay closed.
-		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+o" {
-			m.settingsOpen = false
-			return m, nil
-		}
 		var cmd tea.Cmd
 		m.settingsModel, cmd = m.settingsModel.Update(msg)
 		return m, cmd

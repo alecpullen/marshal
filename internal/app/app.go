@@ -51,6 +51,7 @@ type options struct {
 	trustResolver  trust.Resolver
 	workingDir     string
 	sessionID      string
+	knowledgeHook  func(ctx context.Context, state *session.State, database *db.DB)
 }
 
 type Option func(*options)
@@ -100,6 +101,16 @@ func WithTrustResolver(r trust.Resolver) Option {
 func WithWorkingDir(dir string) Option {
 	return func(opts *options) {
 		opts.workingDir = dir
+	}
+}
+
+// WithKnowledgeHook registers a callback that is invoked after knowledge
+// EndSession completes but before runtime Close. Tests use this hook to
+// observe session state and database availability during the knowledge
+// finalization window.
+func WithKnowledgeHook(hook func(ctx context.Context, state *session.State, database *db.DB)) Option {
+	return func(opts *options) {
+		opts.knowledgeHook = hook
 	}
 }
 
@@ -620,16 +631,6 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	}
 
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			state.Shutdown()
-		case <-done:
-		}
-	}()
-
 	logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
 	select {
@@ -639,8 +640,16 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	}
 
 	progErr := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
+
+	// Phase 1: quiesce — cancel and join active work/jobs without
+	// closing persistence so knowledge finalization can use the DB.
+	quiesceCtx, cancelQuiesce := context.WithTimeout(context.Background(), jobShutdownTimeout)
+	quiesceErr := rt.Quiesce(quiesceCtx)
+	cancelQuiesce()
+
+	// Phase 2: knowledge — finalize the session while DB and logger
+	// are still open.
 	knowledgeCtx, cancelKnowledge := context.WithTimeout(context.Background(), shutdownKnowledgeTimeout)
-	defer cancelKnowledge()
 	knowledge.EndSession(knowledgeCtx, knowledge.EndSessionInput{
 		DB:            database,
 		ProjectID:     projectID,
@@ -651,7 +660,15 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		Now:           runOpts.now,
 		Logger:        logger,
 	})
-	return progErr
+	cancelKnowledge()
+
+	if runOpts.knowledgeHook != nil {
+		runOpts.knowledgeHook(knowledgeCtx, state, database)
+	}
+
+	// Phase 3: close — tear down MCP, brokers, snapshots, DB, logger.
+	closeErr := rt.Close(context.Background())
+	return errors.Join(progErr, quiesceErr, closeErr)
 }
 
 func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {

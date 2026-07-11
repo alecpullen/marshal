@@ -148,6 +148,8 @@ d8710ce feat(session): track and resolve active work
 ea00717 test(app): tighten runtime close ordering and error-join tests
 2434839 fix(tui): cancel safely and guard live settings reload
 dc2ff27 fix(tui): deduplicate runtime message handlers and remove dead SetSaveBlocked
+ca86a23 style: gofmt -w .
+1ee0fab docs: add network-policy / BackgroundRetention config docs
 ```
 
 ### Verification commands
@@ -175,4 +177,4 @@ git status --short
 
 Resolved findings were closed on 2026-07-12 as part of Task 9 of the execution
 and shutdown safety plan. The implementation commit range spans
-`0dd889e..dc2ff27` on branch `feature/execution-shutdown-safety`.
+`0dd889e..1ee0fab` on branch `feature/execution-shutdown-safety`.

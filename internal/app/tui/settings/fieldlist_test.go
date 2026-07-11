@@ -90,7 +90,7 @@ func TestFieldListDescriptionShownForCursorRow(t *testing.T) {
 func TestScalarInlineEditAppliesAndValidates(t *testing.T) {
 	n := 5
 	fl := newFieldList(func() []*field {
-		return []*field{intField2("t.n", "Count", func() int { return n }, 1, func(v int) { n = v })}
+		return []*field{intField("t.n", "Count", func() int { return n }, 1, func(v int) { n = v })}
 	})
 	fl.SetSize(60, 20)
 

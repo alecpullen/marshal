@@ -47,9 +47,8 @@ func scalarField(id, title string, get func() string, set func(string) error) *f
 	return &field{id: id, title: title, kind: kindScalar, getStr: get, setStr: set}
 }
 
-// intField2 binds a scalar row to an int config value. Renamed to intField
-// when the legacy numField is deleted (Task 10).
-func intField2(id, title string, get func() int, min int, apply func(int)) *field {
+// intField binds a scalar row to an int config value.
+func intField(id, title string, get func() int, min int, apply func(int)) *field {
 	return &field{
 		id: id, title: title, kind: kindScalar,
 		getStr: func() string { return strconv.Itoa(get()) },

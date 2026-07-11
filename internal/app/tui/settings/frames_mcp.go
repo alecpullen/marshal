@@ -50,7 +50,7 @@ func mcpFrame(s *state) *frame {
 
 	return newFrame("MCP", func() []*field {
 		return []*field{
-			intField2("mcp.disclosure_threshold", "Disclosure threshold tools",
+			intField("mcp.disclosure_threshold", "Disclosure threshold tools",
 				func() int { return s.cfg.MCP.DisclosureThresholdTools }, 0,
 				func(v int) { s.cfg.MCP.DisclosureThresholdTools = v }),
 			serversDrill,

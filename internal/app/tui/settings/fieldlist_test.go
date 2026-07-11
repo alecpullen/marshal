@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"marshal/internal/app/config"
 )
 
 // kp is a single-rune key helper. Special keys (Space, etc.) are constructed
@@ -287,5 +289,75 @@ func TestFieldListCursorAfterMapIntDrillAdd(t *testing.T) {
 	}
 	if got := ps.top().list.Cursor(); got != 1 {
 		t.Fatalf("cursor index after map add: want 1, got %d", got)
+	}
+}
+
+func TestKindActionEnterTriggersActAndReturnsCmd(t *testing.T) {
+	fl := newFieldList(func() []*field {
+		return []*field{
+			{
+				id:       "test.action",
+				title:    "Run",
+				kind:     kindAction,
+				actLabel: func() string { return "idle" },
+				act: func() tea.Cmd {
+					return func() tea.Msg {
+						return actionResultMsg{FieldID: "test.action", Label: "done"}
+					}
+				},
+			},
+		}
+	})
+	fl.SetSize(40, 10)
+	fl.Refresh()
+
+	cmd := fl.Update(tea.KeyPressMsg{Text: "enter"})
+	if cmd == nil {
+		t.Fatal("kindAction Enter should return a non-nil Cmd")
+	}
+	msg := cmd()
+	arm, ok := msg.(actionResultMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want actionResultMsg", msg)
+	}
+	if arm.FieldID != "test.action" || arm.Label != "done" {
+		t.Fatalf("actionResultMsg = %+v, want {test.action done}", arm)
+	}
+}
+
+func TestKindActionResultUpdatesState(t *testing.T) {
+	st := newState(config.Default())
+	fl := newFieldList(func() []*field {
+		return []*field{
+			{
+				id:       "test.action",
+				title:    "Run",
+				kind:     kindAction,
+				actLabel: func() string {
+					if as, ok := st.actionState["test.action"]; ok && as.label != "" {
+						return as.label
+					}
+					return "idle"
+				},
+				act: func() tea.Cmd {
+					st.actionState["test.action"] = actionState{pending: true, label: "\u2026"}
+					return func() tea.Msg {
+						return actionResultMsg{FieldID: "test.action", Label: "\u2713 ok"}
+					}
+				},
+			},
+		}
+	})
+	fl.SetSize(40, 10)
+	fl.Refresh()
+
+	fl.Update(tea.KeyPressMsg{Text: "enter"})
+	if as := st.actionState["test.action"]; !as.pending {
+		t.Fatal("action should be pending after Enter")
+	}
+
+	st.applyActionResult("test.action", "\u2713 ok")
+	if as := st.actionState["test.action"]; as.pending || as.label != "\u2713 ok" {
+		t.Fatalf("after result, actionState = %+v, want pending=false label=ok", as)
 	}
 }

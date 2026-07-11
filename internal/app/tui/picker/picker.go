@@ -44,12 +44,13 @@ type CancelledMsg struct{}
 
 // Model is the state for a picker modal.
 type Model struct {
-	title   string
-	footer  string
-	items   []Item
-	filter  textinput.Model
-	matches []int // indices into items, rank order
-	cursor  int   // index into matches
+	title       string
+	footer      string
+	items       []Item
+	filter      textinput.Model
+	matches     []int // indices into items, rank order
+	cursor      int   // index into matches
+	allowCustom bool
 }
 
 // New creates a picker model. The cursor starts on the first item whose
@@ -77,6 +78,12 @@ func (m *Model) SetFilter(q string) {
 	m.refilter()
 }
 
+// SetAllowCustom enables custom values: pressing Enter with a typed filter
+// text and no selection emits PickedMsg with the filter text.
+func (m *Model) SetAllowCustom(v bool) {
+	m.allowCustom = v
+}
+
 func (m *Model) refilter() {
 	hay := make([]string, len(m.items))
 	for i, it := range m.items {
@@ -101,6 +108,12 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		if m.cursor < len(m.matches) && len(m.matches) > 0 {
 			v := m.items[m.matches[m.cursor]].Value
 			return func() tea.Msg { return PickedMsg{Value: v} }
+		}
+		if m.allowCustom {
+			v := strings.TrimSpace(m.filter.Value())
+			if v != "" {
+				return func() tea.Msg { return PickedMsg{Value: v} }
+			}
 		}
 		return nil
 	case "up":

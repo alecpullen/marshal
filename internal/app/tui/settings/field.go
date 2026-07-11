@@ -1,5 +1,11 @@
 package settings
 
+import (
+	tea "charm.land/bubbletea/v2"
+
+	"marshal/internal/app/tui/picker"
+)
+
 // fieldKind discriminates the row types a fieldList can render and edit.
 type fieldKind int
 
@@ -8,6 +14,8 @@ const (
 	kindScalar                  // string/number/duration: Enter opens inline edit
 	kindEnum                    // one of options(): ←/→ cycle, Enter opens picker
 	kindDrill                   // Enter pushes build() as a new frame
+	kindAction                  // Enter runs act() and returns a Cmd
+	kindPicker                  // Enter opens a picker overlay
 )
 
 // field is one row in a fieldList. Exactly one kind-group of closures is
@@ -42,6 +50,15 @@ type field struct {
 	// optional per-row delete: entry rows, list items, map keys, and
 	// masked-secret clear all hang their removal behavior here (key: d).
 	del func()
+
+	// kindAction
+	act      func() tea.Cmd
+	actLabel func() string
+
+	// kindPicker
+	pickOptions func() []picker.Item
+	pickOnPick  func(string) error
+	pickPending func() bool
 }
 
 // frame is one level of a pane's drill-down stack: a titled fieldList plus
@@ -52,4 +69,5 @@ type frame struct {
 	list      *fieldList
 	keyPrompt string             // add prompt label; "" with onAdd set = add without prompt
 	onAdd     func(string) error // nil = 'a' disabled in this frame
+	addWizard func() *pickerRequest
 }

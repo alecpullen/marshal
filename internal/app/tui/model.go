@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1341,6 +1342,26 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Bare picker-backed commands open a modal instead of running the
+	// handler; with arguments (or when there is nothing to pick) they fall
+	// through to the handler unchanged.
+	if len(args) == 0 {
+		switch cmd.Name {
+		case "rewind":
+			if items := m.rewindPickerItems(); len(items) > 0 {
+				m.openPicker("rewind", "Rewind to turn", "starts a new branch", items, "")
+				m.refreshViewport()
+				return m, nil
+			}
+		case "branches":
+			if items := m.branchesPickerItems(); len(items) > 1 {
+				m.openPicker("branches", "Switch branch", "", items, "")
+				m.refreshViewport()
+				return m, nil
+			}
+		}
+	}
+
 	msg := cmd.Handler(m.state, args)
 
 	if msg != "" {
@@ -1522,6 +1543,53 @@ func (m *Model) modelPickerItems() []picker.Item {
 			Detail: p.Provider + "/" + p.Model,
 			Badge:  strings.Join(badges, " "),
 			Value:  n,
+		})
+	}
+	return items
+}
+
+// rewindPickerItems builds picker items from user turns, newest first.
+// The most recent turn carries a "● last" badge and is the default cursor target.
+func (m *Model) rewindPickerItems() []picker.Item {
+	var turns []session.Message
+	for _, msg := range m.state.Messages() {
+		if msg.Role == session.RoleUser {
+			turns = append(turns, msg)
+		}
+	}
+	items := make([]picker.Item, 0, len(turns))
+	for i := len(turns) - 1; i >= 0; i-- {
+		badge := ""
+		if i == len(turns)-1 {
+			badge = "● last"
+		}
+		items = append(items, picker.Item{
+			Label:  fmt.Sprintf("turn %d", i+1),
+			Detail: truncateRunes(strings.ReplaceAll(turns[i].Content, "\n", " "), 50),
+			Badge:  badge,
+			Value:  strconv.Itoa(i + 1),
+		})
+	}
+	return items
+}
+
+// branchesPickerItems builds picker items from session branches.
+// The current branch carries a "● now" badge; the picker only opens when
+// there are at least two branches (a meaningful switching target).
+func (m *Model) branchesPickerItems() []picker.Item {
+	leaves := m.state.Branches()
+	cur := m.state.LeafID()
+	items := make([]picker.Item, 0, len(leaves))
+	for i, id := range leaves {
+		badge := ""
+		if id == cur {
+			badge = "● now"
+		}
+		items = append(items, picker.Item{
+			Label:  fmt.Sprintf("branch %d", i+1),
+			Detail: fmt.Sprintf("leaf %d", id),
+			Badge:  badge,
+			Value:  strconv.Itoa(i + 1),
 		})
 	}
 	return items

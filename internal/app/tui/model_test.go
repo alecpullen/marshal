@@ -2506,6 +2506,83 @@ func TestModelNoPresetsPointsAtSettings(t *testing.T) {
 	}
 }
 
+// ── /rewind and /branches pickers (Task 7) ──────────────────────────────
+
+func pickerTestModel(t *testing.T, state *session.State) Model {
+	t.Helper()
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	return m
+}
+
+func TestRewindBareOpensPickerNewestFirst(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "first question", session.ContentTypePlain)
+	state.AddMessage(session.RoleUser, "second question about parsing", session.ContentTypePlain)
+	m := pickerTestModel(t, state)
+	updated, _ := m.dispatchCommand("/rewind")
+	m = *(updated.(*Model))
+	if m.pickerModel == nil || m.pickerCommand != "rewind" {
+		t.Fatal("bare /rewind should open the picker, not rewind immediately")
+	}
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "second question") {
+		t.Fatalf("picker should preview turn content:\n%s", view)
+	}
+	// newest turn is first and carries the ● badge → default Enter target
+	first := strings.Index(view, "turn 2")
+	second := strings.Index(view, "turn 1")
+	if first == -1 || second == -1 || first > second {
+		t.Fatalf("turns should list newest first:\n%s", view)
+	}
+}
+
+func TestRewindWithArgSkipsPicker(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "only turn", session.ContentTypePlain)
+	m := pickerTestModel(t, state)
+	updated, _ := m.dispatchCommand("/rewind 1")
+	m = *(updated.(*Model))
+	if m.pickerModel != nil {
+		t.Fatal("/rewind 1 must run directly")
+	}
+}
+
+func TestBranchesBareOpensPickerWithCurrentBadge(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "first turn", session.ContentTypePlain)
+	state.Rewind(1) // create a fork at the root
+	state.AddMessage(session.RoleUser, "second turn", session.ContentTypePlain)
+	// Now there are 2 branches (messages 1 and 2 are both leaves).
+	m := pickerTestModel(t, state)
+	updated, _ := m.dispatchCommand("/branches")
+	m = *(updated.(*Model))
+	if m.pickerModel == nil || m.pickerCommand != "branches" {
+		t.Fatal("bare /branches should open the picker")
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "● now") {
+		t.Fatal("current branch should be badged")
+	}
+}
+
+func TestRewindNoTurnsFallsThroughToHandler(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := pickerTestModel(t, state)
+	updated, _ := m.dispatchCommand("/rewind")
+	m = *(updated.(*Model))
+	if m.pickerModel != nil {
+		t.Fatal("no turns: picker must not open")
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "No user turns") {
+		t.Fatal("handler's 'No user turns to rewind to.' message should appear")
+	}
+}
+
 func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	th := theme.LoadFor(false, "xterm-256color")

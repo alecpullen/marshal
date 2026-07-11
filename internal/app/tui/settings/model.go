@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/theme"
@@ -157,6 +158,12 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				}
 			case "h", "left":
 				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
+					if m.sidebarHidden {
+						if m.cursor > 0 {
+							m.cursor--
+						}
+						return *m, nil
+					}
 					m.paneFocused = false
 					return *m, nil
 				}
@@ -246,6 +253,7 @@ func (m Model) View() string {
 	if m.footer != "" {
 		footer = m.footer
 	}
+	footer = ansi.Cut(footer, 0, max(m.width, 1))
 	return body + "\n\n" + footer
 }
 

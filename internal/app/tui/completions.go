@@ -10,12 +10,12 @@ import (
 // (`@`). It filters items via a simple in-package subsequence scorer
 // (fuzzyScore) and is rendered above the input area by view.go.
 
-// fuzzyMatchIndices returns the byte positions of the query runes as they
-// appear sequentially in the target string (subsequence match). Returns
-// (indices, true) on match or (nil, true) for empty query.
+// fuzzyMatchIndices returns the matched rune positions of query as it appears
+// sequentially in target (subsequence match). Returns (indices, true) on
+// match or (nil, true) for empty query.
 func fuzzyMatchIndices(query, target string) ([]int, bool) {
-	q := strings.ToLower(query)
-	tt := strings.ToLower(target)
+	q := []rune(strings.ToLower(query))
+	tt := []rune(strings.ToLower(target))
 	if len(q) == 0 {
 		return nil, true
 	}

@@ -1296,11 +1296,13 @@ func TestSettingsTypingThroughMainModel(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	// Enter the agent pane and advance past the two read-only selects to
-	// the Provider input.
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	// Enter the agent pane and navigate to the Provider field.
+	// (In the new fieldList model, Enter opens/selects the current
+	// row; use j to advance.)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})   // Focus pane
+	m = sendKey(m, tea.KeyPressMsg{Text: "j"})          // Past Default profile
+	m = sendKey(m, tea.KeyPressMsg{Text: "j"})          // Past Preset -> Provider
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Open inline edit
 
 	if got := m.settingsModel.FocusedFieldTitle(); got != "Provider" {
 		t.Fatalf("expected Provider field focused, got %q", got)
@@ -1339,11 +1341,13 @@ func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	// Enter the agent pane, then advance to the Local only confirm field.
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	for i := 0; i < 4; i++ {
-		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	}
+	// Enter the agent pane and navigate to the Local only toggle.
+	// (In the new fieldList model, use j to advance; Enter opens/selects.)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab}) // Focus pane
+	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Default profile
+	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Preset
+	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Provider
+	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Model -> Local only
 	if got := m.settingsModel.FocusedFieldTitle(); got != "Local only" {
 		t.Fatalf("expected Local only focused, got %q", got)
 	}
@@ -1351,13 +1355,10 @@ func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
 		t.Fatalf("expected Local only to start true (preset default)")
 	}
 
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 
 	if m.settingsModel.BoolValue("Local only") {
-		t.Fatalf("Space then Enter should have toggled Local only to false and committed")
+		t.Fatalf("Space should have toggled Local only to false")
 	}
 }
 

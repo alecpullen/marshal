@@ -17,21 +17,33 @@ import (
 var settingsTheme = theme.Load()
 
 const (
-	sidebarWidth      = 18
+	sidebarWidth      = 20
 	sidebarBreakpoint = 70
+	maxFrameWidth     = 100
+	maxFrameHeight    = 32
+)
+
+type overlayKind int
+
+const (
+	overlayNone overlayKind = iota
+	overlaySearch
+	overlayHelp
 )
 
 type Model struct {
 	state          *state
-	sections       []section
-	panes          []sectionPane
+	specs          []sectionSpec
+	panes          []*paneStack
 	cursor         int
 	paneFocused    bool
-	helpOpen       bool
+	overlay        overlayKind
+	search         searchState // zero value until Task 11 wires it
 	pendingCancel  bool
+	savedFlash     bool
+	footerMsg      string // error/status text; cleared on next keypress
 	workingDir     string
 	projectCfgPath string
-	footer         string
 	width          int
 	height         int
 	sidebarHidden  bool
@@ -39,17 +51,14 @@ type Model struct {
 
 func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 	st := newState(cfg)
-	secs := sectionList()
-	panes := make([]sectionPane, len(secs))
-	for i, sec := range secs {
-		panes[i] = sec.build(st)
-		if c := panes[i].Init(); c != nil {
-			_ = c()
-		}
+	specs := sectionList()
+	panes := make([]*paneStack, len(specs))
+	for i, sp := range specs {
+		panes[i] = newPaneStack(sp.root(st))
 	}
 	return Model{
 		state:          st,
-		sections:       secs,
+		specs:          specs,
 		panes:          panes,
 		workingDir:     workingDir,
 		projectCfgPath: projectCfgPath,
@@ -58,244 +67,302 @@ func New(cfg config.Config, workingDir, projectCfgPath string) Model {
 
 func (m Model) Init() tea.Cmd { return nil }
 
+// frameSize returns the outer settings frame dimensions.
+func (m Model) frameSize() (int, int) {
+	w := min(m.width-2, maxFrameWidth)
+	h := min(m.height-1, maxFrameHeight)
+	if w < 40 {
+		w = max(m.width, 40)
+	}
+	if h < 10 {
+		h = max(m.height, 10)
+	}
+	return w, h
+}
+
 func (m *Model) SetSize(width, height int) {
-	m.width = width
-	m.height = height
+	m.width, m.height = width, height
 	m.sidebarHidden = width > 0 && width < sidebarBreakpoint
-	pw := width - 6
+	fw, fh := m.frameSize()
+	pw := fw - 2 // detail panel interior width
 	if !m.sidebarHidden {
-		pw = width - sidebarWidth - 6
+		pw = fw - sidebarWidth - 2
 	}
-	if pw < 30 {
-		pw = 30
-	}
+	ph := fh - 4 // borders + title/warning line + footer
 	for _, p := range m.panes {
-		p.SetWidth(pw)
+		p.SetSize(pw-2, ph)
 	}
 }
 
-func (m Model) dirty() bool {
-	return !reflect.DeepEqual(m.state.cfg, m.state.snapshot)
-}
+func (m Model) dirty() bool { return !reflect.DeepEqual(m.state.cfg, m.state.snapshot) }
 
-func (m *Model) activePane() sectionPane { return m.panes[m.cursor] }
+func (m *Model) activePane() *paneStack    { return m.panes[m.cursor] }
+func (m Model) activeSectionTitle() string { return m.specs[m.cursor].title }
 
 func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	if k, ok := msg.(tea.KeyPressMsg); ok {
-		switch k.String() {
-		case "esc":
-			if m.activePane().HasInnerFocus() {
-				m.activePane().CloseInner()
-				return *m, nil
-			}
-			if m.dirty() && !m.pendingCancel {
-				m.pendingCancel = true
-				return *m, nil
-			}
-			m.pendingCancel = false
-			return *m, func() tea.Msg { return CancelledMsg{} }
-		case "ctrl+s":
-			m.pendingCancel = false
-			return *m, m.saveCmd()
-		case "?":
-			if !m.activePane().HasInnerFocus() {
-				m.helpOpen = !m.helpOpen
-				return *m, nil
-			}
-		}
+	k, isKey := msg.(tea.KeyPressMsg)
+	if !isKey {
+		return *m, nil
+	}
+	ks := k.String()
+	if ks != "esc" {
+		m.pendingCancel = false
+	}
+	m.savedFlash = false
+	if m.footerMsg != "" && ks != "ctrl+s" {
+		m.footerMsg = ""
+	}
 
-		if !m.paneFocused {
-			switch k.String() {
-			case "up", "k":
-				if m.cursor > 0 {
-					m.cursor--
-				}
-				return *m, nil
-			case "down", "j":
-				if m.cursor < len(m.sections)-1 {
-					m.cursor++
-				}
-				return *m, nil
-			case "g":
-				m.cursor = 0
-				return *m, nil
-			case "G":
-				m.cursor = len(m.sections) - 1
-				return *m, nil
-			case "tab":
-				m.paneFocused = true
-				return *m, nil
-			case "l", "right":
-				if m.sidebarHidden {
-					m.cursor = (m.cursor + 1) % len(m.sections)
-				} else {
-					m.paneFocused = true
-				}
-				return *m, nil
-			case "h", "left":
-				if m.sidebarHidden {
-					m.cursor = (m.cursor - 1 + len(m.sections)) % len(m.sections)
-					return *m, nil
-				}
-			}
+	// Overlays capture everything (Task 11 wires search; Task 12 help).
+	if m.overlay == overlayHelp {
+		if ks == "esc" || ks == "?" {
+			m.overlay = overlayNone
+		}
+		return *m, nil
+	}
+	if m.overlay == overlaySearch {
+		return *m, m.updateSearch(k)
+	}
+
+	editing := m.activePane().top().list.Editing()
+
+	// Global keys (never while an inline edit wants the characters).
+	switch ks {
+	case "ctrl+s":
+		return *m, m.saveCmd()
+	case "ctrl+o": // parent toggle key behaves like Esc-at-top: close request
+		return *m, m.requestClose()
+	}
+	if !editing {
+		switch ks {
+		case "/":
+			m.openSearch()
+			return *m, nil
+		case "?":
+			m.overlay = overlayHelp
 			return *m, nil
 		}
+	}
 
-		// Pane focused: sidebar-return keys are handled here only when the
-		// pane has no inner edit open (so typing "h" into a text input works)
-		// and the pane is at its first internal focus (otherwise the key is
-		// forwarded to the pane, e.g. mixedPane moving to the previous list).
-		if !m.activePane().HasInnerFocus() {
-			switch k.String() {
-			case "shift+tab":
-				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
-					if m.sidebarHidden {
-						m.cursor = (m.cursor - 1 + len(m.sections)) % len(m.sections)
-						return *m, nil
-					}
-					m.paneFocused = false
-					return *m, nil
-				}
-			case "tab", "l", "right":
-				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
-					if m.sidebarHidden {
-						m.cursor = (m.cursor + 1) % len(m.sections)
-						return *m, nil
-					}
-				}
-			case "h", "left":
-				if ff, ok := m.activePane().(firstFocuser); !ok || ff.AtFirstFocus() {
-					if m.sidebarHidden {
-						m.cursor = (m.cursor - 1 + len(m.sections)) % len(m.sections)
-						return *m, nil
-					}
-					m.paneFocused = false
-					return *m, nil
-				}
+	// Esc: up one level, always.
+	if ks == "esc" {
+		if editing {
+			m.activePane().top().list.CancelEdit()
+			return *m, nil
+		}
+		if m.activePane().pop() {
+			return *m, nil
+		}
+		if m.paneFocused && !m.sidebarHidden {
+			m.paneFocused = false
+			return *m, nil
+		}
+		return *m, m.requestClose()
+	}
+
+	if m.sidebarHidden {
+		// Narrow mode: pane always focused; h/l page sections at root.
+		m.paneFocused = true
+		if !editing && m.activePane().atRoot() {
+			switch ks {
+			case "l":
+				m.cursor = (m.cursor + 1) % len(m.specs)
+				return *m, nil
+			case "h":
+				m.cursor = (m.cursor - 1 + len(m.specs)) % len(m.specs)
+				return *m, nil
 			}
 		}
+		return *m, m.activePane().Update(msg)
 	}
 
-	if m.paneFocused {
-		updated, cmd := m.activePane().Update(msg)
-		m.panes[m.cursor] = updated
-		return *m, cmd
+	if !m.paneFocused {
+		switch ks {
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.specs)-1 {
+				m.cursor++
+			}
+		case "g":
+			m.cursor = 0
+		case "G":
+			m.cursor = len(m.specs) - 1
+		case "enter", "l", "right", "tab":
+			m.paneFocused = true
+		}
+		return *m, nil
 	}
-	return *m, nil
+
+	// Pane focused: h / shift+tab return to the sidebar unless the cursor
+	// row is an enum (which consumes ←/→ but not h) or an edit is open.
+	if !editing {
+		switch ks {
+		case "h", "shift+tab":
+			m.paneFocused = false
+			return *m, nil
+		}
+	}
+	return *m, m.activePane().Update(msg)
+}
+
+// requestClose is the top-level Esc: confirm when dirty, else cancel out.
+func (m *Model) requestClose() tea.Cmd {
+	if m.dirty() && !m.pendingCancel {
+		m.pendingCancel = true
+		return nil
+	}
+	m.pendingCancel = false
+	return func() tea.Msg { return CancelledMsg{} }
 }
 
 func (m *Model) saveCmd() tea.Cmd {
-	return func() tea.Msg {
-		if err := config.SaveProjectConfig(m.projectCfgPath, m.state.cfg); err != nil {
-			m.footer = fmt.Sprintf("Save failed: %v", err)
-			return nil
-		}
-		loaded, err := config.Load(config.LoadOptions{WorkingDir: m.workingDir})
-		if err != nil {
-			m.footer = fmt.Sprintf("Reload failed: %v", err)
-			return nil
-		}
-		return SavedMsg{Cfg: loaded}
+	if err := config.SaveProjectConfig(m.projectCfgPath, m.state.cfg); err != nil {
+		m.footerMsg = fmt.Sprintf("Save failed: %v", err)
+		return nil
 	}
+	loaded, err := config.Load(config.LoadOptions{WorkingDir: m.workingDir})
+	if err != nil {
+		m.footerMsg = fmt.Sprintf("Reload failed: %v", err)
+		return nil
+	}
+	m.pendingCancel = false
+	m.savedFlash = true
+	return func() tea.Msg { return SavedMsg{Cfg: loaded} }
 }
 
 var (
-	sidebarActiveStyle = lipgloss.NewStyle().Bold(true).Reverse(true)
-	sidebarItemStyle   = lipgloss.NewStyle()
-	paneTitleStyle     = lipgloss.NewStyle().Bold(true)
+	sidebarItemStyle   = lipgloss.NewStyle().Foreground(settingsTheme.FGDefault)
+	sidebarActiveStyle = lipgloss.NewStyle().Bold(true).Background(settingsTheme.BGSelection)
 	warnStyle          = lipgloss.NewStyle().Foreground(settingsTheme.StatusWarning)
+	successStyle       = lipgloss.NewStyle().Foreground(settingsTheme.StatusSuccess)
+	errStyle           = lipgloss.NewStyle().Foreground(settingsTheme.StatusError)
+	footerKeyStyle     = lipgloss.NewStyle().Foreground(settingsTheme.AccentPrimary)
+	footerTextStyle    = lipgloss.NewStyle().Foreground(settingsTheme.FGMuted)
 )
 
 func (m Model) View() string {
-	if m.helpOpen {
-		return m.helpView()
+	fw, fh := m.frameSize()
+	body := m.renderBody(fw, fh-1)
+	footer := m.renderFooter(fw)
+	out := body + "\n" + footer
+	if m.overlay == overlayHelp {
+		return m.helpOverlay(fw, fh)
 	}
-
-	paneWidth := m.width - 6
-	if !m.sidebarHidden {
-		paneWidth = m.width - sidebarWidth - 6
+	if m.overlay == overlaySearch {
+		return m.searchOverlay(fw, fh)
 	}
-	if paneWidth < 30 {
-		paneWidth = 30
-	}
-
-	header := paneTitleStyle.Render(m.sections[m.cursor].title)
-	if warns := warningsFor(m.sections[m.cursor].id, m.state.cfg); len(warns) > 0 {
-		header += "\n" + warnStyle.Render("⚠ "+strings.Join(warns, " · "))
-	}
-	pane := header + "\n\n" + m.activePane().View(paneWidth)
-
-	var body string
-	if m.sidebarHidden {
-		body = pane
-	} else {
-		var sb strings.Builder
-		for i, sec := range m.sections {
-			label := " " + sec.title
-			if i == m.cursor {
-				marker := " "
-				if m.paneFocused {
-					marker = "▸"
-				}
-				label = sidebarActiveStyle.Render(marker + sec.title)
-			} else {
-				label = sidebarItemStyle.Render(label)
-			}
-			sb.WriteString(lipgloss.NewStyle().Width(sidebarWidth).Render(label))
-			sb.WriteString("\n")
-		}
-		sidebar := strings.TrimRight(sb.String(), "\n")
-		body = lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "  ", pane)
-	}
-
-	footer := "Ctrl+S save · Esc cancel · ? help"
-	if m.dirty() {
-		footer = "* modified · " + footer
-	}
-	if m.pendingCancel {
-		footer = "⚠ unsaved changes — press Esc again to discard, or save with Ctrl+S"
-	}
-	if m.footer != "" {
-		footer = m.footer
-	}
-	footer = ansi.Cut(footer, 0, max(m.width, 1))
-	return body + "\n\n" + footer
+	return out
 }
 
-func (m Model) helpView() string {
-	enterSection := "  Tab / l / →   enter section"
-	leaveSection := "  Shift+Tab / h back to sidebar"
+func (m Model) renderBody(fw, fh int) string {
+	pane := m.activePane()
+	title := pane.breadcrumb(m.activeSectionTitle())
 	if m.sidebarHidden {
-		enterSection = "  Tab           enter pane"
-		leaveSection = "  h / ←         previous section"
+		title = "‹ " + title + " ›"
 	}
-	return strings.Join([]string{
-		"Settings keys",
-		"",
-		"  ↑/↓ or k/j    move (sidebar or list)",
-		enterSection,
-		leaveSection,
-		"  g / G         first / last section",
-		"  a             add entry (lists)",
-		"  e / Enter     edit entry (lists)",
-		"  d             delete entry (lists)",
-		"  Ctrl+S        save all changes",
-		"  Esc           close sub-form, then cancel",
-		"",
-		"Press ? to close this help.",
-	}, "\n")
+	var content strings.Builder
+	if warns := warningsFor(m.specs[m.cursor].id, m.state.cfg); len(warns) > 0 {
+		content.WriteString(warnStyle.Render("⚠ "+strings.Join(warns, " · ")) + "\n")
+	}
+	content.WriteString(pane.top().list.View())
+
+	if m.sidebarHidden {
+		return renderPanel(title, content.String(), fw, fh, true)
+	}
+
+	sidebarTitle := "Settings"
+	if m.dirty() {
+		sidebarTitle = "Settings " + warnStyle.Render("●")
+	}
+	var sb strings.Builder
+	for i, sp := range m.specs {
+		label := "  " + sp.title
+		if i == m.cursor {
+			label = sidebarActiveStyle.Render("▸ " + sp.title)
+		} else {
+			label = sidebarItemStyle.Render(label)
+		}
+		sb.WriteString(label + "\n")
+	}
+	sidebar := renderPanel(sidebarTitle, strings.TrimRight(sb.String(), "\n"),
+		sidebarWidth, fh, !m.paneFocused)
+	detail := renderPanel(title, content.String(), fw-sidebarWidth, fh, m.paneFocused)
+	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, detail)
+}
+
+// renderFooter shows only what is actionable right now.
+func (m Model) renderFooter(fw int) string {
+	seg := func(k, label string) string {
+		return footerKeyStyle.Render("["+k+"]") + footerTextStyle.Render(label)
+	}
+	var parts []string
+	switch {
+	case m.pendingCancel:
+		return ansi.Cut(warnStyle.Render("⚠ unsaved changes — Esc again to discard, Ctrl+S to save"), 0, max(fw, 1))
+	case m.footerMsg != "":
+		return ansi.Cut(errStyle.Render(m.footerMsg), 0, max(fw, 1))
+	case m.savedFlash:
+		return ansi.Cut(successStyle.Render("✓ saved"), 0, max(fw, 1))
+	}
+	fl := m.activePane().top().list
+	switch {
+	case fl.adding || fl.editing:
+		parts = []string{seg("↵", "apply"), seg("Esc", "cancel")}
+	case fl.picking:
+		parts = []string{seg("j/k", "choose"), seg("↵", "apply"), seg("Esc", "cancel")}
+	case !m.paneFocused && !m.sidebarHidden:
+		parts = []string{seg("j/k", "move"), seg("↵", "open"), seg("/", "search"), seg("^S", "save"), seg("Esc", "close"), seg("?", "help")}
+	default:
+		parts = []string{seg("j/k", "move")}
+		if row := fl.CursorRow(); row != nil {
+			switch row.kind {
+			case kindToggle:
+				parts = append(parts, seg("Space", "toggle"))
+			case kindScalar:
+				if row.setStr != nil {
+					parts = append(parts, seg("↵", "edit"))
+				}
+				if row.masked {
+					parts = append(parts, seg("d", "clear"))
+				}
+			case kindEnum:
+				parts = append(parts, seg("←/→", "cycle"), seg("↵", "pick"))
+			case kindDrill:
+				parts = append(parts, seg("↵", "open"))
+				if row.del != nil {
+					parts = append(parts, seg("d", "delete"))
+				}
+			}
+		}
+		if fl.onAdd != nil {
+			parts = append(parts, seg("a", "add"))
+		}
+		if m.sidebarHidden && m.activePane().atRoot() {
+			parts = append(parts, seg("h/l", "section"))
+		} else if !m.sidebarHidden {
+			parts = append(parts, seg("h", "sidebar"))
+		}
+		parts = append(parts, seg("/", "search"), seg("^S", "save"), seg("?", "help"))
+	}
+	if m.dirty() {
+		parts = append([]string{warnStyle.Render("● unsaved")}, parts...)
+	}
+	return ansi.Cut(" "+strings.Join(parts, " "), 0, max(fw, 1))
 }
 
 func (m Model) FocusedFieldTitle() string {
-	if m.paneFocused {
-		if t := m.activePane().FocusedFieldTitle(); t != "" {
-			return t
+	if m.paneFocused || m.sidebarHidden {
+		if row := m.activePane().top().list.CursorRow(); row != nil {
+			return row.title
 		}
 	}
-	return m.sections[m.cursor].title
+	return m.activeSectionTitle()
 }
 
-func (m Model) Footer() string { return m.footer }
+func (m Model) Footer() string { return m.footerMsg }
 
 // BoolValue returns the current value of a named boolean settings field,
 // read straight from the working copy. Convenience for tests and the parent

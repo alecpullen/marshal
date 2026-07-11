@@ -153,7 +153,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 					return nil
 				}
 				fl.Refresh()
-				fl.cursor = len(fl.rows) - 1
+				fl.cursor = fl.findAddedRow("")
 				return nil
 			}
 			fl.adding = true
@@ -266,12 +266,14 @@ func (fl *fieldList) updatePick(k tea.KeyPressMsg) {
 func (fl *fieldList) updateAdd(k tea.KeyPressMsg) tea.Cmd {
 	switch k.String() {
 	case "enter":
-		if err := fl.onAdd(strings.TrimSpace(fl.keyInput.Value())); err != nil {
+		newKey := strings.TrimSpace(fl.keyInput.Value())
+		if err := fl.onAdd(newKey); err != nil {
 			fl.errMsg = err.Error()
 			return nil
 		}
 		fl.CancelEdit()
 		fl.Refresh()
+		fl.cursor = fl.findAddedRow(newKey)
 		return nil
 	case "esc":
 		fl.CancelEdit()
@@ -280,6 +282,30 @@ func (fl *fieldList) updateAdd(k tea.KeyPressMsg) tea.Cmd {
 	var cmd tea.Cmd
 	fl.keyInput, cmd = fl.keyInput.Update(k)
 	return cmd
+}
+
+// findAddedRow returns the index of the row whose id ends with "."+newKey,
+// or whose title equals newKey (listDrill case). If newKey is empty or no
+// match is found, it falls back to the last row index.
+func (fl *fieldList) findAddedRow(newKey string) int {
+	if newKey != "" {
+		suffix := "." + newKey
+		for i, row := range fl.rows {
+			if strings.HasSuffix(row.id, suffix) {
+				return i
+			}
+		}
+		// No id match: try title match (listDrill uses numeric ids).
+		for i, row := range fl.rows {
+			if row.title == newKey {
+				return i
+			}
+		}
+	}
+	if len(fl.rows) == 0 {
+		return 0
+	}
+	return len(fl.rows) - 1
 }
 
 func indexOf(ss []string, s string) int {

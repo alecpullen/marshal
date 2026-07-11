@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
@@ -193,6 +194,33 @@ func TestHelpViewAdaptsWhenSidebarHidden(t *testing.T) {
 	}
 	if strings.Contains(view, "back to sidebar") {
 		t.Fatalf("hidden-sidebar help should not mention a sidebar that is hidden:\n%s", view)
+	}
+}
+
+func TestPaneFocusedLeftMovesPreviousSectionWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.cursor = 2
+	m.paneFocused = true
+	m = keyPress(m, "left")
+	if m.cursor != 1 {
+		t.Fatalf("left in pane-focused hidden-sidebar mode should move to previous section, got %d", m.cursor)
+	}
+	if !m.paneFocused {
+		t.Fatal("left in pane-focused hidden-sidebar mode should keep pane focus")
+	}
+}
+
+func TestPendingCancelFooterStaysBoundedWhenSidebarHidden(t *testing.T) {
+	m := New(newTestConfig(), "/tmp", "/tmp/.marshal/config.toml")
+	m.SetSize(50, 40)
+	m.pendingCancel = true
+	view := stripANSI(m.View())
+	lines := strings.Split(view, "\n")
+	for _, line := range lines {
+		if w := ansi.StringWidth(line); w > m.width {
+			t.Fatalf("line width = %d exceeds terminal width %d: %q", w, m.width, line)
+		}
 	}
 }
 

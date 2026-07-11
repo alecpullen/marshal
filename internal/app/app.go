@@ -248,11 +248,11 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 	}
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -267,7 +267,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -275,23 +275,46 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		NetworkIsolation: caps.NetworkIsolation,
 	})
 
+	// Milestone Q: construct the JobManager from the sandboxed command
+	// runner so background jobs honour the configured sandbox backend,
+	// output limit, and concurrency limits.
+	jobManager := native.NewJobManager(
+		ctx,
+		commandRunner,
+		state.WorkingDir,
+		cfg.Tools.Shell.MaxBackgroundJobs,
+		cfg.Tools.Shell.BackgroundRetention,
+		cfg.Tools.Shell.MaxOutputBytes,
+	)
+	var jmErr error
+	defer func() {
+		if jmErr != nil {
+			sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			jobManager.Shutdown(sc)
+		}
+	}()
+
 	var fileTracker native.FileTracker
 	if database != nil {
 		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
 	}
 
 	if err := native.RegisterAll(reg, native.Options{
-		WorkspaceRoot: state.WorkingDir,
-		CommandRunner: commandRunner,
-		TestCommand:   cfg.Commands.Test,
-		SessionState:  state,
-		DB:            database,
-		ProjectID:     projectID,
-		FileTracker:   fileTracker,
-		Config:        cfg,
-		JobBroker:     jobBroker,
+		WorkspaceRoot:  state.WorkingDir,
+		CommandRunner:  commandRunner,
+		TestCommand:    cfg.Commands.Test,
+		MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
+		SessionState:   state,
+		DB:             database,
+		ProjectID:      projectID,
+		FileTracker:    fileTracker,
+		Config:         cfg,
+		JobManager:     jobManager,
+		JobBroker:      jobBroker,
 	}); err != nil {
-		return nil, nil, nil, nil, nil, err
+		jmErr = err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -300,11 +323,13 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if len(cfg.MCP.Servers) > 0 {
 		mcpMgr = mcp.NewManager(&cfg)
 		if err := mcpMgr.Start(ctx); err != nil {
-			return nil, nil, nil, nil, nil, err
+			jmErr = err
+			return nil, nil, nil, nil, nil, nil, err
 		}
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			mcpMgr.Close()
-			return nil, nil, nil, nil, nil, err
+			jmErr = err
+			return nil, nil, nil, nil, nil, nil, err
 		}
 	}
 
@@ -315,7 +340,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		state,
 		2,
 	)); err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		jmErr = err
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.SkillIndex = skillIndex
@@ -378,7 +404,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		}
 	}
 	swarmRunner := buildSwarmRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, nil
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, nil
 }
 
 // buildSwarmRunner wires the Milestone O swarm: every role runner shares
@@ -561,13 +587,10 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	runner := rt.Runner
 	swarmRunner := rt.SwarmRunner
 	toolReg := rt.ToolRegistry
-	mcpMgr := rt.MCPManager
 	jobBroker := rt.JobBroker
 	steeringBroker := rt.SteeringBroker
 	state := rt.State
 	logger := rt.Logger
-	dataDir := rt.DataDir
-	skillIndex := rt.SkillIndex
 
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
@@ -591,7 +614,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(jobBrokerCtx, steeringBroker))
 		configReloader := func(newCfg config.Config) error {
 			state.Config = newCfg
-			return reloadAgentRuntime(ctx, newCfg, state, database, projectID, skillIndex, dataDir, runner, swarmRunner, &mcpMgr, jobBroker, jobBrokerCtx)
+			return reloadAgentRuntime(ctx, newCfg, rt)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	}
@@ -630,27 +653,44 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	return progErr
 }
 
-func reloadAgentRuntime(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, runner *agent.Runner, swarmRunner *swarm.Orchestrator, activeMCP **mcp.Manager, jobBroker *pubsub.Broker[native.JobEvent], jobBrokerCtx context.Context) error {
-	if runner == nil {
+func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {
+	if rt.Runner == nil {
 		return nil
 	}
-	newRunner, _, newSwarmRunner, newMCP, newSnapSvc, err := buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, rt.DB, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.JobBroker)
 	if err != nil {
 		return err
 	}
-	if activeMCP != nil && *activeMCP != nil {
-		_ = (*activeMCP).Close()
+
+	// Capture old values for cleanup under the pointer mutex.
+	rt.mu.Lock()
+	oldMCP := rt.MCPManager
+	oldJobMgr := rt.JobManager
+	oldSnap := rt.Snapshot
+
+	// Copy in-place fields.
+	rt.Runner.CopyFrom(newRunner)
+	if rt.SwarmRunner != nil && newSwarmRunner != nil {
+		*rt.SwarmRunner = *newSwarmRunner
 	}
-	runner.CopyFrom(newRunner)
-	if swarmRunner != nil && newSwarmRunner != nil {
-		*swarmRunner = *newSwarmRunner
+
+	// Swap reload-owned pointers.
+	rt.ToolRegistry = newReg
+	rt.MCPManager = newMCP
+	rt.Snapshot = newSnap
+	rt.JobManager = newJobMgr
+	rt.mu.Unlock()
+
+	// Cleanup old resources outside the lock.
+	if oldMCP != nil {
+		_ = oldMCP.Close()
 	}
-	if activeMCP != nil {
-		*activeMCP = newMCP
-	} else if newMCP != nil {
-		_ = newMCP.Close()
+	if oldJobMgr != nil {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = oldJobMgr.Shutdown(sc)
 	}
-	_ = newSnapSvc
+	_ = oldSnap
 	return nil
 }
 

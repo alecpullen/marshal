@@ -2075,6 +2075,87 @@ func TestSlashCompletionAcceptsPlan(t *testing.T) {
 	}
 }
 
+// Regression: each KeyPressMsg in Bubble Tea v2 is paired with a
+// KeyReleaseMsg. Letting the release event fall through the outer
+// switch hit the default path that calls updateCompletionPopups, which
+// resets the popup's index to 0 — so the user could only "scroll" one
+// entry before the selector snapped back to the top.
+func TestArrowKeysSurviveKeyReleaseEvent(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"} {
+		mustRegister(t, reg, commands.Command{
+			Name:    name,
+			Handler: func(s *session.State, args []string) string { return "" },
+		})
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "/"})
+	m = updated.(Model)
+	if !m.cmdPopup.isVisible() {
+		t.Fatal("popup not visible after /")
+	}
+	for i := 1; i <= 5; i++ {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		m = updated.(Model)
+		updated, _ = m.Update(tea.KeyReleaseMsg{Code: tea.KeyDown})
+		m = updated.(Model)
+		if m.cmdPopup.index != i {
+			t.Fatalf("after down #%d: index = %d, want %d (KeyReleaseMsg reset the popup)", i, m.cmdPopup.index, i)
+		}
+	}
+}
+
+// Regression: in the default Update path, updateCompletionPopups() was
+// called for every non-handled event (mouse, spinner tick, paste echo,
+// etc.) and always reset the popup index to 0. The fix is to make
+// updateCompletionPopups idempotent — skip when the input value hasn't
+// actually changed.
+func TestCompletionPopupSurvivesNonKeyEvents(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"} {
+		mustRegister(t, reg, commands.Command{
+			Name:    name,
+			Handler: func(s *session.State, args []string) string { return "" },
+		})
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "/"})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated.(Model)
+	if m.cmdPopup.index != 3 {
+		t.Fatalf("after 3 downs: index = %d, want 3", m.cmdPopup.index)
+	}
+
+	// Now drive a barrage of non-key events. None should change the
+	// input value, and so none should touch the popup.
+	for i := 0; i < 5; i++ {
+		updated, _ = m.Update(spinnerTickMsg{})
+		m = updated.(Model)
+		updated, _ = m.Update(agentTickMsg{})
+		m = updated.(Model)
+		updated, _ = m.Update(tea.KeyReleaseMsg{Code: tea.KeyDown})
+		m = updated.(Model)
+		updated, _ = m.Update(tea.MouseWheelMsg{X: 0, Y: -1})
+		m = updated.(Model)
+		if m.cmdPopup.index != 3 {
+			t.Fatalf("non-key event reset popup: index = %d, want 3", m.cmdPopup.index)
+		}
+	}
+}
+
 // F18: @file completion popup is triggered by "@" at a word start and
 // accepting a suggestion replaces the trigger token with the matched
 // @file path. Requires a model with a seeded file index — see

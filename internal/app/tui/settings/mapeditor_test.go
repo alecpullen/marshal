@@ -39,7 +39,7 @@ func meKey(m meKeyTarget, keys ...string) {
 
 func TestMapEditorAdd(t *testing.T) {
 	v := map[string]string{}
-	m := newMapEditor("Commands", &v)
+	m := newMapStringEditor("Commands", &v)
 	m.Focus(true)
 	meKey(m, "a", "g", "o", "enter", "g", "o", " ", "v", "e", "t", "enter")
 	if v["go"] != "go vet" {
@@ -49,7 +49,7 @@ func TestMapEditorAdd(t *testing.T) {
 
 func TestMapEditorEditValue(t *testing.T) {
 	v := map[string]string{"go": "go vet ./..."}
-	m := newMapEditor("Commands", &v)
+	m := newMapStringEditor("Commands", &v)
 	m.Focus(true)
 	meKey(m, "enter", "g", "o", " ", "b", "u", "i", "l", "d", "enter")
 	if v["go"] != "go build" {
@@ -59,7 +59,7 @@ func TestMapEditorEditValue(t *testing.T) {
 
 func TestMapEditorDelete(t *testing.T) {
 	v := map[string]string{"go": "x", "py": "y"}
-	m := newMapEditor("Commands", &v)
+	m := newMapStringEditor("Commands", &v)
 	m.Focus(true)
 	meKey(m, "d")
 	if _, ok := v["go"]; ok {

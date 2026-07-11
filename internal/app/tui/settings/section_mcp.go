@@ -37,7 +37,7 @@ func newMCPServerEditPane(local *config.MCPServerConfig) *mcpServerEditPane {
 		)
 	})
 	args := newListStrings("Args", &local.Args)
-	env := newMapEditor("Env", &local.Env)
+	env := newMapStringEditor("Env", &local.Env)
 	return &mcpServerEditPane{
 		inner: newMixedPane(form, args, env),
 		local: local,
@@ -100,6 +100,6 @@ func newMCPPane(s *state) sectionPane {
 		delete: func(s *state, key string) { delete(s.cfg.MCP.Servers, key) },
 	}
 	collection := newCollectionPane(s, serversSpec)
-	policies := newMapEditor("Policies", &s.cfg.MCP.Policies)
+	policies := newMapStringEditor("Policies", &s.cfg.MCP.Policies)
 	return newCompositePane(form, collection, policies)
 }

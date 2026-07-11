@@ -20,7 +20,7 @@ func TestCompositePaneFocusCycles(t *testing.T) {
 		entries:   func(s *state) []collectionEntry { return nil },
 		add:       func(s *state, key string) error { return nil },
 	})
-	me := newMapEditor("M", &st.cfg.Diagnostics.Commands)
+	me := newMapStringEditor("M", &st.cfg.Diagnostics.Commands)
 	cp := newCompositePane(form, col, me)
 	cp.SetWidth(60)
 	cp.Update(tea.KeyPressMsg{Code: tea.KeyTab})

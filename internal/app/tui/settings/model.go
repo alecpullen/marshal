@@ -149,7 +149,8 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return *m, nil
 	}
 	if m.overlay == overlaySearch {
-		return *m, m.updateSearch(k)
+		cmd := m.updateSearch(k)
+		return *m, cmd
 	}
 	if m.overlay == overlayPicker {
 		if m.pickerModel == nil {
@@ -316,7 +317,8 @@ func (m *Model) updateDiffOverlay(k tea.KeyPressMsg) (Model, tea.Cmd) {
 			return *m, nil
 		}
 		m.overlay = overlayNone
-		return *m, m.saveCmd()
+		cmd := m.saveCmd()
+		return *m, cmd
 	}
 	return *m, nil
 }

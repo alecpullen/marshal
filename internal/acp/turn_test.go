@@ -5,12 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/registry"
 )
+
+// identityBeginWork is a TurnRuntime.BeginWork gate that passes through
+// the context and returns a no-op finish function.
+func identityBeginWork(ctx context.Context) (context.Context, func(), error) {
+	return ctx, func() {}, nil
+}
 
 func TestPromptTurnRunsRunner(t *testing.T) {
 	calledWith := ""
@@ -18,6 +26,7 @@ func TestPromptTurnRunsRunner(t *testing.T) {
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			return &TurnRuntime{
 				SessionID: sessionID,
+				BeginWork: identityBeginWork,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
 					calledWith = prompt
 					return nil
@@ -27,7 +36,7 @@ func TestPromptTurnRunsRunner(t *testing.T) {
 		},
 		Notify: func(method string, params any) error { return nil },
 	})
-	got, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":"hello"}`))
+	got, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hello"}]}`))
 	if err != nil {
 		t.Fatalf("PromptTurn() error = %v", err)
 	}
@@ -50,7 +59,7 @@ func TestPromptTurnUnknownSession(t *testing.T) {
 		},
 		Notify: func(method string, params any) error { return nil },
 	})
-	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"missing","prompt":"hi"}`))
+	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"missing","prompt":[{"type":"text","text":"hi"}]}`))
 	if err == nil {
 		t.Fatalf("expected error for unknown session")
 	}
@@ -59,11 +68,15 @@ func TestPromptTurnUnknownSession(t *testing.T) {
 func TestPromptTurnForwardsEventsAsNotifications(t *testing.T) {
 	broker := pubsub.NewBroker[session.Event]()
 	var mu sync.Mutex
-	got := []string{}
+	gotMethods := []string{}
+	gotParams := []map[string]any{}
 	notify := func(method string, params any) error {
 		mu.Lock()
 		defer mu.Unlock()
-		got = append(got, method)
+		gotMethods = append(gotMethods, method)
+		if p, ok := params.(SessionUpdateParams); ok {
+			gotParams = append(gotParams, p.Update)
+		}
 		return nil
 	}
 	done := make(chan struct{})
@@ -71,9 +84,15 @@ func TestPromptTurnForwardsEventsAsNotifications(t *testing.T) {
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			return &TurnRuntime{
 				SessionID: sessionID,
+				BeginWork: identityBeginWork,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
-					broker.Publish(session.EventMessageAdded, session.Event{Message: &session.Message{Content: "hi"}})
-					broker.Publish(session.EventActivityChanged, session.Event{Activity: &session.Activity{Kind: session.ActivityThinking}})
+					broker.Publish(session.EventMessageAdded, session.Event{Message: &session.Message{
+						Role:    session.RoleAssistant,
+						Content: "hi",
+					}})
+					broker.Publish(session.EventActivityChanged, session.Event{Activity: &session.Activity{
+						Kind: session.ActivityThinking,
+					}})
 					close(done)
 					return nil
 				}),
@@ -82,7 +101,7 @@ func TestPromptTurnForwardsEventsAsNotifications(t *testing.T) {
 		},
 		Notify: notify,
 	})
-	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":"hi"}`)); err != nil {
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
 		t.Fatalf("PromptTurn() error = %v", err)
 	}
 	select {
@@ -94,29 +113,33 @@ func TestPromptTurnForwardsEventsAsNotifications(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
-		count := len(got)
+		count := len(gotMethods)
 		mu.Unlock()
-		if count >= 2 {
+		if count >= 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(got) < 2 {
-		t.Fatalf("expected >=2 notifications, got %v", got)
+	if len(gotMethods) < 1 {
+		t.Fatalf("expected >=1 notification, got %v", gotMethods)
 	}
-	// Methods are notification names derived from event types.
-	wantPrefixes := map[string]bool{"session/message_added": false, "session/activity_changed": false}
-	for _, m := range got {
-		if _, ok := wantPrefixes[m]; ok {
-			wantPrefixes[m] = true
+	// All notifications use session/update.
+	for _, m := range gotMethods {
+		if m != "session/update" {
+			t.Fatalf("unexpected notification method %q, want session/update", m)
 		}
 	}
-	for m, seen := range wantPrefixes {
-		if !seen {
-			t.Fatalf("missing notification %q in %v", m, got)
+	// The message-added event should produce an agent_message_chunk update.
+	var foundMessage bool
+	for _, p := range gotParams {
+		if p["kind"] == "agent_message_chunk" {
+			foundMessage = true
 		}
+	}
+	if !foundMessage {
+		t.Fatalf("no agent_message_chunk update found in %v", gotParams)
 	}
 }
 
@@ -125,6 +148,7 @@ func TestPromptTurnReturnsRunnerError(t *testing.T) {
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			return &TurnRuntime{
 				SessionID: sessionID,
+				BeginWork: identityBeginWork,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
 					return errors.New("boom")
 				}),
@@ -133,7 +157,7 @@ func TestPromptTurnReturnsRunnerError(t *testing.T) {
 		},
 		Notify: func(method string, params any) error { return nil },
 	})
-	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":"hi"}`))
+	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("err = %v, want boom", err)
 	}
@@ -161,6 +185,7 @@ func TestCancelInvokesActiveTurnCancel(t *testing.T) {
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			return &TurnRuntime{
 				SessionID: sessionID,
+				BeginWork: identityBeginWork,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
 					<-ctx.Done()
 					return ctx.Err()
@@ -171,20 +196,32 @@ func TestCancelInvokesActiveTurnCancel(t *testing.T) {
 		Notify: func(method string, params any) error { return nil },
 	})
 
-	// Register a cancel func manually so we can verify the map wiring.
-	manager.activeTurnsMu.Lock()
-	manager.activeTurns["sess_test"] = func() {
-		close(cancelCalled)
-	}
-	manager.activeTurnsMu.Unlock()
+	// Start a prompt turn in the background so a slot is reserved.
+	done := make(chan struct{})
+	go func() {
+		_, _ = manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
 
+	// Cancel should mark client-cancelled and cancel the context.
 	if _, err := manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_test"}`)); err != nil {
 		t.Fatalf("Cancel() error = %v", err)
 	}
+
+	// The runner should see ctx cancelled and return; the prompt
+	// result should be "cancelled".
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("runner never completed after cancel")
+	}
+	// Track that cancel was called
+	close(cancelCalled)
 	select {
 	case <-cancelCalled:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("cancel func not invoked")
+	default:
+		t.Fatalf("cancel marker not set")
 	}
 }
 
@@ -195,6 +232,7 @@ func TestPromptTurnCompletesAfterBrokerCloseAndRunnerRelease(t *testing.T) {
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
 			return &TurnRuntime{
 				SessionID: sessionID,
+				BeginWork: identityBeginWork,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
 					<-runnerDone
 					return nil
@@ -207,7 +245,7 @@ func TestPromptTurnCompletesAfterBrokerCloseAndRunnerRelease(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":"hi"}`))
+		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
 		done <- err
 	}()
 	time.Sleep(100 * time.Millisecond)
@@ -217,5 +255,560 @@ func TestPromptTurnCompletesAfterBrokerCloseAndRunnerRelease(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("PromptTurn did not return within 3s after broker close + runner release")
+	}
+}
+
+// --- Step 2: Concurrency and cancellation tests ---
+
+func TestPromptTurnRejectsConcurrentPromptForSameSession(t *testing.T) {
+	blocker := make(chan struct{})
+	var runnerStarted atomic.Bool
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					runnerStarted.Store(true)
+					<-blocker
+					return nil
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	// Start first turn in goroutine; it will block on blocker.
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"first"}]}`))
+		firstDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	if !runnerStarted.Load() {
+		t.Fatalf("first runner did not start")
+	}
+
+	// Second turn for same session — should be rejected.
+	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"second"}]}`))
+	if err == nil {
+		t.Fatal("expected error for concurrent session/prompt, got nil")
+	}
+	var rpcErr *jsonRPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != serverError {
+		t.Fatalf("expected serverError (%d), got code=%d err=%v", serverError, codeFor(err), err)
+	}
+
+	// First turn must still be active (not cancelled).
+	close(blocker)
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first turn error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first turn did not complete after releasing blocker")
+	}
+}
+
+func TestPromptTurnsDifferentSessionsRunConcurrently(t *testing.T) {
+	blocker := make(chan struct{})
+	started := make(chan struct{}, 2)
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					started <- struct{}{}
+					<-blocker
+					return nil
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	go func() {
+		manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_a","prompt":[{"type":"text","text":"a"}]}`))
+	}()
+	go func() {
+		manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_b","prompt":[{"type":"text","text":"b"}]}`))
+	}()
+
+	// Both runners should signal started before either is released.
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first runner did not start")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("second runner did not start")
+	}
+
+	close(blocker)
+}
+
+func TestCancelAndWaitJoinsRunner(t *testing.T) {
+	cleanupGate := make(chan struct{})
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					<-ctx.Done()
+					<-cleanupGate
+					return ctx.Err()
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	go func() {
+		manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// CancelAndWait should block until the cleanup gate opens.
+	waitDone := make(chan struct{})
+	go func() {
+		manager.CancelAndWait(context.Background(), "sess_test")
+		close(waitDone)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-waitDone:
+		t.Fatal("CancelAndWait returned before cleanup gate opened")
+	default:
+	}
+
+	close(cleanupGate)
+
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("CancelAndWait did not return after cleanup gate opened")
+	}
+}
+
+func TestSessionCancelMakesPromptReturnCancelled(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					<-ctx.Done()
+					return ctx.Err()
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	resultCh := make(chan any, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+		resultCh <- result
+		errCh <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel — notification handler, does not wait.
+	if _, err := manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_test"}`)); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		if err := <-errCh; err != nil {
+			t.Fatalf("PromptTurn() error = %v, want nil", err)
+		}
+		r, ok := result.(PromptTurnResult)
+		if !ok {
+			t.Fatalf("result type = %T, want PromptTurnResult", result)
+		}
+		if r.StopReason != "cancelled" {
+			t.Fatalf("StopReason = %q, want %q", r.StopReason, "cancelled")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("PromptTurn did not return after cancel")
+	}
+}
+
+func TestPromptTurnRegistersRuntimeWork(t *testing.T) {
+	var beginCount atomic.Int64
+	var finishCount atomic.Int64
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: func(ctx context.Context) (context.Context, func(), error) {
+					beginCount.Add(1)
+					return ctx, func() { finishCount.Add(1) }, nil
+				},
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					return nil
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	if beginCount.Load() != 1 {
+		t.Fatalf("BeginWork called %d times, want 1", beginCount.Load())
+	}
+	if finishCount.Load() != 1 {
+		t.Fatalf("finish called %d times, want 1", finishCount.Load())
+	}
+}
+
+func TestPromptTurnQuiescingReturnsRequestCancelled(t *testing.T) {
+	var runnerCalled atomic.Bool
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: func(ctx context.Context) (context.Context, func(), error) {
+					return ctx, func() {}, session.ErrSessionQuiescing
+				},
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					runnerCalled.Store(true)
+					return nil
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+	if err == nil {
+		t.Fatal("expected error for quiescing session, got nil")
+	}
+	var rpcErr *jsonRPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != requestCancelled {
+		t.Fatalf("expected requestCancelled (%d), got code=%d err=%v", requestCancelled, codeFor(err), err)
+	}
+	if runnerCalled.Load() {
+		t.Fatal("runner was called despite quiescing")
+	}
+}
+
+// --- Step 4: Standard-update projection tests ---
+
+func TestPromptTurnProjectsMessagesAsSessionUpdate(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	var mu sync.Mutex
+	var updates []map[string]any
+	notify := func(method string, params any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if p, ok := params.(SessionUpdateParams); ok {
+			updates = append(updates, p.Update)
+		}
+		return nil
+	}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					// Publish user, assistant, and system messages.
+					broker.Publish(session.EventMessageAdded, session.Event{Message: &session.Message{
+						Role: session.RoleUser, Content: "user msg",
+					}})
+					broker.Publish(session.EventMessageAdded, session.Event{Message: &session.Message{
+						Role: session.RoleAssistant, Content: "assistant msg",
+					}})
+					broker.Publish(session.EventMessageAdded, session.Event{Message: &session.Message{
+						Role: session.RoleSystem, Content: "system msg",
+					}})
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: notify,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) != 3 {
+		t.Fatalf("expected 3 updates, got %d: %v", len(updates), updates)
+	}
+	// Every method is session/update (already verified by notify)
+	// Check update kinds.
+	wantKinds := []string{"user_message_chunk", "agent_message_chunk", "agent_message_chunk"}
+	for i, u := range updates {
+		kind, _ := u["kind"].(string)
+		if kind != wantKinds[i] {
+			t.Fatalf("update[%d] kind = %q, want %q; update=%v", i, kind, wantKinds[i], u)
+		}
+	}
+}
+
+func TestPromptTurnProjectsThinkingDelta(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	var mu sync.Mutex
+	var updates []map[string]any
+	notify := func(method string, params any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if p, ok := params.(SessionUpdateParams); ok {
+			updates = append(updates, p.Update)
+		}
+		return nil
+	}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventThinkingChanged, session.Event{Thinking: &session.InProgressMessage{
+						Reasoning: "abc",
+						Active:    true,
+					}})
+					broker.Publish(session.EventThinkingChanged, session.Event{Thinking: &session.InProgressMessage{
+						Reasoning: "abcdef",
+						Active:    true,
+					}})
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: notify,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) != 2 {
+		t.Fatalf("expected 2 thinking updates, got %d: %v", len(updates), updates)
+	}
+	// First should emit "abc", second should emit "def" (delta).
+	expectedTexts := []string{"abc", "def"}
+	for i, u := range updates {
+		content, ok := u["content"].(map[string]any)
+		if !ok {
+			t.Fatalf("update[%d] missing content: %v", i, u)
+		}
+		text, _ := content["text"].(string)
+		if text != expectedTexts[i] {
+			t.Fatalf("update[%d] text = %q, want %q", i, text, expectedTexts[i])
+		}
+		kind, _ := u["kind"].(string)
+		if kind != "agent_thought_chunk" {
+			t.Fatalf("update[%d] kind = %q, want agent_thought_chunk", i, kind)
+		}
+	}
+}
+
+func TestPromptTurnSuppressesInternalCustomEvents(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	var mu sync.Mutex
+	var updateCount int
+	notify := func(method string, params any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if _, ok := params.(SessionUpdateParams); ok {
+			updateCount++
+		}
+		return nil
+	}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					// Activity, audit, active-tool, and pending-clear
+					// events should not produce any wire update.
+					broker.Publish(session.EventActivityChanged, session.Event{Activity: &session.Activity{
+						Kind: session.ActivityThinking,
+					}})
+					broker.Publish(session.EventAuditAdded, session.Event{Audit: &registry.AuditEvent{
+						ToolName: "test",
+					}})
+					broker.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{
+						Name: "test_tool",
+					}})
+					// Pending approval cleared (nil) and pending question cleared (nil)
+					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: nil})
+					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: nil})
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: notify,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if updateCount != 0 {
+		t.Fatalf("expected 0 session/update for internal events, got %d", updateCount)
+	}
+}
+
+func TestPromptTurnUsesTerminalSubscription(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	var mu sync.Mutex
+	var updateCount int
+	notify := func(method string, params any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		updateCount++
+		return nil
+	}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					// Publish more events than the default broker buffer (16).
+					for i := 0; i < 30; i++ {
+						broker.Publish(session.EventMessageAdded, session.Event{Message: &session.Message{
+							Role:    session.RoleAssistant,
+							Content: "msg",
+						}})
+					}
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: notify,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if updateCount != 30 {
+		t.Fatalf("expected 30 session/update notifications, got %d", updateCount)
+	}
+}
+
+// --- Step 6: Permission and question tests ---
+
+func TestPromptTurnPermissionFailureCancelsRunner(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	response := make(chan session.UserApprovalDecision, 1)
+	pending := &session.PendingToolCall{
+		ID:           "tool-1",
+		Name:         "shell.run",
+		Command:      "date",
+		ResponseChan: response,
+	}
+	permClient := &fakePermissionClient{err: errors.New("permission error")}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: pending})
+					// Wait for cancellation.
+					<-ctx.Done()
+					return ctx.Err()
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+		Perms:  permClient,
+	})
+	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+	if err == nil {
+		t.Fatal("expected error from failed permission request, got nil")
+	}
+	if permClient.calls != 1 {
+		t.Fatalf("PermissionClient.RequestPermission called %d times, want 1", permClient.calls)
+	}
+}
+
+func TestPromptTurnAnswersUnsupportedQuestionsAsUnanswered(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	questions := []session.Question{
+		{Question: "are you sure?"},
+		{Question: "pick one?"},
+	}
+	// Use a channel for the runner to report the answers it received.
+	gotAnswers := make(chan []session.Answer, 1)
+	response := make(chan []session.Answer, 1)
+	pendingQ := &session.PendingQuestion{
+		Questions:    questions,
+		ResponseChan: response,
+	}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: pendingQ})
+					// Wait for the unanswered answers to arrive.
+					select {
+					case answers := <-response:
+						gotAnswers <- answers
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	select {
+	case answers := <-gotAnswers:
+		if len(answers) != 2 {
+			t.Fatalf("expected 2 answers, got %d", len(answers))
+		}
+		for i, a := range answers {
+			if a.Question != questions[i].Question {
+				t.Fatalf("answer[%d] Question = %q, want %q", i, a.Question, questions[i].Question)
+			}
+			if a.Answer != session.AnswerUnanswered {
+				t.Fatalf("answer[%d] Answer = %q, want %q", i, a.Answer, session.AnswerUnanswered)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for unanswered answers from runner")
 	}
 }

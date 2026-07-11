@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,6 +50,10 @@ const (
 	minTerminalHeight = 24
 
 	doneDisplayDuration = 2 * time.Second
+
+	// settingsBusyMessage is the footer text shown in the settings overlay
+	// when the user tries to save while a turn or background jobs are running.
+	settingsBusyMessage = "Stop the active turn and background jobs before applying settings."
 )
 
 type Model struct {
@@ -394,12 +399,11 @@ func (m *Model) resize(width, height int) {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Ctrl+C always quits, even while a settings/memory overlay or huh form
-	// is open. Check it before any overlay routing so it can never be
-	// captured by a form's keymap.
+	// Ctrl+C cancels the in-flight turn, resolves pending state, and quits.
+	// Check it before any overlay routing so it can never be captured by a
+	// form's keymap.
 	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+c" {
-		m.state.Shutdown()
-		return m, tea.Quit
+		return m, m.beginShutdown()
 	}
 
 	// WindowSizeMsg must always resize the underlying layout (and the
@@ -439,6 +443,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case memory.ClosedMsg:
 		m.memoryOpen = false
 		return m, nil
+	}
+
+	// Runtime messages must still reach the parent model when an overlay
+	// is open, so parent state (busy, job count, steering, activity) stays
+	// current and the settings block reason updates.
+	switch msg.(type) {
+	case agentFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg:
+		return m.handleRuntimeMessage(msg)
 	}
 
 	// When the settings overlay is open, route every remaining message to
@@ -540,7 +552,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentFinishedMsg:
 		m.busy = false
 		m.agentCancel = nil
-		if msg.err != nil {
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 			m.state.SetProviderError(msg.err)
 		}
 		m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
@@ -550,9 +562,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.updateViewportHeight()
 		m.refreshViewport()
+		m.syncSettingsSaveBlock()
 		return m, nil
 	case jobCountMsg:
 		m.jobCount = msg.count
+		m.syncSettingsSaveBlock()
 		// Re-arm the pump: exactly one in-flight subscription at a time
 		// (F19 R2). Return nil if no broker is wired so the cmd chain
 		// terminates (this should not happen when the pump is sourced
@@ -630,6 +644,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
 			m.settingsModel.SetSize(m.width, m.height)
 			m.settingsOpen = true
+			m.syncSettingsSaveBlock()
 			return m, nil
 		case "ctrl+k":
 			if m.memoryDB == nil {
@@ -1330,6 +1345,112 @@ func (m *Model) cancelTurn() bool {
 	return true
 }
 
+// beginShutdown cancels the in-flight turn, clears pending state, and
+// returns tea.Quit. Used by Ctrl+C, /quit, and /exit.
+func (m *Model) beginShutdown() tea.Cmd {
+	if m.agentCancel != nil {
+		m.agentCancel()
+		m.agentCancel = nil
+	}
+	m.queuedCount = 0
+	m.state.ResolvePendingForShutdown()
+	m.state.Shutdown()
+	return tea.Quit
+}
+
+// settingsBlockReason returns settingsBusyMessage when the model is busy
+// or there are background jobs running, otherwise empty. Used to populate
+// the settings model's saveBlocked field.
+func (m Model) settingsBlockReason() string {
+	if m.busy || m.state.RunningJobsCount() > 0 {
+		return settingsBusyMessage
+	}
+	return ""
+}
+
+// syncSettingsSaveBlock pushes the current block reason to the settings
+// model whenever settings is open. Called when settings opens and after
+// agentFinishedMsg / jobCountMsg.
+func (m *Model) syncSettingsSaveBlock() {
+	if !m.settingsOpen {
+		return
+	}
+	m.settingsModel.SetSaveBlocked(m.settingsBlockReason())
+}
+
+// SetSaveBlocked is the external API for testing; production code uses
+// syncSettingsSaveBlock.
+func (m *Model) SetSaveBlocked(reason string) {
+	if m.settingsOpen {
+		m.settingsModel.SetSaveBlocked(reason)
+	}
+}
+
+// handleRuntimeMessage processes agent/steering/tick messages so they
+// reach the parent model even when an overlay is open. This keeps
+// parent state (busy, job count, steering, activity) current while the
+// overlay remains visible.
+func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case agentFinishedMsg:
+		m.busy = false
+		m.agentCancel = nil
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+			m.state.SetProviderError(msg.err)
+		}
+		m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
+			m.lastActivityDone = m.now()
+			m.lastActivityKind = session.ActivityIdle
+		}
+		m.updateViewportHeight()
+		m.refreshViewport()
+		m.syncSettingsSaveBlock()
+		return m, nil
+	case jobCountMsg:
+		m.jobCount = msg.count
+		m.syncSettingsSaveBlock()
+		if m.jobEvents == nil {
+			return m, nil
+		}
+		return m, pumpJobEvents(m.jobEvents)
+	case steeringMsg:
+		m.queuedCount = msg.queueLen
+		if m.steeringEvents == nil {
+			m.refreshViewport()
+			return m, nil
+		}
+		m.refreshViewport()
+		return m, pumpSteeringEvents(m.steeringEvents)
+	case agentTickMsg:
+		if !m.busy {
+			return m, nil
+		}
+		act := m.state.Activity()
+		if act.Kind == session.ActivityIdle && m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
+			m.lastActivityDone = m.now()
+		}
+		m.lastActivityKind = act.Kind
+		if act.Kind != session.ActivityIdle && act.Label != "" {
+			m.lastActivityLabel = act.Label
+		}
+		if m.state.PendingQuestion() != nil && m.input.Placeholder != "Type your answer..." {
+			m.input.Placeholder = "Type your answer..."
+		}
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m, tickCmd()
+	case spinnerTickMsg:
+		if !m.busy {
+			return m, nil
+		}
+		m.spinnerFrame = m.spinner.Next()
+		m.refreshViewport()
+		return m, spinnerTickCmd()
+	}
+	return m, nil
+}
+
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(raw)
 	if len(parts) == 0 {
@@ -1381,13 +1502,13 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 
 	switch cmd.Name {
 	case "exit", "quit":
-		m.state.Shutdown()
-		return m, tea.Quit
+		return m, m.beginShutdown()
 
 	case "settings":
 		m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
 		m.settingsModel.SetSize(m.width, m.height)
 		m.settingsOpen = true
+		m.syncSettingsSaveBlock()
 		m.refreshViewport()
 		return m, nil
 

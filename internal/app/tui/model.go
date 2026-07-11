@@ -547,6 +547,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.spinnerFrame = m.spinner.Next()
+		// The spinner tick is at 80ms (smoother than the 150ms layout tick);
+		// the activity strip and the in-progress thinking/tool rows read
+		// m.spinnerFrame via activeSpinnerFrame, so the viewport must
+		// re-render here or the animation stays at the 150ms cadence.
+		m.refreshViewport()
 		return m, spinnerTickCmd()
 	case tea.KeyPressMsg:
 		// Global hotkeys — input is always focused. (Approval and question

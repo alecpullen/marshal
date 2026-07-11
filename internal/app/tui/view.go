@@ -24,7 +24,7 @@ const (
 	inputBorderRows     = 2
 	activityStripRows   = 1
 	transcriptFrameRows = 0
-	footerRows          = 1
+	footerRows          = help.Rows
 	statusLineRows      = 1
 	completionPopupMax  = 8
 )

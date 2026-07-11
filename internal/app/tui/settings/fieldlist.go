@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/picker"
 )
 
 var (
@@ -46,6 +47,12 @@ type fieldList struct {
 
 	// drill request picked up by the owning pane after Update
 	pushRequest *frame
+
+	// picker overlay request picked up by the owning pane after Update
+	pushPicker *pickerRequest
+
+	// add-wizard picker for collection frames (set by frame.addWizard)
+	addWizard func() *pickerRequest
 }
 
 func newFieldList(fields func() []*field) *fieldList {
@@ -145,8 +152,12 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 			fl.cycleEnum(row, k.String() == "right")
 		}
 	case "enter", "e":
-		fl.openRow(row)
+		return fl.openRow(row)
 	case "a":
+		if fl.addWizard != nil {
+			fl.pushPicker = fl.addWizard()
+			return nil
+		}
 		if fl.onAdd != nil {
 			if fl.keyPrompt == "" {
 				if err := fl.onAdd(""); err != nil {
@@ -171,16 +182,16 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (fl *fieldList) openRow(row *field) {
+func (fl *fieldList) openRow(row *field) tea.Cmd {
 	if row == nil {
-		return
+		return nil
 	}
 	switch row.kind {
 	case kindToggle:
 		row.setBool(!row.getBool())
 	case kindScalar:
 		if row.setStr == nil {
-			return // read-only
+			return nil // read-only
 		}
 		fl.editing = true
 		fl.errMsg = ""
@@ -200,7 +211,18 @@ func (fl *fieldList) openRow(row *field) {
 		fl.pickIdx = i
 	case kindDrill:
 		fl.pushRequest = row.build()
+	case kindAction:
+		return row.act()
+	case kindPicker:
+		fl.pushPicker = &pickerRequest{
+			fieldID:     row.id,
+			items:       row.pickOptions(),
+			onPick:      row.pickOnPick,
+			title:       row.title,
+			allowCustom: row.pickAllowCustom,
+		}
 	}
+	return nil
 }
 
 func (fl *fieldList) cycleEnum(row *field, forward bool) {
@@ -357,6 +379,28 @@ func (fl *fieldList) valueCell(row *field, isCursor bool) string {
 		return flValueStyle.Render(row.getStr() + " ▾")
 	case kindDrill:
 		return flValueStyle.Render(row.summary() + " ›")
+	case kindAction:
+		label := "\u21b5 run"
+		if row.actLabel != nil {
+			label = row.actLabel()
+		}
+		if strings.HasPrefix(label, "\u2713") {
+			return flOnStyle.Render(label)
+		}
+		if strings.HasPrefix(label, "\u2717") {
+			return flErrStyle.Render(label)
+		}
+		return flValueStyle.Render(label)
+	case kindPicker:
+		v := row.getStr()
+		if v == "" {
+			v = "\u2014"
+		}
+		suffix := " \u25be"
+		if row.pickPending != nil && row.pickPending() {
+			suffix = " \u2026"
+		}
+		return flValueStyle.Render(v + suffix)
 	}
 	return ""
 }
@@ -421,4 +465,21 @@ func (fl *fieldList) View() string {
 // with ↑/↓ more indicators occupying the first/last row when clipped.
 func clipLines(lines []string, focusLine, height int) string {
 	return chrome.ClipLines(lines, focusLine, height, settingsTheme)
+}
+
+const wizardFieldID = "__wizard__"
+
+type pickerRequest struct {
+	fieldID     string
+	items       []picker.Item
+	onPick      func(string) error
+	title       string
+	footer      string
+	allowCustom bool
+}
+
+func (fl *fieldList) TakePushPicker() *pickerRequest {
+	r := fl.pushPicker
+	fl.pushPicker = nil
+	return r
 }

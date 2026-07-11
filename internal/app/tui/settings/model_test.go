@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -193,5 +194,140 @@ func TestSaveBlockedDoesNotWrite(t *testing.T) {
 	}
 	if string(content) != original {
 		t.Fatalf("file was modified:\nwant: %q\ngot:  %q", original, string(content))
+	}
+}
+
+func TestDrillIntoNewestProviderFindsCreatedProvider(t *testing.T) {
+	// Config with pre-existing providers ("lmstudio" and "ollama").
+	// Adding "groq" creates a provider whose name sorts before both.
+	// The old code took rows[len(rows)-1] (alphabetically-last = "ollama");
+	// the fix must find the row for the newly created provider.
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"lmstudio": {Type: "openai_compatible", BaseURL: "http://localhost:1234/v1"},
+		"ollama":   {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m := New(cfg, t.TempDir(), t.TempDir()+"/config.toml")
+	m.SetSize(100, 32)
+
+	// Navigate to Providers section (index 1, after Agent).
+	m = press(m, kp("j"), tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	// Open the wizard as the normal path would: openPicker stores onPick.
+	req := providersWizard(m.state)()
+	m.pickerOnPick = req.onPick
+	m.pickerFieldID = req.fieldID
+
+	// Simulate picking the "groq" template → creates provider, sets
+	// wizardCreatedProvider, then drills into it.
+	got, _ := m.handlePickerPicked("groq")
+
+	// wizardCreatedProvider should have been consumed (cleared).
+	if got.state.wizardCreatedProvider != "" {
+		t.Fatalf("wizardCreatedProvider should be cleared after drill, got %q",
+			got.state.wizardCreatedProvider)
+	}
+
+	// Should have drilled into the "groq" provider detail.
+	pane := got.activePane()
+	if pane.depth() != 2 {
+		t.Fatalf("expected depth 2 after drilling, got %d", pane.depth())
+	}
+	if !strings.HasPrefix(pane.top().title, "groq") {
+		t.Fatalf("drilled into provider %q, want title starting with 'groq'",
+			pane.top().title)
+	}
+
+	// Verify "groq" actually exists in the config.
+	if _, ok := got.state.cfg.Providers["groq"]; !ok {
+		t.Fatal("wizard should have created providers.groq")
+	}
+}
+
+func TestDrillIntoNewestProviderWithCollision(t *testing.T) {
+	// "ollama" already exists, so wizard picking "ollama" should create
+	// "ollama-2" and drill into it (not the alphabetically-last "openrouter").
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"lmstudio":   {Type: "openai_compatible"},
+		"ollama":     {Type: "openai_compatible"},
+		"openrouter": {Type: "openai_compatible"},
+	}
+	m := New(cfg, t.TempDir(), t.TempDir()+"/config.toml")
+	m.SetSize(100, 32)
+
+	m = press(m, kp("j"), tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	req := providersWizard(m.state)()
+	m.pickerOnPick = req.onPick
+	m.pickerFieldID = req.fieldID
+
+	got, _ := m.handlePickerPicked("ollama")
+
+	// "ollama-2" should be the created provider.
+	if _, ok := got.state.cfg.Providers["ollama-2"]; !ok {
+		t.Fatal("wizard picking ollama with existing ollama should create ollama-2")
+	}
+
+	pane := got.activePane()
+	if pane.depth() != 2 {
+		t.Fatalf("expected depth 2 after drilling, got %d", pane.depth())
+	}
+	if pane.top().title != "ollama-2" {
+		t.Fatalf("drilled into provider %q, want 'ollama-2'", pane.top().title)
+	}
+}
+
+func TestTruncateErrPreservesUTF8AndAddsEllipsis(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"short err", "short err"},
+		{"", ""},
+		// Exactly 40 chars: no truncation
+		{"1234567890123456789012345678901234567890", "1234567890123456789012345678901234567890"},
+		// 41 chars: truncate to 37 + ellipsis
+		{"12345678901234567890123456789012345678901", "1234567890123456789012345678901234567\u2026"},
+		// Multi-byte chars (é is 2 bytes)
+		{"ééééééééééééééééééééé", "ééééééééééééééééééééé"},
+		// Multi-byte that would split: 38 runes, 41+ bytes
+		{"éééééééééééééééééééééé", "éééééééééééééééééééééé"},
+		// 41-rune multi-byte string (each é is 2 bytes) that should be truncated
+		{"éééééééééééééééééééééééééééééééééééééééééé", "ééééééééééééééééééééééééééééééééééééé\u2026"},
+		// Mixed single and multi-byte, 42 runes → truncate to 37 runes + ellipsis
+		{"abcdeééééééééééééééééééééééééééééééééééééé", "abcdeéééééééééééééééééééééééééééééééé\u2026"},
+	}
+	for _, tc := range tests {
+		got := truncateErr(tc.input)
+		if got != tc.want {
+			t.Errorf("truncateErr(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+		// Verify valid UTF-8
+		if !utf8.ValidString(got) {
+			t.Errorf("truncateErr(%q) produced invalid UTF-8: %q", tc.input, got)
+		}
+	}
+}
+
+func TestDrillIntoNewestProviderClearedOnNoWizard(t *testing.T) {
+	// When drillIntoNewestProvider is called without a wizard-created
+	// provider, it should be a no-op (wizardCreatedProvider is empty).
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible"},
+	}
+	m := New(cfg, t.TempDir(), t.TempDir()+"/config.toml")
+	m.SetSize(100, 32)
+
+	m = press(m, kp("j"), tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	// Don't set up any wizard state; just call drillIntoNewestProvider.
+	// It should be a no-op because wizardCreatedProvider is empty.
+	m.drillIntoNewestProvider()
+
+	pane := m.activePane()
+	if pane.depth() != 1 {
+		t.Fatalf("expected depth 1 (no drill), got %d", pane.depth())
 	}
 }

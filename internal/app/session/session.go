@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -289,6 +290,13 @@ type State struct {
 	turnUsage       turnUsage
 	title           string
 	titleSet        bool
+
+		// Task 5: work gate for shutdown sequencing. workMu protects
+	// quiescing and is paired with workWG so BeginQuiesce can set the
+	// gate before WaitForWork begins polling the waitgroup.
+	workMu     sync.Mutex
+	workWG     sync.WaitGroup
+	quiescing  bool
 
 	// F16: steering queue (mid-turn user messages). Published to the broker
 	// so the TUI transcript and status line update without polling.
@@ -702,6 +710,7 @@ const (
 var (
 	ErrSubagentDepthLimit       = fmt.Errorf("session: subagent depth limit exceeded (max %d)", subagentMaxDepth)
 	ErrSubagentConcurrencyLimit = fmt.Errorf("session: subagent concurrency limit exceeded (max %d)", subagentMaxConcurrency)
+	ErrSessionQuiescing         = errors.New("session is quiescing")
 )
 
 // EnterSubagent validates the depth and concurrency guards for spawning a
@@ -735,8 +744,113 @@ func (s *State) ExitSubagent() {
 	}
 }
 
+// BeginWork registers that the caller is starting a unit of asynchronous
+// work (typically a Bubble Tea command). After BeginQuiesce has been
+// called, BeginWork returns ErrSessionQuiescing and the caller must not
+// start the work. Every successful BeginWork must be paired with a
+// matching EndWork call (typically via defer in the command closure).
+func (s *State) BeginWork() error {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	if s.quiescing {
+		return ErrSessionQuiescing
+	}
+	s.workWG.Add(1)
+	return nil
+}
+
+// EndWork signals that a unit of work registered via BeginWork has
+// completed. Calling EndWork without a matching BeginWork is a
+// programming error that would panic via the WaitGroup.
+func (s *State) EndWork() {
+	s.workWG.Done()
+}
+
+// BeginQuiesce sets the quiescing gate so subsequent BeginWork calls
+// are rejected. Callers should call BeginQuiesce before WaitForWork to
+// ensure no new work can register between the gate and the wait.
+func (s *State) BeginQuiesce() {
+	s.workMu.Lock()
+	s.quiescing = true
+	s.workMu.Unlock()
+}
+
+// WaitForWork blocks until all in-flight work registered via BeginWork
+// has completed via EndWork. It must be called after BeginQuiesce (the
+// contract is documented, not enforced at runtime). If the context is
+// cancelled before all work completes, WaitForWork returns the context's
+// error.
+func (s *State) WaitForWork(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		s.workWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// ResolvePendingForShutdown atomically clears the pending approval,
+// pending question, and steering queue for a graceful shutdown. It sends
+// a denial on the approval channel (non-blocking), an AnswerUnanswered
+// answer per question on the question channel (non-blocking), and
+// publishes cleared-state events. The channels are closed on the send
+// side after all values have been sent (or dropped) so the waiter can
+// unblock safely.
+//
+// After this call, PendingApproval() and PendingQuestion() return nil
+// and SteeringQueue() is empty.
+func (s *State) ResolvePendingForShutdown() {
+	s.mu.Lock()
+	approval := s.pendingApproval
+	s.pendingApproval = nil
+	question := s.pendingQuestion
+	s.pendingQuestion = nil
+	s.steeringQueue = nil
+	s.mu.Unlock()
+
+	// Publish cleared-state events regardless of whether there was a
+	// pending item — subscribers that never received the "set" event
+	// are unaffected, and those that did get the cleared value.
+	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: nil})
+	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: nil})
+	broker := func() *pubsub.Broker[SteeringEvent] {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.steeringBroker
+	}()
+	if broker != nil {
+		broker.Publish("steering", SteeringEvent{QueueLen: 0})
+	}
+
+	// Deny any pending approval (non-blocking so unbuffered channels
+	// with no receiver don't deadlock).
+	if approval != nil && approval.ResponseChan != nil {
+		select {
+		case approval.ResponseChan <- UserApprovalDecision{Approved: false}:
+		default:
+		}
+	}
+
+	// Answer every pending question with "Unanswered" (non-blocking).
+	if question != nil && question.ResponseChan != nil {
+		answers := make([]Answer, len(question.Questions))
+		for i, q := range question.Questions {
+			answers[i] = Answer{Question: q.Question, Answer: AnswerUnanswered}
+		}
+		select {
+		case question.ResponseChan <- answers:
+		default:
+		}
+	}
+}
+
 // SubagentDepth returns the session's nesting depth — set once at
-// construction via WithDepth. Exposed for diagnostics and tests.
+	// construction via WithDepth. Exposed for diagnostics and tests.
 func (s *State) SubagentDepth() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

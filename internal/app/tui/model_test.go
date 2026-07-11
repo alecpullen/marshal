@@ -729,6 +729,22 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 func (f *fakeAgentRunner) SetForceClass(string)                   {}
 func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
 
+// blockingAgentRunner blocks on a channel in Run until the channel is
+// closed. Used by TestAgentCommandRegistersAndReleasesSessionWork to
+// verify that session work is tracked and released.
+type blockingAgentRunner struct {
+	block chan struct{}
+	err   error
+}
+
+func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
+	<-b.block
+	return b.err
+}
+
+func (b *blockingAgentRunner) SetForceClass(string)                   {}
+func (b *blockingAgentRunner) SetPolicyRules([]config.PermissionRule) {}
+
 type fakeSwarmRunner struct {
 	mu    sync.Mutex
 	goals []string
@@ -876,6 +892,71 @@ func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
 	}
 	if err := state.ProviderError(); err == nil || err.Error() != "boom" {
 		t.Fatalf("ProviderError() = %v, want an error wrapping %q", err, "boom")
+	}
+}
+
+func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
+	block := make(chan struct{})
+	runner := &blockingAgentRunner{block: block}
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	model := New(state, WithRunner(context.Background(), runner))
+	model.resize(80, 24)
+
+	// Submit a turn. The runner blocks in Run, so the runAgentCmd
+	// command will block until we close(block).
+	model.input.SetValue("hello")
+	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("cmd is nil")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	if len(batch) != 3 {
+		t.Fatalf("len(batch) = %d, want 3", len(batch))
+	}
+
+	// Execute the runAgentCmd (batch[0]) in a goroutine; it will block.
+	runDone := make(chan tea.Msg, 1)
+	go func() {
+		runDone <- batch[0]()
+	}()
+
+	// Give the goroutine a moment to block inside Run.
+	time.Sleep(10 * time.Millisecond)
+
+	// BeginQuiesce and wait for work. WaitForWork should block because
+	// the runner hasn't finished.
+	state.BeginQuiesce()
+	waitDone := make(chan struct{})
+	go func() {
+		state.WaitForWork(context.Background())
+		close(waitDone)
+	}()
+
+	select {
+	case <-waitDone:
+		t.Fatal("WaitForWork returned before runner finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Unblock the runner.
+	close(block)
+
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("WaitForWork did not return after runner unblocked")
+	}
+
+	select {
+	case msg := <-runDone:
+		if _, ok := msg.(agentFinishedMsg); !ok {
+			t.Fatalf("runAgentCmd returned %T, want agentFinishedMsg", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner command did not complete")
 	}
 }
 

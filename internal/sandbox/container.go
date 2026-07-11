@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -87,30 +86,11 @@ func (c *Container) Run(ctx context.Context, req native.CommandRequest) (native.
 	// runtime-lookalike planted anywhere in the current PATH after
 	// detection cannot run under the sandbox. We pass a minimal env and
 	// no shell wrapping to avoid any argv-interpolation risk.
-	cmd := exec.CommandContext(runCtx, c.runtimePath, args...)
+	// Use exec.Command (not CommandContext) — executeCommand handles ctx.
+	cmd := exec.Command(c.runtimePath, args...)
 	cmd.Env = c.buildContainerEnv()
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
 
-	start := nowFn()
-	err = cmd.Run()
-	result := native.CommandResult{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
-	}
-	if cmd.ProcessState != nil {
-		result.ExitCode = cmd.ProcessState.ExitCode()
-	}
-	meta := metaFor(c.Capabilities(), c.cfg)
-	meta.DurationMS = elapsedMS(start)
-	if err != nil {
-		if reason := killedReason(err, runCtx); reason != "" {
-			meta.KilledReason = reason
-		}
-	}
-	result.Meta = meta
-	return result, err
+	return executeCommand(runCtx, cmd, req, metaFor(c.Capabilities(), c.cfg))
 }
 
 func (c *Container) buildContainerEnv() []string {

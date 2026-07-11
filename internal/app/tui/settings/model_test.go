@@ -1,6 +1,8 @@
 package settings
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -168,6 +170,37 @@ func TestFocusedFieldTitleFollowsPaneCursor(t *testing.T) {
 	m = press(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.FocusedFieldTitle() != "Default profile" {
 		t.Fatalf("pane focus should report the cursor row, got %q", m.FocusedFieldTitle())
+	}
+}
+
+func TestSaveBlockedDoesNotWrite(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	original := "# original config\n"
+	if err := os.WriteFile(cfgPath, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(config.Default(), dir, cfgPath)
+	m.SetSize(100, 32)
+	const busyMsg = "Stop the active turn and background jobs before applying settings."
+	m.SetSaveBlocked(busyMsg)
+
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatal("expected nil command when save is blocked")
+	}
+	if m.Footer() != busyMsg {
+		t.Fatalf("footer = %q, want %q", m.Footer(), busyMsg)
+	}
+
+	content, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != original {
+		t.Fatalf("file was modified:\nwant: %q\ngot:  %q", original, string(content))
 	}
 }
 

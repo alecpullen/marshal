@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"marshal/internal/agent"
@@ -18,12 +20,35 @@ import (
 	"marshal/internal/hooks"
 	"marshal/internal/pubsub"
 	"marshal/internal/skills"
-	"marshal/internal/snapshot"
-	"marshal/internal/tools/mcp"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 )
+
+// jobShutdownTimeout controls how long Quiesce waits for background jobs to
+// drain. Package-level so tests can override it without sleeping five seconds.
+var jobShutdownTimeout = 5 * time.Second
+
+// MCPCloser closes an MCP manager during Runtime.Close.
+type MCPCloser interface {
+	Close() error
+}
+
+// BrokerCloser closes a pubsub broker during Runtime.Close.
+type BrokerCloser interface {
+	Close()
+}
+
+// SnapshotCloser prunes old snapshots during Runtime.Close.
+type SnapshotCloser interface {
+	Prune(ctx context.Context, retentionDays int) error
+}
+
+// DBCloser closes a database and prunes old snapshots during Runtime.Close.
+type DBCloser interface {
+	Close() error
+	PruneSnapshotsOlderThan(days int) error
+}
 
 // Runtime is the headless application state shared between the TUI and any
 // other transport (e.g. ACP). It owns configuration, the database, the
@@ -36,67 +61,162 @@ type Runtime struct {
 	Runner         *agent.Runner
 	ToolRegistry   *registry.Registry
 	SwarmRunner    *swarm.Orchestrator
-	DB             *db.DB
+	DB             DBCloser
 	ProjectID      int64
 	SessionID      string
-	JobBroker      *pubsub.Broker[native.JobEvent]
-	SteeringBroker *pubsub.Broker[session.SteeringEvent]
-	EventBroker    *pubsub.Broker[session.Event]
-	MCPManager     *mcp.Manager
-	Snapshot       *snapshot.Service
+	JobBroker      BrokerCloser
+	SteeringBroker BrokerCloser
+	EventBroker    BrokerCloser
+	MCPManager     MCPCloser
+	Snapshot       SnapshotCloser
 	Logger         *slog.Logger
 	WorkingDir     string
 	HomeDir        string
 	DataDir        string
 	SkillIndex     *skills.Index
+	JobManager     *native.JobManager
 
-	jobBrokerCancel context.CancelFunc
-	closeFns        []func()
+	workCtx    context.Context
+	workCancel context.CancelFunc
+	mu         sync.Mutex
+	closeFns   []func()
+
+	quiesceOnce sync.Once
+	closeOnce   sync.Once
+	quiesceErr  error
+	closeErr    error
 }
 
-// Close tears down resources owned by the runtime in reverse order. It is
-// safe to call exactly once after StartRuntime returns successfully; the
-// TUI's Run also calls Close on its way out.
-func (rt *Runtime) Close(ctx context.Context) error {
-	for i := len(rt.closeFns) - 1; i >= 0; i-- {
-		rt.closeFns[i]()
-	}
-	if rt.jobBrokerCancel != nil {
-		rt.jobBrokerCancel()
-	}
-	if rt.JobBroker != nil {
-		rt.JobBroker.Close()
-	}
-	if rt.SteeringBroker != nil {
-		rt.SteeringBroker.Close()
-	}
-	if rt.EventBroker != nil {
-		rt.EventBroker.Close()
-	}
-	if rt.MCPManager != nil {
-		_ = rt.MCPManager.Close()
-	}
-	if rt.Snapshot != nil {
-		pruneCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		if rt.DB != nil && rt.Logger != nil {
-			if perr := rt.DB.PruneSnapshotsOlderThan(rt.Config.Snapshots.RetentionDays); perr != nil {
-				rt.Logger.Warn("snapshot DB prune failed", "error", perr)
-			}
+// Quiesce cancels and joins active turns and background jobs without closing
+// persistence (database, logger). After Quiesce returns the session is
+// quiesced: no new work can begin, all in-flight work has completed, and all
+// running background jobs have been shut down. The database and logger remain
+// open so that downstream consumers (e.g. knowledge finalization) can use
+// them. Idempotent — subsequent calls are no-ops.
+func (rt *Runtime) Quiesce(ctx context.Context) error {
+	rt.quiesceOnce.Do(func() {
+		if rt.State == nil {
+			return
 		}
-		if rt.Logger != nil {
-			if perr := rt.Snapshot.Prune(pruneCtx, rt.Config.Snapshots.RetentionDays); perr != nil {
-				rt.Logger.Warn("snapshot prune failed", "error", perr)
-			}
+		rt.State.BeginQuiesce()
+		if rt.workCancel != nil {
+			rt.workCancel()
 		}
-	}
-	if rt.DB != nil {
-		_ = rt.DB.Close()
-	}
-	if rt.State != nil {
+		rt.State.ResolvePendingForShutdown()
 		rt.State.Shutdown()
-	}
-	return nil
+
+		// Snapshot JobManager under the pointer mutex so a concurrent
+		// reloadAgentRuntime can swap the pointer without a data race.
+		rt.mu.Lock()
+		jm := rt.JobManager
+		rt.mu.Unlock()
+
+		var jobErr error
+		if jm != nil {
+			deadline, ok := ctx.Deadline()
+			var shutdownCtx context.Context
+			var shutdownCancel context.CancelFunc
+			if ok {
+				timeout := time.Until(deadline)
+				if timeout > jobShutdownTimeout {
+					timeout = jobShutdownTimeout
+				}
+				if timeout <= 0 {
+					timeout = time.Nanosecond
+				}
+				shutdownCtx, shutdownCancel = context.WithTimeout(context.Background(), timeout)
+			} else {
+				shutdownCtx, shutdownCancel = context.WithTimeout(context.Background(), jobShutdownTimeout)
+			}
+			defer shutdownCancel()
+			jobErr = jm.Shutdown(shutdownCtx)
+		}
+
+		workErr := rt.State.WaitForWork(ctx)
+		rt.quiesceErr = errors.Join(jobErr, workErr)
+	})
+	return rt.quiesceErr
+}
+
+// Close tears down resources owned by the runtime in the prescribed order.
+// It first calls Quiesce to cancel and join active work/jobs, then closes
+// MCP, brokers, snapshots, database, logger, and finally shuts down the
+// session state. Idempotent — subsequent calls return the same errors.
+//
+// The order is:
+//  1. Quiesce (cancels work, joins jobs, session quiesce/shutdown)
+//  2. MCP manager
+//  3. job broker
+//  4. steering broker
+//  5. event broker
+//  6. snapshot DB prune and filesystem prune
+//  7. database
+//  8. reverse-order closeFns (log file)
+//  9. idempotent state shutdown
+func (rt *Runtime) Close(ctx context.Context) error {
+	_ = rt.Quiesce(ctx)
+
+	rt.closeOnce.Do(func() {
+		var errs []error
+
+		// 2. MCP manager.
+		if rt.MCPManager != nil {
+			if err := rt.MCPManager.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("mcp close: %w", err))
+			}
+		}
+
+		// 3. job broker — close pump and broker.
+		if rt.JobBroker != nil {
+			rt.JobBroker.Close()
+		}
+
+		// 4. steering broker.
+		if rt.SteeringBroker != nil {
+			rt.SteeringBroker.Close()
+		}
+
+		// 5. event broker.
+		if rt.EventBroker != nil {
+			rt.EventBroker.Close()
+		}
+
+		// 6. bounded snapshot DB prune and filesystem prune.
+		if rt.Snapshot != nil {
+			if rt.DB != nil && rt.Logger != nil {
+				if perr := rt.DB.PruneSnapshotsOlderThan(rt.Config.Snapshots.RetentionDays); perr != nil {
+					rt.Logger.Warn("snapshot DB prune failed", "error", perr)
+				}
+			}
+			if rt.Logger != nil {
+				pruneCtx, pruneCancel := context.WithTimeout(ctx, 30*time.Second)
+				defer pruneCancel() // defer is scoped to this closeOnce.Do closure, not to Close itself
+				if perr := rt.Snapshot.Prune(pruneCtx, rt.Config.Snapshots.RetentionDays); perr != nil {
+					rt.Logger.Warn("snapshot prune failed", "error", perr)
+				}
+			}
+		}
+
+		// 7. database.
+		if rt.DB != nil {
+			if err := rt.DB.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("db close: %w", err))
+			}
+		}
+
+		// 8. reverse-order closeFns (log file).
+		for i := len(rt.closeFns) - 1; i >= 0; i-- {
+			rt.closeFns[i]()
+		}
+
+		// 9. idempotent state shutdown.
+		if rt.State != nil {
+			rt.State.Shutdown()
+		}
+
+		rt.closeErr = errors.Join(errs...)
+	})
+	return errors.Join(rt.quiesceErr, rt.closeErr)
 }
 
 // StartRuntime builds a Runtime from the supplied options. It performs every
@@ -197,14 +317,14 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		return nil, fmt.Errorf("load skills: %w", err)
 	}
 
-	jobBrokerCtx, jobBrokerCancel := context.WithCancel(ctx)
+	workCtx, workCancel := context.WithCancel(ctx)
 	jobBroker := pubsub.NewBroker[native.JobEvent]()
 	steeringBroker := pubsub.NewBroker[session.SteeringEvent]()
 	eventBroker := pubsub.NewBroker[session.Event]()
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, err := buildAgentRunner(jobBrokerCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -213,25 +333,37 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	}
 
 	rt := &Runtime{
-		Config:          cfg,
-		State:           state,
-		Runner:          runner,
-		ToolRegistry:    toolReg,
-		SwarmRunner:     swarmRunner,
-		DB:              database,
-		ProjectID:       projectID,
-		SessionID:       sessionID,
-		JobBroker:       jobBroker,
-		SteeringBroker:  steeringBroker,
-		EventBroker:     eventBroker,
-		MCPManager:      mcpMgr,
-		Snapshot:        snapSvc,
-		Logger:          logger,
-		WorkingDir:      workingDir,
-		HomeDir:         homeDir,
-		DataDir:         dataDir,
-		SkillIndex:      skillIndex,
-		jobBrokerCancel: jobBrokerCancel,
+		Config:         cfg,
+		State:          state,
+		Runner:         runner,
+		ToolRegistry:   toolReg,
+		SwarmRunner:    swarmRunner,
+		DB:             database,
+		ProjectID:      projectID,
+		SessionID:      sessionID,
+		JobBroker:      jobBroker,
+		SteeringBroker: steeringBroker,
+		EventBroker:    eventBroker,
+		JobManager:     jobMgr,
+		Logger:         logger,
+		WorkingDir:     workingDir,
+		HomeDir:        homeDir,
+		DataDir:        dataDir,
+		SkillIndex:     skillIndex,
+		workCtx:        workCtx,
+		workCancel:     workCancel,
+	}
+	// Assign MCP and snapshot only on success AND only when the underlying
+	// concrete pointer is non-nil. A nil *mcp.Manager assigned to an MCPCloser
+	// interface would create a non-nil interface wrapping nil — causing the
+	// != nil guard in Close to pass while the method call panics.
+	if err == nil {
+		if mcpMgr != nil {
+			rt.MCPManager = mcpMgr
+		}
+		if snapSvc != nil {
+			rt.Snapshot = snapSvc
+		}
 	}
 	if logFile != nil {
 		rt.closeFns = append(rt.closeFns, func() { _ = logFile.Close() })

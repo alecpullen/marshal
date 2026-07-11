@@ -4,11 +4,9 @@ package sandbox
 
 import (
 	"errors"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 var (
@@ -82,26 +80,4 @@ func restrictedWrapCommand(command string, cfg Config) string {
 	pre.WriteString("exec ")
 	pre.WriteString(command)
 	return pre.String()
-}
-
-// applyProcmgmt makes a command killable as a process group: Setpgid places
-// the child (and its descendants) in a fresh group, and cmd.Cancel is set so
-// that when ctx fires CommandContext kills the ENTIRE group (including any
-// grandchildren) instead of just the direct child — fixing the orphaned-
-// grandchild gap that plain CommandContext leaves.
-func applyProcmgmt(cmd *exec.Cmd) {
-	if cmd.Process != nil {
-		return // too late: already started
-	}
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		// Negative pid signals the whole group.
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
 }

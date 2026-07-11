@@ -20,8 +20,6 @@ import (
 	"marshal/internal/hooks"
 	"marshal/internal/pubsub"
 	"marshal/internal/skills"
-	"marshal/internal/snapshot"
-	"marshal/internal/tools/mcp"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
@@ -30,6 +28,27 @@ import (
 // jobShutdownTimeout controls how long Quiesce waits for background jobs to
 // drain. Package-level so tests can override it without sleeping five seconds.
 var jobShutdownTimeout = 5 * time.Second
+
+// MCPCloser closes an MCP manager during Runtime.Close.
+type MCPCloser interface {
+	Close() error
+}
+
+// BrokerCloser closes a pubsub broker during Runtime.Close.
+type BrokerCloser interface {
+	Close()
+}
+
+// SnapshotCloser prunes old snapshots during Runtime.Close.
+type SnapshotCloser interface {
+	Prune(ctx context.Context, retentionDays int) error
+}
+
+// DBCloser closes a database and prunes old snapshots during Runtime.Close.
+type DBCloser interface {
+	Close() error
+	PruneSnapshotsOlderThan(days int) error
+}
 
 // Runtime is the headless application state shared between the TUI and any
 // other transport (e.g. ACP). It owns configuration, the database, the
@@ -42,14 +61,14 @@ type Runtime struct {
 	Runner         *agent.Runner
 	ToolRegistry   *registry.Registry
 	SwarmRunner    *swarm.Orchestrator
-	DB             *db.DB
+	DB             DBCloser
 	ProjectID      int64
 	SessionID      string
-	JobBroker      *pubsub.Broker[native.JobEvent]
-	SteeringBroker *pubsub.Broker[session.SteeringEvent]
-	EventBroker    *pubsub.Broker[session.Event]
-	MCPManager     *mcp.Manager
-	Snapshot       *snapshot.Service
+	JobBroker      BrokerCloser
+	SteeringBroker BrokerCloser
+	EventBroker    BrokerCloser
+	MCPManager     MCPCloser
+	Snapshot       SnapshotCloser
 	Logger         *slog.Logger
 	WorkingDir     string
 	HomeDir        string
@@ -325,8 +344,6 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		JobBroker:      jobBroker,
 		SteeringBroker: steeringBroker,
 		EventBroker:    eventBroker,
-		MCPManager:     mcpMgr,
-		Snapshot:       snapSvc,
 		JobManager:     jobMgr,
 		Logger:         logger,
 		WorkingDir:     workingDir,
@@ -335,6 +352,18 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		SkillIndex:     skillIndex,
 		workCtx:        workCtx,
 		workCancel:     workCancel,
+	}
+	// Assign MCP and snapshot only on success AND only when the underlying
+	// concrete pointer is non-nil. A nil *mcp.Manager assigned to an MCPCloser
+	// interface would create a non-nil interface wrapping nil — causing the
+	// != nil guard in Close to pass while the method call panics.
+	if err == nil {
+		if mcpMgr != nil {
+			rt.MCPManager = mcpMgr
+		}
+		if snapSvc != nil {
+			rt.Snapshot = snapSvc
+		}
 	}
 	if logFile != nil {
 		rt.closeFns = append(rt.closeFns, func() { _ = logFile.Close() })

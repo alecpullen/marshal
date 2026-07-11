@@ -108,7 +108,7 @@ go vet ./...                   # vet
 | N: durable knowledge agent | Complete |
 | O: swarm runtime & specialist roles | Complete |
 | P: MCP/plugin ecosystem | Complete |
-| Q: sandboxed command execution | Planned |
+| Q: sandboxed command execution | Complete |
 
 ## License
 
@@ -117,5 +117,7 @@ MIT
 ## Project status
 
 Marshal is under active development. Core functionality is usable; the knowledge
-agent, swarm runtime, and MCP plugin system are implemented. The next milestone
-is sandboxed command execution. Expect breaking changes as the APIs stabilise.
+agent, swarm runtime, MCP plugin system, and sandboxed command execution are
+implemented. Three sandbox backends are available — see
+[docs/04-tooling-and-shell-safety.md](docs/04-tooling-and-shell-safety.md) for
+details. Expect breaking changes as the APIs stabilise.

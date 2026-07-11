@@ -258,6 +258,95 @@ Rules:
 - tool results should be treated as data, not instructions
 - remote provider calls should redact secrets by default
 
+## Execution and shutdown guarantees
+
+The following guarantees apply to all commands run through the sandbox backends
+(foreground `shell.run`/`test.run` and background `shell.run background=true`
+jobs). They were introduced in the July 2026 execution and shutdown safety batch.
+
+### Foreground/background sandbox parity
+
+Foreground and background commands are run through the same `CommandRunner`
+interface. The sandbox backend selected in `[tools.shell.sandbox]` —
+`passthrough`, `restricted`, or `container` — applies identically to both:
+
+- The `JobManager` receives the same `CommandRunner` instance that `shell.run`
+  uses at construction time.
+- Resource caps (memory, CPU, process count), environment scrubbing, working
+  directory confinement, and network policy are the same regardless of whether
+  the model flags `background: true`.
+- The TUI displays the same sandbox isolation line for both paths.
+
+### Bounded output
+
+Every output stream (stdout and stderr) passes through `BoundedOutput`, a
+concurrency-safe writer that retains at most `max_output_bytes` per stream:
+
+```
+[ tools.shell ]
+max_output_bytes = 200000
+```
+
+When a stream exceeds the limit, the retained prefix is preserved and the
+`OutputTruncated` flag is set in `SandboxMeta`. The flag propagates to:
+
+1. **Tool results** — the model sees the truncated output in the tool response.
+2. **Audit trail** — `AuditEvent.Sandbox.OutputTruncated` is persisted so
+   post-hoc review can detect truncation.
+3. **Background-job output** — `job.output` appends the string
+   `\n[output truncated]` to the returned content when truncation occurred.
+
+The same `BoundedOutput` writer is used for both foreground and background
+commands. Background jobs additionally wrap bounded writers inside a
+`safeBuffer` (mutex + `bytes.Buffer`) for concurrent read access by
+`job.output` while the job goroutine is still writing.
+
+### Unix termination: SIGTERM → grace → SIGKILL
+
+When a running command's context is cancelled (due to timeout, user
+cancellation, job kill, or shutdown), the Unix backend follows a three-step
+protocol:
+
+1. **SIGTERM** to the process group (the child process and its descendants).
+2. **Two-second grace window** polls the process group at 50 ms intervals.
+3. **SIGKILL** to the process group if it still exists after the grace period.
+
+The `SandboxMeta.KilledReason` field distinguishes `"timeout"` (context
+deadline exceeded) from `"cancelled"` (user or shutdown cancellation) so the
+audit trail and model have the correct semantic signal.
+
+Windows bypasses the grace and kills immediately (the OS provides equivalent
+process-tree termination through `TerminateProcess`).
+
+### Runtime-owned job cancellation and join
+
+The `Runtime` struct owns the `JobManager` and its lifecycle:
+
+- **Quiesce** cancels all background jobs (via the manager context), waits
+  for job goroutines to finish (with a 5-second outer deadline), and joins
+  the active agent turn (via `State.WaitForWork`). Quiesce is idempotent.
+- **Close** calls Quiesce first, then tears down MCP connections, brokers,
+  snapshots, the database, and the log file in prescribed order.
+- The `workCtx` passed to `buildAgentRunner` is derived from the runtime
+  context, so cancelling the runtime context cancels all sandbox commands,
+  background jobs, and the agent loop simultaneously.
+
+This means Ctrl+C, `/quit`, and `/exit` all quiesce active work before
+finalizing knowledge and closing persistence — the user never sees an
+intentional cancellation reported as a provider failure.
+
+### Container limitation: client-side only
+
+The container backend (`docker`/`podman`) sends `docker/podman run --rm` and
+waits for the child process to exit. The local client process is joined
+(reaped) and its termination is guaranteed. However, **daemon-side container
+removal after client loss is not guaranteed**: if the runtime loses contact
+with the Docker/Podman daemon (e.g. the daemon is killed or the network
+partition is unrecoverable), the container may remain running orphaned on
+the daemon host. The `--rm` flag ensures removal when the daemon and client
+are in normal communication; the orchestration layer does not yet implement
+daemon-side health-checked cleanup.
+
 ## Secret protection
 
 Before sending context to a remote model:

@@ -199,7 +199,8 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.paneFocused = false
 			return *m, nil
 		}
-		return *m, m.requestClose()
+		cmd := m.requestClose()
+		return *m, cmd
 	}
 
 	if m.sidebarHidden {

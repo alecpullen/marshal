@@ -18,6 +18,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
@@ -117,6 +118,10 @@ type Model struct {
 
 	// Help overlay (triggered by ?).
 	helpOpen bool
+
+	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
+	pickerModel   *picker.Model
+	pickerCommand string // which command opened the modal: "model", "mode", "branches", "rewind"
 
 	spinner           Spinner
 	spinnerFrame      string
@@ -449,6 +454,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.memoryModel, cmd = m.memoryModel.Update(msg)
 		return m, cmd
+	}
+
+	// Picker modal: handle PickedMsg/CancelledMsg first, then route key
+	// messages to the picker while it's open (focus trap). Non-key messages
+	// (ticks, agent events) keep flowing to normal handlers so background
+	// work continues.
+	switch pm := msg.(type) {
+	case picker.PickedMsg:
+		cmdName := m.pickerCommand
+		m.pickerModel = nil
+		m.pickerCommand = ""
+		switch {
+		case cmdName == "" || pm.Value == "":
+			m.refreshViewport()
+			return m, nil
+		case cmdName == "model":
+			// preset names may contain spaces; apply directly instead of
+			// round-tripping through the arg splitter
+			m.switchModelPreset(pm.Value)
+			m.refreshViewport()
+			return m, nil
+		case cmdName == "mode":
+			return m.dispatchCommand("/" + pm.Value)
+		default:
+			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
+		}
+	case picker.CancelledMsg:
+		m.pickerModel = nil
+		m.pickerCommand = ""
+		m.refreshViewport()
+		return m, nil
+	}
+	if m.pickerModel != nil {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			return m, m.pickerModel.Update(msg)
+		}
+		// non-key messages (ticks, agent events) keep flowing to the
+		// normal handlers below so background work continues.
 	}
 
 	// Help overlay: when open, only ? and Esc close it; other keypresses are
@@ -1417,6 +1460,22 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 }
+
+// openPicker opens a command modal. The picked value is delivered as
+// picker.PickedMsg and re-enters dispatchCommand for pickerCommand, so
+// command semantics stay in one place.
+func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, prefilter string) {
+	p := picker.New(title, footer, items)
+	if prefilter != "" {
+		p.SetFilter(prefilter)
+	}
+	m.pickerModel = p
+	m.pickerCommand = cmdName
+}
+
+// switchModelPreset is a temporary stub for the PickedMsg handler's model
+// case. Task 6 replaces it with the real extraction from dispatchCommand.
+func (m *Model) switchModelPreset(presetName string) {}
 
 func truncateRunes(s string, limit int) string {
 	if limit <= 0 {

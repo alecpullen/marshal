@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
@@ -2383,6 +2384,39 @@ func TestHelpOverlayDoesNotSwallowAgentFinishedMsg(t *testing.T) {
 	}
 	if !m.helpOpen {
 		t.Fatal("non-key runtime messages should not close the help overlay")
+	}
+}
+
+func TestPickerRoutingOpenPickCancel(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	// open a picker directly via the helper
+	m.openPicker("branches", "Switch branch", "", []picker.Item{
+		{Label: "branch 1", Value: "1"},
+		{Label: "branch 2", Value: "2", Badge: "● now"},
+	}, "")
+	if m.pickerModel == nil || m.pickerCommand != "branches" {
+		t.Fatal("openPicker should set the modal state")
+	}
+
+	// the modal renders composited over the normal view
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "Switch branch") || !strings.Contains(view, "branch 1") {
+		t.Fatalf("picker should render over the view:\n%s", view)
+	}
+
+	// keys route to the picker: esc → CancelledMsg → closes
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("esc should produce the picker's cancel command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.pickerModel != nil || m.pickerCommand != "" {
+		t.Fatal("CancelledMsg should close the picker")
 	}
 }
 

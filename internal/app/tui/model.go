@@ -745,10 +745,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshViewport()
 				return m, nil
 			}
+			if err := m.state.BeginWork(); err != nil {
+				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
+				m.busy = false
+				m.refreshViewport()
+				return m, nil
+			}
 			m.busy = true
 			agentCtx, cancel := context.WithCancel(m.ctx)
 			m.agentCancel = cancel
-			return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd(), spinnerTickCmd())
+			return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.runner, value), tickCmd(), spinnerTickCmd())
 		}
 	}
 
@@ -1258,8 +1264,13 @@ type agentFinishedMsg struct{ err error }
 type agentTickMsg struct{}
 type spinnerTickMsg struct{}
 
-func runAgentCmd(ctx context.Context, runner AgentRunner, goal string) tea.Cmd {
+// runAgentCmd wraps an agent turn into a Bubble Tea command that
+// registers session work via BeginWork on construction and releases it
+// via EndWork when the command executes. Callers must handle
+// ErrSessionQuiescing from BeginWork before creating the command.
+func runAgentCmd(ctx context.Context, state *session.State, runner AgentRunner, goal string) tea.Cmd {
 	return func() tea.Msg {
+		defer state.EndWork()
 		err := runner.Run(ctx, goal)
 		return agentFinishedMsg{err: err}
 	}
@@ -1448,10 +1459,16 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		if m.busy {
 			return m, nil
 		}
+		if err := m.state.BeginWork(); err != nil {
+			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
+			m.busy = false
+			m.refreshViewport()
+			return m, nil
+		}
 		m.busy = true
 		agentCtx, cancel := context.WithCancel(m.ctx)
 		m.agentCancel = cancel
-		return m, tea.Batch(runAgentCmd(agentCtx, m.swarmRunner, goal), tickCmd(), spinnerTickCmd())
+		return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.swarmRunner, goal), tickCmd(), spinnerTickCmd())
 
 	case "model":
 		presets := m.state.Config.Models.Presets

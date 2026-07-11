@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
 )
@@ -29,6 +30,7 @@ const (
 	overlayNone overlayKind = iota
 	overlaySearch
 	overlayHelp
+	overlayPicker
 )
 
 type Model struct {
@@ -39,6 +41,9 @@ type Model struct {
 	paneFocused    bool
 	overlay        overlayKind
 	search         searchState // zero value until Task 11 wires it
+	pickerModel    *picker.Model
+	pickerOnPick   func(string) error
+	pickerFieldID  string
 	pendingCancel  bool
 	savedFlash     bool
 	footerMsg      string // error/status text; cleared on next keypress
@@ -100,6 +105,27 @@ func (m *Model) activePane() *paneStack    { return m.panes[m.cursor] }
 func (m Model) activeSectionTitle() string { return m.specs[m.cursor].title }
 
 func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case probeResultMsg:
+		label := fmt.Sprintf("\u2713 ok (%d models)", len(msg.Models))
+		if msg.Err != nil {
+			label = "\u2717 " + truncateErr(msg.Err.Error())
+		}
+		m.state.applyActionResult(msg.FieldID, label)
+		if msg.Err == nil && msg.Provider != "" {
+			m.state.discovered[msg.Provider] = msg.Models
+		}
+		return *m, nil
+	case actionResultMsg:
+		m.state.applyActionResult(msg.FieldID, msg.Label)
+		return *m, nil
+	case picker.PickedMsg:
+		return m.handlePickerPicked(msg.Value)
+	case picker.CancelledMsg:
+		m.closePicker()
+		return *m, nil
+	}
+
 	k, isKey := msg.(tea.KeyPressMsg)
 	if !isKey {
 		return *m, nil
@@ -122,6 +148,14 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	}
 	if m.overlay == overlaySearch {
 		return *m, m.updateSearch(k)
+	}
+	if m.overlay == overlayPicker {
+		if m.pickerModel == nil {
+			m.overlay = overlayNone
+			return *m, nil
+		}
+		cmd := m.pickerModel.Update(msg)
+		return *m, cmd
 	}
 
 	editing := m.activePane().top().list.Editing()
@@ -173,7 +207,11 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				return *m, nil
 			}
 		}
-		return *m, m.activePane().Update(msg)
+		cmd := m.activePane().Update(msg)
+		if req := m.activePane().top().list.TakePushPicker(); req != nil {
+			m.openPicker(req)
+		}
+		return *m, cmd
 	}
 
 	if !m.paneFocused {
@@ -205,7 +243,11 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return *m, nil
 		}
 	}
-	return *m, m.activePane().Update(msg)
+	cmd := m.activePane().Update(msg)
+	if req := m.activePane().top().list.TakePushPicker(); req != nil {
+		m.openPicker(req)
+	}
+	return *m, cmd
 }
 
 // requestClose is the top-level Esc: confirm when dirty, else cancel out.
@@ -233,6 +275,67 @@ func (m *Model) saveCmd() tea.Cmd {
 	return func() tea.Msg { return SavedMsg{Cfg: loaded} }
 }
 
+func (m *Model) openPicker(req *pickerRequest) {
+	p := picker.New(req.title, req.footer, req.items)
+	p.SetAllowCustom(req.allowCustom)
+	m.pickerModel = p
+	m.pickerOnPick = req.onPick
+	m.pickerFieldID = req.fieldID
+	m.overlay = overlayPicker
+}
+
+func (m *Model) closePicker() {
+	m.overlay = overlayNone
+	m.pickerModel = nil
+	m.pickerOnPick = nil
+	m.pickerFieldID = ""
+}
+
+func (m *Model) handlePickerPicked(value string) (Model, tea.Cmd) {
+	if m.pickerOnPick != nil {
+		if err := m.pickerOnPick(value); err != nil {
+			m.footerMsg = err.Error()
+			m.closePicker()
+			return *m, nil
+		}
+	}
+	if m.pickerFieldID == wizardFieldID {
+		m.drillIntoNewestProvider()
+	}
+	m.closePicker()
+	return *m, nil
+}
+
+func (m *Model) drillIntoNewestProvider() {
+	name := m.state.wizardCreatedProvider
+	m.state.wizardCreatedProvider = "" // consumed
+	if name == "" {
+		return
+	}
+	pane := m.activePane()
+	for pane.pop() {
+	}
+	rows := pane.top().list.Rows()
+	for i, row := range rows {
+		if row != nil && row.id == "providers."+name && row.kind == kindDrill {
+			pane.top().list.SetCursor(i)
+			_ = pane.top().list.openRow(row)
+			if f := pane.top().list.TakePushRequest(); f != nil {
+				pane.push(f)
+			}
+			return
+		}
+	}
+}
+
+func truncateErr(s string) string {
+	runes := []rune(s)
+	if len(runes) > 40 {
+		return string(runes[:37]) + "\u2026"
+	}
+	return s
+}
+
 var (
 	sidebarItemStyle   = lipgloss.NewStyle().Foreground(settingsTheme.FGDefault)
 	sidebarActiveStyle = lipgloss.NewStyle().Bold(true).Background(settingsTheme.BGSelection)
@@ -253,6 +356,9 @@ func (m Model) View() string {
 	}
 	if m.overlay == overlaySearch {
 		return m.searchOverlay(fw, fh)
+	}
+	if m.overlay == overlayPicker && m.pickerModel != nil {
+		return m.pickerModel.View(fw, fh)
 	}
 	return out
 }
@@ -335,6 +441,10 @@ func (m Model) renderFooter(fw int) string {
 				if row.del != nil {
 					parts = append(parts, seg("d", "delete"))
 				}
+			case kindAction:
+				parts = append(parts, seg("\u21b5", "run"))
+			case kindPicker:
+				parts = append(parts, seg("\u21b5", "pick"))
 			}
 		}
 		if fl.onAdd != nil {

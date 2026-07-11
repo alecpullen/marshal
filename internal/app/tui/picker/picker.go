@@ -44,12 +44,13 @@ type CancelledMsg struct{}
 
 // Model is the state for a picker modal.
 type Model struct {
-	title   string
-	footer  string
-	items   []Item
-	filter  textinput.Model
-	matches []int // indices into items, rank order
-	cursor  int   // index into matches
+	title       string
+	footer      string
+	items       []Item
+	filter      textinput.Model
+	matches     []int // indices into items, rank order
+	cursor      int   // index into matches
+	allowCustom bool
 }
 
 // New creates a picker model. The cursor starts on the first item whose
@@ -77,12 +78,30 @@ func (m *Model) SetFilter(q string) {
 	m.refilter()
 }
 
+// SetAllowCustom enables custom values: pressing Enter with a typed filter
+// text and no selection emits PickedMsg with the filter text.
+func (m *Model) SetAllowCustom(v bool) {
+	m.allowCustom = v
+}
+
 func (m *Model) refilter() {
 	hay := make([]string, len(m.items))
 	for i, it := range m.items {
 		hay[i] = it.Group + " " + it.Label + " " + it.Detail
 	}
 	m.matches = fuzzy.Rank(m.filter.Value(), hay)
+	if m.allowCustom && strings.TrimSpace(m.filter.Value()) != "" {
+		exact := false
+		for _, idx := range m.matches {
+			if m.items[idx].Value == m.filter.Value() {
+				exact = true
+				break
+			}
+		}
+		if !exact {
+			m.matches = append([]int{-1}, m.matches...)
+		}
+	}
 	if m.cursor >= len(m.matches) {
 		m.cursor = max(len(m.matches)-1, 0)
 	}
@@ -99,7 +118,11 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		return func() tea.Msg { return CancelledMsg{} }
 	case "enter":
 		if m.cursor < len(m.matches) && len(m.matches) > 0 {
-			v := m.items[m.matches[m.cursor]].Value
+			idx := m.matches[m.cursor]
+			if idx == -1 {
+				return func() tea.Msg { return PickedMsg{Value: m.filter.Value()} }
+			}
+			v := m.items[idx].Value
 			return func() tea.Msg { return PickedMsg{Value: v} }
 		}
 		return nil
@@ -135,7 +158,12 @@ func (m *Model) View(maxW, maxH int) string {
 	focusLine := 0
 	lastGroup := ""
 	for pos, idx := range m.matches {
-		it := m.items[idx]
+		var it Item
+		if idx == -1 {
+			it = Item{Label: "Use '" + m.filter.Value() + "'", Value: m.filter.Value(), Badge: "custom"}
+		} else {
+			it = m.items[idx]
+		}
 		if !filtering && it.Group != "" && it.Group != lastGroup {
 			rows = append(rows, groupStyle.Render(it.Group))
 			lastGroup = it.Group

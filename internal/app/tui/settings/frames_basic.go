@@ -28,10 +28,10 @@ func snapshotsFrame(s *state) *frame {
 				desc:    "capture before-write snapshots of changed files",
 				getBool: func() bool { return s.cfg.Snapshots.Enabled },
 				setBool: func(v bool) { s.cfg.Snapshots.Enabled = v }},
-			intField2("snapshots.retention_days", "Retention days",
+			intField("snapshots.retention_days", "Retention days",
 				func() int { return s.cfg.Snapshots.RetentionDays }, 0,
 				func(v int) { s.cfg.Snapshots.RetentionDays = v }),
-			intField2("snapshots.max_file_bytes", "Max file bytes",
+			intField("snapshots.max_file_bytes", "Max file bytes",
 				func() int { return s.cfg.Snapshots.MaxFileBytes }, 0,
 				func(v int) { s.cfg.Snapshots.MaxFileBytes = v }),
 		}
@@ -101,10 +101,10 @@ func webFrame(s *state) *frame {
 func swarmFrame(s *state) *frame {
 	return newFrame("Swarm", func() []*field {
 		return []*field{
-			intField2("swarm.max_fix_rounds", "Max fix rounds",
+			intField("swarm.max_fix_rounds", "Max fix rounds",
 				func() int { return s.cfg.Swarm.Budget.MaxFixRounds }, 0,
 				func(v int) { s.cfg.Swarm.Budget.MaxFixRounds = v }),
-			intField2("swarm.max_total_tokens", "Max total tokens",
+			intField("swarm.max_total_tokens", "Max total tokens",
 				func() int { return s.cfg.Swarm.Budget.MaxTotalTokens }, 0,
 				func(v int) { s.cfg.Swarm.Budget.MaxTotalTokens = v }),
 			mapIntDrill("swarm.tool_iters", "Tool iters", &s.cfg.Swarm.Budget.ToolIters),

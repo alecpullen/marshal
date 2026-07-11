@@ -96,10 +96,10 @@ func presetsFrame(s *state) *frame {
 					scalarField("presets."+k+".model", "Model",
 						func() string { return s.cfg.Models.Presets[k].Model },
 						func(v string) error { mut(func(p *routing.ModelPreset) { p.Model = v }); return nil }),
-					intField2("presets."+k+".context_window", "Context window",
+					intField("presets."+k+".context_window", "Context window",
 						func() int { return s.cfg.Models.Presets[k].ContextWindow }, 0,
 						func(v int) { mut(func(p *routing.ModelPreset) { p.ContextWindow = v }) }),
-					intField2("presets."+k+".max_output", "Max output tokens",
+					intField("presets."+k+".max_output", "Max output tokens",
 						func() int { return s.cfg.Models.Presets[k].MaxOutputTokens }, 0,
 						func(v int) { mut(func(p *routing.ModelPreset) { p.MaxOutputTokens = v }) }),
 					{id: "presets." + k + ".temperature", title: "Temperature", kind: kindScalar,
@@ -169,7 +169,7 @@ func hooksFrame(s *state) *frame {
 					scalarField("hooks."+k+".command", "Command",
 						func() string { return h.Command },
 						func(v string) error { h.Command = v; return nil }),
-					intField2("hooks."+k+".timeout_ms", "Timeout (ms)",
+					intField("hooks."+k+".timeout_ms", "Timeout (ms)",
 						func() int { return h.TimeoutMS }, 0, func(v int) { h.TimeoutMS = v }),
 				}
 			})

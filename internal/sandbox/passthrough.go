@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 
@@ -20,35 +19,15 @@ func (p *Passthrough) Run(ctx context.Context, req native.CommandRequest) (nativ
 	runCtx, cancel := runWithTimeout(ctx, req)
 	defer cancel()
 
-	cmd := shellContextCommand(runCtx, req.Command)
+	cmd := shellCommand(req.Command)
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	start := nowFn()
-	err := cmd.Run()
-	result := native.CommandResult{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
-	}
-	if cmd.ProcessState != nil {
-		result.ExitCode = cmd.ProcessState.ExitCode()
-	}
 	meta := registry.SandboxMeta{
-		Enabled:    true,
-		Backend:    "passthrough",
-		DurationMS: elapsedMS(start),
+		Enabled: true,
+		Backend: "passthrough",
 	}
-	if err != nil {
-		if reason := killedReason(err, runCtx); reason != "" {
-			meta.KilledReason = reason
-		}
-	}
-	result.Meta = meta
-	return result, err
+	return executeCommand(runCtx, cmd, req, meta)
 }
 
 func (p *Passthrough) Capabilities() Capabilities {

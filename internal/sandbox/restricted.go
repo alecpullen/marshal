@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"os"
@@ -70,34 +69,11 @@ func (r *Restricted) Run(ctx context.Context, req native.CommandRequest) (native
 	runCtx, cancel := runWithTimeout(ctx, req)
 	defer cancel()
 
-	cmd := shellContextCommand(runCtx, restrictedWrapCommand(req.Command, r.cfg))
+	cmd := shellCommand(restrictedWrapCommand(req.Command, r.cfg))
 	cmd.Dir = req.Dir
 	cmd.Env = r.buildEnv()
-	applyProcmgmt(cmd) // unix: Setpgid for group kill on timeout
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	start := nowFn()
-	err = cmd.Run()
-	result := native.CommandResult{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
-	}
-	if cmd.ProcessState != nil {
-		result.ExitCode = cmd.ProcessState.ExitCode()
-	}
-
-	meta := metaFor(r.Capabilities(), r.cfg)
-	meta.DurationMS = elapsedMS(start)
-	if err != nil {
-		if reason := killedReason(err, runCtx); reason != "" {
-			meta.KilledReason = reason
-		}
-	}
-	result.Meta = meta
-	return result, err
+	return executeCommand(runCtx, cmd, req, metaFor(r.Capabilities(), r.cfg))
 }
 
 // buildEnv constructs the child environment.

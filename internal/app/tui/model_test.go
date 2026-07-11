@@ -810,11 +810,11 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
 	}
-	if len(batch) != 2 {
-		t.Fatalf("len(batch) = %d, want 2", len(batch))
+	if len(batch) != 3 {
+		t.Fatalf("len(batch) = %d, want 3 (runAgentCmd, tickCmd, spinnerTickCmd)", len(batch))
 	}
 
-	var sawFinished, sawTick bool
+	var sawFinished, sawTick, sawSpinnerTick bool
 	for _, sub := range batch {
 		switch msg := sub().(type) {
 		case agentFinishedMsg:
@@ -824,12 +824,14 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 			}
 		case agentTickMsg:
 			sawTick = true
+		case spinnerTickMsg:
+			sawSpinnerTick = true
 		default:
 			t.Fatalf("unexpected message type %T", msg)
 		}
 	}
-	if !sawFinished || !sawTick {
-		t.Fatalf("sawFinished=%v sawTick=%v, want both true", sawFinished, sawTick)
+	if !sawFinished || !sawTick || !sawSpinnerTick {
+		t.Fatalf("sawFinished=%v sawTick=%v sawSpinnerTick=%v, want all true", sawFinished, sawTick, sawSpinnerTick)
 	}
 
 	select {
@@ -1410,7 +1412,7 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 
 func TestStatusBarShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: time.Now()})
+	state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: time.Now().Add(-time.Second)})
 	m := New(state)
 	m.spinnerFrame = "⠋"
 	m.busy = true

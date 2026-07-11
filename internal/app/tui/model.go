@@ -527,7 +527,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.busy {
 			return m, nil
 		}
-		m.spinnerFrame = m.spinner.Next()
 		act := m.state.Activity()
 		if act.Kind == session.ActivityIdle && m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
 			m.lastActivityDone = m.now()
@@ -542,6 +541,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, tickCmd()
+	case spinnerTickMsg:
+		if !m.busy {
+			return m, nil
+		}
+		m.spinnerFrame = m.spinner.Next()
+		return m, spinnerTickCmd()
 	case tea.KeyPressMsg:
 		// Global hotkeys — input is always focused. (Approval and question
 		// pending states are routed above, before this switch.)
@@ -691,7 +696,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			agentCtx, cancel := context.WithCancel(m.ctx)
 			m.agentCancel = cancel
-			return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd())
+			return m, tea.Batch(runAgentCmd(agentCtx, m.runner, value), tickCmd(), spinnerTickCmd())
 		}
 	}
 
@@ -1168,10 +1173,10 @@ func (m *Model) refreshViewport() {
 	}
 
 	if inProgress.Active && inProgress.Reasoning != "" {
-		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.spinnerFrame, m.viewport.Width()))
+		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()))
 	}
 	if atc, ok := m.state.ActiveToolCall(); ok {
-		b.WriteString(renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.spinnerFrame, m.now(), m.viewport.Width()))
+		b.WriteString(renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.viewport.Width()))
 	}
 	if err := m.state.ProviderError(); err != nil {
 		b.WriteString(renderProviderError(err, m.viewport.Width()))
@@ -1188,6 +1193,7 @@ func (m *Model) refreshViewport() {
 
 type agentFinishedMsg struct{ err error }
 type agentTickMsg struct{}
+type spinnerTickMsg struct{}
 
 func runAgentCmd(ctx context.Context, runner AgentRunner, goal string) tea.Cmd {
 	return func() tea.Msg {
@@ -1200,6 +1206,27 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
 		return agentTickMsg{}
 	})
+}
+
+func spinnerTickCmd() tea.Cmd {
+	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+		return spinnerTickMsg{}
+	})
+}
+
+// activeSpinnerFrame returns the current spinner frame glyph if the activity
+// has been running for at least 200ms, or "" when the activity just started.
+// This avoids a flash of the spinner glyph before the user can perceive the
+// activity. For ActivityIdle it always returns "".
+func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
+	if kind == session.ActivityIdle {
+		return ""
+	}
+	act := m.state.Activity()
+	if m.now().Sub(act.StartedAt) < 200*time.Millisecond {
+		return ""
+	}
+	return m.spinnerFrame
 }
 
 // cancelTurn cancels the in-flight agent turn, if any. Shared by Esc and
@@ -1320,7 +1347,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		m.busy = true
 		agentCtx, cancel := context.WithCancel(m.ctx)
 		m.agentCancel = cancel
-		return m, tea.Batch(runAgentCmd(agentCtx, m.swarmRunner, goal), tickCmd())
+		return m, tea.Batch(runAgentCmd(agentCtx, m.swarmRunner, goal), tickCmd(), spinnerTickCmd())
 
 	case "model":
 		if len(args) == 0 {

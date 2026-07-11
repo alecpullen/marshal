@@ -1422,6 +1422,17 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 
+	case "mode":
+		if len(args) > 0 {
+			switch v := strings.ToLower(args[0]); v {
+			case "ask", "edit", "auto":
+				return m.dispatchCommand("/" + v)
+			}
+		}
+		m.openPicker("mode", "Interaction mode", "", m.modePickerItems(), "")
+		m.refreshViewport()
+		return m, nil
+
 	case "swarm":
 		goal := strings.TrimSpace(strings.Join(args, " "))
 		if goal == "" {
@@ -1593,6 +1604,23 @@ func (m *Model) branchesPickerItems() []picker.Item {
 		})
 	}
 	return items
+}
+
+// modePickerItems builds picker items for the three interaction modes.
+// The current mode (or "auto" when forceMode is empty) carries a "● now" badge.
+func (m *Model) modePickerItems() []picker.Item {
+	current := m.forceMode // "ask", "edit", or "" (auto)
+	badge := func(v string) string {
+		if v == current || (v == "auto" && current == "") {
+			return "● now"
+		}
+		return ""
+	}
+	return []picker.Item{
+		{Label: "Ask", Detail: "read-only, no planning", Badge: badge("ask"), Value: "ask"},
+		{Label: "Edit", Detail: "planning + full tools", Badge: badge("edit"), Value: "edit"},
+		{Label: "Auto", Detail: "classify each turn", Badge: badge("auto"), Value: "auto"},
+	}
 }
 
 func truncateRunes(s string, limit int) string {

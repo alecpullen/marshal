@@ -2599,3 +2599,56 @@ func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 		t.Fatalf("StatusSuccess = %#v, want 43", th.StatusSuccess)
 	}
 }
+
+// ── /mode picker (Task 8) ────────────────────────────────────────────────
+
+func TestModePickerMarksCurrentAndApplies(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.forceMode = "edit"
+
+	updated, _ := m.dispatchCommand("/mode")
+	m = *(updated.(*Model))
+	if m.pickerModel == nil || m.pickerCommand != "mode" {
+		t.Fatal("/mode should open the picker")
+	}
+	view := stripANSI(m.View().Content)
+	for _, want := range []string{"Ask", "Edit", "Auto", "● now"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("mode picker missing %q:\n%s", want, view)
+		}
+	}
+
+	updated, _ = m.Update(picker.PickedMsg{Value: "ask"})
+	m = *(updated.(*Model))
+	if m.forceMode != "ask" {
+		t.Fatalf("picking Ask should set forceMode, got %q", m.forceMode)
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Ask mode") {
+		t.Fatal("the /ask handler's confirmation message should appear")
+	}
+}
+
+func TestModeWithArgDispatchesDirectly(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/mode edit")
+	m = *(updated.(*Model))
+	if m.pickerModel != nil {
+		t.Fatal("/mode edit must not open the picker")
+	}
+	if m.forceMode != "edit" {
+		t.Fatalf("forceMode = %q, want edit", m.forceMode)
+	}
+}

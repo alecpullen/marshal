@@ -168,6 +168,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			},
 		},
 		{
+			Name:        "mode",
+			Description: "Pick the interaction mode (Ask / Edit / Auto)",
+			Args:        "[ask|edit|auto]",
+			Handler:     func(state *session.State, args []string) string { return "" },
+		},
+		{
 			Name:        "swarm",
 			Description: "Run a goal through the swarm (planner → scouts → implementer → reviewer)",
 			Args:        "<goal>",

@@ -285,6 +285,137 @@ func TestProviderNameFieldRejectsCollision(t *testing.T) {
 	}
 }
 
+func TestProviderYankPasteDuplicates(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "sk-1234"},
+	}
+	st := newState(cfg)
+
+	f := providersFrame(st)
+	rows := f.list.Rows()
+	var ollamaRow *field
+	for _, r := range rows {
+		if r.id == "providers.ollama" {
+			ollamaRow = r
+			break
+		}
+	}
+	if ollamaRow == nil {
+		t.Fatal("no ollama row")
+	}
+	data := ollamaRow.yank()
+	pc, ok := data.(yankedMapEntry)
+	if !ok {
+		t.Fatalf("yank data = %T, want yankedMapEntry", data)
+	}
+	if pc.key != "ollama" {
+		t.Fatalf("yanked key = %q, want ollama", pc.key)
+	}
+
+	if err := ollamaRow.paste(data); err != nil {
+		t.Fatalf("paste err = %v", err)
+	}
+	cp, ok := st.cfg.Providers["ollama-copy"]
+	if !ok {
+		t.Fatal("paste should create ollama-copy")
+	}
+	if cp.BaseURL != "http://localhost:11434/v1" {
+		t.Fatalf("copy BaseURL = %q, want preserved", cp.BaseURL)
+	}
+}
+
+func TestHooksReorderMoveUp(t *testing.T) {
+	cfg := config.Default()
+	cfg.Hooks.Entries = []config.HookConfig{
+		{Event: "pre_tool", Command: "a.sh"},
+		{Event: "turn_end", Command: "b.sh"},
+	}
+	st := newState(cfg)
+
+	f := hooksFrame(st)
+	rows := f.list.Rows()
+	var row1 *field
+	for _, r := range rows {
+		if r.id == "hooks.1" {
+			row1 = r
+			break
+		}
+	}
+	if row1 == nil {
+		t.Fatal("no hooks.1 row")
+	}
+	if row1.moveUp == nil {
+		t.Fatal("hooks rows must support moveUp")
+	}
+	row1.moveUp()
+	if st.cfg.Hooks.Entries[0].Command != "b.sh" {
+		t.Fatalf("after moveUp, entries[0].Command = %q, want b.sh", st.cfg.Hooks.Entries[0].Command)
+	}
+}
+
+func TestPermissionsDuplicateInPlace(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Rules = []config.PermissionRule{
+		{Permission: "shell", Pattern: "*", Action: "confirm"},
+	}
+	st := newState(cfg)
+
+	f := permissionsFrame(st)
+	rows := f.list.Rows()
+	var row0 *field
+	for _, r := range rows {
+		if r.id == "permissions.0" {
+			row0 = r
+			break
+		}
+	}
+	if row0 == nil {
+		t.Fatal("no permissions.0 row")
+	}
+	data := row0.yank()
+	if err := row0.paste(data); err != nil {
+		t.Fatalf("paste err = %v", err)
+	}
+	if len(st.cfg.Permissions.Rules) != 2 {
+		t.Fatalf("rules len = %d, want 2 after duplicate", len(st.cfg.Permissions.Rules))
+	}
+	if st.cfg.Permissions.Rules[1].Action != "confirm" {
+		t.Fatalf("duplicated rule Action = %q, want confirm", st.cfg.Permissions.Rules[1].Action)
+	}
+}
+
+func TestLanguagesReorderMoveDown(t *testing.T) {
+	cfg := config.Default()
+	cfg.Project.Languages = []string{"go", "markdown"}
+	st := newState(cfg)
+
+	f := commandsFrame(st)
+	var langDrill *field
+	for _, r := range f.list.Rows() {
+		if r.id == "project.languages" {
+			langDrill = r
+			break
+		}
+	}
+	detail := langDrill.build()
+	rows := detail.list.Rows()
+	var row0 *field
+	for _, r := range rows {
+		if r.id == "project.languages.0" {
+			row0 = r
+			break
+		}
+	}
+	if row0.moveDown == nil {
+		t.Fatal("languages items must support moveDown")
+	}
+	row0.moveDown()
+	if st.cfg.Project.Languages[0] != "markdown" {
+		t.Fatalf("after moveDown, languages[0] = %q, want markdown", st.cfg.Project.Languages[0])
+	}
+}
+
 func TestHooksAddWithoutPromptAndDelete(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(hooksFrame(s))

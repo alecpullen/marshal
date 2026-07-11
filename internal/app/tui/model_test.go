@@ -2877,8 +2877,15 @@ func TestSettingsSaveBlockedDuringAgentTurn(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	// Press Ctrl+S — should be blocked.
+	dirty := config.Default(); dirty.Privacy.RemoteProvidersAllowed = true; m.settingsModel.SetWorkingConfig(dirty)
+
+	// Ctrl+S opens the diff overlay; Enter commits and should be blocked.
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("ctrl+s should open the diff overlay, not save directly")
+	}
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
 	if cmd != nil {
@@ -2899,8 +2906,15 @@ func TestSettingsSaveBlockedDuringBackgroundJob(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	// Press Ctrl+S — should be blocked.
+	dirty := config.Default(); dirty.Privacy.RemoteProvidersAllowed = true; m.settingsModel.SetWorkingConfig(dirty)
+
+	// Ctrl+S opens the diff overlay; Enter commits and should be blocked.
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("ctrl+s should open the diff overlay, not save directly")
+	}
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
 	if cmd != nil {
@@ -2924,8 +2938,12 @@ func TestSettingsSaveAllowedWhenIdle(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	// Press Ctrl+S — should succeed.
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	dirty := config.Default(); dirty.Privacy.RemoteProvidersAllowed = true; m.settingsModel.SetWorkingConfig(dirty)
+
+	// Ctrl+S opens the diff overlay; Enter commits the save.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
 	if cmd == nil {

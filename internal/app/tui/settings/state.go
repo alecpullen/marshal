@@ -12,10 +12,11 @@ import (
 // dirty detection. It is heap-allocated (Model stores *state) so pointer
 // bindings survive Model value copies.
 type state struct {
-	cfg         config.Config
-	snapshot    config.Config
-	discovered  map[string][]string
-	actionState map[string]actionState
+	cfg                   config.Config
+	snapshot              config.Config
+	discovered            map[string][]string
+	actionState           map[string]actionState
+	wizardCreatedProvider string // set by providersWizard.onPick, consumed by drillIntoNewestProvider
 }
 
 type actionState struct {

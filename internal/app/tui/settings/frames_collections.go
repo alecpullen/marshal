@@ -78,7 +78,11 @@ func providersFrame(s *state) *frame {
 					{id: "providers." + k + ".api_key_env", title: "API key env", kind: kindScalar,
 						desc:   "env var name resolved at provider construction — preferred over storing the key",
 						getStr: func() string { return s.cfg.Providers[k].APIKeyEnv },
-						setStr: func(v string) error { mut(func(p *config.ProviderConfig) { p.APIKeyEnv = v }); invalidate(); return nil }},
+						setStr: func(v string) error {
+							mut(func(p *config.ProviderConfig) { p.APIKeyEnv = v })
+							invalidate()
+							return nil
+						}},
 					{id: "providers." + k + ".api_key", title: "API key", kind: kindScalar, masked: true,
 						desc:     "enter replaces · empty keeps · d clears · prefer the env-var field",
 						keywords: []string{"secret", "api key", "token"},
@@ -143,6 +147,7 @@ func providersWizard(s *state) func() *pickerRequest {
 					APIKeyEnv:   tpl.KeyEnv,
 					ToolCalling: tpl.ToolCalling,
 				}
+				s.wizardCreatedProvider = name
 				return nil
 			},
 		}
@@ -151,10 +156,10 @@ func providersWizard(s *state) func() *pickerRequest {
 
 func providerPickerField(s *state, id string, getProvider func() string, setProvider func(string) error) *field {
 	return &field{
-		id:    id,
-		title: "Provider",
-		kind:  kindPicker,
-		desc:  "configured provider for this role",
+		id:     id,
+		title:  "Provider",
+		kind:   kindPicker,
+		desc:   "configured provider for this role",
 		getStr: func() string { return getProvider() },
 		pickOptions: func() []picker.Item {
 			names := sortedKeys(s.cfg.Providers)
@@ -189,10 +194,10 @@ func providerPickerField(s *state, id string, getProvider func() string, setProv
 
 func modelPickerField(s *state, id string, providerName func() string, getModel func() string, setModel func(string) error) *field {
 	return &field{
-		id:    id,
-		title: "Model",
-		kind:  kindPicker,
-		desc:  "model id for this role",
+		id:     id,
+		title:  "Model",
+		kind:   kindPicker,
+		desc:   "model id for this role",
 		getStr: func() string { return getModel() },
 		pickOptions: func() []picker.Item {
 			pn := providerName()

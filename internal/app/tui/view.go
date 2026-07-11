@@ -124,16 +124,17 @@ func (m Model) renderInputArea() string {
 func (m Model) renderActivityStrip() string {
 	available := max(m.width-4, 1)
 	activity := m.state.Activity()
+	spinner := m.activeSpinnerFrame(activity.Kind)
 	label := ""
 	switch activity.Kind {
 	case session.ActivityThinking:
-		label = fmt.Sprintf("%s thinking", m.spinnerFrame)
+		label = fmt.Sprintf("%s thinking", spinner)
 	case session.ActivityTool:
 		elapsed := m.now().Sub(activity.StartedAt)
 		if elapsed < 0 {
 			elapsed = 0
 		}
-		label = fmt.Sprintf("%s %s · %s", m.spinnerFrame, activity.Label, formatElapsed(elapsed))
+		label = fmt.Sprintf("%s %s · %s", spinner, activity.Label, formatElapsed(elapsed))
 	default:
 		return ""
 	}

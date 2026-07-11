@@ -43,6 +43,8 @@ internal/app/config/                  — TOML config loading, defaults, merge r
 internal/app/logging/                 — slog logger construction
 internal/app/session/                 — in-memory app state, message list, shutdown context
 internal/app/tui/                     — Bubble Tea model (View/Update/Init)
+internal/app/tui/theme/               — semantic color slots with NO_COLOR/16/256 detection
+internal/app/tui/help/                — persistent keybinding footer and ? help overlay
 internal/commands/                    — slash commands (/plan, /test, /profile, …)
 internal/contextpack/                 — context pack builder and budget logic
 internal/db/                          — SQLite project/session persistence

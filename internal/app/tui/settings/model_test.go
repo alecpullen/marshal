@@ -134,10 +134,17 @@ func TestNarrowModePagesSections(t *testing.T) {
 
 func TestCtrlSSavesAndFlashes(t *testing.T) {
 	m := newTestModel(t)
+	// Make a change so the diff overlay has something to save.
+	m.state.cfg.Privacy.RemoteProvidersAllowed = true
 	var cmd tea.Cmd
 	m, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	// ctrl+s opens the diff overlay; press Enter to confirm the save.
+	if cmd != nil {
+		t.Fatal("ctrl+s should open diff overlay (nil cmd), not save directly")
+	}
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("ctrl+s should produce a save command")
+		t.Fatal("ctrl+s then Enter should produce a save command")
 	}
 	msg := cmd()
 	if _, ok := msg.(SavedMsg); !ok {

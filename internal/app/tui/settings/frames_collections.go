@@ -149,6 +149,85 @@ func providersWizard(s *state) func() *pickerRequest {
 	}
 }
 
+func providerPickerField(s *state, id string, getProvider func() string, setProvider func(string) error) *field {
+	return &field{
+		id:    id,
+		title: "Provider",
+		kind:  kindPicker,
+		desc:  "configured provider for this role",
+		getStr: func() string { return getProvider() },
+		pickOptions: func() []picker.Item {
+			names := sortedKeys(s.cfg.Providers)
+			if len(names) == 0 {
+				return []picker.Item{{Label: "Add a provider\u2026", Value: "__add_provider__", Badge: "required"}}
+			}
+			items := make([]picker.Item, 0, len(names))
+			current := getProvider()
+			for _, n := range names {
+				badge := ""
+				if n == current {
+					badge = "\u25cf now"
+				}
+				if isLocalhost(s.cfg.Providers[n].BaseURL) {
+					if badge != "" {
+						badge += " "
+					}
+					badge += "local"
+				}
+				items = append(items, picker.Item{Label: n, Value: n, Badge: badge})
+			}
+			return items
+		},
+		pickOnPick: func(v string) error {
+			if v == "__add_provider__" {
+				return fmt.Errorf("add a provider first in the Providers section")
+			}
+			return setProvider(v)
+		},
+	}
+}
+
+func modelPickerField(s *state, id string, providerName func() string, getModel func() string, setModel func(string) error) *field {
+	return &field{
+		id:    id,
+		title: "Model",
+		kind:  kindPicker,
+		desc:  "model id for this role",
+		getStr: func() string { return getModel() },
+		pickOptions: func() []picker.Item {
+			pn := providerName()
+			current := getModel()
+			var items []picker.Item
+			if cached, ok := s.discovered[pn]; ok && len(cached) > 0 {
+				for _, m := range cached {
+					badge := "\u25c9 discovered"
+					if m == current {
+						badge = "\u25cf now \u25c9 discovered"
+					}
+					items = append(items, picker.Item{Label: m, Value: m, Badge: badge})
+				}
+			} else if tpl, ok := provider.Lookup(pn); ok && len(tpl.Models) > 0 {
+				for _, m := range tpl.Models {
+					badge := "\u25cb catalog"
+					if m == current {
+						badge = "\u25cf now \u25cb catalog"
+					}
+					items = append(items, picker.Item{Label: m, Value: m, Badge: badge})
+				}
+			} else {
+				items = []picker.Item{{Label: "Test connection to discover", Value: "__discover__", Badge: "refresh"}}
+			}
+			return items
+		},
+		pickOnPick: func(v string) error {
+			if v == "__discover__" {
+				return fmt.Errorf("test the provider connection first to discover models")
+			}
+			return setModel(v)
+		},
+	}
+}
+
 func badgeForTemplate(tpl provider.ProviderTemplate) string {
 	if tpl.Local {
 		return "local"
@@ -181,10 +260,11 @@ func presetsFrame(s *state) *frame {
 			}
 			return newFrame(k, func() []*field {
 				return []*field{
-					scalarField("presets."+k+".provider", "Provider",
+					providerPickerField(s, "presets."+k+".provider",
 						func() string { return s.cfg.Models.Presets[k].Provider },
 						func(v string) error { mut(func(p *routing.ModelPreset) { p.Provider = v }); return nil }),
-					scalarField("presets."+k+".model", "Model",
+					modelPickerField(s, "presets."+k+".model",
+						func() string { return s.cfg.Models.Presets[k].Provider },
 						func() string { return s.cfg.Models.Presets[k].Model },
 						func(v string) error { mut(func(p *routing.ModelPreset) { p.Model = v }); return nil }),
 					intField("presets."+k+".context_window", "Context window",

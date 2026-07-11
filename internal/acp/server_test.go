@@ -456,6 +456,9 @@ func TestServerShutdownHonorsBound(t *testing.T) {
 	srv.handlerShutdownTimeout = 50 * time.Millisecond
 
 	block := make(chan struct{})
+	// Intentionally context-ignoring to exercise the timeout path.
+	// This is NOT a recommended handler pattern; real handlers SHOULD
+	// select on ctx.Done() alongside their blocking operation.
 	srv.Handle("block", func(ctx context.Context, params json.RawMessage) (any, error) {
 		<-block // never closed — handler ignores cancellation
 		return nil, nil

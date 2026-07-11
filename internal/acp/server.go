@@ -12,12 +12,6 @@ import (
 	"time"
 )
 
-const (
-	parseError     = -32700
-	methodNotFound = -32601
-	internalError  = -32603
-)
-
 // nullID is the JSON-RPC "id: null" sentinel used for responses where
 // the request id could not be determined (parse errors). JSON-RPC 2.0
 // §4.6 requires id to be present and null in that case, but
@@ -442,8 +436,8 @@ func (s *Server) closeInput() {
 	}
 }
 
-// writeError encodes and writes a JSON-RPC error response. The caller
-// MUST hold outMu or ensure serial access.
+// writeError encodes and writes a JSON-RPC error response. It acquires
+// outMu internally so callers do not need to serialise access.
 func (s *Server) writeError(id *json.RawMessage, code int, message string) error {
 	if id == nil {
 		id = &nullID

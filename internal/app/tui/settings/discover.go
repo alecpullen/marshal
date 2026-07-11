@@ -27,7 +27,7 @@ func isLocalhost(baseURL string) bool {
 	case "localhost", "127.0.0.1", "0.0.0.0", "::1":
 		return true
 	}
-	return strings.HasPrefix(u.Host, "[::1]")
+	return strings.HasPrefix(host, "::1%")
 }
 
 func probeProvider(fieldID, name string, pc config.ProviderConfig) tea.Cmd {

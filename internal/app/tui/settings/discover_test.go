@@ -18,6 +18,7 @@ func TestIsLocalhost(t *testing.T) {
 		{"http://127.0.0.1:11434/v1", true},
 		{"http://0.0.0.0:11434/v1", true},
 		{"http://[::1]:11434/v1", true},
+		{"http://[::1%25lo0]:11434/v1", true},
 		{"https://api.openai.com/v1", false},
 		{"https://openrouter.ai/api/v1", false},
 		{"", false},

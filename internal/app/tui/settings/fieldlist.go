@@ -215,9 +215,11 @@ func (fl *fieldList) openRow(row *field) tea.Cmd {
 		return row.act()
 	case kindPicker:
 		fl.pushPicker = &pickerRequest{
-			fieldID: row.id,
-			items:   row.pickOptions(),
-			onPick:  row.pickOnPick,
+			fieldID:     row.id,
+			items:       row.pickOptions(),
+			onPick:      row.pickOnPick,
+			title:       row.title,
+			allowCustom: row.pickAllowCustom,
 		}
 	}
 	return nil
@@ -465,12 +467,15 @@ func clipLines(lines []string, focusLine, height int) string {
 	return chrome.ClipLines(lines, focusLine, height, settingsTheme)
 }
 
+const wizardFieldID = "__wizard__"
+
 type pickerRequest struct {
-	fieldID string
-	items   []picker.Item
-	onPick  func(string) error
-	title   string
-	footer  string
+	fieldID     string
+	items       []picker.Item
+	onPick      func(string) error
+	title       string
+	footer      string
+	allowCustom bool
 }
 
 func (fl *fieldList) TakePushPicker() *pickerRequest {

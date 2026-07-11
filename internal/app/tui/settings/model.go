@@ -277,7 +277,7 @@ func (m *Model) saveCmd() tea.Cmd {
 
 func (m *Model) openPicker(req *pickerRequest) {
 	p := picker.New(req.title, req.footer, req.items)
-	p.SetAllowCustom(true)
+	p.SetAllowCustom(req.allowCustom)
 	m.pickerModel = p
 	m.pickerOnPick = req.onPick
 	m.pickerFieldID = req.fieldID
@@ -299,7 +299,7 @@ func (m *Model) handlePickerPicked(value string) (Model, tea.Cmd) {
 			return *m, nil
 		}
 	}
-	if m.pickerFieldID == "__wizard__" {
+	if m.pickerFieldID == wizardFieldID {
 		m.drillIntoNewestProvider()
 	}
 	m.closePicker()
@@ -329,8 +329,9 @@ func (m *Model) drillIntoNewestProvider() {
 }
 
 func truncateErr(s string) string {
-	if len(s) > 40 {
-		return s[:37] + "\u2026"
+	runes := []rune(s)
+	if len(runes) > 40 {
+		return string(runes[:37]) + "\u2026"
 	}
 	return s
 }

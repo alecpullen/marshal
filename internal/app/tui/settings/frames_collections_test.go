@@ -59,8 +59,8 @@ func TestProvidersAddAndEditType(t *testing.T) {
 	if ps.depth() != 2 {
 		t.Fatalf("enter should drill into the provider, depth=%d", ps.depth())
 	}
-	ps.Update(kp("j"))                               // skip Name row (row 0) to reach Type
-	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})   // edit Type row
+	ps.Update(kp("j"))                             // skip Name row (row 0) to reach Type
+	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // edit Type row
 	ps.top().list.input.SetValue("anthropic")
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if s.cfg.Providers["ollama"].Type != "anthropic" {

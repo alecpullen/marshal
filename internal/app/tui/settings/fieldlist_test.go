@@ -87,6 +87,77 @@ func TestFieldListDescriptionShownForCursorRow(t *testing.T) {
 	}
 }
 
+func TestScalarInlineEditAppliesAndValidates(t *testing.T) {
+	n := 5
+	fl := newFieldList(func() []*field {
+		return []*field{intField2("t.n", "Count", func() int { return n }, 1, func(v int) { n = v })}
+	})
+	fl.SetSize(60, 20)
+
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open edit
+	if !fl.Editing() {
+		t.Fatal("enter should open inline edit")
+	}
+	fl.input.SetValue("") // clear the pre-filled "5" so typing "12" gives exactly "12"
+	for _, r := range "12" {
+		fl.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if n != 12 {
+		t.Fatalf("edit should apply 12, got %d", n)
+	}
+	if fl.Editing() {
+		t.Fatal("apply should close the edit")
+	}
+
+	// invalid input blocks apply and shows the error
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	fl.input.SetValue("abc")
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if n != 12 {
+		t.Fatalf("invalid input must not apply, got %d", n)
+	}
+	if !strings.Contains(fl.View(), "must be a number") {
+		t.Fatalf("error should render, got:\n%s", fl.View())
+	}
+	// esc cancels without applying
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if fl.Editing() {
+		t.Fatal("esc should cancel the edit")
+	}
+}
+
+func TestScalarReadOnlyRowIgnoresEnter(t *testing.T) {
+	fl := newFieldList(func() []*field {
+		return []*field{{id: "t.ro", title: "Preset", kind: kindScalar, getStr: func() string { return "qwen" }}}
+	})
+	fl.SetSize(60, 20)
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if fl.Editing() {
+		t.Fatal("read-only row must not open an edit")
+	}
+}
+
+func TestMaskedRowKeepsOnEmptyAndClearsOnD(t *testing.T) {
+	secret := "sk-abcd1234"
+	fl := newFieldList(func() []*field {
+		return []*field{secretRow("t.key", "API key", func() string { return secret }, func(v string) { secret = v })}
+	})
+	fl.SetSize(60, 20)
+	if !strings.Contains(fl.View(), "••••1234") {
+		t.Fatalf("masked value should render last four, got:\n%s", fl.View())
+	}
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // apply empty = keep
+	if secret != "sk-abcd1234" {
+		t.Fatalf("empty apply must keep the secret, got %q", secret)
+	}
+	fl.Update(kp("d"))
+	if secret != "" {
+		t.Fatalf("d must clear the secret, got %q", secret)
+	}
+}
+
 func TestFieldListScrollsToKeepCursorVisible(t *testing.T) {
 	vals := make([]bool, 30)
 	fl := newFieldList(func() []*field {

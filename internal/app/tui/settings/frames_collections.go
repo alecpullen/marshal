@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 
+	tea "charm.land/bubbletea/v2"
+
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
 )
@@ -39,6 +41,9 @@ func providersFrame(s *state) *frame {
 				f(&pc)
 				s.cfg.Providers[k] = pc
 			}
+			invalidate := func() {
+				delete(s.discovered, k)
+			}
 			return newFrame(k, func() []*field {
 				return []*field{
 					scalarField("providers."+k+".type", "Type",
@@ -46,18 +51,29 @@ func providersFrame(s *state) *frame {
 						func(v string) error { mut(func(p *config.ProviderConfig) { p.Type = v }); return nil }),
 					scalarField("providers."+k+".base_url", "Base URL",
 						func() string { return s.cfg.Providers[k].BaseURL },
-						func(v string) error { mut(func(p *config.ProviderConfig) { p.BaseURL = v }); return nil }),
+						func(v string) error { mut(func(p *config.ProviderConfig) { p.BaseURL = v }); invalidate(); return nil }),
 					{id: "providers." + k + ".api_key_env", title: "API key env", kind: kindScalar,
 						desc:   "env var name resolved at provider construction — preferred over storing the key",
 						getStr: func() string { return s.cfg.Providers[k].APIKeyEnv },
-						setStr: func(v string) error { mut(func(p *config.ProviderConfig) { p.APIKeyEnv = v }); return nil }},
-					secretRow("providers."+k+".api_key", "API key",
-						func() string { return s.cfg.Providers[k].APIKey },
-						func(v string) { mut(func(p *config.ProviderConfig) { p.APIKey = v }) }),
+						setStr: func(v string) error { mut(func(p *config.ProviderConfig) { p.APIKeyEnv = v }); invalidate(); return nil }},
+					{id: "providers." + k + ".api_key", title: "API key", kind: kindScalar, masked: true,
+						desc:     "enter replaces · empty keeps · d clears · prefer the env-var field",
+						keywords: []string{"secret", "api key", "token"},
+						getStr:   func() string { return s.cfg.Providers[k].APIKey },
+						setStr: func(v string) error {
+							mut(func(p *config.ProviderConfig) { p.APIKey = v })
+							invalidate()
+							return nil
+						},
+						del: func() {
+							mut(func(p *config.ProviderConfig) { p.APIKey = "" })
+							invalidate()
+						}},
 					{id: "providers." + k + ".tool_calling", title: "Tool calling", kind: kindToggle,
 						desc:    "provider advertises native tool-calling support",
 						getBool: func() bool { return s.cfg.Providers[k].ToolCalling },
 						setBool: func(v bool) { mut(func(p *config.ProviderConfig) { p.ToolCalling = v }) }},
+					testConnectionField(s, k),
 				}
 			})
 		},
@@ -181,6 +197,34 @@ func hooksFrame(s *state) *frame {
 			}
 		})
 	return rootDrillFrame("Hooks", drill)
+}
+
+func testConnectionField(s *state, k string) *field {
+	fieldID := "providers." + k + ".test_connection"
+	return &field{
+		id:    fieldID,
+		title: "Test connection",
+		kind:  kindAction,
+		desc:  "ping the provider and list available models",
+		actLabel: func() string {
+			if as, ok := s.actionState[fieldID]; ok && as.label != "" {
+				return as.label
+			}
+			pc := s.cfg.Providers[k]
+			if !isLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
+				return "\u2717 blocked (enable Remote providers in Privacy)"
+			}
+			return "\u21b5 test"
+		},
+		act: func() tea.Cmd {
+			pc := s.cfg.Providers[k]
+			if !isLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
+				return nil
+			}
+			s.actionState[fieldID] = actionState{pending: true, label: "\u2026"}
+			return probeProvider(fieldID, k, pc)
+		},
+	}
 }
 
 func permissionsFrame(s *state) *frame {

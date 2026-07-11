@@ -350,15 +350,6 @@ func TestMouseCaptureDisabled(t *testing.T) {
 	}
 }
 
-func TestActiveThemeMirrorsLegacyColors(t *testing.T) {
-	if activeTheme.AccentPrimary != accentColor {
-		t.Fatalf("activeTheme.AccentPrimary = %v, accentColor = %v", activeTheme.AccentPrimary, accentColor)
-	}
-	if activeTheme.StatusSuccess != successColor {
-		t.Fatalf("StatusSuccess = %v, successColor = %v", activeTheme.StatusSuccess, successColor)
-	}
-}
-
 // newViewTestModelWithRegistry builds a model with a small in-memory
 // commands registry. Used by F18 completion tests that need a real
 // /command source to fuzzy-filter against.

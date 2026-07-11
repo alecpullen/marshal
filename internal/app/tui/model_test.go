@@ -10,11 +10,13 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
@@ -2186,5 +2188,22 @@ func TestCommandTriggerDismissesFilePopup(t *testing.T) {
 	}
 	if !m.cmdPopup.isVisible() {
 		t.Fatal("cmd popup should be visible for /pl")
+	}
+}
+
+func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	th := theme.LoadFor(false, "xterm-256color")
+	if th.AccentPrimary != lipgloss.Color("209") {
+		t.Fatalf("AccentPrimary = %#v, want 209", th.AccentPrimary)
+	}
+	if th.AccentTertiary != lipgloss.Color("214") {
+		t.Fatalf("AccentTertiary = %#v, want 214 (gold)", th.AccentTertiary)
+	}
+	if th.UserPrompt != lipgloss.Color("246") {
+		t.Fatalf("UserPrompt = %#v, want 246 (medium grey)", th.UserPrompt)
+	}
+	if th.StatusSuccess != lipgloss.Color("43") {
+		t.Fatalf("StatusSuccess = %#v, want 43", th.StatusSuccess)
 	}
 }

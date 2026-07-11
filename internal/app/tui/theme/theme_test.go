@@ -70,6 +70,12 @@ func Test16ColorFallback(t *testing.T) {
 	if th.AccentPrimary != lipgloss.Color("5") {
 		t.Fatalf("AccentPrimary = %#v, want 16-color magenta 5", th.AccentPrimary)
 	}
+	if th.AccentTertiary != lipgloss.Color("3") {
+		t.Fatalf("AccentTertiary = %#v, want 16-color yellow 3", th.AccentTertiary)
+	}
+	if th.UserPrompt != lipgloss.Color("7") {
+		t.Fatalf("UserPrompt = %#v, want 16-color white 7", th.UserPrompt)
+	}
 	if th.StatusSuccess != lipgloss.Color("2") {
 		t.Fatalf("StatusSuccess = %#v, want 16-color green 2", th.StatusSuccess)
 	}
@@ -81,5 +87,35 @@ func Test16ColorFallback(t *testing.T) {
 	}
 	if th.BGSelection != lipgloss.Color("4") {
 		t.Fatalf("BGSelection = %#v, want 16-color blue 4", th.BGSelection)
+	}
+}
+
+func Test256ColorPaletteHasNewThemeSlots(t *testing.T) {
+	th := LoadFor(false, "xterm-256color")
+	if th.AccentTertiary != lipgloss.Color("214") {
+		t.Fatalf("AccentTertiary = %#v, want 214 (gold)", th.AccentTertiary)
+	}
+	if th.UserPrompt != lipgloss.Color("246") {
+		t.Fatalf("UserPrompt = %#v, want 246 (medium grey)", th.UserPrompt)
+	}
+}
+
+func Test16ColorPaletteHasNewThemeSlots(t *testing.T) {
+	th := LoadFor(false, "xterm")
+	if th.AccentTertiary != lipgloss.Color("3") {
+		t.Fatalf("AccentTertiary = %#v, want 3 (yellow)", th.AccentTertiary)
+	}
+	if th.UserPrompt != lipgloss.Color("7") {
+		t.Fatalf("UserPrompt = %#v, want 7 (white)", th.UserPrompt)
+	}
+}
+
+func TestMonochromeHasNewThemeSlots(t *testing.T) {
+	th := LoadFor(true, "xterm-256color")
+	if _, ok := th.AccentTertiary.(lipgloss.NoColor); !ok {
+		t.Fatalf("AccentTertiary = %#v, want NoColor{} in NO_COLOR mode", th.AccentTertiary)
+	}
+	if _, ok := th.UserPrompt.(lipgloss.NoColor); !ok {
+		t.Fatalf("UserPrompt = %#v, want NoColor{} in NO_COLOR mode", th.UserPrompt)
 	}
 }

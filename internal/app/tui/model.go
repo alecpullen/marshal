@@ -1363,12 +1363,12 @@ var activeTheme = theme.Load()
 
 var (
 	// Warm Sunset palette, sourced from the active theme.
-	coralColor  = activeTheme.AccentPrimary
-	goldColor   = activeTheme.StatusWarning
-	tealColor   = activeTheme.StatusSuccess
-	orangeColor = activeTheme.StatusWarning
-	mauveColor  = activeTheme.FGMuted
-	userColor   = activeTheme.FGDefault
+	coralColor  = activeTheme.AccentPrimary  // marshal, focused border, prompt
+	goldColor   = activeTheme.AccentTertiary // tool-call names (amber/gold 214)
+	tealColor   = activeTheme.StatusSuccess  // success state
+	orangeColor = activeTheme.StatusWarning  // warning/risk labels
+	mauveColor  = lipgloss.Color("245")      // legacy blurred-border alias; no dedicated theme slot
+	userColor   = activeTheme.UserPrompt     // user message prefix (medium grey)
 
 	// accentColor is the primary accent (coral). Retained name because it is
 	// referenced widely; successColor/warningColor/errorColor are retuned to
@@ -1393,7 +1393,7 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(activeTheme.FGMuted)
 	toolNameStyle = lipgloss.NewStyle().
-			Foreground(activeTheme.StatusWarning)
+			Foreground(activeTheme.AccentTertiary)
 	keyHintStyle = lipgloss.NewStyle().
 			Foreground(activeTheme.AccentPrimary).
 			Bold(true)

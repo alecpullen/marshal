@@ -27,6 +27,8 @@ type Theme struct {
 	BGSelection     color.Color
 	AccentPrimary   color.Color
 	AccentSecondary color.Color
+	AccentTertiary  color.Color // amber/gold (214/3) — tool-call names, tertiary accents
+	UserPrompt      color.Color // medium grey (246/7) — user message prefix
 	StatusError     color.Color
 	StatusWarning   color.Color
 	StatusSuccess   color.Color
@@ -44,6 +46,8 @@ var warmSunset256 = Theme{
 	BGSelection:     lipgloss.Color("60"),
 	AccentPrimary:   lipgloss.Color("209"),
 	AccentSecondary: lipgloss.Color("175"),
+	AccentTertiary:  lipgloss.Color("214"),
+	UserPrompt:      lipgloss.Color("246"),
 	StatusError:     lipgloss.Color("203"),
 	StatusWarning:   lipgloss.Color("172"),
 	StatusSuccess:   lipgloss.Color("43"),
@@ -61,6 +65,8 @@ var warmSunset16 = Theme{
 	BGSelection:     lipgloss.Color("4"),
 	AccentPrimary:   lipgloss.Color("5"),
 	AccentSecondary: lipgloss.Color("5"),
+	AccentTertiary:  lipgloss.Color("3"),
+	UserPrompt:      lipgloss.Color("7"),
 	StatusError:     lipgloss.Color("1"),
 	StatusWarning:   lipgloss.Color("3"),
 	StatusSuccess:   lipgloss.Color("2"),
@@ -81,6 +87,8 @@ func monochromeTheme() Theme {
 		BGSelection:     lipgloss.NoColor{},
 		AccentPrimary:   lipgloss.NoColor{},
 		AccentSecondary: lipgloss.NoColor{},
+		AccentTertiary:  lipgloss.NoColor{},
+		UserPrompt:      lipgloss.NoColor{},
 		StatusError:     lipgloss.NoColor{},
 		StatusWarning:   lipgloss.NoColor{},
 		StatusSuccess:   lipgloss.NoColor{},

@@ -233,13 +233,6 @@ func (m *Model) saveCmd() tea.Cmd {
 	return func() tea.Msg { return SavedMsg{Cfg: loaded} }
 }
 
-// openSearch / updateSearch are completed in Task 11; stubs keep this task
-// compiling.
-func (m *Model) openSearch()                          {}
-func (m *Model) updateSearch(tea.KeyPressMsg) tea.Cmd { return nil }
-
-type searchState struct{} // replaced in Task 11
-
 var (
 	sidebarItemStyle   = lipgloss.NewStyle().Foreground(settingsTheme.FGDefault)
 	sidebarActiveStyle = lipgloss.NewStyle().Bold(true).Background(settingsTheme.BGSelection)
@@ -360,9 +353,8 @@ func (m Model) renderFooter(fw int) string {
 	return ansi.Cut(" "+strings.Join(parts, " "), 0, max(fw, 1))
 }
 
-// helpOverlay / searchOverlay are completed in Tasks 11–12.
-func (m Model) helpOverlay(fw, fh int) string   { return "" }
-func (m Model) searchOverlay(fw, fh int) string { return "" }
+// helpOverlay is completed in Task 12.
+func (m Model) helpOverlay(fw, fh int) string { return "" }
 
 func (m Model) FocusedFieldTitle() string {
 	if m.paneFocused || m.sidebarHidden {

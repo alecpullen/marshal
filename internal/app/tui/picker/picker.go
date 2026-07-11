@@ -1,0 +1,185 @@
+// Package picker renders a centered modal selection list with
+// filter-as-you-type, used by slash commands (/model, /rewind, /branches,
+// /mode). Keys are fzf-style: printable characters edit the filter, ↑/↓
+// move, Enter picks, Esc cancels — j/k belong to the filter, not movement.
+package picker
+
+import (
+	"strings"
+
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/theme"
+)
+
+var th = theme.Load()
+
+var (
+	groupStyle  = lipgloss.NewStyle().Foreground(th.AccentPrimary)
+	detailStyle = lipgloss.NewStyle().Foreground(th.FGMuted)
+	nowStyle    = lipgloss.NewStyle().Foreground(th.AccentPrimary)
+	badgeStyle  = lipgloss.NewStyle().Foreground(th.StatusInfo)
+	cursorStyle = lipgloss.NewStyle().Bold(true).Background(th.BGSelection)
+	mutedStyle  = lipgloss.NewStyle().Foreground(th.FGMuted)
+)
+
+// Item is one pickable row.
+type Item struct {
+	Label  string // primary text, left-aligned
+	Detail string // secondary text, right-aligned, muted
+	Badge  string // optional tag; "●" prefix marks the current item
+	Group  string // optional group header (unfiltered view only)
+	Value  string // opaque result delivered in PickedMsg
+}
+
+// PickedMsg is emitted when the user selects an item.
+type PickedMsg struct{ Value string }
+
+// CancelledMsg is emitted when the user presses Esc.
+type CancelledMsg struct{}
+
+// Model is the state for a picker modal.
+type Model struct {
+	title   string
+	footer  string
+	items   []Item
+	filter  textinput.Model
+	matches []int // indices into items, rank order
+	cursor  int   // index into matches
+}
+
+// New creates a picker model. The cursor starts on the first item whose
+// Badge begins with "●", or the first item if none have that badge.
+func New(title, footer string, items []Item) *Model {
+	ti := textinput.New()
+	ti.SetVirtualCursor(true)
+	ti.Focus()
+	m := &Model{title: title, footer: footer, items: items, filter: ti}
+	m.refilter()
+	for pos, idx := range m.matches {
+		if strings.HasPrefix(items[idx].Badge, "●") {
+			m.cursor = pos
+			break
+		}
+	}
+	return m
+}
+
+// SetFilter pre-fills the filter query (e.g. "/model qw" with no exact
+// match).
+func (m *Model) SetFilter(q string) {
+	m.filter.SetValue(q)
+	m.filter.CursorEnd()
+	m.refilter()
+}
+
+func (m *Model) refilter() {
+	hay := make([]string, len(m.items))
+	for i, it := range m.items {
+		hay[i] = it.Group + " " + it.Label + " " + it.Detail
+	}
+	m.matches = fuzzy.Rank(m.filter.Value(), hay)
+	if m.cursor >= len(m.matches) {
+		m.cursor = max(len(m.matches)-1, 0)
+	}
+}
+
+// Update handles key events for the picker.
+func (m *Model) Update(msg tea.Msg) tea.Cmd {
+	k, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return nil
+	}
+	switch k.String() {
+	case "esc":
+		return func() tea.Msg { return CancelledMsg{} }
+	case "enter":
+		if m.cursor < len(m.matches) && len(m.matches) > 0 {
+			v := m.items[m.matches[m.cursor]].Value
+			return func() tea.Msg { return PickedMsg{Value: v} }
+		}
+		return nil
+	case "up":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		return nil
+	case "down":
+		if m.cursor < len(m.matches)-1 {
+			m.cursor++
+		}
+		return nil
+	}
+	var cmd tea.Cmd
+	m.filter, cmd = m.filter.Update(k)
+	m.refilter()
+	m.cursor = 0
+	return cmd
+}
+
+// View renders the picker as a centered panel with filter input, item list,
+// and footer.
+func (m *Model) View(maxW, maxH int) string {
+	pw := min(64, maxW-8)
+	if pw < 30 {
+		pw = max(maxW-2, 30)
+	}
+	inner := pw - 2
+
+	filtering := strings.TrimSpace(m.filter.Value()) != ""
+	var rows []string
+	focusLine := 0
+	lastGroup := ""
+	for pos, idx := range m.matches {
+		it := m.items[idx]
+		if !filtering && it.Group != "" && it.Group != lastGroup {
+			rows = append(rows, groupStyle.Render(it.Group))
+			lastGroup = it.Group
+		}
+		marker := "  "
+		if pos == m.cursor {
+			marker = "▸ "
+			focusLine = len(rows)
+		}
+		right := detailStyle.Render(it.Detail)
+		if it.Badge != "" {
+			bs := badgeStyle
+			if strings.HasPrefix(it.Badge, "●") {
+				bs = nowStyle
+			}
+			right += " " + bs.Render(it.Badge)
+		}
+		gap := inner - lipgloss.Width(marker) - lipgloss.Width(it.Label) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		label := it.Label
+		if pos == m.cursor {
+			label = cursorStyle.Render(label)
+		}
+		rows = append(rows, marker+label+strings.Repeat(" ", gap)+right)
+	}
+	if len(m.matches) == 0 {
+		rows = append(rows, mutedStyle.Render("  no matches"))
+	}
+
+	// panel = filter line + separator + windowed rows + footer
+	listH := maxH - 7 // borders(2) + filter + separator + footer + margin(2)
+	if listH < 3 {
+		listH = 3
+	}
+	body := chrome.ClipLines(rows, focusLine, listH, th)
+	footer := mutedStyle.Render("[↑↓] move [↵] pick [Esc] cancel")
+	if m.footer != "" {
+		footer += mutedStyle.Render(" · " + m.footer)
+	}
+	content := "/ " + m.filter.View() + "\n" +
+		mutedStyle.Render(strings.Repeat("─", inner)) + "\n" +
+		body + "\n" + footer
+	ph := min(lipgloss.Height(content)+2, maxH)
+	return chrome.Panel(m.title, content, pw, ph, true, th)
+}

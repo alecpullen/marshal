@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/help"
 )
 
@@ -66,7 +67,11 @@ func (m Model) viewString() string {
 		rows = append(rows, panel)
 	}
 	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	out := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	if m.pickerModel != nil {
+		return chrome.Overlay(out, m.pickerModel.View(m.width, m.height), m.width, m.height)
+	}
+	return out
 }
 
 func (m Model) renderTranscriptFrame() string {

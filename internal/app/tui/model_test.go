@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
@@ -62,6 +63,16 @@ func drainCmds(m Model, cmd tea.Cmd) Model {
 func sendKey(m Model, key tea.KeyPressMsg) Model {
 	updated, cmd := m.Update(key)
 	return drainCmds(updated.(Model), cmd)
+}
+
+// asModel normalises the *Model-vs-Model return from Update/dispatchCommand
+// so that picker tests can use a single helper regardless of receiver type.
+func asModel(t *testing.T, updated tea.Model) Model {
+	t.Helper()
+	if p, ok := updated.(*Model); ok {
+		return *p
+	}
+	return updated.(Model)
 }
 
 func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
@@ -2386,6 +2397,202 @@ func TestHelpOverlayDoesNotSwallowAgentFinishedMsg(t *testing.T) {
 	}
 }
 
+func TestPickerRoutingOpenPickCancel(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	// open a picker directly via the helper
+	m.openPicker("branches", "Switch branch", "", []picker.Item{
+		{Label: "branch 1", Value: "1"},
+		{Label: "branch 2", Value: "2", Badge: "● now"},
+	}, "")
+	if m.pickerModel == nil || m.pickerCommand != "branches" {
+		t.Fatal("openPicker should set the modal state")
+	}
+
+	// the modal renders composited over the normal view
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "Switch branch") || !strings.Contains(view, "branch 1") {
+		t.Fatalf("picker should render over the view:\n%s", view)
+	}
+
+	// keys route to the picker: esc → CancelledMsg → closes
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("esc should produce the picker's cancel command")
+	}
+	updated, _ = m.Update(cmd())
+	m = asModel(t, updated)
+	if m.pickerModel != nil || m.pickerCommand != "" {
+		t.Fatal("CancelledMsg should close the picker")
+	}
+}
+
+// ── /model picker routing (Task 6) ──────────────────────────────────────
+
+func modelTestState(t *testing.T) *session.State {
+	t.Helper()
+	cfg := config.Default()
+	if cfg.Models.Presets == nil {
+		cfg.Models.Presets = map[string]routing.ModelPreset{}
+	}
+	cfg.Models.Presets["test-a"] = routing.ModelPreset{Name: "test-a", Provider: "ollama", Model: "qwen2.5", LocalOnly: true}
+	cfg.Models.Presets["test-b"] = routing.ModelPreset{Name: "test-b", Provider: "anthropic", Model: "sonnet-5"}
+	return session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+}
+
+func TestModelBareOpensPicker(t *testing.T) {
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model")
+	m = asModel(t, updated)
+	if m.pickerModel == nil || m.pickerCommand != "model" {
+		t.Fatal("bare /model should open the picker")
+	}
+	view := stripANSI(m.View().Content)
+	for _, want := range []string{"test-a", "test-b", "ollama/qwen2.5", "local", "session only"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("picker view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestModelExactArgBypassesPicker(t *testing.T) {
+	var reloaded *config.Config
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model test-b")
+	m = asModel(t, updated)
+	if m.pickerModel != nil {
+		t.Fatal("exact preset arg must switch directly, no picker")
+	}
+	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-b" {
+		t.Fatalf("direct switch should reload with test-b, got %+v", reloaded)
+	}
+}
+
+func TestModelUnknownArgOpensPrefilteredPicker(t *testing.T) {
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model test-a-typo-b")
+	m = asModel(t, updated)
+	if m.pickerModel == nil {
+		t.Fatal("unknown arg should open the picker instead of erroring")
+	}
+}
+
+func TestModelPickAppliesSessionSwitch(t *testing.T) {
+	var reloaded *config.Config
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model")
+	m = asModel(t, updated)
+	updated, _ = m.Update(picker.PickedMsg{Value: "test-a"})
+	m = asModel(t, updated)
+	if m.pickerModel != nil {
+		t.Fatal("pick should close the modal")
+	}
+	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-a" {
+		t.Fatalf("pick should reload with test-a, got %+v", reloaded)
+	}
+}
+
+func TestModelNoPresetsPointsAtSettings(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state, WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/model")
+	m = asModel(t, updated)
+	if m.pickerModel != nil {
+		t.Fatal("no presets: picker must not open")
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "/settings") {
+		t.Fatal("should add a system message pointing at /settings")
+	}
+}
+
+// ── /rewind and /branches pickers (Task 7) ──────────────────────────────
+
+func pickerTestModel(t *testing.T, state *session.State) Model {
+	t.Helper()
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	return m
+}
+
+func TestRewindBareOpensPickerNewestFirst(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "first question", session.ContentTypePlain)
+	state.AddMessage(session.RoleUser, "second question about parsing", session.ContentTypePlain)
+	m := pickerTestModel(t, state)
+	updated, _ := m.dispatchCommand("/rewind")
+	m = asModel(t, updated)
+	if m.pickerModel == nil || m.pickerCommand != "rewind" {
+		t.Fatal("bare /rewind should open the picker, not rewind immediately")
+	}
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "second question") {
+		t.Fatalf("picker should preview turn content:\n%s", view)
+	}
+	// newest turn is first and carries the ● badge → default Enter target
+	first := strings.Index(view, "turn 2")
+	second := strings.Index(view, "turn 1")
+	if first == -1 || second == -1 || first > second {
+		t.Fatalf("turns should list newest first:\n%s", view)
+	}
+}
+
+func TestRewindWithArgSkipsPicker(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "only turn", session.ContentTypePlain)
+	m := pickerTestModel(t, state)
+	updated, _ := m.dispatchCommand("/rewind 1")
+	m = asModel(t, updated)
+	if m.pickerModel != nil {
+		t.Fatal("/rewind 1 must run directly")
+	}
+}
+
+func TestBranchesBareOpensPickerWithCurrentBadge(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "first turn", session.ContentTypePlain)
+	state.Rewind(1) // create a fork at the root
+	state.AddMessage(session.RoleUser, "second turn", session.ContentTypePlain)
+	// Now there are 2 branches (messages 1 and 2 are both leaves).
+	m := pickerTestModel(t, state)
+	updated, _ := m.dispatchCommand("/branches")
+	m = asModel(t, updated)
+	if m.pickerModel == nil || m.pickerCommand != "branches" {
+		t.Fatal("bare /branches should open the picker")
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "● now") {
+		t.Fatal("current branch should be badged")
+	}
+}
+
+func TestRewindNoTurnsFallsThroughToHandler(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := pickerTestModel(t, state)
+	updated, _ := m.dispatchCommand("/rewind")
+	m = asModel(t, updated)
+	if m.pickerModel != nil {
+		t.Fatal("no turns: picker must not open")
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "No user turns") {
+		t.Fatal("handler's 'No user turns to rewind to.' message should appear")
+	}
+}
+
 func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	th := theme.LoadFor(false, "xterm-256color")
@@ -2400,5 +2607,58 @@ func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 	}
 	if th.StatusSuccess != lipgloss.Color("43") {
 		t.Fatalf("StatusSuccess = %#v, want 43", th.StatusSuccess)
+	}
+}
+
+// ── /mode picker (Task 8) ────────────────────────────────────────────────
+
+func TestModePickerMarksCurrentAndApplies(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.forceMode = "edit"
+
+	updated, _ := m.dispatchCommand("/mode")
+	m = asModel(t, updated)
+	if m.pickerModel == nil || m.pickerCommand != "mode" {
+		t.Fatal("/mode should open the picker")
+	}
+	view := stripANSI(m.View().Content)
+	for _, want := range []string{"Ask", "Edit", "Auto", "● now"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("mode picker missing %q:\n%s", want, view)
+		}
+	}
+
+	updated, _ = m.Update(picker.PickedMsg{Value: "ask"})
+	m = asModel(t, updated)
+	if m.forceMode != "ask" {
+		t.Fatalf("picking Ask should set forceMode, got %q", m.forceMode)
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Ask mode") {
+		t.Fatal("the /ask handler's confirmation message should appear")
+	}
+}
+
+func TestModeWithArgDispatchesDirectly(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	updated, _ := m.dispatchCommand("/mode edit")
+	m = asModel(t, updated)
+	if m.pickerModel != nil {
+		t.Fatal("/mode edit must not open the picker")
+	}
+	if m.forceMode != "edit" {
+		t.Fatalf("forceMode = %q, want edit", m.forceMode)
 	}
 }

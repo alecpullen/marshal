@@ -168,9 +168,11 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	// Global keys (never while an inline edit wants the characters).
 	switch ks {
 	case "ctrl+s":
-		return *m, m.openDiff()
+		cmd := m.openDiff()
+		return *m, cmd
 	case "ctrl+o": // parent toggle key behaves like Esc-at-top: close request
-		return *m, m.requestClose()
+		cmd := m.requestClose()
+		return *m, cmd
 	}
 	if !editing {
 		switch ks {

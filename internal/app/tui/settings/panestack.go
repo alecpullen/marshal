@@ -83,43 +83,6 @@ func sortedKeys[T any](m map[string]T) []string {
 	return keys
 }
 
-// listDrill is a drill row over a []string: each item is an editable scalar
-// row, a appends (typed value is the item), d deletes.
-func listDrill(id, title string, items *[]string) *field {
-	buildFields := func() []*field {
-		out := make([]*field, len(*items))
-		for i := range *items {
-			i := i
-			out[i] = &field{
-				id: fmt.Sprintf("%s.%d", id, i), title: (*items)[i], kind: kindScalar,
-				getStr: func() string { return (*items)[i] },
-				setStr: func(v string) error {
-					if v == "" {
-						return fmt.Errorf("cannot be empty")
-					}
-					(*items)[i] = v
-					return nil
-				},
-				del: func() { *items = append((*items)[:i], (*items)[i+1:]...) },
-			}
-		}
-		return out
-	}
-	return &field{
-		id: id, title: title, kind: kindDrill,
-		summary: func() string { return fmt.Sprintf("%d items", len(*items)) },
-		build: func() *frame {
-			return newCollectionFrame(title, "New entry", buildFields, func(v string) error {
-				if strings.TrimSpace(v) == "" {
-					return fmt.Errorf("cannot be empty")
-				}
-				*items = append(*items, v)
-				return nil
-			})
-		},
-	}
-}
-
 // mapDrill is the generic key/value drill; parse/format adapt the value type.
 func mapDrill[T any](id, title string, values *map[string]T, parse func(string) (T, error), format func(T) string) *field {
 	buildFields := func() []*field {
@@ -181,22 +144,39 @@ func mapIntDrill(id, title string, values *map[string]int) *field {
 		strconv.Itoa)
 }
 
-// entriesDrill is a drill row over a named collection (providers, presets,
-// MCP servers, hooks, permission rules). Each entry row drills again into
-// buildEntry(key).
-func entriesDrill(id, title, keyPrompt string, keys func() []string, rowTitle func(string) string,
-	add func(string) error, buildEntry func(string) *frame, del func(string)) *field {
+type entriesOpts struct {
+	moveUp   func(k string)
+	moveDown func(k string)
+	yank     func(k string) any
+	paste    func(k string, data any) error
+}
+
+func entriesDrillExt(id, title, keyPrompt string, keys func() []string, rowTitle func(string) string,
+	add func(string) error, buildEntry func(string) *frame, del func(string), opts entriesOpts) *field {
 	buildFields := func() []*field {
 		ks := keys()
 		out := make([]*field, len(ks))
 		for i, k := range ks {
 			k := k
-			out[i] = &field{
+			row := &field{
 				id: id + "." + k, title: rowTitle(k), kind: kindDrill,
 				summary: func() string { return "" },
 				build:   func() *frame { return buildEntry(k) },
 				del:     func() { del(k) },
 			}
+			if opts.moveUp != nil {
+				row.moveUp = func() { opts.moveUp(k) }
+			}
+			if opts.moveDown != nil {
+				row.moveDown = func() { opts.moveDown(k) }
+			}
+			if opts.yank != nil {
+				row.yank = func() any { return opts.yank(k) }
+			}
+			if opts.paste != nil {
+				row.paste = func(data any) error { return opts.paste(k, data) }
+			}
+			out[i] = row
 		}
 		return out
 	}
@@ -205,6 +185,73 @@ func entriesDrill(id, title, keyPrompt string, keys func() []string, rowTitle fu
 		summary: func() string { return fmt.Sprintf("%d entries", len(keys())) },
 		build: func() *frame {
 			return newCollectionFrame(title, keyPrompt, buildFields, add)
+		},
+	}
+}
+
+// entriesDrill is a drill row over a named collection (providers, presets,
+// MCP servers, hooks, permission rules). Each entry row drills again into
+// buildEntry(key).
+func entriesDrill(id, title, keyPrompt string, keys func() []string, rowTitle func(string) string,
+	add func(string) error, buildEntry func(string) *frame, del func(string)) *field {
+	return entriesDrillExt(id, title, keyPrompt, keys, rowTitle, add, buildEntry, del, entriesOpts{})
+}
+
+type yankedMapEntry struct {
+	key string
+	val any
+}
+
+// listDrill is a drill row over a []string: each item is an editable scalar
+// row, a appends (typed value is the item), d deletes.
+func listDrill(id, title string, items *[]string) *field {
+	return listDrillExt(id, title, items, entriesOpts{})
+}
+
+func listDrillExt(id, title string, items *[]string, opts entriesOpts) *field {
+	buildFields := func() []*field {
+		out := make([]*field, len(*items))
+		for i := range *items {
+			i := i
+			row := &field{
+				id: fmt.Sprintf("%s.%d", id, i), title: (*items)[i], kind: kindScalar,
+				getStr: func() string { return (*items)[i] },
+				setStr: func(v string) error {
+					if v == "" {
+						return fmt.Errorf("cannot be empty")
+					}
+					(*items)[i] = v
+					return nil
+				},
+				del: func() { *items = append((*items)[:i], (*items)[i+1:]...) },
+			}
+			if opts.moveUp != nil {
+				row.moveUp = func() { opts.moveUp(strconv.Itoa(i)) }
+			}
+			if opts.moveDown != nil {
+				row.moveDown = func() { opts.moveDown(strconv.Itoa(i)) }
+			}
+			if opts.yank != nil {
+				row.yank = func() any { return opts.yank(strconv.Itoa(i)) }
+			}
+			if opts.paste != nil {
+				row.paste = func(data any) error { return opts.paste(strconv.Itoa(i), data) }
+			}
+			out[i] = row
+		}
+		return out
+	}
+	return &field{
+		id: id, title: title, kind: kindDrill,
+		summary: func() string { return fmt.Sprintf("%d items", len(*items)) },
+		build: func() *frame {
+			return newCollectionFrame(title, "New entry", buildFields, func(v string) error {
+				if strings.TrimSpace(v) == "" {
+					return fmt.Errorf("cannot be empty")
+				}
+				*items = append(*items, v)
+				return nil
+			})
 		},
 	}
 }

@@ -149,12 +149,15 @@ func TestInputAreaHasNoBackgroundFill(t *testing.T) {
 
 func TestInputBorderColorReflectsFocus(t *testing.T) {
 	m := newViewTestModel(t, 60, 20)
-	if !strings.Contains(m.renderInputArea(), "209") {
-		t.Fatal("focused input box should use coral (209) border")
-	}
+	focused := m.renderInputArea()
 	m.input.Blur()
-	if !strings.Contains(m.renderInputArea(), "245") {
-		t.Fatal("blurred input box should use mauve (245) border")
+	blurred := m.renderInputArea()
+	if focused == blurred {
+		t.Fatal("focused and blurred input box should have different border colors")
+	}
+	// Both must be styled (have ANSI sequences).
+	if focused == stripANSI(focused) {
+		t.Fatalf("focused input area has no ANSI styling:\n%q", focused)
 	}
 }
 
@@ -344,6 +347,15 @@ func TestMouseCaptureDisabled(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	if got := m.View().MouseMode; got != tea.MouseModeNone {
 		t.Fatalf("View().MouseMode = %v, want MouseModeNone (native selection enabled)", got)
+	}
+}
+
+func TestActiveThemeMirrorsLegacyColors(t *testing.T) {
+	if activeTheme.AccentPrimary != accentColor {
+		t.Fatalf("activeTheme.AccentPrimary = %v, accentColor = %v", activeTheme.AccentPrimary, accentColor)
+	}
+	if activeTheme.StatusSuccess != successColor {
+		t.Fatalf("StatusSuccess = %v, successColor = %v", activeTheme.StatusSuccess, successColor)
 	}
 }
 

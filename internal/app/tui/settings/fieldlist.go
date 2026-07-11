@@ -443,5 +443,8 @@ func clipLines(lines []string, focusLine, height int) string {
 	if start+inner < len(lines) {
 		out = append(out, flMoreStyle.Render("  ↓ more"))
 	}
+	if len(out) > height {
+		out = out[:height]
+	}
 	return strings.Join(out, "\n")
 }

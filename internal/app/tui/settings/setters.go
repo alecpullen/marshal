@@ -7,6 +7,8 @@ import (
 )
 
 // intSetter parses an int, clamps to min (when min != 0), and applies it.
+// When min is 0, no minimum clamping is applied (negatives are allowed).
+// To enforce non-negative, pass min=1 (or use a different setter).
 func intSetter(min int, apply func(int)) func(string) error {
 	return func(s string) error {
 		v, err := strconv.Atoi(s)

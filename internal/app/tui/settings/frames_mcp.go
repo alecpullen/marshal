@@ -25,7 +25,7 @@ func mcpFrame(s *state) *frame {
 		},
 		func(k string) *frame {
 			// Args and Env need stable pointers for the drill builders; the
-			// mutate helper writes the struct back after each change. We keep
+			// writeback closure writes the struct back after each change. We keep
 			// a per-frame copy whose slices/maps alias the working config
 			// only through explicit writeback.
 			return newFrame(k, func() []*field {

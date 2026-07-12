@@ -1524,6 +1524,420 @@ func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
 	}
 }
 
+// ── Task 3: existing-session mode ──────────────────────────────────────
+
+func TestStartRuntimeLoadsExistingSessionWithoutDuplicateInsert(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	configContent := `[project]
+name = "existing-test"
+[profile]
+default = "mock_profile"
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+[models.presets.mock_preset]
+provider = "mock"
+model = "mock-model"
+local_only = true
+[agent_profiles.mock_profile]
+implementer = "mock_preset"
+planner = "mock_preset"
+repo_scout = "mock_preset"
+tester = "mock_preset"
+reviewer = "mock_preset"
+`
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx := context.Background()
+	now := time.Unix(100, 0)
+
+	// First runtime: create a session and persist messages.
+	rt1, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithNow(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatalf("first StartRuntime: %v", err)
+	}
+
+	rt1.State.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	rt1.State.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
+	expectedLeaf := rt1.State.LeafID()
+	expectedMessages := rt1.State.Messages()
+	sessionID := rt1.SessionID
+
+	rt1.Close(ctx)
+
+	// Count rows via direct DB.
+	countDB, err := db.Open(dbPath(tmp))
+	if err != nil {
+		t.Fatalf("open db for counting: %v", err)
+	}
+	var initialProjectCount, initialSessionCount, initialMessageCount int
+	countDB.SQLDB().QueryRow("SELECT COUNT(*) FROM projects").Scan(&initialProjectCount)
+	countDB.SQLDB().QueryRow("SELECT COUNT(*) FROM agent_sessions").Scan(&initialSessionCount)
+	countDB.SQLDB().QueryRow("SELECT COUNT(*) FROM messages").Scan(&initialMessageCount)
+	countDB.Close()
+
+	// Second runtime with WithExistingSession.
+	rt2, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithNow(func() time.Time { return time.Unix(200, 0) }),
+		WithExistingSession(sessionID),
+	)
+	if err != nil {
+		t.Fatalf("second StartRuntime with WithExistingSession: %v", err)
+	}
+	defer rt2.Close(ctx)
+
+	gotMessages := rt2.State.Messages()
+	if len(gotMessages) != len(expectedMessages) {
+		t.Fatalf("existing session messages = %d, want %d", len(gotMessages), len(expectedMessages))
+	}
+	for i, m := range gotMessages {
+		if m.Content != expectedMessages[i].Content || m.Role != expectedMessages[i].Role {
+			t.Fatalf("message[%d] = %+v, want %+v", i, m, expectedMessages[i])
+		}
+	}
+	if got := rt2.State.LeafID(); got != expectedLeaf {
+		t.Fatalf("LeafID = %d, want %d", got, expectedLeaf)
+	}
+	if rt2.SessionID != sessionID {
+		t.Fatalf("SessionID = %q, want %q", rt2.SessionID, sessionID)
+	}
+
+	// Verify counts unchanged.
+	countDB2, err := db.Open(dbPath(tmp))
+	if err != nil {
+		t.Fatalf("open db for recount: %v", err)
+	}
+	defer countDB2.Close()
+	var projectCount, sessionCount, messageCount int
+	countDB2.SQLDB().QueryRow("SELECT COUNT(*) FROM projects").Scan(&projectCount)
+	countDB2.SQLDB().QueryRow("SELECT COUNT(*) FROM agent_sessions").Scan(&sessionCount)
+	countDB2.SQLDB().QueryRow("SELECT COUNT(*) FROM messages").Scan(&messageCount)
+	if projectCount != initialProjectCount {
+		t.Fatalf("project count = %d, want %d (unchanged)", projectCount, initialProjectCount)
+	}
+	if sessionCount != initialSessionCount {
+		t.Fatalf("session count = %d, want %d (unchanged)", sessionCount, initialSessionCount)
+	}
+	if messageCount != initialMessageCount {
+		t.Fatalf("message count = %d, want %d (unchanged)", messageCount, initialMessageCount)
+	}
+}
+
+func TestStartRuntimeExistingSessionMissingDoesNotCreate(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	configContent := `[project]
+name = "missing-test"
+[profile]
+default = "mock_profile"
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+[models.presets.mock_preset]
+provider = "mock"
+model = "mock-model"
+local_only = true
+[agent_profiles.mock_profile]
+implementer = "mock_preset"
+planner = "mock_preset"
+repo_scout = "mock_preset"
+tester = "mock_preset"
+reviewer = "mock_preset"
+`
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Create the project row via direct DB (no session).
+	database, err := db.Open(dbPath(tmp))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		database.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := database.GetOrCreateProject(tmp, "missing-test"); err != nil {
+		database.Close()
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	database.Close()
+
+	// Count sessions before.
+	countDB, err := db.Open(dbPath(tmp))
+	if err != nil {
+		t.Fatalf("open db for count: %v", err)
+	}
+	var initialSessionCount int
+	countDB.SQLDB().QueryRow("SELECT COUNT(*) FROM agent_sessions").Scan(&initialSessionCount)
+	countDB.Close()
+
+	ctx := context.Background()
+	_, err = StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithExistingSession("nonexistent-session-id"),
+	)
+	if err == nil {
+		t.Fatal("expected error for nonexistent existing session, got nil")
+	}
+
+	// Verify no session was created.
+	countDB2, err := db.Open(dbPath(tmp))
+	if err != nil {
+		t.Fatalf("open db for second count: %v", err)
+	}
+	defer countDB2.Close()
+	var sessionCount int
+	countDB2.SQLDB().QueryRow("SELECT COUNT(*) FROM agent_sessions").Scan(&sessionCount)
+	if sessionCount != initialSessionCount {
+		t.Fatalf("session count = %d, want %d (unchanged)", sessionCount, initialSessionCount)
+	}
+}
+
+func TestStartRuntimeExistingSessionRejectsProjectMismatch(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	configContent := `[project]
+name = "mismatch-test"
+[profile]
+default = "mock_profile"
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+[models.presets.mock_preset]
+provider = "mock"
+model = "mock-model"
+local_only = true
+[agent_profiles.mock_profile]
+implementer = "mock_preset"
+planner = "mock_preset"
+repo_scout = "mock_preset"
+tester = "mock_preset"
+reviewer = "mock_preset"
+`
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Create two project rows: one for tmp, one for another path.
+	// Attach the session to the OTHER project.
+	database, err := db.Open(dbPath(tmp))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		database.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	// Create project for tmp (this is what GetProjectByRoot will return).
+	if _, err := database.GetOrCreateProject(tmp, "mismatch-test"); err != nil {
+		database.Close()
+		t.Fatalf("GetOrCreateProject tmp: %v", err)
+	}
+	// Create another project row.
+	otherPID, err := database.GetOrCreateProject("/other/path", "other")
+	if err != nil {
+		database.Close()
+		t.Fatalf("GetOrCreateProject other: %v", err)
+	}
+	// Create a session for the OTHER project.
+	if err := database.CreateSession("mismatch-session", otherPID, "", time.Now().UTC()); err != nil {
+		database.Close()
+		t.Fatalf("CreateSession: %v", err)
+	}
+	database.Close()
+
+	ctx := context.Background()
+	_, err = StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithExistingSession("mismatch-session"),
+	)
+	if err == nil {
+		t.Fatal("expected error for project mismatch, got nil")
+	}
+}
+
+func TestStartRuntimeRejectsConflictingSessionModes(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	configContent := `[project]
+name = "conflict-test"
+[profile]
+default = "mock_profile"
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+[models.presets.mock_preset]
+provider = "mock"
+model = "mock-model"
+local_only = true
+[agent_profiles.mock_profile]
+implementer = "mock_preset"
+planner = "mock_preset"
+repo_scout = "mock_preset"
+tester = "mock_preset"
+reviewer = "mock_preset"
+`
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithSessionID("new-session"),
+		WithExistingSession("old-session"),
+	)
+	if err == nil {
+		t.Fatal("expected error for conflicting session modes, got nil")
+	}
+}
+
+// ── Task 3: Runtime.BeginWork ─────────────────────────────────────────
+
+func TestRuntimeBeginWorkCancelledByRuntimeQuiesce(t *testing.T) {
+	ctx := context.Background()
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+
+	workCtx, workCancel := context.WithCancel(ctx)
+	rt := &Runtime{
+		State:      state,
+		workCtx:    workCtx,
+		workCancel: workCancel,
+	}
+
+	workCtx2, finish, err := rt.BeginWork(ctx)
+	if err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+
+	quiesceDone := make(chan struct{})
+	go func() {
+		rt.Quiesce(ctx)
+		close(quiesceDone)
+	}()
+
+	// Work context should be cancelled by Quiesce.
+	select {
+	case <-workCtx2.Done():
+	case <-time.After(time.Second):
+		t.Fatal("work context was not cancelled after Quiesce")
+	}
+
+	// Quiesce should be blocked until we call finish.
+	select {
+	case <-quiesceDone:
+		t.Fatal("Quiesce returned before finish was called")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	finish()
+
+	select {
+	case <-quiesceDone:
+	case <-time.After(time.Second):
+		t.Fatal("Quiesce did not return after finish")
+	}
+}
+
+func TestRuntimeBeginWorkFinishIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+
+	workCtx, workCancel := context.WithCancel(ctx)
+	rt := &Runtime{
+		State:      state,
+		workCtx:    workCtx,
+		workCancel: workCancel,
+	}
+
+	_, finish, err := rt.BeginWork(ctx)
+	if err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+
+	// Calling finish twice must not panic or produce negative counter.
+	finish()
+	finish()
+}
+
+func TestRuntimeBeginWorkRejectsAfterQuiesce(t *testing.T) {
+	ctx := context.Background()
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+
+	workCtx, workCancel := context.WithCancel(ctx)
+	rt := &Runtime{
+		State:      state,
+		workCtx:    workCtx,
+		workCancel: workCancel,
+	}
+
+	if err := rt.Quiesce(ctx); err != nil {
+		t.Fatalf("Quiesce: %v", err)
+	}
+
+	_, _, err := rt.BeginWork(ctx)
+	if !errors.Is(err, session.ErrSessionQuiescing) {
+		t.Fatalf("BeginWork after Quiesce = %v, want ErrSessionQuiescing", err)
+	}
+}
+
+func TestRuntimeBeginWorkCancelledByParent(t *testing.T) {
+	ctx := context.Background()
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+
+	workCtx, workCancel := context.WithCancel(ctx)
+	rt := &Runtime{
+		State:      state,
+		workCtx:    workCtx,
+		workCancel: workCancel,
+	}
+
+	parentCtx, parentCancel := context.WithCancel(ctx)
+	workCtx2, finish, err := rt.BeginWork(parentCtx)
+	if err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+
+	// Cancel the parent context.
+	parentCancel()
+
+	select {
+	case <-workCtx2.Done():
+	case <-time.After(time.Second):
+		t.Fatal("work context was not cancelled after parent cancellation")
+	}
+
+	// Runtime should not be quiesced — new work can still start.
+	if err := rt.State.BeginWork(); err != nil {
+		t.Fatalf("BeginWork on state after parent cancel = %v, want nil", err)
+	}
+	rt.State.EndWork()
+
+	finish()
+}
+
+// ── end Task 3 tests ────────────────────────────────────────────────────
+
 func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()

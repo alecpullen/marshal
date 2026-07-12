@@ -112,8 +112,21 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			t.Fatalf("sessionCapabilities.resume = %v, want empty object", resumeObj)
 		}
 
-		// Must NOT have image/audio/embeddedContext/delete/additionalDirectories/mcp
-		forbidden := []string{"image", "audio", "embeddedContext", "delete", "additionalDirectories", "mcp"}
+		// sessionCapabilities.additionalDirectories is an empty object.
+		adCap, ok := sessionCaps["additionalDirectories"]
+		if !ok {
+			t.Fatalf("sessionCapabilities.additionalDirectories missing")
+		}
+		adObj, ok := adCap.(map[string]any)
+		if !ok {
+			t.Fatalf("sessionCapabilities.additionalDirectories is not an object: %T", adCap)
+		}
+		if len(adObj) != 0 {
+			t.Fatalf("sessionCapabilities.additionalDirectories = %v, want empty object", adObj)
+		}
+
+		// Must NOT have image/audio/embeddedContext/delete/mcp
+		forbidden := []string{"image", "audio", "embeddedContext", "delete", "mcp"}
 		for _, key := range forbidden {
 			if _, exists := caps[key]; exists {
 				t.Fatalf("unexpected capability: %s", key)

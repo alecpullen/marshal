@@ -75,6 +75,7 @@ type Runtime struct {
 	DataDir        string
 	SkillIndex     *skills.Index
 	JobManager     *native.JobManager
+	additionalDirs []string
 
 	workCtx    context.Context
 	workCancel context.CancelFunc
@@ -85,6 +86,12 @@ type Runtime struct {
 	closeOnce   sync.Once
 	quiesceErr  error
 	closeErr    error
+}
+
+// AdditionalDirectories returns the list of extra workspace roots registered
+// via WithAdditionalDirectories, or nil if none.
+func (r *Runtime) AdditionalDirectories() []string {
+	return r.additionalDirs
 }
 
 // BeginWork registers a unit of transport-visible work with the runtime and
@@ -408,7 +415,7 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, jobBroker)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -434,6 +441,7 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		HomeDir:        homeDir,
 		DataDir:        dataDir,
 		SkillIndex:     skillIndex,
+		additionalDirs: runOpts.additionalDirs,
 		workCtx:        workCtx,
 		workCancel:     workCancel,
 	}

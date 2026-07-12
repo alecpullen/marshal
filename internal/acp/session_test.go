@@ -102,12 +102,14 @@ func TestSessionLifecycleValidation(t *testing.T) {
 		{"create missing cwd", "create", `{"mcpServers":[]}`, invalidParams},
 		{"create omitted mcpServers", "create", `{"cwd":"` + absCwd + `"}`, invalidParams},
 		{"create non-empty mcpServers", "create", `{"cwd":"` + absCwd + `","mcpServers":[{"name":"x"}]}`, invalidParams},
-		{"create non-empty additional directories", "create", `{"cwd":"` + absCwd + `","mcpServers":[],"additionalDirectories":["/tmp"]}`, invalidParams},
+		{"create additional directories over cap", "create", `{"cwd":"` + absCwd + `","mcpServers":[],"additionalDirectories":["/a","/b","/c","/d","/e","/f","/g","/h","/i"]}`, invalidParams},
+		{"create additional directories relative path", "create", `{"cwd":"` + absCwd + `","mcpServers":[],"additionalDirectories":["relative/path"]}`, invalidParams},
 		{"load relative cwd", "load", `{"cwd":"relative/path","sessionId":"sess_x","mcpServers":[]}`, invalidParams},
 		{"load missing cwd", "load", `{"sessionId":"sess_x","mcpServers":[]}`, invalidParams},
 		{"load omitted mcpServers", "load", `{"cwd":"` + absCwd + `","sessionId":"sess_x"}`, invalidParams},
 		{"load non-empty mcpServers", "load", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[{"name":"x"}]}`, invalidParams},
-		{"load non-empty additional directories", "load", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/tmp"]}`, invalidParams},
+		{"load additional directories over cap", "load", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/a","/b","/c","/d","/e","/f","/g","/h","/i"]}`, invalidParams},
+		{"load additional directories relative path", "load", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["relative/path"]}`, invalidParams},
 		{"load missing sessionId", "load", `{"cwd":"` + absCwd + `","mcpServers":[]}`, invalidParams},
 		{"load happy path", "load", `{"cwd":"` + absCwd + `","sessionId":"sess_load_ok","mcpServers":[]}`, 0},
 		{"create happy path", "create", `{"cwd":"` + absCwd + `","mcpServers":[]}`, 0},
@@ -117,7 +119,8 @@ func TestSessionLifecycleValidation(t *testing.T) {
 		{"resume relative cwd", "resume", `{"cwd":"relative/path","sessionId":"sess_x","mcpServers":[]}`, invalidParams},
 		{"resume missing cwd", "resume", `{"sessionId":"sess_x","mcpServers":[]}`, invalidParams},
 		{"resume non-empty mcpServers", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[{"name":"x"}]}`, invalidParams},
-		{"resume non-empty additional directories", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/tmp"]}`, invalidParams},
+		{"resume additional directories over cap", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/a","/b","/c","/d","/e","/f","/g","/h","/i"]}`, invalidParams},
+		{"resume additional directories relative path", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["relative/path"]}`, invalidParams},
 	}
 
 	for _, tc := range cases {
@@ -135,6 +138,8 @@ func TestSessionLifecycleValidation(t *testing.T) {
 				res, err = m.List(context.Background(), json.RawMessage(tc.params))
 			case "resume":
 				res, err = m.Resume(context.Background(), json.RawMessage(tc.params))
+			case "delete":
+				res, err = m.Delete(context.Background(), json.RawMessage(tc.params))
 			}
 			if tc.wantCode == 0 {
 				if err != nil {
@@ -156,6 +161,46 @@ func TestSessionLifecycleValidation(t *testing.T) {
 				t.Fatalf("code = %d, want %d (err=%v)", rpcErr.Code, tc.wantCode, err)
 			}
 		})
+	}
+}
+
+func TestSessionPlumbsAdditionalDirectories(t *testing.T) {
+	tmp := t.TempDir()
+	if err := writeMarshalConfig(t, tmp); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx := context.Background()
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: app.StartRuntime,
+		CloseRuntime: func(ctx context.Context, rt *app.Runtime) error { return rt.Close(ctx) },
+		Notify:       func(method string, params any) error { return nil },
+		Options: []app.Option{
+			app.WithSkipOnboarding(true),
+			app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		},
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	res, err := m.Create(ctx, json.RawMessage(`{"cwd":"`+tmp+`","mcpServers":[],"additionalDirectories":["/tmp/extra1","/tmp/extra2"]}`))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resp, ok := res.(SessionResponse)
+	if !ok {
+		t.Fatalf("result type %T", res)
+	}
+
+	rt, ok := m.Get(resp.SessionID)
+	if !ok {
+		t.Fatalf("Get(%s) ok=false", resp.SessionID)
+	}
+	defer rt.Close(ctx)
+
+	got := rt.AdditionalDirectories()
+	if len(got) != 2 || got[0] != "/tmp/extra1" || got[1] != "/tmp/extra2" {
+		t.Fatalf("AdditionalDirectories = %v, want [/tmp/extra1 /tmp/extra2]", got)
 	}
 }
 

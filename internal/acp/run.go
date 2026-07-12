@@ -93,7 +93,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	})
 	manager.SetTurnCanceller(turns.CancelAndWait)
 	srv.Handle("session/prompt", turns.PromptTurn)
-	srv.Handle("session/cancel", turns.Cancel)
+	srv.HandleNotification("session/cancel", turns.Cancel)
 
 	serveErr := srv.Serve(ctx)
 

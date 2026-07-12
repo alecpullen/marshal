@@ -51,9 +51,10 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			"agentCapabilities": map[string]any{
 				"loadSession": true,
 				"sessionCapabilities": map[string]any{
-					"close":  map[string]any{},
-					"list":   map[string]any{},
-					"resume": map[string]any{},
+					"close":                 map[string]any{},
+					"list":                  map[string]any{},
+					"resume":                map[string]any{},
+					"additionalDirectories": map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{

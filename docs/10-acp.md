@@ -14,6 +14,7 @@ supported and which are intentionally omitted.
 | `session/load` | Full | Loads an existing persisted session. Replays the active conversation branch through standard `session/update` notifications before returning. No project/session/message rows are created or modified. |
 | `session/list` | Full | Requires an absolute `cwd`. Filters by project root; no global session registry exists, so a request with no `cwd` returns `-32602`. Cursor-paginated. |
 | `session/resume` | Full | Restores an existing persisted session like `session/load` but does **not** replay history. Returns an empty object. |
+| `session/create`/`session/load`/`session/resume` (`additionalDirectories`) | Full | The `additionalDirectories` array on the three lifecycle methods is now accepted and forwarded to the runtime as extra workspace roots. Capped at 8 entries; each must be an absolute path (`-32602` on overflow or relative path). The restricted tool-layer path validation extends the allowed-cwd set to include these roots. `initialize` advertises `sessionCapabilities.additionalDirectories: {}`. |
 | `session/prompt` | Full | Sends prompt content to the agent. Serialized per session — a second prompt to the same session returns `-32000`. |
 | `session/cancel` | Full | Cancels the active turn in a session and returns `cancelled` from the original prompt. |
 | `session/close` | Full | Removes the runtime, cancels the active turn, joins the runner, and closes owned resources. Unknown sessions return `-32000`. |
@@ -23,8 +24,9 @@ supported and which are intentionally omitted.
 ### Advertised capabilities
 
 `initialize` reports `agentCapabilities.loadSession: true` and
-`sessionCapabilities: { close, list, resume }` (each an empty object). No
-other lifecycle, content, or MCP capabilities are advertised.
+`sessionCapabilities: { close, list, resume, additionalDirectories }`
+(each an empty object). No other lifecycle, content, or MCP capabilities
+are advertised.
 
 ## Prompt content blocks
 
@@ -58,7 +60,6 @@ with an appropriate error or omitted from capability advertisement:
 | `session/delete` | Not implemented. Requires a global session-id → project-root index that does not yet exist; tracked for a follow-up batch. |
 | `$/cancel_request` (generic request cancellation) | Only per-session `session/cancel` is supported. |
 | Dynamic MCP server arrays in `session/new` | MCP configuration is static. |
-| Additional workspace directories (`additional_dirs`) | Not supported. |
 | Image, audio, embedded resource blocks | Rejected with `-32602`. |
 | Full tool-call / plan / config-option projection | Session events do not yet preserve all mandatory ACP identifiers. |
 | Structured question / elicitation support | Pending questions are received from the runner and answered with `AnswerUnanswered` when the turn context cancels, but they are never presented to the ACP client (no `elicitation/create` is emitted). |

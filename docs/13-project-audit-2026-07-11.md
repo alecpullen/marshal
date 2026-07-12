@@ -289,6 +289,11 @@ Resolved findings for the ACP reliability v1 lifecycle batch were closed on
 implementation commit range spans `2b6e5c5..f423a51` on branch
 `feature/acp-reliability-v1-lifecycle`.
 
+Resolved findings for the ACP additional directories batch were closed on
+2026-07-12 as part of the ACP additional directories plan. The
+implementation commit range spans `29290fc..e89aa7f` on branch
+`feature/acp-additional-directories`.
+
 ## Implementation batch — ACP session discovery (list/resume)
 
 The remaining ACP session-discovery findings were addressed by the following
@@ -315,7 +320,33 @@ d0e0640 test(acp): fix data race in TestRunSessionListWire
 
 ### Unadvertised capabilities remain unadvertised
 
-`initialize` continues to omit `delete`, `additionalDirectories`, `mcp`/
-`mcpCapabilities`, image, audio, and embedded-context content blocks. The
-advertised lifecycle set is now `sessionCapabilities: { close, list, resume }`,
+`initialize` continues to omit `delete`, `mcp`/`mcpCapabilities`, image,
+audio, and embedded-context content blocks. The advertised lifecycle set
+is now `sessionCapabilities: { close, list, resume, additionalDirectories }`,
+each as an empty object.
+
+## Implementation batch — ACP additional directories
+
+The `additionalDirectories` capability (previously unadvertised and rejected)
+was implemented by the following commits on branch
+`feature/acp-additional-directories`:
+
+```
+29290fc feat(app): add WithAdditionalDirectories option to headless runtime
+6d46fe4 fix(acp): wire additional directories into tool-layer path validation
+754c75b test(app): fix buildAgentRunner call signature in live_agent_test.go
+da31179 feat(acp): accept and forward additionalDirectories to runtime
+7c3a43d docs(acp): update sessionParams comment for additional directories
+e89aa7f feat(acp): advertise sessionCapabilities.additionalDirectories
+```
+
+### Newly supported parameter
+
+- **`additionalDirectories` on `session/create`, `session/load`, and `session/resume`** — a list of up to 8 absolute paths. Each is forwarded to the runtime as an extra workspace root; the tool layer's multi-root path validation (`resolveWorkspacePathMulti`) extends the allowed-cwd set to include them. The primary `WithWorkingDir` remains the sandbox root.
+
+### Unadvertised capabilities remain unadvertised
+
+`initialize` continues to omit `delete`, `mcp`/`mcpCapabilities`, image,
+audio, and embedded-context content blocks. The advertised lifecycle set
+is now `sessionCapabilities: { close, list, resume, additionalDirectories }`,
 each as an empty object.

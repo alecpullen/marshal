@@ -82,7 +82,7 @@ type SessionResponse struct {
 
 // sessionParams is the subset of ACP session/new and session/load params
 // we honor. mcpServers must be an explicit empty array; additional
-// directories are reserved for a future task and currently rejected.
+// directories are accepted (max 8, must be absolute).
 type sessionParams struct {
 	Cwd                   string             `json:"cwd"`
 	SessionID             string             `json:"sessionId"`

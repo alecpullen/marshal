@@ -66,6 +66,7 @@ type options struct {
 	workingDir        string
 	sessionID         string
 	existingSessionID string
+	additionalDirs    []string
 	knowledgeHook     func(ctx context.Context, state *session.State, database *db.DB)
 }
 
@@ -147,6 +148,15 @@ func WithSessionID(id string) Option {
 func WithExistingSession(id string) Option {
 	return func(opts *options) {
 		opts.existingSessionID = id
+	}
+}
+
+func WithAdditionalDirectories(dirs []string) Option {
+	return func(opts *options) {
+		if len(dirs) == 0 {
+			return
+		}
+		opts.additionalDirs = append(opts.additionalDirs, dirs...)
 	}
 }
 
@@ -286,7 +296,7 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 	}
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
@@ -338,7 +348,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
 	}
 
-	if err := native.RegisterAll(reg, native.Options{
+	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,
 		CommandRunner:  commandRunner,
 		TestCommand:    cfg.Commands.Test,
@@ -350,7 +360,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		Config:         cfg,
 		JobManager:     jobManager,
 		JobBroker:      jobBroker,
-	}); err != nil {
+	}
+	if len(additionalDirs) > 0 {
+		nativeOpts.AdditionalRoots = additionalDirs
+	}
+	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		jmErr = err
 		return nil, nil, nil, nil, nil, nil, err
 	}
@@ -712,7 +726,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if !ok && rt.JobBroker != nil {
 		panic(fmt.Sprintf("runtime: JobBroker is %T, want *pubsub.Broker[native.JobEvent]", rt.JobBroker))
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, jb)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
 	if err != nil {
 		return err
 	}

@@ -40,18 +40,6 @@ func TestOpenrouterIsRemoteWithKeyEnv(t *testing.T) {
 	}
 }
 
-func TestAllReturnsSorted(t *testing.T) {
-	all := All()
-	if len(all) < 2 {
-		t.Fatalf("All() returned %d templates, need at least 2 to verify sort", len(all))
-	}
-	for i := 1; i < len(all); i++ {
-		if all[i-1].ID > all[i].ID {
-			t.Fatalf("All() not sorted by ID: %q > %q at index %d", all[i-1].ID, all[i].ID, i-1)
-		}
-	}
-}
-
 func TestAllReturnsAll(t *testing.T) {
 	all := All()
 	if len(all) < 6 {

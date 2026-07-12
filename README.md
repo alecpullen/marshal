@@ -75,6 +75,7 @@ internal/tools/mcp/            — MCP plugin support
 - **Slash commands** — `/plan`, `/review`, `/test`, `/memory`, `/profile`, etc.
 - **Swarm runtime** — multi-agent orchestration with specialist roles (planner, repo scout, implementer, tester, reviewer).
 - **MCP/plugin ecosystem** — connect external tools via MCP protocol, namespaced and permissioned.
+- **ACP v1 conversation lifecycle** — headless `marshal acp` subcommand over stdio JSON-RPC 2.0 with initialize, session lifecycle, prompt/cancel, and permission methods. See [docs/10-acp.md](docs/10-acp.md) for the supported feature matrix and limitations.
 
 ## Design commitments
 

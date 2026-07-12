@@ -93,3 +93,65 @@ func TestGetProjectNotFound(t *testing.T) {
 		t.Errorf("GetProject error = %q, want it to contain %q", err.Error(), "project not found")
 	}
 }
+
+func TestGetProjectByRoot(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	rootPath := "/repo/path"
+	name := "myproject"
+	id, err := db.GetOrCreateProject(rootPath, name)
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	project, err := db.GetProjectByRoot(rootPath)
+	if err != nil {
+		t.Fatalf("GetProjectByRoot failed: %v", err)
+	}
+	if project.ID != id {
+		t.Errorf("GetProjectByRoot ID = %d, want %d", project.ID, id)
+	}
+	if project.RootPath != rootPath {
+		t.Errorf("GetProjectByRoot RootPath = %q, want %q", project.RootPath, rootPath)
+	}
+	if project.Name != name {
+		t.Errorf("GetProjectByRoot Name = %q, want %q", project.Name, name)
+	}
+}
+
+func TestGetProjectByRootMissingDoesNotCreate(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	_, err = db.GetProjectByRoot("/nonexistent")
+	if err == nil {
+		t.Fatalf("GetProjectByRoot nonexistent: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "project not found") {
+		t.Errorf("GetProjectByRoot error = %q, want it to contain %q", err.Error(), "project not found")
+	}
+
+	var count int
+	row := db.SQLDB().QueryRow("SELECT COUNT(*) FROM projects")
+	if scanErr := row.Scan(&count); scanErr != nil {
+		t.Fatalf("count projects: %v", scanErr)
+	}
+	if count != 0 {
+		t.Fatalf("projects count = %d, want 0 (GetProjectByRoot must not create rows)", count)
+	}
+}

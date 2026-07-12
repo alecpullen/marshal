@@ -29,11 +29,17 @@ report a value that Darwin/ulimit cannot enforce in restricted mode. This is
 documented honest capability reporting — no actionable fix planned outside a
 broader resource-control framework.
 
-### RB3 — (Open) ACP shutdown reliability
+### RB3 — (RESOLVED) ACP shutdown reliability
 
-**Finding:** The ACP (Alternative Control Protocol) transport does not yet
-exist. Shutdown ordering for ACP-backed sessions is out of scope until that
-transport is implemented.
+**Finding:** The ACP (Alternative Control Protocol) transport now exists
+(`marshal acp` subcommand, `internal/acp/`) but shutdown ordering for
+ACP-backed sessions was incomplete. EOF did not close session-owned resources,
+replacing an active ACP runtime leaked the previous runtime, permission
+responses and cancellation were blocked during an active prompt, and
+`session/load` attempted to insert an existing session row instead of loading
+persisted state.
+
+**Resolution:** See ACP findings below.
 
 ### RB10 — Active-turn quit/shutdown ordering (RESOLVED)
 
@@ -115,6 +121,60 @@ turn is running, background jobs are active, a tool is pending approval, or a
 question is pending. Tool output truncation is also blocked while settings
 are open. The block reason is displayed in the settings footer.
 
+## ACP findings
+
+### ACP1 — Synchronous ACP permission/cancel deadlock (RESOLVED)
+
+**Finding:** The ACP server executed request handlers synchronously on its only
+input loop, so a running `session/prompt` prevented the same loop from reading
+permission responses or `session/cancel`. This caused a deadlock: the prompt
+handler could not complete without a permission response, and the permission
+response could not be read until the prompt handler returned.
+
+**Resolution:** The server input loop now routes frames to handlers and waiters
+concurrently. Inbound requests are dispatched in tracked goroutines. Outbound
+requests (permission requests) register a waiter before writing; the read loop
+delivers the matched response to the waiter. The transport reader remains
+available at all times. See implementation batch below.
+
+### ACP2 — session/load duplicate insert / empty load (RESOLVED)
+
+**Finding:** `session/load` used `UpsertProject` then `CreateSession` to load an
+existing session, which hit a UNIQUE constraint on the session primary key.
+When the upsert path was avoided, the session was created without hydrating
+message history, returning an empty load.
+
+**Resolution:** `session/load` now performs no project or session row mutation.
+It validates that the project and session exist, reads the active conversation
+branch from the database, and replays it through standard `session/update`
+notifications before returning `result: null`. Missing projects or sessions
+return errors without side effects.
+
+### ACP3 — Replacing an active ACP runtime without closing it (RESOLVED)
+
+**Finding:** When `session/new` was called for a session that already had a
+loaded runtime, or when `session/load` replaced an existing runtime, the old
+runtime was overwritten without calling `Close`. This leaked goroutines, open
+connections, and database handles.
+
+**Resolution:** The session manager now closes the previous runtime (via the
+Batch 1 lifecycle — `Quiesce` then `Close`) before replacing it with a new
+one. The pointer swap is guarded by a mutex. A session must be explicitly
+closed before it can be replaced.
+
+### ACP4 — No session-manager shutdown on EOF (RESOLVED)
+
+**Finding:** When the ACP transport reached EOF, `Server.Serve` returned but
+the session manager was not notified, so all loaded runtimes remained open
+indefinitely. There was no lifecycle integration between transport EOF and
+runtime cleanup.
+
+**Resolution:** `acp.Run` now owns both the server and session manager. When
+`Serve` returns (EOF, scanner error, context cancellation), it cancels all
+handler contexts, fails all outbound waiters, shuts down the session manager
+(which closes every loaded runtime), and waits up to five seconds for
+completion. No runtime survives transport shutdown.
+
 ## Non-goals (all open)
 
 The following items are out of scope for this batch and remain open:
@@ -130,10 +190,11 @@ The following items are out of scope for this batch and remain open:
 - Multi-tenant isolation.
 - FIPS / government-grade compliance.
 
-## Implementation batch
+## Implementation batch — execution/shutdown safety
 
-The findings above marked **RESOLVED** were addressed by the following commits
-on branch `feature/execution-shutdown-safety`:
+The findings above marked **RESOLVED** in the execution/shutdown safety sections
+were addressed by the following commits on branch
+`feature/execution-shutdown-safety`:
 
 ```
 0dd889e test(agent): make parallel read regression race safe
@@ -173,8 +234,57 @@ rg -n 'sandboxing.*planned|planned.*sandbox' README.md CLAUDE.md docs
 git status --short
 ```
 
+## Implementation batch — ACP reliability v1 lifecycle
+
+The ACP findings above were addressed by the following commits on branch
+`feature/acp-reliability-v1-lifecycle`:
+
+```
+2b6e5c5 feat(acp): add strict v1 wire primitives
+b767b38 fix(acp): keep transport reader live during handlers
+3046d87 fix(acp): address Task 2 review findings
+f708159 feat(app): load existing runtimes safely
+0742670 fix(app): address Task 3 review findings
+42c957c fix(acp): serialize and cancel turns per session
+4504408 fix(acp): address Task 4 review findings
+51bd385 feat(acp): load replay and close owned sessions
+763b458 fix(acp): address Task 5 review findings
+28b9683 fix(acp): advertise and clean up session lifecycle
+82f76c1 fix(acp): address Task 6 review finding
+fb2f8c4 test(acp): cover concurrent lifecycle wire flows
+f423a51 test(acp): address Task 7 review findings
+```
+
+### Newly verified protocol corrections
+
+During this batch the following ACP v1 wire-format issues were verified and
+corrected:
+
+- **Content arrays**: prompt input uses `[]ContentBlock` (text + resource_link)
+  instead of a plain string. All other block types and invalid content are
+  rejected with `-32602`.
+- **Standard updates**: turn/replay output uses the standard `session/update`
+  method with `user_message_chunk`, `agent_message_chunk`, and
+  `agent_thought_chunk` update types. No Marshal-specific notification methods
+  (`message_added`, `thinking_changed`, etc.) are emitted.
+- **Truthful capabilities**: `initialize` advertises exactly the implemented
+  optional lifecycle capabilities (`loadSession: true`,
+  `sessionCapabilities: { close: {} }`). Image, audio, embedded-resource,
+  resume, list, delete, and HTTP/SSE-MCP capabilities are omitted.
+- **Session close**: `session/close` is a stable method that removes the
+  runtime, cancels the active turn, joins the runner, and closes owned
+  resources. Unknown sessions return `-32000`.
+
+These corrections ensure ACP v1 wire compliance for the implemented surface.
+
 ## Dated resolution note
 
-Resolved findings were closed on 2026-07-12 as part of Task 9 of the execution
-and shutdown safety plan. The implementation commit range spans
-`0dd889e..1ee0fab` on branch `feature/execution-shutdown-safety`.
+Resolved findings for the execution and shutdown safety batch were closed on
+2026-07-12 as part of Task 9 of the execution and shutdown safety plan. The
+implementation commit range spans `0dd889e..1ee0fab` on branch
+`feature/execution-shutdown-safety`.
+
+Resolved findings for the ACP reliability v1 lifecycle batch were closed on
+2026-07-12 as part of Task 8 of the ACP reliability v1 lifecycle plan. The
+implementation commit range spans `2b6e5c5..f423a51` on branch
+`feature/acp-reliability-v1-lifecycle`.

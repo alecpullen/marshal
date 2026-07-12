@@ -32,7 +32,7 @@ go vet ./...
 
 ## Architecture
 
-The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, MCP/plugin ecosystem, and sandboxed command execution with restricted/container/passthrough backends). See [docs/04-tooling-and-shell-safety.md](docs/04-tooling-and-shell-safety.md) for sandbox details.
+The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, MCP/plugin ecosystem, sandboxed command execution with restricted/container/passthrough backends, and ACP v1 conversation lifecycle). See [docs/04-tooling-and-shell-safety.md](docs/04-tooling-and-shell-safety.md) for sandbox details and [docs/10-acp.md](docs/10-acp.md) for the ACP support matrix.
 
 ```
 cmd/marshal/main.go                   — thin entrypoint, delegates to internal/app
@@ -61,6 +61,7 @@ internal/tools/native/symbols_find.go — symbols.find tool implementation
 internal/tools/patch/                 — patch apply and approval
 internal/tools/policy/                — command approval and risk policy
 internal/tools/registry/              — tool registration and dispatch
+internal/acp/                         — ACP v1 headless transport (initialize, session lifecycle, prompt/cancel, permissions)
 ```
 
 ### Data flow

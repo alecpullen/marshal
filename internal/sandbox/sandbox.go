@@ -52,9 +52,10 @@ type Config struct {
 	// AllowFallback controls whether the container backend may silently
 	// downgrade to restricted when no container runtime is available.
 	// Default false: missing runtime is a hard error. See sandbox.New.
-	AllowFallback bool
-	EnvAllowlist  []string
-	EnvDenylist   []string
+	AllowFallback         bool
+	AdditionalDirectories []string
+	EnvAllowlist          []string
+	EnvDenylist           []string
 }
 
 // FromConfig builds a Config from a ShellToolConfig, carrying the AllowNetwork

@@ -397,6 +397,36 @@ func TestRuntimeCloseRunsCloseFnsInOrder(t *testing.T) {
 	}
 }
 
+func TestRuntimeAdditionalDirectories(t *testing.T) {
+	ctx := context.Background()
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(t.TempDir()),
+		WithAdditionalDirectories([]string{"/tmp/extra1", "/tmp/extra2"}),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+
+	got := rt.AdditionalDirectories()
+	if len(got) != 2 || got[0] != "/tmp/extra1" || got[1] != "/tmp/extra2" {
+		t.Fatalf("AdditionalDirectories = %v, want [/tmp/extra1 /tmp/extra2]", got)
+	}
+}
+
+func TestAdditionalDirectoriesDefaultsToNil(t *testing.T) {
+	ctx := context.Background()
+	rt, err := StartRuntime(ctx, WithWorkingDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+
+	if got := rt.AdditionalDirectories(); got != nil {
+		t.Fatalf("AdditionalDirectories = %v, want nil when option not supplied", got)
+	}
+}
+
 func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 	prevTimeout := jobShutdownTimeout
 	jobShutdownTimeout = 50 * time.Millisecond

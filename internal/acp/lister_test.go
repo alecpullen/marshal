@@ -69,3 +69,23 @@ func TestPerCwdListerRealDB(t *testing.T) {
 		t.Fatalf("messageCount = %d", got[0].MessageCount)
 	}
 }
+
+func TestPerCwdListerFreshCwdReturnsEmpty(t *testing.T) {
+	root := t.TempDir()
+	absCwd, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	// No .marshal directory — fresh cwd with no prior sessions.
+	l := newPerCwdLister()
+	got, next, err := l.ListSessions(context.Background(), absCwd, "", 0)
+	if err != nil {
+		t.Fatalf("ListSessions on fresh cwd: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d sessions, want 0: %+v", len(got), got)
+	}
+	if next != "" {
+		t.Fatalf("nextCursor = %q, want empty", next)
+	}
+}

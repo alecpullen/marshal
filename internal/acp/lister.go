@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 
 	"marshal/internal/db"
@@ -16,7 +17,11 @@ type perCwdLister struct{}
 func newPerCwdLister() *perCwdLister { return &perCwdLister{} }
 
 func (l *perCwdLister) ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error) {
-	d, err := db.Open(filepath.Join(cwd, ".marshal", "marshal.db"))
+	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return nil, "", err
+	}
+	d, err := db.Open(dbPath)
 	if err != nil {
 		return nil, "", err
 	}

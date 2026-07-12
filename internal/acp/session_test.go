@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,22 +37,8 @@ func newFakeState(t *testing.T) *session.State {
 func fakeRuntimeStart(idSeq *atomic.Int64, state *session.State) RuntimeStarter {
 	return func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
 		id := idSeq.Add(1)
-		return &app.Runtime{SessionID: "sess_" + itoa64(id), State: state}, nil
+		return &app.Runtime{SessionID: "sess_" + strconv.FormatInt(id, 10), State: state}, nil
 	}
-}
-
-func itoa64(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }
 
 // fakeStartFixed returns a StartRuntime that ignores the supplied id and
@@ -79,6 +67,9 @@ func TestSessionLifecycleValidation(t *testing.T) {
 	}
 
 	var idSeq atomic.Int64
+	// nil State is acceptable for the load happy path because replay
+	// short-circuits when rt.State is nil (replay is exercised fully by
+	// TestSessionLoadReplaysActiveBranchBeforeReturning).
 	m := NewSessionManager(SessionManagerConfig{
 		StartRuntime: fakeRuntimeStart(&idSeq, nil),
 		CloseRuntime: noopClose(),
@@ -216,7 +207,7 @@ func TestSessionLoadClosesOldBeforeStartingReplacement(t *testing.T) {
 		t.Fatalf("events = %v, want at least 4 (start1, cancel, close, start2)", events)
 	}
 	last := events[len(events)-3:]
-	if last[0] != "cancel "+oldID || last[1] != "close "+oldID || !startsWith(last[2], "start sess_") {
+	if last[0] != "cancel "+oldID || last[1] != "close "+oldID || !strings.HasPrefix(last[2], "start sess_") {
 		t.Fatalf("last three events = %v, want cancel/close/start", last)
 	}
 	if last[2] == "start "+oldID {
@@ -226,7 +217,6 @@ func TestSessionLoadClosesOldBeforeStartingReplacement(t *testing.T) {
 
 func TestSessionCloseRemovesCancelsAndCloses(t *testing.T) {
 	var idSeq atomic.Int64
-	removedCh := make(chan struct{}, 1)
 	closeStartedCh := make(chan struct{}, 1)
 	releaseCloser := make(chan struct{})
 
@@ -282,7 +272,6 @@ func TestSessionCloseRemovesCancelsAndCloses(t *testing.T) {
 	if _, ok := m.Get("sess_close"); ok {
 		t.Fatalf("Get after Close returned ok=true")
 	}
-	_ = removedCh
 }
 
 func TestSessionCloseUnknownReturnsServerError(t *testing.T) {
@@ -312,7 +301,7 @@ func TestSessionCloseAllAttemptsEveryRuntimeAndJoinsErrors(t *testing.T) {
 	var idSeq atomic.Int64
 	starter := func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
 		id := idSeq.Add(1)
-		return &app.Runtime{SessionID: "sess_" + itoa64(id)}, nil
+		return &app.Runtime{SessionID: "sess_" + strconv.FormatInt(id, 10)}, nil
 	}
 	cancelErr := errors.New("cancel-1")
 	closeErr := errors.New("close-2")
@@ -652,8 +641,4 @@ func countRows(t *testing.T, tmp string) (int, int, int) {
 		t.Fatalf("count messages: %v", err)
 	}
 	return p, s, m
-}
-
-func startsWith(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }

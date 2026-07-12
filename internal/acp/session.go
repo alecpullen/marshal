@@ -241,6 +241,43 @@ func (m *SessionManager) Load(ctx context.Context, params json.RawMessage) (any,
 	return nil, nil
 }
 
+// Resume handles session/resume. It restores an existing persisted session
+// like Load but, per ACP v1, MUST NOT replay conversation history. It
+// validates params, cancels and closes any pre-existing runtime for the
+// same id, starts a new runtime with WithExistingSession, publishes it,
+// and returns an empty result object.
+func (m *SessionManager) Resume(ctx context.Context, params json.RawMessage) (any, error) {
+	if m.start == nil {
+		return nil, fmt.Errorf("acp: SessionManager has no StartRuntime configured")
+	}
+	cancel, err := m.requireReady()
+	if err != nil {
+		return nil, err
+	}
+	var p sessionParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/resume params: %w", err)
+		}
+	}
+	if err := validateLifecycleParams(&p, true); err != nil {
+		return nil, err
+	}
+
+	if _, replaceErr := m.replaceExisting(ctx, p.SessionID, cancel); replaceErr != nil {
+		return nil, replaceErr
+	}
+
+	opts := append([]app.Option{}, m.options...)
+	opts = append(opts, app.WithWorkingDir(p.Cwd), app.WithExistingSession(p.SessionID))
+	rt, err := m.start(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("acp: start runtime: %w", err)
+	}
+	m.publishReplacement(p.SessionID, rt)
+	return map[string]any{}, nil
+}
+
 // Close tears down the runtime for id. The runtime is removed from the
 // map before any canceller or closer is invoked, so concurrent Get calls
 // return false during teardown.

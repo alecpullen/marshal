@@ -50,8 +50,9 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			"agentCapabilities": map[string]any{
 				"loadSession": true,
 				"sessionCapabilities": map[string]any{
-					"close": map[string]any{},
-					"list":  map[string]any{},
+					"close":  map[string]any{},
+					"list":   map[string]any{},
+					"resume": map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{
@@ -71,6 +72,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	srv.Handle("session/load", manager.Load)
 	srv.Handle("session/close", manager.CloseSession)
 	srv.Handle("session/list", manager.List)
+	srv.Handle("session/resume", manager.Resume)
 
 	turns := NewTurnManager(TurnManagerConfig{
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {

@@ -113,6 +113,11 @@ func TestSessionLifecycleValidation(t *testing.T) {
 		{"create happy path", "create", `{"cwd":"` + absCwd + `","mcpServers":[]}`, 0},
 		{"list missing cwd", "list", `{}`, invalidParams},
 		{"list relative cwd", "list", `{"cwd":"relative/path"}`, invalidParams},
+		{"resume missing sessionId", "resume", `{"cwd":"` + absCwd + `","mcpServers":[]}`, invalidParams},
+		{"resume relative cwd", "resume", `{"cwd":"relative/path","sessionId":"sess_x","mcpServers":[]}`, invalidParams},
+		{"resume missing cwd", "resume", `{"sessionId":"sess_x","mcpServers":[]}`, invalidParams},
+		{"resume non-empty mcpServers", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[{"name":"x"}]}`, invalidParams},
+		{"resume non-empty additional directories", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/tmp"]}`, invalidParams},
 	}
 
 	for _, tc := range cases {
@@ -128,6 +133,8 @@ func TestSessionLifecycleValidation(t *testing.T) {
 				res, err = m.Load(context.Background(), json.RawMessage(tc.params))
 			case "list":
 				res, err = m.List(context.Background(), json.RawMessage(tc.params))
+			case "resume":
+				res, err = m.Resume(context.Background(), json.RawMessage(tc.params))
 			}
 			if tc.wantCode == 0 {
 				if err != nil {
@@ -149,6 +156,81 @@ func TestSessionLifecycleValidation(t *testing.T) {
 				t.Fatalf("code = %d, want %d (err=%v)", rpcErr.Code, tc.wantCode, err)
 			}
 		})
+	}
+}
+
+func TestSessionResumeRestoresWithoutReplay(t *testing.T) {
+	var idSeq atomic.Int64
+	var notifyCount atomic.Int64
+	notifier := func(method string, params any) error {
+		notifyCount.Add(1)
+		return nil
+	}
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&idSeq, nil),
+		CloseRuntime: noopClose(),
+		Notify:       notifier,
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	// Use a fixed pre-existing session id; the fake starter ignores it and
+	// returns sess_<n>, so check that the published id differs from the
+	// requested id only insofar as the starter controls the SessionID.
+	_, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_resume_ok","mcpServers":[]}`))
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if notifyCount.Load() != 0 {
+		t.Fatalf("session/update emitted %d notifications, want 0", notifyCount.Load())
+	}
+}
+
+func TestSessionResumeClosesOldRuntime(t *testing.T) {
+	var idSeq atomic.Int64
+	var (
+		mu     sync.Mutex
+		events []string
+	)
+	starter := fakeRuntimeStart(&idSeq, nil)
+	closer := func(ctx context.Context, rt *app.Runtime) error {
+		mu.Lock()
+		events = append(events, "close "+rt.SessionID)
+		mu.Unlock()
+		return nil
+	}
+	canceller := func(ctx context.Context, id string) error {
+		mu.Lock()
+		events = append(events, "cancel "+id)
+		mu.Unlock()
+		return nil
+	}
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: starter,
+		CloseRuntime: closer,
+	})
+	m.SetTurnCanceller(canceller)
+
+	// First resume publishes a runtime under sess_resume_close.
+	if _, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_resume_close","mcpServers":[]}`)); err != nil {
+		t.Fatalf("first resume: %v", err)
+	}
+	// Second resume for the same id must cancel+close the prior runtime
+	// before publishing the new one.
+	if _, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_resume_close","mcpServers":[]}`)); err != nil {
+		t.Fatalf("second resume: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(events, ",")
+	if !strings.Contains(joined, "cancel sess_resume_close") {
+		t.Fatalf("expected turn cancel for sess_resume_close, events=%q", joined)
+	}
+	if !strings.Contains(joined, "close ") {
+		t.Fatalf("expected a close event, events=%q", joined)
 	}
 }
 

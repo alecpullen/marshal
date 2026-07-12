@@ -112,6 +112,14 @@ func TestNormalizePrompt(t *testing.T) {
 			errCode: invalidParams,
 		},
 		{
+			name: "whitespace-only text",
+			blocks: []ContentBlock{
+				{Type: "text", Text: "   "},
+			},
+			wantErr: true,
+			errCode: invalidParams,
+		},
+		{
 			name: "missing resource name",
 			blocks: []ContentBlock{
 				{Type: "resource_link", URI: "file:///repo/README.md"},
@@ -120,9 +128,25 @@ func TestNormalizePrompt(t *testing.T) {
 			errCode: invalidParams,
 		},
 		{
+			name: "whitespace-only resource name",
+			blocks: []ContentBlock{
+				{Type: "resource_link", Name: "   ", URI: "file:///repo/README.md"},
+			},
+			wantErr: true,
+			errCode: invalidParams,
+		},
+		{
 			name: "missing URI",
 			blocks: []ContentBlock{
 				{Type: "resource_link", Name: "README"},
+			},
+			wantErr: true,
+			errCode: invalidParams,
+		},
+		{
+			name: "whitespace-only URI",
+			blocks: []ContentBlock{
+				{Type: "resource_link", Name: "README", URI: "   "},
 			},
 			wantErr: true,
 			errCode: invalidParams,

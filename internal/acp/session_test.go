@@ -59,6 +59,20 @@ func noopCancel() TurnCanceller {
 	return func(ctx context.Context, id string) error { return nil }
 }
 
+// fakeLister implements SessionLister for testing.
+type fakeLister struct {
+	entries    []db.SessionEntry
+	nextCursor string
+	err        error
+}
+
+func (f *fakeLister) ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error) {
+	if f.err != nil {
+		return nil, "", f.err
+	}
+	return f.entries, f.nextCursor, nil
+}
+
 func TestSessionLifecycleValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 	absCwd, err := filepath.Abs(tmpDir)
@@ -74,6 +88,7 @@ func TestSessionLifecycleValidation(t *testing.T) {
 		StartRuntime: fakeRuntimeStart(&idSeq, nil),
 		CloseRuntime: noopClose(),
 		Notify:       func(method string, params any) error { return nil },
+		Lister:       &fakeLister{},
 	})
 	m.SetTurnCanceller(noopCancel())
 
@@ -96,6 +111,13 @@ func TestSessionLifecycleValidation(t *testing.T) {
 		{"load missing sessionId", "load", `{"cwd":"` + absCwd + `","mcpServers":[]}`, invalidParams},
 		{"load happy path", "load", `{"cwd":"` + absCwd + `","sessionId":"sess_load_ok","mcpServers":[]}`, 0},
 		{"create happy path", "create", `{"cwd":"` + absCwd + `","mcpServers":[]}`, 0},
+		{"list missing cwd", "list", `{}`, invalidParams},
+		{"list relative cwd", "list", `{"cwd":"relative/path"}`, invalidParams},
+		{"resume missing sessionId", "resume", `{"cwd":"` + absCwd + `","mcpServers":[]}`, invalidParams},
+		{"resume relative cwd", "resume", `{"cwd":"relative/path","sessionId":"sess_x","mcpServers":[]}`, invalidParams},
+		{"resume missing cwd", "resume", `{"sessionId":"sess_x","mcpServers":[]}`, invalidParams},
+		{"resume non-empty mcpServers", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[{"name":"x"}]}`, invalidParams},
+		{"resume non-empty additional directories", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/tmp"]}`, invalidParams},
 	}
 
 	for _, tc := range cases {
@@ -109,6 +131,10 @@ func TestSessionLifecycleValidation(t *testing.T) {
 				res, err = m.Create(context.Background(), json.RawMessage(tc.params))
 			case "load":
 				res, err = m.Load(context.Background(), json.RawMessage(tc.params))
+			case "list":
+				res, err = m.List(context.Background(), json.RawMessage(tc.params))
+			case "resume":
+				res, err = m.Resume(context.Background(), json.RawMessage(tc.params))
 			}
 			if tc.wantCode == 0 {
 				if err != nil {
@@ -130,6 +156,81 @@ func TestSessionLifecycleValidation(t *testing.T) {
 				t.Fatalf("code = %d, want %d (err=%v)", rpcErr.Code, tc.wantCode, err)
 			}
 		})
+	}
+}
+
+func TestSessionResumeRestoresWithoutReplay(t *testing.T) {
+	var idSeq atomic.Int64
+	var notifyCount atomic.Int64
+	notifier := func(method string, params any) error {
+		notifyCount.Add(1)
+		return nil
+	}
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&idSeq, nil),
+		CloseRuntime: noopClose(),
+		Notify:       notifier,
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	// Use a fixed pre-existing session id; the fake starter ignores it and
+	// returns sess_<n>, so check that the published id differs from the
+	// requested id only insofar as the starter controls the SessionID.
+	_, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_resume_ok","mcpServers":[]}`))
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if notifyCount.Load() != 0 {
+		t.Fatalf("session/update emitted %d notifications, want 0", notifyCount.Load())
+	}
+}
+
+func TestSessionResumeClosesOldRuntime(t *testing.T) {
+	var idSeq atomic.Int64
+	var (
+		mu     sync.Mutex
+		events []string
+	)
+	starter := fakeRuntimeStart(&idSeq, nil)
+	closer := func(ctx context.Context, rt *app.Runtime) error {
+		mu.Lock()
+		events = append(events, "close "+rt.SessionID)
+		mu.Unlock()
+		return nil
+	}
+	canceller := func(ctx context.Context, id string) error {
+		mu.Lock()
+		events = append(events, "cancel "+id)
+		mu.Unlock()
+		return nil
+	}
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: starter,
+		CloseRuntime: closer,
+	})
+	m.SetTurnCanceller(canceller)
+
+	// First resume publishes a runtime under sess_resume_close.
+	if _, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_resume_close","mcpServers":[]}`)); err != nil {
+		t.Fatalf("first resume: %v", err)
+	}
+	// Second resume for the same id must cancel+close the prior runtime
+	// before publishing the new one.
+	if _, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_resume_close","mcpServers":[]}`)); err != nil {
+		t.Fatalf("second resume: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(events, ",")
+	if !strings.Contains(joined, "cancel sess_resume_close") {
+		t.Fatalf("expected turn cancel for sess_resume_close, events=%q", joined)
+	}
+	if !strings.Contains(joined, "close ") {
+		t.Fatalf("expected a close event, events=%q", joined)
 	}
 }
 
@@ -579,6 +680,59 @@ func TestSessionCloseSessionParsesAndReturnsEmptyObject(t *testing.T) {
 	m2, ok := res.(map[string]any)
 	if !ok || len(m2) != 0 {
 		t.Fatalf("CloseSession result = %v, want empty map[string]any{}", res)
+	}
+}
+
+func TestSessionListProjectsFromLister(t *testing.T) {
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	want := []db.SessionEntry{
+		{SessionID: "sess_a", Cwd: absCwd, Title: "A", UpdatedAt: time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC), MessageCount: 2},
+		{SessionID: "sess_b", Cwd: absCwd, Title: "", UpdatedAt: time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC), MessageCount: 0},
+	}
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: noopClose(),
+		Lister:       &fakeLister{entries: want, nextCursor: ""},
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	res, err := m.List(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`"}`))
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	obj, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("result type %T", res)
+	}
+	sessions, ok := obj["sessions"].([]map[string]any)
+	if !ok {
+		t.Fatalf("sessions type %T", obj["sessions"])
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("len = %d", len(sessions))
+	}
+	if sessions[0]["sessionId"] != "sess_a" {
+		t.Fatalf("sessions[0] = %+v", sessions[0])
+	}
+	if sessions[0]["updatedAt"] != "2026-07-03T00:00:00Z" {
+		t.Fatalf("updatedAt = %v", sessions[0]["updatedAt"])
+	}
+	if sessions[0]["cwd"] != absCwd {
+		t.Fatalf("cwd = %v", sessions[0]["cwd"])
+	}
+	if _, hasTitle := sessions[0]["title"].(string); hasTitle && sessions[0]["title"] != "A" {
+		t.Fatalf("title = %v", sessions[0]["title"])
+	}
+	meta, _ := sessions[0]["_meta"].(map[string]any)
+	if meta == nil || meta["messageCount"] != float64(2) {
+		t.Fatalf("_meta = %+v", meta)
+	}
+	if sessions[1]["title"] != "" && sessions[1]["title"] != nil {
+		t.Fatalf("empty title should be omitted, got %v", sessions[1]["title"])
+	}
+	if _, hasNext := obj["nextCursor"]; hasNext {
+		t.Fatalf("unexpected nextCursor: %+v", obj["nextCursor"])
 	}
 }
 

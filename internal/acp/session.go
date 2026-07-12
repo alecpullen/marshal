@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"marshal/internal/app"
+	"marshal/internal/db"
 )
 
 // RuntimeStarter abstracts app.StartRuntime so SessionManager can be tested
@@ -26,6 +27,13 @@ type RuntimeCloser func(context.Context, *app.Runtime) error
 // Load, Close, or CloseAll.
 type TurnCanceller func(context.Context, string) error
 
+// SessionLister exposes per-cwd session discovery for the session/list
+// handler. The production implementation opens the matching per-cwd
+// database; tests inject a fake.
+type SessionLister interface {
+	ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error)
+}
+
 // SessionManagerConfig configures a SessionManager.
 type SessionManagerConfig struct {
 	// StartRuntime builds a new *app.Runtime for a session. Required.
@@ -38,6 +46,9 @@ type SessionManagerConfig struct {
 	// Options are appended to every StartRuntime call. Useful for
 	// headless defaults like WithSkipOnboarding.
 	Options []app.Option
+	// Lister provides session discovery for session/list. When nil,
+	// List returns a server error.
+	Lister SessionLister
 }
 
 // SessionManager owns the map from ACP session IDs to *app.Runtime. It
@@ -56,6 +67,7 @@ type SessionManager struct {
 	options []app.Option
 
 	cancel TurnCanceller
+	lister SessionLister
 
 	mu          sync.RWMutex
 	sessions    map[string]*app.Runtime
@@ -93,6 +105,7 @@ func NewSessionManager(cfg SessionManagerConfig) *SessionManager {
 		start:    cfg.StartRuntime,
 		close:    closeFn,
 		notify:   cfg.Notify,
+		lister:   cfg.Lister,
 		options:  cfg.Options,
 		sessions: map[string]*app.Runtime{},
 	}
@@ -228,6 +241,43 @@ func (m *SessionManager) Load(ctx context.Context, params json.RawMessage) (any,
 	return nil, nil
 }
 
+// Resume handles session/resume. It restores an existing persisted session
+// like Load but, per ACP v1, MUST NOT replay conversation history. It
+// validates params, cancels and closes any pre-existing runtime for the
+// same id, starts a new runtime with WithExistingSession, publishes it,
+// and returns an empty result object.
+func (m *SessionManager) Resume(ctx context.Context, params json.RawMessage) (any, error) {
+	if m.start == nil {
+		return nil, fmt.Errorf("acp: SessionManager has no StartRuntime configured")
+	}
+	cancel, err := m.requireReady()
+	if err != nil {
+		return nil, err
+	}
+	var p sessionParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/resume params: %w", err)
+		}
+	}
+	if err := validateLifecycleParams(&p, true); err != nil {
+		return nil, err
+	}
+
+	if _, replaceErr := m.replaceExisting(ctx, p.SessionID, cancel); replaceErr != nil {
+		return nil, replaceErr
+	}
+
+	opts := append([]app.Option{}, m.options...)
+	opts = append(opts, app.WithWorkingDir(p.Cwd), app.WithExistingSession(p.SessionID))
+	rt, err := m.start(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("acp: start runtime: %w", err)
+	}
+	m.publishReplacement(p.SessionID, rt)
+	return map[string]any{}, nil
+}
+
 // Close tears down the runtime for id. The runtime is removed from the
 // map before any canceller or closer is invoked, so concurrent Get calls
 // return false during teardown.
@@ -265,6 +315,59 @@ func (m *SessionManager) CloseSession(ctx context.Context, params json.RawMessag
 		return nil, err
 	}
 	return map[string]any{}, nil
+}
+
+// listParams is the parameter shape for session/list.
+type listParams struct {
+	Cwd    string `json:"cwd"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
+// List handles session/list. It validates cwd (required, absolute),
+// queries the injected SessionLister, and projects the result into the
+// ACP SessionInfo[] shape with cursor pagination metadata.
+func (m *SessionManager) List(ctx context.Context, params json.RawMessage) (any, error) {
+	if m.lister == nil {
+		return nil, serverErrorf("acp: SessionManager has no SessionLister configured")
+	}
+	var p listParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, invalidParamsError("parse session/list params: %v", err)
+		}
+	}
+	if strings.TrimSpace(p.Cwd) == "" {
+		return nil, invalidParamsError("cwd is required for session/list")
+	}
+	if !filepath.IsAbs(p.Cwd) {
+		return nil, invalidParamsError("cwd must be an absolute path")
+	}
+
+	entries, next, err := m.lister.ListSessions(ctx, p.Cwd, p.Cursor, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		item := map[string]any{
+			"sessionId": e.SessionID,
+			"cwd":       e.Cwd,
+			"_meta":     map[string]any{"messageCount": float64(e.MessageCount)},
+		}
+		if e.Title != "" {
+			item["title"] = e.Title
+		}
+		if !e.UpdatedAt.IsZero() {
+			item["updatedAt"] = e.UpdatedAt.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	result := map[string]any{"sessions": items}
+	if next != "" {
+		result["nextCursor"] = next
+	}
+	return result, nil
 }
 
 // CloseAll tears down every runtime. It swaps the map for a fresh empty

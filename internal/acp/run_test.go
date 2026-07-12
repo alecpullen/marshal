@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"marshal/internal/app"
+	"marshal/internal/db"
 )
 
 func TestRunInitializeCapabilities(t *testing.T) {
@@ -83,8 +86,34 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			t.Fatalf("sessionCapabilities.close = %v, want empty object", closeObj)
 		}
 
-		// Must NOT have image/audio/embeddedContext/resume/list/delete/additionalDirectories/mcp
-		forbidden := []string{"image", "audio", "embeddedContext", "resume", "list", "delete", "additionalDirectories", "mcp"}
+		// sessionCapabilities.list is an empty object.
+		listCap, ok := sessionCaps["list"]
+		if !ok {
+			t.Fatalf("sessionCapabilities.list missing")
+		}
+		listObj, ok := listCap.(map[string]any)
+		if !ok {
+			t.Fatalf("sessionCapabilities.list is not an object: %T", listCap)
+		}
+		if len(listObj) != 0 {
+			t.Fatalf("sessionCapabilities.list = %v, want empty object", listObj)
+		}
+
+		// sessionCapabilities.resume is an empty object.
+		resumeCap, ok := sessionCaps["resume"]
+		if !ok {
+			t.Fatalf("sessionCapabilities.resume missing")
+		}
+		resumeObj, ok := resumeCap.(map[string]any)
+		if !ok {
+			t.Fatalf("sessionCapabilities.resume is not an object: %T", resumeCap)
+		}
+		if len(resumeObj) != 0 {
+			t.Fatalf("sessionCapabilities.resume = %v, want empty object", resumeObj)
+		}
+
+		// Must NOT have image/audio/embeddedContext/delete/additionalDirectories/mcp
+		forbidden := []string{"image", "audio", "embeddedContext", "delete", "additionalDirectories", "mcp"}
 		for _, key := range forbidden {
 			if _, exists := caps[key]; exists {
 				t.Fatalf("unexpected capability: %s", key)
@@ -379,5 +408,94 @@ func TestRunRespectsContextCancellation(t *testing.T) {
 	err := Run(ctx, bytes.NewBuffer(nil), &bytes.Buffer{}, &bytes.Buffer{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() error = %v, want %v", err, context.Canceled)
+	}
+}
+
+func TestRunSessionListWire(t *testing.T) {
+	root := t.TempDir()
+	absCwd, _ := filepath.Abs(root)
+	if err := os.MkdirAll(filepath.Join(absCwd, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	d, err := db.Open(filepath.Join(absCwd, ".marshal", "marshal.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := d.Migrate(); err != nil {
+		_ = d.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	pid, _ := d.GetOrCreateProject(absCwd, "p")
+	if err := d.CreateSession("sess_wire", pid, "Wire", time.Now().UTC()); err != nil {
+		_ = d.Close()
+		t.Fatalf("create: %v", err)
+	}
+	_ = d.Close()
+
+	pr, pw := io.Pipe()
+	out := &lockedBuffer{}
+	cfg := runConfig{
+		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) { return &app.Runtime{}, nil },
+		closeRuntime: func(ctx context.Context, rt *app.Runtime) error { return nil },
+		lister:       newPerCwdLister(),
+		shutdown:     0,
+	}
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- runWithConfig(context.Background(), pr, out, io.Discard, cfg)
+	}()
+
+	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"session/list","params":{"cwd":"` + absCwd + `"}}` + "\n"))
+
+	// Wait for response with the session list.
+	var found bool
+	pollUntil(t, 5*time.Second, func() bool {
+		if strings.Contains(out.String(), `"sessions"`) {
+			found = true
+			return true
+		}
+		return false
+	})
+	pw.Close()
+	<-runErr
+
+	if !found {
+		t.Fatalf("no session/list response; output=%q", out.String())
+	}
+
+	// Parse the response.
+	scan := bufio.NewScanner(bytes.NewReader(out.Bytes()))
+	scan.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var resp Response
+	for scan.Scan() {
+		line := scan.Text()
+		if !strings.Contains(line, `"sessions"`) {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		break
+	}
+	if resp.Error != nil {
+		t.Fatalf("error: %+v", resp.Error)
+	}
+	res, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result %T", resp.Result)
+	}
+	sessions, ok := res["sessions"].([]any)
+	if !ok {
+		t.Fatalf("sessions %T", res["sessions"])
+	}
+	var sessFound bool
+	for _, s := range sessions {
+		m, _ := s.(map[string]any)
+		if m["sessionId"] == "sess_wire" {
+			sessFound = true
+		}
+	}
+	if !sessFound {
+		t.Fatalf("sess_wire not in sessions: %+v", sessions)
 	}
 }

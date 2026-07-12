@@ -311,7 +311,6 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// of a missing sandbox dependency. A nil sandbox leaves the default
 	// non-sandboxed execRunner in place (used by tests).
 	sbCfg := sandbox.FromConfig(cfg.Tools.Shell)
-	sbCfg.AdditionalDirectories = additionalDirs
 	commandRunner, sbErr := sandbox.New(sbCfg, state.Logger())
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
@@ -349,7 +348,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
 	}
 
-	if err := native.RegisterAll(reg, native.Options{
+	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,
 		CommandRunner:  commandRunner,
 		TestCommand:    cfg.Commands.Test,
@@ -361,7 +360,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		Config:         cfg,
 		JobManager:     jobManager,
 		JobBroker:      jobBroker,
-	}); err != nil {
+	}
+	if len(additionalDirs) > 0 {
+		nativeOpts.AdditionalRoots = additionalDirs
+	}
+	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		jmErr = err
 		return nil, nil, nil, nil, nil, nil, err
 	}

@@ -49,7 +49,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 
 		start := t.root
 		if args.Path != "" {
-			start, err = resolveWorkspacePath(t.root, args.Path)
+			start, err = resolveWorkspacePathMulti(t.root, t.additionalRoots, args.Path)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}

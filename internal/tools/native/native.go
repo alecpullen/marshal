@@ -45,6 +45,11 @@ type Options struct {
 	// JobBroker, when non-nil, is wired into the JobManager so every change
 	// in the running-job count publishes a JobEvent. F19 broker wiring.
 	JobBroker *pubsub.Broker[JobEvent]
+	// AdditionalRoots extends the allowed workspace surface for tool
+	// execution beyond the primary workspace root. Each root is checked
+	// when resolving relative paths; paths that escape ALL roots are
+	// rejected. May be nil when no extra directories are configured.
+	AdditionalRoots []string
 }
 
 type CommandRunner interface {
@@ -72,17 +77,18 @@ type CommandResult struct {
 }
 
 type toolSet struct {
-	root           string
-	runner         CommandRunner
-	testCommand    string
-	maxOutputBytes int
-	sessionState   any
-	db             *db.DB
-	projectID      int64
-	fileTracker    FileTracker
-	jobManager     *JobManager
-	diagnostics    *diagnostics.Checker
-	registry       *registry.Registry
+	root            string
+	additionalRoots []string
+	runner          CommandRunner
+	testCommand     string
+	maxOutputBytes  int
+	sessionState    any
+	db              *db.DB
+	projectID       int64
+	fileTracker     FileTracker
+	jobManager      *JobManager
+	diagnostics     *diagnostics.Checker
+	registry        *registry.Registry
 
 	webEnabled      bool
 	webFetchTimeout time.Duration
@@ -150,6 +156,15 @@ func newToolSet(opts Options) (*toolSet, error) {
 		return nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
 
+	additionalRoots := make([]string, 0, len(opts.AdditionalRoots))
+	for _, r := range opts.AdditionalRoots {
+		abs, aerr := filepath.Abs(r)
+		if aerr != nil {
+			return nil, fmt.Errorf("resolve additional root %q: %w", r, aerr)
+		}
+		additionalRoots = append(additionalRoots, abs)
+	}
+
 	runner := opts.CommandRunner
 	if runner == nil {
 		runner = execRunner{}
@@ -187,16 +202,17 @@ func newToolSet(opts Options) (*toolSet, error) {
 	}
 
 	return &toolSet{
-		root:           root,
-		runner:         runner,
-		testCommand:    testCommand,
-		maxOutputBytes: maxOutputBytes,
-		sessionState:   opts.SessionState,
-		db:             opts.DB,
-		projectID:      opts.ProjectID,
-		fileTracker:    opts.FileTracker,
-		jobManager:     jobManager,
-		diagnostics:    diagnostics.NewChecker(opts.Config.Diagnostics.Commands),
+		root:            root,
+		additionalRoots: additionalRoots,
+		runner:          runner,
+		testCommand:     testCommand,
+		maxOutputBytes:  maxOutputBytes,
+		sessionState:    opts.SessionState,
+		db:              opts.DB,
+		projectID:       opts.ProjectID,
+		fileTracker:     opts.FileTracker,
+		jobManager:      jobManager,
+		diagnostics:     diagnostics.NewChecker(opts.Config.Diagnostics.Commands),
 
 		webEnabled:      opts.Config.Web.Enabled,
 		webFetchTimeout: opts.Config.Web.FetchTimeout,

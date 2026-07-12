@@ -39,7 +39,7 @@ func (t *toolSet) fileReadTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("file.read start_line must be <= end_line")
 		}
 
-		path, err := resolveWorkspacePath(t.root, args.Path)
+		path, err := resolveWorkspacePathMulti(t.root, t.additionalRoots, args.Path)
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
@@ -142,7 +142,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 
 		// Dry run first
 		for _, fp := range patches {
-			path, err := resolveWorkspacePath(t.root, fp.Path)
+			path, err := resolveWorkspacePathMulti(t.root, t.additionalRoots, fp.Path)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
@@ -187,7 +187,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 
 		// Apply for real
 		for _, fp := range patches {
-			path, err := resolveWorkspacePath(t.root, fp.Path)
+			path, err := resolveWorkspacePathMulti(t.root, t.additionalRoots, fp.Path)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}

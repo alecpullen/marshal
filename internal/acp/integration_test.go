@@ -261,6 +261,13 @@ func TestACPWireCancelDuringPrompt(t *testing.T) {
 	if errObj := frameError(resp); errObj != nil {
 		t.Fatalf("prompt response error: %+v", errObj)
 	}
+	// No cancel response frame should have been produced. session/cancel
+	// is a notification (no id), so it must never yield a response; any
+	// response frame still cached here would indicate a stray cancel
+	// response that would mask the prompt's terminal frame.
+	if n := len(h.responses); n != 0 {
+		t.Fatalf("unexpected cached response frames after prompt response: %v", cachedIDs(h.responses))
+	}
 	res, _ := frameResult(resp).(map[string]any)
 	if res["stopReason"] != "cancelled" {
 		t.Fatalf("prompt stopReason = %v, want cancelled", res["stopReason"])
@@ -359,9 +366,11 @@ func TestACPWireDifferentSessionsPromptConcurrently(t *testing.T) {
 // and return end_turn once the runner finishes.
 func TestACPWireDuplicatePromptRejectedWithoutCancellingFirst(t *testing.T) {
 	broker := pubsub.NewBroker[session.Event]()
+	runnerStarted := make(chan struct{}, 1)
 	blocker := make(chan struct{})
 
 	runFn := RunnerFunc(func(ctx context.Context, prompt string) error {
+		runnerStarted <- struct{}{}
 		<-blocker
 		return nil
 	})
@@ -391,8 +400,15 @@ func TestACPWireDuplicatePromptRejectedWithoutCancellingFirst(t *testing.T) {
 		},
 	})
 
-	// Give the first prompt a moment to register its active turn slot.
-	time.Sleep(50 * time.Millisecond)
+	// Wait deterministically for the first runner to be in-flight
+	// before sending the duplicate. This guarantees the active turn
+	// slot is registered and the duplicate is rejected deterministically
+	// without a fixed sleep.
+	select {
+	case <-runnerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first runner did not start")
+	}
 
 	// Second prompt (id "2") for the same session: must be rejected.
 	h.send(t, map[string]any{
@@ -492,9 +508,6 @@ func TestACPWireLoadReplaysBeforeNullResult(t *testing.T) {
 	if errObj := frameError(final); errObj != nil {
 		t.Fatalf("load response error: %+v", errObj)
 	}
-	if errObj := frameError(final); errObj != nil {
-		t.Fatalf("load response error: %+v", errObj)
-	}
 	// The result key must be present and explicitly null. A missing
 	// "result" key would not satisfy ACP v1; a present-but-non-null
 	// value would also be wrong.
@@ -503,6 +516,23 @@ func TestACPWireLoadReplaysBeforeNullResult(t *testing.T) {
 	}
 	if frameResult(final) != nil {
 		t.Fatalf("final load response result = %v, want null", frameResult(final))
+	}
+
+	// Drain any remaining frames on the wire briefly and fail if any
+	// use a forbidden load-replay method. readResponse silently drops
+	// notifications, so a stray frame emitted between the replay
+	// notifications and the final response would otherwise be invisible
+	// to the assertions above.
+draining:
+	for {
+		select {
+		case f := <-h.frames:
+			if method := frameMethod(f); shouldFailLoadMethod(method) {
+				t.Fatalf("forbidden load-replay method %q (frame=%v)", method, f)
+			}
+		case <-time.After(200 * time.Millisecond):
+			break draining
+		}
 	}
 
 	// All three messages must have been replayed with the right kinds.

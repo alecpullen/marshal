@@ -158,8 +158,13 @@ func validateLifecycleParams(p *sessionParams, requireSessionID bool) error {
 	if len(*p.MCPServers) > 0 {
 		return invalidParamsError("mcpServers is not yet supported")
 	}
-	if len(p.AdditionalDirectories) > 0 {
-		return invalidParamsError("additionalDirectories is not yet supported")
+	if len(p.AdditionalDirectories) > 8 {
+		return invalidParamsError("additionalDirectories max 8 entries")
+	}
+	for _, d := range p.AdditionalDirectories {
+		if !filepath.IsAbs(d) {
+			return invalidParamsError("additionalDirectories must be absolute paths")
+		}
 	}
 	if requireSessionID && p.SessionID == "" {
 		return invalidParamsError("sessionId is required")
@@ -188,6 +193,9 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 
 	opts := append([]app.Option{}, m.options...)
 	opts = append(opts, app.WithWorkingDir(p.Cwd))
+	if len(p.AdditionalDirectories) > 0 {
+		opts = append(opts, app.WithAdditionalDirectories(p.AdditionalDirectories))
+	}
 	rt, err := m.start(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("acp: start runtime: %w", err)
@@ -230,6 +238,9 @@ func (m *SessionManager) Load(ctx context.Context, params json.RawMessage) (any,
 
 	opts := append([]app.Option{}, m.options...)
 	opts = append(opts, app.WithWorkingDir(p.Cwd), app.WithExistingSession(p.SessionID))
+	if len(p.AdditionalDirectories) > 0 {
+		opts = append(opts, app.WithAdditionalDirectories(p.AdditionalDirectories))
+	}
 	rt, err := m.start(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("acp: start runtime: %w", err)
@@ -270,6 +281,9 @@ func (m *SessionManager) Resume(ctx context.Context, params json.RawMessage) (an
 
 	opts := append([]app.Option{}, m.options...)
 	opts = append(opts, app.WithWorkingDir(p.Cwd), app.WithExistingSession(p.SessionID))
+	if len(p.AdditionalDirectories) > 0 {
+		opts = append(opts, app.WithAdditionalDirectories(p.AdditionalDirectories))
+	}
 	rt, err := m.start(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("acp: start runtime: %w", err)
@@ -315,6 +329,10 @@ func (m *SessionManager) CloseSession(ctx context.Context, params json.RawMessag
 		return nil, err
 	}
 	return map[string]any{}, nil
+}
+
+func (m *SessionManager) Delete(ctx context.Context, params json.RawMessage) (any, error) {
+	return nil, serverErrorf("session/delete not yet implemented")
 }
 
 // listParams is the parameter shape for session/list.

@@ -310,7 +310,7 @@ func TestRunContextCancelClosesSessions(t *testing.T) {
 
 	select {
 	case err := <-runErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
+		if err == nil || !errors.Is(err, context.Canceled) {
 			t.Fatalf("runWithConfig error = %v, want context.Canceled", err)
 		}
 	case <-time.After(5 * time.Second):

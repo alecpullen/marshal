@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -607,5 +608,126 @@ func TestServerOutboundRequestReceivesResponse(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Logf("Serve did not return; harmless in pipe EOF race")
+	}
+}
+
+// --- Wire harness used by the integration_test.go TestACPWire* tests ---
+
+// wireHarness drives a Server through real newline-delimited JSON. Input
+// is fed via an io.Pipe; output is read by a scanner goroutine that
+// decodes each line into a map[string]any. next() has a 2-second
+// timeout; close() closes the input pipe and waits for both the
+// scanner and Serve to finish, failing the test on any non-nil error.
+//
+// responses caches response frames (frames with a non-empty id) keyed
+// by id, so the test can request a particular id even if the matching
+// frame was read by a previous readResponse call.
+type wireHarness struct {
+	inputWriter *io.PipeWriter
+	frames      <-chan map[string]any
+	responses   map[string]map[string]any
+	scannerErr  <-chan error
+	serveErr    <-chan error
+}
+
+func newWireHarness(t *testing.T, configure func(*Server)) *wireHarness {
+	t.Helper()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	srv := NewServer(inR, outW)
+	if configure != nil {
+		configure(srv)
+	}
+	frames := make(chan map[string]any, 512)
+	scannerErr := make(chan error, 1)
+	serveErr := make(chan error, 1)
+
+	go func() {
+		sc := bufio.NewScanner(outR)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			var f map[string]any
+			if err := json.Unmarshal([]byte(line), &f); err != nil {
+				scannerErr <- fmt.Errorf("wire harness: decode frame: %w (line=%q)", err, line)
+				return
+			}
+			frames <- f
+		}
+		if err := sc.Err(); err != nil {
+			scannerErr <- fmt.Errorf("wire harness: scanner: %w", err)
+			return
+		}
+		scannerErr <- nil
+	}()
+
+	go func() {
+		serveErr <- srv.Serve(context.Background())
+		// Close the output pipe once Serve returns so the scanner
+		// goroutine sees EOF and can exit.
+		_ = outW.Close()
+	}()
+
+	return &wireHarness{
+		inputWriter: inW,
+		frames:      frames,
+		responses:   map[string]map[string]any{},
+		scannerErr:  scannerErr,
+		serveErr:    serveErr,
+	}
+}
+
+func (h *wireHarness) send(t *testing.T, frame any) {
+	t.Helper()
+	b, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("marshal frame: %v", err)
+	}
+	b = append(b, '\n')
+	if _, err := h.inputWriter.Write(b); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+}
+
+func (h *wireHarness) next(t *testing.T) map[string]any {
+	t.Helper()
+	select {
+	case f, ok := <-h.frames:
+		if !ok {
+			t.Fatalf("frames channel closed before next frame arrived")
+		}
+		return f
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for next wire frame")
+		return nil
+	}
+}
+
+// close closes the input pipe and waits for both the scanner and Serve
+// to return. The test fails if either returns a non-nil error within a
+// 2-second budget.
+func (h *wireHarness) close(t *testing.T) {
+	t.Helper()
+	if err := h.inputWriter.Close(); err != nil {
+		t.Fatalf("close input pipe: %v", err)
+	}
+	for _, name := range []string{"scanner", "serve"} {
+		var ch <-chan error
+		if name == "scanner" {
+			ch = h.scannerErr
+		} else {
+			ch = h.serveErr
+		}
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Fatalf("wire harness: %s returned non-nil: %v", name, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("wire harness: %s did not return within 2 seconds of close", name)
+		}
 	}
 }

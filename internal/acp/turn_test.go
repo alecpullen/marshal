@@ -1,9 +1,11 @@
 package acp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -810,4 +812,83 @@ func TestPromptTurnAnswersUnsupportedQuestionsAsUnanswered(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for unanswered answers from runner")
 	}
+}
+
+// TestCancelWithIDIsRejected verifies that session/cancel — which the
+// ACP plan defines as a notification — is rejected with invalidRequest
+// (-32600) when a client sends it WITH a request id. An id-bearing
+// cancel must not cancel any active slot.
+func TestCancelWithIDIsRejected(t *testing.T) {
+	var cancelCalls atomic.Int64
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					<-ctx.Done()
+					return ctx.Err()
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	pr, pw := io.Pipe()
+	outR, outW := io.Pipe()
+	srv := NewServer(pr, outW)
+	srv.HandleNotification("session/cancel", func(ctx context.Context, params json.RawMessage) (any, error) {
+		cancelCalls.Add(1)
+		return manager.Cancel(ctx, params)
+	})
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.Serve(context.Background())
+	}()
+
+	// Send session/cancel with a non-nil id.
+	mustMarshalWrite(t, pw, map[string]any{
+		"jsonrpc": "2.0", "id": float64(99), "method": "session/cancel",
+		"params": map[string]any{"sessionId": "sess_test"},
+	})
+
+	// Read the response from the output pipe.
+	scan := bufio.NewScanner(outR)
+	scan.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var resp Response
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("no id-bearing response received within 2s")
+		default:
+		}
+		if scan.Scan() {
+			if err := json.Unmarshal(scan.Bytes(), &resp); err == nil && resp.ID != nil {
+				break
+			}
+		} else {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if string(*resp.ID) != "99" {
+		t.Fatalf("response id = %s, want 99", string(*resp.ID))
+	}
+	if resp.Error == nil {
+		t.Fatalf("expected error response, got result=%v", resp.Result)
+	}
+	if resp.Error.Code != invalidRequest {
+		t.Fatalf("error code = %d, want %d (invalidRequest)", resp.Error.Code, invalidRequest)
+	}
+
+	// No active slot was created, so Cancel must not have run.
+	if cancelCalls.Load() != 0 {
+		t.Fatalf("Cancel handler ran %d times, want 0", cancelCalls.Load())
+	}
+
+	pw.Close()
+	outW.Close()
+	<-serveErr
 }

@@ -64,6 +64,12 @@ type Server struct {
 	out      *json.Encoder
 	handlers map[string]Handler
 
+	// notificationMethods tracks methods registered via HandleNotification.
+	// An id-bearing frame for one of these methods is rejected with
+	// invalidRequest (-32600) because the method is defined as a
+	// notification and clients must not expect a response.
+	notificationMethods map[string]bool
+
 	// outMu serialises writes to the JSON encoder. Encode is
 	// goroutine-safe for individual calls, but our writes interleave
 	// notification, response, and outbound-request frames and the
@@ -98,6 +104,7 @@ func NewServer(stdin io.Reader, stdout io.Writer) *Server {
 		in:                     stdin,
 		out:                    json.NewEncoder(stdout),
 		handlers:               map[string]Handler{},
+		notificationMethods:    map[string]bool{},
 		outbound:               map[string]chan outboundResult{},
 		handlerShutdownTimeout: defaultHandlerShutdownTimeout,
 	}
@@ -105,6 +112,17 @@ func NewServer(stdin io.Reader, stdout io.Writer) *Server {
 
 func (s *Server) Handle(method string, fn Handler) {
 	s.handlers[method] = fn
+}
+
+// HandleNotification registers fn as the handler for a method that the
+// ACP plan defines as a notification. The handler runs and its result
+// is discarded: no response is ever written for a notification. If a
+// client sends the method WITH a request id, the server responds with
+// invalidRequest (-32600) because the method is notification-only and
+// clients must not expect a response.
+func (s *Server) HandleNotification(method string, fn Handler) {
+	s.handlers[method] = fn
+	s.notificationMethods[method] = true
 }
 
 // Notify emits a JSON-RPC notification frame (no id) to the connected
@@ -316,6 +334,20 @@ func (s *Server) handleFrame(ctx context.Context, line []byte) {
 	}
 
 	// Frame has a method — inbound request or notification.
+	if s.notificationMethods[req.Method] {
+		// Method is registered as notification-only. Reject id-bearing
+		// frames with invalidRequest; accept no-id frames and run the
+		// handler without writing a response.
+		if req.ID != nil {
+			if writeErr := s.writeError(req.ID, invalidRequest, "method is notification-only: "+req.Method); writeErr != nil {
+				s.reportFatal(writeErr)
+			}
+			return
+		}
+		s.handlerWG.Add(1)
+		go s.dispatchNotification(ctx, req)
+		return
+	}
 	s.handlerWG.Add(1)
 	if req.ID == nil {
 		// Notification — no response expected.

@@ -288,3 +288,34 @@ Resolved findings for the ACP reliability v1 lifecycle batch were closed on
 2026-07-12 as part of Task 8 of the ACP reliability v1 lifecycle plan. The
 implementation commit range spans `2b6e5c5..f423a51` on branch
 `feature/acp-reliability-v1-lifecycle`.
+
+## Implementation batch — ACP session discovery (list/resume)
+
+The remaining ACP session-discovery findings were addressed by the following
+commits on branch `feature/acp-session-list-resume`:
+
+```
+e513fe4 feat(db): add ListSessions query for ACP session/list
+7445175 feat(acp): implement session/list with cwd-scoped discovery
+3e2bec0 feat(acp): implement session/resume without replay
+d0e0640 test(acp): fix data race in TestRunSessionListWire
+7b7c8d5 docs(acp): document session/list and session/resume support
+```
+
+### Newly supported methods
+
+- **`session/list`** — returns the sessions stored in the per-cwd
+  `<cwd>/.marshal/marshal.db`, ordered by latest activity. Requires an
+  absolute `cwd`; a request with no `cwd` returns `-32602` because there is
+  no global session registry. Cursor-paginated.
+- **`session/resume`** — restores an existing persisted session like
+  `session/load` but does **not** replay conversation history. Cancels and
+  closes any prior runtime for the same id before publishing the new one.
+  Returns an empty object.
+
+### Unadvertised capabilities remain unadvertised
+
+`initialize` continues to omit `delete`, `additionalDirectories`, `mcp`/
+`mcpCapabilities`, image, audio, and embedded-context content blocks. The
+advertised lifecycle set is now `sessionCapabilities: { close, list, resume }`,
+each as an empty object.

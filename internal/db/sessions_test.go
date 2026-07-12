@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -349,5 +351,144 @@ func TestGetLeafMessageIDFallsBackToMax(t *testing.T) {
 	}
 	if got != all[0].ID {
 		t.Fatalf("explicit leaf = %d, want %d", got, all[0].ID)
+	}
+}
+
+func TestListSessions(t *testing.T) {
+	d, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	cwd := "/home/user/project"
+	pid, err := d.GetOrCreateProject(cwd, "project")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	otherCwd := "/home/user/other"
+	pid2, err := d.GetOrCreateProject(otherCwd, "other")
+	if err != nil {
+		t.Fatalf("get or create project 2: %v", err)
+	}
+	t0 := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	if err := d.CreateSession("sess_old", pid, "", t0); err != nil {
+		t.Fatalf("create old: %v", err)
+	}
+	if err := d.CreateSession("sess_new", pid, "Implement list", t0.Add(2*time.Hour)); err != nil {
+		t.Fatalf("create new: %v", err)
+	}
+	if _, err := d.SaveMessage("sess_new", "user", "hello", "plain", t0.Add(3*time.Hour), "", 0, false, 0); err != nil {
+		t.Fatalf("save msg: %v", err)
+	}
+	// Session in a different project must never appear.
+	if err := d.CreateSession("sess_other", pid2, "other", t0.Add(time.Hour)); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	// Filter by cwd, default limit.
+	got, next, err := d.ListSessions(context.Background(), cwd, "", 0)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if next != "" {
+		t.Fatalf("nextCursor = %q, want empty", next)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (%+v)", len(got), got)
+	}
+	if got[0].SessionID != "sess_new" || got[1].SessionID != "sess_old" {
+		t.Fatalf("order = %+v, want [sess_new sess_old]", got)
+	}
+	if got[0].Title != "Implement list" {
+		t.Fatalf("title = %q", got[0].Title)
+	}
+	if got[0].Cwd != cwd {
+		t.Fatalf("cwd = %q", got[0].Cwd)
+	}
+	if !got[0].UpdatedAt.Equal(t0.Add(3 * time.Hour)) {
+		t.Fatalf("updatedAt = %v, want %v", got[0].UpdatedAt, t0.Add(3*time.Hour))
+	}
+	if got[0].MessageCount != 1 {
+		t.Fatalf("messageCount = %d, want 1", got[0].MessageCount)
+	}
+	// old session has no messages: updatedAt falls back to started_at.
+	if !got[1].UpdatedAt.Equal(t0) {
+		t.Fatalf("updatedAt fallback = %v, want %v", got[1].UpdatedAt, t0)
+	}
+	if got[1].MessageCount != 0 {
+		t.Fatalf("messageCount = %d, want 0", got[1].MessageCount)
+	}
+
+	// Unknown cwd returns empty slice, no error.
+	unknown, _, err := d.ListSessions(context.Background(), "/no/such/project", "", 0)
+	if err != nil {
+		t.Fatalf("unknown cwd: %v", err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("unknown cwd returned %+v", unknown)
+	}
+}
+
+func TestListSessionsPagination(t *testing.T) {
+	d, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	cwd := "/home/user/pp"
+	pid, err := d.GetOrCreateProject(cwd, "pp")
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		if err := d.CreateSession(fmt.Sprintf("sess_%d", i), pid, "", t0.Add(time.Duration(i)*time.Hour)); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+
+	// Page size 2 from the top (newest first).
+	page1, next1, err := d.ListSessions(context.Background(), cwd, "", 2)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) != 2 || page1[0].SessionID != "sess_4" || page1[1].SessionID != "sess_3" {
+		t.Fatalf("page1 = %+v", page1)
+	}
+	if next1 == "" {
+		t.Fatalf("expected nextCursor on page1")
+	}
+	page2, next2, err := d.ListSessions(context.Background(), cwd, next1, 2)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2) != 2 || page2[0].SessionID != "sess_2" || page2[1].SessionID != "sess_1" {
+		t.Fatalf("page2 = %+v", page2)
+	}
+	if next2 == "" {
+		t.Fatalf("expected nextCursor on page2")
+	}
+	page3, next3, err := d.ListSessions(context.Background(), cwd, next2, 2)
+	if err != nil {
+		t.Fatalf("page3: %v", err)
+	}
+	if len(page3) != 1 || page3[0].SessionID != "sess_0" {
+		t.Fatalf("page3 = %+v", page3)
+	}
+	if next3 != "" {
+		t.Fatalf("next3 = %q, want empty", next3)
+	}
+
+	// Invalid cursor is an error.
+	if _, _, err := d.ListSessions(context.Background(), cwd, "not-base64!!!", 2); err == nil {
+		t.Fatalf("expected error for invalid cursor")
 	}
 }

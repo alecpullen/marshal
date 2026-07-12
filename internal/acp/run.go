@@ -21,6 +21,7 @@ type InitializeParams struct {
 type runConfig struct {
 	startRuntime RuntimeStarter
 	closeRuntime RuntimeCloser
+	lister       SessionLister
 	shutdown     time.Duration
 }
 
@@ -66,6 +67,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	manager := NewSessionManager(SessionManagerConfig{
 		StartRuntime: cfg.startRuntime,
 		CloseRuntime: cfg.closeRuntime,
+		Lister:       cfg.lister,
 		Notify:       srv.Notify,
 	})
 	srv.Handle("session/new", manager.Create)
@@ -113,6 +115,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
 	return runWithConfig(ctx, stdin, stdout, stderr, runConfig{
 		startRuntime: app.StartRuntime,
+		lister:       newPerCwdLister(),
 		shutdown:     connectionShutdownTimeout,
 	})
 }

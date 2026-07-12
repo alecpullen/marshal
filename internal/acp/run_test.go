@@ -83,8 +83,21 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			t.Fatalf("sessionCapabilities.close = %v, want empty object", closeObj)
 		}
 
-		// Must NOT have image/audio/embeddedContext/resume/list/delete/additionalDirectories/mcp
-		forbidden := []string{"image", "audio", "embeddedContext", "resume", "list", "delete", "additionalDirectories", "mcp"}
+		// sessionCapabilities.list is an empty object.
+		listCap, ok := sessionCaps["list"]
+		if !ok {
+			t.Fatalf("sessionCapabilities.list missing")
+		}
+		listObj, ok := listCap.(map[string]any)
+		if !ok {
+			t.Fatalf("sessionCapabilities.list is not an object: %T", listCap)
+		}
+		if len(listObj) != 0 {
+			t.Fatalf("sessionCapabilities.list = %v, want empty object", listObj)
+		}
+
+		// Must NOT have image/audio/embeddedContext/resume/delete/additionalDirectories/mcp
+		forbidden := []string{"image", "audio", "embeddedContext", "resume", "delete", "additionalDirectories", "mcp"}
 		for _, key := range forbidden {
 			if _, exists := caps[key]; exists {
 				t.Fatalf("unexpected capability: %s", key)

@@ -53,7 +53,7 @@ with an appropriate error or omitted from capability advertisement:
 | Additional workspace directories (`additional_dirs`) | Not supported. |
 | Image, audio, embedded resource blocks | Rejected with `-32602`. |
 | Full tool-call / plan / config-option projection | Session events do not yet preserve all mandatory ACP identifiers. |
-| Structured question / elicitation support | Pending questions are resolved with `AnswerUnanswered`. |
+| Structured question / elicitation support | Pending questions are received from the runner and answered with `AnswerUnanswered` when the turn context cancels, but they are never presented to the ACP client (no `elicitation/create` is emitted). |
 | HTTP, SSE, or WebSocket transports | Only stdio transport is implemented. |
 | ACP v2 | Not targeted. |
 
@@ -66,7 +66,9 @@ EOF on stdin, context cancellation, or `session/cancel` during an active turn:
 3. Calls `Runtime.Close` through the Batch 1 lifecycle — which calls
    `Quiesce` (cancels the in-flight turn, resolves pending state, shuts down
    background jobs) before closing MCP, brokers, snapshots, and the database.
-4. All active runtimes are closed deterministically within five seconds.
+4. All active runtimes are closed deterministically within the shutdown
+   budget. The total upper bound is ~10s: `Serve` waits up to 5s for active
+   handlers to join, then `CloseAll` waits up to 5s for runtimes to close.
 
 No handler, runtime, or outbound waiter remains attached after shutdown.
 

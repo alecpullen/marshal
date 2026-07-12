@@ -58,15 +58,15 @@ func mustDB(raw DBCloser) *db.DB {
 }
 
 type options struct {
-	now                func() time.Time
-	configLoader       configLoader
-	programRunner      ProgramRunner
-	skipOnboarding     bool
-	trustResolver      trust.Resolver
-	workingDir         string
-	sessionID          string
-	existingSessionID  string
-	knowledgeHook      func(ctx context.Context, state *session.State, database *db.DB)
+	now               func() time.Time
+	configLoader      configLoader
+	programRunner     ProgramRunner
+	skipOnboarding    bool
+	trustResolver     trust.Resolver
+	workingDir        string
+	sessionID         string
+	existingSessionID string
+	knowledgeHook     func(ctx context.Context, state *session.State, database *db.DB)
 }
 
 type Option func(*options)

@@ -68,7 +68,7 @@ type field struct {
 	moveDown func()
 	// disarm is called by the fieldList when the cursor leaves this row
 	// (used by the reset-to-defaults confirm idiom).
-	disarm   func()
+	disarm func()
 }
 
 // frame is one level of a pane's drill-down stack: a titled fieldList plus

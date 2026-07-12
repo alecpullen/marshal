@@ -2877,7 +2877,9 @@ func TestSettingsSaveBlockedDuringAgentTurn(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	dirty := config.Default(); dirty.Privacy.RemoteProvidersAllowed = true; m.settingsModel.SetWorkingConfig(dirty)
+	dirty := config.Default()
+	dirty.Privacy.RemoteProvidersAllowed = true
+	m.settingsModel.SetWorkingConfig(dirty)
 
 	// Ctrl+S opens the diff overlay; Enter commits and should be blocked.
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
@@ -2906,7 +2908,9 @@ func TestSettingsSaveBlockedDuringBackgroundJob(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	dirty := config.Default(); dirty.Privacy.RemoteProvidersAllowed = true; m.settingsModel.SetWorkingConfig(dirty)
+	dirty := config.Default()
+	dirty.Privacy.RemoteProvidersAllowed = true
+	m.settingsModel.SetWorkingConfig(dirty)
 
 	// Ctrl+S opens the diff overlay; Enter commits and should be blocked.
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
@@ -2938,7 +2942,9 @@ func TestSettingsSaveAllowedWhenIdle(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	dirty := config.Default(); dirty.Privacy.RemoteProvidersAllowed = true; m.settingsModel.SetWorkingConfig(dirty)
+	dirty := config.Default()
+	dirty.Privacy.RemoteProvidersAllowed = true
+	m.settingsModel.SetWorkingConfig(dirty)
 
 	// Ctrl+S opens the diff overlay; Enter commits the save.
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})

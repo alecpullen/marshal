@@ -47,6 +47,40 @@ func resolveWorkspacePath(root string, rel string) (string, error) {
 	return full, nil
 }
 
+// resolveWorkspacePathMulti resolves a relative path against the primary
+// root and any additional roots. The primary root is checked first; if the
+// path is within it, the absolute path under the primary root is returned.
+// If it escapes the primary root, each additional root is tried. A path
+// that escapes ALL roots is rejected.
+func resolveWorkspacePathMulti(root string, additionalRoots []string, rel string) (string, error) {
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path %q must be relative", rel)
+	}
+
+	cleaned := filepath.Clean(rel)
+	if cleaned == "." {
+		return root, nil
+	}
+
+	// Collect all roots: primary first, then additional.
+	roots := make([]string, 1+len(additionalRoots))
+	roots[0] = root
+	copy(roots[1:], additionalRoots)
+
+	for _, r := range roots {
+		full := filepath.Join(r, cleaned)
+		relative, err := filepath.Rel(r, full)
+		if err != nil {
+			continue
+		}
+		if relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return full, nil
+		}
+	}
+
+	return "", fmt.Errorf("path %q escapes workspace", rel)
+}
+
 func workspaceRel(root string, abs string) (string, error) {
 	rel, err := filepath.Rel(root, abs)
 	if err != nil {

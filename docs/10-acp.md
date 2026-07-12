@@ -12,11 +12,19 @@ supported and which are intentionally omitted.
 | `initialize` | Full | Protocol version negotiation, truthful capability advertisement. No auth methods. |
 | `session/new` | Full | Creates a new project and session record. |
 | `session/load` | Full | Loads an existing persisted session. Replays the active conversation branch through standard `session/update` notifications before returning. No project/session/message rows are created or modified. |
+| `session/list` | Full | Requires an absolute `cwd`. Filters by project root; no global session registry exists, so a request with no `cwd` returns `-32602`. Cursor-paginated. |
+| `session/resume` | Full | Restores an existing persisted session like `session/load` but does **not** replay history. Returns an empty object. |
 | `session/prompt` | Full | Sends prompt content to the agent. Serialized per session — a second prompt to the same session returns `-32000`. |
 | `session/cancel` | Full | Cancels the active turn in a session and returns `cancelled` from the original prompt. |
 | `session/close` | Full | Removes the runtime, cancels the active turn, joins the runner, and closes owned resources. Unknown sessions return `-32000`. |
 | `session/update` | Full | Standard notification emitted for message chunks, thought chunks, and replay during `session/load`. Uses standard `user_message_chunk`, `agent_message_chunk`, and `agent_thought_chunk` update methods. |
 | `request_permission` | Full | Surfaces tool permission requests with the same allow/deny/always semantics as the TUI approval flow. A permission request/response transport failure cancels the turn. |
+
+### Advertised capabilities
+
+`initialize` reports `agentCapabilities.loadSession: true` and
+`sessionCapabilities: { close, list, resume }` (each an empty object). No
+other lifecycle, content, or MCP capabilities are advertised.
 
 ## Prompt content blocks
 
@@ -47,7 +55,7 @@ with an appropriate error or omitted from capability advertisement:
 
 | Feature | Reason |
 |---------|--------|
-| `session/resume`, `session/list`, `session/delete` | Not implemented. |
+| `session/delete` | Not implemented. Requires a global session-id → project-root index that does not yet exist; tracked for a follow-up batch. |
 | `$/cancel_request` (generic request cancellation) | Only per-session `session/cancel` is supported. |
 | Dynamic MCP server arrays in `session/new` | MCP configuration is static. |
 | Additional workspace directories (`additional_dirs`) | Not supported. |

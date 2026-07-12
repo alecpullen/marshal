@@ -1,9 +1,12 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -334,4 +337,109 @@ func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 		return nil, fmt.Errorf("iterate message rows: %w", err)
 	}
 	return messages, nil
+}
+
+// SessionEntry is a single row returned by ListSessions, projected from an
+// agent_sessions row joined to its project root and message activity.
+type SessionEntry struct {
+	SessionID    string
+	Cwd          string
+	Title        string
+	UpdatedAt    time.Time
+	MessageCount int
+}
+
+const (
+	listSessionsDefaultLimit = 50
+	listSessionsMaxLimit     = 200
+)
+
+const listSessionsSQL = `
+SELECT s.id,
+       p.root_path,
+       s.title,
+       COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = s.id), s.started_at) AS updated_at,
+       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+FROM agent_sessions s
+JOIN projects p ON p.id = s.project_id
+WHERE p.root_path = ?
+ORDER BY updated_at DESC, s.id DESC
+LIMIT ? OFFSET ?`
+
+// ListSessions returns sessions whose project root matches cwd, newest
+// activity first. cursor is an opaque base64-encoded offset from a previous
+// nextCursor; pass "" to start from the beginning. limit defaults to 50 and
+// is clamped to [1, 200]. The returned nextCursor is empty when no more rows
+// remain. A cursor that cannot be decoded returns an error.
+func (db *DB) ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]SessionEntry, string, error) {
+	if limit <= 0 {
+		limit = listSessionsDefaultLimit
+	}
+	if limit > listSessionsMaxLimit {
+		limit = listSessionsMaxLimit
+	}
+
+	offset, err := decodeListCursor(cursor)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode session list cursor: %w", err)
+	}
+
+	rows, err := db.sqlDB.QueryContext(ctx, listSessionsSQL, cwd, limit+1, offset)
+	if err != nil {
+		return nil, "", fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SessionEntry
+	for rows.Next() {
+		var (
+			e         SessionEntry
+			updatedAt string
+			title     sql.NullString
+		)
+		if err := rows.Scan(&e.SessionID, &e.Cwd, &title, &updatedAt, &e.MessageCount); err != nil {
+			return nil, "", fmt.Errorf("scan session row: %w", err)
+		}
+		if title.Valid {
+			e.Title = title.String
+		}
+		parsed, perr := time.Parse(time.RFC3339, updatedAt)
+		if perr != nil {
+			return nil, "", fmt.Errorf("parse updated_at %q: %w", updatedAt, perr)
+		}
+		e.UpdatedAt = parsed.UTC()
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("iterate session rows: %w", err)
+	}
+
+	var nextCursor string
+	if len(out) > limit {
+		nextCursor = encodeListCursor(offset + limit)
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
+}
+
+func encodeListCursor(offset int) string {
+	return base64.StdEncoding.EncodeToString([]byte(strconv.Itoa(offset)))
+}
+
+func decodeListCursor(cursor string) (int, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	dec, err := base64.StdEncoding.DecodeString(cursor)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(string(dec))
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("negative cursor offset: %d", n)
+	}
+	return n, nil
 }

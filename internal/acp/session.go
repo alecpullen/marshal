@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"marshal/internal/app"
 )
@@ -105,6 +106,17 @@ func (m *SessionManager) SetTurnCanceller(cancel TurnCanceller) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 	m.cancel = cancel
+}
+
+// connectionShutdownTimeout is the maximum time allowed for cancelling or
+// closing a runtime during shutdown operations. All shutdown paths are
+// bounded at this duration.
+const connectionShutdownTimeout = 5 * time.Second
+
+// shutdownCtx returns a context that is cancelled after
+// connectionShutdownTimeout. Used to bound all shutdown operations.
+func shutdownCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), connectionShutdownTimeout)
 }
 
 // requireReady returns the configured canceller if non-nil. Used by Load,
@@ -220,7 +232,7 @@ func (m *SessionManager) Load(ctx context.Context, params json.RawMessage) (any,
 // map before any canceller or closer is invoked, so concurrent Get calls
 // return false during teardown.
 func (m *SessionManager) Close(ctx context.Context, id string) error {
-	cancel, err := m.requireReady()
+	turnCancel, err := m.requireReady()
 	if err != nil {
 		return err
 	}
@@ -228,8 +240,10 @@ func (m *SessionManager) Close(ctx context.Context, id string) error {
 	if !ok {
 		return serverErrorf("unknown session: %s", id)
 	}
-	err1 := cancel(ctx, id)
-	err2 := m.close(ctx, rt)
+	sCtx, sCancel := shutdownCtx()
+	defer sCancel()
+	err1 := turnCancel(sCtx, id)
+	err2 := m.close(sCtx, rt)
 	return errors.Join(err1, err2)
 }
 
@@ -258,7 +272,7 @@ func (m *SessionManager) CloseSession(ctx context.Context, params json.RawMessag
 // attempts cancel + close for each id using the caller context. The
 // returned error is the joined result of every per-id cancel and close.
 func (m *SessionManager) CloseAll(ctx context.Context) error {
-	cancel, err := m.requireReady()
+	turnCancel, err := m.requireReady()
 	if err != nil {
 		return err
 	}
@@ -278,12 +292,14 @@ func (m *SessionManager) CloseAll(ctx context.Context) error {
 	var errs []error
 	for _, id := range ids {
 		rt := old[id]
-		if err := cancel(ctx, id); err != nil {
+		sCtx, sCancel := shutdownCtx()
+		if err := turnCancel(sCtx, id); err != nil {
 			errs = append(errs, err)
 		}
-		if err := m.close(ctx, rt); err != nil {
+		if err := m.close(sCtx, rt); err != nil {
 			errs = append(errs, err)
 		}
+		sCancel()
 	}
 	return errors.Join(errs...)
 }
@@ -330,22 +346,31 @@ func (m *SessionManager) replaceExisting(ctx context.Context, id string, cancel 
 	return old, errors.Join(errs...)
 }
 
-// publishReplacement installs rt under id, cancelling and closing any
-// prior pointer with the same id. The replacement is then visible to
-// Get and any subsequent lifecycle operation.
+// publishReplacement cancels and closes any prior pointer with the same id,
+// then installs rt under id. The replacement is then visible to Get and any
+// subsequent lifecycle operation. The old runtime is torn down *before* the
+// new pointer is published so that no caller can observe the new runtime
+// while the old one is still being cancelled.
 func (m *SessionManager) publishReplacement(id string, rt *app.Runtime) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	prior, had := m.sessions[id]
-	m.sessions[id] = rt
 	m.mu.Unlock()
 	if had && prior != nil && prior != rt {
-		if m.cancel != nil {
-			_ = m.cancel(context.Background(), id)
+		cancel := m.cancel
+		if cancel != nil {
+			sCtx, sCancel := shutdownCtx()
+			_ = cancel(sCtx, id)
+			sCancel()
 		}
-		_ = m.close(context.Background(), prior)
+		sCtx, sCancel := shutdownCtx()
+		_ = m.close(sCtx, prior)
+		sCancel()
 	}
+	m.mu.Lock()
+	m.sessions[id] = rt
+	m.mu.Unlock()
 }
 
 // replay synchronously projects rt.State.Messages() through messageUpdate
@@ -381,7 +406,9 @@ func (m *SessionManager) teardownIfStillCurrent(rt *app.Runtime) error {
 	if ok && cur == rt {
 		delete(m.sessions, rt.SessionID)
 		m.mu.Unlock()
-		return m.close(context.Background(), rt)
+		sCtx, sCancel := shutdownCtx()
+		defer sCancel()
+		return m.close(sCtx, rt)
 	}
 	m.mu.Unlock()
 	return nil

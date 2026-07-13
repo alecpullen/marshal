@@ -25,6 +25,7 @@ type Config struct {
 	Tools         ToolsConfig                           `toml:"tools"`
 	Web           WebConfig                             `toml:"web"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
+	SDD           SDDConfig                             `toml:"sdd"`
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
 	TUI           TUIConfig                             `toml:"tui"`
@@ -76,6 +77,14 @@ type SwarmBudgetConfig struct {
 	MaxFixRounds   int            `toml:"max_fix_rounds"`
 	MaxTotalTokens int            `toml:"max_total_tokens"`
 	ToolIters      map[string]int `toml:"tool_iters"`
+}
+
+// SDDConfig holds run-level subagent-driven-development settings.
+type SDDConfig struct {
+	AutoWorktree   bool   `toml:"auto_worktree"`
+	MaxFixRounds   int    `toml:"max_fix_rounds"`
+	MaxTotalTokens int    `toml:"max_total_tokens"`
+	PlansDir       string `toml:"plans_dir"`
 }
 
 type MCPConfig struct {
@@ -364,6 +373,13 @@ type fileSwarm struct {
 	Budget *fileSwarmBudget `toml:"budget"`
 }
 
+type fileSDD struct {
+	AutoWorktree   *bool   `toml:"auto_worktree"`
+	MaxFixRounds   *int    `toml:"max_fix_rounds"`
+	MaxTotalTokens *int    `toml:"max_total_tokens"`
+	PlansDir       *string `toml:"plans_dir"`
+}
+
 type fileMCPServer struct {
 	Command *string           `toml:"command"`
 	Args    []string          `toml:"args"`
@@ -426,6 +442,7 @@ type configFile struct {
 	Tools       *fileTools       `toml:"tools"`
 	Web         *fileWeb         `toml:"web"`
 	Swarm       *fileSwarm       `toml:"swarm"`
+	SDD         *fileSDD         `toml:"sdd"`
 	MCP         *fileMCP         `toml:"mcp"`
 	Snapshots   *fileSnapshots   `toml:"snapshots"`
 	TUI         *fileTUI         `toml:"tui"`
@@ -523,6 +540,12 @@ func Default() Config {
 				MaxTotalTokens: 120000,
 				ToolIters:      map[string]int{},
 			},
+		},
+		SDD: SDDConfig{
+			AutoWorktree:   true,
+			MaxFixRounds:   3,
+			MaxTotalTokens: 0,
+			PlansDir:       ".marshal/plans",
 		},
 		Web: WebConfig{
 			Enabled:      false,
@@ -884,6 +907,21 @@ func merge(cfg *Config, file configFile) error {
 				cfg.Swarm.Budget.ToolIters = map[string]int{}
 			}
 			cfg.Swarm.Budget.ToolIters[role] = iters
+		}
+	}
+	if file.SDD != nil {
+		s := file.SDD
+		if s.AutoWorktree != nil {
+			cfg.SDD.AutoWorktree = *s.AutoWorktree
+		}
+		if s.MaxFixRounds != nil {
+			cfg.SDD.MaxFixRounds = *s.MaxFixRounds
+		}
+		if s.MaxTotalTokens != nil {
+			cfg.SDD.MaxTotalTokens = *s.MaxTotalTokens
+		}
+		if s.PlansDir != nil {
+			cfg.SDD.PlansDir = *s.PlansDir
 		}
 	}
 	if file.MCP != nil {

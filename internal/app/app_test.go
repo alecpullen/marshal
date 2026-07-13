@@ -1994,7 +1994,7 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 }
 
-func TestRunRegistersDesktopToolsWhenEnabled(t *testing.T) {
+func TestDesktopRegisterAllRegistersTools(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -2026,6 +2026,38 @@ headless = true
 	}
 	if _, err := desktop.RegisterAll(reg, desktop.Options{Config: cfg.Desktop, BackendFactory: fakeFactory}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	tools := reg.List()
+	names := map[string]bool{}
+	for _, tool := range tools {
+		names[tool.Name] = true
+	}
+	for _, expected := range []string{"browser.navigate", "browser.read", "browser.click", "browser.fill", "browser.submit", "browser.screenshot"} {
+		if !names[expected] {
+			t.Errorf("tool %q not registered", expected)
+		}
+	}
+}
+
+func TestBuildAgentRunnerRegistersDesktopToolsWhenEnabled(t *testing.T) {
+	// Verify that buildAgentRunner wires desktop tools into the registry
+	// when cfg.Desktop.Enabled is true. This tests the wiring, not just the
+	// desktop.RegisterAll package function.
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("test-provider")
+	cfg.Desktop.Enabled = true
+	cfg.Desktop.Mode = "standalone"
+	cfg.Desktop.Headless = true
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	_, reg, _, _, _, _, closer, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+
+	if closer == nil {
+		t.Fatal("desktop closer is nil, want non-nil when desktop is enabled")
 	}
 
 	tools := reg.List()

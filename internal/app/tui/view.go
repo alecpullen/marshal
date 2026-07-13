@@ -69,6 +69,10 @@ func (m Model) viewString() string {
 	if bar := m.renderBrowserBar(); bar != "" {
 		rows = append(rows, bar)
 	}
+	sddSpinner := m.activeSpinnerFrame(session.ActivityTool)
+	if panel := renderSDDPanel(m.state.SDDProgress(), sddSpinner, m.width); panel != "" {
+		rows = append(rows, panel)
+	}
 	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
 	out := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	if m.pickerModel != nil {
@@ -115,6 +119,14 @@ func (m Model) renderInputArea() string {
 			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth))
 		}
 	} else {
+		if m.state.SDDProgress().Active {
+			hint := mutedStyle.Render("SDD running — /stop to cancel, wait for completion to resume typing")
+			rows = append(rows, hint)
+			rows = append(rows, m.input.View())
+			content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+			border := mauveColor
+			return inputBoxStyle.BorderForeground(border).Width(inputInnerWidth).Render(content)
+		}
 		if strip := m.renderActivityStrip(); strip != "" {
 			rows = append(rows, strip)
 		}

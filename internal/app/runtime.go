@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"marshal/internal/agent"
+	"marshal/internal/agent/sdd"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
@@ -61,6 +62,7 @@ type Runtime struct {
 	Runner         *agent.Runner
 	ToolRegistry   *registry.Registry
 	SwarmRunner    *swarm.Orchestrator
+	SDDRunner      *sdd.Orchestrator
 	DB             DBCloser
 	ProjectID      int64
 	SessionID      string
@@ -421,7 +423,7 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
+	runner, toolReg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -435,6 +437,7 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		Runner:         runner,
 		ToolRegistry:   toolReg,
 		SwarmRunner:    swarmRunner,
+		SDDRunner:      sddRunner,
 		DB:             database,
 		ProjectID:      projectID,
 		SessionID:      sessionID,

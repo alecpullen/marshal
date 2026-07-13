@@ -24,6 +24,7 @@ type Config struct {
 	Agents        map[routing.AgentRole]AgentRoleConfig `toml:"agents"`
 	Tools         ToolsConfig                           `toml:"tools"`
 	Web           WebConfig                             `toml:"web"`
+	Desktop       DesktopConfig                         `toml:"desktop"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
@@ -151,6 +152,17 @@ type WebConfig struct {
 	SearchProvider string        `toml:"search_provider"`
 	SearchURL      string        `toml:"search_url"`
 	SearchKey      string        `toml:"search_key"`
+}
+
+type DesktopConfig struct {
+	Enabled          bool          `toml:"enabled"`
+	Mode             string        `toml:"mode"`
+	Headless         bool          `toml:"headless"`
+	CDPURL           string        `toml:"cdp_url"`
+	URLAllowlist     []string      `toml:"url_allowlist"`
+	URLDenylist      []string      `toml:"url_denylist"`
+	DefaultTimeout   time.Duration `toml:"default_timeout"`
+	ScreenshotFormat string        `toml:"screenshot_format"`
 }
 
 type ShellToolConfig struct {
@@ -354,6 +366,17 @@ type fileWeb struct {
 	SearchKey      *string `toml:"search_key"`
 }
 
+type fileDesktop struct {
+	Enabled          *bool    `toml:"enabled"`
+	Mode             *string  `toml:"mode"`
+	Headless         *bool    `toml:"headless"`
+	CDPURL           *string  `toml:"cdp_url"`
+	URLAllowlist     []string `toml:"url_allowlist"`
+	URLDenylist      []string `toml:"url_denylist"`
+	DefaultTimeout   *string  `toml:"default_timeout"`
+	ScreenshotFormat *string  `toml:"screenshot_format"`
+}
+
 type fileSwarmBudget struct {
 	MaxFixRounds   *int           `toml:"max_fix_rounds"`
 	MaxTotalTokens *int           `toml:"max_total_tokens"`
@@ -425,6 +448,7 @@ type configFile struct {
 	Indexing    *fileIndexing    `toml:"indexing"`
 	Tools       *fileTools       `toml:"tools"`
 	Web         *fileWeb         `toml:"web"`
+	Desktop     *fileDesktop     `toml:"desktop"`
 	Swarm       *fileSwarm       `toml:"swarm"`
 	MCP         *fileMCP         `toml:"mcp"`
 	Snapshots   *fileSnapshots   `toml:"snapshots"`
@@ -527,6 +551,13 @@ func Default() Config {
 		Web: WebConfig{
 			Enabled:      false,
 			FetchTimeout: 30 * time.Second,
+		},
+		Desktop: DesktopConfig{
+			Enabled:          false,
+			Mode:             "standalone",
+			Headless:         false,
+			DefaultTimeout:   30 * time.Second,
+			ScreenshotFormat: "png",
 		},
 		MCP: MCPConfig{
 			Servers:                  map[string]MCPServerConfig{},
@@ -965,6 +996,36 @@ func merge(cfg *Config, file configFile) error {
 		}
 		if file.Web.SearchKey != nil {
 			cfg.Web.SearchKey = *file.Web.SearchKey
+		}
+	}
+	if file.Desktop != nil {
+		if file.Desktop.Enabled != nil {
+			cfg.Desktop.Enabled = *file.Desktop.Enabled
+		}
+		if file.Desktop.Mode != nil {
+			cfg.Desktop.Mode = *file.Desktop.Mode
+		}
+		if file.Desktop.Headless != nil {
+			cfg.Desktop.Headless = *file.Desktop.Headless
+		}
+		if file.Desktop.CDPURL != nil {
+			cfg.Desktop.CDPURL = *file.Desktop.CDPURL
+		}
+		if file.Desktop.URLAllowlist != nil {
+			cfg.Desktop.URLAllowlist = file.Desktop.URLAllowlist
+		}
+		if file.Desktop.URLDenylist != nil {
+			cfg.Desktop.URLDenylist = file.Desktop.URLDenylist
+		}
+		if file.Desktop.DefaultTimeout != nil && *file.Desktop.DefaultTimeout != "" {
+			d, err := time.ParseDuration(*file.Desktop.DefaultTimeout)
+			if err != nil {
+				return fmt.Errorf("parse desktop.default_timeout: %w", err)
+			}
+			cfg.Desktop.DefaultTimeout = d
+		}
+		if file.Desktop.ScreenshotFormat != nil {
+			cfg.Desktop.ScreenshotFormat = *file.Desktop.ScreenshotFormat
 		}
 	}
 	if file.Hooks != nil {

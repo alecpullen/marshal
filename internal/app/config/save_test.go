@@ -300,6 +300,7 @@ func fullEditedConfig() Config {
 	cfg.Commands = CommandsConfig{Test: "make test", Format: "make fmt", Vet: "make vet"}
 	cfg.Indexing = IndexingConfig{UseTreesitter: true, UseEmbeddings: true, SummariseFiles: true, Ignore: []string{"build/**"}}
 	cfg.Web = WebConfig{Enabled: true, FetchTimeout: 45 * time.Second, SearchProvider: "searx", SearchURL: "http://localhost:8888", SearchKey: "sk-live-1234"}
+	cfg.Desktop = DesktopConfig{Enabled: true, Mode: "attach", Headless: true, CDPURL: "http://localhost:9222", URLAllowlist: []string{"example.com"}, URLDenylist: []string{"evil.com/admin"}, DefaultTimeout: 60 * time.Second, ScreenshotFormat: "png"}
 	cfg.Swarm.Budget = SwarmBudgetConfig{MaxFixRounds: 5, MaxTotalTokens: 99000, ToolIters: map[string]int{"tester": 9}}
 	cfg.MCP = MCPConfig{
 		Servers:                  map[string]MCPServerConfig{"fs": {Command: "mcp-fs", Args: []string{"--root", "."}, Env: map[string]string{"A": "1"}}},
@@ -341,6 +342,9 @@ func TestSaveProjectConfigFullSurfaceRoundTrip(t *testing.T) {
 	}
 	if loaded.Web != cfg.Web {
 		t.Errorf("web: got %+v want %+v", loaded.Web, cfg.Web)
+	}
+	if !reflect.DeepEqual(loaded.Desktop, cfg.Desktop) {
+		t.Errorf("desktop: got %+v want %+v", loaded.Desktop, cfg.Desktop)
 	}
 	if !reflect.DeepEqual(loaded.Swarm, cfg.Swarm) {
 		t.Errorf("swarm: got %+v want %+v", loaded.Swarm, cfg.Swarm)

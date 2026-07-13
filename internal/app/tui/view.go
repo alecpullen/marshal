@@ -162,7 +162,9 @@ func (m Model) renderInputArea() string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	border := coralColor
-	if !m.input.Focused() {
+	if m.successPulse {
+		border = tealColor
+	} else if !m.input.Focused() {
 		border = mauveColor
 	}
 	return inputBoxStyle.BorderForeground(border).Width(inputInnerWidth).Render(content)

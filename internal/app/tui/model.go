@@ -138,6 +138,7 @@ type Model struct {
 	lastActivityLabel string
 	lastActivityDone  time.Time
 	lastActivityKind  session.ActivityKind
+	successPulse      bool
 	now               func() time.Time
 }
 
@@ -1345,6 +1346,8 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.agentCancel = nil
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		m.state.SetProviderError(msg.err)
+	} else if msg.err == nil {
+		m.successPulse = true
 	}
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
@@ -1354,7 +1357,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.updateViewportHeight()
 	m.refreshViewport()
 	m.syncSettingsSaveBlock()
-	return m, nil
+	return m, tickCmd()
 }
 
 // handleJobCount handles a jobCountMsg, shared by Update and
@@ -1391,7 +1394,13 @@ func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
-	if !m.busy {
+	if !m.busy && m.successPulse {
+		if m.lastActivityKind == session.ActivityIdle && !m.lastActivityDone.IsZero() &&
+			m.now().Sub(m.lastActivityDone) >= doneDisplayDuration {
+			m.successPulse = false
+		}
+	}
+	if !m.busy && !m.successPulse {
 		return m, nil
 	}
 	act := m.state.Activity()

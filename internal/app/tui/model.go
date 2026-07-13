@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1618,6 +1619,42 @@ func (m *Model) setMode(mode string) {
 		m.runner.SetForceClass(class) // "" => auto (classifier runs)
 	}
 	m.forceMode = mode
+}
+
+// modeOrder is the canonical cycle order used by Tab/Shift+Tab.
+// "" represents auto (the classifier-driven default).
+var modeOrder = []string{"", "ask", "edit"}
+
+// modeSwitchMessage maps each mode value to the exact confirmation
+// message used by the /ask, /edit, /auto command handlers, so the
+// transcript looks identical whether the user pressed Tab or typed /ask.
+var modeSwitchMessage = map[string]string{
+	"":     "Switched to Auto mode. Agent will classify each turn automatically.",
+	"ask":  "Switched to Ask mode. Agent will answer questions without planning or editing.",
+	"edit": "Switched to Edit mode. Agent will plan and execute changes.",
+}
+
+// cycleMode advances (forward=true) or reverses the interaction mode,
+// wrapping around. It applies the result via setMode and emits the same
+// confirmation message the /<mode> commands use.
+func (m *Model) cycleMode(forward bool) {
+	cur := m.forceMode
+	idx := slices.Index(modeOrder, cur)
+	if idx < 0 {
+		idx = 0
+	}
+	step := 1
+	if !forward {
+		step = -1
+	}
+	next := modeOrder[(idx+step+len(modeOrder))%len(modeOrder)]
+	m.setMode(next)
+	msg, ok := modeSwitchMessage[next]
+	if !ok {
+		msg = fmt.Sprintf("Switched to %s mode.", next)
+	}
+	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+	m.refreshViewport()
 }
 
 // switchModelPreset applies a session-only model switch by routing every

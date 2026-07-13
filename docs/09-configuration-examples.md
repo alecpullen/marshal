@@ -11,6 +11,10 @@ Path idea:
 Example:
 
 ```toml
+[tui]
+theme = "dracula"
+palette = { accent_primary = "#bd93f9", fg_default = "#f8f8f2" }
+
 [profile]
 default = "local_balanced"
 

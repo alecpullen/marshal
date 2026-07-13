@@ -10,9 +10,9 @@ This document outlines suggested features and expansions for subsequent iteratio
 
 ---
 
-## 2. Visual TUI Themes
-- **Palette Customization**: Support custom color styling under a `[tui]` TOML configuration section.
-- **Predefined Themes**: Ship predefined layouts and themes (e.g., Dracula, Nord, Catppuccin) to enhance aesthetic appeal.
+## 2. Visual TUI Themes — SHIPPED (see `docs/13-project-audit-2026-07-11.md`, batch "TUI themes")
+
+Four named themes (`warm-sunset`, `dracula`, `nord`, `catppuccin-mocha`) plus a `[tui]` TOML block for palette overrides ship in the `feature/tui-themes` batch. `NO_COLOR` still forces monochrome. Light themes and auto-detect remain out of scope.
 
 ---
 

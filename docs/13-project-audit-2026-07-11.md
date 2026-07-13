@@ -294,6 +294,10 @@ Resolved findings for the ACP additional directories batch were closed on
 implementation commit range spans `29290fc..e89aa7f` on branch
 `feature/acp-additional-directories`.
 
+Resolved findings for the TUI themes batch were closed on 2026-07-13 as
+part of the TUI themes plan. The implementation commit range spans
+`b76026e..f3563c1` on branch `feature/tui-themes`.
+
 ## Implementation batch — ACP session discovery (list/resume)
 
 The remaining ACP session-discovery findings were addressed by the following
@@ -350,3 +354,33 @@ e89aa7f feat(acp): advertise sessionCapabilities.additionalDirectories
 audio, and embedded-context content blocks. The advertised lifecycle set
 is now `sessionCapabilities: { close, list, resume, additionalDirectories }`,
 each as an empty object.
+
+## Implementation batch — TUI themes
+
+The TUI palette and theme selection were extended to support TOML-driven
+customization and four named themes (`warm-sunset`, `dracula`, `nord`,
+`catppuccin-mocha`) on branch `feature/tui-themes`:
+
+```
+b76026e feat(theme): add Dracula, Nord, Catppuccin Mocha presets and palette overrides
+27c1caa fix(theme): register warm-sunset, tighten parseHex, drop inline comments
+4ae6933 feat(theme): add LoadWithConfig and Names for runtime theme selection
+3328126 feat(config): add [tui] block for theme name and palette overrides
+f3563c1 feat(tui): add Theme enum to settings and live-reload via LoadWithConfig
+```
+
+### What changed
+
+- `internal/app/tui/theme/presets.go` ships three new dark palettes plus a `PaletteOverrides` merge helper.
+- `internal/app/tui/theme.LoadWithConfig(name, overrides)` selects a named theme and applies per-slot overrides; the old `Load()` is preserved as a thin wrapper.
+- `internal/app/config` gains a `[tui]` block (`theme`, `palette`).
+- Settings gets a `Theme` `kindEnum` row; selecting a theme live-reloads the active palette.
+
+### Audit confirmed clean
+
+A grep for raw `lipgloss.Color("…")` literals in `internal/app/tui/` production files (excluding `theme/` and tests) returned zero matches — the TUI was already fully theme-driven from the prior settings redesign, so no renderer migrations were needed.
+
+### Unchanged
+
+- `NO_COLOR` always forces monochrome, even with a named theme.
+- Light themes and auto-detect are out of scope for this batch.

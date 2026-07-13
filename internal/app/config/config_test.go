@@ -10,6 +10,8 @@ import (
 
 	"marshal/internal/llm/routing"
 	"marshal/internal/trust"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 type staticTrustResolver struct {
@@ -774,6 +776,34 @@ timeout_ms = 2500
 	entry := cfg.Hooks.Entries[0]
 	if entry.Event != "pre_tool_use" || entry.Matcher != "file.write_patch" || entry.Command != "./scripts/check-patch.sh" || entry.TimeoutMS != 2500 {
 		t.Fatalf("entry = %+v", entry)
+	}
+}
+
+func TestTUITomlRoundTrip(t *testing.T) {
+	var cfg Config
+	err := toml.Unmarshal([]byte(`
+[tui]
+theme = "dracula"
+palette = { accent_primary = "#ff00ff" }
+`), &cfg)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.TUI.Theme != "dracula" {
+		t.Fatalf("Theme = %q, want dracula", cfg.TUI.Theme)
+	}
+	if cfg.TUI.Palette["accent_primary"] != "#ff00ff" {
+		t.Fatalf("Palette[accent_primary] = %q, want #ff00ff", cfg.TUI.Palette["accent_primary"])
+	}
+}
+
+func TestTUIDefaultsAreEmpty(t *testing.T) {
+	cfg := Default()
+	if cfg.TUI.Theme != "" {
+		t.Fatalf("Default().TUI.Theme = %q, want empty", cfg.TUI.Theme)
+	}
+	if cfg.TUI.Palette != nil {
+		t.Fatalf("Default().TUI.Palette = %#v, want nil", cfg.TUI.Palette)
 	}
 }
 

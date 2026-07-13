@@ -670,6 +670,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.cycleMode(false)
 			return m, nil
+		case "alt+m":
+			m.cycleModel(true)
+			return m, nil
+		case "shift+alt+m":
+			m.cycleModel(false)
+			return m, nil
 		case "ctrl+x":
 			// F16 R3: clear the steering queue while the agent is
 			// working. Out-of-band so /clear semantics don't collide.

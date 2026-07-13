@@ -427,6 +427,54 @@ func TestPolicyEngine_F4GuardrailOverridesAllow(t *testing.T) {
 	}
 }
 
+func TestEvaluateMCPToolFallsThroughToF4Rule(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Rules = []config.PermissionRule{
+		{Permission: "mcp.github.list_issues", Pattern: "mcp.github.list_issues", Action: "allow"},
+	}
+	pe := NewEngine(&cfg, nil)
+
+	dec, _, err := pe.Evaluate("mcp.github.list_issues", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionAllow {
+		t.Errorf("F4 allow rule should permit mcp.github.list_issues, got %v", dec)
+	}
+}
+
+func TestEvaluateMCPToolDenyRuleWins(t *testing.T) {
+	cfg := config.Default()
+	cfg.MCP.Policies = map[string]string{
+		"mcp.github.create_issue": "confirm",
+	}
+	cfg.Permissions.Rules = []config.PermissionRule{
+		{Permission: "mcp.github.create_issue", Pattern: "mcp.github.create_issue", Action: "deny"},
+	}
+	pe := NewEngine(&cfg, nil)
+
+	dec, _, err := pe.Evaluate("mcp.github.create_issue", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("F4 deny rule should win over MCP policy confirm, got %v", dec)
+	}
+}
+
+func TestEvaluateMCPToolUnmatchedFallsBackToConfirm(t *testing.T) {
+	cfg := config.Default()
+	pe := NewEngine(&cfg, nil)
+
+	dec, _, err := pe.Evaluate("mcp.unknown.tool", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Errorf("unmatched MCP tool should fall back to confirm, got %v", dec)
+	}
+}
+
 func TestPolicyEngine_Evaluate_WebToolsAlwaysConfirm(t *testing.T) {
 	cfg := config.Default()
 	// Even with shell auto_approve, web tools stay confirm-by-default.

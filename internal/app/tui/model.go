@@ -673,7 +673,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "alt+m":
 			m.cycleModel(true)
 			return m, nil
-		case "shift+alt+m":
+		case "alt+shift+m":
 			m.cycleModel(false)
 			return m, nil
 		case "ctrl+x":

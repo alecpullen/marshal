@@ -2744,6 +2744,292 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	}
 }
 
+// ── Tab/Shift+Tab mode cycling and Alt+M model cycling (Task 8) ─────────
+
+func TestTabCyclesModeForward(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	// Start in auto mode (forceMode == "")
+	if m.forceMode != "" {
+		t.Fatalf("initial forceMode = %q, want \"\"", m.forceMode)
+	}
+
+	// Tab → ask
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.forceMode != "ask" {
+		t.Fatalf("after 1st Tab: forceMode = %q, want \"ask\"", m.forceMode)
+	}
+
+	// Tab → edit
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.forceMode != "edit" {
+		t.Fatalf("after 2nd Tab: forceMode = %q, want \"edit\"", m.forceMode)
+	}
+
+	// Tab → auto (wrap)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.forceMode != "" {
+		t.Fatalf("after 3rd Tab: forceMode = %q, want \"\" (auto)", m.forceMode)
+	}
+
+	// Verify the last system message is the auto confirmation
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one system message")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleSystem {
+		t.Fatal("last message should be system role")
+	}
+	if !strings.Contains(last.Content, "Auto mode") {
+		t.Fatalf("last message = %q, want 'Auto mode' confirmation", last.Content)
+	}
+}
+
+func TestShiftTabCyclesModeBackward(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+	m.forceMode = "edit"
+
+	// Shift+Tab → ask
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if m.forceMode != "ask" {
+		t.Fatalf("after 1st Shift+Tab: forceMode = %q, want \"ask\"", m.forceMode)
+	}
+
+	// Shift+Tab → auto
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if m.forceMode != "" {
+		t.Fatalf("after 2nd Shift+Tab: forceMode = %q, want \"\" (auto)", m.forceMode)
+	}
+
+	// Shift+Tab → edit (wrap)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if m.forceMode != "edit" {
+		t.Fatalf("after 3rd Shift+Tab: forceMode = %q, want \"edit\"", m.forceMode)
+	}
+
+	// Verify the last system message is the edit confirmation
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one system message")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleSystem {
+		t.Fatal("last message should be system role")
+	}
+	if !strings.Contains(last.Content, "Edit mode") {
+		t.Fatalf("last message = %q, want 'Edit mode' confirmation", last.Content)
+	}
+}
+
+func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
+	reg := commands.New()
+	mustRegister(t, reg, commands.Command{
+		Name:        "test",
+		Description: "test command",
+		Handler:     func(s *session.State, args []string) string { return "" },
+	})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	// Trigger cmd popup by setting input to "/"
+	m.input.SetValue("/")
+	m.updateCompletionPopups()
+	if !m.cmdPopup.isVisible() {
+		t.Fatal("cmd popup should be visible after /")
+	}
+
+	initialMode := m.forceMode // should be ""
+
+	// Tab should accept the completion, not cycle mode
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+
+	if m.cmdPopup.isVisible() {
+		t.Fatal("cmd popup should be dismissed after Tab")
+	}
+	if m.forceMode != initialMode {
+		t.Fatalf("forceMode changed from %q to %q, should be unchanged", initialMode, m.forceMode)
+	}
+	// Input should have been replaced with the accepted command
+	if !strings.HasPrefix(m.input.Value(), "/test") {
+		t.Fatalf("input = %q, want \"/test\" prefix", m.input.Value())
+	}
+}
+
+func TestTabIgnoredDuringApproval(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	tc := &session.PendingToolCall{
+		ID:           "1",
+		Name:         "shell.run",
+		Command:      "echo test",
+		Risk:         "low",
+		Reason:       "testing",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(tc)
+	m := New(state)
+	m.resize(80, 24)
+	m.forceMode = "ask"
+
+	// Tab while approval is pending should not cycle mode
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+
+	if m.forceMode != "ask" {
+		t.Fatalf("forceMode = %q, want \"ask\" (unchanged during approval)", m.forceMode)
+	}
+	if state.PendingApproval() == nil {
+		t.Fatal("pending approval was cleared by Tab")
+	}
+}
+
+func TestAltMCyclesModelForward(t *testing.T) {
+	var reloaded *config.Config
+	state := modelTestState(t)
+	m := New(state, WithConfigReloader(func(c config.Config) error {
+		reloaded = &c
+		return nil
+	}))
+	m.resize(80, 24)
+
+	// Set active route to test-a so cycleModel finds a known index
+	state.SetActiveRoute(session.RouteInfo{
+		Active: true, Preset: "test-a", Provider: "ollama", Model: "qwen2.5", LocalOnly: true,
+	})
+
+	// Alt+M should cycle forward. Sorted order by provider then name:
+	//   index 0: test-b (anthropic)
+	//   index 1: test-a (ollama)
+	// Forward from index 1 → index 0 → test-b
+	m = sendKey(m, tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt})
+
+	if reloaded == nil {
+		t.Fatal("configReloader was not called")
+	}
+	if reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-b" {
+		t.Fatalf("configReloader preset = %q, want \"test-b\"",
+			reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer])
+	}
+	// A confirmation system message should appear
+	msgs := state.Messages()
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Switched to model") {
+		t.Fatal("expected 'Switched to model' system message")
+	}
+}
+
+func TestAltShiftMCyclesModelBackward(t *testing.T) {
+	var reloaded *config.Config
+	state := modelTestState(t)
+	m := New(state, WithConfigReloader(func(c config.Config) error {
+		reloaded = &c
+		return nil
+	}))
+	m.resize(80, 24)
+
+	// Set active route to test-b (index 0 in sorted order)
+	state.SetActiveRoute(session.RouteInfo{
+		Active: true, Preset: "test-b", Provider: "anthropic", Model: "sonnet-5",
+	})
+
+	// Shift+Alt+M should cycle backward.
+	// Sorted: index 0 = test-b, index 1 = test-a
+	// Backward from index 0 wraps → index 1 → test-a
+	m = sendKey(m, tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt | tea.ModShift})
+
+	if reloaded == nil {
+		t.Fatal("configReloader was not called")
+	}
+	if reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-a" {
+		t.Fatalf("configReloader preset = %q, want \"test-a\"",
+			reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer])
+	}
+}
+
+func TestAltMNoPresetsShowsGuidance(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+
+	// No model presets configured; Alt+M should not panic and show guidance
+	m = sendKey(m, tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt})
+
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected a system message")
+	}
+	last := msgs[len(msgs)-1]
+	if !strings.Contains(last.Content, "No model presets configured") {
+		t.Fatalf("message = %q, want guidance about presets", last.Content)
+	}
+}
+
+func TestAltMBlockedWhileBusy(t *testing.T) {
+	var reloaded bool
+	state := modelTestState(t)
+	m := New(state, WithConfigReloader(func(c config.Config) error {
+		reloaded = true
+		return nil
+	}))
+	m.resize(80, 24)
+	m.busy = true
+
+	// Alt+M while busy should not call configReloader and should show busy msg
+	m = sendKey(m, tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt})
+
+	if reloaded {
+		t.Fatal("configReloader should not be called when busy")
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected a system message")
+	}
+	last := msgs[len(msgs)-1]
+	if !strings.Contains(last.Content, "Busy") {
+		t.Fatalf("message = %q, want 'Busy' message", last.Content)
+	}
+}
+
+func TestShiftTabDuringPopupIsNoOp(t *testing.T) {
+	reg := commands.New()
+	mustRegister(t, reg, commands.Command{
+		Name:        "test",
+		Description: "test command",
+		Handler:     func(s *session.State, args []string) string { return "" },
+	})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	// Trigger cmd popup
+	m.input.SetValue("/")
+	m.updateCompletionPopups()
+	if !m.cmdPopup.isVisible() {
+		t.Fatal("cmd popup should be visible after /")
+	}
+
+	initialMode := m.forceMode
+	initialInput := m.input.Value()
+
+	// Shift+Tab while popup is visible should be a no-op
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+
+	if m.forceMode != initialMode {
+		t.Fatalf("forceMode changed from %q to %q, should be unchanged", initialMode, m.forceMode)
+	}
+	if m.input.Value() != initialInput {
+		t.Fatalf("input changed from %q to %q, should be unchanged", initialInput, m.input.Value())
+	}
+	if !m.cmdPopup.isVisible() {
+		t.Fatal("popup should remain visible after Shift+Tab during popup")
+	}
+}
+
 // ── Task 8: Turn-cancellation on quit paths ──────────────────────────────
 
 func TestCtrlCCancelsTurn(t *testing.T) {

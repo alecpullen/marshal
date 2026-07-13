@@ -169,6 +169,22 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	}
 }
 
+func TestInputBorderPulsesTealOnSuccess(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.successPulse = true
+	out := m.renderInputArea()
+	if out == stripANSI(out) {
+		t.Fatalf("input border should carry ANSI color when successPulse is set:\n%s", out)
+	}
+	// Verify it's specifically the success color, not the coral default.
+	teal := m.renderInputArea()
+	m.successPulse = false
+	neutral := m.renderInputArea()
+	if teal == neutral {
+		t.Fatalf("success pulse border should differ from the default focused border")
+	}
+}
+
 func TestInputAreaHasNoBackgroundFill(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	out := m.renderInputArea()

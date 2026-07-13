@@ -23,14 +23,15 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 const (
-	titleBarRows        = 1
-	inputBorderRows     = 2
-	activityStripRows   = 1
-	transcriptFrameRows  = 0
+	titleBarRows         = 1
+	inputBorderRows      = 2
+	activityStripRows    = 1
+	transcriptFrameRows   = 0
 	transcriptBorderRows = 2
-	footerRows          = help.Rows
-	statusLineRows      = 1
-	completionPopupMax  = 8
+	footerRows           = help.Rows
+	commandBarRows       = footerRows + 1
+	statusLineRows       = 1
+	completionPopupMax   = 8
 )
 
 // View assembles the full-screen frame. Alt screen and mouse mode are
@@ -197,7 +198,16 @@ func (m Model) renderHelpFooter() string {
 		QuestionPending: m.state.PendingQuestion() != nil,
 		PopupOpen:       m.activeCompletionPopup() != nil,
 	}
-	return mutedStyle.Width(max(m.width, 1)).Render(help.Footer(hints))
+	body := help.Footer(hints)
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderTop(true).
+		BorderBottom(false).
+		BorderRight(false).
+		BorderLeft(false).
+		BorderForeground(activeTheme.BorderMuted).
+		Width(max(m.width, 1)).
+		Render(body)
 }
 
 // highlightMatches bolds runes at the given byte indices using the

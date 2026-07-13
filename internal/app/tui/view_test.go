@@ -91,7 +91,7 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	if idleLines[0] != busyLines[0] {
 		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
 	}
-	inputTop := 30 - m.inputAreaRows() - footerRows - statusLineRows
+	inputTop := 30 - m.inputAreaRows() - commandBarRows - statusLineRows
 	if !strings.HasPrefix(stripANSI(busyLines[inputTop]), "╭") {
 		t.Fatalf("input box top moved; line %d = %q", inputTop, busyLines[inputTop])
 	}
@@ -161,9 +161,9 @@ func TestTitleBarShowsWorkingDir(t *testing.T) {
 func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	if m.viewport.Width() != 98 {
-		t.Fatalf("viewport.Width = %d, want 98 (width-2, border accounts for it)", m.viewport.Width())
+		t.Fatalf("viewport.Width = %d, want 98", m.viewport.Width())
 	}
-	wantHeight := 30 - titleBarRows - transcriptBorderRows - m.inputAreaRows() - footerRows - statusLineRows
+	wantHeight := 30 - titleBarRows - transcriptBorderRows - m.inputAreaRows() - commandBarRows - statusLineRows
 	if m.viewport.Height() != wantHeight {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
 	}
@@ -374,6 +374,18 @@ func TestInputWrapsBeforeBoxContentWidth(t *testing.T) {
 		if !strings.Contains(promptRow, "a") {
 			t.Fatalf("width=%d: prompt row has no text after ❯:\n%s", w, out)
 		}
+	}
+}
+
+func TestCommandBarHasTopBorder(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	bar := m.renderHelpFooter()
+	plain := stripANSI(bar)
+	if !strings.Contains(plain, "─") {
+		t.Fatalf("command bar should have a top border rule:\n%s", plain)
+	}
+	if !strings.Contains(plain, "send") || !strings.Contains(plain, "help") {
+		t.Fatalf("command bar should still show the keybinding footer:\n%s", plain)
 	}
 }
 

@@ -66,15 +66,15 @@ func (w *Workspace) WriteReviewPackage(base, head string) (string, error) {
 	if _, err := w.Ensure(); err != nil {
 		return "", err
 	}
-	logOut, err := exec.Command("git", "log", "--oneline", base+".."+head).Output()
+	logOut, err := exec.Command("git", "-C", w.root, "log", "--oneline", base+".."+head).Output()
 	if err != nil {
 		return "", fmt.Errorf("sdd workspace: git log: %w", err)
 	}
-	statOut, err := exec.Command("git", "diff", "--stat", base+".."+head).Output()
+	statOut, err := exec.Command("git", "-C", w.root, "diff", "--stat", base+".."+head).Output()
 	if err != nil {
 		return "", fmt.Errorf("sdd workspace: git diff --stat: %w", err)
 	}
-	diffOut, err := exec.Command("git", "diff", "-U10", base+".."+head).Output()
+	diffOut, err := exec.Command("git", "-C", w.root, "diff", "-U10", base+".."+head).Output()
 	if err != nil {
 		return "", fmt.Errorf("sdd workspace: git diff: %w", err)
 	}

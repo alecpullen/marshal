@@ -34,7 +34,9 @@ type BranchVerdict struct {
 }
 
 // ParseTaskVerdict extracts the spec compliance and task quality verdicts
-// from a task reviewer's report text.
+// from a task reviewer's report text. It also populates Findings by parsing
+// bullet items under #### Critical / #### Important / #### Minor headings
+// in the Issues section.
 func ParseTaskVerdict(text string) TaskVerdict {
 	v := TaskVerdict{SpecCompliance: VerdictUnknown, TaskQuality: VerdictUnknown}
 	lower := strings.ToLower(text)
@@ -55,6 +57,33 @@ func ParseTaskVerdict(text string) TaskVerdict {
 			v.TaskQuality = VerdictNeedsFixes
 		}
 	}
+
+	// Extract findings from #### <Severity> heading sections.
+	lines := strings.Split(text, "\n")
+	var currentSeverity string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "#### Critical"):
+			currentSeverity = "Critical"
+		case strings.HasPrefix(trimmed, "#### Important"):
+			currentSeverity = "Important"
+		case strings.HasPrefix(trimmed, "#### Minor"):
+			currentSeverity = "Minor"
+		case strings.HasPrefix(trimmed, "- ") && currentSeverity != "":
+			v.Findings = append(v.Findings, Finding{
+				Severity: currentSeverity,
+				Text:     strings.TrimPrefix(trimmed, "- "),
+			})
+		default:
+			// A non-empty line that isn't a heading or bullet resets the
+			// current severity section (e.g. ### Assessment closes Issues).
+			if trimmed != "" && !strings.HasPrefix(trimmed, "- ") && !strings.HasPrefix(trimmed, "####") {
+				currentSeverity = ""
+			}
+		}
+	}
+
 	return v
 }
 

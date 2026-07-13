@@ -57,6 +57,38 @@ func TestParseTaskVerdictCannotVerify(t *testing.T) {
 	}
 }
 
+func TestParseTaskVerdictExtractsFindings(t *testing.T) {
+	text := `### Issues
+#### Critical (Must Fix)
+- main.go:15 — nil pointer risk on line 42
+- missing timeout in config parsing
+
+#### Important (Should Fix)
+- handler.go:88 — log before return swallows error
+
+#### Minor (Nice to Have)
+- parser.go:42 — name could be clearer
+
+### Assessment
+**Task quality:** Approved`
+	v := ParseTaskVerdict(text)
+	if len(v.Findings) != 4 {
+		t.Fatalf("Findings count = %d, want 4", len(v.Findings))
+	}
+	expect := []Finding{
+		{Severity: "Critical", Text: "main.go:15 — nil pointer risk on line 42"},
+		{Severity: "Critical", Text: "missing timeout in config parsing"},
+		{Severity: "Important", Text: "handler.go:88 — log before return swallows error"},
+		{Severity: "Minor", Text: "parser.go:42 — name could be clearer"},
+	}
+	for i, want := range expect {
+		if v.Findings[i].Severity != want.Severity || v.Findings[i].Text != want.Text {
+			t.Errorf("Finding[%d] = {%q, %q}, want {%q, %q}",
+				i, v.Findings[i].Severity, v.Findings[i].Text, want.Severity, want.Text)
+		}
+	}
+}
+
 func TestParseBranchVerdictReady(t *testing.T) {
 	text := `### Branch Verdict
 - ✅ Ready to merge

@@ -188,8 +188,8 @@ type Runner struct {
 	forceClassMu sync.Mutex
 	tracker      *progressTracker
 	trackerMu    sync.Mutex
-	stats      *turnStats
-	statsMu    sync.Mutex
+	stats        *turnStats
+	statsMu      sync.Mutex
 }
 
 // RunTaskFunc, if non-nil, overrides RunTask for testing. It returns a

@@ -125,8 +125,21 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			t.Fatalf("sessionCapabilities.additionalDirectories = %v, want empty object", adObj)
 		}
 
-		// Must NOT have image/audio/embeddedContext/delete/mcp
-		forbidden := []string{"image", "audio", "embeddedContext", "delete", "mcp"}
+		// sessionCapabilities.delete is an empty object.
+		deleteCap, ok := sessionCaps["delete"]
+		if !ok {
+			t.Fatalf("sessionCapabilities.delete missing")
+		}
+		deleteObj, ok := deleteCap.(map[string]any)
+		if !ok {
+			t.Fatalf("sessionCapabilities.delete is not an object: %T", deleteCap)
+		}
+		if len(deleteObj) != 0 {
+			t.Fatalf("sessionCapabilities.delete = %v, want empty object", deleteObj)
+		}
+
+		// Must NOT have image/audio/embeddedContext/mcp
+		forbidden := []string{"image", "audio", "embeddedContext", "mcp"}
 		for _, key := range forbidden {
 			if _, exists := caps[key]; exists {
 				t.Fatalf("unexpected capability: %s", key)

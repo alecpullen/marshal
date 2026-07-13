@@ -29,6 +29,10 @@ func Open(path string) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("set sqlite busy_timeout: %w", err)
 	}
+	if _, err := sqlDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("enable sqlite foreign_keys: %w", err)
+	}
 
 	if err := sqlDB.Ping(); err != nil {
 		sqlDB.Close()

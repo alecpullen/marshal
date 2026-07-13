@@ -27,7 +27,10 @@ func TestExtractPinnedFilesFindsAndReadsKnownPaths(t *testing.T) {
 	}
 
 	database := openTestDB(t)
-	projectID := int64(1)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
 	if err := database.SaveFileIndex(projectID, []db.FileIndex{
 		{Path: "a.go", Language: "go"},
 		{Path: "b.go", Language: "go"},
@@ -55,7 +58,10 @@ func TestExtractPinnedFilesIgnoresUnknownPaths(t *testing.T) {
 		t.Fatalf("write known.go: %v", err)
 	}
 	database := openTestDB(t)
-	projectID := int64(1)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
 	if err := database.SaveFileIndex(projectID, []db.FileIndex{
 		{Path: "known.go", Language: "go"},
 	}); err != nil {
@@ -83,7 +89,10 @@ func TestExtractPinnedFilesIgnoresAtInsideEmail(t *testing.T) {
 		t.Fatalf("write real.go: %v", err)
 	}
 	database := openTestDB(t)
-	projectID := int64(1)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
 	if err := database.SaveFileIndex(projectID, []db.FileIndex{
 		{Path: "real.go", Language: "go"},
 	}); err != nil {
@@ -104,7 +113,10 @@ func TestExtractPinnedFilesDeduplicates(t *testing.T) {
 		t.Fatalf("write x.go: %v", err)
 	}
 	database := openTestDB(t)
-	projectID := int64(1)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
 	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "x.go"}}); err != nil {
 		t.Fatalf("SaveFileIndex: %v", err)
 	}
@@ -124,7 +136,10 @@ func TestRunTaskPinsAtFileReferences(t *testing.T) {
 		t.Fatalf("write ref.go: %v", err)
 	}
 	database := openTestDB(t)
-	projectID := int64(1)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
 	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "ref.go", Language: "go"}}); err != nil {
 		t.Fatalf("SaveFileIndex: %v", err)
 	}
@@ -139,7 +154,7 @@ func TestRunTaskPinsAtFileReferences(t *testing.T) {
 	runner.NativeTools = true
 	runner.ProjectID = projectID
 
-	_, err := runner.RunTask(context.Background(), "explain @ref.go")
+	_, err = runner.RunTask(context.Background(), "explain @ref.go")
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}
@@ -172,7 +187,10 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 		t.Fatalf("write steered.go: %v", err)
 	}
 	database := openTestDB(t)
-	projectID := int64(1)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
 	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "steered.go", Language: "go"}}); err != nil {
 		t.Fatalf("SaveFileIndex: %v", err)
 	}
@@ -203,7 +221,7 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 	runner.ProjectID = projectID
 	runner.MaxToolIterations = 5
 
-	_, err := runner.RunTask(context.Background(), "do the thing")
+	_, err = runner.RunTask(context.Background(), "do the thing")
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}

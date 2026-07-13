@@ -434,6 +434,65 @@ func TestListSessions(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionCascadesMessages(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	sessionID := createTestSession(t, db)
+
+	now := time.Now().UTC()
+	if _, err := db.SaveMessage(sessionID, "user", "msg1", "plain", now, "", 0, false, 0); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	if _, err := db.SaveMessage(sessionID, "assistant", "msg2", "markdown", now.Add(time.Second), "", 0, false, 0); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+
+	var before int
+	if err := db.sqlDB.QueryRow("SELECT COUNT(*) FROM messages WHERE session_id = ?", sessionID).Scan(&before); err != nil {
+		t.Fatalf("count before: %v", err)
+	}
+	if before != 2 {
+		t.Fatalf("expected 2 messages before delete, got %d", before)
+	}
+
+	existed, err := db.DeleteSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if !existed {
+		t.Fatal("expected existed=true")
+	}
+
+	var after int
+	if err := db.sqlDB.QueryRow("SELECT COUNT(*) FROM messages WHERE session_id = ?", sessionID).Scan(&after); err != nil {
+		t.Fatalf("count after: %v", err)
+	}
+	if after != 0 {
+		t.Fatalf("expected 0 messages after cascade delete, got %d", after)
+	}
+
+	var sessionCount int
+	if err := db.sqlDB.QueryRow("SELECT COUNT(*) FROM agent_sessions WHERE id = ?", sessionID).Scan(&sessionCount); err != nil {
+		t.Fatalf("session count: %v", err)
+	}
+	if sessionCount != 0 {
+		t.Fatal("expected session row to be deleted")
+	}
+}
+
+func TestDeleteSessionUnknownIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	existed, err := db.DeleteSession(context.Background(), "nonexistent-session-id")
+	if err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if existed {
+		t.Fatal("expected existed=false for unknown session")
+	}
+}
+
 func TestListSessionsPagination(t *testing.T) {
 	d, err := Open(":memory:")
 	if err != nil {

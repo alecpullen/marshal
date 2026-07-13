@@ -18,6 +18,9 @@ func TestSaveAndGetMemories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateProject failed: %v", err)
 	}
+	if err := db.CreateSession("sess-1", projectID, "", time.Unix(100, 0).UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
 
 	now := time.Unix(100, 0).UTC()
 	if err := db.SaveMemory(projectID, "fact", "Uses SQLite for persistence", "sess-1", now); err != nil {
@@ -86,6 +89,9 @@ func TestSetMemoryConfidenceTransitions(t *testing.T) {
 	projectID, err := db.GetOrCreateProject("/repo", "repo")
 	if err != nil {
 		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+	if err := db.CreateSession("sess-1", projectID, "", time.Unix(100, 0).UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
 	}
 
 	now := time.Unix(100, 0).UTC()

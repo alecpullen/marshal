@@ -28,10 +28,11 @@ type RuntimeCloser func(context.Context, *app.Runtime) error
 type TurnCanceller func(context.Context, string) error
 
 // SessionLister exposes per-cwd session discovery for the session/list
-// handler. The production implementation opens the matching per-cwd
-// database; tests inject a fake.
+// and session/delete handlers. The production implementation opens the
+// matching per-cwd database; tests inject a fake.
 type SessionLister interface {
 	ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error)
+	DeleteSession(ctx context.Context, cwd, sessionID string) (existed bool, err error)
 }
 
 // SessionManagerConfig configures a SessionManager.
@@ -332,7 +333,36 @@ func (m *SessionManager) CloseSession(ctx context.Context, params json.RawMessag
 }
 
 func (m *SessionManager) Delete(ctx context.Context, params json.RawMessage) (any, error) {
-	return nil, serverErrorf("session/delete not yet implemented")
+	if m.lister == nil {
+		return nil, serverErrorf("acp: SessionManager has no SessionLister configured")
+	}
+	cancel, err := m.requireReady()
+	if err != nil {
+		return nil, err
+	}
+	var p sessionParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/delete params: %w", err)
+		}
+	}
+	if err := validateLifecycleParams(&p, true); err != nil {
+		return nil, err
+	}
+	if len(p.AdditionalDirectories) > 0 {
+		return nil, invalidParamsError("additionalDirectories is not supported for session/delete")
+	}
+	if _, replaceErr := m.replaceExisting(ctx, p.SessionID, cancel); replaceErr != nil {
+		return nil, replaceErr
+	}
+	existed, err := m.lister.DeleteSession(ctx, p.Cwd, p.SessionID)
+	if err != nil {
+		return nil, serverErrorf("acp: delete session: %v", err)
+	}
+	if !existed {
+		return nil, serverErrorf("acp: no such session %q in %q", p.SessionID, p.Cwd)
+	}
+	return map[string]any{}, nil
 }
 
 // listParams is the parameter shape for session/list.

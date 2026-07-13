@@ -76,34 +76,62 @@ func (pe *PolicyEngine) SetRules(rules []permissions.Rule) {
 
 func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {
 	if strings.HasPrefix(toolName, "mcp.") {
+		var mcpMatched bool
+		var mcpDecision Decision
+		var mcpReason string
+
 		if pe.config != nil && pe.config.MCP.Policies != nil {
-			// 1. Exact Match (highest priority)
+			// 1. Exact Match (highest priority) — deny returns immediately
 			if policyStr, ok := pe.config.MCP.Policies[toolName]; ok {
 				switch Decision(policyStr) {
-				case DecisionAllow:
-					return DecisionAllow, "allowed by MCP policy config exact match", nil
-				case DecisionConfirm:
-					return DecisionConfirm, "requires approval by MCP policy config exact match", nil
 				case DecisionDeny:
 					return DecisionDeny, "blocked by MCP policy config exact match", nil
+				case DecisionAllow:
+					mcpDecision = DecisionAllow
+					mcpReason = "allowed by MCP policy config exact match"
+					mcpMatched = true
+				case DecisionConfirm:
+					mcpDecision = DecisionConfirm
+					mcpReason = "requires approval by MCP policy config exact match"
+					mcpMatched = true
 				}
 			}
 
-			// 2. Pattern Match (prefix, wildcard, regex)
-			for pattern, policyStr := range pe.config.MCP.Policies {
-				if matchMCPPolicy(pattern, toolName) {
-					switch Decision(policyStr) {
-					case DecisionAllow:
-						return DecisionAllow, "allowed by MCP policy match: " + pattern, nil
-					case DecisionConfirm:
-						return DecisionConfirm, "requires approval by MCP policy match: " + pattern, nil
-					case DecisionDeny:
-						return DecisionDeny, "blocked by MCP policy match: " + pattern, nil
+			// 2. Pattern Match (prefix, wildcard, regex) — deny returns immediately
+			if !mcpMatched {
+				for pattern, policyStr := range pe.config.MCP.Policies {
+					if matchMCPPolicy(pattern, toolName) {
+						switch Decision(policyStr) {
+						case DecisionDeny:
+							return DecisionDeny, "blocked by MCP policy match: " + pattern, nil
+						case DecisionAllow:
+							mcpDecision = DecisionAllow
+							mcpReason = "allowed by MCP policy match: " + pattern
+							mcpMatched = true
+						case DecisionConfirm:
+							mcpDecision = DecisionConfirm
+							mcpReason = "requires approval by MCP policy match: " + pattern
+							mcpMatched = true
+						}
+						break
 					}
 				}
 			}
 		}
-		// Default confirm fallback for write-like MCP tools
+
+		// 4. F4 rules — can override allow/confirm from MCP policies
+		subjects := subjectsForTool(toolName, args, "")
+		if len(subjects) > 0 {
+			decision, matched := evaluateSubjects(pe.rules, permissions.PermissionForTool(toolName), subjects)
+			if matched {
+				return decision, "resolved by permission rule", nil
+			}
+		}
+
+		// Fallback to MCP policy decision, or secure default confirm
+		if mcpMatched {
+			return mcpDecision, mcpReason, nil
+		}
 		return DecisionConfirm, "requires approval (unconfigured MCP tool secure default)", nil
 	}
 

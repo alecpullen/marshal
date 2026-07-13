@@ -339,6 +339,19 @@ func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 	return messages, nil
 }
 
+// DeleteSession deletes a session and its messages (via CASCADE).
+func (db *DB) DeleteSession(ctx context.Context, sessionID string) (bool, error) {
+	res, err := db.sqlDB.ExecContext(ctx, "DELETE FROM agent_sessions WHERE id = ?", sessionID)
+	if err != nil {
+		return false, fmt.Errorf("delete session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete session rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
 // SessionEntry is a single row returned by ListSessions, projected from an
 // agent_sessions row joined to its project root and message activity.
 type SessionEntry struct {

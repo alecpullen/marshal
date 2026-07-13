@@ -145,9 +145,27 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 		if verdict.Ready {
 			o.announce("Branch review: ✅ ready to merge")
 		} else {
-			o.announce("⚠ Branch review: findings — fix wave dispatched")
+			o.announce("⚠ Branch review: findings — fix wave dispatched, re-reviewing")
 			fixPrompt := BuildFixPrompt("", branchTask.Summary, PlanTask{})
 			_, _ = o.runRole(ctx, agent.RoleSDDImplementer, swarm.ScopeFull, fixPrompt)
+
+			// Re-review once.
+			headSHA = o.gitHead(workingDir)
+			mergeBase = o.gitMergeBase(workingDir)
+			diffPath, _ = ws.WriteBranchReviewPackage(mergeBase, headSHA)
+			reReviewPrompt := BuildBranchReviewerPrompt(
+				planPath, ws.ReportsDir(), diffPath,
+				plan.GlobalConstraints, mergeBase, headSHA, minorFindings,
+			)
+			reTask, _ := o.runRole(ctx, agent.RoleSDDBranchReviewer, swarm.ScopeReadOnly, reReviewPrompt)
+			if reTask != nil {
+				reVerdict := ParseBranchVerdict(reTask.Summary)
+				if reVerdict.Ready {
+					o.announce("Branch re-review: ✅ ready to merge")
+				} else {
+					o.announce("Branch re-review: ❌ still not ready — manual intervention needed")
+				}
+			}
 		}
 	}
 

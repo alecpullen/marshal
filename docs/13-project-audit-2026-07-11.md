@@ -308,6 +308,11 @@ on 2026-07-13 as part of the per-MCP-tool rules plan. The implementation
 commit range spans `bc4063a..27468ac` on branch
 `feature/mcp-tool-rules`.
 
+Resolved findings for the TUI light themes batch were closed on
+2026-07-13 as part of the TUI light themes plan. The implementation
+commit range spans `99bdcc6..b38f9dc` on branch
+`feature/tui-light-themes`.
+
 ## Implementation batch — ACP session discovery (list/resume)
 
 The remaining ACP session-discovery findings were addressed by the following
@@ -459,3 +464,28 @@ bc4063a feat(policy): allow F4 rules to target specific MCP tools
   entry; a user who wants to deny `mcp.github.delete_repo` specifically
   can do so with another.
 - The default confirm fallback for unconfigured MCP tools is preserved.
+
+## Implementation batch — TUI light themes
+
+The deferred light-variant slice of `docs/11` Feature #2 was closed by
+the following commits on branch `feature/tui-light-themes`:
+
+```
+99bdcc6 feat(theme): add light variants for all four presets
+b41aee9 feat(theme): add mode parameter to LoadWithConfig for light variants
+085574f feat(config): add tui.mode for light/dark theme variant selection
+b38f9dc feat(tui): add Mode enum to settings and thread to LoadWithConfig
+```
+
+### What changed
+
+- `internal/app/tui/theme/presets.go` ships four new light 256-color palettes.
+- `LoadWithConfig(name, mode, overrides)` selects a variant based on `mode` (`"dark"` default, `"light"` switches to the `-light` map keys).
+- `[tui]` config block gains a `mode` field.
+- Settings TUI gets a `Mode` `kindEnum` row that writes to `s.cfg.TUI.Mode`.
+
+### Unchanged
+
+- `NO_COLOR` still forces monochrome, even with `mode = "light"`.
+- Auto-detect (OSC 11 query) is out of scope.
+- The 16-color tier is still `warmSunset16` for all themes in this batch.

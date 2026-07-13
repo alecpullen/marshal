@@ -1200,6 +1200,9 @@ func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
 		t.Fatalf("GetOrCreateProject failed: %v", err)
 	}
 	now := time.Unix(100, 0)
+	if err := database.CreateSession("sess_1", projectID, "", now); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	if err := database.SaveMemory(projectID, "fact", "keep me", "sess_1", now); err != nil {
 		t.Fatalf("SaveMemory confirmed failed: %v", err)
 	}

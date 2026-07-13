@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -657,6 +658,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.acceptCompletion() {
 				return m, nil
 			}
+			if m.state.PendingApproval() != nil || m.state.PendingQuestion() != nil {
+				break
+			}
+			m.cycleMode(true)
+			return m, nil
+		case "shift+tab":
+			if m.activeCompletionPopup() != nil {
+				return m, nil
+			}
+			if m.state.PendingApproval() != nil || m.state.PendingQuestion() != nil {
+				break
+			}
+			m.cycleMode(false)
+			return m, nil
+		case "alt+m":
+			m.cycleModel(true)
+			return m, nil
+		case "alt+shift+m":
+			m.cycleModel(false)
+			return m, nil
 		case "ctrl+x":
 			// F16 R3: clear the steering queue while the agent is
 			// working. Out-of-band so /clear semantics don't collide.
@@ -1525,26 +1546,17 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ask":
-		if m.runner != nil {
-			m.runner.SetForceClass("question")
-		}
-		m.forceMode = "ask"
+		m.setMode("ask")
 		m.refreshViewport()
 		return m, nil
 
 	case "edit":
-		if m.runner != nil {
-			m.runner.SetForceClass("edit")
-		}
-		m.forceMode = "edit"
+		m.setMode("edit")
 		m.refreshViewport()
 		return m, nil
 
 	case "auto":
-		if m.runner != nil {
-			m.runner.SetForceClass("")
-		}
-		m.forceMode = ""
+		m.setMode("")
 		m.refreshViewport()
 		return m, nil
 
@@ -1624,6 +1636,89 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	m.pickerCommand = cmdName
 }
 
+// setMode applies an interaction mode ("ask", "edit", or "" for auto) for
+// the next turn. Shared by the /ask, /edit, /auto, /mode commands and the
+// Tab/Shift+Tab mode-cycling hotkeys.
+func (m *Model) setMode(mode string) {
+	class := mode
+	if mode == "ask" {
+		class = "question"
+	}
+	if m.runner != nil {
+		m.runner.SetForceClass(class) // "" => auto (classifier runs)
+	}
+	m.forceMode = mode
+}
+
+// modeOrder is the canonical cycle order used by Tab/Shift+Tab.
+// "" represents auto (the classifier-driven default).
+var modeOrder = []string{"", "ask", "edit"}
+
+// modeSwitchMessage maps each mode value to the exact confirmation
+// message used by the /ask, /edit, /auto command handlers, so the
+// transcript looks identical whether the user pressed Tab or typed /ask.
+var modeSwitchMessage = map[string]string{
+	"":     "Switched to Auto mode. Agent will classify each turn automatically.",
+	"ask":  "Switched to Ask mode. Agent will answer questions without planning or editing.",
+	"edit": "Switched to Edit mode. Agent will plan and execute changes.",
+}
+
+// cycleMode advances (forward=true) or reverses the interaction mode,
+// wrapping around. It applies the result via setMode and emits the same
+// confirmation message the /<mode> commands use.
+func (m *Model) cycleMode(forward bool) {
+	cur := m.forceMode
+	idx := slices.Index(modeOrder, cur)
+	if idx < 0 {
+		idx = 0
+	}
+	step := 1
+	if !forward {
+		step = -1
+	}
+	next := modeOrder[(idx+step+len(modeOrder))%len(modeOrder)]
+	m.setMode(next)
+	msg, ok := modeSwitchMessage[next]
+	if !ok {
+		msg = fmt.Sprintf("Switched to %s mode.", next)
+	}
+	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+	m.refreshViewport()
+}
+
+// cycleModel advances (forward=true) or reverses the active model preset,
+// wrapping around. Order matches modelPickerItems() (provider then name).
+// Session-only: delegates to switchModelPreset.
+func (m *Model) cycleModel(forward bool) {
+	if m.busy {
+		m.state.AddMessage(session.RoleSystem,
+			"Busy — switch the model after this turn completes.",
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	names := m.sortedPresetNames()
+	if len(names) == 0 {
+		m.state.AddMessage(session.RoleSystem,
+			"No model presets configured. Add one in /settings → Model Presets.",
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	cur := m.state.ActiveRoute().Preset
+	idx := slices.Index(names, cur)
+	if idx < 0 {
+		idx = 0 // legacy/unknown route → start at the first preset
+	}
+	step := 1
+	if !forward {
+		step = -1
+	}
+	target := names[(idx+step+len(names))%len(names)]
+	m.switchModelPreset(target)
+	m.refreshViewport()
+}
+
 // switchModelPreset applies a session-only model switch by routing every
 // role of a synthetic "switched" profile at the preset. Nothing is written
 // to config files; /settings owns persistence.
@@ -1655,8 +1750,10 @@ func (m *Model) switchModelPreset(presetName string) {
 	}
 }
 
-// modelPickerItems builds sorted picker items from configured model presets.
-func (m *Model) modelPickerItems() []picker.Item {
+// sortedPresetNames returns model preset names sorted by provider then name,
+// matching the order used by modelPickerItems. Shared by the model picker and
+// the Alt+M hotkey so they stay in lock-step.
+func (m *Model) sortedPresetNames() []string {
 	presets := m.state.Config.Models.Presets
 	names := make([]string, 0, len(presets))
 	for n := range presets {
@@ -1669,6 +1766,13 @@ func (m *Model) modelPickerItems() []picker.Item {
 		}
 		return names[i] < names[j]
 	})
+	return names
+}
+
+// modelPickerItems builds sorted picker items from configured model presets.
+func (m *Model) modelPickerItems() []picker.Item {
+	presets := m.state.Config.Models.Presets
+	names := m.sortedPresetNames()
 	current := m.state.ActiveRoute().Preset
 	items := make([]picker.Item, 0, len(names))
 	for _, n := range names {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
@@ -243,6 +244,8 @@ func projectConfigPath(workingDir string) string {
 }
 
 func New(state *session.State, opts ...Option) Model {
+	loadTheme(state.Config.TUI)
+
 	input := textarea.New()
 	input.Prompt = ""
 	input.ShowLineNumbers = false
@@ -435,6 +438,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		loadTheme(msg.Cfg.TUI)
 		m.settingsOpen = false
 		return m, nil
 	case settings.CancelledMsg:
@@ -1770,57 +1774,79 @@ func visibleRunes(s string) int {
 	return ansi.StringWidth(s)
 }
 
-var activeTheme = theme.Load()
+var activeTheme theme.Theme
 
 var (
-	// Warm Sunset palette, sourced from the active theme.
-	coralColor  = activeTheme.AccentPrimary  // marshal, focused border, prompt
-	goldColor   = activeTheme.AccentTertiary // tool-call names (amber/gold 214)
-	tealColor   = activeTheme.StatusSuccess  // success state
-	orangeColor = activeTheme.StatusWarning  // warning/risk labels
-	mauveColor  = activeTheme.BorderMuted    // blurred input border / muted chrome
-	userColor   = activeTheme.UserPrompt     // user message prefix (medium grey)
+	coralColor  color.Color
+	goldColor   color.Color
+	tealColor   color.Color
+	orangeColor color.Color
+	mauveColor  color.Color
+	userColor   color.Color
 
-	// accentColor is the primary accent (coral). Retained name because it is
-	// referenced widely; successColor/warningColor/errorColor are retuned to
-	// the warm palette.
-	accentColor  = activeTheme.AccentPrimary
-	violetColor  = activeTheme.AccentSecondary
-	dimColor     = activeTheme.FGMuted
+	accentColor  color.Color
+	violetColor  color.Color
+	dimColor     color.Color
+	successColor color.Color
+	warningColor color.Color
+	errorColor   color.Color
+
+	mutedStyle        lipgloss.Style
+	panelTitleStyle   lipgloss.Style
+	thinkingLineStyle lipgloss.Style
+	codeBorderStyle   lipgloss.Style
+	toolNameStyle     lipgloss.Style
+	keyHintStyle      lipgloss.Style
+	riskLabelStyle    lipgloss.Style
+	dimSeparator      = " · "
+	inputBoxStyle     lipgloss.Style
+	statusBarStyle    lipgloss.Style
+)
+
+func loadTheme(tui config.TUIConfig) {
+	activeTheme = theme.LoadWithConfig(tui.Theme, theme.PaletteOverrides(tui.Palette))
+
+	coralColor = activeTheme.AccentPrimary
+	goldColor = activeTheme.AccentTertiary
+	tealColor = activeTheme.StatusSuccess
+	orangeColor = activeTheme.StatusWarning
+	mauveColor = activeTheme.BorderMuted
+	userColor = activeTheme.UserPrompt
+
+	accentColor = activeTheme.AccentPrimary
+	violetColor = activeTheme.AccentSecondary
+	dimColor = activeTheme.FGMuted
 	successColor = activeTheme.StatusSuccess
 	warningColor = activeTheme.StatusWarning
-	errorColor   = activeTheme.StatusError
+	errorColor = activeTheme.StatusError
 
-	mutedStyle      = lipgloss.NewStyle().Foreground(activeTheme.FGMuted)
+	mutedStyle = lipgloss.NewStyle().Foreground(activeTheme.FGMuted)
 	panelTitleStyle = lipgloss.NewStyle().
-			Foreground(activeTheme.FGEmphasis).
-			Bold(true)
+		Foreground(activeTheme.FGEmphasis).
+		Bold(true)
 	thinkingLineStyle = lipgloss.NewStyle().
-				Foreground(activeTheme.FGMuted).
-				Italic(true)
-
+		Foreground(activeTheme.FGMuted).
+		Italic(true)
 	codeBorderStyle = lipgloss.NewStyle().
-			Foreground(activeTheme.FGMuted).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(activeTheme.FGMuted)
+		Foreground(activeTheme.FGMuted).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(activeTheme.FGMuted)
 	toolNameStyle = lipgloss.NewStyle().
-			Foreground(activeTheme.AccentTertiary)
+		Foreground(activeTheme.AccentTertiary)
 	keyHintStyle = lipgloss.NewStyle().
-			Foreground(activeTheme.AccentPrimary).
-			Bold(true)
+		Foreground(activeTheme.AccentPrimary).
+		Bold(true)
 	riskLabelStyle = lipgloss.NewStyle().
-			Foreground(activeTheme.StatusWarning).
-			Bold(true)
+		Foreground(activeTheme.StatusWarning).
+		Bold(true)
 	dimSeparator = " · "
-
 	inputBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(activeTheme.AccentPrimary).
-			Padding(0, 1)
-
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(activeTheme.AccentPrimary).
+		Padding(0, 1)
 	statusBarStyle = lipgloss.NewStyle().
-			Foreground(activeTheme.FGDefault)
-)
+		Foreground(activeTheme.FGDefault)
+}
 
 func compactTokenCount(tokens int) string {
 	if tokens >= 1000 {

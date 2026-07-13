@@ -17,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/agent"
+	"marshal/internal/agent/sdd"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -296,11 +297,11 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 	}
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -315,7 +316,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -366,7 +367,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		jmErr = err
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -376,12 +377,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		mcpMgr = mcp.NewManager(&cfg)
 		if err := mcpMgr.Start(ctx); err != nil {
 			jmErr = err
-			return nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, err
 		}
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			mcpMgr.Close()
 			jmErr = err
-			return nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 
@@ -393,7 +394,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		2,
 	)); err != nil {
 		jmErr = err
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.SkillIndex = skillIndex
@@ -456,7 +457,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		}
 	}
 	swarmRunner := buildSwarmRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, nil
+	sddRunner := buildSDDRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
+	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, nil
 }
 
 // buildSwarmRunner wires the Milestone O swarm: every role runner shares
@@ -515,6 +517,38 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	o.MaxTotalTokens = cfg.Swarm.Budget.MaxTotalTokens
 	o.NewMeter = func() swarm.TokenMeter { return swarm.NewEstimateMeter() }
 	return o
+}
+
+// buildSDDRunner wires the SDD orchestrator: same factory pattern as the
+// swarm, resolving each SDD role's route via the routing profile.
+func buildSDDRunner(ctx context.Context, cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *sdd.Orchestrator {
+	readOnlyReg := registry.ReadOnlyView(reg)
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		route, p, err := resolver.ResolveRole(routing.AgentRole(role))
+		if err != nil {
+			return nil, err
+		}
+		toolReg := reg
+		switch scope {
+		case swarm.ScopeReadOnly:
+			toolReg = readOnlyReg
+		}
+		r := agent.NewRunner(p, toolReg, pol, state, route.Preset.Model)
+		r.Role = role
+		r.SkillIndex = skillIndex
+		r.MemoryProvider = &dbMemoryProvider{db: database}
+		r.ProjectID = projectID
+		r.RequestTimeout = 60 * time.Second
+		r.SetForceClass("question")
+		decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(ctx))
+		r.NativeTools = decoding.Native
+		r.ResponseFormat = decoding.ResponseFormat
+		if cfg.Agent.MaxToolIterations > 0 {
+			r.MaxToolIterations = cfg.Agent.MaxToolIterations
+		}
+		return r, nil
+	}
+	return sdd.New(state, factory, cfg.SDD)
 }
 
 // roleToolIterations returns the per-role tool-iteration cap, falling back
@@ -726,7 +760,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if !ok && rt.JobBroker != nil {
 		panic(fmt.Sprintf("runtime: JobBroker is %T, want *pubsub.Broker[native.JobEvent]", rt.JobBroker))
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
+	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
 	if err != nil {
 		return err
 	}
@@ -741,6 +775,9 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	rt.Runner.CopyFrom(newRunner)
 	if rt.SwarmRunner != nil && newSwarmRunner != nil {
 		*rt.SwarmRunner = *newSwarmRunner
+	}
+	if rt.SDDRunner != nil && newSDDRunner != nil {
+		*rt.SDDRunner = *newSDDRunner
 	}
 
 	// Swap reload-owned pointers.

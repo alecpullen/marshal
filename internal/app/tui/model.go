@@ -63,6 +63,7 @@ type Model struct {
 	editingCommand bool
 	runner         AgentRunner
 	swarmRunner    AgentRunner
+	sddRunner      AgentRunner
 	ctx            context.Context
 	busy           bool
 	settingsOpen   bool
@@ -212,6 +213,15 @@ func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
 	return func(m *Model) {
 		m.ctx = ctx
 		m.swarmRunner = runner
+	}
+}
+
+// WithSDDRunner configures the TUI to route /sdd <plan-file> and
+// /mode→SDD submissions to the SDD orchestrator.
+func WithSDDRunner(ctx context.Context, runner AgentRunner) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.sddRunner = runner
 	}
 }
 
@@ -495,6 +505,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case cmdName == "mode":
 			return m.dispatchCommand("/" + pm.Value)
+		case cmdName == "sdd-plan":
+			// Close the picker, dispatch /sdd with the picked path.
+			m.pickerModel = nil
+			return m.dispatchCommand("/sdd " + pm.Value)
 		default:
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
@@ -1551,6 +1565,10 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			switch v := strings.ToLower(args[0]); v {
 			case "ask", "edit", "auto":
 				return m.dispatchCommand("/" + v)
+			case "sdd":
+				m.openSDDPlanPicker()
+				m.refreshViewport()
+				return m, nil
 			}
 		}
 		m.openPicker("mode", "Interaction mode", "", m.modePickerItems(), "")
@@ -1582,6 +1600,32 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		agentCtx, cancel := context.WithCancel(m.ctx)
 		m.agentCancel = cancel
 		return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.swarmRunner, goal), tickCmd(), spinnerTickCmd())
+
+	case "sdd":
+		planPath := strings.TrimSpace(strings.Join(args, " "))
+		if planPath == "" {
+			m.state.AddMessage(session.RoleSystem, "Usage: /sdd <plan-file>", session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		if m.sddRunner == nil {
+			m.state.AddMessage(session.RoleSystem, "SDD is not available (agent failed to initialise).", session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		if m.busy {
+			return m, nil
+		}
+		if err := m.state.BeginWork(); err != nil {
+			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
+			m.busy = false
+			m.refreshViewport()
+			return m, nil
+		}
+		m.busy = true
+		agentCtx, cancel := context.WithCancel(m.ctx)
+		m.agentCancel = cancel
+		return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.sddRunner, planPath), tickCmd(), spinnerTickCmd())
 
 	case "model":
 		presets := m.state.Config.Models.Presets
@@ -1620,6 +1664,25 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	}
 	m.pickerModel = p
 	m.pickerCommand = cmdName
+}
+
+// openSDDPlanPicker reads the SDD plans directory, globs for *.md files,
+// and opens a picker for the user to choose a plan to run.
+func (m *Model) openSDDPlanPicker() {
+	plansDir := m.state.Config.SDD.PlansDir
+	var items []picker.Item
+	matches, _ := filepath.Glob(filepath.Join(m.state.WorkingDir, plansDir, "*.md"))
+	for _, path := range matches {
+		name := filepath.Base(path)
+		items = append(items, picker.Item{Label: name, Detail: path, Value: path})
+	}
+	if len(items) == 0 {
+		items = append(items, picker.Item{Label: "No plans found — generate one", Detail: "run the planner first", Value: "generate"})
+	}
+	p := picker.New("Pick a plan", "SDD workflow", items)
+	p.SetAllowCustom(true)
+	m.pickerModel = p
+	m.pickerCommand = "sdd-plan"
 }
 
 // switchModelPreset applies a session-only model switch by routing every
@@ -1736,22 +1799,23 @@ func (m *Model) branchesPickerItems() []picker.Item {
 	return items
 }
 
-// modePickerItems builds picker items for the three interaction modes.
-// The current mode (or "auto" when forceMode is empty) carries a "● now" badge.
-func (m *Model) modePickerItems() []picker.Item {
-	current := m.forceMode // "ask", "edit", or "" (auto)
-	badge := func(v string) string {
-		if v == current || (v == "auto" && current == "") {
-			return "● now"
+	// modePickerItems builds picker items for the interaction modes.
+	// The current mode (or "auto" when forceMode is empty) carries a "● now" badge.
+	func (m *Model) modePickerItems() []picker.Item {
+		current := m.forceMode // "ask", "edit", or "" (auto)
+		badge := func(v string) string {
+			if v == current || (v == "auto" && current == "") {
+				return "● now"
+			}
+			return ""
 		}
-		return ""
+		return []picker.Item{
+			{Label: "Ask", Detail: "read-only, no planning", Badge: badge("ask"), Value: "ask"},
+			{Label: "Edit", Detail: "planning + full tools", Badge: badge("edit"), Value: "edit"},
+			{Label: "Auto", Detail: "classify each turn", Badge: badge("auto"), Value: "auto"},
+			{Label: "SDD", Detail: "plan-driven multi-task", Badge: badge("sdd"), Value: "sdd"},
+		}
 	}
-	return []picker.Item{
-		{Label: "Ask", Detail: "read-only, no planning", Badge: badge("ask"), Value: "ask"},
-		{Label: "Edit", Detail: "planning + full tools", Badge: badge("edit"), Value: "edit"},
-		{Label: "Auto", Detail: "classify each turn", Badge: badge("auto"), Value: "auto"},
-	}
-}
 
 func truncateRunes(s string, limit int) string {
 	if limit <= 0 {

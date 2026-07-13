@@ -821,6 +821,99 @@ func TestSwarmCommandWithoutGoalShowsUsage(t *testing.T) {
 	}
 }
 
+type fakeSDDRunner struct {
+	mu    sync.Mutex
+	plans []string
+}
+
+func (f *fakeSDDRunner) Run(ctx context.Context, planPath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.plans = append(f.plans, planPath)
+	return nil
+}
+
+func (f *fakeSDDRunner) SetForceClass(string)                   {}
+func (f *fakeSDDRunner) SetPolicyRules([]config.PermissionRule) {}
+
+func TestSDDCommandDispatchesPlanToSDDRunner(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	fake := &fakeSDDRunner{}
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	model := New(state,
+		WithCommandRegistry(cmdReg),
+		WithSDDRunner(context.Background(), fake),
+	)
+
+	_, cmd := model.dispatchCommand("/sdd /repo/docs/plans/feature-plan.md")
+	if cmd == nil {
+		t.Fatal("dispatchCommand returned nil cmd")
+	}
+	if !model.busy {
+		t.Fatal("model should be busy while SDD runs")
+	}
+
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", msg)
+	}
+	for _, sub := range batch {
+		if sub != nil {
+			_ = sub()
+		}
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.plans) != 1 || fake.plans[0] != "/repo/docs/plans/feature-plan.md" {
+		t.Fatalf("SDD runner plans = %v, want [\"/repo/docs/plans/feature-plan.md\"]", fake.plans)
+	}
+}
+
+func TestSDDCommandWithoutPlanShowsUsage(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	model := New(state,
+		WithCommandRegistry(cmdReg),
+		WithSDDRunner(context.Background(), &fakeSDDRunner{}),
+	)
+
+	_, _ = model.dispatchCommand("/sdd")
+	messages := state.Messages()
+	last := messages[len(messages)-1]
+	if !strings.Contains(last.Content, "Usage: /sdd") {
+		t.Fatalf("expected usage message, got %q", last.Content)
+	}
+	if model.busy {
+		t.Fatal("model must not be busy after a usage error")
+	}
+}
+
+func TestModePickerIncludesSDD(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	model := New(state)
+	items := model.modePickerItems()
+	found := false
+	for _, item := range items {
+		if item.Value == "sdd" {
+			found = true
+			if item.Label != "SDD" {
+				t.Errorf("SDD label = %q, want %q", item.Label, "SDD")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("modePickerItems missing SDD entry")
+	}
+}
+
 func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}

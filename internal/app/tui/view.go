@@ -116,6 +116,14 @@ func (m Model) renderInputArea() string {
 			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth))
 		}
 	} else {
+		if m.state.SDDProgress().Active {
+			hint := mutedStyle.Render("SDD running — /stop to cancel, wait for completion to resume typing")
+			rows = append(rows, hint)
+			rows = append(rows, m.input.View())
+			content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+			border := mauveColor
+			return inputBoxStyle.BorderForeground(border).Width(inputInnerWidth).Render(content)
+		}
 		if strip := m.renderActivityStrip(); strip != "" {
 			rows = append(rows, strip)
 		}

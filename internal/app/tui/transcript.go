@@ -16,6 +16,10 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func isBrowserTool(name string) bool {
+	return strings.HasPrefix(name, "browser.")
+}
+
 // marshalStyleConfig adapts glamour's dark style to the Warm Sunset
 // palette: coral H1 instead of the banner-style default, violet section
 // headings. Document text (252) and the 2-space margin already match the
@@ -388,7 +392,15 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", atc.Name, formatElapsed(elapsed)))
 	var b strings.Builder
-	b.WriteString(toolBulletStyle.Render(truncateRunes(head, max(width-2, 1))))
+	if isBrowserTool(atc.Name) {
+		b.WriteString(browserGlyphStyle.Render("🌐"))
+		b.WriteString(" ")
+		prefixed := browserPrefixStyle.Render("browser") + "." + strings.TrimPrefix(atc.Name, "browser.")
+		full := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", prefixed, formatElapsed(elapsed)))
+		b.WriteString(truncateRunes(full, max(width-4, 1)))
+	} else {
+		b.WriteString(toolBulletStyle.Render(truncateRunes(head, max(width-2, 1))))
+	}
 	b.WriteString("\n")
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
 		b.WriteString(mutedStyle.Render(truncateRunes("  $ "+atc.Args, max(width-2, 1))))
@@ -414,7 +426,12 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 		style = statusErrStyle
 		state = "failed"
 	}
-	head := fmt.Sprintf("%s %s %s", glyph, event.ToolName, state)
+	var head string
+	if isBrowserTool(event.ToolName) {
+		head = fmt.Sprintf("%s %s %s", glyph, browserPrefixStyle.Render("browser")+"."+strings.TrimPrefix(event.ToolName, "browser."), state)
+	} else {
+		head = fmt.Sprintf("%s %s %s", glyph, event.ToolName, state)
+	}
 	if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
 		head += " · " + hookHint
 	}

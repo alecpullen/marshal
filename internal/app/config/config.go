@@ -105,6 +105,11 @@ type PermissionsConfig struct {
 	Rules []PermissionRule `toml:"rules"`
 }
 
+// PermissionRule maps a tool name to a decision. Permission may be a
+// native tool name (e.g. "shell.run", "file.write_patch") or a full
+// MCP tool name (e.g. "mcp.github.create_issue"). The rule fires when
+// Permission equals the tool's effective permission and either Pattern
+// is empty (exact match) or matches the resolved subject.
 type PermissionRule struct {
 	Permission string `toml:"permission"`
 	Pattern    string `toml:"pattern"`

@@ -503,6 +503,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.switchModelPreset(pm.Value)
 			m.refreshViewport()
 			return m, nil
+		case cmdName == "mode" && pm.Value == "sdd":
+			m.openSDDPlanPicker()
+			m.refreshViewport()
+			return m, nil
 		case cmdName == "mode":
 			return m.dispatchCommand("/" + pm.Value)
 		case cmdName == "sdd-plan":
@@ -1799,23 +1803,23 @@ func (m *Model) branchesPickerItems() []picker.Item {
 	return items
 }
 
-	// modePickerItems builds picker items for the interaction modes.
-	// The current mode (or "auto" when forceMode is empty) carries a "● now" badge.
-	func (m *Model) modePickerItems() []picker.Item {
-		current := m.forceMode // "ask", "edit", or "" (auto)
-		badge := func(v string) string {
-			if v == current || (v == "auto" && current == "") {
-				return "● now"
-			}
-			return ""
+// modePickerItems builds picker items for the interaction modes.
+// The current mode (or "auto" when forceMode is empty) carries a "● now" badge.
+func (m *Model) modePickerItems() []picker.Item {
+	current := m.forceMode // "ask", "edit", or "" (auto)
+	badge := func(v string) string {
+		if v == current || (v == "auto" && current == "") {
+			return "● now"
 		}
-		return []picker.Item{
-			{Label: "Ask", Detail: "read-only, no planning", Badge: badge("ask"), Value: "ask"},
-			{Label: "Edit", Detail: "planning + full tools", Badge: badge("edit"), Value: "edit"},
-			{Label: "Auto", Detail: "classify each turn", Badge: badge("auto"), Value: "auto"},
-			{Label: "SDD", Detail: "plan-driven multi-task", Badge: badge("sdd"), Value: "sdd"},
-		}
+		return ""
 	}
+	return []picker.Item{
+		{Label: "Ask", Detail: "read-only, no planning", Badge: badge("ask"), Value: "ask"},
+		{Label: "Edit", Detail: "planning + full tools", Badge: badge("edit"), Value: "edit"},
+		{Label: "Auto", Detail: "classify each turn", Badge: badge("auto"), Value: "auto"},
+		{Label: "SDD", Detail: "plan-driven multi-task", Badge: badge("sdd"), Value: "sdd"},
+	}
+}
 
 func truncateRunes(s string, limit int) string {
 	if limit <= 0 {

@@ -2819,6 +2819,44 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 	}
 }
 
+func TestModePickerSelectingSDDOpensPlanPicker(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+
+	// Open the mode picker first
+	updated, _ := m.dispatchCommand("/mode")
+	m = asModel(t, updated)
+	if m.pickerModel == nil || m.pickerCommand != "mode" {
+		t.Fatal("/mode should open the picker")
+	}
+
+	// Simulate picking "sdd" from the mode picker
+	updated, _ = m.Update(picker.PickedMsg{Value: "sdd"})
+	m = asModel(t, updated)
+
+	// Verify the SDD plan picker opened instead of dispatching "/sdd" directly
+	if m.pickerModel == nil {
+		t.Fatal("picking SDD should open the plan picker, but pickerModel is nil")
+	}
+	if m.pickerCommand != "sdd-plan" {
+		t.Fatalf("picking SDD should set pickerCommand to %q, got %q", "sdd-plan", m.pickerCommand)
+	}
+
+	// Verify no usage message was printed (regression: the old code dispatched
+	// "/sdd" with no args, which printed "Usage: /sdd <plan-file>")
+	msgs := state.Messages()
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "Usage: /sdd") {
+			t.Fatal("picking SDD from mode picker should not print the /sdd usage message")
+		}
+	}
+}
+
 func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := commands.New()

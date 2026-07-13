@@ -62,12 +62,88 @@ var catppuccinMocha256 = Theme{
 	StatusInfo:      lipgloss.Color("115"),
 }
 
+var warmSunsetLight256 = Theme{
+	FGDefault:       lipgloss.Color("243"),
+	FGMuted:         lipgloss.Color("245"),
+	BorderMuted:     lipgloss.Color("246"),
+	FGEmphasis:      lipgloss.Color("235"),
+	BGBase:          lipgloss.Color("255"),
+	BGSurface:       lipgloss.Color("253"),
+	BGSelection:     lipgloss.Color("252"),
+	AccentPrimary:   lipgloss.Color("209"),
+	AccentSecondary: lipgloss.Color("175"),
+	AccentTertiary:  lipgloss.Color("214"),
+	UserPrompt:      lipgloss.Color("246"),
+	StatusError:     lipgloss.Color("203"),
+	StatusWarning:   lipgloss.Color("172"),
+	StatusSuccess:   lipgloss.Color("43"),
+	StatusInfo:      lipgloss.Color("43"),
+}
+
+var draculaLight256 = Theme{
+	FGDefault:       lipgloss.Color("236"),
+	FGMuted:         lipgloss.Color("244"),
+	BorderMuted:     lipgloss.Color("245"),
+	FGEmphasis:      lipgloss.Color("235"),
+	BGBase:          lipgloss.Color("255"),
+	BGSurface:       lipgloss.Color("253"),
+	BGSelection:     lipgloss.Color("252"),
+	AccentPrimary:   lipgloss.Color("212"),
+	AccentSecondary: lipgloss.Color("141"),
+	AccentTertiary:  lipgloss.Color("228"),
+	UserPrompt:      lipgloss.Color("246"),
+	StatusError:     lipgloss.Color("210"),
+	StatusWarning:   lipgloss.Color("215"),
+	StatusSuccess:   lipgloss.Color("84"),
+	StatusInfo:      lipgloss.Color("117"),
+}
+
+var nordLight256 = Theme{
+	FGDefault:       lipgloss.Color("236"),
+	FGMuted:         lipgloss.Color("240"),
+	BorderMuted:     lipgloss.Color("240"),
+	FGEmphasis:      lipgloss.Color("235"),
+	BGBase:          lipgloss.Color("255"),
+	BGSurface:       lipgloss.Color("253"),
+	BGSelection:     lipgloss.Color("252"),
+	AccentPrimary:   lipgloss.Color("110"),
+	AccentSecondary: lipgloss.Color("67"),
+	AccentTertiary:  lipgloss.Color("222"),
+	UserPrompt:      lipgloss.Color("109"),
+	StatusError:     lipgloss.Color("167"),
+	StatusWarning:   lipgloss.Color("215"),
+	StatusSuccess:   lipgloss.Color("143"),
+	StatusInfo:      lipgloss.Color("139"),
+}
+
+var catppuccinLatte256 = Theme{
+	FGDefault:       lipgloss.Color("238"),
+	FGMuted:         lipgloss.Color("242"),
+	BorderMuted:     lipgloss.Color("240"),
+	FGEmphasis:      lipgloss.Color("235"),
+	BGBase:          lipgloss.Color("255"),
+	BGSurface:       lipgloss.Color("253"),
+	BGSelection:     lipgloss.Color("252"),
+	AccentPrimary:   lipgloss.Color("147"),
+	AccentSecondary: lipgloss.Color("110"),
+	AccentTertiary:  lipgloss.Color("222"),
+	UserPrompt:      lipgloss.Color("146"),
+	StatusError:     lipgloss.Color("210"),
+	StatusWarning:   lipgloss.Color("215"),
+	StatusSuccess:   lipgloss.Color("150"),
+	StatusInfo:      lipgloss.Color("115"),
+}
+
 var presets = map[string]Theme{
-	"warm-sunset":      warmSunset256,
-	"dracula":          dracula256,
-	"nord":             nord256,
-	"catppuccin-mocha": catppuccinMocha256,
-	"Catppuccin Mocha": catppuccinMocha256,
+	"warm-sunset":       warmSunset256,
+	"warm-sunset-light": warmSunsetLight256,
+	"dracula":           dracula256,
+	"dracula-light":     draculaLight256,
+	"nord":              nord256,
+	"nord-light":        nordLight256,
+	"catppuccin-mocha":  catppuccinMocha256,
+	"catppuccin-latte":  catppuccinLatte256,
+	"Catppuccin Mocha":  catppuccinMocha256,
 }
 
 // PaletteOverrides maps lower-snake-case slot names to color values

@@ -298,6 +298,11 @@ Resolved findings for the TUI themes batch were closed on 2026-07-13 as
 part of the TUI themes plan. The implementation commit range spans
 `b76026e..f3563c1` on branch `feature/tui-themes`.
 
+Resolved findings for the ACP session delete (Batch A2) batch were closed
+on 2026-07-13 as part of the ACP session delete plan. The implementation
+commit range spans `07e6044..d678305` on branch
+`feature/acp-session-delete`.
+
 ## Implementation batch — ACP session discovery (list/resume)
 
 The remaining ACP session-discovery findings were addressed by the following
@@ -384,3 +389,40 @@ A grep for raw `lipgloss.Color("…")` literals in `internal/app/tui/` productio
 
 - `NO_COLOR` always forces monochrome, even with a named theme.
 - Light themes and auto-detect are out of scope for this batch.
+
+## Implementation batch — ACP session delete (Batch A2)
+
+The remaining ACP lifecycle gap (session/delete) was closed by the
+following commits on branch `feature/acp-session-delete`:
+
+```
+07e6044 feat(db): add DeleteSession with cascade via messages FK
+4a97d37 feat(acp): add DeleteSession to perCwdLister
+2c81493 feat(acp): implement session/delete with runtime teardown + row delete
+d678305 feat(acp): register session/delete and advertise sessionCapabilities.delete
+```
+
+### Newly supported method
+
+- **`session/delete`** — accepts `cwd` (absolute) and `sessionId`; cancels and closes any loaded runtime for the id, then removes the row (and its messages via the existing FK CASCADE) from `<cwd>/.marshal/marshal.db`. Returns an empty object on success, `-32000` for an unknown session id.
+
+### Design note
+
+The earlier audit note suggested `session/delete` would require a global
+session-id → project-root index. This batch instead takes the per-cwd
+approach: the caller already knows the `cwd` from `session/list` or the
+original `session/new`, and the handler opens that cwd's DB. The
+audit-doc note is updated accordingly. A global session registry
+remains a future feature; it would enable `session/delete` without a
+`cwd` parameter, but is out of scope here.
+
+### Side effect
+
+`internal/db/db.go` now sets `PRAGMA foreign_keys = ON` per connection, so the existing `ON DELETE CASCADE` on `messages.session_id` is actually enforced. Two pre-existing memory tests (`TestSaveAndGetMemories`, `TestSetMemoryConfidenceTransitions`) had latent FK violations that were silently passing because FK enforcement was off; the fix seeds the parent session row.
+
+### Unadvertised capabilities remain unadvertised
+
+`initialize` continues to omit `mcp`/`mcpCapabilities`, image, audio,
+and embedded-context content blocks. The advertised lifecycle set is
+now `sessionCapabilities: { close, list, resume, additionalDirectories,
+delete }`, each as an empty object.

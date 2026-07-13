@@ -218,6 +218,52 @@ func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
 	}
 }
 
+func TestStatusLineShowsBrowserSegmentWhenSessionOpen(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetBrowserInfo(session.BrowserInfo{
+		SessionOpen: true,
+		URL:         "https://example.com/docs",
+		Mode:        "standalone",
+	})
+	line := m.renderStatusLine(100)
+	stripped := stripANSI(line)
+	if !strings.Contains(stripped, "🌐") {
+		t.Fatalf("status line missing 🌐 when browser session open:\n%s", line)
+	}
+	if !strings.Contains(stripped, "example.com/docs") {
+		t.Fatalf("status line missing browser URL:\n%s", line)
+	}
+}
+
+func TestStatusLineHidesBrowserSegmentWhenNoSession(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetBrowserInfo(session.BrowserInfo{SessionOpen: false})
+	line := m.renderStatusLine(100)
+	stripped := stripANSI(line)
+	if strings.Contains(stripped, "🌐") {
+		t.Fatalf("status line should not show 🌐 when no browser session:\n%s", line)
+	}
+}
+
+func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetTrusted(true)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder:14b", Provider: "ollama", LocalOnly: true})
+	m.state.SetBrowserInfo(session.BrowserInfo{
+		SessionOpen: true,
+		URL:         "https://example.com",
+		Mode:        "standalone",
+	})
+	line := m.renderStatusLine(38)
+	stripped := stripANSI(line)
+	if !strings.Contains(stripped, "qwen2.5-coder:14b @ ollama") {
+		t.Fatalf("model segment should survive on narrow width:\n%s", line)
+	}
+	if strings.Contains(stripped, "example.com") {
+		t.Fatalf("browser segment should be dropped on narrow width:\n%s", line)
+	}
+}
+
 func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})

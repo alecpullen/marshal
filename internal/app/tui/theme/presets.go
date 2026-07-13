@@ -8,7 +8,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// Dracula 256-color palette based on the canonical Dracula theme.
 var dracula256 = Theme{
 	FGDefault:       lipgloss.Color("252"),
 	FGMuted:         lipgloss.Color("244"),
@@ -27,7 +26,6 @@ var dracula256 = Theme{
 	StatusInfo:      lipgloss.Color("117"),
 }
 
-// Nord 256-color palette based on the canonical Nord theme.
 var nord256 = Theme{
 	FGDefault:       lipgloss.Color("253"),
 	FGMuted:         lipgloss.Color("240"),
@@ -46,7 +44,6 @@ var nord256 = Theme{
 	StatusInfo:      lipgloss.Color("139"),
 }
 
-// Catppuccin Mocha 256-color palette based on the canonical Catppuccin Mocha theme.
 var catppuccinMocha256 = Theme{
 	FGDefault:       lipgloss.Color("252"),
 	FGMuted:         lipgloss.Color("242"),
@@ -66,6 +63,7 @@ var catppuccinMocha256 = Theme{
 }
 
 var presets = map[string]Theme{
+	"warm-sunset":      warmSunset256,
 	"dracula":          dracula256,
 	"nord":             nord256,
 	"catppuccin-mocha": catppuccinMocha256,
@@ -127,13 +125,13 @@ func parseHex(s string) (color.Color, error) {
 
 	if s[0] == '#' {
 		switch len(s) {
-		case 4: // #RGB
+		case 4:
 			r, g, b := s[1], s[2], s[3]
 			if !isHex(r) || !isHex(g) || !isHex(b) {
 				return nil, fmt.Errorf("invalid hex digit in %q", s)
 			}
 			return lipgloss.Color("#" + string(r) + string(r) + string(g) + string(g) + string(b) + string(b)), nil
-		case 7: // #RRGGBB
+		case 7:
 			for i := 1; i < 7; i++ {
 				if !isHex(s[i]) {
 					return nil, fmt.Errorf("invalid hex digit in %q", s)
@@ -145,7 +143,6 @@ func parseHex(s string) (color.Color, error) {
 		}
 	}
 
-	// No '#' prefix.
 	if len(s) == 6 {
 		for i := 0; i < 6; i++ {
 			if !isHex(s[i]) {
@@ -155,17 +152,28 @@ func parseHex(s string) (color.Color, error) {
 		return lipgloss.Color("#" + s), nil
 	}
 
-	// Try decimal 0–255.
-	n, err := strconv.Atoi(s)
-	if err != nil {
+	if !allDigits(s) {
 		return nil, fmt.Errorf("not a valid hex or decimal color: %q", s)
 	}
-	if n < 0 || n > 255 {
-		return nil, fmt.Errorf("decimal color out of range (0–255): %d", n)
+	n, err := strconv.ParseUint(s, 10, 8)
+	if err != nil {
+		return nil, fmt.Errorf("decimal color out of range (0–255): %v", err)
 	}
-	return lipgloss.Color(s), nil
+	return lipgloss.Color(strconv.FormatUint(n, 10)), nil
 }
 
 func isHex(b byte) bool {
 	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

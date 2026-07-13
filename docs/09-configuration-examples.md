@@ -289,6 +289,31 @@ unload_idle_models_after = "10m"
 reserve_vram_mb = 2048
 ```
 
+## Per-tool permission rules (F4 + per-MCP-tool)
+
+`permission` may be a native tool name (e.g. `shell.run`) or a full MCP
+tool name (e.g. `mcp.github.create_issue`). An MCP rule overrides the
+default confirm fallback; deny wins over `[mcp.policies]` allow.
+
+```toml
+[[permissions.rules]]
+permission = "shell.run"
+pattern    = "git push"
+action     = "allow"
+
+[[permissions.rules]]
+permission = "mcp.github.create_issue"
+action     = "allow"
+
+[[permissions.rules]]
+permission = "mcp.github.delete_repo"
+action     = "deny"
+
+[[permissions.rules]]
+permission = "mcp.filesystem.read"
+action     = "confirm"
+```
+
 ## Budget config
 
 ```toml

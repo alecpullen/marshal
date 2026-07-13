@@ -75,6 +75,7 @@ type Runtime struct {
 	DataDir        string
 	SkillIndex     *skills.Index
 	JobManager     *native.JobManager
+	DesktopCloser  func()
 	additionalDirs []string
 
 	workCtx    context.Context
@@ -252,6 +253,11 @@ func (rt *Runtime) Close(ctx context.Context) error {
 			}
 		}
 
+		// 7b. desktop browser session.
+		if rt.DesktopCloser != nil {
+			rt.DesktopCloser()
+		}
+
 		// 8. reverse-order closeFns (log file).
 		for i := len(rt.closeFns) - 1; i >= 0; i-- {
 			rt.closeFns[i]()
@@ -415,7 +421,7 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -436,6 +442,7 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 		SteeringBroker: steeringBroker,
 		EventBroker:    eventBroker,
 		JobManager:     jobMgr,
+		DesktopCloser:  desktopCloser,
 		Logger:         logger,
 		WorkingDir:     workingDir,
 		HomeDir:        homeDir,

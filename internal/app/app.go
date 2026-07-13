@@ -672,6 +672,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	sessionID := rt.SessionID
 	runner := rt.Runner
 	swarmRunner := rt.SwarmRunner
+	sddRunner := rt.SDDRunner
 	toolReg := rt.ToolRegistry
 	jobBroker, ok := rt.JobBroker.(*pubsub.Broker[native.JobEvent])
 	if !ok && rt.JobBroker != nil {
@@ -702,6 +703,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	if state.ProviderError() == nil {
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
+		tuiOpts = append(tuiOpts, tui.WithSDDRunner(ctx, sddRunner))
 		tuiOpts = append(tuiOpts, tui.WithJobBroker(jobBrokerCtx, jobBroker))
 		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(jobBrokerCtx, steeringBroker))
 		configReloader := func(newCfg config.Config) error {

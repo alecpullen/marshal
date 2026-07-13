@@ -180,6 +180,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
+			Name:        "sdd",
+			Description: "Run a plan through subagent-driven development (implementer → reviewer → branch review)",
+			Args:        "[plan-file]",
+			Handler:     func(state *session.State, args []string) string { return "" },
+		},
+		{
 			Name:        "model",
 			Description: "Switch to a model preset by name",
 			Args:        "<preset-name>",

@@ -29,6 +29,8 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/tools/desktop"
+	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
@@ -337,7 +339,7 @@ func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
 	cfg := nativeToolAgentConfig("native-provider")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	runner, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -359,7 +361,7 @@ func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	runner, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -383,7 +385,7 @@ func TestBuildAgentRunnerBackgroundShellUsesConfiguredSandbox(t *testing.T) {
 	t.Setenv("MARSHAL_TEST_SECRET", "super-secret-value-avoid-leak")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, _, _, _, jobMgr, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	runner, reg, _, _, _, jobMgr, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -417,7 +419,7 @@ func TestBuildAgentRunnerUsesConfiguredOutputLimit(t *testing.T) {
 	cfg.Tools.Shell.MaxOutputBytes = 8
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, _, _, _, jobMgr, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	runner, reg, _, _, _, jobMgr, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -520,7 +522,7 @@ func TestReloadAgentRuntimeReplacesReachableManagerWhenIdle(t *testing.T) {
 	reloadedCfg := nativeToolAgentConfig("test-provider")
 
 	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, _, jobMgr, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil)
+	runner, reg, swarmRunner, _, _, jobMgr, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("initial buildAgentRunner: %v", err)
 	}
@@ -626,7 +628,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 	reloaded.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, mcpMgr, _, jobMgr, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil)
+	runner, reg, swarmRunner, mcpMgr, _, jobMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -695,7 +697,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 	}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, mcpMgr, _, jobMgr, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil)
+	runner, reg, swarmRunner, mcpMgr, _, jobMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -1972,7 +1974,7 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, toolReg, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	_, toolReg, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
 	if err == nil {
 		t.Fatalf("buildAgentRunner should fail when api_key_env points at an unset var")
 	}
@@ -1989,5 +1991,83 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 	if len(cmdReg.List()) < 10 {
 		t.Fatalf("expected at least 10 commands, got %d", len(cmdReg.List()))
+	}
+}
+
+func TestDesktopRegisterAllRegistersTools(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := `
+[project]
+name = "test"
+
+[desktop]
+enabled = true
+mode = "standalone"
+headless = true
+`
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cfg, err := config.Load(config.LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Desktop.Enabled {
+		t.Fatal("desktop should be enabled")
+	}
+
+	reg := registry.New()
+	fakeFactory := func() (browser.BrowserBackend, error) {
+		return &browser.FakeBackend{}, nil
+	}
+	if _, err := desktop.RegisterAll(reg, desktop.Options{Config: cfg.Desktop, BackendFactory: fakeFactory}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	tools := reg.List()
+	names := map[string]bool{}
+	for _, tool := range tools {
+		names[tool.Name] = true
+	}
+	for _, expected := range []string{"browser.navigate", "browser.read", "browser.click", "browser.fill", "browser.submit", "browser.screenshot"} {
+		if !names[expected] {
+			t.Errorf("tool %q not registered", expected)
+		}
+	}
+}
+
+func TestBuildAgentRunnerRegistersDesktopToolsWhenEnabled(t *testing.T) {
+	// Verify that buildAgentRunner wires desktop tools into the registry
+	// when cfg.Desktop.Enabled is true. This tests the wiring, not just the
+	// desktop.RegisterAll package function.
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("test-provider")
+	cfg.Desktop.Enabled = true
+	cfg.Desktop.Mode = "standalone"
+	cfg.Desktop.Headless = true
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	_, reg, _, _, _, _, closer, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+
+	if closer == nil {
+		t.Fatal("desktop closer is nil, want non-nil when desktop is enabled")
+	}
+
+	tools := reg.List()
+	names := map[string]bool{}
+	for _, tool := range tools {
+		names[tool.Name] = true
+	}
+	for _, expected := range []string{"browser.navigate", "browser.read", "browser.click", "browser.fill", "browser.submit", "browser.screenshot"} {
+		if !names[expected] {
+			t.Errorf("tool %q not registered", expected)
+		}
 	}
 }

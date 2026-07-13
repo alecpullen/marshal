@@ -6,11 +6,11 @@
 
 **Architecture:** A new `internal/tools/desktop` package registers six `browser.*` tools through the existing `registry.Registry`. A `BrowserBackend` interface (two impls: standalone Playwright launch, CDP attach) is the seam for both the future vision milestone and OS-level input. Config lives under a new `[desktop]` block mirroring `[web]`. Lifecycle is tied to `session.State` via the `Runtime.closeFns` cleanup hook.
 
-**Tech Stack:** Go, `github.com/playwright-community/playwright-go`, existing `marshal/internal/tools/registry`, `marshal/internal/tools/policy`, `marshal/internal/app/config`.
+**Tech Stack:** Go, `github.com/mxschmitt/playwright-go`, existing `marshal/internal/tools/registry`, `marshal/internal/tools/policy`, `marshal/internal/app/config`.
 
 ## Global Constraints
 
-- Pure Go dependency only: `github.com/playwright-community/playwright-go` (no CGO — must not affect the existing CGO/tree-sitter build).
+- Pure Go dependency only: `github.com/mxschmitt/playwright-go` (no CGO — must not affect the existing CGO/tree-sitter build).
 - Tool risk levels reuse existing `registry.RiskLevel` values only — no new tiers.
 - All browser tools are gated by `config.Desktop.Enabled` (default `false`).
 - `headless` defaults to `false` (visible browser, Cowork-style) but is toggleable in config.
@@ -57,13 +57,13 @@ Modified files:
 - Modify: `go.mod`, `go.sum`
 
 **Interfaces:**
-- Produces: `github.com/playwright-community/playwright-go` available for import in later tasks.
+- Produces: `github.com/mxschmitt/playwright-go` available for import in later tasks.
 
 - [ ] **Step 1: Add the dependency**
 
 Run:
 ```bash
-go get github.com/playwright-community/playwright-go
+go get github.com/mxschmitt/playwright-go
 ```
 
 - [ ] **Step 2: Verify it builds**
@@ -73,7 +73,7 @@ Expected: PASS (no compilation errors — the dependency is imported but not yet
 
 - [ ] **Step 3: Install browser binaries (local dev only, not committed)**
 
-Run: `go run github.com/playwright-community/playwright-go/cmd/playwright install chromium`
+Run: `go run github.com/mxschmitt/playwright-go/cmd/playwright install chromium`
 
 This downloads Chromium into `~/Library/Caches/ms-playwright/`. It is not part of the build — it's a one-time local setup step for integration tests and actual usage.
 
@@ -1672,7 +1672,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 type StandaloneBackend struct {
@@ -1957,7 +1957,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 type AttachBackend struct {
@@ -2361,7 +2361,7 @@ headless = false
 default_timeout = "30s"
 ```
 
-One-time setup: run `go run github.com/playwright-community/playwright-go/cmd/playwright install chromium` to download the browser binary.
+One-time setup: run `go run github.com/mxschmitt/playwright-go/cmd/playwright install chromium` to download the browser binary.
 
 ### Attach mode
 

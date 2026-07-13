@@ -325,3 +325,48 @@ max_local_parallel_models = 2
 max_context_tokens_per_task = 200000
 prefer_local = true
 ```
+
+## Desktop browser automation
+
+Marshal can drive a web browser (Chromium via Playwright) for Cowork-style automation. The browser is visible by default so you can watch the agent work.
+
+### Standalone mode (default)
+
+Launches a bundled Chromium instance managed by Marshal.
+
+```toml
+[desktop]
+enabled = true
+mode = "standalone"
+headless = false
+default_timeout = "30s"
+```
+
+One-time setup: run `go run github.com/playwright-community/playwright-go/cmd/playwright install chromium` to download the browser binary.
+
+### Attach mode
+
+Connect to your running Chrome browser (keeps your session, cookies, profile):
+
+```toml
+[desktop]
+enabled = true
+mode = "attach"
+cdp_url = "http://localhost:9222"
+default_timeout = "30s"
+```
+
+You must launch Chrome with `--remote-debugging-port=9222`.
+
+### URL restrictions
+
+Limit which sites the agent can navigate to:
+
+```toml
+[desktop]
+enabled = true
+url_allowlist = ["example.com", "docs.mycompany.com"]
+url_denylist = ["example.com/admin"]
+```
+
+Entries match on hostname (with subdomain support) and optional path prefix.

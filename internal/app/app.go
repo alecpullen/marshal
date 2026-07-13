@@ -33,6 +33,8 @@ import (
 	"marshal/internal/sandbox"
 	"marshal/internal/skills"
 	"marshal/internal/snapshot"
+	"marshal/internal/tools/desktop"
+	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/mcp"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -296,11 +298,11 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 	}
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -315,7 +317,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -366,7 +368,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		jmErr = err
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -376,12 +378,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		mcpMgr = mcp.NewManager(&cfg)
 		if err := mcpMgr.Start(ctx); err != nil {
 			jmErr = err
-			return nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, err
 		}
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			mcpMgr.Close()
 			jmErr = err
-			return nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 
@@ -393,7 +395,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		2,
 	)); err != nil {
 		jmErr = err
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.SkillIndex = skillIndex
@@ -456,7 +458,24 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		}
 	}
 	swarmRunner := buildSwarmRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, nil
+
+	var desktopCloser func()
+	if cfg.Desktop.Enabled {
+		desktopOpts := desktop.Options{
+			Config: cfg.Desktop,
+			BackendFactory: func() (browser.BrowserBackend, error) {
+				return newDesktopBackend(cfg.Desktop)
+			},
+		}
+		closer, err := desktop.RegisterAll(reg, desktopOpts)
+		if err != nil {
+			jmErr = err
+			return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
+		}
+		desktopCloser = closer
+	}
+
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, nil
 }
 
 // buildSwarmRunner wires the Milestone O swarm: every role runner shares
@@ -726,7 +745,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if !ok && rt.JobBroker != nil {
 		panic(fmt.Sprintf("runtime: JobBroker is %T, want *pubsub.Broker[native.JobEvent]", rt.JobBroker))
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
 	if err != nil {
 		return err
 	}
@@ -736,6 +755,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	oldMCP := rt.MCPManager
 	oldJobMgr := rt.JobManager
 	oldSnap := rt.Snapshot
+	oldDesktopCloser := rt.DesktopCloser
 
 	// Copy in-place fields.
 	rt.Runner.CopyFrom(newRunner)
@@ -756,6 +776,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		rt.Snapshot = nil
 	}
 	rt.JobManager = newJobMgr
+	rt.DesktopCloser = newDesktopCloser
 	rt.mu.Unlock()
 
 	// Cleanup old resources outside the lock.
@@ -774,6 +795,9 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		}
 	}
 	_ = oldSnap
+	if oldDesktopCloser != nil {
+		oldDesktopCloser()
+	}
 	return cleanupErr
 }
 
@@ -802,4 +826,19 @@ func loadFileIndexPaths(database *db.DB, projectID int64) ([]string, error) {
 		paths = append(paths, f.Path)
 	}
 	return paths, nil
+}
+
+func newDesktopBackend(cfg config.DesktopConfig) (browser.BrowserBackend, error) {
+	timeout := cfg.DefaultTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	switch cfg.Mode {
+	case "attach":
+		return browser.NewAttachBackend(cfg.CDPURL, timeout)
+	case "standalone", "":
+		return browser.NewStandaloneBackend(cfg.Headless, timeout)
+	default:
+		return nil, fmt.Errorf("unknown desktop mode %q", cfg.Mode)
+	}
 }

@@ -98,8 +98,9 @@ func (b *StandaloneBackend) Mode() string {
 }
 
 type standalonePage struct {
-	page playwright.Page
-	ctx  playwright.BrowserContext
+	page  playwright.Page
+	ctx   playwright.BrowserContext
+	owned bool
 }
 
 func (p *standalonePage) Navigate(ctx context.Context, url string) error {
@@ -189,8 +190,10 @@ func (p *standalonePage) Close() error {
 	if err := p.page.Close(); err != nil {
 		errs = append(errs, err)
 	}
-	if err := p.ctx.Close(); err != nil {
-		errs = append(errs, err)
+	if p.owned {
+		if err := p.ctx.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("standalone page close: %v", errs)

@@ -55,6 +55,7 @@ func (b *AttachBackend) NewPage(ctx context.Context) (PageHandle, error) {
 	}
 	contexts := b.browser.Contexts()
 	var pwCtx playwright.BrowserContext
+	isNewCtx := false
 	if len(contexts) > 0 {
 		pwCtx = contexts[0]
 	} else {
@@ -63,10 +64,13 @@ func (b *AttachBackend) NewPage(ctx context.Context) (PageHandle, error) {
 		if err != nil {
 			return nil, fmt.Errorf("new browser context: %w", err)
 		}
+		isNewCtx = true
 	}
 	page, err := pwCtx.NewPage()
 	if err != nil {
-		pwCtx.Close()
+		if isNewCtx {
+			_ = pwCtx.Close()
+		}
 		return nil, fmt.Errorf("new page: %w", err)
 	}
 	if b.timeout > 0 {
@@ -74,7 +78,7 @@ func (b *AttachBackend) NewPage(ctx context.Context) (PageHandle, error) {
 		page.SetDefaultTimeout(timeoutMs)
 		page.SetDefaultNavigationTimeout(timeoutMs)
 	}
-	return &standalonePage{page: page, ctx: pwCtx}, nil
+	return &standalonePage{page: page, ctx: pwCtx, owned: isNewCtx}, nil
 }
 
 func (b *AttachBackend) Close() error {

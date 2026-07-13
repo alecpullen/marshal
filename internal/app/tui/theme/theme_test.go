@@ -129,6 +129,47 @@ func Test16ColorPaletteHasNewThemeSlots(t *testing.T) {
 	}
 }
 
+func TestLoadWithConfigUnknownFallsBackToDefault(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+	th := LoadWithConfig("nonexistent", nil)
+	if th.AccentPrimary != lipgloss.Color("209") {
+		t.Fatalf("AccentPrimary = %#v, want 209 (warm-sunset default)", th.AccentPrimary)
+	}
+}
+
+func TestLoadWithConfigNoColorWins(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "xterm-256color")
+	th := LoadWithConfig("dracula", nil)
+	if _, ok := th.AccentPrimary.(lipgloss.NoColor); !ok {
+		t.Fatalf("AccentPrimary = %#v, want NoColor{} even with dracula theme", th.AccentPrimary)
+	}
+}
+
+func TestNamesContainsExpected(t *testing.T) {
+	names := Names()
+	expected := []string{"catppuccin-mocha", "dracula", "nord", "warm-sunset"}
+	for _, exp := range expected {
+		found := false
+		for _, n := range names {
+			if n == exp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Names() missing expected preset %q", exp)
+		}
+	}
+	for i := 1; i < len(names); i++ {
+		if names[i-1] > names[i] {
+			t.Errorf("Names() not sorted: %q appears before %q", names[i-1], names[i])
+			break
+		}
+	}
+}
+
 func TestMonochromeHasNewThemeSlots(t *testing.T) {
 	th := LoadFor(true, "xterm-256color")
 	if _, ok := th.AccentTertiary.(lipgloss.NoColor); !ok {

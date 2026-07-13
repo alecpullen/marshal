@@ -9,6 +9,7 @@ package theme
 import (
 	"image/color"
 	"os"
+	"sort"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -115,5 +116,44 @@ func LoadFor(noColor bool, term string) Theme {
 
 // Load reads the environment and returns the active Theme.
 func Load() Theme {
-	return LoadFor(os.Getenv("NO_COLOR") != "", os.Getenv("TERM"))
+	return LoadWithConfig("warm-sunset", nil)
+}
+
+// LoadWithConfig returns a Theme selected by name with optional overrides.
+// If NO_COLOR is set the monochrome theme is returned unconditionally.
+// An unknown name falls back to warm-sunset. When the terminal does not
+// indicate 256-color support the 16-color variant is used when available.
+func LoadWithConfig(name string, overrides PaletteOverrides) Theme {
+	if os.Getenv("NO_COLOR") != "" {
+		return monochromeTheme()
+	}
+
+	base, ok := LookupPreset(name)
+	if !ok {
+		base = warmSunset256
+	}
+
+	term := os.Getenv("TERM")
+	if !strings.Contains(term, "256color") && !strings.Contains(term, "kitty") && !strings.Contains(term, "wezterm") {
+		if name == "warm-sunset" || !ok {
+			base = warmSunset16
+		}
+	}
+
+	if overrides != nil {
+		base = overrides.Apply(base)
+	}
+
+	return base
+}
+
+// Names returns the list of preset names sorted lexicographically for a
+// stable settings-enum ordering.
+func Names() []string {
+	nn := make([]string, 0, len(presets))
+	for k := range presets {
+		nn = append(nn, k)
+	}
+	sort.Strings(nn)
+	return nn
 }

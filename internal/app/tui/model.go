@@ -1516,26 +1516,17 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ask":
-		if m.runner != nil {
-			m.runner.SetForceClass("question")
-		}
-		m.forceMode = "ask"
+		m.setMode("ask")
 		m.refreshViewport()
 		return m, nil
 
 	case "edit":
-		if m.runner != nil {
-			m.runner.SetForceClass("edit")
-		}
-		m.forceMode = "edit"
+		m.setMode("edit")
 		m.refreshViewport()
 		return m, nil
 
 	case "auto":
-		if m.runner != nil {
-			m.runner.SetForceClass("")
-		}
-		m.forceMode = ""
+		m.setMode("")
 		m.refreshViewport()
 		return m, nil
 
@@ -1613,6 +1604,20 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	}
 	m.pickerModel = p
 	m.pickerCommand = cmdName
+}
+
+// setMode applies an interaction mode ("ask", "edit", or "" for auto) for
+// the next turn. Shared by the /ask, /edit, /auto, /mode commands and the
+// Tab/Shift+Tab mode-cycling hotkeys.
+func (m *Model) setMode(mode string) {
+	class := mode
+	if mode == "ask" {
+		class = "question"
+	}
+	if m.runner != nil {
+		m.runner.SetForceClass(class) // "" => auto (classifier runs)
+	}
+	m.forceMode = mode
 }
 
 // switchModelPreset applies a session-only model switch by routing every

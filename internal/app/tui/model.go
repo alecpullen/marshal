@@ -1671,6 +1671,39 @@ func (m *Model) cycleMode(forward bool) {
 	m.refreshViewport()
 }
 
+// cycleModel advances (forward=true) or reverses the active model preset,
+// wrapping around. Order matches modelPickerItems() (provider then name).
+// Session-only: delegates to switchModelPreset.
+func (m *Model) cycleModel(forward bool) {
+	if m.busy {
+		m.state.AddMessage(session.RoleSystem,
+			"Busy — switch the model after this turn completes.",
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	names := m.sortedPresetNames()
+	if len(names) == 0 {
+		m.state.AddMessage(session.RoleSystem,
+			"No model presets configured. Add one in /settings → Model Presets.",
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	cur := m.state.ActiveRoute().Preset
+	idx := slices.Index(names, cur)
+	if idx < 0 {
+		idx = 0 // legacy/unknown route → start at the first preset
+	}
+	step := 1
+	if !forward {
+		step = -1
+	}
+	target := names[(idx+step+len(names))%len(names)]
+	m.switchModelPreset(target)
+	m.refreshViewport()
+}
+
 // switchModelPreset applies a session-only model switch by routing every
 // role of a synthetic "switched" profile at the preset. Nothing is written
 // to config files; /settings owns persistence.
@@ -1702,8 +1735,10 @@ func (m *Model) switchModelPreset(presetName string) {
 	}
 }
 
-// modelPickerItems builds sorted picker items from configured model presets.
-func (m *Model) modelPickerItems() []picker.Item {
+// sortedPresetNames returns model preset names sorted by provider then name,
+// matching the order used by modelPickerItems. Shared by the model picker and
+// the Alt+M hotkey so they stay in lock-step.
+func (m *Model) sortedPresetNames() []string {
 	presets := m.state.Config.Models.Presets
 	names := make([]string, 0, len(presets))
 	for n := range presets {
@@ -1716,6 +1751,13 @@ func (m *Model) modelPickerItems() []picker.Item {
 		}
 		return names[i] < names[j]
 	})
+	return names
+}
+
+// modelPickerItems builds sorted picker items from configured model presets.
+func (m *Model) modelPickerItems() []picker.Item {
+	presets := m.state.Config.Models.Presets
+	names := m.sortedPresetNames()
 	current := m.state.ActiveRoute().Preset
 	items := make([]picker.Item, 0, len(names))
 	for _, n := range names {

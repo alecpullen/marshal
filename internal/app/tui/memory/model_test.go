@@ -27,6 +27,9 @@ func newTestDB(t *testing.T) (*db.DB, int64) {
 	if err != nil {
 		t.Fatalf("GetOrCreateProject failed: %v", err)
 	}
+	if err := database.CreateSession("sess-1", projectID, "", time.Unix(100, 0)); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	return database, projectID
 }
 
@@ -268,6 +271,9 @@ func createTestProject(t *testing.T, database *db.DB) int64 {
 func TestMemoryViewportScrollsAndClamps(t *testing.T) {
 	database := openTestDB(t)
 	pid := createTestProject(t, database)
+	if err := database.CreateSession("test-session", pid, "", time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 50; i++ {
 		if err := database.SaveMemory(pid, "fact", fmt.Sprintf("memory %d", i), "test-session", time.Unix(int64(i), 0)); err != nil {
 			t.Fatal(err)

@@ -114,30 +114,45 @@ func LoadFor(noColor bool, term string) Theme {
 	return warmSunset16
 }
 
+// Mode constants for LoadWithConfig.
+const (
+	ModeDark  = "dark"
+	ModeLight = "light"
+)
+
 // Load reads the environment and returns the active Theme.
 func Load() Theme {
-	return LoadWithConfig("warm-sunset", nil)
+	return LoadWithConfig("warm-sunset", ModeDark, nil)
 }
 
-// LoadWithConfig returns a Theme selected by name with optional overrides.
-// If NO_COLOR is set the monochrome theme is returned unconditionally.
-// An unknown name falls back to warm-sunset. When the terminal does not
-// indicate 256-color support the 16-color variant is used when available.
-func LoadWithConfig(name string, overrides PaletteOverrides) Theme {
+// LoadWithConfig returns a Theme selected by name and mode (light/dark) with
+// optional overrides. If NO_COLOR is set the monochrome theme is returned
+// unconditionally. An unknown name falls back to warm-sunset. When the
+// terminal does not indicate 256-color support the 16-color variant is used.
+// Mode comparison is case-insensitive; empty mode defaults to ModeDark.
+func LoadWithConfig(name string, mode string, overrides PaletteOverrides) Theme {
 	if os.Getenv("NO_COLOR") != "" {
 		return monochromeTheme()
 	}
 
-	base, ok := LookupPreset(name)
+	if mode == "" {
+		mode = ModeDark
+	}
+	mode = strings.ToLower(mode)
+
+	lookupName := name
+	if mode == ModeLight {
+		lookupName = name + "-light"
+	}
+
+	base, ok := LookupPreset(lookupName)
 	if !ok {
 		base = warmSunset256
 	}
 
 	term := os.Getenv("TERM")
 	if !strings.Contains(term, "256color") && !strings.Contains(term, "kitty") && !strings.Contains(term, "wezterm") {
-		if name == "warm-sunset" || !ok {
-			base = warmSunset16
-		}
+		base = warmSunset16
 	}
 
 	if overrides != nil {

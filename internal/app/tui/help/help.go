@@ -45,13 +45,20 @@ func Footer(h FooterHints) string {
 		segs = append(segs, pair("Enter", "save"), pair("Esc", "cancel edit"))
 	} else if h.PopupOpen {
 		segs = append(segs, pair("↑↓", "choose"), pair("Tab/Enter", "accept"), pair("Esc", "dismiss"))
+	} else if h.Busy {
+		segs = append(segs,
+			pair("Enter", "send"),
+			pair("Shift+Enter", "newline"),
+			pair("Esc", "cancel"),
+			pair("Ctrl+X", "clear queue"),
+		)
 	} else {
-		segs = append(segs, pair("Enter", "send"), pair("Shift+Enter", "newline"))
-		if h.Busy {
-			segs = append(segs, pair("Esc", "cancel"), pair("Ctrl+X", "clear queue"))
-		} else {
-			segs = append(segs, pair("/", "command"), pair("@", "file"))
-		}
+		segs = append(segs,
+			pair("Tab", "mode"),
+			pair("Alt+M", "model"),
+			pair("/", "command"),
+			pair("@", "file"),
+		)
 	}
 	if showHelpHint {
 		segs = append(segs, pair("?", "help"))

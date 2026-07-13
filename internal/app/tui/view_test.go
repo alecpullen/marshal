@@ -50,7 +50,7 @@ func TestViewContainsStatusLine(t *testing.T) {
 func TestViewContainsFooter(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	view := m.View().Content
-	if !strings.Contains(view, "send") || !strings.Contains(view, "help") {
+	if !strings.Contains(view, "mode") || !strings.Contains(view, "help") {
 		t.Fatalf("view missing keybinding footer:\n%s", view)
 	}
 }

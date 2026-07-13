@@ -66,6 +66,10 @@ func (m Model) viewString() string {
 	if panel := renderSwarmPanel(m.state.SwarmProgress(), swarmSpinner, m.width); panel != "" {
 		rows = append(rows, panel)
 	}
+	sddSpinner := m.activeSpinnerFrame(session.ActivityTool)
+	if panel := renderSDDPanel(m.state.SDDProgress(), sddSpinner, m.width); panel != "" {
+		rows = append(rows, panel)
+	}
 	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
 	out := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	if m.pickerModel != nil {

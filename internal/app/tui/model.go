@@ -398,7 +398,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport lives inside a subtle border frame.
 	m.viewport.SetWidth(max(width-2, 1))
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-footerRows-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.inputAreaRows()-footerRows-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -930,8 +930,15 @@ func (m Model) swarmPanelRows() int {
 	return 0
 }
 
+func (m Model) sddPanelRows() int {
+	if m.state.SDDProgress().Active {
+		return sddPanelRows
+	}
+	return 0
+}
+
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-footerRows-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.inputAreaRows()-footerRows-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}

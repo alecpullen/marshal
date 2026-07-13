@@ -70,6 +70,9 @@ func (m Model) modeSegment() string {
 	if m.helpOpen {
 		return "help open"
 	}
+	if m.state.SDDProgress().Active {
+		return "sdd"
+	}
 	if m.editingCommand {
 		return "edit cmd"
 	}
@@ -143,6 +146,15 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("tokens %s/%s",
 			compactTokenCount(sp.TokensUsed),
 			compactTokenCount(sp.TokensMax)), priority: 6})
+	}
+
+	if sp := m.state.SDDProgress(); sp.Active {
+		segs = append(segs, statusSeg{text: fmt.Sprintf("task %d/%d", sp.DoneTasks, sp.TotalTasks), priority: 1})
+		if sp.TokensMax > 0 || sp.TokensUsed > 0 {
+			segs = append(segs, statusSeg{text: fmt.Sprintf("sdd tokens %s/%s",
+				compactTokenCount(sp.TokensUsed),
+				compactTokenCount(sp.TokensMax)), priority: 6})
+		}
 	}
 
 	if n := m.jobCount; m.jobBroker != nil {

@@ -82,6 +82,12 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 		}
 		// If worktree creation fails, fall back to the original directory.
 	}
+	// Clean up the worktree when done, regardless of success or failure.
+	defer func() {
+		if wt != nil {
+			_ = wt.Remove()
+		}
+	}()
 
 	tasks := plan.Tasks
 	total := len(tasks)
@@ -114,7 +120,7 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 			continue
 		}
 
-		if err := o.runTask(ctx, ws, ledger, plan, task, i, total, &minorFindings); err != nil {
+		if err := o.runTask(ctx, ws, ledger, plan, task, i, total, &minorFindings, workingDir); err != nil {
 			return err
 		}
 	}
@@ -150,8 +156,9 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 }
 
 // runTask executes one task: implementer -> review loop (up to MaxFixRounds
-// times) -> ledger append.
-func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledger, plan *Plan, task PlanTask, index, total int, minorFindings *[]string) error {
+// times) -> ledger append. workingDir is the git working directory (may
+// differ from o.State.WorkingDir when AutoWorktree is enabled).
+func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledger, plan *Plan, task PlanTask, index, total int, minorFindings *[]string, workingDir string) error {
 	briefPath, _ := ws.WriteTaskBrief(task.Number, task.Body)
 	reportPath := ws.ReportPath(task.Number)
 
@@ -162,7 +169,7 @@ func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledge
 	})
 	o.announce(fmt.Sprintf("Task %d/%d: %s — implementer dispatched", task.Number, total, task.Title))
 
-	baseSHA := o.gitHead(o.State.WorkingDir)
+	baseSHA := o.gitHead(workingDir)
 	implPrompt := BuildImplementerPrompt(task, briefPath, reportPath, "See the task brief for full details.")
 	implTask, err := o.runRole(ctx, agent.RoleSDDImplementer, swarm.ScopeFull, implPrompt)
 	if err != nil {
@@ -182,7 +189,7 @@ func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledge
 		return fmt.Errorf("task %d implementer %s", task.Number, status)
 	}
 
-	headSHA := o.gitHead(o.State.WorkingDir)
+	headSHA := o.gitHead(workingDir)
 	o.announce(fmt.Sprintf("Task %d/%d: implementer DONE (commits %s..%s)", task.Number, total, shortSHA(baseSHA), shortSHA(headSHA)))
 
 	o.State.UpdateSDDTask(index, func(ts *session.SDDTaskStatus) {
@@ -207,6 +214,11 @@ func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledge
 			return fmt.Errorf("task %d reviewer failed: %w", task.Number, err)
 		}
 		verdict := ParseTaskVerdict(reviewTask.Summary)
+		// Accumulate minor findings for the branch review.
+		for _, f := range verdict.Findings {
+			tag := fmt.Sprintf("task-%d: %s: %s", task.Number, f.Severity, f.Text)
+			*minorFindings = append(*minorFindings, tag)
+		}
 		if !verdict.HasBlockingFindings() {
 			o.announce(fmt.Sprintf("Task %d/%d: review clean — spec ✅, quality approved", task.Number, total))
 			o.State.UpdateSDDTask(index, func(ts *session.SDDTaskStatus) {
@@ -233,7 +245,7 @@ func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledge
 		if err != nil {
 			return fmt.Errorf("task %d fix failed: %w", task.Number, err)
 		}
-		headSHA = o.gitHead(o.State.WorkingDir)
+		headSHA = o.gitHead(workingDir)
 	}
 	o.announce(fmt.Sprintf("⚠ Task %d/%d: fix budget exhausted — escalating", task.Number, total))
 	o.State.UpdateSDDTask(index, func(ts *session.SDDTaskStatus) {

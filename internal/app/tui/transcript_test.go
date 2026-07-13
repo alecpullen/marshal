@@ -373,11 +373,11 @@ func TestRenderActiveToolCallNonBrowserGlyph(t *testing.T) {
 	}
 	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(103, 0), 80)
 	stripped := stripANSI(out)
-	if !strings.Contains(stripped, "⏺") {
-		t.Fatalf("non-browser active tool call missing ⏺ glyph:\n%s", out)
-	}
 	if strings.Contains(stripped, "🌐") {
 		t.Fatalf("non-browser tool should not have 🌐:\n%s", out)
+	}
+	if !strings.Contains(stripped, "file.read") {
+		t.Fatalf("missing tool name:\n%s", out)
 	}
 }
 

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -22,12 +23,15 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 const (
-	inputBorderRows     = 2
-	activityStripRows   = 1
-	transcriptFrameRows = 0
-	footerRows          = help.Rows
-	statusLineRows      = 1
-	completionPopupMax  = 8
+	titleBarRows         = 1
+	inputBorderRows      = 2
+	activityStripRows    = 1
+	transcriptFrameRows  = 0
+	transcriptBorderRows = 2
+	footerRows           = help.Rows
+	commandBarRows       = footerRows + 1
+	statusLineRows       = 1
+	completionPopupMax   = 8
 )
 
 // View assembles the full-screen frame. Alt screen and mouse mode are
@@ -60,7 +64,7 @@ func (m Model) viewString() string {
 		return help.Overlay(m.width, m.height)
 	}
 
-	rows := []string{m.renderTranscriptFrame()}
+	rows := []string{m.renderTitleBar(m.width), m.renderTranscriptFrame()}
 	// Swarm roles are tool-driven; use ActivityTool as the gating kind.
 	swarmSpinner := m.activeSpinnerFrame(session.ActivityTool)
 	if panel := renderSwarmPanel(m.state.SwarmProgress(), swarmSpinner, m.width); panel != "" {
@@ -81,20 +85,52 @@ func (m Model) viewString() string {
 	return out
 }
 
+// renderTitleBar draws the single-line persistent header: brand on the
+// left, working dir + branch on the right. No background fill — it sits
+// on the terminal's default background, matching the status line.
+func (m Model) renderTitleBar(width int) string {
+	dot := lipgloss.NewStyle().Foreground(coralColor).Render("●")
+	brand := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")
+
+	right := ""
+	if wd := m.state.WorkingDir; wd != "" {
+		right = filepath.Base(wd)
+	}
+	if leaves := m.state.Branches(); len(leaves) > 1 {
+		cur := m.state.LeafID()
+		idx := 1
+		for i, id := range leaves {
+			if id == cur {
+				idx = i + 1
+				break
+			}
+		}
+		if right != "" {
+			right += dimSeparator
+		}
+		right += fmt.Sprintf("branch %d/%d", idx, len(leaves))
+	}
+
+	left := " " + dot + " " + brand
+	gap := width - visibleRunes(left) - visibleRunes(right) - 1
+	if gap < 1 {
+		gap = 1
+	}
+	line := left + strings.Repeat(" ", gap) + right + " "
+	return lipgloss.NewStyle().Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
+}
+
 func (m Model) renderTranscriptFrame() string {
+	innerW := max(m.width-2, 1)
+	innerH := m.viewport.Height()
+	title := "Conversation"
+	content := m.viewport.View()
 	if !m.viewportFollow && m.viewport.TotalLineCount() > m.viewport.Height() {
 		hint := mutedStyle.Render("↑ scrolled — End to follow")
-		vpHeight := max(m.viewport.Height()-1, 1)
-		vpView := lipgloss.NewStyle().
-			Width(max(m.width-2, 1)).
-			Height(vpHeight).
-			Render(m.viewport.View())
-		return lipgloss.JoinVertical(lipgloss.Left, hint, vpView)
+		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
+		innerH = max(innerH-1, 1)
 	}
-	return lipgloss.NewStyle().
-		Width(max(m.width-2, 1)).
-		Height(max(m.viewport.Height(), 1)).
-		Render(m.viewport.View())
+	return chrome.Panel(title, content, innerW, innerH+transcriptBorderRows, true, activeTheme)
 }
 
 func (m Model) renderInputArea() string {
@@ -138,7 +174,9 @@ func (m Model) renderInputArea() string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	border := coralColor
-	if !m.input.Focused() {
+	if m.successPulse {
+		border = tealColor
+	} else if !m.input.Focused() {
 		border = mauveColor
 	}
 	return inputBoxStyle.BorderForeground(border).Width(inputInnerWidth).Render(content)
@@ -174,7 +212,16 @@ func (m Model) renderHelpFooter() string {
 		QuestionPending: m.state.PendingQuestion() != nil,
 		PopupOpen:       m.activeCompletionPopup() != nil,
 	}
-	return mutedStyle.Width(max(m.width, 1)).Render(help.Footer(hints))
+	body := help.Footer(hints)
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderTop(true).
+		BorderBottom(false).
+		BorderRight(false).
+		BorderLeft(false).
+		BorderForeground(activeTheme.BorderMuted).
+		Width(max(m.width, 1)).
+		Render(body)
 }
 
 // highlightMatches bolds runes at the given byte indices using the

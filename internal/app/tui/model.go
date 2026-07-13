@@ -140,6 +140,7 @@ type Model struct {
 	lastActivityLabel string
 	lastActivityDone  time.Time
 	lastActivityKind  session.ActivityKind
+	successPulse      bool
 	now               func() time.Time
 }
 
@@ -411,7 +412,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport lives inside a subtle border frame.
 	m.viewport.SetWidth(max(width-2, 1))
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-footerRows-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-transcriptBorderRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -986,7 +987,7 @@ func (m Model) sddPanelRows() int {
 }
 
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-footerRows-statusLineRows, 1)
+	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-transcriptBorderRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -1391,6 +1392,8 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.agentCancel = nil
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		m.state.SetProviderError(msg.err)
+	} else if msg.err == nil {
+		m.successPulse = true
 	}
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
@@ -1400,7 +1403,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.updateViewportHeight()
 	m.refreshViewport()
 	m.syncSettingsSaveBlock()
-	return m, nil
+	return m, tickCmd()
 }
 
 // handleJobCount handles a jobCountMsg, shared by Update and
@@ -1437,7 +1440,13 @@ func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
-	if !m.busy {
+	if !m.busy && m.successPulse {
+		if m.lastActivityKind == session.ActivityIdle && !m.lastActivityDone.IsZero() &&
+			m.now().Sub(m.lastActivityDone) >= doneDisplayDuration {
+			m.successPulse = false
+		}
+	}
+	if !m.busy && !m.successPulse {
 		return m, nil
 	}
 	act := m.state.Activity()

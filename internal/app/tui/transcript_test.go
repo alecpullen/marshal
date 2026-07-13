@@ -381,6 +381,20 @@ func TestRenderActiveToolCallNonBrowserGlyph(t *testing.T) {
 	}
 }
 
+func TestWelcomeBannerIsCenteredHero(t *testing.T) {
+	out := renderWelcomeBanner(60)
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "marshal") {
+		t.Fatalf("welcome banner missing brand:\n%s", plain)
+	}
+	if !strings.Contains(plain, "╭") || !strings.Contains(plain, "╰") {
+		t.Fatalf("welcome banner should be a bordered card:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Type a question") {
+		t.Fatalf("welcome banner missing call-to-action:\n%s", plain)
+	}
+}
+
 func TestRenderCompletedToolCallBrowserGlyph(t *testing.T) {
 	event := registry.AuditEvent{
 		ToolName:      "browser.navigate",

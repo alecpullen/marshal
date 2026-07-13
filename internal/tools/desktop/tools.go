@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/registry"
 )
@@ -16,6 +18,7 @@ type toolSet struct {
 	backendFactory func() (browser.BrowserBackend, error)
 	session        *browser.Session
 	sessionMu      sync.Mutex
+	sessionState   *session.State
 }
 
 func (ts *toolSet) getSession(ctx context.Context) (*browser.Session, error) {
@@ -29,7 +32,17 @@ func (ts *toolSet) getSession(ctx context.Context) (*browser.Session, error) {
 		return nil, fmt.Errorf("create browser backend: %w", err)
 	}
 	ts.session = browser.NewSession(backend)
+	ts.updateBrowserState(session.BrowserInfo{
+		SessionOpen: true,
+		Mode:        ts.cfg.Mode,
+	})
 	return ts.session, nil
+}
+
+func (ts *toolSet) updateBrowserState(info session.BrowserInfo) {
+	if ts.sessionState != nil {
+		ts.sessionState.SetBrowserInfo(info)
+	}
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) (func(), error) {
@@ -39,6 +52,7 @@ func RegisterAll(reg *registry.Registry, opts Options) (func(), error) {
 	ts := &toolSet{
 		cfg:            opts.Config,
 		backendFactory: opts.BackendFactory,
+		sessionState:   opts.SessionState,
 	}
 	tools := []registry.Tool{
 		ts.navigateTool(),
@@ -93,10 +107,34 @@ func (ts *toolSet) navigateTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
+		ts.updateBrowserState(session.BrowserInfo{
+			SessionOpen: true,
+			Active:      true,
+			ToolName:    "browser.navigate",
+			URL:         args.URL,
+			Mode:        ts.cfg.Mode,
+			UpdatedAt:   time.Now(),
+		})
 		if err := page.Navigate(ctx, args.URL); err != nil {
+			ts.updateBrowserState(session.BrowserInfo{
+				SessionOpen: true,
+				Active:      false,
+				URL:         args.URL,
+				Mode:        ts.cfg.Mode,
+				UpdatedAt:   time.Now(),
+			})
 			return registry.ToolResult{}, fmt.Errorf("navigate: %w", err)
 		}
 		title, _ := page.Title(ctx)
+		currentURL, _ := page.URL(ctx)
+		ts.updateBrowserState(session.BrowserInfo{
+			SessionOpen: true,
+			Active:      false,
+			URL:         currentURL,
+			Title:       title,
+			Mode:        ts.cfg.Mode,
+			UpdatedAt:   time.Now(),
+		})
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("Navigated to %s", args.URL),
 			Content: fmt.Sprintf(`{"url":%q,"title":%q}`, args.URL, title),
@@ -127,6 +165,13 @@ func (ts *toolSet) readTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
+		ts.updateBrowserState(session.BrowserInfo{
+			SessionOpen: true,
+			Active:      true,
+			ToolName:    "browser.read",
+			Mode:        ts.cfg.Mode,
+			UpdatedAt:   time.Now(),
+		})
 		var text string
 		if args.Selector != "" {
 			text, err = page.Text(ctx, args.Selector)
@@ -134,8 +179,10 @@ func (ts *toolSet) readTool() registry.Tool {
 			text, err = page.ReadableText(ctx)
 		}
 		if err != nil {
+			ts.updateBrowserState(session.BrowserInfo{SessionOpen: true, Active: false, Mode: ts.cfg.Mode, UpdatedAt: time.Now()})
 			return registry.ToolResult{}, fmt.Errorf("read: %w", err)
 		}
+		ts.updateBrowserState(session.BrowserInfo{SessionOpen: true, Active: false, Mode: ts.cfg.Mode, UpdatedAt: time.Now()})
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("Read page: %d chars", len(text)),
 			Content: text,
@@ -169,9 +216,27 @@ func (ts *toolSet) clickTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
+		ts.updateBrowserState(session.BrowserInfo{
+			SessionOpen: true,
+			Active:      true,
+			ToolName:    "browser.click",
+			Mode:        ts.cfg.Mode,
+			UpdatedAt:   time.Now(),
+		})
 		if err := page.Click(ctx, args.Selector); err != nil {
+			ts.updateBrowserState(session.BrowserInfo{SessionOpen: true, Active: false, Mode: ts.cfg.Mode, UpdatedAt: time.Now()})
 			return registry.ToolResult{}, fmt.Errorf("click %s: %w", args.Selector, err)
 		}
+		clickURL, _ := page.URL(ctx)
+		clickTitle, _ := page.Title(ctx)
+		ts.updateBrowserState(session.BrowserInfo{
+			SessionOpen: true,
+			Active:      false,
+			URL:         clickURL,
+			Title:       clickTitle,
+			Mode:        ts.cfg.Mode,
+			UpdatedAt:   time.Now(),
+		})
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("Clicked %s", args.Selector),
 		}, nil
@@ -209,9 +274,18 @@ func (ts *toolSet) fillTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
+		ts.updateBrowserState(session.BrowserInfo{
+			SessionOpen: true,
+			Active:      true,
+			ToolName:    "browser.fill",
+			Mode:        ts.cfg.Mode,
+			UpdatedAt:   time.Now(),
+		})
 		if err := page.Fill(ctx, args.Selector, args.Value); err != nil {
+			ts.updateBrowserState(session.BrowserInfo{SessionOpen: true, Active: false, Mode: ts.cfg.Mode, UpdatedAt: time.Now()})
 			return registry.ToolResult{}, fmt.Errorf("fill %s: %w", args.Selector, err)
 		}
+		ts.updateBrowserState(session.BrowserInfo{SessionOpen: true, Active: false, Mode: ts.cfg.Mode, UpdatedAt: time.Now()})
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("Filled %s with %q", args.Selector, args.Value),
 		}, nil
@@ -241,16 +315,38 @@ func (ts *toolSet) submitTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
+		ts.updateBrowserState(session.BrowserInfo{
+			SessionOpen: true,
+			Active:      true,
+			ToolName:    "browser.submit",
+			Mode:        ts.cfg.Mode,
+			UpdatedAt:   time.Now(),
+		})
 		if args.Selector != "" {
 			if err := page.Submit(ctx, args.Selector); err != nil {
+				ts.updateBrowserState(session.BrowserInfo{SessionOpen: true, Active: false, Mode: ts.cfg.Mode, UpdatedAt: time.Now()})
 				return registry.ToolResult{}, fmt.Errorf("submit %s: %w", args.Selector, err)
 			}
+		} else {
+			if err := page.PressKey(ctx, "Enter"); err != nil {
+				ts.updateBrowserState(session.BrowserInfo{SessionOpen: true, Active: false, Mode: ts.cfg.Mode, UpdatedAt: time.Now()})
+				return registry.ToolResult{}, fmt.Errorf("press Enter: %w", err)
+			}
+		}
+		submitURL, _ := page.URL(ctx)
+		submitTitle, _ := page.Title(ctx)
+		ts.updateBrowserState(session.BrowserInfo{
+			SessionOpen: true,
+			Active:      false,
+			URL:         submitURL,
+			Title:       submitTitle,
+			Mode:        ts.cfg.Mode,
+			UpdatedAt:   time.Now(),
+		})
+		if args.Selector != "" {
 			return registry.ToolResult{
 				Summary: fmt.Sprintf("Submitted %s", args.Selector),
 			}, nil
-		}
-		if err := page.PressKey(ctx, "Enter"); err != nil {
-			return registry.ToolResult{}, fmt.Errorf("press Enter: %w", err)
 		}
 		return registry.ToolResult{
 			Summary: "Submitted (pressed Enter)",
@@ -281,10 +377,19 @@ func (ts *toolSet) screenshotTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
+		ts.updateBrowserState(session.BrowserInfo{
+			SessionOpen: true,
+			Active:      true,
+			ToolName:    "browser.screenshot",
+			Mode:        ts.cfg.Mode,
+			UpdatedAt:   time.Now(),
+		})
 		_, err = page.Screenshot(ctx, browser.ScreenshotOpts{FullPage: args.FullPage, Format: ts.cfg.ScreenshotFormat})
 		if err != nil {
+			ts.updateBrowserState(session.BrowserInfo{SessionOpen: true, Active: false, Mode: ts.cfg.Mode, UpdatedAt: time.Now()})
 			return registry.ToolResult{}, fmt.Errorf("screenshot: %w", err)
 		}
+		ts.updateBrowserState(session.BrowserInfo{SessionOpen: true, Active: false, Mode: ts.cfg.Mode, UpdatedAt: time.Now()})
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("Screenshot captured (full_page=%v, format=%s)", args.FullPage, ts.cfg.ScreenshotFormat),
 			Content: fmt.Sprintf(`{"full_page":%v,"format":%q}`, args.FullPage, ts.cfg.ScreenshotFormat),

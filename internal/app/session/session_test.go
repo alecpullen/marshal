@@ -1147,6 +1147,49 @@ func TestStateLoadErrorReportsColdLoadFailure(t *testing.T) {
 
 // ── end Task 3 tests ────────────────────────────────────────────────────
 
+func TestBrowserInfoDefault(t *testing.T) {
+	state := newTestState()
+	bi := state.BrowserInfo()
+	if bi.SessionOpen {
+		t.Fatal("new state should have SessionOpen=false")
+	}
+	if bi.Active {
+		t.Fatal("new state should have Active=false")
+	}
+}
+
+func TestSetBrowserInfo(t *testing.T) {
+	state := newTestState()
+	info := BrowserInfo{
+		SessionOpen: true,
+		Active:      true,
+		ToolName:    "browser.navigate",
+		URL:         "https://example.com/docs",
+		Title:       "Example Docs",
+		Mode:        "standalone",
+	}
+	state.SetBrowserInfo(info)
+	got := state.BrowserInfo()
+	if !got.SessionOpen {
+		t.Error("SessionOpen not set")
+	}
+	if got.URL != "https://example.com/docs" {
+		t.Errorf("URL = %q", got.URL)
+	}
+	if got.Title != "Example Docs" {
+		t.Errorf("Title = %q", got.Title)
+	}
+	if got.Mode != "standalone" {
+		t.Errorf("Mode = %q", got.Mode)
+	}
+	if !got.Active {
+		t.Error("Active not set")
+	}
+	if got.ToolName != "browser.navigate" {
+		t.Errorf("ToolName = %q", got.ToolName)
+	}
+}
+
 func TestSteeringQueueIsCopy(t *testing.T) {
 	state := newTestState()
 	state.PushSteering("a")

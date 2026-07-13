@@ -39,6 +39,7 @@ const (
 	EventAuditAdded             = "audit_added"
 	EventPendingApprovalChanged = "pending_approval_changed"
 	EventPendingQuestionChanged = "pending_question_changed"
+	EventBrowserChanged         = "browser_changed"
 )
 
 // Event is the union payload published on the session event broker
@@ -53,6 +54,7 @@ type Event struct {
 	Audit           *registry.AuditEvent
 	PendingApproval *PendingToolCall
 	PendingQuestion *PendingQuestion
+	Browser         *BrowserInfo
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -247,6 +249,16 @@ type SandboxInfo struct {
 	NetworkIsolation bool
 }
 
+type BrowserInfo struct {
+	Active      bool
+	ToolName    string
+	URL         string
+	Title       string
+	Mode        string
+	SessionOpen bool
+	UpdatedAt   time.Time
+}
+
 type State struct {
 	Config     config.Config
 	WorkingDir string
@@ -280,6 +292,7 @@ type State struct {
 	toolBudget      ToolBudget
 	swarmProgress   SwarmProgress
 	sandbox         SandboxInfo
+	browser         BrowserInfo
 	trusted         bool
 	turnIndex       int
 	snapshotter     Snapshotter
@@ -574,6 +587,24 @@ func (s *State) SandboxInfo() SandboxInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sandbox
+}
+
+// SetBrowserInfo records the current browser automation session state.
+// Published on the broker so the TUI browser bar and status segment can
+// react without polling.
+func (s *State) SetBrowserInfo(info BrowserInfo) {
+	s.mu.Lock()
+	s.browser = info
+	s.mu.Unlock()
+	bi := info
+	s.publishEvent(EventBrowserChanged, Event{Browser: &bi})
+}
+
+// BrowserInfo returns the current browser automation session snapshot.
+func (s *State) BrowserInfo() BrowserInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.browser
 }
 
 // SetRunningJobsCount records how many background shell jobs are currently

@@ -348,3 +348,50 @@ func TestAgentMarkdownRendersRichBlocksWithinWidth(t *testing.T) {
 	}
 	t.Logf("rendered:\n%s", out)
 }
+
+func TestRenderActiveToolCallBrowserGlyph(t *testing.T) {
+	atc := session.ActiveToolCall{
+		Name:      "browser.navigate",
+		Args:      "https://example.com",
+		StartedAt: time.Unix(100, 0),
+	}
+	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(103, 0), 80)
+	stripped := stripANSI(out)
+	if !strings.Contains(stripped, "🌐") {
+		t.Fatalf("browser active tool call missing 🌐 glyph:\n%s", out)
+	}
+	if !strings.Contains(stripped, "browser.navigate") {
+		t.Fatalf("missing tool name:\n%s", out)
+	}
+}
+
+func TestRenderActiveToolCallNonBrowserGlyph(t *testing.T) {
+	atc := session.ActiveToolCall{
+		Name:      "file.read",
+		Args:      "src/main.go",
+		StartedAt: time.Unix(100, 0),
+	}
+	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(103, 0), 80)
+	stripped := stripANSI(out)
+	if strings.Contains(stripped, "🌐") {
+		t.Fatalf("non-browser tool should not have 🌐:\n%s", out)
+	}
+	if !strings.Contains(stripped, "file.read") {
+		t.Fatalf("missing tool name:\n%s", out)
+	}
+}
+
+func TestRenderCompletedToolCallBrowserGlyph(t *testing.T) {
+	event := registry.AuditEvent{
+		ToolName:      "browser.navigate",
+		ResultSummary: "Navigated to https://example.com",
+	}
+	out := renderCompletedToolCall(event, 80)
+	stripped := stripANSI(out)
+	if !strings.Contains(stripped, "browser.navigate") {
+		t.Fatalf("missing tool name:\n%s", out)
+	}
+	if !strings.Contains(stripped, "done") {
+		t.Fatalf("missing 'done':\n%s", out)
+	}
+}

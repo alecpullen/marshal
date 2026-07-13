@@ -55,6 +55,8 @@ const (
 	// settingsBusyMessage is the footer text shown in the settings overlay
 	// when the user tries to save while a turn or background jobs are running.
 	settingsBusyMessage = "Stop the active turn and background jobs before applying settings."
+
+	browserBarRows = 1
 )
 
 type Model struct {
@@ -398,7 +400,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport lives inside a subtle border frame.
 	m.viewport.SetWidth(max(width-2, 1))
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-footerRows-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.browserBarRows()-m.inputAreaRows()-footerRows-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -930,8 +932,15 @@ func (m Model) swarmPanelRows() int {
 	return 0
 }
 
+func (m Model) browserBarRows() int {
+	if m.state.BrowserInfo().SessionOpen {
+		return browserBarRows
+	}
+	return 0
+}
+
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.inputAreaRows()-footerRows-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.browserBarRows()-m.inputAreaRows()-footerRows-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -1791,16 +1800,20 @@ var (
 	warningColor color.Color
 	errorColor   color.Color
 
-	mutedStyle        lipgloss.Style
-	panelTitleStyle   lipgloss.Style
-	thinkingLineStyle lipgloss.Style
-	codeBorderStyle   lipgloss.Style
-	toolNameStyle     lipgloss.Style
-	keyHintStyle      lipgloss.Style
-	riskLabelStyle    lipgloss.Style
-	dimSeparator      = " · "
-	inputBoxStyle     lipgloss.Style
-	statusBarStyle    lipgloss.Style
+	mutedStyle         lipgloss.Style
+	panelTitleStyle    lipgloss.Style
+	thinkingLineStyle  lipgloss.Style
+	codeBorderStyle    lipgloss.Style
+	toolNameStyle      lipgloss.Style
+	keyHintStyle       lipgloss.Style
+	riskLabelStyle     lipgloss.Style
+	dimSeparator       = " · "
+	inputBoxStyle      lipgloss.Style
+	statusBarStyle     lipgloss.Style
+	browserGlyphStyle  lipgloss.Style
+	browserPrefixStyle lipgloss.Style
+	browserBarStyle    lipgloss.Style
+	urlStyle           lipgloss.Style
 )
 
 func loadTheme(tui config.TUIConfig) {
@@ -1845,6 +1858,16 @@ func loadTheme(tui config.TUIConfig) {
 		BorderForeground(activeTheme.AccentPrimary).
 		Padding(0, 1)
 	statusBarStyle = lipgloss.NewStyle().
+		Foreground(activeTheme.FGDefault)
+	browserGlyphStyle = lipgloss.NewStyle().
+		Foreground(activeTheme.AccentTertiary)
+	browserPrefixStyle = lipgloss.NewStyle().
+		Foreground(activeTheme.AccentSecondary)
+	browserBarStyle = lipgloss.NewStyle().
+		Background(activeTheme.BGSurface).
+		BorderTop(true).
+		BorderForeground(activeTheme.BorderMuted)
+	urlStyle = lipgloss.NewStyle().
 		Foreground(activeTheme.FGDefault)
 }
 

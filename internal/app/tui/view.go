@@ -26,7 +26,7 @@ const (
 	titleBarRows         = 1
 	inputBorderRows      = 2
 	activityStripRows    = 1
-	transcriptFrameRows   = 0
+	transcriptFrameRows  = 0
 	transcriptBorderRows = 2
 	footerRows           = help.Rows
 	commandBarRows       = footerRows + 1

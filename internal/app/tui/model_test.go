@@ -980,8 +980,8 @@ func TestAgentFinishedMsgClearsBusyAndRecordsProviderError(t *testing.T) {
 	if model.busy {
 		t.Fatal("model.busy = true, want false after agentFinishedMsg")
 	}
-	if cmd != nil {
-		t.Fatal("expected a nil cmd after agentFinishedMsg")
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd (tickCmd) after agentFinishedMsg to re-arm the pulse-clearing tick")
 	}
 	if err := state.ProviderError(); err == nil || err.Error() != "boom" {
 		t.Fatalf("ProviderError() = %v, want an error wrapping %q", err, "boom")

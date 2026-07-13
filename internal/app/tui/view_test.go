@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -59,13 +60,17 @@ func TestViewContainsFooter(t *testing.T) {
 	}
 }
 
-func TestTranscriptIsBorderless(t *testing.T) {
+func TestTranscriptHasTitledBorder(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m.refreshViewport()
 	transcript := m.renderTranscriptFrame()
-	if strings.Contains(transcript, "╭") || strings.Contains(transcript, "╰") {
-		t.Fatalf("transcript should have no rounded border:\n%s", transcript)
+	plain := stripANSI(transcript)
+	if !strings.Contains(plain, "╭") || !strings.Contains(plain, "╰") {
+		t.Fatalf("transcript should have a rounded border:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Conversation") {
+		t.Fatalf("transcript border should embed the title \"Conversation\":\n%s", plain)
 	}
 }
 
@@ -90,7 +95,7 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	if idleLines[0] != busyLines[0] {
 		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
 	}
-	inputTop := 30 - m.inputAreaRows() - footerRows - statusLineRows
+	inputTop := 30 - m.inputAreaRows() - commandBarRows - statusLineRows
 	if !strings.HasPrefix(stripANSI(busyLines[inputTop]), "╭") {
 		t.Fatalf("input box top moved; line %d = %q", inputTop, busyLines[inputTop])
 	}
@@ -136,14 +141,51 @@ func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
 	}
 }
 
+func TestViewHasTitleBar(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	view := m.View().Content
+	if !strings.Contains(view, "marshal") {
+		t.Fatalf("view missing title bar brand:\n%s", view)
+	}
+}
+
+func TestTitleBarShowsWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	bar := m.renderTitleBar(m.width)
+	// The base name of the temp dir should appear in the title bar.
+	base := filepath.Base(dir)
+	if !strings.Contains(stripANSI(bar), base) {
+		t.Fatalf("title bar missing working dir base %q:\n%s", base, bar)
+	}
+}
+
 func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	if m.viewport.Width() != 98 {
-		t.Fatalf("viewport.Width = %d, want 98 (width-2, borderless transcript)", m.viewport.Width())
+		t.Fatalf("viewport.Width = %d, want 98", m.viewport.Width())
 	}
-	wantHeight := 30 - transcriptFrameRows - m.inputAreaRows() - footerRows - statusLineRows
+	wantHeight := 30 - titleBarRows - transcriptBorderRows - m.inputAreaRows() - commandBarRows - statusLineRows
 	if m.viewport.Height() != wantHeight {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
+	}
+}
+
+func TestInputBorderPulsesTealOnSuccess(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.successPulse = true
+	out := m.renderInputArea()
+	if out == stripANSI(out) {
+		t.Fatalf("input border should carry ANSI color when successPulse is set:\n%s", out)
+	}
+	// Verify it's specifically the success color, not the coral default.
+	teal := m.renderInputArea()
+	m.successPulse = false
+	neutral := m.renderInputArea()
+	if teal == neutral {
+		t.Fatalf("success pulse border should differ from the default focused border")
 	}
 }
 
@@ -352,6 +394,18 @@ func TestInputWrapsBeforeBoxContentWidth(t *testing.T) {
 		if !strings.Contains(promptRow, "a") {
 			t.Fatalf("width=%d: prompt row has no text after ❯:\n%s", w, out)
 		}
+	}
+}
+
+func TestCommandBarHasTopBorder(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	bar := m.renderHelpFooter()
+	plain := stripANSI(bar)
+	if !strings.Contains(plain, "─") {
+		t.Fatalf("command bar should have a top border rule:\n%s", plain)
+	}
+	if !strings.Contains(plain, "command") || !strings.Contains(plain, "help") {
+		t.Fatalf("command bar should still show the keybinding footer:\n%s", plain)
 	}
 }
 

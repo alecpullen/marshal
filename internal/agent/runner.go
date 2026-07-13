@@ -180,12 +180,22 @@ type Runner struct {
 	// first user turn to produce a short session title (F13). Fire-and-forget.
 	TitleGenerator TitleGenerator
 
+	// RunTaskFunc, if non-nil, overrides RunTask for testing. It returns a
+	// canned Task without calling the provider. Used by the SDD orchestrator
+	// tests to inject scripted responses.
+	RunTaskFunc RunTaskFunc
+
 	forceClassMu sync.Mutex
 	tracker      *progressTracker
 	trackerMu    sync.Mutex
 	stats        *turnStats
 	statsMu      sync.Mutex
 }
+
+// RunTaskFunc, if non-nil, overrides RunTask for testing. It returns a
+// canned Task without calling the provider. Used by the SDD orchestrator
+// tests to inject scripted responses.
+type RunTaskFunc func(ctx context.Context, prompt string) (*Task, error)
 
 type chatResult struct {
 	Text         string
@@ -279,7 +289,15 @@ func (r *Runner) Run(ctx context.Context, goal string) error {
 // swarm) can read a role's final summary and status without re-parsing
 // the session transcript.
 func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
+	// Early return for test injection: when RunTaskFunc is set, bypass the
+	// full provider loop and return the canned result directly. Must be
+	// before the defer so a nil State on the test runner does not panic.
+	if r.RunTaskFunc != nil {
+		return r.RunTaskFunc(ctx, goal)
+	}
+
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+
 	priorTranscript := r.State.Messages()
 	firstTurn := len(priorTranscript) <= 1
 	if r.TitleGenerator != nil && firstTurn {

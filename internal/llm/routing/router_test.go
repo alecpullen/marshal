@@ -273,6 +273,32 @@ func TestResolveRoleReturnsConfiguredPreset(t *testing.T) {
 	}
 }
 
+func TestResolveSDDRolesFallBackToImplementer(t *testing.T) {
+	router := NewStaticRouter(Config{
+		DefaultProfile: "local_balanced",
+		Presets: map[string]ModelPreset{
+			"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{
+			"local_balanced": {
+				Name: "local_balanced",
+				Roles: map[AgentRole]string{
+					RoleImplementer: "coder",
+				},
+			},
+		},
+	})
+	for _, role := range []AgentRole{RoleSDDImplementer, RoleSDDReviewer, RoleSDDBranchReviewer} {
+		route, err := router.ResolveRole(role)
+		if err != nil {
+			t.Fatalf("ResolveRole(%s): %v", role, err)
+		}
+		if route.Preset.Name != "coder" {
+			t.Errorf("ResolveRole(%s) preset = %q, want coder (fallback)", role, route.Preset.Name)
+		}
+	}
+}
+
 func TestResolveRoleFallsBackToImplementerForUnconfiguredRole(t *testing.T) {
 	router := NewStaticRouter(Config{
 		DefaultProfile: "default",

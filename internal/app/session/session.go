@@ -291,6 +291,7 @@ type State struct {
 	loadedTools     map[string]bool
 	toolBudget      ToolBudget
 	swarmProgress   SwarmProgress
+	sddProgress     SDDProgress
 	sandbox         SandboxInfo
 	browser         BrowserInfo
 	trusted         bool

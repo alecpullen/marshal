@@ -26,6 +26,7 @@ type Config struct {
 	Web           WebConfig                             `toml:"web"`
 	Desktop       DesktopConfig                         `toml:"desktop"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
+	SDD           SDDConfig                             `toml:"sdd"`
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
 	TUI           TUIConfig                             `toml:"tui"`
@@ -77,6 +78,14 @@ type SwarmBudgetConfig struct {
 	MaxFixRounds   int            `toml:"max_fix_rounds"`
 	MaxTotalTokens int            `toml:"max_total_tokens"`
 	ToolIters      map[string]int `toml:"tool_iters"`
+}
+
+// SDDConfig holds run-level subagent-driven-development settings.
+type SDDConfig struct {
+	AutoWorktree   bool   `toml:"auto_worktree"`
+	MaxFixRounds   int    `toml:"max_fix_rounds"`
+	MaxTotalTokens int    `toml:"max_total_tokens"`
+	PlansDir       string `toml:"plans_dir"`
 }
 
 type MCPConfig struct {
@@ -387,6 +396,13 @@ type fileSwarm struct {
 	Budget *fileSwarmBudget `toml:"budget"`
 }
 
+type fileSDD struct {
+	AutoWorktree   *bool   `toml:"auto_worktree"`
+	MaxFixRounds   *int    `toml:"max_fix_rounds"`
+	MaxTotalTokens *int    `toml:"max_total_tokens"`
+	PlansDir       *string `toml:"plans_dir"`
+}
+
 type fileMCPServer struct {
 	Command *string           `toml:"command"`
 	Args    []string          `toml:"args"`
@@ -450,6 +466,7 @@ type configFile struct {
 	Web         *fileWeb         `toml:"web"`
 	Desktop     *fileDesktop     `toml:"desktop"`
 	Swarm       *fileSwarm       `toml:"swarm"`
+	SDD         *fileSDD         `toml:"sdd"`
 	MCP         *fileMCP         `toml:"mcp"`
 	Snapshots   *fileSnapshots   `toml:"snapshots"`
 	TUI         *fileTUI         `toml:"tui"`
@@ -464,15 +481,18 @@ type configFile struct {
 }
 
 type agentProfileConfig struct {
-	Router           string `toml:"router"`
-	Knowledge        string `toml:"knowledge"`
-	Summarizer       string `toml:"summarizer"`
-	RepoScout        string `toml:"repo_scout"`
-	Tester           string `toml:"tester"`
-	Planner          string `toml:"planner"`
-	Implementer      string `toml:"implementer"`
-	Reviewer         string `toml:"reviewer"`
-	SecurityReviewer string `toml:"security_reviewer"`
+	Router            string `toml:"router"`
+	Knowledge         string `toml:"knowledge"`
+	Summarizer        string `toml:"summarizer"`
+	RepoScout         string `toml:"repo_scout"`
+	Tester            string `toml:"tester"`
+	Planner           string `toml:"planner"`
+	Implementer       string `toml:"implementer"`
+	Reviewer          string `toml:"reviewer"`
+	SecurityReviewer  string `toml:"security_reviewer"`
+	SDDImplementer    string `toml:"sdd_implementer"`
+	SDDReviewer       string `toml:"sdd_reviewer"`
+	SDDBranchReviewer string `toml:"sdd_branch_reviewer"`
 }
 
 func Default() Config {
@@ -547,6 +567,12 @@ func Default() Config {
 				MaxTotalTokens: 120000,
 				ToolIters:      map[string]int{},
 			},
+		},
+		SDD: SDDConfig{
+			AutoWorktree:   true,
+			MaxFixRounds:   3,
+			MaxTotalTokens: 0,
+			PlansDir:       ".marshal/plans",
 		},
 		Web: WebConfig{
 			Enabled:      false,
@@ -686,6 +712,15 @@ func profileFromConfig(name string, in agentProfileConfig) routing.AgentProfile 
 	}
 	if in.SecurityReviewer != "" {
 		roles[routing.RoleSecurityReviewer] = in.SecurityReviewer
+	}
+	if in.SDDImplementer != "" {
+		roles[routing.RoleSDDImplementer] = in.SDDImplementer
+	}
+	if in.SDDReviewer != "" {
+		roles[routing.RoleSDDReviewer] = in.SDDReviewer
+	}
+	if in.SDDBranchReviewer != "" {
+		roles[routing.RoleSDDBranchReviewer] = in.SDDBranchReviewer
 	}
 	return routing.AgentProfile{Name: name, Roles: roles}
 }
@@ -915,6 +950,21 @@ func merge(cfg *Config, file configFile) error {
 				cfg.Swarm.Budget.ToolIters = map[string]int{}
 			}
 			cfg.Swarm.Budget.ToolIters[role] = iters
+		}
+	}
+	if file.SDD != nil {
+		s := file.SDD
+		if s.AutoWorktree != nil {
+			cfg.SDD.AutoWorktree = *s.AutoWorktree
+		}
+		if s.MaxFixRounds != nil {
+			cfg.SDD.MaxFixRounds = *s.MaxFixRounds
+		}
+		if s.MaxTotalTokens != nil {
+			cfg.SDD.MaxTotalTokens = *s.MaxTotalTokens
+		}
+		if s.PlansDir != nil {
+			cfg.SDD.PlansDir = *s.PlansDir
 		}
 	}
 	if file.MCP != nil {

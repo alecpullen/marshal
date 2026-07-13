@@ -412,6 +412,23 @@ func TestBuildSystemPromptRepoScoutRole(t *testing.T) {
 	}
 }
 
+func TestSDDRoleAddenda(t *testing.T) {
+	for _, role := range []AgentRole{RoleSDDImplementer, RoleSDDReviewer, RoleSDDBranchReviewer} {
+		msg := BuildSystemPrompt(role, dummyTools(), nil, nil)
+		if !strings.Contains(msg.Content, "SDD") {
+			t.Errorf("role %s: system prompt missing SDD context", role)
+		}
+		addendum, ok := roleAddenda[role]
+		if !ok {
+			t.Errorf("role %s: no addendum in roleAddenda map", role)
+			continue
+		}
+		if len(addendum.allowedActions) == 0 {
+			t.Errorf("role %s: addendum has no allowed actions", role)
+		}
+	}
+}
+
 func TestBaseRulesEncourageEarlyFinal(t *testing.T) {
 	for _, want := range []string{
 		"only to obtain facts",

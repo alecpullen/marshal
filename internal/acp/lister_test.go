@@ -70,6 +70,58 @@ func TestPerCwdListerRealDB(t *testing.T) {
 	}
 }
 
+func TestPerCwdListerDeleteSession(t *testing.T) {
+	root := t.TempDir()
+	absCwd, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+
+	// Seed a real per-cwd DB with a session to delete.
+	if err := os.MkdirAll(filepath.Join(absCwd, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	d, err := db.Open(filepath.Join(absCwd, ".marshal", "marshal.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := d.Migrate(); err != nil {
+		_ = d.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	pid, err := d.GetOrCreateProject(absCwd, "project")
+	if err != nil {
+		_ = d.Close()
+		t.Fatalf("project: %v", err)
+	}
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	if err := d.CreateSession("sess_lister_delete", pid, "Delete Me", t0.Add(time.Hour)); err != nil {
+		_ = d.Close()
+		t.Fatalf("create: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+
+	l := newPerCwdLister()
+	existed, err := l.DeleteSession(context.Background(), absCwd, "sess_lister_delete")
+	if err != nil {
+		t.Fatalf("DeleteSession (first call): %v", err)
+	}
+	if !existed {
+		t.Fatal("existed=false, want true")
+	}
+
+	// Second call must be idempotent (no error, existed=false).
+	existed, err = l.DeleteSession(context.Background(), absCwd, "sess_lister_delete")
+	if err != nil {
+		t.Fatalf("DeleteSession (second call): %v", err)
+	}
+	if existed {
+		t.Fatal("existed=true, want false (idempotent)")
+	}
+}
+
 func TestPerCwdListerFreshCwdReturnsEmpty(t *testing.T) {
 	root := t.TempDir()
 	absCwd, err := filepath.Abs(root)

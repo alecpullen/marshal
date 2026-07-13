@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,6 +66,7 @@ type Model struct {
 	editingCommand bool
 	runner         AgentRunner
 	swarmRunner    AgentRunner
+	sddRunner      AgentRunner
 	ctx            context.Context
 	busy           bool
 	settingsOpen   bool
@@ -215,6 +217,15 @@ func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
 	return func(m *Model) {
 		m.ctx = ctx
 		m.swarmRunner = runner
+	}
+}
+
+// WithSDDRunner configures the TUI to route /sdd <plan-file> and
+// /mode→SDD submissions to the SDD orchestrator.
+func WithSDDRunner(ctx context.Context, runner AgentRunner) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.sddRunner = runner
 	}
 }
 
@@ -401,7 +412,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport lives inside a subtle border frame.
 	m.viewport.SetWidth(max(width-2, 1))
-	m.viewport.SetHeight(max(height-titleBarRows-transcriptBorderRows-m.swarmPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-transcriptBorderRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -496,8 +507,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.switchModelPreset(pm.Value)
 			m.refreshViewport()
 			return m, nil
+		case cmdName == "mode" && pm.Value == "sdd":
+			m.openSDDPlanPicker()
+			m.refreshViewport()
+			return m, nil
 		case cmdName == "mode":
 			return m.dispatchCommand("/" + pm.Value)
+		case cmdName == "sdd-plan":
+			// Close the picker, dispatch /sdd with the picked path.
+			m.pickerModel = nil
+			return m.dispatchCommand("/sdd " + pm.Value)
 		default:
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
@@ -658,6 +677,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.acceptCompletion() {
 				return m, nil
 			}
+			if m.state.PendingApproval() != nil || m.state.PendingQuestion() != nil {
+				break
+			}
+			m.cycleMode(true)
+			return m, nil
+		case "shift+tab":
+			if m.activeCompletionPopup() != nil {
+				return m, nil
+			}
+			if m.state.PendingApproval() != nil || m.state.PendingQuestion() != nil {
+				break
+			}
+			m.cycleMode(false)
+			return m, nil
+		case "alt+m":
+			m.cycleModel(true)
+			return m, nil
+		case "alt+shift+m":
+			m.cycleModel(false)
+			return m, nil
 		case "ctrl+x":
 			// F16 R3: clear the steering queue while the agent is
 			// working. Out-of-band so /clear semantics don't collide.
@@ -940,8 +979,15 @@ func (m Model) browserBarRows() int {
 	return 0
 }
 
+func (m Model) sddPanelRows() int {
+	if m.state.SDDProgress().Active {
+		return sddPanelRows
+	}
+	return 0
+}
+
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-titleBarRows-transcriptBorderRows-m.swarmPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
+	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-transcriptBorderRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -1534,26 +1580,17 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ask":
-		if m.runner != nil {
-			m.runner.SetForceClass("question")
-		}
-		m.forceMode = "ask"
+		m.setMode("ask")
 		m.refreshViewport()
 		return m, nil
 
 	case "edit":
-		if m.runner != nil {
-			m.runner.SetForceClass("edit")
-		}
-		m.forceMode = "edit"
+		m.setMode("edit")
 		m.refreshViewport()
 		return m, nil
 
 	case "auto":
-		if m.runner != nil {
-			m.runner.SetForceClass("")
-		}
-		m.forceMode = ""
+		m.setMode("")
 		m.refreshViewport()
 		return m, nil
 
@@ -1562,6 +1599,10 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			switch v := strings.ToLower(args[0]); v {
 			case "ask", "edit", "auto":
 				return m.dispatchCommand("/" + v)
+			case "sdd":
+				m.openSDDPlanPicker()
+				m.refreshViewport()
+				return m, nil
 			}
 		}
 		m.openPicker("mode", "Interaction mode", "", m.modePickerItems(), "")
@@ -1593,6 +1634,32 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		agentCtx, cancel := context.WithCancel(m.ctx)
 		m.agentCancel = cancel
 		return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.swarmRunner, goal), tickCmd(), spinnerTickCmd())
+
+	case "sdd":
+		planPath := strings.TrimSpace(strings.Join(args, " "))
+		if planPath == "" {
+			m.state.AddMessage(session.RoleSystem, "Usage: /sdd <plan-file>", session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		if m.sddRunner == nil {
+			m.state.AddMessage(session.RoleSystem, "SDD is not available (agent failed to initialise).", session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		if m.busy {
+			return m, nil
+		}
+		if err := m.state.BeginWork(); err != nil {
+			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
+			m.busy = false
+			m.refreshViewport()
+			return m, nil
+		}
+		m.busy = true
+		agentCtx, cancel := context.WithCancel(m.ctx)
+		m.agentCancel = cancel
+		return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.sddRunner, planPath), tickCmd(), spinnerTickCmd())
 
 	case "model":
 		presets := m.state.Config.Models.Presets
@@ -1633,6 +1700,108 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	m.pickerCommand = cmdName
 }
 
+// setMode applies an interaction mode ("ask", "edit", or "" for auto) for
+// the next turn. Shared by the /ask, /edit, /auto, /mode commands and the
+// Tab/Shift+Tab mode-cycling hotkeys.
+func (m *Model) setMode(mode string) {
+	class := mode
+	if mode == "ask" {
+		class = "question"
+	}
+	if m.runner != nil {
+		m.runner.SetForceClass(class) // "" => auto (classifier runs)
+	}
+	m.forceMode = mode
+}
+
+// modeOrder is the canonical cycle order used by Tab/Shift+Tab.
+// "" represents auto (the classifier-driven default).
+var modeOrder = []string{"", "ask", "edit"}
+
+// modeSwitchMessage maps each mode value to the exact confirmation
+// message used by the /ask, /edit, /auto command handlers, so the
+// transcript looks identical whether the user pressed Tab or typed /ask.
+var modeSwitchMessage = map[string]string{
+	"":     "Switched to Auto mode. Agent will classify each turn automatically.",
+	"ask":  "Switched to Ask mode. Agent will answer questions without planning or editing.",
+	"edit": "Switched to Edit mode. Agent will plan and execute changes.",
+}
+
+// cycleMode advances (forward=true) or reverses the interaction mode,
+// wrapping around. It applies the result via setMode and emits the same
+// confirmation message the /<mode> commands use.
+func (m *Model) cycleMode(forward bool) {
+	cur := m.forceMode
+	idx := slices.Index(modeOrder, cur)
+	if idx < 0 {
+		idx = 0
+	}
+	step := 1
+	if !forward {
+		step = -1
+	}
+	next := modeOrder[(idx+step+len(modeOrder))%len(modeOrder)]
+	m.setMode(next)
+	msg, ok := modeSwitchMessage[next]
+	if !ok {
+		msg = fmt.Sprintf("Switched to %s mode.", next)
+	}
+	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+	m.refreshViewport()
+}
+
+// cycleModel advances (forward=true) or reverses the active model preset,
+// wrapping around. Order matches modelPickerItems() (provider then name).
+// Session-only: delegates to switchModelPreset.
+func (m *Model) cycleModel(forward bool) {
+	if m.busy {
+		m.state.AddMessage(session.RoleSystem,
+			"Busy — switch the model after this turn completes.",
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	names := m.sortedPresetNames()
+	if len(names) == 0 {
+		m.state.AddMessage(session.RoleSystem,
+			"No model presets configured. Add one in /settings → Model Presets.",
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	cur := m.state.ActiveRoute().Preset
+	idx := slices.Index(names, cur)
+	if idx < 0 {
+		idx = 0 // legacy/unknown route → start at the first preset
+	}
+	step := 1
+	if !forward {
+		step = -1
+	}
+	target := names[(idx+step+len(names))%len(names)]
+	m.switchModelPreset(target)
+	m.refreshViewport()
+}
+
+// openSDDPlanPicker reads the SDD plans directory, globs for *.md files,
+// and opens a picker for the user to choose a plan to run.
+func (m *Model) openSDDPlanPicker() {
+	plansDir := m.state.Config.SDD.PlansDir
+	var items []picker.Item
+	matches, _ := filepath.Glob(filepath.Join(m.state.WorkingDir, plansDir, "*.md"))
+	for _, path := range matches {
+		name := filepath.Base(path)
+		items = append(items, picker.Item{Label: name, Detail: path, Value: path})
+	}
+	if len(items) == 0 {
+		items = append(items, picker.Item{Label: "No plans found — generate one", Detail: "run the planner first", Value: "generate"})
+	}
+	p := picker.New("Pick a plan", "SDD workflow", items)
+	p.SetAllowCustom(true)
+	m.pickerModel = p
+	m.pickerCommand = "sdd-plan"
+}
+
 // switchModelPreset applies a session-only model switch by routing every
 // role of a synthetic "switched" profile at the preset. Nothing is written
 // to config files; /settings owns persistence.
@@ -1664,8 +1833,10 @@ func (m *Model) switchModelPreset(presetName string) {
 	}
 }
 
-// modelPickerItems builds sorted picker items from configured model presets.
-func (m *Model) modelPickerItems() []picker.Item {
+// sortedPresetNames returns model preset names sorted by provider then name,
+// matching the order used by modelPickerItems. Shared by the model picker and
+// the Alt+M hotkey so they stay in lock-step.
+func (m *Model) sortedPresetNames() []string {
 	presets := m.state.Config.Models.Presets
 	names := make([]string, 0, len(presets))
 	for n := range presets {
@@ -1678,6 +1849,13 @@ func (m *Model) modelPickerItems() []picker.Item {
 		}
 		return names[i] < names[j]
 	})
+	return names
+}
+
+// modelPickerItems builds sorted picker items from configured model presets.
+func (m *Model) modelPickerItems() []picker.Item {
+	presets := m.state.Config.Models.Presets
+	names := m.sortedPresetNames()
 	current := m.state.ActiveRoute().Preset
 	items := make([]picker.Item, 0, len(names))
 	for _, n := range names {
@@ -1747,7 +1925,7 @@ func (m *Model) branchesPickerItems() []picker.Item {
 	return items
 }
 
-// modePickerItems builds picker items for the three interaction modes.
+// modePickerItems builds picker items for the interaction modes.
 // The current mode (or "auto" when forceMode is empty) carries a "● now" badge.
 func (m *Model) modePickerItems() []picker.Item {
 	current := m.forceMode // "ask", "edit", or "" (auto)
@@ -1761,6 +1939,7 @@ func (m *Model) modePickerItems() []picker.Item {
 		{Label: "Ask", Detail: "read-only, no planning", Badge: badge("ask"), Value: "ask"},
 		{Label: "Edit", Detail: "planning + full tools", Badge: badge("edit"), Value: "edit"},
 		{Label: "Auto", Detail: "classify each turn", Badge: badge("auto"), Value: "auto"},
+		{Label: "SDD", Detail: "plan-driven multi-task", Badge: badge("sdd"), Value: "sdd"},
 	}
 }
 

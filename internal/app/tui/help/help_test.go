@@ -14,11 +14,10 @@ func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 func TestFooterIdle(t *testing.T) {
 	out := stripANSI(Footer(FooterHints{}))
-	if !strings.Contains(out, "Enter") || !strings.Contains(out, "?") || !strings.Contains(out, "/") {
-		t.Fatalf("idle footer missing core hints: %q", out)
-	}
-	if strings.Contains(out, "cancel queued") {
-		t.Fatalf("idle footer should not show busy-only hints: %q", out)
+	for _, want := range []string{"Tab", "Alt+M", "?", "/", "@"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("idle footer missing %q: %q", want, out)
+		}
 	}
 }
 

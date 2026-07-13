@@ -13,13 +13,16 @@ import (
 type AgentRole string
 
 const (
-	RoleGeneral     AgentRole = "general"
-	RolePlanner     AgentRole = "planner"
-	RoleImplementer AgentRole = "implementer"
-	RoleTester      AgentRole = "tester"
-	RoleReviewer    AgentRole = "reviewer"
-	RoleRepoScout   AgentRole = "repo_scout"
-	RoleSubtask     AgentRole = "subtask"
+	RoleGeneral           AgentRole = "general"
+	RolePlanner           AgentRole = "planner"
+	RoleImplementer       AgentRole = "implementer"
+	RoleTester            AgentRole = "tester"
+	RoleReviewer          AgentRole = "reviewer"
+	RoleRepoScout         AgentRole = "repo_scout"
+	RoleSubtask           AgentRole = "subtask"
+	RoleSDDImplementer    AgentRole = "sdd_implementer"
+	RoleSDDReviewer       AgentRole = "sdd_reviewer"
+	RoleSDDBranchReviewer AgentRole = "sdd_branch_reviewer"
 )
 
 type rolePrompt struct {
@@ -63,6 +66,21 @@ var roleAddenda = map[AgentRole]rolePrompt{
 		focus:          "You are running an ad-hoc read-only subtask delegated by the parent agent. You only have read-only and network tools (file.read, repo.search, web.fetch, etc.). You MUST NOT attempt to write, modify, patch, or run arbitrary commands. You also MUST NOT prompt the user (ask_user is unavailable in your role). Produce a concise final answer describing what you found; the parent agent will use your summary to continue the main task.",
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Confirm the symbol exists before reporting.", "action": {"type": "tool_call", "tool": "symbols.find", "args": {"query": "Parse"}}}`,
+	},
+	RoleSDDImplementer: {
+		focus:          "You are an SDD implementer. Implement exactly the task brief specifies. Follow TDD. After implementing, self-review, then write a full report to the report file and return only your status, commits, one-line test summary, and concerns.",
+		allowedActions: []string{"tool_call", "patch", "final"},
+		example:        `{"rationale": "Read the task brief first.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "task-1-brief.md"}}}`,
+	},
+	RoleSDDReviewer: {
+		focus:          "You are an SDD task reviewer. Verify the implementation matches its requirements (spec compliance) and is well-built (code quality). Read the task brief, the implementer's report, and the diff file. Return two verdicts: spec compliance and task quality.",
+		allowedActions: []string{"tool_call", "final"},
+		example:        `{"rationale": "Read the diff file to verify the change.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "review-abc123..def456.diff"}}}`,
+	},
+	RoleSDDBranchReviewer: {
+		focus:          "You are the SDD branch reviewer — the merge gate. You see the full branch diff plus the full plan. Judge cross-task integration, whole-plan coverage, and architecture. Trust per-task reviews; your value is what they cannot see.",
+		allowedActions: []string{"tool_call", "final"},
+		example:        `{"rationale": "Read the full plan to check coverage.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "feature-plan.md"}}}`,
 	},
 }
 

@@ -11,7 +11,7 @@ import (
 func TestPreToolUseBlockDecision(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "hook.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' '{\"decision\":\"block\",\"reason\":\"no patches\"}'\n"), 0755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"decision\":\"block\",\"reason\":\"no patches\"}'\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "file.write_patch", Command: script, TimeoutMS: 5000}}})
@@ -24,10 +24,28 @@ func TestPreToolUseBlockDecision(t *testing.T) {
 	}
 }
 
+func TestPreToolUseStable(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		dir := t.TempDir()
+		script := filepath.Join(dir, "hook.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"decision\":\"block\",\"reason\":\"no patches\"}'\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "file.write_patch", Command: script, TimeoutMS: 5000}}})
+		out, err := r.RunPreToolUse(context.Background(), PreToolUseInput{ToolName: "file.write_patch", Args: json.RawMessage(`{"patch":"x"}`)})
+		if err != nil {
+			t.Fatalf("iter %d: RunPreToolUse() error = %v", i, err)
+		}
+		if out.Decision != DecisionBlock || out.Reason != "no patches" {
+			t.Fatalf("iter %d: out = %+v", i, out)
+		}
+	}
+}
+
 func TestPreToolUseRewriteDecision(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "hook.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' '{\"rewrite\":{\"command\":\"go test ./...\"}}'\n"), 0755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"rewrite\":{\"command\":\"go test ./...\"}}'\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "shell.run", Command: script, TimeoutMS: 5000}}})
@@ -62,7 +80,7 @@ func TestHookScrubSecretEnv(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin:/bin")
 	dir := t.TempDir()
 	script := filepath.Join(dir, "hook.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nif env | grep -qE 'MARSHAL_TEST_(SECRET_KEY|OPENAI_API_KEY)'; then\n  printf '%s' '{\"decision\":\"block\",\"reason\":\"secret visible\"}'\nfi\n"), 0755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif env | grep -qE 'MARSHAL_TEST_(SECRET_KEY|OPENAI_API_KEY)'; then\n  printf '%s\\n' '{\"decision\":\"block\",\"reason\":\"secret visible\"}'\nfi\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "shell.run", Command: script, TimeoutMS: 2000}}})
@@ -98,7 +116,7 @@ func TestHookOutputCapPreventsOOM(t *testing.T) {
 func TestTurnEndContinuePropagated(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "hook.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' '{\"continue\":true,\"message\":\"Check tests before final.\"}'\n"), 0755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"continue\":true,\"message\":\"Check tests before final.\"}'\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	r := NewRunner(Config{Entries: []HookEntry{{Event: EventTurnEnd, Command: script, TimeoutMS: 1000}}})

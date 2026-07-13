@@ -8,7 +8,7 @@ import (
 )
 
 func TestLookupPresetKnownNames(t *testing.T) {
-	for _, name := range []string{"dracula", "nord", "catppuccin-mocha", "Catppuccin Mocha"} {
+	for _, name := range []string{"warm-sunset", "dracula", "nord", "catppuccin-mocha", "Catppuccin Mocha"} {
 		th, ok := LookupPreset(name)
 		if !ok {
 			t.Errorf("LookupPreset(%q) returned ok=false, want true", name)
@@ -45,7 +45,6 @@ func TestOverridesApplySlot(t *testing.T) {
 	}
 	got := ov.Apply(base)
 
-	// Overridden slots reflect the override value.
 	wantAccent := parseHexMust("#FF00FF")
 	if got.AccentPrimary != wantAccent {
 		t.Errorf("AccentPrimary = %#v, want %#v", got.AccentPrimary, wantAccent)
@@ -55,7 +54,6 @@ func TestOverridesApplySlot(t *testing.T) {
 		t.Errorf("FGDefault = %#v, want %#v", got.FGDefault, wantFG)
 	}
 
-	// Non-overridden slots keep the preset value.
 	if got.FGMuted != base.FGMuted {
 		t.Errorf("FGMuted changed from %#v to %#v", base.FGMuted, got.FGMuted)
 	}
@@ -113,6 +111,12 @@ func TestParseHexInvalidErrors(t *testing.T) {
 		"-1",
 		"256",
 		"abcxyz",
+		"+1",
+		"-0",
+		"  123  ",
+		" 123",
+		"123 ",
+		"",
 	}
 	for _, s := range invalid {
 		_, err := parseHex(s)
@@ -122,7 +126,6 @@ func TestParseHexInvalidErrors(t *testing.T) {
 	}
 }
 
-// parseHexMust is a test helper that panics on error.
 func parseHexMust(s string) color.Color {
 	c, err := parseHex(s)
 	if err != nil {

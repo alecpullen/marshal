@@ -61,9 +61,10 @@ func noopCancel() TurnCanceller {
 
 // fakeLister implements SessionLister for testing.
 type fakeLister struct {
-	entries    []db.SessionEntry
-	nextCursor string
-	err        error
+	entries       []db.SessionEntry
+	nextCursor    string
+	err           error
+	deleteExisted bool
 }
 
 func (f *fakeLister) ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error) {
@@ -71,6 +72,13 @@ func (f *fakeLister) ListSessions(ctx context.Context, cwd, cursor string, limit
 		return nil, "", f.err
 	}
 	return f.entries, f.nextCursor, nil
+}
+
+func (f *fakeLister) DeleteSession(ctx context.Context, cwd, sessionID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.deleteExisted, nil
 }
 
 func TestSessionLifecycleValidation(t *testing.T) {
@@ -121,6 +129,11 @@ func TestSessionLifecycleValidation(t *testing.T) {
 		{"resume non-empty mcpServers", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[{"name":"x"}]}`, invalidParams},
 		{"resume additional directories over cap", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/a","/b","/c","/d","/e","/f","/g","/h","/i"]}`, invalidParams},
 		{"resume additional directories relative path", "resume", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["relative/path"]}`, invalidParams},
+		{"delete missing cwd", "delete", `{"sessionId":"sess_x","mcpServers":[]}`, invalidParams},
+		{"delete relative cwd", "delete", `{"cwd":"relative/path","sessionId":"sess_x","mcpServers":[]}`, invalidParams},
+		{"delete missing sessionId", "delete", `{"cwd":"` + absCwd + `","mcpServers":[]}`, invalidParams},
+		{"delete non-empty mcpServers", "delete", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[{"name":"x"}]}`, invalidParams},
+		{"delete non-empty additional directories", "delete", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/tmp/extra"]}`, invalidParams},
 	}
 
 	for _, tc := range cases {
@@ -778,6 +791,97 @@ func TestSessionListProjectsFromLister(t *testing.T) {
 	}
 	if _, hasNext := obj["nextCursor"]; hasNext {
 		t.Fatalf("unexpected nextCursor: %+v", obj["nextCursor"])
+	}
+}
+
+func TestSessionDeleteWithLoadedRuntime(t *testing.T) {
+	var idSeq atomic.Int64
+	var closeCount atomic.Int64
+	starter := fakeRuntimeStart(&idSeq, nil)
+	closer := func(ctx context.Context, rt *app.Runtime) error {
+		closeCount.Add(1)
+		return nil
+	}
+	canceller := func(ctx context.Context, id string) error { return nil }
+
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: starter,
+		CloseRuntime: closer,
+		Notify:       func(method string, params any) error { return nil },
+		Lister:       &fakeLister{deleteExisted: true},
+	})
+	m.SetTurnCanceller(canceller)
+
+	if _, err := m.Create(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","mcpServers":[]}`)); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sessID := "sess_1"
+	if _, ok := m.Get(sessID); !ok {
+		t.Fatalf("expected runtime for %s", sessID)
+	}
+
+	res, err := m.Delete(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"`+sessID+`","mcpServers":[]}`))
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	obj, ok := res.(map[string]any)
+	if !ok || len(obj) != 0 {
+		t.Fatalf("result = %v (type %T), want empty map", res, res)
+	}
+	if _, ok := m.Get(sessID); ok {
+		t.Fatalf("runtime still reachable after Delete")
+	}
+	if got := closeCount.Load(); got != 1 {
+		t.Fatalf("closer called %d times, want 1", got)
+	}
+}
+
+func TestSessionDeleteWithoutLoadedRuntime(t *testing.T) {
+	canceller := func(ctx context.Context, id string) error { return nil }
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: noopClose(),
+		Notify:       func(method string, params any) error { return nil },
+		Lister:       &fakeLister{deleteExisted: true},
+	})
+	m.SetTurnCanceller(canceller)
+
+	res, err := m.Delete(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_orphan","mcpServers":[]}`))
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	obj, ok := res.(map[string]any)
+	if !ok || len(obj) != 0 {
+		t.Fatalf("result = %v (type %T), want empty map", res, res)
+	}
+}
+
+func TestSessionDeleteUnknownIdReturnsServerError(t *testing.T) {
+	canceller := func(ctx context.Context, id string) error { return nil }
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: noopClose(),
+		Notify:       func(method string, params any) error { return nil },
+		Lister:       &fakeLister{deleteExisted: false},
+	})
+	m.SetTurnCanceller(canceller)
+
+	_, err := m.Delete(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_nonexistent","mcpServers":[]}`))
+	if err == nil {
+		t.Fatalf("expected error for unknown session")
+	}
+	var rpcErr *jsonRPCError
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("error is not jsonRPCError: %v", err)
+	}
+	if rpcErr.Code != serverError {
+		t.Fatalf("code = %d, want %d", rpcErr.Code, serverError)
 	}
 }
 

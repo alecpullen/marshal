@@ -56,13 +56,17 @@ func TestViewContainsFooter(t *testing.T) {
 	}
 }
 
-func TestTranscriptIsBorderless(t *testing.T) {
+func TestTranscriptHasTitledBorder(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m.refreshViewport()
 	transcript := m.renderTranscriptFrame()
-	if strings.Contains(transcript, "╭") || strings.Contains(transcript, "╰") {
-		t.Fatalf("transcript should have no rounded border:\n%s", transcript)
+	plain := stripANSI(transcript)
+	if !strings.Contains(plain, "╭") || !strings.Contains(plain, "╰") {
+		t.Fatalf("transcript should have a rounded border:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Conversation") {
+		t.Fatalf("transcript border should embed the title \"Conversation\":\n%s", plain)
 	}
 }
 
@@ -157,9 +161,9 @@ func TestTitleBarShowsWorkingDir(t *testing.T) {
 func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	if m.viewport.Width() != 98 {
-		t.Fatalf("viewport.Width = %d, want 98 (width-2, borderless transcript)", m.viewport.Width())
+		t.Fatalf("viewport.Width = %d, want 98 (width-2, border accounts for it)", m.viewport.Width())
 	}
-	wantHeight := 30 - titleBarRows - transcriptFrameRows - m.inputAreaRows() - footerRows - statusLineRows
+	wantHeight := 30 - titleBarRows - transcriptBorderRows - m.inputAreaRows() - footerRows - statusLineRows
 	if m.viewport.Height() != wantHeight {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
 	}

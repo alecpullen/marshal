@@ -27,6 +27,7 @@ const (
 	inputBorderRows     = 2
 	activityStripRows   = 1
 	transcriptFrameRows  = 0
+	transcriptBorderRows = 2
 	footerRows          = help.Rows
 	statusLineRows      = 1
 	completionPopupMax  = 8
@@ -115,19 +116,16 @@ func (m Model) renderTitleBar(width int) string {
 }
 
 func (m Model) renderTranscriptFrame() string {
+	innerW := max(m.width-2, 1)
+	innerH := m.viewport.Height()
+	title := "Conversation"
+	content := m.viewport.View()
 	if !m.viewportFollow && m.viewport.TotalLineCount() > m.viewport.Height() {
 		hint := mutedStyle.Render("↑ scrolled — End to follow")
-		vpHeight := max(m.viewport.Height()-1, 1)
-		vpView := lipgloss.NewStyle().
-			Width(max(m.width-2, 1)).
-			Height(vpHeight).
-			Render(m.viewport.View())
-		return lipgloss.JoinVertical(lipgloss.Left, hint, vpView)
+		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
+		innerH = max(innerH-1, 1)
 	}
-	return lipgloss.NewStyle().
-		Width(max(m.width-2, 1)).
-		Height(max(m.viewport.Height(), 1)).
-		Render(m.viewport.View())
+	return chrome.Panel(title, content, innerW, innerH+transcriptBorderRows, true, activeTheme)
 }
 
 func (m Model) renderInputArea() string {

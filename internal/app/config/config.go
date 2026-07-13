@@ -27,6 +27,7 @@ type Config struct {
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
+	TUI           TUIConfig                             `toml:"tui"`
 	Permissions   PermissionsConfig                     `toml:"permissions"`
 	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
 	Hooks         HooksConfig                           `toml:"hooks"`
@@ -93,6 +94,11 @@ type SnapshotsConfig struct {
 	Enabled       bool `toml:"enabled"`
 	RetentionDays int  `toml:"retention_days"`
 	MaxFileBytes  int  `toml:"max_file_bytes"`
+}
+
+type TUIConfig struct {
+	Theme   string            `toml:"theme"`
+	Palette map[string]string `toml:"palette"`
 }
 
 type PermissionsConfig struct {
@@ -370,6 +376,11 @@ type fileSnapshots struct {
 	MaxFileBytes  *int  `toml:"max_file_bytes"`
 }
 
+type fileTUI struct {
+	Theme   *string           `toml:"theme"`
+	Palette map[string]string `toml:"palette"`
+}
+
 type filePermissions struct {
 	Rules []PermissionRule `toml:"rules"`
 }
@@ -410,6 +421,7 @@ type configFile struct {
 	Swarm       *fileSwarm       `toml:"swarm"`
 	MCP         *fileMCP         `toml:"mcp"`
 	Snapshots   *fileSnapshots   `toml:"snapshots"`
+	TUI         *fileTUI         `toml:"tui"`
 	Permissions *filePermissions `toml:"permissions"`
 	Diagnostics *fileDiagnostics `toml:"diagnostics"`
 	Hooks       *fileHooks       `toml:"hooks"`
@@ -898,6 +910,19 @@ func merge(cfg *Config, file configFile) error {
 		}
 		if file.Snapshots.MaxFileBytes != nil {
 			cfg.Snapshots.MaxFileBytes = *file.Snapshots.MaxFileBytes
+		}
+	}
+	if file.TUI != nil {
+		if file.TUI.Theme != nil {
+			cfg.TUI.Theme = *file.TUI.Theme
+		}
+		if file.TUI.Palette != nil {
+			if cfg.TUI.Palette == nil {
+				cfg.TUI.Palette = map[string]string{}
+			}
+			for k, v := range file.TUI.Palette {
+				cfg.TUI.Palette[k] = v
+			}
 		}
 	}
 	if file.Permissions != nil && file.Permissions.Rules != nil {

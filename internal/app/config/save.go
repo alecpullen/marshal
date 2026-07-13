@@ -122,6 +122,18 @@ func SaveProjectConfig(path string, cfg Config) error {
 			SearchKey:      ptr(cfg.Web.SearchKey),
 		}
 	}
+	if file.Desktop != nil || !reflect.DeepEqual(cfg.Desktop, def.Desktop) {
+		file.Desktop = &fileDesktop{
+			Enabled:          ptr(cfg.Desktop.Enabled),
+			Mode:             ptr(cfg.Desktop.Mode),
+			Headless:         ptr(cfg.Desktop.Headless),
+			CDPURL:           ptr(cfg.Desktop.CDPURL),
+			URLAllowlist:     cfg.Desktop.URLAllowlist,
+			URLDenylist:      cfg.Desktop.URLDenylist,
+			DefaultTimeout:   ptr(cfg.Desktop.DefaultTimeout.String()),
+			ScreenshotFormat: ptr(cfg.Desktop.ScreenshotFormat),
+		}
+	}
 	if file.Swarm != nil || !reflect.DeepEqual(cfg.Swarm, def.Swarm) {
 		file.Swarm = &fileSwarm{Budget: &fileSwarmBudget{
 			MaxFixRounds:   ptr(cfg.Swarm.Budget.MaxFixRounds),

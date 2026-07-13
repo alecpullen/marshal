@@ -126,6 +126,87 @@ func TestParseHexInvalidErrors(t *testing.T) {
 	}
 }
 
+func TestLookupPresetLightVariants(t *testing.T) {
+	for _, name := range []string{"warm-sunset-light", "dracula-light", "nord-light", "catppuccin-latte"} {
+		th, ok := LookupPreset(name)
+		if !ok {
+			t.Errorf("LookupPreset(%q) returned ok=false, want true", name)
+		}
+		if th.AccentPrimary == nil {
+			t.Errorf("LookupPreset(%q).AccentPrimary is nil", name)
+		}
+	}
+}
+
+func TestLightVariantsAreDistinctFromDark(t *testing.T) {
+	pairs := []struct {
+		dark  string
+		light string
+	}{
+		{"warm-sunset", "warm-sunset-light"},
+		{"dracula", "dracula-light"},
+		{"nord", "nord-light"},
+		{"catppuccin-mocha", "catppuccin-latte"},
+	}
+	for _, p := range pairs {
+		dark, darkOK := LookupPreset(p.dark)
+		light, lightOK := LookupPreset(p.light)
+		if !darkOK {
+			t.Errorf("LookupPreset(%q) returned ok=false, want true", p.dark)
+		}
+		if !lightOK {
+			t.Errorf("LookupPreset(%q) returned ok=false, want true", p.light)
+		}
+		if darkOK && lightOK && dark.BGBase == light.BGBase {
+			t.Errorf("BGBase for %q (%#v) and %q (%#v) are equal, want distinct", p.dark, dark.BGBase, p.light, light.BGBase)
+		}
+	}
+}
+
+func TestOverridesApplyToLightVariant(t *testing.T) {
+	base, ok := LookupPreset("catppuccin-latte")
+	if !ok {
+		t.Fatal("LookupPreset(\"catppuccin-latte\") returned ok=false")
+	}
+	ov := PaletteOverrides{
+		"accent_primary": "#00FF00",
+		"fg_default":     "99",
+	}
+	got := ov.Apply(base)
+
+	wantAccent := parseHexMust("#00FF00")
+	if got.AccentPrimary != wantAccent {
+		t.Errorf("AccentPrimary = %#v, want %#v", got.AccentPrimary, wantAccent)
+	}
+	wantFG := parseHexMust("99")
+	if got.FGDefault != wantFG {
+		t.Errorf("FGDefault = %#v, want %#v", got.FGDefault, wantFG)
+	}
+	if got.FGMuted != base.FGMuted {
+		t.Errorf("FGMuted changed from %#v to %#v", base.FGMuted, got.FGMuted)
+	}
+	if got.AccentSecondary != base.AccentSecondary {
+		t.Errorf("AccentSecondary changed from %#v to %#v", base.AccentSecondary, got.AccentSecondary)
+	}
+}
+
+func TestModeIsPartOfPresetName(t *testing.T) {
+	lightNames := []string{"warm-sunset-light", "dracula-light", "nord-light", "catppuccin-latte"}
+	for _, name := range lightNames {
+		_, ok := LookupPreset(name)
+		if !ok {
+			t.Errorf("LookupPreset(%q) returned ok=false, want true", name)
+		}
+	}
+	darkNames := []string{"warm-sunset", "dracula", "nord", "catppuccin-mocha", "Catppuccin Mocha"}
+	for _, name := range darkNames {
+		_, ok := LookupPreset(name)
+		if !ok {
+			t.Errorf("LookupPreset(%q) returned ok=false, want true", name)
+		}
+	}
+}
+
 func parseHexMust(s string) color.Color {
 	c, err := parseHex(s)
 	if err != nil {

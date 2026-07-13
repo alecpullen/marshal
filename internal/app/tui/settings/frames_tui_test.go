@@ -100,6 +100,63 @@ func TestInterfaceFrameThemeOptionsMatchNames(t *testing.T) {
 	}
 }
 
+func TestInterfaceFrameHasModeEnum(t *testing.T) {
+	s := newState(config.Default())
+	ps := newPaneStack(interfaceFrame(s))
+	ps.SetSize(60, 20)
+
+	found := false
+	for _, row := range ps.top().list.Rows() {
+		if row.title == "Mode" {
+			found = true
+			if row.kind != kindEnum {
+				t.Fatalf("Mode row kind = %d, want kindEnum (%d)", row.kind, kindEnum)
+			}
+			opts := row.options()
+			expected := []string{"dark", "light"}
+			if len(opts) != len(expected) {
+				t.Fatalf("Mode enum has %d options, want %d", len(opts), len(expected))
+			}
+			for i, exp := range expected {
+				if opts[i] != exp {
+					t.Errorf("Mode option[%d] = %q, want %q", i, opts[i], exp)
+				}
+			}
+			if row.getStr() != "" {
+				t.Errorf("Mode getStr = %q, want empty string from default config", row.getStr())
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("interfaceFrame should have a 'Mode' row")
+	}
+}
+
+func TestInterfaceFrameModeSetterWritesToConfig(t *testing.T) {
+	s := newState(config.Default())
+	ps := newPaneStack(interfaceFrame(s))
+	ps.SetSize(60, 20)
+
+	var modeField *field
+	for _, row := range ps.top().list.Rows() {
+		if row.title == "Mode" {
+			modeField = row
+			break
+		}
+	}
+	if modeField == nil {
+		t.Fatal("interfaceFrame should have a 'Mode' row")
+	}
+
+	if err := modeField.setStr("light"); err != nil {
+		t.Fatalf("Mode setStr returned error: %v", err)
+	}
+	if s.cfg.TUI.Mode != "light" {
+		t.Fatalf("cfg.TUI.Mode = %q, want %q", s.cfg.TUI.Mode, "light")
+	}
+}
+
 func TestInterfaceFrameCycleViaArrows(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(interfaceFrame(s))

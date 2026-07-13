@@ -99,6 +99,7 @@ type SnapshotsConfig struct {
 type TUIConfig struct {
 	Theme   string            `toml:"theme"`
 	Palette map[string]string `toml:"palette"`
+	Mode    string            `toml:"mode"`
 }
 
 type PermissionsConfig struct {
@@ -384,6 +385,7 @@ type fileSnapshots struct {
 type fileTUI struct {
 	Theme   *string           `toml:"theme"`
 	Palette map[string]string `toml:"palette"`
+	Mode    *string           `toml:"mode"`
 }
 
 type filePermissions struct {
@@ -928,6 +930,9 @@ func merge(cfg *Config, file configFile) error {
 			for k, v := range file.TUI.Palette {
 				cfg.TUI.Palette[k] = v
 			}
+		}
+		if file.TUI.Mode != nil {
+			cfg.TUI.Mode = *file.TUI.Mode
 		}
 	}
 	if file.Permissions != nil && file.Permissions.Rules != nil {

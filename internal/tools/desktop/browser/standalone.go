@@ -66,7 +66,7 @@ func (b *StandaloneBackend) NewPage(ctx context.Context) (PageHandle, error) {
 		page.SetDefaultTimeout(timeoutMs)
 		page.SetDefaultNavigationTimeout(timeoutMs)
 	}
-	return &standalonePage{page: page, ctx: pwCtx}, nil
+	return &standalonePage{page: page, ctx: pwCtx, owned: true}, nil
 }
 
 func (b *StandaloneBackend) Close() error {

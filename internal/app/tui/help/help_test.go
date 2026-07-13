@@ -14,7 +14,7 @@ func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 func TestFooterIdle(t *testing.T) {
 	out := stripANSI(Footer(FooterHints{}))
-	if !strings.Contains(out, "Enter") || !strings.Contains(out, "?") || !strings.Contains(out, "/") {
+	if !strings.Contains(out, "Tab") || !strings.Contains(out, "?") || !strings.Contains(out, "/") {
 		t.Fatalf("idle footer missing core hints: %q", out)
 	}
 	if strings.Contains(out, "cancel queued") {

@@ -656,6 +656,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.acceptCompletion() {
 				return m, nil
 			}
+			if m.state.PendingApproval() != nil || m.state.PendingQuestion() != nil {
+				break
+			}
+			m.cycleMode(true)
+			return m, nil
+		case "shift+tab":
+			if m.activeCompletionPopup() != nil {
+				return m, nil
+			}
+			if m.state.PendingApproval() != nil || m.state.PendingQuestion() != nil {
+				break
+			}
+			m.cycleMode(false)
+			return m, nil
 		case "ctrl+x":
 			// F16 R3: clear the steering queue while the agent is
 			// working. Out-of-band so /clear semantics don't collide.

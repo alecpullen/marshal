@@ -797,6 +797,20 @@ palette = { accent_primary = "#ff00ff" }
 	}
 }
 
+func TestTUIModeRoundTrip(t *testing.T) {
+	var cfg Config
+	err := toml.Unmarshal([]byte(`
+[tui]
+mode = "light"
+`), &cfg)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.TUI.Mode != "light" {
+		t.Fatalf("Mode = %q, want light", cfg.TUI.Mode)
+	}
+}
+
 func TestTUIDefaultsAreEmpty(t *testing.T) {
 	cfg := Default()
 	if cfg.TUI.Theme != "" {

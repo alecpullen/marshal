@@ -13,6 +13,7 @@ Example:
 ```toml
 [tui]
 theme = "dracula"
+mode  = "light"        # or "dark" (default)
 palette = { accent_primary = "#bd93f9", fg_default = "#f8f8f2" }
 
 [profile]

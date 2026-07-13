@@ -10,9 +10,9 @@ This document outlines suggested features and expansions for subsequent iteratio
 
 ---
 
-## 2. Visual TUI Themes — SHIPPED (see `docs/13-project-audit-2026-07-11.md`, batch "TUI themes")
+## 2. Visual TUI Themes — SHIPPED (light variants in the "TUI light themes" batch)
 
-Four named themes (`warm-sunset`, `dracula`, `nord`, `catppuccin-mocha`) plus a `[tui]` TOML block for palette overrides ship in the `feature/tui-themes` batch. `NO_COLOR` still forces monochrome. Light themes and auto-detect remain out of scope.
+Four dark themes (`warm-sunset`, `dracula`, `nord`, `catppuccin-mocha`) plus four light variants (`warm-sunset-light`, `dracula-light`, `nord-light`, `catppuccin-latte`). `mode = "light" | "dark"` selects between them. `NO_COLOR` still forces monochrome. Auto-detect (OSC 11) is out of scope.
 
 ---
 

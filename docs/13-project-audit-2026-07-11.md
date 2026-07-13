@@ -303,6 +303,11 @@ on 2026-07-13 as part of the ACP session delete plan. The implementation
 commit range spans `07e6044..d678305` on branch
 `feature/acp-session-delete`.
 
+Resolved findings for the per-MCP-tool safety rules batch were closed
+on 2026-07-13 as part of the per-MCP-tool rules plan. The implementation
+commit range spans `bc4063a..27468ac` on branch
+`feature/mcp-tool-rules`.
+
 ## Implementation batch — ACP session discovery (list/resume)
 
 The remaining ACP session-discovery findings were addressed by the following
@@ -426,3 +431,31 @@ remains a future feature; it would enable `session/delete` without a
 and embedded-context content blocks. The advertised lifecycle set is
 now `sessionCapabilities: { close, list, resume, additionalDirectories,
 delete }`, each as an empty object.
+
+## Implementation batch — per-MCP-tool safety rules
+
+The remaining gap in `docs/11` Feature #3 (per-MCP-tool safety rules)
+was addressed by the following commits on branch `feature/mcp-tool-rules`:
+
+```
+bc4063a feat(policy): allow F4 rules to target specific MCP tools
+27468ac docs(config): document PermissionRule.MCP tool support
+```
+
+### What changed
+
+- `internal/tools/policy/policy.go`: the MCP branch of `Evaluate` now
+  falls through to the F4 rules path after the existing
+  `[mcp.policies]` exact-match and pattern-match checks. A rule whose
+  `permission` field equals the MCP tool name (e.g.
+  `mcp.github.create_issue`) overrides the default confirm fallback;
+  a deny rule wins over an `[mcp.policies]` allow.
+- `PermissionRule.Permission` doc comment now mentions MCP tools.
+
+### Unchanged
+
+- `[mcp.policies]` namespace-prefix match remains the highest-priority
+  check. A user who wants to allow `mcp.github.*` can do so with one
+  entry; a user who wants to deny `mcp.github.delete_repo` specifically
+  can do so with another.
+- The default confirm fallback for unconfigured MCP tools is preserved.

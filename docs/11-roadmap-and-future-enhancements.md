@@ -16,9 +16,14 @@ Four named themes (`warm-sunset`, `dracula`, `nord`, `catppuccin-mocha`) plus a 
 
 ---
 
-## 3. Fine-Grained Safety Policies
-- **Regex Guardrails**: Extend command-level safety checks to support matching arguments or blocking based on regex patterns (e.g., preventing deletions, git resets, or network commands with specific flags).
-- **Tool-Specific confirmation**: Allow defining individual safety rules for specific MCP tools rather than just namespace prefixes.
+## 3. Fine-Grained Safety Policies — SHIPPED (see `docs/13-project-audit-2026-07-11.md`, batch "per-MCP-tool safety rules")
+
+Regex guardrails, hard-coded conservative blocks, and per-tool F4 rules
+ship today. Per-MCP-tool rules are supported via `[[permissions.rules]]`
+with `permission = "mcp.<server>.<tool>"` (e.g. `mcp.github.create_issue`).
+The existing `[mcp.policies]` namespace-prefix match remains as the
+highest-priority check; a per-MCP-tool rule overrides the default
+confirm fallback; deny wins over allow.
 
 ---
 

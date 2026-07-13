@@ -1804,7 +1804,7 @@ var (
 )
 
 func loadTheme(tui config.TUIConfig) {
-	activeTheme = theme.LoadWithConfig(tui.Theme, theme.ModeDark, theme.PaletteOverrides(tui.Palette))
+	activeTheme = theme.LoadWithConfig(tui.Theme, tui.Mode, theme.PaletteOverrides(tui.Palette))
 
 	coralColor = activeTheme.AccentPrimary
 	goldColor = activeTheme.AccentTertiary

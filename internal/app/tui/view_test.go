@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -132,12 +133,33 @@ func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
 	}
 }
 
+func TestViewHasTitleBar(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	view := m.View().Content
+	if !strings.Contains(view, "marshal") {
+		t.Fatalf("view missing title bar brand:\n%s", view)
+	}
+}
+
+func TestTitleBarShowsWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	bar := m.renderTitleBar(m.width)
+	// The base name of the temp dir should appear in the title bar.
+	base := filepath.Base(dir)
+	if !strings.Contains(stripANSI(bar), base) {
+		t.Fatalf("title bar missing working dir base %q:\n%s", base, bar)
+	}
+}
+
 func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	if m.viewport.Width() != 98 {
 		t.Fatalf("viewport.Width = %d, want 98 (width-2, borderless transcript)", m.viewport.Width())
 	}
-	wantHeight := 30 - transcriptFrameRows - m.inputAreaRows() - footerRows - statusLineRows
+	wantHeight := 30 - titleBarRows - transcriptFrameRows - m.inputAreaRows() - footerRows - statusLineRows
 	if m.viewport.Height() != wantHeight {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
 	}

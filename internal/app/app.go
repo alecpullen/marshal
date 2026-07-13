@@ -466,6 +466,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 			BackendFactory: func() (browser.BrowserBackend, error) {
 				return newDesktopBackend(cfg.Desktop)
 			},
+			SessionState: state,
 		}
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {

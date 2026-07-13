@@ -9,9 +9,6 @@ import (
 	"github.com/mxschmitt/playwright-go"
 )
 
-// StandaloneBackend implements BrowserBackend by launching a local Chromium
-// instance via Playwright. The browser and driver are started lazily on the
-// first call to NewPage.
 type StandaloneBackend struct {
 	headless    bool
 	timeout     time.Duration
@@ -21,8 +18,6 @@ type StandaloneBackend struct {
 	startedOnce bool
 }
 
-// NewStandaloneBackend creates a StandaloneBackend. No browser is launched
-// until NewPage is called.
 func NewStandaloneBackend(headless bool, timeout time.Duration) (*StandaloneBackend, error) {
 	return &StandaloneBackend{
 		headless: headless,
@@ -53,8 +48,6 @@ func (b *StandaloneBackend) ensureStarted() error {
 	return nil
 }
 
-// NewPage creates a new browser page. The Playwright driver and Chromium
-// browser are started on the first call to this method.
 func (b *StandaloneBackend) NewPage(ctx context.Context) (PageHandle, error) {
 	if err := b.ensureStarted(); err != nil {
 		return nil, err
@@ -65,6 +58,7 @@ func (b *StandaloneBackend) NewPage(ctx context.Context) (PageHandle, error) {
 	}
 	page, err := pwCtx.NewPage()
 	if err != nil {
+		pwCtx.Close()
 		return nil, fmt.Errorf("new page: %w", err)
 	}
 	if b.timeout > 0 {
@@ -75,8 +69,6 @@ func (b *StandaloneBackend) NewPage(ctx context.Context) (PageHandle, error) {
 	return &standalonePage{page: page, ctx: pwCtx}, nil
 }
 
-// Close shuts down the browser and Playwright driver. Safe to call
-// multiple times.
 func (b *StandaloneBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -101,13 +93,10 @@ func (b *StandaloneBackend) Close() error {
 	return nil
 }
 
-// Mode returns "standalone".
 func (b *StandaloneBackend) Mode() string {
 	return "standalone"
 }
 
-// standalonePage wraps a playwright Page and BrowserContext to implement
-// PageHandle.
 type standalonePage struct {
 	page playwright.Page
 	ctx  playwright.BrowserContext
@@ -152,7 +141,7 @@ func (p *standalonePage) HTML(ctx context.Context, selector string) (string, err
 }
 
 func (p *standalonePage) ReadableText(ctx context.Context) (string, error) {
-	return p.page.InnerHTML("body")
+	return p.page.InnerText("body")
 }
 
 func (p *standalonePage) Click(ctx context.Context, selector string) error {
@@ -209,8 +198,6 @@ func (p *standalonePage) Close() error {
 	return nil
 }
 
-// loadStateFromString converts a load state string to a playwright.LoadState
-// pointer. Defaults to "load" if the string is not recognized.
 func loadStateFromString(state string) *playwright.LoadState {
 	switch state {
 	case "domcontentloaded":

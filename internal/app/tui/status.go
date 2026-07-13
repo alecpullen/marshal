@@ -156,7 +156,23 @@ func (m Model) statusLeftSegments() []statusSeg {
 	if n := m.queuedCount; n > 0 {
 		segs = append(segs, statusSeg{text: statusWarnStyle.Render(fmt.Sprintf("queued %d", n)), priority: 8})
 	}
+
+	if bi := m.state.BrowserInfo(); bi.SessionOpen {
+		segs = append(segs, statusSeg{
+			text:     browserStatusText(bi),
+			priority: 9,
+		})
+	}
 	return segs
+}
+
+func browserStatusText(bi session.BrowserInfo) string {
+	glyph := browserGlyphStyle.Render("🌐")
+	url := truncateURL(bi.URL, 20)
+	if url == "" {
+		url = bi.Mode
+	}
+	return glyph + " " + url
 }
 
 var (

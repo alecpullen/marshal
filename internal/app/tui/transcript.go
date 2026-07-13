@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/diffview"
 	"marshal/internal/tools/registry"
 )
@@ -583,7 +584,17 @@ func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 
 func renderWelcomeBanner(width int) string {
 	dot := lipgloss.NewStyle().Foreground(coralColor).Render("●")
-	title := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")
-	desc := mutedStyle.Render("local-first coding agent")
-	return "  " + dot + " " + title + dimSeparator + desc + "\n\n"
+	brand := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")
+	tagline := mutedStyle.Render("local-first coding agent")
+	cta := mutedStyle.Render("Type a question, or " + lipgloss.NewStyle().Bold(true).Render("/") + " for commands.")
+
+	headline := dot + " " + brand + dimSeparator + tagline
+	body := lipgloss.JoinVertical(lipgloss.Left, headline, "", cta)
+
+	cardW := width
+	if cardW > 48 {
+		cardW = 48
+	}
+	cardH := 5
+	return chrome.Panel("", body, cardW, cardH, true, activeTheme) + "\n"
 }

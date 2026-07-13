@@ -457,15 +457,18 @@ type configFile struct {
 }
 
 type agentProfileConfig struct {
-	Router           string `toml:"router"`
-	Knowledge        string `toml:"knowledge"`
-	Summarizer       string `toml:"summarizer"`
-	RepoScout        string `toml:"repo_scout"`
-	Tester           string `toml:"tester"`
-	Planner          string `toml:"planner"`
-	Implementer      string `toml:"implementer"`
-	Reviewer         string `toml:"reviewer"`
-	SecurityReviewer string `toml:"security_reviewer"`
+	Router            string `toml:"router"`
+	Knowledge         string `toml:"knowledge"`
+	Summarizer        string `toml:"summarizer"`
+	RepoScout         string `toml:"repo_scout"`
+	Tester            string `toml:"tester"`
+	Planner           string `toml:"planner"`
+	Implementer       string `toml:"implementer"`
+	Reviewer          string `toml:"reviewer"`
+	SecurityReviewer  string `toml:"security_reviewer"`
+	SDDImplementer    string `toml:"sdd_implementer"`
+	SDDReviewer       string `toml:"sdd_reviewer"`
+	SDDBranchReviewer string `toml:"sdd_branch_reviewer"`
 }
 
 func Default() Config {
@@ -678,6 +681,15 @@ func profileFromConfig(name string, in agentProfileConfig) routing.AgentProfile 
 	}
 	if in.SecurityReviewer != "" {
 		roles[routing.RoleSecurityReviewer] = in.SecurityReviewer
+	}
+	if in.SDDImplementer != "" {
+		roles[routing.RoleSDDImplementer] = in.SDDImplementer
+	}
+	if in.SDDReviewer != "" {
+		roles[routing.RoleSDDReviewer] = in.SDDReviewer
+	}
+	if in.SDDBranchReviewer != "" {
+		roles[routing.RoleSDDBranchReviewer] = in.SDDBranchReviewer
 	}
 	return routing.AgentProfile{Name: name, Roles: roles}
 }

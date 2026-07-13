@@ -3,17 +3,20 @@ package routing
 type AgentRole string
 
 const (
-	RoleRouter           AgentRole = "router"
-	RoleKnowledge        AgentRole = "knowledge"
-	RoleSummarizer       AgentRole = "summarizer"
-	RoleRepoScout        AgentRole = "repo_scout"
-	RoleTester           AgentRole = "tester"
-	RolePlanner          AgentRole = "planner"
-	RoleImplementer      AgentRole = "implementer"
-	RoleReviewer         AgentRole = "reviewer"
-	RoleSecurityReviewer AgentRole = "security_reviewer"
-	RoleSubtask          AgentRole = "subtask"
-	RoleTitle            AgentRole = "title"
+	RoleRouter            AgentRole = "router"
+	RoleKnowledge         AgentRole = "knowledge"
+	RoleSummarizer        AgentRole = "summarizer"
+	RoleRepoScout         AgentRole = "repo_scout"
+	RoleTester            AgentRole = "tester"
+	RolePlanner           AgentRole = "planner"
+	RoleImplementer       AgentRole = "implementer"
+	RoleReviewer          AgentRole = "reviewer"
+	RoleSecurityReviewer  AgentRole = "security_reviewer"
+	RoleSubtask           AgentRole = "subtask"
+	RoleTitle             AgentRole = "title"
+	RoleSDDImplementer    AgentRole = "sdd_implementer"
+	RoleSDDReviewer       AgentRole = "sdd_reviewer"
+	RoleSDDBranchReviewer AgentRole = "sdd_branch_reviewer"
 )
 
 type ModelPreset struct {

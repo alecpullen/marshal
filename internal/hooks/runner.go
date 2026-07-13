@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,8 +163,11 @@ func runHook(ctx context.Context, command string, payload any) ([]byte, error) {
 		return nil, err
 	}
 
-	stdout := &limitedBuffer{max: maxHookOutputBytes}
-	cmd.Stdout = stdout
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+
 	cmd.Stderr = &limitedBuffer{max: maxHookOutputBytes}
 
 	if err := cmd.Start(); err != nil {
@@ -176,6 +180,9 @@ func runHook(ctx context.Context, command string, payload any) ([]byte, error) {
 		return nil, err
 	}
 	_ = stdin.Close()
+
+	stdout := &limitedBuffer{max: maxHookOutputBytes}
+	_, _ = io.Copy(stdout, stdoutPipe)
 
 	if err := cmd.Wait(); err != nil {
 		return stdout.bytes(), err

@@ -22,6 +22,21 @@ func statusGlyph(status session.SwarmRoleStatus, spinnerFrame string) string {
 	}
 }
 
+// sddPhaseGlyph returns the status symbol for an SDD phase. Mirrors
+// statusGlyph but for SDDPhase values.
+func sddPhaseGlyph(phase session.SDDPhase, spinnerFrame string) string {
+	switch phase {
+	case session.SDDPhaseDone, session.SDDPhaseSkipped:
+		return "✔"
+	case session.SDDPhaseActive:
+		return spinnerFrame
+	case session.SDDPhaseFailed:
+		return "✘"
+	default:
+		return "○"
+	}
+}
+
 func renderSwarmPanel(p session.SwarmProgress, spinnerFrame string, width int) string {
 	if !p.Active {
 		return ""

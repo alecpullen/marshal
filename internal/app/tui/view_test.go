@@ -51,8 +51,12 @@ func TestViewContainsStatusLine(t *testing.T) {
 func TestViewContainsFooter(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	view := m.View().Content
-	if !strings.Contains(view, "send") || !strings.Contains(view, "help") {
-		t.Fatalf("view missing keybinding footer:\n%s", view)
+	// Assert on the full hint labels (not substrings) so a regression that
+	// drops the model hotkey or the help hint cannot silently pass.
+	for _, want := range []string{"Tab", "Alt+M", "model", "help"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing footer hint %q:\n%s", want, view)
+		}
 	}
 }
 
@@ -400,7 +404,7 @@ func TestCommandBarHasTopBorder(t *testing.T) {
 	if !strings.Contains(plain, "─") {
 		t.Fatalf("command bar should have a top border rule:\n%s", plain)
 	}
-	if !strings.Contains(plain, "send") || !strings.Contains(plain, "help") {
+	if !strings.Contains(plain, "command") || !strings.Contains(plain, "help") {
 		t.Fatalf("command bar should still show the keybinding footer:\n%s", plain)
 	}
 }

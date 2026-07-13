@@ -33,9 +33,9 @@ func (wt *Worktree) MergeBase() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// Remove removes the worktree and its branch. Errors are swallowed.
+// Remove removes the worktree directory but keeps the branch (so the user
+// can /merge or /pr). Errors are swallowed.
 func (wt *Worktree) Remove() error {
 	exec.Command("git", "-C", wt.parent, "worktree", "remove", "--force", wt.Path).Run()
-	exec.Command("git", "-C", wt.parent, "branch", "-D", wt.Branch).Run()
 	return nil
 }

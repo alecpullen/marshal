@@ -14,24 +14,51 @@ import (
 )
 
 // writeFakeRuntime creates a script that mimics a container runtime for
-// testing. It ignores all docker/podman flags and executes the argument
-// that follows "-lc" as a shell command.
+// testing. It supports both invocation styles:
+//
+//  1. Shell path — finds -lc and exec's the next arg as /bin/sh -c
+//     (for commands containing shell metacharacters).
+//  2. Argv path — finds the container image (first positional arg) and
+//     exec's everything after it as argv
+//     (for shell-free commands invoked directly).
 func writeFakeRuntime(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-runtime")
 	content := `#!/bin/sh
-# Fake container runtime: find -lc and exec the next argument.
-found=0
+# Fake container runtime: supports both shell and argv execution.
+# 1. Shell path: find -lc and exec the next arg as /bin/sh -c.
+# 2. Argv path: find the image (first positional arg) then exec
+#    everything after it as argv.
+
+# First pass: look for -lc (shell path).
+prev=
 for arg; do
-    if [ "$found" = "1" ]; then
+    if [ "$prev" = "-lc" ]; then
         exec /bin/sh -c "$arg"
     fi
-    if [ "$arg" = "-lc" ]; then
-        found=1
-    fi
+    prev="$arg"
 done
-# If we get here, no -lc found; exit with error.
+
+# No -lc found: argv path.  Consume docker/podman flags and the
+# image name, then exec the remaining positional args as argv.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --network|--memory|-v|-w|--user|--security-opt|-e)
+            shift 2 ;;
+        --cap-drop=*|--read-only|--rm)
+            shift ;;
+        -*)
+            shift ;;
+        run)
+            shift ;;
+        *)
+            # This is the image; shift it and exec the rest as argv.
+            shift
+            exec "$@"
+            ;;
+    esac
+done
 exit 1
 `
 	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
@@ -42,6 +69,7 @@ exit 1
 
 // writeFakeInfoRuntime creates a script that exits 0 for "info" and
 // otherwise acts as a fake runtime (to pass detectRuntime's probe).
+// Supports both shell and argv execution paths (same as writeFakeRuntime).
 func writeFakeInfoRuntime(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -50,15 +78,30 @@ func writeFakeInfoRuntime(t *testing.T) string {
 if [ "$1" = "info" ]; then
     exit 0
 fi
-# Otherwise, find -lc and exec the next argument.
-found=0
+# Shell path: find -lc and exec the next arg as /bin/sh -c.
+prev=
 for arg; do
-    if [ "$found" = "1" ]; then
+    if [ "$prev" = "-lc" ]; then
         exec /bin/sh -c "$arg"
     fi
-    if [ "$arg" = "-lc" ]; then
-        found=1
-    fi
+    prev="$arg"
+done
+# Argv path: consume flags and image, exec the rest.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --network|--memory|-v|-w|--user|--security-opt|-e)
+            shift 2 ;;
+        --cap-drop=*|--read-only|--rm)
+            shift ;;
+        -*)
+            shift ;;
+        run)
+            shift ;;
+        *)
+            shift
+            exec "$@"
+            ;;
+    esac
 done
 exit 1
 `
@@ -272,5 +315,78 @@ func TestContainerDetectWithFakeInfoRuntime(t *testing.T) {
 	}
 	if sb.Capabilities().Backend != "container" {
 		t.Fatalf("backend = %q, want %q", sb.Capabilities().Backend, "container")
+	}
+}
+
+// TestIsShellFree verifies the isShellFree helper correctly identifies
+// shell metacharacters.  Commands with no shell metacharacters should
+// return true; those with | & ; ` $ ( ) { } < > * ? or newline should
+// return false.
+func TestIsShellFree(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		// Shell-free (should return true)
+		{"echo hello", true},
+		{"ls -la", true},
+		{"cat file.txt", true},
+		{"go build ./...", true},
+		{"go test -run TestFoo", true},
+		{"/usr/bin/env", true},
+		{"git status", true},
+		{"python3 -c \"print(1)\"", false}, // ( and ) are shell metas
+
+		// Shell metacharacters (should return false)
+		{"echo hello | grep h", false},
+		{"echo $HOME", false},
+		{"echo `whoami`", false},
+		{"echo a && echo b", false},
+		{"echo a; echo b", false},
+		{"echo $(whoami)", false},
+		{"echo ${HOME}", false},
+		{"cat < file.txt", false},
+		{"echo *", false},
+		{"echo ?", false},
+		{"echo hello\nworld", false},
+		{"echo a > out.txt", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			if got := isShellFree(tt.command); got != tt.want {
+				t.Errorf("isShellFree(%q) = %v, want %v", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestContainer_AvPathForSimpleCommands verifies that shell-free commands
+// are executed via the argv path (not /bin/sh -lc).  It uses the fake
+// runtime, which only succeeds if its argv-execution path is hit for
+// simple commands.
+func TestContainer_AvPathForSimpleCommands(t *testing.T) {
+	runtimePath := writeFakeRuntime(t)
+
+	c := &Container{
+		cfg:         Config{},
+		runtime:     "fake",
+		runtimePath: runtimePath,
+		envDenySet:  make(map[string]bool),
+	}
+
+	dir := t.TempDir()
+	res, err := c.Run(context.Background(), native.CommandRequest{
+		Command: "echo argv_works",
+		Dir:     dir,
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Container.Run: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "argv_works") {
+		t.Fatalf("stdout = %q, want %q", res.Stdout, "argv_works")
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", res.ExitCode)
 	}
 }

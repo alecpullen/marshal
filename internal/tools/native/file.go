@@ -201,7 +201,13 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 				if !os.IsNotExist(err) {
 					return registry.ToolResult{}, err
 				}
-				// New file creation: original content is empty.
+				// New file creation: verify SEARCH block is empty.
+				for _, chunk := range fp.Chunks {
+					if chunk.Search != "" {
+						return registry.ToolResult{}, fmt.Errorf(
+							"file %s does not exist but patch has a non-empty SEARCH block; use an empty SEARCH block to create a new file", fp.Path)
+					}
+				}
 			} else {
 				original = string(data)
 			}
@@ -226,6 +232,22 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			patched := patch.ApplyPatch(original, fp)
 			if strings.Contains(original, "\r\n") {
 				patched = strings.ReplaceAll(patched, "\n", "\r\n")
+			}
+
+			// F-SAFE-22: TOCTOU re-check — verify file hasn't been modified
+			// between the validate loop and this write. This closes the window
+			// between the fileTracker check in the validate loop and the actual
+			// write. When fileTracker is nil (e.g. no session active) the check
+			// is skipped, which is a known gap.
+			if t.fileTracker != nil {
+				lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
+				if lrErr == nil && hasRead {
+					writeStat, statErr := os.Stat(path)
+					if statErr == nil && writeStat.ModTime().After(lastRead) {
+						return registry.ToolResult{}, fmt.Errorf(
+							"file %s changed on disk since last read; re-read it before editing", fp.Path)
+					}
+				}
 			}
 
 			if err := os.WriteFile(path, []byte(patched), mode); err != nil {

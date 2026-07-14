@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/filetrack"
 	"marshal/internal/tools/registry"
 )
 
@@ -269,5 +270,69 @@ func TestFileWritePatchRollbackIntegration(t *testing.T) {
 	}
 	if info.Mode() != 0755 {
 		t.Fatalf("expected reverted permissions to be 0755, got %v", info.Mode())
+	}
+}
+
+func TestWritePatch_AtomicOnConcurrentModification(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "test.txt")
+	if err := os.WriteFile(filePath, []byte("v1\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// Read the file first to register a read-time in the file tracker.
+	_, err = invokeTool(t, reg, "file.read", `{"path":"test.txt"}`)
+	if err != nil {
+		t.Fatalf("file.read failed: %v", err)
+	}
+
+	// Launch a goroutine that modifies the file concurrently.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(10 * time.Millisecond)
+		if wErr := os.WriteFile(filePath, []byte("v1-modified\n"), 0644); wErr != nil {
+			t.Logf("concurrent write failed: %v", wErr)
+		}
+	}()
+
+	// Give the goroutine time to fire and modify the file before calling
+	// write_patch. The goroutine fires at ~10ms; this sleep ensures it has
+	// already modified the file so the tool's validate loop detects the change.
+	time.Sleep(20 * time.Millisecond)
+
+	// Patch v1 -> v2. The file was modified concurrently so the tool should
+	// reject it with "changed on disk".
+	args := `{"patch": "File: test.txt\n<<<<<<< SEARCH\nv1\n=======\nv2\n>>>>>>> REPLACE"}`
+	_, err = invokeTool(t, reg, "file.write_patch", args)
+
+	<-done // wait for the goroutine to finish
+
+	if err == nil {
+		t.Fatal("expected error for concurrent modification, got nil")
+	}
+	if !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("error should mention 'changed on disk', got: %v", err)
 	}
 }

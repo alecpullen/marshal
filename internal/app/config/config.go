@@ -213,6 +213,12 @@ type SandboxConfig struct {
 	// run the requested sandbox is a hard error, because a downgrade
 	// silently drops network/filesystem containment the user expected.
 	AllowFallback    bool     `toml:"allow_fallback"`
+	// UnsafePassthrough controls whether backend=passthrough may be
+	// selected as the execution backend. Default = false: passthrough
+	// is a hard error unless explicitly opted-in, because it disables
+	// all process isolation (environment scrubbing, cwd confinement,
+	// resource limits) that the restricted and container backends
+	// provide. Set to true only in controlled, trusted environments.
 	UnsafePassthrough bool    `toml:"unsafe_passthrough"`
 	EnvAllowlist     []string `toml:"env_allowlist"`
 	EnvDenylist      []string `toml:"env_denylist"`

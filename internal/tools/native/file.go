@@ -173,6 +173,10 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 
 			data, err := os.ReadFile(path)
 			if err != nil {
+				if os.IsNotExist(err) {
+					// New file creation: no existing content to validate.
+					continue
+				}
 				return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, err)
 			}
 			ok, err := patch.ValidatePatch(string(data), fp)
@@ -192,10 +196,15 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 				return registry.ToolResult{}, err
 			}
 			data, err := os.ReadFile(path)
+			var original string
 			if err != nil {
-				return registry.ToolResult{}, err
+				if !os.IsNotExist(err) {
+					return registry.ToolResult{}, err
+				}
+				// New file creation: original content is empty.
+			} else {
+				original = string(data)
 			}
-			original := string(data)
 
 			info, err := os.Stat(path)
 			var mode os.FileMode = 0644

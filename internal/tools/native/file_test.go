@@ -172,6 +172,38 @@ func TestFileWritePatchTool(t *testing.T) {
 	}
 }
 
+func TestWritePatch_NewFileCreation(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "new.txt")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+
+	// Patch with empty SEARCH block — signals new file creation.
+	args := `{"patch": "File: new.txt\n<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE"}`
+	res, err := invokeTool(t, reg, "file.write_patch", args)
+	if err != nil {
+		t.Fatalf("write_patch failed: %v", err)
+	}
+
+	if res.Summary == "" {
+		t.Fatal("expected non-empty summary")
+	}
+	if !reflect.DeepEqual(res.FilesChanged, []string{"new.txt"}) {
+		t.Fatalf("FilesChanged = %#v, want %#v", res.FilesChanged, []string{"new.txt"})
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read created file failed: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("file content = %q, want %q", string(data), "hello")
+	}
+}
+
 func TestFileWritePatchRollbackIntegration(t *testing.T) {
 	root := t.TempDir()
 	filePath := filepath.Join(root, "app.go")

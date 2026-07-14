@@ -1,4 +1,4 @@
-package settings
+package probe
 
 import (
 	"net/http"
@@ -24,13 +24,13 @@ func TestIsLocalhost(t *testing.T) {
 		{"", false},
 	}
 	for _, c := range cases {
-		if got := isLocalhost(c.url); got != c.want {
-			t.Errorf("isLocalhost(%q) = %v, want %v", c.url, got, c.want)
+		if got := IsLocalhost(c.url); got != c.want {
+			t.Errorf("IsLocalhost(%q) = %v, want %v", c.url, got, c.want)
 		}
 	}
 }
 
-func TestProbeProviderSuccess(t *testing.T) {
+func TestProviderSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
@@ -42,59 +42,52 @@ func TestProbeProviderSuccess(t *testing.T) {
 	defer srv.Close()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	cmd := probeProvider("test.field", "testprov", pc)
-	msg := cmd().(probeResultMsg)
+	msg := Provider("test.field", "testprov", pc)().(ResultMsg)
 
 	if msg.Err != nil {
-		t.Fatalf("probeProvider err = %v", msg.Err)
+		t.Fatalf("Provider err = %v", msg.Err)
 	}
-	if len(msg.Models) != 2 {
-		t.Fatalf("got %d models, want 2", len(msg.Models))
+	if msg.Provider != "testprov" || msg.FieldID != "test.field" {
+		t.Fatalf("ResultMsg identity = %+v", msg)
 	}
-	if msg.Models[0] != "qwen2.5-coder:7b" {
-		t.Fatalf("first model = %q, want qwen2.5-coder:7b", msg.Models[0])
+	if len(msg.Models) != 2 || msg.Models[0] != "qwen2.5-coder:7b" {
+		t.Fatalf("ResultMsg models = %v", msg.Models)
 	}
 }
 
-func TestProbeProviderNon200(t *testing.T) {
+func TestProviderNon200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 	}))
 	defer srv.Close()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	cmd := probeProvider("test.field", "testprov", pc)
-	msg := cmd().(probeResultMsg)
-
+	msg := Provider("test.field", "testprov", pc)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected error for 403 response")
 	}
 }
 
-func TestProbeProviderConnectionRefused(t *testing.T) {
+func TestProviderConnectionRefused(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1"}
-	cmd := probeProvider("test.field", "testprov", pc)
-	msg := cmd().(probeResultMsg)
-
+	msg := Provider("test.field", "testprov", pc)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected error for connection refused")
 	}
 }
 
-func TestProbeProviderTimeout(t *testing.T) {
+func TestProviderTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
 	}))
 	defer srv.Close()
 
-	old := probeTimeout
-	probeTimeout = 200 * time.Millisecond
-	defer func() { probeTimeout = old }()
+	old := Timeout
+	Timeout = 200 * time.Millisecond
+	defer func() { Timeout = old }()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	cmd := probeProvider("test.field", "testprov", pc)
-	msg := cmd().(probeResultMsg)
-
+	msg := Provider("test.field", "testprov", pc)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected timeout error")
 	}

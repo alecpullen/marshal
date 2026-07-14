@@ -83,6 +83,7 @@ func Overlay(width, height int) string {
 		"  Alt+Shift+M    cycle model backward",
 		"  Esc            cancel turn · dismiss popup · deny approval",
 		"  Ctrl+O         settings",
+		"  Ctrl+P         model picker",
 		"  Ctrl+K         memory browser",
 		"  Ctrl+G         toggle thinking",
 		"  Ctrl+R         rollback last change",

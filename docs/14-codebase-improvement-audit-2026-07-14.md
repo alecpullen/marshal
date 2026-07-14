@@ -2127,3 +2127,14 @@ fixes" above).
 
 ### Batch 2 (A3 — workspace path safety): PENDING
 ### Batch 3 (A2 — command classification overhaul): PENDING
+
+### Batch 2 (A3 — workspace path safety): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-SEC-19 | RESOLVED | `repo.search` skips symlinks; walk errors collected |
+| F-SAFE-22 | RESOLVED | `file.write_patch` apply loop re-checks ModTime before write |
+| F-BUG-39 | RESOLVED | `file.write_patch` supports new file creation; non-empty SEARCH rejected |
+| F-SEC-122 | RESOLVED | `resolveWorkspacePath`/`Multi` verify symlink containment |
+| F-SEC-123 | RESOLVED | `repo.search` re-verifies each match via `workspaceRel`; symlinks skipped |
+| F-SEC-102 | RESOLVED | `repo.Scanner` explicitly skips symlinks |

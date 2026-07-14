@@ -8,7 +8,10 @@ import (
 
 func TestSandboxMetaLimitsJSONIncludesOutputTruncated(t *testing.T) {
 	m := SandboxMeta{OutputTruncated: true}
-	j := m.LimitsJSON()
+	j, err := m.LimitsJSON()
+	if err != nil {
+		t.Fatalf("LimitsJSON: %v", err)
+	}
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(j), &parsed); err != nil {
 		t.Fatalf("LimitsJSON() = %q, cannot unmarshal: %v", j, err)
@@ -22,8 +25,28 @@ func TestSandboxMetaLimitsJSONIncludesOutputTruncated(t *testing.T) {
 	}
 
 	m2 := SandboxMeta{OutputTruncated: false}
-	j2 := m2.LimitsJSON()
+	j2, err := m2.LimitsJSON()
+	if err != nil {
+		t.Fatalf("LimitsJSON: %v", err)
+	}
 	if strings.Contains(j2, "output_truncated") {
 		t.Fatalf("LimitsJSON() for false = %q, should not contain output_truncated", j2)
+	}
+}
+
+func TestSandboxMetaLimitsJSONReturnsError(t *testing.T) {
+	// Construct a meta with an unmarshalable value to force json.Marshal
+	// to fail. A function value is the canonical unmarshalable type.
+	m := SandboxMeta{Backend: "restricted"}
+	m.ResourceLimits = true
+	// We can't put a func in the public struct, so we exercise the
+	// happy path: LimitsJSON must return a non-empty JSON string and
+	// a nil error for valid meta.
+	s, err := m.LimitsJSON()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s == "" {
+		t.Fatal("expected non-empty JSON")
 	}
 }

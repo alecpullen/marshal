@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"marshal/internal/tools/registry"
@@ -49,7 +50,16 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 	// alloc + JSON marshal. The column is nullable, so pass nil.
 	var limitsJSON any
 	if event.Sandbox.Enabled {
-		limitsJSON = event.Sandbox.LimitsJSON()
+		s, mErr := event.Sandbox.LimitsJSON()
+		if mErr != nil {
+			// Best-effort: log and persist an empty object. The
+			// audit row should not be lost because of a marshal
+			// failure (which only happens for unmarshalable types
+			// — defensive).
+			log.Printf("tool_calls audit: LimitsJSON marshal failed: %v", mErr)
+			s = "{}"
+		}
+		limitsJSON = s
 	}
 
 	_, err = db.exec(

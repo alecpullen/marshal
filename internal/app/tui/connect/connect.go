@@ -167,8 +167,9 @@ func (m *Model) renderProbing(pw int) string {
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type DoneMsg struct {
-	Provider string
-	Model    string
+	Provider    string
+	Model       string
+	ProviderCfg config.ProviderConfig
 }
 
 type CancelledMsg struct{}
@@ -440,7 +441,9 @@ func (m *Model) runProbe() tea.Cmd {
 }
 
 func (m *Model) done() tea.Cmd {
-	return func() tea.Msg { return DoneMsg{Provider: m.providerName, Model: m.modelChosen} }
+	return func() tea.Msg {
+		return DoneMsg{Provider: m.providerName, Model: m.modelChosen, ProviderCfg: m.providerCfg}
+	}
 }
 
 func (m *Model) uniqueName() string {

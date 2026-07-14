@@ -186,6 +186,16 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
+			Name:        "connect",
+			Description: "Add or reconnect a provider",
+			Handler:     func(state *session.State, args []string) string { return "" },
+		},
+		{
+			Name:        "models",
+			Description: "Pick a model from connected providers",
+			Handler:     func(state *session.State, args []string) string { return "" },
+		},
+		{
 			Name:        "model",
 			Description: "Switch to a model preset by name",
 			Args:        "<preset-name>",

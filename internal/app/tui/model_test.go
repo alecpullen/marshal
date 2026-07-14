@@ -14,6 +14,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
@@ -3343,6 +3344,81 @@ func TestSettingsSaveBlockedDuringBackgroundJob(t *testing.T) {
 	}
 	if m.settingsModel.Footer() != settingsBusyMessage {
 		t.Fatalf("footer = %q, want %q", m.settingsModel.Footer(), settingsBusyMessage)
+	}
+}
+
+// ── Task 5: /connect and /models overlay ──────────────────────────────────
+
+func newTestModel(t *testing.T) Model {
+	t.Helper()
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+	return m
+}
+
+func TestConnectOpensOverlay(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.dispatchCommand("/connect")
+	m = asModel(t, updated)
+	if !m.connectOpen {
+		t.Fatal("/connect should open the connect overlay")
+	}
+}
+
+func TestModelsOpensOverlay(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.dispatchCommand("/models")
+	m = asModel(t, updated)
+	if !m.connectOpen {
+		t.Fatal("/models should open the connect overlay")
+	}
+}
+
+func TestModelsEmptyProvidersShowsAddProvider(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.dispatchCommand("/models")
+	m = asModel(t, updated)
+	if !m.connectOpen || m.connectModel == nil {
+		t.Fatal("/models with no providers should open the connect overlay")
+	}
+	view := stripANSI(m.connectModel.View(80, 24))
+	if !strings.Contains(view, "Connect a provider") {
+		t.Fatalf("no providers should show provider picker, got: %s", view)
+	}
+}
+
+func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
+	m := newTestModel(t)
+	reloaded := false
+	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
+	updated, _ := m.Update(connect.DoneMsg{Provider: "ollama", Model: "qwen2.5-coder:7b", ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"}})
+	if !reloaded {
+		t.Fatal("DoneMsg should call configReloader")
+	}
+	if updated.(Model).state.Config.Agent.Provider != "ollama" || updated.(Model).state.Config.Agent.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("agent cfg not set: %+v", updated.(Model).state.Config.Agent)
+	}
+	if updated.(Model).state.Config.Profile.Default != "" {
+		t.Fatalf("profile default should be cleared, got %q", updated.(Model).state.Config.Profile.Default)
+	}
+	if updated.(Model).connectOpen {
+		t.Fatal("overlay should close after DoneMsg")
+	}
+}
+
+func TestConnectCancelledClosesOverlay(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.dispatchCommand("/connect")
+	m = asModel(t, updated)
+	updated2, _ := m.Update(connect.CancelledMsg{})
+	if updated2.(Model).connectOpen {
+		t.Fatal("CancelledMsg should close the overlay")
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/permissions"
 	"marshal/internal/skills"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -640,6 +641,104 @@ func TestRunnerReevaluatesPolicyAfterEditedArgs(t *testing.T) {
 	case <-executed:
 		t.Fatal("tool handler was executed despite invalid JSON edit")
 	default:
+	}
+}
+
+func TestRunnerReevaluatesDenyAfterValidEdit(t *testing.T) {
+	// Verifies that when the user edits args with valid JSON and the
+	// re-evaluated policy returns DecisionDeny, the runner returns a
+	// tool-error message (not a hard error) and does NOT execute the tool
+	// handler.
+	//
+	// We use web.fetch because the policy engine unconditionally returns
+	// DecisionConfirm for it on first evaluation, letting us reach the
+	// approval dialog. After the approval is pending we inject a deny rule
+	// via SetRules so the re-evaluation on the edited args returns Deny.
+	reg := registry.New()
+	executed := make(chan struct{}, 1)
+	if err := reg.Register(registry.Tool{
+		Name: "web.fetch",
+		Risk: registry.RiskNetwork,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			select {
+			case executed <- struct{}{}:
+			default:
+			}
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"fetch","action":{"type":"tool_call","tool":"web.fetch","args":{}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"done"}}`,
+	}}
+	cfg := config.Default()
+	pol := policy.NewEngine(&cfg, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- runner.Run(context.Background(), "Fetch")
+	}()
+
+	var tc *session.PendingToolCall
+	deadline := time.After(5 * time.Second)
+	for tc == nil {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for pending approval")
+		default:
+			tc = state.PendingApproval()
+		}
+	}
+
+	// First Evaluate returned DecisionConfirm (no deny rules for web.fetch).
+	// Install a deny rule so the re-evaluation after edit sees DecisionDeny.
+	pol.SetRules([]permissions.Rule{
+		{Permission: "web.fetch", Pattern: "web.fetch", Action: permissions.ActionDeny},
+	})
+
+	// Send a valid JSON edit — the re-evaluation must deny it.
+	tc.ResponseChan <- session.UserApprovalDecision{
+		Approved: true,
+		Edited:   `{"url":"https://evil.example/path"}`,
+	}
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run returned unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Run to finish")
+	}
+
+	select {
+	case <-executed:
+		t.Fatal("tool handler was executed despite policy deny after edit")
+	default:
+	}
+
+	// Verify the provider received a message mentioning the denial.
+	if len(p.requests) < 2 {
+		t.Fatalf("expected at least 2 provider requests, got %d", len(p.requests))
+	}
+	lastReq := p.requests[len(p.requests)-1]
+	found := false
+	for _, msg := range lastReq.Messages {
+		if strings.Contains(msg.Content, "denied") || strings.Contains(msg.Content, "deny") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		for i, msg := range lastReq.Messages {
+			t.Logf("msg[%d] role=%s content=%q", i, msg.Role, msg.Content)
+		}
+		t.Fatal("expected a message mentioning denial in the last provider request")
 	}
 }
 

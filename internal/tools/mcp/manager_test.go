@@ -2,9 +2,12 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/tools/registry"
@@ -58,5 +61,105 @@ func TestManagerRegistersAndInvokesTools(t *testing.T) {
 
 	if !strings.Contains(res.Content, "hello world") {
 		t.Errorf("content = %q, want containing 'hello world'", res.Content)
+	}
+}
+
+// TestRegisterTools_SkipsHangingServer verifies that RegisterTools applies a
+// per-server timeout and skips unresponsive servers instead of failing the
+// entire registration.
+func TestRegisterTools_SkipsHangingServer(t *testing.T) {
+	switch {
+	case os.Getenv("BE_HANGING_SERVER") == "1":
+		hangingServerMain()
+		return
+	case os.Getenv("BE_MOCK_SERVER") == "1":
+		mockServerMain()
+		return
+	}
+
+	// Shorten timeout so the test doesn't wait 10s per hanging server.
+	origTimeout := mcpServerTimeout
+	mcpServerTimeout = 100 * time.Millisecond
+	defer func() { mcpServerTimeout = origTimeout }()
+
+	ctx := context.Background()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"hanging": {
+			Command: exe,
+			Args:    []string{"-test.run=TestRegisterTools_SkipsHangingServer"},
+			Env:     map[string]string{"BE_HANGING_SERVER": "1"},
+		},
+		"good": {
+			Command: exe,
+			Args:    []string{"-test.run=TestRegisterTools_SkipsHangingServer"},
+			Env:     map[string]string{"BE_MOCK_SERVER": "1"},
+		},
+	}
+
+	mgr := NewManager(&cfg)
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer mgr.Close()
+
+	reg := registry.New()
+	start := time.Now()
+	if err := mgr.RegisterTools(reg); err != nil {
+		t.Fatalf("RegisterTools: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Should complete quickly — two servers × 100ms timeout gives ~200ms.
+	// Add generous overhead for process startup and shutdown.
+	if elapsed > 10*time.Second {
+		t.Errorf("RegisterTools took %v, expected < 10s", elapsed)
+	}
+
+	// The good server's tool should be registered.
+	_, ok := reg.Lookup("mcp.good.hello")
+	if !ok {
+		t.Error("mcp.good.hello not registered — good server should have succeeded")
+	}
+
+	// The hanging server's tool should NOT be registered.
+	_, ok = reg.Lookup("mcp.hanging.hello")
+	if ok {
+		t.Error("mcp.hanging.hello should not be registered — hanging server should have been skipped")
+	}
+}
+
+// hangingServerMain is a minimal MCP server that completes the initialize
+// handshake but never responds to tools/list (or any subsequent request),
+// simulating a hanging server.
+func hangingServerMain() {
+	dec := json.NewDecoder(os.Stdin)
+	enc := json.NewEncoder(os.Stdout)
+	for {
+		var req Request
+		if err := dec.Decode(&req); err != nil {
+			if err == io.EOF {
+				return
+			}
+			panic(err)
+		}
+		if req.Method == "initialize" {
+			result := InitializeResult{
+				ProtocolVersion: "2024-11-05",
+				ServerInfo:      Implementation{Name: "hanging-server", Version: "1.0"},
+			}
+			res := Response{JSONRPC: "2.0", ID: req.ID}
+			data, _ := json.Marshal(result)
+			res.Result = data
+			_ = enc.Encode(res)
+			continue
+		}
+		// Block forever without responding. The parent will kill this process.
+		select {}
 	}
 }

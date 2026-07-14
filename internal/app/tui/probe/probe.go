@@ -1,4 +1,4 @@
-package settings
+package probe
 
 import (
 	"context"
@@ -12,9 +12,9 @@ import (
 	"marshal/internal/llm/provider"
 )
 
-var probeTimeout = 5 * time.Second
+var Timeout = 5 * time.Second
 
-func isLocalhost(baseURL string) bool {
+func IsLocalhost(baseURL string) bool {
 	if baseURL == "" {
 		return false
 	}
@@ -30,22 +30,29 @@ func isLocalhost(baseURL string) bool {
 	return strings.HasPrefix(host, "::1%")
 }
 
-func probeProvider(fieldID, name string, pc config.ProviderConfig) tea.Cmd {
+func Provider(fieldID, name string, pc config.ProviderConfig) tea.Cmd {
 	return func() tea.Msg {
 		p, err := provider.NewFromConfig(name, pc)
 		if err != nil {
-			return probeResultMsg{FieldID: fieldID, Provider: name, Err: err}
+			return ResultMsg{FieldID: fieldID, Provider: name, Err: err}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 		defer cancel()
 		models, err := p.Models(ctx)
 		if err != nil {
-			return probeResultMsg{FieldID: fieldID, Provider: name, Err: err}
+			return ResultMsg{FieldID: fieldID, Provider: name, Err: err}
 		}
 		ids := make([]string, len(models))
 		for i, m := range models {
 			ids[i] = m.ID
 		}
-		return probeResultMsg{FieldID: fieldID, Provider: name, Models: ids}
+		return ResultMsg{FieldID: fieldID, Provider: name, Models: ids}
 	}
+}
+
+type ResultMsg struct {
+	FieldID  string
+	Provider string
+	Models   []string
+	Err      error
 }

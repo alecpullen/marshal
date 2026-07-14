@@ -385,3 +385,15 @@ Every tool call should record:
 - result summary
 - files changed
 - command exit code
+
+## Release notes — 2026-07-15: A1 sandbox hardening
+
+- The `restricted` and `container` sandbox backends now default to a minimal env allowlist (`PATH`, `HOME`, `LANG`, `LC_*`, `USER`, `TZ`, `TMPDIR`, `XDG_*`). To opt into additional env vars, set `[sandbox] env_allowlist = ["K=V", ...]` explicitly. The previous behavior of passing the full parent env minus a secret scrub is **no longer the default**; users who relied on it must add the missing vars to `env_allowlist` (or accept the safe default).
+- The container backend's `buildContainerEnv` adds an explicit allowlist of container-runtime vars on top of the safe base (`DOCKER_HOST`, `DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`, `DOCKER_CONFIG`, `DOCKER_BUILDKIT`, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` and lowercase variants). Docker auth and corporate proxy setups continue to work.
+- MCP-spawned child processes no longer inherit the parent shell's secrets or dynamic-loader keys (`LD_*`, `DYLD_*`). The new `internal/sandbox/envutil.AllowList` helper is reused by the sandbox, container, and MCP layers.
+- Backend `passthrough` is now opt-in via `[sandbox] unsafe_passthrough = true`. Without the flag, `NewRunner` returns an error and the TUI surfaces it. Existing users who set `backend = "passthrough"` directly will need to add the flag.
+- `shell.run` commands matching destructive patterns (`rm -rf`, `chmod -R`/`--recursive`, `chown -R`/`--recursive`, `git reset --hard`, `git clean -fd*`, `mkfs`, `shutdown`, `reboot`) are now flagged in the policy reason. The previously-persisted `allow_sudo` and `allow_destructive` config flags are now honored: when set, the denial reason appends `(flagged allowed)`. The TUI approval prompt is still required.
+- Substring-based guardrail matching of `chmod -r` / `chown -r` (which missed `-R` and `--recursive`) has been replaced with argv-aware matching.
+- The Unix process-group killer now also sends `SIGKILL` to the direct child PID after the grace interval, so grandchildren that escape the PGID via `setpgid` are still terminated.
+- `RegisterTools` (MCP tool registration) now applies a 10s per-server timeout. A hanging MCP server is logged and skipped; registration of other servers continues. This prevents a single misbehaving server from blocking Marshal startup.
+- The container backend now invokes shell-free commands as direct argv (e.g. `["echo", "hello"]`) instead of always wrapping in `/bin/sh -lc`. Shell metacharacters (`|`, `&`, `;`, `` ` ``, `$()`, etc.) continue to route through the shell. Full argv-aware classification with quoted-argument support comes in A2 (Task 3.1/3.6).

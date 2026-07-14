@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/native"
 )
 
@@ -94,14 +95,39 @@ func (c *Container) Run(ctx context.Context, req native.CommandRequest) (native.
 }
 
 func (c *Container) buildContainerEnv() []string {
-	// Inherit parent env. The isolation boundary is the container itself
-	// (set via --user, --read-only, the -e flags in buildArgs); the host
-	// docker/podman CLI needs access to HOME (~/.docker/config.json for
-	// auth/image pull), DOCKER_HOST, DOCKER_TLS_VERIFY/DOCKER_CERT_PATH,
-	// HTTP_PROXY/HTTPS_PROXY, PATH (helper binaries), etc. Returning
-	// []string{} would wipe these and silently break non-trivial docker
-	// setups; return nil so exec inherits the parent env.
-	return nil
+	// Start from the safe allowlist: no parent secrets, no dynamic-loader
+	// keys, no shell-hijack keys. Only well-known safe vars survive.
+	env := envutil.AllowList(os.Environ())
+
+	// Layer in container-runtime vars that the host CLI legitimately needs
+	// for auth (DOCKER_HOST, docker config), proxy (HTTP_PROXY etc.), and
+	// buildkit support. These are NOT in the general AllowList but are safe
+	// to pass through to the runtime subprocess because they affect only
+	// docker/podman itself — not the sandboxed command.
+	for _, key := range []string{
+		"DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+		"DOCKER_CONFIG", "DOCKER_BUILDKIT",
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "no_proxy",
+	} {
+		if envutil.IsDangerousKey(key) || envutil.IsSecretKey(key) {
+			continue
+		}
+		if v, ok := os.LookupEnv(key); ok {
+			found := false
+			for i, kv := range env {
+				if envutil.EnvKey(kv) == key {
+					env[i] = key + "=" + v
+					found = true
+					break
+				}
+			}
+			if !found {
+				env = append(env, key+"="+v)
+			}
+		}
+	}
+	return env
 }
 
 func (c *Container) buildArgs(command, image, workdir string) []string {

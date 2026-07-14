@@ -1,12 +1,14 @@
 package connect
 
 import (
+	"errors"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/probe"
 )
 
 func TestNewStartsAtPickTemplate(t *testing.T) {
@@ -100,6 +102,76 @@ func TestCustomBaseURLThenKey(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
 	if updated.step != stepProbing {
 		t.Fatalf("after apiKey should be probing, got %v", updated.step)
+	}
+}
+
+func TestProbeSuccessAdvancesToPickModel(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b", "llama3.1:8b"}})
+	if updated.step != stepPickModel {
+		t.Fatalf("success should advance to pickModel, got %v", updated.step)
+	}
+	if len(updated.models) != 2 {
+		t.Fatalf("models not stored: %v", updated.models)
+	}
+	if got := updated.discovered[updated.providerName]; len(got) != 2 {
+		t.Fatalf("discovered cache not populated: %v", got)
+	}
+}
+
+func TestProbeFailureStaysWithRetrySkip(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")})
+	if updated.step != stepProbing {
+		t.Fatalf("failure should stay probing, got %v", updated.step)
+	}
+	if updated.err == "" {
+		t.Fatal("expected inline error text set")
+	}
+}
+
+func TestRetryReRunsProbe(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("boom")})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 114})
+	if updated.step != stepProbing {
+		t.Fatalf("retry should stay probing, got %v", updated.step)
+	}
+	if cmd == nil {
+		t.Fatal("retry should re-arm the probe cmd")
+	}
+}
+
+func TestSkipProbeUsesCatalogAndAdvances(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 115})
+	if updated.step != stepPickModel {
+		t.Fatalf("skip should advance to pickModel, got %v", updated.step)
+	}
+	if len(updated.models) == 0 && len(updated.template.Models) > 0 {
+		t.Fatal("skip should seed models from template catalog")
+	}
+}
+
+func TestPickModelEmitsDone(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	_, cmd := m.Update(pickerPicked("qwen2.5-coder:7b"))
+	if cmd == nil {
+		t.Fatal("pickModel should emit a DoneMsg cmd")
+	}
+	msg := cmd()
+	dm, ok := msg.(DoneMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want DoneMsg", msg)
+	}
+	if dm.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("DoneMsg.Model = %q", dm.Model)
 	}
 }
 

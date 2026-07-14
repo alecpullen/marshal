@@ -158,7 +158,7 @@ func (m *Model) renderInput(pw int) string {
 
 func (m *Model) renderProbing(pw int) string {
 	frame := "…"
-	if m.probeStart > 0 {
+	if m.probeStart > 0 && time.Now().Sub(time.Unix(0, m.probeStart)) > 200*time.Millisecond {
 		frame = spinnerFrames[m.spinner%len(spinnerFrames)]
 	}
 	return mutedStyle.Render(frame + " connecting…")
@@ -269,14 +269,21 @@ func enterPickModelStep(m *Model, providerName string) {
 
 func buildModelPicker(m *Model, providerName string) *picker.Model {
 	var items []picker.Item
-	if cached, ok := m.discovered[providerName]; ok && len(cached) > 0 {
-		for _, mid := range cached {
-			items = append(items, picker.Item{Label: mid, Detail: providerName, Badge: "◉ discovered", Group: providerName, Value: mid})
+	candidates := m.models
+	if len(candidates) == 0 {
+		if cached, ok := m.discovered[providerName]; ok {
+			candidates = cached
 		}
-	} else if tpl, ok := provider.Lookup(strings.TrimSuffix(strings.TrimPrefix(providerName, m.template.ID), "-2")); ok && len(tpl.Models) > 0 {
-		for _, mid := range tpl.Models {
-			items = append(items, picker.Item{Label: mid, Detail: providerName, Badge: "◯ catalog", Group: providerName, Value: mid})
+	}
+	if len(candidates) == 0 {
+		candidates = m.template.Models
+	}
+	for _, mid := range candidates {
+		badge := "◉ discovered"
+		if len(m.models) == 0 {
+			badge = "◯ catalog"
 		}
+		items = append(items, picker.Item{Label: mid, Detail: providerName, Badge: badge, Group: providerName, Value: mid})
 	}
 	if len(items) == 0 {
 		items = append(items, picker.Item{Label: "Enter model id manually", Value: "__manual__", Badge: "custom"})
@@ -295,6 +302,9 @@ func badgeForTemplate(tpl provider.ProviderTemplate) string {
 
 func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 	if m.step == stepPickModel {
+		if value == "__manual__" {
+			return m, nil
+		}
 		m.modelChosen = value
 		m.step = stepDone
 		return m, m.done()
@@ -319,7 +329,28 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) { return m, nil }
+func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.probeErr = msg.Err
+		m.err = "✗ " + truncateErr(msg.Err.Error())
+		m.footer = "[r] retry  [s] skip  [Esc] cancel"
+		return m, nil
+	}
+	m.models = msg.Models
+	if m.discovered != nil {
+		m.discovered[m.providerName] = msg.Models
+	}
+	_, advCmd := m.advanceToPickModel()
+	return m, advCmd
+}
+
+func truncateErr(s string) string {
+	const max = 48
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
 
 func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 	ks := k.String()

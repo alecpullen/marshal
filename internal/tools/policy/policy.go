@@ -32,6 +32,7 @@ type PolicyEngine struct {
 	sessionRules []string
 	rules        []permissions.Rule
 	mu           sync.RWMutex
+	logger       *slog.Logger
 }
 
 func NewEngine(cfg *config.Config, sessionRules []string) *PolicyEngine {
@@ -54,6 +55,7 @@ func NewEngine(cfg *config.Config, sessionRules []string) *PolicyEngine {
 		config:       cfg,
 		sessionRules: sessionRules,
 		rules:        rules,
+		logger:       slog.Default(),
 	}
 }
 
@@ -72,6 +74,29 @@ func (pe *PolicyEngine) SetRules(rules []permissions.Rule) {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
 	pe.rules = rules
+}
+
+// SetLogger injects a structured logger used for debug-level events
+// (e.g. guardrail parse failures). Pass nil to revert to slog.Default().
+func (pe *PolicyEngine) SetLogger(l *slog.Logger) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if l == nil {
+		pe.logger = slog.Default()
+		return
+	}
+	pe.logger = l
+}
+
+// Logger returns the logger used by the engine. May be the package
+// default if SetLogger was never called.
+func (pe *PolicyEngine) Logger() *slog.Logger {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	if pe.logger == nil {
+		return slog.Default()
+	}
+	return pe.logger
 }
 
 func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {
@@ -163,7 +188,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		if pe.config != nil && pe.config.Tools.Shell.GuardrailDynamicArgv0 != "" {
 			dynSetting = pe.config.Tools.Shell.GuardrailDynamicArgv0
 		}
-		dec, reason := evaluateGuardrails(normCmd, dynSetting)
+		dec, reason := pe.EvaluateGuardrails(normCmd, dynSetting)
 		if dec != "" {
 			return dec, reason, nil
 		}
@@ -363,10 +388,10 @@ func basenameLower(argv0 string) string {
 // evaluateGuardrails runs the AST-based guardrail analysis and returns the
 // resulting Decision + reason. Returns Decision("") (empty) to signal
 // "not blocked — continue to rule matching".
-func evaluateGuardrails(cmd, dynSetting string) (Decision, string) {
+func (pe *PolicyEngine) EvaluateGuardrails(cmd, dynSetting string) (Decision, string) {
 	verdict, err := analyzeCommand(cmd)
 	if err != nil {
-		slog.Default().Debug("policy guardrail parse failed, falling back to legacy", "cmd", cmd, "err", err)
+		pe.logger.Debug("policy guardrail parse failed, falling back to legacy", "cmd", cmd, "err", err)
 		if isBlockedByGuardrailLegacy(cmd) {
 			return DecisionDeny, "blocked by conservative guardrail safety checks (legacy)"
 		}

@@ -389,6 +389,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 
 	pol := policy.NewEngine(&cfg, state.SessionRules())
+	if state.Logger() != nil {
+		pol.SetLogger(state.Logger())
+	}
 	if err := reg.Register(agent.NewSubagentTool(
 		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model),
 		reg,

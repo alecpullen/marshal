@@ -39,8 +39,6 @@ func TestEscAtPickTemplateEmitsCancelled(t *testing.T) {
 	_ = updated
 }
 
-// ── Step 1: pickTemplate + step 2 credentials tests ──
-
 func TestPickTemplateOllamaSkipsAPIKey(t *testing.T) {
 	m := New(Opts{Cfg: config.Default()})
 	updated, _ := m.Update(pickerPicked("ollama"))
@@ -65,7 +63,7 @@ func TestPickTemplateOpenRouterEntersAPIKey(t *testing.T) {
 
 func TestPickCustomEntersBaseURL(t *testing.T) {
 	m := New(Opts{Cfg: config.Default()})
-	updated, _ := m.Update(pickerPicked("__custom__"))
+	updated, _ := m.Update(pickerPicked("custom"))
 	if updated.step != stepBaseURL {
 		t.Fatalf("custom should enter baseURL, got step = %v", updated.step)
 	}
@@ -89,7 +87,7 @@ func TestAPIKeyEnterAdvancesToProbing(t *testing.T) {
 
 func TestCustomBaseURLThenKey(t *testing.T) {
 	m := New(Opts{Cfg: config.Default()})
-	m, _ = m.Update(pickerPicked("__custom__"))
+	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("https://myhost/v1")
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepAPIKey {

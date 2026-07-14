@@ -2,6 +2,7 @@ package connect
 
 import (
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -293,21 +294,142 @@ func badgeForTemplate(tpl provider.ProviderTemplate) string {
 }
 
 func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
-	m.modelChosen = value
-	m.step = stepDone
-	return m, func() tea.Msg { return CancelledMsg{} }
+	if m.step == stepPickModel {
+		m.modelChosen = value
+		m.step = stepDone
+		return m, m.done()
+	}
+	tpl, ok := provider.Lookup(value)
+	if !ok {
+		if value == "custom" || strings.HasPrefix(value, "@ai-sdk/") {
+			m.template = provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"}
+			enterBaseURLStep(m)
+			return m, nil
+		}
+		m.template = provider.ProviderTemplate{ID: value, Type: "openai_compatible"}
+		enterBaseURLStep(m)
+		return m, nil
+	}
+	m.template = tpl
+	m.providerCfg = config.ProviderConfig{Type: tpl.Type, BaseURL: tpl.BaseURL, APIKeyEnv: tpl.KeyEnv, ToolCalling: tpl.ToolCalling}
+	if tpl.Local {
+		return m.enterProbing()
+	}
+	m.enterAPIKey()
+	return m, nil
 }
 
 func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) { return m, nil }
 
 func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
-	switch k.String() {
-	case "esc":
+	ks := k.String()
+	switch m.step {
+	case stepBaseURL, stepAPIKey:
+		switch ks {
+		case "esc":
+			return m, m.back()
+		case "enter":
+			return m.confirmInput()
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(k)
+			return m, cmd
+		}
+	case stepProbing:
+		if ks == "esc" {
+			return m, m.cancel()
+		}
+		if ks == "r" {
+			return m.enterProbing()
+		}
+		if ks == "s" {
+			return m.skipProbe()
+		}
+		return m, nil
+	case stepPickModel:
+		return m, nil
+	}
+	if ks == "esc" {
 		return m, m.cancel()
+	}
+	return m, nil
+}
+
+func (m *Model) confirmInput() (*Model, tea.Cmd) {
+	v := strings.TrimSpace(m.input.Value())
+	switch m.step {
+	case stepBaseURL:
+		if v == "" {
+			m.err = "base URL cannot be empty"
+			return m, nil
+		}
+		m.providerCfg.BaseURL = v
+		m.enterAPIKey()
+		return m, nil
+	case stepAPIKey:
+		if v != "" {
+			m.providerCfg.APIKey = v
+		}
+		return m.enterProbing()
 	}
 	return m, nil
 }
 
 func (m *Model) enterPickModel(providerName string) {
 	enterPickModelStep(m, providerName)
+}
+
+func (m *Model) enterProbing() (*Model, tea.Cmd) {
+	m.step = stepProbing
+	m.title = "Connecting"
+	m.subtitle = m.template.Label
+	m.footer = "[r] retry  [s] skip  [Esc] cancel"
+	m.err = ""
+	m.picker = nil
+	m.providerName = m.uniqueName()
+	m.providerCfg.Type = orDefault(m.template.Type, "openai_compatible")
+	m.probeStart = nowNanos()
+	m.spinner = 0
+	return m, tea.Batch(m.runProbe(), tick())
+}
+
+func (m *Model) skipProbe() (*Model, tea.Cmd) {
+	m.probeErr = nil
+	m.models = m.template.Models
+	return m.advanceToPickModel()
+}
+
+func (m *Model) advanceToPickModel() (*Model, tea.Cmd) {
+	enterPickModelStep(m, m.providerName)
+	return m, nil
+}
+
+func (m *Model) runProbe() tea.Cmd {
+	return probe.Provider("connect", m.providerName, m.providerCfg)
+}
+
+func (m *Model) done() tea.Cmd {
+	return func() tea.Msg { return DoneMsg{Provider: m.providerName, Model: m.modelChosen} }
+}
+
+func (m *Model) uniqueName() string {
+	if m.template.ID == "custom" || m.template.ID == "" {
+		return "custom"
+	}
+	existing := map[string]bool{}
+	for k := range m.cfg.Providers {
+		existing[k] = true
+	}
+	return provider.UniqueName(m.template.ID, existing)
+}
+
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+var nowNanos = func() int64 {
+	return time.Now().UnixNano()
 }

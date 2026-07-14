@@ -38,10 +38,30 @@ func TestNewEmptyBackendDefaultsToRestricted(t *testing.T) {
 }
 
 func TestNewPassthroughBackend(t *testing.T) {
-	sb := newTestSandbox(t, Config{Backend: "passthrough"})
+	sb := newTestSandbox(t, Config{Backend: "passthrough", UnsafePassthrough: true})
 	caps := sb.Capabilities()
 	if caps.Backend != "passthrough" || caps.ResourceLimits || caps.NetworkIsolation {
 		t.Fatalf("passthrough caps wrong: %+v", caps)
+	}
+}
+
+func TestNewPassthroughBackend_RequiresFlag(t *testing.T) {
+	// Without the flag it must error.
+	_, err := New(Config{Backend: "passthrough"}, nil)
+	if err == nil {
+		t.Fatal("expected error for passthrough without UnsafePassthrough=true")
+	}
+	if !strings.Contains(err.Error(), "unsafe_passthrough") {
+		t.Fatalf("error message should mention unsafe_passthrough, got: %v", err)
+	}
+
+	// With the flag it must succeed.
+	sb, err := New(Config{Backend: "passthrough", UnsafePassthrough: true}, nil)
+	if err != nil {
+		t.Fatalf("expected ok with UnsafePassthrough=true, got: %v", err)
+	}
+	if sb.Capabilities().Backend != "passthrough" {
+		t.Fatalf("backend = %q, want passthrough", sb.Capabilities().Backend)
 	}
 }
 
@@ -395,7 +415,7 @@ func TestSandboxMetaPassthroughRunsAndCapturesMeta(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell echo differs on windows")
 	}
-	sb := newTestSandbox(t, Config{Backend: "passthrough"})
+	sb := newTestSandbox(t, Config{Backend: "passthrough", UnsafePassthrough: true})
 	dir := t.TempDir()
 	res, err := sb.Run(context.Background(), native.CommandRequest{
 		Command: "echo hi",

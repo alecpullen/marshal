@@ -34,14 +34,11 @@ func TestSandboxMetaLimitsJSONIncludesOutputTruncated(t *testing.T) {
 	}
 }
 
-func TestSandboxMetaLimitsJSONReturnsError(t *testing.T) {
-	// Construct a meta with an unmarshalable value to force json.Marshal
-	// to fail. A function value is the canonical unmarshalable type.
+func TestSandboxMetaLimitsJSONReturnsValidJSON(t *testing.T) {
+	// LimitsJSON must return a non-empty JSON string and a nil error
+	// for valid meta. The marshal-error path is not exercisable through
+	// the public API because all map-value types are primitives.
 	m := SandboxMeta{Backend: "restricted"}
-	m.ResourceLimits = true
-	// We can't put a func in the public struct, so we exercise the
-	// happy path: LimitsJSON must return a non-empty JSON string and
-	// a nil error for valid meta.
 	s, err := m.LimitsJSON()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

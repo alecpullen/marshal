@@ -78,6 +78,9 @@ func (pe *PolicyEngine) SetRules(rules []permissions.Rule) {
 
 // SetLogger injects a structured logger used for debug-level events
 // (e.g. guardrail parse failures). Pass nil to revert to slog.Default().
+//
+// SetLogger is intended to be called once at construction time. The engine
+// is safe for concurrent Evaluate calls but not concurrent SetLogger calls.
 func (pe *PolicyEngine) SetLogger(l *slog.Logger) {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
@@ -89,7 +92,7 @@ func (pe *PolicyEngine) SetLogger(l *slog.Logger) {
 }
 
 // Logger returns the logger used by the engine. May be the package
-// default if SetLogger was never called.
+// default if SetLogger was never called. Safe for concurrent use.
 func (pe *PolicyEngine) Logger() *slog.Logger {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
@@ -385,7 +388,7 @@ func basenameLower(argv0 string) string {
 	return strings.ToLower(name)
 }
 
-// evaluateGuardrails runs the AST-based guardrail analysis and returns the
+// EvaluateGuardrails runs the AST-based guardrail analysis and returns the
 // resulting Decision + reason. Returns Decision("") (empty) to signal
 // "not blocked — continue to rule matching".
 func (pe *PolicyEngine) EvaluateGuardrails(cmd, dynSetting string) (Decision, string) {

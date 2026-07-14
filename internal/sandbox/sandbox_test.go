@@ -172,30 +172,78 @@ func TestRestrictedEmptyAllowlistDeniesEnvInversion(t *testing.T) {
 	}
 }
 
-func TestRestrictedNilAllowlistPassesParentButSrubbsSecrets(t *testing.T) {
+func TestRestrictedNilAllowlistUsesSafeDefaultsAndScrubsSecrets(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("env scrub test relies on sh")
 	}
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "leak-me")
-	t.Setenv("MARSHAL_PLAIN", "ok")
+	// With nil allowlist, buildEnv now defaults to AllowList, so:
+	// - PATH should pass (it's in allowlistKeys)
+	// - ANTHROPIC_API_KEY and AWS_SECRET_ACCESS_KEY should be scrubbed
+	// - MARSHAL_RANDOM should be scrubbed (not in allowlistKeys)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-leak")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-leak")
+	t.Setenv("MARSHAL_RANDOM", "random")
 	sb := newTestSandbox(t, Config{
 		Backend:      "restricted",
-		EnvAllowlist: nil, // nil: pass parent env
+		EnvAllowlist: nil, // nil → use AllowList
 	})
 	dir := t.TempDir()
 	res, err := sb.Run(context.Background(), native.CommandRequest{
-		Command: "printenv AWS_SECRET_ACCESS_KEY || echo aws_scrubbed; printenv MARSHAL_PLAIN || echo plain_lost",
+		Command: `printenv ANTHROPIC_API_KEY || echo anthro_scrubbed; printenv AWS_SECRET_ACCESS_KEY || echo aws_scrubbed; echo PATH=$(printenv PATH || echo no_path)`,
 		Dir:     dir,
 		Timeout: 5 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !strings.Contains(res.Stdout, "aws_scrubbed") {
-		t.Fatalf("nil allowlist should scrub AWS_*: %q", res.Stdout)
+	if !strings.Contains(res.Stdout, "anthro_scrubbed") {
+		t.Fatalf("nil allowlist should scrub ANTHROPIC_API_KEY: %q", res.Stdout)
 	}
-	if !strings.Contains(res.Stdout, "ok") {
-		t.Fatalf("nil allowlist should pass non-secret parent vars: %q", res.Stdout)
+	if !strings.Contains(res.Stdout, "aws_scrubbed") {
+		t.Fatalf("nil allowlist should scrub AWS_SECRET_ACCESS_KEY: %q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "PATH=/") {
+		t.Fatalf("nil allowlist should preserve PATH: %q", res.Stdout)
+	}
+	// MARSHAL_RANDOM is NOT in allowlistKeys — must be scrubbed in new code.
+	res2, err2 := sb.Run(context.Background(), native.CommandRequest{
+		Command: "printenv MARSHAL_RANDOM || echo not_present",
+		Dir:     dir,
+		Timeout: 5 * time.Second,
+	})
+	if err2 != nil {
+		t.Fatalf("Run: %v", err2)
+	}
+	if !strings.Contains(res2.Stdout, "not_present") {
+		t.Fatalf("nil allowlist should scrub vars not in allowlistKeys (MARSHAL_RANDOM): %q", res2.Stdout)
+	}
+}
+
+func TestRestrictedNonEmptyAllowlistRejectsDangerousKeys(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env scrub test relies on sh")
+	}
+	t.Setenv("LD_PRELOAD", "/tmp/evil.so")
+	t.Setenv("MARSHAL_SAFE", "ok_value")
+	sb := newTestSandbox(t, Config{
+		Backend:      "restricted",
+		EnvAllowlist: []string{"LD_PRELOAD", "MARSHAL_SAFE", "PATH"},
+		EnvDenylist:  nil,
+	})
+	dir := t.TempDir()
+	res, err := sb.Run(context.Background(), native.CommandRequest{
+		Command: `printenv MARSHAL_SAFE || echo safe_lost; printenv LD_PRELOAD || echo dangerous_scrubbed`,
+		Dir:     dir,
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "ok_value") {
+		t.Fatalf("non-empty allowlist should preserve MARSHAL_SAFE: %q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "dangerous_scrubbed") {
+		t.Fatalf("non-empty allowlist should reject LD_PRELOAD (dangerous): %q", res.Stdout)
 	}
 }
 

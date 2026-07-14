@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/probe"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 )
@@ -195,7 +196,7 @@ func providerPickerField(s *state, id string, getProvider func() string, setProv
 				if n == current {
 					badge = "\u25cf now"
 				}
-				if isLocalhost(s.cfg.Providers[n].BaseURL) {
+				if probe.IsLocalhost(s.cfg.Providers[n].BaseURL) {
 					if badge != "" {
 						badge += " "
 					}
@@ -476,18 +477,18 @@ func testConnectionField(s *state, k string) *field {
 				return as.label
 			}
 			pc := s.cfg.Providers[k]
-			if !isLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
+			if !probe.IsLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
 				return "\u2717 blocked (enable Remote providers in Privacy)"
 			}
 			return "\u21b5 test"
 		},
 		act: func() tea.Cmd {
 			pc := s.cfg.Providers[k]
-			if !isLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
+			if !probe.IsLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
 				return nil
 			}
 			s.actionState[fieldID] = actionState{pending: true, label: "\u2026"}
-			return probeProvider(fieldID, k, pc)
+			return probe.Provider(fieldID, k, pc)
 		},
 	}
 }

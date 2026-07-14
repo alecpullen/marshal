@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
 )
@@ -117,7 +118,7 @@ func (m Model) activeSectionTitle() string { return m.specs[m.cursor].title }
 
 func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case probeResultMsg:
+	case probe.ResultMsg:
 		label := fmt.Sprintf("\u2713 ok (%d models)", len(msg.Models))
 		if msg.Err != nil {
 			label = "\u2717 " + truncateErr(msg.Err.Error())

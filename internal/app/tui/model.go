@@ -1923,7 +1923,13 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		return
 	}
 	newCfg := m.state.Config
-	if newCfg.Providers == nil {
+	if newCfg.Providers != nil {
+		copied := make(map[string]config.ProviderConfig, len(newCfg.Providers)+1)
+		for k, v := range newCfg.Providers {
+			copied[k] = v
+		}
+		newCfg.Providers = copied
+	} else {
 		newCfg.Providers = map[string]config.ProviderConfig{}
 	}
 	if msg.ProviderCfg.Type != "" {

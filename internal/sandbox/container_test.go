@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/native"
 )
 
@@ -208,6 +209,55 @@ func TestContainerBuildArgsWithFakeRuntimeExecutes(t *testing.T) {
 
 // TestContainerDetectWithFakeInfoRuntime verifies that New can detect a
 // fake runtime on PATH with the info command succeeding.
+func TestBuildContainerEnv_StripsSecrets(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-12345")
+	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:2376")
+	t.Setenv("HTTP_PROXY", "http://proxy:3128")
+	t.Setenv("LD_PRELOAD", "/tmp/evil.so")
+
+	c := &Container{}
+	env := c.buildContainerEnv()
+
+	// Verify secrets are stripped
+	for _, kv := range env {
+		key := envutil.EnvKey(kv)
+		if key == "ANTHROPIC_API_KEY" {
+			t.Errorf("buildContainerEnv leaked ANTHROPIC_API_KEY")
+		}
+		if key == "LD_PRELOAD" {
+			t.Errorf("buildContainerEnv leaked LD_PRELOAD")
+		}
+	}
+
+	// Verify DOCKER_HOST is preserved
+	foundDocker := false
+	for _, kv := range env {
+		if envutil.EnvKey(kv) == "DOCKER_HOST" {
+			foundDocker = true
+			if kv != "DOCKER_HOST=tcp://127.0.0.1:2376" {
+				t.Errorf("DOCKER_HOST = %q, want %q", kv, "DOCKER_HOST=tcp://127.0.0.1:2376")
+			}
+		}
+	}
+	if !foundDocker {
+		t.Error("DOCKER_HOST not found in container env but should be preserved")
+	}
+
+	// Verify HTTP_PROXY is preserved
+	foundProxy := false
+	for _, kv := range env {
+		if envutil.EnvKey(kv) == "HTTP_PROXY" {
+			foundProxy = true
+			if kv != "HTTP_PROXY=http://proxy:3128" {
+				t.Errorf("HTTP_PROXY = %q, want %q", kv, "HTTP_PROXY=http://proxy:3128")
+			}
+		}
+	}
+	if !foundProxy {
+		t.Error("HTTP_PROXY not found in container env but should be preserved")
+	}
+}
+
 func TestContainerDetectWithFakeInfoRuntime(t *testing.T) {
 	fakePath := writeFakeInfoRuntime(t)
 	fakeDir := filepath.Dir(fakePath)

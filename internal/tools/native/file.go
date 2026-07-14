@@ -157,25 +157,34 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 				if statErr != nil {
 					if os.IsNotExist(statErr) {
 						// New file creation: no on-disk version to be stale against.
-						continue
+						// Continue checking other patches but still need to validate below.
+					} else {
+						return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
 					}
-					return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
 				}
-				if hasRead && info.ModTime().After(lastRead) {
+				if statErr == nil && hasRead && info.ModTime().After(lastRead) {
 					return registry.ToolResult{}, fmt.Errorf(
 						"file %s changed on disk since last read; re-read it before editing", fp.Path)
 				}
-				if !hasRead {
+				if statErr == nil && !hasRead {
 					return registry.ToolResult{}, fmt.Errorf(
 						"file %s was never read this session; read it before editing", fp.Path)
 				}
 			}
 
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, err)
+			// Read the file for validation; if it doesn't exist, use empty content.
+			var content string
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				if !os.IsNotExist(readErr) {
+					return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, readErr)
+				}
+				// New file: validate with empty content.
+				content = ""
+			} else {
+				content = string(data)
 			}
-			ok, err := patch.ValidatePatch(string(data), fp)
+			ok, err := patch.ValidatePatch(content, fp)
 			if !ok || err != nil {
 				return registry.ToolResult{}, fmt.Errorf("patch validation failed for %s: %v", fp.Path, err)
 			}
@@ -191,16 +200,29 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return registry.ToolResult{}, err
-			}
-			original := string(data)
-
-			info, err := os.Stat(path)
-			var mode os.FileMode = 0644
-			if err == nil {
+			var original string
+			info, statErr := os.Stat(path)
+			var mode os.FileMode = 0o644
+			newFile := false
+			if statErr != nil {
+				if !os.IsNotExist(statErr) {
+					return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
+				}
+				// New file: only allowed when every chunk has an empty Search.
+				for _, c := range fp.Chunks {
+					if c.Search != "" {
+						return registry.ToolResult{}, fmt.Errorf(
+							"file %s does not exist; non-empty search block is not allowed for new files", fp.Path)
+					}
+				}
+				newFile = true
+			} else {
 				mode = info.Mode()
+				data, readErr := os.ReadFile(path)
+				if readErr != nil {
+					return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, readErr)
+				}
+				original = string(data)
 			}
 
 			diff, err := patch.GenerateDiff(fp.Path, original, fp)
@@ -215,10 +237,13 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			})
 
 			patched := patch.ApplyPatch(original, fp)
-			if strings.Contains(original, "\r\n") {
+			if !newFile && strings.Contains(original, "\r\n") {
 				patched = strings.ReplaceAll(patched, "\n", "\r\n")
 			}
 
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("mkdir for %s: %w", fp.Path, err)
+			}
 			if err := os.WriteFile(path, []byte(patched), mode); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("write file %s: %w", fp.Path, err)
 			}

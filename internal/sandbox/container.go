@@ -178,18 +178,42 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 	// the CPU-RUNAWAY bound. Note that `--cpus` is NOT used here because
 	// `--cpus` is a CPU core-count quota without any wall-time guarantee,
 	// which misrepresents the `cpu_seconds` field.
+	//
+	// For shell-free commands (no pipes, redirects, variable expansion, etc.)
+	// we invoke the command directly as argv to avoid shell-wrapping overhead
+	// and potential shell-injection surface. Commands containing shell
+	// metacharacters still go through /bin/sh -lc.
 	args = append(args, image)
-	if c.cfg.CPUSeconds > 0 {
-		// timeout (from coreutils, present in alpine) -s KILL sends SIGKILL
-		// when the deadline passes; --preserve-status exits with 137 so the
-		// sandbox's killed-reason detection picks it up.
-		args = append(args,
-			"timeout", "--preserve-status", "-s", "KILL",
-			strconv.Itoa(c.cfg.CPUSeconds),
-			"/bin/sh", "-lc", command,
-		)
+	if isShellFree(command) {
+		cmdArgs := strings.Fields(command)
+		if c.cfg.CPUSeconds > 0 {
+			args = append(args,
+				"timeout", "--preserve-status", "-s", "KILL",
+				strconv.Itoa(c.cfg.CPUSeconds),
+			)
+		}
+		args = append(args, cmdArgs...)
 	} else {
-		args = append(args, "/bin/sh", "-lc", command)
+		if c.cfg.CPUSeconds > 0 {
+			args = append(args,
+				"timeout", "--preserve-status", "-s", "KILL",
+				strconv.Itoa(c.cfg.CPUSeconds),
+				"/bin/sh", "-lc", command,
+			)
+		} else {
+			args = append(args, "/bin/sh", "-lc", command)
+		}
 	}
 	return args
+}
+
+// isShellFree reports whether command s contains no shell metacharacters.
+// Shell-free commands can be invoked as argv directly rather than wrapped
+// in /bin/sh -lc, reducing overhead and shell-injection surface area.
+//
+// Metacharacters that trigger shell wrapping:
+//   - | & ; ` $ ( ) { } < > * ? \n
+func isShellFree(s string) bool {
+	shellMetas := "|&;`$<>(){}*?\n"
+	return !strings.ContainsAny(s, shellMetas)
 }

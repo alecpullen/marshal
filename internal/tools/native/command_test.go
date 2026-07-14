@@ -154,7 +154,7 @@ func TestCommandOutputIsLimited(t *testing.T) {
 	root := t.TempDir()
 	runner := &fakeRunner{result: CommandResult{Stdout: "abcdef", ExitCode: 0}}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, MaxOutputBytes: 12}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string) error { return nil }, MaxOutputBytes: 12}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 

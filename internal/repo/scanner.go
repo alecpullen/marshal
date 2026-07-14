@@ -73,6 +73,14 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		if err != nil {
 			return fmt.Errorf("walk %s: %w", path, err)
 		}
+		// Symlinks are deliberately skipped. A symlink inside the workspace
+		// may point outside it, which would let the scanner read arbitrary
+		// files (security) or follow circular structures (correctness).
+		// Users who need indexed symlinks should use hard links or bind
+		// mounts instead.
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			return fmt.Errorf("rel %s: %w", path, relErr)

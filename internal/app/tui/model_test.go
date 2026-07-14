@@ -3407,6 +3407,16 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	if updated.(Model).state.Config.Profile.Default != "" {
 		t.Fatalf("profile default should be cleared, got %q", updated.(Model).state.Config.Profile.Default)
 	}
+	prov, ok := updated.(Model).state.Config.Providers["ollama"]
+	if !ok {
+		t.Fatal(`providers["ollama"] should exist after DoneMsg`)
+	}
+	if prov.Type != "openai_compatible" {
+		t.Fatalf(`expected provider type "openai_compatible", got %q`, prov.Type)
+	}
+	if prov.BaseURL != "http://localhost:11434/v1" {
+		t.Fatalf(`expected provider base_url "http://localhost:11434/v1", got %q`, prov.BaseURL)
+	}
 	if updated.(Model).connectOpen {
 		t.Fatal("overlay should close after DoneMsg")
 	}

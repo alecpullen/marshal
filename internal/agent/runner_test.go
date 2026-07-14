@@ -566,6 +566,83 @@ func TestRunRequiresApprovalForShellRunAndRespectsApproval(t *testing.T) {
 	}
 }
 
+func TestRunnerReevaluatesPolicyAfterEditedArgs(t *testing.T) {
+	// Verifies that a non-shell tool whose args edit is syntactically invalid
+	// JSON causes the runner to abort with an error rather than silently
+	// proceeding with the original args (the bug: the else branch at
+	// runner.go:1125 silently swallowed invalid JSON).
+	//
+	// We use web.fetch because the policy engine unconditionally returns
+	// DecisionConfirm for it, and it is NOT shell.run, so edits go through
+	// the else branch.
+	reg := registry.New()
+	executed := make(chan struct{}, 1)
+	if err := reg.Register(registry.Tool{
+		Name: "web.fetch",
+		Risk: registry.RiskNetwork,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			select {
+			case executed <- struct{}{}:
+			default:
+			}
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Two responses: the tool call (triggers approval) and a final message so
+	// the loop terminates even if the buggy code ignores the edit.
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"fetch","action":{"type":"tool_call","tool":"web.fetch","args":{}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"done"}}`,
+	}}
+	cfg := config.Default()
+	pol := policy.NewEngine(&cfg, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- runner.Run(context.Background(), "Fetch")
+	}()
+
+	var tc *session.PendingToolCall
+	deadline := time.After(5 * time.Second)
+	for tc == nil {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for pending approval")
+		default:
+			tc = state.PendingApproval()
+		}
+	}
+
+	// Send a syntactically invalid JSON edit — the runner must reject it.
+	tc.ResponseChan <- session.UserApprovalDecision{
+		Approved: true,
+		Edited:   "not json",
+	}
+
+	select {
+	case err := <-runErr:
+		if err == nil {
+			t.Fatal("expected error from invalid JSON edit, got nil")
+		}
+		if !strings.Contains(err.Error(), "not valid JSON") {
+			t.Fatalf("error does not mention invalid JSON: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Run to finish")
+	}
+
+	select {
+	case <-executed:
+		t.Fatal("tool handler was executed despite invalid JSON edit")
+	default:
+	}
+}
+
 func TestRunRetriesOnProviderErrorThenSucceeds(t *testing.T) {
 	p := &scriptedProvider{
 		errs:      []error{errors.New("connection reset"), nil},

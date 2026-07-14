@@ -212,9 +212,10 @@ type SandboxConfig struct {
 	// downgrade to the restricted backend. Default = false: failing to
 	// run the requested sandbox is a hard error, because a downgrade
 	// silently drops network/filesystem containment the user expected.
-	AllowFallback bool     `toml:"allow_fallback"`
-	EnvAllowlist  []string `toml:"env_allowlist"`
-	EnvDenylist   []string `toml:"env_denylist"`
+	AllowFallback    bool     `toml:"allow_fallback"`
+	UnsafePassthrough bool    `toml:"unsafe_passthrough"`
+	EnvAllowlist     []string `toml:"env_allowlist"`
+	EnvDenylist      []string `toml:"env_denylist"`
 }
 
 type CommandRules struct {
@@ -231,16 +232,17 @@ type PatternRules struct {
 // field requires editing just this struct plus SandboxConfig itself, plus
 // the merge block.
 type sandboxFile struct {
-	Backend          *string  `toml:"backend"`
-	MemoryLimitMB    *int     `toml:"memory_limit_mb"`
-	CPUSeconds       *int     `toml:"cpu_seconds"`
-	MaxProcesses     *int     `toml:"max_processes"`
-	FileSizeLimitMB  *int     `toml:"file_size_limit_mb"`
-	ContainerRuntime *string  `toml:"container_runtime"`
-	ContainerImage   *string  `toml:"container_image"`
-	AllowFallback    *bool    `toml:"allow_fallback"`
-	EnvAllowlist     []string `toml:"env_allowlist"`
-	EnvDenylist      []string `toml:"env_denylist"`
+	Backend           *string  `toml:"backend"`
+	MemoryLimitMB     *int     `toml:"memory_limit_mb"`
+	CPUSeconds        *int     `toml:"cpu_seconds"`
+	MaxProcesses      *int     `toml:"max_processes"`
+	FileSizeLimitMB   *int     `toml:"file_size_limit_mb"`
+	ContainerRuntime  *string  `toml:"container_runtime"`
+	ContainerImage    *string  `toml:"container_image"`
+	AllowFallback     *bool    `toml:"allow_fallback"`
+	UnsafePassthrough *bool    `toml:"unsafe_passthrough"`
+	EnvAllowlist      []string `toml:"env_allowlist"`
+	EnvDenylist       []string `toml:"env_denylist"`
 }
 
 type ProjectConfig struct {
@@ -540,19 +542,20 @@ func Default() Config {
 				Confirm:               CommandRules{Commands: []string{"go get", "npm install"}},
 				Deny:                  PatternRules{Patterns: []string{"rm -rf", "sudo", "curl * | sh"}},
 				Sandbox: SandboxConfig{
-					Backend:          "restricted",
-					MemoryLimitMB:    0,
-					CPUSeconds:       0,
-					MaxProcesses:     0,
-					FileSizeLimitMB:  0,
-					ContainerRuntime: "auto",
+					Backend:           "restricted",
+					MemoryLimitMB:     0,
+					CPUSeconds:        0,
+					MaxProcesses:      0,
+					FileSizeLimitMB:   0,
+					ContainerRuntime:  "auto",
 					// ContainerImage intentionally empty here: the single
 					// source of truth for the default image lives in
 					// internal/sandbox/container.go (defaultContainerImage).
 					// If this field is empty at runtime, the container
 					// backend substitutes defaultContainerImage.
-					ContainerImage: "",
-					AllowFallback:  false,
+					ContainerImage:    "",
+					AllowFallback:     false,
+					UnsafePassthrough: false,
 					EnvAllowlist: []string{
 						"PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL",
 						"TERM", "TMPDIR", "GOPATH", "GOCACHE", "GOMODCACHE",
@@ -928,6 +931,9 @@ func merge(cfg *Config, file configFile) error {
 			}
 			if s.Sandbox.AllowFallback != nil {
 				cfg.Tools.Shell.Sandbox.AllowFallback = *s.Sandbox.AllowFallback
+			}
+			if s.Sandbox.UnsafePassthrough != nil {
+				cfg.Tools.Shell.Sandbox.UnsafePassthrough = *s.Sandbox.UnsafePassthrough
 			}
 			if s.Sandbox.EnvAllowlist != nil {
 				cfg.Tools.Shell.Sandbox.EnvAllowlist = s.Sandbox.EnvAllowlist

@@ -52,9 +52,10 @@ type Config struct {
 	// AllowFallback controls whether the container backend may silently
 	// downgrade to restricted when no container runtime is available.
 	// Default false: missing runtime is a hard error. See sandbox.New.
-	AllowFallback bool
-	EnvAllowlist  []string
-	EnvDenylist   []string
+	AllowFallback    bool
+	UnsafePassthrough bool // opt-in required for backend=passthrough (no isolation)
+	EnvAllowlist     []string
+	EnvDenylist      []string
 }
 
 // FromConfig builds a Config from a ShellToolConfig, carrying the AllowNetwork
@@ -62,17 +63,18 @@ type Config struct {
 func FromConfig(shell config.ShellToolConfig) Config {
 	sb := shell.Sandbox
 	return Config{
-		Backend:          sb.Backend,
-		AllowNetwork:     shell.AllowNetwork,
-		MemoryLimitMB:    sb.MemoryLimitMB,
-		CPUSeconds:       sb.CPUSeconds,
-		MaxProcesses:     sb.MaxProcesses,
-		FileSizeLimitMB:  sb.FileSizeLimitMB,
-		ContainerRuntime: sb.ContainerRuntime,
-		ContainerImage:   sb.ContainerImage,
-		AllowFallback:    sb.AllowFallback,
-		EnvAllowlist:     sb.EnvAllowlist,
-		EnvDenylist:      sb.EnvDenylist,
+		Backend:           sb.Backend,
+		AllowNetwork:      shell.AllowNetwork,
+		MemoryLimitMB:     sb.MemoryLimitMB,
+		CPUSeconds:        sb.CPUSeconds,
+		MaxProcesses:      sb.MaxProcesses,
+		FileSizeLimitMB:   sb.FileSizeLimitMB,
+		ContainerRuntime:  sb.ContainerRuntime,
+		ContainerImage:    sb.ContainerImage,
+		AllowFallback:     sb.AllowFallback,
+		UnsafePassthrough: sb.UnsafePassthrough,
+		EnvAllowlist:      sb.EnvAllowlist,
+		EnvDenylist:       sb.EnvDenylist,
 	}
 }
 
@@ -99,6 +101,12 @@ func New(cfg Config, logger *slog.Logger) (Sandbox, error) {
 
 	switch backend {
 	case "passthrough":
+		if !cfg.UnsafePassthrough {
+			return nil, errors.New("sandbox: backend=passthrough requires unsafe_passthrough=true (no isolation)")
+		}
+		if logger != nil {
+			logger.Warn("sandbox: running in PASSTHROUGH mode — no isolation")
+		}
 		return &Passthrough{logger: logger}, nil
 	case "restricted":
 		return newRestricted(cfg, logger), nil

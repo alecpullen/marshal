@@ -367,6 +367,15 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			m.input, cmd = m.input.Update(k)
 			return m, cmd
 		}
+	case stepPickTemplate, stepPickModel:
+		if ks == "esc" {
+			return m, m.cancel()
+		}
+		if m.picker == nil {
+			return m, nil
+		}
+		cmd := m.picker.Update(k)
+		return m, cmd
 	case stepProbing:
 		if ks == "esc" {
 			return m, m.cancel()
@@ -377,8 +386,6 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 		if ks == "s" {
 			return m.skipProbe()
 		}
-		return m, nil
-	case stepPickModel:
 		return m, nil
 	}
 	if ks == "esc" {

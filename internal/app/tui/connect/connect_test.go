@@ -175,4 +175,37 @@ func TestPickModelEmitsDone(t *testing.T) {
 	}
 }
 
+func TestPickTemplateKeyForwardedToPicker(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	if m.picker == nil {
+		t.Fatal("expected picker at stepPickTemplate")
+	}
+	// Send Enter; without the fix this returns (m, nil) because handleKey had
+	// no case for stepPickTemplate. With the fix the key is forwarded to the
+	// picker, which returns a cmd that produces picker.PickedMsg.
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
+	if cmd == nil {
+		t.Fatal("Enter on pickTemplate should forward to picker and return a cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(picker.PickedMsg); !ok {
+		t.Fatalf("expected picker.PickedMsg, got %T", msg)
+	}
+}
+
+func TestPickModelKeyForwardedToPicker(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama"})
+	if m.picker == nil {
+		t.Fatal("expected picker at stepPickModel")
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
+	if cmd == nil {
+		t.Fatal("Enter on pickModel should forward to picker and return a cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(picker.PickedMsg); !ok {
+		t.Fatalf("expected picker.PickedMsg, got %T", msg)
+	}
+}
+
 func pickerPicked(value string) tea.Msg { return picker.PickedMsg{Value: value} }

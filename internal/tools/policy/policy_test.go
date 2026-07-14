@@ -1,8 +1,11 @@
 package policy
 
 import (
+	"log/slog"
 	"marshal/internal/app/config"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -490,4 +493,25 @@ func TestPolicyEngine_Evaluate_WebToolsAlwaysConfirm(t *testing.T) {
 			t.Errorf("Evaluate(%q) = %v, want Confirm (%s)", name, dec, reason)
 		}
 	}
+}
+
+func TestPolicyEngineUsesInjectedLogger(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+
+	var captured atomic.Value
+	captured.Store("")
+	handler := slog.NewTextHandler(&logBuffer{store: &captured}, &slog.HandlerOptions{Level: slog.LevelDebug})
+	pe.SetLogger(slog.New(handler))
+
+	pe.Logger().Debug("probe")
+	if !strings.Contains(captured.Load().(string), "probe") {
+		t.Fatalf("injected logger did not receive messages: %q", captured.Load().(string))
+	}
+}
+
+type logBuffer struct{ store *atomic.Value }
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.store.Store(string(p))
+	return len(p), nil
 }

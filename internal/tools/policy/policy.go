@@ -22,9 +22,24 @@ const (
 
 // guardrailPatterns are conservative hard-coded command patterns that are
 // always blocked regardless of user allow rules.
+// Note: chmod -r and chown -r were removed from this list in favor of
+// argv-aware AST checks below that also catch -R and --recursive.
+// See hasRecursiveFlag and the chmod/chown check in analyzeCommand.
 var guardrailPatterns = []string{
 	"sudo", "rm -rf", "git reset --hard", "git clean -fd",
-	"mkfs", "shutdown", "reboot", "chmod -r", "chown -r",
+	"mkfs", "shutdown", "reboot",
+}
+
+// destructivePatterns is the subset of guardrailPatterns that are considered
+// genuinely destructive. Matches from these patterns trigger the
+// AllowDestructive config flag check.
+var destructivePatterns = map[string]bool{
+	"rm -rf":           true,
+	"git reset --hard": true,
+	"git clean -fd":    true,
+	"mkfs":             true,
+	"shutdown":         true,
+	"reboot":           true,
 }
 
 type PolicyEngine struct {
@@ -163,7 +178,9 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		if pe.config != nil && pe.config.Tools.Shell.GuardrailDynamicArgv0 != "" {
 			dynSetting = pe.config.Tools.Shell.GuardrailDynamicArgv0
 		}
-		dec, reason := evaluateGuardrails(normCmd, dynSetting)
+		allowSudo := pe.config != nil && pe.config.Tools.Shell.AllowSudo
+		allowDestructive := pe.config != nil && pe.config.Tools.Shell.AllowDestructive
+		dec, reason := evaluateGuardrails(normCmd, dynSetting, allowSudo, allowDestructive)
 		if dec != "" {
 			return dec, reason, nil
 		}
@@ -259,10 +276,12 @@ func isBlockedByGuardrailLegacy(cmd string) bool {
 	return false
 }
 
-// stage is one pipeline stage: argv0 word + the full printed stage text.
+// stage is one pipeline stage: argv0 word + its arguments + the full printed
+// stage text.
 type stage struct {
 	argv0    string
 	fullText string
+	args     []string // individual argument tokens (excluding argv0)
 	dynamic  bool
 }
 
@@ -283,9 +302,13 @@ func parseStages(cmd string) ([]stage, error) {
 		var b strings.Builder
 		syntax.NewPrinter().Print(&b, call.Args[0])
 		var full strings.Builder
+		var args []string
 		for i, w := range call.Args {
 			if i > 0 {
 				full.WriteString(" ")
+				var argBuf strings.Builder
+				syntax.NewPrinter().Print(&argBuf, w)
+				args = append(args, argBuf.String())
 			}
 			syntax.NewPrinter().Print(&full, w)
 		}
@@ -298,7 +321,7 @@ func parseStages(cmd string) ([]stage, error) {
 			}
 			return true
 		})
-		stages = append(stages, stage{argv0: b.String(), fullText: full.String(), dynamic: dyn})
+		stages = append(stages, stage{argv0: b.String(), fullText: full.String(), args: args, dynamic: dyn})
 		return true
 	})
 	return stages, nil
@@ -309,6 +332,8 @@ type guardrailVerdict struct {
 	blocked      bool
 	reason       string
 	dynamicArgv0 bool
+	destructive  bool   // true when the matching pattern is in destructivePatterns
+	pattern      string // the matched guardrail pattern, if any
 }
 
 // analyzeCommand parses cmd and classifies it against the hardcoded guardrail
@@ -334,10 +359,25 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 		ft := strings.ToLower(st.fullText)
 		for _, p := range guardrailPatterns {
 			if strings.Contains(ft, p) {
-				return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: " + p}, nil
+				destructive := destructivePatterns[p]
+				return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: " + p, destructive: destructive, pattern: p}, nil
 			}
 		}
 		name := basenameLower(st.argv0)
+		// argv-aware check for chmod/chown with recursive flags.
+		// Catches -r, -R (via lowercasing), and --recursive which the
+		// substring guardrailPatterns would miss. chmod -r and chown -r
+		// have been removed from guardrailPatterns above.
+		if name == "chmod" || name == "chown" {
+			if hasRecursiveFlag(st) {
+				return guardrailVerdict{
+					blocked:     true,
+					reason:      "blocked by conservative guardrail: " + name + " --recursive",
+					destructive: true,
+					pattern:     name + " -r",
+				}, nil
+			}
+		}
 		if name == "curl" || name == "wget" {
 			hasFetch = true
 		}
@@ -360,10 +400,28 @@ func basenameLower(argv0 string) string {
 	return strings.ToLower(name)
 }
 
+// hasRecursiveFlag checks whether the stage's arguments include a recursive
+// flag (-r, -R, or --recursive) for chmod/chown. This is used instead of
+// the substring guardrail patterns (which miss --recursive).
+func hasRecursiveFlag(st stage) bool {
+	for _, arg := range st.args {
+		a := strings.ToLower(arg)
+		if a == "-r" || a == "--recursive" {
+			return true
+		}
+	}
+	return false
+}
+
 // evaluateGuardrails runs the AST-based guardrail analysis and returns the
 // resulting Decision + reason. Returns Decision("") (empty) to signal
 // "not blocked — continue to rule matching".
-func evaluateGuardrails(cmd, dynSetting string) (Decision, string) {
+//
+// allowSudo and allowDestructive come from the config ShellToolConfig; when
+// true they change the reason text to "(flagged allowed)" so the audit log
+// records that the user opted in, but the decision remains DecisionDeny (the
+// TUI is still expected to confirm destructive/sudo commands).
+func evaluateGuardrails(cmd, dynSetting string, allowSudo, allowDestructive bool) (Decision, string) {
 	verdict, err := analyzeCommand(cmd)
 	if err != nil {
 		slog.Default().Debug("policy guardrail parse failed, falling back to legacy", "cmd", cmd, "err", err)
@@ -373,7 +431,13 @@ func evaluateGuardrails(cmd, dynSetting string) (Decision, string) {
 		return "", ""
 	}
 	if verdict.blocked {
-		return DecisionDeny, verdict.reason
+		reason := verdict.reason
+		if verdict.destructive && allowDestructive {
+			reason += " (flagged allowed)"
+		} else if verdict.pattern == "sudo" && allowSudo {
+			reason += " (flagged allowed)"
+		}
+		return DecisionDeny, reason
 	}
 	if verdict.dynamicArgv0 {
 		switch dynSetting {

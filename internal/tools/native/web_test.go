@@ -40,6 +40,24 @@ func TestWebFetchBlocksZeroAddr(t *testing.T) {
 	}
 }
 
+func TestHtmlToTextDecodesNumericAndNamedEntities(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"Tom &amp; Jerry", "Tom & Jerry"},
+		{"it&#39;s fine", "it's fine"},
+		{"it&#x27;s fine", "it's fine"},
+		{"&copy; 2026", "© 2026"},
+		{"&nbsp;hi", "hi"},
+	}
+	for _, c := range cases {
+		if got := htmlToText(c.in); got != c.want {
+			t.Errorf("htmlToText(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestWebFetchReturnsText(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("<html><body>hello</body></html>"))

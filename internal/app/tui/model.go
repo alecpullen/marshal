@@ -410,9 +410,9 @@ func (m *Model) resize(width, height int) {
 	// content area and avoid boundary-case trailing-space wrap artifacts.
 	m.input.SetWidth(max(width-8, 1))
 
-	// Transcript viewport lives inside a subtle border frame.
-	m.viewport.SetWidth(max(width-2, 1))
-	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-transcriptBorderRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
+	// Transcript viewport spans the full terminal width (borderless).
+	m.viewport.SetWidth(max(width, 1))
+	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -987,7 +987,7 @@ func (m Model) sddPanelRows() int {
 }
 
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-transcriptBorderRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
+	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}

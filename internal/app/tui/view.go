@@ -23,15 +23,14 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 const (
-	titleBarRows         = 1
-	inputBorderRows      = 2
-	activityStripRows    = 1
-	transcriptFrameRows  = 0
-	transcriptBorderRows = 2
-	footerRows           = help.Rows
-	commandBarRows       = footerRows + 1
-	statusLineRows       = 1
-	completionPopupMax   = 8
+	titleBarRows        = 1
+	inputBorderRows     = 2
+	activityStripRows   = 1
+	transcriptFrameRows = 0
+	footerRows          = help.Rows
+	commandBarRows      = footerRows + 1
+	statusLineRows      = 1
+	completionPopupMax  = 8
 )
 
 // View assembles the full-screen frame. Alt screen and mouse mode are
@@ -121,16 +120,14 @@ func (m Model) renderTitleBar(width int) string {
 }
 
 func (m Model) renderTranscriptFrame() string {
-	innerW := max(m.width-2, 1)
-	innerH := m.viewport.Height()
-	title := "Conversation"
-	content := m.viewport.View()
+	vpWidth := max(m.width, 1)
+	vpHeight := max(m.viewport.Height(), 1)
+	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.viewport.View())
 	if !m.viewportFollow && m.viewport.TotalLineCount() > m.viewport.Height() {
 		hint := mutedStyle.Render("↑ scrolled — End to follow")
-		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
-		innerH = max(innerH-1, 1)
+		return lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}
-	return chrome.Panel(title, content, innerW, innerH+transcriptBorderRows, true, activeTheme)
+	return content
 }
 
 func (m Model) renderInputArea() string {

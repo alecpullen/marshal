@@ -79,19 +79,20 @@ func (r *Restricted) Run(ctx context.Context, req native.CommandRequest) (native
 // buildEnv constructs the child environment.
 //
 // Three cases by config state:
-//   - Nil EnvAllowlist ("nothing configured"): pass the parent env minus
-//     EnvDenylist minus a hardcoded scrub of well-known secret-bearing
-//     var prefixes (AWS_*, *_KEY, *_TOKEN, *_SECRET, etc). This is the
-//     "no opinion" path — the user lets the parent env through but we
-//     still redact the obvious leaks.
+//   - Nil EnvAllowlist ("nothing configured"): use envutil.AllowList to
+//     inherit only a curated set of safe env vars (PATH, HOME, USER, etc.),
+//     minus EnvDenylist. This is the security-hardened default: instead of
+//     passing the full parent env with a best-effort secret scrub, we only
+//     pass vars that are known-safe. (F-SAFE-23)
 //   - Explicit-empty EnvAllowlist (len=0 and != nil): pass a minimal env
 //     (PATH only, when present on the host). This honors the user's
 //     intent to deny all env. It is NOT treated as "no allowlist
 //     configured"; conflating nil and empty was the previous bug.
-//   - Non-empty EnvAllowlist: pass only allowlisted vars minus denylisted.
+//   - Non-empty EnvAllowlist: start from the safe defaults (AllowList),
+//     then layer the user's explicitly allowlisted vars on top. Any user
+//     entry rejected by IsDangerousKey or IsSecretKey is silently dropped.
 //
-// EnvDenylist (r.denySet) is always applied, including in the
-// explicit-empty branch (a no-op there, since only PATH is passed).
+// EnvDenylist (r.denySet) is always applied to the final result.
 func (r *Restricted) buildEnv() []string {
 	parent := os.Environ()
 	// Explicit-empty: user explicitly denied all env. Honor it.
@@ -101,39 +102,66 @@ func (r *Restricted) buildEnv() []string {
 		}
 		return nil
 	}
-	// Nil: no allowlist configured, pass parent env with secret scrub.
+	// Nil: use AllowList — only pass safe vars minus denylist.
 	if r.cfg.EnvAllowlist == nil {
-		out := make([]string, 0, len(parent))
-		for _, kv := range parent {
-			key := envutil.EnvKey(kv)
-			if r.denySet[key] {
+		out := envutil.AllowList(parent)
+		filtered := make([]string, 0, len(out))
+		for _, kv := range out {
+			if r.denySet[envutil.EnvKey(kv)] {
 				continue
 			}
-			if envutil.IsSecretBearer(key) {
-				continue
-			}
-			out = append(out, kv)
+			filtered = append(filtered, kv)
 		}
-		return out
+		return filtered
 	}
-	// Non-empty allowlist: allowlist minus denylist.
-	seen := make(map[string]bool, len(parent))
-	out := make([]string, 0, len(r.cfg.EnvAllowlist))
+	// Non-empty allowlist: start from AllowList then layer user entries.
+	out := envutil.AllowList(parent)
+
+	// Build parent env lookup for user-supplied keys.
+	parentVars := make(map[string]string, len(parent))
 	for _, kv := range parent {
-		key := envutil.EnvKey(kv)
-		if !r.allowSet[key] {
-			continue
+		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
+			parentVars[k] = v
 		}
+	}
+
+	for _, key := range r.cfg.EnvAllowlist {
 		if r.denySet[key] {
 			continue
 		}
-		if seen[key] {
+		if envutil.IsDangerousKey(key) {
 			continue
 		}
-		seen[key] = true
-		out = append(out, kv)
+		if envutil.IsSecretKey(key) {
+			continue
+		}
+		v, ok := parentVars[key]
+		if !ok {
+			continue
+		}
+		// Replace if already present (safe default), otherwise append.
+		replaced := false
+		for i, kv := range out {
+			if envutil.EnvKey(kv) == key {
+				out[i] = key + "=" + v
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, key+"="+v)
+		}
 	}
-	return out
+
+	// Apply denylist to the final result.
+	filtered := make([]string, 0, len(out))
+	for _, kv := range out {
+		if r.denySet[envutil.EnvKey(kv)] {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
 }
 
 func allowSet(keys []string) map[string]bool {

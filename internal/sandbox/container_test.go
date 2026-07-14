@@ -207,8 +207,6 @@ func TestContainerBuildArgsWithFakeRuntimeExecutes(t *testing.T) {
 	}
 }
 
-// TestContainerDetectWithFakeInfoRuntime verifies that New can detect a
-// fake runtime on PATH with the info command succeeding.
 func TestBuildContainerEnv_StripsSecrets(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test-12345")
 	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:2376")
@@ -258,6 +256,8 @@ func TestBuildContainerEnv_StripsSecrets(t *testing.T) {
 	}
 }
 
+// TestContainerDetectWithFakeInfoRuntime verifies that New can detect a
+// fake runtime on PATH with the info command succeeding.
 func TestContainerDetectWithFakeInfoRuntime(t *testing.T) {
 	fakePath := writeFakeInfoRuntime(t)
 	fakeDir := filepath.Dir(fakePath)

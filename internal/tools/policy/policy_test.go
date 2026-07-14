@@ -587,3 +587,43 @@ func TestEvaluate_ChownRecursiveLong(t *testing.T) {
 		t.Errorf("chown --recursive should be denied, got %v", dec)
 	}
 }
+
+// TestEvaluate_ChownR_Capital verifies that chown -R (capital R) is denied.
+// This mirrors the chmod -R fix for chown (F-SEC-16 follow-up).
+func TestEvaluate_ChownR_Capital(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "chown -R alice:alice /tmp/x"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("chown -R should be denied, got %v", dec)
+	}
+}
+
+// TestEvaluate_ChmodR_Lowercase is a regression test: the old substring
+// patterns matched -r for chmod and were replaced by hasRecursiveFlag.
+// Confirm lowercase -r is still caught.
+func TestEvaluate_ChmodR_Lowercase(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "chmod -r 777 /tmp/x"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("chmod -r should be denied, got %v", dec)
+	}
+}
+
+// TestEvaluate_ChownR_Lowercase verifies that chown -r (lowercase) is also
+// caught by hasRecursiveFlag for symmetry with chmod.
+func TestEvaluate_ChownR_Lowercase(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "chown -r alice:alice /tmp/x"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("chown -r should be denied, got %v", dec)
+	}
+}

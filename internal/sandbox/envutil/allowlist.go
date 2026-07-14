@@ -17,6 +17,45 @@ var allowlistKeys = map[string]bool{
 	"XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true, "XDG_CACHE_HOME": true,
 }
 
+// IsSecretKey reports whether key matches common secret/key/credential
+// patterns via case-insensitive substring matching. Unlike IsSecretBearer
+// (which uses prefix/suffix rules), IsSecretKey uses a simple Contains
+// approach designed for downstream consumers (e.g. MCP client) that need
+// to reject user-supplied env additions containing known secret patterns.
+func IsSecretKey(key string) bool {
+	k := strings.ToUpper(key)
+	for _, p := range []string{
+		"API_KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL",
+		"AWS_", "GCP_", "AZURE_", "GH_", "GITHUB_", "GITLAB_",
+		"ANTHROPIC", "OPENAI", "COHERE", "MISTRAL",
+	} {
+		if strings.Contains(k, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDangerousKey reports whether key is a shell-hijack or dynamic-loader
+// variable that should never be inherited from or set by user-supplied
+// env additions. This is for downstream consumers (e.g. MCP client) that
+// need to reject user-supplied env vars containing LD_*, DYLD_*,
+// BASH_FUNC_* prefixes, or exact-dangerous names like IFS, BASH_ENV,
+// PATH, etc.
+func IsDangerousKey(key string) bool {
+	if strings.HasPrefix(key, "LD_") || strings.HasPrefix(key, "DYLD_") {
+		return true
+	}
+	if strings.HasPrefix(key, "BASH_FUNC_") {
+		return true
+	}
+	switch key {
+	case "IFS", "SHELLOPTS", "BASH_ENV", "ENV", "ZDOTDIR", "PATH":
+		return true
+	}
+	return false
+}
+
 // AllowList returns a copy of parent containing only the variables
 // in allowlistKeys — a curated set of env vars that are safe to
 // propagate to sandboxed child processes. Secret-bearing keys,

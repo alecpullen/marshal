@@ -3,9 +3,15 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"marshal/internal/app/config"
 	"marshal/internal/tools/registry"
+	"time"
 )
+
+// mcpServerTimeout is the per-server timeout for tools/list calls.
+// It is a var (not const) so tests can override it.
+var mcpServerTimeout = 10 * time.Second
 
 type Manager struct {
 	config  *config.Config
@@ -46,8 +52,6 @@ func (m *Manager) Close() error {
 }
 
 func (m *Manager) RegisterTools(reg *registry.Registry) error {
-	ctx := context.Background()
-
 	threshold := 0
 	if m.config != nil {
 		threshold = m.config.MCP.DisclosureThresholdTools
@@ -63,10 +67,17 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 	var pending []pendingTool
 
 	for _, client := range m.clients {
+		srvCtx, cancel := context.WithTimeout(context.Background(), mcpServerTimeout)
 		var res ListToolsResult
-		if err := client.Call(ctx, "tools/list", nil, &res); err != nil {
-			return fmt.Errorf("list tools from server %s: %w", client.Name, err)
+		if err := client.Call(srvCtx, "tools/list", nil, &res); err != nil {
+			cancel()
+			slog.Default().Warn("mcp: server skipped",
+				"server", client.Name,
+				"error", err,
+			)
+			continue
 		}
+		cancel()
 		for _, tool := range res.Tools {
 			pending = append(pending, pendingTool{
 				name:        fmt.Sprintf("mcp.%s.%s", client.Name, tool.Name),

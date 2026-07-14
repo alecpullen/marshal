@@ -22,8 +22,10 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
@@ -130,6 +132,11 @@ type Model struct {
 
 	// Help overlay (triggered by ?).
 	helpOpen bool
+
+	// Connect overlay (opened by /connect, /models, Ctrl+P).
+	connectModel *connect.Model
+	connectOpen  bool
+	discovered   map[string][]string
 
 	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
 	pickerModel   *picker.Model
@@ -338,6 +345,7 @@ func New(state *session.State, opts ...Option) Model {
 		spinner:        NewSpinner(),
 		now:            time.Now,
 		viewportFollow: true,
+		discovered:     map[string][]string{},
 	}
 	for _, opt := range opts {
 		opt(&m)
@@ -493,6 +501,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// (ticks, agent events) keep flowing to normal handlers so background
 	// work continues.
 	switch pm := msg.(type) {
+	case connect.DoneMsg:
+		m.applyConnectDone(pm)
+		m.connectOpen = false
+		m.connectModel = nil
+		m.refreshViewport()
+		return m, nil
+	case connect.CancelledMsg:
+		m.connectOpen = false
+		m.connectModel = nil
+		m.refreshViewport()
+		return m, nil
+	case connect.TickMsg:
+		if m.connectOpen && m.connectModel != nil {
+			var cmd tea.Cmd
+			m.connectModel, cmd = m.connectModel.Update(pm)
+			return m, cmd
+		}
+		return m, nil
+	case probe.ResultMsg:
+		if m.connectOpen && m.connectModel != nil {
+			var cmd tea.Cmd
+			m.connectModel, cmd = m.connectModel.Update(pm)
+			if pm.Err == nil && pm.Provider != "" {
+				m.discovered[pm.Provider] = pm.Models
+			}
+			return m, cmd
+		}
+		return m, nil
 	case picker.PickedMsg:
 		cmdName := m.pickerCommand
 		m.pickerModel = nil
@@ -532,6 +568,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// non-key messages (ticks, agent events) keep flowing to the
 		// normal handlers below so background work continues.
+	}
+
+	if m.connectOpen && m.connectModel != nil {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			var cmd tea.Cmd
+			m.connectModel, cmd = m.connectModel.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	}
 
 	// Help overlay: when open, only ? and Esc close it; other keypresses are
@@ -615,6 +660,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.settingsOpen = true
 			m.syncSettingsSaveBlock()
 			return m, nil
+		case "ctrl+p":
+			cmd := m.openModels()
+			m.refreshViewport()
+			return m, cmd
 		case "ctrl+k":
 			if m.memoryDB == nil {
 				return m, nil
@@ -1267,6 +1316,9 @@ func (m *Model) refreshViewport() {
 	}
 	if err := m.state.ProviderError(); err != nil {
 		b.WriteString(renderProviderError(err, m.viewport.Width()))
+		b.WriteString("\n")
+		b.WriteString(mutedStyle.Render("Run /connect to add a provider, or /models to pick a model."))
+		b.WriteString("\n")
 	}
 	if len(queued) > 0 {
 		b.WriteString(renderQueuedMessages(queued, m.viewport.Width()))
@@ -1661,6 +1713,16 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		m.agentCancel = cancel
 		return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.sddRunner, planPath), tickCmd(), spinnerTickCmd())
 
+	case "connect":
+		m.openConnect("/")
+		m.refreshViewport()
+		return m, nil
+
+	case "models":
+		cmd := m.openModels()
+		m.refreshViewport()
+		return m, cmd
+
 	case "model":
 		presets := m.state.Config.Models.Presets
 		if len(presets) == 0 {
@@ -1686,6 +1748,57 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
+}
+
+// openConnect opens the connect overlay for adding/reconnecting a provider.
+func (m *Model) openConnect(_ string) {
+	m.connectModel = connect.New(connect.Opts{
+		Cfg:        m.state.Config,
+		Discovered: m.discovered,
+	})
+	m.connectModel.SetSize(m.width, m.height)
+	m.connectOpen = true
+}
+
+// openModels opens the connect overlay scoped to the first provider for model
+// selection. When no providers are configured it falls through to openConnect.
+// Returns a tea.Cmd batch that probes all connected (and uncached) providers.
+func (m *Model) openModels() tea.Cmd {
+	names := m.sortedProviderNames()
+	if len(names) == 0 {
+		m.openConnect("/")
+		return nil
+	}
+	m.connectModel = connect.New(connect.Opts{
+		Cfg:              m.state.Config,
+		Discovered:       m.discovered,
+		SkipToIntroModel: true,
+		ScopedProvider:   names[0],
+	})
+	m.connectModel.SetSize(m.width, m.height)
+	m.connectOpen = true
+	var cmds []tea.Cmd
+	for _, n := range names {
+		if cached, ok := m.discovered[n]; ok && len(cached) > 0 {
+			continue
+		}
+		pc := m.state.Config.Providers[n]
+		if !probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed {
+			continue
+		}
+		cmds = append(cmds, probe.Provider("models", n, pc))
+	}
+	return tea.Batch(cmds...)
+}
+
+// sortedProviderNames returns provider names sorted alphabetically.
+func (m *Model) sortedProviderNames() []string {
+	names := make([]string, 0, len(m.state.Config.Providers))
+	for k := range m.state.Config.Providers {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // openPicker opens a command modal. The picked value is delivered as
@@ -1800,6 +1913,43 @@ func (m *Model) openSDDPlanPicker() {
 	p.SetAllowCustom(true)
 	m.pickerModel = p
 	m.pickerCommand = "sdd-plan"
+}
+
+// applyConnectDone persists the provider and model chosen through the
+// connect overlay. It writes the provider entry to cfg.Providers, sets
+// Agent.Provider/Model, clears the profile default, and saves.
+func (m *Model) applyConnectDone(msg connect.DoneMsg) {
+	if msg.Provider == "" || msg.Model == "" {
+		return
+	}
+	newCfg := m.state.Config
+	if newCfg.Providers != nil {
+		copied := make(map[string]config.ProviderConfig, len(newCfg.Providers)+1)
+		for k, v := range newCfg.Providers {
+			copied[k] = v
+		}
+		newCfg.Providers = copied
+	} else {
+		newCfg.Providers = map[string]config.ProviderConfig{}
+	}
+	if msg.ProviderCfg.Type != "" {
+		newCfg.Providers[msg.Provider] = msg.ProviderCfg
+	}
+	newCfg.Agent.Provider = msg.Provider
+	newCfg.Agent.Model = msg.Model
+	newCfg.Profile.Default = ""
+	if m.configReloader != nil {
+		if err := m.configReloader(newCfg); err != nil {
+			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
+			return
+		}
+	}
+	if err := config.SaveProjectConfig(projectConfigPath(m.state.WorkingDir), newCfg); err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to save model: %v", err), session.ContentTypePlain)
+		return
+	}
+	m.state.AddMessage(session.RoleSystem,
+		fmt.Sprintf("Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
 }
 
 // switchModelPreset applies a session-only model switch by routing every

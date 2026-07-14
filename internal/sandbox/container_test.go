@@ -360,6 +360,48 @@ func TestIsShellFree(t *testing.T) {
 	}
 }
 
+// TestContainer_AvPathForSimpleCommands_Docker is an integration test that
+// verifies the argv execution path against a real Docker daemon. It is
+// skipped when Docker is not available (e.g., CI, no daemon running).
+func TestContainer_AvPathForSimpleCommands_Docker(t *testing.T) {
+	name, absPath, ok := detectRuntime("docker")
+	if !ok {
+		t.Skip("requires Docker daemon")
+	}
+
+	c := &Container{
+		cfg: Config{
+			ContainerRuntime: "docker",
+			ContainerImage:   "alpine:latest",
+		},
+		runtime:     name,
+		runtimePath: absPath,
+		envDenySet:  make(map[string]bool),
+	}
+
+	dir := t.TempDir()
+	res, err := c.Run(context.Background(), native.CommandRequest{
+		Command: "echo hello",
+		Dir:     dir,
+		Timeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Container.Run: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "hello") {
+		t.Fatalf("stdout = %q, want %q", res.Stdout, "hello\n")
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", res.ExitCode)
+	}
+	if !res.Meta.Enabled {
+		t.Fatal("meta.Enabled should be true")
+	}
+	if res.Meta.Backend != "container" {
+		t.Fatalf("meta.Backend = %q, want %q", res.Meta.Backend, "container")
+	}
+}
+
 // TestContainer_AvPathForSimpleCommands verifies that shell-free commands
 // are executed via the argv path (not /bin/sh -lc).  It uses the fake
 // runtime, which only succeeds if its argv-execution path is hit for

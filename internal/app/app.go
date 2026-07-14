@@ -351,6 +351,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
 	}
 
+	pol := policy.NewEngine(&cfg, state.SessionRules())
+	if state.Logger() != nil {
+		pol.SetLogger(state.Logger())
+	}
+
 	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,
 		CommandRunner:  commandRunner,
@@ -363,6 +368,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		Config:         cfg,
 		JobManager:     jobManager,
 		JobBroker:      jobBroker,
+		Guardrail:      func(cmd string) error { return pol.GuardrailCheck(cmd) },
 	}
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
@@ -386,11 +392,6 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 			jmErr = err
 			return nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
-	}
-
-	pol := policy.NewEngine(&cfg, state.SessionRules())
-	if state.Logger() != nil {
-		pol.SetLogger(state.Logger())
 	}
 	if err := reg.Register(agent.NewSubagentTool(
 		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model),

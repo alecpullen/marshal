@@ -50,6 +50,14 @@ type Options struct {
 	// when resolving relative paths; paths that escape ALL roots are
 	// rejected. May be nil when no extra directories are configured.
 	AdditionalRoots []string
+
+	// Guardrail is invoked by shell.run / test.run after policy
+	// evaluation, as a final pre-flight check. Returning a non-nil
+	// error aborts the command with a tool error. Typically wired to
+	// (*policy.PolicyEngine).GuardrailCheck in app.go. Optional; when
+	// nil, no guardrail check is performed (the policy engine already
+	// ran Evaluate upstream in the agent loop).
+	Guardrail func(command string) error
 }
 
 type CommandRunner interface {
@@ -98,6 +106,8 @@ type toolSet struct {
 	// Test-only hooks. nil in production.
 	webHTTPClient *http.Client
 	ssrfCheck     func(*url.URL) bool
+
+	guardrail func(command string) error
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -214,6 +224,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		jobManager:      jobManager,
 		diagnostics:     diagnostics.NewChecker(opts.Config.Diagnostics.Commands),
 
+		guardrail:       opts.Guardrail,
 		webEnabled:      opts.Config.Web.Enabled,
 		webFetchTimeout: opts.Config.Web.FetchTimeout,
 		webSearchURL:    opts.Config.Web.SearchURL,

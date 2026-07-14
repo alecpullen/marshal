@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"log/slog"
 	"marshal/internal/app/config"
 	"marshal/internal/permissions"
@@ -414,6 +415,18 @@ func (pe *PolicyEngine) EvaluateGuardrails(cmd, dynSetting string) (Decision, st
 		}
 	}
 	return "", ""
+}
+
+// GuardrailCheck returns an error if the policy engine would deny the
+// given command based on its conservative guardrails. The error wraps
+// the deny reason. shell.run / test.run call this as a final pre-flight
+// check before handing the command to the sandbox.
+func (pe *PolicyEngine) GuardrailCheck(command string) error {
+	dec, reason := pe.EvaluateGuardrails(command, "deny")
+	if dec == DecisionDeny {
+		return fmt.Errorf("command blocked by conservative guardrail: %s", reason)
+	}
+	return nil
 }
 
 func normalizeCommand(s string) string {

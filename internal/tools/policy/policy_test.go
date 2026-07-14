@@ -509,6 +509,16 @@ func TestPolicyEngineUsesInjectedLogger(t *testing.T) {
 	}
 }
 
+func TestPolicyEngineGuardrailCheckExposed(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	if err := pe.GuardrailCheck("rm -rf /"); err == nil {
+		t.Fatal("expected error for rm -rf, got nil")
+	}
+	if err := pe.GuardrailCheck("go test ./..."); err != nil {
+		t.Fatalf("go test should not be blocked: %v", err)
+	}
+}
+
 type logBuffer struct{ store *atomic.Value }
 
 func (b *logBuffer) Write(p []byte) (int, error) {

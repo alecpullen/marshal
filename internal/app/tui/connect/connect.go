@@ -157,11 +157,11 @@ func (m *Model) renderInput(pw int) string {
 }
 
 func (m *Model) renderProbing(pw int) string {
-	frame := "…"
 	if m.probeStart > 0 && time.Now().Sub(time.Unix(0, m.probeStart)) > 200*time.Millisecond {
-		frame = spinnerFrames[m.spinner%len(spinnerFrames)]
+		frame := spinnerFrames[m.spinner%len(spinnerFrames)]
+		return mutedStyle.Render(frame + " connecting…")
 	}
-	return mutedStyle.Render(frame + " connecting…")
+	return mutedStyle.Render("… connecting")
 }
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

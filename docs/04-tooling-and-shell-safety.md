@@ -397,3 +397,10 @@ Every tool call should record:
 - The Unix process-group killer now also sends `SIGKILL` to the direct child PID after the grace interval, so grandchildren that escape the PGID via `setpgid` are still terminated.
 - `RegisterTools` (MCP tool registration) now applies a 10s per-server timeout. A hanging MCP server is logged and skipped; registration of other servers continues. This prevents a single misbehaving server from blocking Marshal startup.
 - The container backend now invokes shell-free commands as direct argv (e.g. `["echo", "hello"]`) instead of always wrapping in `/bin/sh -lc`. Shell metacharacters (`|`, `&`, `;`, `` ` ``, `$()`, etc.) continue to route through the shell. Full argv-aware classification with quoted-argument support comes in A2 (Task 3.1/3.6).
+
+## Release notes — 2026-07-15: A3 path safety
+
+- Workspace path resolution (`file.read`, `file.write_patch`, `repo.search`) now uses an explicit `native.SafeResolve` helper that resolves symlinks via `EvalSymlinks` and re-verifies containment under the workspace root. Symlinks inside the workspace that point outside are refused with `ErrPathEscapes`.
+- `file.write_patch` now closes the TOCTOU window between patch validation and application: the apply loop re-stats the file and re-checks the ModTime against the fileTracker's recorded read time before writing. A concurrent modification is detected and the tool returns an error. New files are explicitly validated: a non-empty SEARCH block against a non-existent file is rejected (no silent empty-file creation).
+- `repo.search` no longer follows directory symlinks. Walk errors that were previously swallowed are now collected and surfaced in the tool summary so users can see permission-denied or unreachable paths.
+- `repo.Scanner` (the indexer) now explicitly skips symlinks with a documented policy. Workspaces that relied on symlinked `node_modules` or similar need to switch to bind mounts or hard links.

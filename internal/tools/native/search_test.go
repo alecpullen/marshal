@@ -1,6 +1,7 @@
 package native
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,6 +68,30 @@ func TestRepoSearchSkipsIgnoredDirectories(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "src/main.go:1:needle") {
 		t.Fatalf("Content missing src match:\n%s", result.Content)
+	}
+}
+
+func TestRepoSearch_SkipsSymlinksAndReportsErrors(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("needle"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	if strings.Contains(result.Content, "secret") {
+		t.Errorf("search followed symlink outside root; content:\n%s", result.Content)
 	}
 }
 

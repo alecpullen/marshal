@@ -143,7 +143,13 @@ func (t *toolSet) searchFile(path string, query string, remaining int) []string 
 	// workspaceRel provides a second check against any path that might
 	// have escaped the root (e.g. on platforms where WalkDir follows
 	// directory symlinks, or for any other unforeseen traversal path).
-	rel, err := workspaceRel(t.root, path)
+	// Resolve the path through symlinks first so the rel computation
+	// matches the resolved root that workspaceRel uses.
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil
+	}
+	rel, err := workspaceRel(t.root, resolvedPath)
 	if err != nil {
 		return nil
 	}

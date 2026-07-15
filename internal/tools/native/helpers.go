@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -27,30 +26,11 @@ func decodeArgs[T any](tool registry.Tool, raw json.RawMessage) (T, error) {
 	return zero, nil
 }
 
+// resolveWorkspacePath resolves a relative path against the workspace root,
+// verifying that the resolved path is contained within the root (including
+// through symlinks). It rejects absolute paths and upward traversal.
 func resolveWorkspacePath(root string, rel string) (string, error) {
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path %q must be relative", rel)
-	}
-
-	cleaned := filepath.Clean(rel)
-	if cleaned == "." {
-		return root, nil
-	}
-
-	full := filepath.Join(root, cleaned)
-	relative, err := filepath.Rel(root, full)
-	if err != nil {
-		return "", fmt.Errorf("resolve path %q: %w", rel, err)
-	}
-	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes workspace", rel)
-	}
-	// Verify symlink containment: even if the path is lexically under root,
-	// a symlink component could point outside.
-	if err := verifySymlinkContainment(root, full); err != nil {
-		return "", err
-	}
-	return full, nil
+	return SafeResolve(root, rel)
 }
 
 // resolveWorkspacePathMulti resolves a relative path against the primary
@@ -62,7 +42,6 @@ func resolveWorkspacePathMulti(root string, additionalRoots []string, rel string
 	if filepath.IsAbs(rel) {
 		return "", fmt.Errorf("path %q must be relative", rel)
 	}
-
 	cleaned := filepath.Clean(rel)
 	if cleaned == "." {
 		return root, nil
@@ -73,89 +52,49 @@ func resolveWorkspacePathMulti(root string, additionalRoots []string, rel string
 	roots[0] = root
 	copy(roots[1:], additionalRoots)
 
+	// First pass: lexical check. Pick the first root under which the
+	// path is lexically contained. This intentionally allows `..` at the
+	// start of rel — a path like `../siblingroot/file` is valid when
+	// `siblingroot` is in additionalRoots. The symlink check below
+	// will catch symlink-based escapes that the lexical check would miss.
+	var lastLexical error
 	for _, r := range roots {
 		full := filepath.Join(r, cleaned)
-		relative, err := filepath.Rel(r, full)
+		relToRoot, err := filepath.Rel(r, full)
 		if err != nil {
+			lastLexical = err
 			continue
 		}
-		if relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			if err := verifySymlinkContainment(r, full); err != nil {
-				return "", err
-			}
-			return full, nil
+		if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
+			lastLexical = fmt.Errorf("path %q escapes root %q", rel, r)
+			continue
 		}
+		// Lexically contained. Now verify symlink containment via the
+		// single source of truth (resolveAbsolute).
+		absRoot, err := filepath.Abs(r)
+		if err != nil {
+			return "", err
+		}
+		resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+		if err != nil {
+			return "", fmt.Errorf("resolve root %q: %w", absRoot, err)
+		}
+		return resolveAbsolute(resolvedRoot, full)
 	}
-
+	if lastLexical != nil {
+		return "", lastLexical
+	}
 	return "", fmt.Errorf("path %q escapes workspace", rel)
 }
 
-// verifySymlinkContainment checks that full (which is already known to be
-// lexically under root) does not escape root through symlinks. For paths
-// that do not yet exist (new file case), it resolves the parent directory
-// and appends the leaf component before checking containment.
-func verifySymlinkContainment(root, full string) error {
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return err
-	}
-	// Resolve symlinks in root itself first so that the containment
-	// check compares real (resolved) paths on both sides.
-	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		return fmt.Errorf("resolve root %q: %w", absRoot, err)
-	}
-	absRoot = resolvedRoot
-
-	resolved, err := filepath.EvalSymlinks(full)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("resolve %q: %w", full, err)
-		}
-		// New file: walk up until we find an existing directory,
-		// resolve that, then append the non-existing tail.
-		resolved, err = resolveUpThenDown(full)
-		if err != nil {
-			return fmt.Errorf("resolve %q: %w", full, err)
-		}
-	}
-	rel, err := filepath.Rel(absRoot, resolved)
-	if err != nil {
-		return fmt.Errorf("resolve %q: %w", full, err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("%w: path %q resolves outside root", ErrPathEscapes, full)
-	}
-	return nil
-}
-
-// resolveUpThenDown walks up from path until it finds a directory that exists,
-// resolves that through symlinks, then appends the non-existing suffix back.
-func resolveUpThenDown(path string) (string, error) {
-	var tail []string
-	for {
-		parent := filepath.Dir(path)
-		if parent == path {
-			return "", fmt.Errorf("no existing parent in %q", path)
-		}
-		resolved, err := filepath.EvalSymlinks(path)
-		if err == nil {
-			// Found existing component; append remaining tail.
-			for i := len(tail) - 1; i >= 0; i-- {
-				resolved = filepath.Join(resolved, tail[i])
-			}
-			return resolved, nil
-		}
-		if !os.IsNotExist(err) {
-			return "", err
-		}
-		tail = append(tail, filepath.Base(path))
-		path = parent
-	}
-}
-
 func workspaceRel(root string, abs string) (string, error) {
-	rel, err := filepath.Rel(root, abs)
+	// Resolve symlinks in root so the rel computation matches the path
+	// returned by resolveWorkspacePath (which is also symlink-resolved).
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve root %q: %w", root, err)
+	}
+	rel, err := filepath.Rel(resolvedRoot, abs)
 	if err != nil {
 		return "", err
 	}

@@ -57,6 +57,15 @@ func (f *fakeCommandRunner) Run(ctx context.Context, req CommandRequest) (Comman
 		_, _ = io.WriteString(req.Stdout, strings.Repeat("x", f.extraBytes))
 	}
 
+	// Write the result's captured stdout/stderr to the observers, matching
+	// the real execRunner behaviour.
+	if f.result.Stdout != "" && req.Stdout != nil {
+		_, _ = io.WriteString(req.Stdout, f.result.Stdout)
+	}
+	if f.result.Stderr != "" && req.Stderr != nil {
+		_, _ = io.WriteString(req.Stderr, f.result.Stderr)
+	}
+
 	if f.release != nil {
 		select {
 		case <-f.release:
@@ -634,6 +643,31 @@ func TestJobManagerRunsInWorkspaceDir(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("Start did not call runner.Run with expected command")
+	}
+}
+
+func TestJobOutputSeparatesStdoutAndStderr(t *testing.T) {
+	runner := newFakeRunner(withResult(CommandResult{Stdout: "out-line\n", Stderr: "err-line\n"}))
+	jm := NewJobManager(context.Background(), runner, t.TempDir(), 1, time.Minute, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+	id, err := jm.Start(context.Background(), "echo out-line; echo err-line 1>&2", time.Second)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForStatus(t, jm, id, StatusRunning, false, 2*time.Second)
+
+	_, out, err := jm.Output(id, 0)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if !strings.Contains(out, "stdout:") || !strings.Contains(out, "stderr:") {
+		t.Fatalf("output missing section headers: %q", out)
+	}
+	// stdout must come before stderr in the rendered output
+	stdoutIdx := strings.Index(out, "out-line")
+	stderrIdx := strings.Index(out, "err-line")
+	if stdoutIdx == -1 || stderrIdx == -1 || stdoutIdx > stderrIdx {
+		t.Fatalf("output not ordered stdout-then-stderr: %q", out)
 	}
 }
 

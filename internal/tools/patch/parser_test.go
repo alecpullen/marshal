@@ -2,6 +2,7 @@ package patch
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,32 @@ func main() {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Parse() = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseRejectsUnclosedSearch(t *testing.T) {
+	input := "File: foo.go\n<<<<<<< SEARCH\nhello\n"
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for unclosed SEARCH block, got nil")
+	}
+	if !strings.Contains(err.Error(), "unclosed") {
+		t.Fatalf("error should mention unclosed block: %v", err)
+	}
+}
+
+func TestParseRejectsUnclosedReplace(t *testing.T) {
+	input := "File: foo.go\n<<<<<<< SEARCH\nhello\n=======\nworld\n"
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for unclosed REPLACE block, got nil")
+	}
+}
+
+func TestParseRejectsEmptyPathChunk(t *testing.T) {
+	input := "<<<<<<< SEARCH\nhello\n=======\nworld\n>>>>>>> REPLACE\n"
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for chunk with empty path, got nil")
 	}
 }

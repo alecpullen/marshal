@@ -71,7 +71,7 @@ type SandboxMeta struct {
 	OutputTruncated    bool
 }
 
-func (m SandboxMeta) LimitsJSON() string {
+func (m SandboxMeta) LimitsJSON() (string, error) {
 	limits := map[string]any{"backend": m.Backend}
 	if m.MemoryLimitBytes > 0 {
 		limits["memory_limit_bytes"] = m.MemoryLimitBytes
@@ -96,7 +96,7 @@ func (m SandboxMeta) LimitsJSON() string {
 	}
 	b, err := json.Marshal(limits)
 	if err != nil {
-		return "{}"
+		return "", err
 	}
-	return string(b)
+	return string(b), nil
 }

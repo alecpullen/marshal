@@ -12,11 +12,14 @@ import (
 )
 
 // RenderDirectoryMap renders a simple indented directory tree from a file
-// index. It shows up to maxFiles file entries; if there are more, it appends
-// a truncation note. Each Go file's exported top-level functions, methods,
-// and types are listed inline in parens after the filename. Unexported
-// symbols and imports are omitted here to keep the map compact, but remain
-// fully queryable via the symbols.find tool.
+// index.
+//
+// The cap is applied per file entry: at most maxFiles file rows are
+// printed. Directory entries are NOT counted against the cap and are
+// always printed. Symbols are inlined for the printed files only; the
+// symbol table is otherwise unchanged. Unexported symbols and imports
+// are omitted here to keep the map compact, but remain fully queryable
+// via the symbols.find tool.
 func RenderDirectoryMap(files []db.FileIndex, symbols []db.Symbol, maxFiles int) string {
 	if maxFiles <= 0 {
 		maxFiles = 200
@@ -78,6 +81,9 @@ func renderNode(b *strings.Builder, node *dirNode, prefix string, fileCount *int
 		if *fileCount < maxFiles {
 			fmt.Fprintf(b, "%s%s%s\n", prefix, filepath.Base(fullPath), exportedSymbolSuffix(fullPath, bySymbolFile))
 		}
+		// fileCount counts every file (including the ones we skip because we
+		// hit maxFiles), so that the truncation note at the bottom is exact.
+		// Directories are intentionally not counted.
 		*fileCount++
 	}
 }

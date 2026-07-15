@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"context"
 	"testing"
 
 	"marshal/internal/db"
@@ -13,7 +14,7 @@ func NewScanner(root string) *Scanner {
 	return &Scanner{root: root}
 }
 `)
-	got, err := ExtractSymbols("scanner.go", source)
+	got, err := ExtractSymbols(context.Background(), "scanner.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -38,7 +39,7 @@ func (s Scanner) Value() int {
 	return 0
 }
 `)
-	got, err := ExtractSymbols("scanner.go", source)
+	got, err := ExtractSymbols(context.Background(), "scanner.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -73,7 +74,7 @@ func Valid() int {
 	return 1
 }
 `)
-	got, err := ExtractSymbols("broken.go", source)
+	got, err := ExtractSymbols(context.Background(), "broken.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -93,7 +94,7 @@ type Matcher interface {
 
 type ID int
 `)
-	got, err := ExtractSymbols("types.go", source)
+	got, err := ExtractSymbols(context.Background(), "types.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -110,7 +111,7 @@ type (
 	Bar string
 )
 `)
-	got, err := ExtractSymbols("types.go", source)
+	got, err := ExtractSymbols(context.Background(), "types.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -125,7 +126,7 @@ type Alias = int
 
 type Another = string
 `)
-	got, err := ExtractSymbols("aliases.go", source)
+	got, err := ExtractSymbols(context.Background(), "aliases.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -141,7 +142,7 @@ type (
 	AliasType = string
 )
 `)
-	got, err := ExtractSymbols("types.go", source)
+	got, err := ExtractSymbols(context.Background(), "types.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -154,7 +155,7 @@ func TestExtractSymbolsImportsSingle(t *testing.T) {
 
 import "fmt"
 `)
-	got, err := ExtractSymbols("imports.go", source)
+	got, err := ExtractSymbols(context.Background(), "imports.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}
@@ -169,7 +170,7 @@ import (
 	bar "example.com/bar"
 )
 `)
-	got, err := ExtractSymbols("imports.go", source)
+	got, err := ExtractSymbols(context.Background(), "imports.go", source)
 	if err != nil {
 		t.Fatalf("ExtractSymbols failed: %v", err)
 	}

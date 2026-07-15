@@ -64,7 +64,10 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     duration_ms INTEGER,
     hooks_json TEXT NOT NULL DEFAULT '[]',
     original_args_json TEXT,
-    rewritten INTEGER DEFAULT 0
+    rewritten INTEGER DEFAULT 0,
+    sandbox_enabled INTEGER NOT NULL DEFAULT 0,
+    resource_limits INTEGER NOT NULL DEFAULT 0,
+    output_truncated INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -79,6 +82,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     line_end INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_project_name ON symbols(project_id, name);
+CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
+CREATE INDEX IF NOT EXISTS idx_symbols_project ON symbols(project_id);
 
 CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,7 +147,7 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_session ON snapshots(session_id, turn_i
 
 CREATE TABLE IF NOT EXISTS snapshot_files (
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
+    path TEXT NOT NULL CHECK (length(path) > 0),
     PRIMARY KEY(snapshot_id, path)
 );
 CREATE TABLE IF NOT EXISTS session_state (

@@ -1491,6 +1491,7 @@ is stable and can be referenced from implementation branches.
   types.
 - **Fix:** Move the model types to a neutral package
   (e.g. `internal/repoindex`) or accept the coupling.
+  Decision recorded in `docs/15-data-model-decisions.md` ADR-001; no code change.
 
 #### F-POL-134 — `DetectLanguage` misses many common extensions
 
@@ -2149,27 +2150,28 @@ fixes" above).
 | F-SEC-17 | RESOLVED | Container argv path gated on `ClassifyCommand` |
 | F-SEC-31 | RESOLVED | Slash commands use `shlex.Split` for quoted args |
 
-### Batch 4 (E1 — DB integrity, query correctness, code hygiene): PLANNED on branch `feature/domain-e1-db-integrity`
+### Batch 4 (E1 — DB integrity, query correctness, code hygiene): RESOLVED on branch `feature/domain-e-db-repo-symbols`
 
-Plan: `docs/superpowers/plans/2026-07-15-domain-e1-db-integrity.md`
-
-Closes: F-POL-125, F-POL-126, F-POL-127, F-POL-128, F-POL-136, F-BUG-103, F-BUG-104, F-BUG-106, F-BUG-107, F-BUG-108, F-BUG-109, F-BUG-135, F-SEC-121, F-SEC-124, F-PERF-114, F-BUG-105, F-BUG-115, F-BUG-116.
-
-### Batch 5 (E2 — repo scanner, gitignore, language & indexing): PLANNED on branch `feature/domain-e2-repo-scanner`
-
-Plan: `docs/superpowers/plans/2026-07-15-domain-e2-repo-scanner.md`
-
-Closes: F-BUG-97, F-BUG-98, F-BUG-99, F-BUG-100, F-BUG-101, F-BUG-110, F-BUG-111, F-POL-129, F-POL-131, F-POL-132, F-POL-133 (ADR), F-POL-134.
-
-Depends on: Batch 4 (for `internal/db/sqlutil/escapeLike`).
-
-### Batch 6 (E3 — DB & search performance / scaling / isolation): PLANNED on branch `feature/domain-e3-db-perf`
-
-Plan: `docs/superpowers/plans/2026-07-15-domain-e3-db-perf.md`
-
-Closes: F-PERF-112, F-PERF-113, F-PERF-117, F-PERF-118, F-PERF-119, F-SEC-120.
-
-Depends on: Batches 4 and 5.
+| Finding | Status | Notes |
+|---|---|---|
+| F-POL-126 | RESOLVED | DB.exec / DB.queryRow wrappers removed; callers use sqlDB directly |
+| F-POL-125 | RESOLVED | joinSnapshotFiles removed |
+| F-POL-127 | RESOLVED | SaveFileIndex uses defer rows.Close() |
+| F-POL-128 | RESOLVED | scanSymbol helper extracted |
+| F-POL-136 | RESOLVED | todos.go errors wrapped |
+| F-BUG-103 | RESOLVED | SaveSnapshot is transactional; snapshot_files.path has CHECK (length > 0) |
+| F-BUG-104 | RESOLVED | LatestSnapshot returns zero values on scan/iter error |
+| F-BUG-106 | RESOLVED | PruneSnapshotsOlderThan rejects days < 0 |
+| F-BUG-107 | RESOLVED | GetOrCreateProject always SELECTs id after upsert |
+| F-BUG-135 | RESOLVED | RecentTurnMetrics clamps limit <= 0 |
+| F-SEC-121 | RESOLVED | tableColumns table names are allowlisted; negative tests added |
+| F-SEC-124 | RESOLVED | SaveToolCall normalizes FilesChanged via filepath.ToSlash |
+| F-BUG-108 | RESOLVED | sandbox_enabled / resource_limits / output_truncated columns added; round-trip preserved; legacy-row Enabled fix prevents silent overwrite |
+| F-BUG-109 | RESOLVED | ResourceLimits / OutputTruncated read back from new columns |
+| F-PERF-114 | RESOLVED | idx_files_project, idx_symbols_project added |
+| F-BUG-105 | RESOLVED | MessagesOnBranch uses recursive CTE; no IN-clause limit |
+| F-BUG-115 | RESOLVED | Same change eliminates N+1 |
+| F-BUG-116 | RESOLVED | ListSessions joins against aggregated CTE |
 
 ### Batch 7 (D1 — Runner state hygiene & reentrancy): RESOLVED on branch `feature/domain-d-agent-runtime`
 
@@ -2247,3 +2249,109 @@ Depends on: Batches 4 and 5.
 | Dead `case session.ContentTypeDiff` | RESOLVED | Render path and `renderDiffBlock` helper removed from `transcript.go`; 2 corresponding tests removed from `transcript_test.go`; `diffview` import removed |
 | Duplicate `extractJSONObject` | RESOLVED | New `internal/jsonextract` package owns the balanced-brace scanner; `internal/agent` and `internal/knowledge` both call `jsonextract.Extract` and wrap the error with their own sentinel. `TestParseExtractionHandlesBalancedBracesInStrings` is a regression test for the old fragile behaviour |
 | `buildQuestionLabel` byte-slicing | RESOLVED | New `truncateRunes` helper is rune-aware; test `TestBuildQuestionLabel/long_question_with_multi-byte_characters_truncates_on_rune_boundary` is a regression test |
+
+### Batch 15 (E2 — repo scanner, gitignore, language & indexing): RESOLVED on branch `feature/domain-e-db-repo-symbols`
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-BUG-100 | RESOLVED | FindSymbols uses escapeLike and ESCAPE '\' |
+| F-BUG-101 | RESOLVED | FilesMatchingBasename uses escapeLike and ESCAPE '\' |
+| F-POL-132 | RESOLVED | FilesMatchingBasename now anchors on path separator |
+| F-POL-134 | RESOLVED | DetectLanguage extended with .vue / .svelte / .scala / etc. |
+| F-BUG-98 | RESOLVED | gitignore trailing-slash patterns stay anchored |
+| F-BUG-99 | RESOLVED | gitignore supports !negation with last-pattern-wins semantics |
+| F-POL-131 | RESOLVED | Bad gitignore is logged as a warning; Scan continues |
+| F-BUG-97 | RESOLVED | repo.index passes Indexing.Ignore to Scanner |
+| F-BUG-110 | RESOLVED | ExtractSymbols takes context.Context |
+| F-BUG-111 | RESOLVED | repo.index uses Scanner.ScanDetailed to avoid disk re-reads |
+| F-POL-129 | RESOLVED | RenderDirectoryMap doc comment clarifies maxFiles |
+| F-POL-133 | RESOLVED (ADR) | Coupling accepted; see docs/15-data-model-decisions.md |
+
+### Batch 16 (E3 — DB & search performance / scaling / isolation): RESOLVED on branch `feature/domain-e-db-repo-symbols`
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-PERF-119 | RESOLVED | SQLite WAL + small read pool; existing on-disk DBs upgraded transparently |
+| F-PERF-112 | RESOLVED | SaveSymbols / SaveFileIndex use multi-row VALUES batches of 200 |
+| F-PERF-113 | RESOLVED | GetSymbols / GetFileIndex take an optional limit; repo.map passes repoMapMaxFiles |
+| F-PERF-118 | RESOLVED | Indexing.MaxIndexableFileBytes / MaxSearchableFileBytes caps added |
+| F-PERF-117 | RESOLVED | searchFiles short-circuits the walk when the cap is reached |
+| F-SEC-120 | RESOLVED | Process-local per-project mutex around SaveFileIndex / SaveSymbols |
+
+### Batch 17 (F1 — onboarding hardening): PLANNED
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-f1-onboarding.md`
+
+Closes: F-UIUX-137, F-UIUX-138, F-BUG-154, F-BUG-158, F-BUG-159,
+F-BUG-161, F-POL-168, F-POL-169.
+
+Highlights: API key is always persisted as `api_key_env` (or
+written to the global `~/.config/marshal/config.toml` only when
+the user explicitly pastes inline); `OnboardingModel` uses pointer
+receivers; `Run()` resolves options once; `@`-completion explains
+empty results; Ollama HTTP status checked; project name prompted.
+
+### Batch 18 (F2 — help overlay & footer polish): PLANNED
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-f2-help.md`
+
+Closes: F-UIUX-138 (overlay part), F-UIUX-139, F-POL-174.
+
+Highlights: help overlay rendered as a real two-column table with
+`PgUp/PgDn`/`Ctrl+U/Ctrl+D` and an approval-form sub-table; the
+approval-mode footer says `Enter: arm · Enter⏎: submit · Esc: deny`
+instead of `Enter×2`.
+
+### Batch 19 (F3 — approval/question overlay correctness): PLANNED
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-f3-overlays.md`
+
+Closes: F-UIUX-140, F-UIUX-141, F-BUG-147, F-BUG-148, F-BUG-153,
+F-BUG-156, F-POL-163.
+
+Highlights: `Esc` is a two-step deny on the approval form; the
+question form focuses its first field on open; opening settings /
+memory while a tool is pending is blocked; channel sends to
+`tc.ResponseChan` go through a `sync.Once`-guarded `Respond`; the
+`Event` payload exposes a `PendingToolCallInfo` (no
+`ResponseChan`); `settingsBlockReason` checks pending decisions and
+open pickers; `permissionForTool` deleted.
+
+### Batch 20 (F4 — session state races & lifecycle): PLANNED
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-f4-session-state.md`
+
+Closes: F-BUG-149, F-BUG-150, F-BUG-151, F-BUG-152, F-BUG-155.
+
+Highlights: `cancelTurn` only mutates state in
+`handleAgentFinished`; `successPulse` clears on error;
+`inputAreaRows` includes the SDD hint row; `transcriptHash` includes
+content fingerprint; `BeginWork`/`BeginQuiesce` lock-hold verified
+under `-race`.
+
+### Batch 21 (F5 — view rendering polish): PLANNED
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-f5-view-polish.md`
+
+Closes: F-UIUX-142, F-UIUX-143, F-UIUX-144, F-UIUX-145, F-UIUX-146,
+F-BUG-160, F-POL-162, F-POL-164, F-POL-165, F-POL-170.
+
+Highlights: settings save control shows block reason inline;
+memory browser bumps a version on confidence change; status URL
+hidden when the browser bar is shown; SDD panel reports actual
+height; completion popup shows the `/` prefix; current mode shown
+in the help overlay; `inputAreaRows` uses `lipgloss.Height`; popup
+math centralised; swarm panel only emits lines for active roles.
+
+### Batch 22 (F6 — theme, encoding & pub/sub polish): PLANNED
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-f6-misc-polish.md`
+
+Closes: F-BUG-157, F-POL-166, F-POL-167, F-POL-171, F-POL-172,
+F-POL-173, F-POL-175.
+
+Highlights: `pubsub.WithTerminal` for must-deliver subscriptions;
+theme reload publishes a `ChangedMsg`; `huhtheme.WarmSunset` reads
+the theme lazily; URL truncation is rune-aware; markdown renderer
+cache is bounded (4 entries); `patternForApproval` moved to
+`internal/permissions`; `closeFns` renamed to `resourceClosers`.

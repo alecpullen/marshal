@@ -108,6 +108,13 @@ type toolSet struct {
 	ssrfCheck     func(*url.URL) bool
 
 	guardrail func(command string) error
+
+	config config.Config
+
+	// maxSearchableFileBytes caps the size of individual files that
+	// repo.search will read from disk. Files larger than this threshold
+	// are silently skipped. Defaults to 1 MiB (from IndexingConfig).
+	maxSearchableFileBytes int64
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -224,11 +231,13 @@ func newToolSet(opts Options) (*toolSet, error) {
 		jobManager:      jobManager,
 		diagnostics:     diagnostics.NewChecker(opts.Config.Diagnostics.Commands),
 
-		guardrail:       opts.Guardrail,
-		webEnabled:      opts.Config.Web.Enabled,
-		webFetchTimeout: opts.Config.Web.FetchTimeout,
-		webSearchURL:    opts.Config.Web.SearchURL,
-		webSearchKey:    opts.Config.Web.SearchKey,
-		ssrfCheck:       isPrivateURL,
+		guardrail:              opts.Guardrail,
+		webEnabled:             opts.Config.Web.Enabled,
+		webFetchTimeout:        opts.Config.Web.FetchTimeout,
+		webSearchURL:           opts.Config.Web.SearchURL,
+		webSearchKey:           opts.Config.Web.SearchKey,
+		ssrfCheck:              isPrivateURL,
+		config:                 opts.Config,
+		maxSearchableFileBytes: opts.Config.Indexing.MaxSearchableFileBytes,
 	}, nil
 }

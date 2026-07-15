@@ -5,6 +5,31 @@ import (
 	"testing"
 )
 
+func TestGetOrCreateProjectReturnsExistingID(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	id1, err := db.GetOrCreateProject("/r", "first")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// GetOrCreateProject with the same root_path must return the same id,
+	// even when the UPSERT's LastInsertId() reports 0 (no-op update).
+	// The fix must always SELECT the id after the UPSERT.
+	id2, err := db.GetOrCreateProject("/r", "second")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if id1 != id2 {
+		t.Fatalf("expected existing id %d, got %d", id1, id2)
+	}
+}
+
 func TestGetOrCreateProject(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

@@ -45,7 +45,7 @@ func extractPinnedFiles(goal string, r *Runner, projectID int64) []contextpack.F
 		if db == nil {
 			return nil
 		}
-		index, err := db.GetFileIndex(projectID)
+		index, err := db.GetFileIndex(projectID, 0)
 		if err != nil || len(index) == 0 {
 			return nil
 		}

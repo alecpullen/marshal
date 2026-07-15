@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"fmt"
 )
 
 type TodoItem struct {
@@ -12,14 +13,17 @@ type TodoItem struct {
 func (db *DB) SaveTodos(sessionID string, todos []TodoItem) error {
 	data, err := json.Marshal(todos)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal todos: %w", err)
 	}
 	_, err = db.sqlDB.Exec(
 		`INSERT INTO session_state (session_id, key, value) VALUES (?, 'todos', ?)
 		 ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value`,
 		sessionID, string(data),
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("save todos: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) LoadTodos(sessionID string) ([]TodoItem, error) {
@@ -29,11 +33,11 @@ func (db *DB) LoadTodos(sessionID string) ([]TodoItem, error) {
 		sessionID,
 	).Scan(&raw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load todos: %w", err)
 	}
 	var todos []TodoItem
 	if err := json.Unmarshal([]byte(raw), &todos); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal todos: %w", err)
 	}
 	return todos, nil
 }

@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const fileInsertBatch = 200
+
 type FileIndex struct {
 	Path          string
 	Language      string
@@ -23,6 +25,9 @@ type FileIndex struct {
 // knowledge pass (internal/knowledge) fills it back in later via
 // UpdateFileSummary.
 func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
+	unlock := db.locks.Lock(projectID)
+	defer unlock()
+
 	tx, err := db.sqlDB.Begin()
 	if err != nil {
 		return fmt.Errorf("begin save file index transaction: %w", err)
@@ -34,11 +39,11 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 	if err != nil {
 		return fmt.Errorf("query existing file index: %w", err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var path, hash string
 		var summary sql.NullString
 		if err := rows.Scan(&path, &hash, &summary); err != nil {
-			rows.Close()
 			return fmt.Errorf("scan existing file row: %w", err)
 		}
 		f := FileIndex{Path: path, Hash: hash}
@@ -48,30 +53,36 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 		existing[path] = f
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return fmt.Errorf("iterate existing file rows: %w", err)
 	}
-	rows.Close()
 
 	if _, err := tx.Exec(`DELETE FROM files WHERE project_id = ?`, projectID); err != nil {
 		return fmt.Errorf("delete existing files: %w", err)
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO files (project_id, path, language, hash, size_bytes, last_indexed_at, summary)
-							 VALUES (?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare file insert: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, f := range files {
-		summary := f.Summary
+	// Merge summaries from existing rows before inserting.
+	merged := make([]FileIndex, len(files))
+	for i, f := range files {
+		m := f
 		if prior, ok := existing[f.Path]; ok && prior.Hash == f.Hash {
-			summary = prior.Summary
+			m.Summary = prior.Summary
 		}
-		_, err := stmt.Exec(projectID, f.Path, f.Language, f.Hash, f.SizeBytes, f.LastIndexedAt.UTC().Format(time.RFC3339), summary)
-		if err != nil {
-			return fmt.Errorf("insert file %s: %w", f.Path, err)
+		merged[i] = m
+	}
+
+	for start := 0; start < len(merged); start += fileInsertBatch {
+		end := start + fileInsertBatch
+		if end > len(merged) {
+			end = len(merged)
+		}
+		chunk := merged[start:end]
+		placeholders := buildValues(len(chunk), 7)
+		args := make([]any, 0, len(chunk)*7)
+		for _, f := range chunk {
+			args = append(args, projectID, f.Path, f.Language, f.Hash, f.SizeBytes, f.LastIndexedAt.UTC().Format(time.RFC3339), f.Summary)
+		}
+		if _, err := tx.Exec(`INSERT INTO files (project_id, path, language, hash, size_bytes, last_indexed_at, summary) VALUES `+placeholders, args...); err != nil {
+			return fmt.Errorf("insert files batch [%d:%d]: %w", start, end, err)
 		}
 	}
 
@@ -81,15 +92,19 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 	return nil
 }
 
-// GetFileIndex returns all file rows for a project, ordered by path.
-func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
-	rows, err := db.sqlDB.Query(
-		`SELECT path, language, hash, size_bytes, last_indexed_at, summary
+// GetFileIndex returns up to limit file rows for a project, ordered by path.
+// limit <= 0 means "all rows" (unbounded).
+func (db *DB) GetFileIndex(projectID int64, limit int) ([]FileIndex, error) {
+	query := `SELECT path, language, hash, size_bytes, last_indexed_at, summary
 		 FROM files
 		 WHERE project_id = ?
-		 ORDER BY path`,
-		projectID,
-	)
+		 ORDER BY path`
+	args := []any{projectID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.sqlDB.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query file index: %w", err)
 	}
@@ -121,18 +136,19 @@ func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
 }
 
 // FilesMatchingBasename returns up to limit file paths for the given project
-// where the basename (e.g. "main.go") appears anywhere in the path. Results
+// where the basename (e.g. "main.go") matches at a path-separator boundary
+// (i.e. the basename appears after a `/` or at the start of the path). Results
 // are ordered with exact basename matches first, then by ascending path
 // length so the shortest candidate paths surface first.
 func (db *DB) FilesMatchingBasename(projectID int64, basename string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 5
 	}
-	pattern := "%" + basename + "%"
+	pattern := "%/" + escapeLike(basename)
 	rows, err := db.sqlDB.Query(
 		`SELECT path
 		 FROM files
-		 WHERE project_id = ? AND path LIKE ?
+		 WHERE project_id = ? AND path LIKE ? ESCAPE '\'
 		 ORDER BY
 		   CASE WHEN path = ? OR substr(path, length(path) - length(?) + 1) = ? THEN 0 ELSE 1 END,
 		   LENGTH(path)
@@ -162,7 +178,7 @@ func (db *DB) FilesMatchingBasename(projectID int64, basename string, limit int)
 // touching hash/language/size/last_indexed_at. It is a no-op (not an error)
 // if no row matches project_id+path.
 func (db *DB) UpdateFileSummary(projectID int64, path, summary string) error {
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`UPDATE files SET summary = ? WHERE project_id = ? AND path = ?`,
 		summary, projectID, path,
 	)

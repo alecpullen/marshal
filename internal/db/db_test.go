@@ -3,6 +3,7 @@ package db
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +48,32 @@ func TestMigrateCreatesTables(t *testing.T) {
 		if err != nil {
 			t.Fatalf("table %s not found: %v", table, err)
 		}
+	}
+}
+
+func TestTableColumnsRejectsUnlistedTable(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	tests := []struct {
+		name  string
+		table string
+	}{
+		{"completely unknown table", "attacker"},
+		{"SQL injection attempt", "tool_calls; DROP TABLE x; --"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cols, err := db.tableColumns(tt.table)
+			if err == nil {
+				t.Fatalf("tableColumns(%q) = %v, expected error", tt.table, cols)
+			}
+			if !strings.Contains(err.Error(), tt.table) {
+				t.Errorf("tableColumns(%q) error = %q, expected it to contain the table name", tt.table, err.Error())
+			}
+		})
 	}
 }

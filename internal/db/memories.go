@@ -25,7 +25,7 @@ type Memory struct {
 // SaveMemory inserts a new memory row with confidence "tentative".
 func (db *DB) SaveMemory(projectID int64, kind, content, sourceSessionID string, now time.Time) error {
 	nowStr := now.UTC().Format(time.RFC3339)
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`INSERT INTO memories (project_id, kind, content, confidence, source_session_id, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		projectID, kind, content, MemoryConfidenceTentative, sourceSessionID, nowStr, nowStr,
@@ -82,7 +82,7 @@ func (db *DB) GetMemories(projectID int64) ([]Memory, error) {
 // SetMemoryConfidence updates a single memory's confidence state and
 // updated_at timestamp.
 func (db *DB) SetMemoryConfidence(id int64, confidence string, now time.Time) error {
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`UPDATE memories SET confidence = ?, updated_at = ? WHERE id = ?`,
 		confidence, now.UTC().Format(time.RFC3339), id,
 	)

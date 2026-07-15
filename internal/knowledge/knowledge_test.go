@@ -157,7 +157,7 @@ func TestEndSessionPersistsSummaryMemoriesAndFileSummaries(t *testing.T) {
 		t.Fatal("EndedAt is nil, want set")
 	}
 
-	files, err := database.GetFileIndex(projectID)
+	files, err := database.GetFileIndex(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetFileIndex failed: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestEndSessionIgnoresFileSummaryOutsideTouchedFiles(t *testing.T) {
 		Logger:        testLogger(),
 	})
 
-	files, err := database.GetFileIndex(projectID)
+	files, err := database.GetFileIndex(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetFileIndex failed: %v", err)
 	}

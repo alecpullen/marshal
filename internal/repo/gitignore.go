@@ -15,6 +15,7 @@ type Gitignore struct {
 type gitignorePattern struct {
 	anchored bool
 	dirOnly  bool
+	negate   bool
 	segments []string
 }
 
@@ -51,18 +52,28 @@ func LoadGitignore(path string) (*Gitignore, error) {
 
 func parseGitignorePattern(line string) (gitignorePattern, error) {
 	p := gitignorePattern{}
+	if strings.HasPrefix(line, "!") {
+		p.negate = true
+		line = line[1:]
+	}
 	if strings.HasPrefix(line, "/") {
 		p.anchored = true
 		line = line[1:]
 	}
-	if strings.HasSuffix(line, "/") {
-		p.dirOnly = true
-		line = strings.TrimSuffix(line, "/")
-	}
-	// A slash anywhere in the pattern anchors it to the .gitignore location.
+	// Record whether the pattern is dir-only before removing
+	// the trailing slash, so the slash-anchor check below
+	// can see the full pattern.
+	dirOnly := strings.HasSuffix(line, "/")
+	// A slash anywhere in the pattern anchors it relative
+	// to the .gitignore location. Check before stripping
+	// the trailing / so that build/ is correctly anchored.
 	if strings.Contains(line, "/") {
 		p.anchored = true
 	}
+	if dirOnly {
+		line = strings.TrimSuffix(line, "/")
+	}
+	p.dirOnly = dirOnly
 	p.segments = strings.Split(line, "/")
 	for _, seg := range p.segments {
 		if _, err := filepath.Match(seg, ""); err != nil {
@@ -74,6 +85,7 @@ func parseGitignorePattern(line string) (gitignorePattern, error) {
 
 func (g *Gitignore) Match(path string, isDir bool) bool {
 	path = filepath.ToSlash(path)
+	ignored := false
 	for _, p := range g.patterns {
 		if p.dirOnly {
 			pathSegments := strings.Split(path, "/")
@@ -81,19 +93,24 @@ func (g *Gitignore) Match(path string, isDir bool) bool {
 			if !isDir {
 				end = len(pathSegments) - 1
 			}
+			matched := false
 			for i := 1; i <= end; i++ {
 				prefix := strings.Join(pathSegments[:i], "/")
 				if matchPattern(p, prefix) {
-					return true
+					matched = true
+					break
 				}
+			}
+			if matched {
+				ignored = !p.negate
 			}
 			continue
 		}
 		if matchPattern(p, path) {
-			return true
+			ignored = !p.negate
 		}
 	}
-	return false
+	return ignored
 }
 
 func matchPattern(p gitignorePattern, path string) bool {

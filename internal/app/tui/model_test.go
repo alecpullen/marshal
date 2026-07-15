@@ -2209,7 +2209,18 @@ func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
 	}
 	state.SetPendingQuestion(q)
 
-	for _, r := range "archive" {
+	// First Update constructs the question model and returns the Init()
+	// command without processing the keypress. The keypress is dropped
+	// by the construct-Update; re-send the first character, then continue.
+	first, cmd := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = first.(Model)
+	if cmd != nil {
+		_ = cmd()
+	}
+	// Re-send the 'a' that was dropped by the construct-Update.
+	model, _ := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = model.(Model)
+	for _, r := range "rchive" {
 		model, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = model.(Model)
 	}
@@ -2237,6 +2248,14 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 	}
 	state.SetPendingQuestion(q)
 
+	// First Update constructs the question model and returns the Init()
+	// command without processing the keypress. The Esc is dropped by
+	// the construct-Update; re-send it so the form declines.
+	first, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = first.(Model)
+	if cmd != nil {
+		_ = cmd()
+	}
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	select {

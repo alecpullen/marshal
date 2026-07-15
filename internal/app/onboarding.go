@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -127,6 +128,16 @@ func fetchOllamaModels(url string) tea.Cmd {
 			}
 		}
 		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			slog.Default().Warn("ollama /api/tags returned non-200",
+				"status", resp.StatusCode,
+				"body", strings.TrimSpace(string(body)),
+			)
+			return ollamaModelsFailedMsg{}
+		}
+
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return ollamaModelsFailedMsg{}

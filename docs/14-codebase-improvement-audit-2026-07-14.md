@@ -1491,6 +1491,7 @@ is stable and can be referenced from implementation branches.
   types.
 - **Fix:** Move the model types to a neutral package
   (e.g. `internal/repoindex`) or accept the coupling.
+  Decision recorded in `docs/15-data-model-decisions.md` ADR-001; no code change.
 
 #### F-POL-134 — `DetectLanguage` misses many common extensions
 

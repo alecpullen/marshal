@@ -442,11 +442,16 @@ func TestBuildAgentRunnerUsesConfiguredOutputLimit(t *testing.T) {
 		t.Fatal("expected output truncation for noisy background job")
 	}
 	// Each stream (stdout, stderr) is bounded by MaxOutputBytes.
-	// Truncation appends the truncation marker.
-	const truncationMarkerLen = len("\n[output truncated]") // 20
-	maxExpected := 2*cfg.Tools.Shell.MaxOutputBytes + truncationMarkerLen
+	// The combined output also has fixed overhead from formatCommandOutput
+	// ("stdout:\n" + "\n\nstderr:\n" labels) plus the truncation marker.
+	const (
+		truncationMarkerLen = len("\n[output truncated]") // 19
+		stdoutLabelLen      = len("stdout:\n")            // 8
+		stderrLabelLen      = len("\n\nstderr:\n")        // 10
+	)
+	maxExpected := 2*cfg.Tools.Shell.MaxOutputBytes + stdoutLabelLen + stderrLabelLen + truncationMarkerLen
 	if len(output) > maxExpected {
-		t.Fatalf("output length = %d, want <= %d (2*MaxOutputBytes + truncationMarker)", len(output), maxExpected)
+		t.Fatalf("output length = %d, want <= %d (2*MaxOutputBytes + format overhead + truncation marker)", len(output), maxExpected)
 	}
 }
 

@@ -425,12 +425,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Args:        "[path]",
 			Handler: func(state *session.State, args []string) string {
 				path := strings.Join(args, " ")
+				if path == "" {
+					path = filepath.Join(state.WorkingDir, "marshal-session-"+state.SessionID()+".html")
+				}
 				redactOn := state.Config.Privacy.RedactSecrets
 				if err := export.Write(state, path, redactOn); err != nil {
 					return fmt.Sprintf("Export failed: %v", err)
-				}
-				if path == "" {
-					path = filepath.Join(state.WorkingDir, "marshal-session-"+state.SessionID()+".html")
 				}
 				return "Exported to " + path
 			},

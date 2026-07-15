@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -179,6 +180,14 @@ func TestSessionLifecycleValidation(t *testing.T) {
 
 func TestSessionPlumbsAdditionalDirectories(t *testing.T) {
 	tmp := t.TempDir()
+	extra1 := filepath.Join(tmp, "extra1")
+	extra2 := filepath.Join(tmp, "extra2")
+	if err := os.MkdirAll(extra1, 0o755); err != nil {
+		t.Fatalf("mkdir extra1: %v", err)
+	}
+	if err := os.MkdirAll(extra2, 0o755); err != nil {
+		t.Fatalf("mkdir extra2: %v", err)
+	}
 	if err := writeMarshalConfig(t, tmp); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -195,7 +204,7 @@ func TestSessionPlumbsAdditionalDirectories(t *testing.T) {
 	})
 	m.SetTurnCanceller(noopCancel())
 
-	res, err := m.Create(ctx, json.RawMessage(`{"cwd":"`+tmp+`","mcpServers":[],"additionalDirectories":["/tmp/extra1","/tmp/extra2"]}`))
+	res, err := m.Create(ctx, json.RawMessage(`{"cwd":"`+tmp+`","mcpServers":[],"additionalDirectories":["`+extra1+`","`+extra2+`"]}`))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -212,8 +221,8 @@ func TestSessionPlumbsAdditionalDirectories(t *testing.T) {
 	defer rt.Close(ctx)
 
 	got := rt.AdditionalDirectories()
-	if len(got) != 2 || got[0] != "/tmp/extra1" || got[1] != "/tmp/extra2" {
-		t.Fatalf("AdditionalDirectories = %v, want [/tmp/extra1 /tmp/extra2]", got)
+	if len(got) != 2 || got[0] != extra1 || got[1] != extra2 {
+		t.Fatalf("AdditionalDirectories = %v, want [%s %s]", got, extra1, extra2)
 	}
 }
 
@@ -924,6 +933,68 @@ tester = "mock_preset"
 reviewer = "mock_preset"
 `
 	return os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(content), 0644)
+}
+
+// TestPublishReplacementDoesNotDoubleClose reproduces F-BUG-49: a
+// concurrent publishReplacement with the same id must not call
+// close(prior) twice. Post-fix, the second call sees rt == prior and
+// short-circuits.
+func TestPublishReplacementDoesNotDoubleClose(t *testing.T) {
+	var closeCount atomic.Int32
+	m := &SessionManager{
+		sessions:    map[string]*app.Runtime{},
+		mu:          sync.RWMutex{},
+		lifecycleMu: sync.Mutex{},
+		close: func(ctx context.Context, rt *app.Runtime) error {
+			closeCount.Add(1)
+			return nil
+		},
+		cancel: nil,
+	}
+	rt1 := &app.Runtime{}
+	rt2 := &app.Runtime{}
+	m.sessions["s1"] = rt1
+
+	// Two concurrent publishes — both observe the same prior.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { m.publishReplacement(context.Background(), "s1", rt2); wg.Done() }()
+	go func() { m.publishReplacement(context.Background(), "s1", rt2); wg.Done() }()
+	wg.Wait()
+
+	// Only one close should have happened.
+	if got := closeCount.Load(); got > 1 {
+		t.Errorf("close was called %d times, want at most 1", got)
+	}
+}
+
+// TestValidateLifecycleParamsRejectsSymlinkDuplicate reproduces
+// F-POL-65: 8 symlinks pointing to the same sensitive dir must be
+// rejected as duplicates.
+func TestValidateLifecycleParamsRejectsSymlinkDuplicate(t *testing.T) {
+	// Create a real dir and 8 symlinks pointing to it.
+	tmp := t.TempDir()
+	real := filepath.Join(tmp, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var addDirs []string
+	for i := 0; i < 8; i++ {
+		link := filepath.Join(tmp, fmt.Sprintf("link%d", i))
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		addDirs = append(addDirs, link)
+	}
+	params := sessionParams{
+		Cwd:                  real,
+		MCPServers:           &[]json.RawMessage{},
+		AdditionalDirectories: addDirs,
+	}
+	err := validateLifecycleParams(&params, true)
+	if err == nil {
+		t.Fatal("expected error for symlink duplicates, got nil")
+	}
 }
 
 func countRows(t *testing.T, tmp string) (int, int, int) {

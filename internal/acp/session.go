@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -153,6 +154,18 @@ func validateLifecycleParams(p *sessionParams, requireSessionID bool) error {
 	if !filepath.IsAbs(p.Cwd) {
 		return invalidParamsError("cwd must be an absolute path")
 	}
+	// Resolve symlinks on Cwd and reject if outside trusted roots.
+	cwdResolved, err := filepath.EvalSymlinks(p.Cwd)
+	if err != nil {
+		return invalidParamsError("cwd: %v", err)
+	}
+	allowRoots, err := trustedRoots()
+	if err != nil {
+		return invalidParamsError("internal: trusted roots: %v", err)
+	}
+	if !pathWithinAny(cwdResolved, allowRoots) {
+		return invalidParamsError("cwd resolves outside trusted roots")
+	}
 	if p.MCPServers == nil {
 		return invalidParamsError("mcpServers is required and must be an explicit empty array")
 	}
@@ -166,6 +179,22 @@ func validateLifecycleParams(p *sessionParams, requireSessionID bool) error {
 		if !filepath.IsAbs(d) {
 			return invalidParamsError("additionalDirectories must be absolute paths")
 		}
+	}
+	// Resolve symlinks on AdditionalDirectories, de-duplicate by
+	// resolved path, and reject any path outside trusted roots.
+	seen := map[string]bool{}
+	for _, raw := range p.AdditionalDirectories {
+		resolved, err := filepath.EvalSymlinks(raw)
+		if err != nil {
+			return invalidParamsError("additionalDirectory %q: %v", raw, err)
+		}
+		if !pathWithinAny(resolved, allowRoots) {
+			return invalidParamsError("additionalDirectory %q resolves outside trusted roots", raw)
+		}
+		if seen[resolved] {
+			return invalidParamsError("additionalDirectory %q duplicates %q after symlink resolution", raw, resolved)
+		}
+		seen[resolved] = true
 	}
 	if requireSessionID && p.SessionID == "" {
 		return invalidParamsError("sessionId is required")
@@ -201,7 +230,7 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 	if err != nil {
 		return nil, fmt.Errorf("acp: start runtime: %w", err)
 	}
-	m.publishReplacement(rt.SessionID, rt)
+	m.publishReplacement(ctx, rt.SessionID, rt)
 	return SessionResponse{SessionID: rt.SessionID}, nil
 }
 
@@ -246,7 +275,7 @@ func (m *SessionManager) Load(ctx context.Context, params json.RawMessage) (any,
 	if err != nil {
 		return nil, fmt.Errorf("acp: start runtime: %w", err)
 	}
-	m.publishReplacement(rt.SessionID, rt)
+	m.publishReplacement(ctx, rt.SessionID, rt)
 	if replayErr := m.replay(ctx, rt); replayErr != nil {
 		return nil, replayErr
 	}
@@ -289,7 +318,7 @@ func (m *SessionManager) Resume(ctx context.Context, params json.RawMessage) (an
 	if err != nil {
 		return nil, fmt.Errorf("acp: start runtime: %w", err)
 	}
-	m.publishReplacement(p.SessionID, rt)
+	m.publishReplacement(ctx, p.SessionID, rt)
 	return map[string]any{}, nil
 }
 
@@ -497,31 +526,35 @@ func (m *SessionManager) replaceExisting(ctx context.Context, id string, cancel 
 	return old, errors.Join(errs...)
 }
 
-// publishReplacement cancels and closes any prior pointer with the same id,
-// then installs rt under id. The replacement is then visible to Get and any
-// subsequent lifecycle operation. The old runtime is torn down *before* the
-// new pointer is published so that no caller can observe the new runtime
-// while the old one is still being cancelled.
-func (m *SessionManager) publishReplacement(id string, rt *app.Runtime) {
+// publishReplacement installs rt under id. When a prior pointer exists it is
+// torn down (cancelled and closed) *outside* the sessions map lock, but the
+// lock is held continuously across the read of the prior pointer and the write
+// of the new pointer so that two concurrent calls cannot both observe the same
+// prior and double-close it.
+//
+// The caller context is used for the teardown operations (F-POL-62). Lifecycle
+// serialisation is provided by lifecycleMu.
+func (m *SessionManager) publishReplacement(ctx context.Context, id string, rt *app.Runtime) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
+
 	m.mu.Lock()
 	prior, had := m.sessions[id]
-	m.mu.Unlock()
-	if had && prior != nil && prior != rt {
-		cancel := m.cancel
-		if cancel != nil {
-			sCtx, sCancel := shutdownCtx()
-			_ = cancel(sCtx, id)
-			sCancel()
-		}
-		sCtx, sCancel := shutdownCtx()
-		_ = m.close(sCtx, prior)
-		sCancel()
+	samePointer := prior == rt
+	if !samePointer {
+		m.sessions[id] = rt
 	}
-	m.mu.Lock()
-	m.sessions[id] = rt
 	m.mu.Unlock()
+
+	if !had || samePointer || prior == nil {
+		return
+	}
+	if m.cancel != nil {
+		_ = m.cancel(ctx, id)
+	}
+	sCtx, sCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer sCancel()
+	_ = m.close(sCtx, prior)
 }
 
 // replay synchronously projects rt.State.Messages() through messageUpdate
@@ -563,4 +596,41 @@ func (m *SessionManager) teardownIfStillCurrent(rt *app.Runtime) error {
 	}
 	m.mu.Unlock()
 	return nil
+}
+
+// trustedRoots returns directories that are considered trusted for
+// session lifecycle path validation: the user's home directory and
+// $TMPDIR (if set). Each path is resolved through EvalSymlinks so
+// that comparisons against resolved session paths are consistent.
+func trustedRoots() ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		return nil, err
+	}
+	roots := []string{home}
+	if tmp := os.Getenv("TMPDIR"); tmp != "" {
+		resolved, err := filepath.EvalSymlinks(tmp)
+		if err != nil {
+			return nil, err
+		}
+		roots = append(roots, resolved)
+	}
+	return roots, nil
+}
+
+// pathWithinAny reports whether path is contained within any of the
+// supplied roots. Both path and roots should already be resolved
+// through EvalSymlinks before calling.
+func pathWithinAny(path string, roots []string) bool {
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, path)
+		if err == nil && !strings.HasPrefix(rel, "..") && rel != ".." {
+			return true
+		}
+	}
+	return false
 }

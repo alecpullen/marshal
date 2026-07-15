@@ -381,6 +381,25 @@ func TestScanDetailedContinuesOnReadError(t *testing.T) {
 	}
 }
 
+func TestScannerSkipsOversizedFiles(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "huge.bin")
+	if err := os.WriteFile(big, make([]byte, 1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewScanner(Config{Root: dir, MaxIndexableFileBytes: 512, SkipGitignore: true})
+	files, err := s.Scan()
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("expected 0 files, got %d", len(files))
+	}
+	if len(s.Skipped()) == 0 {
+		t.Errorf("expected a skip entry for the oversized file")
+	}
+}
+
 func TestScanContinuesOnHashError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod 0000 semantics differ on Windows")

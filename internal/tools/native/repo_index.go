@@ -30,9 +30,10 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 		}
 
 		scanner := repo.NewScanner(repo.Config{
-			Root:          t.root,
-			Ignore:        t.config.Indexing.Ignore,
-			SkipGitignore: false, // honour the user's .gitignore by default
+			Root:                  t.root,
+			Ignore:                t.config.Indexing.Ignore,
+			SkipGitignore:         false, // honour the user's .gitignore by default
+			MaxIndexableFileBytes: t.config.Indexing.MaxIndexableFileBytes,
 		})
 		scanned, err := scanner.ScanDetailed()
 		if err != nil {

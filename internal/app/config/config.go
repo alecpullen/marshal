@@ -293,10 +293,12 @@ type PrivacyConfig struct {
 }
 
 type IndexingConfig struct {
-	UseTreesitter  bool     `toml:"use_treesitter"`
-	UseEmbeddings  bool     `toml:"use_embeddings"`
-	SummariseFiles bool     `toml:"summarise_files"`
-	Ignore         []string `toml:"ignore"`
+	UseTreesitter          bool     `toml:"use_treesitter"`
+	UseEmbeddings          bool     `toml:"use_embeddings"`
+	SummariseFiles         bool     `toml:"summarise_files"`
+	Ignore                 []string `toml:"ignore"`
+	MaxIndexableFileBytes  int64    `toml:"max_indexable_file_bytes"`
+	MaxSearchableFileBytes int64    `toml:"max_searchable_file_bytes"`
 }
 
 // ProviderConfig is one [providers.<name>] entry. Only the fields needed
@@ -349,10 +351,12 @@ type filePrivacy struct {
 }
 
 type fileIndexing struct {
-	UseTreesitter  *bool    `toml:"use_treesitter"`
-	UseEmbeddings  *bool    `toml:"use_embeddings"`
-	SummariseFiles *bool    `toml:"summarise_files"`
-	Ignore         []string `toml:"ignore"`
+	UseTreesitter          *bool    `toml:"use_treesitter"`
+	UseEmbeddings          *bool    `toml:"use_embeddings"`
+	SummariseFiles         *bool    `toml:"summarise_files"`
+	Ignore                 []string `toml:"ignore"`
+	MaxIndexableFileBytes  *int64   `toml:"max_indexable_file_bytes"`
+	MaxSearchableFileBytes *int64   `toml:"max_searchable_file_bytes"`
 }
 
 type fileShell struct {
@@ -523,10 +527,12 @@ func Default() Config {
 			IncludeGitignoredFiles: false,
 		},
 		Indexing: IndexingConfig{
-			UseTreesitter:  false,
-			UseEmbeddings:  false,
-			SummariseFiles: false,
-			Ignore:         []string{"node_modules/**", "vendor/**", "dist/**", ".git/**"},
+			UseTreesitter:          false,
+			UseEmbeddings:          false,
+			SummariseFiles:         false,
+			Ignore:                 []string{"node_modules/**", "vendor/**", "dist/**", ".git/**"},
+			MaxIndexableFileBytes:  25 * 1024 * 1024, // 25 MiB
+			MaxSearchableFileBytes: 1 * 1024 * 1024,  // 1 MiB
 		},
 		Models: ModelsConfig{
 			Presets: map[string]routing.ModelPreset{},
@@ -833,6 +839,12 @@ func merge(cfg *Config, file configFile) error {
 		}
 		if file.Indexing.Ignore != nil {
 			cfg.Indexing.Ignore = file.Indexing.Ignore
+		}
+		if file.Indexing.MaxIndexableFileBytes != nil {
+			cfg.Indexing.MaxIndexableFileBytes = *file.Indexing.MaxIndexableFileBytes
+		}
+		if file.Indexing.MaxSearchableFileBytes != nil {
+			cfg.Indexing.MaxSearchableFileBytes = *file.Indexing.MaxSearchableFileBytes
 		}
 	}
 	if file.Providers != nil {

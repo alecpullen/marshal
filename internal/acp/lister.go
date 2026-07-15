@@ -38,6 +38,11 @@ func newPerCwdLister() *perCwdLister {
 // getOrOpen returns a cached *db.DB for cwd if one exists and is within
 // the TTL. Otherwise it opens the database, runs Migrate exactly once,
 // and caches the handle.
+//
+// The entry is populated (db + opened) BEFORE being published to the
+// cache map so that concurrent callers never observe a partially-
+// initialised entry. A double-check pattern handles the rare case where
+// two goroutines race past the initial map lookup.
 func (l *perCwdLister) getOrOpen(cwd string) (*db.DB, error) {
 	l.mu.Lock()
 	entry, ok := l.cache[cwd]
@@ -55,9 +60,6 @@ func (l *perCwdLister) getOrOpen(cwd string) (*db.DB, error) {
 		entry.db = nil
 	} else {
 		entry = &cachedDB{}
-		l.mu.Lock()
-		l.cache[cwd] = entry
-		l.mu.Unlock()
 	}
 
 	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
@@ -70,10 +72,25 @@ func (l *perCwdLister) getOrOpen(cwd string) (*db.DB, error) {
 		return nil, err
 	}
 
+	// Populate the entry BEFORE publishing it to the cache so
+	// concurrent callers see a fully-initialised entry.
 	entry.mu.Lock()
 	entry.db = d
 	entry.opened = time.Now()
 	entry.mu.Unlock()
+
+	if !ok {
+		l.mu.Lock()
+		// Double-check: another goroutine may have raced us.
+		if existing, present := l.cache[cwd]; present {
+			l.mu.Unlock()
+			// They beat us; close our DB and use theirs.
+			_ = d.Close()
+			return existing.db, nil
+		}
+		l.cache[cwd] = entry
+		l.mu.Unlock()
+	}
 
 	return d, nil
 }

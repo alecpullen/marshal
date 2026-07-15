@@ -971,6 +971,7 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
 	if m.questionModel == nil {
 		m.questionModel = newQuestionModel(q, max(m.width-4, 30))
+		return m, m.questionModel.Init()
 	}
 	qm, cmd := m.questionModel.Update(msg)
 	m.questionModel = qm

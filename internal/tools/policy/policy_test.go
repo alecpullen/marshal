@@ -15,9 +15,9 @@ func TestPolicyEngine_Evaluate_Guardrails(t *testing.T) {
 		want Decision
 	}{
 		{"rm -rf /", DecisionDeny},
-		{"rm -r -f /tmp/x", DecisionDeny},                       // ClassifyCommand catches combined flags
-		{"rm -fr /tmp/x", DecisionDeny},                         // ClassifyCommand catches -fr variant
-		{"rm /tmp/x", DecisionConfirm},                          // bare rm without recursive/force is allowed
+		{"rm -r -f /tmp/x", DecisionDeny}, // ClassifyCommand catches combined flags
+		{"rm -fr /tmp/x", DecisionDeny},   // ClassifyCommand catches -fr variant
+		{"rm /tmp/x", DecisionConfirm},    // bare rm without recursive/force is allowed
 		{"sudo apt-get install", DecisionDeny},
 		{"git reset --hard HEAD", DecisionDeny},
 		{"git clean -fd", DecisionDeny},
@@ -628,8 +628,8 @@ func TestEvaluate_ClassifyCommand_Guardrail(t *testing.T) {
 	pe := NewEngine(&config.Config{}, []string{})
 
 	tests := []struct {
-		cmd         string
-		want        Decision
+		cmd          string
+		want         Decision
 		wantInReason string
 	}{
 		{"rm -r -f /tmp/x", DecisionDeny, "rm -r -f"},

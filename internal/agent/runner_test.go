@@ -202,7 +202,7 @@ func TestChatOnceRoutesThinkingDeltasToStateAndReturnsAnswerText(t *testing.T) {
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
-	res, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
+	res, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("chatOnce returned error: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestChatOnceEndsStreamingEvenOnProviderError(t *testing.T) {
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
-	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
+	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
 	if err == nil {
 		t.Fatal("chatOnce returned nil error, want the provider error")
 	}
@@ -1263,7 +1263,7 @@ func TestChatOnceTimesOutPerRequest(t *testing.T) {
 	runner.RequestTimeout = 50 * time.Millisecond
 
 	start := time.Now()
-	_, err := runner.chatOnce(context.Background(), &blockingProvider{}, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
+	_, err := runner.chatOnce(context.Background(), &blockingProvider{}, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -1620,7 +1620,7 @@ func TestRunnerChatOnceSetsThinkingActivity(t *testing.T) {
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
-	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}})
+	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("chatOnce returned error: %v", err)
 	}
@@ -2429,6 +2429,48 @@ func TestSecondConsecutiveParseFailureEnablesJSONMode(t *testing.T) {
 	req := p.requests[2]
 	if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_object" {
 		t.Fatalf("requests[2].ResponseFormat = %v, want {Type:\"json_object\"} after 2 consecutive parse failures", req.ResponseFormat)
+	}
+}
+
+// TestResponseFormatResetsAcrossRunTaskCalls ensures that when a Runner
+// triggers the JSON-mode response format escalation inside one RunTask,
+// the next RunTask on the same *Runner starts with a clean response format
+// (the original seed value, typically nil).
+func TestResponseFormatResetsAcrossRunTaskCalls(t *testing.T) {
+	p := &scriptedProvider{
+		capabilities: schema.ProviderCapabilities{JSONMode: true},
+		responses: []string{
+			// First RunTask: 2 parse failures → JSON mode, then recover
+			"not json 1",
+			"not json 2",
+			`{"rationale":"recovered","action":{"type":"final","content":"first done"}}`,
+			// Second RunTask: no JSON mode should leak across
+			"not json 3",
+			`{"rationale":"done","action":{"type":"final","content":"second done"}}`,
+		},
+	}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 5
+	r.MaxRetries = 0
+
+	// First RunTask triggers JSON-mode escalation on the 3rd request
+	if _, err := r.RunTask(context.Background(), "first goal"); err != nil {
+		t.Fatalf("first RunTask err = %v", err)
+	}
+
+	firstRunRequestCount := len(p.requests)
+
+	// Second RunTask on the same *Runner
+	if _, err := r.RunTask(context.Background(), "second goal"); err != nil {
+		t.Fatalf("second RunTask err = %v", err)
+	}
+
+	// The first request of the second run must NOT inherit JSON mode
+	req := p.requests[firstRunRequestCount]
+	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" {
+		t.Fatalf("second RunTask's first request has ResponseFormat = %v, want nil or non-json_object", req.ResponseFormat)
 	}
 }
 

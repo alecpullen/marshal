@@ -23,7 +23,7 @@ func TestSummarizeAndContinueRebuildsMessages(t *testing.T) {
 		{Role: schema.RoleUser, Content: "fix the bug"},
 		{Role: schema.RoleUser, Content: "Tool file.read result: huge old output"},
 	}
-	fresh, err := runner.summarizeAndContinue(context.Background(), p, "test-model", old, "fix the bug")
+	fresh, err := runner.summarizeAndContinue(context.Background(), p, "test-model", old, "fix the bug", nil)
 	if err != nil {
 		t.Fatalf("summarizeAndContinue: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestSummarizeAndContinueErrorsOnEmptySummary(t *testing.T) {
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
 	_, err := runner.summarizeAndContinue(context.Background(), p, "test-model",
-		[]schema.ChatMessage{{Role: schema.RoleUser, Content: "goal"}}, "goal")
+		[]schema.ChatMessage{{Role: schema.RoleUser, Content: "goal"}}, "goal", nil)
 	if err == nil {
 		t.Fatal("empty summary must return an error so the caller can fall back to compactMessages")
 	}

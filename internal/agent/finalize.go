@@ -69,7 +69,7 @@ const nativeToolCallDisabledReply = `Tool calls are disabled for this step. Resp
 // failure from chatWithRetry. A model that keeps ignoring the directive
 // after all attempts is handled by synthesizing a fallback answer instead of
 // surfacing its raw, unparsed tool-call output to the user.
-func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task, reason finalizeReason) (*Task, error) {
+func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task, reason finalizeReason, responseFormat *schema.ResponseFormat) (*Task, error) {
 	directive := FinalizationDirective
 	if r.NativeTools {
 		directive = NativeFinalizationDirective
@@ -81,7 +81,7 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 	content := ""
 	for attempt := 0; attempt < maxFinalizeAttempts; attempt++ {
 		var err error
-		res, err := r.chatWithRetryNoNativeTools(ctx, p, model, final)
+		res, err := r.chatWithRetryNoNativeTools(ctx, p, model, final, responseFormat)
 		if err != nil {
 			return task, err
 		}

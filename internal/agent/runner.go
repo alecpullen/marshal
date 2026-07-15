@@ -343,6 +343,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	})
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
+	effectiveRF := r.ResponseFormat
+
 	// F18: extract @file references from the goal and pin them into the
 	// context pack before it is appended to the model messages. Unknown
 	// paths and unreadable files are silently skipped (see
@@ -365,7 +367,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if r.PlanFirst && task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
-		planRes, err := r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages)
+		planRes, err := r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages, effectiveRF)
 		if err != nil {
 			return task, r.fail(task, err)
 		}
@@ -461,7 +463,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 
 		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
-			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal); serr == nil {
+			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal, effectiveRF); serr == nil {
 				messages = fresh
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
@@ -471,7 +473,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 		}
 
-		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
+		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages, effectiveRF)
 		if err != nil {
 			return task, r.fail(task, err)
 		}
@@ -495,10 +497,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					r.trackerMu.Unlock()
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: "Call a tool or give a final answer."})
 					if consecutiveEmpty >= 2 {
-						return r.finalize(ctx, turnProvider, turnModel, messages, task, reasonEmpty)
+						return r.finalize(ctx, turnProvider, turnModel, messages, task, reasonEmpty, effectiveRF)
 					}
 					if !steeringArrived {
-						if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+						if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 							return resTask, ferr
 						} else if nudge != "" {
 							messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -551,7 +553,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			messages = append(messages, resultMsgs...)
 			if !steeringArrived {
-				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 					return resTask, ferr
 				} else if nudge != "" {
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -571,7 +573,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, repairMsg)
 				r.State.AddMessage(session.RoleSystem, repairMsg.Content, session.ContentTypePlain)
 				if turnProvider.Capabilities(ctx).JSONMode && r.ResponseFormat == nil {
-					r.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
+					effectiveRF = &schema.ResponseFormat{Type: "json_object"}
 				}
 			}
 			if consecutiveParseFailures >= maxConsecutiveParseFailures {
@@ -605,7 +607,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			messages = append(messages, resultMsgs...)
 			if !steeringArrived {
-				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 					return res, ferr
 				} else if nudge != "" {
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -633,7 +635,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			messages = append(messages, resultMsgs...)
 			if !steeringArrived {
-				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 					return res, ferr
 				} else if nudge != "" {
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -662,7 +664,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.trackerMu.Unlock()
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."})
 				if !steeringArrived {
-					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 						return resTask, ferr
 					} else if nudge != "" {
 						messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -702,7 +704,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.trackerMu.Unlock()
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer every question. Proceed with your best judgment and state the assumptions you made."})
 				if !steeringArrived {
-					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 						return resTask, ferr
 					} else if nudge != "" {
 						messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -724,7 +726,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	if consecutiveParseFailures >= maxConsecutiveParseFailures {
 		if producedValidAction {
-			if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonMalformed); ferr == nil {
+			if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonMalformed, effectiveRF); ferr == nil {
 				return res, nil
 			}
 		}
@@ -734,7 +736,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	if producedValidAction {
-		if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonExhausted); ferr == nil {
+		if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonExhausted, effectiveRF); ferr == nil {
 			return res, nil
 		}
 	}
@@ -749,7 +751,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 // append as a user message, and repeat counts are reset so the loop gets a
 // fresh start. An empty answer, or any non-general (swarm) role, falls back
 // to finalize, which produces a flagged salvaged summary.
-func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, guidance string) {
+func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task, responseFormat *schema.ResponseFormat) (finalized bool, res *Task, err error, guidance string) {
 	r.trackerMu.Lock()
 	a := r.tracker.assess()
 	name, args, _ := r.tracker.lastCall()
@@ -778,7 +780,7 @@ func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, 
 		}
 	}
 
-	res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
+	res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled, responseFormat)
 	return true, res, ferr, ""
 }
 
@@ -888,19 +890,19 @@ func (r *Runner) fail(task *Task, err error) error {
 // model *output* is handled separately in Run via BuildCorrectionMessage; it
 // is not retried here because it is not a chatOnce failure — chatOnce
 // succeeded, the text just didn't parse as an action.
-func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (chatResult, error) {
-	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, true)
+func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat) (chatResult, error) {
+	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, true)
 }
 
-func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (chatResult, error) {
-	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, false)
+func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat) (chatResult, error) {
+	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, false)
 }
 
-func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, includeNativeTools bool) (chatResult, error) {
+func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
 	attempts := r.MaxRetries + 1
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		res, err := r.chatOnce(ctx, p, model, messages, includeNativeTools)
+		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
 		if err == nil {
 			return res, nil
 		}
@@ -909,7 +911,7 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 	return chatResult{}, lastErr
 }
 
-func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, includeNativeToolsOpt ...bool) (chatResult, error) {
+func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeToolsOpt ...bool) (chatResult, error) {
 	if r.RequestTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.RequestTimeout)
@@ -920,15 +922,15 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	if len(includeNativeToolsOpt) > 0 {
 		includeNativeTools = includeNativeToolsOpt[0]
 	}
-	var responseFormat *schema.ResponseFormat
 	var tools []schema.ToolDefinition
 	if r.NativeTools {
 		if includeNativeTools {
 			tools = r.buildToolDefinitions()
 		}
-	} else {
-		responseFormat = r.ResponseFormat
 	}
+	// responseFormat is passed in from RunTask (or a caller in the chain)
+	// so that per-turn mutations (e.g. JSON-mode escalation after parse
+	// failures) do not leak across RunTask calls on the same *Runner.
 
 	events, err := p.Chat(ctx, schema.ChatRequest{
 		Model:          model,

@@ -79,32 +79,50 @@ func Footer(h FooterHints) string {
 	return strings.Join(segs, sepStr)
 }
 
+const keyColumnWidth = 20
+
 // Overlay returns the full-screen help panel shown when ? is pressed.
 func Overlay(width, height int) string {
-	lines := []string{
-		"marshal keys",
-		"",
-		"  Enter          send message / accept",
-		"  Shift+Enter     newline in input",
-		"  /              command completion",
-		"  @              file completion",
-		"  ↑↓             choose completion · PgUp/PgDn/Ctrl-U/Ctrl-D/End scroll",
-		"  Tab            cycle mode (auto→ask→edit) · accept completion",
-		"  Shift+Tab      cycle mode backward",
-		"  Alt+M          cycle model",
-		"  Alt+Shift+M    cycle model backward",
-		"  Esc            cancel turn · dismiss popup · deny approval",
-		"  Ctrl+O         settings",
-		"  Ctrl+P         model picker",
-		"  Ctrl+K         memory browser",
-		"  Ctrl+G         toggle thinking",
-		"  Ctrl+R         rollback last change",
-		"  Ctrl+X         clear steering queue (while busy)",
-		"  ?              this help",
-		"  Ctrl+C         quit",
-		"",
-		"Press ? or Esc to close.",
+	table := [][]string{
+		{"Enter", "send message / accept"},
+		{"Shift+Enter", "newline in input"},
+		{"", ""},
+		{"/", "command completion"},
+		{"@", "file completion"},
+		{"↑↓", "choose completion"},
+		{"PgUp/PgDn", "scroll transcript"},
+		{"Ctrl+U/Ctrl+D", "half-page scroll"},
+		{"End", "jump to bottom"},
+		{"", ""},
+		{"Tab", "cycle mode (auto→ask→edit) · accept completion"},
+		{"Shift+Tab", "cycle mode backward"},
+		{"Alt+M", "cycle model"},
+		{"Alt+Shift+M", "cycle model backward"},
+		{"Esc", "cancel turn · dismiss popup · deny approval"},
+		{"", ""},
+		{"Ctrl+O", "settings"},
+		{"Ctrl+P", "model picker"},
+		{"Ctrl+K", "memory browser"},
+		{"Ctrl+G", "toggle thinking"},
+		{"Ctrl+R", "rollback last change"},
+		{"Ctrl+X", "clear steering queue (while busy)"},
+		{"", ""},
+		{"?", "this help"},
+		{"Ctrl+C", "quit"},
 	}
-	body := strings.Join(lines, "\n")
+
+	keyStyle := lipgloss.NewStyle().Bold(true).Width(keyColumnWidth)
+	descStyle := lipgloss.NewStyle().Width(max(width-keyColumnWidth-4, 20))
+	rows := make([]string, 0, len(table)+4)
+	rows = append(rows, "marshal keys", "")
+	for _, r := range table {
+		if r[0] == "" && r[1] == "" {
+			rows = append(rows, "")
+			continue
+		}
+		rows = append(rows, keyStyle.Render(r[0])+"  "+descStyle.Render(r[1]))
+	}
+	rows = append(rows, "", "Press ? or Esc to close.")
+	body := strings.Join(rows, "\n")
 	return lipgloss.NewStyle().Width(width).Height(height).Align(lipgloss.Center, lipgloss.Center).Render(body)
 }

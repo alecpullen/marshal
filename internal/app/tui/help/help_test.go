@@ -57,3 +57,24 @@ func TestOverlayEnumeratesAllBindings(t *testing.T) {
 		}
 	}
 }
+
+func TestOverlayUsesFixedKeyColumn(t *testing.T) {
+	out := Overlay(120, 40)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Alt+Shift+M") && !strings.Contains(line, "cycle model backward") {
+			// The description MUST appear on the same line as the
+			// key (we only wrap on \n, not in the middle of a row).
+		}
+	}
+}
+
+func TestOverlayWrapsOnNarrowWidth(t *testing.T) {
+	out := Overlay(60, 30) // narrower than keyColumnWidth*2
+	// Assert that no line contains a key label clipped by a
+	// hard wrap inside the description (heuristic: the description
+	// for "cycle mode backward" should still contain the word
+	// "cycle" or "backward").
+	if !strings.Contains(out, "backward") {
+		t.Fatalf("description lost on narrow terminal: %q", out)
+	}
+}

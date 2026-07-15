@@ -7,53 +7,40 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps a single-writer *sql.DB connection. All access goes through
-// db.sqlDB — callers obtain the raw *sql.DB via SQLDB() and pass their own
-// contexts to queries directly. There is no helper/exec/query layer in this
-// package; this is intentional so that every call site controls its own
-// context lifecycle.
+const defaultReadPoolSize = 4
+
+// DB wraps a single-writer *sql.DB connection (sqlDB) and a multi-connection
+// read pool (readDB). All access goes through db.sqlDB — callers obtain the
+// raw *sql.DB via SQLDB() and pass their own contexts to queries directly.
+// There is no helper/exec/query layer in this package; this is intentional so
+// that every call site controls its own context lifecycle.
 type DB struct {
-	sqlDB *sql.DB
+	sqlDB  *sql.DB
+	readDB *sql.DB
+	path   string
 }
 
+// Open opens a SQLite database with WAL mode, a single writer connection,
+// and a read pool of defaultReadPoolSize (4) connections.
 func Open(path string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite db: %w", err)
-	}
-
-	// The agent persists messages and tool calls from parallel goroutines
-	// (parallel tool execution and the swarm runtime). SQLite permits only one
-	// writer at a time, so pin the pool to a single connection to serialize
-	// writers, and set a busy timeout so any residual contention (migrations,
-	// external handles) waits instead of returning SQLITE_BUSY. Without this,
-	// concurrent writes fail with "database is locked".
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
-	if _, err := sqlDB.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		sqlDB.Close()
-		return nil, fmt.Errorf("set sqlite busy_timeout: %w", err)
-	}
-	if _, err := sqlDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		sqlDB.Close()
-		return nil, fmt.Errorf("enable sqlite foreign_keys: %w", err)
-	}
-
-	if err := sqlDB.Ping(); err != nil {
-		sqlDB.Close()
-		return nil, fmt.Errorf("ping sqlite db: %w", err)
-	}
-
-	return &DB{sqlDB: sqlDB}, nil
+	return OpenWithPool(path, defaultReadPoolSize)
 }
 
 func (db *DB) SQLDB() *sql.DB { return db.sqlDB }
 
 func (db *DB) Close() error {
-	if db.sqlDB == nil {
-		return nil
+	var first error
+	if db.sqlDB != nil {
+		if err := db.sqlDB.Close(); err != nil {
+			first = err
+		}
 	}
-	return db.sqlDB.Close()
+	if db.readDB != nil {
+		if err := db.readDB.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 func (db *DB) Migrate() error {

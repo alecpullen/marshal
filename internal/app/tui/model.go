@@ -593,6 +593,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
+	// tool decision is pending. These must be intercepted before the
+	// approval/question routing below, which would otherwise swallow them.
+	if m.state.PendingApproval() != nil || m.state.PendingQuestion() != nil {
+		if k, ok := msg.(tea.KeyPressMsg); ok {
+			switch k.String() {
+			case "ctrl+o":
+				m.state.AddMessage(session.RoleSystem,
+					"Resolve the pending tool decision before opening settings.",
+					session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			case "ctrl+k":
+				m.state.AddMessage(session.RoleSystem,
+					"Resolve the pending tool decision before opening memory browser.",
+					session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			}
+		}
+	}
+
 	// Inline approval chooser: when a tool call is pending, route every
 	// message (keypresses AND huh's internal nextField/nextGroup messages)
 	// to the approval form so selection navigation round-trips correctly.

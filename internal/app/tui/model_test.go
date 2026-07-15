@@ -3809,3 +3809,81 @@ func TestPatternForApproval_SecurityProperty(t *testing.T) {
 		t.Errorf("pattern %q should not contain wildcard", pattern)
 	}
 }
+
+// TestSettingsBlockedByApproval verifies that Ctrl+O does not open the
+// settings overlay when a tool approval is pending (F-BUG-147).
+func TestSettingsBlockedByApproval(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	tc := &session.PendingToolCall{
+		ID:           "block-1",
+		Name:         "shell.run",
+		Command:      "echo blocked",
+		Risk:         "low",
+		Reason:       "testing block",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(tc)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// Ctrl+O should NOT open settings while approval is pending.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	if m.settingsOpen {
+		t.Fatal("settingsOpen should be false when approval is pending")
+	}
+
+	// A system message should have been added.
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected a system message about pending tool decision")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleSystem {
+		t.Fatalf("last message role = %v, want system", last.Role)
+	}
+	if !strings.Contains(last.Content, "pending tool decision") {
+		t.Fatalf("last message = %q, want 'pending tool decision' message", last.Content)
+	}
+}
+
+// TestMemoryBlockedByApproval verifies that Ctrl+K does not open the
+// memory browser overlay when a tool approval is pending (F-BUG-147).
+func TestMemoryBlockedByApproval(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	tc := &session.PendingToolCall{
+		ID:           "block-2",
+		Name:         "shell.run",
+		Command:      "echo blocked",
+		Risk:         "low",
+		Reason:       "testing block",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(tc)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// Ctrl+K should NOT open memory while approval is pending.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	if m.memoryOpen {
+		t.Fatal("memoryOpen should be false when approval is pending")
+	}
+
+	// A system message should have been added.
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected a system message about pending tool decision")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleSystem {
+		t.Fatalf("last message role = %v, want system", last.Role)
+	}
+	if !strings.Contains(last.Content, "pending tool decision") {
+		t.Fatalf("last message = %q, want 'pending tool decision' message", last.Content)
+	}
+}

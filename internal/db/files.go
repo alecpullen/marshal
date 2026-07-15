@@ -34,11 +34,11 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 	if err != nil {
 		return fmt.Errorf("query existing file index: %w", err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var path, hash string
 		var summary sql.NullString
 		if err := rows.Scan(&path, &hash, &summary); err != nil {
-			rows.Close()
 			return fmt.Errorf("scan existing file row: %w", err)
 		}
 		f := FileIndex{Path: path, Hash: hash}
@@ -48,10 +48,8 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 		existing[path] = f
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return fmt.Errorf("iterate existing file rows: %w", err)
 	}
-	rows.Close()
 
 	if _, err := tx.Exec(`DELETE FROM files WHERE project_id = ?`, projectID); err != nil {
 		return fmt.Errorf("delete existing files: %w", err)

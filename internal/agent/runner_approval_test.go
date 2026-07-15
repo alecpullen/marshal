@@ -182,6 +182,16 @@ func TestBuildQuestionLabel(t *testing.T) {
 			want:      "waiting for your answer: Should the cache be per-session or globa…",
 		},
 		{
+			// Regression: prior implementation byte-sliced the string,
+			// which would split the multi-byte character mid-codepoint
+			// and produce invalid UTF-8 in the label. The result must
+			// be valid UTF-8 and the "…" must be a separate rune (not
+			// a continuation of a split multi-byte character).
+			name:      "long question with multi-byte characters truncates on rune boundary",
+			questions: []session.Question{{Question: "日本語の質問です。これはテスト用の非常に長い文章で、切り詰めの挙動を正しく確認するために四十文字を超える長さにしています。"}},
+			want:      "waiting for your answer: 日本語の質問です。これはテスト用の非常に長い文章で、切り詰めの挙動を正しく確認す…",
+		},
+		{
 			name:      "multiple questions",
 			questions: []session.Question{{Question: "Auth?"}, {Question: "Keep legacy?"}},
 			want:      "waiting for your answer (Q1/2): Auth?",

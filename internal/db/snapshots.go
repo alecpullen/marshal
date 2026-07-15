@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -96,9 +95,4 @@ func (db *DB) SnapshotFiles(snapshotID int64) ([]string, error) {
 		paths = append(paths, p)
 	}
 	return paths, rows.Err()
-}
-
-// joinSnapshotFiles joins a list of file paths into a single string for storage.
-func joinSnapshotFiles(files []string) string {
-	return strings.Join(files, "\n")
 }

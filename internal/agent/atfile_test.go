@@ -352,12 +352,6 @@ func TestFileIndexCache(t *testing.T) {
 	if _, ok := cache.get(2); ok {
 		t.Fatal("cache should miss for different project ID")
 	}
-
-	// Invalidate.
-	cache.invalidate()
-	if _, ok := cache.get(1); ok {
-		t.Fatal("cache should be empty after invalidate")
-	}
 }
 
 // openTestDB opens a fresh SQLite database in a temp file and runs

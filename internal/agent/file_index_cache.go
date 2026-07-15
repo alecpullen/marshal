@@ -24,18 +24,12 @@ func (c *fileIndexCache) get(projectID int64) (map[string]struct{}, bool) {
 }
 
 // set stores a fresh path set for projectID, keyed for O(1) membership.
+// A different projectID on the next get invalidates the previous entry
+// automatically, so no explicit invalidate is needed.
 func (c *fileIndexCache) set(projectID int64, paths map[string]struct{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.projectID = projectID
 	c.paths = paths
 	c.loaded = true
-}
-
-// invalidate clears the cache. Called when the project changes.
-func (c *fileIndexCache) invalidate() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.loaded = false
-	c.paths = nil
 }

@@ -95,6 +95,11 @@ type Server struct {
 	// handlers to complete. Tests can override this per-instance.
 	handlerShutdownTimeout time.Duration
 
+	// MaxLineBytes is the maximum token size for the bufio.Scanner used
+	// in scanLines. If zero or negative, a default of 1 MiB is used.
+	// Set this before calling Serve (F-POL-60).
+	MaxLineBytes int
+
 	// fatalErr is a buffered channel that handler goroutines use to
 	// report fatal write errors to the Serve loop. Created in Serve.
 	fatalErr chan error
@@ -153,6 +158,11 @@ func (s *Server) Notify(method string, params any) error {
 //  4. Removes the waiter if encoding fails.
 //  5. Waits on the channel, or removes the waiter on ctx cancellation.
 func (s *Server) Request(ctx context.Context, method string, params any, result any) error {
+	// 0. Reject empty method (F-POL-61).
+	if method == "" {
+		return fmt.Errorf("acp: request method is required")
+	}
+
 	// 1. Reject closed server.
 	s.stateMu.Lock()
 	if s.closed {
@@ -315,7 +325,11 @@ func (s *Server) Serve(ctx context.Context) error {
 // scanner finishes (EOF or error) or serveCtx is cancelled.
 func (s *Server) scanLines(serveCtx context.Context, frames chan<- []byte, done chan<- error) {
 	sc := bufio.NewScanner(s.in)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	maxLine := s.MaxLineBytes
+	if maxLine <= 0 {
+		maxLine = 1 << 20 // 1 MiB default
+	}
+	sc.Buffer(make([]byte, 0, 64*1024), maxLine)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -344,27 +358,22 @@ func (s *Server) handleFrame(ctx context.Context, line []byte) {
 		return
 	}
 
-	// Classify the frame.
-	if req.Method == "" {
-		// No method: this is either a response to an outbound request
-		// or an invalid inbound frame.
+	// Classify the frame using hasMethod (set by UnmarshalJSON) to avoid
+	// re-unmarshalling the line just to check for a "method" key (F-POL-59).
+	if !req.hasMethod {
+		// No method key — this is a response (or a garbage frame).
 		if req.ID != nil {
-			// Check whether the "method" key was explicitly absent
-			// (response frame) or present-but-empty (invalid request).
-			var rawMap map[string]json.RawMessage
-			if json.Unmarshal(line, &rawMap) == nil {
-				if _, hasMethod := rawMap["method"]; !hasMethod {
-					// No method key — it's a response frame.
-					s.deliverOutbound(req.ID, line)
-					return
-				}
-			}
-			// Explicit "method":"" — invalid request.
+			s.deliverOutbound(req.ID, line)
+		}
+		return
+	}
+	if req.Method == "" {
+		// Explicit "method":"" — invalid request.
+		if req.ID != nil {
 			if writeErr := s.writeError(req.ID, invalidRequest, "method is required"); writeErr != nil {
 				s.reportFatal(writeErr)
 			}
 		}
-		// ID is nil: nothing to respond to, silently ignore.
 		return
 	}
 

@@ -354,23 +354,33 @@ func (m *OnboardingModel) saveConfig() error {
 
 	providerKey := strings.ToLower(strings.Fields(m.selectedProvider)[0])
 
-	tomlContent.WriteString(fmt.Sprintf("[providers.%s]\n", providerKey))
-	tomlContent.WriteString("type = \"openai_compatible\"\n")
 	if providerKey == "ollama" {
+		tomlContent.WriteString(fmt.Sprintf("[providers.%s]\n", providerKey))
+		tomlContent.WriteString("type = \"openai_compatible\"\n")
 		tomlContent.WriteString(fmt.Sprintf("base_url = %q\n", m.baseURL))
 		tomlContent.WriteString("api_key = \"ollama\"\n\n")
 	} else {
 		switch m.keyMode {
 		case keyModeEnvName:
+			tomlContent.WriteString(fmt.Sprintf("[providers.%s]\n", providerKey))
+			tomlContent.WriteString("type = \"openai_compatible\"\n")
 			tomlContent.WriteString(fmt.Sprintf("api_key_env = %q\n\n", m.apiKey))
 		case keyModeInline:
 			// Persist the raw key to the GLOBAL config only.
 			if err := writeGlobalProviderAPIKey(m.globalConfigPath, providerKey, m.keySecret); err != nil {
 				return err
 			}
-			// Project config records only the env-var-style reference.
-			tomlContent.WriteString(fmt.Sprintf("api_key_env = %q\n\n", marshalGlobalAPIKey))
+			// Deliberately do NOT write a [providers.<name>] block in the
+			// project config. The global config has the real api_key; the
+			// loader's whole-entry merge (config.go:850-861) preserves the
+			// global entry when the project file has no entry for this
+			// provider name. See F-UIUX-137.
+			tomlContent.WriteString("# Provider config (api_key) lives in the global config\n")
+			tomlContent.WriteString("# (~/.config/marshal/config.toml) to keep secrets out of\n")
+			tomlContent.WriteString("# this project-tracked file. See F-UIUX-137.\n\n")
 		default:
+			tomlContent.WriteString(fmt.Sprintf("[providers.%s]\n", providerKey))
+			tomlContent.WriteString("type = \"openai_compatible\"\n")
 			tomlContent.WriteString("# api_key_env = \"OPENAI_API_KEY\"\n\n")
 		}
 	}

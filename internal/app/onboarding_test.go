@@ -21,11 +21,18 @@ func TestOnboardingWizardTransitionsAndSaves(t *testing.T) {
 	// 1. Select provider (default is Ollama)
 	m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = m2.(*OnboardingModel)
-	if m.state != stateConfigureURL {
-		t.Fatalf("after selecting provider, state = %d, want stateConfigureURL", m.state)
+	if m.state != stateProjectName {
+		t.Fatalf("after selecting provider, state = %d, want stateProjectName", m.state)
 	}
 
-	// 2. Configure URL
+	// 2. Enter project name (accept default derived from working dir)
+	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = m2.(*OnboardingModel)
+	if m.state != stateConfigureURL {
+		t.Fatalf("after entering project name, state = %d, want stateConfigureURL", m.state)
+	}
+
+	// 3. Configure URL
 	m.textInput.SetValue("http://localhost:11434/v1")
 	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = m2.(*OnboardingModel)
@@ -68,8 +75,9 @@ func TestOnboardingWizardTransitionsAndSaves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load generated config: %v", err)
 	}
-	if cfg.Project.Name != "my-project" {
-		t.Errorf("loaded config project name = %q, want 'my-project'", cfg.Project.Name)
+	expectedName := filepath.Base(tempDir)
+	if cfg.Project.Name != expectedName {
+		t.Errorf("loaded config project name = %q, want %q", cfg.Project.Name, expectedName)
 	}
 }
 
@@ -142,6 +150,40 @@ func TestOnboardingEnvVarModeWritesAPIKeyEnv(t *testing.T) {
 	}
 	if strings.Contains(string(data), `api_key = "MY_CUSTOM_ENV_VAR"`) {
 		t.Fatalf("raw key written instead of env var reference: %s", data)
+	}
+}
+
+func TestOnboardingProjectNameFromWorkingDir(t *testing.T) {
+	m := newTestOnboardingModel()
+	m.workingDir = "/tmp/myrepo"
+	m.projectName = "" // simulate user pressing Enter on default
+
+	if err := m.saveConfig(); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(m.workingDir, ".marshal", "config.toml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), `name = "myrepo"`) {
+		t.Fatalf("expected name derived from working dir, got: %s", data)
+	}
+}
+
+func TestOnboardingProjectNameCustomValue(t *testing.T) {
+	m := newTestOnboardingModel()
+	m.workingDir = "/tmp/myrepo"
+	m.projectName = "my-custom-project"
+
+	if err := m.saveConfig(); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(m.workingDir, ".marshal", "config.toml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), `name = "my-custom-project"`) {
+		t.Fatalf("expected name = \"my-custom-project\", got: %s", data)
 	}
 }
 

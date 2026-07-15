@@ -21,6 +21,7 @@ type onboardingState int
 
 const (
 	stateSelectProvider onboardingState = iota
+	stateProjectName
 	stateConfigureURL
 	stateKeyMode
 	stateConfigureKey
@@ -55,6 +56,7 @@ type OnboardingModel struct {
 
 	// Collected inputs
 	selectedProvider string
+	projectName      string
 	baseURL          string
 	apiKey           string
 	modelName        string
@@ -189,6 +191,17 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			switch m.state {
 			case stateSelectProvider:
+				m.state = stateProjectName
+				m.textInput.SetValue("")
+				m.textInput.Placeholder = filepath.Base(m.workingDir)
+				m.textInput.Focus()
+
+			case stateProjectName:
+				name := strings.TrimSpace(m.textInput.Value())
+				if name == "" {
+					name = filepath.Base(m.workingDir)
+				}
+				m.projectName = name
 				if m.selectedProvider == "Ollama (Local)" {
 					m.state = stateConfigureURL
 					m.textInput.Placeholder = "http://localhost:11434/v1"
@@ -274,7 +287,7 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textInput.Focus()
 	}
 
-	if m.state == stateConfigureURL || m.state == stateConfigureKey || (m.state == stateModelSelection && len(m.ollamaModels) == 0 && !m.loading) {
+	if m.state == stateProjectName || m.state == stateConfigureURL || m.state == stateConfigureKey || (m.state == stateModelSelection && len(m.ollamaModels) == 0 && !m.loading) {
 		m.textInput, cmd = m.textInput.Update(msg)
 	}
 
@@ -288,8 +301,12 @@ func (m *OnboardingModel) saveConfig() error {
 	}
 
 	var tomlContent strings.Builder
+	projectName := m.projectName
+	if projectName == "" {
+		projectName = filepath.Base(m.workingDir)
+	}
 	tomlContent.WriteString("[project]\n")
-	tomlContent.WriteString("name = \"my-project\"\n\n")
+	tomlContent.WriteString(fmt.Sprintf("name = %q\n\n", projectName))
 
 	tomlContent.WriteString("[commands]\n")
 	tomlContent.WriteString("test = \"go test ./...\"\n\n")
@@ -382,6 +399,10 @@ func (m *OnboardingModel) viewString() string {
 				body.WriteString(fmt.Sprintf("%s %d. %s\n", cursor, i+1, prov))
 			}
 		}
+
+	case stateProjectName:
+		body.WriteString("Enter a name for this project:\n\n")
+		body.WriteString(m.textInput.View() + "\n")
 
 	case stateConfigureURL:
 		body.WriteString("Enter Ollama Base URL:\n\n")

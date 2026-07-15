@@ -19,15 +19,39 @@ type caller interface {
 // It is a var (not const) so tests can override it.
 var mcpServerTimeout = 10 * time.Second
 
+// ManagerOption configures a Manager.
+type ManagerOption func(*Manager)
+
+// WithManagerLogger sets the logger on a Manager. When nil (or unset), the
+// manager uses slog.Default().
+func WithManagerLogger(l *slog.Logger) ManagerOption {
+	return func(m *Manager) { m.Logger = l }
+}
+
 type Manager struct {
+	Logger *slog.Logger // nil → slog.Default()
+
 	config  *config.Config
 	clients []*Client
 }
 
-func NewManager(cfg *config.Config) *Manager {
-	return &Manager{
+func NewManager(cfg *config.Config, opts ...ManagerOption) *Manager {
+	m := &Manager{
 		config: cfg,
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// log returns the manager's logger, defaulting to slog.Default() when the
+// Logger field is nil.
+func (m *Manager) log() *slog.Logger {
+	if m.Logger == nil {
+		return slog.Default()
+	}
+	return m.Logger
 }
 
 func (m *Manager) Start(ctx context.Context) error {
@@ -45,6 +69,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			return fmt.Errorf("start MCP server %q: %w", name, err)
 		}
 		m.clients = append(m.clients, client)
+		m.log().Info("mcp connect", "name", name)
 	}
 	return nil
 }
@@ -77,7 +102,7 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 		var res ListToolsResult
 		if err := client.Call(srvCtx, "tools/list", nil, &res); err != nil {
 			cancel()
-			slog.Default().Warn("mcp: server skipped",
+			m.log().Warn("mcp: server skipped",
 				"server", client.Name,
 				"error", err,
 			)
@@ -109,7 +134,7 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 			Schema:      p.schema,
 			Risk:        registry.RiskWorkspaceWrite, // secure default; configurable via policy
 			Deferred:    deferred,
-			Handler:     m.makeHandler(client, p.mcpToolName),
+			Handler:     m.makeHandler(client, p.clientName, p.mcpToolName),
 		})
 		if err != nil {
 			return fmt.Errorf("register MCP tool %q: %w", p.name, err)
@@ -129,14 +154,22 @@ func (m *Manager) findClient(name string) *Client {
 	return nil
 }
 
-func (m *Manager) makeHandler(c caller, mcpToolName string) registry.ToolHandler {
+func (m *Manager) makeHandler(c caller, serverName, mcpToolName string) registry.ToolHandler {
 	return func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		start := time.Now()
 		params := CallToolParams{
 			Name:      mcpToolName,
 			Arguments: call.Args,
 		}
 		var res CallToolResult
-		if err := c.Call(ctx, "tools/call", params, &res); err != nil {
+		err := c.Call(ctx, "tools/call", params, &res)
+		m.log().Info("mcp call",
+			"server", serverName,
+			"tool", mcpToolName,
+			"duration_ms", time.Since(start).Milliseconds(),
+			"error", err,
+		)
+		if err != nil {
 			return registry.ToolResult{}, err
 		}
 		var summary string

@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -155,13 +157,48 @@ func TestMakeHandlerPropagatesIsError(t *testing.T) {
 			IsError: true,
 			Content: []MCPContent{{Type: "text", Text: "boom"}},
 		},
-	}, "any")
+	}, "server", "any")
 	res, err := handler(context.Background(), registry.ToolCall{Name: "any", Args: nil})
 	if err == nil {
 		t.Fatal("expected error when IsError=true, got nil")
 	}
 	if res.Error == "" {
 		t.Errorf("expected ToolResult.Error to be set, got %q", res.Error)
+	}
+}
+
+// TestManagerLogsCall verifies that makeHandler logs an "mcp call" line
+// with server, tool, duration_ms, and error fields.
+func TestManagerLogsCall(t *testing.T) {
+	var buf bytes.Buffer
+	m := NewManager(nil, WithManagerLogger(slog.New(slog.NewTextHandler(&buf, nil))))
+
+	handler := m.makeHandler(&stubCaller{
+		res: CallToolResult{
+			Content: []MCPContent{{Type: "text", Text: "ok"}},
+		},
+	}, "myserver", "mytool")
+
+	_, err := handler(context.Background(), registry.ToolCall{Name: "mytool", Args: []byte("{}")})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "mcp call") {
+		t.Fatalf("expected 'mcp call' in log, got %q", logged)
+	}
+	if !strings.Contains(logged, "server=myserver") {
+		t.Errorf("expected server=myserver in log, got %q", logged)
+	}
+	if !strings.Contains(logged, "tool=mytool") {
+		t.Errorf("expected tool=mytool in log, got %q", logged)
+	}
+	if !strings.Contains(logged, "duration_ms=") {
+		t.Errorf("expected duration_ms= in log, got %q", logged)
+	}
+	if !strings.Contains(logged, "error=<nil>") {
+		t.Errorf("expected error=<nil> in log, got %q", logged)
 	}
 }
 

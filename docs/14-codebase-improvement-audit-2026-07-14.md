@@ -2148,3 +2148,80 @@ fixes" above).
 | F-SEC-16 | RESOLVED | `policy.ClassifyCommand` is argv-aware; substring patterns retained as per-stage safety net |
 | F-SEC-17 | RESOLVED | Container argv path gated on `ClassifyCommand` |
 | F-SEC-31 | RESOLVED | Slash commands use `shlex.Split` for quoted args |
+
+### Batch 4 (D1 — Runner state hygiene & reentrancy): RESOLVED on branch `feature/domain-d-agent-runtime`
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-BUG-74 | RESOLVED | `ResponseFormat` threaded as local `effectiveRF` in `RunTask`; not mutated on shared Runner. New test `TestResponseFormatResetsAcrossRunTaskCalls` |
+| F-POL-85 | RESOLVED | Same fix as F-BUG-74 (duplicate finding); covers both mutation sites |
+| F-CON-79 | RESOLVED | `Runner` doc comment declares the concurrency contract (not concurrent, sequential-reuse safe); persistent vs per-turn fields enumerated; new test `TestRunnerSequentialReuse` |
+| F-POL-93 | RESOLVED | Dead inline `RunTaskFunc` declaration removed; named type at line 234 is the single source of truth |
+| F-POL-95 | RESOLVED | `pressureSent` → `pressureMessageSent`; comment now describes what the variable tracks |
+
+### Batch 5 (D2 — Native tool execution correctness): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-BUG-70 | RESOLVED | `executeNativeAskUser` and `executeNativeQuestionAsk` now `iteration++` and `recordIdle` on decline; mirror the envelope path. `iterationBudget` pointer field on Runner set in `RunTask`, nil outside |
+| F-BUG-75 | RESOLVED | Hard-coded `"Unanswered"` literal replaced with `session.AnswerUnanswered` constant |
+| F-BUG-76 | RESOLVED | Serial-tool execution continues after one tool errors; one `Tool` message produced per issued call (including error slots) |
+| F-BUG-77 | RESOLVED | `extractJSONObject` rewritten as stack-based balanced-brace scanner; string-aware and escape-aware. 9 sub-tests in `TestExtractJSONObjectBalanced` |
+| F-CON-80 | RESOLVED | `requestApproval`/`requestQuestions` get a `time.After(effectiveRequestTimeout)` arm; default 5 minutes. Returns `ErrRequestTimedOut` and clears pending slot |
+| F-POL-89 | RESOLVED | `buildQuestionLabel` includes first question preview; "Q1/N: …" format for multi-question. Rune-aware truncation |
+
+### Batch 6 (D3 — Tool approval re-evaluation & rewrite audit): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-SEC-82 | RESOLVED | `registry.AuditEvent` gains additive `OriginalArgs json.RawMessage` and `Rewritten bool` fields. Rewrite loop captures pre-hook args before each hook call. DB columns `original_args_json` and `rewritten` (additive migration) round-trip via `sql.Null*`. New test `TestAuditEventRecordsOriginalArgs` with `onceRewriteHookRunner` |
+| F-POL-88 | RESOLVED | Same site as F-BUG-41; the non-shell branch (already tightened in D2) re-evaluates policy against new args and surfaces errors via `BuildCorrectionMessage`-style nudge |
+| F-BUG-41 | RESOLVED | Shell edit branch now logs `slog.Default().Warn` for silently-discarded `normalizeArgs` and `json.Marshal` failures. New test `TestRunnerShellEditNormalizesSuccessfully` |
+
+### Batch 7 (D4 — `@file` / pinned-files safety & contextpack): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-BUG-71 | RESOLVED | `extractPinnedFiles` regex tightened to `[A-Za-z0-9._/\-]+`; paths routed through `safeWorkspacePath` for `..` containment. 3 new tests cover dotdot, shell metachars, and valid paths |
+| F-CON-81 | RESOLVED | New `fileIndexCache` type with projectID-keyed memoisation; bounded 4-goroutine semaphore for parallel file reads. New test `TestFileIndexCache` |
+| F-POL-83 | RESOLVED | Pinned sections (Priority ≥ 100) processed first against reserved budget; regular sections preserve input order. New tests `TestPinnedSectionSurvivesBudgetPressure` and `TestRebudgetPutsPinnedSectionsFirst` |
+| F-POL-90 | RESOLVED | Single `trimSectionContent` helper used by both `PinFiles` and `buildCandidateSections`. New test `TestTrimSectionContentHelper` |
+| D3 followup | RESOLVED | `TestGetToolCalls_LegacyRows` now asserts `OriginalArgs == nil` and `Rewritten == false` for legacy rows |
+
+### Batch 8 (D5 — Routing & state lifecycle): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-BUG-73 | RESOLVED | `ResolveRole` returns the fallback error (more specific) when both primary and legacy paths fail. New test `TestResolveRoleReturnsFallbackErrorOnExhaustion` |
+| F-POL-86 | RESOLVED | `legacyRoute` now returns a `Route` with `MaxRepoContextTokens=8000` and `MaxConversationTokens=4000`. New test `TestLegacyRouteHasSaneDefaults` |
+| F-POL-87 | RESOLVED | `summarizeAndContinue` failure now terminates the turn with a clear error rather than continuing with lossy in-place compaction. New test `TestSummarizeAndContinueFailureSkipsLossyFallback` |
+| D1 followup | RESOLVED | Runner struct doc comment now describes the monotonic-growth behaviour of `resolveRoute` for `MaxTurnContextTokens` |
+
+### Batch 9 (D6 — Slash command & export fixups): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-POL-84 | RESOLVED | `Command` struct gains additive `Hidden bool` field; 12 unimplemented stub commands marked hidden and excluded from `/help` listing (still runnable via `Lookup`). New tests `TestHelpHidesUnimplementedCommands` and `TestHiddenCommandsStillRunnable` |
+| F-BUG-78 | RESOLVED | `/diff` returns the diff string instead of injecting it as a `ContentTypeDiff` system message. TUI renders via `ContentTypePlain` system-notice path. New test `TestDiffDoesNotInjectIntoState` |
+| F-BUG-72 | RESOLVED | `/export` computes the default path before calling `export.Write`. New test `TestExportComputesPathBeforeWrite` |
+| F-POL-91 | RESOLVED | `skills.DefaultSkillRisk` constant (in `internal/skills/skill.go`) wraps `string(registry.RiskReadOnly)`. New test `TestParseFrontmatterDefaultRiskMatchesRegistryConstant` |
+| D5 followup | RESOLVED | `handoff_test.go:67` comment updated to reflect new terminate-on-failure contract |
+
+### Batch 10 (D7 — Test infrastructure refactor): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-POL-92 | RESOLVED | `runner_test.go` (3000+ lines) split into 7 concern-specific files (approval, askuser, context, hooks, misc, parallel, parse) plus a `runner_testhelpers_test.go`. Test count preserved (95 → 95) |
+| F-POL-96 | RESOLVED | `ScriptedProvider` extracted to new `internal/agent/agenttest/` package; swarm tests migrated from local copies. `swarm/provider_test.go` deleted |
+| F-POL-94 | RESOLVED | `SteeringProvider` interface inlined onto `session.State.DrainSteering()`; `internal/agent/steering.go` deleted; `Runner.SteeringProvider` field removed |
+
+### Batch 11 (D8 — deferred-item cleanup): RESOLVED
+
+| Item | Status | Notes |
+|---|---|---|
+| F-POL-91 followup | RESOLVED | `DefaultSkillRisk` constant promoted to package-level; bare `string(registry.RiskReadOnly)` in `skill.go:95` replaced |
+| `fileIndexCache.invalidate()` | RESOLVED | Dead method removed; auto-invalidation via `projectID` key covers all cases |
+| Runner doc comment | RESOLVED | `fileIndexCache` added to the persistent-fields list |
+| Dead `case session.ContentTypeDiff` | RESOLVED | Render path and `renderDiffBlock` helper removed from `transcript.go`; 2 corresponding tests removed from `transcript_test.go`; `diffview` import removed |
+| Duplicate `extractJSONObject` | RESOLVED | New `internal/jsonextract` package owns the balanced-brace scanner; `internal/agent` and `internal/knowledge` both call `jsonextract.Extract` and wrap the error with their own sentinel. `TestParseExtractionHandlesBalancedBracesInStrings` is a regression test for the old fragile behaviour |
+| `buildQuestionLabel` byte-slicing | RESOLVED | New `truncateRunes` helper is rune-aware; test `TestBuildQuestionLabel/long_question_with_multi-byte_characters_truncates_on_rune_boundary` is a regression test |

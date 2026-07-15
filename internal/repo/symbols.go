@@ -15,12 +15,12 @@ import (
 // functions, methods, types, and imports it finds. Tree-sitter produces a
 // partial tree around syntax errors, so a malformed region of the file
 // does not prevent extraction of symbols from the rest of it.
-func ExtractSymbols(path string, source []byte) ([]db.Symbol, error) {
+func ExtractSymbols(ctx context.Context, path string, source []byte) ([]db.Symbol, error) {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(golang.GetLanguage())
 
-	tree, err := parser.ParseCtx(context.Background(), nil, source)
+	tree, err := parser.ParseCtx(ctx, nil, source)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}

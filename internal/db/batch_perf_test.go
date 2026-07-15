@@ -44,7 +44,7 @@ func TestSaveSymbolsBatchPerformance(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// Verify correctness: all 1000 rows are retrievable.
-	got, err := db.GetSymbols(projectID)
+	got, err := db.GetSymbols(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetSymbols failed: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestSaveFileIndexBatchPerformance(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// Verify correctness: all 1000 rows are retrievable.
-	got, err := db.GetFileIndex(projectID)
+	got, err := db.GetFileIndex(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetFileIndex failed: %v", err)
 	}

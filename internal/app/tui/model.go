@@ -1186,7 +1186,7 @@ func (m *Model) populateFileIndexIfNeeded() {
 		m.fileIndexLoaded = true
 		return
 	}
-	index, err := m.memoryDB.GetFileIndex(m.memoryProject)
+	index, err := m.memoryDB.GetFileIndex(m.memoryProject, 0)
 	if err != nil {
 		m.fileIndexLoaded = true
 		return

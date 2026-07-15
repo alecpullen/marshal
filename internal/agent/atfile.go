@@ -34,7 +34,7 @@ func extractPinnedFiles(goal string, state *session.State, projectID int64) []co
 	if db == nil {
 		return nil
 	}
-	index, err := db.GetFileIndex(projectID)
+	index, err := db.GetFileIndex(projectID, 0)
 	if err != nil {
 		return nil
 	}

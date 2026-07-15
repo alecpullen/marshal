@@ -89,15 +89,19 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 	return nil
 }
 
-// GetFileIndex returns all file rows for a project, ordered by path.
-func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
-	rows, err := db.sqlDB.Query(
-		`SELECT path, language, hash, size_bytes, last_indexed_at, summary
+// GetFileIndex returns up to limit file rows for a project, ordered by path.
+// limit <= 0 means "all rows" (unbounded).
+func (db *DB) GetFileIndex(projectID int64, limit int) ([]FileIndex, error) {
+	query := `SELECT path, language, hash, size_bytes, last_indexed_at, summary
 		 FROM files
 		 WHERE project_id = ?
-		 ORDER BY path`,
-		projectID,
-	)
+		 ORDER BY path`
+	args := []any{projectID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.sqlDB.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query file index: %w", err)
 	}

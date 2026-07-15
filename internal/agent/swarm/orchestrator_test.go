@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"marshal/internal/agent"
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/schema"
@@ -52,7 +53,7 @@ func newScriptedOrchestrator(t *testing.T, state *session.State, summaries map[a
 		mu.Unlock()
 
 		response := `{"rationale": "done", "action": {"type": "final", "content": "` + strings.ReplaceAll(summary, "\n", "\\n") + `"}}`
-		r := agent.NewRunner(&scriptedProvider{responses: []string{response}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r := agent.NewRunner(&agenttest.ScriptedProvider{Responses: []string{response}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 		r.Role = role
 		r.SetForceClass("question")
 		r.MaxRetries = 0
@@ -81,7 +82,7 @@ func newScriptedFactory(state *session.State, finals map[agent.AgentRole]string,
 		*calls = append(*calls, factoryCall{role: role, scope: scope})
 		mu.Unlock()
 		response := `{"rationale": "done", "action": {"type": "final", "content": "` + finals[role] + `"}}`
-		r := agent.NewRunner(&scriptedProvider{responses: []string{response}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r := agent.NewRunner(&agenttest.ScriptedProvider{Responses: []string{response}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 		r.Role = role
 		r.SetForceClass("question")
 		return r, nil
@@ -183,7 +184,7 @@ func TestOrchestratorRunsScoutsInParallel(t *testing.T) {
 		if role == agent.RoleRepoScout {
 			r = agent.NewRunner(scoutBarrier, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 		} else {
-			r = agent.NewRunner(&scriptedProvider{responses: []string{
+			r = agent.NewRunner(&agenttest.ScriptedProvider{Responses: []string{
 				`{"rationale": "done", "action": {"type": "final", "content": "ok"}}`,
 			}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 		}
@@ -213,7 +214,7 @@ func TestOrchestratorContinuesWhenAScoutFails(t *testing.T) {
 	var mu sync.Mutex
 	factory := func(role agent.AgentRole, scope RegistryScope) (*agent.Runner, error) {
 		response := `{"rationale": "done", "action": {"type": "final", "content": "ok"}}`
-		p := &scriptedProvider{responses: []string{response}}
+		p := &agenttest.ScriptedProvider{Responses: []string{response}}
 		if role == agent.RoleRepoScout {
 			mu.Lock()
 			scoutCount++
@@ -221,7 +222,7 @@ func TestOrchestratorContinuesWhenAScoutFails(t *testing.T) {
 			mu.Unlock()
 			if failing {
 				// Malformed forever -> RunTask exhausts iterations and errors.
-				p = &scriptedProvider{responses: []string{"not json at all"}}
+				p = &agenttest.ScriptedProvider{Responses: []string{"not json at all"}}
 			}
 		}
 		r := agent.NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
@@ -261,7 +262,7 @@ func TestOrchestratorAbortsWhenPlannerFails(t *testing.T) {
 		mu.Lock()
 		calls = append(calls, factoryCall{role: role, scope: scope})
 		mu.Unlock()
-		r := agent.NewRunner(&scriptedProvider{responses: []string{"garbage"}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r := agent.NewRunner(&agenttest.ScriptedProvider{Responses: []string{"garbage"}}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 		r.Role = role
 		r.SetForceClass("question")
 		r.MaxToolIterations = 2

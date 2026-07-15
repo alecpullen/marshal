@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -16,8 +17,8 @@ func TestRunTaskInjectsSteeringBeforeNextModelCall(t *testing.T) {
 	// First response asks for a read-only tool so the loop iterates and
 	// drains steering before the second model call. Second response
 	// finalizes the turn.
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			`{"rationale":"inspect","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
 			`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
 		},
@@ -43,23 +44,23 @@ func TestRunTaskInjectsSteeringBeforeNextModelCall(t *testing.T) {
 	// to the provider) but is not persisted into the session transcript —
 	// it's an ephemeral mid-turn nudge. The second chat call must see it
 	// appended after the original user message.
-	if len(p.requests) < 2 {
-		t.Fatalf("provider saw %d chat calls, want >= 2", len(p.requests))
+	if len(p.Requests) < 2 {
+		t.Fatalf("provider saw %d chat calls, want >= 2", len(p.Requests))
 	}
 	var sawSteering bool
-	for _, m := range p.requests[1].Messages {
+	for _, m := range p.Requests[1].Messages {
 		if m.Role == "user" && strings.Contains(m.Content, "also update the README") {
 			sawSteering = true
 			break
 		}
 	}
 	if !sawSteering {
-		t.Fatalf("steering message never sent to the LLM; second request messages:\n%v", p.requests[1].Messages)
+		t.Fatalf("steering message never sent to the LLM; second request messages:\n%v", p.Requests[1].Messages)
 	}
 	if task == nil || task.Summary == "" {
 		t.Fatal("no task summary")
 	}
 }
 
-// Sanity check removed; scriptedProvider satisfies provider.Provider
+// Sanity check removed; agenttest.ScriptedProvider satisfies provider.Provider
 // structurally.

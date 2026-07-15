@@ -178,53 +178,33 @@ func (db *DB) SetBranchLeaf(sessionID string, leafID int64) error {
 	return nil
 }
 
+const branchCTE = `
+WITH RECURSIVE chain(id, parent_id) AS (
+    SELECT id, parent_id FROM messages
+     WHERE id = ? AND session_id = ?
+    UNION ALL
+    SELECT m.id, m.parent_id FROM messages m
+      JOIN chain c ON m.id = c.parent_id
+     WHERE m.session_id = ?
+)
+SELECT m.id, m.role, m.content, m.content_type, m.reasoning, m.think_duration_ms,
+       m.created_at, m.final, m.parent_id
+  FROM messages m
+  JOIN chain c ON m.id = c.id
+ ORDER BY m.id ASC`
+
 // MessagesOnBranch returns the message rows from the root down to leafID
 // (inclusive), following parent_id links. The slice is in chronological order.
 func (db *DB) MessagesOnBranch(sessionID string, leafID int64) ([]Message, error) {
 	if leafID <= 0 {
 		return nil, nil
 	}
-	var ids []int64
-	cur := leafID
-	for cur > 0 {
-		ids = append(ids, cur)
-		row := db.sqlDB.QueryRow(`SELECT parent_id FROM messages WHERE id = ? AND session_id = ?`, cur, sessionID)
-		var pid sql.NullInt64
-		if err := row.Scan(&pid); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				break
-			}
-			return nil, fmt.Errorf("walk parent of %d: %w", cur, err)
-		}
-		if !pid.Valid || pid.Int64 == 0 {
-			break
-		}
-		cur = pid.Int64
-	}
-	for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
-		ids[i], ids[j] = ids[j], ids[i]
-	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	var placeholders string
-	args := []any{sessionID}
-	for i, id := range ids {
-		if i > 0 {
-			placeholders += ","
-		}
-		placeholders += "?"
-		args = append(args, id)
-	}
-	rows, err := db.sqlDB.Query(
-		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id
-		 FROM messages WHERE session_id = ? AND id IN (`+placeholders+`) ORDER BY id ASC`,
-		args...,
-	)
+	rows, err := db.sqlDB.Query(branchCTE, leafID, sessionID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query branch messages: %w", err)
 	}
 	defer rows.Close()
+
 	var out []Message
 	for rows.Next() {
 		var m Message

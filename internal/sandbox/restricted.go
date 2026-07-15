@@ -28,21 +28,19 @@ import (
 // cross-platform. Only the container backend reports NetworkIsolated=true.
 type Restricted struct {
 	cfg Config
-	// Cached, immutable-after-construction env filter sets. buildEnv uses
-	// these on every Run without rebuild; EnvAllowlist/EnvDenylist are
-	// immutable once Config is copied into the struct.
-	denySet  map[string]bool
-	allowSet map[string]bool
-	logger   *slog.Logger
+	// Cached, immutable-after-construction env filter set. buildEnv uses
+	// this on every Run without rebuild; EnvDenylist is immutable once
+	// Config is copied into the struct.
+	denySet map[string]bool
+	logger  *slog.Logger
 }
 
-// newRestricted constructs a Restricted backend with precomputed env sets.
+// newRestricted constructs a Restricted backend with precomputed env filter.
 func newRestricted(cfg Config, logger *slog.Logger) *Restricted {
 	return &Restricted{
-		cfg:      cfg,
-		denySet:  denySet(cfg.EnvDenylist),
-		allowSet: allowSet(cfg.EnvAllowlist),
-		logger:   logger,
+		cfg:     cfg,
+		denySet: denySet(cfg.EnvDenylist),
+		logger:  logger,
 	}
 }
 
@@ -173,7 +171,11 @@ func allowSet(keys []string) map[string]bool {
 }
 
 func denySet(keys []string) map[string]bool {
-	return allowSet(keys)
+	m := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		m[k] = true
+	}
+	return m
 }
 
 // resolveConfinedDir returns an absolute path for dir, rejecting empty or

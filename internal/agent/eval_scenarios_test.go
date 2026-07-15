@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
@@ -173,7 +174,7 @@ func TestEvalScenarios(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := evalRegistry(t)
-			p := &scriptedProvider{responses: tc.responses}
+			p := &agenttest.ScriptedProvider{Responses: tc.responses}
 			state := newTestState(t)
 			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 			r.SetForceClass(string(tc.forceClass))
@@ -236,7 +237,7 @@ func TestEvalNativeScenarios(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := evalRegistry(t)
-			p := &scriptedProvider{responses: tc.responses, toolCalls: tc.toolCalls}
+			p := &agenttest.ScriptedProvider{Responses: tc.responses, ToolCalls: tc.toolCalls}
 			state := newTestState(t)
 			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 			r.NativeTools = true
@@ -323,7 +324,7 @@ func TestEvalNativeFinalizeScenarios(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := evalRegistry(t)
-			p := &scriptedProvider{responses: tc.responses, toolCalls: tc.toolCalls}
+			p := &agenttest.ScriptedProvider{Responses: tc.responses, ToolCalls: tc.toolCalls}
 			state := newTestState(t)
 			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 			r.NativeTools = true

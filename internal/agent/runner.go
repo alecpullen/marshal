@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,13 @@ const (
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
 
 var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
+
+// ErrRequestTimedOut is returned by requestApproval / requestQuestions when
+// the TUI (or bridge channel) does not respond within RequestTimeout. It
+// prevents a goroutine leak when the TUI exits without sending a decision.
+var ErrRequestTimedOut = errors.New("agent: request timed out")
+
+const defaultRequestTimeout = 5 * time.Minute
 
 // isLengthFinish reports whether the provider cut the response off at the
 // output-token limit ("length" for OpenAI-compatible providers, "max_tokens"
@@ -113,6 +121,34 @@ type MemoryProvider interface {
 // and PolicyEngine.Evaluate together — everything else (TUI, tools,
 // registry, policy) stays decoupled and is exercised independently by
 // Milestones C-G's own tests.
+//
+// Concurrency contract:
+//
+//   - A *Runner is NOT safe for concurrent calls to Run() / RunTask() on
+//     the same instance. Callers (TUI, swarm orchestrator) must serialise
+//     RunTask invocations.
+//
+//   - A *Runner IS safe for sequential re-use: after one RunTask returns,
+//     the next call starts from a clean per-turn state. Fields that persist
+//     across calls (Provider, Registry, Policy, State, Model, RouteResolver,
+//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, RequestTimeout,
+//     ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
+//     ForceClass, SkillIndex, Role, WriteGate, UsageObserver,
+//     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleGenerator,
+//     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID,
+//     fileIndexCache) are initialised once; resolveRoute may grow
+//     MaxTurnContextTokens (monotonically) when the route-resolved context
+//     window exceeds the configured value. The seed persists across RunTask
+//     calls.
+//
+//   - Per-turn state (tracker, stats, route, pressureMessageSent,
+//     consecutiveParseFailures, consecutiveEmpty) is reset at the top of
+//     RunTask and never shared across calls.
+//
+//   - tracker, stats, and ForceClass have dedicated mutexes for their
+//     accessor methods (withStats, trackerMu, forceClassMu). All other
+//     field reads and writes are not synchronised — hence the
+//     single-caller-at-a-time rule.
 type UsageObserver func(promptTokens, completionTokens int)
 
 type Runner struct {
@@ -156,12 +192,6 @@ type Runner struct {
 
 	UsageObserver UsageObserver
 
-	// SteeringProvider, when set, is drained at every loop-top in RunTask;
-	// any messages returned are appended as user-role messages to the live
-	// model context for the next chat call (F16). A nil provider disables
-	// steering.
-	SteeringProvider SteeringProvider
-
 	// MetricsObserver, when set, receives one TurnMetrics per RunTask,
 	// emitted on every exit path (answer, salvage, failure). Nil disables
 	// collection output; counter bookkeeping still runs.
@@ -180,9 +210,7 @@ type Runner struct {
 	// first user turn to produce a short session title (F13). Fire-and-forget.
 	TitleGenerator TitleGenerator
 
-	// RunTaskFunc, if non-nil, overrides RunTask for testing. It returns a
-	// canned Task without calling the provider. Used by the SDD orchestrator
-	// tests to inject scripted responses.
+	// RunTaskFunc overrides RunTask for testing (see the named type below).
 	RunTaskFunc RunTaskFunc
 
 	forceClassMu sync.Mutex
@@ -190,6 +218,18 @@ type Runner struct {
 	trackerMu    sync.Mutex
 	stats        *turnStats
 	statsMu      sync.Mutex
+
+	// iterationBudget is set by RunTask to point to its local iteration
+	// counter so that executeNativeAskUser / executeNativeQuestionAsk can
+	// increment the budget when they perform a native ask round-trip
+	// (mirroring the envelope path's iteration++ in ActionAskUser /
+	// ActionQuestionAsk). Nil outside of RunTask.
+	iterationBudget *int
+
+	// fileIndexCache memoises the per-project file index across RunTask
+	// calls and across steering-message drains. Auto-invalidates when the
+	// projectID changes (see fileIndexCache.get).
+	fileIndexCache fileIndexCache
 }
 
 // RunTaskFunc, if non-nil, overrides RunTask for testing. It returns a
@@ -263,7 +303,6 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.Role = other.Role
 	r.WriteGate = other.WriteGate
 	r.UsageObserver = other.UsageObserver
-	r.SteeringProvider = other.SteeringProvider
 	r.MetricsObserver = other.MetricsObserver
 	r.Snapshotter = other.Snapshotter
 	r.SnapshotRecorder = other.SnapshotRecorder
@@ -345,11 +384,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	})
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 
+	effectiveRF := r.ResponseFormat
+
 	// F18: extract @file references from the goal and pin them into the
 	// context pack before it is appended to the model messages. Unknown
 	// paths and unreadable files are silently skipped (see
 	// extractPinnedFiles); the TUI only inserts the literal "@path" text.
-	if pinned := extractPinnedFiles(goal, r.State, r.ProjectID); len(pinned) > 0 {
+	if pinned := extractPinnedFiles(goal, r, r.ProjectID); len(pinned) > 0 {
 		pack := r.State.ContextPack()
 		pack = contextpack.PinFiles(pack, pinned)
 		r.State.SetContextPack(pack)
@@ -367,7 +408,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if r.PlanFirst && task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
-		planRes, err := r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages)
+		planRes, err := r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages, effectiveRF)
 		if err != nil {
 			return task, r.fail(task, err)
 		}
@@ -394,11 +435,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	task.Status = TaskStatusExecuting
 	lastRenderedSkills := r.State.ActiveSkills()
-	pressureSent := false
+	pressureMessageSent := false
 	producedValidAction := false
 	consecutiveParseFailures := 0
 	consecutiveEmpty := 0
 	iteration := 0
+	r.iterationBudget = &iteration
+	defer func() { r.iterationBudget = nil }()
 	turnEndContinued := false
 	runTurnEnd := func(messages []schema.ChatMessage, task *Task) ([]schema.ChatMessage, bool, error) {
 		if r.HookRunner == nil || turnEndContinued {
@@ -436,24 +479,22 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// guards the doom-loop stall finalize below — if the user just
 		// intervened, the loop is no longer auto-iterating.
 		steeringArrived := false
-		if r.SteeringProvider != nil {
-			var steeringPins []contextpack.FileSnippet
-			for _, msg := range r.SteeringProvider.DrainSteering() {
-				steeringPins = append(steeringPins, extractPinnedFiles(msg, r.State, r.ProjectID)...)
-				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
-				steeringArrived = true
-			}
-			if len(steeringPins) > 0 {
-				pack := contextpack.PinFiles(r.State.ContextPack(), steeringPins)
-				r.State.SetContextPack(pack)
-				messages = appendContextPackMessage(messages, pack)
-			}
+		var steeringPins []contextpack.FileSnippet
+		for _, msg := range r.State.DrainSteering() {
+			steeringPins = append(steeringPins, extractPinnedFiles(msg, r, r.ProjectID)...)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
+			steeringArrived = true
+		}
+		if len(steeringPins) > 0 {
+			pack := contextpack.PinFiles(r.State.ContextPack(), steeringPins)
+			r.State.SetContextPack(pack)
+			messages = appendContextPackMessage(messages, pack)
 		}
 
-		if !pressureSent && r.MaxToolIterations-iteration <= finalizePressureThreshold {
+		if !pressureMessageSent && r.MaxToolIterations-iteration <= finalizePressureThreshold {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: finalizePressureMessage})
 			r.State.AddMessage(session.RoleSystem, finalizePressureMessage, session.ContentTypePlain)
-			pressureSent = true
+			pressureMessageSent = true
 		}
 
 		currentSkills := r.State.ActiveSkills()
@@ -463,17 +504,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 
 		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
-			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal); serr == nil {
+			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal, effectiveRF); serr == nil {
 				messages = fresh
-				pressureSent = false // the fresh transcript may legitimately approach the budget again
+				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
-				// Summarization failed (transport error or empty text): fall
-				// back to lossy in-place compaction rather than aborting the turn.
-				messages = compactMessages(messages, r.MaxTurnContextTokens, compactKeepRecentMessages)
+				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and summarization failed: %s. The turn is being terminated to prevent transcript corruption.", serr), session.ContentTypePlain)
+				return task, r.fail(task, fmt.Errorf("context overflow and summarization failed: %w", serr))
 			}
 		}
 
-		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages)
+		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages, effectiveRF)
 		if err != nil {
 			return task, r.fail(task, err)
 		}
@@ -497,10 +537,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					r.trackerMu.Unlock()
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: "Call a tool or give a final answer."})
 					if consecutiveEmpty >= 2 {
-						return r.finalize(ctx, turnProvider, turnModel, messages, task, reasonEmpty)
+						return r.finalize(ctx, turnProvider, turnModel, messages, task, reasonEmpty, effectiveRF)
 					}
 					if !steeringArrived {
-						if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+						if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 							return resTask, ferr
 						} else if nudge != "" {
 							messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -553,7 +593,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			messages = append(messages, resultMsgs...)
 			if !steeringArrived {
-				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 					return resTask, ferr
 				} else if nudge != "" {
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -573,7 +613,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, repairMsg)
 				r.State.AddMessage(session.RoleSystem, repairMsg.Content, session.ContentTypePlain)
 				if turnProvider.Capabilities(ctx).JSONMode && r.ResponseFormat == nil {
-					r.ResponseFormat = &schema.ResponseFormat{Type: "json_object"}
+					effectiveRF = &schema.ResponseFormat{Type: "json_object"}
 				}
 			}
 			if consecutiveParseFailures >= maxConsecutiveParseFailures {
@@ -607,7 +647,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			messages = append(messages, resultMsgs...)
 			if !steeringArrived {
-				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 					return res, ferr
 				} else if nudge != "" {
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -635,7 +675,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			messages = append(messages, resultMsgs...)
 			if !steeringArrived {
-				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 					return res, ferr
 				} else if nudge != "" {
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -664,7 +704,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.trackerMu.Unlock()
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."})
 				if !steeringArrived {
-					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 						return resTask, ferr
 					} else if nudge != "" {
 						messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -704,7 +744,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.trackerMu.Unlock()
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer every question. Proceed with your best judgment and state the assumptions you made."})
 				if !steeringArrived {
-					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task); finalized {
+					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
 						return resTask, ferr
 					} else if nudge != "" {
 						messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
@@ -726,7 +766,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	if consecutiveParseFailures >= maxConsecutiveParseFailures {
 		if producedValidAction {
-			if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonMalformed); ferr == nil {
+			if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonMalformed, effectiveRF); ferr == nil {
 				return res, nil
 			}
 		}
@@ -736,7 +776,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	if producedValidAction {
-		if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonExhausted); ferr == nil {
+		if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonExhausted, effectiveRF); ferr == nil {
 			return res, nil
 		}
 	}
@@ -751,7 +791,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 // append as a user message, and repeat counts are reset so the loop gets a
 // fresh start. An empty answer, or any non-general (swarm) role, falls back
 // to finalize, which produces a flagged salvaged summary.
-func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task) (finalized bool, res *Task, err error, guidance string) {
+func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task, responseFormat *schema.ResponseFormat) (finalized bool, res *Task, err error, guidance string) {
 	r.trackerMu.Lock()
 	a := r.tracker.assess()
 	name, args, _ := r.tracker.lastCall()
@@ -780,7 +820,7 @@ func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, 
 		}
 	}
 
-	res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled)
+	res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled, responseFormat)
 	return true, res, ferr, ""
 }
 
@@ -890,19 +930,19 @@ func (r *Runner) fail(task *Task, err error) error {
 // model *output* is handled separately in Run via BuildCorrectionMessage; it
 // is not retried here because it is not a chatOnce failure — chatOnce
 // succeeded, the text just didn't parse as an action.
-func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (chatResult, error) {
-	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, true)
+func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat) (chatResult, error) {
+	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, true)
 }
 
-func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (chatResult, error) {
-	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, false)
+func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat) (chatResult, error) {
+	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, false)
 }
 
-func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, includeNativeTools bool) (chatResult, error) {
+func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
 	attempts := r.MaxRetries + 1
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		res, err := r.chatOnce(ctx, p, model, messages, includeNativeTools)
+		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
 		if err == nil {
 			return res, nil
 		}
@@ -911,7 +951,7 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 	return chatResult{}, lastErr
 }
 
-func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, includeNativeToolsOpt ...bool) (chatResult, error) {
+func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeToolsOpt ...bool) (chatResult, error) {
 	if r.RequestTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.RequestTimeout)
@@ -922,15 +962,15 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 	if len(includeNativeToolsOpt) > 0 {
 		includeNativeTools = includeNativeToolsOpt[0]
 	}
-	var responseFormat *schema.ResponseFormat
 	var tools []schema.ToolDefinition
 	if r.NativeTools {
 		if includeNativeTools {
 			tools = r.buildToolDefinitions()
 		}
-	} else {
-		responseFormat = r.ResponseFormat
 	}
+	// responseFormat is passed in from RunTask (or a caller in the chain)
+	// so that per-turn mutations (e.g. JSON-mode escalation after parse
+	// failures) do not leak across RunTask calls on the same *Runner.
 
 	events, err := p.Chat(ctx, schema.ChatRequest{
 		Model:          model,
@@ -1116,18 +1156,23 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		}
 		approval = registry.ApprovalApproved
 		if edited != "" {
+			var nerr error
 			if toolName == "shell.run" {
 				argsMap["command"] = edited
 				if remarshalled, merr := json.Marshal(argsMap); merr == nil {
 					args = remarshalled
-					normalizedArgs, _ = normalizeArgs(args)
+					normalizedArgs, nerr = normalizeArgs(args)
+					if nerr != nil {
+						slog.Default().Warn("tool-arg-edit normalize failed", "tool", toolName, "error", nerr)
+					}
+				} else {
+					slog.Default().Warn("tool-arg-edit marshal failed", "tool", toolName, "error", merr)
 				}
 			} else {
 				if !json.Valid([]byte(edited)) {
 					return policyLoopResult{}, fmt.Errorf("user-supplied edit for %s is not valid JSON: %q", toolName, edited)
 				}
 				args = json.RawMessage(edited)
-				var nerr error
 				normalizedArgs, nerr = normalizeArgs(args)
 				if nerr != nil {
 					return policyLoopResult{}, fmt.Errorf("normalize edited %s args: %w", toolName, nerr)
@@ -1233,6 +1278,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	// hook from thrashing the tool budget.
 	var approval registry.ApprovalState
 	var lastHookOut hooks.Output
+	var originalApprovedArgs json.RawMessage
+	var toolWasRewritten bool
 	for rewriteCount := 0; ; rewriteCount++ {
 		if rewriteCount > 1 {
 			r.countToolCall(true, false)
@@ -1263,6 +1310,10 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		normalizedArgs = policyResult.NormalizedArgs
 		approval = policyResult.Approval
 
+		// Capture the user-approved args before any hook rewrite so the
+		// audit event can record what the user approved vs what was
+		// actually executed after a rewrite.
+		preHookArgs := args
 		rewrittenArgs, hookOut, hookErr := r.runPreToolUseHook(ctx, toolName, args)
 		lastHookOut = hookOut
 		if hookErr != nil {
@@ -1283,6 +1334,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			return nil, fmt.Errorf("halted by pre_tool_use hook: %s", hookOut.Reason)
 		}
 		if len(hookOut.Rewrite) > 0 {
+			originalApprovedArgs = preHookArgs
+			toolWasRewritten = true
 			args = rewrittenArgs
 			continue
 		}
@@ -1327,6 +1380,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if execErr != nil {
 		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
 		event.Hooks = hookAuditMetadata(lastHookOut)
+		event.OriginalArgs = originalApprovedArgs
+		event.Rewritten = toolWasRewritten
 		r.State.LogToolCall(event)
 		r.trackerMu.Lock()
 		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()))
@@ -1344,6 +1399,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	}
 	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)
 	event.Hooks = hookAuditMetadata(lastHookOut)
+	event.OriginalArgs = originalApprovedArgs
+	event.Rewritten = toolWasRewritten
 	r.State.LogToolCall(event)
 
 	msg := r.buildToolResultMessage(toolName, summarized, toolCallID)
@@ -1425,7 +1482,14 @@ func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall)
 		return schema.ChatMessage{}, waitErr
 	}
 	r.countToolCall(false, false)
+	if r.iterationBudget != nil {
+		*r.iterationBudget++
+		r.withStats(func(s *turnStats) { s.m.Iterations = *r.iterationBudget })
+	}
 	if strings.TrimSpace(answer) == "" {
+		r.trackerMu.Lock()
+		r.tracker.recordIdle("ask_user declined")
+		r.trackerMu.Unlock()
 		return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."}, nil
 	}
 	r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
@@ -1450,16 +1514,23 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 		return schema.ChatMessage{}, waitErr
 	}
 	r.countToolCall(false, false)
+	if r.iterationBudget != nil {
+		*r.iterationBudget++
+		r.withStats(func(s *turnStats) { s.m.Iterations = *r.iterationBudget })
+	}
 	parts := []string{"User answers:"}
 	allUnanswered := true
 	for _, a := range answers {
-		if a.Answer != "Unanswered" {
+		if a.Answer != session.AnswerUnanswered {
 			allUnanswered = false
 		}
 		parts = append(parts, fmt.Sprintf("- %q: %q", a.Question, a.Answer))
 	}
 	r.State.AddMessage(session.RoleUser, strings.Join(parts[1:], "\n"), session.ContentTypePlain)
 	if allUnanswered {
+		r.trackerMu.Lock()
+		r.tracker.recordIdle("question.ask declined")
+		r.trackerMu.Unlock()
 		return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "The user declined to answer every question. Proceed with your best judgment."}, nil
 	}
 	return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: strings.Join(parts, "\n")}, nil
@@ -1503,8 +1574,9 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 	results := make([][]schema.ChatMessage, len(actions))
 
 	// Phase 1: run any question.ask / ask_user calls one at a time so they
-	// can't race on the single PendingQuestion slot. First error from this
-	// phase short-circuits the rest of the batch.
+	// can't race on the single PendingQuestion slot. If one errors we still
+	// execute the remaining serial tools and substitute an error message
+	// for the failed slot so the model sees one Tool message per call.
 	var parallelIdx []int
 	for i, a := range actions {
 		if !requiresSerialTool(a.Tool) {
@@ -1513,16 +1585,17 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 		}
 		msgs, err := r.executeToolCall(ctx, a)
 		if err != nil {
-			return nil, err
+			results[i] = []schema.ChatMessage{BuildToolErrorMessage(a.Tool, err.Error())}
+			continue
 		}
 		results[i] = msgs
 	}
 
 	// Phase 2: run the remaining read-only tools concurrently as before.
+	// Tool errors are recorded as error messages in the appropriate results
+	// slot so every tool call produces exactly one result batch.
 	if len(parallelIdx) > 0 {
 		var wg sync.WaitGroup
-		var mu sync.Mutex
-		var firstErr error
 		sem := make(chan struct{}, r.MaxParallelActions)
 		for _, idx := range parallelIdx {
 			wg.Add(1)
@@ -1532,21 +1605,13 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 				defer func() { <-sem }()
 				msgs, err := r.executeToolCall(ctx, act)
 				if err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					mu.Unlock()
+					results[i] = []schema.ChatMessage{BuildToolErrorMessage(act.Tool, err.Error())}
 					return
 				}
 				results[i] = msgs
 			}(idx, actions[idx])
 		}
 		wg.Wait()
-
-		if firstErr != nil {
-			return nil, firstErr
-		}
 	}
 
 	var flat []schema.ChatMessage
@@ -1592,6 +1657,7 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 	label := fmt.Sprintf("waiting for approval: %s", command)
 	r.State.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: label, StartedAt: r.Now()})
 
+	timeout := r.effectiveRequestTimeout()
 	select {
 	case decision := <-tc.ResponseChan:
 		r.State.SetPendingApproval(nil)
@@ -1601,6 +1667,10 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		r.State.SetPendingApproval(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return false, "", ctx.Err()
+	case <-time.After(timeout):
+		r.State.SetPendingApproval(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		return false, "", ErrRequestTimedOut
 	}
 }
 
@@ -1626,8 +1696,10 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 		ResponseChan: make(chan []session.Answer, 1),
 	}
 	r.State.SetPendingQuestion(q)
-	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: "waiting for your answer", StartedAt: r.Now()})
+	label := buildQuestionLabel(questions)
+	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: label, StartedAt: r.Now()})
 
+	timeout := r.effectiveRequestTimeout()
 	select {
 	case answers := <-q.ResponseChan:
 		r.State.SetPendingQuestion(nil)
@@ -1637,7 +1709,47 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 		r.State.SetPendingQuestion(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return nil, ctx.Err()
+	case <-time.After(timeout):
+		r.State.SetPendingQuestion(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		return nil, ErrRequestTimedOut
 	}
+}
+
+// effectiveRequestTimeout returns the request timeout to use, falling back
+// to a sensible default if r.RequestTimeout is zero.
+func (r *Runner) effectiveRequestTimeout() time.Duration {
+	if r.RequestTimeout > 0 {
+		return r.RequestTimeout
+	}
+	return defaultRequestTimeout
+}
+
+// buildQuestionLabel returns a human-readable activity label that includes a
+// preview of the first question so the user knows what they are being asked.
+func buildQuestionLabel(questions []session.Question) string {
+	if len(questions) == 0 {
+		return "waiting for your answer"
+	}
+	q := truncateRunes(questions[0].Question, 40)
+	if len(questions) == 1 {
+		return "waiting for your answer: " + q
+	}
+	return fmt.Sprintf("waiting for your answer (Q1/%d): %s", len(questions), q)
+}
+
+// truncateRunes returns s shortened to at most max runes, appending "…"
+// when truncation occurred. Rune-aware so multi-byte characters (emoji,
+// CJK) are never split mid-codepoint.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }
 
 func skillsChanged(prev, curr []string) bool {

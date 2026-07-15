@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"marshal/internal/agent"
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/tools/policy"
@@ -47,7 +48,7 @@ func TestWriteLockSerialisesConcurrentWriters(t *testing.T) {
 	lock := &WriteLock{}
 
 	newWriter := func() *agent.Runner {
-		r := agent.NewRunner(&scriptedProvider{responses: script}, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+		r := agent.NewRunner(&agenttest.ScriptedProvider{Responses: script}, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 		r.SetForceClass("question")
 		r.WriteGate = lock
 		return r

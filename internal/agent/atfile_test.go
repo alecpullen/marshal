@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
@@ -39,7 +40,7 @@ func TestExtractPinnedFilesFindsAndReadsKnownPaths(t *testing.T) {
 	}
 
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
-	pinned := extractPinnedFiles("look at @a.go and @b.go", state, projectID)
+	pinned := extractPinnedFiles("look at @a.go and @b.go", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 2 {
 		t.Fatalf("pinned = %d, want 2", len(pinned))
 	}
@@ -69,7 +70,7 @@ func TestExtractPinnedFilesIgnoresUnknownPaths(t *testing.T) {
 	}
 
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
-	pinned := extractPinnedFiles("@known.go @unknown.go @also-unknown.txt", state, projectID)
+	pinned := extractPinnedFiles("@known.go @unknown.go @also-unknown.txt", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 1 || pinned[0].Path != "known.go" {
 		t.Fatalf("pinned = %+v, want only [known.go]", pinned)
 	}
@@ -78,7 +79,7 @@ func TestExtractPinnedFilesIgnoresUnknownPaths(t *testing.T) {
 func TestExtractPinnedFilesNoTokensReturnsNil(t *testing.T) {
 	dir := t.TempDir()
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{})
-	if got := extractPinnedFiles("no at-refs here", state, 1); got != nil {
+	if got := extractPinnedFiles("no at-refs here", testRunnerFromState(state, 1), 1); got != nil {
 		t.Fatalf("pinned = %+v, want nil", got)
 	}
 }
@@ -101,7 +102,7 @@ func TestExtractPinnedFilesIgnoresAtInsideEmail(t *testing.T) {
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
 	// "user@example.com" is preceded by 'r' (not whitespace), so the
 	// @ in the email must not match. Only " @real.go" is a real trigger.
-	pinned := extractPinnedFiles("user@example.com and @real.go", state, projectID)
+	pinned := extractPinnedFiles("user@example.com and @real.go", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 1 || pinned[0].Path != "real.go" {
 		t.Fatalf("pinned = %+v, want only [real.go]", pinned)
 	}
@@ -121,9 +122,83 @@ func TestExtractPinnedFilesDeduplicates(t *testing.T) {
 		t.Fatalf("SaveFileIndex: %v", err)
 	}
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
-	pinned := extractPinnedFiles("@x.go @x.go @x.go", state, projectID)
+	pinned := extractPinnedFiles("@x.go @x.go @x.go", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 1 {
 		t.Fatalf("pinned = %d, want 1 (deduped)", len(pinned))
+	}
+}
+
+func TestExtractPinnedFilesRejectsDotDot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	database := openTestDB(t)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	// Seed the index with a traversal path.
+	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "../etc/passwd"}}); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
+	// Even if "../etc/passwd" is in the file index, safeWorkspacePath
+	// must reject it because it escapes the working directory.
+	pinned := extractPinnedFiles("see @../etc/passwd", testRunnerFromState(state, projectID), projectID)
+	if len(pinned) != 0 {
+		t.Errorf("got %d snippets, want 0 (path traversal must be rejected)", len(pinned))
+	}
+}
+
+func TestExtractPinnedFilesRejectsShellMetachars(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package foo\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	database := openTestDB(t)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "foo.go"}}); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
+	// The tightened regex @([A-Za-z0-9._/\-]+) captures only valid path
+	// characters. At the goal "try @foo;rm -rf /", the regex matches
+	// "@foo" and captures "foo". Since "foo.go" (not "foo") is in the
+	// index, the result is 0 — the shell metacharacters correctly
+	// broke the path token and the partial match "foo" is not indexed.
+	pinned := extractPinnedFiles("try @foo;rm -rf /", testRunnerFromState(state, projectID), projectID)
+	// No path containing shell metacharacters should ever be read.
+	for _, snip := range pinned {
+		if strings.ContainsAny(snip.Path, ";|&`$(){}[]<>!") {
+			t.Errorf("path %q contains shell metacharacters", snip.Path)
+		}
+	}
+}
+
+func TestExtractPinnedFilesAcceptsValidPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	database := openTestDB(t)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "a.go"}}); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
+	pinned := extractPinnedFiles("read @a.go", testRunnerFromState(state, projectID), projectID)
+	if len(pinned) != 1 || pinned[0].Path != "a.go" {
+		t.Fatalf("pinned = %+v, want [a.go]", pinned)
+	}
+	if !strings.Contains(pinned[0].Content, "package a") {
+		t.Fatalf("content = %q, want 'package a'", pinned[0].Content)
 	}
 }
 
@@ -145,8 +220,8 @@ func TestRunTaskPinsAtFileReferences(t *testing.T) {
 	}
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
 
-	p := &scriptedProvider{
-		responses: []string{`{"actions":[],"type":"answer","content":"done"}`},
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{`{"actions":[],"type":"answer","content":"done"}`},
 	}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
@@ -196,13 +271,13 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 	}
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
 
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			`{"rationale":"inspect","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
 			`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
 		},
 	}
-	p.onChat = func(idx int, req schema.ChatRequest) {
+	p.OnChat = func(idx int, req schema.ChatRequest) {
 		if idx == 0 {
 			state.PushSteering("also inspect @steered.go")
 		}
@@ -217,7 +292,6 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 		},
 	})
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	runner.SteeringProvider = state
 	runner.ProjectID = projectID
 	runner.MaxToolIterations = 5
 
@@ -225,22 +299,58 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}
-	if len(p.requests) < 2 {
-		t.Fatalf("provider saw %d chat calls, want >= 2", len(p.requests))
+	if len(p.Requests) < 2 {
+		t.Fatalf("provider saw %d chat calls, want >= 2", len(p.Requests))
 	}
 	var sawPinnedContent bool
-	for _, msg := range p.requests[1].Messages {
+	for _, msg := range p.Requests[1].Messages {
 		if strings.Contains(msg.Content, "MARKER: steered-go-file") {
 			sawPinnedContent = true
 			break
 		}
 	}
 	if !sawPinnedContent {
-		t.Fatalf("second provider request missing steered file content:\n%v", p.requests[1].Messages)
+		t.Fatalf("second provider request missing steered file content:\n%v", p.Requests[1].Messages)
 	}
 	pack := state.ContextPack()
 	if len(pack.Pinned) != 1 || pack.Pinned[0].Path != "steered.go" {
 		t.Fatalf("pack.Pinned = %+v, want steered.go", pack.Pinned)
+	}
+}
+
+// testRunnerFromState constructs a minimal *Runner suitable for testing
+// extractPinnedFiles. It has no Provider, Registry, or Policy — only the
+// fields that extractPinnedFiles reads (State, ProjectID, fileIndexCache).
+func testRunnerFromState(state *session.State, projectID int64) *Runner {
+	return &Runner{
+		State:     state,
+		ProjectID: projectID,
+		Now:       time.Now,
+	}
+}
+
+func TestFileIndexCache(t *testing.T) {
+	var cache fileIndexCache
+
+	// Initially empty.
+	if _, ok := cache.get(1); ok {
+		t.Fatal("cache should be empty initially")
+	}
+
+	// Set and get.
+	paths := map[string]struct{}{"a.go": {}, "b.go": {}}
+	cache.set(1, paths)
+	got, ok := cache.get(1)
+	if !ok {
+		t.Fatal("cache should have data after set")
+	}
+	if _, has := got["a.go"]; !has {
+		t.Fatal("cache missing a.go")
+	}
+
+	// Different project ID misses.
+	if _, ok := cache.get(2); ok {
+		t.Fatal("cache should miss for different project ID")
 	}
 }
 

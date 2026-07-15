@@ -144,11 +144,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "stop",
 			Description: "Cancel the current agent turn",
+			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
 			Name:        "ask",
 			Description: "Switch to Ask mode (read-only, no planning)",
+			Hidden:      true,
 			Handler: func(state *session.State, args []string) string {
 				return "Switched to Ask mode. Agent will answer questions without planning or editing."
 			},
@@ -156,6 +158,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "edit",
 			Description: "Switch to Edit mode (planning + full tools)",
+			Hidden:      true,
 			Handler: func(state *session.State, args []string) string {
 				return "Switched to Edit mode. Agent will plan and execute changes."
 			},
@@ -163,6 +166,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "auto",
 			Description: "Switch to Auto mode (classify each turn)",
+			Hidden:      true,
 			Handler: func(state *session.State, args []string) string {
 				return "Switched to Auto mode. Agent will classify each turn automatically."
 			},
@@ -171,34 +175,40 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "mode",
 			Description: "Pick the interaction mode (Ask / Edit / Auto)",
 			Args:        "[ask|edit|auto]",
+			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
 			Name:        "swarm",
 			Description: "Run a goal through the swarm (planner → scouts → implementer → reviewer)",
 			Args:        "<goal>",
+			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
 			Name:        "sdd",
 			Description: "Run a plan through subagent-driven development (implementer → reviewer → branch review)",
 			Args:        "[plan-file]",
+			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
 			Name:        "connect",
 			Description: "Add or reconnect a provider",
+			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
 			Name:        "models",
 			Description: "Pick a model from connected providers",
+			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
 			Name:        "model",
 			Description: "Switch to a model preset by name",
 			Args:        "<preset-name>",
+			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
@@ -216,11 +226,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "settings",
 			Description: "Open settings panel",
+			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
 			Name:        "memory",
 			Description: "Open memory browser",
+			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{
@@ -309,8 +321,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				if diff == "" {
 					return "No changes since the last snapshot."
 				}
-				state.AddMessage(session.RoleSystem, diff, session.ContentTypeDiff)
-				return ""
+				return diff
 			},
 		},
 		{
@@ -414,12 +425,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Args:        "[path]",
 			Handler: func(state *session.State, args []string) string {
 				path := strings.Join(args, " ")
+				if path == "" {
+					path = filepath.Join(state.WorkingDir, "marshal-session-"+state.SessionID()+".html")
+				}
 				redactOn := state.Config.Privacy.RedactSecrets
 				if err := export.Write(state, path, redactOn); err != nil {
 					return fmt.Sprintf("Export failed: %v", err)
-				}
-				if path == "" {
-					path = filepath.Join(state.WorkingDir, "marshal-session-"+state.SessionID()+".html")
 				}
 				return "Exported to " + path
 			},

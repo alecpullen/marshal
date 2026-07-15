@@ -253,6 +253,12 @@ func TestGetToolCalls_LegacyRows(t *testing.T) {
 	if got.Error != "" {
 		t.Errorf("expected empty error for legacy row, got %q", got.Error)
 	}
+	if got.OriginalArgs != nil {
+		t.Errorf("legacy row: OriginalArgs = %v, want nil", got.OriginalArgs)
+	}
+	if got.Rewritten {
+		t.Errorf("legacy row: Rewritten = true, want false")
+	}
 }
 
 func TestSaveAndGetToolCalls_SandboxMeta(t *testing.T) {

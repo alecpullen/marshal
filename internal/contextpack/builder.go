@@ -203,30 +203,63 @@ func buildPackFromSections(sections []Section, maxTokens int, generatedAt time.T
 		GeneratedAt: generatedAt,
 	}
 
-	remaining := maxTokens
-	for _, section := range sections {
-		section.EstimatedTokens = EstimateTokens(section.Content)
-		if section.EstimatedTokens == 0 {
+	// Split pinned (Priority >= 100) from regular sections. Pinned
+	// sections are processed first so the greedy pass cannot starve
+	// them. Regular sections keep their original order (RepoCard=10,
+	// Plan=20, FileSnippet=30, ToolOutput=40 — lower number first,
+	// meaning more foundational content gets budget priority).
+	var pinned, regular []Section
+	for _, s := range sections {
+		s.EstimatedTokens = EstimateTokens(s.Content)
+		if s.EstimatedTokens == 0 {
 			continue
 		}
-		if section.EstimatedTokens <= remaining {
-			pack.Sections = append(pack.Sections, section)
-			pack.TokenUsage.EstimatedTokens += section.EstimatedTokens
-			remaining -= section.EstimatedTokens
-			continue
+		if s.Priority >= 100 {
+			pinned = append(pinned, s)
+		} else {
+			regular = append(regular, s)
 		}
+	}
 
-		truncated, ok := truncateToTokens(section.Content, remaining)
+	remaining := maxTokens
+	for _, s := range pinned {
+		if s.EstimatedTokens <= remaining {
+			pack.Sections = append(pack.Sections, s)
+			pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
+			remaining -= s.EstimatedTokens
+			continue
+		}
+		truncated, ok := truncateToTokens(s.Content, remaining)
 		if !ok {
 			pack.TokenUsage.Truncated = true
 			continue
 		}
-		section.Content = truncated
-		section.EstimatedTokens = EstimateTokens(section.Content)
-		pack.Sections = append(pack.Sections, section)
-		pack.TokenUsage.EstimatedTokens += section.EstimatedTokens
+		s.Content = truncated
+		s.EstimatedTokens = EstimateTokens(s.Content)
+		pack.Sections = append(pack.Sections, s)
+		pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
 		pack.TokenUsage.Truncated = true
-		remaining -= section.EstimatedTokens
+		remaining -= s.EstimatedTokens
+	}
+
+	for _, s := range regular {
+		if s.EstimatedTokens <= remaining {
+			pack.Sections = append(pack.Sections, s)
+			pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
+			remaining -= s.EstimatedTokens
+			continue
+		}
+		truncated, ok := truncateToTokens(s.Content, remaining)
+		if !ok {
+			pack.TokenUsage.Truncated = true
+			continue
+		}
+		s.Content = truncated
+		s.EstimatedTokens = EstimateTokens(s.Content)
+		pack.Sections = append(pack.Sections, s)
+		pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
+		pack.TokenUsage.Truncated = true
+		remaining -= s.EstimatedTokens
 	}
 
 	return pack

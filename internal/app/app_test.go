@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -734,6 +735,83 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 
 	if rt.MCPManager != nil {
 		t.Fatal("MCPManager should be nil after reload removes servers")
+	}
+}
+
+func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
+	ctx := context.Background()
+	initialCfg := reloadableAgentConfig("test-provider")
+	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("initial buildAgentRunner: %v", err)
+	}
+
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		SDDRunner:    sddRunner,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
+	}
+
+	originalConfig := rt.State.Config
+	originalRunner := rt.Runner
+	originalReg := rt.ToolRegistry
+
+	// Build a config that buildAgentRunner will reject: the preset
+	// references a provider name that is not in the Providers map.
+	badCfg := reloadableAgentConfig("nonexistent-provider")
+	badCfg.Providers = map[string]config.ProviderConfig{
+		"test-provider": {
+			Type:    "openai_compatible",
+			BaseURL: "http://localhost:11434/v1",
+			APIKey:  "test-key",
+		},
+	}
+	// The preset "coder" references "nonexistent-provider" which is not
+	// in badCfg.Providers — buildAgentRunner will fail at Resolve.
+
+	// Capture slog output to verify the Warn emission.
+	var logBuf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(oldLogger)
+
+	err = reloadAgentRuntime(ctx, badCfg, rt)
+	if err == nil {
+		t.Fatal("expected reload to fail with bad provider config")
+	}
+
+	if !reflect.DeepEqual(rt.State.Config, originalConfig) {
+		t.Fatal("state.Config was mutated despite build failure")
+	}
+	if rt.Runner != originalRunner {
+		t.Fatal("Runner was replaced despite build failure")
+	}
+	if rt.ToolRegistry != originalReg {
+		t.Fatal("ToolRegistry was replaced despite build failure")
+	}
+
+	// Assert the Warn log line was emitted.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "reload: dry-run build failed; keeping previous config") {
+		t.Fatalf("expected warn log about reload failure, got: %s", logOutput)
+	}
+
+	// Assert the TUI message was added.
+	msgs := rt.State.Messages()
+	found := false
+	for _, m := range msgs {
+		if m.Role == session.RoleSystem && strings.Contains(m.Content, "Config reload failed; keeping previous settings.") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected TUI message about reload failure, none found")
 	}
 }
 

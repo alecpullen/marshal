@@ -75,3 +75,18 @@ func TestParseExtractionRejectsMalformedJSON(t *testing.T) {
 		t.Fatal("expected error for malformed JSON, got nil")
 	}
 }
+
+func TestParseExtractionHandlesBalancedBracesInStrings(t *testing.T) {
+	// Regression: the old Index/LastIndex implementation grabbed the
+	// substring from the first { to the last }, so trailing prose with a
+	// stray { would produce malformed JSON. The balanced scanner returns
+	// only the first complete object.
+	raw := `Some preamble {"session_summary":"ok","memories":[],"file_summaries":{}} and then trailing {not really json`
+	extraction, err := ParseExtraction(raw)
+	if err != nil {
+		t.Fatalf("ParseExtraction returned error: %v", err)
+	}
+	if extraction.SessionSummary != "ok" {
+		t.Fatalf("SessionSummary = %q, want %q", extraction.SessionSummary, "ok")
+	}
+}

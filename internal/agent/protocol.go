@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"marshal/internal/app/session"
+	"marshal/internal/jsonextract"
 )
 
 type ActionType string
@@ -59,8 +60,11 @@ type actionPayload struct {
 // leading/trailing ```json fence, since local models frequently wrap JSON in
 // markdown even when told not to.
 func ParseAction(raw string) (ModelAction, error) {
-	jsonText, err := extractJSONObject(raw)
+	jsonText, err := jsonextract.Extract(raw)
 	if err != nil {
+		if errors.Is(err, jsonextract.ErrNotFound) {
+			return ModelAction{}, ErrNoActionFound
+		}
 		return ModelAction{}, err
 	}
 
@@ -111,55 +115,4 @@ func validatePayload(p actionPayload) (ModelAction, error) {
 		return ModelAction{}, fmt.Errorf("agent: question.ask action requires at least one question")
 	}
 	return ModelAction{Type: p.Type, Tool: p.Tool, Args: p.Args, Content: p.Content, Questions: p.Questions}, nil
-}
-
-func extractJSONObject(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	trimmed = strings.TrimPrefix(trimmed, "```json")
-	trimmed = strings.TrimPrefix(trimmed, "```")
-	trimmed = strings.TrimSuffix(trimmed, "```")
-	trimmed = strings.TrimSpace(trimmed)
-
-	// Stack-based scan for the first complete, balanced JSON object.
-	// Walks the string character by character, tracking brace depth while
-	// respecting string boundaries and escape sequences inside strings.
-	depth := 0
-	start := -1
-	inString := false
-	escaped := false
-
-	for i, ch := range trimmed {
-		if inString {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if ch == '\\' {
-				escaped = true
-				continue
-			}
-			if ch == '"' {
-				inString = false
-			}
-			continue
-		}
-
-		switch ch {
-		case '"':
-			inString = true
-			escaped = false
-		case '{':
-			if depth == 0 {
-				start = i
-			}
-			depth++
-		case '}':
-			depth--
-			if depth == 0 && start != -1 {
-				return trimmed[start : i+1], nil
-			}
-		}
-	}
-
-	return "", ErrNoActionFound
 }

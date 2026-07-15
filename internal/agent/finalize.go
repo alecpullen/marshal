@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"marshal/internal/app/session"
+	"marshal/internal/jsonextract"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
 )
@@ -171,7 +172,7 @@ func extractUsefulProse(raw string) string {
 	if trimmed == "" {
 		return ""
 	}
-	jsonText, err := extractJSONObject(trimmed)
+	jsonText, err := jsonextract.Extract(trimmed)
 	if err != nil {
 		return trimmed
 	}

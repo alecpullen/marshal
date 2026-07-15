@@ -348,16 +348,20 @@ const (
 )
 
 const listSessionsSQL = `
-SELECT s.id,
-       p.root_path,
-       s.title,
-       COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = s.id), s.started_at) AS updated_at,
-       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
-FROM agent_sessions s
-JOIN projects p ON p.id = s.project_id
-WHERE p.root_path = ?
-ORDER BY updated_at DESC, s.id DESC
-LIMIT ? OFFSET ?`
+WITH session_stats AS (
+    SELECT session_id, MAX(created_at) AS updated_at, COUNT(*) AS message_count
+      FROM messages
+     GROUP BY session_id
+)
+SELECT s.id, p.root_path, s.title,
+       COALESCE(ss.updated_at, s.started_at) AS updated_at,
+       COALESCE(ss.message_count, 0)        AS message_count
+  FROM agent_sessions s
+  JOIN projects p ON p.id = s.project_id
+  LEFT JOIN session_stats ss ON ss.session_id = s.id
+ WHERE p.root_path = ?
+ ORDER BY updated_at DESC, s.id DESC
+ LIMIT ? OFFSET ?`
 
 // ListSessions returns sessions whose project root matches cwd, newest
 // activity first. cursor is an opaque base64-encoded offset from a previous

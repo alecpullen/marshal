@@ -10,6 +10,12 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// DefaultSkillRisk is the risk level assigned to a skill when its
+// frontmatter does not specify one. It mirrors the registry's RiskReadOnly
+// value so that skills that don't opt in to a higher risk are treated as
+// safe-to-invoke reference material by the policy engine.
+const DefaultSkillRisk = string(registry.RiskReadOnly)
+
 type Skill struct {
 	Name        string
 	Description string
@@ -92,7 +98,7 @@ func parseFrontmatter(raw string) (Skill, error) {
 		return Skill{}, fmt.Errorf("skill frontmatter missing required field: description")
 	}
 	if fm.Risk == "" {
-		fm.Risk = string(registry.RiskReadOnly)
+		fm.Risk = DefaultSkillRisk
 	}
 
 	return Skill{

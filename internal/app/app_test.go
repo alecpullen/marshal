@@ -737,6 +737,58 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 	}
 }
 
+func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
+	ctx := context.Background()
+	initialCfg := reloadableAgentConfig("test-provider")
+	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("initial buildAgentRunner: %v", err)
+	}
+
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		SDDRunner:    sddRunner,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
+	}
+
+	originalConfig := rt.State.Config
+	originalRunner := rt.Runner
+	originalReg := rt.ToolRegistry
+
+	// Build a config that buildAgentRunner will reject: the preset
+	// references a provider name that is not in the Providers map.
+	badCfg := reloadableAgentConfig("nonexistent-provider")
+	badCfg.Providers = map[string]config.ProviderConfig{
+		"test-provider": {
+			Type:    "openai_compatible",
+			BaseURL: "http://localhost:11434/v1",
+			APIKey:  "test-key",
+		},
+	}
+	// The preset "coder" references "nonexistent-provider" which is not
+	// in badCfg.Providers — buildAgentRunner will fail at Resolve.
+
+	err = reloadAgentRuntime(ctx, badCfg, rt)
+	if err == nil {
+		t.Fatal("expected reload to fail with bad provider config")
+	}
+
+	if !reflect.DeepEqual(rt.State.Config, originalConfig) {
+		t.Fatal("state.Config was mutated despite build failure")
+	}
+	if rt.Runner != originalRunner {
+		t.Fatal("Runner was replaced despite build failure")
+	}
+	if rt.ToolRegistry != originalReg {
+		t.Fatal("ToolRegistry was replaced despite build failure")
+	}
+}
+
 func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 	ctx := context.Background()
 	initial := reloadableAgentConfig("old-provider")

@@ -513,9 +513,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = fresh
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
-				// Summarization failed (transport error or empty text): fall
-				// back to lossy in-place compaction rather than aborting the turn.
-				messages = compactMessages(messages, r.MaxTurnContextTokens, compactKeepRecentMessages)
+				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and summarization failed: %s. The turn is being terminated to prevent transcript corruption.", serr), session.ContentTypePlain)
+				return task, r.fail(task, fmt.Errorf("context overflow and summarization failed: %w", serr))
 			}
 		}
 

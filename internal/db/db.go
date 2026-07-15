@@ -7,6 +7,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// DB wraps a single-writer *sql.DB connection. All access goes through
+// db.sqlDB — callers obtain the raw *sql.DB via SQLDB() and pass their own
+// contexts to queries directly. There is no helper/exec/query layer in this
+// package; this is intentional so that every call site controls its own
+// context lifecycle.
 type DB struct {
 	sqlDB *sql.DB
 }
@@ -181,12 +186,4 @@ func (db *DB) tableColumns(table string) (map[string]bool, error) {
 		return nil, fmt.Errorf("iterate table_info rows: %w", err)
 	}
 	return columns, nil
-}
-
-func (db *DB) exec(query string, args ...any) (sql.Result, error) {
-	return db.sqlDB.Exec(query, args...)
-}
-
-func (db *DB) queryRow(query string, args ...any) *sql.Row {
-	return db.sqlDB.QueryRow(query, args...)
 }

@@ -19,7 +19,7 @@ type Project struct {
 func (db *DB) GetProject(id int64) (Project, error) {
 	var p Project
 	var createdAt, updatedAt string
-	row := db.queryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE id = ?`, id)
+	row := db.sqlDB.QueryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE id = ?`, id)
 	if err := row.Scan(&p.ID, &p.RootPath, &p.Name, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Project{}, fmt.Errorf("project not found: %d", id)
@@ -43,7 +43,7 @@ func (db *DB) GetProject(id int64) (Project, error) {
 func (db *DB) GetProjectByRoot(rootPath string) (Project, error) {
 	var p Project
 	var createdAt, updatedAt string
-	row := db.queryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE root_path = ?`, rootPath)
+	row := db.sqlDB.QueryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE root_path = ?`, rootPath)
 	if err := row.Scan(&p.ID, &p.RootPath, &p.Name, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Project{}, fmt.Errorf("project not found: %s", rootPath)
@@ -68,7 +68,7 @@ func (db *DB) GetProjectByRoot(rootPath string) (Project, error) {
 func (db *DB) GetOrCreateProject(rootPath string, name string) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	res, err := db.exec(
+	res, err := db.sqlDB.Exec(
 		`INSERT INTO projects (root_path, name, created_at, updated_at)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(root_path) DO UPDATE SET name=excluded.name, updated_at=excluded.updated_at`,
@@ -84,7 +84,7 @@ func (db *DB) GetOrCreateProject(rootPath string, name string) (int64, error) {
 	}
 
 	if id == 0 {
-		row := db.queryRow(`SELECT id FROM projects WHERE root_path = ?`, rootPath)
+		row := db.sqlDB.QueryRow(`SELECT id FROM projects WHERE root_path = ?`, rootPath)
 		if scanErr := row.Scan(&id); scanErr != nil {
 			return 0, fmt.Errorf("lookup project id: %w", scanErr)
 		}

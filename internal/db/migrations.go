@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     line_end INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_project_name ON symbols(project_id, name);
+CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
+CREATE INDEX IF NOT EXISTS idx_symbols_project ON symbols(project_id);
 
 CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

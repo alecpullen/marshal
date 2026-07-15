@@ -68,26 +68,18 @@ func (db *DB) GetProjectByRoot(rootPath string) (Project, error) {
 func (db *DB) GetOrCreateProject(rootPath string, name string) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	res, err := db.sqlDB.Exec(
+	if _, err := db.sqlDB.Exec(
 		`INSERT INTO projects (root_path, name, created_at, updated_at)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(root_path) DO UPDATE SET name=excluded.name, updated_at=excluded.updated_at`,
 		rootPath, name, now, now,
-	)
-	if err != nil {
+	); err != nil {
 		return 0, fmt.Errorf("upsert project: %w", err)
 	}
 
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("get last project id: %w", err)
-	}
-
-	if id == 0 {
-		row := db.sqlDB.QueryRow(`SELECT id FROM projects WHERE root_path = ?`, rootPath)
-		if scanErr := row.Scan(&id); scanErr != nil {
-			return 0, fmt.Errorf("lookup project id: %w", scanErr)
-		}
+	var id int64
+	if err := db.sqlDB.QueryRow(`SELECT id FROM projects WHERE root_path = ?`, rootPath).Scan(&id); err != nil {
+		return 0, fmt.Errorf("lookup project id: %w", err)
 	}
 
 	return id, nil

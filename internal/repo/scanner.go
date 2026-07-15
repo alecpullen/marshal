@@ -36,6 +36,7 @@ type Scanner struct {
 	gitignore *Gitignore
 	loadErr   error
 	skipped   []skippedEntry
+	warnings  []string
 }
 
 // defaultIgnoredDirs is the set of directory names that should always be
@@ -74,9 +75,10 @@ func NewScanner(config Config) *Scanner {
 }
 
 func (s *Scanner) Scan() ([]db.FileIndex, error) {
+	s.warnings = nil
 	root := s.config.Root
 	if s.loadErr != nil {
-		return nil, s.loadErr
+		s.warnings = append(s.warnings, "gitignore: "+s.loadErr.Error())
 	}
 
 	var files []db.FileIndex
@@ -159,6 +161,12 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 // Scan. The caller must not modify the returned slice.
 func (s *Scanner) Skipped() []skippedEntry {
 	return s.skipped
+}
+
+// Warnings returns any non-fatal diagnostics accumulated during Scan, such as
+// gitignore parse errors. The caller must not modify the returned slice.
+func (s *Scanner) Warnings() []string {
+	return s.warnings
 }
 
 func hashFile(path string) (string, int64, error) {

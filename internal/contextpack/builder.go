@@ -9,6 +9,17 @@ import (
 
 const truncationMarker = "\n\n...[truncated]"
 
+// trimSectionContent trims surrounding whitespace and reports whether
+// the result is non-empty. Used as the shared skip/empty rule for
+// sections built by PinFiles and buildCandidateSections.
+func trimSectionContent(s string) (string, bool) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return "", false
+	}
+	return trimmed, true
+}
+
 type Builder struct{}
 
 func NewBuilder() Builder {
@@ -47,8 +58,8 @@ func (b Builder) Build(input BuildInput) Pack {
 // downstream visibility.
 func PinFiles(pack Pack, snippets []FileSnippet) Pack {
 	for _, snip := range snippets {
-		content := snip.Content
-		if strings.TrimSpace(content) == "" {
+		content, ok := trimSectionContent(snip.Content)
+		if !ok {
 			continue
 		}
 		source := snip.Path
@@ -60,7 +71,7 @@ func PinFiles(pack Pack, snippets []FileSnippet) Pack {
 			Title:           snip.Path,
 			Content:         content,
 			Source:          source,
-			Priority:        100, // higher than normal snippets (30/40)
+			Priority:        100,
 			EstimatedTokens: EstimateTokens(content),
 		})
 	}
@@ -145,8 +156,8 @@ func buildCandidateSections(input BuildInput) []Section {
 		})
 	}
 	for _, snippet := range input.FileSnippets {
-		content := strings.TrimSpace(snippet.Content)
-		if content == "" {
+		content, ok := trimSectionContent(snippet.Content)
+		if !ok {
 			continue
 		}
 		source := snippet.Path
@@ -162,12 +173,18 @@ func buildCandidateSections(input BuildInput) []Section {
 		})
 	}
 	for _, output := range input.RecentToolOutput {
-		content := strings.TrimSpace(output.Summary)
-		if strings.TrimSpace(output.Content) != "" {
-			content += "\n\n" + strings.TrimSpace(output.Content)
-		}
-		if strings.TrimSpace(content) == "" {
+		base, ok := trimSectionContent(output.Summary)
+		body, _ := trimSectionContent(output.Content)
+		if !ok && body == "" {
 			continue
+		}
+		content := base
+		if body != "" {
+			if content != "" {
+				content += "\n\n" + body
+			} else {
+				content = body
+			}
 		}
 		sections = append(sections, Section{
 			Kind:     SectionToolOutput,

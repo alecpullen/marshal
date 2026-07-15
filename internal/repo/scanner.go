@@ -23,6 +23,10 @@ type Config struct {
 	// When false (the default), .gitignore rules are applied.
 	// When true, .gitignore files are skipped entirely.
 	SkipGitignore bool
+	// MaxIndexableFileBytes caps the size of files that will be hashed and
+	// indexed during scanning. Files larger than this threshold are skipped
+	// and recorded in Skipped(). Zero means no limit.
+	MaxIndexableFileBytes int64
 }
 
 // skippedEntry records a file or directory that was skipped during scanning.
@@ -144,6 +148,14 @@ func (s *Scanner) walk(fn func(path, rel string) (db.FileIndex, []byte, error)) 
 		}
 		if skip {
 			return nil
+		}
+
+		// Skip files that exceed the configurable size cap.
+		if s.config.MaxIndexableFileBytes > 0 {
+			if info, infoErr := entry.Info(); infoErr == nil && info.Size() > s.config.MaxIndexableFileBytes {
+				s.skipped = append(s.skipped, skippedEntry{Path: rel, Reason: fmt.Sprintf("file too large (%d bytes)", info.Size())})
+				return nil
+			}
 		}
 
 		fi, content, fnErr := fn(path, rel)

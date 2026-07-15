@@ -132,6 +132,13 @@ func (t *toolSet) searchFile(path string, query string, remaining int) []string 
 		return nil
 	}
 
+	// Skip files that exceed the configurable size cap for searching.
+	if t.maxSearchableFileBytes > 0 {
+		if info, err := os.Stat(path); err == nil && info.Size() > t.maxSearchableFileBytes {
+			return nil
+		}
+	}
+
 	file, err := os.Open(path)
 	if err != nil {
 		return nil

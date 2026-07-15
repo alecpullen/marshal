@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
@@ -219,8 +220,8 @@ func TestRunTaskPinsAtFileReferences(t *testing.T) {
 	}
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
 
-	p := &scriptedProvider{
-		responses: []string{`{"actions":[],"type":"answer","content":"done"}`},
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{`{"actions":[],"type":"answer","content":"done"}`},
 	}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
@@ -270,13 +271,13 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 	}
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
 
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			`{"rationale":"inspect","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
 			`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
 		},
 	}
-	p.onChat = func(idx int, req schema.ChatRequest) {
+	p.OnChat = func(idx int, req schema.ChatRequest) {
 		if idx == 0 {
 			state.PushSteering("also inspect @steered.go")
 		}
@@ -298,18 +299,18 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}
-	if len(p.requests) < 2 {
-		t.Fatalf("provider saw %d chat calls, want >= 2", len(p.requests))
+	if len(p.Requests) < 2 {
+		t.Fatalf("provider saw %d chat calls, want >= 2", len(p.Requests))
 	}
 	var sawPinnedContent bool
-	for _, msg := range p.requests[1].Messages {
+	for _, msg := range p.Requests[1].Messages {
 		if strings.Contains(msg.Content, "MARKER: steered-go-file") {
 			sawPinnedContent = true
 			break
 		}
 	}
 	if !sawPinnedContent {
-		t.Fatalf("second provider request missing steered file content:\n%v", p.requests[1].Messages)
+		t.Fatalf("second provider request missing steered file content:\n%v", p.Requests[1].Messages)
 	}
 	pack := state.ContextPack()
 	if len(pack.Pinned) != 1 || pack.Pinned[0].Path != "steered.go" {

@@ -5,12 +5,13 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/llm/schema"
 )
 
 func TestFinalizeProducesFlaggedCompletion(t *testing.T) {
 	state := newTestState(t)
-	prov := &scriptedProvider{responses: []string{
+	prov := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"done","action":{"type":"final","content":"Here is my best answer."}}`,
 	}}
 	r := NewRunner(prov, nil, nil, state, "test-model")
@@ -36,7 +37,7 @@ func TestFinalizeProducesFlaggedCompletion(t *testing.T) {
 
 func TestFinalizeSynthesizesWhenModelIgnoresDirective(t *testing.T) {
 	state := newTestState(t)
-	prov := &scriptedProvider{responses: []string{
+	prov := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"one more read","action":{"type":"tool_call","tool":"file.read","args":{"path":"x.go"}}}`,
 	}}
 	r := NewRunner(prov, nil, nil, state, "test-model")
@@ -56,8 +57,8 @@ func TestFinalizeSynthesizesWhenModelIgnoresDirective(t *testing.T) {
 	if !last.Salvaged || last.Content == "" {
 		t.Fatalf("expected non-empty synthesized salvage message, got %+v", last)
 	}
-	if prov.calls != maxFinalizeAttempts {
-		t.Fatalf("calls = %d, want %d (all retries exhausted before falling back)", prov.calls, maxFinalizeAttempts)
+	if prov.Calls != maxFinalizeAttempts {
+		t.Fatalf("calls = %d, want %d (all retries exhausted before falling back)", prov.Calls, maxFinalizeAttempts)
 	}
 }
 
@@ -67,7 +68,7 @@ func TestFinalizeSynthesizesWhenModelIgnoresDirective(t *testing.T) {
 // final answer, not a synthesized fallback stitched from raw tool-call JSON.
 func TestFinalizeRecoversAfterCorrection(t *testing.T) {
 	state := newTestState(t)
-	prov := &scriptedProvider{responses: []string{
+	prov := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"one more read","action":{"type":"tool_call","tool":"file.read","args":{"path":"x.go"}}}`,
 		`{"rationale":"ok, concluding","action":{"type":"final","content":"Here is the answer after correction."}}`,
 	}}
@@ -83,8 +84,8 @@ func TestFinalizeRecoversAfterCorrection(t *testing.T) {
 	if got.Summary != "Here is the answer after correction." {
 		t.Fatalf("Summary = %q, want the model's second-attempt final content", got.Summary)
 	}
-	if prov.calls != 2 {
-		t.Fatalf("calls = %d, want 2 (stop retrying once model complies)", prov.calls)
+	if prov.Calls != 2 {
+		t.Fatalf("calls = %d, want 2 (stop retrying once model complies)", prov.Calls)
 	}
 	last := state.Messages()[len(state.Messages())-1]
 	if !last.Salvaged || last.Content != "Here is the answer after correction." {
@@ -159,7 +160,7 @@ func TestExtractUsefulProseStripsToolCallEnvelope(t *testing.T) {
 func TestFinalizeSynthesisDoesNotDumpRawToolCallJSON(t *testing.T) {
 	state := newTestState(t)
 	toolCallJSON := `{"rationale":"I want to read x.go one more time","action":{"type":"tool_call","tool":"file.read","args":{"path":"x.go"}}}`
-	prov := &scriptedProvider{responses: []string{toolCallJSON}}
+	prov := &agenttest.ScriptedProvider{Responses: []string{toolCallJSON}}
 	r := NewRunner(prov, nil, nil, state, "test-model")
 
 	task := NewTask("do the thing", r.Now())
@@ -193,10 +194,10 @@ func TestFinalizeSynthesisDoesNotDumpRawToolCallJSON(t *testing.T) {
 // complying before synthesis is triggered.
 func TestFinalizeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 	state := newTestState(t)
-	// Single canned response; scriptedProvider repeats it after scripts run
+	// Single canned response; agenttest.ScriptedProvider repeats it after scripts run
 	// out, so all three finalize attempts see a tool_call.
 	toolCallJSON := `{"rationale":"need more info","action":{"type":"tool_call","tool":"file.read","args":{"path":"y.go"}}}`
-	prov := &scriptedProvider{responses: []string{toolCallJSON}}
+	prov := &agenttest.ScriptedProvider{Responses: []string{toolCallJSON}}
 	r := NewRunner(prov, nil, nil, state, "test-model")
 
 	task := NewTask("go", r.Now())
@@ -208,10 +209,10 @@ func TestFinalizeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 	// After 3 chat calls, probe captured request messages should show the
 	// final-warning escalation on the last retry (attempt index 2, which
 	// was preceded by the penultimate retry's correction being appended).
-	if len(prov.requests) < 3 {
-		t.Fatalf("expected >=3 chat calls, got %d", len(prov.requests))
+	if len(prov.Requests) < 3 {
+		t.Fatalf("expected >=3 chat calls, got %d", len(prov.Requests))
 	}
-	lastReq := prov.requests[len(prov.requests)-1]
+	lastReq := prov.Requests[len(prov.Requests)-1]
 	foundFinalWarn := false
 	for _, m := range lastReq.Messages {
 		if m.Role == schema.RoleSystem && strings.Contains(m.Content, "STOP.") {
@@ -226,7 +227,7 @@ func TestFinalizeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 
 func TestFinalizeNativeUsesProseDirectly(t *testing.T) {
 	state := newTestState(t)
-	prov := &scriptedProvider{responses: []string{"This is the native prose answer."}}
+	prov := &agenttest.ScriptedProvider{Responses: []string{"This is the native prose answer."}}
 	r := NewRunner(prov, nil, nil, state, "test-model")
 	r.NativeTools = true
 
@@ -251,7 +252,7 @@ func TestFinalizeNativeUsesProseDirectly(t *testing.T) {
 		t.Fatalf("final message = %+v, want salvaged prose answer", last)
 	}
 	// Native mode must not have asked for a JSON envelope correction.
-	for _, req := range prov.requests {
+	for _, req := range prov.Requests {
 		for _, m := range req.Messages {
 			if strings.Contains(m.Content, `{"rationale"`) {
 				t.Fatalf("native finalize emitted JSON-envelope correction: %q", m.Content)
@@ -262,9 +263,9 @@ func TestFinalizeNativeUsesProseDirectly(t *testing.T) {
 
 func TestFinalizeNativeRecoversAfterToolCall(t *testing.T) {
 	state := newTestState(t)
-	prov := &scriptedProvider{
-		responses: []string{"Trying one more tool.", "Recovered prose answer."},
-		toolCalls: [][]schema.ToolCall{
+	prov := &agenttest.ScriptedProvider{
+		Responses: []string{"Trying one more tool.", "Recovered prose answer."},
+		ToolCalls: [][]schema.ToolCall{
 			{{ID: "call_1", Name: "file.read", Args: nil}},
 			nil,
 		},
@@ -282,12 +283,12 @@ func TestFinalizeNativeRecoversAfterToolCall(t *testing.T) {
 	if got.Summary != "Recovered prose answer." {
 		t.Fatalf("Summary = %q, want recovered prose answer", got.Summary)
 	}
-	if prov.calls != 2 {
-		t.Fatalf("calls = %d, want 2 (stop retrying once prose received)", prov.calls)
+	if prov.Calls != 2 {
+		t.Fatalf("calls = %d, want 2 (stop retrying once prose received)", prov.Calls)
 	}
 	// The correction after the first tool-call attempt must be native vocabulary.
 	foundCorrection := false
-	for _, req := range prov.requests {
+	for _, req := range prov.Requests {
 		for _, m := range req.Messages {
 			if m.Role == schema.RoleSystem && strings.Contains(m.Content, "Do not call tools") {
 				foundCorrection = true
@@ -301,9 +302,9 @@ func TestFinalizeNativeRecoversAfterToolCall(t *testing.T) {
 
 func TestFinalizeNativeSynthesizesWhenModelKeepsCallingTools(t *testing.T) {
 	state := newTestState(t)
-	prov := &scriptedProvider{
-		responses: []string{"Need another read."},
-		toolCalls: [][]schema.ToolCall{
+	prov := &agenttest.ScriptedProvider{
+		Responses: []string{"Need another read."},
+		ToolCalls: [][]schema.ToolCall{
 			{{ID: "call_1", Name: "file.read", Args: nil}},
 			{{ID: "call_1", Name: "file.read", Args: nil}},
 			{{ID: "call_1", Name: "file.read", Args: nil}},
@@ -330,16 +331,16 @@ func TestFinalizeNativeSynthesizesWhenModelKeepsCallingTools(t *testing.T) {
 	if strings.Contains(last.Content, `"file.read"`) {
 		t.Fatalf("synthesized output still contains raw tool name:\n%s", last.Content)
 	}
-	if prov.calls != maxFinalizeAttempts {
-		t.Fatalf("calls = %d, want %d (all retries exhausted before falling back)", prov.calls, maxFinalizeAttempts)
+	if prov.Calls != maxFinalizeAttempts {
+		t.Fatalf("calls = %d, want %d (all retries exhausted before falling back)", prov.Calls, maxFinalizeAttempts)
 	}
 }
 
 func TestFinalizeNativeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 	state := newTestState(t)
-	prov := &scriptedProvider{
-		responses: []string{"Need another read."},
-		toolCalls: [][]schema.ToolCall{
+	prov := &agenttest.ScriptedProvider{
+		Responses: []string{"Need another read."},
+		ToolCalls: [][]schema.ToolCall{
 			{{ID: "call_1", Name: "file.read", Args: nil}},
 			{{ID: "call_1", Name: "file.read", Args: nil}},
 			{{ID: "call_1", Name: "file.read", Args: nil}},
@@ -354,10 +355,10 @@ func TestFinalizeNativeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 	if _, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled, nil); err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if len(prov.requests) < 3 {
-		t.Fatalf("expected >=3 chat calls, got %d", len(prov.requests))
+	if len(prov.Requests) < 3 {
+		t.Fatalf("expected >=3 chat calls, got %d", len(prov.Requests))
 	}
-	lastReq := prov.requests[len(prov.requests)-1]
+	lastReq := prov.Requests[len(prov.Requests)-1]
 	foundFinalWarn := false
 	for _, m := range lastReq.Messages {
 		if m.Role == schema.RoleSystem && strings.Contains(m.Content, "STOP.") && strings.Contains(m.Content, "Do NOT call tools") {
@@ -377,7 +378,7 @@ func TestFinalizeReasonEmptySynthesizesFallback(t *testing.T) {
 	state := newTestState(t)
 	// The model ignores the finalize directive entirely across all attempts;
 	// finalize must synthesize a fallback rather than dump empty output.
-	prov := &scriptedProvider{responses: []string{""}}
+	prov := &agenttest.ScriptedProvider{Responses: []string{""}}
 	r := NewRunner(prov, nil, nil, state, "test-model")
 
 	task := NewTask("do the thing", r.Now())
@@ -406,9 +407,9 @@ func TestFinalizeReasonEmptySynthesizesFallback(t *testing.T) {
 // each tool_call_id before the next model turn.
 func TestFinalizeNativePairsToolCallsWithToolResults(t *testing.T) {
 	state := newTestState(t)
-	prov := &scriptedProvider{
-		responses: []string{"Need another read.", "Recovered prose answer."},
-		toolCalls: [][]schema.ToolCall{
+	prov := &agenttest.ScriptedProvider{
+		Responses: []string{"Need another read.", "Recovered prose answer."},
+		ToolCalls: [][]schema.ToolCall{
 			{
 				{ID: "call_1", Name: "file.read", Args: nil},
 				{ID: "call_2", Name: "repo.search", Args: nil},
@@ -429,14 +430,14 @@ func TestFinalizeNativePairsToolCallsWithToolResults(t *testing.T) {
 	if got.Summary != "Recovered prose answer." {
 		t.Fatalf("Summary = %q, want recovered prose answer", got.Summary)
 	}
-	if len(prov.requests) < 2 {
-		t.Fatalf("expected >=2 chat calls, got %d", len(prov.requests))
+	if len(prov.Requests) < 2 {
+		t.Fatalf("expected >=2 chat calls, got %d", len(prov.Requests))
 	}
 
 	// Inspect the second request (the retry after the non-compliant tool-call
 	// attempt). It should contain the assistant tool-call message, then one
 	// role:tool result per tool_call_id, then the correction system message.
-	retryReq := prov.requests[1]
+	retryReq := prov.Requests[1]
 	for i, m := range retryReq.Messages {
 		if m.Role != schema.RoleAssistant || len(m.ToolCalls) == 0 {
 			continue

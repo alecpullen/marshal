@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
@@ -30,81 +31,6 @@ func TestRunnerDefaultsAreSensible(t *testing.T) {
 	if DefaultMaxRetries != 2 {
 		t.Fatalf("DefaultMaxRetries = %d, want 2", DefaultMaxRetries)
 	}
-}
-
-// scriptedProvider returns pre-canned responses in call order. Each call to
-// Chat consumes the next entry from responses/errs (whichever is non-empty
-// at that index); once the scripts run out, the last response is repeated
-// so tests exercising max-iteration limits do not need to script every turn.
-type scriptedProvider struct {
-	responses     []string
-	toolCalls     [][]schema.ToolCall
-	finishReasons []string
-	thinking      []string
-	errs          []error
-	usages        []*schema.TokenUsage
-	calls         int
-	requests      []schema.ChatRequest
-	capabilities  schema.ProviderCapabilities
-	onChat        func(idx int, req schema.ChatRequest)
-}
-
-func (p *scriptedProvider) Name() string { return "scripted" }
-
-func (p *scriptedProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) {
-	return nil, nil
-}
-
-func (p *scriptedProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
-	return schema.EmbedResponse{}, nil
-}
-
-func (p *scriptedProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
-	return p.capabilities
-}
-
-func (p *scriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
-	idx := p.calls
-	p.requests = append(p.requests, req)
-	p.calls++
-	if p.onChat != nil {
-		p.onChat(idx, req)
-	}
-
-	ch := make(chan schema.ChatEvent, 3)
-	if idx < len(p.thinking) && p.thinking[idx] != "" {
-		ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: p.thinking[idx]}
-	}
-
-	if idx < len(p.errs) && p.errs[idx] != nil {
-		ch <- schema.ChatEvent{Type: schema.ChatEventError, Err: p.errs[idx]}
-		close(ch)
-		return ch, nil
-	}
-
-	content := ""
-	switch {
-	case idx < len(p.responses):
-		content = p.responses[idx]
-	case len(p.responses) > 0:
-		content = p.responses[len(p.responses)-1]
-	}
-	if content != "" {
-		ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
-	}
-	done := schema.ChatEvent{Type: schema.ChatEventDone}
-	if idx < len(p.usages) {
-		done.Usage = p.usages[idx]
-	}
-	if idx < len(p.toolCalls) {
-		done.ToolCalls = p.toolCalls[idx]
-	}
-	if idx < len(p.finishReasons) {
-		done.FinishReason = p.finishReasons[idx]
-	}
-	ch <- done
-	close(ch)
-	return ch, nil
 }
 
 type scriptedRouteResolver struct {
@@ -152,11 +78,11 @@ func newTestState(t *testing.T) *session.State {
 
 func TestLengthTruncatedToolCallsAreFailedNotExecuted(t *testing.T) {
 	executed := false
-	p := &scriptedProvider{
-		responses:     []string{"", "all done"},
-		toolCalls:     [][]schema.ToolCall{{{ID: "tc1", Name: "risky.tool", Args: json.RawMessage(`{"partial":`)}}, nil},
-		finishReasons: []string{"length", "stop"},
-		capabilities:  schema.ProviderCapabilities{},
+	p := &agenttest.ScriptedProvider{
+		Responses:     []string{"", "all done"},
+		ToolCalls:     [][]schema.ToolCall{{{ID: "tc1", Name: "risky.tool", Args: json.RawMessage(`{"partial":`)}}, nil},
+		FinishReasons: []string{"length", "stop"},
+		ProviderCaps:  schema.ProviderCapabilities{},
 	}
 	reg := registry.New()
 	reg.Register(registry.Tool{
@@ -180,7 +106,7 @@ func TestLengthTruncatedToolCallsAreFailedNotExecuted(t *testing.T) {
 	}
 	// The model must have been told to re-issue: the second request carries a
 	// role:tool message for tc1 mentioning truncation.
-	second := p.requests[1]
+	second := p.Requests[1]
 	found := false
 	for _, m := range second.Messages {
 		if m.Role == schema.RoleTool && m.ToolCallID == "tc1" && strings.Contains(m.Content, "truncated") {
@@ -193,9 +119,9 @@ func TestLengthTruncatedToolCallsAreFailedNotExecuted(t *testing.T) {
 }
 
 func TestChatOnceRoutesThinkingDeltasToStateAndReturnsAnswerText(t *testing.T) {
-	p := &scriptedProvider{
-		thinking:  []string{"considering the question"},
-		responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+	p := &agenttest.ScriptedProvider{
+		Thinking:  []string{"considering the question"},
+		Responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
 	}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
@@ -219,9 +145,9 @@ func TestChatOnceRoutesThinkingDeltasToStateAndReturnsAnswerText(t *testing.T) {
 }
 
 func TestChatOnceEndsStreamingEvenOnProviderError(t *testing.T) {
-	p := &scriptedProvider{
-		thinking: []string{"partial thought"},
-		errs:     []error{errors.New("boom")},
+	p := &agenttest.ScriptedProvider{
+		Thinking: []string{"partial thought"},
+		Errs:     []error{errors.New("boom")},
 	}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
@@ -241,7 +167,7 @@ func TestChatOnceEndsStreamingEvenOnProviderError(t *testing.T) {
 }
 
 func TestRunAnswersQuestionWithoutToolCalls(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"simple","action":{"type":"answer","content":"Marshal is a TUI coding agent."}}`,
 	}}
 	reg := registry.New()
@@ -280,7 +206,7 @@ func TestRunExecutesAllowedToolCallThenAnswers(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"need data","action":{"type":"tool_call","tool":"demo.read","args":{"key":"value"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Read demo content successfully."}}`,
 	}}
@@ -327,9 +253,9 @@ func TestRunNativeToolCallFeedsRoleToolThenAnswers(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{
-		responses: []string{"Reading demo.", "Read demo content successfully."},
-		toolCalls: [][]schema.ToolCall{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Reading demo.", "Read demo content successfully."},
+		ToolCalls: [][]schema.ToolCall{
 			{{ID: "call_1", Name: "demo.read", Args: json.RawMessage(`{"key":"value"}`)}},
 			nil,
 		},
@@ -355,20 +281,20 @@ func TestRunNativeToolCallFeedsRoleToolThenAnswers(t *testing.T) {
 	if got == nil || got.ParseFailures != 0 || got.ToolCalls != 1 {
 		t.Fatalf("metrics = %+v, want ParseFailures=0 ToolCalls=1", got)
 	}
-	if len(p.requests) != 2 {
-		t.Fatalf("provider requests = %d, want 2", len(p.requests))
+	if len(p.Requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(p.Requests))
 	}
-	if len(p.requests[0].Tools) != 2 {
-		t.Fatalf("len(request tools) = %d, want demo.read + ask_user: %+v", len(p.requests[0].Tools), p.requests[0].Tools)
+	if len(p.Requests[0].Tools) != 2 {
+		t.Fatalf("len(request tools) = %d, want demo.read + ask_user: %+v", len(p.Requests[0].Tools), p.Requests[0].Tools)
 	}
 	foundToolResult := false
-	for _, msg := range p.requests[1].Messages {
+	for _, msg := range p.Requests[1].Messages {
 		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_1" && strings.Contains(msg.Content, "demo content") {
 			foundToolResult = true
 		}
 	}
 	if !foundToolResult {
-		t.Fatalf("second request missing role:tool result for call_1: %#v", p.requests[1].Messages)
+		t.Fatalf("second request missing role:tool result for call_1: %#v", p.Requests[1].Messages)
 	}
 }
 
@@ -389,9 +315,9 @@ func TestRunNativeMultiCallBatchFeedsEachRoleToolInOrder(t *testing.T) {
 		}
 	}
 
-	p := &scriptedProvider{
-		responses: []string{"Reading both.", "Done."},
-		toolCalls: [][]schema.ToolCall{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Reading both.", "Done."},
+		ToolCalls: [][]schema.ToolCall{
 			{
 				{ID: "call_a", Name: "demo.a", Args: json.RawMessage(`{}`)},
 				{ID: "call_b", Name: "demo.b", Args: json.RawMessage(`{}`)},
@@ -410,7 +336,7 @@ func TestRunNativeMultiCallBatchFeedsEachRoleToolInOrder(t *testing.T) {
 		t.Fatalf("execution order = %v, want demo.a,demo.b", order)
 	}
 	var ids []string
-	for _, msg := range p.requests[1].Messages {
+	for _, msg := range p.Requests[1].Messages {
 		if msg.Role == schema.RoleTool {
 			ids = append(ids, msg.ToolCallID)
 		}
@@ -422,9 +348,9 @@ func TestRunNativeMultiCallBatchFeedsEachRoleToolInOrder(t *testing.T) {
 
 func TestRunNativeAskUserFeedsAnswerAsRoleTool(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{
-		responses: []string{"Need clarification.", "Archived as requested."},
-		toolCalls: [][]schema.ToolCall{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Need clarification.", "Archived as requested."},
+		ToolCalls: [][]schema.ToolCall{
 			{{ID: "call_question", Name: "ask_user", Args: json.RawMessage(`{"question":"Archive or delete?"}`)}},
 		},
 	}
@@ -445,20 +371,20 @@ func TestRunNativeAskUserFeedsAnswerAsRoleTool(t *testing.T) {
 		t.Fatalf("Summary = %q", task.Summary)
 	}
 	found := false
-	for _, msg := range p.requests[1].Messages {
+	for _, msg := range p.Requests[1].Messages {
 		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_question" && strings.Contains(msg.Content, "archive") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("answer not fed back as role:tool: %#v", p.requests[1].Messages)
+		t.Fatalf("answer not fed back as role:tool: %#v", p.Requests[1].Messages)
 	}
 }
 
 func TestRunNativeUnknownToolAnswersToolCallIDWithError(t *testing.T) {
-	p := &scriptedProvider{
-		responses: []string{"Trying unknown.", "Recovered."},
-		toolCalls: [][]schema.ToolCall{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Trying unknown.", "Recovered."},
+		ToolCalls: [][]schema.ToolCall{
 			{{ID: "call_bad", Name: "missing.tool", Args: json.RawMessage(`{}`)}},
 		},
 	}
@@ -471,21 +397,21 @@ func TestRunNativeUnknownToolAnswersToolCallIDWithError(t *testing.T) {
 		t.Fatalf("RunTask err = %v", err)
 	}
 	found := false
-	for _, msg := range p.requests[1].Messages {
+	for _, msg := range p.Requests[1].Messages {
 		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_bad" && strings.Contains(msg.Content, "unknown tool") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("unknown tool error not fed back as role:tool: %#v", p.requests[1].Messages)
+		t.Fatalf("unknown tool error not fed back as role:tool: %#v", p.Requests[1].Messages)
 	}
 }
 
 func TestNativeQuestionAskDeclined(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{
-		responses: []string{"Need to ask.", "Done."},
-		toolCalls: [][]schema.ToolCall{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Need to ask.", "Done."},
+		ToolCalls: [][]schema.ToolCall{
 			{{ID: "call_q", Name: "question.ask", Args: json.RawMessage(`{"questions":[{"question":"Keep legacy?"}]}`)}},
 			nil,
 		},
@@ -529,7 +455,7 @@ func TestBuildToolDefinitionsOmitsAskUserForSwarmRoles(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	r := NewRunner(&scriptedProvider{}, reg, policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	r := NewRunner(&agenttest.ScriptedProvider{}, reg, policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
 	r.Role = RoleRepoScout
 
 	defs := r.buildToolDefinitions()
@@ -545,9 +471,9 @@ func TestBuildToolDefinitionsOmitsAskUserForSwarmRoles(t *testing.T) {
 
 func TestNativeAskUserCountsAgainstIterationBudget(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{
-		responses: []string{"Ask1.", "Ask2."},
-		toolCalls: [][]schema.ToolCall{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Ask1.", "Ask2."},
+		ToolCalls: [][]schema.ToolCall{
 			{{ID: "c1", Name: "ask_user", Args: json.RawMessage(`{"question":"Q1?"}`)}},
 			{{ID: "c2", Name: "ask_user", Args: json.RawMessage(`{"question":"Q2?"}`)}},
 		},
@@ -586,9 +512,9 @@ func TestNativeAskUserCountsAgainstIterationBudget(t *testing.T) {
 
 func TestNativeQuestionAskCountsAgainstIterationBudget(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{
-		responses: []string{"Ask1.", "Ask2."},
-		toolCalls: [][]schema.ToolCall{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Ask1.", "Ask2."},
+		ToolCalls: [][]schema.ToolCall{
 			{{ID: "c1", Name: "question.ask", Args: json.RawMessage(`{"questions":[{"question":"Q1?"}]}`)}},
 			{{ID: "c2", Name: "question.ask", Args: json.RawMessage(`{"questions":[{"question":"Q2?"}]}`)}},
 		},
@@ -620,7 +546,7 @@ func TestNativeQuestionAskCountsAgainstIterationBudget(t *testing.T) {
 
 func TestRequestApprovalTimeout(t *testing.T) {
 	state := newTestState(t)
-	r := NewRunner(&scriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.RequestTimeout = 10 * time.Millisecond
 
 	ctx := context.Background()
@@ -637,7 +563,7 @@ func TestRequestApprovalTimeout(t *testing.T) {
 
 func TestRequestQuestionsTimeout(t *testing.T) {
 	state := newTestState(t)
-	r := NewRunner(&scriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.RequestTimeout = 10 * time.Millisecond
 
 	ctx := context.Background()
@@ -702,7 +628,7 @@ func TestRunRequiresApprovalForShellRunAndRespectsApproval(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"check status","action":{"type":"tool_call","tool":"shell.run","args":{"command":"echo hi"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Command ran."}}`,
 	}}
@@ -759,7 +685,7 @@ func TestRunnerShellEditNormalizesSuccessfully(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"run","action":{"type":"tool_call","tool":"shell.run","args":{"command":"echo hello"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"done"}}`,
 	}}
@@ -812,9 +738,9 @@ func TestRunnerReevaluatesPolicyAfterEditedArgs(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// Two responses: the tool call (triggers approval) and a final message so
+	// Two Responses: the tool call (triggers approval) and a final message so
 	// the loop terminates even if the buggy code ignores the edit.
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"fetch","action":{"type":"tool_call","tool":"web.fetch","args":{}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"done"}}`,
 	}}
@@ -890,7 +816,7 @@ func TestRunnerReevaluatesDenyAfterValidEdit(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"fetch","action":{"type":"tool_call","tool":"web.fetch","args":{}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"done"}}`,
 	}}
@@ -943,10 +869,10 @@ func TestRunnerReevaluatesDenyAfterValidEdit(t *testing.T) {
 	}
 
 	// Verify the provider received a message mentioning the denial.
-	if len(p.requests) < 2 {
-		t.Fatalf("expected at least 2 provider requests, got %d", len(p.requests))
+	if len(p.Requests) < 2 {
+		t.Fatalf("expected at least 2 provider requests, got %d", len(p.Requests))
 	}
-	lastReq := p.requests[len(p.requests)-1]
+	lastReq := p.Requests[len(p.Requests)-1]
 	found := false
 	for _, msg := range lastReq.Messages {
 		if strings.Contains(msg.Content, "denied") || strings.Contains(msg.Content, "deny") {
@@ -963,9 +889,9 @@ func TestRunnerReevaluatesDenyAfterValidEdit(t *testing.T) {
 }
 
 func TestRunRetriesOnProviderErrorThenSucceeds(t *testing.T) {
-	p := &scriptedProvider{
-		errs:      []error{errors.New("connection reset"), nil},
-		responses: []string{"", `{"rationale":"ok","action":{"type":"answer","content":"recovered"}}`},
+	p := &agenttest.ScriptedProvider{
+		Errs:      []error{errors.New("connection reset"), nil},
+		Responses: []string{"", `{"rationale":"ok","action":{"type":"answer","content":"recovered"}}`},
 	}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
@@ -975,8 +901,8 @@ func TestRunRetriesOnProviderErrorThenSucceeds(t *testing.T) {
 	if err := runner.Run(context.Background(), "What is this?"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if p.calls != 2 {
-		t.Fatalf("provider called %d times, want 2 (1 failure + 1 retry)", p.calls)
+	if p.Calls != 2 {
+		t.Fatalf("provider called %d times, want 2 (1 failure + 1 retry)", p.Calls)
 	}
 }
 
@@ -991,7 +917,7 @@ func TestMergeMemoriesRemovesExistingMemorySectionWhenProviderReturnsNone(t *tes
 		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 10},
 	})
 
-	runner := NewRunner(&scriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	runner.MemoryProvider = &fakeMemoryProvider{}
 
 	runner.mergeMemories(0)
@@ -1005,7 +931,7 @@ func TestMergeMemoriesRemovesExistingMemorySectionWhenProviderReturnsNone(t *tes
 
 func TestRunFailsAfterExhaustingRetries(t *testing.T) {
 	failure := errors.New("connection reset")
-	p := &scriptedProvider{errs: []error{failure, failure, failure}}
+	p := &agenttest.ScriptedProvider{Errs: []error{failure, failure, failure}}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
@@ -1037,7 +963,7 @@ func TestRunStopsAfterMaxToolIterationsWithoutFinalAnswer(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"loop","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
 	}}
 	pol := policy.NewEngine(&config.Config{}, nil)
@@ -1063,7 +989,7 @@ func TestExhaustionSalvagesInsteadOfFailing(t *testing.T) {
 	// exhaustion. finalize (scripted to answer on the next call) must then
 	// salvage the turn instead of failing it.
 	state := newTestState(t)
-	prov := &scriptedProvider{responses: []string{
+	prov := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
 		`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"b.go"}}}`,
 		`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"c.go"}}}`,
@@ -1089,7 +1015,7 @@ func TestExhaustionWithoutValidActionFailsHard(t *testing.T) {
 	// responses the loop exits via ErrModelOutputMalformed rather than
 	// ErrMaxIterationsExceeded (the model is broken, not merely slow).
 	state := newTestState(t)
-	prov := &scriptedProvider{responses: []string{"not json at all"}}
+	prov := &agenttest.ScriptedProvider{Responses: []string{"not json at all"}}
 	r := NewRunner(prov, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.MaxToolIterations = 2
 	r.MaxRetries = 0
@@ -1105,13 +1031,13 @@ func TestExhaustionSalvageFailureReturnsError(t *testing.T) {
 	// Same setup as above, but the finalize model call itself errors ->
 	// original ErrMaxIterationsExceeded semantics must be preserved.
 	state := newTestState(t)
-	prov := &scriptedProvider{
-		responses: []string{
+	prov := &agenttest.ScriptedProvider{
+		Responses: []string{
 			`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
 			`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"b.go"}}}`,
 			`{"rationale":"loop","action":{"type":"tool_call","tool":"file.read","args":{"path":"c.go"}}}`,
 		},
-		errs: []error{nil, nil, nil, errors.New("boom")},
+		Errs: []error{nil, nil, nil, errors.New("boom")},
 	}
 	r := NewRunner(prov, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.MaxToolIterations = 3
@@ -1125,7 +1051,7 @@ func TestExhaustionSalvageFailureReturnsError(t *testing.T) {
 }
 
 func TestRunInjectsStoredContextPack(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"simple","action":{"type":"answer","content":"Marshal is indexed."}}`,
 	}}
 	reg := registry.New()
@@ -1142,22 +1068,22 @@ func TestRunInjectsStoredContextPack(t *testing.T) {
 	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if len(p.requests) != 1 {
-		t.Fatalf("provider requests = %d, want 1", len(p.requests))
+	if len(p.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(p.Requests))
 	}
 	var found bool
-	for _, msg := range p.requests[0].Messages {
+	for _, msg := range p.Requests[0].Messages {
 		if strings.Contains(msg.Content, "Project context pack:") && strings.Contains(msg.Content, "Project: marshal") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("request missing context pack: %#v", p.requests[0].Messages)
+		t.Fatalf("request missing context pack: %#v", p.Requests[0].Messages)
 	}
 }
 
 func TestRunOmitsContextPackWhenEmpty(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"simple","action":{"type":"answer","content":"No pack."}}`,
 	}}
 	reg := registry.New()
@@ -1168,15 +1094,15 @@ func TestRunOmitsContextPackWhenEmpty(t *testing.T) {
 	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	for _, msg := range p.requests[0].Messages {
+	for _, msg := range p.Requests[0].Messages {
 		if strings.Contains(msg.Content, "Project context pack:") {
-			t.Fatalf("empty context pack was injected: %#v", p.requests[0].Messages)
+			t.Fatalf("empty context pack was injected: %#v", p.Requests[0].Messages)
 		}
 	}
 }
 
 func TestRunMergesMemoriesIntoContextPackBeforeFirstMessage(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"simple","action":{"type":"answer","content":"done"}}`,
 	}}
 	reg := registry.New()
@@ -1191,42 +1117,42 @@ func TestRunMergesMemoriesIntoContextPackBeforeFirstMessage(t *testing.T) {
 	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if len(p.requests) != 1 {
-		t.Fatalf("provider requests = %d, want 1", len(p.requests))
+	if len(p.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(p.Requests))
 	}
 
 	var contextMessage string
-	for _, msg := range p.requests[0].Messages {
+	for _, msg := range p.Requests[0].Messages {
 		if strings.Contains(msg.Content, "Project context pack:") {
 			contextMessage = msg.Content
 			break
 		}
 	}
 	if contextMessage == "" {
-		t.Fatalf("first provider request missing context pack: %#v", p.requests[0].Messages)
+		t.Fatalf("first provider request missing context pack: %#v", p.Requests[0].Messages)
 	}
 	if !strings.Contains(contextMessage, "## Project Memories") || !strings.Contains(contextMessage, "Uses SQLite for persistence") {
 		t.Fatalf("first provider request missing memory content:\n%s", contextMessage)
 	}
 	userIdx := -1
-	for i, msg := range p.requests[0].Messages {
+	for i, msg := range p.Requests[0].Messages {
 		if msg.Role == schema.RoleUser && msg.Content == "What does this project do?" {
 			userIdx = i
 			break
 		}
 	}
 	if userIdx == -1 {
-		t.Fatalf("first provider request missing user message: %#v", p.requests[0].Messages)
+		t.Fatalf("first provider request missing user message: %#v", p.Requests[0].Messages)
 	}
 	contextIdx := -1
-	for i, msg := range p.requests[0].Messages {
+	for i, msg := range p.Requests[0].Messages {
 		if msg.Content == contextMessage {
 			contextIdx = i
 			break
 		}
 	}
 	if contextIdx == -1 || contextIdx > userIdx {
-		t.Fatalf("context pack should precede user message: %#v", p.requests[0].Messages)
+		t.Fatalf("context pack should precede user message: %#v", p.Requests[0].Messages)
 	}
 
 	pack := state.ContextPack()
@@ -1242,7 +1168,7 @@ func TestRunMergesMemoriesIntoContextPackBeforeFirstMessage(t *testing.T) {
 }
 
 func TestRunWithoutMemoryProviderLeavesContextPackEmpty(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"simple","action":{"type":"answer","content":"done"}}`,
 	}}
 	reg := registry.New()
@@ -1261,7 +1187,7 @@ func TestRunWithoutMemoryProviderLeavesContextPackEmpty(t *testing.T) {
 }
 
 func TestRunSwallowsMemoryProviderErrorsWithoutInjectingMemorySection(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"simple","action":{"type":"answer","content":"done"}}`,
 	}}
 	reg := registry.New()
@@ -1274,12 +1200,12 @@ func TestRunSwallowsMemoryProviderErrorsWithoutInjectingMemorySection(t *testing
 	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if len(p.requests) != 1 {
-		t.Fatalf("provider requests = %d, want 1", len(p.requests))
+	if len(p.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(p.Requests))
 	}
-	for _, msg := range p.requests[0].Messages {
+	for _, msg := range p.Requests[0].Messages {
 		if strings.Contains(msg.Content, "Project context pack:") {
-			t.Fatalf("unexpected context pack injected after memory provider error: %#v", p.requests[0].Messages)
+			t.Fatalf("unexpected context pack injected after memory provider error: %#v", p.Requests[0].Messages)
 		}
 	}
 
@@ -1295,7 +1221,7 @@ func TestRunSwallowsMemoryProviderErrorsWithoutInjectingMemorySection(t *testing
 }
 
 func TestRunAddsPlanToContextPackForActionCalls(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		"1. Inspect the repo.\n2. Run the demo tool.",
 		`{"rationale":"need data","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
@@ -1324,22 +1250,22 @@ func TestRunAddsPlanToContextPackForActionCalls(t *testing.T) {
 	if err := runner.Run(context.Background(), "Add a test"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if len(p.requests) < 2 {
-		t.Fatalf("provider requests = %d, want at least 2", len(p.requests))
+	if len(p.Requests) < 2 {
+		t.Fatalf("provider requests = %d, want at least 2", len(p.Requests))
 	}
 	var foundPlan bool
-	for _, msg := range p.requests[1].Messages {
+	for _, msg := range p.Requests[1].Messages {
 		if strings.Contains(msg.Content, "## Current Plan") && strings.Contains(msg.Content, "Inspect the repo") {
 			foundPlan = true
 		}
 	}
 	if !foundPlan {
-		t.Fatalf("action request missing plan context: %#v", p.requests[1].Messages)
+		t.Fatalf("action request missing plan context: %#v", p.Requests[1].Messages)
 	}
 }
 
 func TestRunAddsPlanToContextPackBeforeSnippetsAndToolOutput(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		"1. Inspect the repo.\n2. Run the demo tool.",
 		`{"rationale":"need data","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
@@ -1372,14 +1298,14 @@ func TestRunAddsPlanToContextPackBeforeSnippetsAndToolOutput(t *testing.T) {
 	}
 
 	var actionContext string
-	for _, msg := range p.requests[1].Messages {
+	for _, msg := range p.Requests[1].Messages {
 		if strings.Contains(msg.Content, "Project context pack:") {
 			actionContext = msg.Content
 			break
 		}
 	}
 	if actionContext == "" {
-		t.Fatalf("action request missing context pack: %#v", p.requests[1].Messages)
+		t.Fatalf("action request missing context pack: %#v", p.Requests[1].Messages)
 	}
 
 	planIdx := strings.Index(actionContext, "## Current Plan")
@@ -1394,7 +1320,7 @@ func TestRunAddsPlanToContextPackBeforeSnippetsAndToolOutput(t *testing.T) {
 }
 
 func TestRunPreservesContextPackSectionMetadataWhenAddingPlan(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		"1. Inspect the repo.\n2. Run the demo tool.",
 		`{"rationale":"need data","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
@@ -1495,7 +1421,7 @@ func TestChatOnceTimesOutPerRequest(t *testing.T) {
 }
 
 func TestRunResolvesQuestionRouteAndUpdatesModel(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"simple","action":{"type":"answer","content":"ok"}}`,
 	}}
 	reg := registry.New()
@@ -1518,8 +1444,8 @@ func TestRunResolvesQuestionRouteAndUpdatesModel(t *testing.T) {
 	if len(resolver.tasks) != 1 || resolver.tasks[0].Class != "question" {
 		t.Fatalf("resolved tasks = %#v", resolver.tasks)
 	}
-	if p.requests[0].Model != "fast-model" {
-		t.Fatalf("request model = %q, want fast-model", p.requests[0].Model)
+	if p.Requests[0].Model != "fast-model" {
+		t.Fatalf("request model = %q, want fast-model", p.Requests[0].Model)
 	}
 	route := state.ActiveRoute()
 	if route.Role != routing.RoleRepoScout || route.Model != "fast-model" || !route.Active {
@@ -1528,7 +1454,7 @@ func TestRunResolvesQuestionRouteAndUpdatesModel(t *testing.T) {
 }
 
 func TestRunAppliesRouteContextBudgetToExistingPack(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		"1. Inspect.\n2. Edit.",
 		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
 	}}
@@ -1561,7 +1487,7 @@ func TestRunAppliesRouteContextBudgetToExistingPack(t *testing.T) {
 }
 
 func TestRunAppliesRouteContextBudgetToMemoryOnlyPack(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"done","action":{"type":"answer","content":"ok"}}`,
 	}}
 	reg := registry.New()
@@ -1609,10 +1535,10 @@ func TestRunAppliesRouteContextBudgetToMemoryOnlyPack(t *testing.T) {
 }
 
 func TestRunFallsBackToOriginalProviderAndModelAfterResolverError(t *testing.T) {
-	fallbackProvider := &scriptedProvider{responses: []string{
+	fallbackProvider := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"fallback","action":{"type":"answer","content":"fallback ok"}}`,
 	}}
-	routedProvider := &scriptedProvider{responses: []string{
+	routedProvider := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"routed","action":{"type":"answer","content":"route ok"}}`,
 	}}
 	reg := registry.New()
@@ -1626,7 +1552,7 @@ func TestRunFallsBackToOriginalProviderAndModelAfterResolverError(t *testing.T) 
 			Preset:  routing.ModelPreset{Name: "fast", Provider: "ollama", Model: "fast-model", LocalOnly: true},
 		}},
 		providers: []provider.Provider{routedProvider},
-		errs:      []error{nil, resolverErr},
+			errs:      []error{nil, resolverErr},
 	}
 	runner := NewRunner(fallbackProvider, reg, pol, state, "fallback-model")
 	runner.RouteResolver = resolver
@@ -1638,17 +1564,17 @@ func TestRunFallsBackToOriginalProviderAndModelAfterResolverError(t *testing.T) 
 		t.Fatalf("second Run returned error: %v", err)
 	}
 
-	if len(routedProvider.requests) != 1 {
-		t.Fatalf("routed provider requests = %d, want 1", len(routedProvider.requests))
+	if len(routedProvider.Requests) != 1 {
+		t.Fatalf("routed provider requests = %d, want 1", len(routedProvider.Requests))
 	}
-	if routedProvider.requests[0].Model != "fast-model" {
-		t.Fatalf("routed request model = %q, want fast-model", routedProvider.requests[0].Model)
+	if routedProvider.Requests[0].Model != "fast-model" {
+		t.Fatalf("routed request model = %q, want fast-model", routedProvider.Requests[0].Model)
 	}
-	if len(fallbackProvider.requests) != 1 {
-		t.Fatalf("fallback provider requests = %d, want 1", len(fallbackProvider.requests))
+	if len(fallbackProvider.Requests) != 1 {
+		t.Fatalf("fallback provider requests = %d, want 1", len(fallbackProvider.Requests))
 	}
-	if fallbackProvider.requests[0].Model != "fallback-model" {
-		t.Fatalf("fallback request model = %q, want fallback-model", fallbackProvider.requests[0].Model)
+	if fallbackProvider.Requests[0].Model != "fallback-model" {
+		t.Fatalf("fallback request model = %q, want fallback-model", fallbackProvider.Requests[0].Model)
 	}
 	if got := state.ProviderError(); !errors.Is(got, resolverErr) {
 		t.Fatalf("ProviderError = %v, want %v", got, resolverErr)
@@ -1690,7 +1616,7 @@ func TestRunCachesReadOnlyToolResults(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{"key":"value"}}}`,
 		`{"rationale":"read again","action":{"type":"tool_call","tool":"demo.read","args":{"key":"value"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
@@ -1736,7 +1662,7 @@ func TestRunExecutesParallelReadOnlyActions(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"read both","actions":[{"type":"tool_call","tool":"demo.a","args":{}},{"type":"tool_call","tool":"demo.b","args":{}}]}`,
 		`{"rationale":"done","action":{"type":"final","content":"Got alpha and beta."}}`,
 	}}
@@ -1773,7 +1699,7 @@ func TestRunDetectsRepeatedToolCalls(t *testing.T) {
 		responses = append(responses, read)
 	}
 	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"Done."}}`)
-	p := &scriptedProvider{responses: responses}
+	p := &agenttest.ScriptedProvider{Responses: responses}
 	state := newTestState(t)
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	runner.Role = RoleRepoScout
@@ -1807,7 +1733,7 @@ func TestRunSummarizesLargeToolResults(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"read","action":{"type":"tool_call","tool":"demo.read","args":{}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
 	}}
@@ -1831,9 +1757,9 @@ func TestRunSummarizesLargeToolResults(t *testing.T) {
 }
 
 func TestRunnerChatOnceSetsThinkingActivity(t *testing.T) {
-	p := &scriptedProvider{
-		thinking:  []string{"thinking about it"},
-		responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
+	p := &agenttest.ScriptedProvider{
+		Thinking:  []string{"thinking about it"},
+		Responses: []string{`{"rationale":"r","action":{"type":"answer","content":"done"}}`},
 	}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
@@ -1856,8 +1782,8 @@ func TestRunnerChatOnceSetsThinkingActivity(t *testing.T) {
 }
 
 func TestRunnerSetsActivityDuringToolExecute(t *testing.T) {
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			`{"rationale":"let me check","action":{"type":"tool_call","tool":"file.read","args":{"path":"main.go"}}}`,
 			`{"rationale":"done","action":{"type":"answer","content":"done"}}`,
 		},
@@ -1887,8 +1813,8 @@ func TestRunnerSetsActivityDuringToolExecute(t *testing.T) {
 }
 
 func TestRunnerSetsActivityDuringApproval(t *testing.T) {
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			`{"rationale":"need to run","action":{"type":"tool_call","tool":"shell.run","args":{"command":"go test"}}}`,
 			`{"rationale":"done","action":{"type":"answer","content":"done"}}`,
 		},
@@ -1948,8 +1874,8 @@ func TestRunnerSetsActivityDuringApproval(t *testing.T) {
 }
 
 func TestRunnerSetsPlanAfterPlanningPhase(t *testing.T) {
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			"Refactor the layout\nAdd tests\nupdate docs",
 			`{"rationale":"done","action":{"type":"answer","content":"done"}}`,
 		},
@@ -1976,7 +1902,7 @@ func TestRunnerSetsPlanAfterPlanningPhase(t *testing.T) {
 }
 
 func TestPlanningStepSkippedByDefault(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"done","action":{"type":"final","content":"edited"}}`,
 	}}
 	reg := registry.New()
@@ -1988,8 +1914,8 @@ func TestPlanningStepSkippedByDefault(t *testing.T) {
 	if err := runner.Run(context.Background(), "rename the function"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if p.calls != 1 {
-		t.Fatalf("provider called %d times, want 1 (no separate planning round-trip)", p.calls)
+	if p.Calls != 1 {
+		t.Fatalf("provider called %d times, want 1 (no separate planning round-trip)", p.Calls)
 	}
 	if len(state.Plan()) != 0 {
 		t.Fatalf("plan was set without PlanFirst: %v", state.Plan())
@@ -1997,7 +1923,7 @@ func TestPlanningStepSkippedByDefault(t *testing.T) {
 }
 
 func TestPlanningStepRunsWhenPlanFirstEnabled(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		"1. Read the file\n2. Edit it",
 		`{"rationale":"done","action":{"type":"final","content":"edited"}}`,
 	}}
@@ -2011,8 +1937,8 @@ func TestPlanningStepRunsWhenPlanFirstEnabled(t *testing.T) {
 	if err := runner.Run(context.Background(), "rename the function"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if p.calls != 2 {
-		t.Fatalf("provider called %d times, want 2 (plan + answer)", p.calls)
+	if p.Calls != 2 {
+		t.Fatalf("provider called %d times, want 2 (plan + answer)", p.Calls)
 	}
 	if len(state.Plan()) == 0 {
 		t.Fatal("PlanFirst=true did not set a plan")
@@ -2031,7 +1957,7 @@ func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"bad parallel","actions":[{"type":"tool_call","tool":"demo.write","args":{}}]}`,
 		`{"rationale":"corrected","action":{"type":"final","content":"Done."}}`,
 	}}
@@ -2043,7 +1969,7 @@ func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 	}
 
 	found := false
-	for _, req := range p.requests {
+	for _, req := range p.Requests {
 		for _, m := range req.Messages {
 			if strings.Contains(m.Content, "read-only") {
 				found = true
@@ -2052,7 +1978,7 @@ func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("missing correction message in provider requests: %#v", p.requests)
+		t.Fatalf("missing correction message in provider requests: %#v", p.Requests)
 	}
 }
 
@@ -2074,8 +2000,8 @@ func TestRunnerSetsAndClearsActiveToolCall(t *testing.T) {
 		},
 	})
 
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			`{"rationale":"need file","action":{"type":"tool_call","tool":"file.read","args":{"path":"/repo/main.go"}}}`,
 			`{"rationale":"done","action":{"type":"answer","content":"done"}}`,
 		},
@@ -2094,8 +2020,8 @@ func TestRunnerSetsAndClearsActiveToolCall(t *testing.T) {
 
 func TestRunnerMarksFinalAnswer(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			`{"rationale":"simple","action":{"type":"answer","content":"here is the answer"}}`,
 		},
 	}
@@ -2136,7 +2062,7 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	pol := policy.NewEngine(&config.Config{}, nil)
 	skills.RegisterTool(reg, idx, state)
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"need debugging workflow","action":{"type":"tool_call","tool":"skill.load","args":{"name":"debug"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Debug skill loaded and used."}}`,
 	}}
@@ -2164,7 +2090,7 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	}
 
 	var systemPromptMsgs []string
-	for _, req := range p.requests {
+	for _, req := range p.Requests {
 		for _, msg := range req.Messages {
 			if msg.Role == schema.RoleSystem {
 				systemPromptMsgs = append(systemPromptMsgs, msg.Content)
@@ -2186,7 +2112,7 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 }
 
 func TestRunnerUsesConfiguredRoleInSystemPrompt(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale": "done", "action": {"type": "final", "content": "review complete"}}`,
 	}}
 	state := newTestState(t)
@@ -2197,17 +2123,17 @@ func TestRunnerUsesConfiguredRoleInSystemPrompt(t *testing.T) {
 	if err := runner.Run(context.Background(), "review the diff"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(p.requests) == 0 {
+	if len(p.Requests) == 0 {
 		t.Fatal("provider was never called")
 	}
-	system := p.requests[0].Messages[0].Content
+	system := p.Requests[0].Messages[0].Content
 	if !strings.Contains(system, "You are a reviewer") {
 		t.Fatalf("system prompt did not use reviewer role:\n%s", system)
 	}
 }
 
 func TestRunTaskReturnsCompletedTaskWithSummary(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale": "done", "action": {"type": "final", "content": "all findings recorded"}}`,
 	}}
 	state := newTestState(t)
@@ -2256,7 +2182,7 @@ func TestWriteGateAcquiredForWriteToolsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale": "read", "action": {"type": "tool_call", "tool": "fs.peek", "args": {}}}`,
 		`{"rationale": "write", "action": {"type": "tool_call", "tool": "fs.touch", "args": {}}}`,
 		`{"rationale": "done", "action": {"type": "final", "content": "done"}}`,
@@ -2287,7 +2213,7 @@ func TestRunnerNonShellToolApprovalAndJSONEditing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale": "call tool", "action": {"type": "tool_call", "tool": "mcp.github.create_issue", "args": {"title": "old title", "body": "old body"}}}`,
 		`{"rationale": "done", "action": {"type": "final", "content": "done"}}`,
 	}}
@@ -2349,7 +2275,7 @@ func TestRunAllowsSustainedDistinctReadsBeforeAnswering(t *testing.T) {
 	responses = append(responses,
 		`{"rationale":"done","action":{"type":"final","content":"THE REAL ANSWER after reading all five files."}}`)
 
-	p := &scriptedProvider{responses: responses}
+	p := &agenttest.ScriptedProvider{Responses: responses}
 	state := newTestState(t)
 	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.SetForceClass(string(ClassQuestion))
@@ -2367,8 +2293,8 @@ func TestRunAllowsSustainedDistinctReadsBeforeAnswering(t *testing.T) {
 	if task.Summary != "THE REAL ANSWER after reading all five files." {
 		t.Fatalf("Summary = %q, want the model's own final answer", task.Summary)
 	}
-	if p.calls != 6 {
-		t.Fatalf("provider calls = %d, want 6 (5 reads + 1 final, no finalize calls)", p.calls)
+	if p.Calls != 6 {
+		t.Fatalf("provider calls = %d, want 6 (5 reads + 1 final, no finalize calls)", p.Calls)
 	}
 	for _, m := range state.Messages() {
 		if m.Role == session.RoleSystem && strings.Contains(m.Content, "repeating") {
@@ -2397,7 +2323,7 @@ func TestRunAllowsParallelReadBatchWithoutStalling(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"read all four relevant files at once","actions":[
 			{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}},
 			{"type":"tool_call","tool":"file.read","args":{"path":"b.go"}},
@@ -2423,8 +2349,8 @@ func TestRunAllowsParallelReadBatchWithoutStalling(t *testing.T) {
 	if task.SalvagedReason != "" || task.Summary != "REAL ANSWER." {
 		t.Fatalf("task = %+v, want un-salvaged completion with the model's answer", task)
 	}
-	if p.calls != 3 {
-		t.Fatalf("provider calls = %d, want 3 (batch, single read, final)", p.calls)
+	if p.Calls != 3 {
+		t.Fatalf("provider calls = %d, want 3 (batch, single read, final)", p.Calls)
 	}
 }
 
@@ -2468,7 +2394,7 @@ func TestSerialBatchContinuesAfterError(t *testing.T) {
 	}
 
 	state := newTestState(t)
-	r := NewRunner(&scriptedProvider{}, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r := NewRunner(&agenttest.ScriptedProvider{}, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.tracker = newProgressTracker()
 	defer func() { r.tracker = nil }()
 
@@ -2602,7 +2528,7 @@ func TestParallelActionsSerializesQuestionTools(t *testing.T) {
 		t.Fatalf("Register ask_user: %v", err)
 	}
 
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"two questions needing user input plus one parallel read","actions":[
 			{"type":"tool_call","tool":"question.ask","args":{"questions":[{"question":"auth?","options":["JWT","OAuth"]}]}},
 			{"type":"tool_call","tool":"ask_user","args":{"question":"which backend?"}},
@@ -2637,8 +2563,8 @@ func TestParallelActionsSerializesQuestionTools(t *testing.T) {
 }
 
 func TestParseFailuresDoNotConsumeToolIterations(t *testing.T) {
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			"not a json action at all",
 			`{"rationale":"done","action":{"type":"final","content":"Answer."}}`,
 		},
@@ -2671,8 +2597,8 @@ func TestParseFailuresDoNotConsumeToolIterations(t *testing.T) {
 }
 
 func TestSecondConsecutiveParseFailureEscalatesToRepair(t *testing.T) {
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			"not json 1",
 			"not json 2",
 			`{"rationale":"recovered","action":{"type":"final","content":"recovered"}}`,
@@ -2706,9 +2632,9 @@ func TestSecondConsecutiveParseFailureEscalatesToRepair(t *testing.T) {
 }
 
 func TestSecondConsecutiveParseFailureEnablesJSONMode(t *testing.T) {
-	p := &scriptedProvider{
-		capabilities: schema.ProviderCapabilities{JSONMode: true},
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		ProviderCaps: schema.ProviderCapabilities{JSONMode: true},
+		Responses: []string{
 			"not json 1",
 			"not json 2",
 			`{"rationale":"recovered","action":{"type":"final","content":"recovered"}}`,
@@ -2724,10 +2650,10 @@ func TestSecondConsecutiveParseFailureEnablesJSONMode(t *testing.T) {
 		t.Fatalf("RunTask err = %v", err)
 	}
 
-	if len(p.requests) < 3 {
-		t.Fatalf("expected at least 3 requests, got %d", len(p.requests))
+	if len(p.Requests) < 3 {
+		t.Fatalf("expected at least 3 requests, got %d", len(p.Requests))
 	}
-	req := p.requests[2]
+	req := p.Requests[2]
 	if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_object" {
 		t.Fatalf("requests[2].ResponseFormat = %v, want {Type:\"json_object\"} after 2 consecutive parse failures", req.ResponseFormat)
 	}
@@ -2738,9 +2664,9 @@ func TestSecondConsecutiveParseFailureEnablesJSONMode(t *testing.T) {
 // the next RunTask on the same *Runner starts with a clean response format
 // (the original seed value, typically nil).
 func TestResponseFormatResetsAcrossRunTaskCalls(t *testing.T) {
-	p := &scriptedProvider{
-		capabilities: schema.ProviderCapabilities{JSONMode: true},
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		ProviderCaps: schema.ProviderCapabilities{JSONMode: true},
+		Responses: []string{
 			// First RunTask: 2 parse failures → JSON mode, then recover
 			"not json 1",
 			"not json 2",
@@ -2761,7 +2687,7 @@ func TestResponseFormatResetsAcrossRunTaskCalls(t *testing.T) {
 		t.Fatalf("first RunTask err = %v", err)
 	}
 
-	firstRunRequestCount := len(p.requests)
+	firstRunRequestCount := len(p.Requests)
 
 	// Second RunTask on the same *Runner
 	if _, err := r.RunTask(context.Background(), "second goal"); err != nil {
@@ -2769,7 +2695,7 @@ func TestResponseFormatResetsAcrossRunTaskCalls(t *testing.T) {
 	}
 
 	// The first request of the second run must NOT inherit JSON mode
-	req := p.requests[firstRunRequestCount]
+	req := p.Requests[firstRunRequestCount]
 	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" {
 		t.Fatalf("second RunTask's first request has ResponseFormat = %v, want nil or non-json_object", req.ResponseFormat)
 	}
@@ -2779,9 +2705,9 @@ func TestResponseFormatResetsAcrossRunTaskCalls(t *testing.T) {
 // with RunTask twice in sequence (different goals, different ForceClass
 // values) and both calls complete successfully.
 func TestRunnerSequentialReuse(t *testing.T) {
-	p := &scriptedProvider{
-		capabilities: schema.ProviderCapabilities{JSONMode: true},
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		ProviderCaps: schema.ProviderCapabilities{JSONMode: true},
+		Responses: []string{
 			// First RunTask
 			`{"rationale":"first","action":{"type":"final","content":"first done"}}`,
 			// Second RunTask
@@ -2805,8 +2731,8 @@ func TestRunnerSequentialReuse(t *testing.T) {
 
 	// Both completed without error — the second call did not inherit
 	// per-run state from the first.
-	if len(p.requests) < 2 {
-		t.Fatalf("expected at least 2 chat requests, got %d", len(p.requests))
+	if len(p.Requests) < 2 {
+		t.Fatalf("expected at least 2 chat requests, got %d", len(p.Requests))
 	}
 }
 
@@ -2825,7 +2751,7 @@ func TestPersistentMalformedOutputSalvagesWhenWorkExists(t *testing.T) {
 	read := func(p string) string {
 		return fmt.Sprintf(`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":%q}}}`, p)
 	}
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		read("a.go"),
 		read("b.go"),
 		"garbage 1",
@@ -2867,7 +2793,7 @@ func TestPersistentMalformedOutputSalvagesWhenWorkExists(t *testing.T) {
 }
 
 func TestPersistentMalformedOutputFailsFastWithoutWork(t *testing.T) {
-	p := &scriptedProvider{responses: []string{"not json at all"}}
+	p := &agenttest.ScriptedProvider{Responses: []string{"not json at all"}}
 	state := newTestState(t)
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.SetForceClass(string(ClassQuestion))
@@ -2887,8 +2813,8 @@ func TestPersistentMalformedOutputFailsFastWithoutWork(t *testing.T) {
 	if got != nil && got.ParseFailures != 3 {
 		t.Fatalf("ParseFailures = %d, want 3 (hit maxConsecutiveParseFailures)", got.ParseFailures)
 	}
-	if p.calls != 3 {
-		t.Fatalf("provider calls = %d, want 3 (fail fast, did not exhaust budget)", p.calls)
+	if p.Calls != 3 {
+		t.Fatalf("provider calls = %d, want 3 (fail fast, did not exhaust budget)", p.Calls)
 	}
 }
 
@@ -2905,7 +2831,7 @@ func TestHardStallAsksUserAndContinuesOnGuidance(t *testing.T) {
 	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
 	responses := scriptRepeats(repeatHardStall, toolResp)
 	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"finished after guidance"}}`)
-	p := &scriptedProvider{responses: responses}
+	p := &agenttest.ScriptedProvider{Responses: responses}
 	reg := registry.New()
 	reg.Register(registry.Tool{
 		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
@@ -2940,7 +2866,7 @@ func TestHardStallAsksUserAndContinuesOnGuidance(t *testing.T) {
 		t.Fatalf("task.Summary = %q", task.Summary)
 	}
 	// The guidance must reach the model as a user message.
-	last := p.requests[len(p.requests)-1]
+	last := p.Requests[len(p.Requests)-1]
 	found := false
 	for _, m := range last.Messages {
 		if m.Role == schema.RoleUser && strings.Contains(m.Content, "try reading the config file instead") {
@@ -2956,7 +2882,7 @@ func TestHardStallFinalizesWhenUserDeclines(t *testing.T) {
 	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
 	responses := scriptRepeats(repeatHardStall, toolResp)
 	responses = append(responses, `{"rationale":"stopping","action":{"type":"final","content":"summary of progress"}}`)
-	p := &scriptedProvider{responses: responses}
+	p := &agenttest.ScriptedProvider{Responses: responses}
 	reg := registry.New()
 	reg.Register(registry.Tool{
 		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
@@ -2993,7 +2919,7 @@ func TestHardStallAutoFinalizesForNonGeneralRole(t *testing.T) {
 	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
 	responses := scriptRepeats(repeatHardStall, toolResp)
 	responses = append(responses, `{"rationale":"stopping","action":{"type":"final","content":"scout findings"}}`)
-	p := &scriptedProvider{responses: responses}
+	p := &agenttest.ScriptedProvider{Responses: responses}
 	reg := registry.New()
 	reg.Register(registry.Tool{
 		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
@@ -3035,7 +2961,7 @@ func answerPendingQuestion(state *session.State, answer string) <-chan string {
 
 func TestRunHandlesAskUserAction(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Archive or delete?"}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Archived as requested."}}`,
 	}}
@@ -3054,7 +2980,7 @@ func TestRunHandlesAskUserAction(t *testing.T) {
 	if task.Summary != "Archived as requested." {
 		t.Fatalf("Summary = %q", task.Summary)
 	}
-	second := p.requests[len(p.requests)-1]
+	second := p.Requests[len(p.Requests)-1]
 	found := false
 	for _, m := range second.Messages {
 		if strings.Contains(m.Content, "User answered: archive") {
@@ -3080,7 +3006,7 @@ func TestRunHandlesAskUserAction(t *testing.T) {
 
 func TestRunAskUserDeclinedContinues(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Archive or delete?"}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Proceeded with best judgment."}}`,
 	}}
@@ -3096,7 +3022,7 @@ func TestRunAskUserDeclinedContinues(t *testing.T) {
 	if task.Summary != "Proceeded with best judgment." {
 		t.Fatalf("Summary = %q", task.Summary)
 	}
-	second := p.requests[len(p.requests)-1]
+	second := p.Requests[len(p.Requests)-1]
 	found := false
 	for _, m := range second.Messages {
 		if strings.Contains(m.Content, "declined to answer") {
@@ -3110,7 +3036,7 @@ func TestRunAskUserDeclinedContinues(t *testing.T) {
 
 func TestRunAskUserCancelledByContext(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Archive or delete?"}}`,
 	}}
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
@@ -3133,7 +3059,7 @@ func TestRunAskUserCancelledByContext(t *testing.T) {
 
 func TestSwarmRolesCannotAskUser(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Which file?"}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Findings reported."}}`,
 	}}
@@ -3144,7 +3070,7 @@ func TestSwarmRolesCannotAskUser(t *testing.T) {
 	if _, err := r.RunTask(context.Background(), "scout the repo"); err != nil {
 		t.Fatalf("RunTask err = %v", err)
 	}
-	second := p.requests[len(p.requests)-1]
+	second := p.Requests[len(p.Requests)-1]
 	found := false
 	for _, m := range second.Messages {
 		if strings.Contains(m.Content, "ask_user is not available") {
@@ -3166,9 +3092,9 @@ func TestRunNativeEmptyResponsesFinalizeWithReasonEmpty(t *testing.T) {
 	state := newTestState(t)
 	// Two empty native responses (no text, no tool calls), then finalize's
 	// own forced call produces a real prose answer.
-	p := &scriptedProvider{
-		responses: []string{"", "", "Here is the salvaged answer."},
-		toolCalls: [][]schema.ToolCall{nil, nil, nil},
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"", "", "Here is the salvaged answer."},
+		ToolCalls: [][]schema.ToolCall{nil, nil, nil},
 	}
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.NativeTools = true
@@ -3202,9 +3128,9 @@ func TestRunNativeEmptyResponsesFinalizeWithReasonEmpty(t *testing.T) {
 // finalize after one silence.
 func TestRunNativeEmptyThenAnswerWins(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{
-		responses: []string{"", "The real answer after a moment of silence."},
-		toolCalls: [][]schema.ToolCall{nil, nil},
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"", "The real answer after a moment of silence."},
+		ToolCalls: [][]schema.ToolCall{nil, nil},
 	}
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.NativeTools = true
@@ -3229,7 +3155,7 @@ func TestRunAskUserDeclinedCountsAgainstBudget(t *testing.T) {
 	// Repeated ask_user, always declined, until the budget runs out. With a
 	// small budget the loop must terminate (via finalize/salvage or budget
 	// exhaustion) rather than looping ask→decline forever.
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"ambiguous","action":{"type":"ask_user","content":"Which one?"}}`,
 	}}
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
@@ -3264,7 +3190,7 @@ func TestRunAskUserDeclinedCountsAgainstBudget(t *testing.T) {
 
 func TestRepeatedToolCallGetsReminderInResult(t *testing.T) {
 	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		toolResp, toolResp, toolResp,
 		`{"rationale":"done","action":{"type":"final","content":"finished"}}`,
 	}}
@@ -3287,7 +3213,7 @@ func TestRepeatedToolCallGetsReminderInResult(t *testing.T) {
 	}
 	// The 3rd identical result must carry the gentle reminder; requests[3] is
 	// the model call after that result, so its message list contains it.
-	last := p.requests[len(p.requests)-1]
+	last := p.Requests[len(p.Requests)-1]
 	found := false
 	for _, m := range last.Messages {
 		if strings.Contains(m.Content, "repeating the exact same tool call") {
@@ -3301,7 +3227,7 @@ func TestRepeatedToolCallGetsReminderInResult(t *testing.T) {
 
 func TestLoopCompactsViaSummaryWhenOverBudget(t *testing.T) {
 	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"big.tool","args":{}}}`
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		toolResp,
 		"## Current State\nread the big file; ready to answer.", // handoff summary call
 		`{"rationale":"done","action":{"type":"final","content":"answer from summary"}}`,
@@ -3330,7 +3256,7 @@ func TestLoopCompactsViaSummaryWhenOverBudget(t *testing.T) {
 	}
 	// Request 2 is the summarization call; request 3 must be the rebuilt
 	// transcript containing the summary but not the huge tool output.
-	final := p.requests[len(p.requests)-1]
+	final := p.Requests[len(p.Requests)-1]
 	for _, m := range final.Messages {
 		if strings.Count(m.Content, "word ") > 100 {
 			t.Fatal("rebuilt transcript still contains the oversized tool output")
@@ -3339,7 +3265,7 @@ func TestLoopCompactsViaSummaryWhenOverBudget(t *testing.T) {
 }
 
 func TestSecondTurnSeesFirstTurnHistory(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"a","action":{"type":"answer","content":"the parser lives in protocol.go"}}`,
 		`{"rationale":"b","action":{"type":"answer","content":"expanded answer"}}`,
 	}}
@@ -3355,7 +3281,7 @@ func TestSecondTurnSeesFirstTurnHistory(t *testing.T) {
 		t.Fatalf("second Run: %v", err)
 	}
 
-	second := p.requests[len(p.requests)-1]
+	second := p.Requests[len(p.Requests)-1]
 	sawPriorQuestion, sawPriorAnswer := false, false
 	for _, m := range second.Messages {
 		if strings.Contains(m.Content, "where is the parser?") {
@@ -3380,7 +3306,7 @@ func (s *staticResolver) Resolve(task routing.TaskProfile) (routing.Route, provi
 }
 
 func TestResolveRouteRaisesBudgetFromKnownWindow(t *testing.T) {
-	p := &scriptedProvider{responses: []string{`{"rationale":"done","action":{"type":"final","content":"ok"}}`}}
+	p := &agenttest.ScriptedProvider{Responses: []string{`{"rationale":"done","action":{"type":"final","content":"ok"}}`}}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
@@ -3409,7 +3335,7 @@ func TestResolveRouteRaisesBudgetFromKnownWindow(t *testing.T) {
 }
 
 func TestResolveRouteConfigWindowRaisesBudget(t *testing.T) {
-	runner := NewRunner(&scriptedProvider{responses: []string{`{"rationale":"done","action":{"type":"final","content":"ok"}}`}},
+	runner := NewRunner(&agenttest.ScriptedProvider{Responses: []string{`{"rationale":"done","action":{"type":"final","content":"ok"}}`}},
 		registry.New(), policy.NewEngine(&config.Config{}, nil), newTestState(t), "big-model")
 	runner.MaxTurnContextTokens = 1000 // small floor
 	runner.RouteResolver = &staticResolver{
@@ -3427,7 +3353,7 @@ func TestResolveRouteConfigWindowRaisesBudget(t *testing.T) {
 }
 
 func TestHistoryAfterRewindExcludesAbandonedBranch(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"a","action":{"type":"answer","content":"first answer"}}`,
 		`{"rationale":"b","action":{"type":"answer","content":"second answer"}}`,
 	}}
@@ -3445,7 +3371,7 @@ func TestHistoryAfterRewindExcludesAbandonedBranch(t *testing.T) {
 		t.Fatalf("run2: %v", err)
 	}
 
-	second := p.requests[len(p.requests)-1]
+	second := p.Requests[len(p.Requests)-1]
 	for _, m := range second.Messages {
 		if strings.Contains(m.Content, "first answer") {
 			t.Fatal("abandoned branch's answer leaked into the new branch's history")
@@ -3504,7 +3430,7 @@ func TestAuditEventRecordsOriginalArgs(t *testing.T) {
 	}
 	// Hook rewrites once, then stops on subsequent calls.
 	hook := &onceRewriteHookRunner{}
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"r","action":{"type":"tool_call","tool":"shell.run","args":{"command":"git status"}}}`,
 		`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
 	}}
@@ -3583,7 +3509,7 @@ func TestPreToolUseHookBlocksPatch(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	p := &scriptedProvider{responses: []string{`{"rationale":"r","action":{"type":"patch","content":"*** Begin Patch\n*** End Patch"}}`, `{"rationale":"r","action":{"type":"answer","content":"stopped"}}`}}
+	p := &agenttest.ScriptedProvider{Responses: []string{`{"rationale":"r","action":{"type":"patch","content":"*** Begin Patch\n*** End Patch"}}`, `{"rationale":"r","action":{"type":"answer","content":"stopped"}}`}}
 	state := newTestState(t)
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	runner.HookRunner = fakeHookRunner{preOut: hooks.Output{Decision: hooks.DecisionBlock, Reason: "patch blocked"}}
@@ -3618,7 +3544,7 @@ func TestPreToolUseRewriteReentersPolicy(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.Permissions.Rules = []config.PermissionRule{{Permission: "shell.run", Pattern: "rm*", Action: "deny"}}
-	p := &scriptedProvider{responses: []string{`{"rationale":"r","action":{"type":"tool_call","tool":"shell.run","args":{"command":"date"}}}`, `{"rationale":"r","action":{"type":"answer","content":"done"}}`}}
+	p := &agenttest.ScriptedProvider{Responses: []string{`{"rationale":"r","action":{"type":"tool_call","tool":"shell.run","args":{"command":"date"}}}`, `{"rationale":"r","action":{"type":"answer","content":"done"}}`}}
 	state := newTestState(t)
 	runner := NewRunner(p, reg, policy.NewEngine(&cfg, nil), state, "test-model")
 	runner.HookRunner = fakeHookRunner{preOut: hooks.Output{Rewrite: json.RawMessage(`{"command":"rm -rf ."}`)}}
@@ -3644,7 +3570,7 @@ func TestPreToolUseHookErrorBlocksWhenFailClosed(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	p := &scriptedProvider{responses: []string{`{"rationale":"r","action":{"type":"tool_call","tool":"shell.run","args":{"command":"date"}}}`, `{"rationale":"r","action":{"type":"answer","content":"done"}}`}}
+	p := &agenttest.ScriptedProvider{Responses: []string{`{"rationale":"r","action":{"type":"tool_call","tool":"shell.run","args":{"command":"date"}}}`, `{"rationale":"r","action":{"type":"answer","content":"done"}}`}}
 	state := newTestState(t)
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	runner.HookRunner = fakeHookRunner{preOut: hooks.Output{Decision: hooks.DecisionBlock, Reason: "boom"}, preErr: fmt.Errorf("boom")}
@@ -3659,7 +3585,7 @@ func TestPreToolUseHookErrorBlocksWhenFailClosed(t *testing.T) {
 }
 
 func TestTurnEndHookContinuesExactlyOnce(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
 		`{"rationale":"r","action":{"type":"answer","content":"checked"}}`,
 	}}
@@ -3687,7 +3613,7 @@ func TestTurnEndHookContinuesExactlyOnce(t *testing.T) {
 }
 
 func TestTurnEndHookDoesNotContinueTwice(t *testing.T) {
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"r","action":{"type":"answer","content":"one"}}`,
 		`{"rationale":"r","action":{"type":"answer","content":"two"}}`,
 	}}
@@ -3719,13 +3645,13 @@ func TestSummarizeAndContinueFailureSkipsLossyFallback(t *testing.T) {
 	// MaxTurnContextTokens=1000 so the initial check passes. The tool
 	// returns 4000+ chars, pushing the total past 1000 on iteration 2,
 	// which triggers the summarization attempt.
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			`{"rationale":"need big data","action":{"type":"tool_call","tool":"big.tool","args":{}}}`, // idx=0: main loop first chat
 			"", // idx=1: summarizeAndContinue call — overridden by errs[1]
 			`{"rationale":"done","action":{"type":"final","content":"done"}}`, // idx=2: post-compaction main loop (old code only)
 		},
-		errs: []error{nil, errors.New("simulated summarization failure")},
+		Errs: []error{nil, errors.New("simulated summarization failure")},
 	}
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{
@@ -3761,9 +3687,9 @@ func TestTurnEndHookContinuesNativePath(t *testing.T) {
 	// len(res.ToolCalls) == 0 && strings.TrimSpace(res.Text) != ""). The
 	// existing two turn-end tests both use the JSON ActionAnswer/ActionFinal
 	// site, so this test guards the other hook wiring against regressions.
-	p := &scriptedProvider{
-		responses: []string{"first native answer", "final native answer"},
-		toolCalls: [][]schema.ToolCall{nil, nil},
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"first native answer", "final native answer"},
+		ToolCalls: [][]schema.ToolCall{nil, nil},
 	}
 	state := newTestState(t)
 	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")

@@ -2399,6 +2399,31 @@ func TestAtFileCompletionOmitsWhitespacePaths(t *testing.T) {
 	}
 }
 
+// F-BUG-159: @ completion with an empty file index shows a placeholder
+// explaining that no files are indexed.
+func TestAtFileCompletionEmptyIndexShowsPlaceholder(t *testing.T) {
+	m := newViewTestModelWithFileIndex(t, 80, 24, []string{})
+	m.input.SetValue("@")
+	m.updateCompletionPopups()
+	if m.filePopup == nil || !m.filePopup.isVisible() {
+		t.Fatal("file popup should be visible even with empty index")
+	}
+	matches := m.filePopup.matches()
+	if len(matches) == 0 {
+		t.Fatal("expected placeholder in matches, got empty")
+	}
+	found := false
+	for _, it := range matches {
+		if strings.Contains(it.Text, "no indexed files") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected placeholder text in matches, got %#v", matches)
+	}
+}
+
 // F18: @ inside a word (e.g. an email) does not trigger the file popup.
 func TestAtInsideWordDoesNotTrigger(t *testing.T) {
 	m := newViewTestModelWithFileIndex(t, 80, 24, []string{"a.go", "b.go"})

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/app/config"
+
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -20,9 +22,22 @@ type onboardingState int
 const (
 	stateSelectProvider onboardingState = iota
 	stateConfigureURL
+	stateKeyMode
 	stateConfigureKey
 	stateModelSelection
 	stateDone
+)
+
+type keyModeKind int
+
+const (
+	keyModeUnset   keyModeKind = iota
+	keyModeEnvName
+	keyModeInline
+)
+
+const (
+	marshalGlobalAPIKey = "MARSHAL_GLOBAL_API_KEY"
 )
 
 type OnboardingModel struct {
@@ -43,6 +58,10 @@ type OnboardingModel struct {
 	baseURL          string
 	apiKey           string
 	modelName        string
+
+	// API key mode (F-UIUX-137)
+	keyMode   keyModeKind // keyModeEnvName | keyModeInline | keyModeUnset
+	keySecret string      // when keyMode == inline, the value the user typed
 
 	// Ollama dynamic models
 	ollamaModels []string
@@ -129,6 +148,12 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.providerIndex = len(m.providers) - 1
 				}
 				m.selectedProvider = m.providers[m.providerIndex]
+			} else if m.state == stateKeyMode {
+				if m.keyMode == keyModeInline {
+					m.keyMode = keyModeEnvName
+				} else {
+					m.keyMode = keyModeInline
+				}
 			} else if m.state == stateModelSelection && len(m.ollamaModels) > 0 {
 				m.ollamaIndex--
 				if m.ollamaIndex < 0 {
@@ -143,6 +168,12 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.providerIndex = 0
 				}
 				m.selectedProvider = m.providers[m.providerIndex]
+			} else if m.state == stateKeyMode {
+				if m.keyMode == keyModeEnvName {
+					m.keyMode = keyModeInline
+				} else {
+					m.keyMode = keyModeEnvName
+				}
 			} else if m.state == stateModelSelection && len(m.ollamaModels) > 0 {
 				m.ollamaIndex++
 				if m.ollamaIndex >= len(m.ollamaModels) {
@@ -159,9 +190,8 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.Placeholder = "http://localhost:11434/v1"
 					m.textInput.SetValue("http://localhost:11434/v1")
 				} else {
-					m.state = stateConfigureKey
-					m.textInput.Placeholder = "API Key or Env Var name (e.g. OPENROUTER_API_KEY)"
-					m.textInput.SetValue("")
+					m.state = stateKeyMode
+					m.keyMode = keyModeEnvName // default
 				}
 				m.textInput.Focus()
 
@@ -175,11 +205,30 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.SetValue("")
 				return m, fetchOllamaModels(m.baseURL)
 
+			case stateKeyMode:
+				// keyMode is already set by up/down; proceed to input.
+				m.state = stateConfigureKey
+				m.textInput.SetValue("")
+				if m.keyMode == keyModeEnvName {
+					m.textInput.Placeholder = "Env var name (e.g. OPENAI_API_KEY)"
+					m.textInput.EchoMode = textinput.EchoNormal
+				} else {
+					m.textInput.Placeholder = "Paste API key (masked)"
+					m.textInput.EchoMode = textinput.EchoPassword
+				}
+				m.textInput.Focus()
+
 			case stateConfigureKey:
-				m.apiKey = strings.TrimSpace(m.textInput.Value())
-				if m.apiKey == "" {
-					m.err = "API Key cannot be empty"
+				val := strings.TrimSpace(m.textInput.Value())
+				if val == "" {
+					m.err = "Value cannot be empty"
 					return m, nil
+				}
+				if m.keyMode == keyModeEnvName {
+					m.apiKey = val
+				} else {
+					m.keySecret = val
+					m.apiKey = marshalGlobalAPIKey
 				}
 				m.state = stateModelSelection
 				m.textInput.SetValue("")
@@ -251,12 +300,20 @@ func (m *OnboardingModel) saveConfig() error {
 	if providerKey == "ollama" {
 		tomlContent.WriteString(fmt.Sprintf("base_url = %q\n", m.baseURL))
 		tomlContent.WriteString("api_key = \"ollama\"\n\n")
-	} else if strings.Contains(m.apiKey, "_") {
-		// Env var
-		tomlContent.WriteString(fmt.Sprintf("api_key_env = %q\n\n", m.apiKey))
 	} else {
-		// Raw key
-		tomlContent.WriteString(fmt.Sprintf("api_key = %q\n\n", m.apiKey))
+		switch m.keyMode {
+		case keyModeEnvName:
+			tomlContent.WriteString(fmt.Sprintf("api_key_env = %q\n\n", m.apiKey))
+		case keyModeInline:
+			// Persist the raw key to the GLOBAL config only.
+			if err := writeGlobalProviderAPIKey(providerKey, m.keySecret); err != nil {
+				return err
+			}
+			// Project config records only the env-var-style reference.
+			tomlContent.WriteString(fmt.Sprintf("api_key_env = %q\n\n", marshalGlobalAPIKey))
+		default:
+			tomlContent.WriteString("# api_key_env = \"OPENAI_API_KEY\"\n\n")
+		}
 	}
 
 	tomlContent.WriteString("[models.presets.onboarded_preset]\n")
@@ -278,6 +335,20 @@ func (m *OnboardingModel) saveConfig() error {
 	tomlContent.WriteString("max_tool_iterations = 32\n")
 
 	return os.WriteFile(filepath.Join(dir, "config.toml"), []byte(tomlContent.String()), 0644)
+}
+
+// writeGlobalProviderAPIKey writes the raw API key to the user's global
+// config file (~/.config/marshal/config.toml) under [providers.<name>].api_key.
+// If the file does not exist, it creates it with a minimal header.
+// TODO: The constant MARSHAL_GLOBAL_API_KEY should be documented in
+// docs/03-config-and-policy.md (out of scope for this plan).
+func writeGlobalProviderAPIKey(providerName, key string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("find home dir: %w", err)
+	}
+	path := filepath.Join(home, ".config", "marshal", "config.toml")
+	return config.SaveUserConfigProviderAPIKey(path, providerName, key)
 }
 
 func (m *OnboardingModel) View() tea.View {
@@ -309,7 +380,30 @@ func (m *OnboardingModel) viewString() string {
 		body.WriteString("Enter Ollama Base URL:\n\n")
 		body.WriteString(m.textInput.View() + "\n")
 
+	case stateKeyMode:
+		body.WriteString(fmt.Sprintf("API Key Source for %s:\n\n", m.selectedProvider))
+		options := []struct {
+			kind keyModeKind
+			text string
+		}{
+			{keyModeEnvName, "Use env var (recommended)"},
+			{keyModeInline, "Paste key inline (writes to global config)"},
+		}
+		for _, opt := range options {
+			cursor := " "
+			if opt.kind == m.keyMode {
+				cursor = ">"
+				body.WriteString(lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(fmt.Sprintf("%s %s", cursor, opt.text)) + "\n")
+			} else {
+				body.WriteString(fmt.Sprintf("%s %s\n", cursor, opt.text))
+			}
+		}
+		body.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("Use up/down to select, Enter to confirm") + "\n")
+
 	case stateConfigureKey:
+		if m.keyMode == keyModeInline {
+			body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("⚠ WARNING: this value will only be written to your global ~/.config/marshal/config.toml, never to a project file.") + "\n\n")
+		}
 		body.WriteString(fmt.Sprintf("Enter API Key / Environment Variable Name for %s:\n\n", m.selectedProvider))
 		body.WriteString(m.textInput.View() + "\n")
 

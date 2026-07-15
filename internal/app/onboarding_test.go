@@ -72,3 +72,79 @@ func TestOnboardingWizardTransitionsAndSaves(t *testing.T) {
 		t.Errorf("loaded config project name = %q, want 'my-project'", cfg.Project.Name)
 	}
 }
+
+// newTestOnboardingModel builds an OnboardingModel with every step
+// pre-filled for a non-Ollama provider, ready to call saveConfig.
+func newTestOnboardingModel() *OnboardingModel {
+	m := NewOnboardingModel("") // workingDir set by caller
+	m.state = stateModelSelection
+	m.selectedProvider = "OpenAI"
+	m.baseURL = ""
+	m.keyMode = keyModeEnvName
+	m.apiKey = "OPENAI_API_KEY"
+	m.modelName = "gpt-4o"
+	return m
+}
+
+func TestOnboardingNeverWritesRawKeyToProject(t *testing.T) {
+	m := newTestOnboardingModel()
+	m.keyMode = keyModeInline
+	m.keySecret = "sk-deadbeef-no-underscore"
+	dir := t.TempDir()
+	m.workingDir = dir
+
+	if err := m.saveConfig(); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".marshal", "config.toml"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(data), "sk-deadbeef") {
+		t.Fatalf("raw key leaked into project config: %s", data)
+	}
+	if !strings.Contains(string(data), `api_key_env = "MARSHAL_GLOBAL_API_KEY"`) {
+		t.Fatalf("expected api_key_env reference, got: %s", data)
+	}
+}
+
+func TestOnboardingEnvVarModeWritesAPIKeyEnv(t *testing.T) {
+	m := newTestOnboardingModel()
+	m.keyMode = keyModeEnvName
+	m.apiKey = "MY_CUSTOM_ENV_VAR"
+	dir := t.TempDir()
+	m.workingDir = dir
+
+	if err := m.saveConfig(); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".marshal", "config.toml"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), `api_key_env = "MY_CUSTOM_ENV_VAR"`) {
+		t.Fatalf("expected api_key_env = \"MY_CUSTOM_ENV_VAR\", got: %s", data)
+	}
+	if strings.Contains(string(data), `api_key = "MY_CUSTOM_ENV_VAR"`) {
+		t.Fatalf("raw key written instead of env var reference: %s", data)
+	}
+}
+
+func TestOnboardingUnsetModeWritesCommentedPlaceholder(t *testing.T) {
+	m := newTestOnboardingModel()
+	m.keyMode = keyModeUnset
+	m.apiKey = ""
+	dir := t.TempDir()
+	m.workingDir = dir
+
+	if err := m.saveConfig(); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".marshal", "config.toml"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), "# api_key_env") {
+		t.Fatalf("expected commented-out api_key_env placeholder, got: %s", data)
+	}
+}

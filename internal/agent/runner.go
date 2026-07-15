@@ -1731,14 +1731,25 @@ func buildQuestionLabel(questions []session.Question) string {
 	if len(questions) == 0 {
 		return "waiting for your answer"
 	}
-	q := questions[0].Question
-	if len(q) > 40 {
-		q = q[:40] + "…"
-	}
+	q := truncateRunes(questions[0].Question, 40)
 	if len(questions) == 1 {
 		return "waiting for your answer: " + q
 	}
 	return fmt.Sprintf("waiting for your answer (Q1/%d): %s", len(questions), q)
+}
+
+// truncateRunes returns s shortened to at most max runes, appending "…"
+// when truncation occurred. Rune-aware so multi-byte characters (emoji,
+// CJK) are never split mid-codepoint.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }
 
 func skillsChanged(prev, curr []string) bool {

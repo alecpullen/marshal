@@ -323,6 +323,29 @@ func TestResolveRoleFallsBackToImplementerForUnconfiguredRole(t *testing.T) {
 	}
 }
 
+func TestLegacyRouteHasSaneDefaults(t *testing.T) {
+	// A router with only LegacyProvider/LegacyModel set should return a
+	// legacy route with non-zero ContextBudget values.
+	router := NewStaticRouter(Config{
+		DefaultProfile: "missing",
+		LegacyProvider: "ollama",
+		LegacyModel:    "qwen2.5-coder:7b",
+	})
+	route, err := router.Resolve(TaskProfile{Class: "edit"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !route.Legacy {
+		t.Fatal("expected legacy route")
+	}
+	if route.ContextBudget.MaxRepoContextTokens == 0 {
+		t.Fatal("legacy route ContextBudget.MaxRepoContextTokens is 0, want > 0")
+	}
+	if route.ContextBudget.MaxConversationTokens == 0 {
+		t.Fatal("legacy route ContextBudget.MaxConversationTokens is 0, want > 0")
+	}
+}
+
 func TestResolveRoleReturnsFallbackErrorOnExhaustion(t *testing.T) {
 	// Both repo_scout and implementer are unconfigured in the profile,
 	// and no legacy provider exists. The returned error should reference

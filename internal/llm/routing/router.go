@@ -114,6 +114,10 @@ func (r *StaticRouter) legacyRoute(role AgentRole) (Route, bool) {
 			Provider: r.config.LegacyProvider,
 			Model:    r.config.LegacyModel,
 		},
+		ContextBudget: ContextBudget{
+			MaxRepoContextTokens:  8000,
+			MaxConversationTokens: 4000,
+		},
 		Legacy: true,
 	}, true
 }

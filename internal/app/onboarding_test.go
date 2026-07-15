@@ -205,6 +205,30 @@ func TestFetchOllamaModelsNon200Status(t *testing.T) {
 	}
 }
 
+// TestOnboardingPointerReceiverSemantics verifies that mutations to a plain
+// (int) field on OnboardingModel persist across Update calls. This test
+// would fail if any method used a value receiver instead of a pointer
+// receiver, because the int field would be copied and the increment lost.
+func TestOnboardingPointerReceiverSemantics(t *testing.T) {
+	m := newTestOnboardingModel()
+	m.attempts = 0
+
+	// Dispatch two "enter" key presses. Each one hits the
+	// stateSelectProvider branch (we reset state between dispatches) and
+	// increments attempts. If receivers were value receivers, the
+	// increment from the first dispatch would be lost and attempts would
+	// still be 1 after the second dispatch.
+	for i := 1; i <= 2; i++ {
+		m.state = stateSelectProvider
+		m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = m2.(*OnboardingModel)
+		if m.attempts != i {
+			t.Fatalf("after dispatch %d: attempts = %d, want %d (value receiver would give %d)",
+				i, m.attempts, i, i-1)
+		}
+	}
+}
+
 func TestOnboardingUnsetModeWritesCommentedPlaceholder(t *testing.T) {
 	m := newTestOnboardingModel()
 	m.keyMode = keyModeUnset

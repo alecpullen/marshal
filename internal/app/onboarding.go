@@ -80,6 +80,12 @@ type OnboardingModel struct {
 	// field, so we can distinguish "pressed Enter on the default" from
 	// "typed then cleared the input" (F-POL-168).
 	projectNameTouched bool
+
+	// attempts is a plain int field used only by the pointer-receiver
+	// regression test (F-BUG-158). It is incremented on each "enter" key
+	// press while in stateSelectProvider. If receivers were value receivers,
+	// the increment would not persist across Update calls.
+	attempts int
 }
 
 type ollamaTagsResponse struct {
@@ -213,6 +219,7 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			switch m.state {
 			case stateSelectProvider:
+				m.attempts++
 				m.state = stateProjectName
 				m.textInput.SetValue("")
 				m.textInput.Placeholder = filepath.Base(m.workingDir)

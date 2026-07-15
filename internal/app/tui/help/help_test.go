@@ -35,6 +35,20 @@ func TestFooterQuestionShowsAnswer(t *testing.T) {
 	}
 }
 
+func TestFooterIdleShowsThinkingToggle(t *testing.T) {
+	out := stripANSI(Footer(FooterHints{}))
+	if !strings.Contains(out, "Ctrl+G") {
+		t.Fatalf("idle footer missing Ctrl+G: %q", out)
+	}
+}
+
+func TestFooterIdleShowsRollbackWhenEligible(t *testing.T) {
+	out := stripANSI(Footer(FooterHints{IdleRollbackEligible: true}))
+	if !strings.Contains(out, "Ctrl+R") {
+		t.Fatalf("idle footer missing Ctrl+R: %q", out)
+	}
+}
+
 func TestOverlayEnumeratesAllBindings(t *testing.T) {
 	out := stripANSI(Overlay(80, 24))
 	for _, want := range []string{"Enter", "Shift+Enter", "/", "@", "Esc", "?", "Ctrl+O", "Ctrl+K", "Ctrl+G", "Ctrl+R", "Ctrl+X", "PgUp", "PgDn", "End"} {

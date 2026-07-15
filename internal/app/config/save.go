@@ -109,12 +109,12 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 	if file.Indexing != nil || !reflect.DeepEqual(cfg.Indexing, def.Indexing) {
 		file.Indexing = &fileIndexing{
-			UseTreesitter:           ptr(cfg.Indexing.UseTreesitter),
-			UseEmbeddings:           ptr(cfg.Indexing.UseEmbeddings),
-			SummariseFiles:          ptr(cfg.Indexing.SummariseFiles),
-			Ignore:                  cfg.Indexing.Ignore,
-			MaxIndexableFileBytes:   ptr(cfg.Indexing.MaxIndexableFileBytes),
-			MaxSearchableFileBytes:  ptr(cfg.Indexing.MaxSearchableFileBytes),
+			UseTreesitter:          ptr(cfg.Indexing.UseTreesitter),
+			UseEmbeddings:          ptr(cfg.Indexing.UseEmbeddings),
+			SummariseFiles:         ptr(cfg.Indexing.SummariseFiles),
+			Ignore:                 cfg.Indexing.Ignore,
+			MaxIndexableFileBytes:  ptr(cfg.Indexing.MaxIndexableFileBytes),
+			MaxSearchableFileBytes: ptr(cfg.Indexing.MaxSearchableFileBytes),
 		}
 	}
 	if file.Web != nil || cfg.Web != def.Web {
@@ -225,6 +225,36 @@ func activePresetName(cfg Config) string {
 		return ""
 	}
 	return presetName
+}
+
+func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
+	file, err := loadFile(path)
+	if err != nil {
+		return fmt.Errorf("load user config: %w", err)
+	}
+	if file.Providers == nil {
+		file.Providers = make(map[string]ProviderConfig, 1)
+	}
+	existing := file.Providers[providerName]
+	existing.APIKey = apiKey
+	existing.APIKeyEnv = "" // clear stale env-var reference when switching to inline
+	file.Providers[providerName] = existing
+
+	data, err := toml.Marshal(&file)
+	if err != nil {
+		return fmt.Errorf("marshal user config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	// Prepend a minimal header if the file is being created for the first time.
+	// loadFile returns an empty configFile when the file does not exist, so we
+	// check whether the file exists on disk.
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		header := "# Marshal global configuration\n"
+		data = append([]byte(header), data...)
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 func SaveUserConfigRule(path string, rule PermissionRule) error {

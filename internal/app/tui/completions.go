@@ -96,6 +96,7 @@ type completionItem struct {
 	Text        string
 	Description string
 	Kind        completionKind
+	Disabled    bool
 	matchedIdxs []int
 }
 
@@ -205,6 +206,14 @@ func (p *completionPopup) accept() {
 		return
 	}
 	chosen := p.filtered[p.index]
+	// Disabled items (e.g. placeholder rows) cannot be selected — dismiss
+	// the popup without inserting any text.
+	if chosen.Disabled {
+		p.visible = false
+		p.filtered = nil
+		p.index = 0
+		return
+	}
 	switch chosen.Kind {
 	case completionCommand:
 		// Commands get a trailing space so args can be typed immediately.

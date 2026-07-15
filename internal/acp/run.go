@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"time"
 
 	"marshal/internal/app"
+	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
 )
@@ -23,6 +25,7 @@ type runConfig struct {
 	closeRuntime RuntimeCloser
 	lister       SessionLister
 	shutdown     time.Duration
+	logger       *slog.Logger
 }
 
 // runWithConfig constructs the ACP server, session manager, and turn manager
@@ -33,7 +36,12 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		cfg.shutdown = connectionShutdownTimeout
 	}
 
-	srv := NewServer(stdin, stdout)
+	log := cfg.logger
+	if log == nil {
+		log = slog.Default()
+	}
+
+	srv := NewServer(stdin, stdout, WithLogger(log))
 
 	srv.Handle("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p InitializeParams
@@ -71,7 +79,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		CloseRuntime: cfg.closeRuntime,
 		Lister:       cfg.lister,
 		Notify:       srv.Notify,
-	})
+	}, WithSessionManagerLogger(log))
 	srv.Handle("session/new", manager.Create)
 	srv.Handle("session/load", manager.Load)
 	srv.Handle("session/close", manager.CloseSession)
@@ -120,5 +128,6 @@ func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
 		startRuntime: app.StartRuntime,
 		lister:       newPerCwdLister(),
 		shutdown:     connectionShutdownTimeout,
+		logger:       logging.New(stderr, slog.LevelInfo),
 	})
 }

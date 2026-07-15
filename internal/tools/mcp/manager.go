@@ -63,7 +63,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		for k, v := range srv.Env {
 			env = append(env, fmt.Sprintf("%s=%s", k, v))
 		}
-		client := NewClient(name, srv.Command, srv.Args, env)
+		client := NewClient(name, srv.Command, srv.Args, env, WithClientLogger(m.log()))
 		if err := client.Start(ctx); err != nil {
 			m.Close()
 			return fmt.Errorf("start MCP server %q: %w", name, err)

@@ -188,6 +188,27 @@ const AnswerUnanswered = "Unanswered"
 type PendingQuestion struct {
 	Questions    []Question
 	ResponseChan chan []Answer
+	responded sync.Once
+}
+
+// Respond sends answers to the response channel exactly once (guarded by
+// sync.Once). It is safe to call multiple times; only the first call
+// produces a send. The send is non-blocking so unbuffered channels with no
+// receiver don't deadlock. The channel is closed after the send so the
+// runner can detect that no more responses are coming.
+func (p *PendingQuestion) Respond(a []Answer) {
+	if p == nil {
+		return
+	}
+	p.responded.Do(func() {
+		if p.ResponseChan != nil {
+			select {
+			case p.ResponseChan <- a:
+			default:
+			}
+			close(p.ResponseChan)
+		}
+	})
 }
 
 type PendingToolCall struct {
@@ -200,6 +221,27 @@ type PendingToolCall struct {
 	Diff         string // Added field for patch rendering
 	Schema       string // Details / schema / description of the tool
 	ResponseChan chan UserApprovalDecision
+	responded sync.Once
+}
+
+// Respond sends a UserApprovalDecision to the response channel exactly once
+// (guarded by sync.Once). It is safe to call multiple times; only the first
+// call produces a send. The send is non-blocking so unbuffered channels with
+// no receiver don't deadlock. The channel is closed after the send so the
+// runner can detect that no more responses are coming.
+func (p *PendingToolCall) Respond(d UserApprovalDecision) {
+	if p == nil {
+		return
+	}
+	p.responded.Do(func() {
+		if p.ResponseChan != nil {
+			select {
+			case p.ResponseChan <- d:
+			default:
+			}
+			close(p.ResponseChan)
+		}
+	})
 }
 
 type ActiveToolCall struct {
@@ -866,25 +908,20 @@ func (s *State) ResolvePendingForShutdown() {
 		broker.Publish("steering", SteeringEvent{QueueLen: 0})
 	}
 
-	// Deny any pending approval (non-blocking so unbuffered channels
-	// with no receiver don't deadlock).
-	if approval != nil && approval.ResponseChan != nil {
-		select {
-		case approval.ResponseChan <- UserApprovalDecision{Approved: false}:
-		default:
-		}
+	// Deny any pending approval (Respond handles nil channel and
+	// once-only guarantee).
+	if approval != nil {
+		approval.Respond(UserApprovalDecision{Approved: false})
 	}
 
-	// Answer every pending question with "Unanswered" (non-blocking).
-	if question != nil && question.ResponseChan != nil {
+	// Answer every pending question with "Unanswered" (Respond handles
+	// nil channel and once-only guarantee).
+	if question != nil {
 		answers := make([]Answer, len(question.Questions))
 		for i, q := range question.Questions {
 			answers[i] = Answer{Question: q.Question, Answer: AnswerUnanswered}
 		}
-		select {
-		case question.ResponseChan <- answers:
-		default:
-		}
+		question.Respond(answers)
 	}
 }
 

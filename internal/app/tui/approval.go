@@ -62,11 +62,11 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 		candidates[i] = o.Value
 	}
 	am := &approvalModel{
-		tc:         tc,
-		width:      width,
-		choice:     choiceApprove,
-		candidates: candidates,
-		selected:   0,
+		tc:     tc,
+		width:  width,
+		choice:       choiceApprove,
+		candidates:   candidates,
+		selected:     0,
 	}
 
 	summary := approvalSummary(tc, sb, allowNetwork)

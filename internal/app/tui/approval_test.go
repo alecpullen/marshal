@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"marshal/internal/app/session"
 )
 
@@ -31,6 +33,49 @@ func TestApprovalDialogNoDiffWhenEmpty(t *testing.T) {
 	// No diff → just the form.
 	if strings.Contains(view, "───") && !strings.Contains(view, "Approval") {
 		t.Fatalf("view should not contain diff artifacts when tc.Diff is empty:\n%s", view)
+	}
+}
+
+func TestApprovalSubFormMarksDoneWithoutDispatching(t *testing.T) {
+	ch := make(chan session.UserApprovalDecision, 1)
+	tc := &session.PendingToolCall{
+		Name:         "shell.run",
+		Args:         `{"command":"ls"}`,
+		ResponseChan: ch,
+	}
+	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+
+	// Esc should mark done + deny without writing to the channel.
+	am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !am.IsDone() {
+		t.Fatal("esc should set done")
+	}
+	if am.Choice() != choiceDeny {
+		t.Fatalf("esc should set choiceDeny; got %v", am.Choice())
+	}
+	select {
+	case got := <-ch:
+		t.Fatalf("sub-form dispatched on esc: %v", got)
+	default:
+	}
+
+	// Reset and test the two-enter confirm path.
+	am2 := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	am2, _ = am2.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // arm
+	if am2.IsDone() {
+		t.Fatal("first enter should not set done")
+	}
+	am2, _ = am2.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm
+	if !am2.IsDone() {
+		t.Fatal("second enter should set done")
+	}
+	if am2.Choice() != choiceApprove {
+		t.Fatalf("expected choiceApprove; got %v", am2.Choice())
+	}
+	select {
+	case got := <-ch:
+		t.Fatalf("sub-form dispatched on confirm: %v", got)
+	default:
 	}
 }
 

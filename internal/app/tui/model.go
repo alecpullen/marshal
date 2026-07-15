@@ -846,7 +846,9 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 			case "enter":
 				value := strings.TrimSpace(m.input.Value())
 				if value != "" {
-					tc.ResponseChan <- session.UserApprovalDecision{Approved: true, Edited: value}
+					if m.state.PendingApproval() == tc {
+						tc.Respond(session.UserApprovalDecision{Approved: true, Edited: value})
+					}
 					m.editingCommand = false
 					m.input.Reset()
 					m.input.Placeholder = "Ask Marshal..."
@@ -879,12 +881,16 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 	m.approvalModel = nil
 	switch choice {
 	case choiceApprove:
-		tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+		if m.state.PendingApproval() == tc {
+			tc.Respond(session.UserApprovalDecision{Approved: true})
+		}
 		m.state.SetPendingApproval(nil)
 		m.lastTranscriptHash = 0
 		return m, nil
 	case choiceDeny:
-		tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
+		if m.state.PendingApproval() == tc {
+			tc.Respond(session.UserApprovalDecision{Approved: false})
+		}
 		m.state.SetPendingApproval(nil)
 		m.lastTranscriptHash = 0
 		return m, nil
@@ -911,13 +917,17 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 				m.runner.SetPolicyRules(m.state.Config.Permissions.Rules)
 			}
 		}
-		tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+		if m.state.PendingApproval() == tc {
+			tc.Respond(session.UserApprovalDecision{Approved: true})
+		}
 		m.state.SetPendingApproval(nil)
 		m.lastTranscriptHash = 0
 		return m, nil
 	case choiceSessionAllow:
 		m.state.AddSessionRule(tc.Command)
-		tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+		if m.state.PendingApproval() == tc {
+			tc.Respond(session.UserApprovalDecision{Approved: true})
+		}
 		m.state.SetPendingApproval(nil)
 		m.lastTranscriptHash = 0
 		return m, nil
@@ -968,7 +978,9 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 		return m, cmd
 	}
 
-	q.ResponseChan <- m.questionModel.Answers()
+	if m.state.PendingQuestion() == q {
+		q.Respond(m.questionModel.Answers())
+	}
 	m.state.SetPendingQuestion(nil)
 	m.questionModel = nil
 	m.input.Reset()

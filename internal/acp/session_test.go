@@ -1,10 +1,12 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -983,6 +985,88 @@ func TestPublishReplacementDoesNotDoubleClose(t *testing.T) {
 	// Only one close should have happened.
 	if got := closeCount.Load(); got > 1 {
 		t.Errorf("close was called %d times, want at most 1", got)
+	}
+}
+
+// TestSessionManagerLogsReplacement verifies that publishReplacement emits
+// an Info-level log line when a prior runtime is replaced.
+func TestSessionManagerLogsReplacement(t *testing.T) {
+	var buf bytes.Buffer
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: noopClose(),
+		Notify:       func(method string, params any) error { return nil },
+	}, WithSessionManagerLogger(slog.New(slog.NewTextHandler(&buf, nil))))
+	m.SetTurnCanceller(noopCancel())
+
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+
+	// First Create publishes a runtime.
+	res, err := m.Create(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","mcpServers":[]}`))
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	sid := res.(SessionResponse).SessionID
+
+	// Second Create with the same id forces a replacement. The fake starter
+	// always returns a fresh id, so we cannot force a same-id replacement
+	// through Create. Instead, publish a second runtime directly.
+	rt2 := &app.Runtime{SessionID: "sess_replacement"}
+	m.publishReplacement(context.Background(), sid, rt2)
+
+	if !strings.Contains(buf.String(), "publishReplacement") {
+		t.Fatalf("expected replacement log, got %q", buf.String())
+	}
+}
+
+// TestSessionManagerLogsCloseNoop verifies that Close logs at Debug when
+// the session id is unknown.
+func TestSessionManagerLogsCloseNoop(t *testing.T) {
+	var buf bytes.Buffer
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: noopClose(),
+		Notify:       func(method string, params any) error { return nil },
+	}, WithSessionManagerLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))))
+	m.SetTurnCanceller(noopCancel())
+
+	// Close an unknown id — this should log at Debug and return an error.
+	err := m.Close(context.Background(), "sess_does_not_exist")
+	if err == nil {
+		t.Fatalf("expected error for unknown session")
+	}
+	if !strings.Contains(buf.String(), "session close (no-op)") {
+		t.Fatalf("expected no-op close log, got %q", buf.String())
+	}
+}
+
+// TestSessionManagerLogsCloseTeardown verifies that Close logs at Debug
+// when a session is successfully torn down.
+func TestSessionManagerLogsCloseTeardown(t *testing.T) {
+	var buf bytes.Buffer
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: noopClose(),
+		Notify:       func(method string, params any) error { return nil },
+	}, WithSessionManagerLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))))
+	m.SetTurnCanceller(noopCancel())
+
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+
+	res, err := m.Create(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","mcpServers":[]}`))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sid := res.(SessionResponse).SessionID
+
+	if err := m.Close(context.Background(), sid); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "session close") || strings.Contains(logged, "(no-op)") {
+		t.Fatalf("expected teardown close log (without no-op), got %q", logged)
 	}
 }
 

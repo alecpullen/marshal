@@ -382,7 +382,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 
 	var mcpMgr *mcp.Manager
 	if len(cfg.MCP.Servers) > 0 {
-		mcpMgr = mcp.NewManager(&cfg)
+		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
 		if err := mcpMgr.Start(ctx); err != nil {
 			jmErr = err
 			return nil, nil, nil, nil, nil, nil, nil, nil, err

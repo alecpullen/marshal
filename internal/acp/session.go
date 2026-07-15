@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,6 +37,15 @@ type SessionLister interface {
 	DeleteSession(ctx context.Context, cwd, sessionID string) (existed bool, err error)
 }
 
+// SessionManagerOption configures a SessionManager.
+type SessionManagerOption func(*SessionManager)
+
+// WithSessionManagerLogger sets the logger on a SessionManager. When nil
+// (or unset), the manager uses slog.Default().
+func WithSessionManagerLogger(l *slog.Logger) SessionManagerOption {
+	return func(m *SessionManager) { m.Logger = l }
+}
+
 // SessionManagerConfig configures a SessionManager.
 type SessionManagerConfig struct {
 	// StartRuntime builds a new *app.Runtime for a session. Required.
@@ -63,6 +73,8 @@ type SessionManagerConfig struct {
 //     The lock is taken in a fixed order: lifecycleMu before mu, never
 //     the reverse, to prevent deadlock with concurrent Get.
 type SessionManager struct {
+	Logger *slog.Logger // nil → slog.Default()
+
 	start   RuntimeStarter
 	close   RuntimeCloser
 	notify  NotifyFunc
@@ -93,7 +105,7 @@ type sessionParams struct {
 }
 
 // NewSessionManager constructs a SessionManager.
-func NewSessionManager(cfg SessionManagerConfig) *SessionManager {
+func NewSessionManager(cfg SessionManagerConfig, opts ...SessionManagerOption) *SessionManager {
 	closeFn := cfg.CloseRuntime
 	if closeFn == nil {
 		closeFn = func(ctx context.Context, rt *app.Runtime) error {
@@ -103,7 +115,7 @@ func NewSessionManager(cfg SessionManagerConfig) *SessionManager {
 			return rt.Close(ctx)
 		}
 	}
-	return &SessionManager{
+	m := &SessionManager{
 		start:    cfg.StartRuntime,
 		close:    closeFn,
 		notify:   cfg.Notify,
@@ -111,6 +123,10 @@ func NewSessionManager(cfg SessionManagerConfig) *SessionManager {
 		options:  cfg.Options,
 		sessions: map[string]*app.Runtime{},
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // SetTurnCanceller registers the per-session turn cancellation function.
@@ -121,6 +137,14 @@ func (m *SessionManager) SetTurnCanceller(cancel TurnCanceller) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 	m.cancel = cancel
+}
+
+// log returns the configured logger or slog.Default() when Logger is nil.
+func (m *SessionManager) log() *slog.Logger {
+	if m.Logger == nil {
+		return slog.Default()
+	}
+	return m.Logger
 }
 
 // connectionShutdownTimeout is the maximum time allowed for cancelling or
@@ -332,8 +356,16 @@ func (m *SessionManager) Close(ctx context.Context, id string) error {
 	}
 	rt, ok := m.detach(id)
 	if !ok {
+		m.mu.RLock()
+		n := len(m.sessions)
+		m.mu.RUnlock()
+		m.log().Debug("session close (no-op)", "session_id", id, "count", n)
 		return serverErrorf("unknown session: %s", id)
 	}
+	m.mu.RLock()
+	n := len(m.sessions)
+	m.mu.RUnlock()
+	m.log().Debug("session close", "session_id", id, "count", n)
 	sCtx, sCancel := shutdownCtx()
 	defer sCancel()
 	err1 := turnCancel(sCtx, id)
@@ -549,6 +581,8 @@ func (m *SessionManager) publishReplacement(ctx context.Context, id string, rt *
 	if !had || samePointer || prior == nil {
 		return
 	}
+	m.log().Info("session publishReplacement",
+		"session_id", id, "prior_runtime", prior.SessionID, "new_runtime", rt.SessionID)
 	if m.cancel != nil {
 		_ = m.cancel(ctx, id)
 	}

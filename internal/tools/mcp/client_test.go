@@ -1,11 +1,14 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -177,6 +180,90 @@ func TestReadLoopFailPendingDoesNotBlockUnderMu(t *testing.T) {
 		t.Fatal("readLoop deadlocked while failing pending (F-CON-53)")
 	}
 }
+
+// TestClientReadLoopLogsCleanEOF verifies that readLoop logs at INFO level
+// on clean EOF (no scanner error).
+func TestClientReadLoopLogsCleanEOF(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewClient("test", "ignored", nil, nil,
+		WithClientLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))),
+	)
+	c.stdin = &nopWriteCloser{}
+	c.stdout = &malformedReader{}
+
+	c.wg.Add(1)
+	c.readLoop()
+
+	logged := buf.String()
+	if !strings.Contains(logged, "level=INFO") {
+		t.Fatalf("expected INFO level on clean EOF, got %q", logged)
+	}
+	if !strings.Contains(logged, "mcp readLoop ended") {
+		t.Fatalf("expected 'mcp readLoop ended' in log, got %q", logged)
+	}
+	if strings.Contains(logged, "err=") {
+		t.Fatalf("expected no err attribute on clean EOF, got %q", logged)
+	}
+}
+
+// TestClientReadLoopLogsScannerError verifies that readLoop logs at WARN
+// level when the scanner encounters a real error.
+func TestClientReadLoopLogsScannerError(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewClient("test", "ignored", nil, nil,
+		WithClientLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))),
+	)
+	c.stdin = &nopWriteCloser{}
+	c.stdout = &errorReader{}
+
+	c.wg.Add(1)
+	c.readLoop()
+
+	logged := buf.String()
+	if !strings.Contains(logged, "level=WARN") {
+		t.Fatalf("expected WARN level on scanner error, got %q", logged)
+	}
+	if !strings.Contains(logged, "mcp readLoop ended") {
+		t.Fatalf("expected 'mcp readLoop ended' in log, got %q", logged)
+	}
+	if !strings.Contains(logged, "err=") {
+		t.Fatalf("expected err attribute on scanner error, got %q", logged)
+	}
+}
+
+// nopWriteCloser is an io.WriteCloser that discards all writes.
+type nopWriteCloser struct{}
+
+func (n *nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (n *nopWriteCloser) Close() error                 { return nil }
+
+// malformedReader is an io.ReadCloser that yields a single malformed JSON
+// line and then returns io.EOF on subsequent reads.
+type malformedReader struct {
+	pos int
+}
+
+func (m *malformedReader) Read(p []byte) (int, error) {
+	if m.pos > 0 {
+		return 0, io.EOF
+	}
+	m.pos++
+	data := []byte("{invalid}\n")
+	n := copy(p, data)
+	return n, nil
+}
+
+func (m *malformedReader) Close() error { return nil }
+
+// errorReader is an io.ReadCloser that returns a non-nil error on the first
+// read, simulating a scanner error.
+type errorReader struct{}
+
+func (e *errorReader) Read(p []byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (e *errorReader) Close() error { return nil }
 
 func mockServerMain() {
 	dec := json.NewDecoder(os.Stdin)

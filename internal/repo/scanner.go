@@ -1,3 +1,7 @@
+// Package repo provides file system scanning and indexing for project
+// repositories. It walks directory trees, computes file hashes, detects
+// languages, applies gitignore rules, and skips symlinks for security and
+// correctness.
 package repo
 
 import (
@@ -21,10 +25,17 @@ type Config struct {
 	SkipGitignore bool
 }
 
+// skippedEntry records a file or directory that was skipped during scanning.
+type skippedEntry struct {
+	Path   string
+	Reason string
+}
+
 type Scanner struct {
 	config    Config
 	gitignore *Gitignore
 	loadErr   error
+	skipped   []skippedEntry
 }
 
 // defaultIgnoredDirs is the set of directory names that should always be
@@ -103,6 +114,10 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 			}
 			return nil
 		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			s.skipped = append(s.skipped, skippedEntry{Path: rel, Reason: "symlink"})
+			return nil
+		}
 		if !entry.Type().IsRegular() {
 			return nil
 		}
@@ -129,6 +144,12 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		return nil, err
 	}
 	return files, nil
+}
+
+// Skipped returns a list of entries that were skipped during the most recent
+// Scan. The caller must not modify the returned slice.
+func (s *Scanner) Skipped() []skippedEntry {
+	return s.skipped
 }
 
 func hashFile(path string) (string, int64, error) {

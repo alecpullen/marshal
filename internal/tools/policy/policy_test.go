@@ -525,3 +525,98 @@ func (b *logBuffer) Write(p []byte) (int, error) {
 	b.store.Store(string(p))
 	return len(p), nil
 }
+
+// TestEvaluate_DestructiveRequiresApproval verifies that genuinely destructive
+// shell commands (e.g. rm -rf) are always denied (DecisionDeny) and the reason
+// includes the word "destructive" or the specific guardrail pattern.
+func TestEvaluate_DestructiveRequiresApproval(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "rm -rf /tmp/build"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("destructive command got %v, want %v", dec, DecisionDeny)
+	}
+	if !strings.Contains(reason, "blocked by conservative guardrail") {
+		t.Errorf("reason should mention guardrail, got %q", reason)
+	}
+}
+
+// TestEvaluate_DestructiveFlagAffectsReason verifies that when
+// AllowDestructive is true, the reason includes "(flagged allowed)" but the
+// decision is still DecisionDeny (the user must still confirm at the TUI).
+func TestEvaluate_DestructiveFlagAffectsReason(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.AllowDestructive = true
+	pe := NewEngine(&cfg, []string{})
+	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "rm -rf /tmp/build"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("destructive with AllowDestructive got %v, want %v (still denied)", dec, DecisionDeny)
+	}
+	if !strings.Contains(reason, "flagged allowed") {
+		t.Errorf("with AllowDestructive, reason should contain '(flagged allowed)', got %q", reason)
+	}
+}
+
+// TestEvaluate_SudoFlagAffectsReason verifies that when AllowSudo is true,
+// the reason includes "(flagged allowed)" but the decision is still
+// DecisionDeny (the user must still confirm at the TUI).
+func TestEvaluate_SudoFlagAffectsReason(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.AllowSudo = true
+	pe := NewEngine(&cfg, []string{})
+	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "sudo apt-get update"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("sudo with AllowSudo got %v, want %v (still denied)", dec, DecisionDeny)
+	}
+	if !strings.Contains(reason, "flagged allowed") {
+		t.Errorf("with AllowSudo, reason should contain '(flagged allowed)', got %q", reason)
+	}
+}
+
+// TestEvaluate_ChmodR_Capital verifies that chmod -R (capital R) is denied
+// by the guardrail. This was previously a gap (F-SEC-16) where the substring
+// patterns only matched lowercase -r, missing -R and --recursive.
+func TestEvaluate_ChmodR_Capital(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "chmod -R 777 /tmp/x"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("chmod -R should be denied, got %v", dec)
+	}
+}
+
+// TestEvaluate_ChmodRecursive verifies that chmod --recursive (long flag) is
+// also caught by the argv-aware check.
+func TestEvaluate_ChmodRecursive(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "chmod --recursive 777 /tmp/x"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("chmod --recursive should be denied, got %v", dec)
+	}
+}
+
+// TestEvaluate_ChownRecursiveLong verifies that chown --recursive is also
+// caught.
+func TestEvaluate_ChownRecursiveLong(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "chown --recursive alice:alice /tmp/x"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("chown --recursive should be denied, got %v", dec)
+	}
+}

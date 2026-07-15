@@ -493,6 +493,51 @@ func TestDeleteSessionUnknownIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMessagesOnBranchLongChain(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/r", "r")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	sid := "long-chain"
+	if err := db.CreateSession(sid, projectID, "long chain test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	const n = 1500
+	var prevID int64
+	baseTime := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < n; i++ {
+		now := baseTime.Add(time.Duration(i) * time.Second)
+		id, err := db.SaveMessage(sid, "user", fmt.Sprintf("msg-%d", i), "plain", now, "", 0, false, prevID)
+		if err != nil {
+			t.Fatalf("SaveMessage %d: %v", i, err)
+		}
+		prevID = id
+	}
+
+	// MessagesOnBranch from the leaf should return all 1500.
+	msgs, err := db.MessagesOnBranch(sid, prevID)
+	if err != nil {
+		t.Fatalf("MessagesOnBranch: %v", err)
+	}
+	if len(msgs) != n {
+		t.Fatalf("got %d messages, want %d", len(msgs), n)
+	}
+	for i, m := range msgs {
+		if m.Content != fmt.Sprintf("msg-%d", i) {
+			t.Fatalf("message %d content = %q, want %q", i, m.Content, fmt.Sprintf("msg-%d", i))
+		}
+	}
+}
+
 func TestListSessionsPagination(t *testing.T) {
 	d, err := Open(":memory:")
 	if err != nil {

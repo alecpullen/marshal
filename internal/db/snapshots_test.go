@@ -109,6 +109,35 @@ func TestLatestSnapshotNotFound(t *testing.T) {
 	}
 }
 
+func TestPruneSnapshotsOlderThanRejectsNegative(t *testing.T) {
+	db := testSnapshotDB(t)
+	if err := db.PruneSnapshotsOlderThan(-1); err == nil {
+		t.Fatal("expected error for negative days")
+	}
+}
+
+func TestSaveSnapshotRollsBackFilesOnError(t *testing.T) {
+	db := testSnapshotDB(t)
+	at := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+	if _, err := db.SaveSnapshot("s1", 1, "h1", nil, at); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// A second snapshot for the same session with an empty path; ensure
+	// that the snapshot row is rolled back when the file insert fails.
+	_, err := db.SaveSnapshot("s1", 2, "h2", []string{""}, at)
+	if err == nil {
+		t.Fatal("expected error for empty file path")
+	}
+	// After rollback, the second snapshot must not exist.
+	id, _, _, err := db.LatestSnapshot("s1")
+	if err != nil {
+		t.Fatalf("LatestSnapshot: %v", err)
+	}
+	if id != 1 {
+		t.Fatalf("expected only seed snapshot (id=1), got id=%d", id)
+	}
+}
+
 func init() {
 	_ = os.RemoveAll
 	_ = sql.ErrNoRows

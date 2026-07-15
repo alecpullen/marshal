@@ -857,7 +857,7 @@ func loadFileIndexPaths(database *db.DB, projectID int64) ([]string, error) {
 	if database == nil || projectID == 0 {
 		return nil, fmt.Errorf("no database or project id")
 	}
-	index, err := database.GetFileIndex(projectID)
+	index, err := database.GetFileIndex(projectID, 0)
 	if err != nil {
 		return nil, err
 	}

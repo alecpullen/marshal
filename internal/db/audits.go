@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"time"
 
 	"marshal/internal/tools/registry"
@@ -19,7 +20,15 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		exitCode = sql.NullInt64{Int64: int64(*event.CommandExitCode), Valid: true}
 	}
 
-	filesChanged, err := json.Marshal(event.FilesChanged)
+	var normalizedInput any = event.FilesChanged
+	if event.FilesChanged != nil {
+		normalized := make([]string, len(event.FilesChanged))
+		for i, p := range event.FilesChanged {
+			normalized[i] = filepath.ToSlash(p)
+		}
+		normalizedInput = normalized
+	}
+	filesChanged, err := json.Marshal(normalizedInput)
 	if err != nil {
 		return fmt.Errorf("marshal files changed: %w", err)
 	}
@@ -71,10 +80,12 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		rewritten = 1
 	}
 
-	_, err = db.exec(
+	_, err = db.sqlDB.Exec(
 		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
-		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json, original_args_json, rewritten)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json,
+		                          original_args_json, rewritten,
+		                          sandbox_enabled, resource_limits, output_truncated)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID,
 		event.AgentRole,
 		event.Model,
@@ -95,11 +106,14 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		string(hooksJSON),
 		originalArgsJSON,
 		rewritten,
+		boolToInt(event.Sandbox.Enabled),
+		boolToInt(event.Sandbox.ResourceLimits),
+		boolToInt(event.Sandbox.OutputTruncated),
 	)
-	if err != nil {
-		return fmt.Errorf("save tool call: %w", err)
-	}
-	return nil
+		if err != nil {
+			return fmt.Errorf("save tool call: %w", err)
+		}
+		return nil
 }
 
 func boolToInt(b bool) int64 {
@@ -108,12 +122,13 @@ func boolToInt(b bool) int64 {
 	}
 	return 0
 }
-
 // GetToolCalls returns all audit events for a session in chronological order.
 func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 	rows, err := db.sqlDB.Query(
 		`SELECT agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
-		        sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json, original_args_json, rewritten
+		        sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json,
+		        original_args_json, rewritten,
+		        sandbox_enabled, resource_limits, output_truncated
 		 FROM tool_calls
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,
@@ -142,8 +157,11 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		var hooksJSON sql.NullString
 		var origArgs sql.NullString
 		var rewritten sql.NullInt64
+		var sbEnabled sql.NullInt64
+		var rl sql.NullInt64
+		var ot sql.NullInt64
 		if err := rows.Scan(&e.AgentRole, &e.Model, &e.ToolName, &args, &e.ResultSummary, &risk, &approval, &exitCode, &filesChanged, &errorString, &created,
-			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS, &hooksJSON, &origArgs, &rewritten); err != nil {
+			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS, &hooksJSON, &origArgs, &rewritten, &sbEnabled, &rl, &ot); err != nil {
 			return nil, fmt.Errorf("scan tool call row: %w", err)
 		}
 		e.Args = []byte(args)
@@ -169,6 +187,19 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		if sbBackend.Valid && sbBackend.String != "" {
 			e.Sandbox.Enabled = true
 			e.Sandbox.Backend = sbBackend.String
+		}
+		// sbEnabled is the authoritative source of truth for new rows. Legacy
+		// rows migrated via ALTER TABLE have sbEnabled=0 by default, so we use
+		// sbEnabled only to *upgrade* Enabled (false→true) and never to
+		// downgrade a backend-inferred Enabled=true. See F-BUG-108.
+		if sbEnabled.Valid && sbEnabled.Int64 == 1 {
+			e.Sandbox.Enabled = true
+		}
+		if rl.Valid {
+			e.Sandbox.ResourceLimits = rl.Int64 == 1
+		}
+		if ot.Valid {
+			e.Sandbox.OutputTruncated = ot.Int64 == 1
 		}
 		if sbNetwork.Valid {
 			e.Sandbox.NetworkIsolated = sbNetwork.Int64 == 1

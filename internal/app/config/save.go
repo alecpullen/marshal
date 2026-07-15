@@ -109,10 +109,12 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 	if file.Indexing != nil || !reflect.DeepEqual(cfg.Indexing, def.Indexing) {
 		file.Indexing = &fileIndexing{
-			UseTreesitter:  ptr(cfg.Indexing.UseTreesitter),
-			UseEmbeddings:  ptr(cfg.Indexing.UseEmbeddings),
-			SummariseFiles: ptr(cfg.Indexing.SummariseFiles),
-			Ignore:         cfg.Indexing.Ignore,
+			UseTreesitter:           ptr(cfg.Indexing.UseTreesitter),
+			UseEmbeddings:           ptr(cfg.Indexing.UseEmbeddings),
+			SummariseFiles:          ptr(cfg.Indexing.SummariseFiles),
+			Ignore:                  cfg.Indexing.Ignore,
+			MaxIndexableFileBytes:   ptr(cfg.Indexing.MaxIndexableFileBytes),
+			MaxSearchableFileBytes:  ptr(cfg.Indexing.MaxSearchableFileBytes),
 		}
 	}
 	if file.Web != nil || cfg.Web != def.Web {

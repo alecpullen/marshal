@@ -34,7 +34,7 @@ type Session struct {
 // CreateSession inserts a new agent_sessions row. The session id is generated
 // by the caller (session.State) and is the primary key.
 func (db *DB) CreateSession(sessionID string, projectID int64, title string, startedAt time.Time) error {
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`INSERT INTO agent_sessions (id, project_id, title, started_at)
 		 VALUES (?, ?, ?, ?)`,
 		sessionID, projectID, title, startedAt.UTC().Format(time.RFC3339),
@@ -50,7 +50,7 @@ func (db *DB) GetSession(sessionID string) (Session, error) {
 	var s Session
 	var startedAt string
 	var endedAt, summary sql.NullString
-	row := db.queryRow(
+	row := db.sqlDB.QueryRow(
 		`SELECT id, project_id, title, started_at, ended_at, summary FROM agent_sessions WHERE id = ?`,
 		sessionID,
 	)
@@ -81,7 +81,7 @@ func (db *DB) GetSession(sessionID string) (Session, error) {
 
 // UpdateSessionTitle sets the title on an existing session row (F13).
 func (db *DB) UpdateSessionTitle(sessionID string, title string) error {
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`UPDATE agent_sessions SET title = ? WHERE id = ?`,
 		title, sessionID,
 	)
@@ -93,7 +93,7 @@ func (db *DB) UpdateSessionTitle(sessionID string, title string) error {
 
 // EndSession sets ended_at and summary on an existing session row.
 func (db *DB) EndSession(sessionID string, endedAt time.Time, summary string) error {
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`UPDATE agent_sessions SET ended_at = ?, summary = ? WHERE id = ?`,
 		endedAt.UTC().Format(time.RFC3339), summary, sessionID,
 	)
@@ -127,7 +127,7 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 	if parentID > 0 {
 		parentArg = sql.NullInt64{Int64: parentID, Valid: true}
 	}
-	res, err := db.exec(
+	res, err := db.sqlDB.Exec(
 		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339), final, parentArg,
@@ -149,7 +149,7 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 // finds the right tip. Returns 0 if the session has no messages.
 func (db *DB) GetLeafMessageID(sessionID string) (int64, error) {
 	var leaf sql.NullInt64
-	row := db.queryRow(`SELECT leaf_message_id FROM agent_sessions WHERE id = ?`, sessionID)
+	row := db.sqlDB.QueryRow(`SELECT leaf_message_id FROM agent_sessions WHERE id = ?`, sessionID)
 	if err := row.Scan(&leaf); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, nil
@@ -161,7 +161,7 @@ func (db *DB) GetLeafMessageID(sessionID string) (int64, error) {
 	}
 	// Fallback: newest message id in the session.
 	var maxID sql.NullInt64
-	if err := db.queryRow(`SELECT MAX(id) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxID); err != nil {
+	if err := db.sqlDB.QueryRow(`SELECT MAX(id) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxID); err != nil {
 		return 0, fmt.Errorf("get max message id: %w", err)
 	}
 	if !maxID.Valid {
@@ -172,11 +172,26 @@ func (db *DB) GetLeafMessageID(sessionID string) (int64, error) {
 
 // SetBranchLeaf records leafID as the session's current active branch tip.
 func (db *DB) SetBranchLeaf(sessionID string, leafID int64) error {
-	if _, err := db.exec(`UPDATE agent_sessions SET leaf_message_id = ? WHERE id = ?`, leafID, sessionID); err != nil {
+	if _, err := db.sqlDB.Exec(`UPDATE agent_sessions SET leaf_message_id = ? WHERE id = ?`, leafID, sessionID); err != nil {
 		return fmt.Errorf("set branch leaf: %w", err)
 	}
 	return nil
 }
+
+const branchCTE = `
+WITH RECURSIVE chain(id, parent_id) AS (
+    SELECT id, parent_id FROM messages
+     WHERE id = ? AND session_id = ?
+    UNION ALL
+    SELECT m.id, m.parent_id FROM messages m
+      JOIN chain c ON m.id = c.parent_id
+     WHERE m.session_id = ?
+)
+SELECT m.id, m.role, m.content, m.content_type, m.reasoning, m.think_duration_ms,
+       m.created_at, m.final, m.parent_id
+  FROM messages m
+  JOIN chain c ON m.id = c.id
+ ORDER BY m.id ASC`
 
 // MessagesOnBranch returns the message rows from the root down to leafID
 // (inclusive), following parent_id links. The slice is in chronological order.
@@ -184,47 +199,12 @@ func (db *DB) MessagesOnBranch(sessionID string, leafID int64) ([]Message, error
 	if leafID <= 0 {
 		return nil, nil
 	}
-	var ids []int64
-	cur := leafID
-	for cur > 0 {
-		ids = append(ids, cur)
-		row := db.queryRow(`SELECT parent_id FROM messages WHERE id = ? AND session_id = ?`, cur, sessionID)
-		var pid sql.NullInt64
-		if err := row.Scan(&pid); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				break
-			}
-			return nil, fmt.Errorf("walk parent of %d: %w", cur, err)
-		}
-		if !pid.Valid || pid.Int64 == 0 {
-			break
-		}
-		cur = pid.Int64
-	}
-	for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
-		ids[i], ids[j] = ids[j], ids[i]
-	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	var placeholders string
-	args := []any{sessionID}
-	for i, id := range ids {
-		if i > 0 {
-			placeholders += ","
-		}
-		placeholders += "?"
-		args = append(args, id)
-	}
-	rows, err := db.sqlDB.Query(
-		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id
-		 FROM messages WHERE session_id = ? AND id IN (`+placeholders+`) ORDER BY id ASC`,
-		args...,
-	)
+	rows, err := db.sqlDB.Query(branchCTE, leafID, sessionID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query branch messages: %w", err)
 	}
 	defer rows.Close()
+
 	var out []Message
 	for rows.Next() {
 		var m Message
@@ -368,16 +348,20 @@ const (
 )
 
 const listSessionsSQL = `
-SELECT s.id,
-       p.root_path,
-       s.title,
-       COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = s.id), s.started_at) AS updated_at,
-       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
-FROM agent_sessions s
-JOIN projects p ON p.id = s.project_id
-WHERE p.root_path = ?
-ORDER BY updated_at DESC, s.id DESC
-LIMIT ? OFFSET ?`
+WITH session_stats AS (
+    SELECT session_id, MAX(created_at) AS updated_at, COUNT(*) AS message_count
+      FROM messages
+     GROUP BY session_id
+)
+SELECT s.id, p.root_path, s.title,
+       COALESCE(ss.updated_at, s.started_at) AS updated_at,
+       COALESCE(ss.message_count, 0)        AS message_count
+  FROM agent_sessions s
+  JOIN projects p ON p.id = s.project_id
+  LEFT JOIN session_stats ss ON ss.session_id = s.id
+ WHERE p.root_path = ?
+ ORDER BY updated_at DESC, s.id DESC
+ LIMIT ? OFFSET ?`
 
 // ListSessions returns sessions whose project root matches cwd, newest
 // activity first. cursor is an opaque base64-encoded offset from a previous

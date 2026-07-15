@@ -1,9 +1,12 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 )
+
+const symbolInsertBatch = 200
 
 type Symbol struct {
 	ID        int64
@@ -20,6 +23,9 @@ type Symbol struct {
 // existing symbols for the project and inserts the provided rows. Callers
 // are expected to pass the complete current symbol set for the project.
 func (db *DB) SaveSymbols(projectID int64, symbols []Symbol) error {
+	unlock := db.locks.Lock(projectID)
+	defer unlock()
+
 	tx, err := db.sqlDB.Begin()
 	if err != nil {
 		return fmt.Errorf("begin save symbols transaction: %w", err)
@@ -30,17 +36,19 @@ func (db *DB) SaveSymbols(projectID int64, symbols []Symbol) error {
 		return fmt.Errorf("delete existing symbols: %w", err)
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO symbols (project_id, file_path, kind, name, receiver, signature, line_start, line_end)
-							 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare symbol insert: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, s := range symbols {
-		_, err := stmt.Exec(projectID, s.FilePath, s.Kind, s.Name, s.Receiver, s.Signature, s.LineStart, s.LineEnd)
-		if err != nil {
-			return fmt.Errorf("insert symbol %s: %w", s.Name, err)
+	for start := 0; start < len(symbols); start += symbolInsertBatch {
+		end := start + symbolInsertBatch
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		chunk := symbols[start:end]
+		placeholders := buildValues(len(chunk), 8)
+		args := make([]any, 0, len(chunk)*8)
+		for _, s := range chunk {
+			args = append(args, projectID, s.FilePath, s.Kind, s.Name, s.Receiver, s.Signature, s.LineStart, s.LineEnd)
+		}
+		if _, err := tx.Exec(`INSERT INTO symbols (project_id, file_path, kind, name, receiver, signature, line_start, line_end) VALUES `+placeholders, args...); err != nil {
+			return fmt.Errorf("insert symbols batch [%d:%d]: %w", start, end, err)
 		}
 	}
 
@@ -50,16 +58,30 @@ func (db *DB) SaveSymbols(projectID int64, symbols []Symbol) error {
 	return nil
 }
 
-// GetSymbols returns all symbol rows for a project, ordered by file path
-// then line start.
-func (db *DB) GetSymbols(projectID int64) ([]Symbol, error) {
-	rows, err := db.sqlDB.Query(
-		`SELECT id, file_path, kind, name, receiver, signature, line_start, line_end
+// scanSymbol reads the next row from rows in the column order used by both
+// GetSymbols and FindSymbols (id, file_path, kind, name, receiver,
+// signature, line_start, line_end).
+func scanSymbol(rows *sql.Rows) (Symbol, error) {
+	var s Symbol
+	if err := rows.Scan(&s.ID, &s.FilePath, &s.Kind, &s.Name, &s.Receiver, &s.Signature, &s.LineStart, &s.LineEnd); err != nil {
+		return Symbol{}, err
+	}
+	return s, nil
+}
+
+// GetSymbols returns up to limit symbol rows for a project, ordered by file
+// path then line start. limit <= 0 means "all rows" (unbounded).
+func (db *DB) GetSymbols(projectID int64, limit int) ([]Symbol, error) {
+	query := `SELECT id, file_path, kind, name, receiver, signature, line_start, line_end
 		 FROM symbols
 		 WHERE project_id = ?
-		 ORDER BY file_path, line_start`,
-		projectID,
-	)
+		 ORDER BY file_path, line_start`
+	args := []any{projectID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.sqlDB.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query symbols: %w", err)
 	}
@@ -67,8 +89,8 @@ func (db *DB) GetSymbols(projectID int64) ([]Symbol, error) {
 
 	var symbols []Symbol
 	for rows.Next() {
-		var s Symbol
-		if err := rows.Scan(&s.ID, &s.FilePath, &s.Kind, &s.Name, &s.Receiver, &s.Signature, &s.LineStart, &s.LineEnd); err != nil {
+		s, err := scanSymbol(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan symbol row: %w", err)
 		}
 		symbols = append(symbols, s)
@@ -95,8 +117,8 @@ func (db *DB) FindSymbols(projectID int64, name, kind string, limit int) ([]Symb
 			   WHERE project_id = ?`
 	args := []any{projectID}
 	if name != "" {
-		query += ` AND LOWER(name) LIKE ?`
-		args = append(args, "%"+strings.ToLower(name)+"%")
+		query += ` AND LOWER(name) LIKE ? ESCAPE '\'`
+		args = append(args, "%"+escapeLike(strings.ToLower(name))+"%")
 	}
 	if kind != "" {
 		query += ` AND kind = ?`
@@ -113,8 +135,8 @@ func (db *DB) FindSymbols(projectID int64, name, kind string, limit int) ([]Symb
 
 	var symbols []Symbol
 	for rows.Next() {
-		var s Symbol
-		if err := rows.Scan(&s.ID, &s.FilePath, &s.Kind, &s.Name, &s.Receiver, &s.Signature, &s.LineStart, &s.LineEnd); err != nil {
+		s, err := scanSymbol(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan symbol row: %w", err)
 		}
 		symbols = append(symbols, s)

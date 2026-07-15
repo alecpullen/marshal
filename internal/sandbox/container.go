@@ -11,6 +11,8 @@ import (
 
 	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/native"
+	"marshal/internal/tools/policy"
+	"marshal/internal/tools/registry"
 )
 
 // defaultContainerImage is the fallback image when [tools.shell.sandbox].
@@ -183,8 +185,20 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 	// we invoke the command directly as argv to avoid shell-wrapping overhead
 	// and potential shell-injection surface. Commands containing shell
 	// metacharacters still go through /bin/sh -lc.
+	//
+	// Destructive commands (e.g. rm -rf, git clean -f) always go through
+	// /bin/sh -lc so that shell features (globbing, variable expansion) are
+	// available when the user has explicitly approved a destructive operation.
+	// This is enforced via ClassifyCommand, not just isShellFree.
 	args = append(args, image)
-	if isShellFree(command) {
+	shellFree := isShellFree(command)
+	if shellFree {
+		cls, _ := policy.ClassifyCommand(command)
+		if cls.Risk == registry.RiskDestructive {
+			shellFree = false
+		}
+	}
+	if shellFree {
 		cmdArgs := strings.Fields(command)
 		if c.cfg.CPUSeconds > 0 {
 			args = append(args,

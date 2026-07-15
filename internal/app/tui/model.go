@@ -1111,10 +1111,25 @@ func (m *Model) updateCompletionPopups() {
 	fileTrigger, fileQuery := m.fileTrigger(value)
 	if fileTrigger {
 		m.populateFileIndexIfNeeded()
-		if m.filePopup.items == nil {
+		if len(m.fileIndex) == 0 {
+			m.fileIndex = []completionItem{{
+				Text: "(no indexed files — run /index)",
+				Kind: completionFile,
+			}}
+		}
+		if m.filePopup.items == nil || len(m.filePopup.items) == 0 {
 			m.filePopup.items = m.fileIndex
 		}
-		m.filePopup.update(fileQuery)
+		if fileQuery == "" {
+			// Bare "@" → show every file item, unfiltered.
+			m.filePopup.filtered = append([]completionItem(nil), m.filePopup.items...)
+			m.filePopup.index = 0
+			m.filePopup.viewOffset = 0
+			m.filePopup.acceptedText = ""
+			m.filePopup.visible = len(m.filePopup.filtered) > 0
+		} else {
+			m.filePopup.update(fileQuery)
+		}
 		m.cmdPopup.dismiss()
 		return
 	}

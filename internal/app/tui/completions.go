@@ -205,6 +205,13 @@ func (p *completionPopup) accept() {
 		return
 	}
 	chosen := p.filtered[p.index]
+	// Placeholder items (e.g. "no indexed files") start with "(" — skip them.
+	if strings.HasPrefix(chosen.Text, "(") {
+		p.visible = false
+		p.filtered = nil
+		p.index = 0
+		return
+	}
 	switch chosen.Kind {
 	case completionCommand:
 		// Commands get a trailing space so args can be typed immediately.

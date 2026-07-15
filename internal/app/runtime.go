@@ -295,7 +295,12 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	for _, opt := range opts {
 		opt(&runOpts)
 	}
+	return startRuntime(ctx, runOpts)
+}
 
+// startRuntime is the internal implementation shared by Run and StartRuntime.
+// It expects a fully-resolved options struct — no option iteration.
+func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	workingDir, err := resolveWorkingDir(runOpts.workingDir)
 	if err != nil {
 		return nil, err

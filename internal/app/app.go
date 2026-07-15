@@ -718,7 +718,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		slog.Default().Info("onboarding cancelled; using default config")
 	}
 
-	rt, err := StartRuntime(ctx, opts...)
+	rt, err := startRuntime(ctx, runOpts)
 	if err != nil {
 		return err
 	}

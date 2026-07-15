@@ -38,8 +38,10 @@ func (r *StaticRouter) ResolveRole(role AgentRole) (Route, error) {
 	if !isNoConfiguredRoute(err) {
 		return Route{}, err
 	}
+	var fallbackErr error
 	if role != RoleImplementer && errors.Is(err, errRoleNotConfigured) {
-		fallback, fallbackErr := r.resolveProfileRole(RoleImplementer)
+		fallback, fErr := r.resolveProfileRole(RoleImplementer)
+		fallbackErr = fErr
 		if fallbackErr == nil {
 			return fallback, nil
 		}
@@ -49,6 +51,9 @@ func (r *StaticRouter) ResolveRole(role AgentRole) (Route, error) {
 	}
 	if legacy, ok := r.legacyRoute(role); ok {
 		return legacy, nil
+	}
+	if fallbackErr != nil {
+		return Route{}, fallbackErr
 	}
 	return Route{}, err
 }

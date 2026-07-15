@@ -87,6 +87,15 @@ func TestOverlayUsesFixedKeyColumn(t *testing.T) {
 	}
 }
 
+func TestOverlayListsApprovalShortcuts(t *testing.T) {
+	out := stripANSI(Overlay(120, 60))
+	for _, want := range []string{"always allow", "deny", "edit command/args", "PgUp", "Ctrl+U"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("overlay missing %q: %s", want, out)
+		}
+	}
+}
+
 func TestOverlayWrapsOnNarrowWidth(t *testing.T) {
 	out := stripANSI(Overlay(40, 30))
 	// With width=40, desc column is max(40-20-4, 20) = 20 chars.

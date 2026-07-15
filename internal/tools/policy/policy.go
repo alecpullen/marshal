@@ -27,16 +27,19 @@ const (
 // argv-aware AST checks below that also catch -R and --recursive.
 // See hasRecursiveFlag and the chmod/chown check in analyzeCommand.
 var guardrailPatterns = []string{
-	"sudo", "mkfs", "shutdown", "reboot",
+	"sudo", "mkfs", "shutdown", "reboot", "rm -rf", "git reset --hard", "git clean -fd",
 }
 
 // destructivePatterns is the subset of guardrailPatterns that are considered
 // genuinely destructive. Matches from these patterns trigger the
 // AllowDestructive config flag check.
 var destructivePatterns = map[string]bool{
-	"mkfs":     true,
-	"shutdown": true,
-	"reboot":   true,
+	"mkfs":             true,
+	"shutdown":         true,
+	"reboot":           true,
+	"rm -rf":           true,
+	"git reset --hard": true,
+	"git clean -fd":    true,
 }
 
 type PolicyEngine struct {

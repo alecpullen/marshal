@@ -635,6 +635,7 @@ func TestEvaluate_ClassifyCommand_Guardrail(t *testing.T) {
 		{"rm -r -f /tmp/x", DecisionDeny, "rm -r -f"},
 		{"rm -fr /tmp/x", DecisionDeny, "rm -r -f"},
 		{"sudo mkfs /dev/sda", DecisionDeny, "blocked by conservative guardrail"},
+		{"echo hi | rm -rf /tmp", DecisionDeny, "rm -rf"},
 		{"rm /tmp/x", DecisionConfirm, ""},
 	}
 

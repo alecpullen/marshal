@@ -10,19 +10,8 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-type fakeSteeringState struct {
-	queue []string
-}
-
-func (f *fakeSteeringState) DrainSteering() []string {
-	out := f.queue
-	f.queue = nil
-	return out
-}
-
 func TestRunTaskInjectsSteeringBeforeNextModelCall(t *testing.T) {
 	state := newTestState(t)
-	steering := &fakeSteeringState{queue: []string{"also update the README"}}
 
 	// First response asks for a read-only tool so the loop iterates and
 	// drains steering before the second model call. Second response
@@ -43,8 +32,8 @@ func TestRunTaskInjectsSteeringBeforeNextModelCall(t *testing.T) {
 		},
 	})
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	runner.SteeringProvider = steering
 	runner.MaxToolIterations = 5
+	state.PushSteering("also update the README")
 
 	task, err := runner.RunTask(context.Background(), "do the thing")
 	if err != nil {

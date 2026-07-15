@@ -191,12 +191,6 @@ type Runner struct {
 
 	UsageObserver UsageObserver
 
-	// SteeringProvider, when set, is drained at every loop-top in RunTask;
-	// any messages returned are appended as user-role messages to the live
-	// model context for the next chat call (F16). A nil provider disables
-	// steering.
-	SteeringProvider SteeringProvider
-
 	// MetricsObserver, when set, receives one TurnMetrics per RunTask,
 	// emitted on every exit path (answer, salvage, failure). Nil disables
 	// collection output; counter bookkeeping still runs.
@@ -305,7 +299,6 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.Role = other.Role
 	r.WriteGate = other.WriteGate
 	r.UsageObserver = other.UsageObserver
-	r.SteeringProvider = other.SteeringProvider
 	r.MetricsObserver = other.MetricsObserver
 	r.Snapshotter = other.Snapshotter
 	r.SnapshotRecorder = other.SnapshotRecorder
@@ -482,18 +475,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// guards the doom-loop stall finalize below — if the user just
 		// intervened, the loop is no longer auto-iterating.
 		steeringArrived := false
-		if r.SteeringProvider != nil {
-			var steeringPins []contextpack.FileSnippet
-			for _, msg := range r.SteeringProvider.DrainSteering() {
-				steeringPins = append(steeringPins, extractPinnedFiles(msg, r, r.ProjectID)...)
-				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
-				steeringArrived = true
-			}
-			if len(steeringPins) > 0 {
-				pack := contextpack.PinFiles(r.State.ContextPack(), steeringPins)
-				r.State.SetContextPack(pack)
-				messages = appendContextPackMessage(messages, pack)
-			}
+		var steeringPins []contextpack.FileSnippet
+		for _, msg := range r.State.DrainSteering() {
+			steeringPins = append(steeringPins, extractPinnedFiles(msg, r, r.ProjectID)...)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
+			steeringArrived = true
+		}
+		if len(steeringPins) > 0 {
+			pack := contextpack.PinFiles(r.State.ContextPack(), steeringPins)
+			r.State.SetContextPack(pack)
+			messages = appendContextPackMessage(messages, pack)
 		}
 
 		if !pressureMessageSent && r.MaxToolIterations-iteration <= finalizePressureThreshold {

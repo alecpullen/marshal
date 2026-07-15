@@ -2138,3 +2138,13 @@ fixes" above).
 | F-SEC-122 | RESOLVED | `resolveWorkspacePath`/`Multi` verify symlink containment |
 | F-SEC-123 | RESOLVED | `repo.search` re-verifies each match via `workspaceRel`; symlinks skipped |
 | F-SEC-102 | RESOLVED | `repo.Scanner` explicitly skips symlinks |
+
+### Batch 3 (A2 — command classification overhaul): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-SEC-01 | RESOLVED | `shell.run` (native) and container backend use argv path for shell-free, non-destructive commands |
+| F-SEC-07 | RESOLVED | TUI "always allow" pattern is now the full argv |
+| F-SEC-16 | RESOLVED | `policy.ClassifyCommand` is argv-aware; substring patterns retained as per-stage safety net |
+| F-SEC-17 | RESOLVED | Container argv path gated on `ClassifyCommand` |
+| F-SEC-31 | RESOLVED | Slash commands use `shlex.Split` for quoted args |

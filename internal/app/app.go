@@ -61,16 +61,18 @@ func mustDB(raw DBCloser) *db.DB {
 }
 
 type options struct {
-	now               func() time.Time
-	configLoader      configLoader
-	programRunner     ProgramRunner
-	skipOnboarding    bool
-	trustResolver     trust.Resolver
-	workingDir        string
-	sessionID         string
-	existingSessionID string
-	additionalDirs    []string
-	knowledgeHook     func(ctx context.Context, state *session.State, database *db.DB)
+	now                     func() time.Time
+	configLoader            configLoader
+	programRunner           ProgramRunner
+	onboardingProgramRunner ProgramRunner // injected for tests; nil means use tea.NewProgram directly
+	skipOnboarding          bool
+	skipOnboardingSet       bool // true when WithSkipOnboarding was explicitly called
+	trustResolver           trust.Resolver
+	workingDir              string
+	sessionID               string
+	existingSessionID       string
+	additionalDirs          []string
+	knowledgeHook           func(ctx context.Context, state *session.State, database *db.DB)
 }
 
 type Option func(*options)
@@ -78,8 +80,8 @@ type Option func(*options)
 var (
 	shutdownKnowledgeTimeout = 5 * time.Second
 
-	// errOnboardingCancelled is returned by Run when the user exits the
-	// onboarding wizard before completing all steps. Callers can use
+	// errOnboardingCancelled is set when the user cancels onboarding;
+	// Run logs it and continues with default config. Callers can use
 	// errors.Is to distinguish cancellation from other errors.
 	errOnboardingCancelled = errors.New("onboarding cancelled")
 )
@@ -102,6 +104,17 @@ func WithProgramRunner(runner ProgramRunner) Option {
 func WithSkipOnboarding(skip bool) Option {
 	return func(opts *options) {
 		opts.skipOnboarding = skip
+		opts.skipOnboardingSet = true
+	}
+}
+
+// WithOnboardingProgramRunner injects a fake ProgramRunner for the
+// onboarding wizard. When set, Run uses this instead of creating a
+// tea.NewProgram directly, allowing tests to simulate user input
+// (e.g. Ctrl+C) without a real terminal.
+func WithOnboardingProgramRunner(runner ProgramRunner) Option {
+	return func(opts *options) {
+		opts.onboardingProgramRunner = runner
 	}
 }
 
@@ -674,11 +687,26 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	}
 
 	var onboardingErr error
-	if !runOpts.skipOnboarding && flag.Lookup("test.v") == nil && !config.HasConfig(config.LoadOptions{WorkingDir: workingDir}) {
+	// Determine whether to run onboarding. If WithSkipOnboarding was
+	// explicitly provided, honour it; otherwise skip during tests and
+	// when a config already exists.
+	skipOnboarding := runOpts.skipOnboarding
+	if !runOpts.skipOnboardingSet {
+		skipOnboarding = flag.Lookup("test.v") != nil || config.HasConfig(config.LoadOptions{WorkingDir: workingDir})
+	}
+	if !skipOnboarding {
 		onboarding := NewOnboardingModel(workingDir)
-		p := tea.NewProgram(onboarding, tea.WithOutput(stdout), tea.WithContext(ctx))
-		if _, err := p.Run(); err != nil {
-			return fmt.Errorf("onboarding failed: %w", err)
+		if runOpts.onboardingProgramRunner != nil {
+			// Injected runner (used by tests): call it directly instead
+			// of creating a tea.NewProgram.
+			if err := runOpts.onboardingProgramRunner(ctx, onboarding, stdout); err != nil {
+				return fmt.Errorf("onboarding failed: %w", err)
+			}
+		} else {
+			p := tea.NewProgram(onboarding, tea.WithOutput(stdout), tea.WithContext(ctx))
+			if _, err := p.Run(); err != nil {
+				return fmt.Errorf("onboarding failed: %w", err)
+			}
 		}
 		if onboarding.state != stateDone {
 			if onboarding.Cancelled() {
@@ -688,8 +716,6 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 	}
 	if errors.Is(onboardingErr, errOnboardingCancelled) {
 		slog.Default().Info("onboarding cancelled; using default config")
-	} else if onboardingErr != nil {
-		return onboardingErr
 	}
 
 	rt, err := StartRuntime(ctx, opts...)

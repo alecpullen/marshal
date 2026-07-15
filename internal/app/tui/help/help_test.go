@@ -49,11 +49,82 @@ func TestFooterIdleShowsRollbackWhenEligible(t *testing.T) {
 	}
 }
 
+func TestFooterApprovalWording(t *testing.T) {
+	out := stripANSI(Footer(FooterHints{ApprovalPending: true}))
+	if strings.Contains(out, "Enter×2") {
+		t.Fatalf("stale 'Enter×2' label still present: %q", out)
+	}
+	if !strings.Contains(out, "arm") || !strings.Contains(out, "submit") {
+		t.Fatalf("expected arm/submit labels, got %q", out)
+	}
+}
+
 func TestOverlayEnumeratesAllBindings(t *testing.T) {
 	out := stripANSI(Overlay(80, 24))
 	for _, want := range []string{"Enter", "Shift+Enter", "/", "@", "Esc", "?", "Ctrl+O", "Ctrl+K", "Ctrl+G", "Ctrl+R", "Ctrl+X", "PgUp", "PgDn", "End"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help overlay missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// firstLineContaining returns the first line in s that contains substr.
+func firstLineContaining(s, substr string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, substr) {
+			return line
+		}
+	}
+	return ""
+}
+
+func TestOverlayUsesFixedKeyColumn(t *testing.T) {
+	out := stripANSI(Overlay(120, 80))
+	tabLine := firstLineContaining(out, "Tab")
+	altLine := firstLineContaining(out, "Alt+Shift+M")
+	if tabLine == "" || altLine == "" {
+		t.Fatal("expected both Tab and Alt+Shift+M in overlay")
+	}
+	// Both descriptions should start at the same column because the
+	// key column is fixed-width.
+	tabDesc := strings.Index(tabLine, "cycle mode")
+	altDesc := strings.Index(altLine, "cycle model backward")
+	if tabDesc < 0 || altDesc < 0 {
+		t.Fatal("expected descriptions in both lines")
+	}
+	if tabDesc != altDesc {
+		t.Fatalf("descriptions misaligned: Tab at col %d, Alt+Shift+M at col %d", tabDesc, altDesc)
+	}
+}
+
+func TestOverlayListsApprovalShortcuts(t *testing.T) {
+	out := stripANSI(Overlay(120, 60))
+	for _, want := range []string{"always allow", "deny", "edit command/args", "PgUp", "Ctrl+U"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("overlay missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestOverlayWrapsOnNarrowWidth(t *testing.T) {
+	out := stripANSI(Overlay(40, 30))
+	// With width=40, desc column is max(40-20-4, 20) = 20 chars.
+	// "cancel turn · dismiss popup · deny approval" (42 chars) wraps.
+	// Verify that "cancel turn" and "approval" end up on different lines.
+	lines := strings.Split(out, "\n")
+	var cancelLine, approvalLine int
+	for i, line := range lines {
+		if strings.Contains(line, "cancel turn") {
+			cancelLine = i
+		}
+		if strings.Contains(line, "approval") {
+			approvalLine = i
+		}
+	}
+	if cancelLine == 0 || approvalLine == 0 {
+		t.Fatal("expected 'cancel turn' and 'approval' in output")
+	}
+	if cancelLine == approvalLine {
+		t.Fatal("expected description to wrap, but 'cancel turn' and 'approval' are on the same line")
 	}
 }

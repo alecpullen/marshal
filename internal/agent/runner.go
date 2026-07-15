@@ -135,10 +135,11 @@ type MemoryProvider interface {
 //     ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
 //     ForceClass, SkillIndex, Role, WriteGate, UsageObserver,
 //     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleGenerator,
-//     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID)
-//     are initialised once; resolveRoute may grow MaxTurnContextTokens
-//     (monotonically) when the route-resolved context window exceeds the
-//     configured value. The seed persists across RunTask calls.
+//     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID,
+//     fileIndexCache) are initialised once; resolveRoute may grow
+//     MaxTurnContextTokens (monotonically) when the route-resolved context
+//     window exceeds the configured value. The seed persists across RunTask
+//     calls.
 //
 //   - Per-turn state (tracker, stats, route, pressureMessageSent,
 //     consecutiveParseFailures, consecutiveEmpty) is reset at the top of
@@ -225,6 +226,9 @@ type Runner struct {
 	// ActionQuestionAsk). Nil outside of RunTask.
 	iterationBudget *int
 
+	// fileIndexCache memoises the per-project file index across RunTask
+	// calls and across steering-message drains. Auto-invalidates when the
+	// projectID changes (see fileIndexCache.get).
 	fileIndexCache fileIndexCache
 }
 

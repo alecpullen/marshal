@@ -74,14 +74,20 @@ func NewScanner(config Config) *Scanner {
 	return s
 }
 
-func (s *Scanner) Scan() ([]db.FileIndex, error) {
+// walk performs the directory walk, calling fn for each regular file that
+// passes the filter chain. fn receives the absolute path and relative path,
+// and returns the FileIndex, content bytes, and an optional per-file error.
+// Unlike WalkDir errors, per-file errors from fn are NOT fatal — they are
+// logged in Warnings() and recorded as ScannedFile.ReadErr so the caller
+// can inspect them without aborting the entire scan.
+func (s *Scanner) walk(fn func(path, rel string) (db.FileIndex, []byte, error)) ([]ScannedFile, error) {
 	s.warnings = nil
 	root := s.config.Root
 	if s.loadErr != nil {
 		s.warnings = append(s.warnings, "gitignore: "+s.loadErr.Error())
 	}
 
-	var files []db.FileIndex
+	var results []ScannedFile
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("walk %s: %w", path, err)
@@ -139,22 +145,77 @@ func (s *Scanner) Scan() ([]db.FileIndex, error) {
 		if skip {
 			return nil
 		}
-		hash, size, hashErr := hashFile(path)
-		if hashErr != nil {
-			return fmt.Errorf("hash %s: %w", rel, hashErr)
+
+		fi, content, fnErr := fn(path, rel)
+		if fnErr != nil {
+			s.warnings = append(s.warnings, fnErr.Error())
 		}
-		files = append(files, db.FileIndex{
-			Path:      rel,
-			Language:  DetectLanguage(rel),
-			Hash:      hash,
-			SizeBytes: size,
+		results = append(results, ScannedFile{
+			FileIndex: fi,
+			Content:   content,
+			ReadErr:   fnErr,
 		})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	return results, nil
+}
+
+func (s *Scanner) Scan() ([]db.FileIndex, error) {
+	scanned, err := s.walk(func(path, rel string) (db.FileIndex, []byte, error) {
+		hash, size, hashErr := hashFile(path)
+		if hashErr != nil {
+			return db.FileIndex{
+				Path:     rel,
+				Language: DetectLanguage(rel),
+			}, nil, fmt.Errorf("hash %s: %w", rel, hashErr)
+		}
+		return db.FileIndex{
+			Path:      rel,
+			Language:  DetectLanguage(rel),
+			Hash:      hash,
+			SizeBytes: size,
+		}, nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	files := make([]db.FileIndex, len(scanned))
+	for i, sf := range scanned {
+		files[i] = sf.FileIndex
+	}
 	return files, nil
+}
+
+// ScanDetailed scans the repo root like Scan but also captures each file's
+// content so callers can use it without re-reading from disk.
+// Per-file read failures are non-fatal: the returned ScannedFile will have a
+// nil Content and a non-nil ReadErr. The scan continues to other files.
+func (s *Scanner) ScanDetailed() ([]ScannedFile, error) {
+	return s.walk(func(path, rel string) (db.FileIndex, []byte, error) {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return db.FileIndex{
+				Path:     rel,
+				Language: DetectLanguage(rel),
+			}, nil, fmt.Errorf("read %s: %w", rel, err)
+		}
+		hash, size, hashErr := hashBytes(content)
+		if hashErr != nil {
+			return db.FileIndex{
+				Path:     rel,
+				Language: DetectLanguage(rel),
+			}, content, fmt.Errorf("hash %s: %w", rel, hashErr)
+		}
+		return db.FileIndex{
+			Path:      rel,
+			Language:  DetectLanguage(rel),
+			Hash:      hash,
+			SizeBytes: size,
+		}, content, nil
+	})
 }
 
 // Skipped returns a list of entries that were skipped during the most recent
@@ -181,6 +242,14 @@ func hashFile(path string) (string, int64, error) {
 		return "", 0, err
 	}
 	return hex.EncodeToString(h.Sum(nil)), size, nil
+}
+
+// hashBytes computes the SHA-256 hash of content and returns the hex-encoded
+// hash along with the content length.
+func hashBytes(content []byte) (string, int64, error) {
+	h := sha256.New()
+	h.Write(content)
+	return hex.EncodeToString(h.Sum(nil)), int64(len(content)), nil
 }
 
 // shouldSkipDir reports whether rel is a known tooling or output directory

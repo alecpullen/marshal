@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -36,9 +34,14 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			Ignore:        t.config.Indexing.Ignore,
 			SkipGitignore: false, // honour the user's .gitignore by default
 		})
-		files, err := scanner.Scan()
+		scanned, err := scanner.ScanDetailed()
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("scan repo: %w", err)
+		}
+
+		files := make([]db.FileIndex, len(scanned))
+		for i, sf := range scanned {
+			files[i] = sf.FileIndex
 		}
 
 		// The tool layer owns LastIndexedAt: set it just before persisting so
@@ -53,20 +56,18 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 
 		var symbols []db.Symbol
 		var warnings []string
-		for _, f := range files {
-			if f.Language != "go" {
+		for _, sf := range scanned {
+			if sf.ReadErr != nil {
+				warnings = append(warnings, fmt.Sprintf("%s: read error", sf.FileIndex.Path))
 				continue
 			}
-			content, readErr := os.ReadFile(filepath.Join(t.root, f.Path))
-			if readErr != nil {
-				// Unreadable file: keep its file-index entry, skip symbols.
-				warnings = append(warnings, fmt.Sprintf("%s: read error", f.Path))
+			if sf.FileIndex.Language != "go" {
 				continue
 			}
-			fileSymbols, extractErr := repo.ExtractSymbols(ctx, f.Path, content)
+			fileSymbols, extractErr := repo.ExtractSymbols(ctx, sf.FileIndex.Path, sf.Content)
 			if extractErr != nil {
 				// Unparseable file: keep its file-index entry, skip symbols.
-				warnings = append(warnings, fmt.Sprintf("%s: parse error", f.Path))
+				warnings = append(warnings, fmt.Sprintf("%s: parse error", sf.FileIndex.Path))
 				continue
 			}
 			symbols = append(symbols, fileSymbols...)

@@ -382,7 +382,11 @@ func (s *Server) deliverOutbound(id *json.RawMessage, line []byte) bool {
 	if err := json.Unmarshal(line, &resp); err != nil {
 		resp = Response{Error: &Error{Code: parseError, Message: "malformed response: " + err.Error()}}
 	}
-	ch <- outboundResult{response: &resp}
+	select {
+	case ch <- outboundResult{response: &resp}:
+	default:
+		// waiter already consumed the buffer; nothing to do
+	}
 	return true
 }
 
@@ -396,7 +400,10 @@ func (s *Server) failOutbound(err error) {
 	s.stateMu.Unlock()
 
 	for _, ch := range old {
-		ch <- outboundResult{err: err}
+		select {
+		case ch <- outboundResult{err: err}:
+		default:
+		}
 	}
 }
 

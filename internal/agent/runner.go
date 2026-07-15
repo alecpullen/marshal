@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -1157,18 +1158,23 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		}
 		approval = registry.ApprovalApproved
 		if edited != "" {
+			var nerr error
 			if toolName == "shell.run" {
 				argsMap["command"] = edited
 				if remarshalled, merr := json.Marshal(argsMap); merr == nil {
 					args = remarshalled
-					normalizedArgs, _ = normalizeArgs(args)
+					normalizedArgs, nerr = normalizeArgs(args)
+					if nerr != nil {
+						slog.Default().Warn("tool-arg-edit normalize failed", "tool", toolName, "error", nerr)
+					}
+				} else {
+					slog.Default().Warn("tool-arg-edit marshal failed", "tool", toolName, "error", merr)
 				}
 			} else {
 				if !json.Valid([]byte(edited)) {
 					return policyLoopResult{}, fmt.Errorf("user-supplied edit for %s is not valid JSON: %q", toolName, edited)
 				}
 				args = json.RawMessage(edited)
-				var nerr error
 				normalizedArgs, nerr = normalizeArgs(args)
 				if nerr != nil {
 					return policyLoopResult{}, fmt.Errorf("normalize edited %s args: %w", toolName, nerr)

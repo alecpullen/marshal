@@ -747,6 +747,46 @@ func TestRunRequiresApprovalForShellRunAndRespectsApproval(t *testing.T) {
 	}
 }
 
+func TestRunnerShellEditNormalizesSuccessfully(t *testing.T) {
+	reg := registry.New()
+	var calledArgs string
+	if err := reg.Register(registry.Tool{
+		Name: "shell.run", Risk: registry.RiskCommand,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			calledArgs = string(call.Args)
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"run","action":{"type":"tool_call","tool":"shell.run","args":{"command":"echo hello"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"done"}}`,
+	}}
+	state := newTestState(t)
+	pol := policy.NewEngine(&config.Config{}, nil)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SetForceClass(string(ClassQuestion))
+
+	go func() {
+		for state.PendingApproval() == nil {
+			time.Sleep(10 * time.Millisecond)
+		}
+		tc := state.PendingApproval()
+		tc.ResponseChan <- session.UserApprovalDecision{
+			Approved: true,
+			Edited:   "echo edited",
+		}
+	}()
+
+	if err := runner.Run(context.Background(), "run"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(calledArgs, "echo edited") {
+		t.Errorf("calledArgs = %q, want to contain 'echo edited'", calledArgs)
+	}
+}
+
 func TestRunnerReevaluatesPolicyAfterEditedArgs(t *testing.T) {
 	// Verifies that a non-shell tool whose args edit is syntactically invalid
 	// JSON causes the runner to abort with an error rather than silently

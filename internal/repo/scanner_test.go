@@ -265,3 +265,169 @@ func TestScannerComputesHashesAndLanguages(t *testing.T) {
 		t.Fatalf("expected size 13, got %d", f.SizeBytes)
 	}
 }
+
+func TestScanDetailedReturnsContent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hello.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("write hello.go: %v", err)
+	}
+
+	scanner := NewScanner(Config{Root: dir})
+	scanned, err := scanner.ScanDetailed()
+	if err != nil {
+		t.Fatalf("ScanDetailed failed: %v", err)
+	}
+	if len(scanned) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(scanned))
+	}
+	sf := scanned[0]
+	if sf.Path != "hello.go" {
+		t.Fatalf("expected hello.go, got %s", sf.Path)
+	}
+	if sf.Content == nil {
+		t.Fatal("expected non-nil Content")
+	}
+	if string(sf.Content) != "package main\n" {
+		t.Fatalf("unexpected content: %q", string(sf.Content))
+	}
+	if sf.ReadErr != nil {
+		t.Fatalf("unexpected ReadErr: %v", sf.ReadErr)
+	}
+	if sf.Hash == "" {
+		t.Fatal("expected non-empty hash")
+	}
+}
+
+func TestScanDetailedContinuesOnReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0000 semantics differ on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0000 has no effect when running as root")
+	}
+
+	dir := t.TempDir()
+
+	// Create a readable file.
+	if err := os.WriteFile(filepath.Join(dir, "good.go"), []byte("package good\n"), 0644); err != nil {
+		t.Fatalf("write good.go: %v", err)
+	}
+	// Create a file that will be made unreadable.
+	if err := os.WriteFile(filepath.Join(dir, "bad.go"), []byte("package bad\n"), 0000); err != nil {
+		t.Fatalf("write bad.go: %v", err)
+	}
+	// Make it truly unreadable (WriteFile with 0000 may not work on all
+	// systems depending on umask, so chmod explicitly).
+	if err := os.Chmod(filepath.Join(dir, "bad.go"), 0000); err != nil {
+		t.Fatalf("chmod bad.go: %v", err)
+	}
+	// Restore permissions on cleanup so t.TempDir can remove the tree.
+	defer os.Chmod(filepath.Join(dir, "bad.go"), 0644)
+
+	scanner := NewScanner(Config{Root: dir})
+	scanned, err := scanner.ScanDetailed()
+	if err != nil {
+		t.Fatalf("ScanDetailed should not abort on read errors: %v", err)
+	}
+
+	// We should still get results for both files.
+	if len(scanned) != 2 {
+		t.Fatalf("expected 2 results (one with ReadErr), got %d", len(scanned))
+	}
+
+	var good, bad *ScannedFile
+	for i := range scanned {
+		sf := &scanned[i]
+		switch sf.Path {
+		case "good.go":
+			good = sf
+		case "bad.go":
+			bad = sf
+		}
+	}
+	if good == nil {
+		t.Fatal("expected result for good.go")
+	}
+	if bad == nil {
+		t.Fatal("expected result for bad.go")
+	}
+	if good.ReadErr != nil {
+		t.Fatalf("good.go should not have ReadErr: %v", good.ReadErr)
+	}
+	if good.Content == nil {
+		t.Fatal("good.go should have non-nil Content")
+	}
+	if bad.ReadErr == nil {
+		t.Fatal("bad.go should have a non-nil ReadErr")
+	}
+	if bad.Content != nil {
+		t.Fatal("bad.go should have nil Content")
+	}
+	if bad.Path != "bad.go" {
+		t.Fatalf("bad.go path should be preserved, got %s", bad.Path)
+	}
+
+	// Warnings should include the read error.
+	warnings := scanner.Warnings()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "bad.go") && strings.Contains(w, "read ") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected warning about bad.go read error, got %v", warnings)
+	}
+}
+
+func TestScanContinuesOnHashError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0000 semantics differ on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0000 has no effect when running as root")
+	}
+
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, "good.go"), []byte("package good\n"), 0644); err != nil {
+		t.Fatalf("write good.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bad.go"), []byte("package bad\n"), 0000); err != nil {
+		t.Fatalf("write bad.go: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "bad.go"), 0000); err != nil {
+		t.Fatalf("chmod bad.go: %v", err)
+	}
+	defer os.Chmod(filepath.Join(dir, "bad.go"), 0644)
+
+	scanner := NewScanner(Config{Root: dir})
+
+	// Scan (which reads file contents via hashFile) should also continue.
+	files, err := scanner.Scan()
+	if err != nil {
+		t.Fatalf("Scan should not abort on hash errors: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files from Scan, got %d", len(files))
+	}
+
+	// The readable file should have a hash, the unreadable one should have an
+	// empty hash (because hashFile failed).
+	var goodHash, badHash string
+	for _, f := range files {
+		switch f.Path {
+		case "good.go":
+			goodHash = f.Hash
+		case "bad.go":
+			badHash = f.Hash
+		}
+	}
+	if goodHash == "" {
+		t.Fatal("good.go should have a non-empty hash")
+	}
+	if badHash != "" {
+		t.Fatal("bad.go should have an empty hash (read failed)")
+	}
+}

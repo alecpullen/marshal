@@ -63,7 +63,7 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 				warnings = append(warnings, fmt.Sprintf("%s: read error", f.Path))
 				continue
 			}
-			fileSymbols, extractErr := repo.ExtractSymbols(f.Path, content)
+			fileSymbols, extractErr := repo.ExtractSymbols(ctx, f.Path, content)
 			if extractErr != nil {
 				// Unparseable file: keep its file-index entry, skip symbols.
 				warnings = append(warnings, fmt.Sprintf("%s: parse error", f.Path))

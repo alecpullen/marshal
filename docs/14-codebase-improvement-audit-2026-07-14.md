@@ -2148,3 +2148,25 @@ fixes" above).
 | F-SEC-16 | RESOLVED | `policy.ClassifyCommand` is argv-aware; substring patterns retained as per-stage safety net |
 | F-SEC-17 | RESOLVED | Container argv path gated on `ClassifyCommand` |
 | F-SEC-31 | RESOLVED | Slash commands use `shlex.Split` for quoted args |
+
+### Batch 4 (E1 — DB integrity, query correctness, code hygiene): PLANNED on branch `feature/domain-e1-db-integrity`
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-e1-db-integrity.md`
+
+Closes: F-POL-125, F-POL-126, F-POL-127, F-POL-128, F-POL-136, F-BUG-103, F-BUG-104, F-BUG-106, F-BUG-107, F-BUG-108, F-BUG-109, F-BUG-135, F-SEC-121, F-SEC-124, F-PERF-114, F-BUG-105, F-BUG-115, F-BUG-116.
+
+### Batch 5 (E2 — repo scanner, gitignore, language & indexing): PLANNED on branch `feature/domain-e2-repo-scanner`
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-e2-repo-scanner.md`
+
+Closes: F-BUG-97, F-BUG-98, F-BUG-99, F-BUG-100, F-BUG-101, F-BUG-110, F-BUG-111, F-POL-129, F-POL-131, F-POL-132, F-POL-133 (ADR), F-POL-134.
+
+Depends on: Batch 4 (for `internal/db/sqlutil/escapeLike`).
+
+### Batch 6 (E3 — DB & search performance / scaling / isolation): PLANNED on branch `feature/domain-e3-db-perf`
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-e3-db-perf.md`
+
+Closes: F-PERF-112, F-PERF-113, F-PERF-117, F-PERF-118, F-PERF-119, F-SEC-120.
+
+Depends on: Batches 4 and 5.

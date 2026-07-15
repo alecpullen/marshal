@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+const recentTurnMetricsDefaultLimit = 50
+const recentTurnMetricsMaxLimit = 200
+
 type TurnMetricsRow struct {
 	ID               int64
 	ProjectID        int64
@@ -74,6 +77,12 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 }
 
 func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, error) {
+	if limit <= 0 {
+		limit = recentTurnMetricsDefaultLimit
+	}
+	if limit > recentTurnMetricsMaxLimit {
+		limit = recentTurnMetricsMaxLimit
+	}
 	rows, err := db.sqlDB.Query(
 		`SELECT id, project_id, session_id, started_at, duration_ms, class,
 			role, provider, model, goal, iterations, tool_calls, tool_errors,

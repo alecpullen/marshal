@@ -93,6 +93,25 @@ func TestInsertTurnMetricsNullSessionID(t *testing.T) {
 	}
 }
 
+func TestRecentTurnMetricsClampsNonPositiveLimit(t *testing.T) {
+	db, projectID := openMetricsTestDB(t)
+	if err := db.CreateSession("s1", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := db.InsertTurnMetrics(sampleRow(projectID, "s1")); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	for _, limit := range []int{0, -1, -100} {
+		rows, err := db.RecentTurnMetrics(projectID, limit)
+		if err != nil {
+			t.Fatalf("limit=%d: %v", limit, err)
+		}
+		if len(rows) != 1 {
+			t.Errorf("limit=%d: expected 1 row, got %d", limit, len(rows))
+		}
+	}
+}
+
 func TestRecentTurnMetricsNewestFirstAndLimited(t *testing.T) {
 	database, projectID := openMetricsTestDB(t)
 

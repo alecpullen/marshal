@@ -31,6 +31,50 @@ func TestScannerFindsFiles(t *testing.T) {
 	}
 }
 
+func TestNewScannerContinuesOnBadGitignore(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("[\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s := NewScanner(Config{Root: dir})
+	if s.loadErr == nil {
+		t.Fatal("expected loadErr to be set for malformed gitignore")
+	}
+	if s.gitignore != nil {
+		t.Fatal("expected gitignore to be nil when parse fails")
+	}
+	// Scan must still succeed (the gitignore rules are simply not applied).
+	if _, err := s.Scan(); err != nil {
+		t.Errorf("Scan should succeed when gitignore fails to parse: %v", err)
+	}
+	// Warnings should contain the gitignore error.
+	if len(s.Warnings()) == 0 {
+		t.Error("expected at least one warning after gitignore parse failure")
+	}
+}
+
+func TestScannerWarningsResetBetweenScanCalls(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("[\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s := NewScanner(Config{Root: dir})
+	if s.loadErr == nil {
+		t.Fatal("expected loadErr to be set for malformed gitignore")
+	}
+	// First Scan.
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("first Scan failed: %v", err)
+	}
+	// Second Scan — without the fix, warnings would duplicate.
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("second Scan failed: %v", err)
+	}
+	if n := len(s.Warnings()); n != 1 {
+		t.Fatalf("expected exactly 1 warning after two Scan calls, got %d", n)
+	}
+}
+
 func TestScannerSkipsIgnoredDirs(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644); err != nil {

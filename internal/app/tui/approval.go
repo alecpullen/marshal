@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -12,6 +13,9 @@ import (
 	"marshal/internal/app/tui/huhtheme"
 	"marshal/internal/diffview"
 )
+
+// warningStyle is used for the "press Esc again to deny" prompt.
+var warningStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
 
 // approvalChoice is the set of actions the inline approval chooser offers.
 type approvalChoice string
@@ -44,6 +48,9 @@ type approvalModel struct {
 	// done is set once the form reaches a terminal state, so the parent can
 	// read Choice without re-dispatching the form.
 	done bool
+	// pendingDenyAt is set to time.Now() on the first Esc press. A second
+	// Esc within 1.5s confirms the deny. Any other key resets it to zero.
+	pendingDenyAt time.Time
 }
 
 func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int) *approvalModel {
@@ -116,12 +123,26 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 	if am.form == nil || am.done {
 		return am, nil
 	}
-	// Esc denies (aborts the form). Ctrl+C is intercepted by the parent.
+	// Esc requires a second press within 1.5s to deny. Ctrl+C is
+	// intercepted by the parent.
 	if k, ok := msg.(tea.KeyPressMsg); ok {
+		if k.String() != "esc" {
+			// Any non-Esc key resets the pending deny.
+			am.pendingDenyAt = time.Time{}
+		}
 		switch k.String() {
 		case "esc":
-			am.done = true
-			am.choice = choiceDeny
+			if am.pendingDenyAt.IsZero() {
+				am.pendingDenyAt = time.Now()
+				return am, nil
+			}
+			if time.Since(am.pendingDenyAt) <= 1500*time.Millisecond {
+				am.done = true
+				am.choice = choiceDeny
+				return am, nil
+			}
+			// Expired; treat as a new first press.
+			am.pendingDenyAt = time.Now()
 			return am, nil
 		case "enter":
 			if am.submitPending {
@@ -178,7 +199,10 @@ func (am *approvalModel) View() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(am.form.View())
-	if am.submitPending {
+	if !am.pendingDenyAt.IsZero() {
+		b.WriteString("\n")
+		b.WriteString(warningStyle.Render("▸ Press Esc again to deny · any other key cancels"))
+	} else if am.submitPending {
 		b.WriteString("\n")
 		b.WriteString(promptPrefixStyle.Render("▸ Submit selected action"))
 	} else {

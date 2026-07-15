@@ -9,6 +9,22 @@ import (
 	"marshal/internal/app/session"
 )
 
+// keyPress is a helper that wraps a key string into a tea.KeyPressMsg.
+func keyPress(key string) tea.KeyPressMsg {
+	switch key {
+	case "esc":
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "enter":
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
+	default:
+		return tea.KeyPressMsg{Code: rune(key[0])}
+	}
+}
+
 func TestApprovalDialogRendersDiff(t *testing.T) {
 	tc := &session.PendingToolCall{
 		Name: "file.write_patch",
@@ -45,10 +61,14 @@ func TestApprovalSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	}
 	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
 
-	// Esc should mark done + deny without writing to the channel.
-	am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	// Double Esc should mark done + deny without writing to the channel.
+	am, _ = am.Update(keyPress("esc"))
+	if am.IsDone() {
+		t.Fatal("first esc should not set done")
+	}
+	am, _ = am.Update(keyPress("esc"))
 	if !am.IsDone() {
-		t.Fatal("esc should set done")
+		t.Fatal("second esc should set done")
 	}
 	if am.Choice() != choiceDeny {
 		t.Fatalf("esc should set choiceDeny; got %v", am.Choice())
@@ -76,6 +96,33 @@ func TestApprovalSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	case got := <-ch:
 		t.Fatalf("sub-form dispatched on confirm: %v", got)
 	default:
+	}
+}
+
+func TestEscRequiresDoublePressToDeny(t *testing.T) {
+	am := newApprovalModel(&session.PendingToolCall{
+		Name: "shell.run",
+		Args: `{"command":"ls"}`,
+	}, session.SandboxInfo{}, false, false, 160)
+	am, _ = am.Update(keyPress("esc"))
+	if am.IsDone() {
+		t.Fatalf("first Esc should not complete the form")
+	}
+	am, _ = am.Update(keyPress("esc"))
+	if !am.IsDone() || am.Choice() != choiceDeny {
+		t.Fatalf("second Esc should deny; got done=%v choice=%v", am.IsDone(), am.Choice())
+	}
+}
+
+func TestEscAfterOtherKeyResetsPendingDeny(t *testing.T) {
+	am := newApprovalModel(&session.PendingToolCall{
+		Name: "shell.run",
+		Args: `{"command":"ls"}`,
+	}, session.SandboxInfo{}, false, false, 160)
+	am, _ = am.Update(keyPress("esc"))
+	am, _ = am.Update(keyPress("down"))
+	if !am.pendingDenyAt.IsZero() {
+		t.Fatalf("non-Esc key should reset pending deny")
 	}
 }
 

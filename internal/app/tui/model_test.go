@@ -1275,8 +1275,15 @@ func TestEscDuringApprovalDenies(t *testing.T) {
 	}
 	state.SetPendingApproval(tc)
 	model := New(state)
+	// First Esc arms the pending deny.
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m := updated.(Model)
+	if cmd != nil {
+		t.Fatal("first Esc should not return a quit command")
+	}
+	// Second Esc confirms the deny.
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(Model)
 
 	if cmd != nil {
 		t.Fatal("Esc during approval should not return a quit command")

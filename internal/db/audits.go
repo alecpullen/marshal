@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"time"
 
 	"marshal/internal/tools/registry"
@@ -19,7 +20,15 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		exitCode = sql.NullInt64{Int64: int64(*event.CommandExitCode), Valid: true}
 	}
 
-	filesChanged, err := json.Marshal(event.FilesChanged)
+	var normalizedInput any = event.FilesChanged
+	if event.FilesChanged != nil {
+		normalized := make([]string, len(event.FilesChanged))
+		for i, p := range event.FilesChanged {
+			normalized[i] = filepath.ToSlash(p)
+		}
+		normalizedInput = normalized
+	}
+	filesChanged, err := json.Marshal(normalizedInput)
 	if err != nil {
 		return fmt.Errorf("marshal files changed: %w", err)
 	}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -27,7 +28,7 @@ type Client struct {
 
 	mu      sync.Mutex
 	nextID  int64
-	pending map[interface{}]chan<- Response
+	pending map[json.Number]chan<- Response
 	err     error
 }
 
@@ -37,7 +38,7 @@ func NewClient(name, command string, args, env []string) *Client {
 		Command: command,
 		Args:    args,
 		Env:     env,
-		pending: make(map[interface{}]chan<- Response),
+		pending: make(map[json.Number]chan<- Response),
 	}
 }
 
@@ -125,7 +126,8 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) Call(ctx context.Context, method string, params interface{}, result interface{}) error {
-	id := atomic.AddInt64(&c.nextID, 1)
+	n := atomic.AddInt64(&c.nextID, 1)
+	id := json.Number(strconv.FormatInt(n, 10))
 	req := Request{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -188,20 +190,12 @@ func (c *Client) readLoop() {
 		if err := json.Unmarshal(scanner.Bytes(), &res); err != nil {
 			continue
 		}
-		if res.ID == nil {
+		if res.ID == "" {
 			continue
 		}
-		// Handle JSON numeric type float64 vs int64
-		var key interface{}
-		switch v := res.ID.(type) {
-		case float64:
-			key = int64(v)
-		default:
-			key = v
-		}
-
+		// ID is now json.Number — use it directly as the pending key.
 		c.mu.Lock()
-		ch, ok := c.pending[key]
+		ch, ok := c.pending[res.ID]
 		c.mu.Unlock()
 
 		if ok {

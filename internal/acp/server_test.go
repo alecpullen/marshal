@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -887,4 +888,27 @@ func TestDispatchRecoversFromHandlerPanic(t *testing.T) {
 	if rpcErr.Code != internalError {
 		t.Errorf("code = %d, want %d (internalError)", rpcErr.Code, internalError)
 	}
+}
+
+func TestServerDispatchLogs(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewServer(strings.NewReader(""), &bytes.Buffer{},
+		WithLogger(slog.New(slog.NewTextHandler(&buf, nil))))
+
+	s.Handle("ping", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+
+	req := Request{Method: "ping", ID: rawMessagePtr(`1`), Params: json.RawMessage(`{}`)}
+	_, _ = s.dispatch(context.Background(), req)
+
+	if !strings.Contains(buf.String(), "method=ping") {
+		t.Fatalf("expected dispatch log, got %q", buf.String())
+	}
+}
+
+// rawMessagePtr returns a *json.RawMessage pointing to the given JSON string.
+func rawMessagePtr(s string) *json.RawMessage {
+	r := json.RawMessage(s)
+	return &r
 }

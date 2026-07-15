@@ -2355,3 +2355,36 @@ theme reload publishes a `ChangedMsg`; `huhtheme.WarmSunset` reads
 the theme lazily; URL truncation is rune-aware; markdown renderer
 cache is bounded (4 entries); `patternForApproval` moved to
 `internal/permissions`; `closeFns` renamed to `resourceClosers`.
+
+### Section G (Cross-cutting concerns): status & batching
+
+Doc: `docs/superpowers/plans/2026-07-15-section-g-xcut-batching.md`
+
+13 of 16 XCUT items are already covered by existing plans/batches
+(see the table in the batching doc). The 3 with residual work are
+covered by three new plans:
+
+- **G1 — ACP/MCP structured logging** (F-XCUT-176):
+  `docs/superpowers/plans/2026-07-15-domain-g1-logging.md`
+  Adds `*slog.Logger` fields and `With…` options to `acp.Server`,
+  `acp.SessionManager`, `mcp.Manager`, `mcp.Client`. 4 new tests.
+- **G2 — `reloadAgentRuntime` atomicity** (F-XCUT-184 / F-BUG-15):
+  `docs/superpowers/plans/2026-07-15-domain-g2-reload.md`
+  Pre-validates the new config by dry-building a runner from a
+  copy before mutating `state.Config`. New regression test.
+- **G3 — `huh` form completion race residual** (F-XCUT-188 / F-BUG-14):
+  `docs/superpowers/plans/2026-07-15-domain-g3-huh-race.md`
+  Sub-form `Update` no longer dispatches; parent guards dispatch
+  on `sub.done` and `state.PendingApproval() == tc`. Complements
+  F3 Task 4. 3 new tests.
+
+The remaining 13 (F-XCUT-177, 178, 179, 180, 181, 182, 183, 185,
+186, 187, 189, 190, 191) are already RESOLVED or PLANNED in
+earlier batches; the batching doc links each to its underlying
+finding and source plan.
+
+### Batch 23 (G1 — ACP/MCP structured logging): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-XCUT-176 | RESOLVED | `acp.Server`, `acp.SessionManager`, `mcp.Manager`, `mcp.Client` all accept `*slog.Logger` via `With…` options. Default `slog.Default()`. Dispatch, connect, list, call, replace, close all log. 4 new tests assert specific events on a buffer logger. |

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -19,11 +20,22 @@ import (
 // ErrClientClosed is returned by Call when the client has been Close()d.
 var ErrClientClosed = errors.New("mcp: client closed")
 
+// ClientOption configures a Client.
+type ClientOption func(*Client)
+
+// WithClientLogger sets the logger on a Client. When nil (or unset), the
+// client uses slog.Default().
+func WithClientLogger(l *slog.Logger) ClientOption {
+	return func(c *Client) { c.Logger = l }
+}
+
 type Client struct {
 	Name    string
 	Command string
 	Args    []string
 	Env     []string
+
+	Logger *slog.Logger // nil → slog.Default()
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -36,14 +48,27 @@ type Client struct {
 	err     error
 }
 
-func NewClient(name, command string, args, env []string) *Client {
-	return &Client{
+func NewClient(name, command string, args, env []string, opts ...ClientOption) *Client {
+	c := &Client{
 		Name:    name,
 		Command: command,
 		Args:    args,
 		Env:     env,
 		pending: make(map[json.Number]chan<- Response),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// log returns the client's logger, defaulting to slog.Default() when the
+// Logger field is nil.
+func (c *Client) log() *slog.Logger {
+	if c.Logger == nil {
+		return slog.Default()
+	}
+	return c.Logger
 }
 
 // buildChildEnv returns a safe environment for the MCP child process.
@@ -126,6 +151,7 @@ func (c *Client) Close() error {
 		_ = c.cmd.Process.Kill()
 	}
 	c.wg.Wait()
+	c.log().Info("mcp client closed")
 	return nil
 }
 
@@ -201,6 +227,7 @@ func (c *Client) readLoop() {
 		if res.ID == "" {
 			continue
 		}
+		c.log().Debug("mcp response", "id", res.ID)
 		// ID is now json.Number — use it directly as the pending key.
 		c.mu.Lock()
 		ch, ok := c.pending[res.ID]
@@ -209,6 +236,11 @@ func (c *Client) readLoop() {
 		if ok {
 			ch <- res
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		c.log().Warn("mcp readLoop ended", "err", err)
+	} else {
+		c.log().Info("mcp readLoop ended")
 	}
 	c.mu.Lock()
 	if c.err == nil {

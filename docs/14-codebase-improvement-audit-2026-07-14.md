@@ -2149,11 +2149,28 @@ fixes" above).
 | F-SEC-17 | RESOLVED | Container argv path gated on `ClassifyCommand` |
 | F-SEC-31 | RESOLVED | Slash commands use `shlex.Split` for quoted args |
 
-### Batch 4 (E1 — DB integrity, query correctness, code hygiene): PLANNED on branch `feature/domain-e1-db-integrity`
+### Batch 4 (E1 — DB integrity, query correctness, code hygiene): RESOLVED on branch `feature/domain-e-db-repo-symbols`
 
-Plan: `docs/superpowers/plans/2026-07-15-domain-e1-db-integrity.md`
-
-Closes: F-POL-125, F-POL-126, F-POL-127, F-POL-128, F-POL-136, F-BUG-103, F-BUG-104, F-BUG-106, F-BUG-107, F-BUG-108, F-BUG-109, F-BUG-135, F-SEC-121, F-SEC-124, F-PERF-114, F-BUG-105, F-BUG-115, F-BUG-116.
+| Finding | Status | Notes |
+|---|---|---|
+| F-POL-126 | RESOLVED | DB.exec / DB.queryRow wrappers removed; callers use sqlDB directly |
+| F-POL-125 | RESOLVED | joinSnapshotFiles removed |
+| F-POL-127 | RESOLVED | SaveFileIndex uses defer rows.Close() |
+| F-POL-128 | RESOLVED | scanSymbol helper extracted |
+| F-POL-136 | RESOLVED | todos.go errors wrapped |
+| F-BUG-103 | RESOLVED | SaveSnapshot is transactional; snapshot_files.path has CHECK (length > 0) |
+| F-BUG-104 | RESOLVED | LatestSnapshot returns zero values on scan/iter error |
+| F-BUG-106 | RESOLVED | PruneSnapshotsOlderThan rejects days < 0 |
+| F-BUG-107 | RESOLVED | GetOrCreateProject always SELECTs id after upsert |
+| F-BUG-135 | RESOLVED | RecentTurnMetrics clamps limit <= 0 |
+| F-SEC-121 | RESOLVED | tableColumns table names are allowlisted; negative tests added |
+| F-SEC-124 | RESOLVED | SaveToolCall normalizes FilesChanged via filepath.ToSlash |
+| F-BUG-108 | RESOLVED | sandbox_enabled / resource_limits / output_truncated columns added; round-trip preserved; legacy-row Enabled fix prevents silent overwrite |
+| F-BUG-109 | RESOLVED | ResourceLimits / OutputTruncated read back from new columns |
+| F-PERF-114 | RESOLVED | idx_files_project, idx_symbols_project added |
+| F-BUG-105 | RESOLVED | MessagesOnBranch uses recursive CTE; no IN-clause limit |
+| F-BUG-115 | RESOLVED | Same change eliminates N+1 |
+| F-BUG-116 | RESOLVED | ListSessions joins against aggregated CTE |
 
 ### Batch 5 (E2 — repo scanner, gitignore, language & indexing): PLANNED on branch `feature/domain-e2-repo-scanner`
 

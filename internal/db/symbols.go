@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -50,6 +51,17 @@ func (db *DB) SaveSymbols(projectID int64, symbols []Symbol) error {
 	return nil
 }
 
+// scanSymbol reads the next row from rows in the column order used by both
+// GetSymbols and FindSymbols (id, file_path, kind, name, receiver,
+// signature, line_start, line_end).
+func scanSymbol(rows *sql.Rows) (Symbol, error) {
+	var s Symbol
+	if err := rows.Scan(&s.ID, &s.FilePath, &s.Kind, &s.Name, &s.Receiver, &s.Signature, &s.LineStart, &s.LineEnd); err != nil {
+		return Symbol{}, err
+	}
+	return s, nil
+}
+
 // GetSymbols returns all symbol rows for a project, ordered by file path
 // then line start.
 func (db *DB) GetSymbols(projectID int64) ([]Symbol, error) {
@@ -67,8 +79,8 @@ func (db *DB) GetSymbols(projectID int64) ([]Symbol, error) {
 
 	var symbols []Symbol
 	for rows.Next() {
-		var s Symbol
-		if err := rows.Scan(&s.ID, &s.FilePath, &s.Kind, &s.Name, &s.Receiver, &s.Signature, &s.LineStart, &s.LineEnd); err != nil {
+		s, err := scanSymbol(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan symbol row: %w", err)
 		}
 		symbols = append(symbols, s)
@@ -113,8 +125,8 @@ func (db *DB) FindSymbols(projectID int64, name, kind string, limit int) ([]Symb
 
 	var symbols []Symbol
 	for rows.Next() {
-		var s Symbol
-		if err := rows.Scan(&s.ID, &s.FilePath, &s.Kind, &s.Name, &s.Receiver, &s.Signature, &s.LineStart, &s.LineEnd); err != nil {
+		s, err := scanSymbol(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan symbol row: %w", err)
 		}
 		symbols = append(symbols, s)

@@ -822,6 +822,45 @@ func TestReportFatalSurfacesAllErrors(t *testing.T) {
 	}
 }
 
+// --- F-POL-61: Empty method rejection ---
+
+func TestRequestRejectsEmptyMethod(t *testing.T) {
+	s := &Server{
+		outbound: make(map[string]chan outboundResult),
+	}
+	err := s.Request(context.Background(), "", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for empty method, got nil")
+	}
+	if !strings.Contains(err.Error(), "method") {
+		t.Errorf("error should mention 'method', got: %v", err)
+	}
+}
+
+// --- F-POL-60: MaxLineBytes scanner cap ---
+
+func TestScanLinesRespectsMaxLineBytes(t *testing.T) {
+	// The scanner enforces MaxLineBytes when it needs to grow its
+	// internal buffer. The default initial buffer is 64 KiB, so the
+	// test line must exceed that to force growth.
+	s := &Server{MaxLineBytes: 4096} // tiny cap
+	big := strings.Repeat("a", 70000) + "\n"
+	in := strings.NewReader(big)
+	s.in = in
+	frames := make(chan []byte, 1)
+	done := make(chan error, 1)
+	go s.scanLines(context.Background(), frames, done)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("scanner did not error on oversized line")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("scanLines did not return after oversized line")
+	}
+}
+
 // TestDispatchRecoversFromHandlerPanic reproduces F-BUG-57. Pre-fix
 // code lets a panicking handler crash the process. Post-fix, the
 // panic is recovered and returned as a JSON-RPC internalError.

@@ -24,6 +24,30 @@ type Request struct {
 	ID      *json.RawMessage `json:"id,omitempty"`
 	Method  string           `json:"method"`
 	Params  json.RawMessage  `json:"params,omitempty"`
+
+	// hasMethod is true iff the JSON input contained a "method" key.
+	// It is set by UnmarshalJSON and used by handleFrame to distinguish
+	// between a response frame (no method key) and a request/notification
+	// whose method string happens to be empty.
+	hasMethod bool `json:"-"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler for Request. It unmarshals
+// normally and then probes the raw JSON for a "method" key to set the
+// hasMethod flag. This avoids re-unmarshalling the full line in
+// handleFrame (F-POL-59).
+func (r *Request) UnmarshalJSON(data []byte) error {
+	type alias Request
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*r = Request(a)
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err == nil {
+		_, r.hasMethod = probe["method"]
+	}
+	return nil
 }
 
 type Response struct {

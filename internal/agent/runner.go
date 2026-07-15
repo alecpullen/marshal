@@ -180,9 +180,7 @@ type Runner struct {
 	// first user turn to produce a short session title (F13). Fire-and-forget.
 	TitleGenerator TitleGenerator
 
-	// RunTaskFunc, if non-nil, overrides RunTask for testing. It returns a
-	// canned Task without calling the provider. Used by the SDD orchestrator
-	// tests to inject scripted responses.
+	// RunTaskFunc overrides RunTask for testing (see the named type below).
 	RunTaskFunc RunTaskFunc
 
 	forceClassMu sync.Mutex

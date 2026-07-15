@@ -3,6 +3,7 @@ package native
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -72,6 +73,9 @@ func TestRepoSearchSkipsIgnoredDirectories(t *testing.T) {
 }
 
 func TestRepoSearch_SkipsSymlinksAndReportsErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink requires elevated privileges on Windows")
+	}
 	root := t.TempDir()
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("needle"), 0o644); err != nil {

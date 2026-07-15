@@ -3,6 +3,8 @@ package repo
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -163,6 +165,31 @@ func TestScannerIncludesGitignoredFilesWhenConfigured(t *testing.T) {
 	}
 	if paths[".gitignore"] {
 		t.Fatalf("expected .gitignore itself to be skipped, got %+v", files)
+	}
+}
+
+func TestScanner_SkipsSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewScanner(Config{Root: root})
+	files, err := s.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.Contains(f.Path, "link") || strings.Contains(f.Path, "secret") {
+			t.Errorf("scanner followed symlink: %s", f.Path)
+		}
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/google/shlex"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -1553,7 +1554,12 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
-	parts := strings.Fields(raw)
+	parts, err := shlex.Split(raw)
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, "Invalid command syntax.", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
 	if len(parts) == 0 {
 		return m, nil
 	}
@@ -2247,11 +2253,15 @@ func permissionForTool(toolName string) string {
 
 func patternForApproval(tc *session.PendingToolCall) string {
 	if tc.Name == "shell.run" || tc.Name == "test.run" {
-		words := strings.Fields(tc.Command)
-		if len(words) > 0 {
-			return words[0] + " *"
+		argv, err := shlex.Split(tc.Command)
+		if err != nil || len(argv) == 0 {
+			// If shlex fails to parse, fall back to the raw command as an exact pattern.
+			if tc.Command != "" {
+				return tc.Command
+			}
+			return "*"
 		}
-		return "*"
+		return strings.Join(argv, " ")
 	}
 	if tc.Name == "file.write_patch" {
 		patches, err := patch.Parse(tc.Args)

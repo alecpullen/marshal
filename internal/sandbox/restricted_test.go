@@ -27,7 +27,7 @@ func backendCases(t *testing.T) []struct {
 		sb   Sandbox
 	}{
 		{"restricted", newTestSandbox(t, Config{Backend: "restricted"})},
-		{"passthrough", newTestSandbox(t, Config{Backend: "passthrough"})},
+		{"passthrough", newTestSandbox(t, Config{Backend: "passthrough", UnsafePassthrough: true})},
 	}
 }
 

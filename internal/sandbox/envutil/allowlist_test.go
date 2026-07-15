@@ -1,0 +1,169 @@
+// Package envutil hosts env-scrubbing helpers shared between the sandbox
+// and the hooks runner.
+package envutil
+
+import (
+	"testing"
+)
+
+func TestAllowList_StripsSecrets(t *testing.T) {
+	parent := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/u",
+		"ANTHROPIC_API_KEY=sk-secret",
+		"OPENAI_API_KEY=sk-secret",
+		"AWS_ACCESS_KEY_ID=AKIA...",
+		"GH_TOKEN=ghp_...",
+		"LD_PRELOAD=/tmp/evil.so",
+		"DYLD_INSERT_LIBRARIES=/tmp/evil.dylib",
+		"IFS=,",
+		"LANG=en_US.UTF-8",
+		"USER=alice",
+	}
+	got := AllowList(parent)
+	for _, kv := range got {
+		if IsSecretBearer(EnvKey(kv)) {
+			t.Errorf("AllowList leaked secret key: %s", kv)
+		}
+		if k := EnvKey(kv); k == "LD_PRELOAD" || k == "DYLD_INSERT_LIBRARIES" || k == "IFS" {
+			t.Errorf("AllowList leaked dangerous key: %s", kv)
+		}
+	}
+}
+
+func TestAllowList_PreservesCoreVars(t *testing.T) {
+	parent := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/u",
+		"LANG=en_US.UTF-8",
+		"LC_ALL=en_US.UTF-8",
+		"USER=alice",
+		"TZ=UTC",
+		"TMPDIR=/tmp",
+		"TERM=xterm-256color",
+	}
+	got := AllowList(parent)
+	want := map[string]bool{
+		"PATH": true, "HOME": true, "LANG": true, "LC_ALL": true,
+		"USER": true, "TZ": true, "TMPDIR": true, "TERM": true,
+	}
+	for _, kv := range got {
+		if !want[EnvKey(kv)] {
+			t.Errorf("unexpected key in allowlist: %s", kv)
+		}
+		delete(want, EnvKey(kv))
+	}
+	if len(want) != 0 {
+		t.Errorf("missing core keys: %v", want)
+	}
+}
+
+func TestAllowList_StripsLDAndDYLDWildcards(t *testing.T) {
+	parent := []string{
+		"LD_LIBRARY_PATH=/tmp",
+		"LD_AUDIT=/tmp/audit.so",
+		"DYLD_FRAMEWORK_PATH=/tmp",
+		"DYLD_FALLBACK_LIBRARY_PATH=/tmp",
+		"PATH=/usr/bin", // allowed key — proves the function is not a no-op
+	}
+	got := AllowList(parent)
+	// Verify the dangerous keys are stripped.
+	for _, kv := range got {
+		k := EnvKey(kv)
+		if k == "LD_LIBRARY_PATH" || k == "LD_AUDIT" ||
+			k == "DYLD_FRAMEWORK_PATH" || k == "DYLD_FALLBACK_LIBRARY_PATH" {
+			t.Errorf("AllowList leaked dynamic-loader key: %s", kv)
+		}
+	}
+	// Verify the allowed key survived.
+	found := false
+	for _, kv := range got {
+		if EnvKey(kv) == "PATH" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("AllowList dropped allowed key PATH but should have kept it")
+	}
+}
+
+func TestAllowList_OrderIsStable(t *testing.T) {
+	// All keys are in allowlistKeys so the sort loop actually iterates.
+	parent := []string{"TMPDIR=/t", "PATH=/usr/bin", "USER=alice"}
+	got := AllowList(parent)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 results, got %d: %v", len(got), got)
+	}
+	for i := 1; i < len(got); i++ {
+		if EnvKey(got[i-1]) > EnvKey(got[i]) {
+			t.Fatalf("AllowList output not sorted: %v", got)
+		}
+	}
+}
+
+func TestIsSecretKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{"ANTHROPIC_API_KEY", true},
+		{"GH_TOKEN", true},
+		{"AWS_ACCESS_KEY_ID", true},
+		{"GCP_PROJECT", true},
+		{"AZURE_CLIENT_SECRET", true},
+		{"OPENAI_API_KEY", true},
+		{"COHERE_API_KEY", true},
+		{"MISTRAL_API_KEY", true},
+		{"GITLAB_TOKEN", true},
+		{"GITHUB_TOKEN", true},
+		{"MY_SECRET_PASSWORD", true}, // "PASSWORD" substring match
+		{"DB_PASSWD", true},          // "PASSWD" substring match
+		{"MY_CREDENTIAL_FILE", true}, // "CREDENTIAL" substring match
+		{"MYAPP_CONFIG", false},      // no matching substring
+		{"PATH", false},
+		{"USER", false},
+		{"HOME", false},
+		{"TMPDIR", false},
+		{"LD_PRELOAD", false}, // dangerous, but not secret-bearing
+		{"IFS", false},
+	}
+	for _, tc := range tests {
+		got := IsSecretKey(tc.key)
+		if got != tc.want {
+			t.Errorf("IsSecretKey(%q) = %v, want %v", tc.key, got, tc.want)
+		}
+	}
+}
+
+func TestIsDangerousKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{"LD_PRELOAD", true},
+		{"LD_LIBRARY_PATH", true},
+		{"DYLD_INSERT_LIBRARIES", true},
+		{"DYLD_FRAMEWORK_PATH", true},
+		{"IFS", true},
+		{"SHELLOPTS", true},
+		{"BASH_ENV", true},
+		{"ENV", true},
+		{"BASH_FUNC_foo", true},
+		{"BASH_FUNC_bar", true},
+		{"ZDOTDIR", true},
+		{"PATH", true},
+		{"USER", false},
+		{"HOME", false},
+		{"TMPDIR", false},
+		{"ANTHROPIC_API_KEY", false}, // secret-bearing, but not dangerous
+		{"LANG", false},
+		{"TERM", false},
+	}
+	for _, tc := range tests {
+		got := IsDangerousKey(tc.key)
+		if got != tc.want {
+			t.Errorf("IsDangerousKey(%q) = %v, want %v", tc.key, got, tc.want)
+		}
+	}
+}

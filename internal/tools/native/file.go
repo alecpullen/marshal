@@ -157,34 +157,29 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 				if statErr != nil {
 					if os.IsNotExist(statErr) {
 						// New file creation: no on-disk version to be stale against.
-						// Continue checking other patches but still need to validate below.
-					} else {
-						return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
+						continue
 					}
+					return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
 				}
-				if statErr == nil && hasRead && info.ModTime().After(lastRead) {
+				if hasRead && info.ModTime().After(lastRead) {
 					return registry.ToolResult{}, fmt.Errorf(
 						"file %s changed on disk since last read; re-read it before editing", fp.Path)
 				}
-				if statErr == nil && !hasRead {
+				if !hasRead {
 					return registry.ToolResult{}, fmt.Errorf(
 						"file %s was never read this session; read it before editing", fp.Path)
 				}
 			}
 
-			// Read the file for validation; if it doesn't exist, use empty content.
-			var content string
-			data, readErr := os.ReadFile(path)
-			if readErr != nil {
-				if !os.IsNotExist(readErr) {
-					return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, readErr)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					// New file creation: no existing content to validate.
+					continue
 				}
-				// New file: validate with empty content.
-				content = ""
-			} else {
-				content = string(data)
+				return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, err)
 			}
-			ok, err := patch.ValidatePatch(content, fp)
+			ok, err := patch.ValidatePatch(string(data), fp)
 			if !ok || err != nil {
 				return registry.ToolResult{}, fmt.Errorf("patch validation failed for %s: %v", fp.Path, err)
 			}
@@ -200,29 +195,27 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
+			data, err := os.ReadFile(path)
 			var original string
-			info, statErr := os.Stat(path)
-			var mode os.FileMode = 0o644
-			newFile := false
-			if statErr != nil {
-				if !os.IsNotExist(statErr) {
-					return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
+			if err != nil {
+				if !os.IsNotExist(err) {
+					return registry.ToolResult{}, err
 				}
-				// New file: only allowed when every chunk has an empty Search.
-				for _, c := range fp.Chunks {
-					if c.Search != "" {
+				// New file creation: verify SEARCH block is empty.
+				for _, chunk := range fp.Chunks {
+					if chunk.Search != "" {
 						return registry.ToolResult{}, fmt.Errorf(
-							"file %s does not exist; non-empty search block is not allowed for new files", fp.Path)
+							"file %s does not exist but patch has a non-empty SEARCH block; use an empty SEARCH block to create a new file", fp.Path)
 					}
 				}
-				newFile = true
 			} else {
-				mode = info.Mode()
-				data, readErr := os.ReadFile(path)
-				if readErr != nil {
-					return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, readErr)
-				}
 				original = string(data)
+			}
+
+			info, err := os.Stat(path)
+			var mode os.FileMode = 0644
+			if err == nil {
+				mode = info.Mode()
 			}
 
 			diff, err := patch.GenerateDiff(fp.Path, original, fp)
@@ -237,13 +230,26 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			})
 
 			patched := patch.ApplyPatch(original, fp)
-			if !newFile && strings.Contains(original, "\r\n") {
+			if strings.Contains(original, "\r\n") {
 				patched = strings.ReplaceAll(patched, "\n", "\r\n")
 			}
 
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return registry.ToolResult{}, fmt.Errorf("mkdir for %s: %w", fp.Path, err)
+			// F-SAFE-22: TOCTOU re-check — verify file hasn't been modified
+			// between the validate loop and this write. This closes the window
+			// between the fileTracker check in the validate loop and the actual
+			// write. When fileTracker is nil (e.g. no session active) the check
+			// is skipped, which is a known gap.
+			if t.fileTracker != nil {
+				lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
+				if lrErr == nil && hasRead {
+					writeStat, statErr := os.Stat(path)
+					if statErr == nil && writeStat.ModTime().After(lastRead) {
+						return registry.ToolResult{}, fmt.Errorf(
+							"file %s changed on disk since last read; re-read it before editing", fp.Path)
+					}
+				}
 			}
+
 			if err := os.WriteFile(path, []byte(patched), mode); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("write file %s: %w", fp.Path, err)
 			}

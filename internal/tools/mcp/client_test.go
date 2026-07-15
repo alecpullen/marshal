@@ -36,6 +36,46 @@ func TestClientCall(t *testing.T) {
 	}
 }
 
+func TestClient_BuildEnv_StripsSecrets(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("LD_PRELOAD", "/tmp/evil.so")
+
+	c := &Client{Env: []string{"FOO=bar"}}
+	env := c.buildChildEnv()
+	for _, kv := range env {
+		if len(kv) >= 16 && kv[:16] == "ANTHROPIC_API_KEY" {
+			t.Errorf("MCP child env leaked ANTHROPIC_API_KEY: %s", kv)
+		}
+		if len(kv) >= 11 && kv[:11] == "LD_PRELOAD=" {
+			t.Errorf("MCP child env leaked LD_PRELOAD: %s", kv)
+		}
+	}
+
+	// Verify user-supplied safe var is present
+	foundFOO := false
+	for _, kv := range env {
+		if kv == "FOO=bar" {
+			foundFOO = true
+			break
+		}
+	}
+	if !foundFOO {
+		t.Error("MCP child env missing user-supplied FOO=bar")
+	}
+
+	// Verify PATH from allowlist is present
+	foundPATH := false
+	for _, kv := range env {
+		if len(kv) >= 5 && kv[:5] == "PATH=" {
+			foundPATH = true
+			break
+		}
+	}
+	if !foundPATH {
+		t.Error("MCP child env missing PATH from allowlist")
+	}
+}
+
 func mockServerMain() {
 	dec := json.NewDecoder(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)

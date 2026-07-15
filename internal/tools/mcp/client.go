@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
+
+	"marshal/internal/sandbox/envutil"
 )
 
 type Client struct {
@@ -38,9 +41,28 @@ func NewClient(name, command string, args, env []string) *Client {
 	}
 }
 
+// buildChildEnv returns a safe environment for the MCP child process.
+// It starts from the envutil allowlist (safe defaults, no parent secrets),
+// then layers user-configured env entries, rejecting any that are dangerous
+// or secret-bearing.
+func (c *Client) buildChildEnv() []string {
+	env := envutil.AllowList(os.Environ())
+	for _, kv := range c.Env {
+		k := envutil.EnvKey(kv)
+		if k == "" {
+			continue
+		}
+		if envutil.IsDangerousKey(k) || envutil.IsSecretKey(k) {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
+}
+
 func (c *Client) Start(ctx context.Context) error {
 	c.cmd = exec.CommandContext(ctx, c.Command, c.Args...)
-	c.cmd.Env = append(c.cmd.Env, c.Env...)
+	c.cmd.Env = c.buildChildEnv()
 
 	stdin, err := c.cmd.StdinPipe()
 	if err != nil {

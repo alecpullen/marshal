@@ -323,9 +323,9 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 // fields that extractPinnedFiles reads (State, ProjectID, fileIndexCache).
 func testRunnerFromState(state *session.State, projectID int64) *Runner {
 	return &Runner{
-		State:          state,
-		ProjectID:      projectID,
-		Now:            time.Now,
+		State:     state,
+		ProjectID: projectID,
+		Now:       time.Now,
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -773,6 +774,12 @@ func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
 	// The preset "coder" references "nonexistent-provider" which is not
 	// in badCfg.Providers — buildAgentRunner will fail at Resolve.
 
+	// Capture slog output to verify the Warn emission.
+	var logBuf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(oldLogger)
+
 	err = reloadAgentRuntime(ctx, badCfg, rt)
 	if err == nil {
 		t.Fatal("expected reload to fail with bad provider config")
@@ -786,6 +793,25 @@ func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
 	}
 	if rt.ToolRegistry != originalReg {
 		t.Fatal("ToolRegistry was replaced despite build failure")
+	}
+
+	// Assert the Warn log line was emitted.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "reload: dry-run build failed; keeping previous config") {
+		t.Fatalf("expected warn log about reload failure, got: %s", logOutput)
+	}
+
+	// Assert the TUI message was added.
+	msgs := rt.State.Messages()
+	found := false
+	for _, m := range msgs {
+		if m.Role == session.RoleSystem && strings.Contains(m.Content, "Config reload failed; keeping previous settings.") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected TUI message about reload failure, none found")
 	}
 }
 

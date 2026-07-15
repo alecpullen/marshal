@@ -783,6 +783,11 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
 	if err != nil {
+		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
+			"err", err)
+		rt.State.AddMessage(session.RoleSystem,
+			"Config reload failed; keeping previous settings.",
+			session.ContentTypePlain)
 		return err
 	}
 

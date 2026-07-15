@@ -213,6 +213,13 @@ type Runner struct {
 	trackerMu    sync.Mutex
 	stats        *turnStats
 	statsMu      sync.Mutex
+
+	// iterationBudget is set by RunTask to point to its local iteration
+	// counter so that executeNativeAskUser / executeNativeQuestionAsk can
+	// increment the budget when they perform a native ask round-trip
+	// (mirroring the envelope path's iteration++ in ActionAskUser /
+	// ActionQuestionAsk). Nil outside of RunTask.
+	iterationBudget *int
 }
 
 // RunTaskFunc, if non-nil, overrides RunTask for testing. It returns a
@@ -424,6 +431,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	consecutiveParseFailures := 0
 	consecutiveEmpty := 0
 	iteration := 0
+	r.iterationBudget = &iteration
+	defer func() { r.iterationBudget = nil }()
 	turnEndContinued := false
 	runTurnEnd := func(messages []schema.ChatMessage, task *Task) ([]schema.ChatMessage, bool, error) {
 		if r.HookRunner == nil || turnEndContinued {
@@ -1450,7 +1459,14 @@ func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall)
 		return schema.ChatMessage{}, waitErr
 	}
 	r.countToolCall(false, false)
+	if r.iterationBudget != nil {
+		*r.iterationBudget++
+		r.withStats(func(s *turnStats) { s.m.Iterations = *r.iterationBudget })
+	}
 	if strings.TrimSpace(answer) == "" {
+		r.trackerMu.Lock()
+		r.tracker.recordIdle("ask_user declined")
+		r.trackerMu.Unlock()
 		return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."}, nil
 	}
 	r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
@@ -1475,6 +1491,10 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 		return schema.ChatMessage{}, waitErr
 	}
 	r.countToolCall(false, false)
+	if r.iterationBudget != nil {
+		*r.iterationBudget++
+		r.withStats(func(s *turnStats) { s.m.Iterations = *r.iterationBudget })
+	}
 	parts := []string{"User answers:"}
 	allUnanswered := true
 	for _, a := range answers {
@@ -1485,6 +1505,9 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 	}
 	r.State.AddMessage(session.RoleUser, strings.Join(parts[1:], "\n"), session.ContentTypePlain)
 	if allUnanswered {
+		r.trackerMu.Lock()
+		r.tracker.recordIdle("question.ask declined")
+		r.trackerMu.Unlock()
 		return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "The user declined to answer every question. Proceed with your best judgment."}, nil
 	}
 	return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: strings.Join(parts, "\n")}, nil

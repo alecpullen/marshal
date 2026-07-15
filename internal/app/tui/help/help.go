@@ -23,6 +23,10 @@ type FooterHints struct {
 	ApprovalPending bool
 	QuestionPending bool
 	PopupOpen       bool
+	// IdleRollbackEligible is true when a backup exists and the user is idle.
+	IdleRollbackEligible bool
+	// ThinkingVisible reflects the current thinking-block visibility toggle.
+	ThinkingVisible bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -59,6 +63,14 @@ func Footer(h FooterHints) string {
 			pair("/", "command"),
 			pair("@", "file"),
 		)
+		if h.IdleRollbackEligible {
+			segs = append(segs, pair("Ctrl+R", "rollback"))
+		}
+		if h.ThinkingVisible {
+			segs = append(segs, pair("Ctrl+G", "hide thinking"))
+		} else {
+			segs = append(segs, pair("Ctrl+G", "show thinking"))
+		}
 	}
 	if showHelpHint {
 		segs = append(segs, pair("?", "help"))

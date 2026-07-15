@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"marshal/internal/repo"
@@ -75,13 +75,14 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 }
 
 func (t *toolSet) searchFiles(ctx context.Context, start string, query string, limit int) ([]string, bool, []error, error) {
-	var files []string
 	var walkErrs []error
+	var matches []string
+	capped := false
 
-	err := filepath.WalkDir(start, func(path string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(start, func(path string, entry fs.DirEntry, walkErr error) error {
 		// Collect walk errors instead of swallowing them (F-SEC-19).
-		if err != nil {
-			walkErrs = append(walkErrs, fmt.Errorf("%s: %w", path, err))
+		if walkErr != nil {
+			walkErrs = append(walkErrs, fmt.Errorf("%s: %w", path, walkErr))
 			if entry != nil && entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -89,6 +90,10 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		// Short-circuit once the cap is reached (F-PERF-117).
+		if len(matches) >= limit {
+			return filepath.SkipAll
 		}
 		// Skip all symlinks — WalkDir does not follow directory symlinks on
 		// most platforms, but this explicit check acts as a belt-and-suspenders
@@ -103,25 +108,19 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 			return nil
 		}
 		if entry.Type().IsRegular() {
-			files = append(files, path)
+			fileMatches := t.searchFile(path, query, limit-len(matches))
+			matches = append(matches, fileMatches...)
+			if len(matches) >= limit {
+				capped = true
+			}
 		}
 		return nil
 	})
+	if errors.Is(err, filepath.SkipAll) {
+		err = nil
+	}
 	if err != nil {
 		return nil, false, walkErrs, err
-	}
-
-	sort.Strings(files)
-
-	var matches []string
-	capped := false
-	for _, path := range files {
-		fileMatches := t.searchFile(path, query, limit-len(matches))
-		matches = append(matches, fileMatches...)
-		if len(matches) >= limit {
-			capped = true
-			break
-		}
 	}
 
 	return matches, capped, walkErrs, nil

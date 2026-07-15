@@ -229,7 +229,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	s.fatalErr = make(chan error, 1)
+	s.fatalErr = make(chan error, 16)
 
 	// Scanner goroutine: reads lines from input, sends to frames channel.
 	frames := make(chan []byte, 100)
@@ -244,7 +244,18 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.failOutbound(errors.New("acp: connection closed"))
 			s.closeInput()
 			handlerErr := s.waitHandlers()
-			return joinErrors(ctx.Err(), handlerErr)
+			// Drain any fatal errors reported during or after shutdown.
+			var late []error
+		drainLoop1:
+			for {
+				select {
+				case err := <-s.fatalErr:
+					late = append(late, err)
+				default:
+					break drainLoop1
+				}
+			}
+			return joinErrors(ctx.Err(), handlerErr, errors.Join(late...))
 
 		case scanErr := <-scannerDone:
 			// Scanner finished (EOF or error).
@@ -253,13 +264,25 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.closeInput()
 			handlerErr := s.waitHandlers()
 
+			// Drain any fatal errors reported during shutdown.
+			var late []error
+		drainLoop2:
+			for {
+				select {
+				case err := <-s.fatalErr:
+					late = append(late, err)
+				default:
+					break drainLoop2
+				}
+			}
+
 			if ctx.Err() != nil {
-				return joinErrors(ctx.Err(), handlerErr)
+				return joinErrors(ctx.Err(), handlerErr, errors.Join(late...))
 			}
 			if scanErr != nil {
-				return joinErrors(scanErr, handlerErr)
+				return joinErrors(scanErr, handlerErr, errors.Join(late...))
 			}
-			return handlerErr
+			return joinErrors(handlerErr, errors.Join(late...))
 
 		case fatalWrite := <-s.fatalErr:
 			// A handler goroutine reported a fatal write error.
@@ -267,7 +290,18 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.failOutbound(errors.New("acp: connection closed"))
 			s.closeInput()
 			handlerErr := s.waitHandlers()
-			return joinErrors(fatalWrite, handlerErr)
+			// Drain any fatal errors reported after waitHandlers returned.
+			var late []error
+		drainLoop3:
+			for {
+				select {
+				case err := <-s.fatalErr:
+					late = append(late, err)
+				default:
+					break drainLoop3
+				}
+			}
+			return joinErrors(fatalWrite, handlerErr, errors.Join(late...))
 
 		case line := <-frames:
 			s.handleFrame(serveCtx, line)
@@ -412,10 +446,7 @@ func (s *Server) failOutbound(err error) {
 // error has already been reported or Serve is shutting down), the
 // error is silently dropped.
 func (s *Server) reportFatal(err error) {
-	select {
-	case s.fatalErr <- err:
-	default:
-	}
+	s.fatalErr <- err
 }
 
 // dispatchRequest runs the handler for an inbound request with an id

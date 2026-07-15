@@ -787,3 +787,37 @@ func (h *wireHarness) close(t *testing.T) {
 		}
 	}
 }
+
+// TestReportFatalSurfacesAllErrors reproduces F-CON-55: the pre-fix
+// reportFatal uses select-default with a capacity-1 channel, silently
+// dropping excess fatal errors. Post-fix, a blocking send and a drain
+// loop on shutdown surface every reported error.
+func TestReportFatalSurfacesAllErrors(t *testing.T) {
+	s := &Server{fatalErr: make(chan error, 1)}
+
+	var mu sync.Mutex
+	var got []error
+	var drainWg sync.WaitGroup
+	drainWg.Add(1)
+	go func() {
+		defer drainWg.Done()
+		for err := range s.fatalErr {
+			mu.Lock()
+			got = append(got, err)
+			mu.Unlock()
+		}
+	}()
+
+	s.reportFatal(errors.New("first"))
+	s.reportFatal(errors.New("second"))
+	s.reportFatal(errors.New("third"))
+
+	close(s.fatalErr)
+	drainWg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("got %d errors, want 3", len(got))
+	}
+}

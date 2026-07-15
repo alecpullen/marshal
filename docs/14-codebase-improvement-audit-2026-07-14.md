@@ -2189,10 +2189,12 @@ fixes" above).
 | F-POL-129 | RESOLVED | RenderDirectoryMap doc comment clarifies maxFiles |
 | F-POL-133 | RESOLVED (ADR) | Coupling accepted; see docs/15-data-model-decisions.md |
 
-### Batch 6 (E3 — DB & search performance / scaling / isolation): PLANNED on branch `feature/domain-e3-db-perf`
-
-Plan: `docs/superpowers/plans/2026-07-15-domain-e3-db-perf.md`
-
-Closes: F-PERF-112, F-PERF-113, F-PERF-117, F-PERF-118, F-PERF-119, F-SEC-120.
-
-Depends on: Batches 4 and 5.
+### Batch 6 (E3 — DB & search performance / scaling / isolation): RESOLVED on branch `feature/domain-e3-db-perf`
+| Finding | Status | Notes |
+|---|---|---|
+| F-PERF-119 | RESOLVED | SQLite WAL + small read pool; existing on-disk DBs upgraded transparently |
+| F-PERF-112 | RESOLVED | SaveSymbols / SaveFileIndex use multi-row VALUES batches of 200 |
+| F-PERF-113 | RESOLVED | GetSymbols / GetFileIndex take an optional limit; repo.map passes repoMapMaxFiles |
+| F-PERF-118 | RESOLVED | Indexing.MaxIndexableFileBytes / MaxSearchableFileBytes caps added |
+| F-PERF-117 | RESOLVED | searchFiles short-circuits the walk when the cap is reached |
+| F-SEC-120 | RESOLVED | Process-local per-project mutex around SaveFileIndex / SaveSymbols |

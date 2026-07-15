@@ -18,6 +18,9 @@ func OpenWithPool(path string, readPoolSize int) (*DB, error) {
 		return nil, err
 	}
 
+	// Read pool connections are read-only — they never write to the database,
+	// so foreign key enforcement (PRAGMA foreign_keys = ON) is intentionally
+	// omitted. Foreign keys are enforced by the single writer connection.
 	readDB, err := sql.Open("sqlite", path)
 	if err != nil {
 		sqlDB.Close()
@@ -31,7 +34,7 @@ func OpenWithPool(path string, readPoolSize int) (*DB, error) {
 		return nil, fmt.Errorf("set read busy_timeout: %w", err)
 	}
 
-	return &DB{sqlDB: sqlDB, readDB: readDB, path: path, locks: NewProjectLocks()}, nil
+	return &DB{sqlDB: sqlDB, readDB: readDB, locks: NewProjectLocks()}, nil
 }
 
 // openOneConnection opens a single *sql.DB pinned to one connection and runs

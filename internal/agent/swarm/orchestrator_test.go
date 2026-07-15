@@ -365,6 +365,24 @@ func TestSwarmUnparseableVerdictStopsLoop(t *testing.T) {
 	}
 }
 
+// TestOverBudgetRechecksAfterRole reproduces F-POL-67: a parallel
+// scout completing during the implementer role pushes the meter
+// over budget; the next overBudget check must observe the new
+// total and stop the loop.
+func TestOverBudgetRechecksAfterRole(t *testing.T) {
+	o := &Orchestrator{MaxTotalTokens: 100}
+	m := NewEstimateMeter()
+	// Pre-fill to 90, then run a "role" that adds 20.
+	m.Observe(agent.RolePlanner, 0, 90)
+	if o.overBudget(m) {
+		t.Fatal("pre-fill should not be over budget")
+	}
+	m.Observe(agent.RoleImplementer, 0, 20)
+	if !o.overBudget(m) {
+		t.Fatal("post-role observation should put us over budget")
+	}
+}
+
 func TestSwarmTokenCeilingStopsAfterCurrentRole(t *testing.T) {
 	state := newLockTestState(t)
 	o := newScriptedOrchestrator(t, state, map[agent.AgentRole][]string{

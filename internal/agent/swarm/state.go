@@ -13,6 +13,14 @@ type Finding struct {
 	Content string
 }
 
+// TestFailure is a structured test failure emitted by the tester role.
+type TestFailure struct {
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Test    string `json:"test"`
+	Message string `json:"message"`
+}
+
 // TaskState is the shared blackboard for one swarm run (docs/07, "Shared
 // task state"). Agents never talk to each other directly: the orchestrator
 // writes role outputs here and each role reads the whole state via Render.
@@ -23,6 +31,7 @@ type TaskState struct {
 	goal         string
 	plan         []string
 	findings     []Finding
+	testFailures []TestFailure
 	patchNotes   []string
 	finalSummary string
 }
@@ -53,6 +62,18 @@ func (ts *TaskState) Findings() []Finding {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	return append([]Finding(nil), ts.findings...)
+}
+
+func (ts *TaskState) AddTestFailure(tf TestFailure) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.testFailures = append(ts.testFailures, tf)
+}
+
+func (ts *TaskState) TestFailures() []TestFailure {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return append([]TestFailure(nil), ts.testFailures...)
 }
 
 func (ts *TaskState) AddPatchNote(note string) {
@@ -92,6 +113,12 @@ func (ts *TaskState) Render() string {
 		b.WriteString("\nFindings:\n")
 		for _, f := range ts.findings {
 			b.WriteString(fmt.Sprintf("- [%s/%s] %s\n", f.Agent, f.Area, f.Content))
+		}
+	}
+	if len(ts.testFailures) > 0 {
+		b.WriteString("\nTest failures:\n")
+		for _, tf := range ts.testFailures {
+			fmt.Fprintf(&b, "- %s:%d [%s] %s\n", tf.File, tf.Line, tf.Test, tf.Message)
 		}
 	}
 	if len(ts.patchNotes) > 0 {

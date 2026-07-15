@@ -611,6 +611,62 @@ func TestServerOutboundRequestReceivesResponse(t *testing.T) {
 	}
 }
 
+// --- F-CON-52: Non-blocking outbound channel sends ---
+
+func TestDeliverOutboundDoesNotBlockOnFullChannel(t *testing.T) {
+	s := &Server{
+		outbound: make(map[string]chan outboundResult),
+	}
+	id := json.RawMessage(`"abc"`)
+	ch := make(chan outboundResult, 1)
+	ch <- outboundResult{response: &Response{}} // pre-fill buffer
+	s.outbound["abc"] = ch
+
+	done := make(chan bool, 1)
+	go func() {
+		_ = s.deliverOutbound(&id, []byte(`{"jsonrpc":"2.0","id":"abc","result":{}}`))
+		done <- true
+	}()
+	select {
+	case <-done:
+		// ok
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("deliverOutbound blocked on a full waiter channel (F-CON-52)")
+	}
+}
+
+func TestFailOutboundDoesNotBlockOnFullChannel(t *testing.T) {
+	s := &Server{
+		outbound: make(map[string]chan outboundResult),
+		closed:   true,
+	}
+	full := make(chan outboundResult, 1)
+	full <- outboundResult{response: &Response{}}
+	s.outbound["full"] = full
+	open := make(chan outboundResult, 1)
+	s.outbound["open"] = open
+
+	done := make(chan struct{})
+	go func() {
+		s.failOutbound(errors.New("test close"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("failOutbound blocked on a full waiter channel (F-CON-52)")
+	}
+	// The "open" waiter should have received the error.
+	select {
+	case res := <-open:
+		if res.err == nil {
+			t.Fatal("open waiter received no error")
+		}
+	default:
+		t.Fatal("open waiter did not receive the fail error")
+	}
+}
+
 // --- Wire harness used by the integration_test.go TestACPWire* tests ---
 
 // wireHarness drives a Server through real newline-delimited JSON. Input
@@ -729,5 +785,106 @@ func (h *wireHarness) close(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("wire harness: %s did not return within 2 seconds of close", name)
 		}
+	}
+}
+
+// TestReportFatalSurfacesAllErrors reproduces F-CON-55: the pre-fix
+// reportFatal uses select-default with a capacity-1 channel, silently
+// dropping excess fatal errors. Post-fix, a blocking send and a drain
+// loop on shutdown surface every reported error.
+func TestReportFatalSurfacesAllErrors(t *testing.T) {
+	s := &Server{fatalErr: make(chan error, 1)}
+
+	var mu sync.Mutex
+	var got []error
+	var drainWg sync.WaitGroup
+	drainWg.Add(1)
+	go func() {
+		defer drainWg.Done()
+		for err := range s.fatalErr {
+			mu.Lock()
+			got = append(got, err)
+			mu.Unlock()
+		}
+	}()
+
+	s.reportFatal(errors.New("first"))
+	s.reportFatal(errors.New("second"))
+	s.reportFatal(errors.New("third"))
+
+	close(s.fatalErr)
+	drainWg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("got %d errors, want 3", len(got))
+	}
+}
+
+// --- F-POL-61: Empty method rejection ---
+
+func TestRequestRejectsEmptyMethod(t *testing.T) {
+	s := &Server{
+		outbound: make(map[string]chan outboundResult),
+	}
+	err := s.Request(context.Background(), "", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for empty method, got nil")
+	}
+	if !strings.Contains(err.Error(), "method") {
+		t.Errorf("error should mention 'method', got: %v", err)
+	}
+}
+
+// --- F-POL-60: MaxLineBytes scanner cap ---
+
+func TestScanLinesRespectsMaxLineBytes(t *testing.T) {
+	// The scanner enforces MaxLineBytes when it needs to grow its
+	// internal buffer. The default initial buffer is 64 KiB, so the
+	// test line must exceed that to force growth.
+	s := &Server{MaxLineBytes: 4096} // tiny cap
+	big := strings.Repeat("a", 70000) + "\n"
+	in := strings.NewReader(big)
+	s.in = in
+	frames := make(chan []byte, 1)
+	done := make(chan error, 1)
+	go s.scanLines(context.Background(), frames, done)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("scanner did not error on oversized line")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("scanLines did not return after oversized line")
+	}
+}
+
+// TestDispatchRecoversFromHandlerPanic reproduces F-BUG-57. Pre-fix
+// code lets a panicking handler crash the process. Post-fix, the
+// panic is recovered and returned as a JSON-RPC internalError.
+func TestDispatchRecoversFromHandlerPanic(t *testing.T) {
+	s := &Server{handlers: map[string]Handler{
+		"panic": func(ctx context.Context, params json.RawMessage) (any, error) {
+			panic("handler bug")
+		},
+	}}
+	req := Request{Method: "panic"}
+	// The dispatch function is private; call it directly.
+	res, err := s.dispatch(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error from panicking handler, got nil")
+	}
+	if res != nil {
+		t.Errorf("result = %v, want nil", res)
+	}
+	// Convert to JSON-RPC error and check the code.
+	rpcErr, ok := err.(*jsonRPCError)
+	if !ok {
+		t.Fatalf("err type = %T, want *jsonRPCError", err)
+	}
+	if rpcErr.Code != internalError {
+		t.Errorf("code = %d, want %d (internalError)", rpcErr.Code, internalError)
 	}
 }

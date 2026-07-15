@@ -17,15 +17,13 @@ func TestEstimateMeterAccumulates(t *testing.T) {
 	}
 }
 
-func TestProviderUsageMeterIsDormantButUsable(t *testing.T) {
-	var m ProviderUsageMeter
-	m.Observe(agent.RoleTester, 10, 5)
-	if got := m.Total(); got != 15 {
-		t.Fatalf("zero-value provider meter Total = %d, want 15", got)
-	}
-
-	if got := NewProviderUsageMeter().Total(); got != 0 {
-		t.Fatalf("new provider meter Total = %d, want 0", got)
+// TestEstimateMeterIsDefault verifies the active default meter is
+// EstimateMeter (ProviderUsageMeter is removed).
+func TestEstimateMeterIsDefault(t *testing.T) {
+	o := &Orchestrator{}
+	m := o.newMeter()
+	if _, ok := m.(*EstimateMeter); !ok {
+		t.Errorf("default meter = %T, want *EstimateMeter", m)
 	}
 }
 

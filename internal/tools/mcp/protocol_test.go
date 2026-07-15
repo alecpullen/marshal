@@ -8,7 +8,7 @@ import (
 func TestJSONRPCSerialization(t *testing.T) {
 	req := Request{
 		JSONRPC: "2.0",
-		ID:      1,
+		ID:      json.Number("1"),
 		Method:  "initialize",
 	}
 	data, err := json.Marshal(req)
@@ -19,7 +19,7 @@ func TestJSONRPCSerialization(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatal(err)
 	}
-	if back.Method != "initialize" || back.ID.(float64) != 1 {
+	if back.Method != "initialize" || back.ID != json.Number("1") {
 		t.Errorf("roundtrip failed: %+v", back)
 	}
 }

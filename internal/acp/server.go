@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +95,11 @@ type Server struct {
 	// handlers to complete. Tests can override this per-instance.
 	handlerShutdownTimeout time.Duration
 
+	// MaxLineBytes is the maximum token size for the bufio.Scanner used
+	// in scanLines. If zero or negative, a default of 1 MiB is used.
+	// Set this before calling Serve (F-POL-60).
+	MaxLineBytes int
+
 	// fatalErr is a buffered channel that handler goroutines use to
 	// report fatal write errors to the Serve loop. Created in Serve.
 	fatalErr chan error
@@ -152,6 +158,11 @@ func (s *Server) Notify(method string, params any) error {
 //  4. Removes the waiter if encoding fails.
 //  5. Waits on the channel, or removes the waiter on ctx cancellation.
 func (s *Server) Request(ctx context.Context, method string, params any, result any) error {
+	// 0. Reject empty method (F-POL-61).
+	if method == "" {
+		return fmt.Errorf("acp: request method is required")
+	}
+
 	// 1. Reject closed server.
 	s.stateMu.Lock()
 	if s.closed {
@@ -229,7 +240,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	s.fatalErr = make(chan error, 1)
+	s.fatalErr = make(chan error, 16)
 
 	// Scanner goroutine: reads lines from input, sends to frames channel.
 	frames := make(chan []byte, 100)
@@ -244,7 +255,18 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.failOutbound(errors.New("acp: connection closed"))
 			s.closeInput()
 			handlerErr := s.waitHandlers()
-			return joinErrors(ctx.Err(), handlerErr)
+			// Drain any fatal errors reported during or after shutdown.
+			var late []error
+		drainLoop1:
+			for {
+				select {
+				case err := <-s.fatalErr:
+					late = append(late, err)
+				default:
+					break drainLoop1
+				}
+			}
+			return joinErrors(ctx.Err(), handlerErr, errors.Join(late...))
 
 		case scanErr := <-scannerDone:
 			// Scanner finished (EOF or error).
@@ -253,13 +275,25 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.closeInput()
 			handlerErr := s.waitHandlers()
 
+			// Drain any fatal errors reported during shutdown.
+			var late []error
+		drainLoop2:
+			for {
+				select {
+				case err := <-s.fatalErr:
+					late = append(late, err)
+				default:
+					break drainLoop2
+				}
+			}
+
 			if ctx.Err() != nil {
-				return joinErrors(ctx.Err(), handlerErr)
+				return joinErrors(ctx.Err(), handlerErr, errors.Join(late...))
 			}
 			if scanErr != nil {
-				return joinErrors(scanErr, handlerErr)
+				return joinErrors(scanErr, handlerErr, errors.Join(late...))
 			}
-			return handlerErr
+			return joinErrors(handlerErr, errors.Join(late...))
 
 		case fatalWrite := <-s.fatalErr:
 			// A handler goroutine reported a fatal write error.
@@ -267,7 +301,18 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.failOutbound(errors.New("acp: connection closed"))
 			s.closeInput()
 			handlerErr := s.waitHandlers()
-			return joinErrors(fatalWrite, handlerErr)
+			// Drain any fatal errors reported after waitHandlers returned.
+			var late []error
+		drainLoop3:
+			for {
+				select {
+				case err := <-s.fatalErr:
+					late = append(late, err)
+				default:
+					break drainLoop3
+				}
+			}
+			return joinErrors(fatalWrite, handlerErr, errors.Join(late...))
 
 		case line := <-frames:
 			s.handleFrame(serveCtx, line)
@@ -280,7 +325,11 @@ func (s *Server) Serve(ctx context.Context) error {
 // scanner finishes (EOF or error) or serveCtx is cancelled.
 func (s *Server) scanLines(serveCtx context.Context, frames chan<- []byte, done chan<- error) {
 	sc := bufio.NewScanner(s.in)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	maxLine := s.MaxLineBytes
+	if maxLine <= 0 {
+		maxLine = 1 << 20 // 1 MiB default
+	}
+	sc.Buffer(make([]byte, 0, 64*1024), maxLine)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -309,27 +358,22 @@ func (s *Server) handleFrame(ctx context.Context, line []byte) {
 		return
 	}
 
-	// Classify the frame.
-	if req.Method == "" {
-		// No method: this is either a response to an outbound request
-		// or an invalid inbound frame.
+	// Classify the frame using hasMethod (set by UnmarshalJSON) to avoid
+	// re-unmarshalling the line just to check for a "method" key (F-POL-59).
+	if !req.hasMethod {
+		// No method key — this is a response (or a garbage frame).
 		if req.ID != nil {
-			// Check whether the "method" key was explicitly absent
-			// (response frame) or present-but-empty (invalid request).
-			var rawMap map[string]json.RawMessage
-			if json.Unmarshal(line, &rawMap) == nil {
-				if _, hasMethod := rawMap["method"]; !hasMethod {
-					// No method key — it's a response frame.
-					s.deliverOutbound(req.ID, line)
-					return
-				}
-			}
-			// Explicit "method":"" — invalid request.
+			s.deliverOutbound(req.ID, line)
+		}
+		return
+	}
+	if req.Method == "" {
+		// Explicit "method":"" — invalid request.
+		if req.ID != nil {
 			if writeErr := s.writeError(req.ID, invalidRequest, "method is required"); writeErr != nil {
 				s.reportFatal(writeErr)
 			}
 		}
-		// ID is nil: nothing to respond to, silently ignore.
 		return
 	}
 
@@ -382,7 +426,11 @@ func (s *Server) deliverOutbound(id *json.RawMessage, line []byte) bool {
 	if err := json.Unmarshal(line, &resp); err != nil {
 		resp = Response{Error: &Error{Code: parseError, Message: "malformed response: " + err.Error()}}
 	}
-	ch <- outboundResult{response: &resp}
+	select {
+	case ch <- outboundResult{response: &resp}:
+	default:
+		// waiter already consumed the buffer; nothing to do
+	}
 	return true
 }
 
@@ -396,19 +444,19 @@ func (s *Server) failOutbound(err error) {
 	s.stateMu.Unlock()
 
 	for _, ch := range old {
-		ch <- outboundResult{err: err}
+		select {
+		case ch <- outboundResult{err: err}:
+		default:
+		}
 	}
 }
 
 // reportFatal sends a fatal error to the Serve loop via the buffered
-// fatalErr channel. If the channel is already full (another fatal
-// error has already been reported or Serve is shutting down), the
-// error is silently dropped.
+// fatalErr channel. The channel has capacity 16 so simultaneous
+// reports do not block. Serve drains the channel on shutdown to
+// ensure every reported fatal is joined into the final return value.
 func (s *Server) reportFatal(err error) {
-	select {
-	case s.fatalErr <- err:
-	default:
-	}
+	s.fatalErr <- err
 }
 
 // dispatchRequest runs the handler for an inbound request with an id
@@ -494,14 +542,27 @@ func unquoteJSONString(s string) string {
 	return s
 }
 
-func (s *Server) dispatch(ctx context.Context, req Request) (any, error) {
+func (s *Server) dispatch(ctx context.Context, req Request) (result any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Default().Error("acp: handler panicked",
+				"method", req.Method,
+				"panic", r,
+			)
+			result = nil
+			err = &jsonRPCError{
+				Code:    internalError,
+				Message: "internal error: handler panicked",
+			}
+		}
+	}()
 	handler, ok := s.handlers[req.Method]
 	if !ok {
 		return nil, &jsonRPCError{Code: methodNotFound, Message: "method not found: " + req.Method}
 	}
-	result, err := handler(ctx, req.Params)
-	if err != nil {
-		return nil, &jsonRPCError{Code: codeFor(err), Message: err.Error()}
+	res, herr := handler(ctx, req.Params)
+	if herr != nil {
+		return nil, &jsonRPCError{Code: codeFor(herr), Message: herr.Error()}
 	}
-	return result, nil
+	return res, nil
 }

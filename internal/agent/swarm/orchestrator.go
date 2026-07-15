@@ -3,6 +3,7 @@ package swarm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -177,6 +178,9 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 			o.announce("Swarm aborted: implementer failed.")
 			return err
 		}
+		if o.overBudget(meter) {
+			break
+		}
 		ts.AddPatchNote(implTask.Summary)
 		o.State.UpdateSwarmRole("implementer", session.SwarmRoleDone, fmt.Sprintf("round %d/%d", round, rounds))
 
@@ -191,7 +195,13 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 			o.State.UpdateSwarmRole("tester", session.SwarmRoleFailed, "")
 			break
 		}
+		if o.overBudget(meter) {
+			break
+		}
 		ts.AddFinding(Finding{Agent: "tester", Area: "tests", Content: testTask.Summary})
+		for _, tf := range parseTestFailures(testTask.Summary) {
+			ts.AddTestFailure(tf)
+		}
 
 		pass, ok := ParseVerdict(testTask.Summary)
 		if pass || !ok {
@@ -258,6 +268,29 @@ func (o *Orchestrator) focuses() []ScoutFocus {
 
 func (o *Orchestrator) announce(text string) {
 	o.State.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+}
+
+// parseTestFailures extracts the TEST_FAILURES_JSON: [...] block from
+// the tester's output. Returns nil on parse error or empty input.
+func parseTestFailures(s string) []TestFailure {
+	idx := strings.Index(s, "TEST_FAILURES_JSON:")
+	if idx < 0 {
+		return nil
+	}
+	rest := s[idx+len("TEST_FAILURES_JSON:"):]
+	end := strings.Index(rest, "\n")
+	if end < 0 {
+		end = len(rest)
+	}
+	payload := strings.TrimSpace(rest[:end])
+	if payload == "" || payload == "[]" {
+		return nil
+	}
+	var failures []TestFailure
+	if err := json.Unmarshal([]byte(payload), &failures); err != nil {
+		return nil
+	}
+	return failures
 }
 
 // planLines splits the planner's final answer into trimmed non-empty lines.

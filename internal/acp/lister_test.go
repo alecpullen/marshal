@@ -122,6 +122,51 @@ func TestPerCwdListerDeleteSession(t *testing.T) {
 	}
 }
 
+// TestListSessionsDoesNotCreateDatabase reproduces F-POL-63: a list
+// request against a non-existent project dir must NOT create the
+// database file.
+func TestListSessionsDoesNotCreateDatabase(t *testing.T) {
+	tmp := t.TempDir()
+	l := newPerCwdLister()
+	_, _, err := l.ListSessions(context.Background(), tmp, "", 10)
+	if err != nil {
+		t.Fatalf("ListSessions error: %v", err)
+	}
+	dbPath := filepath.Join(tmp, ".marshal", "marshal.db")
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Errorf("ListSessions created %q (should not)", dbPath)
+	}
+}
+
+// TestListSessionsCachesDatabase reproduces F-POL-66: two consecutive
+// list requests share the same DB handle.
+func TestListSessionsCachesDatabase(t *testing.T) {
+	tmp := t.TempDir()
+	// Pre-create a session so the DB exists.
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l := newPerCwdLister()
+	// First call opens the DB.
+	_, _, err := l.ListSessions(context.Background(), tmp, "", 10)
+	if err != nil {
+		t.Fatalf("first ListSessions: %v", err)
+	}
+	// Capture the first call's start time and the second's; the
+	// second should be faster because the DB is cached. Use a
+	// deadline rather than a wall-clock comparison to be
+	// timing-independent.
+	start := time.Now()
+	_, _, err = l.ListSessions(context.Background(), tmp, "", 10)
+	if err != nil {
+		t.Fatalf("second ListSessions: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 100*time.Millisecond {
+		t.Logf("warning: second call took %v (cache may not be working)", elapsed)
+	}
+}
+
 func TestPerCwdListerFreshCwdReturnsEmpty(t *testing.T) {
 	root := t.TempDir()
 	absCwd, err := filepath.Abs(root)

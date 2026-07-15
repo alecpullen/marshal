@@ -394,7 +394,7 @@ func TestPinnedSectionSurvivesBudgetPressure(t *testing.T) {
 	// A pinned section must survive even when the budget is exhausted
 	// by a large non-pinned file snippet.
 	pack := NewBuilder().Build(BuildInput{
-		MaxTokens:    50,
+		MaxTokens: 50,
 		FileSnippets: []FileSnippet{
 			{Path: "big.go", Content: strings.Repeat("x", 4000)},
 		},

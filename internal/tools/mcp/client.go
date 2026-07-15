@@ -237,7 +237,11 @@ func (c *Client) readLoop() {
 			ch <- res
 		}
 	}
-	c.log().Warn("mcp readLoop ended", "err", scanner.Err())
+	if err := scanner.Err(); err != nil {
+		c.log().Warn("mcp readLoop ended", "err", err)
+	} else {
+		c.log().Info("mcp readLoop ended")
+	}
 	c.mu.Lock()
 	if c.err == nil {
 		c.err = scanner.Err()

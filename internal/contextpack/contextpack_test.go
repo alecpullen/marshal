@@ -389,3 +389,83 @@ func TestPinFilesSkipsEmptyContent(t *testing.T) {
 		t.Fatalf("sections len = %d, want 0 (empty content should be skipped)", len(pack.Sections))
 	}
 }
+
+func TestPinnedSectionSurvivesBudgetPressure(t *testing.T) {
+	// A pinned section must survive even when the budget is exhausted
+	// by a large non-pinned file snippet.
+	pack := NewBuilder().Build(BuildInput{
+		MaxTokens: 50,
+		FileSnippets: []FileSnippet{
+			{Path: "big.go", Content: strings.Repeat("x", 4000)},
+		},
+	})
+	pack = PinFiles(pack, []FileSnippet{{Path: "pinned.md", Content: "PINNED"}})
+
+	found := false
+	for _, sec := range pack.Sections {
+		if sec.Title == "pinned.md" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("pinned section was dropped despite being pinned with Priority 100")
+	}
+}
+
+func TestRebudgetPutsPinnedSectionsFirst(t *testing.T) {
+	// Build a pack with a FileSnippet (regular) first, then PinFiles
+	// appends a pinned section. After Rebudget (which calls
+	// buildPackFromSections), the pinned section must be first.
+	pack := NewBuilder().Build(BuildInput{
+		MaxTokens:    10_000,
+		FileSnippets: []FileSnippet{{Path: "normal.go", Content: "normal"}},
+	})
+	pack = PinFiles(pack, []FileSnippet{{Path: "pinned.md", Content: "PINNED"}})
+	// pack.Sections order is now: [file_snippet (30), pinned (100)]
+
+	if len(pack.Sections) != 2 {
+		t.Fatalf("sections len = %d, want 2", len(pack.Sections))
+	}
+	if pack.Sections[0].Priority != 30 {
+		t.Fatalf("first section priority = %d, want 30", pack.Sections[0].Priority)
+	}
+	if pack.Sections[1].Priority != 100 {
+		t.Fatalf("second section priority = %d, want 100", pack.Sections[1].Priority)
+	}
+
+	// Rebudget should reorder: pinned first, then regular.
+	rebudgeted := Rebudget(pack, 10_000, nil)
+	if len(rebudgeted.Sections) != 2 {
+		t.Fatalf("rebudgeted sections len = %d, want 2", len(rebudgeted.Sections))
+	}
+	if rebudgeted.Sections[0].Priority != 100 {
+		t.Errorf("rebudgeted first section priority = %d, want 100 (pinned first)", rebudgeted.Sections[0].Priority)
+	}
+	if rebudgeted.Sections[1].Priority != 30 {
+		t.Errorf("rebudgeted second section priority = %d, want 30", rebudgeted.Sections[1].Priority)
+	}
+}
+
+func TestTrimSectionContentHelper(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+		ok   bool
+	}{
+		{"empty", "", "", false},
+		{"whitespace", "   \n\t  ", "", false},
+		{"plain", "hello", "hello", true},
+		{"padded", "  hello  \n", "hello", true},
+		{"internal newline", "hello\nworld", "hello\nworld", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := trimSectionContent(tc.in)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("trimSectionContent(%q) = (%q, %v), want (%q, %v)", tc.in, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}

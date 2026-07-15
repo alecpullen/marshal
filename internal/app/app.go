@@ -411,10 +411,6 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.UsageObserver = func(promptTokens, completionTokens int) {
 		state.SetTurnUsage(promptTokens + completionTokens)
 	}
-	// F16: the session itself is the SteeringProvider — its DrainSteering
-	// is called by the runner at every loop-top to inject user-typed
-	// follow-up messages into the live model context.
-	runner.SteeringProvider = state
 	decoding := resolveActionDecoding(route.Preset.ToolCalling, resolvedProvider.Capabilities(ctx))
 	runner.NativeTools = decoding.Native
 	runner.ResponseFormat = decoding.ResponseFormat

@@ -9,6 +9,17 @@ import (
 
 const truncationMarker = "\n\n...[truncated]"
 
+// trimSectionContent trims surrounding whitespace and reports whether
+// the result is non-empty. Used as the shared skip/empty rule for
+// sections built by PinFiles and buildCandidateSections.
+func trimSectionContent(s string) (string, bool) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return "", false
+	}
+	return trimmed, true
+}
+
 type Builder struct{}
 
 func NewBuilder() Builder {
@@ -47,8 +58,8 @@ func (b Builder) Build(input BuildInput) Pack {
 // downstream visibility.
 func PinFiles(pack Pack, snippets []FileSnippet) Pack {
 	for _, snip := range snippets {
-		content := snip.Content
-		if strings.TrimSpace(content) == "" {
+		content, ok := trimSectionContent(snip.Content)
+		if !ok {
 			continue
 		}
 		source := snip.Path
@@ -60,7 +71,7 @@ func PinFiles(pack Pack, snippets []FileSnippet) Pack {
 			Title:           snip.Path,
 			Content:         content,
 			Source:          source,
-			Priority:        100, // higher than normal snippets (30/40)
+			Priority:        100,
 			EstimatedTokens: EstimateTokens(content),
 		})
 	}
@@ -145,8 +156,8 @@ func buildCandidateSections(input BuildInput) []Section {
 		})
 	}
 	for _, snippet := range input.FileSnippets {
-		content := strings.TrimSpace(snippet.Content)
-		if content == "" {
+		content, ok := trimSectionContent(snippet.Content)
+		if !ok {
 			continue
 		}
 		source := snippet.Path
@@ -162,12 +173,18 @@ func buildCandidateSections(input BuildInput) []Section {
 		})
 	}
 	for _, output := range input.RecentToolOutput {
-		content := strings.TrimSpace(output.Summary)
-		if strings.TrimSpace(output.Content) != "" {
-			content += "\n\n" + strings.TrimSpace(output.Content)
-		}
-		if strings.TrimSpace(content) == "" {
+		base, ok := trimSectionContent(output.Summary)
+		body, _ := trimSectionContent(output.Content)
+		if !ok && body == "" {
 			continue
+		}
+		content := base
+		if body != "" {
+			if content != "" {
+				content += "\n\n" + body
+			} else {
+				content = body
+			}
 		}
 		sections = append(sections, Section{
 			Kind:     SectionToolOutput,
@@ -186,30 +203,63 @@ func buildPackFromSections(sections []Section, maxTokens int, generatedAt time.T
 		GeneratedAt: generatedAt,
 	}
 
-	remaining := maxTokens
-	for _, section := range sections {
-		section.EstimatedTokens = EstimateTokens(section.Content)
-		if section.EstimatedTokens == 0 {
+	// Split pinned (Priority >= 100) from regular sections. Pinned
+	// sections are processed first so the greedy pass cannot starve
+	// them. Regular sections keep their original order (RepoCard=10,
+	// Plan=20, FileSnippet=30, ToolOutput=40 — lower number first,
+	// meaning more foundational content gets budget priority).
+	var pinned, regular []Section
+	for _, s := range sections {
+		s.EstimatedTokens = EstimateTokens(s.Content)
+		if s.EstimatedTokens == 0 {
 			continue
 		}
-		if section.EstimatedTokens <= remaining {
-			pack.Sections = append(pack.Sections, section)
-			pack.TokenUsage.EstimatedTokens += section.EstimatedTokens
-			remaining -= section.EstimatedTokens
-			continue
+		if s.Priority >= 100 {
+			pinned = append(pinned, s)
+		} else {
+			regular = append(regular, s)
 		}
+	}
 
-		truncated, ok := truncateToTokens(section.Content, remaining)
+	remaining := maxTokens
+	for _, s := range pinned {
+		if s.EstimatedTokens <= remaining {
+			pack.Sections = append(pack.Sections, s)
+			pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
+			remaining -= s.EstimatedTokens
+			continue
+		}
+		truncated, ok := truncateToTokens(s.Content, remaining)
 		if !ok {
 			pack.TokenUsage.Truncated = true
 			continue
 		}
-		section.Content = truncated
-		section.EstimatedTokens = EstimateTokens(section.Content)
-		pack.Sections = append(pack.Sections, section)
-		pack.TokenUsage.EstimatedTokens += section.EstimatedTokens
+		s.Content = truncated
+		s.EstimatedTokens = EstimateTokens(s.Content)
+		pack.Sections = append(pack.Sections, s)
+		pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
 		pack.TokenUsage.Truncated = true
-		remaining -= section.EstimatedTokens
+		remaining -= s.EstimatedTokens
+	}
+
+	for _, s := range regular {
+		if s.EstimatedTokens <= remaining {
+			pack.Sections = append(pack.Sections, s)
+			pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
+			remaining -= s.EstimatedTokens
+			continue
+		}
+		truncated, ok := truncateToTokens(s.Content, remaining)
+		if !ok {
+			pack.TokenUsage.Truncated = true
+			continue
+		}
+		s.Content = truncated
+		s.EstimatedTokens = EstimateTokens(s.Content)
+		pack.Sections = append(pack.Sections, s)
+		pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
+		pack.TokenUsage.Truncated = true
+		remaining -= s.EstimatedTokens
 	}
 
 	return pack

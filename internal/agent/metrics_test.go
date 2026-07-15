@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
@@ -100,7 +101,7 @@ func captureMetrics(r *Runner) *TurnMetrics {
 func TestRunTaskEmitsMetricsOnAnswer(t *testing.T) {
 	reg := registry.New()
 	registerFakeRead(t, reg, false)
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
 		`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"b.go"}}}`,
 		`{"rationale":"done","action":{"type":"final","content":"Answer."}}`,
@@ -129,7 +130,7 @@ func TestRunTaskEmitsMetricsOnAnswer(t *testing.T) {
 
 func TestRunTaskMetricsCountsParseFailures(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		"this is not a json action",
 		`{"rationale":"done","action":{"type":"final","content":"Recovered."}}`,
 	}}
@@ -148,7 +149,7 @@ func TestRunTaskMetricsCountsParseFailures(t *testing.T) {
 func TestRunTaskMetricsCountsToolErrorsAndCacheHits(t *testing.T) {
 	reg := registry.New()
 	registerFakeRead(t, reg, true) // cacheable: second identical read is a cache hit
-	p := &scriptedProvider{responses: []string{
+	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
 		`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
 		`{"rationale":"r","action":{"type":"tool_call","tool":"missing.tool","args":{}}}`,
@@ -176,7 +177,7 @@ func TestRunTaskMetricsCountsStalls(t *testing.T) {
 		responses = append(responses, read)
 	}
 	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"Forced."}}`)
-	p := &scriptedProvider{responses: responses}
+	p := &agenttest.ScriptedProvider{Responses: responses}
 	state := newTestState(t)
 	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.Role = RoleRepoScout
@@ -193,7 +194,7 @@ func TestRunTaskMetricsCountsStalls(t *testing.T) {
 
 func TestRunTaskMetricsFailedOnProviderError(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{errs: []error{errors.New("boom")}}
+	p := &agenttest.ScriptedProvider{Errs: []error{errors.New("boom")}}
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.MaxRetries = 0
 	r.SetForceClass(string(ClassQuestion))
@@ -209,12 +210,12 @@ func TestRunTaskMetricsFailedOnProviderError(t *testing.T) {
 
 func TestRunTaskMetricsAccumulatesTokens(t *testing.T) {
 	state := newTestState(t)
-	p := &scriptedProvider{
-		responses: []string{
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
 			"garbage that fails to parse",
 			`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
 		},
-		usages: []*schema.TokenUsage{
+		Usages: []*schema.TokenUsage{
 			{PromptTokens: 10, CompletionTokens: 5},
 			{PromptTokens: 7, CompletionTokens: 3},
 		},

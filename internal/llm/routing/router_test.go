@@ -2,6 +2,7 @@ package routing
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -319,5 +320,56 @@ func TestResolveRoleFallsBackToImplementerForUnconfiguredRole(t *testing.T) {
 	}
 	if route.Preset.Model != "small" {
 		t.Fatalf("route.Preset.Model = %q, want implementer fallback \"small\"", route.Preset.Model)
+	}
+}
+
+func TestLegacyRouteHasSaneDefaults(t *testing.T) {
+	// A router with only LegacyProvider/LegacyModel set should return a
+	// legacy route with non-zero ContextBudget values.
+	router := NewStaticRouter(Config{
+		DefaultProfile: "missing",
+		LegacyProvider: "ollama",
+		LegacyModel:    "qwen2.5-coder:7b",
+	})
+	route, err := router.Resolve(TaskProfile{Class: "edit"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !route.Legacy {
+		t.Fatal("expected legacy route")
+	}
+	if route.ContextBudget.MaxRepoContextTokens == 0 {
+		t.Fatal("legacy route ContextBudget.MaxRepoContextTokens is 0, want > 0")
+	}
+	if route.ContextBudget.MaxConversationTokens == 0 {
+		t.Fatal("legacy route ContextBudget.MaxConversationTokens is 0, want > 0")
+	}
+}
+
+func TestResolveRoleReturnsFallbackErrorOnExhaustion(t *testing.T) {
+	// Both repo_scout and implementer are unconfigured in the profile,
+	// and no legacy provider exists. The returned error should reference
+	// the implementer role (the fallback error) rather than the primary
+	// role (repo_scout), because the fallback error is more informative
+	// (it tells the caller which fallback role also wasn't found).
+	router := NewStaticRouter(Config{
+		DefaultProfile: "default",
+		Profiles: map[string]AgentProfile{
+			"default": {
+				Name:  "default",
+				Roles: map[AgentRole]string{}, // no roles at all
+			},
+		},
+	})
+
+	_, err := router.ResolveRole(RoleRepoScout)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// With the old code, the returned error mentions "repo_scout" (the
+	// primary role). With the fix, it should mention "implementer" (the
+	// fallback role) because that is the more specific error.
+	if !strings.Contains(err.Error(), "implementer") {
+		t.Fatalf("returned error should reference implementer (fallback), got: %v", err)
 	}
 }

@@ -33,10 +33,10 @@ var errEmptyHandoffSummary = errors.New("agent: handoff summarization returned e
 // compaction: request a handoff summary of the oversized transcript, then
 // rebuild the working message list from scratch around it so the loop can
 // keep working with full instructions intact.
-func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, goal string) ([]schema.ChatMessage, error) {
+func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, goal string, responseFormat *schema.ResponseFormat) ([]schema.ChatMessage, error) {
 	req := append(append([]schema.ChatMessage{}, messages...),
 		schema.ChatMessage{Role: schema.RoleSystem, Content: handoffSummaryDirective})
-	res, err := r.chatWithRetryNoNativeTools(ctx, p, model, req)
+	res, err := r.chatWithRetryNoNativeTools(ctx, p, model, req, responseFormat)
 	if err != nil {
 		return nil, err
 	}

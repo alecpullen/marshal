@@ -61,6 +61,40 @@ func TestNewAuditEventCopiesToolCallResultAndError(t *testing.T) {
 	}
 }
 
+func TestNewAuditEventRoundTripsOriginalArgs(t *testing.T) {
+	now := time.Unix(456, 0)
+	tool := testTool("shell.run")
+	tool.Risk = RiskCommand
+	call := ToolCall{
+		ID:   "call-rewrite",
+		Name: "shell.run",
+		Args: json.RawMessage(`{"command":"git --no-pager log"}`),
+	}
+	result := ToolResult{Summary: "ran"}
+	event := NewAuditEvent(now, tool, call, result, ApprovalApproved, nil)
+	event.OriginalArgs = json.RawMessage(`{"command":"git status"}`)
+	event.Rewritten = true
+
+	if string(event.OriginalArgs) != `{"command":"git status"}` {
+		t.Fatalf("OriginalArgs = %s", event.OriginalArgs)
+	}
+	if !event.Rewritten {
+		t.Fatal("Rewritten should be true")
+	}
+	if string(event.Args) != `{"command":"git --no-pager log"}` {
+		t.Fatalf("Args = %s", event.Args)
+	}
+
+	// Verify that a non-rewritten event has zero values.
+	event2 := NewAuditEvent(now, tool, call, result, ApprovalApproved, nil)
+	if event2.OriginalArgs != nil {
+		t.Fatalf("OriginalArgs = %s, want nil", event2.OriginalArgs)
+	}
+	if event2.Rewritten {
+		t.Fatal("Rewritten should be false")
+	}
+}
+
 func TestNewAuditEventCopiesCommandExitCode(t *testing.T) {
 	now := time.Unix(123, 0)
 	exitCode := 2

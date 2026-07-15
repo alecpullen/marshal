@@ -3,6 +3,8 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -441,5 +443,112 @@ func TestModeCommandRegistered(t *testing.T) {
 	}
 	if _, ok := reg.Lookup("mode"); !ok {
 		t.Fatal("/mode should be registered")
+	}
+}
+
+func TestHelpHidesUnimplementedCommands(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, ok := cmdReg.Lookup("help")
+	if !ok {
+		t.Fatal("help command not registered")
+	}
+	result := cmd.Handler(newTestState(), nil)
+
+	// Unimplemented commands must NOT appear in /help output.
+	for _, name := range []string{"swarm", "sdd", "settings", "memory", "connect", "models"} {
+		if strings.Contains(result, "/"+name) {
+			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
+		}
+	}
+
+	// Mode commands are stubs; they should also be hidden.
+	for _, name := range []string{"ask", "edit", "auto", "mode", "stop"} {
+		if strings.Contains(result, "/"+name) {
+			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
+		}
+	}
+
+	// Implemented commands must still appear.
+	for _, name := range []string{"help", "new", "config", "route", "context", "log", "diff", "rollback", "undo", "redo", "export", "rename", "rewind", "branches", "trust", "tools", "exit", "quit", "clear"} {
+		if !strings.Contains(result, "/"+name) {
+			t.Errorf("help output should contain /%s, got:\n%s", name, result)
+		}
+	}
+}
+
+func TestDiffDoesNotInjectIntoState(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	state := newTestState()
+	cmd, ok := cmdReg.Lookup("diff")
+	if !ok {
+		t.Fatal("diff command not registered")
+	}
+	before := len(state.Messages())
+	result := cmd.Handler(state, nil)
+	after := len(state.Messages())
+
+	if after != before {
+		t.Errorf("expected no new messages in state after /diff, got %d -> %d", before, after)
+	}
+	if result == "" {
+		t.Error("/diff should return a message, not empty string")
+	}
+	// No message in state should have ContentTypeDiff.
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeDiff {
+			t.Errorf("state should not contain ContentTypeDiff messages: %q", m.Content)
+		}
+	}
+}
+
+func TestExportComputesPathBeforeWrite(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	state := newTestState()
+	tmpDir := t.TempDir()
+	state.WorkingDir = tmpDir
+
+	cmd, ok := cmdReg.Lookup("export")
+	if !ok {
+		t.Fatal("export command not registered")
+	}
+
+	result := cmd.Handler(state, nil)
+
+	if !strings.Contains(result, "Exported to ") {
+		t.Fatalf("export output missing 'Exported to': %q", result)
+	}
+	if !strings.Contains(result, tmpDir) {
+		t.Fatalf("export output should contain working dir: %q", result)
+	}
+	if strings.Contains(result, "failed") {
+		t.Fatalf("export failed unexpectedly: %q", result)
+	}
+
+	defaultPath := filepath.Join(tmpDir, "marshal-session-"+state.SessionID()+".html")
+	if _, err := os.Stat(defaultPath); os.IsNotExist(err) {
+		t.Fatalf("export file not found at default path: %s", defaultPath)
+	}
+}
+
+func TestHiddenCommandsStillRunnable(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	// Hidden commands must still be findable via Lookup.
+	for _, name := range []string{"stop", "ask", "edit", "auto", "mode", "swarm", "sdd", "settings", "memory", "model", "connect", "models"} {
+		_, ok := cmdReg.Lookup(name)
+		if !ok {
+			t.Errorf("hidden command /%s must still be registered for Lookup", name)
+		}
 	}
 }

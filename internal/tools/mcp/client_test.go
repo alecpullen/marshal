@@ -1,11 +1,14 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -177,6 +180,49 @@ func TestReadLoopFailPendingDoesNotBlockUnderMu(t *testing.T) {
 		t.Fatal("readLoop deadlocked while failing pending (F-CON-53)")
 	}
 }
+
+// TestClientReadLoopLogsScannerError verifies that readLoop logs a warning
+// when the scanner encounters an error (e.g. malformed JSON line).
+func TestClientReadLoopLogsScannerError(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewClient("test", "ignored", nil, nil,
+		WithClientLogger(slog.New(slog.NewTextHandler(&buf, nil))),
+	)
+	c.stdin = &nopWriteCloser{}
+	c.stdout = &malformedReader{}
+
+	c.wg.Add(1)
+	c.readLoop()
+
+	logged := buf.String()
+	if !strings.Contains(logged, "mcp readLoop ended") {
+		t.Fatalf("expected 'mcp readLoop ended' in log, got %q", logged)
+	}
+}
+
+// nopWriteCloser is an io.WriteCloser that discards all writes.
+type nopWriteCloser struct{}
+
+func (n *nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (n *nopWriteCloser) Close() error                 { return nil }
+
+// malformedReader is an io.ReadCloser that yields a single malformed JSON
+// line and then returns io.EOF on subsequent reads.
+type malformedReader struct {
+	pos int
+}
+
+func (m *malformedReader) Read(p []byte) (int, error) {
+	if m.pos > 0 {
+		return 0, io.EOF
+	}
+	m.pos++
+	data := []byte("{invalid}\n")
+	n := copy(p, data)
+	return n, nil
+}
+
+func (m *malformedReader) Close() error { return nil }
 
 func mockServerMain() {
 	dec := json.NewDecoder(os.Stdin)

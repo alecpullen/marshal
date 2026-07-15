@@ -74,6 +74,8 @@ func (db *DB) Migrate() error {
 		"sandbox_killed_reason":    "TEXT",
 		"duration_ms":              "INTEGER",
 		"hooks_json":               "TEXT NOT NULL DEFAULT '[]'",
+		"original_args_json":       "TEXT",
+		"rewritten":                "INTEGER DEFAULT 0",
 	}
 	for name, def := range columnDefs {
 		if columns[name] {

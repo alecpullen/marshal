@@ -321,8 +321,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				if diff == "" {
 					return "No changes since the last snapshot."
 				}
-				state.AddMessage(session.RoleSystem, diff, session.ContentTypeDiff)
-				return ""
+				return diff
 			},
 		},
 		{

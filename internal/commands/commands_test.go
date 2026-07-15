@@ -477,6 +477,34 @@ func TestHelpHidesUnimplementedCommands(t *testing.T) {
 	}
 }
 
+func TestDiffDoesNotInjectIntoState(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	state := newTestState()
+	cmd, ok := cmdReg.Lookup("diff")
+	if !ok {
+		t.Fatal("diff command not registered")
+	}
+	before := len(state.Messages())
+	result := cmd.Handler(state, nil)
+	after := len(state.Messages())
+
+	if after != before {
+		t.Errorf("expected no new messages in state after /diff, got %d -> %d", before, after)
+	}
+	if result == "" {
+		t.Error("/diff should return a message, not empty string")
+	}
+	// No message in state should have ContentTypeDiff.
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeDiff {
+			t.Errorf("state should not contain ContentTypeDiff messages: %q", m.Content)
+		}
+	}
+}
+
 func TestHiddenCommandsStillRunnable(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()

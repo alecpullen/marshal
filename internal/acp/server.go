@@ -442,9 +442,9 @@ func (s *Server) failOutbound(err error) {
 }
 
 // reportFatal sends a fatal error to the Serve loop via the buffered
-// fatalErr channel. If the channel is already full (another fatal
-// error has already been reported or Serve is shutting down), the
-// error is silently dropped.
+// fatalErr channel. The channel has capacity 16 so simultaneous
+// reports do not block. Serve drains the channel on shutdown to
+// ensure every reported fatal is joined into the final return value.
 func (s *Server) reportFatal(err error) {
 	s.fatalErr <- err
 }

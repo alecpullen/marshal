@@ -611,6 +611,62 @@ func TestServerOutboundRequestReceivesResponse(t *testing.T) {
 	}
 }
 
+// --- F-CON-52: Non-blocking outbound channel sends ---
+
+func TestDeliverOutboundDoesNotBlockOnFullChannel(t *testing.T) {
+	s := &Server{
+		outbound: make(map[string]chan outboundResult),
+	}
+	id := json.RawMessage(`"abc"`)
+	ch := make(chan outboundResult, 1)
+	ch <- outboundResult{response: &Response{}} // pre-fill buffer
+	s.outbound["abc"] = ch
+
+	done := make(chan bool, 1)
+	go func() {
+		_ = s.deliverOutbound(&id, []byte(`{"jsonrpc":"2.0","id":"abc","result":{}}`))
+		done <- true
+	}()
+	select {
+	case <-done:
+		// ok
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("deliverOutbound blocked on a full waiter channel (F-CON-52)")
+	}
+}
+
+func TestFailOutboundDoesNotBlockOnFullChannel(t *testing.T) {
+	s := &Server{
+		outbound: make(map[string]chan outboundResult),
+		closed:   true,
+	}
+	full := make(chan outboundResult, 1)
+	full <- outboundResult{response: &Response{}}
+	s.outbound["full"] = full
+	open := make(chan outboundResult, 1)
+	s.outbound["open"] = open
+
+	done := make(chan struct{})
+	go func() {
+		s.failOutbound(errors.New("test close"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("failOutbound blocked on a full waiter channel (F-CON-52)")
+	}
+	// The "open" waiter should have received the error.
+	select {
+	case res := <-open:
+		if res.err == nil {
+			t.Fatal("open waiter received no error")
+		}
+	default:
+		t.Fatal("open waiter did not receive the fail error")
+	}
+}
+
 // --- Wire harness used by the integration_test.go TestACPWire* tests ---
 
 // wireHarness drives a Server through real newline-delimited JSON. Input

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
@@ -221,6 +222,10 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 	// computing thinking deltas. Reset per turn.
 	var lastThinking string
 
+	// turnAnswered guards the pending-question send so the unanswered
+	// answer is delivered at most once per question identity (F-BUG-51).
+	var turnAnswered sync.Map
+
 	// forward dispatches one session event to the ACP client. Defined
 	// once and used in both the main loop and the post-run drain.
 	forward := func(ev pubsub.Event[session.Event]) {
@@ -237,18 +242,24 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		}
 
 		// Drive pending approvals through the permission bridge
-		// synchronously in the forwarding loop.
+		// in a goroutine so the forwarder never blocks on the
+		// bridge (F-CON-54).
 		if ev.Type == session.EventPendingApprovalChanged &&
 			ev.Payload.PendingApproval != nil &&
 			m.bridge != nil {
-			if err := m.bridge.Request(turnCtx, ev.Payload.PendingApproval); err != nil {
-				slotCancel()
-				subCancel()
-			}
+			pa := ev.Payload.PendingApproval
+			go func() {
+				if err := m.bridge.Request(turnCtx, pa); err != nil {
+					slotCancel()
+					subCancel()
+				}
+			}()
 		}
 
 		// Answer pending questions with unanswered immediately —
 		// the ACP v1 transport does not support interactive questions.
+		// The turn-scoped sync.Map guards against duplicate delivery
+		// when the event re-fires (F-BUG-51).
 		if ev.Type == session.EventPendingQuestionChanged &&
 			ev.Payload.PendingQuestion != nil {
 			pending := ev.Payload.PendingQuestion
@@ -256,9 +267,11 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 			for i, q := range pending.Questions {
 				answers[i] = session.Answer{Question: q.Question, Answer: session.AnswerUnanswered}
 			}
-			select {
-			case pending.ResponseChan <- answers:
-			case <-turnCtx.Done():
+			if _, loaded := turnAnswered.LoadOrStore(pending.ResponseChan, true); !loaded {
+				select {
+				case pending.ResponseChan <- answers:
+				case <-turnCtx.Done():
+				}
 			}
 		}
 	}
@@ -347,9 +360,14 @@ func (m *TurnManager) Cancel(ctx context.Context, params json.RawMessage) (any, 
 	return nil, nil
 }
 
+// cancelWait is the fallback timeout for CancelAndWait. Exported as a
+// package-level var so tests can override it without slowing the suite.
+var cancelWait = 30 * time.Second
+
 // CancelAndWait cancels the active turn for the named session and blocks
 // until the runner has fully completed. Returns nil if no turn is active
-// (benign double-cancel).
+// (benign double-cancel). The wait is bounded by cancelWait even when the
+// caller's context never cancels (F-BUG-50).
 func (m *TurnManager) CancelAndWait(ctx context.Context, sessionID string) error {
 	m.activeTurnsMu.Lock()
 	slot, ok := m.activeTurns[sessionID]
@@ -361,9 +379,13 @@ func (m *TurnManager) CancelAndWait(ctx context.Context, sessionID string) error
 	slot.clientCancelled.Store(true)
 	slot.cancel()
 
+	timer := time.NewTimer(cancelWait)
+	defer timer.Stop()
 	select {
 	case <-slot.done:
 		return nil
+	case <-timer.C:
+		return fmt.Errorf("acp: CancelAndWait timed out after %v waiting for slot %s", cancelWait, sessionID)
 	case <-ctx.Done():
 		return ctx.Err()
 	}

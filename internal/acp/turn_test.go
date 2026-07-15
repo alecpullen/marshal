@@ -259,6 +259,83 @@ func TestPromptTurnCompletesAfterBrokerCloseAndRunnerRelease(t *testing.T) {
 	}
 }
 
+// TestCancelAndWaitBoundsWait reproduces F-BUG-50: when a runner
+// goroutine never writes to runErr (simulated by an activeTurn whose
+// done channel is never closed), CancelAndWait must not block forever.
+// The test uses a short bounded-wait override so it completes in
+// milliseconds regardless.
+func TestCancelAndWaitBoundsWait(t *testing.T) {
+	orig := cancelWait
+	cancelWait = 100 * time.Millisecond
+	defer func() { cancelWait = orig }()
+
+	tm := &TurnManager{
+		activeTurns:   map[string]*activeTurn{},
+		activeTurnsMu: sync.Mutex{},
+	}
+	_, slotCancel := context.WithCancel(context.Background())
+	tm.activeTurns["s1"] = &activeTurn{
+		cancel: slotCancel,
+		done:   make(chan struct{}), // never closed — runner never finishes
+	}
+
+	// We do NOT close done, so the slot never resolves through the
+	// normal cleanup path. Before the fix (F-BUG-50) this call would
+	// block forever; after the fix the bounded wait ensures it returns.
+	start := time.Now()
+	err := tm.CancelAndWait(context.Background(), "s1")
+	elapsed := time.Since(start)
+	if elapsed > 5*time.Second {
+		t.Fatalf("CancelAndWait blocked for %v (expected bounded wait)", elapsed)
+	}
+	if err == nil {
+		t.Fatal("expected timeout error from bounded wait")
+	}
+}
+
+// TestForwardDoesNotBlockOnBridge is a smoke test for F-CON-54. It sets
+// up a synthetic turn where the forwarder encounters a permission approval
+// event and the PermissionBridge uses a blocking client. Before the fix
+// the synchronous bridge call in the forwarder would hang the entire
+// PromptTurn; after the fix the call is dispatched in a goroutine so the
+// turn completes normally and quickly.
+func TestForwardDoesNotBlockOnBridge(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	response := make(chan session.UserApprovalDecision, 1)
+	pending := &session.PendingToolCall{
+		ID:           "tool-block",
+		Name:         "shell.run",
+		Command:      "block",
+		ResponseChan: response,
+	}
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					// Publish an approval event — the forwarder must not block.
+					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: pending})
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+		Perms:  blockingPermissionClient{}, // blocks until ctx.Done()
+	})
+
+	// Before the fix (F-CON-54), the forwarder calls bridge.Request
+	// synchronously, blocking the event loop and the entire turn.
+	// After the fix, the bridge call runs in a goroutine so the
+	// forwarder returns immediately and the turn completes normally.
+	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("PromptTurn() error = %v (expected nil, bridge call is now async)", err)
+	}
+}
+
 // --- Step 2: Concurrency and cancellation tests ---
 
 func TestPromptTurnRejectsConcurrentPromptForSameSession(t *testing.T) {

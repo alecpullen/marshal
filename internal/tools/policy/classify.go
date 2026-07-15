@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/google/shlex"
@@ -28,7 +29,7 @@ type Classification struct {
 func ClassifyCommand(input string) (Classification, error) {
 	args, err := shlex.Split(input)
 	if err != nil {
-		return Classification{Risk: registry.RiskCommand, Reason: "unparseable command"}, err
+		return Classification{}, fmt.Errorf("classify command: %w", err)
 	}
 	if len(args) == 0 {
 		return Classification{Risk: registry.RiskCommand, Reason: "empty command"}, nil

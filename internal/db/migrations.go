@@ -140,7 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_session ON snapshots(session_id, turn_i
 
 CREATE TABLE IF NOT EXISTS snapshot_files (
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
+    path TEXT NOT NULL CHECK (length(path) > 0),
     PRIMARY KEY(snapshot_id, path)
 );
 CREATE TABLE IF NOT EXISTS session_state (

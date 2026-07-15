@@ -1651,7 +1651,8 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 		ResponseChan: make(chan []session.Answer, 1),
 	}
 	r.State.SetPendingQuestion(q)
-	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: "waiting for your answer", StartedAt: r.Now()})
+	label := buildQuestionLabel(questions)
+	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: label, StartedAt: r.Now()})
 
 	select {
 	case answers := <-q.ResponseChan:
@@ -1663,6 +1664,22 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return nil, ctx.Err()
 	}
+}
+
+// buildQuestionLabel returns a human-readable activity label that includes a
+// preview of the first question so the user knows what they are being asked.
+func buildQuestionLabel(questions []session.Question) string {
+	if len(questions) == 0 {
+		return "waiting for your answer"
+	}
+	q := questions[0].Question
+	if len(q) > 40 {
+		q = q[:40] + "…"
+	}
+	if len(questions) == 1 {
+		return "waiting for your answer: " + q
+	}
+	return fmt.Sprintf("waiting for your answer (Q1/%d): %s", len(questions), q)
 }
 
 func skillsChanged(prev, curr []string) bool {

@@ -4,46 +4,105 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"marshal/internal/db"
 )
 
-// perCwdLister implements SessionLister by opening the per-cwd Marshal
-// database (<cwd>/.marshal/marshal.db), migrating it idempotently,
-// querying sessions, and closing the handle before returning. Each call
-// is independent; there is no connection pooling across list requests.
-type perCwdLister struct{}
+// cachedDB holds an open database handle and the time it was opened so
+// that perCwdLister can detect staleness and re-open.
+type cachedDB struct {
+	mu     sync.Mutex
+	db     *db.DB
+	opened time.Time
+}
 
-func newPerCwdLister() *perCwdLister { return &perCwdLister{} }
+// perCwdLister implements SessionLister by caching per-cwd database
+// handles with a TTL. ListSessions never creates the database; it
+// returns an empty result if the file does not exist. DeleteSession is
+// the only path that creates the directory and opens the DB.
+type perCwdLister struct {
+	mu    sync.Mutex
+	cache map[string]*cachedDB
+	ttl   time.Duration
+}
 
+func newPerCwdLister() *perCwdLister {
+	return &perCwdLister{
+		cache: make(map[string]*cachedDB),
+		ttl:   30 * time.Second,
+	}
+}
+
+// getOrOpen returns a cached *db.DB for cwd if one exists and is within
+// the TTL. Otherwise it opens the database, runs Migrate exactly once,
+// and caches the handle.
+func (l *perCwdLister) getOrOpen(cwd string) (*db.DB, error) {
+	l.mu.Lock()
+	entry, ok := l.cache[cwd]
+	l.mu.Unlock()
+
+	if ok {
+		entry.mu.Lock()
+		defer entry.mu.Unlock()
+
+		if time.Since(entry.opened) < l.ttl {
+			return entry.db, nil
+		}
+		// Stale — close and reopen below.
+		_ = entry.db.Close()
+		entry.db = nil
+	} else {
+		entry = &cachedDB{}
+		l.mu.Lock()
+		l.cache[cwd] = entry
+		l.mu.Unlock()
+	}
+
+	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
+	d, err := db.Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.Migrate(); err != nil {
+		_ = d.Close()
+		return nil, err
+	}
+
+	entry.mu.Lock()
+	entry.db = d
+	entry.opened = time.Now()
+	entry.mu.Unlock()
+
+	return d, nil
+}
+
+// ListSessions returns an empty list without opening or creating the
+// database if the per-cwd database file does not exist. Otherwise it
+// uses the cached (or freshly opened) handle.
+func (l *perCwdLister) ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error) {
+	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return nil, "", nil // empty list, no error
+	}
+	d, err := l.getOrOpen(cwd)
+	if err != nil {
+		return nil, "", err
+	}
+	return d.ListSessions(ctx, cwd, cursor, limit)
+}
+
+// DeleteSession creates the directory if necessary, opens (or reuses)
+// the cached database handle, and deletes the session.
 func (l *perCwdLister) DeleteSession(ctx context.Context, cwd, sessionID string) (bool, error) {
 	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return false, err
 	}
-	d, err := db.Open(dbPath)
+	d, err := l.getOrOpen(cwd)
 	if err != nil {
-		return false, err
-	}
-	defer d.Close()
-	if err := d.Migrate(); err != nil {
 		return false, err
 	}
 	return d.DeleteSession(ctx, sessionID)
-}
-
-func (l *perCwdLister) ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error) {
-	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return nil, "", err
-	}
-	d, err := db.Open(dbPath)
-	if err != nil {
-		return nil, "", err
-	}
-	defer d.Close()
-	if err := d.Migrate(); err != nil {
-		return nil, "", err
-	}
-	return d.ListSessions(ctx, cwd, cursor, limit)
 }

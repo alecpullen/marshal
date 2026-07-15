@@ -109,12 +109,12 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 	if file.Indexing != nil || !reflect.DeepEqual(cfg.Indexing, def.Indexing) {
 		file.Indexing = &fileIndexing{
-			UseTreesitter:           ptr(cfg.Indexing.UseTreesitter),
-			UseEmbeddings:           ptr(cfg.Indexing.UseEmbeddings),
-			SummariseFiles:          ptr(cfg.Indexing.SummariseFiles),
-			Ignore:                  cfg.Indexing.Ignore,
-			MaxIndexableFileBytes:   ptr(cfg.Indexing.MaxIndexableFileBytes),
-			MaxSearchableFileBytes:  ptr(cfg.Indexing.MaxSearchableFileBytes),
+			UseTreesitter:          ptr(cfg.Indexing.UseTreesitter),
+			UseEmbeddings:          ptr(cfg.Indexing.UseEmbeddings),
+			SummariseFiles:         ptr(cfg.Indexing.SummariseFiles),
+			Ignore:                 cfg.Indexing.Ignore,
+			MaxIndexableFileBytes:  ptr(cfg.Indexing.MaxIndexableFileBytes),
+			MaxSearchableFileBytes: ptr(cfg.Indexing.MaxSearchableFileBytes),
 		}
 	}
 	if file.Web != nil || cfg.Web != def.Web {
@@ -227,99 +227,6 @@ func activePresetName(cfg Config) string {
 	return presetName
 }
 
-// SaveUserConfig writes a full configFile to path (typically
-// ~/.config/marshal/config.toml). It reads any existing file first,
-// merges the provided file on top, and writes the result. If the file
-// does not exist, it creates it with a minimal header.
-func SaveUserConfig(path string, file configFile) error {
-	existing, err := loadFile(path)
-	if err != nil {
-		return fmt.Errorf("load user config: %w", err)
-	}
-	// Merge file into existing (file wins for any non-nil field).
-	// We do a simple field-by-field overwrite for the top-level sections.
-	if file.Project != nil {
-		existing.Project = file.Project
-	}
-	if file.Commands != nil {
-		existing.Commands = file.Commands
-	}
-	if file.Profile != nil {
-		existing.Profile = file.Profile
-	}
-	if file.Agent != nil {
-		existing.Agent = file.Agent
-	}
-	if file.Privacy != nil {
-		existing.Privacy = file.Privacy
-	}
-	if file.Indexing != nil {
-		existing.Indexing = file.Indexing
-	}
-	if file.Tools != nil {
-		existing.Tools = file.Tools
-	}
-	if file.Web != nil {
-		existing.Web = file.Web
-	}
-	if file.Desktop != nil {
-		existing.Desktop = file.Desktop
-	}
-	if file.Swarm != nil {
-		existing.Swarm = file.Swarm
-	}
-	if file.SDD != nil {
-		existing.SDD = file.SDD
-	}
-	if file.MCP != nil {
-		existing.MCP = file.MCP
-	}
-	if file.Snapshots != nil {
-		existing.Snapshots = file.Snapshots
-	}
-	if file.TUI != nil {
-		existing.TUI = file.TUI
-	}
-	if file.Permissions != nil {
-		existing.Permissions = file.Permissions
-	}
-	if file.Diagnostics != nil {
-		existing.Diagnostics = file.Diagnostics
-	}
-	if file.Hooks != nil {
-		existing.Hooks = file.Hooks
-	}
-	if file.Providers != nil {
-		if existing.Providers == nil {
-			existing.Providers = make(map[string]ProviderConfig, len(file.Providers))
-		}
-		for name, pc := range file.Providers {
-			existing.Providers[name] = pc
-		}
-	}
-	if file.Models != nil {
-		existing.Models = file.Models
-	}
-	if file.AgentProfiles != nil {
-		existing.AgentProfiles = file.AgentProfiles
-	}
-	if file.Agents != nil {
-		existing.Agents = file.Agents
-	}
-
-	data, err := toml.Marshal(&existing)
-	if err != nil {
-		return fmt.Errorf("marshal user config: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
-}
-
-// SaveUserConfigProviderAPIKey merges a provider's api_key into the
-// config file at path (typically ~/.config/marshal/config.toml). If the
-// file does not exist, it is created. Other sections are preserved.
 func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
 	file, err := loadFile(path)
 	if err != nil {
@@ -330,6 +237,7 @@ func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
 	}
 	existing := file.Providers[providerName]
 	existing.APIKey = apiKey
+	existing.APIKeyEnv = "" // clear stale env-var reference when switching to inline
 	file.Providers[providerName] = existing
 
 	data, err := toml.Marshal(&file)
@@ -338,6 +246,13 @@ func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
+	}
+	// Prepend a minimal header if the file is being created for the first time.
+	// loadFile returns an empty configFile when the file does not exist, so we
+	// check whether the file exists on disk.
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		header := "# Marshal global configuration\n"
+		data = append([]byte(header), data...)
 	}
 	return os.WriteFile(path, data, 0644)
 }

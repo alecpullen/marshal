@@ -209,10 +209,29 @@ func (c *Client) readLoop() {
 			c.err = io.EOF
 		}
 	}
-	// Fail all pending
-	for id, ch := range c.pending {
-		ch <- Response{Error: &Error{Message: c.err.Error()}}
-		delete(c.pending, id)
+	// Snapshot pending entries under the lock; send outside the lock so a
+	// full per-id channel cannot block the read loop (F-CON-53). The
+	// per-id channel buffer is 1; if it's already full, the response
+	// was delivered and there's no one to notify.
+	errMsg := ""
+	if c.err != nil {
+		errMsg = c.err.Error()
 	}
+	type pendingEntry struct {
+		id json.Number
+		ch chan<- Response
+	}
+	entries := make([]pendingEntry, 0, len(c.pending))
+	for id, ch := range c.pending {
+		entries = append(entries, pendingEntry{id: id, ch: ch})
+	}
+	c.pending = make(map[json.Number]chan<- Response)
 	c.mu.Unlock()
+
+	for _, e := range entries {
+		select {
+		case e.ch <- Response{Error: &Error{Message: errMsg}}:
+		default:
+		}
+	}
 }

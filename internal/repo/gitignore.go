@@ -55,14 +55,20 @@ func parseGitignorePattern(line string) (gitignorePattern, error) {
 		p.anchored = true
 		line = line[1:]
 	}
-	if strings.HasSuffix(line, "/") {
-		p.dirOnly = true
-		line = strings.TrimSuffix(line, "/")
-	}
-	// A slash anywhere in the pattern anchors it to the .gitignore location.
+	// Record whether the pattern is dir-only before removing
+	// the trailing slash, so the slash-anchor check below
+	// can see the full pattern.
+	dirOnly := strings.HasSuffix(line, "/")
+	// A slash anywhere in the pattern anchors it relative
+	// to the .gitignore location. Check before stripping
+	// the trailing / so that build/ is correctly anchored.
 	if strings.Contains(line, "/") {
 		p.anchored = true
 	}
+	if dirOnly {
+		line = strings.TrimSuffix(line, "/")
+	}
+	p.dirOnly = dirOnly
 	p.segments = strings.Split(line, "/")
 	for _, seg := range p.segments {
 		if _, err := filepath.Match(seg, ""); err != nil {

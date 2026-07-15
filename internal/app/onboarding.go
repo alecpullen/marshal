@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"marshal/internal/app/config"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -19,15 +22,30 @@ type onboardingState int
 
 const (
 	stateSelectProvider onboardingState = iota
+	stateProjectName
 	stateConfigureURL
+	stateKeyMode
 	stateConfigureKey
 	stateModelSelection
 	stateDone
 )
 
+type keyModeKind int
+
+const (
+	keyModeUnset keyModeKind = iota
+	keyModeEnvName
+	keyModeInline
+)
+
+const (
+	marshalGlobalAPIKey = "MARSHAL_GLOBAL_API_KEY"
+)
+
 type OnboardingModel struct {
 	state      onboardingState
 	workingDir string
+	cancelled  bool
 
 	// Step 1: Provider selection
 	providers     []string
@@ -40,14 +58,34 @@ type OnboardingModel struct {
 
 	// Collected inputs
 	selectedProvider string
+	projectName      string
 	baseURL          string
 	apiKey           string
 	modelName        string
+
+	// API key mode (F-UIUX-137)
+	keyMode   keyModeKind // keyModeEnvName | keyModeInline | keyModeUnset
+	keySecret string      // when keyMode == inline, the value the user typed
+
+	// globalConfigPath overrides the default global config path for testing.
+	// If empty, defaults to ~/.config/marshal/config.toml.
+	globalConfigPath string
 
 	// Ollama dynamic models
 	ollamaModels []string
 	ollamaIndex  int
 	ollamaErr    bool
+
+	// projectNameTouched tracks whether the user typed in the project name
+	// field, so we can distinguish "pressed Enter on the default" from
+	// "typed then cleared the input" (F-POL-168).
+	projectNameTouched bool
+
+	// attempts is a plain int field used only by the pointer-receiver
+	// regression test (F-BUG-158). It is incremented on each "enter" key
+	// press while in stateSelectProvider. If receivers were value receivers,
+	// the increment would not persist across Update calls.
+	attempts int
 }
 
 type ollamaTagsResponse struct {
@@ -71,6 +109,10 @@ func NewOnboardingModel(workingDir string) *OnboardingModel {
 	}
 }
 
+// Cancelled returns true when the user pressed Esc or Ctrl+C to exit the
+// onboarding wizard before completing all steps.
+func (m *OnboardingModel) Cancelled() bool { return m.cancelled }
+
 func (m *OnboardingModel) Init() tea.Cmd {
 	return textinput.Blink
 }
@@ -92,6 +134,16 @@ func fetchOllamaModels(url string) tea.Cmd {
 			}
 		}
 		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			slog.Default().Warn("ollama /api/tags returned non-200",
+				"status", resp.StatusCode,
+				"body", strings.TrimSpace(string(body)),
+			)
+			return ollamaModelsFailedMsg{}
+		}
+
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return ollamaModelsFailedMsg{}
@@ -120,6 +172,7 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
+			m.cancelled = true
 			return m, tea.Quit
 
 		case "up":
@@ -129,6 +182,12 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.providerIndex = len(m.providers) - 1
 				}
 				m.selectedProvider = m.providers[m.providerIndex]
+			} else if m.state == stateKeyMode {
+				if m.keyMode == keyModeInline {
+					m.keyMode = keyModeEnvName
+				} else {
+					m.keyMode = keyModeInline
+				}
 			} else if m.state == stateModelSelection && len(m.ollamaModels) > 0 {
 				m.ollamaIndex--
 				if m.ollamaIndex < 0 {
@@ -143,6 +202,12 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.providerIndex = 0
 				}
 				m.selectedProvider = m.providers[m.providerIndex]
+			} else if m.state == stateKeyMode {
+				if m.keyMode == keyModeEnvName {
+					m.keyMode = keyModeInline
+				} else {
+					m.keyMode = keyModeEnvName
+				}
 			} else if m.state == stateModelSelection && len(m.ollamaModels) > 0 {
 				m.ollamaIndex++
 				if m.ollamaIndex >= len(m.ollamaModels) {
@@ -154,14 +219,30 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			switch m.state {
 			case stateSelectProvider:
+				m.attempts++
+				m.state = stateProjectName
+				m.textInput.SetValue("")
+				m.textInput.Placeholder = filepath.Base(m.workingDir)
+				m.projectNameTouched = false
+				m.textInput.Focus()
+
+			case stateProjectName:
+				name := strings.TrimSpace(m.textInput.Value())
+				if name == "" {
+					if m.projectNameTouched {
+						m.err = "Project name cannot be empty"
+						return m, nil
+					}
+					name = filepath.Base(m.workingDir)
+				}
+				m.projectName = name
 				if m.selectedProvider == "Ollama (Local)" {
 					m.state = stateConfigureURL
 					m.textInput.Placeholder = "http://localhost:11434/v1"
 					m.textInput.SetValue("http://localhost:11434/v1")
 				} else {
-					m.state = stateConfigureKey
-					m.textInput.Placeholder = "API Key or Env Var name (e.g. OPENROUTER_API_KEY)"
-					m.textInput.SetValue("")
+					m.state = stateKeyMode
+					m.keyMode = keyModeEnvName // default
 				}
 				m.textInput.Focus()
 
@@ -175,11 +256,30 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.SetValue("")
 				return m, fetchOllamaModels(m.baseURL)
 
+			case stateKeyMode:
+				// keyMode is already set by up/down; proceed to input.
+				m.state = stateConfigureKey
+				m.textInput.SetValue("")
+				if m.keyMode == keyModeEnvName {
+					m.textInput.Placeholder = "Env var name (e.g. OPENAI_API_KEY)"
+					m.textInput.EchoMode = textinput.EchoPassword
+				} else {
+					m.textInput.Placeholder = "Paste API key (masked)"
+					m.textInput.EchoMode = textinput.EchoPassword
+				}
+				m.textInput.Focus()
+
 			case stateConfigureKey:
-				m.apiKey = strings.TrimSpace(m.textInput.Value())
-				if m.apiKey == "" {
-					m.err = "API Key cannot be empty"
+				val := strings.TrimSpace(m.textInput.Value())
+				if val == "" {
+					m.err = "Value cannot be empty"
 					return m, nil
+				}
+				if m.keyMode == keyModeEnvName {
+					m.apiKey = val
+				} else {
+					m.keySecret = val
+					m.apiKey = marshalGlobalAPIKey
 				}
 				m.state = stateModelSelection
 				m.textInput.SetValue("")
@@ -221,8 +321,12 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textInput.Focus()
 	}
 
-	if m.state == stateConfigureURL || m.state == stateConfigureKey || (m.state == stateModelSelection && len(m.ollamaModels) == 0 && !m.loading) {
+	if m.state == stateProjectName || m.state == stateConfigureURL || m.state == stateConfigureKey || (m.state == stateModelSelection && len(m.ollamaModels) == 0 && !m.loading) {
+		oldVal := m.textInput.Value()
 		m.textInput, cmd = m.textInput.Update(msg)
+		if m.state == stateProjectName && m.textInput.Value() != oldVal {
+			m.projectNameTouched = true
+		}
 	}
 
 	return m, cmd
@@ -235,8 +339,12 @@ func (m *OnboardingModel) saveConfig() error {
 	}
 
 	var tomlContent strings.Builder
+	projectName := m.projectName
+	if projectName == "" {
+		projectName = filepath.Base(m.workingDir)
+	}
 	tomlContent.WriteString("[project]\n")
-	tomlContent.WriteString("name = \"my-project\"\n\n")
+	tomlContent.WriteString(fmt.Sprintf("name = %q\n\n", projectName))
 
 	tomlContent.WriteString("[commands]\n")
 	tomlContent.WriteString("test = \"go test ./...\"\n\n")
@@ -246,17 +354,35 @@ func (m *OnboardingModel) saveConfig() error {
 
 	providerKey := strings.ToLower(strings.Fields(m.selectedProvider)[0])
 
-	tomlContent.WriteString(fmt.Sprintf("[providers.%s]\n", providerKey))
-	tomlContent.WriteString("type = \"openai_compatible\"\n")
 	if providerKey == "ollama" {
+		tomlContent.WriteString(fmt.Sprintf("[providers.%s]\n", providerKey))
+		tomlContent.WriteString("type = \"openai_compatible\"\n")
 		tomlContent.WriteString(fmt.Sprintf("base_url = %q\n", m.baseURL))
 		tomlContent.WriteString("api_key = \"ollama\"\n\n")
-	} else if strings.Contains(m.apiKey, "_") {
-		// Env var
-		tomlContent.WriteString(fmt.Sprintf("api_key_env = %q\n\n", m.apiKey))
 	} else {
-		// Raw key
-		tomlContent.WriteString(fmt.Sprintf("api_key = %q\n\n", m.apiKey))
+		switch m.keyMode {
+		case keyModeEnvName:
+			tomlContent.WriteString(fmt.Sprintf("[providers.%s]\n", providerKey))
+			tomlContent.WriteString("type = \"openai_compatible\"\n")
+			tomlContent.WriteString(fmt.Sprintf("api_key_env = %q\n\n", m.apiKey))
+		case keyModeInline:
+			// Persist the raw key to the GLOBAL config only.
+			if err := writeGlobalProviderAPIKey(m.globalConfigPath, providerKey, m.keySecret); err != nil {
+				return err
+			}
+			// Deliberately do NOT write a [providers.<name>] block in the
+			// project config. The global config has the real api_key; the
+			// loader's whole-entry merge (config.go:850-861) preserves the
+			// global entry when the project file has no entry for this
+			// provider name. See F-UIUX-137.
+			tomlContent.WriteString("# Provider config (api_key) lives in the global config\n")
+			tomlContent.WriteString("# (~/.config/marshal/config.toml) to keep secrets out of\n")
+			tomlContent.WriteString("# this project-tracked file. See F-UIUX-137.\n\n")
+		default:
+			tomlContent.WriteString(fmt.Sprintf("[providers.%s]\n", providerKey))
+			tomlContent.WriteString("type = \"openai_compatible\"\n")
+			tomlContent.WriteString("# api_key_env = \"OPENAI_API_KEY\"\n\n")
+		}
 	}
 
 	tomlContent.WriteString("[models.presets.onboarded_preset]\n")
@@ -278,6 +404,23 @@ func (m *OnboardingModel) saveConfig() error {
 	tomlContent.WriteString("max_tool_iterations = 32\n")
 
 	return os.WriteFile(filepath.Join(dir, "config.toml"), []byte(tomlContent.String()), 0644)
+}
+
+// writeGlobalProviderAPIKey writes the raw API key to the user's global
+// config file under [providers.<name>].api_key.
+// If path is empty, it defaults to ~/.config/marshal/config.toml.
+// If the file does not exist, it creates it with a minimal header.
+// TODO: The constant MARSHAL_GLOBAL_API_KEY should be documented in
+// docs/03-config-and-policy.md (out of scope for this plan).
+func writeGlobalProviderAPIKey(path, providerName, key string) error {
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("find home dir: %w", err)
+		}
+		path = filepath.Join(home, ".config", "marshal", "config.toml")
+	}
+	return config.SaveUserConfigProviderAPIKey(path, providerName, key)
 }
 
 func (m *OnboardingModel) View() tea.View {
@@ -305,11 +448,38 @@ func (m *OnboardingModel) viewString() string {
 			}
 		}
 
+	case stateProjectName:
+		body.WriteString("Enter a name for this project:\n\n")
+		body.WriteString(m.textInput.View() + "\n")
+
 	case stateConfigureURL:
 		body.WriteString("Enter Ollama Base URL:\n\n")
 		body.WriteString(m.textInput.View() + "\n")
 
+	case stateKeyMode:
+		body.WriteString(fmt.Sprintf("API Key Source for %s:\n\n", m.selectedProvider))
+		options := []struct {
+			kind keyModeKind
+			text string
+		}{
+			{keyModeEnvName, "Use env var (recommended)"},
+			{keyModeInline, "Paste key inline (writes to global config)"},
+		}
+		for _, opt := range options {
+			cursor := " "
+			if opt.kind == m.keyMode {
+				cursor = ">"
+				body.WriteString(lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(fmt.Sprintf("%s %s", cursor, opt.text)) + "\n")
+			} else {
+				body.WriteString(fmt.Sprintf("%s %s\n", cursor, opt.text))
+			}
+		}
+		body.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("Use up/down to select, Enter to confirm") + "\n")
+
 	case stateConfigureKey:
+		if m.keyMode == keyModeInline {
+			body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("⚠ WARNING: this value will only be written to your global ~/.config/marshal/config.toml, never to a project file.") + "\n\n")
+		}
 		body.WriteString(fmt.Sprintf("Enter API Key / Environment Variable Name for %s:\n\n", m.selectedProvider))
 		body.WriteString(m.textInput.View() + "\n")
 

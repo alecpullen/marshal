@@ -2510,6 +2510,47 @@ func TestAtFileCompletionOmitsWhitespacePaths(t *testing.T) {
 	}
 }
 
+// F-BUG-159: @ completion with an empty file index shows a placeholder
+// explaining that no files are indexed.
+func TestAtFileCompletionEmptyIndexShowsPlaceholder(t *testing.T) {
+	m := newViewTestModelWithFileIndex(t, 80, 24, []string{})
+	m.input.SetValue("@")
+	m.updateCompletionPopups()
+	if m.filePopup == nil || !m.filePopup.isVisible() {
+		t.Fatal("file popup should be visible even with empty index")
+	}
+	matches := m.filePopup.matches()
+	if len(matches) == 0 {
+		t.Fatal("expected placeholder in matches, got empty")
+	}
+	found := false
+	for _, it := range matches {
+		if strings.Contains(it.Text, "no indexed files") {
+			found = true
+			if !it.Disabled {
+				t.Fatal("placeholder item must have Disabled=true")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected placeholder text in matches, got %#v", matches)
+	}
+
+	// Verify the placeholder is non-selectable: accepting it must not
+	// delete the "@" from the input.
+	inputBefore := m.input.Value()
+	if !m.acceptCompletion() {
+		t.Fatal("acceptCompletion should return true (popup was visible)")
+	}
+	if m.filePopup != nil && m.filePopup.isVisible() {
+		t.Fatal("popup should be dismissed after accept")
+	}
+	if got := m.input.Value(); got != inputBefore {
+		t.Fatalf("input value changed from %q to %q after accepting placeholder", inputBefore, got)
+	}
+}
+
 // F18: @ inside a word (e.g. an email) does not trigger the file popup.
 func TestAtInsideWordDoesNotTrigger(t *testing.T) {
 	m := newViewTestModelWithFileIndex(t, 80, 24, []string{"a.go", "b.go"})

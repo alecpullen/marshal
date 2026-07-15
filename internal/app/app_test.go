@@ -2117,6 +2117,100 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 }
 
+// -- Task 4: onboarding cancelled sentinel ------------------------------
+
+func TestOnboardingModelCancelled(t *testing.T) {
+	m := NewOnboardingModel(t.TempDir())
+	if m.Cancelled() {
+		t.Fatal("expected Cancelled() to be false before cancellation")
+	}
+
+	// Simulate a non-cancel keypress ('a' is unambiguously unhandled by
+	// the onboarding model's cancel logic; avoid 'q' in case it is later
+	// bound as a quit key).
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'a'})
+	m = updated.(*OnboardingModel)
+	if m.Cancelled() {
+		t.Fatal("expected Cancelled() to be false after non-cancel key")
+	}
+
+	// Simulate Ctrl+C.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = updated.(*OnboardingModel)
+	if !m.Cancelled() {
+		t.Fatal("expected Cancelled() to be true after Ctrl+C")
+	}
+
+	// Reset and test Esc.
+	m2 := NewOnboardingModel(t.TempDir())
+	// Code 27 is ASCII ESC. Bubble Tea v2's KeyPressMsg.String() maps
+	// this to "esc", which the onboarding model's Update matches.
+	updated, _ = m2.Update(tea.KeyPressMsg{Code: 27})
+	m2 = updated.(*OnboardingModel)
+	if !m2.Cancelled() {
+		t.Fatal("expected Cancelled() to be true after Esc")
+	}
+}
+
+func TestErrOnboardingCancelledSentinel(t *testing.T) {
+	// Verify the sentinel matches itself (trivial case).
+	if !errors.Is(errOnboardingCancelled, errOnboardingCancelled) {
+		t.Fatal("errOnboardingCancelled must be identifiable via errors.Is")
+	}
+	// Verify errors.Is works through wrapping (non-trivial case).
+	wrapped := fmt.Errorf("wrap: %w", errOnboardingCancelled)
+	if !errors.Is(wrapped, errOnboardingCancelled) {
+		t.Fatal("wrapped errOnboardingCancelled must be identifiable via errors.Is")
+	}
+	if errOnboardingCancelled.Error() != "onboarding cancelled" {
+		t.Fatalf("errOnboardingCancelled.Error() = %q, want %q", errOnboardingCancelled.Error(), "onboarding cancelled")
+	}
+}
+
+func TestRunDistinguishesOnboardingCancelled(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	// Track whether the main TUI program runner was called.
+	mainRunnerCalled := false
+
+	// Inject a fake onboarding program runner that simulates Ctrl+C
+	// by sending a Ctrl+C keypress to the model directly, then returns
+	// nil (mimicking a clean program exit).
+	onboardingRunner := func(ctx context.Context, model tea.Model, output io.Writer) error {
+		m := model.(*OnboardingModel)
+		// Simulate Ctrl+C keypress.
+		m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+		return nil
+	}
+
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithSkipOnboarding(false),
+		WithOnboardingProgramRunner(onboardingRunner),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			mainRunnerCalled = true
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error after onboarding cancellation: %v", err)
+	}
+	if !mainRunnerCalled {
+		t.Fatal("main program runner should have been called after cancelled onboarding (Run must fall through to StartRuntime)")
+	}
+}
+
 func TestDesktopRegisterAllRegistersTools(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {
@@ -2160,6 +2254,42 @@ headless = true
 		if !names[expected] {
 			t.Errorf("tool %q not registered", expected)
 		}
+	}
+}
+
+func TestRunResolvesOptionsOnce(t *testing.T) {
+	// Regression test for F-BUG-154: options must be applied exactly once,
+	// not once in Run and again in StartRuntime.
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	applyCount := 0
+	customOpt := func(opts *options) {
+		applyCount++
+	}
+
+	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			return nil
+		}),
+		customOpt,
+	)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if applyCount != 1 {
+		t.Fatalf("option applied %d times, want 1", applyCount)
 	}
 }
 

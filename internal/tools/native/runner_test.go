@@ -3,6 +3,7 @@ package native
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +70,55 @@ func TestExecRunnerUsesOutputLimitDefault(t *testing.T) {
 	}
 	if len(result.Stdout) == 0 {
 		t.Fatal("Stdout should not be empty with default limit")
+	}
+}
+
+func TestExecRunnerShellFreeCommand(t *testing.T) {
+	runner := execRunner{}
+	req := CommandRequest{
+		Command: "echo hello world",
+	}
+	result, err := runner.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", result.ExitCode)
+	}
+	if !strings.Contains(result.Stdout, "hello world") {
+		t.Errorf("stdout = %q, want %q", result.Stdout, "hello world")
+	}
+}
+
+func TestExecRunnerWithShellMetacharacters(t *testing.T) {
+	runner := execRunner{}
+	req := CommandRequest{
+		Command: "echo hello | grep hello",
+	}
+	result, err := runner.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", result.ExitCode)
+	}
+	if !strings.Contains(result.Stdout, "hello") {
+		t.Errorf("stdout = %q, want %q", result.Stdout, "hello")
+	}
+}
+
+func TestExecRunnerDestructiveGoesThroughShell(t *testing.T) {
+	runner := execRunner{}
+	// rm -rf on a non-existent path is harmless but is classified as
+	// RiskDestructive and should still be routed through /bin/sh -lc.
+	req := CommandRequest{
+		Command: "rm -rf /tmp/__marshal_test_nonexistent__",
+	}
+	result, err := runner.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code = %d, want 0", result.ExitCode)
 	}
 }

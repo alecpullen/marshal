@@ -256,6 +256,68 @@ func TestGetToolCalls_LegacyRows(t *testing.T) {
 	}
 }
 
+func TestGetToolCallsPreservesLegacyEnabledFlag(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	// Create the full schema as it exists after migration.
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	sessionID := "session-legacy-enabled"
+	if err := db.CreateSession(sessionID, projectID, "legacy enabled test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	// Simulate a legacy row that existed before the sandbox_enabled column
+	// was added. After ALTER TABLE the column defaults to 0, but the row
+	// has a non-empty sandbox_backend which implies Enabled=true.
+	_, err = db.sqlDB.Exec(
+		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, created_at,
+		                          sandbox_backend, sandbox_enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID,
+		"implementer",
+		"legacy-model",
+		"shell.exec",
+		`{"command":"go test"}`,
+		"tests passed",
+		string(registry.RiskCommand),
+		string(registry.ApprovalApproved),
+		time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		"restricted",
+		0, // sandbox_enabled = 0 — legacy default after ALTER TABLE
+	)
+	if err != nil {
+		t.Fatalf("insert legacy sandbox row: %v", err)
+	}
+
+	calls, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolCalls failed: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+
+	got := calls[0]
+	if !got.Sandbox.Enabled {
+		t.Errorf("expected Enabled=true for legacy row with sandbox_backend='restricted', got Enabled=false")
+	}
+	if got.Sandbox.Backend != "restricted" {
+		t.Errorf("expected Backend='restricted', got %q", got.Sandbox.Backend)
+	}
+}
+
 func TestSaveAndGetToolCalls_SandboxMeta(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {
@@ -330,6 +392,54 @@ func TestSaveAndGetToolCalls_SandboxMeta(t *testing.T) {
 	}
 	if got.Sandbox.MaxProcesses != event.Sandbox.MaxProcesses {
 		t.Errorf("expected MaxProcesses %d, got %d", event.Sandbox.MaxProcesses, got.Sandbox.MaxProcesses)
+	}
+}
+
+func TestSaveToolCallRoundTripsSandboxMeta(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	sessionID := "session-rt-sandbox"
+	if err := db.CreateSession(sessionID, projectID, "sandbox round-trip test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	ev := registry.AuditEvent{
+		ToolName:  "shell.run",
+		Timestamp: time.Now().UTC(),
+		Sandbox: registry.SandboxMeta{
+			Enabled:         true,
+			Backend:         "restricted",
+			NetworkIsolated: true,
+			ResourceLimits:  true,
+			OutputTruncated: true,
+		},
+	}
+	if err := db.SaveToolCall(sessionID, ev); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	rows, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	sm := rows[0].Sandbox
+	if !sm.Enabled || sm.Backend != "restricted" {
+		t.Errorf("Enabled/Backend not preserved: %+v", sm)
+	}
+	if !sm.ResourceLimits || !sm.OutputTruncated {
+		t.Errorf("ResourceLimits/OutputTruncated not preserved: %+v", sm)
 	}
 }
 

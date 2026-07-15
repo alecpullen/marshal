@@ -18,7 +18,7 @@ func TestFinalizeProducesFlaggedCompletion(t *testing.T) {
 	task := NewTask("do the thing", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
 
-	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonExhausted)
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonExhausted, nil)
 	if err != nil {
 		t.Fatalf("finalize err = %v, want nil", err)
 	}
@@ -45,7 +45,7 @@ func TestFinalizeSynthesizesWhenModelIgnoresDirective(t *testing.T) {
 	task.Plan = []string{"Read x.go", "Patch it"}
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
 
-	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled)
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled, nil)
 	if err != nil {
 		t.Fatalf("finalize err = %v, want nil", err)
 	}
@@ -76,7 +76,7 @@ func TestFinalizeRecoversAfterCorrection(t *testing.T) {
 	task := NewTask("do the thing", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
 
-	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled)
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled, nil)
 	if err != nil {
 		t.Fatalf("finalize err = %v, want nil", err)
 	}
@@ -166,7 +166,7 @@ func TestFinalizeSynthesisDoesNotDumpRawToolCallJSON(t *testing.T) {
 	task.Plan = []string{"Read x.go"}
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
 
-	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled)
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled, nil)
 	if err != nil {
 		t.Fatalf("finalize err = %v", err)
 	}
@@ -202,7 +202,7 @@ func TestFinalizeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 	task := NewTask("go", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "go"}}
 
-	if _, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled); err != nil {
+	if _, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled, nil); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	// After 3 chat calls, probe captured request messages should show the
@@ -233,7 +233,7 @@ func TestFinalizeNativeUsesProseDirectly(t *testing.T) {
 	task := NewTask("do the thing", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
 
-	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonExhausted)
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonExhausted, nil)
 	if err != nil {
 		t.Fatalf("finalize err = %v, want nil", err)
 	}
@@ -275,7 +275,7 @@ func TestFinalizeNativeRecoversAfterToolCall(t *testing.T) {
 	task := NewTask("do the thing", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
 
-	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled)
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled, nil)
 	if err != nil {
 		t.Fatalf("finalize err = %v, want nil", err)
 	}
@@ -316,7 +316,7 @@ func TestFinalizeNativeSynthesizesWhenModelKeepsCallingTools(t *testing.T) {
 	task.Plan = []string{"Read the file"}
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
 
-	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled)
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled, nil)
 	if err != nil {
 		t.Fatalf("finalize err = %v, want nil", err)
 	}
@@ -351,7 +351,7 @@ func TestFinalizeNativeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 	task := NewTask("go", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "go"}}
 
-	if _, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled); err != nil {
+	if _, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled, nil); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if len(prov.requests) < 3 {
@@ -384,7 +384,7 @@ func TestFinalizeReasonEmptySynthesizesFallback(t *testing.T) {
 	task.Plan = []string{"Read x.go"}
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
 
-	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonEmpty)
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonEmpty, nil)
 	if err != nil {
 		t.Fatalf("finalize err = %v, want nil", err)
 	}
@@ -422,7 +422,7 @@ func TestFinalizeNativePairsToolCallsWithToolResults(t *testing.T) {
 	task := NewTask("do the thing", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
 
-	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled)
+	got, err := r.finalize(context.Background(), prov, "test-model", msgs, task, reasonStalled, nil)
 	if err != nil {
 		t.Fatalf("finalize err = %v, want nil", err)
 	}

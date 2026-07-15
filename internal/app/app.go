@@ -727,7 +727,6 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithJobBroker(jobBrokerCtx, jobBroker))
 		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(jobBrokerCtx, steeringBroker))
 		configReloader := func(newCfg config.Config) error {
-			state.Config = newCfg
 			return reloadAgentRuntime(ctx, newCfg, rt)
 		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
@@ -784,8 +783,16 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
 	if err != nil {
+		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
+			"err", err)
+		rt.State.AddMessage(session.RoleSystem,
+			"Config reload failed; keeping previous settings.",
+			session.ContentTypePlain)
 		return err
 	}
+
+	// Config validated — swap atomically with the runtime.
+	rt.State.Config = cfg
 
 	// Capture old values for cleanup under the pointer mutex.
 	rt.mu.Lock()

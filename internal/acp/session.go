@@ -356,10 +356,16 @@ func (m *SessionManager) Close(ctx context.Context, id string) error {
 	}
 	rt, ok := m.detach(id)
 	if !ok {
-		m.log().Debug("session close (no-op)", "session_id", id, "count", len(m.sessions))
+		m.mu.RLock()
+		n := len(m.sessions)
+		m.mu.RUnlock()
+		m.log().Debug("session close (no-op)", "session_id", id, "count", n)
 		return serverErrorf("unknown session: %s", id)
 	}
-	m.log().Debug("session close", "session_id", id, "count", len(m.sessions))
+	m.mu.RLock()
+	n := len(m.sessions)
+	m.mu.RUnlock()
+	m.log().Debug("session close", "session_id", id, "count", n)
 	sCtx, sCancel := shutdownCtx()
 	defer sCancel()
 	err1 := turnCancel(sCtx, id)

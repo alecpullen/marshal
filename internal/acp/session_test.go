@@ -1064,8 +1064,9 @@ func TestSessionManagerLogsCloseTeardown(t *testing.T) {
 	if err := m.Close(context.Background(), sid); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if !strings.Contains(buf.String(), "session close") {
-		t.Fatalf("expected close log, got %q", buf.String())
+	logged := buf.String()
+	if !strings.Contains(logged, "session close") || strings.Contains(logged, "(no-op)") {
+		t.Fatalf("expected teardown close log (without no-op), got %q", logged)
 	}
 }
 

@@ -2039,6 +2039,46 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 }
 
+// ── Task 4: onboarding cancelled sentinel ──────────────────────────────
+
+func TestOnboardingModelCancelled(t *testing.T) {
+	m := NewOnboardingModel(t.TempDir())
+	if m.Cancelled() {
+		t.Fatal("expected Cancelled() to be false before cancellation")
+	}
+
+	// Simulate a non-cancel keypress (e.g. 'q').
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'q'})
+	m = updated.(*OnboardingModel)
+	if m.Cancelled() {
+		t.Fatal("expected Cancelled() to be false after non-cancel key")
+	}
+
+	// Simulate Ctrl+C.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = updated.(*OnboardingModel)
+	if !m.Cancelled() {
+		t.Fatal("expected Cancelled() to be true after Ctrl+C")
+	}
+
+	// Reset and test Esc.
+	m2 := NewOnboardingModel(t.TempDir())
+	updated, _ = m2.Update(tea.KeyPressMsg{Code: 27}) // esc
+	m2 = updated.(*OnboardingModel)
+	if !m2.Cancelled() {
+		t.Fatal("expected Cancelled() to be true after Esc")
+	}
+}
+
+func TestErrOnboardingCancelledSentinel(t *testing.T) {
+	if !errors.Is(errOnboardingCancelled, errOnboardingCancelled) {
+		t.Fatal("errOnboardingCancelled must be identifiable via errors.Is")
+	}
+	if errOnboardingCancelled.Error() != "onboarding cancelled" {
+		t.Fatalf("errOnboardingCancelled.Error() = %q, want %q", errOnboardingCancelled.Error(), "onboarding cancelled")
+	}
+}
+
 func TestDesktopRegisterAllRegistersTools(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {

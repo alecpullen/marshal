@@ -7,9 +7,16 @@ import (
 )
 
 func (db *DB) SaveSnapshot(sessionID string, turnIndex int, hash string, files []string, at time.Time) (int64, error) {
-	res, err := db.sqlDB.Exec(
+	tx, err := db.sqlDB.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin save snapshot: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(
 		`INSERT INTO snapshots (session_id, turn_index, hash, created_at) VALUES (?, ?, ?, ?)`,
-		sessionID, turnIndex, hash, at.UTC().Format(time.RFC3339))
+		sessionID, turnIndex, hash, at.UTC().Format(time.RFC3339),
+	)
 	if err != nil {
 		return 0, fmt.Errorf("insert snapshot: %w", err)
 	}
@@ -17,12 +24,18 @@ func (db *DB) SaveSnapshot(sessionID string, turnIndex int, hash string, files [
 	if err != nil {
 		return 0, fmt.Errorf("snapshot id: %w", err)
 	}
+
 	for _, f := range files {
-		if _, err := db.sqlDB.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO snapshot_files (snapshot_id, path) VALUES (?, ?)`,
-			id, f); err != nil {
-			return id, fmt.Errorf("insert snapshot file: %w", err)
+			id, f,
+		); err != nil {
+			return 0, fmt.Errorf("insert snapshot file: %w", err)
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit save snapshot: %w", err)
 	}
 	return id, nil
 }
@@ -46,11 +59,14 @@ func (db *DB) LatestSnapshot(sessionID string) (id int64, hash string, files []s
 	for rows.Next() {
 		var p string
 		if err := rows.Scan(&p); err != nil {
-			return id, hash, nil, err
+			return 0, "", nil, fmt.Errorf("scan snapshot file: %w", err)
 		}
 		files = append(files, p)
 	}
-	return id, hash, files, rows.Err()
+	if err := rows.Err(); err != nil {
+		return 0, "", nil, fmt.Errorf("iterate snapshot files: %w", err)
+	}
+	return id, hash, files, nil
 }
 
 func (db *DB) SnapshotBefore(sessionID string, turnIndex int) (hash string, err error) {

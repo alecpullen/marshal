@@ -543,6 +543,43 @@ func TestBuildToolDefinitionsOmitsAskUserForSwarmRoles(t *testing.T) {
 	}
 }
 
+func TestBuildQuestionLabel(t *testing.T) {
+	tests := []struct {
+		name      string
+		questions []session.Question
+		want      string
+	}{
+		{
+			name:      "empty questions falls back",
+			questions: nil,
+			want:      "waiting for your answer",
+		},
+		{
+			name:      "single short question",
+			questions: []session.Question{{Question: "Archive or delete?"}},
+			want:      "waiting for your answer: Archive or delete?",
+		},
+		{
+			name:      "single long question truncated",
+			questions: []session.Question{{Question: "Should the cache be per-session or global? This is a very long question that exceeds forty characters"}},
+			want:      "waiting for your answer: Should the cache be per-session or globa…",
+		},
+		{
+			name:      "multiple questions",
+			questions: []session.Question{{Question: "Auth?"}, {Question: "Keep legacy?"}},
+			want:      "waiting for your answer (Q1/2): Auth?",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildQuestionLabel(tt.questions)
+			if got != tt.want {
+				t.Fatalf("buildQuestionLabel = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunRequiresApprovalForShellRunAndRespectsApproval(t *testing.T) {
 	reg := registry.New()
 	executed := make(chan struct{}, 1)

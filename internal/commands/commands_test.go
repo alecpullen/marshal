@@ -443,3 +443,50 @@ func TestModeCommandRegistered(t *testing.T) {
 		t.Fatal("/mode should be registered")
 	}
 }
+
+func TestHelpHidesUnimplementedCommands(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, ok := cmdReg.Lookup("help")
+	if !ok {
+		t.Fatal("help command not registered")
+	}
+	result := cmd.Handler(newTestState(), nil)
+
+	// Unimplemented commands must NOT appear in /help output.
+	for _, name := range []string{"swarm", "sdd", "settings", "memory", "connect", "models"} {
+		if strings.Contains(result, "/"+name) {
+			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
+		}
+	}
+
+	// Mode commands are stubs; they should also be hidden.
+	for _, name := range []string{"ask", "edit", "auto", "mode", "stop"} {
+		if strings.Contains(result, "/"+name) {
+			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
+		}
+	}
+
+	// Implemented commands must still appear.
+	for _, name := range []string{"help", "new", "config", "route", "context", "log", "diff", "rollback", "undo", "redo", "export", "rename", "rewind", "branches", "trust", "tools", "exit", "quit", "clear"} {
+		if !strings.Contains(result, "/"+name) {
+			t.Errorf("help output should contain /%s, got:\n%s", name, result)
+		}
+	}
+}
+
+func TestHiddenCommandsStillRunnable(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	// Hidden commands must still be findable via Lookup.
+	for _, name := range []string{"stop", "ask", "edit", "auto", "mode", "swarm", "sdd", "settings", "memory", "model", "connect", "models"} {
+		_, ok := cmdReg.Lookup(name)
+		if !ok {
+			t.Errorf("hidden command /%s must still be registered for Lookup", name)
+		}
+	}
+}

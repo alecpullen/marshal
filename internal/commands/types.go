@@ -20,6 +20,7 @@ type Command struct {
 	Name        string
 	Description string
 	Args        string // human-readable, e.g. "<model-name>" or "" for no args
+	Hidden      bool   // when true, excluded from /help listing
 	Handler     Handler
 }
 
@@ -54,6 +55,9 @@ func (r *Registry) Lookup(name string) (Command, bool) {
 func (r *Registry) List() []Command {
 	cmds := make([]Command, 0, len(r.commands))
 	for _, cmd := range r.commands {
+		if cmd.Hidden {
+			continue
+		}
 		cmds = append(cmds, cmd)
 	}
 	sort.Slice(cmds, func(i, j int) bool {

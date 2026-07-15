@@ -6,6 +6,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/permissions"
 	"marshal/internal/tools/patch"
+	"marshal/internal/tools/registry"
 	"regexp"
 	"strings"
 	"sync"
@@ -373,6 +374,19 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 	}
 	if len(stages) == 0 {
 		return guardrailVerdict{}, nil
+	}
+
+	// Use argv-aware classification (shlex-based) for destructive patterns
+	// that the substring guardrailPatterns would miss (e.g. rm -fr, rm -r -f).
+	// This is additive: ClassifyCommand catches destructive patterns, then the
+	// stage loop below catches non-destructive substring patterns (sudo, mkfs).
+	cls, clsErr := ClassifyCommand(cmd)
+	if clsErr == nil && cls.Risk == registry.RiskDestructive {
+		return guardrailVerdict{
+			blocked:     true,
+			reason:      "blocked by conservative guardrail: " + cls.Reason,
+			destructive: true,
+		}, nil
 	}
 
 	shellNames := map[string]bool{"sh": true, "bash": true, "zsh": true}

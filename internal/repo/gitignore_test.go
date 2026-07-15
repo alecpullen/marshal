@@ -131,6 +131,25 @@ func TestGitignoreDirOnlyMatchesNested(t *testing.T) {
 	}
 }
 
+func TestGitignoreNegation(t *testing.T) {
+	g, err := ParseGitignore("*.log\n!important.log\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !g.Match("debug.log", false) {
+		t.Errorf("*.log must match debug.log")
+	}
+	if g.Match("important.log", false) {
+		t.Errorf("!important.log must un-ignore important.log")
+	}
+	// A path matched only by the negative pattern (not by a preceding
+	// positive one) must NOT be ignored — git's behaviour.
+	g2, _ := ParseGitignore("!foo\n")
+	if g2.Match("foo", false) {
+		t.Errorf("!foo alone must not match anything (no positive match to override)")
+	}
+}
+
 func TestGitignoreMiddleSlashPattern(t *testing.T) {
 	g, err := ParseGitignore("foo/bar\n")
 	if err != nil {

@@ -1,7 +1,6 @@
 package native
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +11,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/filetrack"
 	"marshal/internal/tools/registry"
 )
 
@@ -173,6 +173,38 @@ func TestFileWritePatchTool(t *testing.T) {
 	}
 }
 
+func TestWritePatch_NewFileCreation(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "new.txt")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll error: %v", err)
+	}
+
+	// Patch with empty SEARCH block — signals new file creation.
+	args := `{"patch": "File: new.txt\n<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE"}`
+	res, err := invokeTool(t, reg, "file.write_patch", args)
+	if err != nil {
+		t.Fatalf("write_patch failed: %v", err)
+	}
+
+	if res.Summary == "" {
+		t.Fatal("expected non-empty summary")
+	}
+	if !reflect.DeepEqual(res.FilesChanged, []string{"new.txt"}) {
+		t.Fatalf("FilesChanged = %#v, want %#v", res.FilesChanged, []string{"new.txt"})
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read created file failed: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("file content = %q, want %q", string(data), "hello")
+	}
+}
+
 func TestFileWritePatchRollbackIntegration(t *testing.T) {
 	root := t.TempDir()
 	filePath := filepath.Join(root, "app.go")
@@ -241,32 +273,66 @@ func TestFileWritePatchRollbackIntegration(t *testing.T) {
 	}
 }
 
-func TestFileWritePatchCreatesNewFile(t *testing.T) {
+func TestWritePatch_AtomicOnConcurrentModification(t *testing.T) {
 	root := t.TempDir()
-	filePath := filepath.Join(root, "new.go")
+	filePath := filepath.Join(root, "test.txt")
+	if err := os.WriteFile(filePath, []byte("v1\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	ft := filetrack.New(database.SQLDB(), "test-session")
 
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	patch := "File: new.go\n<<<<<<< SEARCH\n=======\npackage new\n\nfunc New() {}\n>>>>>>> REPLACE\n"
-	res, err := invokeTool(t, reg, "file.write_patch", fmt.Sprintf(`{"patch":%q}`, patch))
+	// Read the file first to register a read-time in the file tracker.
+	_, err = invokeTool(t, reg, "file.read", `{"path":"test.txt"}`)
 	if err != nil {
-		t.Fatalf("handler failed: %v", err)
+		t.Fatalf("file.read failed: %v", err)
 	}
-	if !reflect.DeepEqual(res.FilesChanged, []string{"new.go"}) {
-		t.Fatalf("FilesChanged = %#v", res.FilesChanged)
+
+	// Launch a goroutine that modifies the file concurrently.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(10 * time.Millisecond)
+		if wErr := os.WriteFile(filePath, []byte("v1-modified\n"), 0644); wErr != nil {
+			t.Logf("concurrent write failed: %v", wErr)
+		}
+	}()
+
+	// Give the goroutine time to fire and modify the file before calling
+	// write_patch. The goroutine fires at ~10ms; this sleep ensures it has
+	// already modified the file so the tool's validate loop detects the change.
+	time.Sleep(20 * time.Millisecond)
+
+	// Patch v1 -> v2. The file was modified concurrently so the tool should
+	// reject it with "changed on disk".
+	args := `{"patch": "File: test.txt\n<<<<<<< SEARCH\nv1\n=======\nv2\n>>>>>>> REPLACE"}`
+	_, err = invokeTool(t, reg, "file.write_patch", args)
+
+	<-done // wait for the goroutine to finish
+
+	if err == nil {
+		t.Fatal("expected error for concurrent modification, got nil")
 	}
-	data, readErr := os.ReadFile(filePath)
-	if readErr != nil {
-		t.Fatalf("read new file: %v", readErr)
-	}
-	if !strings.Contains(string(data), "package new") {
-		t.Fatalf("file content = %q", string(data))
-	}
-	info, _ := os.Stat(filePath)
-	if info.Mode().Perm() != 0o644 {
-		t.Fatalf("mode = %v, want 0644", info.Mode().Perm())
+	if !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("error should mention 'changed on disk', got: %v", err)
 	}
 }

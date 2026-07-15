@@ -9,7 +9,10 @@ import (
 	"strconv"
 	"strings"
 
+	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/native"
+	"marshal/internal/tools/policy"
+	"marshal/internal/tools/registry"
 )
 
 // defaultContainerImage is the fallback image when [tools.shell.sandbox].
@@ -94,14 +97,39 @@ func (c *Container) Run(ctx context.Context, req native.CommandRequest) (native.
 }
 
 func (c *Container) buildContainerEnv() []string {
-	// Inherit parent env. The isolation boundary is the container itself
-	// (set via --user, --read-only, the -e flags in buildArgs); the host
-	// docker/podman CLI needs access to HOME (~/.docker/config.json for
-	// auth/image pull), DOCKER_HOST, DOCKER_TLS_VERIFY/DOCKER_CERT_PATH,
-	// HTTP_PROXY/HTTPS_PROXY, PATH (helper binaries), etc. Returning
-	// []string{} would wipe these and silently break non-trivial docker
-	// setups; return nil so exec inherits the parent env.
-	return nil
+	// Start from the safe allowlist: no parent secrets, no dynamic-loader
+	// keys, no shell-hijack keys. Only well-known safe vars survive.
+	env := envutil.AllowList(os.Environ())
+
+	// Layer in container-runtime vars that the host CLI legitimately needs
+	// for auth (DOCKER_HOST, docker config), proxy (HTTP_PROXY etc.), and
+	// buildkit support. These are NOT in the general AllowList but are safe
+	// to pass through to the runtime subprocess because they affect only
+	// docker/podman itself — not the sandboxed command.
+	for _, key := range []string{
+		"DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+		"DOCKER_CONFIG", "DOCKER_BUILDKIT",
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "no_proxy",
+	} {
+		if envutil.IsDangerousKey(key) || envutil.IsSecretKey(key) {
+			continue
+		}
+		if v, ok := os.LookupEnv(key); ok {
+			found := false
+			for i, kv := range env {
+				if envutil.EnvKey(kv) == key {
+					env[i] = key + "=" + v
+					found = true
+					break
+				}
+			}
+			if !found {
+				env = append(env, key+"="+v)
+			}
+		}
+	}
+	return env
 }
 
 func (c *Container) buildArgs(command, image, workdir string) []string {
@@ -152,18 +180,54 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 	// the CPU-RUNAWAY bound. Note that `--cpus` is NOT used here because
 	// `--cpus` is a CPU core-count quota without any wall-time guarantee,
 	// which misrepresents the `cpu_seconds` field.
+	//
+	// For shell-free commands (no pipes, redirects, variable expansion, etc.)
+	// we invoke the command directly as argv to avoid shell-wrapping overhead
+	// and potential shell-injection surface. Commands containing shell
+	// metacharacters still go through /bin/sh -lc.
+	//
+	// Destructive commands (e.g. rm -rf, git clean -f) always go through
+	// /bin/sh -lc so that shell features (globbing, variable expansion) are
+	// available when the user has explicitly approved a destructive operation.
+	// This is enforced via ClassifyCommand, not just isShellFree.
 	args = append(args, image)
-	if c.cfg.CPUSeconds > 0 {
-		// timeout (from coreutils, present in alpine) -s KILL sends SIGKILL
-		// when the deadline passes; --preserve-status exits with 137 so the
-		// sandbox's killed-reason detection picks it up.
-		args = append(args,
-			"timeout", "--preserve-status", "-s", "KILL",
-			strconv.Itoa(c.cfg.CPUSeconds),
-			"/bin/sh", "-lc", command,
-		)
+	shellFree := isShellFree(command)
+	if shellFree {
+		cls, _ := policy.ClassifyCommand(command)
+		if cls.Risk == registry.RiskDestructive {
+			shellFree = false
+		}
+	}
+	if shellFree {
+		cmdArgs := strings.Fields(command)
+		if c.cfg.CPUSeconds > 0 {
+			args = append(args,
+				"timeout", "--preserve-status", "-s", "KILL",
+				strconv.Itoa(c.cfg.CPUSeconds),
+			)
+		}
+		args = append(args, cmdArgs...)
 	} else {
-		args = append(args, "/bin/sh", "-lc", command)
+		if c.cfg.CPUSeconds > 0 {
+			args = append(args,
+				"timeout", "--preserve-status", "-s", "KILL",
+				strconv.Itoa(c.cfg.CPUSeconds),
+				"/bin/sh", "-lc", command,
+			)
+		} else {
+			args = append(args, "/bin/sh", "-lc", command)
+		}
 	}
 	return args
+}
+
+// isShellFree reports whether command s contains no shell metacharacters.
+// Shell-free commands can be invoked as argv directly rather than wrapped
+// in /bin/sh -lc, reducing overhead and shell-injection surface area.
+//
+// Metacharacters that trigger shell wrapping:
+//   - | & ; ` $ ( ) { } < > * ? \n
+func isShellFree(s string) bool {
+	shellMetas := "|&;`$<>(){}*?\n"
+	return !strings.ContainsAny(s, shellMetas)
 }

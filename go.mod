@@ -11,6 +11,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.14.0
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
+	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/pelletier/go-toml/v2 v2.4.2
 	github.com/sergi/go-diff v1.4.0

@@ -23,7 +23,10 @@ func configureProcessGroup(cmd *exec.Cmd) {
 
 // terminateProcessTree sends SIGTERM to the process group, polls at
 // 50 ms intervals until the grace deadline, and sends SIGKILL if the
-// group still exists. ESRCH (process already gone) is treated as success.
+// group still exists. After the PGID SIGKILL, it also sends SIGKILL to
+// the direct child PID as a fallback against grandchildren (or the child
+// itself) that may have escaped the PGID via setpgid. ESRCH (process
+// already gone) is treated as success.
 func terminateProcessTree(cmd *exec.Cmd, grace time.Duration) error {
 	if cmd.Process == nil {
 		return nil
@@ -45,8 +48,29 @@ func terminateProcessTree(cmd *exec.Cmd, grace time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Step 3: grace expired — force kill.
-	err := syscall.Kill(negPID, syscall.SIGKILL)
+	// Step 3: grace expired — force kill the process group.
+	pgidErr := syscall.Kill(negPID, syscall.SIGKILL)
+
+	// Step 4: fallback — force kill the direct child PID.
+	// This handles grandchildren (or the child itself) that may have
+	// escaped the PGID via setpgid, and ensures the child process is
+	// definitely dead even if the PGID kill failed.
+	childErr := killDirectPID(pid)
+
+	// ESRCH on either kill is fine (process already gone).
+	if childErr != nil {
+		return childErr
+	}
+	if pgidErr != nil && pgidErr != syscall.ESRCH {
+		return pgidErr
+	}
+	return nil
+}
+
+// killDirectPID sends SIGKILL to a single PID. ESRCH (process already
+// gone) is treated as success. Returns any other error.
+func killDirectPID(pid int) error {
+	err := syscall.Kill(pid, syscall.SIGKILL)
 	if err == syscall.ESRCH {
 		return nil
 	}

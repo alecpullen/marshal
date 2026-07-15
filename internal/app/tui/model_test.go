@@ -22,6 +22,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
+	"marshal/internal/permissions"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
@@ -3507,5 +3508,126 @@ func TestSettingsOverlayDoesNotSwallowAgentFinishedOrJobCount(t *testing.T) {
 	}
 	if !m.settingsOpen {
 		t.Fatal("settings should stay open after jobCountMsg")
+	}
+}
+
+func TestPatternForApproval_FullArgv(t *testing.T) {
+	tests := []struct {
+		name     string
+		tc       *session.PendingToolCall
+		want     string
+		wantGlob bool // if true, pattern contains "*"
+	}{
+		{
+			name: "simple git status returns full argv",
+			tc: &session.PendingToolCall{
+				Name:    "shell.run",
+				Command: "git status",
+			},
+			want:     "git status",
+			wantGlob: false,
+		},
+		{
+			name: "git status --short returns full argv",
+			tc: &session.PendingToolCall{
+				Name:    "shell.run",
+				Command: "git status --short",
+			},
+			want:     "git status --short",
+			wantGlob: false,
+		},
+		{
+			name: "malicious command with semicolon returns full argv, not prefix",
+			tc: &session.PendingToolCall{
+				Name:    "shell.run",
+				Command: "git ; rm -rf /",
+			},
+			want:     "git ; rm -rf /",
+			wantGlob: false,
+		},
+		{
+			name: "non-shell tool returns star",
+			tc: &session.PendingToolCall{
+				Name:    "file.read",
+				Command: "anything",
+			},
+			want:     "*",
+			wantGlob: true,
+		},
+		{
+			name: "empty command returns star",
+			tc: &session.PendingToolCall{
+				Name:    "shell.run",
+				Command: "",
+			},
+			want:     "*",
+			wantGlob: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := patternForApproval(tt.tc)
+			if got != tt.want {
+				t.Errorf("patternForApproval() = %q, want %q", got, tt.want)
+			}
+			if tt.wantGlob && !strings.Contains(got, "*") {
+				t.Errorf("pattern %q should contain glob character", got)
+			}
+			if !tt.wantGlob && strings.Contains(got, "*") {
+				t.Errorf("pattern %q should not contain glob/wildcard", got)
+			}
+		})
+	}
+}
+
+// TestDispatchCommand_QuotedArgs verifies that shlex.Split preserves quoted
+// arguments instead of splitting on internal whitespace (F-SEC-31).
+func TestDispatchCommand_QuotedArgs(t *testing.T) {
+	var captured []string
+	cmdReg := commands.New()
+	if err := cmdReg.Register(commands.Command{
+		Name: "teststub",
+		Handler: func(state *session.State, args []string) string {
+			captured = args
+			return ""
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	m := New(modelTestState(t), WithCommandRegistry(cmdReg))
+	m.resize(80, 24)
+
+	_, _ = m.dispatchCommand(`/teststub "my idea"`)
+
+	if len(captured) != 1 || captured[0] != "my idea" {
+		t.Fatalf("captured args = %q, want [\"my idea\"]", captured)
+	}
+}
+
+// TestPatternForApproval_SecurityProperty verifies that a pattern produced for
+// "git status" does NOT match a malicious command like "git ; rm -rf /" via the
+// permissions matching logic.
+func TestPatternForApproval_SecurityProperty(t *testing.T) {
+	tc := &session.PendingToolCall{
+		Name:    "shell.run",
+		Command: "git status",
+	}
+	pattern := patternForApproval(tc)
+
+	// The pattern "git status" must NOT match "git ; rm -rf /"
+	if permissions.Matches(pattern, "git ; rm -rf /") {
+		t.Errorf("pattern %q should NOT match malicious command %q", pattern, "git ; rm -rf /")
+	}
+
+	// The pattern MUST match "git status" (exact match)
+	if !permissions.Matches(pattern, "git status") {
+		t.Errorf("pattern %q SHOULD match %q", pattern, "git status")
+	}
+
+	// The pattern must NOT contain "*"
+	if strings.Contains(pattern, "*") {
+		t.Errorf("pattern %q should not contain wildcard", pattern)
 	}
 }

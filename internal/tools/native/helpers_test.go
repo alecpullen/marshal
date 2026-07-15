@@ -1,8 +1,10 @@
 package native
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -124,5 +126,20 @@ func TestResolveWorkspacePathMultiRejectsTraversalToNonexistentRoot(t *testing.T
 	_, err := resolveWorkspacePathMulti(root, additionalRoots, "../outside")
 	if err == nil {
 		t.Fatal("expected error for path that escapes all roots")
+	}
+}
+
+func TestResolveWorkspacePath_SymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests not supported on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := resolveWorkspacePath(root, "link/secret.txt")
+	if !errors.Is(err, ErrPathEscapes) {
+		t.Errorf("got %v, want ErrPathEscapes", err)
 	}
 }

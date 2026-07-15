@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -55,7 +56,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			}
 		}
 
-		matches, capped, err := t.searchFiles(ctx, start, args.Query, limit)
+		matches, capped, walkErrs, err := t.searchFiles(ctx, start, args.Query, limit)
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
@@ -65,19 +66,35 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 		if capped {
 			summary += " (capped)"
 		}
+		if len(walkErrs) > 0 {
+			summary += fmt.Sprintf(", %d walk errors", len(walkErrs))
+		}
 		return registry.ToolResult{Summary: summary, Content: content}, nil
 	}
 	return tool
 }
 
-func (t *toolSet) searchFiles(ctx context.Context, start string, query string, limit int) ([]string, bool, error) {
+func (t *toolSet) searchFiles(ctx context.Context, start string, query string, limit int) ([]string, bool, []error, error) {
 	var files []string
-	err := filepath.WalkDir(start, func(path string, entry os.DirEntry, err error) error {
+	var walkErrs []error
+
+	err := filepath.WalkDir(start, func(path string, entry fs.DirEntry, err error) error {
+		// Collect walk errors instead of swallowing them (F-SEC-19).
 		if err != nil {
+			walkErrs = append(walkErrs, fmt.Errorf("%s: %w", path, err))
+			if entry != nil && entry.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		// Skip all symlinks — WalkDir does not follow directory symlinks on
+		// most platforms, but this explicit check acts as a belt-and-suspenders
+		// defense so we never accidentally descend into or read a symlink.
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
 		}
 		if entry.IsDir() {
 			if repo.IsDefaultIgnoredDir(entry.Name()) && path != start {
@@ -91,7 +108,7 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 		return nil
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, false, walkErrs, err
 	}
 
 	sort.Strings(files)
@@ -107,7 +124,7 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 		}
 	}
 
-	return matches, capped, nil
+	return matches, capped, walkErrs, nil
 }
 
 func (t *toolSet) searchFile(path string, query string, remaining int) []string {
@@ -121,6 +138,11 @@ func (t *toolSet) searchFile(path string, query string, remaining int) []string 
 	}
 	defer file.Close()
 
+	// Re-verify the file is under the workspace root (F-SEC-123).
+	// This is a layered defense: the walk already skips symlinks, but
+	// workspaceRel provides a second check against any path that might
+	// have escaped the root (e.g. on platforms where WalkDir follows
+	// directory symlinks, or for any other unforeseen traversal path).
 	rel, err := workspaceRel(t.root, path)
 	if err != nil {
 		return nil

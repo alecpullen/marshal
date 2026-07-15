@@ -82,6 +82,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 	sandboxRuntime := cfg.Tools.Shell.Sandbox.ContainerRuntime
 	sandboxImage := cfg.Tools.Shell.Sandbox.ContainerImage
 	sandboxAllowFallback := cfg.Tools.Shell.Sandbox.AllowFallback
+	sandboxUnsafePassthrough := cfg.Tools.Shell.Sandbox.UnsafePassthrough
 	file.Tools.Shell.Sandbox.Backend = &sandboxBackend
 	file.Tools.Shell.Sandbox.MemoryLimitMB = &sandboxMemory
 	file.Tools.Shell.Sandbox.CPUSeconds = &sandboxCPU
@@ -90,6 +91,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 	file.Tools.Shell.Sandbox.ContainerRuntime = &sandboxRuntime
 	file.Tools.Shell.Sandbox.ContainerImage = &sandboxImage
 	file.Tools.Shell.Sandbox.AllowFallback = &sandboxAllowFallback
+	file.Tools.Shell.Sandbox.UnsafePassthrough = &sandboxUnsafePassthrough
 	if cfg.Tools.Shell.Sandbox.EnvAllowlist != nil {
 		file.Tools.Shell.Sandbox.EnvAllowlist = cfg.Tools.Shell.Sandbox.EnvAllowlist
 	}

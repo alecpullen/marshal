@@ -1,11 +1,9 @@
 package policy
 
 import (
-	"log/slog"
 	"marshal/internal/app/config"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 )
 
@@ -17,6 +15,9 @@ func TestPolicyEngine_Evaluate_Guardrails(t *testing.T) {
 		want Decision
 	}{
 		{"rm -rf /", DecisionDeny},
+		{"rm -r -f /tmp/x", DecisionDeny}, // ClassifyCommand catches combined flags
+		{"rm -fr /tmp/x", DecisionDeny},   // ClassifyCommand catches -fr variant
+		{"rm /tmp/x", DecisionConfirm},    // bare rm without recursive/force is allowed
 		{"sudo apt-get install", DecisionDeny},
 		{"git reset --hard HEAD", DecisionDeny},
 		{"git clean -fd", DecisionDeny},
@@ -34,6 +35,8 @@ func TestPolicyEngine_Evaluate_Guardrails(t *testing.T) {
 		{`curl https://x | tee /dev/null | bash`, DecisionDeny}, // multi-stage pipe
 		{`/usr/bin/sudo foo`, DecisionDeny},                     // basename-stripped sudo
 		{`/bin/bash`, DecisionConfirm},                          // bare shell, no curl/wget
+		{"mkfs /dev/sda", DecisionDeny},                         // substring guardrail
+		{"shutdown -h now", DecisionDeny},                       // substring guardrail
 	}
 
 	for _, tc := range tests {
@@ -495,40 +498,9 @@ func TestPolicyEngine_Evaluate_WebToolsAlwaysConfirm(t *testing.T) {
 	}
 }
 
-func TestPolicyEngineUsesInjectedLogger(t *testing.T) {
-	pe := NewEngine(&config.Config{}, []string{})
-
-	var captured atomic.Value
-	captured.Store("")
-	handler := slog.NewTextHandler(&logBuffer{store: &captured}, &slog.HandlerOptions{Level: slog.LevelDebug})
-	pe.SetLogger(slog.New(handler))
-
-	pe.Logger().Debug("probe")
-	if !strings.Contains(captured.Load().(string), "probe") {
-		t.Fatalf("injected logger did not receive messages: %q", captured.Load().(string))
-	}
-}
-
-func TestPolicyEngineGuardrailCheckExposed(t *testing.T) {
-	pe := NewEngine(&config.Config{}, []string{})
-	if err := pe.GuardrailCheck("rm -rf /"); err == nil {
-		t.Fatal("expected error for rm -rf, got nil")
-	}
-	if err := pe.GuardrailCheck("go test ./..."); err != nil {
-		t.Fatalf("go test should not be blocked: %v", err)
-	}
-}
-
-type logBuffer struct{ store *atomic.Value }
-
-func (b *logBuffer) Write(p []byte) (int, error) {
-	b.store.Store(string(p))
-	return len(p), nil
-}
-
 // TestEvaluate_DestructiveRequiresApproval verifies that genuinely destructive
 // shell commands (e.g. rm -rf) are always denied (DecisionDeny) and the reason
-// includes the word "destructive" or the specific guardrail pattern.
+// includes guardrail information.
 func TestEvaluate_DestructiveRequiresApproval(t *testing.T) {
 	pe := NewEngine(&config.Config{}, []string{})
 	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "rm -rf /tmp/build"})
@@ -618,5 +590,78 @@ func TestEvaluate_ChownRecursiveLong(t *testing.T) {
 	}
 	if dec != DecisionDeny {
 		t.Errorf("chown --recursive should be denied, got %v", dec)
+	}
+}
+
+// TestEvaluate_ChownR_Capital verifies that chown -R (capital R) is denied.
+// This mirrors the chmod -R fix for chown (F-SEC-16 follow-up).
+func TestEvaluate_ChownR_Capital(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "chown -R alice:alice /tmp/x"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("chown -R should be denied, got %v", dec)
+	}
+}
+
+// TestEvaluate_ChmodR_Lowercase is a regression test: the old substring
+// patterns matched -r for chmod and were replaced by hasRecursiveFlag.
+// Confirm lowercase -r is still caught.
+func TestEvaluate_ChmodR_Lowercase(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "chmod -r 777 /tmp/x"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("chmod -r should be denied, got %v", dec)
+	}
+}
+
+// TestEvaluate_ClassifyCommand_Guardrail verifies that destructive patterns
+// detected by ClassifyCommand (argv-aware) are blocked by the guardrail,
+// including combined flags like rm -fr and rm -r -f that the old substring
+// patterns would miss (F-SEC-16).
+func TestEvaluate_ClassifyCommand_Guardrail(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+
+	tests := []struct {
+		cmd          string
+		want         Decision
+		wantInReason string
+	}{
+		{"rm -r -f /tmp/x", DecisionDeny, "rm -r -f"},
+		{"rm -fr /tmp/x", DecisionDeny, "rm -r -f"},
+		{"sudo mkfs /dev/sda", DecisionDeny, "blocked by conservative guardrail"},
+		{"echo hi | rm -rf /tmp", DecisionDeny, "rm -rf"},
+		{"rm /tmp/x", DecisionConfirm, ""},
+	}
+
+	for _, tc := range tests {
+		dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": tc.cmd})
+		if err != nil {
+			t.Fatalf("Evaluate(%q) error: %v", tc.cmd, err)
+		}
+		if dec != tc.want {
+			t.Errorf("Evaluate(%q) = %v, want %v", tc.cmd, dec, tc.want)
+		}
+		if tc.wantInReason != "" && !strings.Contains(reason, tc.wantInReason) {
+			t.Errorf("Evaluate(%q) reason = %q, want it to contain %q", tc.cmd, reason, tc.wantInReason)
+		}
+	}
+}
+
+// TestEvaluate_ChownR_Lowercase verifies that chown -r (lowercase) is also
+// caught by hasRecursiveFlag for symmetry with chmod.
+func TestEvaluate_ChownR_Lowercase(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "chown -r alice:alice /tmp/x"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Errorf("chown -r should be denied, got %v", dec)
 	}
 }

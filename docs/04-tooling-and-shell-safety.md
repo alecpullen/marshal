@@ -385,3 +385,30 @@ Every tool call should record:
 - result summary
 - files changed
 - command exit code
+
+## Release notes — 2026-07-15: A1 sandbox hardening
+
+- The `restricted` and `container` sandbox backends now default to a minimal env allowlist (`PATH`, `HOME`, `LANG`, `LC_*`, `USER`, `TZ`, `TMPDIR`, `XDG_*`). To opt into additional env vars, set `[sandbox] env_allowlist = ["K=V", ...]` explicitly. The previous behavior of passing the full parent env minus a secret scrub is **no longer the default**; users who relied on it must add the missing vars to `env_allowlist` (or accept the safe default).
+- The container backend's `buildContainerEnv` adds an explicit allowlist of container-runtime vars on top of the safe base (`DOCKER_HOST`, `DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`, `DOCKER_CONFIG`, `DOCKER_BUILDKIT`, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` and lowercase variants). Docker auth and corporate proxy setups continue to work.
+- MCP-spawned child processes no longer inherit the parent shell's secrets or dynamic-loader keys (`LD_*`, `DYLD_*`). The new `internal/sandbox/envutil.AllowList` helper is reused by the sandbox, container, and MCP layers.
+- Backend `passthrough` is now opt-in via `[sandbox] unsafe_passthrough = true`. Without the flag, `NewRunner` returns an error and the TUI surfaces it. Existing users who set `backend = "passthrough"` directly will need to add the flag.
+- `shell.run` commands matching destructive patterns (`rm -rf`, `chmod -R`/`--recursive`, `chown -R`/`--recursive`, `git reset --hard`, `git clean -fd*`, `mkfs`, `shutdown`, `reboot`) are now flagged in the policy reason. The previously-persisted `allow_sudo` and `allow_destructive` config flags are now honored: when set, the denial reason appends `(flagged allowed)`. The TUI approval prompt is still required.
+- Substring-based guardrail matching of `chmod -r` / `chown -r` (which missed `-R` and `--recursive`) has been replaced with argv-aware matching.
+- The Unix process-group killer now also sends `SIGKILL` to the direct child PID after the grace interval, so grandchildren that escape the PGID via `setpgid` are still terminated.
+- `RegisterTools` (MCP tool registration) now applies a 10s per-server timeout. A hanging MCP server is logged and skipped; registration of other servers continues. This prevents a single misbehaving server from blocking Marshal startup.
+- The container backend now invokes shell-free commands as direct argv (e.g. `["echo", "hello"]`) instead of always wrapping in `/bin/sh -lc`. Shell metacharacters (`|`, `&`, `;`, `` ` ``, `$()`, etc.) continue to route through the shell. Full argv-aware classification with quoted-argument support comes in A2 (Task 3.1/3.6).
+
+## Release notes — 2026-07-15: A3 path safety
+
+- Workspace path resolution (`file.read`, `file.write_patch`, `repo.search`) now uses an explicit `native.SafeResolve` helper that resolves symlinks via `EvalSymlinks` and re-verifies containment under the workspace root. Symlinks inside the workspace that point outside are refused with `ErrPathEscapes`.
+- `file.write_patch` now closes the TOCTOU window between patch validation and application: the apply loop re-stats the file and re-checks the ModTime against the fileTracker's recorded read time before writing. A concurrent modification is detected and the tool returns an error. New files are explicitly validated: a non-empty SEARCH block against a non-existent file is rejected (no silent empty-file creation).
+- `repo.search` no longer follows directory symlinks. Walk errors that were previously swallowed are now collected and surfaced in the tool summary so users can see permission-denied or unreachable paths.
+- `repo.Scanner` (the indexer) now explicitly skips symlinks with a documented policy. Workspaces that relied on symlinked `node_modules` or similar need to switch to bind mounts or hard links.
+
+## Release notes — 2026-07-15: A2 command classification
+
+- Shell command classification is now argv-aware via `policy.ClassifyCommand`. Patterns like `rm -r -f`, `rm -fr`, `git clean -fdx`, `git reset --hard`, and `chmod -R` / `chown -R` are detected regardless of flag ordering or short forms. The previous substring guardrails (`strings.Contains` for `rm -rf`, `sudo`, etc.) are retained as a per-stage safety net for pipelined commands like `echo hi | rm -rf /tmp`.
+- The TUI's "always allow" pattern is now the full argv (`git status`), not `git *`. This prevents `git ; rm -rf /` from being matched by an "always allow git" rule. Existing always-allow rules saved before this change will need to be re-saved; the TUI surfaces a one-time hint.
+- `shell.run` (native) and the container backend now invoke the child process directly with argv when the command is shell-free and not classified as `RiskDestructive`. Shell features (`|`, `&&`, `$(...)`, redirects, etc.) and destructive commands (`rm -rf` etc.) still route through `/bin/sh -lc`.
+- Slash commands accept shell-style quoted arguments via `shlex.Split`. `/plan "my idea"` now correctly passes `["my idea"]` to the command handler.
+- `RiskDestructive` is now assigned to genuinely destructive patterns and always requires explicit approval, even when other shell commands are auto-allowed. The `allow_destructive` config flag changes the displayed reason but not the approval requirement.

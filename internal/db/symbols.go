@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+const symbolInsertBatch = 200
+
 type Symbol struct {
 	ID        int64
 	FilePath  string
@@ -31,17 +33,19 @@ func (db *DB) SaveSymbols(projectID int64, symbols []Symbol) error {
 		return fmt.Errorf("delete existing symbols: %w", err)
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO symbols (project_id, file_path, kind, name, receiver, signature, line_start, line_end)
-							 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare symbol insert: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, s := range symbols {
-		_, err := stmt.Exec(projectID, s.FilePath, s.Kind, s.Name, s.Receiver, s.Signature, s.LineStart, s.LineEnd)
-		if err != nil {
-			return fmt.Errorf("insert symbol %s: %w", s.Name, err)
+	for start := 0; start < len(symbols); start += symbolInsertBatch {
+		end := start + symbolInsertBatch
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		chunk := symbols[start:end]
+		placeholders := buildValues(len(chunk), 8)
+		args := make([]any, 0, len(chunk)*8)
+		for _, s := range chunk {
+			args = append(args, projectID, s.FilePath, s.Kind, s.Name, s.Receiver, s.Signature, s.LineStart, s.LineEnd)
+		}
+		if _, err := tx.Exec(`INSERT INTO symbols (project_id, file_path, kind, name, receiver, signature, line_start, line_end) VALUES `+placeholders, args...); err != nil {
+			return fmt.Errorf("insert symbols batch [%d:%d]: %w", start, end, err)
 		}
 	}
 

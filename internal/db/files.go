@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const fileInsertBatch = 200
+
 type FileIndex struct {
 	Path          string
 	Language      string
@@ -55,21 +57,29 @@ func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
 		return fmt.Errorf("delete existing files: %w", err)
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO files (project_id, path, language, hash, size_bytes, last_indexed_at, summary)
-							 VALUES (?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare file insert: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, f := range files {
-		summary := f.Summary
+	// Merge summaries from existing rows before inserting.
+	merged := make([]FileIndex, len(files))
+	for i, f := range files {
+		m := f
 		if prior, ok := existing[f.Path]; ok && prior.Hash == f.Hash {
-			summary = prior.Summary
+			m.Summary = prior.Summary
 		}
-		_, err := stmt.Exec(projectID, f.Path, f.Language, f.Hash, f.SizeBytes, f.LastIndexedAt.UTC().Format(time.RFC3339), summary)
-		if err != nil {
-			return fmt.Errorf("insert file %s: %w", f.Path, err)
+		merged[i] = m
+	}
+
+	for start := 0; start < len(merged); start += fileInsertBatch {
+		end := start + fileInsertBatch
+		if end > len(merged) {
+			end = len(merged)
+		}
+		chunk := merged[start:end]
+		placeholders := buildValues(len(chunk), 7)
+		args := make([]any, 0, len(chunk)*7)
+		for _, f := range chunk {
+			args = append(args, projectID, f.Path, f.Language, f.Hash, f.SizeBytes, f.LastIndexedAt.UTC().Format(time.RFC3339), f.Summary)
+		}
+		if _, err := tx.Exec(`INSERT INTO files (project_id, path, language, hash, size_bytes, last_indexed_at, summary) VALUES `+placeholders, args...); err != nil {
+			return fmt.Errorf("insert files batch [%d:%d]: %w", start, end, err)
 		}
 	}
 

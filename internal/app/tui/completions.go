@@ -96,6 +96,7 @@ type completionItem struct {
 	Text        string
 	Description string
 	Kind        completionKind
+	Disabled    bool
 	matchedIdxs []int
 }
 
@@ -205,8 +206,9 @@ func (p *completionPopup) accept() {
 		return
 	}
 	chosen := p.filtered[p.index]
-	// Placeholder items (e.g. "no indexed files") start with "(" — skip them.
-	if strings.HasPrefix(chosen.Text, "(") {
+	// Disabled items (e.g. placeholder rows) cannot be selected — dismiss
+	// the popup without inserting any text.
+	if chosen.Disabled {
 		p.visible = false
 		p.filtered = nil
 		p.index = 0

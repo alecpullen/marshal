@@ -13,7 +13,6 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
-	"marshal/internal/diffview"
 	"marshal/internal/tools/registry"
 )
 
@@ -199,8 +198,6 @@ func renderMessage(msg session.Message, width int) string {
 	switch msg.ContentType {
 	case session.ContentTypePlan:
 		return renderPlanBlock(msg.Content, width)
-	case session.ContentTypeDiff:
-		return renderDiffBlock(msg.Content, width)
 	case session.ContentTypeToolResult:
 		return renderToolResultLine(msg.Content, width)
 	case session.ContentTypeCode:
@@ -356,17 +353,6 @@ func renderPlanBlock(content string, width int) string {
 	}
 	b.WriteString("\n")
 	return b.String()
-}
-
-func renderDiffBlock(content string, width int) string {
-	rendered := diffview.Render(content, diffview.Options{Width: max(width-2, 1), Mode: diffview.ModeAuto, Highlight: true})
-	if rendered == "" && content != "" {
-		rendered = content
-	}
-	if rendered != "" && !strings.HasSuffix(rendered, "\n") {
-		rendered += "\n"
-	}
-	return rendered + "\n"
 }
 
 var providerErrorStyle = lipgloss.NewStyle().Foreground(errorColor).Bold(true)

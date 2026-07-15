@@ -26,7 +26,7 @@ func implementerPrompt(ts *TaskState) string {
 }
 
 func testerPrompt(ts *TaskState) string {
-	return "You are the swarm tester. Run the project's tests for the change described in the shared task state below. Do not modify source files; only run tests and inspect output. Diagnose any failures: name the failing test and the minimal fix needed. End your final answer with a line reading exactly \"VERDICT: PASS\" if all relevant tests pass, or \"VERDICT: FAIL\" if any fail.\n\n" + ts.Render()
+	return "You are the swarm tester. Run the project's tests for the change described in the shared task state below. Do not modify source files; only run tests and inspect output. End your final answer with TWO lines in this order: a JSON line `TEST_FAILURES_JSON: [...]` (an empty array if all tests pass) followed by a line reading exactly \"VERDICT: PASS\" or \"VERDICT: FAIL\".\n\n" + ts.Render()
 }
 
 func reviewerPrompt(ts *TaskState) string {

@@ -392,7 +392,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	task.Status = TaskStatusExecuting
 	lastRenderedSkills := r.State.ActiveSkills()
-	pressureSent := false
+	pressureMessageSent := false
 	producedValidAction := false
 	consecutiveParseFailures := 0
 	consecutiveEmpty := 0
@@ -448,10 +448,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 		}
 
-		if !pressureSent && r.MaxToolIterations-iteration <= finalizePressureThreshold {
+		if !pressureMessageSent && r.MaxToolIterations-iteration <= finalizePressureThreshold {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: finalizePressureMessage})
 			r.State.AddMessage(session.RoleSystem, finalizePressureMessage, session.ContentTypePlain)
-			pressureSent = true
+			pressureMessageSent = true
 		}
 
 		currentSkills := r.State.ActiveSkills()
@@ -463,7 +463,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
 			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal); serr == nil {
 				messages = fresh
-				pressureSent = false // the fresh transcript may legitimately approach the budget again
+				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
 				// Summarization failed (transport error or empty text): fall
 				// back to lossy in-place compaction rather than aborting the turn.

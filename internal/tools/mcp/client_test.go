@@ -135,6 +135,49 @@ func TestCallReceivesQuotedStringID(t *testing.T) {
 	}
 }
 
+// TestReadLoopFailPendingDoesNotBlockUnderMu verifies F-CON-53: when the
+// read loop fails pending requests at EOF, it must not hold c.mu while
+// sending on the per-id channel. Holding the mutex during a send
+// deadlocks the client if any pending goroutine also tries to take
+// c.mu while receiving.
+func TestReadLoopFailPendingDoesNotBlockUnderMu(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+
+	c := NewClient("test", "ignored", nil, nil)
+	c.stdin = stdinW
+	c.stdout = stdoutR
+
+	// Two pending entries that will both need to receive the EOF error.
+	// One of them is full (no reader); the test asserts the loop does not
+	// deadlock while failing them.
+	c.mu.Lock()
+	full := make(chan Response, 1)
+	full <- Response{ID: json.Number("1")} // pre-fill the buffer
+	open := make(chan Response, 1)
+	c.pending[json.Number("1")] = full
+	c.pending[json.Number("2")] = open
+	c.mu.Unlock()
+
+	// Close stdout so readLoop returns and runs the fail-pending path.
+	stdoutW.Close()
+	stdinR.Close()
+
+	done := make(chan struct{})
+	c.wg.Add(1)
+	go func() {
+		c.readLoop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Expected: readLoop exited without deadlocking.
+	case <-time.After(2 * time.Second):
+		t.Fatal("readLoop deadlocked while failing pending (F-CON-53)")
+	}
+}
+
 func mockServerMain() {
 	dec := json.NewDecoder(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)

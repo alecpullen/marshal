@@ -24,7 +24,7 @@ func TestSaveAndGetSymbols(t *testing.T) {
 		t.Fatalf("SaveSymbols failed: %v", err)
 	}
 
-	got, err := db.GetSymbols(projectID)
+	got, err := db.GetSymbols(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetSymbols failed: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestSaveSymbolsReplacesExisting(t *testing.T) {
 		t.Fatalf("SaveSymbols replace failed: %v", err)
 	}
 
-	got, err := db.GetSymbols(projectID)
+	got, err := db.GetSymbols(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetSymbols failed: %v", err)
 	}

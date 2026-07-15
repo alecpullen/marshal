@@ -43,7 +43,7 @@ func TestSaveAndGetFileIndex(t *testing.T) {
 		t.Fatalf("SaveFileIndex failed: %v", err)
 	}
 
-	got, err := db.GetFileIndex(projectID)
+	got, err := db.GetFileIndex(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetFileIndex failed: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestSaveFileIndexUpdatesExisting(t *testing.T) {
 		t.Fatalf("SaveFileIndex update failed: %v", err)
 	}
 
-	got, err := db.GetFileIndex(projectID)
+	got, err := db.GetFileIndex(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetFileIndex failed: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestSaveFileIndexPreservesSummaryWhenHashUnchanged(t *testing.T) {
 		t.Fatalf("second SaveFileIndex failed: %v", err)
 	}
 
-	got, err := db.GetFileIndex(projectID)
+	got, err := db.GetFileIndex(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetFileIndex failed: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSaveFileIndexClearsSummaryWhenHashChanges(t *testing.T) {
 		t.Fatalf("second SaveFileIndex failed: %v", err)
 	}
 
-	got, err := db.GetFileIndex(projectID)
+	got, err := db.GetFileIndex(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetFileIndex failed: %v", err)
 	}

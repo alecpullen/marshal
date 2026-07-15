@@ -21,7 +21,7 @@ func (t *toolSet) repoCardTool() registry.Tool {
 		if t.db == nil || t.projectID == 0 {
 			return registry.ToolResult{}, errors.New("database not configured for repo.card")
 		}
-		files, err := t.db.GetFileIndex(t.projectID)
+		files, err := t.db.GetFileIndex(t.projectID, 0)
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("load file index: %w", err)
 		}

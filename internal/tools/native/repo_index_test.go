@@ -57,7 +57,7 @@ func TestRepoIndexTool(t *testing.T) {
 		t.Fatalf("expected content to contain 'go: 1', got %q", res.Content)
 	}
 
-	files, err := dbConn.GetFileIndex(projectID)
+	files, err := dbConn.GetFileIndex(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetFileIndex failed: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestRepoIndexTool(t *testing.T) {
 		t.Fatalf("expected Language == 'go', got %q", files[0].Language)
 	}
 
-	symbols, err := dbConn.GetSymbols(projectID)
+	symbols, err := dbConn.GetSymbols(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetSymbols failed: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRepoIndexToolIgnoresByConfigPattern(t *testing.T) {
 		t.Fatalf("expected 1 file indexed (only keepme.go), got %q", res.Summary)
 	}
 
-	files, err := dbConn.GetFileIndex(projectID)
+	files, err := dbConn.GetFileIndex(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetFileIndex failed: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestRepoIndexToolSkipsSymbolsForNonGoFiles(t *testing.T) {
 		t.Fatalf("repo.index failed: %v", err)
 	}
 
-	symbols, err := dbConn.GetSymbols(projectID)
+	symbols, err := dbConn.GetSymbols(projectID, 0)
 	if err != nil {
 		t.Fatalf("GetSymbols failed: %v", err)
 	}

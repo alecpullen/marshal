@@ -66,16 +66,19 @@ func scanSymbol(rows *sql.Rows) (Symbol, error) {
 	return s, nil
 }
 
-// GetSymbols returns all symbol rows for a project, ordered by file path
-// then line start.
-func (db *DB) GetSymbols(projectID int64) ([]Symbol, error) {
-	rows, err := db.sqlDB.Query(
-		`SELECT id, file_path, kind, name, receiver, signature, line_start, line_end
+// GetSymbols returns up to limit symbol rows for a project, ordered by file
+// path then line start. limit <= 0 means "all rows" (unbounded).
+func (db *DB) GetSymbols(projectID int64, limit int) ([]Symbol, error) {
+	query := `SELECT id, file_path, kind, name, receiver, signature, line_start, line_end
 		 FROM symbols
 		 WHERE project_id = ?
-		 ORDER BY file_path, line_start`,
-		projectID,
-	)
+		 ORDER BY file_path, line_start`
+	args := []any{projectID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.sqlDB.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query symbols: %w", err)
 	}

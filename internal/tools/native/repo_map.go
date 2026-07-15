@@ -23,7 +23,7 @@ func (t *toolSet) repoMapTool() registry.Tool {
 		if t.db == nil || t.projectID == 0 {
 			return registry.ToolResult{}, errors.New("database not configured for repo.map")
 		}
-		files, err := t.db.GetFileIndex(t.projectID)
+		files, err := t.db.GetFileIndex(t.projectID, repoMapMaxFiles)
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("load file index: %w", err)
 		}
@@ -33,7 +33,7 @@ func (t *toolSet) repoMapTool() registry.Tool {
 				Content: "Run repo.index to build the file index first.",
 			}, nil
 		}
-		symbols, err := t.db.GetSymbols(t.projectID)
+		symbols, err := t.db.GetSymbols(t.projectID, repoMapMaxFiles)
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("load symbol index: %w", err)
 		}

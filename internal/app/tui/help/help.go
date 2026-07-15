@@ -81,37 +81,39 @@ func Footer(h FooterHints) string {
 
 const keyColumnWidth = 20
 
+// table is the keybinding table rendered by Overlay. Defined at package
+// level to avoid re-allocation on every call.
+var table = [][]string{
+	{"Enter", "send message / accept"},
+	{"Shift+Enter", "newline in input"},
+	{"", ""},
+	{"/", "command completion"},
+	{"@", "file completion"},
+	{"↑↓", "choose completion"},
+	{"PgUp/PgDn", "scroll transcript"},
+	{"Ctrl+U/Ctrl+D", "half-page scroll"},
+	{"End", "jump to bottom"},
+	{"", ""},
+	{"Tab", "cycle mode (auto→ask→edit) · accept completion"},
+	{"Shift+Tab", "cycle mode backward"},
+	{"Alt+M", "cycle model"},
+	{"Alt+Shift+M", "cycle model backward"},
+	{"Esc", "cancel turn · dismiss popup · deny approval"},
+	{"", ""},
+	{"Ctrl+O", "settings"},
+	{"Ctrl+P", "model picker"},
+	{"Ctrl+K", "memory browser"},
+	{"Ctrl+G", "toggle thinking"},
+	{"Ctrl+R", "rollback last change"},
+	{"Ctrl+X", "clear steering queue (while busy)"},
+	{"", ""},
+	{"?", "this help"},
+	{"Ctrl+C", "quit"},
+}
+
 // Overlay returns the full-screen help panel shown when ? is pressed.
 func Overlay(width, height int) string {
-	table := [][]string{
-		{"Enter", "send message / accept"},
-		{"Shift+Enter", "newline in input"},
-		{"", ""},
-		{"/", "command completion"},
-		{"@", "file completion"},
-		{"↑↓", "choose completion"},
-		{"PgUp/PgDn", "scroll transcript"},
-		{"Ctrl+U/Ctrl+D", "half-page scroll"},
-		{"End", "jump to bottom"},
-		{"", ""},
-		{"Tab", "cycle mode (auto→ask→edit) · accept completion"},
-		{"Shift+Tab", "cycle mode backward"},
-		{"Alt+M", "cycle model"},
-		{"Alt+Shift+M", "cycle model backward"},
-		{"Esc", "cancel turn · dismiss popup · deny approval"},
-		{"", ""},
-		{"Ctrl+O", "settings"},
-		{"Ctrl+P", "model picker"},
-		{"Ctrl+K", "memory browser"},
-		{"Ctrl+G", "toggle thinking"},
-		{"Ctrl+R", "rollback last change"},
-		{"Ctrl+X", "clear steering queue (while busy)"},
-		{"", ""},
-		{"?", "this help"},
-		{"Ctrl+C", "quit"},
-	}
-
-	keyStyle := lipgloss.NewStyle().Bold(true).Width(keyColumnWidth)
+	overlayKeyStyle := lipgloss.NewStyle().Bold(true).Width(keyColumnWidth)
 	descStyle := lipgloss.NewStyle().Width(max(width-keyColumnWidth-4, 20))
 	rows := make([]string, 0, len(table)+4)
 	rows = append(rows, "marshal keys", "")
@@ -120,7 +122,7 @@ func Overlay(width, height int) string {
 			rows = append(rows, "")
 			continue
 		}
-		rows = append(rows, keyStyle.Render(r[0])+"  "+descStyle.Render(r[1]))
+		rows = append(rows, overlayKeyStyle.Render(r[0])+"  "+descStyle.Render(r[1]))
 	}
 	rows = append(rows, "", "Press ? or Esc to close.")
 	body := strings.Join(rows, "\n")

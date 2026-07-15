@@ -73,6 +73,11 @@ type OnboardingModel struct {
 	ollamaModels []string
 	ollamaIndex  int
 	ollamaErr    bool
+
+	// projectNameTouched tracks whether the user typed in the project name
+	// field, so we can distinguish "pressed Enter on the default" from
+	// "typed then cleared the input" (F-POL-168).
+	projectNameTouched bool
 }
 
 type ollamaTagsResponse struct {
@@ -194,11 +199,16 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = stateProjectName
 				m.textInput.SetValue("")
 				m.textInput.Placeholder = filepath.Base(m.workingDir)
+				m.projectNameTouched = false
 				m.textInput.Focus()
 
 			case stateProjectName:
 				name := strings.TrimSpace(m.textInput.Value())
 				if name == "" {
+					if m.projectNameTouched {
+						m.err = "Project name cannot be empty"
+						return m, nil
+					}
 					name = filepath.Base(m.workingDir)
 				}
 				m.projectName = name
@@ -288,7 +298,11 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.state == stateProjectName || m.state == stateConfigureURL || m.state == stateConfigureKey || (m.state == stateModelSelection && len(m.ollamaModels) == 0 && !m.loading) {
+		oldVal := m.textInput.Value()
 		m.textInput, cmd = m.textInput.Update(msg)
+		if m.state == stateProjectName && m.textInput.Value() != oldVal {
+			m.projectNameTouched = true
+		}
 	}
 
 	return m, cmd

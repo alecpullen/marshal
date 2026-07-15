@@ -155,7 +155,7 @@ func TestOnboardingEnvVarModeWritesAPIKeyEnv(t *testing.T) {
 
 func TestOnboardingProjectNameFromWorkingDir(t *testing.T) {
 	m := newTestOnboardingModel()
-	m.workingDir = "/tmp/myrepo"
+	m.workingDir = t.TempDir()
 	m.projectName = "" // simulate user pressing Enter on default
 
 	if err := m.saveConfig(); err != nil {
@@ -165,14 +165,15 @@ func TestOnboardingProjectNameFromWorkingDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	if !strings.Contains(string(data), `name = "myrepo"`) {
-		t.Fatalf("expected name derived from working dir, got: %s", data)
+	expectedName := filepath.Base(m.workingDir)
+	if !strings.Contains(string(data), `name = "`+expectedName+`"`) {
+		t.Fatalf("expected name derived from working dir (%q), got: %s", expectedName, data)
 	}
 }
 
 func TestOnboardingProjectNameCustomValue(t *testing.T) {
 	m := newTestOnboardingModel()
-	m.workingDir = "/tmp/myrepo"
+	m.workingDir = t.TempDir()
 	m.projectName = "my-custom-project"
 
 	if err := m.saveConfig(); err != nil {

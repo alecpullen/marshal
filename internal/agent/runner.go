@@ -228,6 +228,8 @@ type Runner struct {
 	// (mirroring the envelope path's iteration++ in ActionAskUser /
 	// ActionQuestionAsk). Nil outside of RunTask.
 	iterationBudget *int
+
+	fileIndexCache fileIndexCache
 }
 
 // RunTaskFunc, if non-nil, overrides RunTask for testing. It returns a
@@ -389,7 +391,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// context pack before it is appended to the model messages. Unknown
 	// paths and unreadable files are silently skipped (see
 	// extractPinnedFiles); the TUI only inserts the literal "@path" text.
-	if pinned := extractPinnedFiles(goal, r.State, r.ProjectID); len(pinned) > 0 {
+	if pinned := extractPinnedFiles(goal, r, r.ProjectID); len(pinned) > 0 {
 		pack := r.State.ContextPack()
 		pack = contextpack.PinFiles(pack, pinned)
 		r.State.SetContextPack(pack)
@@ -481,7 +483,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		if r.SteeringProvider != nil {
 			var steeringPins []contextpack.FileSnippet
 			for _, msg := range r.SteeringProvider.DrainSteering() {
-				steeringPins = append(steeringPins, extractPinnedFiles(msg, r.State, r.ProjectID)...)
+				steeringPins = append(steeringPins, extractPinnedFiles(msg, r, r.ProjectID)...)
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 				steeringArrived = true
 			}

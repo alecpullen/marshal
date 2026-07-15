@@ -543,6 +543,81 @@ func TestBuildToolDefinitionsOmitsAskUserForSwarmRoles(t *testing.T) {
 	}
 }
 
+func TestNativeAskUserCountsAgainstIterationBudget(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{
+		responses: []string{"Ask1.", "Ask2."},
+		toolCalls: [][]schema.ToolCall{
+			{{ID: "c1", Name: "ask_user", Args: json.RawMessage(`{"question":"Q1?"}`)}},
+			{{ID: "c2", Name: "ask_user", Args: json.RawMessage(`{"question":"Q2?"}`)}},
+		},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassQuestion))
+
+	var got *TurnMetrics
+	r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 2; i++ {
+			answerPendingQuestion(state, "yes")
+		}
+		close(done)
+	}()
+
+	task, err := r.RunTask(context.Background(), "ask repeatedly")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.Summary != "Ask2." {
+		t.Fatalf("Summary = %q, want Ask2.", task.Summary)
+	}
+	if got == nil || got.Iterations < 4 {
+		// Each ask_user batch consumes 1 iteration from line 564 +
+		// 1 iteration from executeNativeAskUser = 2 per call × 2 calls = 4
+		t.Fatalf("Iterations = %d, want at least 4", got.Iterations)
+	}
+	if r.iterationBudget != nil {
+		t.Fatalf("iterationBudget should be nil after RunTask")
+	}
+}
+
+func TestNativeQuestionAskCountsAgainstIterationBudget(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{
+		responses: []string{"Ask1.", "Ask2."},
+		toolCalls: [][]schema.ToolCall{
+			{{ID: "c1", Name: "question.ask", Args: json.RawMessage(`{"questions":[{"question":"Q1?"}]}`)}},
+			{{ID: "c2", Name: "question.ask", Args: json.RawMessage(`{"questions":[{"question":"Q2?"}]}`)}},
+		},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassQuestion))
+
+	var got *TurnMetrics
+	r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 2; i++ {
+			answerPendingQuestion(state, "yes")
+		}
+		close(done)
+	}()
+
+	task, err := r.RunTask(context.Background(), "ask repeatedly")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if got == nil || got.Iterations < 4 {
+		t.Fatalf("Iterations = %d, want at least 4", got.Iterations)
+	}
+	_ = task
+}
+
 func TestBuildQuestionLabel(t *testing.T) {
 	tests := []struct {
 		name      string

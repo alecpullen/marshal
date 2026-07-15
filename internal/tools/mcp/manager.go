@@ -2,12 +2,18 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"marshal/internal/app/config"
 	"marshal/internal/tools/registry"
 	"time"
 )
+
+// caller abstracts the MCP client invocation so tests can inject a stub.
+type caller interface {
+	Call(ctx context.Context, method string, params, result any) error
+}
 
 // mcpServerTimeout is the per-server timeout for tools/list calls.
 // It is a var (not const) so tests can override it.
@@ -123,25 +129,32 @@ func (m *Manager) findClient(name string) *Client {
 	return nil
 }
 
-func (m *Manager) makeHandler(client *Client, mcpToolName string) registry.ToolHandler {
+func (m *Manager) makeHandler(c caller, mcpToolName string) registry.ToolHandler {
 	return func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		params := CallToolParams{
 			Name:      mcpToolName,
 			Arguments: call.Args,
 		}
 		var res CallToolResult
-		if err := client.Call(ctx, "tools/call", params, &res); err != nil {
+		if err := c.Call(ctx, "tools/call", params, &res); err != nil {
 			return registry.ToolResult{}, err
 		}
 		var summary string
 		var fullContent string
-		if len(res.Content) > 0 {
-			summary = res.Content[0].Text
-			for _, content := range res.Content {
-				if content.Type == "text" {
-					fullContent += content.Text + "\n"
+		for _, content := range res.Content {
+			if content.Type == "text" {
+				if summary == "" {
+					summary = content.Text
 				}
+				fullContent += content.Text + "\n"
 			}
+		}
+		if res.IsError {
+			return registry.ToolResult{
+				Summary: summary,
+				Content: fullContent,
+				Error:   "MCP tool reported error: " + summary,
+			}, errors.New("mcp: tool reported error")
 		}
 		return registry.ToolResult{
 			Summary: summary,

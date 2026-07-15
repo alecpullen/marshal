@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -179,6 +180,14 @@ func TestSessionLifecycleValidation(t *testing.T) {
 
 func TestSessionPlumbsAdditionalDirectories(t *testing.T) {
 	tmp := t.TempDir()
+	extra1 := filepath.Join(tmp, "extra1")
+	extra2 := filepath.Join(tmp, "extra2")
+	if err := os.MkdirAll(extra1, 0o755); err != nil {
+		t.Fatalf("mkdir extra1: %v", err)
+	}
+	if err := os.MkdirAll(extra2, 0o755); err != nil {
+		t.Fatalf("mkdir extra2: %v", err)
+	}
 	if err := writeMarshalConfig(t, tmp); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -195,7 +204,7 @@ func TestSessionPlumbsAdditionalDirectories(t *testing.T) {
 	})
 	m.SetTurnCanceller(noopCancel())
 
-	res, err := m.Create(ctx, json.RawMessage(`{"cwd":"`+tmp+`","mcpServers":[],"additionalDirectories":["/tmp/extra1","/tmp/extra2"]}`))
+	res, err := m.Create(ctx, json.RawMessage(`{"cwd":"`+tmp+`","mcpServers":[],"additionalDirectories":["`+extra1+`","`+extra2+`"]}`))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -212,8 +221,8 @@ func TestSessionPlumbsAdditionalDirectories(t *testing.T) {
 	defer rt.Close(ctx)
 
 	got := rt.AdditionalDirectories()
-	if len(got) != 2 || got[0] != "/tmp/extra1" || got[1] != "/tmp/extra2" {
-		t.Fatalf("AdditionalDirectories = %v, want [/tmp/extra1 /tmp/extra2]", got)
+	if len(got) != 2 || got[0] != extra1 || got[1] != extra2 {
+		t.Fatalf("AdditionalDirectories = %v, want [%s %s]", got, extra1, extra2)
 	}
 }
 
@@ -650,38 +659,56 @@ func TestSessionLoadUsesExistingSessionOption(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	ctx := context.Background()
-	now := time.Unix(100, 0)
-
-	// First runtime: create a session and persist messages.
-	rt1, err := app.StartRuntime(ctx, app.WithWorkingDir(tmp), app.WithSkipOnboarding(true),
-		app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
-		app.WithNow(func() time.Time { return now }),
-	)
+	// Pre-seed the on-disk DB with a project, session, and two messages.
+	dbPath := filepath.Join(tmp, ".marshal", "marshal.db")
+	d, err := db.Open(dbPath)
 	if err != nil {
-		t.Fatalf("first StartRuntime: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
-	rt1.State.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	rt1.State.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
-	expectedMessages := rt1.State.Messages()
-	sessionID := rt1.SessionID
-	rt1.Close(ctx)
+	if err := d.Migrate(); err != nil {
+		d.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := d.GetOrCreateProject(tmp, "load-test")
+	if err != nil {
+		d.Close()
+		t.Fatalf("create project: %v", err)
+	}
+	sessionID := "sess_load_test"
+	now := time.Unix(100, 0)
+	if err := d.CreateSession(sessionID, projectID, "", now); err != nil {
+		d.Close()
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := d.SaveMessage(sessionID, "user", "hello", "plain", now, "", 0, false, 0); err != nil {
+		d.Close()
+		t.Fatalf("save msg1: %v", err)
+	}
+	if _, err := d.SaveMessage(sessionID, "assistant", "hi there", "plain", now.Add(time.Second), "", 0, false, 0); err != nil {
+		d.Close()
+		t.Fatalf("save msg2: %v", err)
+	}
+	d.Close()
 
 	// Snapshot DB counts.
 	initialProjects, initialSessions, initialMessages := countRows(t, tmp)
 
-	// Build a SessionManager that wraps real StartRuntime.
-	m := NewSessionManager(SessionManagerConfig{
-		StartRuntime: app.StartRuntime,
-		CloseRuntime: func(ctx context.Context, rt *app.Runtime) error { return rt.Close(ctx) },
-		Notify:       func(method string, params any) error { return nil },
-		Options: []app.Option{
-			app.WithSkipOnboarding(true),
-			app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
-		},
-	})
-	m.SetTurnCanceller(func(ctx context.Context, id string) error { return nil })
+	// Build a Runtime with the expected state already populated.
+	st := session.New(config.Default(), tmp, now, session.Persistence{})
+	st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	st.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
+	expectedMessages := st.Messages()
+	rt := &app.Runtime{SessionID: sessionID, State: st}
 
+	// Wire the SessionManager with the fake start.
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeStartFixed(rt),
+		CloseRuntime: noopClose(),
+		Notify:       func(method string, params any) error { return nil },
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	ctx := context.Background()
 	res, err := m.Load(ctx, json.RawMessage(`{"cwd":"`+tmp+`","sessionId":"`+sessionID+`","mcpServers":[]}`))
 	if err != nil {
 		t.Fatalf("manager Load: %v", err)
@@ -924,6 +951,68 @@ tester = "mock_preset"
 reviewer = "mock_preset"
 `
 	return os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(content), 0644)
+}
+
+// TestPublishReplacementDoesNotDoubleClose reproduces F-BUG-49: a
+// concurrent publishReplacement with the same id must not call
+// close(prior) twice. Post-fix, the second call sees rt == prior and
+// short-circuits.
+func TestPublishReplacementDoesNotDoubleClose(t *testing.T) {
+	var closeCount atomic.Int32
+	m := &SessionManager{
+		sessions:    map[string]*app.Runtime{},
+		mu:          sync.RWMutex{},
+		lifecycleMu: sync.Mutex{},
+		close: func(ctx context.Context, rt *app.Runtime) error {
+			closeCount.Add(1)
+			return nil
+		},
+		cancel: nil,
+	}
+	rt1 := &app.Runtime{}
+	rt2 := &app.Runtime{}
+	m.sessions["s1"] = rt1
+
+	// Two concurrent publishes — both observe the same prior.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { m.publishReplacement(context.Background(), "s1", rt2); wg.Done() }()
+	go func() { m.publishReplacement(context.Background(), "s1", rt2); wg.Done() }()
+	wg.Wait()
+
+	// Only one close should have happened.
+	if got := closeCount.Load(); got > 1 {
+		t.Errorf("close was called %d times, want at most 1", got)
+	}
+}
+
+// TestValidateLifecycleParamsRejectsSymlinkDuplicate reproduces
+// F-POL-65: 8 symlinks pointing to the same sensitive dir must be
+// rejected as duplicates.
+func TestValidateLifecycleParamsRejectsSymlinkDuplicate(t *testing.T) {
+	// Create a real dir and 8 symlinks pointing to it.
+	tmp := t.TempDir()
+	real := filepath.Join(tmp, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var addDirs []string
+	for i := 0; i < 8; i++ {
+		link := filepath.Join(tmp, fmt.Sprintf("link%d", i))
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		addDirs = append(addDirs, link)
+	}
+	params := sessionParams{
+		Cwd:                   real,
+		MCPServers:            &[]json.RawMessage{},
+		AdditionalDirectories: addDirs,
+	}
+	err := validateLifecycleParams(&params, true)
+	if err == nil {
+		t.Fatal("expected error for symlink duplicates, got nil")
+	}
 }
 
 func countRows(t *testing.T, tmp string) (int, int, int) {

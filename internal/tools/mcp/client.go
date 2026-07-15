@@ -4,15 +4,20 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
 	"marshal/internal/sandbox/envutil"
 )
+
+// ErrClientClosed is returned by Call when the client has been Close()d.
+var ErrClientClosed = errors.New("mcp: client closed")
 
 type Client struct {
 	Name    string
@@ -27,7 +32,7 @@ type Client struct {
 
 	mu      sync.Mutex
 	nextID  int64
-	pending map[interface{}]chan<- Response
+	pending map[json.Number]chan<- Response
 	err     error
 }
 
@@ -37,7 +42,7 @@ func NewClient(name, command string, args, env []string) *Client {
 		Command: command,
 		Args:    args,
 		Env:     env,
-		pending: make(map[interface{}]chan<- Response),
+		pending: make(map[json.Number]chan<- Response),
 	}
 }
 
@@ -107,7 +112,7 @@ func (c *Client) Start(ctx context.Context) error {
 func (c *Client) Close() error {
 	c.mu.Lock()
 	if c.err == nil {
-		c.err = fmt.Errorf("client closed")
+		c.err = ErrClientClosed
 	}
 	c.mu.Unlock()
 
@@ -125,7 +130,8 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) Call(ctx context.Context, method string, params interface{}, result interface{}) error {
-	id := atomic.AddInt64(&c.nextID, 1)
+	n := atomic.AddInt64(&c.nextID, 1)
+	id := json.Number(strconv.FormatInt(n, 10))
 	req := Request{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -135,9 +141,13 @@ func (c *Client) Call(ctx context.Context, method string, params interface{}, re
 
 	ch := make(chan Response, 1)
 	c.mu.Lock()
+	if errors.Is(c.err, ErrClientClosed) {
+		c.mu.Unlock()
+		return ErrClientClosed
+	}
 	if c.err != nil {
 		c.mu.Unlock()
-		return c.err
+		return fmt.Errorf("mcp: call %s: %w", method, c.err)
 	}
 	c.pending[id] = ch
 	c.mu.Unlock()
@@ -188,20 +198,12 @@ func (c *Client) readLoop() {
 		if err := json.Unmarshal(scanner.Bytes(), &res); err != nil {
 			continue
 		}
-		if res.ID == nil {
+		if res.ID == "" {
 			continue
 		}
-		// Handle JSON numeric type float64 vs int64
-		var key interface{}
-		switch v := res.ID.(type) {
-		case float64:
-			key = int64(v)
-		default:
-			key = v
-		}
-
+		// ID is now json.Number — use it directly as the pending key.
 		c.mu.Lock()
-		ch, ok := c.pending[key]
+		ch, ok := c.pending[res.ID]
 		c.mu.Unlock()
 
 		if ok {
@@ -215,10 +217,29 @@ func (c *Client) readLoop() {
 			c.err = io.EOF
 		}
 	}
-	// Fail all pending
-	for id, ch := range c.pending {
-		ch <- Response{Error: &Error{Message: c.err.Error()}}
-		delete(c.pending, id)
+	// Snapshot pending entries under the lock; send outside the lock so a
+	// full per-id channel cannot block the read loop (F-CON-53). The
+	// per-id channel buffer is 1; if it's already full, the response
+	// was delivered and there's no one to notify.
+	errMsg := ""
+	if c.err != nil {
+		errMsg = c.err.Error()
 	}
+	type pendingEntry struct {
+		id json.Number
+		ch chan<- Response
+	}
+	entries := make([]pendingEntry, 0, len(c.pending))
+	for id, ch := range c.pending {
+		entries = append(entries, pendingEntry{id: id, ch: ch})
+	}
+	c.pending = make(map[json.Number]chan<- Response)
 	c.mu.Unlock()
+
+	for _, e := range entries {
+		select {
+		case e.ch <- Response{Error: &Error{Message: errMsg}}:
+		default:
+		}
+	}
 }

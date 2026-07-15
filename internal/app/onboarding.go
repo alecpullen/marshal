@@ -44,6 +44,7 @@ const (
 type OnboardingModel struct {
 	state      onboardingState
 	workingDir string
+	cancelled  bool
 
 	// Step 1: Provider selection
 	providers     []string
@@ -101,6 +102,10 @@ func NewOnboardingModel(workingDir string) *OnboardingModel {
 	}
 }
 
+// Cancelled returns true when the user pressed Esc or Ctrl+C to exit the
+// onboarding wizard before completing all steps.
+func (m *OnboardingModel) Cancelled() bool { return m.cancelled }
+
 func (m *OnboardingModel) Init() tea.Cmd {
 	return textinput.Blink
 }
@@ -150,6 +155,7 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
+			m.cancelled = true
 			return m, tea.Quit
 
 		case "up":

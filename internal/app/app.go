@@ -75,7 +75,14 @@ type options struct {
 
 type Option func(*options)
 
-var shutdownKnowledgeTimeout = 5 * time.Second
+var (
+	shutdownKnowledgeTimeout = 5 * time.Second
+
+	// errOnboardingCancelled is returned by Run when the user exits the
+	// onboarding wizard before completing all steps. Callers can use
+	// errors.Is to distinguish cancellation from other errors.
+	errOnboardingCancelled = errors.New("onboarding cancelled")
+)
 
 func WithNow(now func() time.Time) Option {
 	return func(opts *options) {
@@ -666,6 +673,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		return err
 	}
 
+	var onboardingErr error
 	if !runOpts.skipOnboarding && flag.Lookup("test.v") == nil && !config.HasConfig(config.LoadOptions{WorkingDir: workingDir}) {
 		onboarding := NewOnboardingModel(workingDir)
 		p := tea.NewProgram(onboarding, tea.WithOutput(stdout), tea.WithContext(ctx))
@@ -673,8 +681,15 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 			return fmt.Errorf("onboarding failed: %w", err)
 		}
 		if onboarding.state != stateDone {
-			return nil
+			if onboarding.Cancelled() {
+				onboardingErr = errOnboardingCancelled
+			}
 		}
+	}
+	if errors.Is(onboardingErr, errOnboardingCancelled) {
+		slog.Default().Info("onboarding cancelled; using default config")
+	} else if onboardingErr != nil {
+		return onboardingErr
 	}
 
 	rt, err := StartRuntime(ctx, opts...)

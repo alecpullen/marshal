@@ -206,11 +206,13 @@ func (m Model) renderActivityStrip() string {
 // the input area and above the status line.
 func (m Model) renderHelpFooter() string {
 	hints := help.FooterHints{
-		Busy:            m.busy,
-		EditingCommand:  m.editingCommand,
-		ApprovalPending: m.state.PendingApproval() != nil,
-		QuestionPending: m.state.PendingQuestion() != nil,
-		PopupOpen:       m.activeCompletionPopup() != nil,
+		Busy:                 m.busy,
+		EditingCommand:       m.editingCommand,
+		ApprovalPending:      m.state.PendingApproval() != nil,
+		QuestionPending:      m.state.PendingQuestion() != nil,
+		PopupOpen:            m.activeCompletionPopup() != nil,
+		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
+		ThinkingVisible:      m.thinkingExpanded,
 	}
 	body := help.Footer(hints)
 	return lipgloss.NewStyle().

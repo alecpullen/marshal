@@ -108,6 +108,8 @@ type toolSet struct {
 	ssrfCheck     func(*url.URL) bool
 
 	guardrail func(command string) error
+
+	config config.Config
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -230,5 +232,6 @@ func newToolSet(opts Options) (*toolSet, error) {
 		webSearchURL:    opts.Config.Web.SearchURL,
 		webSearchKey:    opts.Config.Web.SearchKey,
 		ssrfCheck:       isPrivateURL,
+		config:          opts.Config,
 	}, nil
 }

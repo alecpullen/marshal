@@ -16,6 +16,9 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// repoIndexTool builds the repo.index tool. It honours the configured
+// Indexing.Ignore patterns to exclude files from indexing, and respects
+// .gitignore rules (SkipGitignore is false by default).
 func (t *toolSet) repoIndexTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.index",
@@ -28,7 +31,11 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			return registry.ToolResult{}, errors.New("database not configured for repo.index")
 		}
 
-		scanner := repo.NewScanner(repo.Config{Root: t.root})
+		scanner := repo.NewScanner(repo.Config{
+			Root:          t.root,
+			Ignore:        t.config.Indexing.Ignore,
+			SkipGitignore: false, // honour the user's .gitignore by default
+		})
 		files, err := scanner.Scan()
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("scan repo: %w", err)

@@ -107,8 +107,8 @@ func (db *DB) FindSymbols(projectID int64, name, kind string, limit int) ([]Symb
 			   WHERE project_id = ?`
 	args := []any{projectID}
 	if name != "" {
-		query += ` AND LOWER(name) LIKE ?`
-		args = append(args, "%"+strings.ToLower(name)+"%")
+		query += ` AND LOWER(name) LIKE ? ESCAPE '\'`
+		args = append(args, "%"+escapeLike(strings.ToLower(name))+"%")
 	}
 	if kind != "" {
 		query += ` AND kind = ?`

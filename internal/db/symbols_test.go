@@ -122,6 +122,42 @@ func TestFindSymbolsFiltersByNameAndKind(t *testing.T) {
 	}
 }
 
+func TestFindSymbolsEscapesWildcards(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+
+	if err := db.SaveSymbols(projectID, []Symbol{
+		{FilePath: "a.go", Kind: "function", Name: "foo_bar", Signature: "func foo_bar()", LineStart: 1, LineEnd: 1},
+		{FilePath: "b.go", Kind: "function", Name: "fooXbar", Signature: "func fooXbar()", LineStart: 1, LineEnd: 1},
+	}); err != nil {
+		t.Fatalf("SaveSymbols failed: %v", err)
+	}
+
+	// Without wildcard escaping, "_" matches any single character so both
+	// "foo_bar" and "fooXbar" would match the pattern "%foo_bar%". With
+	// escapeLike the underscore is escaped, so only "foo_bar" matches.
+	got, err := db.FindSymbols(projectID, "foo_bar", "", 10)
+	if err != nil {
+		t.Fatalf("FindSymbols failed: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 symbol matching literal 'foo_bar', got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "foo_bar" {
+		t.Errorf("expected foo_bar, got %q", got[0].Name)
+	}
+}
+
 func TestFindSymbolsLimitDefaultsAndClamps(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

@@ -119,18 +119,19 @@ func (db *DB) GetFileIndex(projectID int64) ([]FileIndex, error) {
 }
 
 // FilesMatchingBasename returns up to limit file paths for the given project
-// where the basename (e.g. "main.go") appears anywhere in the path. Results
+// where the basename (e.g. "main.go") matches at a path-separator boundary
+// (i.e. the basename appears after a `/` or at the start of the path). Results
 // are ordered with exact basename matches first, then by ascending path
 // length so the shortest candidate paths surface first.
 func (db *DB) FilesMatchingBasename(projectID int64, basename string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 5
 	}
-	pattern := "%" + basename + "%"
+	pattern := "%/" + escapeLike(basename)
 	rows, err := db.sqlDB.Query(
 		`SELECT path
 		 FROM files
-		 WHERE project_id = ? AND path LIKE ?
+		 WHERE project_id = ? AND path LIKE ? ESCAPE '\'
 		 ORDER BY
 		   CASE WHEN path = ? OR substr(path, length(path) - length(?) + 1) = ? THEN 0 ELSE 1 END,
 		   LENGTH(path)

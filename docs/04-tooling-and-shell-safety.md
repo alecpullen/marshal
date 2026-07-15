@@ -404,3 +404,11 @@ Every tool call should record:
 - `file.write_patch` now closes the TOCTOU window between patch validation and application: the apply loop re-stats the file and re-checks the ModTime against the fileTracker's recorded read time before writing. A concurrent modification is detected and the tool returns an error. New files are explicitly validated: a non-empty SEARCH block against a non-existent file is rejected (no silent empty-file creation).
 - `repo.search` no longer follows directory symlinks. Walk errors that were previously swallowed are now collected and surfaced in the tool summary so users can see permission-denied or unreachable paths.
 - `repo.Scanner` (the indexer) now explicitly skips symlinks with a documented policy. Workspaces that relied on symlinked `node_modules` or similar need to switch to bind mounts or hard links.
+
+## Release notes — 2026-07-15: A2 command classification
+
+- Shell command classification is now argv-aware via `policy.ClassifyCommand`. Patterns like `rm -r -f`, `rm -fr`, `git clean -fdx`, `git reset --hard`, and `chmod -R` / `chown -R` are detected regardless of flag ordering or short forms. The previous substring guardrails (`strings.Contains` for `rm -rf`, `sudo`, etc.) are retained as a per-stage safety net for pipelined commands like `echo hi | rm -rf /tmp`.
+- The TUI's "always allow" pattern is now the full argv (`git status`), not `git *`. This prevents `git ; rm -rf /` from being matched by an "always allow git" rule. Existing always-allow rules saved before this change will need to be re-saved; the TUI surfaces a one-time hint.
+- `shell.run` (native) and the container backend now invoke the child process directly with argv when the command is shell-free and not classified as `RiskDestructive`. Shell features (`|`, `&&`, `$(...)`, redirects, etc.) and destructive commands (`rm -rf` etc.) still route through `/bin/sh -lc`.
+- Slash commands accept shell-style quoted arguments via `shlex.Split`. `/plan "my idea"` now correctly passes `["my idea"]` to the command handler.
+- `RiskDestructive` is now assigned to genuinely destructive patterns and always requires explicit approval, even when other shell commands are auto-allowed. The `allow_destructive` config flag changes the displayed reason but not the approval requirement.

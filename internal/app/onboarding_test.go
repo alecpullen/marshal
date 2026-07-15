@@ -96,7 +96,7 @@ func newTestOnboardingModel() *OnboardingModel {
 	return m
 }
 
-func TestOnboardingNeverWritesRawKeyToProject(t *testing.T) {
+func TestInlineAPIKeyLivesInGlobalConfigOnly(t *testing.T) {
 	m := newTestOnboardingModel()
 	m.keyMode = keyModeInline
 	m.keySecret = "sk-deadbeef-no-underscore"
@@ -110,17 +110,27 @@ func TestOnboardingNeverWritesRawKeyToProject(t *testing.T) {
 	if err := m.saveConfig(); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, ".marshal", "config.toml"))
+
+	// Project config must NOT contain the raw key.
+	projectData, err := os.ReadFile(filepath.Join(dir, ".marshal", "config.toml"))
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatalf("read project config: %v", err)
 	}
-	if strings.Contains(string(data), "sk-deadbeef") {
-		t.Fatalf("raw key leaked into project config: %s", data)
+	if strings.Contains(string(projectData), "sk-deadbeef") {
+		t.Fatalf("raw key leaked into project config: %s", projectData)
 	}
-	if !strings.Contains(string(data), `api_key_env = "MARSHAL_GLOBAL_API_KEY"`) {
-		t.Fatalf("expected api_key_env reference, got: %s", data)
+	// Project config must NOT contain a [providers.<name>] block in inline
+	// mode — the global entry (with the real api_key) is preserved by the
+	// loader's whole-entry merge when the project file has no entry.
+	if strings.Contains(string(projectData), "[providers.openai]") {
+		t.Fatalf("project config must not contain [providers.openai] block in inline mode, got: %s", projectData)
 	}
-	// Verify the global config was written with the raw key and a header.
+	// Project config should have the explanatory comment instead.
+	if !strings.Contains(string(projectData), "Provider config (api_key) lives in the global config") {
+		t.Fatalf("expected explanatory comment in project config, got: %s", projectData)
+	}
+
+	// Global config must contain the raw key and a header.
 	globalData, err := os.ReadFile(m.globalConfigPath)
 	if err != nil {
 		t.Fatalf("read global config: %v", err)

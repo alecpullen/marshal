@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -329,6 +330,52 @@ func TestSaveAndGetToolCalls_SandboxMeta(t *testing.T) {
 	}
 	if got.Sandbox.MaxProcesses != event.Sandbox.MaxProcesses {
 		t.Errorf("expected MaxProcesses %d, got %d", event.Sandbox.MaxProcesses, got.Sandbox.MaxProcesses)
+	}
+}
+
+func TestSaveToolCallNormalizesFilesChanged(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+
+	sessionID := "session-normalize"
+	if err := db.CreateSession(sessionID, projectID, "normalize test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	raw := `a\b/c.go`
+	ev := registry.AuditEvent{
+		ToolName:      "shell.run",
+		FilesChanged:  []string{raw},
+		Timestamp:     time.Now().UTC(),
+		AgentRole:     "implementer",
+		Model:         "test-model",
+		Risk:          registry.RiskCommand,
+		Approval:      registry.ApprovalApproved,
+		ResultSummary: "test",
+	}
+	if err := db.SaveToolCall(sessionID, ev); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	rows, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].FilesChanged[0] != filepath.ToSlash(raw) {
+		t.Errorf("expected slash-normalized path, got %q", rows[0].FilesChanged[0])
 	}
 }
 

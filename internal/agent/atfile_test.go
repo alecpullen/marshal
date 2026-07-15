@@ -39,7 +39,7 @@ func TestExtractPinnedFilesFindsAndReadsKnownPaths(t *testing.T) {
 	}
 
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
-	pinned := extractPinnedFiles("look at @a.go and @b.go", state, projectID)
+	pinned := extractPinnedFiles("look at @a.go and @b.go", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 2 {
 		t.Fatalf("pinned = %d, want 2", len(pinned))
 	}
@@ -69,7 +69,7 @@ func TestExtractPinnedFilesIgnoresUnknownPaths(t *testing.T) {
 	}
 
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
-	pinned := extractPinnedFiles("@known.go @unknown.go @also-unknown.txt", state, projectID)
+	pinned := extractPinnedFiles("@known.go @unknown.go @also-unknown.txt", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 1 || pinned[0].Path != "known.go" {
 		t.Fatalf("pinned = %+v, want only [known.go]", pinned)
 	}
@@ -78,7 +78,7 @@ func TestExtractPinnedFilesIgnoresUnknownPaths(t *testing.T) {
 func TestExtractPinnedFilesNoTokensReturnsNil(t *testing.T) {
 	dir := t.TempDir()
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{})
-	if got := extractPinnedFiles("no at-refs here", state, 1); got != nil {
+	if got := extractPinnedFiles("no at-refs here", testRunnerFromState(state, 1), 1); got != nil {
 		t.Fatalf("pinned = %+v, want nil", got)
 	}
 }
@@ -101,7 +101,7 @@ func TestExtractPinnedFilesIgnoresAtInsideEmail(t *testing.T) {
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
 	// "user@example.com" is preceded by 'r' (not whitespace), so the
 	// @ in the email must not match. Only " @real.go" is a real trigger.
-	pinned := extractPinnedFiles("user@example.com and @real.go", state, projectID)
+	pinned := extractPinnedFiles("user@example.com and @real.go", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 1 || pinned[0].Path != "real.go" {
 		t.Fatalf("pinned = %+v, want only [real.go]", pinned)
 	}
@@ -121,7 +121,7 @@ func TestExtractPinnedFilesDeduplicates(t *testing.T) {
 		t.Fatalf("SaveFileIndex: %v", err)
 	}
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
-	pinned := extractPinnedFiles("@x.go @x.go @x.go", state, projectID)
+	pinned := extractPinnedFiles("@x.go @x.go @x.go", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 1 {
 		t.Fatalf("pinned = %d, want 1 (deduped)", len(pinned))
 	}
@@ -144,7 +144,7 @@ func TestExtractPinnedFilesRejectsDotDot(t *testing.T) {
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
 	// Even if "../etc/passwd" is in the file index, safeWorkspacePath
 	// must reject it because it escapes the working directory.
-	pinned := extractPinnedFiles("see @../etc/passwd", state, projectID)
+	pinned := extractPinnedFiles("see @../etc/passwd", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 0 {
 		t.Errorf("got %d snippets, want 0 (path traversal must be rejected)", len(pinned))
 	}
@@ -169,7 +169,7 @@ func TestExtractPinnedFilesRejectsShellMetachars(t *testing.T) {
 	// "@foo" and captures "foo". Since "foo.go" (not "foo") is in the
 	// index, the result is 0 — the shell metacharacters correctly
 	// broke the path token and the partial match "foo" is not indexed.
-	pinned := extractPinnedFiles("try @foo;rm -rf /", state, projectID)
+	pinned := extractPinnedFiles("try @foo;rm -rf /", testRunnerFromState(state, projectID), projectID)
 	// No path containing shell metacharacters should ever be read.
 	for _, snip := range pinned {
 		if strings.ContainsAny(snip.Path, ";|&`$(){}[]<>!") {
@@ -192,7 +192,7 @@ func TestExtractPinnedFilesAcceptsValidPath(t *testing.T) {
 		t.Fatalf("SaveFileIndex: %v", err)
 	}
 	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
-	pinned := extractPinnedFiles("read @a.go", state, projectID)
+	pinned := extractPinnedFiles("read @a.go", testRunnerFromState(state, projectID), projectID)
 	if len(pinned) != 1 || pinned[0].Path != "a.go" {
 		t.Fatalf("pinned = %+v, want [a.go]", pinned)
 	}
@@ -315,6 +315,48 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 	pack := state.ContextPack()
 	if len(pack.Pinned) != 1 || pack.Pinned[0].Path != "steered.go" {
 		t.Fatalf("pack.Pinned = %+v, want steered.go", pack.Pinned)
+	}
+}
+
+// testRunnerFromState constructs a minimal *Runner suitable for testing
+// extractPinnedFiles. It has no Provider, Registry, or Policy — only the
+// fields that extractPinnedFiles reads (State, ProjectID, fileIndexCache).
+func testRunnerFromState(state *session.State, projectID int64) *Runner {
+	return &Runner{
+		State:          state,
+		ProjectID:      projectID,
+		Now:            time.Now,
+	}
+}
+
+func TestFileIndexCache(t *testing.T) {
+	var cache fileIndexCache
+
+	// Initially empty.
+	if _, ok := cache.get(1); ok {
+		t.Fatal("cache should be empty initially")
+	}
+
+	// Set and get.
+	paths := map[string]struct{}{"a.go": {}, "b.go": {}}
+	cache.set(1, paths)
+	got, ok := cache.get(1)
+	if !ok {
+		t.Fatal("cache should have data after set")
+	}
+	if _, has := got["a.go"]; !has {
+		t.Fatal("cache missing a.go")
+	}
+
+	// Different project ID misses.
+	if _, ok := cache.get(2); ok {
+		t.Fatal("cache should miss for different project ID")
+	}
+
+	// Invalidate.
+	cache.invalidate()
+	if _, ok := cache.get(1); ok {
+		t.Fatal("cache should be empty after invalidate")
 	}
 }
 

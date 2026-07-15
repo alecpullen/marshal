@@ -18,6 +18,7 @@ type DB struct {
 	sqlDB  *sql.DB
 	readDB *sql.DB
 	path   string
+	locks  *ProjectLocks
 }
 
 // Open opens a SQLite database with WAL mode, a single writer connection,

@@ -23,6 +23,9 @@ type Symbol struct {
 // existing symbols for the project and inserts the provided rows. Callers
 // are expected to pass the complete current symbol set for the project.
 func (db *DB) SaveSymbols(projectID int64, symbols []Symbol) error {
+	unlock := db.locks.Lock(projectID)
+	defer unlock()
+
 	tx, err := db.sqlDB.Begin()
 	if err != nil {
 		return fmt.Errorf("begin save symbols transaction: %w", err)

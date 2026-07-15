@@ -31,7 +31,7 @@ func OpenWithPool(path string, readPoolSize int) (*DB, error) {
 		return nil, fmt.Errorf("set read busy_timeout: %w", err)
 	}
 
-	return &DB{sqlDB: sqlDB, readDB: readDB, path: path}, nil
+	return &DB{sqlDB: sqlDB, readDB: readDB, path: path, locks: NewProjectLocks()}, nil
 }
 
 // openOneConnection opens a single *sql.DB pinned to one connection and runs

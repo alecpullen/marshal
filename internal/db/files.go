@@ -25,6 +25,9 @@ type FileIndex struct {
 // knowledge pass (internal/knowledge) fills it back in later via
 // UpdateFileSummary.
 func (db *DB) SaveFileIndex(projectID int64, files []FileIndex) error {
+	unlock := db.locks.Lock(projectID)
+	defer unlock()
+
 	tx, err := db.sqlDB.Begin()
 	if err != nil {
 		return fmt.Errorf("begin save file index transaction: %w", err)

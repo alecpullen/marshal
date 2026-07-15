@@ -53,6 +53,15 @@ type outboundResult struct {
 	err      error
 }
 
+// ServerOption configures a Server.
+type ServerOption func(*Server)
+
+// WithLogger sets the logger on a Server. When nil (or unset), the
+// server uses slog.Default().
+func WithLogger(l *slog.Logger) ServerOption {
+	return func(s *Server) { s.Logger = l }
+}
+
 // Server is a dedicated asynchronous JSON-RPC frame router that keeps
 // the transport reader live while handlers execute. Inbound requests
 // are classified and dispatched to handler goroutines so that the
@@ -61,6 +70,8 @@ type outboundResult struct {
 // Request caller. When the transport closes or the parent context
 // cancels, pending handlers are waited on with a bounded timeout.
 type Server struct {
+	Logger *slog.Logger // nil → slog.Default()
+
 	in       io.Reader
 	out      *json.Encoder
 	handlers map[string]Handler
@@ -105,8 +116,8 @@ type Server struct {
 	fatalErr chan error
 }
 
-func NewServer(stdin io.Reader, stdout io.Writer) *Server {
-	return &Server{
+func NewServer(stdin io.Reader, stdout io.Writer, opts ...ServerOption) *Server {
+	s := &Server{
 		in:                     stdin,
 		out:                    json.NewEncoder(stdout),
 		handlers:               map[string]Handler{},
@@ -114,6 +125,10 @@ func NewServer(stdin io.Reader, stdout io.Writer) *Server {
 		outbound:               map[string]chan outboundResult{},
 		handlerShutdownTimeout: defaultHandlerShutdownTimeout,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *Server) Handle(method string, fn Handler) {
@@ -542,10 +557,20 @@ func unquoteJSONString(s string) string {
 	return s
 }
 
+// log returns the server's logger, defaulting to slog.Default() when
+// the Logger field is nil.
+func (s *Server) log() *slog.Logger {
+	if s.Logger == nil {
+		return slog.Default()
+	}
+	return s.Logger
+}
+
 func (s *Server) dispatch(ctx context.Context, req Request) (result any, err error) {
+	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Default().Error("acp: handler panicked",
+			s.log().Error("acp: handler panicked",
 				"method", req.Method,
 				"panic", r,
 			)
@@ -555,6 +580,12 @@ func (s *Server) dispatch(ctx context.Context, req Request) (result any, err err
 				Message: "internal error: handler panicked",
 			}
 		}
+		s.log().Info("acp dispatch",
+			"method", req.Method,
+			"id", req.ID,
+			"duration_ms", time.Since(start).Milliseconds(),
+			"error", err,
+		)
 	}()
 	handler, ok := s.handlers[req.Method]
 	if !ok {

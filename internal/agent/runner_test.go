@@ -481,6 +481,42 @@ func TestRunNativeUnknownToolAnswersToolCallIDWithError(t *testing.T) {
 	}
 }
 
+func TestNativeQuestionAskDeclined(t *testing.T) {
+	state := newTestState(t)
+	p := &scriptedProvider{
+		responses: []string{"Need to ask.", "Done."},
+		toolCalls: [][]schema.ToolCall{
+			{{ID: "call_q", Name: "question.ask", Args: json.RawMessage(`{"questions":[{"question":"Keep legacy?"}]}`)}},
+			nil,
+		},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassQuestion))
+
+	// Simulate what the TUI actually does: send AnswerUnanswered when user declines.
+	_ = answerPendingQuestion(state, session.AnswerUnanswered)
+
+	task, err := r.RunTask(context.Background(), "ask something")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.Summary != "Done." {
+		t.Fatalf("Summary = %q, want Done.", task.Summary)
+	}
+	// Verify the runner used the correct sentinel constant by checking state messages.
+	foundUnanswered := false
+	for _, a := range state.Messages() {
+		if strings.Contains(a.Content, "Unanswered") {
+			foundUnanswered = true
+			break
+		}
+	}
+	if !foundUnanswered {
+		t.Fatal("expected state to contain AnswerUnanswered sentinel in content after declined question.ask")
+	}
+}
+
 func TestBuildToolDefinitionsOmitsAskUserForSwarmRoles(t *testing.T) {
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{

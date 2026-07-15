@@ -659,38 +659,56 @@ func TestSessionLoadUsesExistingSessionOption(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	ctx := context.Background()
-	now := time.Unix(100, 0)
-
-	// First runtime: create a session and persist messages.
-	rt1, err := app.StartRuntime(ctx, app.WithWorkingDir(tmp), app.WithSkipOnboarding(true),
-		app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
-		app.WithNow(func() time.Time { return now }),
-	)
+	// Pre-seed the on-disk DB with a project, session, and two messages.
+	dbPath := filepath.Join(tmp, ".marshal", "marshal.db")
+	d, err := db.Open(dbPath)
 	if err != nil {
-		t.Fatalf("first StartRuntime: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
-	rt1.State.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	rt1.State.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
-	expectedMessages := rt1.State.Messages()
-	sessionID := rt1.SessionID
-	rt1.Close(ctx)
+	if err := d.Migrate(); err != nil {
+		d.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := d.GetOrCreateProject(tmp, "load-test")
+	if err != nil {
+		d.Close()
+		t.Fatalf("create project: %v", err)
+	}
+	sessionID := "sess_load_test"
+	now := time.Unix(100, 0)
+	if err := d.CreateSession(sessionID, projectID, "", now); err != nil {
+		d.Close()
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := d.SaveMessage(sessionID, "user", "hello", "plain", now, "", 0, false, 0); err != nil {
+		d.Close()
+		t.Fatalf("save msg1: %v", err)
+	}
+	if _, err := d.SaveMessage(sessionID, "assistant", "hi there", "plain", now.Add(time.Second), "", 0, false, 0); err != nil {
+		d.Close()
+		t.Fatalf("save msg2: %v", err)
+	}
+	d.Close()
 
 	// Snapshot DB counts.
 	initialProjects, initialSessions, initialMessages := countRows(t, tmp)
 
-	// Build a SessionManager that wraps real StartRuntime.
-	m := NewSessionManager(SessionManagerConfig{
-		StartRuntime: app.StartRuntime,
-		CloseRuntime: func(ctx context.Context, rt *app.Runtime) error { return rt.Close(ctx) },
-		Notify:       func(method string, params any) error { return nil },
-		Options: []app.Option{
-			app.WithSkipOnboarding(true),
-			app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
-		},
-	})
-	m.SetTurnCanceller(func(ctx context.Context, id string) error { return nil })
+	// Build a Runtime with the expected state already populated.
+	st := session.New(config.Default(), tmp, now, session.Persistence{})
+	st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	st.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
+	expectedMessages := st.Messages()
+	rt := &app.Runtime{SessionID: sessionID, State: st}
 
+	// Wire the SessionManager with the fake start.
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeStartFixed(rt),
+		CloseRuntime: noopClose(),
+		Notify:       func(method string, params any) error { return nil },
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	ctx := context.Background()
 	res, err := m.Load(ctx, json.RawMessage(`{"cwd":"`+tmp+`","sessionId":"`+sessionID+`","mcpServers":[]}`))
 	if err != nil {
 		t.Fatalf("manager Load: %v", err)
@@ -987,8 +1005,8 @@ func TestValidateLifecycleParamsRejectsSymlinkDuplicate(t *testing.T) {
 		addDirs = append(addDirs, link)
 	}
 	params := sessionParams{
-		Cwd:                  real,
-		MCPServers:           &[]json.RawMessage{},
+		Cwd:                   real,
+		MCPServers:            &[]json.RawMessage{},
 		AdditionalDirectories: addDirs,
 	}
 	err := validateLifecycleParams(&params, true)

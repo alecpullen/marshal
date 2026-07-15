@@ -31,7 +31,7 @@ const (
 type keyModeKind int
 
 const (
-	keyModeUnset   keyModeKind = iota
+	keyModeUnset keyModeKind = iota
 	keyModeEnvName
 	keyModeInline
 )
@@ -62,6 +62,10 @@ type OnboardingModel struct {
 	// API key mode (F-UIUX-137)
 	keyMode   keyModeKind // keyModeEnvName | keyModeInline | keyModeUnset
 	keySecret string      // when keyMode == inline, the value the user typed
+
+	// globalConfigPath overrides the default global config path for testing.
+	// If empty, defaults to ~/.config/marshal/config.toml.
+	globalConfigPath string
 
 	// Ollama dynamic models
 	ollamaModels []string
@@ -211,7 +215,7 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.SetValue("")
 				if m.keyMode == keyModeEnvName {
 					m.textInput.Placeholder = "Env var name (e.g. OPENAI_API_KEY)"
-					m.textInput.EchoMode = textinput.EchoNormal
+					m.textInput.EchoMode = textinput.EchoPassword
 				} else {
 					m.textInput.Placeholder = "Paste API key (masked)"
 					m.textInput.EchoMode = textinput.EchoPassword
@@ -306,7 +310,7 @@ func (m *OnboardingModel) saveConfig() error {
 			tomlContent.WriteString(fmt.Sprintf("api_key_env = %q\n\n", m.apiKey))
 		case keyModeInline:
 			// Persist the raw key to the GLOBAL config only.
-			if err := writeGlobalProviderAPIKey(providerKey, m.keySecret); err != nil {
+			if err := writeGlobalProviderAPIKey(m.globalConfigPath, providerKey, m.keySecret); err != nil {
 				return err
 			}
 			// Project config records only the env-var-style reference.
@@ -338,16 +342,19 @@ func (m *OnboardingModel) saveConfig() error {
 }
 
 // writeGlobalProviderAPIKey writes the raw API key to the user's global
-// config file (~/.config/marshal/config.toml) under [providers.<name>].api_key.
+// config file under [providers.<name>].api_key.
+// If path is empty, it defaults to ~/.config/marshal/config.toml.
 // If the file does not exist, it creates it with a minimal header.
 // TODO: The constant MARSHAL_GLOBAL_API_KEY should be documented in
 // docs/03-config-and-policy.md (out of scope for this plan).
-func writeGlobalProviderAPIKey(providerName, key string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("find home dir: %w", err)
+func writeGlobalProviderAPIKey(path, providerName, key string) error {
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("find home dir: %w", err)
+		}
+		path = filepath.Join(home, ".config", "marshal", "config.toml")
 	}
-	path := filepath.Join(home, ".config", "marshal", "config.toml")
 	return config.SaveUserConfigProviderAPIKey(path, providerName, key)
 }
 

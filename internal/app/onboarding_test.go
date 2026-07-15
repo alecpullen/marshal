@@ -92,6 +92,10 @@ func TestOnboardingNeverWritesRawKeyToProject(t *testing.T) {
 	m.keySecret = "sk-deadbeef-no-underscore"
 	dir := t.TempDir()
 	m.workingDir = dir
+	// Point the global config to a temp file so the test never touches
+	// the real ~/.config/marshal/config.toml.
+	globalDir := t.TempDir()
+	m.globalConfigPath = filepath.Join(globalDir, "config.toml")
 
 	if err := m.saveConfig(); err != nil {
 		t.Fatalf("saveConfig: %v", err)
@@ -105,6 +109,17 @@ func TestOnboardingNeverWritesRawKeyToProject(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `api_key_env = "MARSHAL_GLOBAL_API_KEY"`) {
 		t.Fatalf("expected api_key_env reference, got: %s", data)
+	}
+	// Verify the global config was written with the raw key and a header.
+	globalData, err := os.ReadFile(m.globalConfigPath)
+	if err != nil {
+		t.Fatalf("read global config: %v", err)
+	}
+	if !strings.Contains(string(globalData), "sk-deadbeef") {
+		t.Fatalf("raw key not found in global config: %s", globalData)
+	}
+	if !strings.Contains(string(globalData), "# Marshal global configuration") {
+		t.Fatalf("expected header in global config, got: %s", globalData)
 	}
 }
 

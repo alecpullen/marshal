@@ -402,6 +402,82 @@ func TestContainer_AvPathForSimpleCommands_Docker(t *testing.T) {
 	}
 }
 
+// TestContainerBuildArgs_RoutesDestructiveThroughShell verifies that
+// destructive commands (e.g. rm -rf) are routed through /bin/sh -lc even
+// when the command contains no shell metacharacters. This ensures shell
+// features are available for destructive operations explicitly approved
+// by the user.
+func TestContainerBuildArgs_RoutesDestructiveThroughShell(t *testing.T) {
+	c := &Container{
+		cfg:         Config{},
+		runtime:     "docker",
+		runtimePath: "/usr/bin/docker",
+		envDenySet:  make(map[string]bool),
+	}
+
+	// rm -rf /tmp/x is shell-free (no metacharacters) but destructive.
+	args := c.buildArgs("rm -rf /tmp/x", "alpine:latest", "/workspace")
+
+	// Verify /bin/sh -lc appears in the args (shell path, not argv path).
+	foundShell := false
+	for i, a := range args {
+		if a == "/bin/sh" && i+1 < len(args) && args[i+1] == "-lc" {
+			foundShell = true
+			break
+		}
+	}
+	if !foundShell {
+		t.Errorf("expected /bin/sh -lc in args for destructive command, got %v", args)
+	}
+
+	// Verify the command string is present after -lc.
+	cmdFound := false
+	for i, a := range args {
+		if a == "-lc" && i+1 < len(args) && args[i+1] == "rm -rf /tmp/x" {
+			cmdFound = true
+			break
+		}
+	}
+	if !cmdFound {
+		t.Errorf("expected command after -lc, got %v", args)
+	}
+}
+
+// TestContainerBuildArgs_UsesArgvForNonDestructiveShellFree verifies that
+// non-destructive shell-free commands still use the argv path (not /bin/sh -lc).
+// This is the existing behavior — this test guards against regression.
+func TestContainerBuildArgs_UsesArgvForNonDestructiveShellFree(t *testing.T) {
+	c := &Container{
+		cfg:         Config{},
+		runtime:     "docker",
+		runtimePath: "/usr/bin/docker",
+		envDenySet:  make(map[string]bool),
+	}
+
+	// echo hello is shell-free and non-destructive — should use argv path.
+	args := c.buildArgs("echo hello", "alpine:latest", "/workspace")
+
+	// Verify /bin/sh does NOT appear in the args (argv path).
+	for _, a := range args {
+		if a == "/bin/sh" {
+			t.Errorf("unexpected /bin/sh in args for non-destructive shell-free command, got %v", args)
+			break
+		}
+	}
+
+	// Verify the command args appear directly (echo hello).
+	foundEcho := false
+	for _, a := range args {
+		if a == "echo" {
+			foundEcho = true
+			break
+		}
+	}
+	if !foundEcho {
+		t.Errorf("expected 'echo' in argv path args, got %v", args)
+	}
+}
+
 // TestContainer_AvPathForSimpleCommands verifies that shell-free commands
 // are executed via the argv path (not /bin/sh -lc).  It uses the fake
 // runtime, which only succeeds if its argv-execution path is hit for

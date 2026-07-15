@@ -3,9 +3,11 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestClientCall(t *testing.T) {
@@ -73,6 +75,63 @@ func TestClient_BuildEnv_StripsSecrets(t *testing.T) {
 	}
 	if !foundPATH {
 		t.Error("MCP child env missing PATH from allowlist")
+	}
+}
+
+// TestCallReceivesQuotedStringID exercises F-BUG-47: an MCP server that
+// echoes the request id as a JSON string must still resolve the pending
+// response. Pre-fix code dropped the response because the pending map
+// was keyed by int64 but the response id unmarshaled as a string.
+func TestCallReceivesQuotedStringID(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+
+	c := NewClient("test", "ignored", nil, nil)
+	c.stdin = stdinW
+	c.stdout = stdoutR
+	c.cmd = nil
+
+	// Start readLoop in the background.
+	c.wg.Add(1)
+	go c.readLoop()
+
+	// Server goroutine: reads the request from stdin, echoes back a
+	// JSON-RPC response whose "id" is a JSON string (quoted).
+	serverErr := make(chan error, 1)
+	go func() {
+		defer stdinR.Close()
+		defer stdoutW.Close()
+
+		var req Request
+		if err := json.NewDecoder(stdinR).Decode(&req); err != nil {
+			serverErr <- fmt.Errorf("server decode: %w", err)
+			return
+		}
+
+		// Build a response with the id as a JSON string.
+		rawID := fmt.Sprintf("%v", req.ID)
+		jsonResp := fmt.Sprintf(`{"jsonrpc":"2.0","id":"%s","result":%q}`+"\n",
+			rawID, "ok")
+		if _, err := io.WriteString(stdoutW, jsonResp); err != nil {
+			serverErr <- fmt.Errorf("server write: %w", err)
+			return
+		}
+		serverErr <- nil
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var result json.RawMessage
+	if err := c.Call(ctx, "ping", nil, &result); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if string(result) != `"ok"` {
+		t.Errorf("unexpected result: %s", string(result))
+	}
+
+	if srvErr := <-serverErr; srvErr != nil {
+		t.Errorf("server error: %v", srvErr)
 	}
 }
 

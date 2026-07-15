@@ -389,3 +389,26 @@ func TestPinFilesSkipsEmptyContent(t *testing.T) {
 		t.Fatalf("sections len = %d, want 0 (empty content should be skipped)", len(pack.Sections))
 	}
 }
+
+func TestTrimSectionContentHelper(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+		ok   bool
+	}{
+		{"empty", "", "", false},
+		{"whitespace", "   \n\t  ", "", false},
+		{"plain", "hello", "hello", true},
+		{"padded", "  hello  \n", "hello", true},
+		{"internal newline", "hello\nworld", "hello\nworld", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := trimSectionContent(tc.in)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("trimSectionContent(%q) = (%q, %v), want (%q, %v)", tc.in, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}

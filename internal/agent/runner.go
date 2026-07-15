@@ -1478,7 +1478,7 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 	parts := []string{"User answers:"}
 	allUnanswered := true
 	for _, a := range answers {
-		if a.Answer != "Unanswered" {
+		if a.Answer != session.AnswerUnanswered {
 			allUnanswered = false
 		}
 		parts = append(parts, fmt.Sprintf("- %q: %q", a.Question, a.Answer))

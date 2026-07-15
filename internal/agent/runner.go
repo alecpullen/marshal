@@ -1280,6 +1280,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	// hook from thrashing the tool budget.
 	var approval registry.ApprovalState
 	var lastHookOut hooks.Output
+	var originalApprovedArgs json.RawMessage
+	var toolWasRewritten bool
 	for rewriteCount := 0; ; rewriteCount++ {
 		if rewriteCount > 1 {
 			r.countToolCall(true, false)
@@ -1310,6 +1312,10 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		normalizedArgs = policyResult.NormalizedArgs
 		approval = policyResult.Approval
 
+		// Capture the user-approved args before any hook rewrite so the
+		// audit event can record what the user approved vs what was
+		// actually executed after a rewrite.
+		preHookArgs := args
 		rewrittenArgs, hookOut, hookErr := r.runPreToolUseHook(ctx, toolName, args)
 		lastHookOut = hookOut
 		if hookErr != nil {
@@ -1330,6 +1336,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			return nil, fmt.Errorf("halted by pre_tool_use hook: %s", hookOut.Reason)
 		}
 		if len(hookOut.Rewrite) > 0 {
+			originalApprovedArgs = preHookArgs
+			toolWasRewritten = true
 			args = rewrittenArgs
 			continue
 		}
@@ -1374,6 +1382,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if execErr != nil {
 		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
 		event.Hooks = hookAuditMetadata(lastHookOut)
+		event.OriginalArgs = originalApprovedArgs
+		event.Rewritten = toolWasRewritten
 		r.State.LogToolCall(event)
 		r.trackerMu.Lock()
 		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()))
@@ -1391,6 +1401,8 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	}
 	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)
 	event.Hooks = hookAuditMetadata(lastHookOut)
+	event.OriginalArgs = originalApprovedArgs
+	event.Rewritten = toolWasRewritten
 	r.State.LogToolCall(event)
 
 	msg := r.buildToolResultMessage(toolName, summarized, toolCallID)

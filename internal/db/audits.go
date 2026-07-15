@@ -62,10 +62,19 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		limitsJSON = s
 	}
 
+	var originalArgsJSON any
+	if len(event.OriginalArgs) > 0 {
+		originalArgsJSON = string(event.OriginalArgs)
+	}
+	rewritten := 0
+	if event.Rewritten {
+		rewritten = 1
+	}
+
 	_, err = db.exec(
 		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
-		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json, original_args_json, rewritten)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID,
 		event.AgentRole,
 		event.Model,
@@ -84,6 +93,8 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		killedVal,
 		durVal,
 		string(hooksJSON),
+		originalArgsJSON,
+		rewritten,
 	)
 	if err != nil {
 		return fmt.Errorf("save tool call: %w", err)
@@ -102,7 +113,7 @@ func boolToInt(b bool) int64 {
 func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 	rows, err := db.sqlDB.Query(
 		`SELECT agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
-		        sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json
+		        sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json, original_args_json, rewritten
 		 FROM tool_calls
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,
@@ -129,8 +140,10 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		var sbKilled sql.NullString
 		var durMS sql.NullInt64
 		var hooksJSON sql.NullString
+		var origArgs sql.NullString
+		var rewritten sql.NullInt64
 		if err := rows.Scan(&e.AgentRole, &e.Model, &e.ToolName, &args, &e.ResultSummary, &risk, &approval, &exitCode, &filesChanged, &errorString, &created,
-			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS, &hooksJSON); err != nil {
+			&sbBackend, &sbNetwork, &sbLimits, &sbKilled, &durMS, &hooksJSON, &origArgs, &rewritten); err != nil {
 			return nil, fmt.Errorf("scan tool call row: %w", err)
 		}
 		e.Args = []byte(args)
@@ -170,6 +183,12 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 			if err := json.Unmarshal([]byte(hooksJSON.String), &e.Hooks); err != nil {
 				return nil, fmt.Errorf("unmarshal hooks: %w", err)
 			}
+		}
+		if origArgs.Valid && origArgs.String != "" {
+			e.OriginalArgs = json.RawMessage(origArgs.String)
+		}
+		if rewritten.Valid {
+			e.Rewritten = rewritten.Int64 == 1
 		}
 		if sbLimits.Valid && sbLimits.String != "" {
 			// Parse the JSON blob the SandboxMeta.LimitsJSON writer

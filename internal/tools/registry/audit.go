@@ -28,6 +28,12 @@ type AuditEvent struct {
 	Error           string
 	Sandbox         SandboxMeta
 	Hooks           []HookMetadata
+	// OriginalArgs holds the user-approved args before any pre_tool_use hook
+	// rewrite. Nil when no rewrite occurred.
+	OriginalArgs json.RawMessage
+	// Rewritten is true when a pre_tool_use hook rewrote the tool arguments
+	// after user approval.
+	Rewritten bool
 }
 
 // HookMetadata captures the per-tool audit trail for F20 lifecycle hooks.

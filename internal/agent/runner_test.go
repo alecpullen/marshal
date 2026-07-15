@@ -3467,6 +3467,110 @@ func (f fakeHookRunner) RunTurnEnd(ctx context.Context, in hooks.TurnEndInput) (
 	return f.turnOut, nil
 }
 
+// onceRewriteHookRunner rewrites args exactly once, then passes through
+// on subsequent calls. Used by TestAuditEventRecordsOriginalArgs.
+type onceRewriteHookRunner struct {
+	hasRewritten bool
+}
+
+func (r *onceRewriteHookRunner) RunPreToolUse(ctx context.Context, in hooks.PreToolUseInput) (hooks.Output, error) {
+	if !r.hasRewritten {
+		r.hasRewritten = true
+		return hooks.Output{Rewrite: json.RawMessage(`{"command":"git --no-pager log"}`)}, nil
+	}
+	return hooks.Output{}, nil
+}
+
+func (r *onceRewriteHookRunner) RunTurnEnd(ctx context.Context, in hooks.TurnEndInput) (hooks.Output, error) {
+	return hooks.Output{}, nil
+}
+
+func TestAuditEventRecordsOriginalArgs(t *testing.T) {
+	// Simulate a pre_tool_use hook rewriting "git status" to
+	// "git --no-pager log". "git status" is auto-approved by the
+	// allow list, so no first approval is needed. After the rewrite
+	// the user is re-prompted to approve "git --no-pager log".
+	// Verify the audit event preserves the original approved args.
+	reg := registry.New()
+	executed := false
+	if err := reg.Register(registry.Tool{
+		Name: "shell.run", Risk: registry.RiskCommand,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executed = true
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Hook rewrites once, then stops on subsequent calls.
+	hook := &onceRewriteHookRunner{}
+	p := &scriptedProvider{responses: []string{
+		`{"rationale":"r","action":{"type":"tool_call","tool":"shell.run","args":{"command":"git status"}}}`,
+		`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
+	}}
+	cfg := config.Default()
+	pol := policy.NewEngine(&cfg, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.HookRunner = hook
+	runner.SetForceClass(string(ClassQuestion))
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- runner.Run(context.Background(), "check status")
+	}()
+
+	// "git status" is auto-approved (allow list). The hook rewrites it
+	// to "git --no-pager log", which requires approval. Wait for that
+	// single approval dialog.
+	var tc *session.PendingToolCall
+	deadline := time.After(5 * time.Second)
+	for tc == nil {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for approval after rewrite")
+		default:
+			tc = state.PendingApproval()
+		}
+	}
+	tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Run to finish")
+	}
+
+	if !executed {
+		t.Fatal("tool was not executed")
+	}
+
+	log := state.AuditLog()
+	// Find the execution event (the last successful shell.run event).
+	var execEvent *registry.AuditEvent
+	for i := len(log) - 1; i >= 0; i-- {
+		if log[i].Error == "" && log[i].ToolName == "shell.run" {
+			execEvent = &log[i]
+			break
+		}
+	}
+	if execEvent == nil {
+		t.Fatal("no successful shell.run audit event found")
+	}
+	if !execEvent.Rewritten {
+		t.Fatal("expected Rewritten=true on the audit event")
+	}
+	if execEvent.OriginalArgs == nil {
+		t.Fatal("expected OriginalArgs to be set")
+	}
+	if !strings.Contains(string(execEvent.OriginalArgs), "git status") {
+		t.Fatalf("OriginalArgs = %s, want to contain 'git status'", string(execEvent.OriginalArgs))
+	}
+}
+
 func TestPreToolUseHookBlocksPatch(t *testing.T) {
 	executed := false
 	reg := registry.New()

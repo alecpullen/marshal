@@ -2394,3 +2394,9 @@ finding and source plan.
 | Finding | Status | Notes |
 |---|---|---|
 | F-XCUT-188 (residual) | RESOLVED | `session.PendingToolCall.Respond` and `PendingQuestion.Respond` use `sync.Once` to send + close the response channel exactly once. Parent `handleApproval`/`handleQuestion` call `tc.Respond(...)` with a `state.PendingApproval() == tc` identity guard. Sub-form `Update` is pure (no side effects). Complements F3 Task 4. 4 new tests. |
+
+### Batch 24 (G2 — reload atomicity): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-XCUT-184 | RESOLVED | `reloadAgentRuntime` dry-builds the runner from a copy of the new config before mutating `state.Config`. On failure the prior config and runner are preserved and a TUI footer message is shown. New test `TestReloadAgentRuntimeRollsBackOnFailure`. |

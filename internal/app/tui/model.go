@@ -1554,7 +1554,12 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
-	parts := strings.Fields(raw)
+	parts, err := shlex.Split(raw)
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, "Invalid command syntax.", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
 	if len(parts) == 0 {
 		return m, nil
 	}

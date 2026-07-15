@@ -2474,6 +2474,41 @@ func TestResponseFormatResetsAcrossRunTaskCalls(t *testing.T) {
 	}
 }
 
+// TestRunnerSequentialReuse verifies that the same *Runner can be called
+// with RunTask twice in sequence (different goals, different ForceClass
+// values) and both calls complete successfully.
+func TestRunnerSequentialReuse(t *testing.T) {
+	p := &scriptedProvider{
+		capabilities: schema.ProviderCapabilities{JSONMode: true},
+		responses: []string{
+			// First RunTask
+			`{"rationale":"first","action":{"type":"final","content":"first done"}}`,
+			// Second RunTask
+			`{"rationale":"second","action":{"type":"final","content":"second done"}}`,
+		},
+	}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.MaxToolIterations = 5
+	r.MaxRetries = 0
+
+	r.SetForceClass("question")
+	if _, err := r.RunTask(context.Background(), "first goal"); err != nil {
+		t.Fatalf("first RunTask err = %v", err)
+	}
+
+	r.SetForceClass("edit")
+	if _, err := r.RunTask(context.Background(), "second goal"); err != nil {
+		t.Fatalf("second RunTask err = %v", err)
+	}
+
+	// Both completed without error — the second call did not inherit
+	// per-run state from the first.
+	if len(p.requests) < 2 {
+		t.Fatalf("expected at least 2 chat requests, got %d", len(p.requests))
+	}
+}
+
 func TestPersistentMalformedOutputSalvagesWhenWorkExists(t *testing.T) {
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{

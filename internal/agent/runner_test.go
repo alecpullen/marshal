@@ -618,6 +618,38 @@ func TestNativeQuestionAskCountsAgainstIterationBudget(t *testing.T) {
 	_ = task
 }
 
+func TestRequestApprovalTimeout(t *testing.T) {
+	state := newTestState(t)
+	r := NewRunner(&scriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.RequestTimeout = 10 * time.Millisecond
+
+	ctx := context.Background()
+	// Tool that will never get a response — the channel has a buffer of 1 but
+	// nobody sends on it. The timeout arm should fire.
+	_, _, err := r.requestApproval(ctx, registry.Tool{Name: "test", Risk: registry.RiskReadOnly, Description: "test"}, "test", nil, map[string]interface{}{}, "test reason")
+	if !errors.Is(err, ErrRequestTimedOut) {
+		t.Fatalf("requestApproval err = %v, want ErrRequestTimedOut", err)
+	}
+	if state.PendingApproval() != nil {
+		t.Fatal("PendingApproval should be nil after timeout")
+	}
+}
+
+func TestRequestQuestionsTimeout(t *testing.T) {
+	state := newTestState(t)
+	r := NewRunner(&scriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.RequestTimeout = 10 * time.Millisecond
+
+	ctx := context.Background()
+	_, err := r.requestQuestions(ctx, []session.Question{{Question: "Q?"}})
+	if !errors.Is(err, ErrRequestTimedOut) {
+		t.Fatalf("requestQuestions err = %v, want ErrRequestTimedOut", err)
+	}
+	if state.PendingQuestion() != nil {
+		t.Fatal("PendingQuestion should be nil after timeout")
+	}
+}
+
 func TestBuildQuestionLabel(t *testing.T) {
 	tests := []struct {
 		name      string

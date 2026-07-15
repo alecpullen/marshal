@@ -39,6 +39,13 @@ var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations w
 
 var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
 
+// ErrRequestTimedOut is returned by requestApproval / requestQuestions when
+// the TUI (or bridge channel) does not respond within RequestTimeout. It
+// prevents a goroutine leak when the TUI exits without sending a decision.
+var ErrRequestTimedOut = errors.New("agent: request timed out")
+
+const defaultRequestTimeout = 5 * time.Minute
+
 // isLengthFinish reports whether the provider cut the response off at the
 // output-token limit ("length" for OpenAI-compatible providers, "max_tokens"
 // for Anthropic-style ones). Tool calls in such a response may carry
@@ -1634,6 +1641,7 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 	label := fmt.Sprintf("waiting for approval: %s", command)
 	r.State.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: label, StartedAt: r.Now()})
 
+	timeout := r.effectiveRequestTimeout()
 	select {
 	case decision := <-tc.ResponseChan:
 		r.State.SetPendingApproval(nil)
@@ -1643,6 +1651,10 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		r.State.SetPendingApproval(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return false, "", ctx.Err()
+	case <-time.After(timeout):
+		r.State.SetPendingApproval(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		return false, "", ErrRequestTimedOut
 	}
 }
 
@@ -1671,6 +1683,7 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 	label := buildQuestionLabel(questions)
 	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: label, StartedAt: r.Now()})
 
+	timeout := r.effectiveRequestTimeout()
 	select {
 	case answers := <-q.ResponseChan:
 		r.State.SetPendingQuestion(nil)
@@ -1680,7 +1693,20 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 		r.State.SetPendingQuestion(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return nil, ctx.Err()
+	case <-time.After(timeout):
+		r.State.SetPendingQuestion(nil)
+		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		return nil, ErrRequestTimedOut
 	}
+}
+
+// effectiveRequestTimeout returns the request timeout to use, falling back
+// to a sensible default if r.RequestTimeout is zero.
+func (r *Runner) effectiveRequestTimeout() time.Duration {
+	if r.RequestTimeout > 0 {
+		return r.RequestTimeout
+	}
+	return defaultRequestTimeout
 }
 
 // buildQuestionLabel returns a human-readable activity label that includes a

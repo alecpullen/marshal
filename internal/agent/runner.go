@@ -113,6 +113,31 @@ type MemoryProvider interface {
 // and PolicyEngine.Evaluate together — everything else (TUI, tools,
 // registry, policy) stays decoupled and is exercised independently by
 // Milestones C-G's own tests.
+//
+// Concurrency contract:
+//
+//   - A *Runner is NOT safe for concurrent calls to Run() / RunTask() on
+//     the same instance. Callers (TUI, swarm orchestrator) must serialise
+//     RunTask invocations.
+//
+//   - A *Runner IS safe for sequential re-use: after one RunTask returns,
+//     the next call starts from a clean per-turn state. Fields that persist
+//     across calls (Provider, Registry, Policy, State, Model, RouteResolver,
+//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, RequestTimeout,
+//     ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
+//     ForceClass, SkillIndex, Role, WriteGate, UsageObserver, SteeringProvider,
+//     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleGenerator,
+//     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID)
+//     are initialised once and never mutated by RunTask's internal logic.
+//
+//   - Per-turn state (tracker, stats, route, pressureMessageSent,
+//     consecutiveParseFailures, consecutiveEmpty) is reset at the top of
+//     RunTask and never shared across calls.
+//
+//   - tracker, stats, and ForceClass have dedicated mutexes for their
+//     accessor methods (withStats, trackerMu, forceClassMu). All other
+//     field reads and writes are not synchronised — hence the
+//     single-caller-at-a-time rule.
 type UsageObserver func(promptTokens, completionTokens int)
 
 type Runner struct {

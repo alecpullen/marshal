@@ -58,23 +58,54 @@ func TestOverlayEnumeratesAllBindings(t *testing.T) {
 	}
 }
 
-func TestOverlayUsesFixedKeyColumn(t *testing.T) {
-	out := Overlay(120, 40)
-	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "Alt+Shift+M") && !strings.Contains(line, "cycle model backward") {
-			// The description MUST appear on the same line as the
-			// key (we only wrap on \n, not in the middle of a row).
+// firstLineContaining returns the first line in s that contains substr.
+func firstLineContaining(s, substr string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, substr) {
+			return line
 		}
+	}
+	return ""
+}
+
+func TestOverlayUsesFixedKeyColumn(t *testing.T) {
+	out := stripANSI(Overlay(120, 80))
+	tabLine := firstLineContaining(out, "Tab")
+	altLine := firstLineContaining(out, "Alt+Shift+M")
+	if tabLine == "" || altLine == "" {
+		t.Fatal("expected both Tab and Alt+Shift+M in overlay")
+	}
+	// Both descriptions should start at the same column because the
+	// key column is fixed-width.
+	tabDesc := strings.Index(tabLine, "cycle mode")
+	altDesc := strings.Index(altLine, "cycle model backward")
+	if tabDesc < 0 || altDesc < 0 {
+		t.Fatal("expected descriptions in both lines")
+	}
+	if tabDesc != altDesc {
+		t.Fatalf("descriptions misaligned: Tab at col %d, Alt+Shift+M at col %d", tabDesc, altDesc)
 	}
 }
 
 func TestOverlayWrapsOnNarrowWidth(t *testing.T) {
-	out := Overlay(60, 30) // narrower than keyColumnWidth*2
-	// Assert that no line contains a key label clipped by a
-	// hard wrap inside the description (heuristic: the description
-	// for "cycle mode backward" should still contain the word
-	// "cycle" or "backward").
-	if !strings.Contains(out, "backward") {
-		t.Fatalf("description lost on narrow terminal: %q", out)
+	out := stripANSI(Overlay(40, 30))
+	// With width=40, desc column is max(40-20-4, 20) = 20 chars.
+	// "cancel turn · dismiss popup · deny approval" (42 chars) wraps.
+	// Verify that "cancel turn" and "approval" end up on different lines.
+	lines := strings.Split(out, "\n")
+	var cancelLine, approvalLine int
+	for i, line := range lines {
+		if strings.Contains(line, "cancel turn") {
+			cancelLine = i
+		}
+		if strings.Contains(line, "approval") {
+			approvalLine = i
+		}
+	}
+	if cancelLine == 0 || approvalLine == 0 {
+		t.Fatal("expected 'cancel turn' and 'approval' in output")
+	}
+	if cancelLine == approvalLine {
+		t.Fatal("expected description to wrap, but 'cancel turn' and 'approval' are on the same line")
 	}
 }

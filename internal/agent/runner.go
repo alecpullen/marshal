@@ -133,7 +133,7 @@ type MemoryProvider interface {
 //     across calls (Provider, Registry, Policy, State, Model, RouteResolver,
 //     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, RequestTimeout,
 //     ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
-//     ForceClass, SkillIndex, Role, WriteGate, UsageObserver, SteeringProvider,
+//     ForceClass, SkillIndex, Role, WriteGate, UsageObserver,
 //     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleGenerator,
 //     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID)
 //     are initialised once; resolveRoute may grow MaxTurnContextTokens

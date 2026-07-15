@@ -120,10 +120,46 @@ func extractJSONObject(raw string) (string, error) {
 	trimmed = strings.TrimSuffix(trimmed, "```")
 	trimmed = strings.TrimSpace(trimmed)
 
-	start := strings.Index(trimmed, "{")
-	end := strings.LastIndex(trimmed, "}")
-	if start == -1 || end == -1 || end < start {
-		return "", ErrNoActionFound
+	// Stack-based scan for the first complete, balanced JSON object.
+	// Walks the string character by character, tracking brace depth while
+	// respecting string boundaries and escape sequences inside strings.
+	depth := 0
+	start := -1
+	inString := false
+	escaped := false
+
+	for i, ch := range trimmed {
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+			escaped = false
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 0 && start != -1 {
+				return trimmed[start : i+1], nil
+			}
+		}
 	}
-	return trimmed[start : end+1], nil
+
+	return "", ErrNoActionFound
 }

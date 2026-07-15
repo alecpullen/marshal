@@ -821,3 +821,31 @@ func TestReportFatalSurfacesAllErrors(t *testing.T) {
 		t.Fatalf("got %d errors, want 3", len(got))
 	}
 }
+
+// TestDispatchRecoversFromHandlerPanic reproduces F-BUG-57. Pre-fix
+// code lets a panicking handler crash the process. Post-fix, the
+// panic is recovered and returned as a JSON-RPC internalError.
+func TestDispatchRecoversFromHandlerPanic(t *testing.T) {
+	s := &Server{handlers: map[string]Handler{
+		"panic": func(ctx context.Context, params json.RawMessage) (any, error) {
+			panic("handler bug")
+		},
+	}}
+	req := Request{Method: "panic"}
+	// The dispatch function is private; call it directly.
+	res, err := s.dispatch(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error from panicking handler, got nil")
+	}
+	if res != nil {
+		t.Errorf("result = %v, want nil", res)
+	}
+	// Convert to JSON-RPC error and check the code.
+	rpcErr, ok := err.(*jsonRPCError)
+	if !ok {
+		t.Fatalf("err type = %T, want *jsonRPCError", err)
+	}
+	if rpcErr.Code != internalError {
+		t.Errorf("code = %d, want %d (internalError)", rpcErr.Code, internalError)
+	}
+}

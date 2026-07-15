@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -532,14 +533,27 @@ func unquoteJSONString(s string) string {
 	return s
 }
 
-func (s *Server) dispatch(ctx context.Context, req Request) (any, error) {
+func (s *Server) dispatch(ctx context.Context, req Request) (result any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Default().Error("acp: handler panicked",
+				"method", req.Method,
+				"panic", r,
+			)
+			result = nil
+			err = &jsonRPCError{
+				Code:    internalError,
+				Message: "internal error: handler panicked",
+			}
+		}
+	}()
 	handler, ok := s.handlers[req.Method]
 	if !ok {
 		return nil, &jsonRPCError{Code: methodNotFound, Message: "method not found: " + req.Method}
 	}
-	result, err := handler(ctx, req.Params)
-	if err != nil {
-		return nil, &jsonRPCError{Code: codeFor(err), Message: err.Error()}
+	res, herr := handler(ctx, req.Params)
+	if herr != nil {
+		return nil, &jsonRPCError{Code: codeFor(herr), Message: herr.Error()}
 	}
-	return result, nil
+	return res, nil
 }

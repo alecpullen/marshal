@@ -49,6 +49,16 @@ func TestFooterIdleShowsRollbackWhenEligible(t *testing.T) {
 	}
 }
 
+func TestFooterApprovalWording(t *testing.T) {
+	out := stripANSI(Footer(FooterHints{ApprovalPending: true}))
+	if strings.Contains(out, "Enter×2") {
+		t.Fatalf("stale 'Enter×2' label still present: %q", out)
+	}
+	if !strings.Contains(out, "arm") || !strings.Contains(out, "submit") {
+		t.Fatalf("expected arm/submit labels, got %q", out)
+	}
+}
+
 func TestOverlayEnumeratesAllBindings(t *testing.T) {
 	out := stripANSI(Overlay(80, 24))
 	for _, want := range []string{"Enter", "Shift+Enter", "/", "@", "Esc", "?", "Ctrl+O", "Ctrl+K", "Ctrl+G", "Ctrl+R", "Ctrl+X", "PgUp", "PgDn", "End"} {

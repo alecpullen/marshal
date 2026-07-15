@@ -31,12 +31,24 @@ func TestResolveWorkspacePathMulti(t *testing.T) {
 
 	additionalRoots := []string{extraRoot}
 
+	// resolvedEqual compares two paths, treating them as equal if they
+	// agree after symlink resolution (the multi-root resolver returns
+	// symlink-resolved paths; test fixtures use the un-resolved form).
+	resolvedEqual := func(a, b string) bool {
+		ra, errRA := filepath.EvalSymlinks(a)
+		rb, errRB := filepath.EvalSymlinks(b)
+		if errRA != nil || errRB != nil {
+			return a == b
+		}
+		return ra == rb
+	}
+
 	// Test 1: path that escapes primary root but is valid under additional root.
 	got, err := resolveWorkspacePathMulti(root, additionalRoots, extraFileRel)
 	if err != nil {
 		t.Fatalf("additional root path returned error: %v", err)
 	}
-	if got != extraFilePath {
+	if !resolvedEqual(got, extraFilePath) {
 		t.Fatalf("resolveWorkspacePathMulti(root, addl, %q) = %q, want %q", extraFileRel, got, extraFilePath)
 	}
 
@@ -45,7 +57,7 @@ func TestResolveWorkspacePathMulti(t *testing.T) {
 	if err != nil {
 		t.Fatalf("primary root path returned error: %v", err)
 	}
-	if got != primaryPath {
+	if !resolvedEqual(got, primaryPath) {
 		t.Fatalf("resolveWorkspacePathMulti(root, addl, %q) = %q, want %q", primaryFile, got, primaryPath)
 	}
 
@@ -61,12 +73,12 @@ func TestResolveWorkspacePathMulti(t *testing.T) {
 		t.Fatal("resolveWorkspacePathMulti absolute path returned nil error")
 	}
 
-	// Test 5: bare "." returns primary root.
+	// Test 5: bare "." returns the (symlink-resolved) primary root.
 	got, err = resolveWorkspacePathMulti(root, additionalRoots, ".")
 	if err != nil {
 		t.Fatalf("resolveWorkspacePathMulti '.' returned error: %v", err)
 	}
-	if got != root {
+	if !resolvedEqual(got, root) {
 		t.Fatalf("resolveWorkspacePathMulti(root, addl, '.') = %q, want %q", got, root)
 	}
 
@@ -76,7 +88,7 @@ func TestResolveWorkspacePathMulti(t *testing.T) {
 	if err != nil {
 		t.Fatalf("primary root path with nil additional roots returned error: %v", err)
 	}
-	if got != primaryPath {
+	if !resolvedEqual(got, primaryPath) {
 		t.Fatalf("with nil additional roots: got %q, want %q", got, primaryPath)
 	}
 
@@ -102,7 +114,7 @@ func TestResolveWorkspacePathMulti(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nested path in additional root returned error: %v", err)
 	}
-	if got != subFilePath {
+	if !resolvedEqual(got, subFilePath) {
 		t.Fatalf("nested path: got %q, want %q", got, subFilePath)
 	}
 
@@ -111,7 +123,7 @@ func TestResolveWorkspacePathMulti(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveWorkspacePath regression failed: %v", err)
 	}
-	if got != primaryPath {
+	if !resolvedEqual(got, primaryPath) {
 		t.Fatalf("resolveWorkspacePath regression: got %q, want %q", got, primaryPath)
 	}
 	if _, err := resolveWorkspacePath(root, "../outside"); err == nil {

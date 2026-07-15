@@ -35,7 +35,7 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 	if row.SessionID != "" {
 		sessionID = sql.NullString{String: row.SessionID, Valid: true}
 	}
-	res, err := db.exec(
+	res, err := db.sqlDB.Exec(
 		`INSERT INTO turn_metrics (
 			project_id, session_id, started_at, duration_ms, class, role,
 			provider, model, goal, iterations, tool_calls, tool_errors,

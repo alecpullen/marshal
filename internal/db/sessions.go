@@ -34,7 +34,7 @@ type Session struct {
 // CreateSession inserts a new agent_sessions row. The session id is generated
 // by the caller (session.State) and is the primary key.
 func (db *DB) CreateSession(sessionID string, projectID int64, title string, startedAt time.Time) error {
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`INSERT INTO agent_sessions (id, project_id, title, started_at)
 		 VALUES (?, ?, ?, ?)`,
 		sessionID, projectID, title, startedAt.UTC().Format(time.RFC3339),
@@ -50,7 +50,7 @@ func (db *DB) GetSession(sessionID string) (Session, error) {
 	var s Session
 	var startedAt string
 	var endedAt, summary sql.NullString
-	row := db.queryRow(
+	row := db.sqlDB.QueryRow(
 		`SELECT id, project_id, title, started_at, ended_at, summary FROM agent_sessions WHERE id = ?`,
 		sessionID,
 	)
@@ -81,7 +81,7 @@ func (db *DB) GetSession(sessionID string) (Session, error) {
 
 // UpdateSessionTitle sets the title on an existing session row (F13).
 func (db *DB) UpdateSessionTitle(sessionID string, title string) error {
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`UPDATE agent_sessions SET title = ? WHERE id = ?`,
 		title, sessionID,
 	)
@@ -93,7 +93,7 @@ func (db *DB) UpdateSessionTitle(sessionID string, title string) error {
 
 // EndSession sets ended_at and summary on an existing session row.
 func (db *DB) EndSession(sessionID string, endedAt time.Time, summary string) error {
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`UPDATE agent_sessions SET ended_at = ?, summary = ? WHERE id = ?`,
 		endedAt.UTC().Format(time.RFC3339), summary, sessionID,
 	)
@@ -127,7 +127,7 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 	if parentID > 0 {
 		parentArg = sql.NullInt64{Int64: parentID, Valid: true}
 	}
-	res, err := db.exec(
+	res, err := db.sqlDB.Exec(
 		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339), final, parentArg,
@@ -149,7 +149,7 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 // finds the right tip. Returns 0 if the session has no messages.
 func (db *DB) GetLeafMessageID(sessionID string) (int64, error) {
 	var leaf sql.NullInt64
-	row := db.queryRow(`SELECT leaf_message_id FROM agent_sessions WHERE id = ?`, sessionID)
+	row := db.sqlDB.QueryRow(`SELECT leaf_message_id FROM agent_sessions WHERE id = ?`, sessionID)
 	if err := row.Scan(&leaf); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, nil
@@ -161,7 +161,7 @@ func (db *DB) GetLeafMessageID(sessionID string) (int64, error) {
 	}
 	// Fallback: newest message id in the session.
 	var maxID sql.NullInt64
-	if err := db.queryRow(`SELECT MAX(id) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxID); err != nil {
+	if err := db.sqlDB.QueryRow(`SELECT MAX(id) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxID); err != nil {
 		return 0, fmt.Errorf("get max message id: %w", err)
 	}
 	if !maxID.Valid {
@@ -172,7 +172,7 @@ func (db *DB) GetLeafMessageID(sessionID string) (int64, error) {
 
 // SetBranchLeaf records leafID as the session's current active branch tip.
 func (db *DB) SetBranchLeaf(sessionID string, leafID int64) error {
-	if _, err := db.exec(`UPDATE agent_sessions SET leaf_message_id = ? WHERE id = ?`, leafID, sessionID); err != nil {
+	if _, err := db.sqlDB.Exec(`UPDATE agent_sessions SET leaf_message_id = ? WHERE id = ?`, leafID, sessionID); err != nil {
 		return fmt.Errorf("set branch leaf: %w", err)
 	}
 	return nil
@@ -188,7 +188,7 @@ func (db *DB) MessagesOnBranch(sessionID string, leafID int64) ([]Message, error
 	cur := leafID
 	for cur > 0 {
 		ids = append(ids, cur)
-		row := db.queryRow(`SELECT parent_id FROM messages WHERE id = ? AND session_id = ?`, cur, sessionID)
+		row := db.sqlDB.QueryRow(`SELECT parent_id FROM messages WHERE id = ? AND session_id = ?`, cur, sessionID)
 		var pid sql.NullInt64
 		if err := row.Scan(&pid); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {

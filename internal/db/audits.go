@@ -62,7 +62,7 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		limitsJSON = s
 	}
 
-	_, err = db.exec(
+	_, err = db.sqlDB.Exec(
 		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
 		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

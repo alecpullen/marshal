@@ -162,7 +162,7 @@ func (db *DB) FilesMatchingBasename(projectID int64, basename string, limit int)
 // touching hash/language/size/last_indexed_at. It is a no-op (not an error)
 // if no row matches project_id+path.
 func (db *DB) UpdateFileSummary(projectID int64, path, summary string) error {
-	_, err := db.exec(
+	_, err := db.sqlDB.Exec(
 		`UPDATE files SET summary = ? WHERE project_id = ? AND path = ?`,
 		summary, projectID, path,
 	)

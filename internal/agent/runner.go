@@ -1123,11 +1123,36 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 					normalizedArgs, _ = normalizeArgs(args)
 				}
 			} else {
-				if json.Valid([]byte(edited)) {
-					args = json.RawMessage(edited)
-					normalizedArgs, _ = normalizeArgs(args)
-					_ = json.Unmarshal(args, &argsMap)
+				if !json.Valid([]byte(edited)) {
+					return policyLoopResult{}, fmt.Errorf("user-supplied edit for %s is not valid JSON: %q", toolName, edited)
 				}
+				args = json.RawMessage(edited)
+				var nerr error
+				normalizedArgs, nerr = normalizeArgs(args)
+				if nerr != nil {
+					return policyLoopResult{}, fmt.Errorf("normalize edited %s args: %w", toolName, nerr)
+				}
+				updated := map[string]interface{}{}
+				if uerr := json.Unmarshal(args, &updated); uerr != nil {
+					return policyLoopResult{}, fmt.Errorf("decode edited %s args: %w", toolName, uerr)
+				}
+				argsMap = updated
+				// Re-evaluate policy against the new args. The user has
+				// already approved this call, so only a DecisionDeny from
+				// the edited args should block execution. DecisionConfirm
+				// is treated as "proceed" because the user has already
+				// provided consent.
+				newDecision, newReason, perr := r.Policy.Evaluate(toolName, argsMap)
+				if perr != nil {
+					return policyLoopResult{}, fmt.Errorf("policy re-evaluate after edit: %w", perr)
+				}
+				if newDecision == policy.DecisionDeny {
+					return policyLoopResult{Messages: []schema.ChatMessage{
+						r.buildToolErrorMessage(toolName, "denied by policy after edit: "+newReason, toolCallID),
+					}}, nil
+				}
+				// DecisionAllow and DecisionConfirm: proceed — the user
+				// already confirmed in the approval dialog.
 			}
 		}
 	case policy.DecisionAllow:

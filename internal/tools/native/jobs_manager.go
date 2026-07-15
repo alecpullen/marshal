@@ -292,10 +292,9 @@ func (m *JobManager) Output(id string, tailLines int) (JobInfo, string, error) {
 	truncated := j.info.OutputTruncated
 	j.mu.Unlock()
 
-	combined := stdoutStr + stderrStr
-	if tailLines > 0 {
-		combined = tailString(combined, tailLines)
-	}
+	stdoutTail := tailString(stdoutStr, tailLines)
+	stderrTail := tailString(stderrStr, tailLines)
+	combined := formatCommandOutput(stdoutTail, stderrTail)
 	if truncated {
 		combined += truncationMarker
 	}

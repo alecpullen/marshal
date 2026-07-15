@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -172,9 +173,6 @@ func isPrivateURL(u *url.URL) bool {
 
 func htmlToText(s string) string {
 	s = htmlTagRe.ReplaceAllString(s, " ")
-	s = strings.NewReplacer(
-		"&nbsp;", " ", "&amp;", "&", "&lt;", "<", "&gt;", ">",
-		"&quot;", `"`, "&#39;", "'",
-	).Replace(s)
+	s = html.UnescapeString(s)
 	return strings.TrimSpace(s)
 }

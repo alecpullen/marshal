@@ -1,6 +1,7 @@
 package native
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -237,5 +238,35 @@ func TestFileWritePatchRollbackIntegration(t *testing.T) {
 	}
 	if info.Mode() != 0755 {
 		t.Fatalf("expected reverted permissions to be 0755, got %v", info.Mode())
+	}
+}
+
+func TestFileWritePatchCreatesNewFile(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "new.go")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	patch := "File: new.go\n<<<<<<< SEARCH\n=======\npackage new\n\nfunc New() {}\n>>>>>>> REPLACE\n"
+	res, err := invokeTool(t, reg, "file.write_patch", fmt.Sprintf(`{"patch":%q}`, patch))
+	if err != nil {
+		t.Fatalf("handler failed: %v", err)
+	}
+	if !reflect.DeepEqual(res.FilesChanged, []string{"new.go"}) {
+		t.Fatalf("FilesChanged = %#v", res.FilesChanged)
+	}
+	data, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatalf("read new file: %v", readErr)
+	}
+	if !strings.Contains(string(data), "package new") {
+		t.Fatalf("file content = %q", string(data))
+	}
+	info, _ := os.Stat(filePath)
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("mode = %v, want 0644", info.Mode().Perm())
 	}
 }

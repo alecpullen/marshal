@@ -45,8 +45,10 @@ func (t *toolSet) shellRunTool() registry.Tool {
 			if command == "" {
 				return registry.ToolResult{}, fmt.Errorf("command is required")
 			}
-			if err := validateConservativeCommand(command); err != nil {
-				return registry.ToolResult{}, err
+			if t.guardrail != nil {
+				if err := t.guardrail(command); err != nil {
+					return registry.ToolResult{}, err
+				}
 			}
 			id, err := t.jobManager.Start(ctx, command, timeout)
 			if err != nil {
@@ -88,8 +90,10 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 	if command == "" {
 		return registry.ToolResult{}, fmt.Errorf("command is required")
 	}
-	if err := validateConservativeCommand(command); err != nil {
-		return registry.ToolResult{}, err
+	if t.guardrail != nil {
+		if err := t.guardrail(command); err != nil {
+			return registry.ToolResult{}, err
+		}
 	}
 
 	result, err := t.runner.Run(ctx, CommandRequest{Command: command, Dir: t.root, Timeout: timeout})
@@ -105,34 +109,6 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 		CommandExitCode: &exitCode,
 		Sandbox:         result.Meta,
 	}, err
-}
-
-func validateConservativeCommand(command string) error {
-	lower := strings.ToLower(command)
-	blocked := []string{
-		"sudo",
-		"rm -rf",
-		"git reset --hard",
-		"git clean -fd",
-		"mkfs",
-		"shutdown",
-		"reboot",
-		"chmod -r",
-		"chown -r",
-	}
-	for _, pattern := range blocked {
-		if strings.Contains(lower, pattern) {
-			return fmt.Errorf("command blocked by conservative guardrail: %s", pattern)
-		}
-	}
-	if (strings.Contains(lower, "curl ") || strings.Contains(lower, "wget ")) && strings.Contains(lower, "|") {
-		for _, shell := range []string{" sh", " bash", " zsh"} {
-			if strings.Contains(lower, shell) {
-				return fmt.Errorf("command blocked by conservative guardrail: piped network installer")
-			}
-		}
-	}
-	return nil
 }
 
 func clampTimeout(seconds int, defaultTimeout time.Duration, maxTimeout time.Duration) time.Duration {

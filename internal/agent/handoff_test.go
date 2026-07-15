@@ -64,6 +64,6 @@ func TestSummarizeAndContinueErrorsOnEmptySummary(t *testing.T) {
 	_, err := runner.summarizeAndContinue(context.Background(), p, "test-model",
 		[]schema.ChatMessage{{Role: schema.RoleUser, Content: "goal"}}, "goal", nil)
 	if err == nil {
-		t.Fatal("empty summary must return an error so the caller can fall back to compactMessages")
+		t.Fatal("empty summary must return an error so the caller can terminate the turn (see runner.go summarizeAndContinue path)")
 	}
 }

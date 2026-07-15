@@ -2,6 +2,8 @@ package skills
 
 import (
 	"testing"
+
+	"marshal/internal/tools/registry"
 )
 
 func TestParseFrontmatterValid(t *testing.T) {
@@ -152,6 +154,23 @@ func TestIndexLoadAndList(t *testing.T) {
 	}
 	if list[0].Name != "a" || list[1].Name != "b" {
 		t.Fatalf("List order: %v, want [a, b]", []string{list[0].Name, list[1].Name})
+	}
+}
+
+func TestParseFrontmatterDefaultRiskMatchesRegistryConstant(t *testing.T) {
+	raw := `+++
+name = "no-risk-skill"
+description = "A skill without explicit risk"
++++
+
+Body.
+`
+	skill, err := parseFrontmatter(raw)
+	if err != nil {
+		t.Fatalf("parseFrontmatter: %v", err)
+	}
+	if skill.Risk != string(registry.RiskReadOnly) {
+		t.Fatalf("Risk = %q, want %q (registry.RiskReadOnly)", skill.Risk, string(registry.RiskReadOnly))
 	}
 }
 

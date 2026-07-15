@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"marshal/internal/tools/registry"
+
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -90,7 +92,7 @@ func parseFrontmatter(raw string) (Skill, error) {
 		return Skill{}, fmt.Errorf("skill frontmatter missing required field: description")
 	}
 	if fm.Risk == "" {
-		fm.Risk = "read_only"
+		fm.Risk = string(registry.RiskReadOnly)
 	}
 
 	return Skill{

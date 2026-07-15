@@ -1,6 +1,8 @@
 package app
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,6 +187,21 @@ func TestOnboardingProjectNameCustomValue(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `name = "my-custom-project"`) {
 		t.Fatalf("expected name = \"my-custom-project\", got: %s", data)
+	}
+}
+
+func TestFetchOllamaModelsNon200Status(t *testing.T) {
+	// Start a test server that returns 500 with a JSON body.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"internal server error"}`))
+	}))
+	defer ts.Close()
+
+	cmd := fetchOllamaModels(ts.URL)
+	msg := cmd()
+	if _, ok := msg.(ollamaModelsFailedMsg); !ok {
+		t.Fatalf("expected ollamaModelsFailedMsg, got %T", msg)
 	}
 }
 

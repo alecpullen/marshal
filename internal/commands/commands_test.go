@@ -3,6 +3,8 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -502,6 +504,38 @@ func TestDiffDoesNotInjectIntoState(t *testing.T) {
 		if m.ContentType == session.ContentTypeDiff {
 			t.Errorf("state should not contain ContentTypeDiff messages: %q", m.Content)
 		}
+	}
+}
+
+func TestExportComputesPathBeforeWrite(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	state := newTestState()
+	tmpDir := t.TempDir()
+	state.WorkingDir = tmpDir
+
+	cmd, ok := cmdReg.Lookup("export")
+	if !ok {
+		t.Fatal("export command not registered")
+	}
+
+	result := cmd.Handler(state, nil)
+
+	if !strings.Contains(result, "Exported to ") {
+		t.Fatalf("export output missing 'Exported to': %q", result)
+	}
+	if !strings.Contains(result, tmpDir) {
+		t.Fatalf("export output should contain working dir: %q", result)
+	}
+	if strings.Contains(result, "failed") {
+		t.Fatalf("export failed unexpectedly: %q", result)
+	}
+
+	defaultPath := filepath.Join(tmpDir, "marshal-session-"+state.SessionID()+".html")
+	if _, err := os.Stat(defaultPath); os.IsNotExist(err) {
+		t.Fatalf("export file not found at default path: %s", defaultPath)
 	}
 }
 

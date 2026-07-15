@@ -2388,3 +2388,9 @@ finding and source plan.
 | Finding | Status | Notes |
 |---|---|---|
 | F-XCUT-176 | RESOLVED | `acp.Server`, `acp.SessionManager`, `mcp.Manager`, `mcp.Client` all accept `*slog.Logger` via `With…` options. Default `slog.Default()`. Dispatch, connect, list, call, replace, close all log. 4 new tests assert specific events on a buffer logger. |
+
+### Batch 25 (G3 — huh form completion race residual): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-XCUT-188 (residual) | RESOLVED | `session.PendingToolCall.Respond` and `PendingQuestion.Respond` use `sync.Once` to send + close the response channel exactly once. Parent `handleApproval`/`handleQuestion` call `tc.Respond(...)` with a `state.PendingApproval() == tc` identity guard. Sub-form `Update` is pure (no side effects). Complements F3 Task 4. 4 new tests. |

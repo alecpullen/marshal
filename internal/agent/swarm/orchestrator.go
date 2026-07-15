@@ -177,6 +177,9 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 			o.announce("Swarm aborted: implementer failed.")
 			return err
 		}
+		if o.overBudget(meter) {
+			break
+		}
 		ts.AddPatchNote(implTask.Summary)
 		o.State.UpdateSwarmRole("implementer", session.SwarmRoleDone, fmt.Sprintf("round %d/%d", round, rounds))
 
@@ -189,6 +192,9 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 		if err != nil {
 			ts.AddFinding(Finding{Agent: "tester", Area: "tests", Content: "tester failed: " + err.Error()})
 			o.State.UpdateSwarmRole("tester", session.SwarmRoleFailed, "")
+			break
+		}
+		if o.overBudget(meter) {
 			break
 		}
 		ts.AddFinding(Finding{Agent: "tester", Area: "tests", Content: testTask.Summary})

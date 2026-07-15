@@ -2357,6 +2357,87 @@ func TestRunAllowsParallelReadBatchWithoutStalling(t *testing.T) {
 }
 
 // TestParallelActionsSerializesQuestionTools is a regression test for the
+func TestSerialBatchContinuesAfterError(t *testing.T) {
+	// Test that executeActions runs all serial tools even when one errors.
+	reg := registry.New()
+	var mu sync.Mutex
+	serialCount := 0
+	errCount := 0
+
+	if err := reg.Register(registry.Tool{
+		Name: "question.ask",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			mu.Lock()
+			serialCount++
+			count := serialCount
+			mu.Unlock()
+			if count == 2 {
+				mu.Lock()
+				errCount++
+				mu.Unlock()
+				return registry.ToolResult{}, fmt.Errorf("simulated error on serial tool %d", count)
+			}
+			return registry.ToolResult{Summary: "ok", Content: "result"}, nil
+		},
+		Schema: json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string"}},"required":["question"]}}},"required":["questions"]}`),
+	}); err != nil {
+		t.Fatalf("Register question.ask: %v", err)
+	}
+	if err := reg.Register(registry.Tool{
+		Name: "file.read",
+		Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok", Content: "content"}, nil
+		},
+		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+	}); err != nil {
+		t.Fatalf("Register file.read: %v", err)
+	}
+
+	state := newTestState(t)
+	r := NewRunner(&scriptedProvider{}, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.tracker = newProgressTracker()
+	defer func() { r.tracker = nil }()
+
+	// Build 3 actions: question.ask, question.ask (errors), file.read
+	actions := []ModelAction{
+		{Type: ActionToolCall, Tool: "question.ask", Args: json.RawMessage(`{"questions":[{"question":"Q1?"}]}`)},
+		{Type: ActionToolCall, Tool: "question.ask", Args: json.RawMessage(`{"questions":[{"question":"Q2?"}]}`)},
+		{Type: ActionToolCall, Tool: "file.read", Args: json.RawMessage(`{"path":"x.go"}`)},
+	}
+
+	// Use a background context with cancel to prevent hanging
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	results, err := r.executeActions(ctx, actions)
+	if err != nil {
+		t.Fatalf("executeActions err = %v (should not propagate tool errors)", err)
+	}
+
+	if serialCount != 2 {
+		t.Fatalf("serial tools executed = %d, want 2 (both serial tools should run)", serialCount)
+	}
+	if errCount != 1 {
+		t.Fatalf("errors = %d, want 1 (second serial tool should error)", errCount)
+	}
+	if len(results) != 3 {
+		t.Fatalf("results count = %d, want 3 (one per tool call)", len(results))
+	}
+	// Verify one of the messages contains the error
+	foundErr := false
+	for _, msg := range results {
+		if msg.Role == schema.RoleUser && strings.Contains(msg.Content, "simulated error") {
+			foundErr = true
+			break
+		}
+	}
+	if !foundErr {
+		t.Fatal("expected an error message for the failed serial tool")
+	}
+}
+
 // bug in which the parallel-actions path (executeActions) raced two
 // ask_user / question.ask calls on the single State.PendingQuestion
 // slot, clobbering queue state and leaking ResponseChans. The fix

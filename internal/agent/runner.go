@@ -1551,8 +1551,9 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 	results := make([][]schema.ChatMessage, len(actions))
 
 	// Phase 1: run any question.ask / ask_user calls one at a time so they
-	// can't race on the single PendingQuestion slot. First error from this
-	// phase short-circuits the rest of the batch.
+	// can't race on the single PendingQuestion slot. If one errors we still
+	// execute the remaining serial tools and substitute an error message
+	// for the failed slot so the model sees one Tool message per call.
 	var parallelIdx []int
 	for i, a := range actions {
 		if !requiresSerialTool(a.Tool) {
@@ -1561,16 +1562,17 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 		}
 		msgs, err := r.executeToolCall(ctx, a)
 		if err != nil {
-			return nil, err
+			results[i] = []schema.ChatMessage{BuildToolErrorMessage(a.Tool, err.Error())}
+			continue
 		}
 		results[i] = msgs
 	}
 
 	// Phase 2: run the remaining read-only tools concurrently as before.
+	// Tool errors are recorded as error messages in the appropriate results
+	// slot so every tool call produces exactly one result batch.
 	if len(parallelIdx) > 0 {
 		var wg sync.WaitGroup
-		var mu sync.Mutex
-		var firstErr error
 		sem := make(chan struct{}, r.MaxParallelActions)
 		for _, idx := range parallelIdx {
 			wg.Add(1)
@@ -1580,21 +1582,13 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 				defer func() { <-sem }()
 				msgs, err := r.executeToolCall(ctx, act)
 				if err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					mu.Unlock()
+					results[i] = []schema.ChatMessage{BuildToolErrorMessage(act.Tool, err.Error())}
 					return
 				}
 				results[i] = msgs
 			}(idx, actions[idx])
 		}
 		wg.Wait()
-
-		if firstErr != nil {
-			return nil, firstErr
-		}
 	}
 
 	var flat []schema.ChatMessage

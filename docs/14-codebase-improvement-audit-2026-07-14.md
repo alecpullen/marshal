@@ -2173,13 +2173,21 @@ fixes" above).
 | F-BUG-115 | RESOLVED | Same change eliminates N+1 |
 | F-BUG-116 | RESOLVED | ListSessions joins against aggregated CTE |
 
-### Batch 5 (E2 — repo scanner, gitignore, language & indexing): PLANNED on branch `feature/domain-e2-repo-scanner`
-
-Plan: `docs/superpowers/plans/2026-07-15-domain-e2-repo-scanner.md`
-
-Closes: F-BUG-97, F-BUG-98, F-BUG-99, F-BUG-100, F-BUG-101, F-BUG-110, F-BUG-111, F-POL-129, F-POL-131, F-POL-132, F-POL-133 (ADR), F-POL-134.
-
-Depends on: Batch 4 (for `internal/db/sqlutil/escapeLike`).
+### Batch 5 (E2 — repo scanner, gitignore, language & indexing): RESOLVED on branch `feature/domain-e2-repo-scanner`
+| Finding | Status | Notes |
+|---|---|---|
+| F-BUG-100 | RESOLVED | FindSymbols uses escapeLike and ESCAPE '\\' |
+| F-BUG-101 | RESOLVED | FilesMatchingBasename uses escapeLike and ESCAPE '\\' |
+| F-POL-132 | RESOLVED | FilesMatchingBasename now anchors on path separator |
+| F-POL-134 | RESOLVED | DetectLanguage extended with .vue / .svelte / .scala / etc. |
+| F-BUG-98 | RESOLVED | gitignore trailing-slash patterns stay anchored |
+| F-BUG-99 | RESOLVED | gitignore supports !negation with last-pattern-wins semantics |
+| F-POL-131 | RESOLVED | Bad gitignore is logged as a warning; Scan continues |
+| F-BUG-97 | RESOLVED | repo.index passes Indexing.Ignore to Scanner |
+| F-BUG-110 | RESOLVED | ExtractSymbols takes context.Context |
+| F-BUG-111 | RESOLVED | repo.index uses Scanner.ScanDetailed to avoid disk re-reads |
+| F-POL-129 | RESOLVED | RenderDirectoryMap doc comment clarifies maxFiles |
+| F-POL-133 | RESOLVED (ADR) | Coupling accepted; see docs/15-data-model-decisions.md |
 
 ### Batch 6 (E3 — DB & search performance / scaling / isolation): PLANNED on branch `feature/domain-e3-db-perf`
 

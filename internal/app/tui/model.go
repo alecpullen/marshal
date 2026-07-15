@@ -1113,8 +1113,9 @@ func (m *Model) updateCompletionPopups() {
 		m.populateFileIndexIfNeeded()
 		if len(m.fileIndex) == 0 {
 			m.fileIndex = []completionItem{{
-				Text: "(no indexed files — run /index)",
-				Kind: completionFile,
+				Text:     "(no indexed files — run /index)",
+				Kind:     completionFile,
+				Disabled: true,
 			}}
 		}
 		if m.filePopup.items == nil || len(m.filePopup.items) == 0 {
@@ -1246,6 +1247,13 @@ func (m *Model) acceptCompletion() bool {
 	}
 	p.accept()
 	accepted := p.acceptedText
+	if accepted == "" {
+		// Disabled / placeholder items produce no accepted text — just
+		// dismiss the popup without mutating the input.
+		m.dismissCompletionPopups()
+		m.updateViewportHeight()
+		return true
+	}
 	value := m.input.Value()
 	newValue := replaceTriggerToken(value, accepted)
 	m.input.SetValue(newValue)

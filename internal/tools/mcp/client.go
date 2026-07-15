@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,9 @@ import (
 
 	"marshal/internal/sandbox/envutil"
 )
+
+// ErrClientClosed is returned by Call when the client has been Close()d.
+var ErrClientClosed = errors.New("mcp: client closed")
 
 type Client struct {
 	Name    string
@@ -108,7 +112,7 @@ func (c *Client) Start(ctx context.Context) error {
 func (c *Client) Close() error {
 	c.mu.Lock()
 	if c.err == nil {
-		c.err = fmt.Errorf("client closed")
+		c.err = ErrClientClosed
 	}
 	c.mu.Unlock()
 
@@ -137,9 +141,13 @@ func (c *Client) Call(ctx context.Context, method string, params interface{}, re
 
 	ch := make(chan Response, 1)
 	c.mu.Lock()
+	if errors.Is(c.err, ErrClientClosed) {
+		c.mu.Unlock()
+		return ErrClientClosed
+	}
 	if c.err != nil {
 		c.mu.Unlock()
-		return c.err
+		return fmt.Errorf("mcp: call %s: %w", method, c.err)
 	}
 	c.pending[id] = ch
 	c.mu.Unlock()

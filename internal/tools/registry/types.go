@@ -45,6 +45,7 @@ type ToolHandler func(ctx context.Context, call ToolCall) (ToolResult, error)
 type ToolResult struct {
 	Summary         string
 	Content         string
+	Error           string
 	FilesChanged    []string
 	CommandExitCode *int
 	Sandbox         SandboxMeta

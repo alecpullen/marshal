@@ -134,6 +134,37 @@ func TestRegisterTools_SkipsHangingServer(t *testing.T) {
 	}
 }
 
+// stubCaller is a test stub that implements the caller interface.
+type stubCaller struct {
+	res CallToolResult
+	err error
+}
+
+func (s *stubCaller) Call(ctx context.Context, method string, params, result any) error {
+	if s.err != nil {
+		return s.err
+	}
+	data, _ := json.Marshal(s.res)
+	return json.Unmarshal(data, result)
+}
+
+func TestMakeHandlerPropagatesIsError(t *testing.T) {
+	m := NewManager(nil)
+	handler := m.makeHandler(&stubCaller{
+		res: CallToolResult{
+			IsError: true,
+			Content: []MCPContent{{Type: "text", Text: "boom"}},
+		},
+	}, "any")
+	res, err := handler(context.Background(), registry.ToolCall{Name: "any", Args: nil})
+	if err == nil {
+		t.Fatal("expected error when IsError=true, got nil")
+	}
+	if res.Error == "" {
+		t.Errorf("expected ToolResult.Error to be set, got %q", res.Error)
+	}
+}
+
 // hangingServerMain is a minimal MCP server that completes the initialize
 // handshake but never responds to tools/list (or any subsequent request),
 // simulating a hanging server.

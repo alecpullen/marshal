@@ -3581,6 +3581,31 @@ func TestPatternForApproval_FullArgv(t *testing.T) {
 	}
 }
 
+// TestDispatchCommand_QuotedArgs verifies that shlex.Split preserves quoted
+// arguments instead of splitting on internal whitespace (F-SEC-31).
+func TestDispatchCommand_QuotedArgs(t *testing.T) {
+	var captured []string
+	cmdReg := commands.New()
+	if err := cmdReg.Register(commands.Command{
+		Name: "teststub",
+		Handler: func(state *session.State, args []string) string {
+			captured = args
+			return ""
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	m := New(modelTestState(t), WithCommandRegistry(cmdReg))
+	m.resize(80, 24)
+
+	_, _ = m.dispatchCommand(`/teststub "my idea"`)
+
+	if len(captured) != 1 || captured[0] != "my idea" {
+		t.Fatalf("captured args = %q, want [\"my idea\"]", captured)
+	}
+}
+
 // TestPatternForApproval_SecurityProperty verifies that a pattern produced for
 // "git status" does NOT match a malicious command like "git ; rm -rf /" via the
 // permissions matching logic.

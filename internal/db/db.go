@@ -17,7 +17,6 @@ const defaultReadPoolSize = 4
 type DB struct {
 	sqlDB  *sql.DB
 	readDB *sql.DB
-	path   string
 	locks  *ProjectLocks
 }
 

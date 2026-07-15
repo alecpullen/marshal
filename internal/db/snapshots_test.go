@@ -109,6 +109,13 @@ func TestLatestSnapshotNotFound(t *testing.T) {
 	}
 }
 
+func TestPruneSnapshotsOlderThanRejectsNegative(t *testing.T) {
+	db := testSnapshotDB(t)
+	if err := db.PruneSnapshotsOlderThan(-1); err == nil {
+		t.Fatal("expected error for negative days")
+	}
+}
+
 func TestSaveSnapshotRollsBackFilesOnError(t *testing.T) {
 	db := testSnapshotDB(t)
 	at := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)

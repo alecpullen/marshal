@@ -83,6 +83,9 @@ func (db *DB) SnapshotBefore(sessionID string, turnIndex int) (hash string, err 
 }
 
 func (db *DB) PruneSnapshotsOlderThan(days int) error {
+	if days < 0 {
+		return fmt.Errorf("prune snapshots: days must be >= 0, got %d", days)
+	}
 	cutoff := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
 	res, err := db.sqlDB.Exec(
 		`DELETE FROM snapshots WHERE created_at < ?`, cutoff)

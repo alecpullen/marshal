@@ -77,6 +77,114 @@ func asModel(t *testing.T, updated tea.Model) Model {
 	return updated.(Model)
 }
 
+// TestHandleApprovalRejectsForeignPending verifies that handleApproval does
+// not respond on a PendingToolCall that is no longer the current pending
+// approval (e.g. because ResolvePendingForShutdown already responded on it).
+// We call handleApproval directly with a stale pointer to simulate the race
+// where the state changes between form completion and the switch dispatch.
+func TestHandleApprovalRejectsForeignPending(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	ch := make(chan session.UserApprovalDecision, 1)
+	P1 := &session.PendingToolCall{
+		ID:           "p1",
+		Name:         "shell.run",
+		Command:      "echo p1",
+		Risk:         "low",
+		ResponseChan: ch,
+	}
+	P2 := &session.PendingToolCall{
+		ID:           "p2",
+		Name:         "shell.run",
+		Command:      "echo p2",
+		Risk:         "low",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+
+	// Set P1 as the pending approval and create a model.
+	state.SetPendingApproval(P1)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+
+	// Swap P2 in as the pending approval before driving the form.
+	state.SetPendingApproval(P2)
+
+	// Call handleApproval directly with P1 (a stale pointer). The form
+	// will be created from P1, driven to completion, and then the switch
+	// will check m.state.PendingApproval() == tc (P2 == P1 = false).
+	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, P1)
+	m = updated.(Model)
+	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, P1)
+	m = updated.(Model)
+
+	// P1's channel must not have been sent to (identity guard).
+	select {
+	case <-ch:
+		t.Fatal("handleApproval responded on P1 even though PendingApproval() was P2")
+	default:
+	}
+
+	// The pending approval is cleared by handleApproval's unconditional
+	// SetPendingApproval(nil) after the switch. The key assertion is that
+	// P1 was NOT responded to.
+	if state.PendingApproval() != nil {
+		t.Fatal("state.PendingApproval() should be nil after handleApproval")
+	}
+}
+
+// TestRespondIsIdempotent verifies that calling Respond twice on the same
+// PendingToolCall or PendingQuestion only sends once.
+func TestRespondIsIdempotent(t *testing.T) {
+	t.Run("PendingToolCall", func(t *testing.T) {
+		ch := make(chan session.UserApprovalDecision, 1)
+		tc := &session.PendingToolCall{ResponseChan: ch}
+		tc.Respond(session.UserApprovalDecision{Approved: true})
+		tc.Respond(session.UserApprovalDecision{Approved: true})
+		// Read the one value that was sent.
+		dec, ok := <-ch
+		if !ok {
+			t.Fatal("channel closed without a value")
+		}
+		if !dec.Approved {
+			t.Fatal("expected approved")
+		}
+		// Channel is now closed; reading again gives zero value, !ok.
+		_, ok = <-ch
+		if ok {
+			t.Fatal("second Respond sent a value")
+		}
+	})
+
+	t.Run("PendingQuestion", func(t *testing.T) {
+		ch := make(chan []session.Answer, 1)
+		q := &session.PendingQuestion{ResponseChan: ch}
+		answers := []session.Answer{{Question: "q1", Answer: "a1"}}
+		q.Respond(answers)
+		q.Respond(answers)
+		// Read the one value that was sent.
+		got, ok := <-ch
+		if !ok {
+			t.Fatal("channel closed without a value")
+		}
+		if len(got) != 1 || got[0].Answer != "a1" {
+			t.Fatalf("unexpected answers: %#v", got)
+		}
+		// Channel is now closed; reading again gives zero value, !ok.
+		_, ok = <-ch
+		if ok {
+			t.Fatal("second Respond sent a value")
+		}
+	})
+
+	t.Run("nil receiver is safe", func(t *testing.T) {
+		var tc *session.PendingToolCall
+		tc.Respond(session.UserApprovalDecision{Approved: true}) // must not panic
+
+		var q *session.PendingQuestion
+		q.Respond([]session.Answer{}) // must not panic
+	})
+}
+
 func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	model := New(state)
@@ -544,18 +652,24 @@ func TestPolishedTranscriptShowsRolesThinkingAndInput(t *testing.T) {
 func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 
-	respChan := make(chan session.UserApprovalDecision, 1)
-	tc := &session.PendingToolCall{
-		ID:           "456",
-		Name:         "shell.run",
-		Args:         `{"command":"go test"}`,
-		Command:      "go test",
-		Risk:         "command",
-		Reason:       "run tests",
-		ResponseChan: respChan,
+	// Each sub-test needs a fresh PendingToolCall because Respond uses
+	// sync.Once and closes the channel.
+	makeTC := func() (*session.PendingToolCall, chan session.UserApprovalDecision) {
+		ch := make(chan session.UserApprovalDecision, 1)
+		return &session.PendingToolCall{
+			ID:           "456",
+			Name:         "shell.run",
+			Args:         `{"command":"go test"}`,
+			Command:      "go test",
+			Risk:         "command",
+			Reason:       "run tests",
+			ResponseChan: ch,
+		}, ch
 	}
-	state.SetPendingApproval(tc)
 
+	// 1. Test Deny.
+	tc, respChan := makeTC()
+	state.SetPendingApproval(tc)
 	m := New(state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
@@ -568,7 +682,6 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("View() missing proposed command")
 	}
 
-	// 1. Test Deny: navigate to "Deny", then press Enter twice to confirm.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -585,13 +698,13 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("expected pending approval to be cleared")
 	}
 
-	// Set up again for Approve.
+	// 2. Test Approve.
+	tc, respChan = makeTC()
 	state.SetPendingApproval(tc)
 	m = New(state)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 2. Test Approve: press Enter twice to confirm.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
@@ -604,13 +717,13 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("timeout waiting for approve response")
 	}
 
-	// Set up again for Edit.
+	// 3. Test Edit.
+	tc, respChan = makeTC()
 	state.SetPendingApproval(tc)
 	m = New(state)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 3. Test Edit: navigate to "Edit", then press Enter twice to confirm.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -623,14 +736,12 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatalf("expected input value to be 'go test', got %q", m.input.Value())
 	}
 
-	// Simulate typing to edit command.
 	updated, _ = m.Update(tea.KeyPressMsg{Text: " -v"})
 	m = updated.(Model)
 	if m.input.Value() != "go test -v" {
 		t.Fatalf("expected edited input value to be 'go test -v', got %q", m.input.Value())
 	}
 
-	// Press Enter to confirm edited command.
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
@@ -643,13 +754,13 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("timeout waiting for edited response")
 	}
 
-	// Set up again for Always Allow.
+	// 4. Test Always Allow.
+	tc, respChan = makeTC()
 	state.SetPendingApproval(tc)
 	m = New(state)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 4. Test Always Allow: navigate to the 4th option, then press Enter twice.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
@@ -665,13 +776,13 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("timeout waiting for always allow response")
 	}
 
-	// Set up again for Allow this session.
+	// 5. Test Allow this session.
+	tc, respChan = makeTC()
 	state.SetPendingApproval(tc)
 	m = New(state)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	// 5. Test Allow this session: navigate to the 5th option, then press Enter twice.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})

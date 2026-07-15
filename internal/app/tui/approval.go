@@ -32,6 +32,9 @@ const (
 type approvalModel struct {
 	form   *huh.Form
 	tc     *session.PendingToolCall
+	// ownedPending is the PendingToolCall pointer this model was constructed
+	// with. The parent uses it for identity checks against the live state.
+	ownedPending *session.PendingToolCall
 	choice approvalChoice
 	// candidates is the ordered list of approval choices the user can pick.
 	// Tracked locally so we can update am.choice from j/k navigation
@@ -62,11 +65,12 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 		candidates[i] = o.Value
 	}
 	am := &approvalModel{
-		tc:         tc,
-		width:      width,
-		choice:     choiceApprove,
-		candidates: candidates,
-		selected:   0,
+		tc:           tc,
+		ownedPending: tc,
+		width:        width,
+		choice:       choiceApprove,
+		candidates:   candidates,
+		selected:     0,
 	}
 
 	summary := approvalSummary(tc, sb, allowNetwork)

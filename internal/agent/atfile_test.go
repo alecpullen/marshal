@@ -291,7 +291,6 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 		},
 	})
 	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	runner.SteeringProvider = state
 	runner.ProjectID = projectID
 	runner.MaxToolIterations = 5
 

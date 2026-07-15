@@ -68,3 +68,26 @@ func TestImplementerPromptMentionsTesterFeedback(t *testing.T) {
 		t.Error("implementer prompt should reference tests / tester feedback")
 	}
 }
+
+// TestTaskStateRendersTestFailures reproduces F-POL-68: the
+// implementer prompt should see a structured test-failures block,
+// not just free-form prose.
+func TestTaskStateRendersTestFailures(t *testing.T) {
+	ts := NewTaskState("fix tests")
+	ts.AddTestFailure(TestFailure{
+		File:    "internal/foo/foo_test.go",
+		Line:    42,
+		Test:    "TestFooDoesBar",
+		Message: "expected 1, got 0",
+	})
+	rendered := ts.Render()
+	if !strings.Contains(rendered, "Test failures:") {
+		t.Errorf("rendered state should contain 'Test failures:' section, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "TestFooDoesBar") {
+		t.Errorf("rendered state should contain the test name, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "internal/foo/foo_test.go:42") {
+		t.Errorf("rendered state should contain file:line, got:\n%s", rendered)
+	}
+}

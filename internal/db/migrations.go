@@ -62,7 +62,10 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     sandbox_limits_json TEXT,
     sandbox_killed_reason TEXT,
     duration_ms INTEGER,
-    hooks_json TEXT NOT NULL DEFAULT '[]'
+    hooks_json TEXT NOT NULL DEFAULT '[]',
+    sandbox_enabled INTEGER NOT NULL DEFAULT 0,
+    resource_limits INTEGER NOT NULL DEFAULT 0,
+    output_truncated INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS symbols (

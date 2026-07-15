@@ -127,6 +127,80 @@ func TestExtractPinnedFilesDeduplicates(t *testing.T) {
 	}
 }
 
+func TestExtractPinnedFilesRejectsDotDot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	database := openTestDB(t)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	// Seed the index with a traversal path.
+	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "../etc/passwd"}}); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
+	// Even if "../etc/passwd" is in the file index, safeWorkspacePath
+	// must reject it because it escapes the working directory.
+	pinned := extractPinnedFiles("see @../etc/passwd", state, projectID)
+	if len(pinned) != 0 {
+		t.Errorf("got %d snippets, want 0 (path traversal must be rejected)", len(pinned))
+	}
+}
+
+func TestExtractPinnedFilesRejectsShellMetachars(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package foo\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	database := openTestDB(t)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "foo.go"}}); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
+	// The tightened regex @([A-Za-z0-9._/\-]+) captures only valid path
+	// characters. At the goal "try @foo;rm -rf /", the regex matches
+	// "@foo" and captures "foo". Since "foo.go" (not "foo") is in the
+	// index, the result is 0 — the shell metacharacters correctly
+	// broke the path token and the partial match "foo" is not indexed.
+	pinned := extractPinnedFiles("try @foo;rm -rf /", state, projectID)
+	// No path containing shell metacharacters should ever be read.
+	for _, snip := range pinned {
+		if strings.ContainsAny(snip.Path, ";|&`$(){}[]<>!") {
+			t.Errorf("path %q contains shell metacharacters", snip.Path)
+		}
+	}
+}
+
+func TestExtractPinnedFilesAcceptsValidPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	database := openTestDB(t)
+	projectID, err := database.GetOrCreateProject(dir, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := database.SaveFileIndex(projectID, []db.FileIndex{{Path: "a.go"}}); err != nil {
+		t.Fatalf("SaveFileIndex: %v", err)
+	}
+	state := session.New(config.Config{}, dir, time.Unix(100, 0), session.Persistence{DB: database})
+	pinned := extractPinnedFiles("read @a.go", state, projectID)
+	if len(pinned) != 1 || pinned[0].Path != "a.go" {
+		t.Fatalf("pinned = %+v, want [a.go]", pinned)
+	}
+	if !strings.Contains(pinned[0].Content, "package a") {
+		t.Fatalf("content = %q, want 'package a'", pinned[0].Content)
+	}
+}
+
 // TestRunTaskPinsAtFileReferences is an end-to-end check that the runner
 // invokes extractPinnedFiles during RunTask, before the first model call,
 // and that the resulting context pack carries the file content.

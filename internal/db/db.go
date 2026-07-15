@@ -163,8 +163,23 @@ func (db *DB) Migrate() error {
 	return nil
 }
 
+// allowedTableInfo lists the tables whose schema may be introspected via
+// tableColumns. The list is the union of every table referenced by
+// Migrate()'s column-add backfill branches.
+var allowedTableInfo = map[string]bool{
+	"tool_calls":     true,
+	"files":          true,
+	"messages":       true,
+	"agent_sessions": true,
+}
+
 // tableColumns returns the set of column names for the given table.
 func (db *DB) tableColumns(table string) (map[string]bool, error) {
+	if !allowedTableInfo[table] {
+		return nil, fmt.Errorf("tableColumns: table %q is not in the introspection allowlist", table)
+	}
+	// The table name is now provably constant; the Sprintf is still used
+	// for clarity but the value is no longer user-controllable.
 	rows, err := db.sqlDB.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
 		return nil, fmt.Errorf("pragma table_info for %s: %w", table, err)

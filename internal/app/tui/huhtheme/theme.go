@@ -21,7 +21,7 @@ import (
 func WarmSunset() huh.ThemeFunc {
 	return func(isDark bool) *huh.Styles {
 		t := huh.ThemeCharm(isDark)
-		th := theme.Current()
+		th := theme.Load()
 
 		coral := th.AccentPrimary
 		gold := th.StatusWarning

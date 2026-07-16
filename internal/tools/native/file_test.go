@@ -127,6 +127,33 @@ func TestFileReadMissingFileSuggestsClosestPaths(t *testing.T) {
 	}
 }
 
+func TestFileReadRefusesHugeFile(t *testing.T) {
+	tmp := t.TempDir()
+	big := filepath.Join(tmp, "big.txt")
+	// Write a 100 MB file. The default maxOutputBytes in toolset is
+	// much smaller (8 KB or so); we expect a clear error.
+	if err := os.WriteFile(big, make([]byte, 100*1024*1024), 0644); err != nil {
+		t.Fatalf("write big: %v", err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  tmp,
+		CommandRunner:  &fakeRunner{},
+		MaxOutputBytes: 8 * 1024,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err := invokeTool(t, reg, "file.read", `{"path":"big.txt"}`)
+	if err == nil {
+		t.Fatal("expected error for huge file, got success")
+	}
+	if !strings.Contains(err.Error(), "too large") && !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("expected size-related error, got: %v", err)
+	}
+}
+
 func writeFile(t *testing.T, path string, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

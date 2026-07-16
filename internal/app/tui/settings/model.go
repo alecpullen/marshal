@@ -287,6 +287,15 @@ func (m *Model) SetSaveBlocked(reason string) {
 	m.saveBlocked = reason
 }
 
+// saveView returns the rendered save control for the diff overlay footer.
+// When save is blocked the control is dimmed with the reason appended inline.
+func (m *Model) saveView() string {
+	if m.saveBlocked != "" {
+		return mutedStyle.Render("Save (blocked: " + m.saveBlocked + ")")
+	}
+	return keyStyle.Render("Ctrl+S") + " save"
+}
+
 func (m *Model) saveCmd() tea.Cmd {
 	if m.saveBlocked != "" {
 		m.footerMsg = m.saveBlocked
@@ -397,6 +406,8 @@ var (
 	errStyle           = lipgloss.NewStyle().Foreground(settingsTheme.StatusError)
 	footerKeyStyle     = lipgloss.NewStyle().Foreground(settingsTheme.AccentPrimary)
 	footerTextStyle    = lipgloss.NewStyle().Foreground(settingsTheme.FGMuted)
+	mutedStyle         = lipgloss.NewStyle().Faint(true).Foreground(settingsTheme.FGMuted)
+	keyStyle           = lipgloss.NewStyle().Foreground(settingsTheme.AccentPrimary)
 )
 
 func (m Model) View() string {
@@ -548,9 +559,11 @@ func (m Model) diffOverlay(fw, fh int) string {
 			b.WriteString("\n")
 		}
 	}
-	footer := "[\u21b5] save  [Esc] cancel"
+	var footer string
 	if len(m.diffLines) == 0 {
 		footer = "[Esc] close"
+	} else {
+		footer = m.saveView() + "  [Esc] cancel"
 	}
 	content := strings.TrimRight(b.String(), "\n") + "\n" + footerTextStyle.Render(footer)
 	h := min(fh, len(m.diffLines)+5)

@@ -638,6 +638,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		if len(action.Actions) > 0 {
 			if err := r.allReadOnly(action.Actions); err != nil {
+				// F-SEC-11: the violation is a parse failure for budget
+				// purposes. Without this, a model that keeps emitting
+				// non-read-only actions loops forever. `iteration` and
+				// `consecutiveParseFailures` are local variables in
+				// RunTask; increment them directly, the same way the
+				// parse-failure branch above does.
+				iteration++
+				consecutiveParseFailures++
+				r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
 				messages = append(messages, BuildCorrectionMessage(err))
 				continue
 			}

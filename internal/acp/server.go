@@ -474,6 +474,35 @@ func (s *Server) reportFatal(err error) {
 	s.fatalErr <- err
 }
 
+// wireError returns the safe, opaque message emitted to the client.
+// Server-side: the full error is logged via slog before this is
+// called. Wire-side: a fixed string per JSON-RPC error code. F-SEC-37.
+func wireError(err error) string {
+	var rpcErr *jsonRPCError
+	if errors.As(err, &rpcErr) {
+		switch rpcErr.Code {
+		case parseError:
+			return "parse error"
+		case invalidRequest:
+			return "invalid request"
+		case methodNotFound:
+			return "method not found"
+		case invalidParams:
+			return "invalid params"
+		case internalError:
+			return "internal error"
+		case requestCancelled:
+			return "request cancelled"
+		default:
+			return "server error"
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return "request cancelled"
+	}
+	return "internal error"
+}
+
 // dispatchRequest runs the handler for an inbound request with an id
 // and writes exactly one success/error response. If the response
 // encode fails, the error is reported as fatal.
@@ -483,7 +512,9 @@ func (s *Server) dispatchRequest(ctx context.Context, req Request) {
 	result, err := s.dispatch(ctx, req)
 	resp := Response{JSONRPC: "2.0", ID: req.ID}
 	if err != nil {
-		resp.Error = &Error{Code: codeFor(err), Message: err.Error()}
+		resp.Error = &Error{Code: codeFor(err), Message: wireError(err)}
+		// Log the full error server-side for operators. F-SEC-37.
+		s.log().Warn("acp dispatch error", "method", req.Method, "err", err)
 	} else {
 		resp.Result = result
 	}

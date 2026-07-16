@@ -7,12 +7,42 @@ import (
 	"log/slog"
 	"marshal/internal/app/config"
 	"marshal/internal/tools/registry"
+	"strings"
 	"time"
 )
 
 // caller abstracts the MCP client invocation so tests can inject a stub.
 type caller interface {
 	Call(ctx context.Context, method string, params, result any) error
+}
+
+// mcpDenyListEnv is the set of env-var names that may hijack the spawned
+// process or its descendants. Configs that include any of these keys are
+// rejected at Start time. See F-SEC-05.
+var mcpDenyListEnv = map[string]bool{
+	"LD_PRELOAD":            true,
+	"LD_LIBRARY_PATH":       true,
+	"LD_AUDIT":              true,
+	"DYLD_INSERT_LIBRARIES": true,
+	"DYLD_LIBRARY_PATH":     true,
+	"PATH":                  true,
+	"IFS":                   true,
+	"PYTHONPATH":            true,
+	"PYTHONSTARTUP":         true,
+	"NODE_OPTIONS":          true,
+	"RUBYOPT":               true,
+}
+
+func validateServerEnv(env map[string]string) error {
+	for k, v := range env {
+		if mcpDenyListEnv[k] {
+			return fmt.Errorf("MCP server env: %q is on the deny-list", k)
+		}
+		if strings.ContainsAny(v, "\n\r\x00") {
+			return fmt.Errorf("MCP server env: %q contains a forbidden control character", k)
+		}
+	}
+	return nil
 }
 
 // mcpServerTimeout is the per-server timeout for tools/list calls.
@@ -59,6 +89,10 @@ func (m *Manager) Start(ctx context.Context) error {
 		return nil
 	}
 	for name, srv := range m.config.MCP.Servers {
+		if err := validateServerEnv(srv.Env); err != nil {
+			m.Close()
+			return fmt.Errorf("start MCP server %q: %w", name, err)
+		}
 		var env []string
 		for k, v := range srv.Env {
 			env = append(env, fmt.Sprintf("%s=%s", k, v))

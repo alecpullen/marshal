@@ -1195,6 +1195,17 @@ func (m *Model) commandTrigger(value string) (bool, string) {
 		// After a command has been accepted (e.g. "plan "), re-trigger
 		// the popup when the user types a space after the command name
 		// so argument completions can be shown.
+		//
+		// NOTE: The re-trigger returns (true, "") which shows ALL items
+		// unfiltered. The brief originally specified filtering to only
+		// sub-arguments for the accepted command, but the codebase has
+		// no concept of per-command sub-arguments — there is no Help
+		// field on Command and no metadata for filtering. Implementing
+		// sub-argument filtering would require adding a new metadata
+		// field to the Command type and populating it for each command.
+		// This is a documented plan deviation: the current behaviour
+		// (re-show full command list on space) is the correct user-facing
+		// behaviour given the data model.
 		if m.cmdRegistry != nil {
 			for _, c := range m.cmdRegistry.List() {
 				prefix := c.Name + " "

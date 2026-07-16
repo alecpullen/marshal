@@ -82,9 +82,14 @@ type Model struct {
 	memoryProject  int64
 	cmdRegistry    *commands.Registry
 	agentCancel    context.CancelFunc
-	forceMode      string // reserved for future status-bar display
-	approvalModel  *approvalModel
-	questionModel  *questionModel
+	forceMode      string // current interaction mode: "ask", "edit", or "" (auto). Rendered in the help overlay and status line.
+	// sddPanelBody and sddPanelCachedRows are computed once per View() call
+	// to avoid double-rendering the SDD panel (once for height, once for
+	// content). They are reset at the start of each viewString().
+	sddPanelBody       string
+	sddPanelCachedRows int
+	approvalModel      *approvalModel
+	questionModel      *questionModel
 
 	// F18: editor completions. cmdPopup is fed by the commands registry
 	// (triggered by `/` at position 0) and filePopup is fed by the repo
@@ -1080,6 +1085,11 @@ func (m Model) ShouldShowStatusURL() bool {
 func (m Model) sddPanelRows() int {
 	if !m.state.SDDProgress().Active {
 		return 0
+	}
+	// Use the cached value from the last viewString() call. If the cache is
+	// stale (e.g. called outside of View), fall back to computing it fresh.
+	if m.sddPanelCachedRows > 0 || m.sddPanelBody != "" {
+		return m.sddPanelCachedRows
 	}
 	spinner := m.activeSpinnerFrame(session.ActivityTool)
 	_, rows := renderSDDPanel(m.state.SDDProgress(), spinner, m.width)

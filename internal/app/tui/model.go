@@ -2308,17 +2308,6 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 	return h
 }
 
-func permissionForTool(toolName string) string {
-	switch toolName {
-	case "shell.run", "test.run":
-		return "shell"
-	case "file.write_patch":
-		return "file.write_patch"
-	default:
-		return toolName
-	}
-}
-
 func patternForApproval(tc *session.PendingToolCall) string {
 	if tc.Name == "shell.run" || tc.Name == "test.run" {
 		argv, err := shlex.Split(tc.Command)

@@ -1429,7 +1429,7 @@ func (m *Model) refreshViewport() {
 	if err := m.state.ProviderError(); err != nil {
 		b.WriteString(renderProviderError(err, m.viewport.Width()))
 		b.WriteString("\n")
-		b.WriteString(mutedStyle.Render("Run /connect to add a provider, or /models to pick a model."))
+		b.WriteString(mutedStyle().Render("Run /connect to add a provider, or /models to pick a model."))
 		b.WriteString("\n")
 	}
 	if len(queued) > 0 {
@@ -2272,20 +2272,7 @@ var (
 	warningColor color.Color
 	errorColor   color.Color
 
-	mutedStyle         lipgloss.Style
-	panelTitleStyle    lipgloss.Style
-	thinkingLineStyle  lipgloss.Style
-	codeBorderStyle    lipgloss.Style
-	toolNameStyle      lipgloss.Style
-	keyHintStyle       lipgloss.Style
-	riskLabelStyle     lipgloss.Style
-	dimSeparator       = " · "
-	inputBoxStyle      lipgloss.Style
-	statusBarStyle     lipgloss.Style
-	browserGlyphStyle  lipgloss.Style
-	browserPrefixStyle lipgloss.Style
-	browserBarStyle    lipgloss.Style
-	urlStyle           lipgloss.Style
+	dimSeparator = " · "
 )
 
 func loadTheme(tui config.TUIConfig) {
@@ -2305,43 +2292,54 @@ func loadTheme(tui config.TUIConfig) {
 	warningColor = activeTheme.StatusWarning
 	errorColor = activeTheme.StatusError
 
-	mutedStyle = lipgloss.NewStyle().Foreground(activeTheme.FGMuted)
-	panelTitleStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.FGEmphasis).
-		Bold(true)
-	thinkingLineStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.FGMuted).
-		Italic(true)
-	codeBorderStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.FGMuted).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(activeTheme.FGMuted)
-	toolNameStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.AccentTertiary)
-	keyHintStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.AccentPrimary).
-		Bold(true)
-	riskLabelStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.StatusWarning).
-		Bold(true)
-	dimSeparator = " · "
-	inputBoxStyle = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(activeTheme.AccentPrimary).
-		Padding(0, 1)
-	statusBarStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.FGDefault)
-	browserGlyphStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.AccentTertiary)
-	browserPrefixStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.AccentSecondary)
-	browserBarStyle = lipgloss.NewStyle().
-		Background(activeTheme.BGSurface).
-		BorderTop(true).
-		BorderForeground(activeTheme.BorderMuted)
-	urlStyle = lipgloss.NewStyle().
-		Foreground(activeTheme.FGDefault)
+	theme.Reload(activeTheme)
 }
+
+// Style helpers — lazy reads from theme.Current() so theme reloads propagate.
+func mutedStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func panelTitleStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().FGEmphasis).Bold(true)
+}
+func thinkingLineStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Italic(true)
+}
+func codeBorderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(theme.Current().FGMuted).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Current().FGMuted)
+}
+func toolNameStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)
+}
+func keyHintStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary).Bold(true)
+}
+func riskLabelStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning).Bold(true)
+}
+func inputBoxStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Current().AccentPrimary).
+		Padding(0, 1)
+}
+func statusBarStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().FGDefault)
+}
+func browserGlyphStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)
+}
+func browserPrefixStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary)
+}
+func browserBarStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Background(theme.Current().BGSurface).
+		BorderTop(true).
+		BorderForeground(theme.Current().BorderMuted)
+}
+func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
 func compactTokenCount(tokens int) string {
 	if tokens >= 1000 {

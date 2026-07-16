@@ -134,7 +134,7 @@ func (m Model) renderTranscriptFrame() string {
 	vpHeight := max(m.viewport.Height(), 1)
 	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.viewport.View())
 	if !m.viewportFollow && m.viewport.TotalLineCount() > m.viewport.Height() {
-		hint := mutedStyle.Render("↑ scrolled — End to follow")
+		hint := mutedStyle().Render("↑ scrolled — End to follow")
 		return lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}
 	return content
@@ -163,12 +163,12 @@ func (m Model) renderInputArea() string {
 		}
 	} else {
 		if m.state.SDDProgress().Active {
-			hint := mutedStyle.Render("SDD running — /stop to cancel, wait for completion to resume typing")
+			hint := mutedStyle().Render("SDD running — /stop to cancel, wait for completion to resume typing")
 			rows = append(rows, hint)
 			rows = append(rows, m.input.View())
 			content := lipgloss.JoinVertical(lipgloss.Left, rows...)
 			border := mauveColor
-			return inputBoxStyle.BorderForeground(border).Width(inputInnerWidth).Render(content)
+			return inputBoxStyle().BorderForeground(border).Width(inputInnerWidth).Render(content)
 		}
 		if strip := m.renderActivityStrip(); strip != "" {
 			rows = append(rows, strip)
@@ -186,7 +186,7 @@ func (m Model) renderInputArea() string {
 	} else if !m.input.Focused() {
 		border = mauveColor
 	}
-	return inputBoxStyle.BorderForeground(border).Width(inputInnerWidth).Render(content)
+	return inputBoxStyle().BorderForeground(border).Width(inputInnerWidth).Render(content)
 }
 
 func (m Model) renderActivityStrip() string {
@@ -282,7 +282,7 @@ func (m Model) renderCompletionPopup() string {
 	for i := 0; i < max; i++ {
 		mi := offset + i
 		marker := "  "
-		style := mutedStyle
+		style := mutedStyle()
 		if mi == p.index {
 			marker = "▸ "
 			style = promptPrefixStyle
@@ -314,7 +314,7 @@ func (m Model) tooSmallView() string {
 		trimmedLines[i] = ansi.Cut(line, 0, boxW)
 	}
 	return lipgloss.Place(boxW, boxH, lipgloss.Center, lipgloss.Center,
-		mutedStyle.Render(strings.Join(trimmedLines, "\n")),
+		mutedStyle().Render(strings.Join(trimmedLines, "\n")),
 	)
 }
 
@@ -329,6 +329,6 @@ func (m Model) fallbackView() string {
 		return m.memoryModel.View()
 	}
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		mutedStyle.Render("Marshal — waiting for terminal resize..."),
+		mutedStyle().Render("Marshal — waiting for terminal resize..."),
 	)
 }

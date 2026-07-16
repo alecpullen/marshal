@@ -16,12 +16,16 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
-func groupStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary) }
+func groupStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary)
+}
 func detailStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
 func nowStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary) }
 func badgeStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
-func cursorStyle() lipgloss.Style { return lipgloss.NewStyle().Bold(true).Background(theme.Current().BGSelection) }
-func mutedStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func cursorStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Background(theme.Current().BGSelection)
+}
+func mutedStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
 
 // Item is one pickable row.
 type Item struct {

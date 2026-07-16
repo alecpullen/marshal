@@ -16,9 +16,9 @@ func (m Model) renderBrowserBar() string {
 
 	available := max(m.width-4, 1)
 	var b strings.Builder
-	b.WriteString(browserGlyphStyle.Render("🌐"))
+	b.WriteString(browserGlyphStyle().Render("🌐"))
 	b.WriteString(" ")
-	b.WriteString(urlStyle.Render(truncateURL(bi.URL, available)))
+	b.WriteString(urlStyle().Render(truncateURL(bi.URL, available)))
 
 	if bi.Title != "" {
 		b.WriteString(dimSep(bi.Title))
@@ -31,14 +31,14 @@ func (m Model) renderBrowserBar() string {
 	}
 
 	line := b.String()
-	return browserBarStyle.
+	return browserBarStyle().
 		Width(max(m.width, 1)).
 		MaxWidth(max(m.width, 1)).
 		Render(ansi.Cut(" "+line+" ", 0, m.width))
 }
 
 func dimSep(text string) string {
-	return mutedStyle.Render(" · ") + text
+	return mutedStyle().Render(" · ") + text
 }
 
 func truncateURL(raw string, max int) string {

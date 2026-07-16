@@ -207,7 +207,7 @@ func (am *approvalModel) View() string {
 		b.WriteString(promptPrefixStyle.Render("▸ Submit selected action"))
 	} else {
 		b.WriteString("\n")
-		b.WriteString(mutedStyle.Render("  Submit selected action"))
+		b.WriteString(mutedStyle().Render("  Submit selected action"))
 	}
 	return b.String()
 }
@@ -220,7 +220,7 @@ func (am *approvalModel) IsDone() bool           { return am.done }
 // risk, sandbox isolation) but as plain titled text the select can render.
 func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool) string {
 	titleStyle := lipgloss.NewStyle().Foreground(warningColor).Bold(true)
-	muted := mutedStyle
+	muted := mutedStyle()
 	text := lipgloss.NewStyle()
 
 	var b strings.Builder
@@ -232,7 +232,7 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 		b.WriteString("\n")
 		b.WriteString(text.Render(tc.Command))
 	} else {
-		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle.Render(tc.Name))
+		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle().Render(tc.Name))
 		b.WriteString("\n")
 		if tc.Schema != "" {
 			b.WriteString(muted.Render("Description: ") + text.Render(tc.Schema))
@@ -241,7 +241,7 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 		b.WriteString(muted.Render("Arguments: ") + text.Render(tc.Args))
 	}
 	b.WriteString("\n\n")
-	b.WriteString(riskLabelStyle.Render("Risk: "))
+	b.WriteString(riskLabelStyle().Render("Risk: "))
 	b.WriteString(text.Render(riskText(tc)))
 	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
 		b.WriteString("\n")

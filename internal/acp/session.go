@@ -688,5 +688,3 @@ func trustedRoots() ([]string, error) {
 	}
 	return roots, nil
 }
-
-

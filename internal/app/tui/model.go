@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"image/color"
 	"os"
 	"path/filepath"
@@ -2302,21 +2303,33 @@ func compactTokenCount(tokens int) string {
 }
 
 func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string) uint64 {
-	var h uint64
-	h = uint64(len(items)) ^ (uint64(streamLen) << 20) ^ (uint64(width) << 40) ^ (uint64(len(todos)) << 50) ^ (uint64(len(queued)) << 60)
-	for i, item := range items {
-		h ^= uint64(item.Timestamp.UnixNano()) * uint64(i+1)
+	h := fnv.New64a()
+	fmt.Fprintf(h, "c=%d|w=%d|f=%d|", len(items), width, flags(streamLen, busy, len(todos), len(queued)))
+	for _, item := range items {
+		fmt.Fprintf(h, "%d|%d|", item.Kind, item.Timestamp.UnixNano())
+		if item.Message != nil {
+			fmt.Fprintf(h, "%s|%s|%s\x00", item.Message.Role, item.Message.ContentType, item.Message.Content)
+		}
 	}
-	for i, todo := range todos {
-		h ^= uint64(len(todo.Content)+len(todo.Status)) * uint64(i+7)
+	for _, todo := range todos {
+		fmt.Fprintf(h, "todo=%s|%s\x00", todo.Content, todo.Status)
 	}
-	for i, q := range queued {
-		h ^= uint64(len(q)) * uint64(i+13)
+	for _, q := range queued {
+		fmt.Fprintf(h, "q=%s\x00", q)
 	}
+	return h.Sum64()
+}
+
+// flags packs boolean/len state into a single uint64 for the hash.
+func flags(streamLen int, busy bool, nTodos, nQueued int) uint64 {
+	var f uint64
 	if busy {
-		h ^= 0xDEADBEEF
+		f |= 1
 	}
-	return h
+	f |= uint64(streamLen) << 1
+	f |= uint64(nTodos) << 21
+	f |= uint64(nQueued) << 41
+	return f
 }
 
 func patternForApproval(tc *session.PendingToolCall) string {

@@ -1077,10 +1077,12 @@ func (m Model) ShouldShowStatusURL() bool {
 }
 
 func (m Model) sddPanelRows() int {
-	if m.state.SDDProgress().Active {
-		return sddPanelRows
+	if !m.state.SDDProgress().Active {
+		return 0
 	}
-	return 0
+	spinner := m.activeSpinnerFrame(session.ActivityTool)
+	_, rows := renderSDDPanel(m.state.SDDProgress(), spinner, m.width)
+	return rows
 }
 
 func (m *Model) updateViewportHeight() bool {

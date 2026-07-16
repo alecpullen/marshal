@@ -76,7 +76,7 @@ func (m Model) viewString() string {
 		rows = append(rows, bar)
 	}
 	sddSpinner := m.activeSpinnerFrame(session.ActivityTool)
-	if panel := renderSDDPanel(m.state.SDDProgress(), sddSpinner, m.width); panel != "" {
+	if panel, _ := renderSDDPanel(m.state.SDDProgress(), sddSpinner, m.width); panel != "" {
 		rows = append(rows, panel)
 	}
 	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))

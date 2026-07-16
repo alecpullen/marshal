@@ -31,6 +31,7 @@ type questionModel struct {
 	width   int
 	done    bool
 	aborted bool
+	initCmd tea.Cmd
 
 	answers []session.Answer
 	inputs  []*string
@@ -108,9 +109,7 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 		WithShowHelp(false).
 		WithKeyMap(km)
 
-	if cmd := qm.form.Init(); cmd != nil {
-		_ = cmd()
-	}
+	qm.initCmd = qm.form.Init()
 	return qm
 }
 
@@ -127,6 +126,8 @@ func buildQuestionOptions(in []string, allowOther bool) []huh.Option[string] {
 	}
 	return opts
 }
+
+func (qm *questionModel) Init() tea.Cmd { return qm.initCmd }
 
 func (qm *questionModel) SetSize(width int) {
 	qm.width = width

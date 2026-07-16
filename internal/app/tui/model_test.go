@@ -132,6 +132,62 @@ func TestHandleApprovalRejectsForeignPending(t *testing.T) {
 	}
 }
 
+// TestHandleApprovalDoubleEnterAfterComplete verifies that sending a second
+// Enter after the approval form has already completed does not panic, does
+// not deadlock, and does not send a second decision on the channel.
+//
+// The approval form requires two Enters to complete: the first Enter arms the
+// explicit submit step (submitPending=true), and the second Enter confirms the
+// selected action (done=true, choice processed). After the form completes,
+// handleApproval clears m.approvalModel and calls state.SetPendingApproval(nil),
+// so a subsequent Enter falls through to the regular keypress switch and is a
+// safe no-op.
+func TestHandleApprovalDoubleEnterAfterComplete(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	ch := make(chan session.UserApprovalDecision, 1)
+	tc := &session.PendingToolCall{
+		ID:           "p1",
+		Name:         "shell.run",
+		Command:      "echo hello",
+		Risk:         "low",
+		ResponseChan: ch,
+	}
+	state.SetPendingApproval(tc)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+
+	// First Enter: arms the explicit submit step (submitPending = true).
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Second Enter: confirms the selected action (done = true). handleApproval
+	// processes the choice: calls tc.Respond (sends on ch), clears
+	// m.approvalModel, and calls state.SetPendingApproval(nil).
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Third Enter: the regression scenario. PendingApproval() is nil so
+	// Update falls through to the regular keypress switch — no approval
+	// handler, no panic, no deadlock.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	_ = updated.(Model)
+
+	// The channel must have exactly one value (the first decision) and be closed.
+	dec, ok := <-ch
+	if !ok {
+		t.Fatal("channel closed without a value")
+	}
+	if !dec.Approved {
+		t.Fatal("expected approved decision")
+	}
+	// Second read must yield !ok (channel closed after the single send).
+	_, ok = <-ch
+	if ok {
+		t.Fatal("second Enter sent an extra decision on the channel")
+	}
+}
+
 // TestRespondIsIdempotent verifies that calling Respond twice on the same
 // PendingToolCall or PendingQuestion only sends once.
 func TestRespondIsIdempotent(t *testing.T) {
@@ -1275,8 +1331,15 @@ func TestEscDuringApprovalDenies(t *testing.T) {
 	}
 	state.SetPendingApproval(tc)
 	model := New(state)
+	// First Esc arms the pending deny.
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m := updated.(Model)
+	if cmd != nil {
+		t.Fatal("first Esc should not return a quit command")
+	}
+	// Second Esc confirms the deny.
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(Model)
 
 	if cmd != nil {
 		t.Fatal("Esc during approval should not return a quit command")
@@ -2202,7 +2265,18 @@ func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
 	}
 	state.SetPendingQuestion(q)
 
-	for _, r := range "archive" {
+	// First Update constructs the question model and returns the Init()
+	// command without processing the keypress. The keypress is dropped
+	// by the construct-Update; re-send the first character, then continue.
+	first, cmd := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = first.(Model)
+	if cmd != nil {
+		_ = cmd()
+	}
+	// Re-send the 'a' that was dropped by the construct-Update.
+	model, _ := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = model.(Model)
+	for _, r := range "rchive" {
 		model, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = model.(Model)
 	}
@@ -2230,6 +2304,14 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 	}
 	state.SetPendingQuestion(q)
 
+	// First Update constructs the question model and returns the Init()
+	// command without processing the keypress. The Esc is dropped by
+	// the construct-Update; re-send it so the form declines.
+	first, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = first.(Model)
+	if cmd != nil {
+		_ = cmd()
+	}
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	select {
@@ -3782,4 +3864,153 @@ func TestPatternForApproval_SecurityProperty(t *testing.T) {
 	if strings.Contains(pattern, "*") {
 		t.Errorf("pattern %q should not contain wildcard", pattern)
 	}
+}
+
+// TestSettingsBlockedByApproval verifies that Ctrl+O does not open the
+// settings overlay when a tool approval is pending (F-BUG-147).
+func TestSettingsBlockedByApproval(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	tc := &session.PendingToolCall{
+		ID:           "block-1",
+		Name:         "shell.run",
+		Command:      "echo blocked",
+		Risk:         "low",
+		Reason:       "testing block",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(tc)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// Ctrl+O should NOT open settings while approval is pending.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	if m.settingsOpen {
+		t.Fatal("settingsOpen should be false when approval is pending")
+	}
+
+	// A system message should have been added.
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected a system message about pending tool decision")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleSystem {
+		t.Fatalf("last message role = %v, want system", last.Role)
+	}
+	if !strings.Contains(last.Content, "pending tool decision") {
+		t.Fatalf("last message = %q, want 'pending tool decision' message", last.Content)
+	}
+}
+
+// TestMemoryBlockedByApproval verifies that Ctrl+K does not open the
+// memory browser overlay when a tool approval is pending (F-BUG-147).
+func TestMemoryBlockedByApproval(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	tc := &session.PendingToolCall{
+		ID:           "block-2",
+		Name:         "shell.run",
+		Command:      "echo blocked",
+		Risk:         "low",
+		Reason:       "testing block",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(tc)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// Ctrl+K should NOT open memory while approval is pending.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	if m.memoryOpen {
+		t.Fatal("memoryOpen should be false when approval is pending")
+	}
+
+	// A system message should have been added.
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected a system message about pending tool decision")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleSystem {
+		t.Fatalf("last message role = %v, want system", last.Role)
+	}
+	if !strings.Contains(last.Content, "pending tool decision") {
+		t.Fatalf("last message = %q, want 'pending tool decision' message", last.Content)
+	}
+}
+
+// TestSettingsBlockReason verifies that settingsBlockReason returns the
+// correct blocking message for each condition (F-BUG-153).
+func TestSettingsBlockReason(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+
+	t.Run("busy", func(t *testing.T) {
+		m := New(state)
+		m.busy = true
+		if got := m.settingsBlockReason(); got != settingsBusyMessage {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, settingsBusyMessage)
+		}
+	})
+
+	t.Run("running jobs", func(t *testing.T) {
+		m := New(state)
+		state.SetRunningJobsCount(1)
+		if got := m.settingsBlockReason(); got != settingsBusyMessage {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, settingsBusyMessage)
+		}
+		state.SetRunningJobsCount(0)
+	})
+
+	t.Run("pending approval", func(t *testing.T) {
+		tc := &session.PendingToolCall{
+			ID:           "test-approval",
+			Name:         "test.tool",
+			Command:      "echo test",
+			Risk:         "low",
+			Reason:       "testing",
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		}
+		state.SetPendingApproval(tc)
+		m := New(state)
+		want := "Resolve the pending tool approval to save."
+		if got := m.settingsBlockReason(); got != want {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, want)
+		}
+		state.SetPendingApproval(nil)
+	})
+
+	t.Run("pending question", func(t *testing.T) {
+		q := &session.PendingQuestion{
+			Questions:    []session.Question{{Question: "test?"}},
+			ResponseChan: make(chan []session.Answer, 1),
+		}
+		state.SetPendingQuestion(q)
+		m := New(state)
+		want := "Answer the pending question to save."
+		if got := m.settingsBlockReason(); got != want {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, want)
+		}
+		state.SetPendingQuestion(nil)
+	})
+
+	t.Run("picker open", func(t *testing.T) {
+		m := New(state)
+		m.pickerModel = &picker.Model{}
+		want := "Close the picker to save."
+		if got := m.settingsBlockReason(); got != want {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no block", func(t *testing.T) {
+		m := New(state)
+		if got := m.settingsBlockReason(); got != "" {
+			t.Fatalf("settingsBlockReason = %q, want empty string", got)
+		}
+	})
 }

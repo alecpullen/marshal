@@ -346,6 +346,33 @@ func TestLegacyRouteHasSaneDefaults(t *testing.T) {
 	}
 }
 
+func TestLegacyRouteBlockedWhenRemoteNotAllowed(t *testing.T) {
+	r := NewStaticRouter(Config{
+		RemoteAllowed:  false,
+		LegacyProvider: "https://api.openai.com/v1",
+		LegacyModel:    "gpt-4o",
+	})
+	route, ok := r.legacyRoute(RoleImplementer)
+	if ok {
+		t.Fatalf("expected legacyRoute to be blocked; got %+v", route)
+	}
+}
+
+func TestLegacyRouteAllowedWhenLocal(t *testing.T) {
+	r := NewStaticRouter(Config{
+		RemoteAllowed:  false,
+		LegacyProvider: "http://localhost:11434/v1",
+		LegacyModel:    "qwen2.5-coder:7b",
+	})
+	route, ok := r.legacyRoute(RoleImplementer)
+	if !ok {
+		t.Fatalf("expected legacyRoute to allow localhost; got ok=false")
+	}
+	if route.Preset.Provider != "http://localhost:11434/v1" {
+		t.Fatalf("wrong provider: %q", route.Preset.Provider)
+	}
+}
+
 func TestResolveRoleReturnsFallbackErrorOnExhaustion(t *testing.T) {
 	// Both repo_scout and implementer are unconfigured in the profile,
 	// and no legacy provider exists. The returned error should reference

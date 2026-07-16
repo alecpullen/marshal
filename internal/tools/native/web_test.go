@@ -58,6 +58,34 @@ func TestHtmlToTextDecodesNumericAndNamedEntities(t *testing.T) {
 	}
 }
 
+func TestWebFetchRejectsSSRFRedirect(t *testing.T) {
+	// Server returns a 302 redirect to a private IP (AWS metadata).
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer target.Close()
+
+	// ssrfCheck returns false for the test server (so the initial request goes through)
+	// but true for the redirect target (169.254.169.254).
+	tools := &toolSet{
+		webEnabled:     true,
+		maxOutputBytes: 200000,
+		ssrfCheck: func(u *url.URL) bool {
+			return u.Hostname() == "169.254.169.254"
+		},
+		// webHTTPClient left nil so the handler constructs a client with CheckRedirect.
+	}
+	tool := tools.webFetchTool()
+	args, _ := json.Marshal(map[string]any{"url": target.URL})
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: args})
+	if err == nil {
+		t.Fatal("expected SSRF redirect to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "private") && !strings.Contains(err.Error(), "redirect") && !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("expected SSRF/redirect error, got %v", err)
+	}
+}
+
 func TestWebFetchReturnsText(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("<html><body>hello</body></html>"))

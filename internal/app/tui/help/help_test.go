@@ -60,7 +60,7 @@ func TestFooterApprovalWording(t *testing.T) {
 }
 
 func TestOverlayEnumeratesAllBindings(t *testing.T) {
-	out := stripANSI(Overlay(80, 24))
+	out := stripANSI(Overlay(80, 24, OverlayHints{}))
 	for _, want := range []string{"Enter", "Shift+Enter", "/", "@", "Esc", "?", "Ctrl+O", "Ctrl+K", "Ctrl+G", "Ctrl+R", "Ctrl+X", "PgUp", "PgDn", "End"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help overlay missing %q:\n%s", want, out)
@@ -79,7 +79,7 @@ func firstLineContaining(s, substr string) string {
 }
 
 func TestOverlayUsesFixedKeyColumn(t *testing.T) {
-	out := stripANSI(Overlay(120, 80))
+	out := stripANSI(Overlay(120, 80, OverlayHints{}))
 	tabLine := firstLineContaining(out, "Tab")
 	altLine := firstLineContaining(out, "Alt+Shift+M")
 	if tabLine == "" || altLine == "" {
@@ -98,7 +98,7 @@ func TestOverlayUsesFixedKeyColumn(t *testing.T) {
 }
 
 func TestOverlayListsApprovalShortcuts(t *testing.T) {
-	out := stripANSI(Overlay(120, 60))
+	out := stripANSI(Overlay(120, 60, OverlayHints{}))
 	for _, want := range []string{"always allow", "deny", "edit command/args", "PgUp", "Ctrl+U"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("overlay missing %q: %s", want, out)
@@ -107,7 +107,7 @@ func TestOverlayListsApprovalShortcuts(t *testing.T) {
 }
 
 func TestOverlayWrapsOnNarrowWidth(t *testing.T) {
-	out := stripANSI(Overlay(40, 30))
+	out := stripANSI(Overlay(40, 30, OverlayHints{}))
 	// With width=40, desc column is max(40-20-4, 20) = 20 chars.
 	// "cancel turn · dismiss popup · deny approval" (42 chars) wraps.
 	// Verify that "cancel turn" and "approval" end up on different lines.
@@ -126,5 +126,12 @@ func TestOverlayWrapsOnNarrowWidth(t *testing.T) {
 	}
 	if cancelLine == approvalLine {
 		t.Fatal("expected description to wrap, but 'cancel turn' and 'approval' are on the same line")
+	}
+}
+
+func TestOverlayRendersMode(t *testing.T) {
+	out := stripANSI(Overlay(120, 60, OverlayHints{Mode: "ask"}))
+	if !strings.Contains(out, "ask") {
+		t.Fatalf("mode not rendered: %s", out)
 	}
 }

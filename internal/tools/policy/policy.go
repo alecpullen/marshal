@@ -50,6 +50,7 @@ type PolicyEngine struct {
 	rules        []permissions.Rule
 	mu           sync.RWMutex
 	logger       *slog.Logger
+	registry     *registry.Registry
 }
 
 func NewEngine(cfg *config.Config, sessionRules []string) *PolicyEngine {
@@ -106,6 +107,16 @@ func (pe *PolicyEngine) SetLogger(l *slog.Logger) {
 		return
 	}
 	pe.logger = l
+}
+
+// WithRegistry sets the tool registry the policy engine consults to look
+// up a tool's registered Risk level. When nil (the default), the engine
+// falls back to the legacy "low-risk read tool" allow for any non-shell
+// tool (preserves the pre-registry behavior for tests and legacy callers).
+func (pe *PolicyEngine) WithRegistry(r *registry.Registry) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	pe.registry = r
 }
 
 // Logger returns the logger used by the engine. May be the package
@@ -235,6 +246,21 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	}
 
 	if toolName != "shell.run" && toolName != "test.run" {
+		if pe.registry != nil {
+			if tool, ok := pe.registry.Lookup(toolName); ok {
+				switch tool.Risk {
+				case registry.RiskReadOnly:
+					return DecisionAllow, "read-only tool", nil
+				case registry.RiskWorkspaceWrite, registry.RiskCommand,
+					registry.RiskNetwork, registry.RiskDestructive:
+					return DecisionConfirm,
+						fmt.Sprintf("%s tool requires approval", tool.Risk), nil
+				}
+				// Unknown risk: fall through to the existing
+				// "low-risk read tool" allow (preserves current behavior
+				// for tools that didn't declare Risk).
+			}
+		}
 		return DecisionAllow, "low-risk read tool", nil
 	}
 

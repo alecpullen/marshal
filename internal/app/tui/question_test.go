@@ -9,6 +9,42 @@ import (
 	"marshal/internal/app/session"
 )
 
+func TestQuestionModelInitReturnsCommand(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{
+			{Question: "What is your favorite color?"},
+		},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
+	qm := newQuestionModel(q, 80)
+
+	cmd := qm.Init()
+	if cmd == nil {
+		t.Fatal("Init() should return a non-nil command")
+	}
+
+	// Execute the command to produce a message that the Bubble Tea
+	// runtime would normally process.
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("executing Init() command should return a non-nil message")
+	}
+
+	// Feed the message back to the form to verify it processes
+	// without error. The form should remain in normal state.
+	_, updateCmd := qm.form.Update(msg)
+	if qm.form.State != huh.StateNormal {
+		t.Fatal("form should remain in normal state after processing Init() message")
+	}
+	_ = updateCmd
+
+	// Verify the first field is focused after Init() is performed.
+	focused := qm.form.GetFocusedField()
+	if focused == nil {
+		t.Fatal("GetFocusedField() should return a non-nil field after Init()")
+	}
+}
+
 func TestQuestionSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	ch := make(chan []session.Answer, 1)
 	q := &session.PendingQuestion{

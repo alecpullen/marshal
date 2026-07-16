@@ -593,6 +593,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
+	// tool decision is pending. These must be intercepted before the
+	// approval/question routing below, which would otherwise swallow them.
+	if m.state.PendingApproval() != nil || m.state.PendingQuestion() != nil {
+		if k, ok := msg.(tea.KeyPressMsg); ok {
+			switch k.String() {
+			case "ctrl+o":
+				m.state.AddMessage(session.RoleSystem,
+					"Resolve the pending tool decision before opening settings.",
+					session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			case "ctrl+k":
+				m.state.AddMessage(session.RoleSystem,
+					"Resolve the pending tool decision before opening memory browser.",
+					session.ContentTypePlain)
+				m.refreshViewport()
+				return m, nil
+			}
+		}
+	}
+
 	// Inline approval chooser: when a tool call is pending, route every
 	// message (keypresses AND huh's internal nextField/nextGroup messages)
 	// to the approval form so selection navigation round-trips correctly.
@@ -971,6 +993,7 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
 	if m.questionModel == nil {
 		m.questionModel = newQuestionModel(q, max(m.width-4, 30))
+		return m, m.questionModel.Init()
 	}
 	qm, cmd := m.questionModel.Update(msg)
 	m.questionModel = qm
@@ -1453,12 +1476,22 @@ func (m *Model) beginShutdown() tea.Cmd {
 	return tea.Quit
 }
 
-// settingsBlockReason returns settingsBusyMessage when the model is busy
-// or there are background jobs running, otherwise empty. Used to populate
-// the settings model's saveBlocked field.
+// settingsBlockReason returns a message when the model is busy, has
+// background jobs, a pending approval, a pending question, or an open
+// picker — any condition that should block settings save. Used to
+// populate the settings model's saveBlocked field.
 func (m Model) settingsBlockReason() string {
 	if m.busy || m.state.RunningJobsCount() > 0 {
 		return settingsBusyMessage
+	}
+	if m.state.PendingApproval() != nil {
+		return "Resolve the pending tool approval to save."
+	}
+	if m.state.PendingQuestion() != nil {
+		return "Answer the pending question to save."
+	}
+	if m.pickerModel != nil {
+		return "Close the picker to save."
 	}
 	return ""
 }
@@ -2273,17 +2306,6 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 		h ^= 0xDEADBEEF
 	}
 	return h
-}
-
-func permissionForTool(toolName string) string {
-	switch toolName {
-	case "shell.run", "test.run":
-		return "shell"
-	case "file.write_patch":
-		return "file.write_patch"
-	default:
-		return toolName
-	}
 }
 
 func patternForApproval(tc *session.PendingToolCall) string {

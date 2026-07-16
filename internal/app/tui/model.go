@@ -499,10 +499,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Picker modal: handle PickedMsg/CancelledMsg first, then route key
-	// messages to the picker while it's open (focus trap). Non-key messages
-	// (ticks, agent events) keep flowing to normal handlers so background
-	// work continues.
+	// pickerModel is pointer-updated: m.pickerModel.Update(msg) mutates
+	// the picker in place via its embedded pointer, and returns the same
+	// *picker.Model. We forward the returned command but discard the
+	// model — assigning back is a no-op. The picker keeps its own
+	// state.
 	switch pm := msg.(type) {
 	case connect.DoneMsg:
 		m.applyConnectDone(pm)

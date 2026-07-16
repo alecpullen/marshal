@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -245,15 +246,23 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		// in a goroutine so the forwarder never blocks on the
 		// bridge (F-CON-54).
 		if ev.Type == session.EventPendingApprovalChanged &&
-			ev.Payload.PendingApproval != nil &&
-			m.bridge != nil {
+			ev.Payload.PendingApproval != nil {
 			pa := ev.Payload.PendingApproval
-			go func() {
-				if err := m.bridge.Request(turnCtx, pa); err != nil {
-					slotCancel()
-					subCancel()
-				}
-			}()
+			if m.bridge == nil {
+				// F-SEC-13: without a bridge, the runner is blocked on
+				// ResponseChan. Send a deny so the runner unblocks and the
+				// turn proceeds. Log so operators can see the misconfig.
+				pa.Respond(session.UserApprovalDecision{Approved: false})
+				slog.Default().Warn("acp: pending approval arrived but no permission bridge; denied",
+					"session", p.SessionID, "approval", pa.ID)
+			} else {
+				go func() {
+					if err := m.bridge.Request(turnCtx, pa); err != nil {
+						slotCancel()
+						subCancel()
+					}
+				}()
+			}
 		}
 
 		// Answer pending questions with unanswered immediately —

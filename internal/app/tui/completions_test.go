@@ -211,7 +211,8 @@ func TestCompletionPopupShowsSlashPrefix(t *testing.T) {
 		{Text: "plan", Description: "Plan a task", Kind: completionCommand},
 	})
 	pop.update("pl")
-	out := pop.View()
+	m := Model{cmdPopup: pop, width: 80}
+	out := stripANSI(m.renderCompletionPopup())
 	if !strings.Contains(out, "/plan") {
 		t.Fatalf("expected /plan in popup, got %q", out)
 	}

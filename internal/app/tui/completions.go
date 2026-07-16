@@ -161,51 +161,6 @@ func (p *completionPopup) update(query string) {
 func (p *completionPopup) matches() []completionItem { return p.filtered }
 func (p *completionPopup) isVisible() bool           { return p.visible }
 
-// View renders the popup content as a multi-line string. Each line shows
-// the candidate text with a leading "/" for command items, a selection
-// marker, and the description if present. Returns "" when the popup is
-// not visible or has no matches.
-func (p *completionPopup) View() string {
-	if !p.visible || len(p.filtered) == 0 {
-		return ""
-	}
-	max := completionPopupMax
-	if len(p.filtered) < max {
-		max = len(p.filtered)
-	}
-	offset := p.viewOffset
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > len(p.filtered)-max {
-		offset = len(p.filtered) - max
-	}
-	if p.index < offset {
-		offset = p.index
-	}
-	if p.index >= offset+max {
-		offset = p.index - max + 1
-	}
-	rows := make([]string, 0, max)
-	for i := 0; i < max; i++ {
-		mi := offset + i
-		marker := "  "
-		if mi == p.index {
-			marker = "▸ "
-		}
-		display := p.filtered[mi].Text
-		if p.filtered[mi].Kind == completionCommand && !strings.HasPrefix(display, "/") {
-			display = "/" + display
-		}
-		row := marker + display
-		if p.filtered[mi].Description != "" {
-			row += "  " + p.filtered[mi].Description
-		}
-		rows = append(rows, row)
-	}
-	return strings.Join(rows, "\n")
-}
-
 func (p *completionPopup) dismiss() {
 	p.visible = false
 	p.filtered = nil

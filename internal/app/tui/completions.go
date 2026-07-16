@@ -186,17 +186,23 @@ func (p *completionPopup) moveUp() {
 }
 
 // reconcileOffset keeps p.viewOffset positioned so p.index is visible
-// within completionPopupMax rows. The renderer also clamps the offset, so
-// this is the authoritative scroll position used at draw time.
+// within completionPopupMax rows. This is the single source of truth for
+// popup scroll math — the renderer only reads p.viewOffset.
 func (p *completionPopup) reconcileOffset() {
 	max := completionPopupMax
 	if len(p.filtered) < max {
 		max = len(p.filtered)
 	}
+	if p.viewOffset < 0 {
+		p.viewOffset = 0
+	}
+	if max > 0 && p.viewOffset > len(p.filtered)-max {
+		p.viewOffset = len(p.filtered) - max
+	}
 	if p.index < p.viewOffset {
 		p.viewOffset = p.index
 	}
-	if p.index >= p.viewOffset+max {
+	if max > 0 && p.index >= p.viewOffset+max {
 		p.viewOffset = p.index - max + 1
 	}
 }

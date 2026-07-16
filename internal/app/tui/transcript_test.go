@@ -10,6 +10,26 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestTranscriptHashDistinguishesContent(t *testing.T) {
+	a := transcriptHash([]session.TranscriptItem{
+		{
+			Kind:      session.KindMessage,
+			Timestamp: time.Unix(0, 1),
+			Message:   &session.Message{Role: session.RoleUser, Content: "hello", ContentType: session.ContentTypePlain},
+		},
+	}, 0, false, 80, nil, nil)
+	b := transcriptHash([]session.TranscriptItem{
+		{
+			Kind:      session.KindMessage,
+			Timestamp: time.Unix(0, 1),
+			Message:   &session.Message{Role: session.RoleUser, Content: "goodbye", ContentType: session.ContentTypePlain},
+		},
+	}, 0, false, 80, nil, nil)
+	if a == b {
+		t.Fatal("hash should differ for different content")
+	}
+}
+
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}, 80)
 	if !strings.Contains(out, "›") || !strings.Contains(out, "fix the tests") {

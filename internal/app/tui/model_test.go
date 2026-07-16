@@ -2430,11 +2430,57 @@ func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	if !cancelled {
 		t.Fatal("Esc should cancel the in-flight agent turn")
 	}
+	// After Esc, the queue is NOT cleared yet — that happens in
+	// handleAgentFinished. Verify the flag is set.
+	if !m.cancelling {
+		t.Fatal("cancelling flag should be set after Esc")
+	}
+	// Simulate the agent finishing.
+	updated, _ = m.Update(agentFinishedMsg{err: context.Canceled})
+	m = updated.(Model)
 	if len(m.state.SteeringQueue()) != 0 {
-		t.Fatalf("queue not dropped on cancel: %v", m.state.SteeringQueue())
+		t.Fatalf("queue not dropped on agent finish: %v", m.state.SteeringQueue())
 	}
 	if m.queuedCount != 0 {
 		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	}
+	if m.cancelling {
+		t.Fatal("cancelling flag should be cleared after agentFinishedMsg")
+	}
+}
+
+// F-BUG-149: cancelTurn must not clear steering state when the agent
+// finished before the cancel call arrived. Simulates the race where
+// cancelTurn sets cancelling=true but the agent goroutine finishes
+// first, then a second cancelTurn call must be a no-op.
+func TestCancelTurnDoesNotClearSteeringWhenAgentAlreadyFinished(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.cancelling = true // cancelTurn was called, set the flag
+	m.queuedCount = 1
+	// Simulate agent finishing first (before cancel took effect).
+	updated, _ := m.Update(agentFinishedMsg{err: nil})
+	m = updated.(Model)
+	if m.queuedCount != 0 {
+		t.Fatalf("steering not drained on agent finish: %d", m.queuedCount)
+	}
+	// Now call cancelTurn — must not double-clear.
+	if m.cancelTurn() {
+		t.Fatalf("cancelTurn returned true with no in-flight turn")
+	}
+}
+
+// F-BUG-150: successPulse must clear when the agent finishes with an
+// error (not context.Canceled). If the previous turn succeeded, the
+// input border should not flash teal during the error state.
+func TestSuccessPulseClearsOnError(t *testing.T) {
+	m := newTestModel(t)
+	m.successPulse = true
+	m.busy = true
+	updated, _ := m.Update(agentFinishedMsg{err: errors.New("boom")})
+	m = updated.(Model)
+	if m.successPulse {
+		t.Fatal("successPulse should clear on error")
 	}
 }
 
@@ -4013,4 +4059,13 @@ func TestSettingsBlockReason(t *testing.T) {
 			t.Fatalf("settingsBlockReason = %q, want empty string", got)
 		}
 	})
+}
+
+func TestInputAreaRowsIncludesSDDHint(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetSDDProgress(session.SDDProgress{Active: true})
+	rows := m.inputAreaRows()
+	if rows < inputBorderRows+1 {
+		t.Fatalf("expected SDD hint row, got %d", rows)
+	}
 }

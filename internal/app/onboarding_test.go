@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"marshal/internal/app/config"
 )
@@ -237,6 +238,44 @@ func TestOnboardingPointerReceiverSemantics(t *testing.T) {
 				i, m.attempts, i, i-1)
 		}
 	}
+}
+
+func TestOnboardingKeyEntryMasksInput(t *testing.T) {
+	t.Run("inline mode", func(t *testing.T) {
+		m := NewOnboardingModel(t.TempDir())
+		m.selectedProvider = "OpenAI"
+		m.keyMode = keyModeInline
+		m.state = stateKeyMode
+		m.textInput.SetValue("")
+
+		m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = m2.(*OnboardingModel)
+
+		if m.state != stateConfigureKey {
+			t.Fatalf("expected stateConfigureKey, got %v", m.state)
+		}
+		if m.textInput.EchoMode != textinput.EchoPassword {
+			t.Fatalf("expected EchoPassword for inline API key input, got %v", m.textInput.EchoMode)
+		}
+	})
+
+	t.Run("env var mode", func(t *testing.T) {
+		m := NewOnboardingModel(t.TempDir())
+		m.selectedProvider = "OpenAI"
+		m.keyMode = keyModeEnvName
+		m.state = stateKeyMode
+		m.textInput.SetValue("")
+
+		m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = m2.(*OnboardingModel)
+
+		if m.state != stateConfigureKey {
+			t.Fatalf("expected stateConfigureKey, got %v", m.state)
+		}
+		if m.textInput.EchoMode != textinput.EchoPassword {
+			t.Fatalf("expected EchoPassword for env var API key input, got %v", m.textInput.EchoMode)
+		}
+	})
 }
 
 func TestOnboardingUnsetModeWritesCommentedPlaceholder(t *testing.T) {

@@ -46,7 +46,7 @@ func (m Model) View() tea.View {
 	return v
 }
 
-func (m Model) viewString() string {
+func (m *Model) viewString() string {
 	if m.width == 0 || m.height == 0 {
 		return m.fallbackView()
 	}
@@ -79,9 +79,12 @@ func (m Model) viewString() string {
 	if bar := m.renderBrowserBar(); bar != "" {
 		rows = append(rows, bar)
 	}
+	// Compute the SDD panel once and cache it so sddPanelRows() can reuse
+	// the result instead of calling renderSDDPanel a second time.
 	sddSpinner := m.activeSpinnerFrame(session.ActivityTool)
-	if panel, _ := renderSDDPanel(m.state.SDDProgress(), sddSpinner, m.width); panel != "" {
-		rows = append(rows, panel)
+	m.sddPanelBody, m.sddPanelCachedRows = renderSDDPanel(m.state.SDDProgress(), sddSpinner, m.width)
+	if m.sddPanelBody != "" {
+		rows = append(rows, m.sddPanelBody)
 	}
 	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
 	out := lipgloss.JoinVertical(lipgloss.Left, rows...)

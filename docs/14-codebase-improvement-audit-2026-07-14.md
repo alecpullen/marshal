@@ -2438,3 +2438,15 @@ finding and source plan.
 | F-POL-44 | RESOLVED | `validateConservativeCommand` removed; runtime path now uses the single `policy` package implementation. New test `TestCommandOutputIsLimited`. |
 | F-POL-45 | RESOLVED | `PolicyEngine` has a `logger *slog.Logger` field, `SetLogger` setter, and production wiring at `app.go:376` injects `state.Logger()`. Default `slog.Default()`. |
 | F-POL-46 | RESOLVED | `SandboxMeta.LimitsJSON` returns `(string, error)`. New tests `TestSandboxMetaLimitsJSONReturnsValidJSON`, `TestSandboxMetaLimitsJSONIncludesOutputTruncated`. |
+
+### Batch 29 (Low — final polish + doc reconciliation): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-SEC-34 | RESOLVED | `normalizePrompt` now validates `resource_link` URIs against a scheme allow-list (`https:`, `file:` with no `..` traversal). `javascript:`, `data:`, `ftp:`, `http:` are rejected with `invalidParams`. 2 new tests: `TestNormalizePromptRejectsBadResourceLinkScheme`, `TestNormalizePromptAcceptsHTTPSResourceLink`. |
+| F-SEC-37 | RESOLVED | `dispatchRequest` now uses a `wireError(err)` helper that maps each JSON-RPC error code to a fixed opaque string. The full error is logged server-side via `slog`. 1 new test: `TestDispatchRequestSanitizesWireErrorMessage`. |
+| F-SEC-38 | RESOLVED | `/export` clamps the path to the working dir; absolute paths and `..` traversal are rejected. 2 new tests: `TestExportRejectsAbsolutePath`, `TestExportRejectsParentTraversal`. |
+| F-BUG-51 | RESOLVED | Turn forwarder uses `pending.Respond(answers)` (sync.Once + close, added in G3) instead of a direct `pending.ResponseChan <- answers` select that could fire `<-turnCtx.Done()` and lose the answers. 1 new test: `TestForwarderUsesRespondForQuestion`. |
+| F-POL-130 | RESOLVED | `Scanner` already skips symlinks (added by an earlier batch, `scanner.go:104-112`). Regression test added to lock the behavior in. 1 new test: `TestScannerSkipsSymlinkWithReason`. |
+| F-SEC-03 | RESOLVED | Doc-gap: code is correct. `SafeResolve` path resolver (added in the A3 batch) is in place. Marked RESOLVED to reconcile the audit table. |
+| F-SEC-08 | RESOLVED | Doc-gap: code is correct. Onboarding key entry uses `EchoPassword` for both modes (verified in A5 Task 3). Marked RESOLVED to reconcile the audit table. |

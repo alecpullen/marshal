@@ -132,6 +132,62 @@ func TestHandleApprovalRejectsForeignPending(t *testing.T) {
 	}
 }
 
+// TestHandleApprovalDoubleEnterAfterComplete verifies that sending a second
+// Enter after the approval form has already completed does not panic, does
+// not deadlock, and does not send a second decision on the channel.
+//
+// The approval form requires two Enters to complete: the first Enter arms the
+// explicit submit step (submitPending=true), and the second Enter confirms the
+// selected action (done=true, choice processed). After the form completes,
+// handleApproval clears m.approvalModel and calls state.SetPendingApproval(nil),
+// so a subsequent Enter falls through to the regular keypress switch and is a
+// safe no-op.
+func TestHandleApprovalDoubleEnterAfterComplete(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	ch := make(chan session.UserApprovalDecision, 1)
+	tc := &session.PendingToolCall{
+		ID:           "p1",
+		Name:         "shell.run",
+		Command:      "echo hello",
+		Risk:         "low",
+		ResponseChan: ch,
+	}
+	state.SetPendingApproval(tc)
+	m := New(state)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+
+	// First Enter: arms the explicit submit step (submitPending = true).
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Second Enter: confirms the selected action (done = true). handleApproval
+	// processes the choice: calls tc.Respond (sends on ch), clears
+	// m.approvalModel, and calls state.SetPendingApproval(nil).
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Third Enter: the regression scenario. PendingApproval() is nil so
+	// Update falls through to the regular keypress switch — no approval
+	// handler, no panic, no deadlock.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	_ = updated.(Model)
+
+	// The channel must have exactly one value (the first decision) and be closed.
+	dec, ok := <-ch
+	if !ok {
+		t.Fatal("channel closed without a value")
+	}
+	if !dec.Approved {
+		t.Fatal("expected approved decision")
+	}
+	// Second read must yield !ok (channel closed after the single send).
+	_, ok = <-ch
+	if ok {
+		t.Fatal("second Enter sent an extra decision on the channel")
+	}
+}
+
 // TestRespondIsIdempotent verifies that calling Respond twice on the same
 // PendingToolCall or PendingQuestion only sends once.
 func TestRespondIsIdempotent(t *testing.T) {

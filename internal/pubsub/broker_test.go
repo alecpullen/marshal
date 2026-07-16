@@ -181,5 +181,26 @@ func TestTerminalSubscriptionBlocksUntilConsumed(t *testing.T) {
 	<-done
 }
 
+func TestTerminalSubscriptionTimeoutDropsEvent(t *testing.T) {
+	b := NewBroker[string](WithBufferSize[string](0))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = b.Subscribe(ctx, WithTerminal[string]())
+
+	// Publish 2 events without draining. Each sendBlocking has a 500ms
+	// timeout, so the publisher must unblock within ~1.2s total.
+	done := make(chan struct{})
+	go func() {
+		b.Publish("a", "1")
+		b.Publish("a", "2")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal publish did not time out; publisher blocked forever")
+	}
+}
+
 // guard against accidental import of strings without use
 var _ = strings.Builder{}

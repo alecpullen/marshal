@@ -212,6 +212,63 @@ func TestScannerIncludesGitignoredFilesWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestScannerSkipsSymlinkWithReason(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	root := t.TempDir()
+
+	// Create a real file.
+	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("write real.txt: %v", err)
+	}
+	// Create a symlink pointing to the real file.
+	if err := os.Symlink("real.txt", filepath.Join(root, "link.txt")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	s := NewScanner(Config{Root: root})
+	files, err := s.Scan()
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	// The real file must be present.
+	foundReal := false
+	for _, f := range files {
+		if f.Path == "real.txt" {
+			foundReal = true
+			break
+		}
+	}
+	if !foundReal {
+		t.Fatalf("expected real.txt in scanned files, got %+v", files)
+	}
+
+	// The symlink must NOT be in the scanned files.
+	for _, f := range files {
+		if f.Path == "link.txt" {
+			t.Fatalf("symlink link.txt should not be in scanned files: %+v", files)
+		}
+	}
+
+	// The symlink must be in Skipped() with reason "symlink".
+	skipped := s.Skipped()
+	foundSkipped := false
+	for _, sk := range skipped {
+		if sk.Path == "link.txt" {
+			foundSkipped = true
+			if sk.Reason != "symlink" {
+				t.Fatalf("expected reason %q for link.txt, got %q", "symlink", sk.Reason)
+			}
+			break
+		}
+	}
+	if !foundSkipped {
+		t.Fatalf("expected link.txt in Skipped(), got %+v", skipped)
+	}
+}
+
 func TestScanner_SkipsSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on Windows")

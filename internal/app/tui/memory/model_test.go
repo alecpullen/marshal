@@ -277,12 +277,11 @@ func newTestMemoryModel(t *testing.T) Model {
 	return New(database, projectID)
 }
 
-func TestSetConfidenceBumpsVersion(t *testing.T) {
+func TestSetConfidenceSetsFooter(t *testing.T) {
 	m := newTestMemoryModel(t)
-	before := m.Version()
 	m.setConfidence("stale")
-	if m.Version() <= before {
-		t.Fatal("version did not advance")
+	if m.footer != "Marked as stale" {
+		t.Fatalf("footer = %q, want %q", m.footer, "Marked as stale")
 	}
 }
 

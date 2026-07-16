@@ -17,7 +17,6 @@ type Model struct {
 	width     int
 	height    int
 	offset    int
-	version   int
 }
 
 func New(database *db.DB, projectID int64) Model {
@@ -126,13 +125,8 @@ func (m *Model) setConfidence(confidence string) {
 	selected.UpdatedAt = now
 	m.memories[m.cursor] = selected
 	m.footer = "Marked as " + confidence
-	m.version++
 }
 
 func (m Model) Footer() string {
 	return m.footer
-}
-
-func (m Model) Version() int {
-	return m.version
 }

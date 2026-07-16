@@ -268,6 +268,24 @@ func createTestProject(t *testing.T, database *db.DB) int64 {
 	return projectID
 }
 
+func newTestMemoryModel(t *testing.T) Model {
+	t.Helper()
+	database, projectID := newTestDB(t)
+	if err := database.SaveMemory(projectID, "fact", "Uses SQLite", "sess-1", time.Unix(100, 0)); err != nil {
+		t.Fatalf("SaveMemory failed: %v", err)
+	}
+	return New(database, projectID)
+}
+
+func TestSetConfidenceBumpsVersion(t *testing.T) {
+	m := newTestMemoryModel(t)
+	before := m.Version()
+	m.setConfidence("stale")
+	if m.Version() <= before {
+		t.Fatal("version did not advance")
+	}
+}
+
 func TestMemoryViewportScrollsAndClamps(t *testing.T) {
 	database := openTestDB(t)
 	pid := createTestProject(t, database)

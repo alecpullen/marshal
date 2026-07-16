@@ -372,7 +372,7 @@ func New(state *session.State, opts ...Option) Model {
 		m.filePopup = newCompletionPopup(m.fileIndex)
 	}
 	if m.jobBroker != nil && m.jobEvents == nil {
-		m.jobEvents = m.jobBroker.Subscribe(m.ctx)
+		m.jobEvents = m.jobBroker.Subscribe(m.ctx, pubsub.WithTerminal[native.JobEvent]())
 	}
 	if m.steeringBroker != nil && m.steeringEvents == nil {
 		m.steeringEvents = m.steeringBroker.Subscribe(m.ctx)

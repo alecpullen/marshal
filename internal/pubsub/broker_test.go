@@ -161,5 +161,25 @@ func TestBrokerStressParallel(t *testing.T) {
 	wg.Wait()
 }
 
+func TestTerminalSubscriptionBlocksUntilConsumed(t *testing.T) {
+	b := NewBroker[string](WithBufferSize[string](0))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := b.Subscribe(ctx, WithTerminal[string]())
+	// With a 0-buffer, every publish blocks until the consumer drains.
+	done := make(chan struct{})
+	go func() {
+		b.Publish("jobs", "d")
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("terminal publish should block on full buffer")
+	case <-time.After(50 * time.Millisecond):
+	}
+	<-ch
+	<-done
+}
+
 // guard against accidental import of strings without use
 var _ = strings.Builder{}

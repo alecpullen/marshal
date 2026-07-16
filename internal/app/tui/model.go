@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image/color"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2393,10 +2394,36 @@ func longestCommonPrefix(a, b, sep string) string {
 	return strings.Join(common, sep)
 }
 
+// userConfigDir returns the absolute path to the user-level Marshal
+// config directory (typically ~/.config/marshal). The path is
+// symlink-resolved and verified to be under the user's home directory
+// to defend against an attacker-controlled $HOME pointing at a
+// sensitive location (e.g. /root, /etc). See F-SEC-27.
 func userConfigDir() string {
 	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	absHome, err := filepath.Abs(home)
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "marshal")
+	resHome, err := filepath.EvalSymlinks(absHome)
+	if err != nil {
+		resHome = absHome
+	}
+	cfgDir := filepath.Join(resHome, ".config", "marshal")
+	// If the config dir doesn't exist yet, the parent path is what
+	// matters for the trust check.
+	resCfg, err := filepath.EvalSymlinks(cfgDir)
+	if err != nil {
+		resCfg = filepath.Dir(cfgDir)
+	}
+	rel, err := filepath.Rel(resHome, resCfg)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		slog.Default().Warn("userConfigDir outside home; refusing",
+			"home", resHome, "configDir", resCfg)
+		return ""
+	}
+	return cfgDir
 }

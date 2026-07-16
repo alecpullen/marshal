@@ -202,6 +202,62 @@ func TestManagerLogsCall(t *testing.T) {
 	}
 }
 
+func TestStartRejectsDangerousEnvKey(t *testing.T) {
+	if os.Getenv("BE_MOCK_SERVER") == "1" {
+		mockServerMain()
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"evil": {
+			Command: exe,
+			Args:    []string{"-test.run=TestStartRejectsDangerousEnvKey"},
+			Env: map[string]string{
+				"BE_MOCK_SERVER": "1",
+				"LD_PRELOAD":     "/tmp/evil.so",
+			},
+		},
+	}
+	m := NewManager(&cfg)
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("expected Start to reject LD_PRELOAD env key, got nil")
+	}
+}
+
+func TestStartRejectsNewlineInEnvValue(t *testing.T) {
+	if os.Getenv("BE_MOCK_SERVER") == "1" {
+		mockServerMain()
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"evil": {
+			Command: exe,
+			Args:    []string{"-test.run=TestStartRejectsNewlineInEnvValue"},
+			Env: map[string]string{
+				"BE_MOCK_SERVER": "1",
+				"FOO":            "bar\nbaz",
+			},
+		},
+	}
+	m := NewManager(&cfg)
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("expected Start to reject newline in env value, got nil")
+	}
+}
+
 // hangingServerMain is a minimal MCP server that completes the initialize
 // handshake but never responds to tools/list (or any subsequent request),
 // simulating a hanging server.

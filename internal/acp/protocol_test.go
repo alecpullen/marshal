@@ -201,3 +201,44 @@ func TestNormalizePrompt(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizePromptRejectsBadResourceLinkScheme(t *testing.T) {
+	cases := []struct {
+		name string
+		uri  string
+	}{
+		{"javascript", "javascript:alert(1)"},
+		{"data", "data:text/html;base64,PHNjcmlwdD4="},
+		{"file_traversal", "file:///repo/../../etc/passwd"},
+		{"empty", ""},
+		{"ftp", "ftp://example.com/file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks := []ContentBlock{{
+				Type: "resource_link",
+				Name: "name",
+				URI:  tc.uri,
+			}}
+			_, err := normalizePrompt(blocks)
+			if err == nil {
+				t.Fatalf("expected %q to be rejected, got nil", tc.uri)
+			}
+		})
+	}
+}
+
+func TestNormalizePromptAcceptsHTTPSResourceLink(t *testing.T) {
+	blocks := []ContentBlock{{
+		Type: "resource_link",
+		Name: "docs",
+		URI:  "https://example.com/page",
+	}}
+	got, err := normalizePrompt(blocks)
+	if err != nil {
+		t.Fatalf("https URI rejected: %v", err)
+	}
+	if !strings.Contains(got, "https://example.com/page") {
+		t.Fatalf("expected URI in output, got %q", got)
+	}
+}

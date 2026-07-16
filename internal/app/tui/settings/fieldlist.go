@@ -11,13 +11,17 @@ import (
 	"marshal/internal/app/tui/picker"
 )
 
-func flCursorStyle() lipgloss.Style { return lipgloss.NewStyle().Bold(true).Background(settingsTheme().BGSelection) }
-func flTitleStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().FGDefault) }
-func flValueStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().AccentSecondary) }
-func flDescStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
-func flErrStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(settingsTheme().StatusError) }
-func flOnStyle() lipgloss.Style     { return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess) }
-func flOffStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
+func flCursorStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Background(settingsTheme().BGSelection)
+}
+func flTitleStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGDefault) }
+func flValueStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(settingsTheme().AccentSecondary)
+}
+func flDescStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
+func flErrStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().StatusError) }
+func flOnStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess) }
+func flOffStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
 
 // fieldList renders and edits a vertical list of typed rows. It is the one
 // widget behind every settings pane and drill-down frame.

@@ -16,12 +16,16 @@ import (
 	"marshal/internal/llm/provider"
 )
 
-func titleStyle() lipgloss.Style   { return lipgloss.NewStyle().Bold(true).Foreground(theme.Current().FGDefault) }
-func mutedStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
-func hintStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
-func errStyle() lipgloss.Style     { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
-func footerStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
-func successStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess) }
+func titleStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(theme.Current().FGDefault)
+}
+func mutedStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func hintStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
+func errStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
+func footerStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func successStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess)
+}
 
 type step int
 

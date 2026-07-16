@@ -398,15 +398,25 @@ func truncateErr(s string) string {
 	return s
 }
 
-func sidebarItemStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(settingsTheme().FGDefault) }
-func sidebarActiveStyle() lipgloss.Style { return lipgloss.NewStyle().Bold(true).Background(settingsTheme().BGSelection) }
-func warnStyle() lipgloss.Style          { return lipgloss.NewStyle().Foreground(settingsTheme().StatusWarning) }
-func successStyle() lipgloss.Style       { return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess) }
-func errStyle() lipgloss.Style           { return lipgloss.NewStyle().Foreground(settingsTheme().StatusError) }
-func footerKeyStyle() lipgloss.Style     { return lipgloss.NewStyle().Foreground(settingsTheme().AccentPrimary) }
-func footerTextStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
-func mutedStyle() lipgloss.Style         { return lipgloss.NewStyle().Faint(true).Foreground(settingsTheme().FGMuted) }
-func keyStyle() lipgloss.Style           { return lipgloss.NewStyle().Foreground(settingsTheme().AccentPrimary) }
+func sidebarItemStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(settingsTheme().FGDefault)
+}
+func sidebarActiveStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Background(settingsTheme().BGSelection)
+}
+func warnStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().StatusWarning) }
+func successStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess)
+}
+func errStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().StatusError) }
+func footerKeyStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(settingsTheme().AccentPrimary)
+}
+func footerTextStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
+func mutedStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Faint(true).Foreground(settingsTheme().FGMuted)
+}
+func keyStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().AccentPrimary) }
 
 func (m Model) View() string {
 	fw, fh := m.frameSize()

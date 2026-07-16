@@ -16,10 +16,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// ChangedMsg is published when the theme is reloaded. Subscribers can
-// type-switch on this in their Update method to rebuild styles.
-type ChangedMsg struct{ Theme Theme }
-
 var (
 	current   Theme
 	mu        sync.RWMutex

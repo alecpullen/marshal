@@ -49,5 +49,3 @@ func (m *EstimateMeter) Total() int {
 	defer m.mu.Unlock()
 	return m.total
 }
-
-

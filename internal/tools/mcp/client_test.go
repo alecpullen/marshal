@@ -235,7 +235,7 @@ func TestClientReadLoopLogsScannerError(t *testing.T) {
 type nopWriteCloser struct{}
 
 func (n *nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
-func (n *nopWriteCloser) Close() error                 { return nil }
+func (n *nopWriteCloser) Close() error                { return nil }
 
 // malformedReader is an io.ReadCloser that yields a single malformed JSON
 // line and then returns io.EOF on subsequent reads.

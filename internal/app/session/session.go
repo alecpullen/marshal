@@ -53,16 +53,16 @@ const (
 // channel-free snapshots for subscribers that only need to inspect the
 // pending item (e.g., the TUI renderer).
 type Event struct {
-	Message              *Message
-	Thinking             *InProgressMessage
-	Activity             *Activity
-	ActiveTool           *ActiveToolCall
-	Audit                *registry.AuditEvent
-	PendingApproval      *PendingToolCall
-	PendingQuestion      *PendingQuestion
-	PendingApprovalInfo  *PendingToolCallInfo
-	PendingQuestionInfo  *PendingQuestionInfo
-	Browser              *BrowserInfo
+	Message             *Message
+	Thinking            *InProgressMessage
+	Activity            *Activity
+	ActiveTool          *ActiveToolCall
+	Audit               *registry.AuditEvent
+	PendingApproval     *PendingToolCall
+	PendingQuestion     *PendingQuestion
+	PendingApprovalInfo *PendingToolCallInfo
+	PendingQuestionInfo *PendingQuestionInfo
+	Browser             *BrowserInfo
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -205,7 +205,7 @@ type PendingQuestionInfo struct {
 type PendingQuestion struct {
 	Questions    []Question
 	ResponseChan chan []Answer
-	responded sync.Once
+	responded    sync.Once
 }
 
 // Respond sends answers to the response channel exactly once (guarded by
@@ -253,7 +253,7 @@ type PendingToolCall struct {
 	Diff         string // Added field for patch rendering
 	Schema       string // Details / schema / description of the tool
 	ResponseChan chan UserApprovalDecision
-	responded sync.Once
+	responded    sync.Once
 }
 
 // Respond sends a UserApprovalDecision to the response channel exactly once

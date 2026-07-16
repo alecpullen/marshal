@@ -110,10 +110,10 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		boolToInt(event.Sandbox.ResourceLimits),
 		boolToInt(event.Sandbox.OutputTruncated),
 	)
-		if err != nil {
-			return fmt.Errorf("save tool call: %w", err)
-		}
-		return nil
+	if err != nil {
+		return fmt.Errorf("save tool call: %w", err)
+	}
+	return nil
 }
 
 func boolToInt(b bool) int64 {
@@ -122,6 +122,7 @@ func boolToInt(b bool) int64 {
 	}
 	return 0
 }
+
 // GetToolCalls returns all audit events for a session in chronological order.
 func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 	rows, err := db.sqlDB.Query(

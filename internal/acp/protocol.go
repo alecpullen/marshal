@@ -160,6 +160,9 @@ func normalizePrompt(blocks []ContentBlock) (string, error) {
 			if strings.TrimSpace(block.URI) == "" {
 				return "", invalidParamsError("resource_link block %d is missing uri", i)
 			}
+			if err := validateResourceLinkScheme(block.URI); err != nil {
+				return "", err
+			}
 			parts = append(parts, fmt.Sprintf("Resource link: %s (%s)", block.Name, block.URI))
 		default:
 			return "", invalidParamsError("unsupported block type: %s", block.Type)
@@ -169,4 +172,36 @@ func normalizePrompt(blocks []ContentBlock) (string, error) {
 		return "", invalidParamsError("prompt must contain at least one valid block")
 	}
 	return strings.Join(parts, "\n\n"), nil
+}
+
+// validateResourceLinkScheme returns an error if uri is not one of the
+// safe schemes. F-SEC-34. Accepts "https:" and "file:" (with a path
+// that does not contain ".."). Rejects everything else.
+func validateResourceLinkScheme(uri string) error {
+	if uri == "" {
+		return invalidParamsError("resource_link URI must not be empty")
+	}
+	// Find the first ":".
+	idx := strings.Index(uri, ":")
+	if idx < 0 {
+		return invalidParamsError("resource_link URI has no scheme: %q", uri)
+	}
+	scheme := strings.ToLower(uri[:idx])
+	switch scheme {
+	case "https":
+		return nil
+	case "file":
+		// Reject path traversal.
+		if strings.Contains(uri[idx+1:], "..") {
+			return invalidParamsError("resource_link file: URI contains '..': %q", uri)
+		}
+		return nil
+	case "http":
+		// http: is allowed only if the entire URI is the same-host
+		// non-redirect target. For the prompt context, this is too
+		// dangerous — reject.
+		return invalidParamsError("resource_link http: URI not allowed; use https: instead")
+	default:
+		return invalidParamsError("resource_link URI scheme %q not allowed", scheme)
+	}
 }

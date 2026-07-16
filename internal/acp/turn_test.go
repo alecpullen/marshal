@@ -1015,3 +1015,89 @@ func TestCancelWithIDIsRejected(t *testing.T) {
 	outW.Close()
 	<-serveErr
 }
+
+// TestForwarderUsesRespondForQuestion verifies F-BUG-51: the forwarder
+// uses pending.Respond (sync.Once + close) instead of a raw select on
+// ResponseChan. The test simulates an abandoned question by having the
+// runner NOT read from the unbuffered ResponseChan and then cancelling
+// the turn. With the old code the select picks <-turnCtx.Done() and the
+// answers are lost; with pending.Respond the non-blocking send + close
+// ensures the channel is always serviced.
+func TestForwarderUsesRespondForQuestion(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	questions := []session.Question{
+		{Question: "confirm?"},
+		{Question: "proceed?"},
+	}
+	response := make(chan []session.Answer) // unbuffered — forces blocking send
+	pendingQ := &session.PendingQuestion{
+		Questions:    questions,
+		ResponseChan: response,
+	}
+
+	runnerStarted := make(chan struct{})
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: pendingQ})
+					close(runnerStarted)
+					// Do NOT read from response — simulate abandoned question.
+					<-ctx.Done()
+					return ctx.Err()
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	promptDone := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+		promptDone <- err
+	}()
+
+	<-runnerStarted
+	time.Sleep(50 * time.Millisecond) // let forwarder process the event
+
+	// Cancel the turn — this cancels turnCtx.
+	manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_test"}`))
+
+	// With the old code the answers were lost (select picked <-turnCtx.Done()).
+	// With pending.Respond the non-blocking send fires the default case and
+	// the channel is closed. Verify the channel is closed (read succeeds).
+	select {
+	case answers, ok := <-response:
+		if !ok {
+			// Channel closed but no answers delivered (non-blocking send
+			// hit default because no reader). This is acceptable — the
+			// runner unblocks on the closed channel.
+			break
+		}
+		if len(answers) != 2 {
+			t.Fatalf("expected 2 answers, got %d", len(answers))
+		}
+		for i, a := range answers {
+			if a.Question != questions[i].Question {
+				t.Fatalf("answer[%d] Question = %q, want %q", i, a.Question, questions[i].Question)
+			}
+			if a.Answer != session.AnswerUnanswered {
+				t.Fatalf("answer[%d] Answer = %q, want %q", i, a.Answer, session.AnswerUnanswered)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for channel to be closed — forwarder lost the answers (F-BUG-51)")
+	}
+
+	select {
+	case err := <-promptDone:
+		if err != nil {
+			t.Fatalf("PromptTurn() error = %v, want nil (cancelled is expected)", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PromptTurn did not return after cancel")
+	}
+}

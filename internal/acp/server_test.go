@@ -907,6 +907,49 @@ func TestServerDispatchLogs(t *testing.T) {
 	}
 }
 
+// --- F-SEC-37: Sanitized wire error messages ---
+
+func TestDispatchRequestSanitizesWireErrorMessage(t *testing.T) {
+	out := &bytes.Buffer{}
+	s := &Server{
+		out:      json.NewEncoder(out),
+		handlers: map[string]Handler{},
+	}
+	s.handlers["reveal"] = func(ctx context.Context, params json.RawMessage) (any, error) {
+		return nil, &jsonRPCError{
+			Code:    internalError,
+			Message: "internal: open /home/alice/.config/marshal/secrets.json: permission denied",
+		}
+	}
+	req := Request{
+		JSONRPC: "2.0",
+		Method:  "reveal",
+		ID:      rawMessagePtr("1"),
+	}
+	s.handlerWG.Add(1)
+	s.dispatchRequest(context.Background(), req)
+
+	var resp Response
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if resp.Error.Message == "" {
+		t.Fatal("error message should not be empty")
+	}
+	if strings.Contains(resp.Error.Message, "/home/alice") {
+		t.Fatal("error message leaked filesystem path")
+	}
+	if strings.Contains(resp.Error.Message, "permission denied") {
+		t.Fatal("error message leaked internal error detail")
+	}
+	if resp.Error.Message != "internal error" {
+		t.Fatalf("error message = %q, want %q", resp.Error.Message, "internal error")
+	}
+}
+
 // rawMessagePtr returns a *json.RawMessage pointing to the given JSON string.
 func rawMessagePtr(s string) *json.RawMessage {
 	r := json.RawMessage(s)

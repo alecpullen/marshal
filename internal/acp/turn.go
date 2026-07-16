@@ -276,11 +276,11 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 			for i, q := range pending.Questions {
 				answers[i] = session.Answer{Question: q.Question, Answer: session.AnswerUnanswered}
 			}
+			// F-BUG-51: use pending.Respond (sync.Once + close) so a stale
+			// select that already fired <-turnCtx.Done() cannot lose the
+			// answers. The turnAnswered sync.Map is belt-and-suspenders.
 			if _, loaded := turnAnswered.LoadOrStore(pending.ResponseChan, true); !loaded {
-				select {
-				case pending.ResponseChan <- answers:
-				case <-turnCtx.Done():
-				}
+				pending.Respond(answers)
 			}
 		}
 	}

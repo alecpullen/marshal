@@ -218,7 +218,7 @@ func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
 	}
 }
 
-func TestStatusLineShowsBrowserSegmentWhenSessionOpen(t *testing.T) {
+func TestStatusLineHidesBrowserSegmentWhenBrowserBarVisible(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetBrowserInfo(session.BrowserInfo{
 		SessionOpen: true,
@@ -227,11 +227,11 @@ func TestStatusLineShowsBrowserSegmentWhenSessionOpen(t *testing.T) {
 	})
 	line := m.renderStatusLine(100)
 	stripped := stripANSI(line)
-	if !strings.Contains(stripped, "🌐") {
-		t.Fatalf("status line missing 🌐 when browser session open:\n%s", line)
+	if strings.Contains(stripped, "🌐") {
+		t.Fatalf("status line should not show 🌐 when browser bar is visible:\n%s", line)
 	}
-	if !strings.Contains(stripped, "example.com/docs") {
-		t.Fatalf("status line missing browser URL:\n%s", line)
+	if strings.Contains(stripped, "example.com/docs") {
+		t.Fatalf("status line should not show browser URL when browser bar is visible:\n%s", line)
 	}
 }
 
@@ -249,6 +249,8 @@ func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetTrusted(true)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder:14b", Provider: "ollama", LocalOnly: true})
+	// Browser segment is never added when browser bar is visible (SessionOpen=true
+	// means ShouldShowStatusURL() returns false). Verify the route survives.
 	m.state.SetBrowserInfo(session.BrowserInfo{
 		SessionOpen: true,
 		URL:         "https://example.com",
@@ -260,7 +262,26 @@ func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
 		t.Fatalf("model segment should survive on narrow width:\n%s", line)
 	}
 	if strings.Contains(stripped, "example.com") {
-		t.Fatalf("browser segment should be dropped on narrow width:\n%s", line)
+		t.Fatalf("browser segment should not appear when browser bar is visible:\n%s", line)
+	}
+}
+
+func TestShouldShowStatusURLReturnsFalseWhenBrowserBarVisible(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetBrowserInfo(session.BrowserInfo{
+		SessionOpen: true,
+		URL:         "http://example.com",
+	})
+	if m.ShouldShowStatusURL() {
+		t.Fatal("ShouldShowStatusURL should return false when browser bar is visible")
+	}
+}
+
+func TestShouldShowStatusURLReturnsTrueWhenBrowserBarHidden(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetBrowserInfo(session.BrowserInfo{SessionOpen: false})
+	if !m.ShouldShowStatusURL() {
+		t.Fatal("ShouldShowStatusURL should return true when browser bar is hidden")
 	}
 }
 

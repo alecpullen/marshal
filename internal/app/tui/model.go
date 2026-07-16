@@ -1069,6 +1069,13 @@ func (m Model) browserBarRows() int {
 	return 0
 }
 
+// ShouldShowStatusURL returns false when the browser bar is visible, because
+// the browser bar already shows the URL and tool name. The right-side status
+// segment should omit the URL line to avoid duplication.
+func (m Model) ShouldShowStatusURL() bool {
+	return !m.state.BrowserInfo().SessionOpen
+}
+
 func (m Model) sddPanelRows() int {
 	if m.state.SDDProgress().Active {
 		return sddPanelRows

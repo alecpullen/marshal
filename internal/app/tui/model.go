@@ -1019,6 +1019,9 @@ func (m Model) inputAreaRows() int {
 	if m.state.Activity().Kind != session.ActivityIdle {
 		rows += activityStripRows
 	}
+	if sd := m.state.SDDProgress(); sd.Active {
+		rows++ // SDD hint row
+	}
 	if q := m.state.PendingQuestion(); q != nil {
 		content := ""
 		if m.questionModel != nil {

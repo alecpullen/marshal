@@ -1,6 +1,9 @@
 package tui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFuzzyScoreSubsequence(t *testing.T) {
 	cases := []struct {
@@ -47,18 +50,18 @@ func TestFuzzyScoreEmptyQueryMatchesAll(t *testing.T) {
 
 func TestCompletionPopupFiltersAndSelects(t *testing.T) {
 	items := []completionItem{
-		{Text: "/plan", Description: "Plan a task", Kind: completionCommand},
-		{Text: "/help", Description: "Show help", Kind: completionCommand},
-		{Text: "/tools", Description: "List tools", Kind: completionCommand},
+		{Text: "plan", Description: "Plan a task", Kind: completionCommand},
+		{Text: "help", Description: "Show help", Kind: completionCommand},
+		{Text: "tools", Description: "List tools", Kind: completionCommand},
 	}
 	p := newCompletionPopup(items)
-	p.update("/pl")
+	p.update("pl")
 	if !p.isVisible() {
 		t.Fatal("popup should be visible after filtering")
 	}
 	matches := p.matches()
-	if len(matches) != 1 || matches[0].Text != "/plan" {
-		t.Fatalf("matches = %v, want [/plan]", matches)
+	if len(matches) != 1 || matches[0].Text != "plan" {
+		t.Fatalf("matches = %v, want [plan]", matches)
 	}
 	p.accept()
 	if p.acceptedText != "/plan " {
@@ -70,7 +73,7 @@ func TestCompletionPopupFiltersAndSelects(t *testing.T) {
 }
 
 func TestCompletionPopupNoMatchesHidden(t *testing.T) {
-	items := []completionItem{{Text: "/plan", Description: "Plan", Kind: completionCommand}}
+	items := []completionItem{{Text: "plan", Description: "Plan", Kind: completionCommand}}
 	p := newCompletionPopup(items)
 	p.update("/zzz")
 	if p.isVisible() {
@@ -79,9 +82,9 @@ func TestCompletionPopupNoMatchesHidden(t *testing.T) {
 }
 
 func TestCompletionPopupEmptyQueryHides(t *testing.T) {
-	items := []completionItem{{Text: "/plan", Description: "Plan", Kind: completionCommand}}
+	items := []completionItem{{Text: "plan", Description: "Plan", Kind: completionCommand}}
 	p := newCompletionPopup(items)
-	p.update("/p")
+	p.update("pl")
 	if !p.isVisible() {
 		t.Fatal("popup should be visible after partial match")
 	}
@@ -92,9 +95,9 @@ func TestCompletionPopupEmptyQueryHides(t *testing.T) {
 }
 
 func TestCompletionPopupEscDismisses(t *testing.T) {
-	items := []completionItem{{Text: "/plan", Description: "Plan", Kind: completionCommand}}
+	items := []completionItem{{Text: "plan", Description: "Plan", Kind: completionCommand}}
 	p := newCompletionPopup(items)
-	p.update("/p")
+	p.update("pl")
 	p.dismiss()
 	if p.isVisible() {
 		t.Fatal("popup should hide after dismiss")
@@ -103,12 +106,12 @@ func TestCompletionPopupEscDismisses(t *testing.T) {
 
 func TestCompletionPopupNavigation(t *testing.T) {
 	items := []completionItem{
-		{Text: "/plan", Description: "Plan", Kind: completionCommand},
-		{Text: "/profile", Description: "Profile", Kind: completionCommand},
-		{Text: "/projects", Description: "Projects", Kind: completionCommand},
+		{Text: "plan", Description: "Plan", Kind: completionCommand},
+		{Text: "profile", Description: "Profile", Kind: completionCommand},
+		{Text: "projects", Description: "Projects", Kind: completionCommand},
 	}
 	p := newCompletionPopup(items)
-	p.update("/p")
+	p.update("p")
 	if !p.isVisible() {
 		t.Fatal("popup should be visible")
 	}
@@ -139,12 +142,12 @@ func TestCompletionPopupScrollsToKeepIndexVisible(t *testing.T) {
 	items := make([]completionItem, 0, 20)
 	for i := 0; i < 20; i++ {
 		items = append(items, completionItem{
-			Text: "/cmd" + string(rune('a'+i)),
+			Text: "cmd" + string(rune('a'+i)),
 			Kind: completionCommand,
 		})
 	}
 	p := newCompletionPopup(items)
-	p.update("/cmd")
+	p.update("cmd")
 	if p.index != 0 || p.viewOffset != 0 {
 		t.Fatalf("initial state index=%d offset=%d, want 0/0", p.index, p.viewOffset)
 	}
@@ -200,6 +203,17 @@ func TestFuzzyMatchIndicesUseRunePositions(t *testing.T) {
 	}
 	if len(idxs) != 2 || idxs[0] != 2 || idxs[1] != 3 {
 		t.Fatalf("match indices = %v, want [2 3]", idxs)
+	}
+}
+
+func TestCompletionPopupShowsSlashPrefix(t *testing.T) {
+	pop := newCompletionPopup([]completionItem{
+		{Text: "plan", Description: "Plan a task", Kind: completionCommand},
+	})
+	pop.update("pl")
+	out := pop.View()
+	if !strings.Contains(out, "/plan") {
+		t.Fatalf("expected /plan in popup, got %q", out)
 	}
 }
 

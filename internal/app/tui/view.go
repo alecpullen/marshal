@@ -293,7 +293,11 @@ func (m Model) renderCompletionPopup() string {
 			marker = "▸ "
 			style = promptPrefixStyle
 		}
-		row := marker + highlightMatches(matches[mi].Text, matches[mi].matchedIdxs)
+		display := matches[mi].Text
+		if matches[mi].Kind == completionCommand && !strings.HasPrefix(display, "/") {
+			display = "/" + display
+		}
+		row := marker + highlightMatches(display, matches[mi].matchedIdxs)
 		if matches[mi].Description != "" {
 			row += "  " + matches[mi].Description
 		}

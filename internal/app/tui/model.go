@@ -1133,9 +1133,8 @@ func (m *Model) updateCompletionPopups() {
 			// always reflects the current registry.
 			items := make([]completionItem, 0, len(m.cmdRegistry.List()))
 			for _, c := range m.cmdRegistry.List() {
-				text := "/" + c.Name
 				items = append(items, completionItem{
-					Text:        text,
+					Text:        c.Name,
 					Description: c.Description,
 					Kind:        completionCommand,
 				})
@@ -1193,6 +1192,17 @@ func (m *Model) updateCompletionPopups() {
 // the command name, not its arguments), and is non-empty after the "/".
 func (m *Model) commandTrigger(value string) (bool, string) {
 	if !strings.HasPrefix(value, "/") {
+		// After a command has been accepted (e.g. "plan "), re-trigger
+		// the popup when the user types a space after the command name
+		// so argument completions can be shown.
+		if m.cmdRegistry != nil {
+			for _, c := range m.cmdRegistry.List() {
+				prefix := c.Name + " "
+				if strings.HasPrefix(value, prefix) {
+					return true, ""
+				}
+			}
+		}
 		return false, ""
 	}
 	// "/plan " is committed — no longer a trigger.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -4067,5 +4069,46 @@ func TestInputAreaRowsIncludesSDDHint(t *testing.T) {
 	rows := m.inputAreaRows()
 	if rows < inputBorderRows+1 {
 		t.Fatalf("expected SDD hint row, got %d", rows)
+	}
+}
+
+func TestUserConfigDirIsUnderHome(t *testing.T) {
+	dir := userConfigDir()
+	if dir == "" {
+		t.Skip("no home directory in this test environment")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	absHome, err := filepath.Abs(home)
+	if err != nil {
+		t.Fatalf("Abs home: %v", err)
+	}
+	// Resolve symlinks for both, then check containment.
+	resDir, _ := filepath.EvalSymlinks(absDir)
+	resHome, _ := filepath.EvalSymlinks(absHome)
+	// resDir may equal resHome only if marshal's config dir is the
+	// home itself (which is wrong) — we expect it under <home>/.config.
+	rel, err := filepath.Rel(resHome, resDir)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("userConfigDir %q escaped home %q", resDir, resHome)
+	}
+}
+
+func TestReplaceTriggerTokenHandlesConsecutiveAt(t *testing.T) {
+	got := replaceTriggerToken("@@file", "X")
+	// The first "@" should be consumed along with the second.
+	if got != "X" {
+		t.Fatalf("expected X, got %q", got)
+	}
+	// Sanity: a single @ still works.
+	got2 := replaceTriggerToken("hello @world", "X")
+	if got2 != "hello X" {
+		t.Fatalf("expected 'hello X', got %q", got2)
 	}
 }

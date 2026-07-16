@@ -1070,6 +1070,23 @@ func TestSessionManagerLogsCloseTeardown(t *testing.T) {
 	}
 }
 
+// TestValidateWorkingPathsRejectsEtc verifies that validateWorkingPaths
+// rejects paths outside the trusted-roots allow-list (F-SEC-33).
+func TestValidateWorkingPathsRejectsEtc(t *testing.T) {
+	if err := validateWorkingPaths("/etc", nil); err == nil {
+		t.Fatal("expected /etc to be rejected")
+	}
+	if err := validateWorkingPaths(t.TempDir(), []string{"/root"}); err == nil {
+		t.Fatal("expected /root to be rejected as additionalDirectory")
+	}
+	home := os.Getenv("HOME")
+	if home != "" {
+		if err := validateWorkingPaths(home, nil); err != nil {
+			t.Fatalf("expected home %q to be allowed, got %v", home, err)
+		}
+	}
+}
+
 // TestValidateLifecycleParamsRejectsSymlinkDuplicate reproduces
 // F-POL-65: 8 symlinks pointing to the same sensitive dir must be
 // rejected as duplicates.

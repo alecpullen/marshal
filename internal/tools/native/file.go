@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +52,26 @@ func (t *toolSet) fileReadTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("%s is not a regular file", args.Path)
 		}
 
-		data, err := os.ReadFile(path)
+		f, err := os.Open(path)
+		if err != nil {
+			return registry.ToolResult{}, fmt.Errorf("read %s: %w", args.Path, err)
+		}
+		defer f.Close()
+
+		// Re-check size now that we have an open fd; closes the TOCTOU window
+		// between os.Stat and the read. A symlink swap after open would change
+		// the file backing the fd but the size is fixed at this point.
+		info2, err := f.Stat()
+		if err != nil {
+			return registry.ToolResult{}, fmt.Errorf("stat %s after open: %w", args.Path, err)
+		}
+		if info2.Size() > int64(t.maxOutputBytes)+1 {
+			return registry.ToolResult{}, fmt.Errorf("%s is too large to read (%d bytes; limit %d)",
+				args.Path, info2.Size(), t.maxOutputBytes)
+		}
+
+		cap := int64(t.maxOutputBytes) + 1
+		data, err := io.ReadAll(io.LimitReader(f, cap))
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("read %s: %w", args.Path, err)
 		}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1326,5 +1327,29 @@ func TestEventInfoHidesResponseChan_Question(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for question event")
+	}
+}
+
+func TestBeginWorkAndBeginQuiesceConcurrent(t *testing.T) {
+	s := newTestState()
+	var wg sync.WaitGroup
+	for i := 0; i < 1000; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = s.BeginWork()
+			if err := s.BeginWork(); err == nil {
+				s.EndWork()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			s.BeginQuiesce()
+		}()
+	}
+	wg.Wait()
+	// After both gates flip, BeginWork must always return an error.
+	if err := s.BeginWork(); !errors.Is(err, ErrSessionQuiescing) {
+		t.Fatalf("expected ErrSessionQuiescing after BeginQuiesce, got %v", err)
 	}
 }

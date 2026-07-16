@@ -174,7 +174,7 @@ func TestStatusLineShowsHelpOpenModeWhenHelpIsOpen(t *testing.T) {
 
 func TestStatusLineShowsCompletingModeWhenPopupIsVisible(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.cmdPopup = newCompletionPopup([]completionItem{{Text: "/plan", Kind: completionCommand}})
+	m.cmdPopup = newCompletionPopup([]completionItem{{Text: "plan", Kind: completionCommand}})
 	m.cmdPopup.update("pl") // triggers filtering and sets visible=true
 
 	line := m.renderStatusLine(100)

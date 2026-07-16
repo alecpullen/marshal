@@ -118,6 +118,7 @@ type Model struct {
 	steeringBroker *pubsub.Broker[session.SteeringEvent]
 	steeringEvents <-chan pubsub.Event[session.SteeringEvent]
 	queuedCount    int
+	cancelling     bool
 
 	// New Layout State
 	rawWidth  int // unclamped terminal dimensions (gate check)
@@ -1443,18 +1444,18 @@ func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
 }
 
 // cancelTurn cancels the in-flight agent turn, if any. Shared by Esc and
-// the /stop command. F16 R5: also drops any messages queued before the
-// interrupt — they were enqueued for the turn we just killed, and
-// keeping them would re-fire on the next follow-up.
+// the /stop command. The steering queue is NOT cleared here — that happens
+// in handleAgentFinished so the finishing goroutine can observe the
+// cancellation state and avoid double-processing.
 func (m *Model) cancelTurn() bool {
-	if m.agentCancel == nil {
+	if m.agentCancel == nil && !m.busy {
 		return false
 	}
-	m.agentCancel()
-	m.agentCancel = nil
-	m.state.ClearSteering()
-	m.queuedCount = 0
-	m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
+	m.cancelling = true
+	if m.agentCancel != nil {
+		m.agentCancel()
+		m.agentCancel = nil
+	}
 	m.refreshViewport()
 	return true
 }
@@ -1509,6 +1510,12 @@ func (m *Model) syncSettingsSaveBlock() {
 // handleAgentFinished handles an agentFinishedMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
+	if m.cancelling {
+		m.state.ClearSteering()
+		m.queuedCount = 0
+		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
+		m.cancelling = false
+	}
 	m.busy = false
 	m.agentCancel = nil
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {

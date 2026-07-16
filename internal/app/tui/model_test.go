@@ -2470,6 +2470,20 @@ func TestCancelTurnDoesNotClearSteeringWhenAgentAlreadyFinished(t *testing.T) {
 	}
 }
 
+// F-BUG-150: successPulse must clear when the agent finishes with an
+// error (not context.Canceled). If the previous turn succeeded, the
+// input border should not flash teal during the error state.
+func TestSuccessPulseClearsOnError(t *testing.T) {
+	m := newTestModel(t)
+	m.successPulse = true
+	m.busy = true
+	updated, _ := m.Update(agentFinishedMsg{err: errors.New("boom")})
+	m = updated.(Model)
+	if m.successPulse {
+		t.Fatal("successPulse should clear on error")
+	}
+}
+
 // F18: /command completion popup is triggered by "/" at position 0 and
 // accepting a suggestion replaces the trigger token with the full
 // command name (and a trailing space for arg typing).

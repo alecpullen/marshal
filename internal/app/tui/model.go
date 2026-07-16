@@ -1520,6 +1520,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.agentCancel = nil
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		m.state.SetProviderError(msg.err)
+		m.successPulse = false
 	} else if msg.err == nil {
 		m.successPulse = true
 	}

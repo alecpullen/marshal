@@ -169,11 +169,13 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: statusWarnStyle.Render(fmt.Sprintf("queued %d", n)), priority: 8})
 	}
 
-	if bi := m.state.BrowserInfo(); bi.SessionOpen {
-		segs = append(segs, statusSeg{
-			text:     browserStatusText(bi),
-			priority: 9,
-		})
+	if m.ShouldShowStatusURL() {
+		if bi := m.state.BrowserInfo(); bi.SessionOpen {
+			segs = append(segs, statusSeg{
+				text:     browserStatusText(bi),
+				priority: 9,
+			})
+		}
 	}
 	return segs
 }

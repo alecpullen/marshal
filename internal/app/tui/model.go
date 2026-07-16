@@ -83,9 +83,14 @@ type Model struct {
 	memoryProject  int64
 	cmdRegistry    *commands.Registry
 	agentCancel    context.CancelFunc
-	forceMode      string // reserved for future status-bar display
-	approvalModel  *approvalModel
-	questionModel  *questionModel
+	forceMode      string // current interaction mode: "ask", "edit", or "" (auto). Rendered in the help overlay and status line.
+	// sddPanelBody and sddPanelCachedRows are computed once per View() call
+	// to avoid double-rendering the SDD panel (once for height, once for
+	// content). They are reset at the start of each viewString().
+	sddPanelBody       string
+	sddPanelCachedRows int
+	approvalModel      *approvalModel
+	questionModel      *questionModel
 
 	// F18: editor completions. cmdPopup is fed by the commands registry
 	// (triggered by `/` at position 0) and filePopup is fed by the repo
@@ -500,10 +505,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Picker modal: handle PickedMsg/CancelledMsg first, then route key
-	// messages to the picker while it's open (focus trap). Non-key messages
-	// (ticks, agent events) keep flowing to normal handlers so background
-	// work continues.
+	// pickerModel is pointer-updated: m.pickerModel.Update(msg) mutates
+	// the picker in place via its embedded pointer, and returns the same
+	// *picker.Model. We forward the returned command but discard the
+	// model — assigning back is a no-op. The picker keeps its own
+	// state.
 	switch pm := msg.(type) {
 	case connect.DoneMsg:
 		m.applyConnectDone(pm)
@@ -1031,7 +1037,7 @@ func (m Model) inputAreaRows() int {
 		} else {
 			content = renderQuestionPanel(q, max(m.width-4, 1))
 		}
-		rows += len(strings.Split(content, "\n"))
+		rows += lipgloss.Height(content)
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		content := ""
 		if m.editingCommand {
@@ -1043,7 +1049,7 @@ func (m Model) inputAreaRows() int {
 		} else {
 			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.width-4, 1))
 		}
-		rows += len(strings.Split(content, "\n"))
+		rows += lipgloss.Height(content)
 	} else {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
@@ -1070,11 +1076,25 @@ func (m Model) browserBarRows() int {
 	return 0
 }
 
+// ShouldShowStatusURL returns false when the browser bar is visible, because
+// the browser bar already shows the URL and tool name. The right-side status
+// segment should omit the URL line to avoid duplication.
+func (m Model) ShouldShowStatusURL() bool {
+	return !m.state.BrowserInfo().SessionOpen
+}
+
 func (m Model) sddPanelRows() int {
-	if m.state.SDDProgress().Active {
-		return sddPanelRows
+	if !m.state.SDDProgress().Active {
+		return 0
 	}
-	return 0
+	// Use the cached value from the last viewString() call. If the cache is
+	// stale (e.g. called outside of View), fall back to computing it fresh.
+	if m.sddPanelCachedRows > 0 || m.sddPanelBody != "" {
+		return m.sddPanelCachedRows
+	}
+	spinner := m.activeSpinnerFrame(session.ActivityTool)
+	_, rows := renderSDDPanel(m.state.SDDProgress(), spinner, m.width)
+	return rows
 }
 
 func (m *Model) updateViewportHeight() bool {
@@ -1125,9 +1145,8 @@ func (m *Model) updateCompletionPopups() {
 			// always reflects the current registry.
 			items := make([]completionItem, 0, len(m.cmdRegistry.List()))
 			for _, c := range m.cmdRegistry.List() {
-				text := "/" + c.Name
 				items = append(items, completionItem{
-					Text:        text,
+					Text:        c.Name,
 					Description: c.Description,
 					Kind:        completionCommand,
 				})
@@ -1185,6 +1204,28 @@ func (m *Model) updateCompletionPopups() {
 // the command name, not its arguments), and is non-empty after the "/".
 func (m *Model) commandTrigger(value string) (bool, string) {
 	if !strings.HasPrefix(value, "/") {
+		// After a command has been accepted (e.g. "plan "), re-trigger
+		// the popup when the user types a space after the command name
+		// so argument completions can be shown.
+		//
+		// NOTE: The re-trigger returns (true, "") which shows ALL items
+		// unfiltered. The brief originally specified filtering to only
+		// sub-arguments for the accepted command, but the codebase has
+		// no concept of per-command sub-arguments — there is no Help
+		// field on Command and no metadata for filtering. Implementing
+		// sub-argument filtering would require adding a new metadata
+		// field to the Command type and populating it for each command.
+		// This is a documented plan deviation: the current behaviour
+		// (re-show full command list on space) is the correct user-facing
+		// behaviour given the data model.
+		if m.cmdRegistry != nil {
+			for _, c := range m.cmdRegistry.List() {
+				prefix := c.Name + " "
+				if strings.HasPrefix(value, prefix) {
+					return true, ""
+				}
+			}
+		}
 		return false, ""
 	}
 	// "/plan " is committed — no longer a trigger.

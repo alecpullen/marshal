@@ -104,6 +104,21 @@ func TestRenderSwarmPanelHidesTokensWhenZero(t *testing.T) {
 	}
 }
 
+func TestSwarmPanelEmitsOneLinePerRole(t *testing.T) {
+	p := session.SwarmProgress{
+		Goal:   "test",
+		Active: true,
+		Roles: []session.SwarmRole{
+			{Name: "implementer", Status: session.SwarmRoleActive},
+			{Name: "tester", Status: session.SwarmRolePending},
+		},
+	}
+	out := renderSwarmPanel(p, "*", 60)
+	if got, want := strings.Count(out, "\n"), 2; got != want {
+		t.Fatalf("expected %d newlines, got %d (%q)", want, got, out)
+	}
+}
+
 func TestSwarmPanelIsBorderless(t *testing.T) {
 	p := session.SwarmProgress{Active: true, Goal: "build", Roles: []session.SwarmRole{{Name: "coder", Status: session.SwarmRoleActive}}}
 	out := renderSwarmPanel(p, "⠋", 60)

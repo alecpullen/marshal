@@ -125,12 +125,24 @@ var table = [][]string{
 	{"Ctrl+C", "quit"},
 }
 
+// OverlayHints carries optional context for the help overlay rendering.
+type OverlayHints struct {
+	// Mode is the current interaction mode ("auto", "ask", or "edit").
+	// When empty the overlay omits the mode sub-table.
+	Mode string
+}
+
 // Overlay returns the full-screen help panel shown when ? is pressed.
-func Overlay(width, height int) string {
+func Overlay(width, height int, hints OverlayHints) string {
 	overlayKeyStyle := lipgloss.NewStyle().Bold(true).Width(keyColumnWidth)
 	descStyle := lipgloss.NewStyle().Width(max(width-keyColumnWidth-4, 20))
-	rows := make([]string, 0, len(table)+4)
+	rows := make([]string, 0, len(table)+6)
 	rows = append(rows, "marshal keys", "")
+	if hints.Mode != "" {
+		rows = append(rows, "— current mode —", "")
+		rows = append(rows, overlayKeyStyle.Render("mode")+"  "+descStyle.Render(hints.Mode))
+		rows = append(rows, "")
+	}
 	for _, r := range table {
 		if r[0] == "" && r[1] == "" {
 			rows = append(rows, "")

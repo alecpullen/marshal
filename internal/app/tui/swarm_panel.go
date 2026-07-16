@@ -45,12 +45,8 @@ func renderSwarmPanel(p session.SwarmProgress, spinnerFrame string, width int) s
 
 	var b strings.Builder
 	b.WriteString(promptPrefixStyle.Render(truncateRunes("Swarm: "+p.Goal, inner)))
-	for i := 0; i < 5; i++ {
+	for _, r := range p.Roles {
 		b.WriteString("\n")
-		if i >= len(p.Roles) {
-			continue
-		}
-		r := p.Roles[i]
 		line := fmt.Sprintf("%s %s", statusGlyph(r.Status, spinnerFrame), r.Name)
 		if r.Detail != "" {
 			line += "   " + r.Detail

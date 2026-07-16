@@ -641,13 +641,9 @@ func checkPath(p string, trusted []string) error {
 	if !filepath.IsAbs(p) {
 		return fmt.Errorf("%q is not absolute", p)
 	}
-	abs, err := filepath.Abs(p)
+	res, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		return err
-	}
-	res, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		res = abs
+		res = p
 	}
 	for _, root := range trusted {
 		rel, err := filepath.Rel(root, res)
@@ -693,15 +689,4 @@ func trustedRoots() ([]string, error) {
 	return roots, nil
 }
 
-// pathWithinAny reports whether path is contained within any of the
-// supplied roots. Both path and roots should already be resolved
-// through EvalSymlinks before calling.
-func pathWithinAny(path string, roots []string) bool {
-	for _, root := range roots {
-		rel, err := filepath.Rel(root, path)
-		if err == nil && !strings.HasPrefix(rel, "..") && rel != ".." {
-			return true
-		}
-	}
-	return false
-}
+

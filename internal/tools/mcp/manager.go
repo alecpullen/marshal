@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"marshal/internal/app/config"
 	"marshal/internal/tools/registry"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -43,6 +44,25 @@ func validateServerEnv(env map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// mcpAllowListCommands is the set of command basenames that may be spawned
+// by the MCP manager without an explicit Trust flag. See F-SEC-06.
+var mcpAllowListCommands = map[string]bool{
+	"npx": true, "uvx": true,
+	"python": true, "python3": true,
+	"node": true, "deno": true, "bun": true,
+}
+
+func validateServerCommand(srv config.MCPServerConfig) error {
+	if srv.Trust == "unrestricted" {
+		return nil
+	}
+	base := filepath.Base(srv.Command)
+	if mcpAllowListCommands[base] {
+		return nil
+	}
+	return fmt.Errorf("MCP server command %q is not in the allow-list; set trust = \"unrestricted\" to override", srv.Command)
 }
 
 // mcpServerTimeout is the per-server timeout for tools/list calls.
@@ -89,6 +109,13 @@ func (m *Manager) Start(ctx context.Context) error {
 		return nil
 	}
 	for name, srv := range m.config.MCP.Servers {
+		if err := validateServerCommand(srv); err != nil {
+			m.Close()
+			return fmt.Errorf("start MCP server %q: %w", name, err)
+		}
+		if srv.Trust == "unrestricted" {
+			m.log().Warn("mcp server command accepted with unrestricted trust", "name", name, "command", srv.Command)
+		}
 		if err := validateServerEnv(srv.Env); err != nil {
 			m.Close()
 			return fmt.Errorf("start MCP server %q: %w", name, err)

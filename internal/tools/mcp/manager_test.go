@@ -33,6 +33,7 @@ func TestManagerRegistersAndInvokesTools(t *testing.T) {
 			Command: exe,
 			Args:    []string{"-test.run=TestManagerRegistersAndInvokesTools"},
 			Env:     map[string]string{"BE_MOCK_SERVER": "1"},
+			Trust:   "unrestricted",
 		},
 	}
 
@@ -96,11 +97,13 @@ func TestRegisterTools_SkipsHangingServer(t *testing.T) {
 			Command: exe,
 			Args:    []string{"-test.run=TestRegisterTools_SkipsHangingServer"},
 			Env:     map[string]string{"BE_HANGING_SERVER": "1"},
+			Trust:   "unrestricted",
 		},
 		"good": {
 			Command: exe,
 			Args:    []string{"-test.run=TestRegisterTools_SkipsHangingServer"},
 			Env:     map[string]string{"BE_MOCK_SERVER": "1"},
+			Trust:   "unrestricted",
 		},
 	}
 
@@ -222,6 +225,7 @@ func TestStartRejectsDangerousEnvKey(t *testing.T) {
 				"BE_MOCK_SERVER": "1",
 				"LD_PRELOAD":     "/tmp/evil.so",
 			},
+			Trust: "unrestricted",
 		},
 	}
 	m := NewManager(&cfg)
@@ -250,11 +254,59 @@ func TestStartRejectsNewlineInEnvValue(t *testing.T) {
 				"BE_MOCK_SERVER": "1",
 				"FOO":            "bar\nbaz",
 			},
+			Trust: "unrestricted",
 		},
 	}
 	m := NewManager(&cfg)
 	if err := m.Start(context.Background()); err == nil {
 		t.Fatal("expected Start to reject newline in env value, got nil")
+	}
+}
+
+func TestStartRejectsUnknownCommandWithoutTrust(t *testing.T) {
+	cfg := &config.Config{
+		MCP: config.MCPConfig{
+			Servers: map[string]config.MCPServerConfig{
+				"evil": {Command: "/tmp/evil-binary", Args: []string{}},
+			},
+		},
+	}
+	m := NewManager(cfg)
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("expected Start to reject unlisted command without trust flag")
+	}
+}
+
+func TestStartAcceptsUnknownCommandWithUnrestrictedTrust(t *testing.T) {
+	cfg := &config.Config{
+		MCP: config.MCPConfig{
+			Servers: map[string]config.MCPServerConfig{
+				"evil": {Command: "/tmp/evil-binary", Args: []string{}, Trust: "unrestricted"},
+			},
+		},
+	}
+	m := NewManager(cfg)
+	err := m.Start(context.Background())
+	// /tmp/evil-binary doesn't exist, so Start will fail with exec-not-found.
+	// We're asserting the validation step does NOT reject it.
+	if err != nil && (strings.Contains(err.Error(), "deny-list") || strings.Contains(err.Error(), "allow-list")) {
+		t.Fatalf("validation should have passed; got %v", err)
+	}
+}
+
+func TestStartAcceptsNpx(t *testing.T) {
+	cfg := &config.Config{
+		MCP: config.MCPConfig{
+			Servers: map[string]config.MCPServerConfig{
+				"ok": {Command: "npx", Args: []string{"-y", "some-mcp-server"}},
+			},
+		},
+	}
+	m := NewManager(cfg)
+	// npx may not be installed in the test env; we just want validation to pass.
+	err := m.Start(context.Background())
+	if err != nil && (strings.Contains(err.Error(), "allow-list") || strings.Contains(err.Error(), "command")) {
+		t.Fatalf("validation should have passed; got %v", err)
 	}
 }
 

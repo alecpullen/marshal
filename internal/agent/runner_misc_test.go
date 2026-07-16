@@ -969,6 +969,34 @@ func TestRunnerUsesConfiguredRoleInSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestMaxTurnContextTokensUsesSmallerOfConfiguredAndDerived(t *testing.T) {
+	state := newTestState(t)
+	r := NewRunner(nil, nil, nil, state, "test-model")
+	r.MaxTurnContextTokens = 100_000 // generous user config
+	r.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "tiny", ContextWindow: 32_000},
+	}}
+
+	_, _, _ = r.resolveRoute(&Task{Class: ClassQuestion})
+	if r.MaxTurnContextTokens > 32_000 {
+		t.Fatalf("expected MaxTurnContextTokens ≤ 32000, got %d", r.MaxTurnContextTokens)
+	}
+}
+
+func TestMaxTurnContextTokensUsesConfiguredWhenLarger(t *testing.T) {
+	state := newTestState(t)
+	r := NewRunner(nil, nil, nil, state, "test-model")
+	r.MaxTurnContextTokens = 100_000
+	r.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "huge", ContextWindow: 200_000},
+	}}
+
+	_, _, _ = r.resolveRoute(&Task{Class: ClassQuestion})
+	if r.MaxTurnContextTokens != 100_000 {
+		t.Fatalf("expected MaxTurnContextTokens = 100000, got %d", r.MaxTurnContextTokens)
+	}
+}
+
 func TestRunTaskReturnsCompletedTaskWithSummary(t *testing.T) {
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale": "done", "action": {"type": "final", "content": "all findings recorded"}}`,

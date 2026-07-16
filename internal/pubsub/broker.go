@@ -17,6 +17,7 @@ package pubsub
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -78,7 +79,8 @@ func newSubscription[T any](buffer int) *subscription[T] {
 }
 
 // sendBlocking is for terminal subscribers: must receive. Blocks until
-// delivered, ctx-cancelled, or sub closed.
+// delivered, ctx-cancelled, sub closed, or a 500ms timeout elapses (in
+// which case a warning is logged and the event is dropped).
 func sendBlocking[T any](s *subscription[T], ev Event[T]) {
 	if !s.enter() {
 		return
@@ -88,6 +90,8 @@ func sendBlocking[T any](s *subscription[T], ev Event[T]) {
 	select {
 	case s.ch <- ev:
 	case <-s.stopCh:
+	case <-time.After(500 * time.Millisecond):
+		slog.Default().Warn("terminal subscription slow; dropping", "topic", ev.Type)
 	}
 }
 

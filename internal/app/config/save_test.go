@@ -481,6 +481,19 @@ func TestSaveSDDConfig(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRejectsBadBaseURL(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	cfg := Config{
+		Providers: map[string]ProviderConfig{
+			"evil": {Type: "openai_compatible", BaseURL: "javascript:alert(1)"},
+		},
+	}
+	if err := SaveProjectConfig(path, cfg); err == nil {
+		t.Fatal("expected SaveProjectConfig to reject javascript: URL, got nil")
+	}
+}
+
 func TestSaveProjectConfigPreservesAgentProfiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".marshal", "config.toml")

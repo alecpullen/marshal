@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,6 +21,12 @@ func SaveProjectConfig(path string, cfg Config) error {
 	file, err := loadFile(path)
 	if err != nil {
 		return fmt.Errorf("load existing project config: %w", err)
+	}
+
+	for name, p := range cfg.Providers {
+		if err := validateProviderBaseURL(p.BaseURL); err != nil {
+			return fmt.Errorf("provider %q: %w", name, err)
+		}
 	}
 
 	defaultProfile := cfg.Profile.Default
@@ -255,6 +262,25 @@ func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
 		data = append([]byte(header), data...)
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// validateProviderBaseURL returns an error if the base URL is not a
+// parseable HTTP/HTTPS URL with a non-empty host. See F-SEC-30.
+func validateProviderBaseURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("provider base_url %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("provider base_url %q: scheme must be http or https", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("provider base_url %q: empty host", raw)
+	}
+	return nil
 }
 
 func SaveUserConfigRule(path string, rule PermissionRule) error {

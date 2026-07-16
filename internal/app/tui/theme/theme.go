@@ -11,9 +11,49 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"charm.land/lipgloss/v2"
 )
+
+// ChangedMsg is published when the theme is reloaded. Subscribers can
+// type-switch on this in their Update method to rebuild styles.
+type ChangedMsg struct{ Theme Theme }
+
+var (
+	current   Theme
+	mu        sync.RWMutex
+	listeners []func(Theme)
+)
+
+// Current returns the currently active theme. It is safe to call from any
+// goroutine. The zero value is returned before the first call to Reload.
+func Current() Theme {
+	mu.RLock()
+	defer mu.RUnlock()
+	return current
+}
+
+// Subscribe registers fn to be called (in the same goroutine as Reload)
+// every time the theme is reloaded. The callback receives the new Theme.
+func Subscribe(fn func(Theme)) {
+	mu.Lock()
+	defer mu.Unlock()
+	listeners = append(listeners, fn)
+}
+
+// Reload sets the current theme and notifies all subscribers. It is safe
+// to call from any goroutine.
+func Reload(th Theme) {
+	mu.Lock()
+	current = th
+	fns := make([]func(Theme), len(listeners))
+	copy(fns, listeners)
+	mu.Unlock()
+	for _, fn := range fns {
+		fn(th)
+	}
+}
 
 // Theme is the set of semantic color slots consumed by every renderer.
 // Each slot maps a meaning (primary accent, muted text, error) to a

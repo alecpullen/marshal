@@ -11,15 +11,13 @@ import (
 	"marshal/internal/app/tui/picker"
 )
 
-var (
-	flCursorStyle = lipgloss.NewStyle().Bold(true).Background(settingsTheme.BGSelection)
-	flTitleStyle  = lipgloss.NewStyle().Foreground(settingsTheme.FGDefault)
-	flValueStyle  = lipgloss.NewStyle().Foreground(settingsTheme.AccentSecondary)
-	flDescStyle   = lipgloss.NewStyle().Foreground(settingsTheme.FGMuted)
-	flErrStyle    = lipgloss.NewStyle().Foreground(settingsTheme.StatusError)
-	flOnStyle     = lipgloss.NewStyle().Foreground(settingsTheme.StatusSuccess)
-	flOffStyle    = lipgloss.NewStyle().Foreground(settingsTheme.FGMuted)
-)
+func flCursorStyle() lipgloss.Style { return lipgloss.NewStyle().Bold(true).Background(settingsTheme().BGSelection) }
+func flTitleStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().FGDefault) }
+func flValueStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().AccentSecondary) }
+func flDescStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
+func flErrStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(settingsTheme().StatusError) }
+func flOnStyle() lipgloss.Style     { return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess) }
+func flOffStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
 
 // fieldList renders and edits a vertical list of typed rows. It is the one
 // widget behind every settings pane and drill-down frame.
@@ -408,9 +406,9 @@ func (fl *fieldList) valueCell(row *field, isCursor bool) string {
 	switch row.kind {
 	case kindToggle:
 		if row.getBool() {
-			return flOnStyle.Render("on ●")
+			return flOnStyle().Render("on ●")
 		}
-		return flOffStyle.Render("off ○")
+		return flOffStyle().Render("off ○")
 	case kindScalar:
 		if fl.editing && isCursor {
 			return fl.input.View()
@@ -422,23 +420,23 @@ func (fl *fieldList) valueCell(row *field, isCursor bool) string {
 		if v == "" {
 			v = "—"
 		}
-		return flValueStyle.Render(v)
+		return flValueStyle().Render(v)
 	case kindEnum:
-		return flValueStyle.Render(row.getStr() + " ▾")
+		return flValueStyle().Render(row.getStr() + " ▾")
 	case kindDrill:
-		return flValueStyle.Render(row.summary() + " ›")
+		return flValueStyle().Render(row.summary() + " ›")
 	case kindAction:
 		label := "\u21b5 run"
 		if row.actLabel != nil {
 			label = row.actLabel()
 		}
 		if strings.HasPrefix(label, "\u2713") {
-			return flOnStyle.Render(label)
+			return flOnStyle().Render(label)
 		}
 		if strings.HasPrefix(label, "\u2717") {
-			return flErrStyle.Render(label)
+			return flErrStyle().Render(label)
 		}
-		return flValueStyle.Render(label)
+		return flValueStyle().Render(label)
 	case kindPicker:
 		v := row.getStr()
 		if v == "" {
@@ -448,7 +446,7 @@ func (fl *fieldList) valueCell(row *field, isCursor bool) string {
 		if row.pickPending != nil && row.pickPending() {
 			suffix = " \u2026"
 		}
-		return flValueStyle.Render(v + suffix)
+		return flValueStyle().Render(v + suffix)
 	}
 	return ""
 }
@@ -464,7 +462,7 @@ func (fl *fieldList) View() string {
 		if fl.onAdd != nil {
 			empty += " — press a to add"
 		}
-		lines = append(lines, flDescStyle.Render(empty+")"))
+		lines = append(lines, flDescStyle().Render(empty+")"))
 	}
 	for i, row := range fl.rows {
 		isCursor := i == fl.cursor
@@ -478,17 +476,17 @@ func (fl *fieldList) View() string {
 		if gap < 1 {
 			gap = 1
 		}
-		line := marker + flTitleStyle.Render(title) + strings.Repeat(" ", gap) + val
+		line := marker + flTitleStyle().Render(title) + strings.Repeat(" ", gap) + val
 		if isCursor {
 			cursorLine = len(lines)
-			line = flCursorStyle.Render(marker+title) + strings.Repeat(" ", gap) + val
+			line = flCursorStyle().Render(marker+title) + strings.Repeat(" ", gap) + val
 		}
 		lines = append(lines, line)
 		if isCursor && fl.errMsg != "" {
-			lines = append(lines, "    "+flErrStyle.Render("⚠ "+fl.errMsg))
+			lines = append(lines, "    "+flErrStyle().Render("⚠ "+fl.errMsg))
 		}
 		if isCursor && row.desc != "" && !fl.Editing() {
-			lines = append(lines, "    "+flDescStyle.Render(row.desc))
+			lines = append(lines, "    "+flDescStyle().Render(row.desc))
 		}
 		if isCursor && fl.picking {
 			for j, opt := range row.options() {
@@ -496,14 +494,14 @@ func (fl *fieldList) View() string {
 				if j == fl.pickIdx {
 					pm = "  ▸ "
 				}
-				lines = append(lines, pm+flValueStyle.Render(opt))
+				lines = append(lines, pm+flValueStyle().Render(opt))
 			}
 		}
 	}
 	if fl.adding {
 		lines = append(lines, "▸ "+fl.keyPrompt+": "+fl.keyInput.View())
 		if fl.errMsg != "" {
-			lines = append(lines, "    "+flErrStyle.Render("⚠ "+fl.errMsg))
+			lines = append(lines, "    "+flErrStyle().Render("⚠ "+fl.errMsg))
 		}
 	}
 	return clipLines(lines, cursorLine, fl.height)
@@ -512,7 +510,7 @@ func (fl *fieldList) View() string {
 // clipLines windows lines to at most height rows, keeping focusLine visible,
 // with ↑/↓ more indicators occupying the first/last row when clipped.
 func clipLines(lines []string, focusLine, height int) string {
-	return chrome.ClipLines(lines, focusLine, height, settingsTheme)
+	return chrome.ClipLines(lines, focusLine, height, settingsTheme())
 }
 
 const wizardFieldID = "__wizard__"

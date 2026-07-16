@@ -336,6 +336,52 @@ func TestForwardDoesNotBlockOnBridge(t *testing.T) {
 	}
 }
 
+// TestForwarderDeniesPendingApprovalWhenBridgeNil verifies F-SEC-13:
+// when the permission bridge is nil and a pending approval arrives, the
+// forwarder sends a deny decision on the ResponseChan instead of silently
+// skipping the bridge call (which would block the runner indefinitely).
+func TestForwarderDeniesPendingApprovalWhenBridgeNil(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	response := make(chan session.UserApprovalDecision, 1)
+	pending := &session.PendingToolCall{
+		ID:           "test-approval",
+		Name:         "shell.run",
+		Command:      "date",
+		ResponseChan: response,
+	}
+
+	// No Perms → bridge is nil.
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: pending})
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+		// Perms is nil → bridge stays nil.
+	})
+
+	_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("PromptTurn() error = %v (expected nil, deny should unblock runner)", err)
+	}
+
+	select {
+	case got := <-response:
+		if got.Approved {
+			t.Fatalf("expected deny, got approved: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no response on ResponseChan; forwarder is stuck (F-SEC-13)")
+	}
+}
+
 // --- Step 2: Concurrency and cancellation tests ---
 
 func TestPromptTurnRejectsConcurrentPromptForSameSession(t *testing.T) {

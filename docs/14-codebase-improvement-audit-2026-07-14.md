@@ -2400,3 +2400,16 @@ finding and source plan.
 | Finding | Status | Notes |
 |---|---|---|
 | F-XCUT-184 | RESOLVED | `reloadAgentRuntime` dry-builds the runner from a copy of the new config before mutating `state.Config`. On failure the prior config and runner are preserved and a TUI footer message is shown. New test `TestReloadAgentRuntimeRollsBackOnFailure`. |
+
+### Batch 26 (A4 — remaining HIGH-severity security fixes): RESOLVED
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-SEC-02 | RESOLVED | `PolicyEngine.WithRegistry` setter; fallback now consults the tool's `Risk` level and returns `DecisionConfirm` for `RiskWorkspaceWrite`/`RiskCommand`/`RiskNetwork`/`RiskDestructive`. 3 new tests. |
+| F-SEC-04 | RESOLVED | `web.fetch` `http.Client.CheckRedirect` re-runs `ssrfCheck` on every redirect target; rejects after 5 hops. 1 new test. |
+| F-SEC-05 | RESOLVED | `validateServerEnv` rejects `LD_PRELOAD`/`LD_LIBRARY_PATH`/`PATH`/`DYLD_INSERT_LIBRARIES`/`PYTHONPATH`/`NODE_OPTIONS`/`RUBYOPT` and any value containing `\n`/`\r`/`\x00`. 2 new tests. |
+| F-SEC-06 | RESOLVED | `validateServerCommand` allow-lists `npx`/`uvx`/`python`/`python3`/`node`/`deno`/`bun`; unlisted commands require `trust = "unrestricted"`. New `Trust` field on `MCPServer`. 3 new tests. |
+| F-SEC-09 | RESOLVED | `legacyRoute` returns `(Route{}, false)` when `RemoteAllowed=false` and the legacy provider is not local. New `ErrLegacyProviderBlocked` sentinel. 2 new tests. |
+| F-SEC-10 | RESOLVED | `MaxTurnContextTokens` now uses the *minimum* of the configured and model-derived values. Comment updated. 2 new tests. |
+| F-SEC-11 | RESOLVED | `actions[]` read-only violation now increments `iteration` and `consecutiveParseFailures` and calls `recordIdle`. 1 new test. |
+| F-SEC-13 | RESOLVED | Pending approval with `m.bridge == nil` now sends a `deny` decision on the `ResponseChan` and logs a `Warn`. 1 new test. |

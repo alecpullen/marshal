@@ -3,6 +3,7 @@ package routing
 import (
 	"errors"
 	"fmt"
+	"net/url"
 )
 
 var (
@@ -106,6 +107,15 @@ func (r *StaticRouter) legacyRoute(role AgentRole) (Route, bool) {
 	if r.config.LegacyProvider == "" || r.config.LegacyModel == "" {
 		return Route{}, false
 	}
+	if !r.config.RemoteAllowed && !isLocalProvider(r.config.LegacyProvider) {
+		// F-SEC-09: the legacy provider is remote but the user has
+		// opted out of remote providers. Returning (Route{}, false)
+		// makes the caller's `_, ok` form fall through to the
+		// existing errRoleNotConfigured error, which the surface
+		// layer turns into a user-visible "no route for role X"
+		// message.
+		return Route{}, false
+	}
 	return Route{
 		Role:    role,
 		Profile: "legacy",
@@ -120,4 +130,16 @@ func (r *StaticRouter) legacyRoute(role AgentRole) (Route, bool) {
 		},
 		Legacy: true,
 	}, true
+}
+
+// isLocalProvider returns true if the provider URL targets the local
+// machine. Used to bypass the remote_providers_allowed gate for
+// localhost-only deployments. See F-SEC-09.
+func isLocalProvider(provider string) bool {
+	u, err := url.Parse(provider)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == ""
 }

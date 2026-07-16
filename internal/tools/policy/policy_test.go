@@ -1,7 +1,9 @@
 package policy
 
 import (
+	"context"
 	"marshal/internal/app/config"
+	"marshal/internal/tools/registry"
 	"strings"
 	"sync"
 	"testing"
@@ -663,5 +665,60 @@ func TestEvaluate_ChownR_Lowercase(t *testing.T) {
 	}
 	if dec != DecisionDeny {
 		t.Errorf("chown -r should be denied, got %v", dec)
+	}
+}
+
+// dummyHandler is a minimal ToolHandler for registry tests.
+var dummyHandler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+	return registry.ToolResult{}, nil
+}
+
+func TestEvaluate_RiskWorkspaceWriteRequiresConfirmation(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name:    "file.write_patch",
+		Risk:    registry.RiskWorkspaceWrite,
+		Handler: dummyHandler,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	pe := NewEngine(nil, nil)
+	pe.WithRegistry(reg)
+
+	dec, reason, err := pe.Evaluate("file.write_patch", nil)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Fatalf("expected DecisionConfirm for RiskWorkspaceWrite; got %v (%q)", dec, reason)
+	}
+}
+
+func TestEvaluate_RiskReadOnlyAutoAllows(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name:    "file.read",
+		Risk:    registry.RiskReadOnly,
+		Handler: dummyHandler,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	pe := NewEngine(nil, nil)
+	pe.WithRegistry(reg)
+
+	dec, _, err := pe.Evaluate("file.read", nil)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if dec != DecisionAllow {
+		t.Fatalf("expected DecisionAllow for RiskReadOnly; got %v", dec)
+	}
+}
+
+func TestEvaluate_NoRegistryKeepsLegacyLowRiskAllow(t *testing.T) {
+	pe := NewEngine(nil, nil)
+	dec, _, _ := pe.Evaluate("file.write_patch", nil)
+	if dec != DecisionAllow {
+		t.Fatalf("without registry, legacy allow should hold; got %v", dec)
 	}
 }

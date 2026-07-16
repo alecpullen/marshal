@@ -699,6 +699,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 			Command: exe,
 			Args:    []string{"-test.run=TestReloadAgentRuntimeManagesMCP"},
 			Env:     map[string]string{"BE_MOCK_SERVER": "1"},
+			Trust:   "unrestricted",
 		},
 	}
 

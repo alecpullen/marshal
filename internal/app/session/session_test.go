@@ -1235,3 +1235,96 @@ func TestStatePublishesApprovalEvent(t *testing.T) {
 		t.Fatal("timed out waiting for approval event")
 	}
 }
+
+// TestEventInfoHidesResponseChan verifies that SetPendingApproval publishes
+// a PendingApprovalInfo (channel-free) alongside the full PendingApproval.
+// Subscribers that only need to inspect the pending call should read the
+// Info field to avoid touching the response channel (F-BUG-156).
+func TestEventInfoHidesResponseChan(t *testing.T) {
+	state := newTestState()
+	broker := pubsub.NewBroker[Event]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := broker.Subscribe(ctx)
+	state.SetEventBroker(broker)
+
+	tc := &PendingToolCall{
+		ID:           "x",
+		Name:         "shell.run",
+		Command:      "echo hello",
+		Args:         "{}",
+		Risk:         "low",
+		Diff:         "--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-hello\n+world",
+		Schema:       "{}",
+		ResponseChan: make(chan UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(tc)
+
+	select {
+	case ev := <-ch:
+		if ev.Type != EventPendingApprovalChanged {
+			t.Fatalf("type = %q, want %q", ev.Type, EventPendingApprovalChanged)
+		}
+		info := ev.Payload.PendingApprovalInfo
+		if info == nil {
+			t.Fatal("PendingApprovalInfo is nil, want non-nil")
+		}
+		if info.ID != "x" {
+			t.Fatalf("info.ID = %q, want %q", info.ID, "x")
+		}
+		if info.Name != "shell.run" {
+			t.Fatalf("info.Name = %q, want %q", info.Name, "shell.run")
+		}
+		if info.Command != "echo hello" {
+			t.Fatalf("info.Command = %q, want %q", info.Command, "echo hello")
+		}
+		if info.RiskLevel != "low" {
+			t.Fatalf("info.RiskLevel = %q, want %q", info.RiskLevel, "low")
+		}
+		if info.Diff == "" {
+			t.Fatal("info.Diff is empty, want non-empty")
+		}
+		if info.Schema != "{}" {
+			t.Fatalf("info.Schema = %q, want %q", info.Schema, "{}")
+		}
+		// Verify the info does NOT carry the response channel.
+		if ev.Payload.PendingApproval != nil && ev.Payload.PendingApproval.ResponseChan == nil {
+			t.Fatal("PendingApproval.ResponseChan is nil in snapshot")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for approval event")
+	}
+}
+
+// TestEventInfoHidesResponseChan_Question is the PendingQuestion analogue
+// of TestEventInfoHidesResponseChan.
+func TestEventInfoHidesResponseChan_Question(t *testing.T) {
+	state := newTestState()
+	broker := pubsub.NewBroker[Event]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := broker.Subscribe(ctx)
+	state.SetEventBroker(broker)
+
+	q := &PendingQuestion{
+		Questions:    []Question{{Question: "q1", Options: []string{"a", "b"}}},
+		ResponseChan: make(chan []Answer, 1),
+	}
+	state.SetPendingQuestion(q)
+
+	select {
+	case ev := <-ch:
+		if ev.Type != EventPendingQuestionChanged {
+			t.Fatalf("type = %q, want %q", ev.Type, EventPendingQuestionChanged)
+		}
+		info := ev.Payload.PendingQuestionInfo
+		if info == nil {
+			t.Fatal("PendingQuestionInfo is nil, want non-nil")
+		}
+		if len(info.Questions) != 1 || info.Questions[0].Question != "q1" {
+			t.Fatalf("info.Questions = %+v", info.Questions)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for question event")
+	}
+}

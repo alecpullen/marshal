@@ -4099,3 +4099,16 @@ func TestUserConfigDirIsUnderHome(t *testing.T) {
 		t.Fatalf("userConfigDir %q escaped home %q", resDir, resHome)
 	}
 }
+
+func TestReplaceTriggerTokenHandlesConsecutiveAt(t *testing.T) {
+	got := replaceTriggerToken("@@file", "X")
+	// The first "@" should be consumed along with the second.
+	if got != "X" {
+		t.Fatalf("expected X, got %q", got)
+	}
+	// Sanity: a single @ still works.
+	got2 := replaceTriggerToken("hello @world", "X")
+	if got2 != "hello X" {
+		t.Fatalf("expected 'hello X', got %q", got2)
+	}
+}

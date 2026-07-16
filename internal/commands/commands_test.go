@@ -539,6 +539,32 @@ func TestExportComputesPathBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestExportRejectsAbsolutePath(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	state := newTestState()
+	cmd, _ := cmdReg.Lookup("export")
+	out := cmd.Handler(state, []string{"/etc/passwd"})
+	if !strings.Contains(out, "must be relative") {
+		t.Fatalf("expected absolute path to be rejected with 'must be relative', got %q", out)
+	}
+}
+
+func TestExportRejectsParentTraversal(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	state := newTestState()
+	cmd, _ := cmdReg.Lookup("export")
+	out := cmd.Handler(state, []string{"../../etc/passwd"})
+	if !strings.Contains(out, "escapes") {
+		t.Fatalf("expected parent traversal to be rejected with 'escapes', got %q", out)
+	}
+}
+
 func TestHiddenCommandsStillRunnable(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()

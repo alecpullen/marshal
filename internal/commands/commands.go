@@ -422,15 +422,24 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "export",
 			Description: "Export this session to a self-contained HTML file",
-			Args:        "[path]",
+			Args:        "[relative-path]",
 			Handler: func(state *session.State, args []string) string {
-				path := strings.Join(args, " ")
-				if path == "" {
-					path = filepath.Join(state.WorkingDir, "marshal-session-"+state.SessionID()+".html")
+				rel := strings.TrimSpace(strings.Join(args, " "))
+				if rel == "" {
+					rel = "marshal-session-" + state.SessionID() + ".html"
 				}
+				// F-SEC-38: clamp the export to the working dir.
+				if filepath.IsAbs(rel) {
+					return "Export failed: path must be relative to the working directory"
+				}
+				cleaned := filepath.Clean(rel)
+				if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+					return "Export failed: path escapes the working directory"
+				}
+				path := filepath.Join(state.WorkingDir, cleaned)
 				redactOn := state.Config.Privacy.RedactSecrets
 				if err := export.Write(state, path, redactOn); err != nil {
-					return fmt.Sprintf("Export failed: %v", err)
+					return "Export failed: " + err.Error()
 				}
 				return "Exported to " + path
 			},

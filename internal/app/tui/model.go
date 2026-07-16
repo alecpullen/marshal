@@ -1031,7 +1031,7 @@ func (m Model) inputAreaRows() int {
 		} else {
 			content = renderQuestionPanel(q, max(m.width-4, 1))
 		}
-		rows += len(strings.Split(content, "\n"))
+		rows += lipgloss.Height(content)
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		content := ""
 		if m.editingCommand {
@@ -1043,7 +1043,7 @@ func (m Model) inputAreaRows() int {
 		} else {
 			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.width-4, 1))
 		}
-		rows += len(strings.Split(content, "\n"))
+		rows += lipgloss.Height(content)
 	} else {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.

@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"marshal/internal/app/session"
 )
 
 func TestFuzzyScoreSubsequence(t *testing.T) {
@@ -215,6 +217,17 @@ func TestCompletionPopupShowsSlashPrefix(t *testing.T) {
 	out := stripANSI(m.renderCompletionPopup())
 	if !strings.Contains(out, "/plan") {
 		t.Fatalf("expected /plan in popup, got %q", out)
+	}
+}
+
+func TestInputAreaRowsHandlesWrappedContent(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetPendingApproval(&session.PendingToolCall{Command: strings.Repeat("x ", 200)})
+	m.approvalModel = newApprovalModel(m.state.PendingApproval(), m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.width-4, 30))
+	rows := m.inputAreaRows()
+	lineCount := len(strings.Split(m.approvalModel.View(), "\n"))
+	if rows < lineCount {
+		t.Fatalf("rows undercount: %d < %d", rows, lineCount)
 	}
 }
 

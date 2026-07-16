@@ -273,22 +273,9 @@ func (m Model) renderCompletionPopup() string {
 	if len(matches) < max {
 		max = len(matches)
 	}
-	// Clamp the view window to keep p.index visible. The popup keeps its
-	// own viewOffset that moves with moveUp/moveDown, but a smaller
-	// filtered list (after typing) can leave the offset past the end.
+	// The popup's reconcileOffset() is the single source of truth for
+	// scroll position. The renderer only reads p.viewOffset.
 	offset := p.viewOffset
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > len(matches)-max {
-		offset = len(matches) - max
-	}
-	if p.index < offset {
-		offset = p.index
-	}
-	if p.index >= offset+max {
-		offset = p.index - max + 1
-	}
 	for i := 0; i < max; i++ {
 		mi := offset + i
 		marker := "  "

@@ -1318,18 +1318,24 @@ func replaceTriggerToken(value, replacement string) string {
 	if strings.HasPrefix(value, "/") && !strings.ContainsAny(value, " \t\n") {
 		return replacement
 	}
-	// File trigger: find the last "@<...>" at a word start.
+	// File trigger: find the last "@<...>" at a word start, and consume
+	// any immediately-preceding "@"s as part of the trigger. F-SEC-28.
 	idx := strings.LastIndex(value, "@")
 	if idx < 0 {
 		return value
 	}
-	if idx > 0 {
-		prev := value[idx-1]
+	// Walk back over any preceding "@"s in the same run.
+	start := idx
+	for start > 0 && value[start-1] == '@' {
+		start--
+	}
+	if start > 0 {
+		prev := value[start-1]
 		if !isAtFileBoundary(prev) {
 			return value
 		}
 	}
-	return value[:idx] + replacement
+	return value[:start] + replacement
 }
 
 // popOldestSteering returns and removes the oldest queued steering

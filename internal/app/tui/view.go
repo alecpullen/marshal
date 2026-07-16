@@ -63,7 +63,11 @@ func (m Model) viewString() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
 	}
 	if m.helpOpen {
-		return help.Overlay(m.width, m.height)
+		mode := m.forceMode
+		if mode == "" {
+			mode = "auto"
+		}
+		return help.Overlay(m.width, m.height, help.OverlayHints{Mode: mode})
 	}
 
 	rows := []string{m.renderTitleBar(m.width), m.renderTranscriptFrame()}

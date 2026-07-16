@@ -373,6 +373,29 @@ func TestDiffOverlayEscReturnsToEditing(t *testing.T) {
 	}
 }
 
+func TestSaveControlShowsBlockedReason(t *testing.T) {
+	m := newTestModel(t)
+	m.SetSaveBlocked("Resolve the pending tool approval to save.")
+	out := m.saveView()
+	if !strings.Contains(out, "Resolve the pending tool approval") {
+		t.Fatalf("reason not inlined: %q", out)
+	}
+	if !strings.Contains(out, "Save") {
+		t.Fatalf("button label missing: %q", out)
+	}
+}
+
+func TestSaveControlShowsUnblocked(t *testing.T) {
+	m := newTestModel(t)
+	out := m.saveView()
+	if !strings.Contains(out, "Ctrl+S") {
+		t.Fatalf("unblocked save should show Ctrl+S keybinding: %q", out)
+	}
+	if !strings.Contains(out, "save") {
+		t.Fatalf("unblocked save should show 'save' label: %q", out)
+	}
+}
+
 func TestDrillIntoNewestProviderClearedOnNoWizard(t *testing.T) {
 	// When drillIntoNewestProvider is called without a wizard-created
 	// provider, it should be a no-op (wizardCreatedProvider is empty).

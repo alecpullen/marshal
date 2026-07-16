@@ -4,23 +4,22 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"marshal/internal/app/session"
 )
 
-const sddPanelRows = 10
-
-// renderSDDPanel renders the SDD progress panel. Returns empty string when
-// the SDD run is not active.
-func renderSDDPanel(p session.SDDProgress, spinnerFrame string, width int) string {
+// renderSDDPanel renders the SDD progress panel. Returns the rendered body
+// and its actual row count. Returns ("", 0) when the SDD run is not active.
+func renderSDDPanel(p session.SDDProgress, spinnerFrame string, width int) (string, int) {
 	if !p.Active {
-		return ""
+		return "", 0
 	}
 	inner := max(width-2, 1)
 
 	var b strings.Builder
 	b.WriteString(promptPrefixStyle.Render(truncateRunes("SDD: "+p.PlanName, inner)))
 	for i, task := range p.Tasks {
-		if i >= sddPanelRows-2 {
+		if i >= 8 {
 			break
 		}
 		b.WriteString("\n")
@@ -47,5 +46,6 @@ func renderSDDPanel(p session.SDDProgress, spinnerFrame string, width int) strin
 		b.WriteString(mutedStyle.Render(truncateRunes(line, inner)))
 	}
 
-	return indentBlock(b.String(), "  ")
+	body := indentBlock(b.String(), "  ")
+	return body, lipgloss.Height(body)
 }

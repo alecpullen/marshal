@@ -46,7 +46,7 @@ func (m Model) View() tea.View {
 	return v
 }
 
-func (m Model) viewString() string {
+func (m *Model) viewString() string {
 	if m.width == 0 || m.height == 0 {
 		return m.fallbackView()
 	}
@@ -63,7 +63,11 @@ func (m Model) viewString() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
 	}
 	if m.helpOpen {
-		return help.Overlay(m.width, m.height)
+		mode := m.forceMode
+		if mode == "" {
+			mode = "auto"
+		}
+		return help.Overlay(m.width, m.height, help.OverlayHints{Mode: mode})
 	}
 
 	rows := []string{m.renderTitleBar(m.width), m.renderTranscriptFrame()}
@@ -75,9 +79,12 @@ func (m Model) viewString() string {
 	if bar := m.renderBrowserBar(); bar != "" {
 		rows = append(rows, bar)
 	}
+	// Compute the SDD panel once and cache it so sddPanelRows() can reuse
+	// the result instead of calling renderSDDPanel a second time.
 	sddSpinner := m.activeSpinnerFrame(session.ActivityTool)
-	if panel := renderSDDPanel(m.state.SDDProgress(), sddSpinner, m.width); panel != "" {
-		rows = append(rows, panel)
+	m.sddPanelBody, m.sddPanelCachedRows = renderSDDPanel(m.state.SDDProgress(), sddSpinner, m.width)
+	if m.sddPanelBody != "" {
+		rows = append(rows, m.sddPanelBody)
 	}
 	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
 	out := lipgloss.JoinVertical(lipgloss.Left, rows...)
@@ -269,22 +276,9 @@ func (m Model) renderCompletionPopup() string {
 	if len(matches) < max {
 		max = len(matches)
 	}
-	// Clamp the view window to keep p.index visible. The popup keeps its
-	// own viewOffset that moves with moveUp/moveDown, but a smaller
-	// filtered list (after typing) can leave the offset past the end.
+	// The popup's reconcileOffset() is the single source of truth for
+	// scroll position. The renderer only reads p.viewOffset.
 	offset := p.viewOffset
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > len(matches)-max {
-		offset = len(matches) - max
-	}
-	if p.index < offset {
-		offset = p.index
-	}
-	if p.index >= offset+max {
-		offset = p.index - max + 1
-	}
 	for i := 0; i < max; i++ {
 		mi := offset + i
 		marker := "  "
@@ -293,7 +287,11 @@ func (m Model) renderCompletionPopup() string {
 			marker = "▸ "
 			style = promptPrefixStyle
 		}
-		row := marker + highlightMatches(matches[mi].Text, matches[mi].matchedIdxs)
+		display := matches[mi].Text
+		if matches[mi].Kind == completionCommand && !strings.HasPrefix(display, "/") {
+			display = "/" + display
+		}
+		row := marker + highlightMatches(display, matches[mi].matchedIdxs)
 		if matches[mi].Description != "" {
 			row += "  " + matches[mi].Description
 		}

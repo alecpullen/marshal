@@ -124,7 +124,7 @@ func (m *Model) setConfidence(confidence string) {
 	selected.Confidence = confidence
 	selected.UpdatedAt = now
 	m.memories[m.cursor] = selected
-	m.footer = ""
+	m.footer = "Marked as " + confidence
 }
 
 func (m Model) Footer() string {

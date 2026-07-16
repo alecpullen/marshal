@@ -268,6 +268,23 @@ func createTestProject(t *testing.T, database *db.DB) int64 {
 	return projectID
 }
 
+func newTestMemoryModel(t *testing.T) Model {
+	t.Helper()
+	database, projectID := newTestDB(t)
+	if err := database.SaveMemory(projectID, "fact", "Uses SQLite", "sess-1", time.Unix(100, 0)); err != nil {
+		t.Fatalf("SaveMemory failed: %v", err)
+	}
+	return New(database, projectID)
+}
+
+func TestSetConfidenceSetsFooter(t *testing.T) {
+	m := newTestMemoryModel(t)
+	m.setConfidence("stale")
+	if m.footer != "Marked as stale" {
+		t.Fatalf("footer = %q, want %q", m.footer, "Marked as stale")
+	}
+}
+
 func TestMemoryViewportScrollsAndClamps(t *testing.T) {
 	database := openTestDB(t)
 	pid := createTestProject(t, database)

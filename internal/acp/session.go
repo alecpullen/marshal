@@ -178,17 +178,10 @@ func validateLifecycleParams(p *sessionParams, requireSessionID bool) error {
 	if !filepath.IsAbs(p.Cwd) {
 		return invalidParamsError("cwd must be an absolute path")
 	}
-	// Resolve symlinks on Cwd and reject if outside trusted roots.
-	cwdResolved, err := filepath.EvalSymlinks(p.Cwd)
-	if err != nil {
-		return invalidParamsError("cwd: %v", err)
-	}
-	allowRoots, err := trustedRoots()
-	if err != nil {
-		return invalidParamsError("internal: trusted roots: %v", err)
-	}
-	if !pathWithinAny(cwdResolved, allowRoots) {
-		return invalidParamsError("cwd resolves outside trusted roots")
+	// Validate cwd and additionalDirectories against the trusted-roots
+	// allow-list (F-SEC-33).
+	if err := validateWorkingPaths(p.Cwd, p.AdditionalDirectories); err != nil {
+		return invalidParamsError("%v", err)
 	}
 	if p.MCPServers == nil {
 		return invalidParamsError("mcpServers is required and must be an explicit empty array")
@@ -199,21 +192,12 @@ func validateLifecycleParams(p *sessionParams, requireSessionID bool) error {
 	if len(p.AdditionalDirectories) > 8 {
 		return invalidParamsError("additionalDirectories max 8 entries")
 	}
-	for _, d := range p.AdditionalDirectories {
-		if !filepath.IsAbs(d) {
-			return invalidParamsError("additionalDirectories must be absolute paths")
-		}
-	}
-	// Resolve symlinks on AdditionalDirectories, de-duplicate by
-	// resolved path, and reject any path outside trusted roots.
+	// De-duplicate additionalDirectories by resolved path.
 	seen := map[string]bool{}
 	for _, raw := range p.AdditionalDirectories {
 		resolved, err := filepath.EvalSymlinks(raw)
 		if err != nil {
 			return invalidParamsError("additionalDirectory %q: %v", raw, err)
-		}
-		if !pathWithinAny(resolved, allowRoots) {
-			return invalidParamsError("additionalDirectory %q resolves outside trusted roots", raw)
 		}
 		if seen[resolved] {
 			return invalidParamsError("additionalDirectory %q duplicates %q after symlink resolution", raw, resolved)
@@ -632,10 +616,53 @@ func (m *SessionManager) teardownIfStillCurrent(rt *app.Runtime) error {
 	return nil
 }
 
+// validateWorkingPaths verifies that cwd and each additionalDirectory
+// are within an allow-list of trusted roots (the user's home, the
+// system temp, and the process's working directory). See F-SEC-33.
+func validateWorkingPaths(cwd string, additional []string) error {
+	trusted, err := trustedRoots()
+	if err != nil {
+		return fmt.Errorf("internal: trusted roots: %v", err)
+	}
+	if err := checkPath(cwd, trusted); err != nil {
+		return fmt.Errorf("cwd: %w", err)
+	}
+	for _, p := range additional {
+		if err := checkPath(p, trusted); err != nil {
+			return fmt.Errorf("additionalDirectory: %w", err)
+		}
+	}
+	return nil
+}
+
+// checkPath verifies that p is an absolute path within one of the
+// trusted roots after resolving symlinks.
+func checkPath(p string, trusted []string) error {
+	if !filepath.IsAbs(p) {
+		return fmt.Errorf("%q is not absolute", p)
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return err
+	}
+	res, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		res = abs
+	}
+	for _, root := range trusted {
+		rel, err := filepath.Rel(root, res)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%q is outside the trusted-roots allow-list", p)
+}
+
 // trustedRoots returns directories that are considered trusted for
-// session lifecycle path validation: the user's home directory and
-// $TMPDIR (if set). Each path is resolved through EvalSymlinks so
-// that comparisons against resolved session paths are consistent.
+// session lifecycle path validation: the user's home directory,
+// the system temp directory, and the process working directory.
+// Each path is resolved through EvalSymlinks so that comparisons
+// against resolved session paths are consistent.
 func trustedRoots() ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -652,6 +679,16 @@ func trustedRoots() ([]string, error) {
 			return nil, err
 		}
 		roots = append(roots, resolved)
+	} else {
+		// Fall back to /tmp when TMPDIR is unset.
+		if resolved, err := filepath.EvalSymlinks("/tmp"); err == nil {
+			roots = append(roots, resolved)
+		}
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		if resolved, err := filepath.EvalSymlinks(wd); err == nil {
+			roots = append(roots, resolved)
+		}
 	}
 	return roots, nil
 }

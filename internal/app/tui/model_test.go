@@ -4060,3 +4060,12 @@ func TestSettingsBlockReason(t *testing.T) {
 		}
 	})
 }
+
+func TestInputAreaRowsIncludesSDDHint(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetSDDProgress(session.SDDProgress{Active: true})
+	rows := m.inputAreaRows()
+	if rows < inputBorderRows+1 {
+		t.Fatalf("expected SDD hint row, got %d", rows)
+	}
+}

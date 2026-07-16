@@ -3943,3 +3943,74 @@ func TestMemoryBlockedByApproval(t *testing.T) {
 		t.Fatalf("last message = %q, want 'pending tool decision' message", last.Content)
 	}
 }
+
+// TestSettingsBlockReason verifies that settingsBlockReason returns the
+// correct blocking message for each condition (F-BUG-153).
+func TestSettingsBlockReason(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+
+	t.Run("busy", func(t *testing.T) {
+		m := New(state)
+		m.busy = true
+		if got := m.settingsBlockReason(); got != settingsBusyMessage {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, settingsBusyMessage)
+		}
+	})
+
+	t.Run("running jobs", func(t *testing.T) {
+		m := New(state)
+		state.SetRunningJobsCount(1)
+		if got := m.settingsBlockReason(); got != settingsBusyMessage {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, settingsBusyMessage)
+		}
+		state.SetRunningJobsCount(0)
+	})
+
+	t.Run("pending approval", func(t *testing.T) {
+		tc := &session.PendingToolCall{
+			ID:           "test-approval",
+			Name:         "test.tool",
+			Command:      "echo test",
+			Risk:         "low",
+			Reason:       "testing",
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		}
+		state.SetPendingApproval(tc)
+		m := New(state)
+		want := "Resolve the pending tool approval to save."
+		if got := m.settingsBlockReason(); got != want {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, want)
+		}
+		state.SetPendingApproval(nil)
+	})
+
+	t.Run("pending question", func(t *testing.T) {
+		q := &session.PendingQuestion{
+			Questions:    []session.Question{{Question: "test?"}},
+			ResponseChan: make(chan []session.Answer, 1),
+		}
+		state.SetPendingQuestion(q)
+		m := New(state)
+		want := "Answer the pending question to save."
+		if got := m.settingsBlockReason(); got != want {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, want)
+		}
+		state.SetPendingQuestion(nil)
+	})
+
+	t.Run("picker open", func(t *testing.T) {
+		m := New(state)
+		m.pickerModel = &picker.Model{}
+		want := "Close the picker to save."
+		if got := m.settingsBlockReason(); got != want {
+			t.Fatalf("settingsBlockReason = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no block", func(t *testing.T) {
+		m := New(state)
+		if got := m.settingsBlockReason(); got != "" {
+			t.Fatalf("settingsBlockReason = %q, want empty string", got)
+		}
+	})
+}

@@ -98,6 +98,7 @@ type MCPServerConfig struct {
 	Command string            `toml:"command"`
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
+	Trust   string            `toml:"trust"` // "" | "unrestricted" — see F-SEC-06
 }
 
 type SnapshotsConfig struct {

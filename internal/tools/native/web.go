@@ -63,7 +63,22 @@ func (t *toolSet) webFetchTool() registry.Tool {
 		}
 		client := t.webHTTPClient
 		if client == nil {
-			client = &http.Client{Timeout: timeout}
+			client = &http.Client{
+				Timeout: timeout,
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					if len(via) >= 5 {
+						return fmt.Errorf("too many redirects")
+					}
+					u, err := url.Parse(req.URL.String())
+					if err != nil {
+						return fmt.Errorf("invalid redirect target: %w", err)
+					}
+					if t.ssrfCheck(u) {
+						return fmt.Errorf("redirect to private or link-local address blocked: %s", req.URL.String())
+					}
+					return nil
+				},
+			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 		if err != nil {

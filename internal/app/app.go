@@ -375,6 +375,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if state.Logger() != nil {
 		pol.SetLogger(state.Logger())
 	}
+	pol.WithRegistry(reg)
 
 	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,

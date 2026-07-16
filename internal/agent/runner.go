@@ -638,6 +638,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		if len(action.Actions) > 0 {
 			if err := r.allReadOnly(action.Actions); err != nil {
+				// F-SEC-11: the violation is a parse failure for budget
+				// purposes. Without this, a model that keeps emitting
+				// non-read-only actions loops forever. `iteration` and
+				// `consecutiveParseFailures` are local variables in
+				// RunTask; increment them directly, the same way the
+				// parse-failure branch above does.
+				iteration++
+				consecutiveParseFailures++
+				r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
 				messages = append(messages, BuildCorrectionMessage(err))
 				continue
 			}
@@ -875,8 +884,13 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 		if effective < 0 {
 			effective = 0
 		}
-		// configured value is the floor (max(configured, 0.85*window - reserved)).
-		if effective > r.MaxTurnContextTokens {
+		// F-SEC-10: use the smaller of the configured value and the
+		// model-derived value. The configured value is a CEILING (never
+		// exceed the user's setting), not a floor. The previous code
+		// raised the configured value to the model-derived value, which
+		// meant a generous user config on a small model fed the model
+		// more tokens than its window supports.
+		if r.MaxTurnContextTokens == 0 || effective < r.MaxTurnContextTokens {
 			r.MaxTurnContextTokens = effective
 		}
 		r.State.SetTurnContextWindow(window)

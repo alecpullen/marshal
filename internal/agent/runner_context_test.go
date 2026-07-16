@@ -632,10 +632,10 @@ func TestResolveRouteRaisesBudgetFromKnownWindow(t *testing.T) {
 	}
 }
 
-func TestResolveRouteConfigWindowRaisesBudget(t *testing.T) {
+func TestResolveRouteConfigWindowCapsBudget(t *testing.T) {
 	runner := NewRunner(&agenttest.ScriptedProvider{Responses: []string{`{"rationale":"done","action":{"type":"final","content":"ok"}}`}},
 		registry.New(), policy.NewEngine(&config.Config{}, nil), newTestState(t), "big-model")
-	runner.MaxTurnContextTokens = 1000 // small floor
+	runner.MaxTurnContextTokens = 1000 // small ceiling
 	runner.RouteResolver = &staticResolver{
 		route:    routing.Route{Preset: routing.ModelPreset{Model: "big", ContextWindow: 200000, MaxOutputTokens: 8192}},
 		provider: runner.Provider,
@@ -644,9 +644,9 @@ func TestResolveRouteConfigWindowRaisesBudget(t *testing.T) {
 	if err := runner.Run(context.Background(), "hi"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// 0.85*200000 - 8192 = 161808, far above the 1000 floor.
-	if runner.MaxTurnContextTokens != 161808 {
-		t.Fatalf("effective budget = %d, want 161808", runner.MaxTurnContextTokens)
+	// 0.85*200000 - 8192 = 161808, but the configured ceiling of 1000 must win.
+	if runner.MaxTurnContextTokens != 1000 {
+		t.Fatalf("effective budget = %d, want 1000 (configured ceiling)", runner.MaxTurnContextTokens)
 	}
 }
 

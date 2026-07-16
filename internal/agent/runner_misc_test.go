@@ -782,6 +782,49 @@ func TestPlanningStepRunsWhenPlanFirstEnabled(t *testing.T) {
 	}
 }
 
+func TestActionsReadOnlyViolationAdvancesIteration(t *testing.T) {
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "file.write_patch", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"bad","actions":[{"type":"tool_call","tool":"file.write_patch","args":{}}]}`,
+		`{"rationale":"done","action":{"type":"final","content":"Done."}}`,
+	}}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	r := NewRunner(p, reg, pol, state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 5
+	r.MaxRetries = 0
+
+	var got *TurnMetrics
+	r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	task, err := r.RunTask(context.Background(), "test goal")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.Status != TaskStatusCompleted {
+		t.Fatalf("task.Status = %q, want completed", task.Status)
+	}
+	if got == nil {
+		t.Fatal("no TurnMetrics emitted")
+	}
+	// Without the F-SEC-11 fix, the violation branch does not increment
+	// iteration, so Iterations would be 2 (initial parse + final answer).
+	// With the fix, the violation branch increments iteration, making it 3.
+	if got.Iterations < 3 {
+		t.Fatalf("Iterations = %d, want at least 3 (read-only violation must advance iteration budget)", got.Iterations)
+	}
+	if got.ParseFailures != 1 {
+		t.Fatalf("ParseFailures = %d, want 1 (read-only violation counts as parse failure)", got.ParseFailures)
+	}
+}
+
 func TestRunRejectsNonReadOnlyActions(t *testing.T) {
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{
@@ -966,6 +1009,34 @@ func TestRunnerUsesConfiguredRoleInSystemPrompt(t *testing.T) {
 	system := p.Requests[0].Messages[0].Content
 	if !strings.Contains(system, "You are a reviewer") {
 		t.Fatalf("system prompt did not use reviewer role:\n%s", system)
+	}
+}
+
+func TestMaxTurnContextTokensUsesSmallerOfConfiguredAndDerived(t *testing.T) {
+	state := newTestState(t)
+	r := NewRunner(nil, nil, nil, state, "test-model")
+	r.MaxTurnContextTokens = 100_000 // generous user config
+	r.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "tiny", ContextWindow: 32_000},
+	}}
+
+	_, _, _ = r.resolveRoute(&Task{Class: ClassQuestion})
+	if r.MaxTurnContextTokens > 32_000 {
+		t.Fatalf("expected MaxTurnContextTokens ≤ 32000, got %d", r.MaxTurnContextTokens)
+	}
+}
+
+func TestMaxTurnContextTokensUsesConfiguredWhenLarger(t *testing.T) {
+	state := newTestState(t)
+	r := NewRunner(nil, nil, nil, state, "test-model")
+	r.MaxTurnContextTokens = 100_000
+	r.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "huge", ContextWindow: 200_000},
+	}}
+
+	_, _, _ = r.resolveRoute(&Task{Class: ClassQuestion})
+	if r.MaxTurnContextTokens != 100_000 {
+		t.Fatalf("expected MaxTurnContextTokens = 100000, got %d", r.MaxTurnContextTokens)
 	}
 }
 

@@ -1476,12 +1476,22 @@ func (m *Model) beginShutdown() tea.Cmd {
 	return tea.Quit
 }
 
-// settingsBlockReason returns settingsBusyMessage when the model is busy
-// or there are background jobs running, otherwise empty. Used to populate
-// the settings model's saveBlocked field.
+// settingsBlockReason returns a message when the model is busy, has
+// background jobs, a pending approval, a pending question, or an open
+// picker — any condition that should block settings save. Used to
+// populate the settings model's saveBlocked field.
 func (m Model) settingsBlockReason() string {
 	if m.busy || m.state.RunningJobsCount() > 0 {
 		return settingsBusyMessage
+	}
+	if m.state.PendingApproval() != nil {
+		return "Resolve the pending tool approval to save."
+	}
+	if m.state.PendingQuestion() != nil {
+		return "Answer the pending question to save."
+	}
+	if m.pickerModel != nil {
+		return "Close the picker to save."
 	}
 	return ""
 }

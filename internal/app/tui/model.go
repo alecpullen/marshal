@@ -102,9 +102,11 @@ type Model struct {
 	// don't re-evaluate and clobber the popup's index/offset.
 	cmdPopup           *completionPopup
 	filePopup          *completionPopup
+	setPopup           *completionPopup
 	fileIndex          []completionItem
 	fileIndexLoaded    bool
 	lastInputForPopups string
+	setReg             *settings.Registry
 
 	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
 	// cmd returned from Init (and re-armed from Update on each
@@ -272,6 +274,93 @@ func WithSteeringBroker(ctx context.Context, broker *pubsub.Broker[session.Steer
 
 func projectConfigPath(workingDir string) string {
 	return filepath.Join(workingDir, ".marshal", "config.toml")
+}
+
+func relPath(workingDir, path string) string {
+	rel, err := filepath.Rel(workingDir, path)
+	if err != nil {
+		return path
+	}
+	return rel
+}
+
+// applyNewConfig installs cfg as the live session config and invalidates
+// anything derived from it.
+func (m *Model) applyNewConfig(cfg config.Config) {
+	m.state.Config = cfg
+	m.setReg = nil
+	m.setPopup = nil
+	m.lastInputForPopups = ""
+	loadTheme(cfg.TUI)
+}
+
+// settingsRegistry returns the cached /set registry, rebuilt after a config
+// change invalidates it.
+func (m *Model) settingsRegistry() *settings.Registry {
+	if m.setReg == nil {
+		m.setReg = settings.BuildRegistry(m.state.Config)
+	}
+	return m.setReg
+}
+
+func (m *Model) handleSetCommand(args []string) {
+	sys := func(text string) {
+		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+	}
+
+	switch len(args) {
+	case 0:
+		// Task 5 replaces this fallback with the docked settings browser.
+		m.dispatchCommand("/settings")
+		return
+	case 1:
+		key := args[0]
+		reg := m.settingsRegistry()
+		kind, current, options, err := reg.Describe(key)
+		if err != nil {
+			matches := reg.MatchKeys(key)
+			if len(matches) == 0 {
+				sys(fmt.Sprintf("✗ no setting matches %q", key))
+				return
+			}
+			var b strings.Builder
+			b.WriteString("Settings matching \"" + key + "\":")
+			for i, match := range matches {
+				if i == 8 {
+					b.WriteString("\n  …")
+					break
+				}
+				b.WriteString("\n  " + match)
+			}
+			sys(b.String())
+			return
+		}
+		line := fmt.Sprintf("%s = %s (%s)", key, current, kind)
+		if len(options) > 0 {
+			line += " · options: " + strings.Join(options, ", ")
+		}
+		sys(line)
+		return
+	default:
+		key, value := args[0], strings.Join(args[1:], " ")
+		reg := m.settingsRegistry()
+		oldValue, newValue, err := reg.Apply(key, value)
+		if err != nil {
+			m.setReg = nil
+			sys("✗ " + key + ": " + err.Error())
+			return
+		}
+		path := projectConfigPath(m.state.WorkingDir)
+		saveErr := config.SaveProjectConfig(path, reg.Config())
+		// Keep the in-memory change even when persistence fails so users can
+		// correct filesystem permissions and retry without losing their edit.
+		m.applyNewConfig(reg.Config())
+		if saveErr != nil {
+			sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
+			return
+		}
+		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, oldValue, newValue, relPath(m.state.WorkingDir, path)))
+	}
 }
 
 func New(state *session.State, opts ...Option) Model {
@@ -461,7 +550,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// the settings-open guard so they aren't fed back into the form.
 	switch msg := msg.(type) {
 	case settings.SavedMsg:
-		m.state.Config = msg.Cfg
 		if m.configReloader != nil {
 			if err := m.configReloader(msg.Cfg); err != nil {
 				m.state.SetProviderError(err)
@@ -470,7 +558,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		loadTheme(msg.Cfg.TUI)
+		m.applyNewConfig(msg.Cfg)
 		m.settingsOpen = false
 		return m, nil
 	case settings.CancelledMsg:
@@ -1115,7 +1203,7 @@ func (m *Model) updateViewportHeight() bool {
 }
 
 // updateCompletionPopups inspects the current input value and updates the
-// cmdPopup and filePopup state. Called from every keystroke.
+// command, file, and /set completion popups. Called from every keystroke.
 //
 // Triggers (F18 R1, R4):
 //   - `/` at position 0 with no space in the typed value → cmdPopup filters
@@ -1123,11 +1211,10 @@ func (m *Model) updateViewportHeight() bool {
 //   - `@` at a word start (preceded by start-of-input or whitespace) with
 //     no whitespace after the `@` → filePopup filters against the repo
 //     file index.
+//   - `/set ` → setPopup filters setting keys, then selectable enum values.
 //
-// The popups are mutually exclusive: the file popup takes precedence when
-// both could match (e.g. "/@" would show commands; "@" at start shows
-// files). When the input doesn't match either trigger, both popups are
-// dismissed.
+// The popups are mutually exclusive. When the input doesn't match a trigger,
+// every popup is dismissed.
 func (m *Model) updateCompletionPopups() {
 	if m.cmdPopup == nil || m.filePopup == nil {
 		return
@@ -1143,6 +1230,13 @@ func (m *Model) updateCompletionPopups() {
 		return
 	}
 	m.lastInputForPopups = value
+
+	if rest, ok := strings.CutPrefix(value, "/set "); ok {
+		m.updateSetCompletionPopup(rest)
+		m.cmdPopup.dismiss()
+		m.filePopup.dismiss()
+		return
+	}
 
 	cmdTrigger, cmdQuery := m.commandTrigger(value)
 	if cmdTrigger {
@@ -1173,6 +1267,9 @@ func (m *Model) updateCompletionPopups() {
 			m.cmdPopup.update(cmdQuery)
 		}
 		m.filePopup.dismiss()
+		if m.setPopup != nil {
+			m.setPopup.dismiss()
+		}
 		return
 	}
 
@@ -1200,11 +1297,53 @@ func (m *Model) updateCompletionPopups() {
 			m.filePopup.update(fileQuery)
 		}
 		m.cmdPopup.dismiss()
+		if m.setPopup != nil {
+			m.setPopup.dismiss()
+		}
 		return
 	}
 
 	m.cmdPopup.dismiss()
 	m.filePopup.dismiss()
+	if m.setPopup != nil {
+		m.setPopup.dismiss()
+	}
+}
+
+func (m *Model) updateSetCompletionPopup(rest string) {
+	reg := m.settingsRegistry()
+	items := []completionItem{}
+	query := rest
+
+	if keyEnd := strings.IndexAny(rest, " \t\n"); keyEnd >= 0 {
+		key := rest[:keyEnd]
+		query = strings.TrimSpace(rest[keyEnd:])
+		if _, _, options, err := reg.Describe(key); err == nil {
+			for _, option := range options {
+				items = append(items, completionItem{Text: option, Kind: completionSetting})
+			}
+		}
+	} else {
+		for _, key := range reg.Keys() {
+			_, current, _, _ := reg.Describe(key)
+			items = append(items, completionItem{
+				Text:        key,
+				Description: current,
+				Kind:        completionSetting,
+			})
+		}
+	}
+
+	m.setPopup = newCompletionPopup(items)
+	if query == "" {
+		m.setPopup.filtered = append([]completionItem(nil), m.setPopup.items...)
+		m.setPopup.index = 0
+		m.setPopup.viewOffset = 0
+		m.setPopup.acceptedText = ""
+		m.setPopup.visible = len(m.setPopup.filtered) > 0
+		return
+	}
+	m.setPopup.update(query)
 }
 
 // commandTrigger returns (true, query) when value is a slash command in
@@ -1306,9 +1445,12 @@ func (m *Model) populateFileIndexIfNeeded() {
 }
 
 // activeCompletionPopup returns whichever popup is currently visible
-// (cmd takes precedence when both somehow show), or nil when none is up.
+// (/set takes precedence when both somehow show), or nil when none is up.
 // Used by the keypress switch to route Up/Down/Tab/Esc.
 func (m *Model) activeCompletionPopup() *completionPopup {
+	if m.setPopup != nil && m.setPopup.isVisible() {
+		return m.setPopup
+	}
 	if m.cmdPopup != nil && m.cmdPopup.isVisible() {
 		return m.cmdPopup
 	}
@@ -1324,6 +1466,9 @@ func (m *Model) dismissCompletionPopups() {
 	}
 	if m.filePopup != nil {
 		m.filePopup.dismiss()
+	}
+	if m.setPopup != nil {
+		m.setPopup.dismiss()
 	}
 }
 
@@ -1346,6 +1491,9 @@ func (m *Model) acceptCompletion() bool {
 	}
 	value := m.input.Value()
 	newValue := replaceTriggerToken(value, accepted)
+	if p == m.setPopup {
+		newValue = replaceSetCompletionToken(value, accepted)
+	}
 	m.input.SetValue(newValue)
 	// Move the cursor to the end of the inserted text so the user can
 	// keep typing args / a trailing space directly.
@@ -1353,6 +1501,17 @@ func (m *Model) acceptCompletion() bool {
 	m.dismissCompletionPopups()
 	m.updateViewportHeight()
 	return true
+}
+
+func replaceSetCompletionToken(value, replacement string) string {
+	if !strings.HasPrefix(value, "/set ") {
+		return value
+	}
+	index := strings.LastIndexAny(value, " \t\n")
+	if index < 0 {
+		return value
+	}
+	return value[:index+1] + replacement
 }
 
 // replaceTriggerToken finds the most recent trigger token in value
@@ -1746,6 +1905,11 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	switch cmd.Name {
 	case "exit", "quit":
 		return m, m.beginShutdown()
+
+	case "set":
+		m.handleSetCommand(args)
+		m.refreshViewport()
+		return m, nil
 
 	case "settings":
 		m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))

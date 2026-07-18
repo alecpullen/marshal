@@ -571,7 +571,7 @@ func TestHiddenCommandsStillRunnable(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	// Hidden commands must still be findable via Lookup.
-	for _, name := range []string{"stop", "ask", "edit", "auto", "mode", "swarm", "sdd", "settings", "memory", "model", "connect", "models"} {
+	for _, name := range []string{"stop", "ask", "edit", "auto", "mode", "swarm", "sdd", "settings", "set", "memory", "model", "connect", "models"} {
 		_, ok := cmdReg.Lookup(name)
 		if !ok {
 			t.Errorf("hidden command /%s must still be registered for Lookup", name)

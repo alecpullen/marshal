@@ -3651,6 +3651,28 @@ func TestSetCommandAppliesAndPrintsReceipt(t *testing.T) {
 	}
 }
 
+func TestSetCommandPersistsPrivacyToggles(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+
+	m.dispatchCommand("/set privacy.redact_secrets off")
+	m.dispatchCommand("/set privacy.include_gitignored on")
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
+		WorkingDir: m.state.WorkingDir,
+	})
+	if err != nil {
+		t.Fatalf("load saved project config: %v", err)
+	}
+	if loaded.Privacy.RedactSecrets {
+		t.Fatal("redact_secrets = true, want false after /set")
+	}
+	if !loaded.Privacy.IncludeGitignoredFiles {
+		t.Fatal("include_gitignored_files = false, want true after /set")
+	}
+}
+
 func TestSetCommandReloadsRuntimeBeforeReportingSuccess(t *testing.T) {
 	m := newTestModel(t)
 	m.state.WorkingDir = t.TempDir()

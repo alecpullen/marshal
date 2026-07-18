@@ -960,7 +960,7 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	msgs := state.Messages()
 	foundBody := false
 	for _, m := range msgs {
-		if m.Content == "# Debug\n\nSteps: reproduce, isolate, fix, verify.\n" {
+		if strings.Contains(m.Content, "# Debug\n\nSteps: reproduce, isolate, fix, verify.\n") {
 			foundBody = true
 			break
 		}

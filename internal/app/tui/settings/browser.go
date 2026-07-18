@@ -321,8 +321,11 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd) tea.Cmd {
 		return inner
 	}
 
-	receipts := b.receipts(lines)
 	saveErr := config.SaveProjectConfig(b.cfgPath, b.reg.Config())
+	var receipts []string
+	if saveErr == nil {
+		receipts = b.receipts(lines)
+	}
 	b.baseline = cloneConfig(b.reg.Config())
 	b.pendingKey = ""
 	changed := func() tea.Msg {
@@ -348,13 +351,17 @@ func (b *BrowserPanel) receipts(lines []diffLine) []string {
 // View renders the active flat browser, collection drill, or picker within
 // the dock's dimensions.
 func (b *BrowserPanel) View(width, maxHeight int) string {
+	// chrome.Panel needs three rows for its borders and body. The dock owns
+	// the normal six-row usability floor; direct callers may supply less.
+	if maxHeight < 3 {
+		return ""
+	}
 	if b.pickerModel != nil {
 		return b.pickerModel.View(width, maxHeight)
 	}
 
 	panelWidth := min(72, max(width-2, 30))
 	innerWidth := panelWidth - 2
-	maxHeight = max(maxHeight, 6)
 
 	title := "Settings"
 	var body string

@@ -105,6 +105,9 @@ type Model struct {
 	fileIndexLoaded    bool
 	lastInputForPopups string
 	setReg             *settings.Registry
+	// configSavePending means state.Config contains a change that could not
+	// be persisted. An otherwise unchanged /set retries the full config.
+	configSavePending bool
 
 	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
 	// cmd returned from Init (and re-armed from Update on each
@@ -338,8 +341,10 @@ func (m *Model) handleSetCommand(args []string) {
 			return
 		}
 		if !change.Changed {
-			sys(fmt.Sprintf("• %s unchanged (%s)", key, change.NewValue))
-			return
+			if !m.configSavePending {
+				sys(fmt.Sprintf("• %s unchanged (%s)", key, change.NewValue))
+				return
+			}
 		}
 		path := projectConfigPath(m.state.WorkingDir)
 		saveErr := config.SaveProjectConfig(path, reg.Config())
@@ -347,9 +352,11 @@ func (m *Model) handleSetCommand(args []string) {
 		// correct filesystem permissions and retry without losing their edit.
 		if saveErr != nil {
 			m.applyNewConfig(reg.Config())
+			m.configSavePending = true
 			sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
 			return
 		}
+		m.configSavePending = false
 		if m.configReloader != nil {
 			// A reload can install cfg before a later resource cleanup fails.
 			// Do not retain a registry built from the previous config.
@@ -360,6 +367,10 @@ func (m *Model) handleSetCommand(args []string) {
 			}
 		}
 		m.applyNewConfig(reg.Config())
+		if !change.Changed {
+			sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, path)))
+			return
+		}
 		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, path)))
 	}
 }
@@ -556,11 +567,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case settings.ChangedMsg:
-		if msg.SaveErr == nil && m.configReloader != nil {
+		if msg.SaveErr != nil {
+			m.applyNewConfig(msg.Cfg)
+			m.configSavePending = true
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("✗ save failed: %v", msg.SaveErr),
+				session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		m.configSavePending = false
+		if m.configReloader != nil {
 			// reloadAgentRuntime may install cfg before reporting a cleanup
 			// error, so discard every config-derived cache first.
 			m.setReg = nil
 			if err := m.configReloader(msg.Cfg); err != nil {
+				// The runtime has already swapped cfg before cleanup can fail.
+				// Keep all TUI-derived state aligned with that live config.
+				m.applyNewConfig(msg.Cfg)
 				m.state.AddMessage(session.RoleSystem,
 					fmt.Sprintf("✗ settings saved, but live reload failed: %v", err),
 					session.ContentTypePlain)
@@ -572,11 +596,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, receipt := range msg.Receipts {
 			m.state.AddMessage(session.RoleSystem,
 				"✓ "+receipt+" · "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),
-				session.ContentTypePlain)
-		}
-		if msg.SaveErr != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("✗ save failed: %v", msg.SaveErr),
 				session.ContentTypePlain)
 		}
 		m.refreshViewport()
@@ -2266,6 +2285,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to save model: %v", err), session.ContentTypePlain)
 		return
 	}
+	m.configSavePending = false
 	m.applyNewConfig(newCfg)
 	m.state.AddMessage(session.RoleSystem,
 		fmt.Sprintf("Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)

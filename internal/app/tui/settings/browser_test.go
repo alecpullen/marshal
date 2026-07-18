@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/picker"
 )
 
 func TestBrowserFiltersAndRendersRows(t *testing.T) {
@@ -47,6 +49,52 @@ func TestBrowserToggleSavesAndEmitsChangedMsg(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("changed setting was not saved: %v", err)
+	}
+}
+
+func TestBrowserSaveFailurePreservesConfigWithoutReceipt(t *testing.T) {
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	b := NewBrowser(config.Default(), filepath.Join(blockingPath, "config.toml"), "shell.allow_network")
+
+	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	if cmd == nil {
+		t.Fatal("mutating update must emit a command")
+	}
+	msg := cmd()
+	changed, ok := msg.(ChangedMsg)
+	if !ok {
+		t.Fatalf("want ChangedMsg, got %T", msg)
+	}
+	if changed.SaveErr == nil {
+		t.Fatal("save should fail")
+	}
+	if !changed.Cfg.Tools.Shell.AllowNetwork {
+		t.Fatal("save failure must preserve the in-memory config")
+	}
+	if len(changed.Receipts) != 0 {
+		t.Fatalf("save failure must not emit success receipts: %v", changed.Receipts)
+	}
+}
+
+func TestBrowserViewHonorsMaxHeight(t *testing.T) {
+	for _, pickerOpen := range []bool{false, true} {
+		b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+		if pickerOpen {
+			b.pickerModel = picker.New("Pick", "", []picker.Item{{Label: "choice", Value: "choice"}})
+		}
+		for _, maxHeight := range []int{0, 1, 2, 3, 4, 6} {
+			view := b.View(80, maxHeight)
+			height := 0
+			if view != "" {
+				height = lipgloss.Height(view)
+			}
+			if height > maxHeight {
+				t.Errorf("pickerOpen=%t: View(80, %d) rendered %d rows", pickerOpen, maxHeight, height)
+			}
+		}
 	}
 }
 

@@ -3727,6 +3727,21 @@ func TestSetCommandBadValuePrintsError(t *testing.T) {
 	}
 }
 
+func TestSetCommandUnavailableAgentToggleDoesNotSaveOrReportSuccess(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+
+	m.dispatchCommand("/set agent.local_only on")
+
+	if _, err := os.Stat(filepath.Join(m.state.WorkingDir, ".marshal", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("unavailable setting should not be persisted, stat error = %v", err)
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if strings.Contains(got, "✓") || !strings.Contains(got, "unavailable") {
+		t.Fatalf("unavailable setting receipt = %q", got)
+	}
+}
+
 func TestSetCommandKeyOnlyPrintsCurrentValue(t *testing.T) {
 	m := newTestModel(t)
 	m.dispatchCommand("/set shell.allow_network")

@@ -344,10 +344,14 @@ func (m *Model) handleSetCommand(args []string) {
 	default:
 		key, value := args[0], strings.Join(args[1:], " ")
 		reg := m.settingsRegistry()
-		oldValue, newValue, err := reg.Apply(key, value)
+		change, err := reg.Apply(key, value)
 		if err != nil {
 			m.setReg = nil
 			sys("✗ " + key + ": " + err.Error())
+			return
+		}
+		if !change.Changed {
+			sys(fmt.Sprintf("• %s unchanged (%s)", key, change.NewValue))
 			return
 		}
 		path := projectConfigPath(m.state.WorkingDir)
@@ -369,7 +373,7 @@ func (m *Model) handleSetCommand(args []string) {
 			}
 		}
 		m.applyNewConfig(reg.Config())
-		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, oldValue, newValue, relPath(m.state.WorkingDir, path)))
+		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, path)))
 	}
 }
 

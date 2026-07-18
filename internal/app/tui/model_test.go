@@ -2910,7 +2910,7 @@ func TestModelBareOpensPicker(t *testing.T) {
 		t.Fatal("bare /model should open the picker")
 	}
 	view := stripANSI(m.View().Content)
-	for _, want := range []string{"test-a", "test-b", "ollama/qwen2.5", "local", "session only"} {
+	for _, want := range []string{"Switch model", "test-b", "anthropic/sonnet-5", "session only"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("picker view missing %q:\n%s", want, view)
 		}
@@ -3086,7 +3086,7 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 		t.Fatal("/mode should open the picker")
 	}
 	view := stripANSI(m.View().Content)
-	for _, want := range []string{"Ask", "Edit", "Auto", "● now"} {
+	for _, want := range []string{"Interaction mode", "Edit", "planning + full tools", "● now"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("mode picker missing %q:\n%s", want, view)
 		}
@@ -4049,6 +4049,7 @@ func TestSettingsBlockReason(t *testing.T) {
 	t.Run("picker open", func(t *testing.T) {
 		m := New(state)
 		m.pickerModel = &picker.Model{}
+		m.dock.Open(m.pickerModel)
 		want := "Close the picker to save."
 		if got := m.settingsBlockReason(); got != want {
 			t.Fatalf("settingsBlockReason = %q, want %q", got, want)

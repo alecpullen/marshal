@@ -26,6 +26,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/connect"
+	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
@@ -149,6 +150,7 @@ type Model struct {
 	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
 	pickerModel   *picker.Model
 	pickerCommand string // which command opened the modal: "model", "mode", "branches", "rewind"
+	dock          dock.Host
 
 	spinner           Spinner
 	spinnerFrame      string
@@ -428,7 +430,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport spans the full terminal width (borderless).
 	m.viewport.SetWidth(max(width, 1))
-	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -541,6 +543,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case picker.PickedMsg:
 		cmdName := m.pickerCommand
 		m.pickerModel = nil
+		m.dock.CloseNow()
 		m.pickerCommand = ""
 		switch {
 		case cmdName == "" || pm.Value == "":
@@ -561,19 +564,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case cmdName == "sdd-plan":
 			// Close the picker, dispatch /sdd with the picked path.
 			m.pickerModel = nil
+			m.dock.CloseNow()
 			return m.dispatchCommand("/sdd " + pm.Value)
 		default:
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
 	case picker.CancelledMsg:
 		m.pickerModel = nil
+		m.dock.CloseNow()
 		m.pickerCommand = ""
 		m.refreshViewport()
 		return m, nil
 	}
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		if _, ok := msg.(tea.KeyPressMsg); ok {
-			return m, m.pickerModel.Update(msg)
+			return m, m.dock.Update(msg)
 		}
 		// non-key messages (ticks, agent events) keep flowing to the
 		// normal handlers below so background work continues.
@@ -1096,8 +1101,12 @@ func (m Model) sddPanelRows() int {
 	return rows
 }
 
+// dockRows reports the rows the docked panel occupied at last render, so the
+// transcript viewport shrinks while a panel is open.
+func (m Model) dockRows() int { return m.dock.Rows() }
+
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
+	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -1542,7 +1551,7 @@ func (m Model) settingsBlockReason() string {
 	if m.state.PendingQuestion() != nil {
 		return "Answer the pending question to save."
 	}
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		return "Close the picker to save."
 	}
 	return ""
@@ -1943,6 +1952,7 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 		p.SetFilter(prefilter)
 	}
 	m.pickerModel = p
+	m.dock.Open(p)
 	m.pickerCommand = cmdName
 }
 
@@ -2045,6 +2055,7 @@ func (m *Model) openSDDPlanPicker() {
 	p := picker.New("Pick a plan", "SDD workflow", items)
 	p.SetAllowCustom(true)
 	m.pickerModel = p
+	m.dock.Open(p)
 	m.pickerCommand = "sdd-plan"
 }
 

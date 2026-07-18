@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/help"
 )
 
@@ -70,6 +69,9 @@ func (m *Model) viewString() string {
 		return help.Overlay(m.width, m.height, help.OverlayHints{Mode: mode})
 	}
 
+	dockView := m.dock.View(m.width, m.height)
+	m.updateViewportHeight()
+
 	rows := []string{m.renderTitleBar(m.width), m.renderTranscriptFrame()}
 	// Swarm roles are tool-driven; use ActivityTool as the gating kind.
 	swarmSpinner := m.activeSpinnerFrame(session.ActivityTool)
@@ -86,12 +88,11 @@ func (m *Model) viewString() string {
 	if m.sddPanelBody != "" {
 		rows = append(rows, m.sddPanelBody)
 	}
-	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
-	out := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	if m.pickerModel != nil {
-		return chrome.Overlay(out, m.pickerModel.View(m.width, m.height), m.width, m.height)
+	if dockView != "" {
+		rows = append(rows, dockView)
 	}
-	return out
+	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 // renderTitleBar draws the single-line persistent header: brand on the

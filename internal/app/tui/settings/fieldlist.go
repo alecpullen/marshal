@@ -37,6 +37,15 @@ type fieldList struct {
 	input   textinput.Model
 	errMsg  string
 
+	// committed reports whether the most recent Update call actually
+	// invoked a field setter successfully (toggle, enum cycle/pick, scalar
+	// edit confirm, collection add, or paste) as opposed to pure cursor
+	// navigation or filter typing. It is reset at the top of every Update
+	// call. BrowserPanel uses it to decide whether a no-diff Update is a
+	// cheap navigation no-op or an explicit commit gesture eligible to
+	// retry a previously failed save.
+	committed bool
+
 	// enum picker (inline dropdown under the row)
 	picking bool
 	pickIdx int
@@ -114,6 +123,10 @@ func (fl *fieldList) DisarmCurrent() {
 
 func (fl *fieldList) Editing() bool { return fl.editing || fl.picking || fl.adding }
 
+// Committed reports whether the most recent Update call invoked a field
+// setter successfully. See the committed field doc for why this matters.
+func (fl *fieldList) Committed() bool { return fl.committed }
+
 func (fl *fieldList) CancelEdit() {
 	fl.editing = false
 	fl.picking = false
@@ -136,6 +149,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	fl.Refresh()
+	fl.committed = false
 	if fl.adding {
 		return fl.updateAdd(k)
 	}
@@ -167,6 +181,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 	case "space":
 		if row != nil && row.kind == kindToggle {
 			row.setBool(!row.getBool())
+			fl.committed = true
 		}
 	case "left", "right":
 		if row != nil && row.kind == kindEnum {
@@ -185,6 +200,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 					fl.errMsg = err.Error()
 					return nil
 				}
+				fl.committed = true
 				fl.Refresh()
 				fl.cursor = fl.findAddedRow("")
 				return nil
@@ -205,6 +221,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 			if err := row.paste(fl.yankedData); err != nil {
 				fl.errMsg = err.Error()
 			} else {
+				fl.committed = true
 				fl.yankedID = ""
 				fl.yankedData = nil
 				fl.Refresh()
@@ -239,6 +256,7 @@ func (fl *fieldList) openRow(row *field) tea.Cmd {
 	switch row.kind {
 	case kindToggle:
 		row.setBool(!row.getBool())
+		fl.committed = true
 	case kindScalar:
 		if row.setStr == nil {
 			return nil // read-only
@@ -291,7 +309,9 @@ func (fl *fieldList) cycleEnum(row *field, forward bool) {
 	}
 	if err := row.setStr(opts[i]); err != nil {
 		fl.errMsg = err.Error()
+		return
 	}
+	fl.committed = true
 }
 
 func (fl *fieldList) updateEdit(k tea.KeyPressMsg) tea.Cmd {
@@ -311,6 +331,7 @@ func (fl *fieldList) updateEdit(k tea.KeyPressMsg) tea.Cmd {
 			fl.errMsg = err.Error()
 			return nil
 		}
+		fl.committed = true
 		fl.CancelEdit()
 		return nil
 	case "esc":
@@ -344,6 +365,7 @@ func (fl *fieldList) updatePick(k tea.KeyPressMsg) {
 				fl.errMsg = err.Error()
 				return
 			}
+			fl.committed = true
 		}
 		fl.picking = false
 	case "esc":
@@ -359,6 +381,7 @@ func (fl *fieldList) updateAdd(k tea.KeyPressMsg) tea.Cmd {
 			fl.errMsg = err.Error()
 			return nil
 		}
+		fl.committed = true
 		fl.CancelEdit()
 		fl.Refresh()
 		fl.cursor = fl.findAddedRow(newKey)

@@ -360,10 +360,10 @@ func (m *Model) handleSetCommand(args []string) {
 			return
 		}
 		if m.configReloader != nil {
+			// A reload can install cfg before a later resource cleanup fails.
+			// Do not retain a registry built from the previous config.
+			m.setReg = nil
 			if err := m.configReloader(reg.Config()); err != nil {
-				// The registry now holds the unswapped snapshot, while the
-				// session continues using its previous live config.
-				m.setReg = nil
 				sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
 				return
 			}
@@ -561,6 +561,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case settings.SavedMsg:
 		if m.configReloader != nil {
+			// reloadAgentRuntime may swap State.Config before returning a
+			// cleanup error, so a cached registry is no longer reliable.
+			m.setReg = nil
 			if err := m.configReloader(msg.Cfg); err != nil {
 				m.state.SetProviderError(err)
 				m.settingsModel = settings.New(msg.Cfg, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
@@ -2259,6 +2262,9 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	newCfg.Agent.Model = msg.Model
 	newCfg.Profile.Default = ""
 	if m.configReloader != nil {
+		// reloadAgentRuntime may install newCfg before reporting a cleanup
+		// error; invalidate config-derived state before attempting it.
+		m.setReg = nil
 		if err := m.configReloader(newCfg); err != nil {
 			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
 			return
@@ -2297,6 +2303,9 @@ func (m *Model) switchModelPreset(presetName string) {
 			},
 		},
 	}
+	// reloadAgentRuntime may install newCfg before reporting a cleanup
+	// error; invalidate config-derived state before attempting it.
+	m.setReg = nil
 	if err := m.configReloader(newCfg); err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
 	} else {

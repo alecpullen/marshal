@@ -10,6 +10,18 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestRendererCacheEvicts(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		_ = getRenderer(60 + i*7)
+	}
+	mdMu.Lock()
+	size := len(mdRenderers)
+	mdMu.Unlock()
+	if size > maxRenderers {
+		t.Fatalf("cache exceeded bound: %d", size)
+	}
+}
+
 func TestTranscriptHashDistinguishesContent(t *testing.T) {
 	a := transcriptHash([]session.TranscriptItem{
 		{

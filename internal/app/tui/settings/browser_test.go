@@ -79,6 +79,133 @@ func TestBrowserSaveFailurePreservesConfigWithoutReceipt(t *testing.T) {
 	}
 }
 
+// TestBrowserRetriesFailedSaveOnRepeatedCommit reproduces the bug where a
+// failed save's baseline rollforward masks the "unsaved" state: repeating
+// the exact same commit gesture (re-confirming an inline edit with the same
+// value) diffs empty against the rolled-forward baseline and, before this
+// fix, silently no-op'd instead of retrying the persistence attempt.
+func TestBrowserRetriesFailedSaveOnRepeatedCommit(t *testing.T) {
+	dir := t.TempDir()
+	blockingPath := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	cfgPath := filepath.Join(blockingPath, "config.toml")
+
+	b := NewBrowser(config.Default(), cfgPath, "agent.max_retries")
+	if got := b.list.CursorRow().id; got != "agent.max_retries" {
+		t.Fatalf("filtered cursor = %q, want agent.max_retries", got)
+	}
+
+	// commit opens the inline scalar edit, sets it to "9", and confirms.
+	commit := func() ChangedMsg {
+		if cmd := b.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+			t.Fatal("opening an inline edit must not itself persist")
+		}
+		if !b.list.editing {
+			t.Fatal("expected inline edit mode after enter")
+		}
+		b.list.input.SetValue("9")
+		cmd := b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatal("confirming an inline edit must emit a command")
+		}
+		msg, ok := cmd().(ChangedMsg)
+		if !ok {
+			t.Fatalf("want ChangedMsg, got %T", msg)
+		}
+		return msg
+	}
+
+	first := commit()
+	if first.SaveErr == nil {
+		t.Fatal("expected the first save to fail (parent path is a file)")
+	}
+	if len(first.Receipts) != 0 {
+		t.Fatalf("failed save must not emit receipts: %v", first.Receipts)
+	}
+
+	// Fix the underlying problem: cfgPath's parent now exists as a real
+	// directory.
+	if err := os.Remove(blockingPath); err != nil {
+		t.Fatalf("remove blocking file: %v", err)
+	}
+	if err := os.Mkdir(blockingPath, 0o755); err != nil {
+		t.Fatalf("create real directory: %v", err)
+	}
+
+	// Re-confirm the exact same inline edit. The in-memory config already
+	// holds "9" from the failed attempt, so this diffs empty against
+	// baseline — it must still retry the save rather than silently no-op.
+	second := commit()
+	if second.SaveErr != nil {
+		t.Fatalf("retry save should succeed now that the path is fixed: %v", second.SaveErr)
+	}
+	if len(second.Receipts) == 0 {
+		t.Fatal("a successful retry must emit a receipt")
+	}
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("retried setting was not saved to disk: %v", err)
+	}
+}
+
+// TestBrowserPendingSaveDoesNotRetryOnNavigationOrFilterTyping guards the
+// other half of the fix: while a save is pending retry, pure cursor
+// navigation and filter typing must stay cheap no-ops that never touch
+// disk, even though they also produce an empty diff against baseline.
+func TestBrowserPendingSaveDoesNotRetryOnNavigationOrFilterTyping(t *testing.T) {
+	dir := t.TempDir()
+	blockingPath := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	cfgPath := filepath.Join(blockingPath, "config.toml")
+
+	b := NewBrowser(config.Default(), cfgPath, "shell.allow_network")
+	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	changed := cmd().(ChangedMsg)
+	if changed.SaveErr == nil {
+		t.Fatal("expected the toggle save to fail")
+	}
+	if !b.savePending {
+		t.Fatal("a failed save must leave savePending set")
+	}
+
+	// Fix the underlying problem so a wrongly-triggered retry would succeed
+	// and be observable.
+	if err := os.Remove(blockingPath); err != nil {
+		t.Fatalf("remove blocking file: %v", err)
+	}
+	if err := os.Mkdir(blockingPath, 0o755); err != nil {
+		t.Fatalf("create real directory: %v", err)
+	}
+
+	navKeys := []tea.KeyPressMsg{
+		{Code: tea.KeyDown},
+		{Code: tea.KeyUp},
+	}
+	for _, k := range navKeys {
+		if cmd := b.Update(k); cmd != nil {
+			t.Fatalf("navigation key %v must be a no-op while save is pending, got a command", k)
+		}
+	}
+	// Filter typing: textinput.Update may still return its own cursor-blink
+	// tea.Cmd, so the no-op assertion is "no ChangedMsg / no disk write",
+	// not "cmd == nil".
+	if cmd := b.Update(tea.KeyPressMsg{Code: 'x', Text: "x"}); cmd != nil {
+		if _, ok := cmd().(ChangedMsg); ok {
+			t.Fatal("filter typing must not persist while save is pending")
+		}
+	}
+
+	if !b.savePending {
+		t.Fatal("savePending must remain set: nothing should have retried yet")
+	}
+	if _, err := os.Stat(cfgPath); err == nil {
+		t.Fatal("navigation/filter typing must never touch disk")
+	}
+}
+
 func TestBrowserViewHonorsMaxHeight(t *testing.T) {
 	for _, pickerOpen := range []bool{false, true} {
 		b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")

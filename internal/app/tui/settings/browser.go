@@ -35,6 +35,13 @@ type BrowserPanel struct {
 
 	pendingKey  string
 	saveBlocked string
+
+	// savePending mirrors Model's configSavePending: set when
+	// config.SaveProjectConfig fails, cleared on the next successful save.
+	// While true, an explicit commit gesture that reproduces the same
+	// (already in-memory, still-unsaved) value — which diffs empty against
+	// baseline — still retries persistence instead of silently no-op'ing.
+	savePending bool
 }
 
 var _ dock.Panel = (*BrowserPanel)(nil)
@@ -211,10 +218,12 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 	}
 
 	var cmd tea.Cmd
+	committed := false
 	switch {
 	case b.stack != nil:
 		if list.Editing() {
 			cmd = b.stack.Update(key)
+			committed = list.Committed()
 		} else if key.Code == tea.KeyEscape {
 			list.DisarmCurrent()
 			if b.stack.pop() {
@@ -223,16 +232,19 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 			b.stack = nil
 		} else {
 			cmd = b.stack.Update(key)
+			committed = list.Committed()
 			b.takePicker(list)
 		}
 	case list.Editing():
 		cmd = list.Update(key)
+		committed = list.Committed()
 		b.takePicker(list)
 	case key.Code == tea.KeyEscape:
 		return func() tea.Msg { return BrowserClosedMsg{} }
 	case key.Code == tea.KeyUp || key.Code == tea.KeyDown ||
 		key.Code == tea.KeyEnter || key.Code == tea.KeySpace:
 		cmd = list.Update(key)
+		committed = list.Committed()
 		if frame := list.TakePushRequest(); frame != nil {
 			b.stack = newPaneStack(frame)
 		}
@@ -242,7 +254,7 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 		b.list.Refresh()
 		b.list.SetCursor(0)
 	}
-	return b.flushChanges(cmd)
+	return b.flushChanges(cmd, committed)
 }
 
 func (b *BrowserPanel) takePicker(list *fieldList) {
@@ -270,7 +282,9 @@ func (b *BrowserPanel) handlePickerPicked(value string) tea.Cmd {
 	if fieldID == wizardFieldID {
 		b.drillIntoNewestProvider()
 	}
-	return b.flushChanges(nil)
+	// A pick is always an explicit commit gesture (even if it reproduces the
+	// value already held in memory from a previously failed save).
+	return b.flushChanges(nil, true)
 }
 
 func (b *BrowserPanel) closePicker() {
@@ -302,9 +316,18 @@ func (b *BrowserPanel) drillIntoNewestProvider() {
 // flushChanges persists mutations and turns the reflected config diff into
 // transcript-ready receipts. The working config stays applied on save error,
 // matching /set's retry-friendly behavior.
-func (b *BrowserPanel) flushChanges(inner tea.Cmd) tea.Cmd {
+//
+// commitAttempted reports whether this call was triggered by an explicit
+// commit gesture (toggle, inline edit confirm, enum cycle/pick, collection
+// add/paste, or an external picker pick) rather than pure cursor navigation
+// or filter typing. When the diff against baseline is empty — because a
+// previous save failed and left baseline rolled forward to the unsaved
+// value (see below) — only a real commitAttempted retries the save; plain
+// navigation stays a cheap no-op that never touches disk.
+func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd {
 	lines := configDiff(b.baseline, b.reg.Config())
-	if len(lines) == 0 {
+	retry := len(lines) == 0 && commitAttempted && b.savePending
+	if len(lines) == 0 && !retry {
 		b.pendingKey = ""
 		return inner
 	}
@@ -323,9 +346,17 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd) tea.Cmd {
 
 	saveErr := config.SaveProjectConfig(b.cfgPath, b.reg.Config())
 	var receipts []string
-	if saveErr == nil {
+	switch {
+	case saveErr != nil:
+		// No receipts on failure.
+	case retry:
+		// No new diff to describe — the value was already applied in
+		// memory by the failed attempt this gesture is retrying.
+		receipts = []string{b.pendingKey + " persisted"}
+	default:
 		receipts = b.receipts(lines)
 	}
+	b.savePending = saveErr != nil
 	b.baseline = cloneConfig(b.reg.Config())
 	b.pendingKey = ""
 	changed := func() tea.Msg {

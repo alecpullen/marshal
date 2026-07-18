@@ -194,6 +194,10 @@ func (s *Session) WaitFor(ctx context.Context, pred func(Snapshot) bool) error {
 func (s *Session) Close() error {
 	_ = s.pty.Close()
 	if s.cmd.Process != nil {
+		// The background readLoop goroutine holds the PTY fd open; on macOS
+		// this prevents pty.Close() from delivering EOF/SIGHUP to the child.
+		// Kill the process explicitly before waiting so Close() does not
+		// deadlock during PTY teardown.
 		_ = s.cmd.Process.Kill()
 	}
 	return s.cmd.Wait()

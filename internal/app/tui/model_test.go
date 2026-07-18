@@ -3834,6 +3834,31 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	}
 }
 
+func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
+	m := newTestModel(t)
+	m.settingsRegistry()
+	m.configReloader = func(cfg config.Config) error {
+		// reloadAgentRuntime installs the config before cleaning up old
+		// resources, whose failure is returned to the TUI.
+		m.state.Config = cfg
+		return errors.New("old runtime cleanup failed")
+	}
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
+	})
+	m = updated.(Model)
+
+	if m.setReg != nil {
+		t.Fatal("failed connect reload must invalidate the cached /set registry")
+	}
+	if m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
+		t.Fatal("test setup did not simulate a config swap before cleanup failure")
+	}
+}
+
 func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
@@ -3846,6 +3871,29 @@ func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
 
 	if m.setReg != nil {
 		t.Fatal("model switch should invalidate the cached /set registry")
+	}
+}
+
+func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	m.settingsRegistry()
+	m.configReloader = func(cfg config.Config) error {
+		// reloadAgentRuntime installs the config before cleaning up old
+		// resources, whose failure is returned to the TUI.
+		m.state.Config = cfg
+		return errors.New("old runtime cleanup failed")
+	}
+
+	m.switchModelPreset("fast")
+
+	if m.setReg != nil {
+		t.Fatal("failed model reload must invalidate the cached /set registry")
+	}
+	if m.state.Config.Profile.Default != "switched" {
+		t.Fatal("test setup did not simulate a config swap before cleanup failure")
 	}
 }
 

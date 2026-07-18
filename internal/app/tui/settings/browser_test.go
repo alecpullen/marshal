@@ -225,6 +225,34 @@ func TestBrowserViewHonorsMaxHeight(t *testing.T) {
 	}
 }
 
+// TestBrowserViewHonorsMaxHeightWhileDrilled extends
+// TestBrowserViewHonorsMaxHeight to the b.stack != nil branch (drilled into
+// a collection), which the original test never exercised.
+func TestBrowserViewHonorsMaxHeightWhileDrilled(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
+	for index, row := range b.list.Rows() {
+		if row.id == "section.providers" {
+			b.list.SetCursor(index)
+			break
+		}
+	}
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if b.stack == nil {
+		t.Fatal("expected to be drilled into the providers collection")
+	}
+
+	for _, maxHeight := range []int{0, 1, 2, 3, 4, 6} {
+		view := b.View(80, maxHeight)
+		height := 0
+		if view != "" {
+			height = lipgloss.Height(view)
+		}
+		if height > maxHeight {
+			t.Errorf("drilled View(80, %d) rendered %d rows", maxHeight, height)
+		}
+	}
+}
+
 func TestBrowserDrillsIntoCollectionAndBack(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
 	for index, row := range b.list.Rows() {

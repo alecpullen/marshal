@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -134,6 +135,26 @@ func TestAllowCustomExactMatchNoCustomItem(t *testing.T) {
 	for _, idx := range m.matches {
 		if idx == -1 {
 			t.Fatal("exact match should not show custom item")
+		}
+	}
+}
+
+// TestViewHonorsMaxHeight mirrors settings.TestBrowserViewHonorsMaxHeight:
+// picker.Model is used directly as a dock.Panel (see model.go's
+// openPicker/openSDDPlanPicker), so its View must independently honor the
+// dock.Panel contract ("renders at most maxHeight rows") at every maxHeight
+// dock.MaxRows can produce (floor 6) as well as smaller values a direct or
+// future caller might supply.
+func TestViewHonorsMaxHeight(t *testing.T) {
+	for _, maxHeight := range []int{0, 1, 2, 3, 4, 6} {
+		m := New("Switch model", "footer text", testItems())
+		view := m.View(80, maxHeight)
+		height := 0
+		if view != "" {
+			height = lipgloss.Height(view)
+		}
+		if height > maxHeight {
+			t.Errorf("View(80, %d) rendered %d rows", maxHeight, height)
 		}
 	}
 }

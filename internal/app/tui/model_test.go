@@ -3651,6 +3651,69 @@ func TestSetCommandAppliesAndPrintsReceipt(t *testing.T) {
 	}
 }
 
+func TestSetCommandReloadsRuntimeBeforeReportingSuccess(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	var reloaded config.Config
+	m.configReloader = func(cfg config.Config) error {
+		reloaded = cfg
+		return nil
+	}
+
+	m.dispatchCommand("/set shell.allow_network on")
+
+	if !reloaded.Tools.Shell.AllowNetwork {
+		t.Fatal("configReloader did not receive the /set config")
+	}
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("successful /set did not apply the config to the session")
+	}
+	if got := m.state.Messages()[len(m.state.Messages())-1].Content; !strings.Contains(got, "✓") {
+		t.Fatalf("successful /set receipt = %q, want success", got)
+	}
+}
+
+func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.settingsRegistry()
+	m.configReloader = func(config.Config) error {
+		return errors.New("runtime unavailable")
+	}
+
+	m.dispatchCommand("/set shell.allow_network on")
+
+	if m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("failed runtime reload must not replace the live session config")
+	}
+	if m.setReg != nil {
+		t.Fatal("failed runtime reload must invalidate the stale /set registry")
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if strings.Contains(got, "✓") || !strings.Contains(got, "live reload failed") {
+		t.Fatalf("reload failure receipt = %q", got)
+	}
+}
+
+func TestSetCommandSaveFailureKeepsSessionConfig(t *testing.T) {
+	m := newTestModel(t)
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+
+	m.dispatchCommand("/set shell.allow_network on")
+
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("save failure must keep the /set change in the session")
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.Contains(got, "applied in session, but save failed") {
+		t.Fatalf("save failure receipt = %q", got)
+	}
+}
+
 func TestSetCommandBadValuePrintsError(t *testing.T) {
 	m := newTestModel(t)
 	m.state.WorkingDir = t.TempDir()
@@ -3740,6 +3803,7 @@ func TestModelsEmptyProvidersShowsAddProvider(t *testing.T) {
 
 func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	m := newTestModel(t)
+	m.settingsRegistry()
 	reloaded := false
 	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
 	updated, _ := m.Update(connect.DoneMsg{Provider: "ollama", Model: "qwen2.5-coder:7b", ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"}})
@@ -3764,6 +3828,24 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	}
 	if updated.(Model).connectOpen {
 		t.Fatal("overlay should close after DoneMsg")
+	}
+	if updated.(Model).setReg != nil {
+		t.Fatal("connect config update should invalidate the cached /set registry")
+	}
+}
+
+func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	m.settingsRegistry()
+	m.configReloader = func(config.Config) error { return nil }
+
+	m.switchModelPreset("fast")
+
+	if m.setReg != nil {
+		t.Fatal("model switch should invalidate the cached /set registry")
 	}
 }
 

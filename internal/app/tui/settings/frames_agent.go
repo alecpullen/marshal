@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
 )
 
@@ -95,4 +96,15 @@ func agentFrame(s *state) *frame {
 				setBool: func(v bool) { s.cfg.Agent.PlanFirst = v }},
 		}
 	})
+}
+
+// activePresetNameFor resolves the implementer preset of the default profile.
+// It remains local because the config package intentionally keeps its
+// equivalent helper private.
+func activePresetNameFor(cfg config.Config) string {
+	profile, ok := cfg.AgentProfiles[cfg.Profile.Default]
+	if !ok {
+		return ""
+	}
+	return profile.Roles[routing.RoleImplementer]
 }

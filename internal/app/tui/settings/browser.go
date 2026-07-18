@@ -1,0 +1,378 @@
+package settings
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"marshal/internal/app/config"
+	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/dock"
+	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/probe"
+	"marshal/internal/app/tui/theme"
+)
+
+// BrowserPanel is the docked settings browser. It presents a filterable flat
+// registry while reusing the existing field list and collection drill frames.
+// Every config mutation is persisted immediately.
+type BrowserPanel struct {
+	reg      *Registry
+	cfgPath  string
+	filter   textinput.Model
+	list     *fieldList
+	stack    *paneStack
+	baseline config.Config
+
+	pickerModel  *picker.Model
+	pickerOnPick func(string) error
+	pickerField  string
+
+	pendingKey  string
+	saveBlocked string
+}
+
+var _ dock.Panel = (*BrowserPanel)(nil)
+
+func settingsTheme() theme.Theme { return theme.Current() }
+
+// NewBrowser creates a docked browser pre-filtered by query.
+func NewBrowser(cfg config.Config, cfgPath, query string) *BrowserPanel {
+	filter := textinput.New()
+	filter.SetVirtualCursor(true)
+	filter.Focus()
+	filter.SetValue(query)
+	filter.CursorEnd()
+
+	browser := &BrowserPanel{
+		reg:      BuildRegistry(cfg),
+		cfgPath:  cfgPath,
+		filter:   filter,
+		baseline: cloneConfig(cfg),
+	}
+	browser.list = newFieldList(browser.matchedFields)
+	return browser
+}
+
+// SetSaveBlocked prevents immediate settings writes while runtime work or a
+// decision is active. The parent updates this before forwarding a key.
+func (b *BrowserPanel) SetSaveBlocked(reason string) { b.saveBlocked = reason }
+
+func (b *BrowserPanel) matchedFields() []*field {
+	query := strings.TrimSpace(b.filter.Value())
+	fields := make([]*field, 0)
+	for _, field := range b.reg.matchFields(query) {
+		fields = append(fields, browserField(field))
+	}
+	fields = append(fields, b.collectionFields(query)...)
+	if query != "" {
+		fields = append(fields, b.resetFields(query)...)
+	}
+	sort.SliceStable(fields, func(i, j int) bool {
+		leftDirect := browserDirectMatch(fields[i], query)
+		rightDirect := browserDirectMatch(fields[j], query)
+		if leftDirect != rightDirect {
+			return leftDirect
+		}
+		return fields[i].id < fields[j].id
+	})
+	return fields
+}
+
+// browserField keeps the existing field behavior while rendering the
+// registry's canonical dotted key in the flat browser.
+func browserField(field *field) *field {
+	copy := *field
+	title := field.title
+	copy.title = field.id
+	if title != "" && title != field.id {
+		if copy.desc == "" {
+			copy.desc = title
+		} else {
+			copy.desc = title + " · " + copy.desc
+		}
+	}
+	return &copy
+}
+
+// collectionFields exposes collection-root frames that otherwise have no
+// addressable root row when empty (providers, presets, hooks, and similar).
+func (b *BrowserPanel) collectionFields(query string) []*field {
+	var fields []*field
+	for _, spec := range sectionList() {
+		root := spec.root(b.reg.st)
+		if root.list.onAdd == nil && root.list.addWizard == nil {
+			continue
+		}
+		haystack := spec.id + " " + spec.title + " collection"
+		if !browserMatches(query, haystack) {
+			continue
+		}
+		spec := spec
+		fields = append(fields, &field{
+			id:    "section." + spec.id,
+			title: spec.id,
+			desc:  spec.title + " collection",
+			kind:  kindDrill,
+			summary: func() string {
+				return fmt.Sprintf("%d entries", len(spec.root(b.reg.st).list.Rows()))
+			},
+			build: func() *frame {
+				return withResetRow(b.reg.st, spec.id, spec.title, spec.root(b.reg.st))
+			},
+		})
+	}
+	return fields
+}
+
+// resetFields keep the existing two-press reset action discoverable without
+// adding every reset row to the browser's normal flat registry.
+func (b *BrowserPanel) resetFields(query string) []*field {
+	var fields []*field
+	for _, spec := range sectionList() {
+		if !browserMatches(query, spec.id+" "+spec.title+" reset defaults") {
+			continue
+		}
+		fields = append(fields, browserField(resetField(b.reg.st, spec.id, spec.title)))
+	}
+	return fields
+}
+
+func browserMatches(query, haystack string) bool {
+	if query == "" {
+		return true
+	}
+	return len(fuzzy.Rank(query, []string{haystack})) > 0
+}
+
+func browserDirectMatch(field *field, query string) bool {
+	return query == "" || strings.Contains(
+		strings.ToLower(field.id+" "+field.title+" "+field.desc),
+		strings.ToLower(query),
+	)
+}
+
+func truncateErr(message string) string {
+	runes := []rune(message)
+	if len(runes) > 40 {
+		return string(runes[:37]) + "…"
+	}
+	return message
+}
+
+func (b *BrowserPanel) activeList() *fieldList {
+	if b.stack != nil {
+		return b.stack.top().list
+	}
+	return b.list
+}
+
+// Update handles flat filtering, field editing, collection drills, and
+// picker/action messages from the existing field machinery.
+func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case picker.PickedMsg:
+		return b.handlePickerPicked(msg.Value)
+	case picker.CancelledMsg:
+		b.closePicker()
+		return nil
+	case probe.ResultMsg:
+		label := fmt.Sprintf("✓ ok (%d models)", len(msg.Models))
+		if msg.Err != nil {
+			label = "✗ " + truncateErr(msg.Err.Error())
+		}
+		b.reg.st.applyActionResult(msg.FieldID, label)
+		if msg.Err == nil && msg.Provider != "" {
+			b.reg.st.discovered[msg.Provider] = msg.Models
+		}
+		return nil
+	case actionResultMsg:
+		b.reg.st.applyActionResult(msg.FieldID, msg.Label)
+		return nil
+	}
+
+	key, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return nil
+	}
+	if b.pickerModel != nil {
+		return b.pickerModel.Update(key)
+	}
+
+	list := b.activeList()
+	b.pendingKey = ""
+	if row := list.CursorRow(); row != nil {
+		b.pendingKey = row.id
+	}
+
+	var cmd tea.Cmd
+	switch {
+	case b.stack != nil:
+		if list.Editing() {
+			cmd = b.stack.Update(key)
+		} else if key.Code == tea.KeyEscape {
+			list.DisarmCurrent()
+			if b.stack.pop() {
+				break
+			}
+			b.stack = nil
+		} else {
+			cmd = b.stack.Update(key)
+			b.takePicker(list)
+		}
+	case list.Editing():
+		cmd = list.Update(key)
+		b.takePicker(list)
+	case key.Code == tea.KeyEscape:
+		return func() tea.Msg { return BrowserClosedMsg{} }
+	case key.Code == tea.KeyUp || key.Code == tea.KeyDown ||
+		key.Code == tea.KeyEnter || key.Code == tea.KeySpace:
+		cmd = list.Update(key)
+		if frame := list.TakePushRequest(); frame != nil {
+			b.stack = newPaneStack(frame)
+		}
+		b.takePicker(list)
+	default:
+		b.filter, cmd = b.filter.Update(key)
+		b.list.Refresh()
+		b.list.SetCursor(0)
+	}
+	return b.flushChanges(cmd)
+}
+
+func (b *BrowserPanel) takePicker(list *fieldList) {
+	request := list.TakePushPicker()
+	if request == nil {
+		return
+	}
+	b.pickerModel = picker.New(request.title, request.footer, request.items)
+	b.pickerModel.SetAllowCustom(request.allowCustom)
+	b.pickerOnPick = request.onPick
+	b.pickerField = request.fieldID
+}
+
+func (b *BrowserPanel) handlePickerPicked(value string) tea.Cmd {
+	b.pendingKey = b.pickerField
+	if b.pickerOnPick != nil {
+		if err := b.pickerOnPick(value); err != nil {
+			b.activeList().errMsg = err.Error()
+			b.closePicker()
+			return nil
+		}
+	}
+	fieldID := b.pickerField
+	b.closePicker()
+	if fieldID == wizardFieldID {
+		b.drillIntoNewestProvider()
+	}
+	return b.flushChanges(nil)
+}
+
+func (b *BrowserPanel) closePicker() {
+	b.pickerModel = nil
+	b.pickerOnPick = nil
+	b.pickerField = ""
+}
+
+func (b *BrowserPanel) drillIntoNewestProvider() {
+	name := b.reg.st.wizardCreatedProvider
+	b.reg.st.wizardCreatedProvider = ""
+	if name == "" || b.stack == nil {
+		return
+	}
+	for b.stack.pop() {
+	}
+	for index, row := range b.stack.top().list.Rows() {
+		if row.id != "providers."+name || row.kind != kindDrill {
+			continue
+		}
+		b.stack.top().list.SetCursor(index)
+		if frame := row.build(); frame != nil {
+			b.stack.push(frame)
+		}
+		return
+	}
+}
+
+// flushChanges persists mutations and turns the reflected config diff into
+// transcript-ready receipts. The working config stays applied on save error,
+// matching /set's retry-friendly behavior.
+func (b *BrowserPanel) flushChanges(inner tea.Cmd) tea.Cmd {
+	lines := configDiff(b.baseline, b.reg.Config())
+	if len(lines) == 0 {
+		b.pendingKey = ""
+		return inner
+	}
+	if b.saveBlocked != "" {
+		b.reg.st.cfg = cloneConfig(b.baseline)
+		// Nested frames can hold closures over collection entries that no
+		// longer exist after restoring the baseline. Return to the flat
+		// registry so the next edit always starts from fresh bindings.
+		b.stack = nil
+		b.list.CancelEdit()
+		b.list.Refresh()
+		b.list.errMsg = b.saveBlocked
+		b.pendingKey = ""
+		return inner
+	}
+
+	receipts := b.receipts(lines)
+	saveErr := config.SaveProjectConfig(b.cfgPath, b.reg.Config())
+	b.baseline = cloneConfig(b.reg.Config())
+	b.pendingKey = ""
+	changed := func() tea.Msg {
+		return ChangedMsg{Receipts: receipts, Cfg: b.baseline, SaveErr: saveErr}
+	}
+	if inner == nil {
+		return changed
+	}
+	return tea.Batch(inner, changed)
+}
+
+func (b *BrowserPanel) receipts(lines []diffLine) []string {
+	if len(lines) == 1 && b.pendingKey != "" {
+		return []string{b.pendingKey + lines[0].Detail}
+	}
+	receipts := make([]string, len(lines))
+	for index, line := range lines {
+		receipts[index] = line.String()
+	}
+	return receipts
+}
+
+// View renders the active flat browser, collection drill, or picker within
+// the dock's dimensions.
+func (b *BrowserPanel) View(width, maxHeight int) string {
+	if b.pickerModel != nil {
+		return b.pickerModel.View(width, maxHeight)
+	}
+
+	panelWidth := min(72, max(width-2, 30))
+	innerWidth := panelWidth - 2
+	maxHeight = max(maxHeight, 6)
+
+	title := "Settings"
+	var body string
+	var footer string
+	if b.stack != nil {
+		rootTitle := b.stack.stack[0].title
+		title += " › " + b.stack.breadcrumb(rootTitle)
+		b.stack.SetSize(innerWidth, max(maxHeight-4, 1))
+		body = b.stack.top().list.View()
+		footer = fmt.Sprintf("%d settings · [Esc] back", len(b.stack.top().list.Rows()))
+	} else {
+		b.list.SetSize(innerWidth, max(maxHeight-6, 1))
+		body = "/ " + b.filter.View() + "\n" +
+			flDescStyle().Render(strings.Repeat("─", innerWidth)) + "\n" +
+			b.list.View()
+		footer = fmt.Sprintf("%d settings · [↵] edit · [Esc] close", len(b.list.Rows()))
+	}
+	content := body + "\n" + flDescStyle().Render(footer)
+	panelHeight := min(lipgloss.Height(content)+2, maxHeight)
+	return chrome.Panel(title, content, panelWidth, panelHeight, true, settingsTheme())
+}

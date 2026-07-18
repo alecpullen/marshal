@@ -1189,7 +1189,7 @@ func TestRunUsesLiveConfigForShutdownKnowledgePass(t *testing.T) {
 			state.AddMessage(session.RoleUser, "summarize this session", session.ContentTypePlain)
 
 			m := model.(tui.Model)
-			updated, _ := m.Update(settings.SavedMsg{Cfg: reloadedCfg})
+			updated, _ := m.Update(settings.ChangedMsg{Cfg: reloadedCfg})
 			_ = updated.(tui.Model)
 			return nil
 		}),

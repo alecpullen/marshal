@@ -60,6 +60,12 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 	start := time.Now()
 	result := report.ScenarioResult{Name: sc.Name, Actor: actorName(sc)}
 
+	finish := func(err error) (report.ScenarioResult, error) {
+		result.Duration = time.Since(start)
+		r.rep.AddResult(result)
+		return result, err
+	}
+
 	workDir := sc.WorkDir
 	if workDir == "" {
 		workDir = r.cfg.WorkDir
@@ -73,7 +79,7 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 	})
 	if err != nil {
 		result.Error = err.Error()
-		return result, err
+		return finish(err)
 	}
 	defer sess.Close()
 
@@ -99,9 +105,7 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 		select {
 		case <-scenarioCtx.Done():
 			result.Error = "scenario timeout"
-			result.Duration = time.Since(start)
-			r.rep.AddResult(result)
-			return result, scenarioCtx.Err()
+			return finish(scenarioCtx.Err())
 		default:
 		}
 
@@ -109,9 +113,7 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 		act, err := sc.Actor.Act(scenarioCtx, scr)
 		if err != nil {
 			result.Error = err.Error()
-			result.Duration = time.Since(start)
-			r.rep.AddResult(result)
-			return result, err
+			return finish(err)
 		}
 
 		r.rep.Record("actor_action", map[string]any{"scenario": sc.Name, "action": act})
@@ -119,36 +121,32 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 		switch act.Type {
 		case actor.ActionDone:
 			result.Success = act.Success
-			result.Duration = time.Since(start)
 			result.Keystrokes = keystrokes
-			r.rep.AddResult(result)
-			return result, nil
+			return finish(nil)
 		case actor.ActionNoOp:
 			// Wait a bit and re-observe.
 			select {
 			case <-scenarioCtx.Done():
 				result.Error = "scenario timeout during noop"
-				result.Duration = time.Since(start)
-				r.rep.AddResult(result)
-				return result, scenarioCtx.Err()
+				return finish(scenarioCtx.Err())
 			case <-time.After(100 * time.Millisecond):
 			}
 			continue
 		case actor.ActionType:
 			if err := sess.Send(act.Text); err != nil {
 				result.Error = err.Error()
-				return result, err
+				return finish(err)
 			}
 			keystrokes += len(act.Text)
 		case actor.ActionKey:
 			if err := sess.SendKey(act.Key); err != nil {
 				result.Error = err.Error()
-				return result, err
+				return finish(err)
 			}
 			keystrokes++
 		default:
 			result.Error = fmt.Sprintf("unknown action type %q", act.Type)
-			return result, fmt.Errorf("unknown action type %q", act.Type)
+			return finish(fmt.Errorf("unknown action type %q", act.Type))
 		}
 	}
 }

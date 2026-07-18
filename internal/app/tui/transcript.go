@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/glamour/v2"
@@ -36,26 +37,61 @@ func marshalStyleConfig() gansi.StyleConfig {
 
 func ptr[T any](v T) *T { return &v }
 
+const maxRenderers = 4
+
 // mdRenderers caches glamour renderers by wrap width; building one parses
-// the full style config, which is too slow to repeat per message. The TUI
-// renders on Bubble Tea's single Update/View goroutine, so no locking.
-var mdRenderers = map[int]*glamour.TermRenderer{}
+// the full style config, which is too slow to repeat per message. The cache
+// is bounded to prevent unbounded growth on repeated resizes.
+var (
+	mdMu        sync.Mutex
+	mdRenderers = map[int]*glamour.TermRenderer{}
+)
+
+func abs(a int) int {
+	if a < 0 {
+		return -a
+	}
+	return a
+}
+
+// getRenderer returns a cached glamour renderer for the requested width,
+// evicting the entry farthest from width when the cache is full.
+func getRenderer(width int) *glamour.TermRenderer {
+	mdMu.Lock()
+	defer mdMu.Unlock()
+	if r, ok := mdRenderers[width]; ok {
+		return r
+	}
+	if len(mdRenderers) >= maxRenderers {
+		var evictKey int
+		var evictDist int
+		first := true
+		for k := range mdRenderers {
+			d := abs(k - width)
+			if first || d > evictDist {
+				evictKey, evictDist, first = k, d, false
+			}
+		}
+		delete(mdRenderers, evictKey)
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStyles(marshalStyleConfig()),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return nil
+	}
+	mdRenderers[width] = r
+	return r
+}
 
 // renderMarkdown renders content as ANSI-styled markdown wrapped to
 // width. ok is false when glamour is unavailable (renderer construction
 // or rendering failed); callers fall back to plain text.
 func renderMarkdown(content string, width int) (out string, ok bool) {
-	r, cached := mdRenderers[width]
-	if !cached {
-		var err error
-		r, err = glamour.NewTermRenderer(
-			glamour.WithStyles(marshalStyleConfig()),
-			glamour.WithWordWrap(width),
-		)
-		if err != nil {
-			return "", false
-		}
-		mdRenderers[width] = r
+	r := getRenderer(width)
+	if r == nil {
+		return "", false
 	}
 	rendered, err := r.Render(content)
 	if err != nil {

@@ -47,10 +47,14 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 
 	remoteAllowed := cfg.Privacy.RemoteProvidersAllowed
+	redactSecrets := cfg.Privacy.RedactSecrets
+	includeGitignoredFiles := cfg.Privacy.IncludeGitignoredFiles
 	if file.Privacy == nil {
 		file.Privacy = &filePrivacy{}
 	}
 	file.Privacy.RemoteProvidersAllowed = &remoteAllowed
+	file.Privacy.RedactSecrets = &redactSecrets
+	file.Privacy.IncludeGitignoredFiles = &includeGitignoredFiles
 
 	if file.Tools == nil {
 		file.Tools = &fileTools{}

@@ -82,6 +82,18 @@ func (r *Registry) MatchKeys(query string) []string {
 	return keys
 }
 
+// matchFields returns the fields matching query in the same ranked order as
+// MatchKeys. It is intentionally package-private: fields are mutable widgets,
+// while callers outside settings should address the registry by stable key.
+func (r *Registry) matchFields(query string) []*field {
+	keys := r.MatchKeys(query)
+	fields := make([]*field, 0, len(keys))
+	for _, key := range keys {
+		fields = append(fields, r.byID[key])
+	}
+	return fields
+}
+
 // Describe reports a field's type, display value, and available choices.
 func (r *Registry) Describe(key string) (kind, current string, options []string, err error) {
 	field, ok := r.byID[key]

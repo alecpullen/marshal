@@ -58,8 +58,8 @@ const (
 
 	doneDisplayDuration = 2 * time.Second
 
-	// settingsBusyMessage is the footer text shown in the settings overlay
-	// when the user tries to save while a turn or background jobs are running.
+	// settingsBusyMessage is shown when runtime work makes a settings change
+	// unsafe to persist.
 	settingsBusyMessage = "Stop the active turn and background jobs before applying settings."
 
 	browserBarRows = 1
@@ -74,8 +74,6 @@ type Model struct {
 	sddRunner      AgentRunner
 	ctx            context.Context
 	busy           bool
-	settingsOpen   bool
-	settingsModel  settings.Model
 	configReloader ConfigReloader
 	memoryOpen     bool
 	memoryModel    memory.Model
@@ -310,29 +308,14 @@ func (m *Model) handleSetCommand(args []string) {
 
 	switch len(args) {
 	case 0:
-		// Task 5 replaces this fallback with the docked settings browser.
-		m.dispatchCommand("/settings")
+		m.openSettingsBrowser("")
 		return
 	case 1:
 		key := args[0]
 		reg := m.settingsRegistry()
 		kind, current, options, err := reg.Describe(key)
 		if err != nil {
-			matches := reg.MatchKeys(key)
-			if len(matches) == 0 {
-				sys(fmt.Sprintf("✗ no setting matches %q", key))
-				return
-			}
-			var b strings.Builder
-			b.WriteString("Settings matching \"" + key + "\":")
-			for i, match := range matches {
-				if i == 8 {
-					b.WriteString("\n  …")
-					break
-				}
-				b.WriteString("\n  " + match)
-			}
-			sys(b.String())
+			m.openSettingsBrowser(key)
 			return
 		}
 		line := fmt.Sprintf("%s = %s (%s)", key, current, kind)
@@ -379,6 +362,14 @@ func (m *Model) handleSetCommand(args []string) {
 		m.applyNewConfig(reg.Config())
 		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, path)))
 	}
+}
+
+func (m *Model) openSettingsBrowser(query string) {
+	m.dock.Open(settings.NewBrowser(
+		m.state.Config,
+		projectConfigPath(m.state.WorkingDir),
+		query,
+	))
 }
 
 func New(state *session.State, opts ...Option) Model {
@@ -552,7 +543,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// settings/memory overlays) regardless of which overlay is open.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.resize(ws.Width, ws.Height)
-		m.settingsModel.SetSize(m.width, m.height)
 		m.memoryModel.SetSize(m.width, m.height)
 		if m.approvalModel != nil {
 			m.approvalModel.SetSize(max(m.width-4, 30))
@@ -564,47 +554,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// SavedMsg/CancelledMsg close the settings overlay; handle them before
-	// the settings-open guard so they aren't fed back into the form.
 	switch msg := msg.(type) {
-	case settings.SavedMsg:
-		if m.configReloader != nil {
-			// reloadAgentRuntime may swap State.Config before returning a
-			// cleanup error, so a cached registry is no longer reliable.
+	case settings.ChangedMsg:
+		if msg.SaveErr == nil && m.configReloader != nil {
+			// reloadAgentRuntime may install cfg before reporting a cleanup
+			// error, so discard every config-derived cache first.
 			m.setReg = nil
 			if err := m.configReloader(msg.Cfg); err != nil {
-				m.state.SetProviderError(err)
-				m.settingsModel = settings.New(msg.Cfg, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-				m.settingsModel.SetSize(m.width, m.height)
+				m.state.AddMessage(session.RoleSystem,
+					fmt.Sprintf("✗ settings saved, but live reload failed: %v", err),
+					session.ContentTypePlain)
+				m.refreshViewport()
 				return m, nil
 			}
 		}
 		m.applyNewConfig(msg.Cfg)
-		m.settingsOpen = false
+		for _, receipt := range msg.Receipts {
+			m.state.AddMessage(session.RoleSystem,
+				"✓ "+receipt+" · "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),
+				session.ContentTypePlain)
+		}
+		if msg.SaveErr != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("✗ save failed: %v", msg.SaveErr),
+				session.ContentTypePlain)
+		}
+		m.refreshViewport()
 		return m, nil
-	case settings.CancelledMsg:
-		m.settingsOpen = false
+	case settings.BrowserClosedMsg:
+		m.dock.CloseNow()
+		m.refreshViewport()
 		return m, nil
 	case memory.ClosedMsg:
 		m.memoryOpen = false
 		return m, nil
 	}
 
-	// Runtime messages must still reach the parent model when an overlay
-	// is open, so parent state (busy, job count, steering, activity) stays
-	// current and the settings block reason updates.
+	// Runtime messages always stay with the parent model so background state
+	// remains current while a dock panel is open.
 	switch msg.(type) {
 	case agentFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
-	// When the settings overlay is open, route every remaining message to
-	// the settings model, which consumes key messages only.
-	if m.settingsOpen {
-		var cmd tea.Cmd
-		m.settingsModel, cmd = m.settingsModel.Update(msg)
-		return m, cmd
-	}
 	if m.memoryOpen {
 		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+k" {
 			m.memoryOpen = false
@@ -613,6 +605,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.memoryModel, cmd = m.memoryModel.Update(msg)
 		return m, cmd
+	}
+
+	// Browser-owned picker and probe/action messages must return to the
+	// browser before the model's command-picker and connect handlers see
+	// them. The browser itself is the dock panel, so it can safely handle
+	// every remaining message here.
+	if browser, ok := m.dock.Panel().(*settings.BrowserPanel); ok {
+		browser.SetSaveBlocked(m.settingsBlockReason())
+		return m, m.dock.Update(msg)
 	}
 
 	// pickerModel is pointer-updated: m.pickerModel.Update(msg) mutates
@@ -800,10 +801,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelTurn()
 			return m, nil
 		case "ctrl+o":
-			m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-			m.settingsModel.SetSize(m.width, m.height)
-			m.settingsOpen = true
-			m.syncSettingsSaveBlock()
+			m.openSettingsBrowser("")
 			return m, nil
 		case "ctrl+p":
 			cmd := m.openModels()
@@ -1719,10 +1717,8 @@ func (m *Model) beginShutdown() tea.Cmd {
 	return tea.Quit
 }
 
-// settingsBlockReason returns a message when the model is busy, has
-// background jobs, a pending approval, a pending question, or an open
-// picker — any condition that should block settings save. Used to
-// populate the settings model's saveBlocked field.
+// settingsBlockReason returns a message when runtime work, a pending
+// decision, or another dock surface makes a settings write unsafe.
 func (m Model) settingsBlockReason() string {
 	if m.busy || m.state.RunningJobsCount() > 0 {
 		return settingsBusyMessage
@@ -1734,19 +1730,12 @@ func (m Model) settingsBlockReason() string {
 		return "Answer the pending question to save."
 	}
 	if m.dock.IsOpen() {
+		if _, browser := m.dock.Panel().(*settings.BrowserPanel); browser {
+			return ""
+		}
 		return "Close the picker to save."
 	}
 	return ""
-}
-
-// syncSettingsSaveBlock pushes the current block reason to the settings
-// model whenever settings is open. Called when settings opens and after
-// agentFinishedMsg / jobCountMsg.
-func (m *Model) syncSettingsSaveBlock() {
-	if !m.settingsOpen {
-		return
-	}
-	m.settingsModel.SetSaveBlocked(m.settingsBlockReason())
 }
 
 // handleAgentFinished handles an agentFinishedMsg, shared by Update and
@@ -1773,7 +1762,6 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	}
 	m.updateViewportHeight()
 	m.refreshViewport()
-	m.syncSettingsSaveBlock()
 	return m, tickCmd()
 }
 
@@ -1781,7 +1769,6 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 // handleRuntimeMessage.
 func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 	m.jobCount = msg.count
-	m.syncSettingsSaveBlock()
 	// Re-arm the pump: exactly one in-flight subscription at a time
 	// (F19 R2). Return nil if no broker is wired so the cmd chain
 	// terminates (this should not happen when the pump is sourced
@@ -1935,10 +1922,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "settings":
-		m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-		m.settingsModel.SetSize(m.width, m.height)
-		m.settingsOpen = true
-		m.syncSettingsSaveBlock()
+		m.openSettingsBrowser(strings.Join(args, " "))
 		m.refreshViewport()
 		return m, nil
 

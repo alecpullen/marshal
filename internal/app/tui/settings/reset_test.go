@@ -70,12 +70,9 @@ func TestResetFieldDisarmClearsConfirm(t *testing.T) {
 }
 
 func TestEverySectionRootHasResetRow(t *testing.T) {
-	m := New(config.Default(), "/tmp", "/tmp/.marshal/config.toml")
-	m.SetSize(80, 30)
-	for i, sp := range m.specs {
-		m.cursor = i
-		m.paneFocused = true
-		rows := m.activePane().top().list.Rows()
+	state := newState(config.Default())
+	for _, sp := range sectionList() {
+		rows := withResetRow(state, sp.id, sp.title, sp.root(state)).list.Rows()
 		found := false
 		for _, r := range rows {
 			if r.kind == kindAction && strings.HasPrefix(r.id, sp.id+".reset") {
@@ -84,7 +81,7 @@ func TestEverySectionRootHasResetRow(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("section %q (%d) has no reset row", sp.id, i)
+			t.Fatalf("section %q has no reset row", sp.id)
 		}
 	}
 }

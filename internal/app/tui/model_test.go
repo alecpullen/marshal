@@ -1265,28 +1265,26 @@ func TestEnterWhileBusyIsIgnored(t *testing.T) {
 	}
 }
 
-func TestCtrlOOpensSettings(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+func TestCtrlOOpensDockedSettingsBrowserAndEscClosesIt(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state)
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen to be true")
-	}
-}
+	m.resize(100, 40)
 
-func TestSettingsCancelClosesOverlay(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("Ctrl+O dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
 	}
-	updated, _ = m.Update(settings.CancelledMsg{})
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	m = updated.(Model)
-	if m.settingsOpen {
-		t.Fatal("expected settingsOpen to be false after cancel")
+	if cmd == nil {
+		t.Fatal("Esc at browser root must emit BrowserClosedMsg")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.dock.IsOpen() {
+		t.Fatal("BrowserClosedMsg must close the dock")
 	}
 }
 
@@ -1597,149 +1595,6 @@ func TestBusyTickRefreshesViewportOnReasoningGrowthAlone(t *testing.T) {
 	model = updated.(Model)
 	if !strings.Contains(stripANSI(model.View().Content), "step one step two") {
 		t.Fatalf("expected viewport to refresh on reasoning growth alone (message count unchanged):\n%s", stripANSI(model.View().Content))
-	}
-}
-
-func TestSettingsNavigationThroughMainModel(t *testing.T) {
-	cfg := config.Default()
-	cfg.Profile.Default = "local_balanced"
-	cfg.AgentProfiles = map[string]routing.AgentProfile{
-		"local_balanced": {
-			Name: "local_balanced",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
-			},
-		},
-	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
-	}
-	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	m = updated.(Model)
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen")
-	}
-
-	// Sidebar starts focused. FocusedFieldTitle returns the section title.
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Agent" {
-		t.Fatalf("first section = %q, want Agent", got)
-	}
-
-	// Tab enters the agent pane. The first field there is "Default profile".
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Default profile" {
-		t.Fatalf("Tab should focus first field of Agent pane, got %q", got)
-	}
-}
-
-func TestSettingsTypingThroughMainModel(t *testing.T) {
-	cfg := config.Default()
-	cfg.Profile.Default = "local_balanced"
-	cfg.AgentProfiles = map[string]routing.AgentProfile{
-		"local_balanced": {
-			Name: "local_balanced",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
-			},
-		},
-	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
-	}
-	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-
-	// Enter the agent pane and navigate to the Provider field.
-	// (In the new fieldList model, Enter opens/selects the current
-	// row; use j to advance.)
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})   // Focus pane
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})          // Past Default profile
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})          // Past Preset -> Provider
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Open inline edit
-
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Provider" {
-		t.Fatalf("expected Provider field focused, got %q", got)
-	}
-
-	updated, _ = m.Update(tea.KeyPressMsg{Text: "z"})
-	m = updated.(Model)
-
-	if !m.settingsModel.BoolValue("Local only") {
-		t.Fatal("typing into Provider must not toggle Local only off")
-	}
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Provider" {
-		t.Fatalf("focused field = %q, want Provider", got)
-	}
-}
-
-func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
-	cfg := config.Default()
-	cfg.Profile.Default = "local_balanced"
-	cfg.AgentProfiles = map[string]routing.AgentProfile{
-		"local_balanced": {
-			Name: "local_balanced",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
-			},
-		},
-	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
-	}
-	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-
-	// Enter the agent pane and navigate to the Local only toggle.
-	// (In the new fieldList model, use j to advance; Enter opens/selects.)
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab}) // Focus pane
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Default profile
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Preset
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Provider
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Model -> Local only
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Local only" {
-		t.Fatalf("expected Local only focused, got %q", got)
-	}
-	if !m.settingsModel.BoolValue("Local only") {
-		t.Fatalf("expected Local only to start true (preset default)")
-	}
-
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
-
-	if m.settingsModel.BoolValue("Local only") {
-		t.Fatalf("Space should have toggled Local only to false")
-	}
-}
-
-func TestSettingsNavigationWithDefaultConfig(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen")
-	}
-
-	// With the default config the sidebar shows the Agent section selected.
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Agent" {
-		t.Fatalf("default section = %q, want Agent", got)
 	}
 }
 
@@ -3566,67 +3421,24 @@ func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
 	}
 }
 
-// ── Task 8: Settings save guard ──────────────────────────────────────────
-
-func TestSettingsSaveBlockedDuringAgentTurn(t *testing.T) {
+func TestDockedSettingsBrowserBlocksChangesDuringAgentTurn(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	m.resize(100, 40)
 	m.busy = true
 
-	// Open settings while busy.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-
-	dirty := config.Default()
-	dirty.Privacy.RemoteProvidersAllowed = true
-	m.settingsModel.SetWorkingConfig(dirty)
-
-	// Ctrl+S opens the diff overlay; Enter commits and should be blocked.
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if cmd != nil {
-		t.Fatal("ctrl+s should open the diff overlay, not save directly")
+	m.openSettingsBrowser("shell.allow_network")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("dock panel = %T, want settings browser", m.dock.Panel())
 	}
-	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(Model)
 
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	m = updated.(Model)
 	if cmd != nil {
 		t.Fatal("expected nil cmd when save is blocked by busy turn")
 	}
-	if m.settingsModel.Footer() != settingsBusyMessage {
-		t.Fatalf("footer = %q, want %q", m.settingsModel.Footer(), settingsBusyMessage)
-	}
-}
-
-func TestSettingsSaveBlockedDuringBackgroundJob(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	m.resize(100, 40)
-	m.state.SetRunningJobsCount(1)
-
-	// Open settings while jobs are running.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-
-	dirty := config.Default()
-	dirty.Privacy.RemoteProvidersAllowed = true
-	m.settingsModel.SetWorkingConfig(dirty)
-
-	// Ctrl+S opens the diff overlay; Enter commits and should be blocked.
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if cmd != nil {
-		t.Fatal("ctrl+s should open the diff overlay, not save directly")
-	}
-	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(Model)
-
-	if cmd != nil {
-		t.Fatal("expected nil cmd when save is blocked by background jobs")
-	}
-	if m.settingsModel.Footer() != settingsBusyMessage {
-		t.Fatalf("footer = %q, want %q", m.settingsModel.Footer(), settingsBusyMessage)
+	if m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("blocked browser change must not update the live config")
 	}
 }
 
@@ -3771,6 +3583,33 @@ func TestSetCommandKeyOnlyPrintsCurrentValue(t *testing.T) {
 	last := msgs[len(msgs)-1].Content
 	if !strings.Contains(last, "shell.allow_network") || !strings.Contains(last, "toggle") {
 		t.Errorf("want current-value print with kind, got %q", last)
+	}
+}
+
+func TestSettingsAndPartialSetCommandsOpenDockedBrowser(t *testing.T) {
+	m := newTestModel(t)
+
+	m.dispatchCommand("/settings shell")
+	browser, ok := m.dock.Panel().(*settings.BrowserPanel)
+	if !ok {
+		t.Fatalf("/settings dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
+	}
+	if !strings.Contains(stripANSI(browser.View(80, 12)), "shell.allow_network") {
+		t.Fatal("/settings query should pre-filter the browser")
+	}
+
+	m.dispatchCommand("/set")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("/set dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
+	}
+
+	m.dispatchCommand("/set shell.allow")
+	browser, ok = m.dock.Panel().(*settings.BrowserPanel)
+	if !ok {
+		t.Fatalf("/set partial dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
+	}
+	if !strings.Contains(stripANSI(browser.View(80, 12)), "shell.allow_network") {
+		t.Fatal("non-exact /set key should pre-filter the browser")
 	}
 }
 
@@ -4022,7 +3861,7 @@ func TestConnectCancelledClosesOverlay(t *testing.T) {
 	}
 }
 
-func TestSettingsSaveAllowedWhenIdle(t *testing.T) {
+func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 	var reloaded bool
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state, WithConfigReloader(func(cfg config.Config) error {
@@ -4031,72 +3870,65 @@ func TestSettingsSaveAllowedWhenIdle(t *testing.T) {
 	}))
 	m.resize(100, 40)
 
-	// Open settings while idle.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	m.openSettingsBrowser("shell.allow_network")
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 	m = updated.(Model)
-
-	dirty := config.Default()
-	dirty.Privacy.RemoteProvidersAllowed = true
-	m.settingsModel.SetWorkingConfig(dirty)
-
-	// Ctrl+S opens the diff overlay; Enter commits the save.
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(Model)
-
 	if cmd == nil {
-		t.Fatal("expected a non-nil cmd when save is allowed")
+		t.Fatal("expected toggle to emit ChangedMsg")
 	}
-
-	// Execute the command to get SavedMsg, then feed it back to trigger the reloader.
 	msg := cmd()
-	sm, ok := msg.(settings.SavedMsg)
+	_, ok := msg.(settings.ChangedMsg)
 	if !ok {
-		t.Fatalf("expected SavedMsg, got %T", msg)
+		t.Fatalf("expected ChangedMsg, got %T", msg)
 	}
-	updated, _ = m.Update(sm)
-	_ = updated.(Model)
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
 
 	if !reloaded {
 		t.Fatal("configReloader should have been called")
 	}
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("ChangedMsg should apply the browser config")
+	}
+	messages := m.state.Messages()
+	last := messages[len(messages)-1].Content
+	for _, want := range []string{"✓", "shell.allow_network", ".marshal/config.toml"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("receipt %q missing %q", last, want)
+		}
+	}
 }
 
-func TestSettingsOverlayDoesNotSwallowAgentFinishedOrJobCount(t *testing.T) {
+func TestDockedSettingsBrowserDoesNotSwallowRuntimeMessages(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	m.resize(100, 40)
 	m.busy = true
 	m.lastActivityKind = session.ActivityThinking
 
-	// Open settings.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen")
+	m.openSettingsBrowser("")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("dock panel = %T, want settings browser", m.dock.Panel())
 	}
 
-	// Feed agentFinishedMsg while settings is open.
-	updated, _ = m.Update(agentFinishedMsg{err: nil})
+	updated, _ := m.Update(agentFinishedMsg{err: nil})
 	m = updated.(Model)
 
 	if m.busy {
 		t.Fatal("busy should be cleared after agentFinishedMsg even with settings open")
 	}
-	if !m.settingsOpen {
-		t.Fatal("settings should stay open after agentFinishedMsg")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatal("settings browser should stay open after agentFinishedMsg")
 	}
 
-	// Feed jobCountMsg while settings is open.
 	updated, _ = m.Update(jobCountMsg{count: 3})
 	m = updated.(Model)
 
 	if m.jobCount != 3 {
 		t.Fatalf("jobCount = %d, want 3", m.jobCount)
 	}
-	if !m.settingsOpen {
-		t.Fatal("settings should stay open after jobCountMsg")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatal("settings browser should stay open after jobCountMsg")
 	}
 }
 
@@ -4222,7 +4054,7 @@ func TestPatternForApproval_SecurityProperty(t *testing.T) {
 }
 
 // TestSettingsBlockedByApproval verifies that Ctrl+O does not open the
-// settings overlay when a tool approval is pending (F-BUG-147).
+// settings browser when a tool approval is pending (F-BUG-147).
 func TestSettingsBlockedByApproval(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	tc := &session.PendingToolCall{
@@ -4242,8 +4074,8 @@ func TestSettingsBlockedByApproval(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	if m.settingsOpen {
-		t.Fatal("settingsOpen should be false when approval is pending")
+	if m.dock.IsOpen() {
+		t.Fatal("settings browser should stay closed when approval is pending")
 	}
 
 	// A system message should have been added.

@@ -3517,8 +3517,15 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 
 	m.dispatchCommand("/set shell.allow_network on")
 
-	if m.state.Config.Tools.Shell.AllowNetwork {
-		t.Fatal("failed runtime reload must not replace the live session config")
+	// The runtime reloader has already swapped the new config into the live
+	// runtime before its cleanup step failed (same contract as the
+	// settings.ChangedMsg handler) — the save itself succeeded too, so
+	// m.state.Config must reflect what's actually on disk and in the
+	// runtime, not the pre-/set value. See
+	// TestSetCommandReloadFailureSyncsStateConfig for the focused
+	// regression covering this specifically.
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("failed runtime reload must still sync the live session config with what was saved")
 	}
 	if m.setReg != nil {
 		t.Fatal("failed runtime reload must invalidate the stale /set registry")
@@ -3526,6 +3533,45 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 	got := m.state.Messages()[len(m.state.Messages())-1].Content
 	if strings.Contains(got, "✓") || !strings.Contains(got, "live reload failed") {
 		t.Fatalf("reload failure receipt = %q", got)
+	}
+}
+
+// TestSetCommandReloadFailureSyncsStateConfig is the focused regression for
+// the handleSetCommand reload-error path: config.SaveProjectConfig already
+// wrote the new value to disk and m.configReloader already swapped it into
+// the live runtime before its cleanup failed, so m.state.Config (and
+// everything applyNewConfig invalidates/refreshes) must stay aligned with
+// that saved/live config — exactly like the settings.ChangedMsg handler's
+// reload-error branch already does. Before the fix, handleSetCommand left
+// m.state.Config pointing at the stale pre-/set value while m.setReg was
+// invalidated, so the next /set would rebuild its registry from the stale
+// config and silently revert the change that was just persisted.
+func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error {
+		return errors.New("runtime unavailable")
+	}
+
+	m.dispatchCommand("/set shell.allow_network on")
+
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("m.state.Config must reflect the saved value after a reload failure")
+	}
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
+		WorkingDir: m.state.WorkingDir,
+	})
+	if err != nil {
+		t.Fatalf("load saved project config: %v", err)
+	}
+	if !loaded.Tools.Shell.AllowNetwork {
+		t.Fatal("the value should have been saved to disk before the reload failed")
+	}
+	if m.state.Config.Tools.Shell.AllowNetwork != loaded.Tools.Shell.AllowNetwork {
+		t.Fatalf("m.state.Config (AllowNetwork=%v) diverges from what was saved to disk (AllowNetwork=%v)",
+			m.state.Config.Tools.Shell.AllowNetwork, loaded.Tools.Shell.AllowNetwork)
 	}
 }
 

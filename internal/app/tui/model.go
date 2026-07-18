@@ -362,6 +362,10 @@ func (m *Model) handleSetCommand(args []string) {
 			// Do not retain a registry built from the previous config.
 			m.setReg = nil
 			if err := m.configReloader(reg.Config()); err != nil {
+				// The runtime has already swapped cfg before cleanup can
+				// fail (same contract as the settings.ChangedMsg handler).
+				// Keep all TUI-derived state aligned with that live config.
+				m.applyNewConfig(reg.Config())
 				sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
 				return
 			}

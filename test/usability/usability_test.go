@@ -30,7 +30,9 @@ func TestScriptedHelpOpenClose(t *testing.T) {
 	r := scenario.NewRunner(scenario.RunnerConfig{
 		BinaryPath: binaryPath(t),
 		WorkDir:    t.TempDir(),
+		ReportDir:  "/tmp/marshal-usability",
 	})
+	defer r.WriteReport()
 	res, err := r.Run(context.Background(), scenario.Scenario{
 		Name:  "help_open_close",
 		Actor: scenario.HelpOpenClose(),
@@ -54,7 +56,9 @@ func TestLLMSubtractFix(t *testing.T) {
 	r := scenario.NewRunner(scenario.RunnerConfig{
 		BinaryPath: binaryPath(t),
 		WorkDir:    workDir,
+		ReportDir:  "/tmp/marshal-usability",
 	})
+	defer r.WriteReport()
 	res, err := r.Run(context.Background(), scenario.Scenario{
 		Name:  "subtract_fix",
 		Actor: scenario.SubtractFix(),

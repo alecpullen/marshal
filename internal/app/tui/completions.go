@@ -90,6 +90,7 @@ type completionKind int
 const (
 	completionCommand completionKind = iota
 	completionFile
+	completionSetting
 )
 
 type completionItem struct {
@@ -234,6 +235,8 @@ func (p *completionPopup) accept() {
 		} else {
 			p.acceptedText = accepted
 		}
+	case completionSetting:
+		p.acceptedText = chosen.Text + " "
 	}
 	p.visible = false
 	p.filtered = nil

@@ -57,8 +57,9 @@ func (r *Registry) Keys() []string {
 	return keys
 }
 
-// Match returns fields matching a query, ranked by section, key, title, and keywords.
-func (r *Registry) Match(query string) []*field {
+// MatchKeys returns setting keys matching a query, ranked by section, key,
+// title, and keywords.
+func (r *Registry) MatchKeys(query string) []string {
 	haystacks := make([]string, len(r.order))
 	for index, key := range r.order {
 		field := r.byID[key]
@@ -66,11 +67,11 @@ func (r *Registry) Match(query string) []*field {
 	}
 
 	matches := fuzzy.Rank(query, haystacks)
-	fields := make([]*field, 0, len(matches))
+	keys := make([]string, 0, len(matches))
 	for _, index := range matches {
-		fields = append(fields, r.byID[r.order[index]])
+		keys = append(keys, r.order[index])
 	}
-	return fields
+	return keys
 }
 
 // Describe reports a field's type, display value, and available choices.

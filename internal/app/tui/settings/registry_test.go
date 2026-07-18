@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -78,4 +79,17 @@ func TestRegistryApplyErrors(t *testing.T) {
 		return
 	}
 	t.Error("registry has no writable enum field")
+}
+
+func TestRegistryMatchKeysReturnsKeys(t *testing.T) {
+	registry := BuildRegistry(config.Default())
+	matches := registry.MatchKeys("shell network")
+	for _, key := range matches {
+		if _, ok := registry.Lookup(key); !ok {
+			t.Errorf("MatchKeys returned unknown key %q", key)
+		}
+	}
+	if !slices.Contains(matches, "shell.allow_network") {
+		t.Errorf("MatchKeys(%q) = %v, want shell.allow_network", "shell network", matches)
+	}
 }

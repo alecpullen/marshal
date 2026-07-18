@@ -3632,6 +3632,68 @@ func TestSettingsSaveBlockedDuringBackgroundJob(t *testing.T) {
 
 // ── Task 5: /connect and /models overlay ──────────────────────────────────
 
+func TestSetCommandAppliesAndPrintsReceipt(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.dispatchCommand("/set shell.allow_network on")
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Error("config not applied")
+	}
+	msgs := m.state.Messages()
+	last := msgs[len(msgs)-1].Content
+	for _, want := range []string{"✓", "shell.allow_network", "→ on", ".marshal/config.toml"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("receipt %q missing %q", last, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(m.state.WorkingDir, ".marshal", "config.toml")); err != nil {
+		t.Errorf("project config not written: %v", err)
+	}
+}
+
+func TestSetCommandBadValuePrintsError(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.dispatchCommand("/set shell.allow_network maybe")
+	msgs := m.state.Messages()
+	if !strings.Contains(msgs[len(msgs)-1].Content, "✗") {
+		t.Errorf("want error receipt, got %q", msgs[len(msgs)-1].Content)
+	}
+	if m.state.Config.Tools.Shell.AllowNetwork {
+		t.Error("failed set must not mutate session config")
+	}
+}
+
+func TestSetCommandKeyOnlyPrintsCurrentValue(t *testing.T) {
+	m := newTestModel(t)
+	m.dispatchCommand("/set shell.allow_network")
+	msgs := m.state.Messages()
+	last := msgs[len(msgs)-1].Content
+	if !strings.Contains(last, "shell.allow_network") || !strings.Contains(last, "toggle") {
+		t.Errorf("want current-value print with kind, got %q", last)
+	}
+}
+
+func TestApplyNewConfigInvalidatesSetRegistry(t *testing.T) {
+	m := newTestModel(t)
+	previous := m.settingsRegistry()
+	cfg := m.state.Config
+	cfg.Tools.Shell.AllowNetwork = true
+
+	m.applyNewConfig(cfg)
+
+	if m.setReg != nil {
+		t.Fatal("applyNewConfig should clear the cached /set registry")
+	}
+	if current := m.settingsRegistry(); current == previous {
+		t.Fatal("settingsRegistry should rebuild after a config change")
+	}
+	_, value, _, err := m.settingsRegistry().Describe("shell.allow_network")
+	if err != nil || value != "on" {
+		t.Fatalf("rebuilt registry value = %q, %v; want on, nil", value, err)
+	}
+}
+
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})

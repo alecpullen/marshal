@@ -2106,7 +2106,7 @@ fixes" above).
 
 ---
 
-## Resolution status (updated 2026-07-15)
+## Resolution status (updated 2026-07-18)
 
 ### Batch 1 (A1 — sandbox execution hardening): RESOLVED on branch `feature/domain-a-security-and-sandbox`
 
@@ -2343,12 +2343,22 @@ height; completion popup shows the `/` prefix; current mode shown
 in the help overlay; `inputAreaRows` uses `lipgloss.Height`; popup
 math centralised; swarm panel only emits lines for active roles.
 
-### Batch 22 (F6 — theme, encoding & pub/sub polish): PLANNED
+### Batch 22 (F6 — theme, encoding & pub/sub polish): RESOLVED
 
 Plan: `docs/superpowers/plans/2026-07-15-domain-f6-misc-polish.md`
 
 Closes: F-BUG-157, F-POL-166, F-POL-167, F-POL-171, F-POL-172,
 F-POL-173, F-POL-175.
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-BUG-157 | RESOLVED | `pubsub.WithTerminal()` option added; terminal subscriptions block briefly instead of dropping. Job-count subscription uses it. |
+| F-POL-166 | RESOLVED | `theme.Reload()` notifies subscribers; model style helpers read `theme.Current()` lazily. |
+| F-POL-167 | RESOLVED | `huhtheme.WarmSunset()` is a function that calls `theme.Load()` on each invocation. |
+| F-POL-171 | RESOLVED | `truncateURL` uses `ansi.StringWidth`/`ansi.Cut` for rune/width-aware truncation. |
+| F-POL-172 | RESOLVED | Markdown renderer cache bounded to 4 entries; evicts width farthest from current. |
+| F-POL-173 | RESOLVED | `patternForApproval` and helpers moved to `internal/permissions.PatternForApproval`; `patch` import removed from TUI. |
+| F-POL-175 | RESOLVED | `Runtime.closeFns` renamed to `resourceClosers`; comment documents reverse-order cleanup. |
 
 Highlights: `pubsub.WithTerminal` for must-deliver subscriptions;
 theme reload publishes a `ChangedMsg`; `huhtheme.WarmSunset` reads

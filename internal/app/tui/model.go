@@ -343,6 +343,10 @@ func (m *Model) handleSetCommand(args []string) {
 		return
 	default:
 		key, value := args[0], strings.Join(args[1:], " ")
+		if reason := m.settingsBlockReason(); reason != "" {
+			sys(reason)
+			return
+		}
 		reg := m.settingsRegistry()
 		change, err := reg.Apply(key, value)
 		if err != nil {

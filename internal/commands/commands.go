@@ -233,7 +233,6 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "set",
 			Description: "Change a setting inline (\"/set\" alone browses)",
 			Args:        "<key> [value]",
-			Hidden:      true,
 			Handler:     func(state *session.State, args []string) string { return "" },
 		},
 		{

@@ -41,20 +41,26 @@ func dimSep(text string) string {
 	return mutedStyle().Render(" · ") + text
 }
 
-func truncateURL(raw string, max int) string {
+func truncateURL(raw string, maxWidth int) string {
 	raw = strings.TrimPrefix(strings.TrimPrefix(raw, "https://"), "http://")
-	if max <= 0 || len(raw) <= max {
+	if maxWidth <= 0 || ansi.StringWidth(raw) <= maxWidth {
 		return raw
 	}
-	if max < 8 {
-		return raw[:max]
+	if maxWidth < 8 {
+		return ansi.Cut(raw, 0, maxWidth)
 	}
 	hostEnd := strings.Index(raw, "/")
 	if hostEnd < 0 {
-		return raw[:max]
+		return ansi.Cut(raw, 0, maxWidth-1) + "…"
+	}
+	lastSlash := strings.LastIndex(raw, "/")
+	if lastSlash <= hostEnd {
+		return ansi.Cut(raw, 0, maxWidth-1) + "…"
 	}
 	host := raw[:hostEnd]
-	lastSlash := strings.LastIndex(raw, "/")
 	suffix := raw[lastSlash:]
+	if ansi.StringWidth(host)+2+ansi.StringWidth(suffix) > maxWidth {
+		return ansi.Cut(raw, 0, maxWidth-1) + "…"
+	}
 	return host + "/…" + suffix
 }

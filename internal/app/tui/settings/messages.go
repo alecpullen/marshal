@@ -4,8 +4,9 @@ import (
 	"marshal/internal/app/config"
 )
 
-// ChangedMsg reports settings changes that were applied and saved.
-// Receipts are preformatted old-to-new lines for the transcript.
+// ChangedMsg reports a settings persistence attempt. Cfg is applied in memory
+// even when SaveErr is non-nil; receipts are emitted only after a successful
+// save.
 type ChangedMsg struct {
 	Receipts []string
 	Cfg      config.Config

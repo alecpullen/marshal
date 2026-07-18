@@ -3548,6 +3548,60 @@ func TestSetCommandSaveFailureKeepsSessionConfig(t *testing.T) {
 	}
 }
 
+func TestBrowserSaveFailureCanBeRetriedWithUnchangedSet(t *testing.T) {
+	m := newTestModel(t)
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+	m.openSettingsBrowser("shell.allow_network")
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("browser toggle must emit ChangedMsg")
+	}
+	msg := cmd()
+	changed, ok := msg.(settings.ChangedMsg)
+	if !ok || changed.SaveErr == nil {
+		t.Fatalf("browser save failure = %#v, want ChangedMsg with SaveErr", msg)
+	}
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("browser save failure must preserve the session config")
+	}
+	if !m.configSavePending {
+		t.Fatal("browser save failure must mark the config pending")
+	}
+	if got := m.state.Messages()[len(m.state.Messages())-1].Content; strings.Contains(got, "✓") {
+		t.Fatalf("browser save failure emitted a success receipt: %q", got)
+	}
+
+	retryDir := t.TempDir()
+	m.state.WorkingDir = retryDir
+	m.dispatchCommand("/set shell.allow_network on")
+
+	if m.configSavePending {
+		t.Fatal("successful unchanged /set retry must clear pending persistence")
+	}
+	if got := m.state.Messages()[len(m.state.Messages())-1].Content; !strings.Contains(got, "✓ shell.allow_network persisted") {
+		t.Fatalf("unchanged /set retry receipt = %q", got)
+	}
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(retryDir, "no-home"),
+		WorkingDir: retryDir,
+	})
+	if err != nil {
+		t.Fatalf("load retried config: %v", err)
+	}
+	if !loaded.Tools.Shell.AllowNetwork {
+		t.Fatal("unchanged /set retry did not persist the browser setting")
+	}
+}
+
 func TestSetCommandBadValuePrintsError(t *testing.T) {
 	m := newTestModel(t)
 	m.state.WorkingDir = t.TempDir()
@@ -3896,6 +3950,43 @@ func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 		if !strings.Contains(last, want) {
 			t.Errorf("receipt %q missing %q", last, want)
 		}
+	}
+}
+
+func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	m := newTestModel(t)
+	m.settingsRegistry()
+	m.setPopup = &completionPopup{}
+	m.lastInputForPopups = "/set shell"
+	reloaded := m.state.Config
+	reloaded.TUI.Theme = "warm-sunset"
+	reloaded.TUI.Mode = theme.ModeLight
+	expectedTheme := theme.LoadWithConfig(reloaded.TUI.Theme, reloaded.TUI.Mode, nil)
+	m.configReloader = func(cfg config.Config) error {
+		// reloadAgentRuntime swaps the config before old-resource cleanup.
+		m.state.Config = cfg
+		return errors.New("old runtime cleanup failed")
+	}
+
+	updated, _ := m.Update(settings.ChangedMsg{
+		Cfg:      reloaded,
+		Receipts: []string{"shell.allow_network: off → on"},
+	})
+	m = updated.(Model)
+
+	if m.state.Config.TUI.Mode != theme.ModeLight {
+		t.Fatal("post-swap cleanup failure must retain the live config")
+	}
+	if m.setReg != nil || m.setPopup != nil || m.lastInputForPopups != "" {
+		t.Fatal("post-swap cleanup failure must refresh config-derived UI caches")
+	}
+	if activeTheme.AccentPrimary != expectedTheme.AccentPrimary {
+		t.Fatalf("active theme = %#v, want %#v", activeTheme.AccentPrimary, expectedTheme.AccentPrimary)
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if strings.Contains(got, "✓") || !strings.Contains(got, "live reload failed") {
+		t.Fatalf("reload cleanup failure receipt = %q", got)
 	}
 }
 

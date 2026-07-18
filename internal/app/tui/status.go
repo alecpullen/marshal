@@ -51,7 +51,7 @@ func (m Model) renderStatusLine(width int) string {
 		gap = statusMinGap
 	}
 	line := " " + left + strings.Repeat(" ", gap) + right + " "
-	return statusBarStyle.Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
+	return statusBarStyle().Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
 }
 
 // joinSegs joins status segments with the dim separator.
@@ -181,7 +181,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 }
 
 func browserStatusText(bi session.BrowserInfo) string {
-	glyph := browserGlyphStyle.Render("🌐")
+	glyph := browserGlyphStyle().Render("🌐")
 	url := truncateURL(bi.URL, 20)
 	if url == "" {
 		url = bi.Mode

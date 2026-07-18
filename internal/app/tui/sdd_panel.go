@@ -43,7 +43,7 @@ func renderSDDPanel(p session.SDDProgress, spinnerFrame string, width int) (stri
 	if p.TokensMax > 0 || p.TokensUsed > 0 {
 		b.WriteString("\n")
 		line := fmt.Sprintf("Tokens: %d / %d", p.TokensUsed, p.TokensMax)
-		b.WriteString(mutedStyle.Render(truncateRunes(line, inner)))
+		b.WriteString(mutedStyle().Render(truncateRunes(line, inner)))
 	}
 
 	body := indentBlock(b.String(), "  ")

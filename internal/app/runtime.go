@@ -83,7 +83,10 @@ type Runtime struct {
 	workCtx    context.Context
 	workCancel context.CancelFunc
 	mu         sync.Mutex
-	closeFns   []func()
+	// resourceClosers holds cleanup functions (log file, DB handle, open file
+	// descriptors) appended in setup order. They are invoked in reverse during
+	// Close, so the most recently opened resource is released first.
+	resourceClosers []func()
 
 	quiesceOnce sync.Once
 	closeOnce   sync.Once
@@ -202,7 +205,7 @@ func (rt *Runtime) Quiesce(ctx context.Context) error {
 //  5. event broker
 //  6. snapshot DB prune and filesystem prune
 //  7. database
-//  8. reverse-order closeFns (log file)
+//  8. reverse-order resourceClosers
 //  9. idempotent state shutdown
 func (rt *Runtime) Close(ctx context.Context) error {
 	_ = rt.Quiesce(ctx)
@@ -260,9 +263,9 @@ func (rt *Runtime) Close(ctx context.Context) error {
 			rt.DesktopCloser()
 		}
 
-		// 8. reverse-order closeFns (log file).
-		for i := len(rt.closeFns) - 1; i >= 0; i-- {
-			rt.closeFns[i]()
+		// 8. reverse-order resourceClosers.
+		for i := len(rt.resourceClosers) - 1; i >= 0; i-- {
+			rt.resourceClosers[i]()
 		}
 
 		// 9. idempotent state shutdown.
@@ -473,7 +476,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 	}
 	if logFile != nil {
-		rt.closeFns = append(rt.closeFns, func() { _ = logFile.Close() })
+		rt.resourceClosers = append(rt.resourceClosers, func() { _ = logFile.Close() })
 	}
 	return rt, nil
 }

@@ -10,7 +10,7 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
-var memTheme = theme.Load()
+func memTheme() theme.Theme { return theme.Current() }
 
 func (m Model) View() string {
 	frameWidth := 61
@@ -55,7 +55,7 @@ func (m Model) View() string {
 	lines = append(lines, "[↑/k ↓/j] Move  [c] Confirm  [s] Mark Stale  [Esc] Close")
 
 	// Truncate and pad each line to inner display width.
-	contentStyle := lipgloss.NewStyle().Width(inner).Foreground(memTheme.FGDefault)
+	contentStyle := lipgloss.NewStyle().Width(inner).Foreground(memTheme().FGDefault)
 	for i, l := range lines {
 		if lipgloss.Width(l) > inner {
 			l = ansi.Cut(l, 0, inner)
@@ -68,7 +68,7 @@ func (m Model) View() string {
 	// Wrap the entire content in a rounded border.
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(memTheme.FGMuted).
+		BorderForeground(memTheme().FGMuted).
 		Padding(0, 1)
 
 	return style.Render(innerContent)

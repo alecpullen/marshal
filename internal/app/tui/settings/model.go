@@ -16,7 +16,7 @@ import (
 	"marshal/internal/llm/routing"
 )
 
-var settingsTheme = theme.Load()
+func settingsTheme() theme.Theme { return theme.Current() }
 
 const (
 	sidebarWidth      = 20
@@ -291,9 +291,9 @@ func (m *Model) SetSaveBlocked(reason string) {
 // When save is blocked the control is dimmed with the reason appended inline.
 func (m *Model) saveView() string {
 	if m.saveBlocked != "" {
-		return mutedStyle.Render("Save (blocked: " + m.saveBlocked + ")")
+		return mutedStyle().Render("Save (blocked: " + m.saveBlocked + ")")
 	}
-	return keyStyle.Render("Ctrl+S") + " save"
+	return keyStyle().Render("Ctrl+S") + " save"
 }
 
 func (m *Model) saveCmd() tea.Cmd {
@@ -398,17 +398,25 @@ func truncateErr(s string) string {
 	return s
 }
 
-var (
-	sidebarItemStyle   = lipgloss.NewStyle().Foreground(settingsTheme.FGDefault)
-	sidebarActiveStyle = lipgloss.NewStyle().Bold(true).Background(settingsTheme.BGSelection)
-	warnStyle          = lipgloss.NewStyle().Foreground(settingsTheme.StatusWarning)
-	successStyle       = lipgloss.NewStyle().Foreground(settingsTheme.StatusSuccess)
-	errStyle           = lipgloss.NewStyle().Foreground(settingsTheme.StatusError)
-	footerKeyStyle     = lipgloss.NewStyle().Foreground(settingsTheme.AccentPrimary)
-	footerTextStyle    = lipgloss.NewStyle().Foreground(settingsTheme.FGMuted)
-	mutedStyle         = lipgloss.NewStyle().Faint(true).Foreground(settingsTheme.FGMuted)
-	keyStyle           = lipgloss.NewStyle().Foreground(settingsTheme.AccentPrimary)
-)
+func sidebarItemStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(settingsTheme().FGDefault)
+}
+func sidebarActiveStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Background(settingsTheme().BGSelection)
+}
+func warnStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().StatusWarning) }
+func successStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess)
+}
+func errStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().StatusError) }
+func footerKeyStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(settingsTheme().AccentPrimary)
+}
+func footerTextStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
+func mutedStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Faint(true).Foreground(settingsTheme().FGMuted)
+}
+func keyStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().AccentPrimary) }
 
 func (m Model) View() string {
 	fw, fh := m.frameSize()
@@ -438,7 +446,7 @@ func (m Model) renderBody(fw, fh int) string {
 	}
 	var content strings.Builder
 	if warns := warningsFor(m.specs[m.cursor].id, m.state.cfg); len(warns) > 0 {
-		content.WriteString(warnStyle.Render("⚠ "+strings.Join(warns, " · ")) + "\n")
+		content.WriteString(warnStyle().Render("⚠ "+strings.Join(warns, " · ")) + "\n")
 	}
 	content.WriteString(pane.top().list.View())
 
@@ -448,15 +456,15 @@ func (m Model) renderBody(fw, fh int) string {
 
 	sidebarTitle := "Settings"
 	if m.dirty() {
-		sidebarTitle = "Settings " + warnStyle.Render("●")
+		sidebarTitle = "Settings " + warnStyle().Render("●")
 	}
 	var sb strings.Builder
 	for i, sp := range m.specs {
 		label := "  " + sp.title
 		if i == m.cursor {
-			label = sidebarActiveStyle.Render("▸ " + sp.title)
+			label = sidebarActiveStyle().Render("▸ " + sp.title)
 		} else {
-			label = sidebarItemStyle.Render(label)
+			label = sidebarItemStyle().Render(label)
 		}
 		sb.WriteString(label + "\n")
 	}
@@ -469,16 +477,16 @@ func (m Model) renderBody(fw, fh int) string {
 // renderFooter shows only what is actionable right now.
 func (m Model) renderFooter(fw int) string {
 	seg := func(k, label string) string {
-		return footerKeyStyle.Render("["+k+"]") + footerTextStyle.Render(label)
+		return footerKeyStyle().Render("["+k+"]") + footerTextStyle().Render(label)
 	}
 	var parts []string
 	switch {
 	case m.pendingCancel:
-		return ansi.Cut(warnStyle.Render("⚠ unsaved changes — Esc again to discard, Ctrl+S to save"), 0, max(fw, 1))
+		return ansi.Cut(warnStyle().Render("⚠ unsaved changes — Esc again to discard, Ctrl+S to save"), 0, max(fw, 1))
 	case m.footerMsg != "":
-		return ansi.Cut(errStyle.Render(m.footerMsg), 0, max(fw, 1))
+		return ansi.Cut(errStyle().Render(m.footerMsg), 0, max(fw, 1))
 	case m.savedFlash:
-		return ansi.Cut(successStyle.Render("✓ saved"), 0, max(fw, 1))
+		return ansi.Cut(successStyle().Render("✓ saved"), 0, max(fw, 1))
 	}
 	fl := m.activePane().top().list
 	switch {
@@ -534,7 +542,7 @@ func (m Model) renderFooter(fw int) string {
 		parts = append(parts, seg("/", "search"), seg("^S", "save"), seg("?", "help"))
 	}
 	if m.dirty() {
-		parts = append([]string{warnStyle.Render("● unsaved")}, parts...)
+		parts = append([]string{warnStyle().Render("● unsaved")}, parts...)
 	}
 	return ansi.Cut(" "+strings.Join(parts, " "), 0, max(fw, 1))
 }
@@ -542,18 +550,18 @@ func (m Model) renderFooter(fw int) string {
 func (m Model) diffOverlay(fw, fh int) string {
 	var b strings.Builder
 	if len(m.diffLines) == 0 {
-		b.WriteString(flDescStyle.Render("no changes"))
+		b.WriteString(flDescStyle().Render("no changes"))
 		b.WriteString("\n")
 	} else {
 		for _, d := range m.diffLines {
 			line := d.Prefix + " " + d.Path + d.Detail
 			switch d.Prefix {
 			case "+":
-				line = flOnStyle.Render(line)
+				line = flOnStyle().Render(line)
 			case "-":
-				line = flErrStyle.Render(line)
+				line = flErrStyle().Render(line)
 			default:
-				line = flDescStyle.Render(line)
+				line = flDescStyle().Render(line)
 			}
 			b.WriteString(line)
 			b.WriteString("\n")
@@ -565,7 +573,7 @@ func (m Model) diffOverlay(fw, fh int) string {
 	} else {
 		footer = m.saveView() + "  [Esc] cancel"
 	}
-	content := strings.TrimRight(b.String(), "\n") + "\n" + footerTextStyle.Render(footer)
+	content := strings.TrimRight(b.String(), "\n") + "\n" + footerTextStyle().Render(footer)
 	h := min(fh, len(m.diffLines)+5)
 	if h < 6 {
 		h = 6

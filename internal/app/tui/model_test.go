@@ -3774,6 +3774,84 @@ func TestSetCommandKeyOnlyPrintsCurrentValue(t *testing.T) {
 	}
 }
 
+func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
+	tests := []struct {
+		name   string
+		block  func(*Model)
+		reason string
+	}{
+		{
+			name:   "agent turn active",
+			block:  func(m *Model) { m.busy = true },
+			reason: settingsBusyMessage,
+		},
+		{
+			name: "background job active",
+			block: func(m *Model) {
+				m.state.SetRunningJobsCount(1)
+			},
+			reason: settingsBusyMessage,
+		},
+		{
+			name: "tool approval pending",
+			block: func(m *Model) {
+				m.state.SetPendingApproval(&session.PendingToolCall{
+					ID:           "pending-approval",
+					Name:         "shell.run",
+					ResponseChan: make(chan session.UserApprovalDecision, 1),
+				})
+			},
+			reason: "Resolve the pending tool approval to save.",
+		},
+		{
+			name: "question pending",
+			block: func(m *Model) {
+				m.state.SetPendingQuestion(&session.PendingQuestion{
+					ResponseChan: make(chan []session.Answer, 1),
+				})
+			},
+			reason: "Answer the pending question to save.",
+		},
+		{
+			name: "picker open",
+			block: func(m *Model) {
+				m.pickerModel = &picker.Model{}
+				m.dock.Open(m.pickerModel)
+			},
+			reason: "Close the picker to save.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel(t)
+			reloads := 0
+			m.configReloader = func(config.Config) error {
+				reloads++
+				return nil
+			}
+			tt.block(&m)
+
+			m.dispatchCommand("/set shell.allow_network on")
+
+			if m.state.Config.Tools.Shell.AllowNetwork {
+				t.Fatal("guarded /set mutated the live config")
+			}
+			if reloads != 0 {
+				t.Fatalf("guarded /set reloaded runtime %d times", reloads)
+			}
+			path := projectConfigPath(m.state.WorkingDir)
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("guarded /set persisted config, stat error = %v", err)
+			}
+			msgs := m.state.Messages()
+			if got := msgs[len(msgs)-1].Content; got != tt.reason {
+				t.Fatalf("guarded /set message = %q, want %q", got, tt.reason)
+			}
+		})
+	}
+}
+
 func TestApplyNewConfigInvalidatesSetRegistry(t *testing.T) {
 	m := newTestModel(t)
 	previous := m.settingsRegistry()

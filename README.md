@@ -101,6 +101,13 @@ gofmt -w .                     # format
 go vet ./...                   # vet
 ```
 
+## Usability testing (synthetic users)
+
+```bash
+go build ./cmd/marshal
+go test ./test/usability/... -run TestScripted -v
+```
+
 ## Roadmap
 
 | Milestone | Status |

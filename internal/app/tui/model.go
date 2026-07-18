@@ -354,11 +354,21 @@ func (m *Model) handleSetCommand(args []string) {
 		saveErr := config.SaveProjectConfig(path, reg.Config())
 		// Keep the in-memory change even when persistence fails so users can
 		// correct filesystem permissions and retry without losing their edit.
-		m.applyNewConfig(reg.Config())
 		if saveErr != nil {
+			m.applyNewConfig(reg.Config())
 			sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
 			return
 		}
+		if m.configReloader != nil {
+			if err := m.configReloader(reg.Config()); err != nil {
+				// The registry now holds the unswapped snapshot, while the
+				// session continues using its previous live config.
+				m.setReg = nil
+				sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
+				return
+			}
+		}
+		m.applyNewConfig(reg.Config())
 		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, oldValue, newValue, relPath(m.state.WorkingDir, path)))
 	}
 }
@@ -1031,11 +1041,13 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 		}); err != nil {
 			m.state.AddSessionRule(tc.Command)
 		} else {
-			m.state.Config.Permissions.Rules = append(m.state.Config.Permissions.Rules, config.PermissionRule{
+			newCfg := m.state.Config
+			newCfg.Permissions.Rules = append(newCfg.Permissions.Rules, config.PermissionRule{
 				Permission: rule.Permission,
 				Pattern:    rule.Pattern,
 				Action:     string(rule.Action),
 			})
+			m.applyNewConfig(newCfg)
 			if m.runner != nil {
 				m.runner.SetPolicyRules(m.state.Config.Permissions.Rules)
 			}
@@ -2256,6 +2268,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to save model: %v", err), session.ContentTypePlain)
 		return
 	}
+	m.applyNewConfig(newCfg)
 	m.state.AddMessage(session.RoleSystem,
 		fmt.Sprintf("Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
 }
@@ -2287,6 +2300,7 @@ func (m *Model) switchModelPreset(presetName string) {
 	if err := m.configReloader(newCfg); err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
 	} else {
+		m.applyNewConfig(newCfg)
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
 	}
 }

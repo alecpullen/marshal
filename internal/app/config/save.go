@@ -145,6 +145,13 @@ func SaveProjectConfig(path string, cfg Config) error {
 			ScreenshotFormat: ptr(cfg.Desktop.ScreenshotFormat),
 		}
 	}
+	if file.TUI != nil || !reflect.DeepEqual(cfg.TUI, def.TUI) {
+		file.TUI = &fileTUI{
+			Theme:   ptr(cfg.TUI.Theme),
+			Palette: cfg.TUI.Palette,
+			Mode:    ptr(cfg.TUI.Mode),
+		}
+	}
 	if file.Swarm != nil || !reflect.DeepEqual(cfg.Swarm, def.Swarm) {
 		file.Swarm = &fileSwarm{Budget: &fileSwarmBudget{
 			MaxFixRounds:   ptr(cfg.Swarm.Budget.MaxFixRounds),

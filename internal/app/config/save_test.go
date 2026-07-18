@@ -256,6 +256,29 @@ func TestSaveProjectConfigRoundTripsPlanFirst(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRoundTripsTUI(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+	cfg := Default()
+	cfg.TUI = TUIConfig{
+		Theme:   "catppuccin",
+		Palette: map[string]string{"accent": "#cba6f7"},
+		Mode:    "ask",
+	}
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.TUI, cfg.TUI) {
+		t.Fatalf("TUI = %+v, want %+v", loaded.TUI, cfg.TUI)
+	}
+}
+
 func TestSaveProjectConfigPreservesUnrelatedSections(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

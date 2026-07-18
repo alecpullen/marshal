@@ -1,0 +1,25 @@
+name: usability
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  scripted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build marshal
+        run: CGO_ENABLED=1 go build ./cmd/marshal
+      - name: Run scripted usability tests
+        run: go test ./test/usability/... -run TestScripted -v -timeout 5m
+      - name: Upload usability report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: usability-report
+          path: /tmp/marshal-usability/

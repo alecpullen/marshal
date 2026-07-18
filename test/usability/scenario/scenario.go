@@ -46,16 +46,19 @@ type SuccessCriterion struct {
 
 // Scenario is one usability test.
 type Scenario struct {
-	Name    string
-	Actor   actor.Actor
-	WorkDir string
-	Success SuccessCriterion
+	Name      string
+	ActorType string // metadata describing the actor, e.g. "scripted" or "llm"
+	Fixture   string // optional path to a fixture repo; informational/metadata only
+	Goal      string // optional task goal; informational/metadata only
+	Actor     actor.Actor
+	WorkDir   string
+	Success   SuccessCriterion
 }
 
 // Run executes the scenario and returns the result.
 func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, error) {
 	start := time.Now()
-	result := report.ScenarioResult{Name: sc.Name, Actor: actorName(sc.Actor)}
+	result := report.ScenarioResult{Name: sc.Name, Actor: actorName(sc)}
 
 	workDir := sc.WorkDir
 	if workDir == "" {
@@ -159,9 +162,9 @@ func (r *Runner) WriteReport() error {
 	return r.rep.WriteReport(dir)
 }
 
-func actorName(a actor.Actor) string {
-	switch a.(type) {
-	default:
-		return fmt.Sprintf("%T", a)
+func actorName(sc Scenario) string {
+	if sc.ActorType != "" {
+		return sc.ActorType
 	}
+	return fmt.Sprintf("%T", sc.Actor)
 }

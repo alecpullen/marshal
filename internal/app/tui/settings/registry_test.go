@@ -1,11 +1,13 @@
 package settings
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/routing"
 )
 
 func TestRegistryKeysUniqueAndPopulated(t *testing.T) {
@@ -44,27 +46,67 @@ func TestRegistryParityWithSectionFrames(t *testing.T) {
 
 func TestRegistryApplyToggle(t *testing.T) {
 	registry := BuildRegistry(config.Default())
-	oldValue, newValue, err := registry.Apply("shell.allow_network", "on")
+	change, err := registry.Apply("shell.allow_network", "on")
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if newValue != "on" {
-		t.Errorf("newValue = %q, want on", newValue)
+	if change.NewValue != "on" {
+		t.Errorf("newValue = %q, want on", change.NewValue)
 	}
-	if oldValue == newValue {
-		t.Errorf("old and new both %q — toggle did not report a change", oldValue)
+	if !change.Changed {
+		t.Errorf("toggle did not report a change: %#v", change)
 	}
 	if !registry.Config().Tools.Shell.AllowNetwork {
 		t.Error("Apply did not mutate the working config")
 	}
 }
 
+func TestRegistryApplyUnavailableAgentToggle(t *testing.T) {
+	registry := BuildRegistry(config.Default())
+	before := registry.Config()
+	if _, err := registry.Apply("agent.local_only", "on"); err == nil ||
+		!strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("Apply unavailable agent toggle error = %v, want unavailable error", err)
+	}
+	if !reflect.DeepEqual(registry.Config(), before) {
+		t.Fatal("unavailable agent toggle must not mutate config")
+	}
+}
+
+func TestRegistryApplyAgentToggleWithActivePreset(t *testing.T) {
+	cfg := config.Default()
+	cfg.Profile.Default = "default"
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"default": {
+			Roles: map[routing.AgentRole]string{routing.RoleImplementer: "local"},
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{"local": {}}
+	registry := BuildRegistry(cfg)
+
+	change, err := registry.Apply("agent.local_only", "on")
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !change.Changed || !registry.Config().Models.Presets["local"].LocalOnly {
+		t.Fatalf("agent toggle did not update active preset: %#v", change)
+	}
+
+	change, err = registry.Apply("agent.local_only", "on")
+	if err != nil {
+		t.Fatalf("reapplying active agent toggle: %v", err)
+	}
+	if change.Changed {
+		t.Fatalf("reapplying active agent toggle should be unchanged: %#v", change)
+	}
+}
+
 func TestRegistryApplyErrors(t *testing.T) {
 	registry := BuildRegistry(config.Default())
-	if _, _, err := registry.Apply("no.such.key", "x"); err == nil {
+	if _, err := registry.Apply("no.such.key", "x"); err == nil {
 		t.Error("unknown key must error")
 	}
-	if _, _, err := registry.Apply("shell.allow_network", "maybe"); err == nil {
+	if _, err := registry.Apply("shell.allow_network", "maybe"); err == nil {
 		t.Error("bad bool must error")
 	}
 	for _, key := range registry.Keys() {
@@ -72,7 +114,7 @@ func TestRegistryApplyErrors(t *testing.T) {
 		if field.kind != kindEnum || field.setStr == nil {
 			continue
 		}
-		if _, _, err := registry.Apply(key, "definitely-not-an-option"); err == nil ||
+		if _, err := registry.Apply(key, "definitely-not-an-option"); err == nil ||
 			!strings.Contains(err.Error(), "one of") {
 			t.Errorf("enum %s: want 'must be one of' error, got %v", key, err)
 		}

@@ -17,6 +17,14 @@ type Registry struct {
 	section map[string]string
 }
 
+// Change is the observed result of applying a setting. Changed is based on
+// the field getter after its setter runs, rather than the requested value.
+type Change struct {
+	OldValue string
+	NewValue string
+	Changed  bool
+}
+
 // BuildRegistry indexes every addressable root-frame setting.
 func BuildRegistry(cfg config.Config) *Registry {
 	st := newState(cfg)
@@ -98,24 +106,33 @@ func (r *Registry) Describe(key string) (kind, current string, options []string,
 }
 
 // Apply validates and applies a value without persisting it.
-func (r *Registry) Apply(key, value string) (oldValue, newValue string, err error) {
+func (r *Registry) Apply(key, value string) (Change, error) {
 	field, ok := r.byID[key]
 	if !ok {
-		return "", "", fmt.Errorf("unknown setting %q", key)
+		return Change{}, fmt.Errorf("unknown setting %q", key)
 	}
 
 	switch field.kind {
 	case kindToggle:
 		parsed, parseErr := parseOnOff(value)
 		if parseErr != nil {
-			return "", "", parseErr
+			return Change{}, parseErr
 		}
-		oldValue = onOff(field.getBool())
+		oldValue := onOff(field.getBool())
 		field.setBool(parsed)
-		return oldValue, onOff(parsed), nil
+		newValue := onOff(field.getBool())
+		change := Change{
+			OldValue: oldValue,
+			NewValue: newValue,
+			Changed:  oldValue != newValue,
+		}
+		if !change.Changed && newValue != onOff(parsed) {
+			return Change{}, fmt.Errorf("is unavailable in the current configuration")
+		}
+		return change, nil
 	case kindScalar, kindEnum:
 		if field.setStr == nil {
-			return "", "", fmt.Errorf("%s is read-only", key)
+			return Change{}, fmt.Errorf("%s is read-only", key)
 		}
 		if field.kind == kindEnum {
 			found := false
@@ -126,20 +143,25 @@ func (r *Registry) Apply(key, value string) (oldValue, newValue string, err erro
 				}
 			}
 			if !found {
-				return "", "", fmt.Errorf("%s must be one of: %s", key, strings.Join(field.options(), ", "))
+				return Change{}, fmt.Errorf("%s must be one of: %s", key, strings.Join(field.options(), ", "))
 			}
 		}
-		oldValue = field.getStr()
+		oldValue := field.getStr()
 		if err := field.setStr(value); err != nil {
-			return "", "", err
+			return Change{}, err
 		}
-		newValue = field.getStr()
+		newValue := field.getStr()
+		change := Change{
+			OldValue: oldValue,
+			NewValue: newValue,
+			Changed:  oldValue != newValue,
+		}
 		if field.masked {
-			oldValue, newValue = maskKey(oldValue), maskKey(newValue)
+			change.OldValue, change.NewValue = maskKey(oldValue), maskKey(newValue)
 		}
-		return oldValue, newValue, nil
+		return change, nil
 	default:
-		return "", "", fmt.Errorf("%s is edited in /settings (collection or action)", key)
+		return Change{}, fmt.Errorf("%s is edited in /settings (collection or action)", key)
 	}
 }
 

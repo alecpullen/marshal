@@ -1,2 +1,2 @@
-// Package calcbroken is a deliberately broken calculator fixture for usability tests.
-package calcbroken
+// Package calc is a deliberately broken calculator fixture for usability tests.
+package calc

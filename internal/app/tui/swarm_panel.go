@@ -57,7 +57,7 @@ func renderSwarmPanel(p session.SwarmProgress, spinnerFrame string, width int) s
 	if p.TokensMax > 0 || p.TokensUsed > 0 {
 		b.WriteString("\n")
 		line := fmt.Sprintf("Tokens: %d / %d", p.TokensUsed, p.TokensMax)
-		b.WriteString(mutedStyle.Render(truncateRunes(line, inner)))
+		b.WriteString(mutedStyle().Render(truncateRunes(line, inner)))
 	}
 
 	return indentBlock(b.String(), "  ")

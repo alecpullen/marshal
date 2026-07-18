@@ -11,9 +11,6 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
-// warmSunsetTheme is loaded once at startup and shared by all huh surfaces.
-var warmSunsetTheme = theme.Load()
-
 // WarmSunset returns a huh.Theme that retunes the Charm theme to the Warm
 // Sunset palette used across the marshal transcript: coral for titles and
 // selectors, gold for accents, teal for confirmations, and dim grey for
@@ -24,13 +21,14 @@ var warmSunsetTheme = theme.Load()
 func WarmSunset() huh.ThemeFunc {
 	return func(isDark bool) *huh.Styles {
 		t := huh.ThemeCharm(isDark)
+		th := theme.Load()
 
-		coral := warmSunsetTheme.AccentPrimary
-		gold := warmSunsetTheme.StatusWarning
-		teal := warmSunsetTheme.StatusSuccess
-		dim := warmSunsetTheme.FGMuted
-		err := warmSunsetTheme.StatusError
-		normal := warmSunsetTheme.FGDefault
+		coral := th.AccentPrimary
+		gold := th.StatusWarning
+		teal := th.StatusSuccess
+		dim := th.FGMuted
+		err := th.StatusError
+		normal := th.FGDefault
 
 		// Focused field styling.
 		t.Focused.Base = t.Focused.Base.BorderForeground(dim)

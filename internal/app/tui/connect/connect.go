@@ -16,16 +16,16 @@ import (
 	"marshal/internal/llm/provider"
 )
 
-var th = theme.Load()
-
-var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(th.FGDefault)
-	mutedStyle   = lipgloss.NewStyle().Foreground(th.FGMuted)
-	hintStyle    = lipgloss.NewStyle().Foreground(th.StatusInfo)
-	errStyle     = lipgloss.NewStyle().Foreground(th.StatusError)
-	footerStyle  = lipgloss.NewStyle().Foreground(th.FGMuted)
-	successStyle = lipgloss.NewStyle().Foreground(th.StatusSuccess)
-)
+func titleStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(theme.Current().FGDefault)
+}
+func mutedStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func hintStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
+func errStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
+func footerStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func successStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess)
+}
 
 type step int
 
@@ -123,10 +123,10 @@ func (m *Model) View(maxW, maxH int) string {
 	}
 	ph := min(14, maxH)
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(m.title))
+	b.WriteString(titleStyle().Render(m.title))
 	b.WriteString("\n")
 	if m.subtitle != "" {
-		b.WriteString(hintStyle.Render(m.subtitle))
+		b.WriteString(hintStyle().Render(m.subtitle))
 		b.WriteString("\n")
 	}
 	if m.picker != nil {
@@ -138,13 +138,13 @@ func (m *Model) View(maxW, maxH int) string {
 	}
 	if m.err != "" {
 		b.WriteString("\n")
-		b.WriteString(errStyle.Render(m.err))
+		b.WriteString(errStyle().Render(m.err))
 	}
 	if m.footer != "" {
 		b.WriteString("\n")
-		b.WriteString(footerStyle.Render(m.footer))
+		b.WriteString(footerStyle().Render(m.footer))
 	}
-	return chrome.Panel("connect", b.String(), pw, min(lipgloss.Height(b.String())+2, maxH), true, th)
+	return chrome.Panel("connect", b.String(), pw, min(lipgloss.Height(b.String())+2, maxH), true, theme.Current())
 }
 
 func (m *Model) renderInput(pw int) string {
@@ -159,9 +159,9 @@ func (m *Model) renderInput(pw int) string {
 func (m *Model) renderProbing(pw int) string {
 	if m.probeStart > 0 && time.Now().Sub(time.Unix(0, m.probeStart)) > 200*time.Millisecond {
 		frame := spinnerFrames[m.spinner%len(spinnerFrames)]
-		return mutedStyle.Render(frame + " connecting…")
+		return mutedStyle().Render(frame + " connecting…")
 	}
-	return mutedStyle.Render("… connecting")
+	return mutedStyle().Render("… connecting")
 }
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

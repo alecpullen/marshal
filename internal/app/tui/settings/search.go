@@ -122,7 +122,7 @@ func (m *Model) jumpTo(h searchHit) {
 func (m Model) searchOverlay(fw, fh int) string {
 	var b strings.Builder
 	b.WriteString("/ " + m.search.input.View() + "\n")
-	b.WriteString(footerTextStyle.Render(strings.Repeat("─", max(fw/2-2, 10))) + "\n")
+	b.WriteString(footerTextStyle().Render(strings.Repeat("─", max(fw/2-2, 10))) + "\n")
 	maxRows := min(len(m.search.results), fh-6)
 	for i := 0; i < maxRows; i++ {
 		h := m.search.results[i]
@@ -130,12 +130,12 @@ func (m Model) searchOverlay(fw, fh int) string {
 		line := h.sectionTitle + " › " + h.fieldTitle
 		if i == m.search.cursor {
 			marker = "▸ "
-			line = sidebarActiveStyle.Render(line)
+			line = sidebarActiveStyle().Render(line)
 		}
 		b.WriteString(marker + line + "\n")
 	}
 	if len(m.search.results) == 0 {
-		b.WriteString(footerTextStyle.Render("  no matches") + "\n")
+		b.WriteString(footerTextStyle().Render("  no matches") + "\n")
 	}
 	panel := renderPanel("Jump to setting", strings.TrimRight(b.String(), "\n"),
 		max(fw/2, 40), min(fh, maxRows+5), true)

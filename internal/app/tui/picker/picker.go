@@ -16,16 +16,16 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
-var th = theme.Load()
-
-var (
-	groupStyle  = lipgloss.NewStyle().Foreground(th.AccentPrimary)
-	detailStyle = lipgloss.NewStyle().Foreground(th.FGMuted)
-	nowStyle    = lipgloss.NewStyle().Foreground(th.AccentPrimary)
-	badgeStyle  = lipgloss.NewStyle().Foreground(th.StatusInfo)
-	cursorStyle = lipgloss.NewStyle().Bold(true).Background(th.BGSelection)
-	mutedStyle  = lipgloss.NewStyle().Foreground(th.FGMuted)
-)
+func groupStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary)
+}
+func detailStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func nowStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary) }
+func badgeStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
+func cursorStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Background(theme.Current().BGSelection)
+}
+func mutedStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
 
 // Item is one pickable row.
 type Item struct {
@@ -165,7 +165,7 @@ func (m *Model) View(maxW, maxH int) string {
 			it = m.items[idx]
 		}
 		if !filtering && it.Group != "" && it.Group != lastGroup {
-			rows = append(rows, groupStyle.Render(it.Group))
+			rows = append(rows, groupStyle().Render(it.Group))
 			lastGroup = it.Group
 		}
 		marker := "  "
@@ -173,11 +173,11 @@ func (m *Model) View(maxW, maxH int) string {
 			marker = "▸ "
 			focusLine = len(rows)
 		}
-		right := detailStyle.Render(it.Detail)
+		right := detailStyle().Render(it.Detail)
 		if it.Badge != "" {
-			bs := badgeStyle
+			bs := badgeStyle()
 			if strings.HasPrefix(it.Badge, "●") {
-				bs = nowStyle
+				bs = nowStyle()
 			}
 			right += " " + bs.Render(it.Badge)
 		}
@@ -187,12 +187,12 @@ func (m *Model) View(maxW, maxH int) string {
 		}
 		label := it.Label
 		if pos == m.cursor {
-			label = cursorStyle.Render(label)
+			label = cursorStyle().Render(label)
 		}
 		rows = append(rows, marker+label+strings.Repeat(" ", gap)+right)
 	}
 	if len(m.matches) == 0 {
-		rows = append(rows, mutedStyle.Render("  no matches"))
+		rows = append(rows, mutedStyle().Render("  no matches"))
 	}
 
 	// panel = filter line + separator + windowed rows + footer
@@ -200,14 +200,14 @@ func (m *Model) View(maxW, maxH int) string {
 	if listH < 3 {
 		listH = 3
 	}
-	body := chrome.ClipLines(rows, focusLine, listH, th)
-	footer := mutedStyle.Render("[↑↓] move [↵] pick [Esc] cancel")
+	body := chrome.ClipLines(rows, focusLine, listH, theme.Current())
+	footer := mutedStyle().Render("[↑↓] move [↵] pick [Esc] cancel")
 	if m.footer != "" {
-		footer += mutedStyle.Render(" · " + m.footer)
+		footer += mutedStyle().Render(" · " + m.footer)
 	}
 	content := "/ " + m.filter.View() + "\n" +
-		mutedStyle.Render(strings.Repeat("─", inner)) + "\n" +
+		mutedStyle().Render(strings.Repeat("─", inner)) + "\n" +
 		body + "\n" + footer
 	ph := min(lipgloss.Height(content)+2, maxH)
-	return chrome.Panel(m.title, content, pw, ph, true, th)
+	return chrome.Panel(m.title, content, pw, ph, true, theme.Current())
 }

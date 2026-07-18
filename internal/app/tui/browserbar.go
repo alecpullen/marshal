@@ -16,9 +16,9 @@ func (m Model) renderBrowserBar() string {
 
 	available := max(m.width-4, 1)
 	var b strings.Builder
-	b.WriteString(browserGlyphStyle.Render("🌐"))
+	b.WriteString(browserGlyphStyle().Render("🌐"))
 	b.WriteString(" ")
-	b.WriteString(urlStyle.Render(truncateURL(bi.URL, available)))
+	b.WriteString(urlStyle().Render(truncateURL(bi.URL, available)))
 
 	if bi.Title != "" {
 		b.WriteString(dimSep(bi.Title))
@@ -31,30 +31,36 @@ func (m Model) renderBrowserBar() string {
 	}
 
 	line := b.String()
-	return browserBarStyle.
+	return browserBarStyle().
 		Width(max(m.width, 1)).
 		MaxWidth(max(m.width, 1)).
 		Render(ansi.Cut(" "+line+" ", 0, m.width))
 }
 
 func dimSep(text string) string {
-	return mutedStyle.Render(" · ") + text
+	return mutedStyle().Render(" · ") + text
 }
 
-func truncateURL(raw string, max int) string {
+func truncateURL(raw string, maxWidth int) string {
 	raw = strings.TrimPrefix(strings.TrimPrefix(raw, "https://"), "http://")
-	if max <= 0 || len(raw) <= max {
+	if maxWidth <= 0 || ansi.StringWidth(raw) <= maxWidth {
 		return raw
 	}
-	if max < 8 {
-		return raw[:max]
+	if maxWidth < 8 {
+		return ansi.Cut(raw, 0, maxWidth)
 	}
 	hostEnd := strings.Index(raw, "/")
 	if hostEnd < 0 {
-		return raw[:max]
+		return ansi.Cut(raw, 0, maxWidth-1) + "…"
+	}
+	lastSlash := strings.LastIndex(raw, "/")
+	if lastSlash <= hostEnd {
+		return ansi.Cut(raw, 0, maxWidth-1) + "…"
 	}
 	host := raw[:hostEnd]
-	lastSlash := strings.LastIndex(raw, "/")
 	suffix := raw[lastSlash:]
+	if ansi.StringWidth(host)+2+ansi.StringWidth(suffix) > maxWidth {
+		return ansi.Cut(raw, 0, maxWidth-1) + "…"
+	}
 	return host + "/…" + suffix
 }

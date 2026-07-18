@@ -3849,9 +3849,9 @@ func TestPatternForApproval_FullArgv(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := patternForApproval(tt.tc)
+			got := permissions.PatternForApproval(tt.tc)
 			if got != tt.want {
-				t.Errorf("patternForApproval() = %q, want %q", got, tt.want)
+				t.Errorf("permissions.PatternForApproval() = %q, want %q", got, tt.want)
 			}
 			if tt.wantGlob && !strings.Contains(got, "*") {
 				t.Errorf("pattern %q should contain glob character", got)
@@ -3896,7 +3896,7 @@ func TestPatternForApproval_SecurityProperty(t *testing.T) {
 		Name:    "shell.run",
 		Command: "git status",
 	}
-	pattern := patternForApproval(tc)
+	pattern := permissions.PatternForApproval(tc)
 
 	// The pattern "git status" must NOT match "git ; rm -rf /"
 	if permissions.Matches(pattern, "git ; rm -rf /") {

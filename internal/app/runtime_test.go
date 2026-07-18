@@ -245,7 +245,7 @@ func TestRuntimeCloseClosesResourcesAfterQuiesce(t *testing.T) {
 
 	// Fake every cleanup stage so we can verify the full prescribed order:
 	//   Quiesce → MCP → jobBroker → steeringBroker → eventBroker →
-	//   dbPrune → snapshot → dbClose → closeFns (reversed) → state shutdown.
+	//   dbPrune → snapshot → dbClose → resourceClosers (reversed) → state shutdown.
 	mcp := &recordingMCP{name: "mcp", record: record}
 	jobBroker := &recordingBroker{name: "jobBroker", record: record}
 	steeringBroker := &recordingBroker{name: "steeringBroker", record: record}
@@ -269,7 +269,7 @@ func TestRuntimeCloseClosesResourcesAfterQuiesce(t *testing.T) {
 		Snapshot:       snap,
 		DB:             database,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		closeFns:       []func(){closeFn1, closeFn2},
+		resourceClosers: []func(){closeFn1, closeFn2},
 	}
 
 	if err := state.BeginWork(); err != nil {
@@ -311,7 +311,7 @@ func TestRuntimeCloseClosesResourcesAfterQuiesce(t *testing.T) {
 		"dbPrune",        // 6a. DB prune (inside snapshot stage)
 		"snapshot",       // 6b. snapshot filesystem prune
 		"dbClose",        // 7. database
-		"closeFn-2",      // 8. closeFns reversed (fn2 before fn1)
+		"closeFn-2",      // 8. resourceClosers reversed (fn2 before fn1)
 		"closeFn-1",
 	}
 	if len(order) != len(expected) {
@@ -336,7 +336,7 @@ func TestRuntimeCloseIsIdempotent(t *testing.T) {
 		State:      state,
 		workCtx:    workCtx,
 		workCancel: workCancel,
-		closeFns:   []func(){closeFn},
+		resourceClosers: []func(){closeFn},
 	}
 
 	// Call Close twice.
@@ -352,7 +352,7 @@ func TestRuntimeCloseIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestRuntimeCloseRunsCloseFnsInOrder(t *testing.T) {
+func TestRuntimeCloseRunsResourceClosersInOrder(t *testing.T) {
 	ctx := context.Background()
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 
@@ -367,8 +367,8 @@ func TestRuntimeCloseRunsCloseFnsInOrder(t *testing.T) {
 		workCancel: workCancel,
 	}
 
-	// Pre-populate closeFns to verify they all run in reverse order.
-	rt.closeFns = []func(){
+	// Pre-populate resourceClosers to verify they all run in reverse order.
+	rt.resourceClosers = []func(){
 		func() { recordOrder(&orderMu, &order, "fn1") },
 		func() { recordOrder(&orderMu, &order, "fn2") },
 		func() { recordOrder(&orderMu, &order, "fn3") },
@@ -386,14 +386,14 @@ func TestRuntimeCloseRunsCloseFnsInOrder(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// closeFns run in reverse order: fn3, fn2, fn1.
+	// resourceClosers run in reverse order: fn3, fn2, fn1.
 	orderMu.Lock()
 	defer orderMu.Unlock()
 	if len(order) != 3 {
-		t.Fatalf("expected 3 closeFn calls, got %d: %v", len(order), order)
+		t.Fatalf("expected 3 resourceCloser calls, got %d: %v", len(order), order)
 	}
 	if order[0] != "fn3" || order[1] != "fn2" || order[2] != "fn1" {
-		t.Fatalf("closeFn order = %v, want [fn3 fn2 fn1]", order)
+		t.Fatalf("resourceCloser order = %v, want [fn3 fn2 fn1]", order)
 	}
 }
 
@@ -457,7 +457,7 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 
 	// Close-stage errors: inject failures into MCP and DB
 	// (broker Close() has no return value so it cannot produce an error).
-	// Verify each is surfaced and later stages (closeFns, state shutdown)
+	// Verify each is surfaced and later stages (resourceClosers, state shutdown)
 	// still ran.
 	mcpErr := errors.New("mcp failure")
 	dbErr := errors.New("db close failure")
@@ -465,7 +465,7 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 	mcp := &recordingMCP{name: "mcp", err: mcpErr}
 	db := &recordingDB{closeErr: dbErr}
 
-	// Mark that later stages (closeFns, state shutdown) ran despite errors.
+	// Mark that later stages (resourceClosers, state shutdown) ran despite errors.
 	var orderMu sync.Mutex
 	var order []string
 	record := func(s string) {
@@ -483,7 +483,7 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 		MCPManager: mcp,
 		DB:         db,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		closeFns: []func(){
+		resourceClosers: []func(){
 			func() { record("closeFn-2") },
 			func() { record("closeFn-3") },
 		},
@@ -506,12 +506,12 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 		t.Errorf("Close error should contain %q, got %v", dbErr, err)
 	}
 
-	// (b) Later stages (closeFns, state shutdown) still ran.
+	// (b) Later stages (resourceClosers, state shutdown) still ran.
 	if len(order) != 2 {
-		t.Errorf("expected 2 closeFn calls, got %d: %v", len(order), order)
+		t.Errorf("expected 2 resourceCloser calls, got %d: %v", len(order), order)
 	} else {
 		if order[0] != "closeFn-3" || order[1] != "closeFn-2" {
-			t.Errorf("closeFn order = %v, want [closeFn-3 closeFn-2]", order)
+			t.Errorf("resourceCloser order = %v, want [closeFn-3 closeFn-2]", order)
 		}
 	}
 

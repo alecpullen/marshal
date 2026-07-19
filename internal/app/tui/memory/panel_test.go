@@ -129,6 +129,28 @@ func TestMemoryPanelFiltersEntries(t *testing.T) {
 	}
 }
 
+func TestMemoryPanelPasteIntoFilter(t *testing.T) {
+	database, projectID := newTestDB(t)
+	if err := database.SaveMemory(projectID, "fact", "Uses SQLite", "sess-1", time.Unix(100, 0)); err != nil {
+		t.Fatalf("SaveMemory failed: %v", err)
+	}
+	if err := database.SaveMemory(projectID, "architecture", "TUI built with Bubble Tea", "sess-1", time.Unix(101, 0)); err != nil {
+		t.Fatalf("SaveMemory failed: %v", err)
+	}
+	p := NewPanel(database, projectID)
+	p.Update(tea.PasteMsg{Content: "sqlite"})
+	if got := p.filter.Value(); got != "sqlite" {
+		t.Fatalf("filter value = %q, want %q", got, "sqlite")
+	}
+	v := p.View(80, 12)
+	if !strings.Contains(v, "SQLite") {
+		t.Fatalf("pasted filter should match SQLite entry:\n%s", v)
+	}
+	if strings.Contains(v, "Bubble Tea") {
+		t.Fatalf("pasted filter should exclude non-matching entry:\n%s", v)
+	}
+}
+
 func TestMemoryPanelEscEmitsClosedMsg(t *testing.T) {
 	database, projectID := newTestDB(t)
 	p := NewPanel(database, projectID)

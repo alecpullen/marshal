@@ -213,4 +213,28 @@ func TestPickModelKeyForwardedToPicker(t *testing.T) {
 	}
 }
 
+func TestPasteMsgIntoAPIKeyInput(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	m, _ = m.Update(pickerPicked("openrouter"))
+	if m.step != stepAPIKey {
+		t.Fatalf("expected stepAPIKey, got %v", m.step)
+	}
+	updated, _ := m.Update(tea.PasteMsg{Content: "sk-pasted-key"})
+	if got := updated.input.Value(); got != "sk-pasted-key" {
+		t.Fatalf("input.Value() = %q, want %q", got, "sk-pasted-key")
+	}
+}
+
+func TestPasteMsgIntoBaseURLInput(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	m, _ = m.Update(pickerPicked("custom"))
+	if m.step != stepBaseURL {
+		t.Fatalf("expected stepBaseURL, got %v", m.step)
+	}
+	updated, _ := m.Update(tea.PasteMsg{Content: "https://example.com/v1"})
+	if got := updated.input.Value(); got != "https://example.com/v1" {
+		t.Fatalf("input.Value() = %q, want %q", got, "https://example.com/v1")
+	}
+}
+
 func pickerPicked(value string) tea.Msg { return picker.PickedMsg{Value: value} }

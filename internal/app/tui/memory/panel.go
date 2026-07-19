@@ -55,42 +55,50 @@ func NewPanel(database *db.DB, projectID int64) *BrowserPanel {
 
 // Update handles filtering, cursor movement, selection, and delete gestures.
 func (p *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
-	k, ok := msg.(tea.KeyPressMsg)
-	if !ok {
-		return nil
-	}
-
-	switch k.String() {
-	case "esc":
-		return func() tea.Msg { return ClosedMsg{} }
-	case "enter":
-		if p.cursor < len(p.matches) {
-			id := p.all[p.matches[p.cursor]].ID
-			return func() tea.Msg { return ShowMsg{ID: id} }
+	switch k := msg.(type) {
+	case tea.KeyPressMsg:
+		switch k.String() {
+		case "esc":
+			return func() tea.Msg { return ClosedMsg{} }
+		case "enter":
+			if p.cursor < len(p.matches) {
+				id := p.all[p.matches[p.cursor]].ID
+				return func() tea.Msg { return ShowMsg{ID: id} }
+			}
+			return nil
+		case "up":
+			p.moveCursor(-1)
+			return nil
+		case "down":
+			p.moveCursor(1)
+			return nil
 		}
-		return nil
-	case "up":
-		p.moveCursor(-1)
-		return nil
-	case "down":
-		p.moveCursor(1)
-		return nil
-	}
 
-	if k.String() == "ctrl+d" {
-		if p.deleteArmed {
-			return p.deleteSelected()
+		if k.String() == "ctrl+d" {
+			if p.deleteArmed {
+				return p.deleteSelected()
+			}
+			p.deleteArmed = true
+			return nil
 		}
-		p.deleteArmed = true
-		return nil
+
+		var cmd tea.Cmd
+		p.filter, cmd = p.filter.Update(k)
+		p.refilter()
+		p.cursor = 0
+		p.deleteArmed = false
+		return cmd
+
+	case tea.PasteMsg:
+		var cmd tea.Cmd
+		p.filter, cmd = p.filter.Update(k)
+		p.refilter()
+		p.cursor = 0
+		p.deleteArmed = false
+		return cmd
 	}
 
-	var cmd tea.Cmd
-	p.filter, cmd = p.filter.Update(k)
-	p.refilter()
-	p.cursor = 0
-	p.deleteArmed = false
-	return cmd
+	return nil
 }
 
 func (p *BrowserPanel) moveCursor(delta int) {

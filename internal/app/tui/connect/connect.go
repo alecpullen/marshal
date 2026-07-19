@@ -112,6 +112,20 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+	case tea.PasteMsg:
+		switch m.step {
+		case stepBaseURL, stepAPIKey:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		case stepPickTemplate, stepPickModel:
+			if m.picker == nil {
+				return m, nil
+			}
+			cmd := m.picker.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	}
 	return m, nil
 }

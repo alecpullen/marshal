@@ -99,54 +99,16 @@ func TestRecordReadUpsert(t *testing.T) {
 	}
 }
 
-func TestListReadFiles(t *testing.T) {
+func TestRecordWrite(t *testing.T) {
 	db := testDB(t)
 	svc := New(db, "session-1")
 	now := time.Now()
 
-	svc.RecordRead("a.go", now)
-	svc.RecordRead("b.go", now)
-	svc.RecordRead("c.go", now)
-
-	paths, err := svc.ListReadFiles()
-	if err != nil {
-		t.Fatalf("ListReadFiles: %v", err)
+	if err := svc.RecordWrite("src/main.go", now); err != nil {
+		t.Fatalf("RecordWrite: %v", err)
 	}
-	if len(paths) != 3 {
-		t.Fatalf("expected 3 paths, got %d", len(paths))
-	}
-	if paths[0] != "a.go" || paths[1] != "b.go" || paths[2] != "c.go" {
-		t.Fatalf("unexpected paths: %v", paths)
-	}
-}
-
-func TestListReadFilesEmpty(t *testing.T) {
-	db := testDB(t)
-	svc := New(db, "session-1")
-
-	paths, err := svc.ListReadFiles()
-	if err != nil {
-		t.Fatalf("ListReadFiles: %v", err)
-	}
-	if len(paths) != 0 {
-		t.Fatalf("expected 0 paths, got %d", len(paths))
-	}
-}
-
-func TestRecordWriteAndListWrittenFiles(t *testing.T) {
-	db := testDB(t)
-	svc := New(db, "session-1")
-	now := time.Now()
-
-	svc.RecordWrite("src/main.go", now)
-	svc.RecordWrite("src/lib.go", now)
-
-	paths, err := svc.ListWrittenFiles()
-	if err != nil {
-		t.Fatalf("ListWrittenFiles: %v", err)
-	}
-	if len(paths) != 2 {
-		t.Fatalf("expected 2 paths, got %d", len(paths))
+	if err := svc.RecordWrite("src/lib.go", now); err != nil {
+		t.Fatalf("RecordWrite: %v", err)
 	}
 }
 
@@ -159,14 +121,24 @@ func TestSessionIsolation(t *testing.T) {
 	svc1.RecordRead("a.go", now)
 	svc2.RecordRead("b.go", now)
 
-	paths1, _ := svc1.ListReadFiles()
-	paths2, _ := svc2.ListReadFiles()
-
-	if len(paths1) != 1 || paths1[0] != "a.go" {
-		t.Fatalf("session-1 unexpected paths: %v", paths1)
+	// svc1 should see a.go but not b.go
+	_, ok1, _ := svc1.LastReadTime("a.go")
+	if !ok1 {
+		t.Fatal("session-1 should have a.go")
 	}
-	if len(paths2) != 1 || paths2[0] != "b.go" {
-		t.Fatalf("session-2 unexpected paths: %v", paths2)
+	_, ok1b, _ := svc1.LastReadTime("b.go")
+	if ok1b {
+		t.Fatal("session-1 should NOT have b.go")
+	}
+
+	// svc2 should see b.go but not a.go
+	_, ok2, _ := svc2.LastReadTime("b.go")
+	if !ok2 {
+		t.Fatal("session-2 should have b.go")
+	}
+	_, ok2b, _ := svc2.LastReadTime("a.go")
+	if ok2b {
+		t.Fatal("session-2 should NOT have a.go")
 	}
 }
 
@@ -176,12 +148,11 @@ func TestRecordWriteUpsert(t *testing.T) {
 	first := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
 	second := time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
 
-	svc.RecordWrite("src/main.go", first)
-	svc.RecordWrite("src/main.go", second)
-
-	paths, _ := svc.ListWrittenFiles()
-	if len(paths) != 1 {
-		t.Fatalf("expected 1 path after upsert, got %d", len(paths))
+	if err := svc.RecordWrite("src/main.go", first); err != nil {
+		t.Fatalf("first RecordWrite: %v", err)
+	}
+	if err := svc.RecordWrite("src/main.go", second); err != nil {
+		t.Fatalf("second RecordWrite: %v", err)
 	}
 }
 

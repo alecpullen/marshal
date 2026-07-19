@@ -27,8 +27,6 @@ type FileTracker interface {
 	RecordRead(path string, at time.Time) error
 	LastReadTime(path string) (time.Time, bool, error)
 	RecordWrite(path string, at time.Time) error
-	ListReadFiles() ([]string, error)
-	ListWrittenFiles() ([]string, error)
 }
 
 type Options struct {

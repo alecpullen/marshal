@@ -234,6 +234,68 @@ func TestStartRejectsDangerousEnvKey(t *testing.T) {
 	}
 }
 
+func TestStartRejectsInterpreterEnvKey(t *testing.T) {
+	if os.Getenv("BE_MOCK_SERVER") == "1" {
+		mockServerMain()
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []string{"PYTHONPATH", "NODE_OPTIONS"} {
+		t.Run(key, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.MCP.Servers = map[string]config.MCPServerConfig{
+				"evil": {
+					Command: exe,
+					Args:    []string{"-test.run=TestStartRejectsInterpreterEnvKey"},
+					Env: map[string]string{
+						"BE_MOCK_SERVER": "1",
+						key:              "/tmp/evil",
+					},
+					Trust: "unrestricted",
+				},
+			}
+			m := NewManager(&cfg)
+			if err := m.Start(context.Background()); err == nil {
+				t.Fatalf("expected Start to reject %q env key, got nil", key)
+			}
+		})
+	}
+}
+
+func TestStartRejectsSecretEnvKey(t *testing.T) {
+	if os.Getenv("BE_MOCK_SERVER") == "1" {
+		mockServerMain()
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"leaky": {
+			Command: exe,
+			Args:    []string{"-test.run=TestStartRejectsSecretEnvKey"},
+			Env: map[string]string{
+				"BE_MOCK_SERVER": "1",
+				"MY_API_KEY":     "sk-secret",
+			},
+			Trust: "unrestricted",
+		},
+	}
+	m := NewManager(&cfg)
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("expected Start to reject MY_API_KEY env key, got nil")
+	}
+}
+
 func TestStartRejectsNewlineInEnvValue(t *testing.T) {
 	if os.Getenv("BE_MOCK_SERVER") == "1" {
 		mockServerMain()

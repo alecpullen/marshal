@@ -127,6 +127,14 @@ func TestIsSecretKeyUnion(t *testing.T) {
 	}
 }
 
+func TestIsDangerousKeyInterpreterVars(t *testing.T) {
+	for _, k := range []string{"PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "RUBYOPT", "LD_PRELOAD", "PATH", "IFS"} {
+		if !IsDangerousKey(k) {
+			t.Errorf("IsDangerousKey(%q) = false, want true", k)
+		}
+	}
+}
+
 func TestIsDangerousKey(t *testing.T) {
 	tests := []struct {
 		key  string

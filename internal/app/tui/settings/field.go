@@ -75,9 +75,6 @@ type field struct {
 // optional add behavior for collection frames. (Stack management lives in
 // pane.go — Task 4.)
 type frame struct {
-	title     string // breadcrumb segment, e.g. "github" in "MCP › github"
-	list      *fieldList
-	keyPrompt string             // add prompt label; "" with onAdd set = add without prompt
-	onAdd     func(string) error // nil = 'a' disabled in this frame
-	addWizard func() *pickerRequest
+	title string // breadcrumb segment, e.g. "github" in "MCP › github"
+	list  *fieldList
 }

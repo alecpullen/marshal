@@ -56,8 +56,8 @@ func TestProvidersAddAndEditType(t *testing.T) {
 	}
 	// drill into it and edit Type
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if ps.depth() != 2 {
-		t.Fatalf("enter should drill into the provider, depth=%d", ps.depth())
+	if len(ps.stack) != 2 {
+		t.Fatalf("enter should drill into the provider, depth=%d", len(ps.stack))
 	}
 	ps.Update(kp("j"))                             // skip Name row (row 0) to reach Type
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // edit Type row
@@ -215,10 +215,10 @@ func TestWizardCollisionAppendsSuffix(t *testing.T) {
 func TestProvidersFrameHasAddWizard(t *testing.T) {
 	st := newState(config.Default())
 	f := providersFrame(st)
-	if f.addWizard == nil {
+	if f.list.addWizard == nil {
 		t.Fatal("providers root frame must have addWizard set")
 	}
-	req := f.addWizard()
+	req := f.list.addWizard()
 	if req == nil || req.title != "Add provider" {
 		t.Fatalf("addWizard request = %+v, want title 'Add provider'", req)
 	}

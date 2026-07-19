@@ -409,7 +409,7 @@ func TestKindActionResultUpdatesState(t *testing.T) {
 					return "idle"
 				},
 				act: func() tea.Cmd {
-					st.actionState["test.action"] = actionState{pending: true, label: "\u2026"}
+					st.actionState["test.action"] = actionState{label: "\u2026"}
 					return func() tea.Msg {
 						return actionResultMsg{FieldID: "test.action", Label: "\u2713 ok"}
 					}
@@ -421,13 +421,13 @@ func TestKindActionResultUpdatesState(t *testing.T) {
 	fl.Refresh()
 
 	fl.Update(tea.KeyPressMsg{Text: "enter"})
-	if as := st.actionState["test.action"]; !as.pending {
-		t.Fatal("action should be pending after Enter")
+	if as := st.actionState["test.action"]; as.label == "" {
+		t.Fatal("action should have a label after Enter")
 	}
 
 	st.applyActionResult("test.action", "\u2713 ok")
-	if as := st.actionState["test.action"]; as.pending || as.label != "\u2713 ok" {
-		t.Fatalf("after result, actionState = %+v, want pending=false label=ok", as)
+	if as := st.actionState["test.action"]; as.label != "\u2713 ok" {
+		t.Fatalf("after result, actionState = %+v, want label=ok", as)
 	}
 }
 

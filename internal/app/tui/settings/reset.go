@@ -64,7 +64,7 @@ func resetField(s *state, sectionID, title string) *field {
 				s.applyActionResult(id, "\u2713 reset")
 				return nil
 			}
-			s.actionState[id] = actionState{pending: true, label: "again to confirm"}
+			s.actionState[id] = actionState{label: "again to confirm"}
 			return nil
 		},
 	}

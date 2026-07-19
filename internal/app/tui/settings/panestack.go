@@ -15,8 +15,6 @@ func newFrame(title string, fields func() []*field) *frame {
 
 func newCollectionFrame(title, keyPrompt string, fields func() []*field, onAdd func(string) error) *frame {
 	f := newFrame(title, fields)
-	f.keyPrompt = keyPrompt
-	f.onAdd = onAdd
 	f.list.keyPrompt = keyPrompt
 	f.list.onAdd = onAdd
 	return f
@@ -31,9 +29,7 @@ type paneStack struct {
 
 func newPaneStack(root *frame) *paneStack { return &paneStack{stack: []*frame{root}} }
 
-func (p *paneStack) top() *frame  { return p.stack[len(p.stack)-1] }
-func (p *paneStack) depth() int   { return len(p.stack) }
-func (p *paneStack) atRoot() bool { return len(p.stack) == 1 }
+func (p *paneStack) top() *frame { return p.stack[len(p.stack)-1] }
 
 func (p *paneStack) push(f *frame) {
 	f.list.SetSize(p.width, p.height)

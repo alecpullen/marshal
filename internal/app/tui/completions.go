@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"cmp"
+	"slices"
 	"strings"
 )
 
@@ -141,14 +143,12 @@ func (p *completionPopup) update(query string) {
 		}
 	}
 	// Sort by score desc, then text asc.
-	for i := 0; i < len(hits); i++ {
-		for j := i + 1; j < len(hits); j++ {
-			if hits[j].score > hits[i].score ||
-				(hits[j].score == hits[i].score && hits[j].item.Text < hits[i].item.Text) {
-				hits[i], hits[j] = hits[j], hits[i]
-			}
+	slices.SortFunc(hits, func(a, b scored) int {
+		if a.score != b.score {
+			return cmp.Compare(b.score, a.score)
 		}
-	}
+		return strings.Compare(a.item.Text, b.item.Text)
+	})
 	p.filtered = make([]completionItem, len(hits))
 	for i, h := range hits {
 		p.filtered[i] = h.item

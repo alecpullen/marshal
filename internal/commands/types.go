@@ -65,3 +65,17 @@ func (r *Registry) List() []Command {
 	})
 	return cmds
 }
+
+// ListAll returns every registered command, sorted — including Hidden ones.
+// Hidden scopes a command out of the /help listing only; type-ahead
+// completion should still offer every runnable command.
+func (r *Registry) ListAll() []Command {
+	cmds := make([]Command, 0, len(r.commands))
+	for _, cmd := range r.commands {
+		cmds = append(cmds, cmd)
+	}
+	sort.Slice(cmds, func(i, j int) bool {
+		return cmds[i].Name < cmds[j].Name
+	})
+	return cmds
+}

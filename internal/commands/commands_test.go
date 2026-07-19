@@ -613,3 +613,29 @@ func TestHiddenCommandsStillRunnable(t *testing.T) {
 		}
 	}
 }
+
+func TestListAllIncludesHiddenCommands(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	all := map[string]bool{}
+	for _, c := range cmdReg.ListAll() {
+		all[c.Name] = true
+	}
+	// Hidden commands are excluded from List (/help) but must appear in
+	// ListAll (completion popup).
+	for _, name := range []string{"settings", "model", "models", "memory", "connect", "swarm", "sdd", "mode", "ask", "edit", "auto", "stop"} {
+		if !all[name] {
+			t.Errorf("ListAll() missing hidden command /%s", name)
+		}
+	}
+	for _, c := range cmdReg.List() {
+		if c.Hidden {
+			t.Errorf("List() must exclude hidden commands, found /%s", c.Name)
+		}
+	}
+	if got, want := len(cmdReg.ListAll()), len(cmdReg.List()); got <= want {
+		t.Errorf("ListAll() (%d) should cover more commands than List() (%d)", got, want)
+	}
+}

@@ -257,12 +257,18 @@ func TestSessionResumeRestoresWithoutReplay(t *testing.T) {
 }
 
 func TestSessionResumeClosesOldRuntime(t *testing.T) {
-	var idSeq atomic.Int64
 	var (
 		mu     sync.Mutex
 		events []string
 	)
-	starter := fakeRuntimeStart(&idSeq, nil)
+	// Use a fixed session ID so that publish-under-rt.SessionID and
+	// publish-under-p.SessionID both store under the same key. The old
+	// code published under p.SessionID; the refactored code publishes
+	// under rt.SessionID.
+	const fixedID = "sess_resume_close"
+	starter := func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+		return &app.Runtime{SessionID: fixedID}, nil
+	}
 	closer := func(ctx context.Context, rt *app.Runtime) error {
 		mu.Lock()
 		events = append(events, "close "+rt.SessionID)
@@ -283,22 +289,22 @@ func TestSessionResumeClosesOldRuntime(t *testing.T) {
 	})
 	m.SetTurnCanceller(canceller)
 
-	// First resume publishes a runtime under sess_resume_close.
-	if _, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_resume_close","mcpServers":[]}`)); err != nil {
+	// First resume publishes a runtime under the fixed session ID.
+	if _, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"`+fixedID+`","mcpServers":[]}`)); err != nil {
 		t.Fatalf("first resume: %v", err)
 	}
 	// Second resume for the same id must cancel+close the prior runtime
 	// before publishing the new one.
-	if _, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"sess_resume_close","mcpServers":[]}`)); err != nil {
+	if _, err := m.Resume(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","sessionId":"`+fixedID+`","mcpServers":[]}`)); err != nil {
 		t.Fatalf("second resume: %v", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	joined := strings.Join(events, ",")
-	if !strings.Contains(joined, "cancel sess_resume_close") {
-		t.Fatalf("expected turn cancel for sess_resume_close, events=%q", joined)
+	if !strings.Contains(joined, "cancel "+fixedID) {
+		t.Fatalf("expected turn cancel for %s, events=%q", fixedID, joined)
 	}
-	if !strings.Contains(joined, "close ") {
+	if !strings.Contains(joined, "close "+fixedID) {
 		t.Fatalf("expected a close event, events=%q", joined)
 	}
 }

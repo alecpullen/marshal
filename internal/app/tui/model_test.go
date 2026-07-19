@@ -544,12 +544,17 @@ func TestCtrlKOpensMemoryBrowser(t *testing.T) {
 	}
 
 	m := New(state, WithMemoryStore(database, projectID))
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	if !m.memoryOpen {
-		t.Fatal("expected memoryOpen to be true")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock to be open")
 	}
-	if !strings.Contains(stripANSI(m.View().Content), "Project Memories") {
+	if _, ok := m.dock.Panel().(*memory.BrowserPanel); !ok {
+		t.Fatalf("expected *memory.BrowserPanel, got %T", m.dock.Panel())
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "Memory") {
 		t.Fatalf("View() missing memory browser:\n%s", stripANSI(m.View().Content))
 	}
 }
@@ -572,13 +577,13 @@ func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
 	m := New(state, WithMemoryStore(database, projectID))
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	m = updated.(Model)
-	if !m.memoryOpen {
-		t.Fatal("expected memoryOpen")
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock to be open")
 	}
 	updated, _ = m.Update(memory.ClosedMsg{})
 	m = updated.(Model)
-	if m.memoryOpen {
-		t.Fatal("expected memoryOpen to be false after ClosedMsg")
+	if m.dock.IsOpen() {
+		t.Fatal("expected dock to be closed after ClosedMsg")
 	}
 }
 
@@ -592,12 +597,14 @@ func TestCtrlKWithoutMemoryStoreDoesNothing(t *testing.T) {
 		}
 	}()
 
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	if m.memoryOpen {
-		t.Fatal("expected memoryOpen to remain false without memory store")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if m.dock.IsOpen() {
+		t.Fatal("expected dock to remain closed without memory store")
 	}
-	if strings.Contains(stripANSI(m.View().Content), "Project Memories") {
+	if strings.Contains(stripANSI(m.View().Content), "Memory") {
 		t.Fatalf("View() should not show memory browser without memory store:\n%s", stripANSI(m.View().Content))
 	}
 }
@@ -1357,7 +1364,7 @@ func TestEscDuringApprovalDenies(t *testing.T) {
 	}
 }
 
-func TestCtrlKTogglesMemory(t *testing.T) {
+func TestCtrlKOpensMemoryAndClosedMsgCloses(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	db, err := db.Open(":memory:")
 	if err != nil {
@@ -1375,13 +1382,13 @@ func TestCtrlKTogglesMemory(t *testing.T) {
 	model := New(state, WithMemoryStore(db, pid))
 	updated, _ := model.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	model = updated.(Model)
-	if !model.memoryOpen {
-		t.Fatal("Ctrl+K did not open memory")
+	if !model.dock.IsOpen() {
+		t.Fatal("Ctrl+K did not open memory browser")
 	}
-	updated, _ = model.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	updated, _ = model.Update(memory.ClosedMsg{})
 	model = updated.(Model)
-	if model.memoryOpen {
-		t.Fatal("Ctrl+K did not close memory")
+	if model.dock.IsOpen() {
+		t.Fatal("memory browser did not close after ClosedMsg")
 	}
 }
 func TestBusyTickRefreshesViewport(t *testing.T) {
@@ -4342,8 +4349,8 @@ func TestMemoryBlockedByApproval(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	if m.memoryOpen {
-		t.Fatal("memoryOpen should be false when approval is pending")
+	if m.dock.IsOpen() {
+		t.Fatal("dock should be closed when approval is pending")
 	}
 
 	// A system message should have been added.

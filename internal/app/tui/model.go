@@ -75,8 +75,6 @@ type Model struct {
 	ctx            context.Context
 	busy           bool
 	configReloader ConfigReloader
-	memoryOpen     bool
-	memoryModel    memory.Model
 	memoryDB       *db.DB
 	memoryProject  int64
 	cmdRegistry    *commands.Registry
@@ -563,7 +561,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// settings/memory overlays) regardless of which overlay is open.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.resize(ws.Width, ws.Height)
-		m.memoryModel.SetSize(m.width, m.height)
 		if m.approvalModel != nil {
 			m.approvalModel.SetSize(max(m.width-4, 30))
 		}
@@ -613,8 +610,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
+	case memory.ShowMsg:
+		m.dock.CloseNow()
+		text := memory.RenderEntry(m.memoryDB, msg.ID)
+		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	case memory.DeletedMsg:
+		if msg.Err != nil {
+			m.state.AddMessage(session.RoleSystem, "✗ delete failed: "+msg.Err.Error(), session.ContentTypePlain)
+		} else {
+			m.state.AddMessage(session.RoleSystem, "✓ deleted memory: "+msg.Title, session.ContentTypePlain)
+		}
+		m.refreshViewport()
+		return m, nil
 	case memory.ClosedMsg:
-		m.memoryOpen = false
+		m.dock.CloseNow()
+		m.refreshViewport()
 		return m, nil
 	}
 
@@ -623,16 +635,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case agentFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg:
 		return m.handleRuntimeMessage(msg)
-	}
-
-	if m.memoryOpen {
-		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+k" {
-			m.memoryOpen = false
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.memoryModel, cmd = m.memoryModel.Update(msg)
-		return m, cmd
 	}
 
 	// Browser-owned picker and probe/action messages must return to the
@@ -812,9 +814,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.memoryDB == nil {
 				return m, nil
 			}
-			m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
-			m.memoryModel.SetSize(m.width, m.height)
-			m.memoryOpen = true
+			m.dock.Open(memory.NewPanel(m.memoryDB, m.memoryProject))
+			m.refreshViewport()
 			return m, nil
 		case "ctrl+g":
 			m.thinkingExpanded = !m.thinkingExpanded
@@ -1933,9 +1934,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
-		m.memoryModel.SetSize(m.width, m.height)
-		m.memoryOpen = true
+		m.dock.Open(memory.NewPanel(m.memoryDB, m.memoryProject))
 		m.refreshViewport()
 		return m, nil
 

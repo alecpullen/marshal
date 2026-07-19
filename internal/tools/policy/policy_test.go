@@ -2,7 +2,9 @@ package policy
 
 import (
 	"context"
+	"log/slog"
 	"marshal/internal/app/config"
+	"marshal/internal/permissions"
 	"marshal/internal/tools/registry"
 	"strings"
 	"sync"
@@ -748,4 +750,29 @@ func TestEvaluate_NoRegistryKeepsLegacyLowRiskAllow(t *testing.T) {
 	if dec != DecisionAllow {
 		t.Fatalf("without registry, legacy allow should hold; got %v", dec)
 	}
+}
+
+// TestPolicyEngineEvaluateConcurrentWithSetters: the TUI calls SetRules
+// from the UI goroutine while the agent goroutine is mid-Evaluate. Run
+// with -race: Evaluate must snapshot the mutable fields under the lock.
+func TestPolicyEngineEvaluateConcurrentWithSetters(t *testing.T) {
+	cfg := config.Default()
+	pe := NewEngine(&cfg, nil)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			pe.SetRules([]permissions.Rule{{Permission: "shell.run", Pattern: "ls", Action: permissions.ActionAllow}})
+			pe.WithRegistry(registry.New())
+			pe.SetLogger(slog.Default())
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		if _, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "ls -la"}); err != nil {
+			t.Errorf("Evaluate: %v", err)
+		}
+	}
+	wg.Wait()
 }

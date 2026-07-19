@@ -131,6 +131,13 @@ func (pe *PolicyEngine) Logger() *slog.Logger {
 }
 
 func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {
+	// Snapshot the mutable fields under the lock: SetRules / WithRegistry
+	// run from the UI goroutine and must not race a mid-Evaluate read.
+	pe.mu.RLock()
+	rules := pe.rules
+	reg := pe.registry
+	pe.mu.RUnlock()
+
 	if strings.HasPrefix(toolName, "mcp.") {
 		var mcpMatched bool
 		var mcpDecision Decision
@@ -183,7 +190,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		// 4. F4 rules — can override allow/confirm from MCP policies
 		subjects := subjectsForTool(toolName, args, "")
 		if len(subjects) > 0 {
-			decision, matched := evaluateSubjects(pe.rules, permissions.PermissionForTool(toolName), subjects)
+			decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(toolName), subjects)
 			if matched {
 				return decision, "resolved by permission rule", nil
 			}
@@ -235,7 +242,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	// An allow rule here can downgrade an ask to allow; a deny rule forces deny.
 	subjects := subjectsForTool(toolName, args, normCmd)
 	if len(subjects) > 0 {
-		decision, matched := evaluateSubjects(pe.rules, permissions.PermissionForTool(toolName), subjects)
+		decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(toolName), subjects)
 		if matched {
 			return decision, "resolved by permission rule", nil
 		}
@@ -251,8 +258,8 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	}
 
 	if toolName != "shell.run" && toolName != "test.run" {
-		if pe.registry != nil {
-			if tool, ok := pe.registry.Lookup(toolName); ok {
+		if reg != nil {
+			if tool, ok := reg.Lookup(toolName); ok {
 				switch tool.Risk {
 				case registry.RiskReadOnly:
 					return DecisionAllow, "read-only tool", nil
@@ -498,7 +505,7 @@ func (pe *PolicyEngine) EvaluateGuardrails(cmd, dynSetting string) (Decision, st
 	allowDestructive := pe.config != nil && pe.config.Tools.Shell.AllowDestructive
 	verdict, err := analyzeCommand(cmd)
 	if err != nil {
-		pe.logger.Debug("policy guardrail parse failed, falling back to legacy", "cmd", cmd, "err", err)
+		pe.Logger().Debug("policy guardrail parse failed, falling back to legacy", "cmd", cmd, "err", err)
 		if isBlockedByGuardrailLegacy(cmd) {
 			return DecisionDeny, "blocked by conservative guardrail safety checks (legacy)"
 		}

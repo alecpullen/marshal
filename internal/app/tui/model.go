@@ -142,9 +142,6 @@ type Model struct {
 	thinkingExpanded   bool
 	viewportFollow     bool
 
-	// Help overlay (triggered by ?).
-	helpOpen bool
-
 	// Connect overlay (opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
 	connectOpen  bool
@@ -735,19 +732,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Help overlay: when open, only ? and Esc close it; other keypresses are
-	// blocked so the overlay stays visible until dismissed. Non-key runtime
-	// messages must continue through Update so background state cannot freeze.
-	if m.helpOpen {
-		if k, ok := msg.(tea.KeyPressMsg); ok {
-			if k.String() == "?" || k.String() == "esc" {
-				m.helpOpen = false
-				return m, nil
-			}
-			return m, nil
-		}
-	}
-
 	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
 	// tool decision is pending. These must be intercepted before the
 	// approval/question routing below, which would otherwise swallow them.
@@ -813,14 +797,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// pending states are routed above, before this switch.)
 		switch msg.String() {
 		case "?":
-			// Close-handler is in the helpOpen guard near the top of Update.
-			// Here we only handle the open path: open the overlay when the
-			// textarea is empty and we are not in the middle of an approval,
-			// question, or command edit. Otherwise the trailing
-			// m.input.Update(msg) below inserts ? as a literal char.
+			// ? on an empty textarea prints the help cheatsheet to the
+			// transcript, same as typing /help. With input already present
+			// (or mid approval/question/command-edit), ? falls through to
+			// the trailing m.input.Update(msg) below and is typed literally.
 			if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && m.state.PendingApproval() == nil {
-				m.helpOpen = true
-				return m, nil
+				return m.dispatchCommand("/help")
 			}
 		case "esc":
 			// F18: dismiss the active completion popup first. Only if

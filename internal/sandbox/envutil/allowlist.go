@@ -18,10 +18,10 @@ var allowlistKeys = map[string]bool{
 }
 
 // IsSecretKey reports whether key names a likely secret/credential. It is
-// the union of the old IsSecretKey (case-insensitive substring patterns)
-// and IsSecretBearer (exact well-known names, provider prefixes, and
-// credential suffixes): one predicate, one list, used by the sandbox, the
-// MCP client/manager, and the hooks runner.
+// the union of the old substring predicate (case-insensitive patterns)
+// and the old bearer predicate (exact well-known names, provider prefixes,
+// and credential suffixes): one predicate, one list, used by the sandbox,
+// the MCP client/manager, and the hooks runner.
 func IsSecretKey(key string) bool {
 	k := strings.ToUpper(key)
 	switch k {

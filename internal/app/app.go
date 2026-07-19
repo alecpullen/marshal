@@ -520,9 +520,7 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	memory := &dbMemoryProvider{db: database}
 
 	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
-		// agent.AgentRole and routing.AgentRole share string values
-		// ("planner", "repo_scout", "implementer", "reviewer").
-		route, p, err := resolver.ResolveRole(routing.AgentRole(role))
+		route, p, err := resolver.ResolveRole(role)
 		if err != nil {
 			return nil, err
 		}
@@ -570,7 +568,7 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 func buildSDDRunner(ctx context.Context, cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *sdd.Orchestrator {
 	readOnlyReg := registry.ReadOnlyView(reg)
 	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
-		route, p, err := resolver.ResolveRole(routing.AgentRole(role))
+		route, p, err := resolver.ResolveRole(role)
 		if err != nil {
 			return nil, err
 		}

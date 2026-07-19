@@ -5,24 +5,28 @@ import (
 	"strings"
 
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
 	"marshal/internal/tools/registry"
 )
 
-type AgentRole string
+// AgentRole is an alias for routing.AgentRole so role identity is shared
+// with the routing layer — there is exactly one role enum. The agent
+// package adds only the "general" fallback role, which has no route.
+type AgentRole = routing.AgentRole
 
 const (
 	RoleGeneral           AgentRole = "general"
-	RolePlanner           AgentRole = "planner"
-	RoleImplementer       AgentRole = "implementer"
-	RoleTester            AgentRole = "tester"
-	RoleReviewer          AgentRole = "reviewer"
-	RoleRepoScout         AgentRole = "repo_scout"
-	RoleSubtask           AgentRole = "subtask"
-	RoleSDDImplementer    AgentRole = "sdd_implementer"
-	RoleSDDReviewer       AgentRole = "sdd_reviewer"
-	RoleSDDBranchReviewer AgentRole = "sdd_branch_reviewer"
+	RolePlanner           AgentRole = routing.RolePlanner
+	RoleImplementer       AgentRole = routing.RoleImplementer
+	RoleTester            AgentRole = routing.RoleTester
+	RoleReviewer          AgentRole = routing.RoleReviewer
+	RoleRepoScout         AgentRole = routing.RoleRepoScout
+	RoleSubtask           AgentRole = routing.RoleSubtask
+	RoleSDDImplementer    AgentRole = routing.RoleSDDImplementer
+	RoleSDDReviewer       AgentRole = routing.RoleSDDReviewer
+	RoleSDDBranchReviewer AgentRole = routing.RoleSDDBranchReviewer
 )
 
 type rolePrompt struct {

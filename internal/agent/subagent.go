@@ -91,10 +91,8 @@ type agentRunArgs struct {
 
 // NewSubagentTool returns the registry.Tool entry for agent.run. The
 // factory builds a fresh subagent runner; the state enforces the depth and
-// concurrency guards. maxConcurrent is recorded for documentation (the
-// enforcement values live on session.State and are not configurable per
-// session in Milestone P — see EnterSubagent).
-func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, state *session.State, maxConcurrent int, opts ...SubagentOption) registry.Tool {
+// concurrency guards.
+func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, state *session.State, opts ...SubagentOption) registry.Tool {
 	cfg := subagentToolConfig{exec: runSubagentChild}
 	for _, opt := range opts {
 		opt(&cfg)

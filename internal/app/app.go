@@ -429,7 +429,6 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model),
 		reg,
 		state,
-		2,
 	)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)

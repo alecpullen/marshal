@@ -12,12 +12,6 @@ type Panel interface {
 	View(width, maxHeight int) string
 }
 
-// CloseMsg asks the model to close the dock.
-type CloseMsg struct{}
-
-// Close is a convenience message constructor for panels.
-func Close() tea.Msg { return CloseMsg{} }
-
 // MaxRows is the dock's height budget: 40% of the frame height, floor 6.
 func MaxRows(frameHeight int) int {
 	return max(frameHeight*2/5, 6)

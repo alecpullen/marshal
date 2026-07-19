@@ -24,7 +24,7 @@ func TestSubagentDepthLimit(t *testing.T) {
 	}
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(2))
 
-	tool := NewSubagentTool(factory, registry.New(), state, 2)
+	tool := NewSubagentTool(factory, registry.New(), state)
 	if tool.Name != "agent.run" {
 		t.Fatalf("Name = %q, want %q", tool.Name, "agent.run")
 	}
@@ -82,7 +82,7 @@ func TestSubagentConcurrencyLimit(t *testing.T) {
 		factoryCalls++
 		return &Runner{}, nil
 	}
-	tool := NewSubagentTool(factory, registry.New(), state, 2)
+	tool := NewSubagentTool(factory, registry.New(), state)
 	_, err := tool.Handler(t.Context(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
 	if err == nil {
 		t.Fatal("expected concurrency-limit error, got nil")

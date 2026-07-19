@@ -17,19 +17,32 @@ var allowlistKeys = map[string]bool{
 	"XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true, "XDG_CACHE_HOME": true,
 }
 
-// IsSecretKey reports whether key matches common secret/key/credential
-// patterns via case-insensitive substring matching. Unlike IsSecretBearer
-// (which uses prefix/suffix rules), IsSecretKey uses a simple Contains
-// approach designed for downstream consumers (e.g. MCP client) that need
-// to reject user-supplied env additions containing known secret patterns.
+// IsSecretKey reports whether key names a likely secret/credential. It is
+// the union of the old IsSecretKey (case-insensitive substring patterns)
+// and IsSecretBearer (exact well-known names, provider prefixes, and
+// credential suffixes): one predicate, one list, used by the sandbox, the
+// MCP client/manager, and the hooks runner.
 func IsSecretKey(key string) bool {
 	k := strings.ToUpper(key)
+	switch k {
+	case "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO",
+		"DATABASE_URL", "REDIS_URL", "MONGODB_URI":
+		return true
+	}
 	for _, p := range []string{
 		"API_KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL",
-		"AWS_", "GCP_", "AZURE_", "GH_", "GITHUB_", "GITLAB_",
-		"ANTHROPIC", "OPENAI", "COHERE", "MISTRAL",
+		"AWS_", "GCP_", "AZURE_", "GH_", "GITHUB_", "GITLAB_", "GOOGLE_",
+		"ANTHROPIC", "OPENAI", "COHERE", "MISTRAL", "HUGGINGFACE", "OPENROUTER",
 	} {
 		if strings.Contains(k, p) {
+			return true
+		}
+	}
+	for _, s := range []string{
+		"_KEY", "_TOKEN", "_SECRET", "_PASSWORD",
+		"_CREDENTIALS", "_CREDENTIAL", "_PRIVATE_KEY", "_ACCESS_KEY",
+	} {
+		if strings.HasSuffix(k, s) {
 			return true
 		}
 	}

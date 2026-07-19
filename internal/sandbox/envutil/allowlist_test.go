@@ -22,7 +22,7 @@ func TestAllowList_StripsSecrets(t *testing.T) {
 	}
 	got := AllowList(parent)
 	for _, kv := range got {
-		if IsSecretBearer(EnvKey(kv)) {
+		if IsSecretKey(EnvKey(kv)) {
 			t.Errorf("AllowList leaked secret key: %s", kv)
 		}
 		if k := EnvKey(kv); k == "LD_PRELOAD" || k == "DYLD_INSERT_LIBRARIES" || k == "IFS" {
@@ -102,36 +102,27 @@ func TestAllowList_OrderIsStable(t *testing.T) {
 	}
 }
 
-func TestIsSecretKey(t *testing.T) {
-	tests := []struct {
-		key  string
-		want bool
-	}{
-		{"ANTHROPIC_API_KEY", true},
-		{"GH_TOKEN", true},
-		{"AWS_ACCESS_KEY_ID", true},
-		{"GCP_PROJECT", true},
-		{"AZURE_CLIENT_SECRET", true},
-		{"OPENAI_API_KEY", true},
-		{"COHERE_API_KEY", true},
-		{"MISTRAL_API_KEY", true},
-		{"GITLAB_TOKEN", true},
-		{"GITHUB_TOKEN", true},
-		{"MY_SECRET_PASSWORD", true}, // "PASSWORD" substring match
-		{"DB_PASSWD", true},          // "PASSWD" substring match
-		{"MY_CREDENTIAL_FILE", true}, // "CREDENTIAL" substring match
-		{"MYAPP_CONFIG", false},      // no matching substring
-		{"PATH", false},
-		{"USER", false},
-		{"HOME", false},
-		{"TMPDIR", false},
-		{"LD_PRELOAD", false}, // dangerous, but not secret-bearing
-		{"IFS", false},
+func TestIsSecretKeyUnion(t *testing.T) {
+	secret := []string{
+		// substring patterns
+		"OPENAI_API_KEY", "MY_TOKEN_INFO", "POSTGRES_PASSWORD", "GH_PAT",
+		// exact names without telling substrings
+		"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO",
+		"DATABASE_URL", "REDIS_URL", "MONGODB_URI",
+		// provider prefixes from IsSecretBearer
+		"GOOGLE_API_KEY", "HUGGINGFACE_TOKEN", "OPENROUTER_API_KEY",
+		// bare suffix rules from IsSecretBearer
+		"MY_KEY", "SERVICE_PRIVATE_KEY", "BACKUP_CREDENTIALS",
 	}
-	for _, tc := range tests {
-		got := IsSecretKey(tc.key)
-		if got != tc.want {
-			t.Errorf("IsSecretKey(%q) = %v, want %v", tc.key, got, tc.want)
+	for _, k := range secret {
+		if !IsSecretKey(k) {
+			t.Errorf("IsSecretKey(%q) = false, want true", k)
+		}
+	}
+	benign := []string{"PATH", "HOME", "MONKEY", "KEYBOARD_LAYOUT", "TONALITY"}
+	for _, k := range benign {
+		if IsSecretKey(k) {
+			t.Errorf("IsSecretKey(%q) = true, want false", k)
 		}
 	}
 }

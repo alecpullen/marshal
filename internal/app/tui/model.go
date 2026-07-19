@@ -1290,9 +1290,10 @@ func (m *Model) updateCompletionPopups() {
 			// Lazily build the command items from the registry the first
 			// time the user starts typing "/". Registry contents can
 			// change at runtime; we re-build on every trigger so /help
-			// always reflects the current registry.
-			items := make([]completionItem, 0, len(m.cmdRegistry.List()))
-			for _, c := range m.cmdRegistry.List() {
+			// always reflects the current registry. ListAll includes
+			// Hidden commands — they are runnable and belong in the popup.
+			items := make([]completionItem, 0, len(m.cmdRegistry.ListAll()))
+			for _, c := range m.cmdRegistry.ListAll() {
 				items = append(items, completionItem{
 					Text:        c.Name,
 					Description: c.Description,
@@ -1412,7 +1413,7 @@ func (m *Model) commandTrigger(value string) (bool, string) {
 		// (re-show full command list on space) is the correct user-facing
 		// behaviour given the data model.
 		if m.cmdRegistry != nil {
-			for _, c := range m.cmdRegistry.List() {
+			for _, c := range m.cmdRegistry.ListAll() {
 				prefix := c.Name + " "
 				if strings.HasPrefix(value, prefix) {
 					return true, ""

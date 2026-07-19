@@ -381,6 +381,29 @@ func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 	}
 }
 
+func TestSlashCommandSuggestionsIncludeHiddenCommands(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	hidden := commands.Command{Name: "settings", Description: "Open settings", Hidden: true, Handler: func(*session.State, []string) string { return "" }}
+	if err := reg.Register(hidden); err != nil {
+		t.Fatalf("Register settings failed: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+
+	for _, r := range "/se" {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = updated.(Model)
+	}
+
+	// Hidden commands are excluded from /help but must still be offered as
+	// completions — they are runnable commands.
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "/settings") {
+		t.Fatalf("View() missing hidden command suggestion:\n%s", view)
+	}
+}
+
 func TestPageKeysScrollViewport(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	for i := 0; i < 100; i++ {

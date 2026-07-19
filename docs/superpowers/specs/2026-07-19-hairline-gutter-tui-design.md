@@ -58,11 +58,16 @@ Rules:
 
 ```text
 [transcript ......................................]  ← full height
+[optional: todo panel]                                ← up to ~10 rows while a task list is active
 [optional: live strip (swarm / sdd)]                 ← 0–1 rows, only while running
 [optional: dock panel]                                ← only while open
  ▍❯ input                                             ← 1+ rows (grows with input)
   status-left ................. contextual hints      ← 1 row
 ```
+
+The todo panel is the one deliberate exception to the "chrome is at most
+one row" rule: progress tracking earns persistent height (see "The todo
+panel" below).
 
 Idle chrome: 2 rows (input + status). Removed entirely: title bar (1),
 input border (2), footer rule (1), dedicated hint row (1).
@@ -99,7 +104,7 @@ input border (2), footer rule (1), dedicated hint row (1).
 | System notice (`renderSystemNotice`) | `·`-prefixed dim | Already style B. Becomes the shared treatment for state-change events (model/mode switches print here). |
 | Provider error (`renderProviderError`) | Bold red block | `✗` gutter, first line red, detail lines dim. |
 | Queued messages (`renderQueuedMessages`) | `Queued (Ctrl+X to clear):` header + `›` lines | Header deleted. Each line: dim `·` gutter + `queued: <text>`; hint moves to status-line right cluster while queue is non-empty. |
-| Todos (`renderTodos`) | Checklist block | `·`/`✓` gutter per item, active item bold. No header. |
+| Todos (`renderTodos`) | `Tasks:` block prepended to the transcript top — scrolls out of view in follow mode | Moves out of the transcript into the pinned todo panel (see "The todo panel"). |
 
 ### Interaction widgets
 
@@ -135,6 +140,46 @@ is rewritten:
 - huh-rendered bodies (inline editors) inherit the new frame; the
   `huhtheme` selection styles get a consistency pass only.
 
+## The todo panel
+
+Progress tracking is useful enough to earn persistent screen space —
+todos are the one widget that gets *taller* in this redesign, not
+flatter. Today's `Tasks:` block is prepended to the transcript content,
+so in follow mode (the normal state while the agent works) it scrolls
+out of view exactly when it matters. It moves to a pinned panel directly
+below the transcript, above the live strip and dock.
+
+Rendering (gutter-styled, no box, no header):
+
+```text
+ ✓ scaffold parser package                    ← teal, done
+ ✓ define token types
+ ▶ implement expression parsing               ← coral bold, in progress
+ · handle operator precedence                 ← muted, pending
+ · add error recovery tests
+```
+
+Rules:
+
+- **Visibility:** shown whenever the session's todo list is non-empty.
+  When every item is done, the panel collapses to a single dim line
+  (`✓ 5 tasks done`) which clears on the next user turn.
+- **Height:** up to `min(len(todos), 10)` rows, and never more than ~25%
+  of the frame. When clipped, `chrome.ClipLines` keeps the in-progress
+  item visible, and the leading run of completed items collapses into
+  one dim `✓ n done` line so the visible rows skew toward remaining
+  work.
+- **Toggle:** `Ctrl+T` cycles expanded → collapsed (one line:
+  `▶ tasks 3/7 · implement expression parsing`) → hidden. The collapsed
+  one-liner is also what renders when the frame is too short for the
+  panel minimum. State persists for the session.
+- **Glyphs:** `✓` teal done, `▶` coral bold in-progress, `·` muted
+  pending — matching the existing `native.TodoItem` statuses; no data
+  or tool changes.
+- The transcript keeps a `·` event line when the agent rewrites the todo
+  list (`· tasks updated · 7 items`), so history still records planning
+  changes after the panel clears.
+
 ## Height accounting
 
 `view.go` constants change: `titleBarRows` 1→0, `inputBorderRows` 2→0,
@@ -162,9 +207,10 @@ copies of the old values may survive.
 
 ## Non-goals
 
-- No change to keybindings, modes, or interaction logic (approval
-  semantics, question flow, completion behavior are re-rendered, not
-  redesigned).
+- No change to existing keybindings, modes, or interaction logic
+  (approval semantics, question flow, completion behavior are
+  re-rendered, not redesigned). One keybinding is added: `Ctrl+T`
+  for the todo panel toggle.
 - No theme/palette changes; all colors come from existing slots.
 - Not adopting style C (status stays its own row; hints stay visible).
 - No changes to ACP, agent runtime, or session state shapes. The only
@@ -184,10 +230,11 @@ Three independently shippable phases, riskiest-last:
    tool/plan/error/queued/todos; code-block tint; approval and question
    flat rendering (render-only rewrite of `approvalModel.View` /
    `questionModel.View`).
-3. **Panels → events** — replace swarm/SDD persistent panels and the
-   browser bar with the live strip + transcript events. Touches
-   event-emission points, not just rendering; smallest visual surface
-   but the only phase with non-render changes.
+3. **Panels → events, todo panel** — replace swarm/SDD persistent
+   panels and the browser bar with the live strip + transcript events;
+   move todos out of the transcript into the pinned todo panel with the
+   `Ctrl+T` toggle. Touches event-emission points and layout wiring,
+   not just rendering.
 
 Each phase updates the view tests it breaks (tests asserting `Response`,
 box glyphs, footer content, and panel borders) in the same change.

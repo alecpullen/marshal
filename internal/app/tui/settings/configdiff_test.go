@@ -107,6 +107,27 @@ func TestConfigDiffMasksAPIKey(t *testing.T) {
 	}
 }
 
+func TestConfigDiffAgentRoleKeyedMap(t *testing.T) {
+	before := config.Default()
+	before.Agents = map[routing.AgentRole]config.AgentRoleConfig{
+		routing.RoleImplementer: {Context: routing.ContextBudget{MaxRepoContextTokens: 48000}},
+	}
+	after := config.Default()
+	after.Agents = map[routing.AgentRole]config.AgentRoleConfig{
+		routing.RoleImplementer: {Context: routing.ContextBudget{MaxRepoContextTokens: 64000}},
+	}
+
+	// Must not panic: map keys are routing.AgentRole, not plain string.
+	lines := configDiff(before, after)
+	l, ok := findDiff(lines, "Agents.implementer.Context.MaxRepoContextTokens")
+	if !ok {
+		t.Fatalf("missing Agents.implementer.Context.MaxRepoContextTokens in %v", lines)
+	}
+	if l.Prefix != "~" {
+		t.Fatalf("prefix = %q, want ~", l.Prefix)
+	}
+}
+
 func TestConfigDiffSliceChange(t *testing.T) {
 	before := config.Default()
 	after := config.Default()

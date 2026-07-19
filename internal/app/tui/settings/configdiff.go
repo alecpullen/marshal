@@ -123,23 +123,38 @@ func diffValue(path string, b, a reflect.Value, lines *[]diffLine) {
 }
 
 func diffMap(path string, b, a reflect.Value, lines *[]diffLine) {
-	seen := map[string]bool{}
+	// Keep the original key values: map key types are not always plain
+	// string (e.g. map[routing.AgentRole]AgentRoleConfig), and MapIndex
+	// requires the exact key type.
+	keys := map[string]reflect.Value{}
 	for _, k := range b.MapKeys() {
-		seen[k.String()] = true
+		keys[mapKeyString(k)] = k
 	}
 	for _, k := range a.MapKeys() {
-		seen[k.String()] = true
+		if _, ok := keys[mapKeyString(k)]; !ok {
+			keys[mapKeyString(k)] = k
+		}
 	}
-	sorted := make([]string, 0, len(seen))
-	for k := range seen {
+	sorted := make([]string, 0, len(keys))
+	for k := range keys {
 		sorted = append(sorted, k)
 	}
 	sort.Strings(sorted)
 	for _, k := range sorted {
-		bv := b.MapIndex(reflect.ValueOf(k))
-		av := a.MapIndex(reflect.ValueOf(k))
+		kv := keys[k]
+		var bv, av reflect.Value
+		if kv.Type().AssignableTo(b.Type().Key()) {
+			bv = b.MapIndex(kv)
+		}
+		if kv.Type().AssignableTo(a.Type().Key()) {
+			av = a.MapIndex(kv)
+		}
 		diffValue(joinPath(path, k), bv, av, lines)
 	}
+}
+
+func mapKeyString(k reflect.Value) string {
+	return fmt.Sprintf("%v", k.Interface())
 }
 
 func diffSlice(path string, b, a reflect.Value, lines *[]diffLine) {

@@ -204,13 +204,15 @@ func SaveProjectConfig(path string, cfg Config) error {
 		if file.Models == nil {
 			file.Models = &fileModels{}
 		}
-		file.Models.Presets = map[string]modelPresetConfig{}
+		file.Models.Presets = map[string]routing.ModelPreset{}
 		for name, p := range cfg.Models.Presets {
-			file.Models.Presets[name] = modelPresetConfig{
+			preset := routing.ModelPreset{
 				Provider: p.Provider, Model: p.Model, ContextWindow: p.ContextWindow,
 				MaxOutputTokens: p.MaxOutputTokens,
 				ToolCalling:     p.ToolCalling, LocalOnly: p.LocalOnly,
 			}
+			preset.Name = name
+			file.Models.Presets[name] = preset
 		}
 	}
 

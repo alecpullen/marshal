@@ -109,9 +109,9 @@ func TestIsSecretKeyUnion(t *testing.T) {
 		// exact names without telling substrings
 		"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO",
 		"DATABASE_URL", "REDIS_URL", "MONGODB_URI",
-		// provider prefixes from IsSecretBearer
+		// provider prefixes from the old bearer predicate
 		"GOOGLE_API_KEY", "HUGGINGFACE_TOKEN", "OPENROUTER_API_KEY",
-		// bare suffix rules from IsSecretBearer
+		// bare suffix rules from the old bearer predicate
 		"MY_KEY", "SERVICE_PRIVATE_KEY", "BACKUP_CREDENTIALS",
 	}
 	for _, k := range secret {

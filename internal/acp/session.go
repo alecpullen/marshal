@@ -268,11 +268,10 @@ func (m *SessionManager) Load(ctx context.Context, params json.RawMessage) (any,
 		return nil, err
 	}
 
-	old, loadErr := m.replaceExisting(ctx, p.SessionID, cancel)
+	loadErr := m.replaceExisting(ctx, p.SessionID, cancel)
 	if loadErr != nil {
 		return nil, loadErr
 	}
-	_ = old // already torn down
 
 	opts := append([]app.Option{}, m.options...)
 	opts = append(opts, app.WithWorkingDir(p.Cwd), app.WithExistingSession(p.SessionID))
@@ -313,7 +312,7 @@ func (m *SessionManager) Resume(ctx context.Context, params json.RawMessage) (an
 		return nil, err
 	}
 
-	if _, replaceErr := m.replaceExisting(ctx, p.SessionID, cancel); replaceErr != nil {
+	if replaceErr := m.replaceExisting(ctx, p.SessionID, cancel); replaceErr != nil {
 		return nil, replaceErr
 	}
 
@@ -397,7 +396,7 @@ func (m *SessionManager) Delete(ctx context.Context, params json.RawMessage) (an
 	if len(p.AdditionalDirectories) > 0 {
 		return nil, invalidParamsError("additionalDirectories is not supported for session/delete")
 	}
-	if _, replaceErr := m.replaceExisting(ctx, p.SessionID, cancel); replaceErr != nil {
+	if replaceErr := m.replaceExisting(ctx, p.SessionID, cancel); replaceErr != nil {
 		return nil, replaceErr
 	}
 	existed, err := m.lister.DeleteSession(ctx, p.Cwd, p.SessionID)
@@ -527,10 +526,10 @@ func (m *SessionManager) detach(id string) (*app.Runtime, bool) {
 // turn, and closes it. If id has no prior runtime, both calls are
 // skipped and the returned error is nil. Any error from cancel or close
 // is returned; the manager does not start a replacement.
-func (m *SessionManager) replaceExisting(ctx context.Context, id string, cancel TurnCanceller) (*app.Runtime, error) {
+func (m *SessionManager) replaceExisting(ctx context.Context, id string, cancel TurnCanceller) error {
 	old, ok := m.detach(id)
 	if !ok {
-		return nil, nil
+		return nil
 	}
 	var errs []error
 	if err := cancel(ctx, id); err != nil {
@@ -539,7 +538,7 @@ func (m *SessionManager) replaceExisting(ctx context.Context, id string, cancel 
 	if err := m.close(ctx, old); err != nil {
 		errs = append(errs, err)
 	}
-	return old, errors.Join(errs...)
+	return errors.Join(errs...)
 }
 
 // publishReplacement installs rt under id. When a prior pointer exists it is

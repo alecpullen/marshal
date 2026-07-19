@@ -62,8 +62,6 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 // passing the struct to NewOpenAICompatible via Options.Capabilities.
 func DefaultCapabilities() schema.ProviderCapabilities {
 	return schema.ProviderCapabilities{
-		Streaming:        true,
-		Embeddings:       true,
 		ToolCalling:      false,
 		JSONMode:         true,
 		StructuredOutput: true,
@@ -379,39 +377,4 @@ func readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	}
 }
 
-// Embed requests embeddings via POST {base_url}/embeddings.
-func (p *OpenAICompatible) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
-	body, err := json.Marshal(embedRequestBody{Model: req.Model, Input: req.Input})
-	if err != nil {
-		return schema.EmbedResponse{}, fmt.Errorf("provider %q: encode embed request: %w", p.name, err)
-	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/embeddings", bytes.NewReader(body))
-	if err != nil {
-		return schema.EmbedResponse{}, fmt.Errorf("provider %q: build embed request: %w", p.name, err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	p.setHeaders(httpReq)
-
-	resp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return schema.EmbedResponse{}, fmt.Errorf("provider %q: embed request failed: %w", p.name, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return schema.EmbedResponse{}, p.httpError(resp)
-	}
-
-	var parsed embedResponseBody
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return schema.EmbedResponse{}, fmt.Errorf("provider %q: decode embed response: %w", p.name, err)
-	}
-	if parsed.Error != nil {
-		return schema.EmbedResponse{}, errors.New(parsed.Error.Message)
-	}
-	embeddings := make([][]float64, 0, len(parsed.Data))
-	for _, d := range parsed.Data {
-		embeddings = append(embeddings, d.Embedding)
-	}
-	return schema.EmbedResponse{Model: parsed.Model, Embeddings: embeddings}, nil
-}

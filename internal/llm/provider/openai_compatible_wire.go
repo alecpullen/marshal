@@ -95,16 +95,3 @@ type modelsResponseBody struct {
 		OwnedBy string `json:"owned_by"`
 	} `json:"data"`
 }
-
-type embedRequestBody struct {
-	Model string   `json:"model"`
-	Input []string `json:"input"`
-}
-
-type embedResponseBody struct {
-	Model string `json:"model"`
-	Data  []struct {
-		Embedding []float64 `json:"embedding"`
-	} `json:"data"`
-	Error *apiError `json:"error"`
-}

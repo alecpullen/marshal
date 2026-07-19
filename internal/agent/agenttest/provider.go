@@ -32,10 +32,6 @@ func (p *ScriptedProvider) Models(ctx context.Context) ([]schema.ModelInfo, erro
 	return nil, nil
 }
 
-func (p *ScriptedProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
-	return schema.EmbedResponse{}, nil
-}
-
 func (p *ScriptedProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
 	return p.ProviderCaps
 }

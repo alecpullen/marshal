@@ -12,6 +12,5 @@ type Provider interface {
 	Name() string
 	Models(ctx context.Context) ([]schema.ModelInfo, error)
 	Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error)
-	Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error)
 	Capabilities(ctx context.Context) schema.ProviderCapabilities
 }

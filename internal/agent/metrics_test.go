@@ -9,6 +9,7 @@ import (
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/llm/schema"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -31,7 +32,7 @@ func TestTruncateGoal(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := truncateGoal(tc.goal, 200)
+			got := strutil.Truncate(tc.goal, 200, false)
 			if got != tc.want {
 				t.Fatalf("truncateGoal length = %d runes, want %d", len([]rune(got)), len([]rune(tc.want)))
 			}

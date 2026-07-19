@@ -8,6 +8,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
+	"marshal/internal/strutil"
 )
 
 const (
@@ -63,9 +64,7 @@ func (t *titleGenerator) generate(ctx context.Context, firstUserMessage string) 
 	title := strings.TrimSpace(res)
 	title = strings.Join(strings.Fields(title), " ")
 	title = strings.Trim(title, "\"'`.,;:!?")
-	if runes := []rune(title); len(runes) > titleMaxChars {
-		title = string(runes[:titleMaxChars])
-	}
+	title = strutil.Truncate(title, titleMaxChars, false)
 	// Re-check the manual-title guard immediately before persisting.
 	// A /rename issued after the early-return check at the top of
 	// generate() but before the LLM call returns must not be silently

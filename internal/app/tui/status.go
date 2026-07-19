@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/strutil"
 )
 
 const (
@@ -117,13 +118,13 @@ func (m Model) statusLeftSegments() []statusSeg {
 
 	if pack := m.state.ContextPack(); !pack.IsEmpty() {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("ctx %s/%s",
-			compactTokenCount(pack.TokenUsage.EstimatedTokens),
-			compactTokenCount(pack.TokenUsage.MaxTokens)), priority: 3})
+			strutil.CompactTokens(pack.TokenUsage.EstimatedTokens),
+			strutil.CompactTokens(pack.TokenUsage.MaxTokens)), priority: 3})
 	}
 
 	if used, window := m.state.TurnUsage(); window > 0 {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("turn %s/%s",
-			compactTokenCount(used), compactTokenCount(window)), priority: 4})
+			strutil.CompactTokens(used), strutil.CompactTokens(window)), priority: 4})
 	}
 
 	if leaves := m.state.Branches(); len(leaves) > 1 {
@@ -140,16 +141,16 @@ func (m Model) statusLeftSegments() []statusSeg {
 
 	if sp := m.state.SwarmProgress(); sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("tokens %s/%s",
-			compactTokenCount(sp.TokensUsed),
-			compactTokenCount(sp.TokensMax)), priority: 6})
+			strutil.CompactTokens(sp.TokensUsed),
+			strutil.CompactTokens(sp.TokensMax)), priority: 6})
 	}
 
 	if sp := m.state.SDDProgress(); sp.Active {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("task %d/%d", sp.DoneTasks, sp.TotalTasks), priority: 1})
 		if sp.TokensMax > 0 || sp.TokensUsed > 0 {
 			segs = append(segs, statusSeg{text: fmt.Sprintf("sdd tokens %s/%s",
-				compactTokenCount(sp.TokensUsed),
-				compactTokenCount(sp.TokensMax)), priority: 6})
+				strutil.CompactTokens(sp.TokensUsed),
+				strutil.CompactTokens(sp.TokensMax)), priority: 6})
 		}
 	}
 

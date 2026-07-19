@@ -12,6 +12,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/help"
+	"marshal/internal/strutil"
 )
 
 // ansiRe matches SGR (and empty) escape sequences that lipgloss emits.
@@ -190,7 +191,7 @@ func (m Model) renderActivityStrip() string {
 	default:
 		return ""
 	}
-	return statusBusyStyle().Render(truncateRunes(label, available))
+	return statusBusyStyle().Render(strutil.Truncate(label, available, false))
 }
 
 // renderHelpFooter returns the persistent keybinding hint bar shown below

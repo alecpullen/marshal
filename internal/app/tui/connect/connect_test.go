@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
+	"marshal/internal/strutil"
 )
 
 func TestPanelSatisfiesDock(t *testing.T) {
@@ -257,12 +258,12 @@ func TestTickThrottlesSpinner(t *testing.T) {
 func pickerPicked(value string) tea.Msg { return picker.PickedMsg{Value: value} }
 
 func TestTruncateErrRuneSafe(t *testing.T) {
-	out := truncateErr(strings.Repeat("é", 60)) // 2-byte runes
+	out := strutil.Truncate(strings.Repeat("é", 60), 48, true) // 2-byte runes
 	if !utf8.ValidString(out) {
-		t.Fatalf("truncateErr produced invalid UTF-8: %q", out)
+		t.Fatalf("strutil.Truncate produced invalid UTF-8: %q", out)
 	}
 	// 48 runes + ellipsis
 	if n := utf8.RuneCountInString(out); n != 49 {
-		t.Fatalf("truncateErr length = %d runes, want 49", n)
+		t.Fatalf("strutil.Truncate length = %d runes, want 49", n)
 	}
 }

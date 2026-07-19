@@ -20,8 +20,8 @@ type TurnMetrics struct {
 	// ParseFailures counts unparseable JSON-envelope actions.
 	// In native tool-calling mode this is always 0 because the provider
 	// returns parsed tool_calls directly.
-	ParseFailures int
-	HardStalls    int
+	ParseFailures    int
+	HardStalls       int
 	Outcome          string
 	SalvageReason    string // non-empty when Outcome is "salvaged": "exhausted", "stalled", or "malformed"
 	PromptTokens     int
@@ -34,15 +34,6 @@ type TurnMetrics struct {
 // worker goroutines.
 type turnStats struct {
 	m TurnMetrics
-}
-
-// truncateGoal caps goal at max runes without splitting a UTF-8 rune.
-func truncateGoal(goal string, max int) string {
-	runes := []rune(goal)
-	if len(runes) <= max {
-		return goal
-	}
-	return string(runes[:max])
 }
 
 // outcomeFor maps a finished task to the metrics outcome vocabulary. Any

@@ -39,6 +39,36 @@ func TestWebFrameDurationValidation(t *testing.T) {
 	}
 }
 
+func TestSliceOpts(t *testing.T) {
+	items := []string{"a", "b", "c"}
+	opts := sliceOpts(&items)
+
+	opts.moveUp("1")
+	if items[0] != "b" || items[1] != "a" {
+		t.Fatalf("moveUp: %v", items)
+	}
+	opts.moveDown("0")
+	if items[0] != "a" || items[1] != "b" {
+		t.Fatalf("moveDown: %v", items)
+	}
+	if got := opts.yank("2"); got != "c" {
+		t.Fatalf("yank: %v", got)
+	}
+	if got := opts.yank("9"); got != nil {
+		t.Fatalf("yank out of range: %v", got)
+	}
+	if err := opts.paste("1", "x"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a", "b", "x", "c"}
+	if len(items) != 4 || items[2] != "x" {
+		t.Fatalf("paste: %v, want %v", items, want)
+	}
+	if err := opts.paste("0", 42); err == nil {
+		t.Fatal("paste of wrong type should fail")
+	}
+}
+
 func TestDiagnosticsFrameIsMapAtRoot(t *testing.T) {
 	s := newState(config.Default())
 	s.cfg.Diagnostics.Commands = map[string]string{"lint": "go vet ./..."}

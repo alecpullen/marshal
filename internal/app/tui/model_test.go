@@ -1729,7 +1729,7 @@ func TestSlashCommandHelp(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("expected system message from /help")
 	}
-	if !strings.Contains(msgs[0].Content, "Available commands") {
+	if !strings.Contains(msgs[0].Content, "Keys") || !strings.Contains(msgs[0].Content, "Commands") {
 		t.Errorf("help output missing header: %s", msgs[0].Content)
 	}
 }
@@ -2608,105 +2608,59 @@ func TestCommandTriggerDismissesFilePopup(t *testing.T) {
 	}
 }
 
-func TestHelpOpenWithQuestionMarkKey(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
+// TestQuestionMarkPrintsHelpToTranscript verifies ? on an empty textarea
+// behaves like typing /help: it prints the cheatsheet to the transcript
+// instead of opening a full-screen overlay.
+func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
 
-	// Press ? to open help overlay.
+	before := len(m.state.Messages())
 	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
-	m = updated.(Model)
+	m = asModel(t, updated)
 
-	if !m.helpOpen {
-		t.Fatal("expected helpOpen to be true after pressing ?")
+	msgs := m.state.Messages()
+	if len(msgs) != before+1 {
+		t.Fatalf("expected ? to print one transcript message, got %d -> %d", before, len(msgs))
 	}
-
-	view := m.View().Content
-	if !strings.Contains(view, "marshal keys") {
-		t.Fatalf("help overlay missing title:\n%s", view)
-	}
-
-	// Press Esc to close help overlay.
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	m = updated.(Model)
-
-	if m.helpOpen {
-		t.Fatal("expected helpOpen to be false after pressing Esc")
-	}
-
-	view = m.View().Content
-	if strings.Contains(view, "marshal keys") {
-		t.Fatalf("help overlay should be closed after Esc:\n%s", view)
+	last := msgs[len(msgs)-1]
+	if !strings.Contains(last.Content, "Keys") || !strings.Contains(last.Content, "Commands") {
+		t.Fatalf("? did not print the help cheatsheet, got: %q", last.Content)
 	}
 }
 
 func TestQuestionMarkDoesNotLeakIntoInput(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
 
-	// Press ? — it should toggle help, not type ? into the textarea.
+	// Press ? — it should print help, not type ? into the textarea.
 	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
-	m = updated.(Model)
-	if !m.helpOpen {
-		t.Fatal("expected helpOpen to be true")
-	}
+	m = asModel(t, updated)
 	if m.input.Value() != "" {
 		t.Fatalf("expected empty input after ?, got %q", m.input.Value())
 	}
 }
 
-func TestHelpToggleWithQuestionMark(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
-
-	// Press ? to open.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
-	m = updated.(Model)
-	if !m.helpOpen {
-		t.Fatal("expected helpOpen after first ?")
-	}
-
-	// Press ? again to close.
-	updated, _ = m.Update(tea.KeyPressMsg{Code: '?'})
-	m = updated.(Model)
-	if m.helpOpen {
-		t.Fatal("expected helpOpen to be false after second ?")
-	}
-}
-
 // TestQuestionMarkTypesLiterallyInNonEmptyInput verifies that ? is inserted
-// as a literal character when the textarea has content — the help overlay
-// should NOT open in that case, because ? is a very common character in
-// chat prompts (e.g. "What is X? How do I Y?").
+// as a literal character when the textarea has content — /help should NOT
+// fire in that case, because ? is a very common character in chat prompts
+// (e.g. "What is X? How do I Y?").
 func TestQuestionMarkTypesLiterallyInNonEmptyInput(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
 
 	// Type some text first.
 	m = sendKey(m, tea.KeyPressMsg{Text: "hello"})
+	before := len(m.state.Messages())
 
-	// Press ? — should append to the input, NOT open help.
+	// Press ? — should append to the input, NOT print help.
 	m = sendKey(m, tea.KeyPressMsg{Text: "?"})
 
-	if m.helpOpen {
-		t.Fatal("? should not open help overlay when input has content")
+	if len(m.state.Messages()) != before {
+		t.Fatal("? should not print help when input has content")
 	}
 	if !strings.Contains(m.input.Value(), "?") {
 		t.Fatalf("? should be a literal char in input, got %q", m.input.Value())
-	}
-}
-
-func TestHelpOverlayDoesNotSwallowAgentFinishedMsg(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	m.resize(100, 30)
-	m.helpOpen = true
-	m.busy = true
-	m.lastActivityKind = session.ActivityThinking
-
-	updated, _ := m.Update(agentFinishedMsg{})
-	m = updated.(Model)
-
-	if m.busy {
-		t.Fatal("help overlay should not swallow agentFinishedMsg")
-	}
-	if !m.helpOpen {
-		t.Fatal("non-key runtime messages should not close the help overlay")
 	}
 }
 

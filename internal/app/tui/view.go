@@ -58,14 +58,6 @@ func (m *Model) viewString() string {
 	if m.memoryOpen {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
 	}
-	if m.helpOpen {
-		mode := m.forceMode
-		if mode == "" {
-			mode = "auto"
-		}
-		return help.Overlay(m.width, m.height, help.OverlayHints{Mode: mode})
-	}
-
 	dockView := m.dock.View(m.width, m.height)
 	m.updateViewportHeight()
 

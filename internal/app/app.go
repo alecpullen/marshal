@@ -80,6 +80,11 @@ type Option func(*options)
 var (
 	shutdownKnowledgeTimeout = 5 * time.Second
 
+	// agentRequestTimeout is the ceiling for approval/question requests on
+	// interactive, swarm, and SDD runners. (agent.Runner's own 5-minute
+	// default covers ad-hoc subagent runners.)
+	agentRequestTimeout = 60 * time.Second
+
 	// errOnboardingCancelled is set when the user cancels onboarding;
 	// Run logs it and continues with default config. Callers can use
 	// errors.Is to distinguish cancellation from other errors.
@@ -452,7 +457,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	runner.PlanFirst = cfg.Agent.PlanFirst
 	if runner.RequestTimeout == 0 {
-		runner.RequestTimeout = 60 * time.Second
+		runner.RequestTimeout = agentRequestTimeout
 	}
 
 	var snapSvc *snapshot.Service
@@ -485,7 +490,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 			runner.TitleGenerator = agent.NewTitleGenerator(titleProvider, titleRoute.Preset.Model, state)
 		}
 	}
-	swarmRunner := buildSwarmRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
+	swarmRunner := buildSwarmRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
 
 	var desktopCloser func()
 	if cfg.Desktop.Enabled {
@@ -504,8 +509,73 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		desktopCloser = closer
 	}
 
-	sddRunner := buildSDDRunner(ctx, cfg, state, reg, pol, resolver, database, projectID, skillIndex)
+	sddRunner := buildSDDRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
 	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, nil
+}
+
+// roleRunnerSpec holds the dependencies shared by the swarm and SDD
+// role-runner factories. The final three fields are the intentional
+// differences between the two orchestrators; everything else is shared.
+type roleRunnerSpec struct {
+	cfg         config.Config
+	state       *session.State
+	pol         *policy.PolicyEngine
+	resolver    *routedProviderResolver
+	reg         *registry.Registry
+	readOnlyReg *registry.Registry
+	testerReg   *registry.Registry // nil for SDD: ScopeTester falls back to reg
+	skillIndex  *skills.Index
+	memory      *dbMemoryProvider
+	projectID   int64
+
+	writeGate        agent.WriteGate         // swarm only; nil for SDD
+	metricsObserver  func(agent.TurnMetrics) // swarm only; nil for SDD
+	applyAgentLimits bool                    // swarm copies retries/ctx tokens/plan-first
+}
+
+// newRunner builds one role runner. It satisfies swarm.RunnerFactory (and,
+// by alias, sdd.RunnerFactory).
+func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+	route, p, err := s.resolver.ResolveRole(role)
+	if err != nil {
+		return nil, err
+	}
+	toolReg := s.reg
+	switch scope {
+	case swarm.ScopeReadOnly:
+		toolReg = s.readOnlyReg
+	case swarm.ScopeTester:
+		if s.testerReg != nil {
+			toolReg = s.testerReg
+		}
+	}
+	r := agent.NewRunner(p, toolReg, s.pol, s.state, route.Preset.Model)
+	r.Role = role
+	r.WriteGate = s.writeGate
+	r.SkillIndex = s.skillIndex
+	r.MemoryProvider = s.memory
+	r.ProjectID = s.projectID
+	r.MetricsObserver = s.metricsObserver
+	r.RequestTimeout = agentRequestTimeout
+	// Role prompts embed the shared plan, so skip the per-turn
+	// classify/plan pass (class "question" bypasses planning).
+	r.SetForceClass("question")
+	decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(context.Background()))
+	r.NativeTools = decoding.Native
+	r.ResponseFormat = decoding.ResponseFormat
+	if cap := roleToolIterations(s.cfg, role); cap > 0 {
+		r.MaxToolIterations = cap
+	}
+	if s.applyAgentLimits {
+		if s.cfg.Agent.MaxRetries > 0 {
+			r.MaxRetries = s.cfg.Agent.MaxRetries
+		}
+		if s.cfg.Agent.MaxTurnContextTokens > 0 {
+			r.MaxTurnContextTokens = s.cfg.Agent.MaxTurnContextTokens
+		}
+		r.PlanFirst = s.cfg.Agent.PlanFirst
+	}
+	return r, nil
 }
 
 // buildSwarmRunner wires the Milestone O swarm: every role runner shares
@@ -513,51 +583,24 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // the filtered registry view; each role's provider/model comes from the
 // routing profile via ResolveRole (falling back to the implementer preset
 // for unconfigured roles).
-func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *swarm.Orchestrator {
-	readOnlyReg := registry.ReadOnlyView(reg)
-	testerReg := registry.TesterView(reg)
-	gate := &swarm.WriteLock{}
-	memory := &dbMemoryProvider{db: database}
+func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *swarm.Orchestrator {
+	spec := roleRunnerSpec{
+		cfg:         cfg,
+		state:       state,
+		pol:         pol,
+		resolver:    resolver,
+		reg:         reg,
+		readOnlyReg: registry.ReadOnlyView(reg),
+		testerReg:   registry.TesterView(reg),
+		skillIndex:  skillIndex,
+		memory:      &dbMemoryProvider{db: database},
+		projectID:   projectID,
 
-	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
-		route, p, err := resolver.ResolveRole(role)
-		if err != nil {
-			return nil, err
-		}
-		toolReg := reg
-		switch scope {
-		case swarm.ScopeReadOnly:
-			toolReg = readOnlyReg
-		case swarm.ScopeTester:
-			toolReg = testerReg
-		}
-		r := agent.NewRunner(p, toolReg, pol, state, route.Preset.Model)
-		r.Role = role
-		r.WriteGate = gate
-		r.SkillIndex = skillIndex
-		r.MemoryProvider = memory
-		r.ProjectID = projectID
-		r.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
-		r.RequestTimeout = 60 * time.Second
-		// Swarm role prompts embed the shared plan, so skip the per-turn
-		// classify/plan pass (class "question" bypasses planning).
-		r.SetForceClass("question")
-		decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(ctx))
-		r.NativeTools = decoding.Native
-		r.ResponseFormat = decoding.ResponseFormat
-		if cap := roleToolIterations(cfg, role); cap > 0 {
-			r.MaxToolIterations = cap
-		}
-		if cfg.Agent.MaxRetries > 0 {
-			r.MaxRetries = cfg.Agent.MaxRetries
-		}
-		if cfg.Agent.MaxTurnContextTokens > 0 {
-			r.MaxTurnContextTokens = cfg.Agent.MaxTurnContextTokens
-		}
-		r.PlanFirst = cfg.Agent.PlanFirst
-		return r, nil
+		writeGate:        &swarm.WriteLock{},
+		metricsObserver:  metricsRecorder(database, projectID, state.SessionID(), state.Logger()),
+		applyAgentLimits: true,
 	}
-	o := swarm.New(state, factory)
+	o := swarm.New(state, spec.newRunner)
 	o.MaxFixRounds = cfg.Swarm.Budget.MaxFixRounds
 	o.MaxTotalTokens = cfg.Swarm.Budget.MaxTotalTokens
 	return o
@@ -565,34 +608,19 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 
 // buildSDDRunner wires the SDD orchestrator: same factory pattern as the
 // swarm, resolving each SDD role's route via the routing profile.
-func buildSDDRunner(ctx context.Context, cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *sdd.Orchestrator {
-	readOnlyReg := registry.ReadOnlyView(reg)
-	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
-		route, p, err := resolver.ResolveRole(role)
-		if err != nil {
-			return nil, err
-		}
-		toolReg := reg
-		switch scope {
-		case swarm.ScopeReadOnly:
-			toolReg = readOnlyReg
-		}
-		r := agent.NewRunner(p, toolReg, pol, state, route.Preset.Model)
-		r.Role = role
-		r.SkillIndex = skillIndex
-		r.MemoryProvider = &dbMemoryProvider{db: database}
-		r.ProjectID = projectID
-		r.RequestTimeout = 60 * time.Second
-		r.SetForceClass("question")
-		decoding := resolveActionDecoding(route.Preset.ToolCalling, p.Capabilities(ctx))
-		r.NativeTools = decoding.Native
-		r.ResponseFormat = decoding.ResponseFormat
-		if cfg.Agent.MaxToolIterations > 0 {
-			r.MaxToolIterations = cfg.Agent.MaxToolIterations
-		}
-		return r, nil
+func buildSDDRunner(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *sdd.Orchestrator {
+	spec := roleRunnerSpec{
+		cfg:         cfg,
+		state:       state,
+		pol:         pol,
+		resolver:    resolver,
+		reg:         reg,
+		readOnlyReg: registry.ReadOnlyView(reg),
+		skillIndex:  skillIndex,
+		memory:      &dbMemoryProvider{db: database},
+		projectID:   projectID,
 	}
-	return sdd.New(state, factory, cfg.SDD)
+	return sdd.New(state, spec.newRunner, cfg.SDD)
 }
 
 // roleToolIterations returns the per-role tool-iteration cap, falling back

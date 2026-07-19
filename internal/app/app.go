@@ -306,7 +306,6 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 			ToolErrors:       m.ToolErrors,
 			CacheHits:        m.CacheHits,
 			ParseFailures:    m.ParseFailures,
-			SoftStalls:       m.SoftStalls,
 			HardStalls:       m.HardStalls,
 			Outcome:          m.Outcome,
 			SalvageReason:    m.SalvageReason,

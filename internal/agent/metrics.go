@@ -20,9 +20,8 @@ type TurnMetrics struct {
 	// ParseFailures counts unparseable JSON-envelope actions.
 	// In native tool-calling mode this is always 0 because the provider
 	// returns parsed tool_calls directly.
-	ParseFailures    int
-	SoftStalls       int
-	HardStalls       int
+	ParseFailures int
+	HardStalls    int
 	Outcome          string
 	SalvageReason    string // non-empty when Outcome is "salvaged": "exhausted", "stalled", or "malformed"
 	PromptTokens     int

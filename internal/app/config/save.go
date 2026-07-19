@@ -161,10 +161,9 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 	if file.SDD != nil || !reflect.DeepEqual(cfg.SDD, def.SDD) {
 		file.SDD = &fileSDD{
-			AutoWorktree:   ptr(cfg.SDD.AutoWorktree),
-			MaxFixRounds:   ptr(cfg.SDD.MaxFixRounds),
-			MaxTotalTokens: ptr(cfg.SDD.MaxTotalTokens),
-			PlansDir:       ptr(cfg.SDD.PlansDir),
+			AutoWorktree: ptr(cfg.SDD.AutoWorktree),
+			MaxFixRounds: ptr(cfg.SDD.MaxFixRounds),
+			PlansDir:     ptr(cfg.SDD.PlansDir),
 		}
 	}
 	if file.MCP != nil || !reflect.DeepEqual(cfg.MCP, def.MCP) {

@@ -820,11 +820,9 @@ func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 	ctx := context.Background()
 	initial := reloadableAgentConfig("old-provider")
 	initial.SDD.MaxFixRounds = 3
-	initial.SDD.MaxTotalTokens = 0
 
 	reloaded := reloadableAgentConfig("new-provider")
 	reloaded.SDD.MaxFixRounds = 5
-	reloaded.SDD.MaxTotalTokens = 90000
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil)

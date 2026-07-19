@@ -25,7 +25,6 @@ type TurnMetricsRow struct {
 	ToolErrors       int
 	CacheHits        int
 	ParseFailures    int
-	SoftStalls       int
 	HardStalls       int
 	Outcome          string
 	SalvageReason    string
@@ -42,9 +41,9 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		`INSERT INTO turn_metrics (
 			project_id, session_id, started_at, duration_ms, class, role,
 			provider, model, goal, iterations, tool_calls, tool_errors,
-			cache_hits, parse_failures, soft_stalls, hard_stalls, outcome,
+			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ProjectID,
 		sessionID,
 		row.StartedAt.UTC().Format(time.RFC3339),
@@ -59,7 +58,6 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		row.ToolErrors,
 		row.CacheHits,
 		row.ParseFailures,
-		row.SoftStalls,
 		row.HardStalls,
 		row.Outcome,
 		row.SalvageReason,
@@ -86,7 +84,7 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 	rows, err := db.sqlDB.Query(
 		`SELECT id, project_id, session_id, started_at, duration_ms, class,
 			role, provider, model, goal, iterations, tool_calls, tool_errors,
-			cache_hits, parse_failures, soft_stalls, hard_stalls, outcome,
+			cache_hits, parse_failures, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens
 		 FROM turn_metrics
 		 WHERE project_id = ?
@@ -107,7 +105,7 @@ func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, e
 		if err := rows.Scan(
 			&r.ID, &r.ProjectID, &sessionID, &started, &r.DurationMs, &r.Class,
 			&r.Role, &r.Provider, &r.Model, &r.Goal, &r.Iterations, &r.ToolCalls,
-			&r.ToolErrors, &r.CacheHits, &r.ParseFailures, &r.SoftStalls,
+			&r.ToolErrors, &r.CacheHits, &r.ParseFailures,
 			&r.HardStalls, &r.Outcome, &r.SalvageReason, &r.PromptTokens,
 			&r.CompletionTokens,
 		); err != nil {

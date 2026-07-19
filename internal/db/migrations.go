@@ -113,7 +113,6 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
     tool_errors INTEGER NOT NULL,
     cache_hits INTEGER NOT NULL,
     parse_failures INTEGER NOT NULL,
-    soft_stalls INTEGER NOT NULL,
     hard_stalls INTEGER NOT NULL,
     outcome TEXT NOT NULL,
     salvage_reason TEXT NOT NULL DEFAULT '',

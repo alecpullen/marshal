@@ -144,7 +144,7 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 	o.announce("Branch review dispatched.")
 	mergeBase := o.gitMergeBase(workingDir)
 	headSHA := o.gitHead(workingDir)
-	diffPath, err := ws.WriteBranchReviewPackage(mergeBase, headSHA)
+	diffPath, err := ws.WriteReviewPackage(mergeBase, headSHA)
 	switch {
 	case err != nil:
 		o.State.UpdateSDDBranchReview(session.SDDPhaseFailed)
@@ -188,7 +188,7 @@ func (o *Orchestrator) runBranchReview(ctx context.Context, planPath string, pla
 	// Re-review once.
 	headSHA = o.gitHead(workingDir)
 	mergeBase = o.gitMergeBase(workingDir)
-	diffPath, err = ws.WriteBranchReviewPackage(mergeBase, headSHA)
+	diffPath, err = ws.WriteReviewPackage(mergeBase, headSHA)
 	if err != nil {
 		o.announce("Branch re-review skipped — could not write review package: " + err.Error())
 		return

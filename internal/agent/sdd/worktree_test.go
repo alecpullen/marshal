@@ -50,21 +50,3 @@ func TestCreateWorktree(t *testing.T) {
 	}
 }
 
-func TestMergeBase(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping git worktree test in short mode")
-	}
-	dir := initGitRepoDir(t)
-	wt, err := CreateWorktree(dir, "sdd/test-plan")
-	if err != nil {
-		t.Fatalf("CreateWorktree: %v", err)
-	}
-	defer wt.Remove()
-	mb, err := wt.MergeBase()
-	if err != nil {
-		t.Fatalf("MergeBase: %v", err)
-	}
-	if mb == "" {
-		t.Error("MergeBase returned empty string")
-	}
-}

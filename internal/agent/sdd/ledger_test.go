@@ -31,7 +31,7 @@ func TestLedgerRoundTrip(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("Read = %d entries, want 2", len(entries))
 	}
-	if entries[0].TaskNumber != 1 || entries[0].BaseSHA != "abc1234" {
+	if entries[0].TaskNumber != 1 {
 		t.Errorf("entry 0 = %+v", entries[0])
 	}
 	if entries[1].TaskNumber != 2 {

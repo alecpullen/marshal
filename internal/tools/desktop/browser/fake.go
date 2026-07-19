@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"sync"
-	"time"
 )
 
 type FakePage struct {
@@ -42,10 +41,6 @@ func (p *FakePage) Text(ctx context.Context, selector string) (string, error) {
 	return p.ReadableTextVal, nil
 }
 
-func (p *FakePage) HTML(ctx context.Context, selector string) (string, error) {
-	return "<html>" + selector + "</html>", nil
-}
-
 func (p *FakePage) ReadableText(ctx context.Context) (string, error) {
 	return p.ReadableTextVal, nil
 }
@@ -75,14 +70,6 @@ func (p *FakePage) Submit(ctx context.Context, selector string) error {
 	p.mu.Lock()
 	p.SubmittedSel = selector
 	p.mu.Unlock()
-	return nil
-}
-
-func (p *FakePage) WaitForSelector(ctx context.Context, selector string, timeout time.Duration) error {
-	return nil
-}
-
-func (p *FakePage) WaitForLoadState(ctx context.Context, state string) error {
 	return nil
 }
 

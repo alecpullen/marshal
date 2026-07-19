@@ -31,7 +31,6 @@ func TestStandaloneBackendNavigateAndRead(t *testing.T) {
 	if err := page.Navigate(context.Background(), target); err != nil {
 		t.Fatalf("Navigate: %v", err)
 	}
-	_ = page.WaitForLoadState(context.Background(), "domcontentloaded")
 
 	title, err := page.Title(context.Background())
 	if err != nil {
@@ -67,7 +66,6 @@ func TestStandaloneBackendScreenshot(t *testing.T) {
 	defer page.Close()
 
 	_ = page.Navigate(context.Background(), "https://example.com")
-	_ = page.WaitForLoadState(context.Background(), "domcontentloaded")
 
 	data, err := page.Screenshot(context.Background(), ScreenshotOpts{Format: "png"})
 	if err != nil {

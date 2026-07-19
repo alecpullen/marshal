@@ -127,20 +127,6 @@ func (p *standalonePage) Text(ctx context.Context, selector string) (string, err
 	return el.InnerText()
 }
 
-func (p *standalonePage) HTML(ctx context.Context, selector string) (string, error) {
-	if selector == "" {
-		return p.page.Content()
-	}
-	el, err := p.page.QuerySelector(selector)
-	if err != nil {
-		return "", err
-	}
-	if el == nil {
-		return "", fmt.Errorf("element %q not found", selector)
-	}
-	return el.InnerHTML()
-}
-
 func (p *standalonePage) ReadableText(ctx context.Context) (string, error) {
 	return p.page.InnerText("body")
 }
@@ -159,19 +145,6 @@ func (p *standalonePage) PressKey(ctx context.Context, key string) error {
 
 func (p *standalonePage) Submit(ctx context.Context, selector string) error {
 	return p.page.Click(selector)
-}
-
-func (p *standalonePage) WaitForSelector(ctx context.Context, selector string, timeout time.Duration) error {
-	_, err := p.page.WaitForSelector(selector, playwright.PageWaitForSelectorOptions{
-		Timeout: playwright.Float(float64(timeout / time.Millisecond)),
-	})
-	return err
-}
-
-func (p *standalonePage) WaitForLoadState(ctx context.Context, state string) error {
-	return p.page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State: loadStateFromString(state),
-	})
 }
 
 func (p *standalonePage) Screenshot(ctx context.Context, opts ScreenshotOpts) ([]byte, error) {
@@ -199,15 +172,4 @@ func (p *standalonePage) Close() error {
 		return fmt.Errorf("standalone page close: %v", errs)
 	}
 	return nil
-}
-
-func loadStateFromString(state string) *playwright.LoadState {
-	switch state {
-	case "domcontentloaded":
-		return playwright.LoadStateDomcontentloaded
-	case "networkidle":
-		return playwright.LoadStateNetworkidle
-	default:
-		return playwright.LoadStateLoad
-	}
 }

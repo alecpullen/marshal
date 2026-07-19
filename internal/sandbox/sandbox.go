@@ -135,6 +135,12 @@ func metaFor(caps Capabilities, cfg Config) registry.SandboxMeta {
 	if cfg.MemoryLimitMB <= 0 {
 		memBytes = 0
 	}
+	// Honest reporting: the restricted backend cannot enforce address-space
+	// caps where ulimit -v is unsupported (darwin, windows) — record 0
+	// rather than a phantom limit the audit log would show as enforced.
+	if caps.Backend == "restricted" && !ulimitSupportsMem() {
+		memBytes = 0
+	}
 	return registry.SandboxMeta{
 		Enabled:            true,
 		Backend:            caps.Backend,

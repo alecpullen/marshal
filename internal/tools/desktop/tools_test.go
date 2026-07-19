@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/registry"
 )
@@ -236,5 +238,41 @@ func TestRegisterAllDisabledDoesNotRegister(t *testing.T) {
 	}
 	if len(reg.List()) != 0 {
 		t.Fatalf("expected 0 tools when disabled, got %d", len(reg.List()))
+	}
+}
+
+// TestBrowserReadPreservesURLAndTitle: post-op state updates from
+// read/fill/screenshot must merge with existing state, not replace it —
+// replacing wipes the URL/Title that navigate recorded (the TUI browser
+// bar loses the current page after any read).
+func TestBrowserReadPreservesURLAndTitle(t *testing.T) {
+	reg := registry.New()
+	backend := &browser.FakeBackend{}
+	page := &browser.FakePage{TitleVal: "Example", URLVal: "https://example.com", ReadableTextVal: "content"}
+	backend.Page = page
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	opts := Options{
+		Config:         config.DesktopConfig{Enabled: true, Mode: "standalone", ScreenshotFormat: "png"},
+		BackendFactory: func() (browser.BrowserBackend, error) { return backend, nil },
+		SessionState:   state,
+	}
+	if _, err := RegisterAll(reg, opts); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	navArgs, _ := json.Marshal(map[string]any{"url": "https://example.com"})
+	if _, err := toolByName(t, reg, "browser.navigate").Handler(context.Background(), registry.ToolCall{Args: navArgs}); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	if _, err := toolByName(t, reg, "browser.read").Handler(context.Background(), registry.ToolCall{Args: []byte(`{}`)}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	info := state.BrowserInfo()
+	if info.URL != "https://example.com" || info.Title != "Example" {
+		t.Fatalf("after read: URL/Title = %q/%q, want https://example.com/Example preserved", info.URL, info.Title)
+	}
+	if info.Active {
+		t.Fatal("Active should be false after read completes")
 	}
 }

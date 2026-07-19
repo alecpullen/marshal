@@ -22,14 +22,7 @@ func warningsFor(sectionID string, cfg config.Config) []string {
 		}
 		return ws
 	case "shell":
-		var ws []string
-		if cfg.Tools.Shell.AllowSudo && cfg.Tools.Shell.AutoApprove {
-			ws = append(ws, "sudo runs without confirmation (auto-approve on)")
-		}
-		if cfg.Tools.Shell.AllowDestructive && cfg.Tools.Shell.AutoApprove {
-			ws = append(ws, "destructive commands run without confirmation (auto-approve on)")
-		}
-		return ws
+		return nil
 	case "sandbox":
 		if cfg.Tools.Shell.Sandbox.Backend == "container" && cfg.Tools.Shell.Sandbox.ContainerImage == "" {
 			return []string{"container backend set but no image configured — will fall back or error at runtime"}

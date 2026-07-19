@@ -16,38 +16,6 @@ func TestWarningsRemoteProvidersNoProvider(t *testing.T) {
 	}
 }
 
-func TestWarningsSudoAutoApprove(t *testing.T) {
-	cfg := config.Default()
-	cfg.Tools.Shell.AllowSudo = true
-	cfg.Tools.Shell.AutoApprove = true
-	w := warningsFor("shell", cfg)
-	found := false
-	for _, msg := range w {
-		if strings.Contains(msg, "sudo") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected sudo/auto-approve warning, got %v", w)
-	}
-}
-
-func TestWarningsDestructiveAutoApprove(t *testing.T) {
-	cfg := config.Default()
-	cfg.Tools.Shell.AllowDestructive = true
-	cfg.Tools.Shell.AutoApprove = true
-	w := warningsFor("shell", cfg)
-	found := false
-	for _, msg := range w {
-		if strings.Contains(msg, "destructive") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected destructive/auto-approve warning, got %v", w)
-	}
-}
-
 func TestWarningsContainerNoImage(t *testing.T) {
 	cfg := config.Default()
 	cfg.Tools.Shell.Sandbox.Backend = "container"

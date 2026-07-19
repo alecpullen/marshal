@@ -172,8 +172,6 @@ type ShellToolConfig struct {
 	MaxBackgroundJobs     int           `toml:"max_background_jobs"`
 	BackgroundRetention   time.Duration `toml:"background_retention"`
 	AllowNetwork          bool          `toml:"allow_network"`
-	AllowSudo             bool          `toml:"allow_sudo"`
-	AllowDestructive      bool          `toml:"allow_destructive"`
 	AutoApprove           bool          `toml:"auto_approve"`
 	Allow                 CommandRules  `toml:"allow"`
 	Confirm               CommandRules  `toml:"confirm"`
@@ -357,8 +355,6 @@ type fileShell struct {
 	MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
 	BackgroundRetention   *string       `toml:"background_retention"`
 	AllowNetwork          *bool         `toml:"allow_network"`
-	AllowSudo             *bool         `toml:"allow_sudo"`
-	AllowDestructive      *bool         `toml:"allow_destructive"`
 	AutoApprove           *bool         `toml:"auto_approve"`
 	GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
 	Allow                 *CommandRules `toml:"allow"`
@@ -539,8 +535,6 @@ func Default() Config {
 				MaxBackgroundJobs:     25,
 				BackgroundRetention:   8 * time.Hour,
 				AllowNetwork:          false,
-				AllowSudo:             false,
-				AllowDestructive:      false,
 				AutoApprove:           false,
 				GuardrailDynamicArgv0: "deny",
 				Allow:                 CommandRules{Commands: []string{"go test", "git status", "git diff"}},
@@ -889,12 +883,6 @@ func merge(cfg *Config, file configFile) error {
 		}
 		if s.AllowNetwork != nil {
 			cfg.Tools.Shell.AllowNetwork = *s.AllowNetwork
-		}
-		if s.AllowSudo != nil {
-			cfg.Tools.Shell.AllowSudo = *s.AllowSudo
-		}
-		if s.AllowDestructive != nil {
-			cfg.Tools.Shell.AllowDestructive = *s.AllowDestructive
 		}
 		if s.AutoApprove != nil {
 			cfg.Tools.Shell.AutoApprove = *s.AutoApprove

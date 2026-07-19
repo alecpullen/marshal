@@ -67,16 +67,12 @@ func SaveProjectConfig(path string, cfg Config) error {
 	maxBackgroundJobs := cfg.Tools.Shell.MaxBackgroundJobs
 	backgroundRetention := cfg.Tools.Shell.BackgroundRetention.String()
 	allowNetwork := cfg.Tools.Shell.AllowNetwork
-	allowSudo := cfg.Tools.Shell.AllowSudo
-	allowDestructive := cfg.Tools.Shell.AllowDestructive
 	autoApprove := cfg.Tools.Shell.AutoApprove
 	file.Tools.Shell.DefaultTimeoutSeconds = &shellTimeout
 	file.Tools.Shell.MaxOutputBytes = &maxOutputBytes
 	file.Tools.Shell.MaxBackgroundJobs = &maxBackgroundJobs
 	file.Tools.Shell.BackgroundRetention = &backgroundRetention
 	file.Tools.Shell.AllowNetwork = &allowNetwork
-	file.Tools.Shell.AllowSudo = &allowSudo
-	file.Tools.Shell.AllowDestructive = &allowDestructive
 	file.Tools.Shell.AutoApprove = &autoApprove
 
 	guardrailDyn := cfg.Tools.Shell.GuardrailDynamicArgv0

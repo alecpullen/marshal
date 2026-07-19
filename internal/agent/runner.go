@@ -79,7 +79,6 @@ type Snapshotter interface {
 	Track(ctx context.Context) (string, error)
 	Diff(ctx context.Context, hash string) (string, error)
 	Restore(ctx context.Context, hash string) error
-	Revert(ctx context.Context, fromHash, toHash string) error
 }
 
 // SnapshotRecorder persists snapshot metadata to durable storage.

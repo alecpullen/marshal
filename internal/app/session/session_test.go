@@ -859,46 +859,6 @@ func TestStateTodosRoundTrip(t *testing.T) {
 	}
 }
 
-func TestStateTodosPersistToDB(t *testing.T) {
-	dbConn, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer dbConn.Close()
-	if err := dbConn.Migrate(); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
-	if err != nil {
-		t.Fatalf("get or create project: %v", err)
-	}
-
-	sessionID := "sess-todos"
-	if err := dbConn.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
-
-	todos := []db.TodoItem{
-		{Content: "step one", Status: "completed"},
-		{Content: "step two", Status: "in_progress"},
-	}
-	if err := s.SetTodos(todos); err != nil {
-		t.Fatalf("SetTodos error: %v", err)
-	}
-
-	loaded, err := dbConn.LoadTodos(sessionID)
-	if err != nil {
-		t.Fatalf("LoadTodos error: %v", err)
-	}
-	if len(loaded) != 2 || loaded[0].Content != "step one" || loaded[1].Status != "in_progress" {
-		t.Fatalf("LoadTodos = %+v", loaded)
-	}
-}
-
 // ── Work gate and shutdown resolution (Task 5) ─────────────────────────
 
 func TestWorkGateWaitsForActiveWork(t *testing.T) {

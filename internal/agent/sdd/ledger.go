@@ -93,22 +93,5 @@ func parseLedgerLine(line string) LedgerEntry {
 		return LedgerEntry{}
 	}
 	entry := LedgerEntry{TaskNumber: num}
-	// Extract commits BASE..HEAD from the parenthesised clause.
-	commitIdx := strings.Index(parts[1], "commits ")
-	if commitIdx >= 0 {
-		rest := parts[1][commitIdx+8:]
-		endIdx := strings.Index(rest, ",")
-		if endIdx < 0 {
-			endIdx = strings.Index(rest, ")")
-		}
-		if endIdx >= 0 {
-			rest = rest[:endIdx]
-		}
-		dotIdx := strings.Index(rest, "..")
-		if dotIdx >= 0 {
-			entry.BaseSHA = rest[:dotIdx]
-			entry.HeadSHA = rest[dotIdx+2:]
-		}
-	}
 	return entry
 }

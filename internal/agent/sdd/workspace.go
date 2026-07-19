@@ -89,11 +89,7 @@ func (w *Workspace) WriteReviewPackage(base, head string) (string, error) {
 	return path, nil
 }
 
-// WriteBranchReviewPackage is like WriteReviewPackage but for the whole
-// branch (mergeBase..head).
-func (w *Workspace) WriteBranchReviewPackage(mergeBase, head string) (string, error) {
-	return w.WriteReviewPackage(mergeBase, head)
-}
+
 
 func shortSHA(sha string) string {
 	if len(sha) >= 7 {

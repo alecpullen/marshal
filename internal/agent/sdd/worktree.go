@@ -23,16 +23,6 @@ func CreateWorktree(workingDir, branchName string) (*Worktree, error) {
 	}
 	return &Worktree{Path: wtPath, Branch: branchName, parent: workingDir}, nil
 }
-
-// MergeBase returns the merge-base of the worktree branch and main.
-func (wt *Worktree) MergeBase() (string, error) {
-	out, err := exec.Command("git", "-C", wt.Path, "merge-base", "main", "HEAD").Output()
-	if err != nil {
-		return "", fmt.Errorf("sdd worktree: merge-base: %w", err)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
 // Remove removes the worktree directory but keeps the branch (so the user
 // can /merge or /pr). Errors are swallowed.
 func (wt *Worktree) Remove() error {

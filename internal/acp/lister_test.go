@@ -2,8 +2,10 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -184,5 +186,64 @@ func TestPerCwdListerFreshCwdReturnsEmpty(t *testing.T) {
 	}
 	if next != "" {
 		t.Fatalf("nextCursor = %q, want empty", next)
+	}
+}
+
+// TestPerCwdListerTTLExpiryReopens exercises the stale-entry path. Pre-fix
+// this deadlocked: getOrOpen re-locked a mutex the same goroutine already
+// held via defer.
+func TestPerCwdListerTTLExpiryReopens(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l := newPerCwdLister()
+	l.ttl = 20 * time.Millisecond
+
+	d1, err := l.getOrOpen(tmp)
+	if err != nil {
+		t.Fatalf("first getOrOpen: %v", err)
+	}
+	time.Sleep(40 * time.Millisecond)
+	d2, err := l.getOrOpen(tmp)
+	if err != nil {
+		t.Fatalf("second getOrOpen after TTL: %v", err)
+	}
+	if d1 == d2 {
+		t.Fatal("expected a fresh *db.DB after TTL expiry, got the stale cached handle")
+	}
+}
+
+// TestPerCwdListerConcurrentGetOrOpen hammers getOrOpen from many goroutines
+// with an instantly-expiring TTL to force the close/reopen path. Run with
+// -race: pre-fix the double-check loser read existing.db lock-free.
+func TestPerCwdListerConcurrentGetOrOpen(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l := newPerCwdLister()
+	l.ttl = time.Nanosecond // every call takes the stale/reopen path
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d, err := l.getOrOpen(tmp)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if d == nil {
+				errs <- errors.New("getOrOpen returned nil db")
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent getOrOpen: %v", err)
 	}
 }

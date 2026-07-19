@@ -13,7 +13,6 @@ import (
 // cachedDB holds an open database handle and the time it was opened so
 // that perCwdLister can detect staleness and re-open.
 type cachedDB struct {
-	mu     sync.Mutex
 	db     *db.DB
 	opened time.Time
 }
@@ -36,30 +35,24 @@ func newPerCwdLister() *perCwdLister {
 }
 
 // getOrOpen returns a cached *db.DB for cwd if one exists and is within
-// the TTL. Otherwise it opens the database, runs Migrate exactly once,
-// and caches the handle.
+// the TTL. Otherwise it closes the stale handle, opens the database, runs
+// Migrate, and caches the new handle.
 //
-// The entry is populated (db + opened) BEFORE being published to the
-// cache map so that concurrent callers never observe a partially-
-// initialised entry. A double-check pattern handles the rare case where
-// two goroutines race past the initial map lookup.
+	// The whole check/open/store runs under l.mu. Opens are rare (TTL-cached),
+	// and the single lock removes both hazards of the old two-mutex scheme:
+	// the self-deadlock on TTL expiry (re-locking a held entry mutex) and the
+	// unsynchronized read of a handle another goroutine could be closing.
 func (l *perCwdLister) getOrOpen(cwd string) (*db.DB, error) {
 	l.mu.Lock()
-	entry, ok := l.cache[cwd]
-	l.mu.Unlock()
+	defer l.mu.Unlock()
 
-	if ok {
-		entry.mu.Lock()
-		defer entry.mu.Unlock()
-
+	if entry, ok := l.cache[cwd]; ok {
 		if time.Since(entry.opened) < l.ttl {
 			return entry.db, nil
 		}
-		// Stale — close and reopen below.
+		// stale
 		_ = entry.db.Close()
-		entry.db = nil
-	} else {
-		entry = &cachedDB{}
+		delete(l.cache, cwd)
 	}
 
 	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
@@ -71,27 +64,7 @@ func (l *perCwdLister) getOrOpen(cwd string) (*db.DB, error) {
 		_ = d.Close()
 		return nil, err
 	}
-
-	// Populate the entry BEFORE publishing it to the cache so
-	// concurrent callers see a fully-initialised entry.
-	entry.mu.Lock()
-	entry.db = d
-	entry.opened = time.Now()
-	entry.mu.Unlock()
-
-	if !ok {
-		l.mu.Lock()
-		// Double-check: another goroutine may have raced us.
-		if existing, present := l.cache[cwd]; present {
-			l.mu.Unlock()
-			// They beat us; close our DB and use theirs.
-			_ = d.Close()
-			return existing.db, nil
-		}
-		l.cache[cwd] = entry
-		l.mu.Unlock()
-	}
-
+	l.cache[cwd] = &cachedDB{db: d, opened: time.Now()}
 	return d, nil
 }
 

@@ -17,7 +17,7 @@ func renderSDDPanel(p session.SDDProgress, spinnerFrame string, width int) (stri
 	inner := max(width-2, 1)
 
 	var b strings.Builder
-	b.WriteString(promptPrefixStyle.Render(truncateRunes("SDD: "+p.PlanName, inner)))
+	b.WriteString(promptPrefixStyle().Render(truncateRunes("SDD: "+p.PlanName, inner)))
 	for i, task := range p.Tasks {
 		if i >= 8 {
 			break

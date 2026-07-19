@@ -14,9 +14,6 @@ import (
 	"marshal/internal/diffview"
 )
 
-// warningStyle is used for the "press Esc again to deny" prompt.
-var warningStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
-
 // approvalChoice is the set of actions the inline approval chooser offers.
 type approvalChoice string
 
@@ -201,10 +198,10 @@ func (am *approvalModel) View() string {
 	b.WriteString(am.form.View())
 	if !am.pendingDenyAt.IsZero() {
 		b.WriteString("\n")
-		b.WriteString(warningStyle.Render("▸ Press Esc again to deny · any other key cancels"))
+		b.WriteString(warningStyle().Render("▸ Press Esc again to deny · any other key cancels"))
 	} else if am.submitPending {
 		b.WriteString("\n")
-		b.WriteString(promptPrefixStyle.Render("▸ Submit selected action"))
+		b.WriteString(promptPrefixStyle().Render("▸ Submit selected action"))
 	} else {
 		b.WriteString("\n")
 		b.WriteString(mutedStyle().Render("  Submit selected action"))

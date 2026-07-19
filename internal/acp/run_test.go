@@ -33,7 +33,7 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			shutdown:     0,
 		}
 
-		if err := runWithConfig(context.Background(), in, out, io.Discard, cfg); err != nil {
+		if err := runWithConfig(context.Background(), in, out, cfg); err != nil {
 			t.Fatalf("runWithConfig() = %v", err)
 		}
 
@@ -180,7 +180,7 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			shutdown:     0,
 		}
 
-		if err := runWithConfig(context.Background(), in, out, io.Discard, cfg); err != nil {
+		if err := runWithConfig(context.Background(), in, out, cfg); err != nil {
 			t.Fatalf("runWithConfig() = %v", err)
 		}
 
@@ -213,7 +213,7 @@ func TestRunInitializeCapabilities(t *testing.T) {
 			shutdown:     0,
 		}
 
-		if err := runWithConfig(context.Background(), in, out, io.Discard, cfg); err != nil {
+		if err := runWithConfig(context.Background(), in, out, cfg); err != nil {
 			t.Fatalf("runWithConfig() = %v", err)
 		}
 
@@ -267,7 +267,7 @@ func TestRunEOFClosesAllSessionsExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- runWithConfig(ctx, pr, out, io.Discard, cfg)
+		runErr <- runWithConfig(ctx, pr, out, cfg)
 	}()
 
 	absCwd := t.TempDir()
@@ -345,7 +345,7 @@ func TestRunContextCancelClosesSessions(t *testing.T) {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- runWithConfig(ctx, pr, out, io.Discard, cfg)
+		runErr <- runWithConfig(ctx, pr, out, cfg)
 	}()
 
 	absCwd := t.TempDir()
@@ -398,7 +398,7 @@ func TestRunReturnsJoinedServeAndCleanupErrors(t *testing.T) {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- runWithConfig(context.Background(), pr, wf, io.Discard, cfg)
+		runErr <- runWithConfig(context.Background(), pr, wf, cfg)
 	}()
 
 	absCwd := t.TempDir()
@@ -468,7 +468,7 @@ func TestRunSessionListWire(t *testing.T) {
 	}
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- runWithConfig(context.Background(), pr, out, io.Discard, cfg)
+		runErr <- runWithConfig(context.Background(), pr, out, cfg)
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"session/list","params":{"cwd":"` + absCwd + `"}}` + "\n"))

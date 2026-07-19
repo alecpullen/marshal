@@ -31,7 +31,7 @@ type runConfig struct {
 // runWithConfig constructs the ACP server, session manager, and turn manager
 // in dependency order, runs the server until ctx is cancelled or stdin closes,
 // then performs bounded cleanup of every session.
-func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, cfg runConfig) error {
+func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg runConfig) error {
 	if cfg.shutdown <= 0 {
 		cfg.shutdown = connectionShutdownTimeout
 	}
@@ -124,7 +124,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 // production dependencies, serves until the connection closes, then
 // performs bounded cleanup.
 func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
-	return runWithConfig(ctx, stdin, stdout, stderr, runConfig{
+	return runWithConfig(ctx, stdin, stdout, runConfig{
 		startRuntime: app.StartRuntime,
 		lister:       newPerCwdLister(),
 		shutdown:     connectionShutdownTimeout,

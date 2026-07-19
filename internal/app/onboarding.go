@@ -125,8 +125,14 @@ func fetchOllamaModels(url string) tea.Cmd {
 		client := &http.Client{Timeout: 2 * time.Second}
 		reqURL := strings.TrimRight(url, "/") + "/tags"
 		resp, err := client.Get(reqURL)
-		if err != nil {
-			// Try without "/v1" if the user entered standard API URL
+		if err != nil || resp.StatusCode != http.StatusOK {
+			// The default "/v1" base URL answers 404 for /v1/tags, so retry
+			// the native /api/tags path on non-200 too (previously only
+			// transport errors retried, making the default Ollama path
+			// unreachable).
+			if resp != nil {
+				resp.Body.Close()
+			}
 			reqURL = strings.Replace(reqURL, "/v1/tags", "/api/tags", 1)
 			resp, err = client.Get(reqURL)
 			if err != nil {

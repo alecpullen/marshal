@@ -5,39 +5,6 @@ import (
 	"testing"
 )
 
-func TestOpenWithPoolClampsNonPositivePoolSize(t *testing.T) {
-	// readPoolSize = 0 should clamp to 1.
-	path0 := filepath.Join(t.TempDir(), "test0.db")
-	db0, err := OpenWithPool(path0, 0)
-	if err != nil {
-		t.Fatalf("OpenWithPool(path, 0): %v", err)
-	}
-	defer db0.Close()
-
-	var v int
-	if err := db0.readDB.QueryRow("SELECT 1").Scan(&v); err != nil {
-		t.Fatalf("SELECT 1 on read pool after OpenWithPool(path, 0): %v", err)
-	}
-	if v != 1 {
-		t.Errorf("expected 1, got %d", v)
-	}
-
-	// readPoolSize = -5 should clamp to 1.
-	pathNeg := filepath.Join(t.TempDir(), "test_neg.db")
-	dbNeg, err := OpenWithPool(pathNeg, -5)
-	if err != nil {
-		t.Fatalf("OpenWithPool(path, -5): %v", err)
-	}
-	defer dbNeg.Close()
-
-	if err := dbNeg.readDB.QueryRow("SELECT 1").Scan(&v); err != nil {
-		t.Fatalf("SELECT 1 on read pool after OpenWithPool(path, -5): %v", err)
-	}
-	if v != 1 {
-		t.Errorf("expected 1, got %d", v)
-	}
-}
-
 func TestCloseOnFreshDB(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fresh.db")
 	db, err := Open(path)

@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/help"
 )
 
@@ -53,22 +52,8 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
-	if m.connectOpen && m.connectModel != nil {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.connectModel.View(m.width, m.height))
-	}
-	if m.settingsOpen {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.settingsModel.View())
-	}
-	if m.memoryOpen {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
-	}
-	if m.helpOpen {
-		mode := m.forceMode
-		if mode == "" {
-			mode = "auto"
-		}
-		return help.Overlay(m.width, m.height, help.OverlayHints{Mode: mode})
-	}
+	dockView := m.dock.View(m.width, m.height)
+	m.updateViewportHeight()
 
 	rows := []string{m.renderTitleBar(m.width), m.renderTranscriptFrame()}
 	// Swarm roles are tool-driven; use ActivityTool as the gating kind.
@@ -86,12 +71,11 @@ func (m *Model) viewString() string {
 	if m.sddPanelBody != "" {
 		rows = append(rows, m.sddPanelBody)
 	}
-	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
-	out := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	if m.pickerModel != nil {
-		return chrome.Overlay(out, m.pickerModel.View(m.width, m.height), m.width, m.height)
+	if dockView != "" {
+		rows = append(rows, dockView)
 	}
-	return out
+	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 // renderTitleBar draws the single-line persistent header: brand on the
@@ -319,15 +303,6 @@ func (m Model) tooSmallView() string {
 }
 
 func (m Model) fallbackView() string {
-	if m.connectOpen && m.connectModel != nil {
-		return m.connectModel.View(m.width, m.height)
-	}
-	if m.settingsOpen {
-		return m.settingsModel.View()
-	}
-	if m.memoryOpen {
-		return m.memoryModel.View()
-	}
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		mutedStyle().Render("Marshal — waiting for terminal resize..."),
 	)

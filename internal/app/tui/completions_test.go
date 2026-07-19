@@ -251,3 +251,66 @@ func TestCompletionPopupFileKindOmitsWhitespaceText(t *testing.T) {
 		t.Fatalf("matches = %#v, want only internal/agent/runner.go", matches)
 	}
 }
+
+func TestSetArgumentCompletion(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("/set shell")
+	m.updateCompletionPopups()
+	p := m.activeCompletionPopup()
+	if p == nil || !p.isVisible() {
+		t.Fatal("expected key completion popup for /set argument")
+	}
+	found := false
+	for _, item := range p.matches() {
+		if strings.Contains(item.Text, "shell.allow_network") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("shell.allow_network not offered")
+	}
+}
+
+func TestSetValueCompletionForToggle(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("/set shell.allow_network ")
+	m.updateCompletionPopups()
+	p := m.activeCompletionPopup()
+	if p == nil || !p.isVisible() {
+		t.Fatal("expected value completion popup")
+	}
+	texts := ""
+	for _, item := range p.matches() {
+		texts += item.Text + " "
+	}
+	if !strings.Contains(texts, "on") || !strings.Contains(texts, "off") {
+		t.Errorf("toggle values not offered, got %q", texts)
+	}
+}
+
+func TestSetCompletionReplacesCurrentToken(t *testing.T) {
+	m := newTestModel(t)
+	m.input.SetValue("/set shell")
+	m.updateCompletionPopups()
+	for index, item := range m.setPopup.matches() {
+		if item.Text == "shell.allow_network" {
+			m.setPopup.index = index
+			break
+		}
+	}
+	if !m.acceptCompletion() {
+		t.Fatal("expected to accept a setting key completion")
+	}
+	if got := m.input.Value(); got != "/set shell.allow_network " {
+		t.Fatalf("input = %q, want %q", got, "/set shell.allow_network ")
+	}
+
+	m.input.SetValue("/set shell.allow_network on")
+	m.updateCompletionPopups()
+	if !m.acceptCompletion() {
+		t.Fatal("expected to accept a setting value completion")
+	}
+	if got := m.input.Value(); got != "/set shell.allow_network on " {
+		t.Fatalf("input = %q, want %q", got, "/set shell.allow_network on ")
+	}
+}

@@ -63,6 +63,66 @@ func TestViewContainsFooter(t *testing.T) {
 	}
 }
 
+func TestPickerRendersDockedAboveInput(t *testing.T) {
+	m := newViewTestModel(t, 100, 40)
+	m.openPicker("mode", "Interaction mode", "", m.modePickerItems(), "")
+
+	lines := strings.Split(stripANSI(m.viewString()), "\n")
+	panelLine, inputLine := -1, -1
+	for index, line := range lines {
+		if strings.Contains(line, "Interaction mode") {
+			panelLine = index
+		}
+		if panelLine != -1 && strings.Contains(line, "❯") {
+			inputLine = index
+			break
+		}
+	}
+	if panelLine == -1 {
+		t.Fatal("picker panel not rendered")
+	}
+	if inputLine == -1 || inputLine < panelLine {
+		t.Fatalf("picker must sit above the input area (panel=%d input=%d)", panelLine, inputLine)
+	}
+	if !strings.HasPrefix(strings.TrimRight(lines[panelLine], " "), "╭") {
+		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
+	}
+}
+
+func TestConnectRendersDockedAboveInput(t *testing.T) {
+	m := newViewTestModel(t, 100, 40)
+	m.openConnect("")
+
+	view := stripANSI(m.viewString())
+	if !strings.Contains(view, "Connect a provider") {
+		t.Fatalf("connect panel content not rendered:\n%s", view)
+	}
+
+	lines := strings.Split(view, "\n")
+	// connect.Model.View renders its chrome.Panel border with the literal
+	// title "connect" (not the dynamic step title), so the border row is
+	// found by that label rather than by "Connect a provider".
+	panelLine, inputLine := -1, -1
+	for index, line := range lines {
+		if strings.Contains(line, "╭") && strings.Contains(line, "connect") {
+			panelLine = index
+		}
+		if panelLine != -1 && strings.Contains(line, "❯") {
+			inputLine = index
+			break
+		}
+	}
+	if panelLine == -1 {
+		t.Fatal("connect panel border not rendered")
+	}
+	if inputLine == -1 || inputLine < panelLine {
+		t.Fatalf("connect panel must sit above the input area (panel=%d input=%d)", panelLine, inputLine)
+	}
+	if !strings.HasPrefix(strings.TrimRight(lines[panelLine], " "), "╭") {
+		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
+	}
+}
+
 func TestTranscriptIsBorderless(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
@@ -480,6 +540,23 @@ func TestNormalViewRendersAtMinSize(t *testing.T) {
 	}
 	if !strings.Contains(view, "❯") {
 		t.Fatal("normal view at min size should show input prompt")
+	}
+}
+
+// No full-screen takeover survives: with a dock panel open, the title
+// bar, transcript, input, footer, and status line are all still present.
+func TestNoFullScreenTakeovers(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.openSettingsBrowser("")
+	out := stripANSI(m.viewString())
+	for _, want := range []string{"marshal", "Settings"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("frame missing %q while dock open", want)
+		}
+	}
+	if got := strings.Count(out, "\n") + 1; got != 40 {
+		t.Errorf("frame height %d, want 40", got)
 	}
 }
 

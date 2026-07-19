@@ -26,6 +26,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/connect"
+	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
@@ -57,8 +58,8 @@ const (
 
 	doneDisplayDuration = 2 * time.Second
 
-	// settingsBusyMessage is the footer text shown in the settings overlay
-	// when the user tries to save while a turn or background jobs are running.
+	// settingsBusyMessage is shown when runtime work makes a settings change
+	// unsafe to persist.
 	settingsBusyMessage = "Stop the active turn and background jobs before applying settings."
 
 	browserBarRows = 1
@@ -73,11 +74,7 @@ type Model struct {
 	sddRunner      AgentRunner
 	ctx            context.Context
 	busy           bool
-	settingsOpen   bool
-	settingsModel  settings.Model
 	configReloader ConfigReloader
-	memoryOpen     bool
-	memoryModel    memory.Model
 	memoryDB       *db.DB
 	memoryProject  int64
 	cmdRegistry    *commands.Registry
@@ -101,9 +98,14 @@ type Model struct {
 	// don't re-evaluate and clobber the popup's index/offset.
 	cmdPopup           *completionPopup
 	filePopup          *completionPopup
+	setPopup           *completionPopup
 	fileIndex          []completionItem
 	fileIndexLoaded    bool
 	lastInputForPopups string
+	setReg             *settings.Registry
+	// configSavePending means state.Config contains a change that could not
+	// be persisted. An otherwise unchanged /set retries the full config.
+	configSavePending bool
 
 	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
 	// cmd returned from Init (and re-armed from Update on each
@@ -138,17 +140,15 @@ type Model struct {
 	thinkingExpanded   bool
 	viewportFollow     bool
 
-	// Help overlay (triggered by ?).
-	helpOpen bool
-
-	// Connect overlay (opened by /connect, /models, Ctrl+P).
+	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
-	connectOpen  bool
 	discovered   map[string][]string
 
 	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
-	pickerModel   *picker.Model
-	pickerCommand string // which command opened the modal: "model", "mode", "branches", "rewind"
+	// The picker itself is hosted in m.dock; pickerCommand records which
+	// command opened it so PickedMsg can dispatch correctly.
+	pickerCommand string
+	dock          dock.Host
 
 	spinner           Spinner
 	spinnerFrame      string
@@ -270,6 +270,139 @@ func WithSteeringBroker(ctx context.Context, broker *pubsub.Broker[session.Steer
 
 func projectConfigPath(workingDir string) string {
 	return filepath.Join(workingDir, ".marshal", "config.toml")
+}
+
+func relPath(workingDir, path string) string {
+	rel, err := filepath.Rel(workingDir, path)
+	if err != nil {
+		return path
+	}
+	return rel
+}
+
+// applyNewConfig installs cfg as the live session config and invalidates
+// anything derived from it.
+func (m *Model) applyNewConfig(cfg config.Config) {
+	m.state.Config = cfg
+	m.setReg = nil
+	m.setPopup = nil
+	m.lastInputForPopups = ""
+	loadTheme(cfg.TUI)
+}
+
+// settingsRegistry returns the cached /set registry, rebuilt after a config
+// change invalidates it.
+func (m *Model) settingsRegistry() *settings.Registry {
+	if m.setReg == nil {
+		m.setReg = settings.BuildRegistry(m.state.Config)
+	}
+	return m.setReg
+}
+
+func (m *Model) handleSetCommand(args []string) {
+	sys := func(text string) {
+		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+	}
+
+	switch len(args) {
+	case 0:
+		m.openSettingsBrowser("")
+		return
+	case 1:
+		key := args[0]
+		reg := m.settingsRegistry()
+		kind, current, options, err := reg.Describe(key)
+		if err != nil {
+			m.openSettingsBrowser(key)
+			return
+		}
+		line := fmt.Sprintf("%s = %s (%s)", key, current, kind)
+		if len(options) > 0 {
+			line += " · options: " + strings.Join(options, ", ")
+		}
+		sys(line)
+		return
+	default:
+		key, value := args[0], strings.Join(args[1:], " ")
+		if reason := m.settingsBlockReason(); reason != "" {
+			sys(reason)
+			return
+		}
+		reg := m.settingsRegistry()
+		change, err := reg.Apply(key, value)
+		if err != nil {
+			m.setReg = nil
+			sys("✗ " + key + ": " + err.Error())
+			return
+		}
+		if !change.Changed {
+			if !m.configSavePending {
+				sys(fmt.Sprintf("• %s unchanged (%s)", key, change.NewValue))
+				return
+			}
+		}
+		path := projectConfigPath(m.state.WorkingDir)
+		saveErr := config.SaveProjectConfig(path, reg.Config())
+		// Keep the in-memory change even when persistence fails so users can
+		// correct filesystem permissions and retry without losing their edit.
+		if saveErr != nil {
+			m.applyNewConfig(reg.Config())
+			m.refreshOpenSettingsBrowser()
+			m.configSavePending = true
+			sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
+			return
+		}
+		m.configSavePending = false
+		if m.configReloader != nil {
+			// A reload can install cfg before a later resource cleanup fails.
+			// Do not retain a registry built from the previous config.
+			m.setReg = nil
+			if err := m.configReloader(reg.Config()); err != nil {
+				// The runtime has already swapped cfg before cleanup can
+				// fail (same contract as the settings.ChangedMsg handler).
+				// Keep all TUI-derived state aligned with that live config.
+				m.applyNewConfig(reg.Config())
+				m.refreshOpenSettingsBrowser()
+				sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
+				return
+			}
+		}
+		m.applyNewConfig(reg.Config())
+		m.refreshOpenSettingsBrowser()
+		if !change.Changed {
+			sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, path)))
+			return
+		}
+		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, path)))
+	}
+}
+
+func (m *Model) openSettingsBrowser(query string) {
+	browser := settings.NewBrowser(
+		m.state.Config,
+		projectConfigPath(m.state.WorkingDir),
+		query,
+	)
+	// m.state.Config may already hold an unsaved change left behind by a
+	// previous failed save (browser or /set) — applyNewConfig keeps it
+	// applied in-memory so the edit isn't lost, which means this fresh
+	// panel's baseline is cloned from that already-advanced value and diffs
+	// empty on construction. Seed savePending so a repeated commit still
+	// retries persistence instead of silently no-op'ing (see
+	// BrowserPanel.SetSavePending and flushChanges).
+	browser.SetSavePending(m.configSavePending)
+	m.dock.Open(browser)
+}
+
+// refreshOpenSettingsBrowser rebuilds an open settings browser from the
+// current session config so that a preceding /set (or other external config
+// change) isn't reverted by the next browser edit/save. The filter query is
+// preserved; cursor and drill stack are reset because field closures are bound
+// to the old registry's state.
+func (m *Model) refreshOpenSettingsBrowser() {
+	if browser, ok := m.dock.Panel().(*settings.BrowserPanel); ok {
+		m.openSettingsBrowser(browser.FilterValue())
+	}
 }
 
 func New(state *session.State, opts ...Option) Model {
@@ -428,7 +561,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport spans the full terminal width (borderless).
 	m.viewport.SetWidth(max(width, 1))
-	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -443,8 +576,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// settings/memory overlays) regardless of which overlay is open.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.resize(ws.Width, ws.Height)
-		m.settingsModel.SetSize(m.width, m.height)
-		m.memoryModel.SetSize(m.width, m.height)
 		if m.approvalModel != nil {
 			m.approvalModel.SetSize(max(m.width-4, 30))
 		}
@@ -455,83 +586,118 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// SavedMsg/CancelledMsg close the settings overlay; handle them before
-	// the settings-open guard so they aren't fed back into the form.
 	switch msg := msg.(type) {
-	case settings.SavedMsg:
-		m.state.Config = msg.Cfg
+	case settings.ChangedMsg:
+		if msg.BlockedReason != "" {
+			m.applyNewConfig(msg.Cfg)
+			m.configSavePending = true
+			for _, receipt := range msg.Receipts {
+				m.state.AddMessage(session.RoleSystem,
+					"✗ "+receipt+" · save blocked: "+msg.BlockedReason,
+					session.ContentTypePlain)
+			}
+			m.refreshViewport()
+			return m, nil
+		}
+		if msg.SaveErr != nil {
+			m.applyNewConfig(msg.Cfg)
+			m.configSavePending = true
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("✗ save failed: %v", msg.SaveErr),
+				session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		m.configSavePending = false
 		if m.configReloader != nil {
+			// reloadAgentRuntime may install cfg before reporting a cleanup
+			// error, so discard every config-derived cache first.
+			m.setReg = nil
 			if err := m.configReloader(msg.Cfg); err != nil {
-				m.state.SetProviderError(err)
-				m.settingsModel = settings.New(msg.Cfg, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-				m.settingsModel.SetSize(m.width, m.height)
+				// The runtime has already swapped cfg before cleanup can fail.
+				// Keep all TUI-derived state aligned with that live config.
+				m.applyNewConfig(msg.Cfg)
+				m.state.AddMessage(session.RoleSystem,
+					fmt.Sprintf("✗ settings saved, but live reload failed: %v", err),
+					session.ContentTypePlain)
+				m.refreshViewport()
 				return m, nil
 			}
 		}
-		loadTheme(msg.Cfg.TUI)
-		m.settingsOpen = false
+		m.applyNewConfig(msg.Cfg)
+		for _, receipt := range msg.Receipts {
+			m.state.AddMessage(session.RoleSystem,
+				"✓ "+receipt+" · "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),
+				session.ContentTypePlain)
+		}
+		m.refreshViewport()
 		return m, nil
-	case settings.CancelledMsg:
-		m.settingsOpen = false
+	case settings.BrowserClosedMsg:
+		m.dock.CloseNow()
+		m.refreshViewport()
+		return m, nil
+	case memory.ShowMsg:
+		m.dock.CloseNow()
+		text := memory.RenderEntry(m.memoryDB, msg.ID)
+		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	case memory.DeletedMsg:
+		if msg.Err != nil {
+			m.state.AddMessage(session.RoleSystem, "✗ delete failed: "+msg.Err.Error(), session.ContentTypePlain)
+		} else {
+			m.state.AddMessage(session.RoleSystem, "✓ deleted memory: "+msg.Title, session.ContentTypePlain)
+		}
+		m.refreshViewport()
 		return m, nil
 	case memory.ClosedMsg:
-		m.memoryOpen = false
+		m.dock.CloseNow()
+		m.refreshViewport()
 		return m, nil
 	}
 
-	// Runtime messages must still reach the parent model when an overlay
-	// is open, so parent state (busy, job count, steering, activity) stays
-	// current and the settings block reason updates.
+	// Runtime messages always stay with the parent model so background state
+	// remains current while a dock panel is open.
 	switch msg.(type) {
 	case agentFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
-	// When the settings overlay is open, route every remaining message to
-	// the settings model, which consumes key messages only.
-	if m.settingsOpen {
-		var cmd tea.Cmd
-		m.settingsModel, cmd = m.settingsModel.Update(msg)
-		return m, cmd
-	}
-	if m.memoryOpen {
-		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+k" {
-			m.memoryOpen = false
-			return m, nil
+	// Browser-owned picker and probe/action messages must return to the
+	// browser before the model's command-picker and connect handlers see
+	// them. The browser itself is the dock panel, so it can safely handle
+	// every remaining message here.
+	if browser, ok := m.dock.Panel().(*settings.BrowserPanel); ok {
+		blockedCmd := browser.SetSaveBlocked(m.settingsBlockReason())
+		cmd := m.dock.Update(msg)
+		if blockedCmd != nil {
+			return m, tea.Batch(blockedCmd, cmd)
 		}
-		var cmd tea.Cmd
-		m.memoryModel, cmd = m.memoryModel.Update(msg)
 		return m, cmd
 	}
 
-	// pickerModel is pointer-updated: m.pickerModel.Update(msg) mutates
-	// the picker in place via its embedded pointer, and returns the same
-	// *picker.Model. We forward the returned command but discard the
-	// model — assigning back is a no-op. The picker keeps its own
-	// state.
+	// Picker messages: the picker itself lives in m.dock and is updated
+	// through the dock. We only handle the terminal messages here.
 	switch pm := msg.(type) {
 	case connect.DoneMsg:
 		m.applyConnectDone(pm)
-		m.connectOpen = false
+		m.dock.CloseNow()
 		m.connectModel = nil
 		m.refreshViewport()
 		return m, nil
 	case connect.CancelledMsg:
-		m.connectOpen = false
+		m.dock.CloseNow()
 		m.connectModel = nil
 		m.refreshViewport()
 		return m, nil
 	case connect.TickMsg:
-		if m.connectOpen && m.connectModel != nil {
-			var cmd tea.Cmd
-			m.connectModel, cmd = m.connectModel.Update(pm)
-			return m, cmd
+		if _, ok := m.dock.Panel().(connect.Panel); ok {
+			return m, m.dock.Update(pm)
 		}
 		return m, nil
 	case probe.ResultMsg:
-		if m.connectOpen && m.connectModel != nil {
-			var cmd tea.Cmd
-			m.connectModel, cmd = m.connectModel.Update(pm)
+		if _, ok := m.dock.Panel().(connect.Panel); ok {
+			cmd := m.dock.Update(pm)
 			if pm.Err == nil && pm.Provider != "" {
 				m.discovered[pm.Provider] = pm.Models
 			}
@@ -540,7 +706,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case picker.PickedMsg:
 		cmdName := m.pickerCommand
-		m.pickerModel = nil
+		m.dock.CloseNow()
 		m.pickerCommand = ""
 		switch {
 		case cmdName == "" || pm.Value == "":
@@ -559,46 +725,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case cmdName == "mode":
 			return m.dispatchCommand("/" + pm.Value)
 		case cmdName == "sdd-plan":
-			// Close the picker, dispatch /sdd with the picked path.
-			m.pickerModel = nil
+			// Dock already closed above; dispatch /sdd with the picked path.
 			return m.dispatchCommand("/sdd " + pm.Value)
 		default:
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
 	case picker.CancelledMsg:
-		m.pickerModel = nil
+		m.dock.CloseNow()
 		m.pickerCommand = ""
 		m.refreshViewport()
 		return m, nil
 	}
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		if _, ok := msg.(tea.KeyPressMsg); ok {
-			return m, m.pickerModel.Update(msg)
+			return m, m.dock.Update(msg)
 		}
 		// non-key messages (ticks, agent events) keep flowing to the
 		// normal handlers below so background work continues.
-	}
-
-	if m.connectOpen && m.connectModel != nil {
-		if _, ok := msg.(tea.KeyPressMsg); ok {
-			var cmd tea.Cmd
-			m.connectModel, cmd = m.connectModel.Update(msg)
-			return m, cmd
-		}
-		return m, nil
-	}
-
-	// Help overlay: when open, only ? and Esc close it; other keypresses are
-	// blocked so the overlay stays visible until dismissed. Non-key runtime
-	// messages must continue through Update so background state cannot freeze.
-	if m.helpOpen {
-		if k, ok := msg.(tea.KeyPressMsg); ok {
-			if k.String() == "?" || k.String() == "esc" {
-				m.helpOpen = false
-				return m, nil
-			}
-			return m, nil
-		}
 	}
 
 	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
@@ -666,14 +809,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// pending states are routed above, before this switch.)
 		switch msg.String() {
 		case "?":
-			// Close-handler is in the helpOpen guard near the top of Update.
-			// Here we only handle the open path: open the overlay when the
-			// textarea is empty and we are not in the middle of an approval,
-			// question, or command edit. Otherwise the trailing
-			// m.input.Update(msg) below inserts ? as a literal char.
+			// ? on an empty textarea prints the help cheatsheet to the
+			// transcript, same as typing /help. With input already present
+			// (or mid approval/question/command-edit), ? falls through to
+			// the trailing m.input.Update(msg) below and is typed literally.
 			if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && m.state.PendingApproval() == nil {
-				m.helpOpen = true
-				return m, nil
+				return m.dispatchCommand("/help")
 			}
 		case "esc":
 			// F18: dismiss the active completion popup first. Only if
@@ -686,10 +827,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelTurn()
 			return m, nil
 		case "ctrl+o":
-			m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-			m.settingsModel.SetSize(m.width, m.height)
-			m.settingsOpen = true
-			m.syncSettingsSaveBlock()
+			m.openSettingsBrowser("")
 			return m, nil
 		case "ctrl+p":
 			cmd := m.openModels()
@@ -699,9 +837,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.memoryDB == nil {
 				return m, nil
 			}
-			m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
-			m.memoryModel.SetSize(m.width, m.height)
-			m.memoryOpen = true
+			m.dock.Open(memory.NewPanel(m.memoryDB, m.memoryProject))
+			m.refreshViewport()
 			return m, nil
 		case "ctrl+g":
 			m.thinkingExpanded = !m.thinkingExpanded
@@ -938,11 +1075,13 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 		}); err != nil {
 			m.state.AddSessionRule(tc.Command)
 		} else {
-			m.state.Config.Permissions.Rules = append(m.state.Config.Permissions.Rules, config.PermissionRule{
+			newCfg := m.state.Config
+			newCfg.Permissions.Rules = append(newCfg.Permissions.Rules, config.PermissionRule{
 				Permission: rule.Permission,
 				Pattern:    rule.Pattern,
 				Action:     string(rule.Action),
 			})
+			m.applyNewConfig(newCfg)
 			if m.runner != nil {
 				m.runner.SetPolicyRules(m.state.Config.Permissions.Rules)
 			}
@@ -1096,8 +1235,12 @@ func (m Model) sddPanelRows() int {
 	return rows
 }
 
+// dockRows reports the rows the docked panel occupied at last render, so the
+// transcript viewport shrinks while a panel is open.
+func (m Model) dockRows() int { return m.dock.Rows() }
+
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
+	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -1106,7 +1249,7 @@ func (m *Model) updateViewportHeight() bool {
 }
 
 // updateCompletionPopups inspects the current input value and updates the
-// cmdPopup and filePopup state. Called from every keystroke.
+// command, file, and /set completion popups. Called from every keystroke.
 //
 // Triggers (F18 R1, R4):
 //   - `/` at position 0 with no space in the typed value → cmdPopup filters
@@ -1114,11 +1257,10 @@ func (m *Model) updateViewportHeight() bool {
 //   - `@` at a word start (preceded by start-of-input or whitespace) with
 //     no whitespace after the `@` → filePopup filters against the repo
 //     file index.
+//   - `/set ` → setPopup filters setting keys, then selectable enum values.
 //
-// The popups are mutually exclusive: the file popup takes precedence when
-// both could match (e.g. "/@" would show commands; "@" at start shows
-// files). When the input doesn't match either trigger, both popups are
-// dismissed.
+// The popups are mutually exclusive. When the input doesn't match a trigger,
+// every popup is dismissed.
 func (m *Model) updateCompletionPopups() {
 	if m.cmdPopup == nil || m.filePopup == nil {
 		return
@@ -1134,6 +1276,13 @@ func (m *Model) updateCompletionPopups() {
 		return
 	}
 	m.lastInputForPopups = value
+
+	if rest, ok := strings.CutPrefix(value, "/set "); ok {
+		m.updateSetCompletionPopup(rest)
+		m.cmdPopup.dismiss()
+		m.filePopup.dismiss()
+		return
+	}
 
 	cmdTrigger, cmdQuery := m.commandTrigger(value)
 	if cmdTrigger {
@@ -1164,6 +1313,9 @@ func (m *Model) updateCompletionPopups() {
 			m.cmdPopup.update(cmdQuery)
 		}
 		m.filePopup.dismiss()
+		if m.setPopup != nil {
+			m.setPopup.dismiss()
+		}
 		return
 	}
 
@@ -1191,11 +1343,53 @@ func (m *Model) updateCompletionPopups() {
 			m.filePopup.update(fileQuery)
 		}
 		m.cmdPopup.dismiss()
+		if m.setPopup != nil {
+			m.setPopup.dismiss()
+		}
 		return
 	}
 
 	m.cmdPopup.dismiss()
 	m.filePopup.dismiss()
+	if m.setPopup != nil {
+		m.setPopup.dismiss()
+	}
+}
+
+func (m *Model) updateSetCompletionPopup(rest string) {
+	reg := m.settingsRegistry()
+	items := []completionItem{}
+	query := rest
+
+	if keyEnd := strings.IndexAny(rest, " \t\n"); keyEnd >= 0 {
+		key := rest[:keyEnd]
+		query = strings.TrimSpace(rest[keyEnd:])
+		if _, _, options, err := reg.Describe(key); err == nil {
+			for _, option := range options {
+				items = append(items, completionItem{Text: option, Kind: completionSetting})
+			}
+		}
+	} else {
+		for _, key := range reg.Keys() {
+			_, current, _, _ := reg.Describe(key)
+			items = append(items, completionItem{
+				Text:        key,
+				Description: current,
+				Kind:        completionSetting,
+			})
+		}
+	}
+
+	m.setPopup = newCompletionPopup(items)
+	if query == "" {
+		m.setPopup.filtered = append([]completionItem(nil), m.setPopup.items...)
+		m.setPopup.index = 0
+		m.setPopup.viewOffset = 0
+		m.setPopup.acceptedText = ""
+		m.setPopup.visible = len(m.setPopup.filtered) > 0
+		return
+	}
+	m.setPopup.update(query)
 }
 
 // commandTrigger returns (true, query) when value is a slash command in
@@ -1297,9 +1491,12 @@ func (m *Model) populateFileIndexIfNeeded() {
 }
 
 // activeCompletionPopup returns whichever popup is currently visible
-// (cmd takes precedence when both somehow show), or nil when none is up.
+// (/set takes precedence when both somehow show), or nil when none is up.
 // Used by the keypress switch to route Up/Down/Tab/Esc.
 func (m *Model) activeCompletionPopup() *completionPopup {
+	if m.setPopup != nil && m.setPopup.isVisible() {
+		return m.setPopup
+	}
 	if m.cmdPopup != nil && m.cmdPopup.isVisible() {
 		return m.cmdPopup
 	}
@@ -1315,6 +1512,9 @@ func (m *Model) dismissCompletionPopups() {
 	}
 	if m.filePopup != nil {
 		m.filePopup.dismiss()
+	}
+	if m.setPopup != nil {
+		m.setPopup.dismiss()
 	}
 }
 
@@ -1337,6 +1537,9 @@ func (m *Model) acceptCompletion() bool {
 	}
 	value := m.input.Value()
 	newValue := replaceTriggerToken(value, accepted)
+	if p == m.setPopup {
+		newValue = replaceSetCompletionToken(value, accepted)
+	}
 	m.input.SetValue(newValue)
 	// Move the cursor to the end of the inserted text so the user can
 	// keep typing args / a trailing space directly.
@@ -1344,6 +1547,17 @@ func (m *Model) acceptCompletion() bool {
 	m.dismissCompletionPopups()
 	m.updateViewportHeight()
 	return true
+}
+
+func replaceSetCompletionToken(value, replacement string) string {
+	if !strings.HasPrefix(value, "/set ") {
+		return value
+	}
+	index := strings.LastIndexAny(value, " \t\n")
+	if index < 0 {
+		return value
+	}
+	return value[:index+1] + replacement
 }
 
 // replaceTriggerToken finds the most recent trigger token in value
@@ -1528,10 +1742,8 @@ func (m *Model) beginShutdown() tea.Cmd {
 	return tea.Quit
 }
 
-// settingsBlockReason returns a message when the model is busy, has
-// background jobs, a pending approval, a pending question, or an open
-// picker — any condition that should block settings save. Used to
-// populate the settings model's saveBlocked field.
+// settingsBlockReason returns a message when runtime work, a pending
+// decision, or another dock surface makes a settings write unsafe.
 func (m Model) settingsBlockReason() string {
 	if m.busy || m.state.RunningJobsCount() > 0 {
 		return settingsBusyMessage
@@ -1542,20 +1754,13 @@ func (m Model) settingsBlockReason() string {
 	if m.state.PendingQuestion() != nil {
 		return "Answer the pending question to save."
 	}
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
+		if _, browser := m.dock.Panel().(*settings.BrowserPanel); browser {
+			return ""
+		}
 		return "Close the picker to save."
 	}
 	return ""
-}
-
-// syncSettingsSaveBlock pushes the current block reason to the settings
-// model whenever settings is open. Called when settings opens and after
-// agentFinishedMsg / jobCountMsg.
-func (m *Model) syncSettingsSaveBlock() {
-	if !m.settingsOpen {
-		return
-	}
-	m.settingsModel.SetSaveBlocked(m.settingsBlockReason())
 }
 
 // handleAgentFinished handles an agentFinishedMsg, shared by Update and
@@ -1582,7 +1787,6 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	}
 	m.updateViewportHeight()
 	m.refreshViewport()
-	m.syncSettingsSaveBlock()
 	return m, tickCmd()
 }
 
@@ -1590,7 +1794,6 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 // handleRuntimeMessage.
 func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 	m.jobCount = msg.count
-	m.syncSettingsSaveBlock()
 	// Re-arm the pump: exactly one in-flight subscription at a time
 	// (F19 R2). Return nil if no broker is wired so the cmd chain
 	// terminates (this should not happen when the pump is sourced
@@ -1738,11 +1941,13 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	case "exit", "quit":
 		return m, m.beginShutdown()
 
+	case "set":
+		m.handleSetCommand(args)
+		m.refreshViewport()
+		return m, nil
+
 	case "settings":
-		m.settingsModel = settings.New(m.state.Config, m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))
-		m.settingsModel.SetSize(m.width, m.height)
-		m.settingsOpen = true
-		m.syncSettingsSaveBlock()
+		m.openSettingsBrowser(strings.Join(args, " "))
 		m.refreshViewport()
 		return m, nil
 
@@ -1752,9 +1957,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		m.memoryModel = memory.New(m.memoryDB, m.memoryProject)
-		m.memoryModel.SetSize(m.width, m.height)
-		m.memoryOpen = true
+		m.dock.Open(memory.NewPanel(m.memoryDB, m.memoryProject))
 		m.refreshViewport()
 		return m, nil
 
@@ -1890,7 +2093,7 @@ func (m *Model) openConnect(_ string) {
 		Discovered: m.discovered,
 	})
 	m.connectModel.SetSize(m.width, m.height)
-	m.connectOpen = true
+	m.dock.Open(connect.Panel{Model: m.connectModel})
 }
 
 // openModels opens the connect overlay scoped to the first provider for model
@@ -1909,7 +2112,7 @@ func (m *Model) openModels() tea.Cmd {
 		ScopedProvider:   names[0],
 	})
 	m.connectModel.SetSize(m.width, m.height)
-	m.connectOpen = true
+	m.dock.Open(connect.Panel{Model: m.connectModel})
 	var cmds []tea.Cmd
 	for _, n := range names {
 		if cached, ok := m.discovered[n]; ok && len(cached) > 0 {
@@ -1942,7 +2145,7 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	if prefilter != "" {
 		p.SetFilter(prefilter)
 	}
-	m.pickerModel = p
+	m.dock.Open(p)
 	m.pickerCommand = cmdName
 }
 
@@ -2044,7 +2247,7 @@ func (m *Model) openSDDPlanPicker() {
 	}
 	p := picker.New("Pick a plan", "SDD workflow", items)
 	p.SetAllowCustom(true)
-	m.pickerModel = p
+	m.dock.Open(p)
 	m.pickerCommand = "sdd-plan"
 }
 
@@ -2071,31 +2274,46 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	newCfg.Agent.Provider = msg.Provider
 	newCfg.Agent.Model = msg.Model
 	newCfg.Profile.Default = ""
+
+	// Persist before asking the runtime to reload so a save failure never
+	// leaves m.state.Config stale while the runtime already installed newCfg.
+	path := projectConfigPath(m.state.WorkingDir)
+	if err := config.SaveProjectConfig(path, newCfg); err != nil {
+		// Keep the in-memory change so the user can correct the filesystem
+		// issue and retry without losing their edit.
+		m.applyNewConfig(newCfg)
+		m.configSavePending = true
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model: %v", err), session.ContentTypePlain)
+		return
+	}
+	m.configSavePending = false
+
 	if m.configReloader != nil {
+		// reloadAgentRuntime may install newCfg before reporting a cleanup
+		// error; invalidate config-derived state before attempting it.
+		m.setReg = nil
 		if err := m.configReloader(newCfg); err != nil {
-			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
+			// The runtime has already swapped cfg before cleanup can fail.
+			// Keep all TUI-derived state aligned with that live config.
+			m.applyNewConfig(newCfg)
+			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", err), session.ContentTypePlain)
 			return
 		}
 	}
-	if err := config.SaveProjectConfig(projectConfigPath(m.state.WorkingDir), newCfg); err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to save model: %v", err), session.ContentTypePlain)
-		return
-	}
+	m.applyNewConfig(newCfg)
 	m.state.AddMessage(session.RoleSystem,
-		fmt.Sprintf("Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
+		fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
 }
 
-// switchModelPreset applies a session-only model switch by routing every
-// role of a synthetic "switched" profile at the preset. Nothing is written
-// to config files; /settings owns persistence.
+// switchModelPreset applies a model switch by routing every role of a
+// synthetic "switched" profile at the preset. The change is persisted before
+// the runtime is asked to reload, matching the /set and settings.ChangedMsg
+// contracts.
 func (m *Model) switchModelPreset(presetName string) {
-	if m.configReloader == nil {
-		return
-	}
 	newCfg := m.state.Config
 	preset, ok := newCfg.Models.Presets[presetName]
 	if !ok {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown preset: %s", presetName), session.ContentTypePlain)
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Unknown preset: %s", presetName), session.ContentTypePlain)
 		return
 	}
 	newCfg.Profile.Default = "switched"
@@ -2109,10 +2327,37 @@ func (m *Model) switchModelPreset(presetName string) {
 			},
 		},
 	}
+
+	// Persist before asking the runtime to reload so a save failure never
+	// leaves m.state.Config stale while the runtime already installed newCfg.
+	path := projectConfigPath(m.state.WorkingDir)
+	if err := config.SaveProjectConfig(path, newCfg); err != nil {
+		// Keep the in-memory change so the user can correct the filesystem
+		// issue and retry without losing their edit.
+		m.applyNewConfig(newCfg)
+		m.configSavePending = true
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
+		return
+	}
+	m.configSavePending = false
+
+	if m.configReloader == nil {
+		m.applyNewConfig(newCfg)
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
+		return
+	}
+
+	// reloadAgentRuntime may install newCfg before reporting a cleanup
+	// error; invalidate config-derived state before attempting it.
+	m.setReg = nil
 	if err := m.configReloader(newCfg); err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
+		// The runtime has already swapped cfg before cleanup can fail.
+		// Keep all TUI-derived state aligned with that live config.
+		m.applyNewConfig(newCfg)
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", err), session.ContentTypePlain)
 	} else {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
+		m.applyNewConfig(newCfg)
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/commands"
 	"marshal/internal/llm/routing"
 )
@@ -65,7 +66,7 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 			updated, _ := m.dispatchCommand(tc.cmd)
 			mm := *(updated.(*Model))
 			if tc.expectPicker {
-				if mm.pickerModel == nil {
+				if _, ok := mm.dock.Panel().(*picker.Model); !ok {
 					t.Fatalf("%s: expected picker to open", tc.name)
 				}
 				view := mm.View().Content
@@ -80,11 +81,11 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 				}
 				upd, _ = mm2.Update(cmd())
 				mm3 := upd.(Model)
-				if mm3.pickerModel != nil {
+				if mm3.dock.IsOpen() {
 					t.Fatalf("%s: CancelledMsg should close the picker", tc.name)
 				}
 			} else {
-				if mm.pickerModel != nil {
+				if mm.dock.IsOpen() {
 					t.Fatalf("%s: picker must not open", tc.name)
 				}
 			}
@@ -104,7 +105,7 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 		mm.resize(120, 40)
 		updated, _ := mm.dispatchCommand("/model")
 		mm2 := *(updated.(*Model))
-		if mm2.pickerModel != nil {
+		if mm2.dock.IsOpen() {
 			t.Fatal("no presets: picker must not open")
 		}
 		msgs := emptyState.Messages()
@@ -121,7 +122,7 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 		m.state.AddMessage(session.RoleUser, "alternate third turn", session.ContentTypePlain)
 		updated, _ := m.dispatchCommand("/branches")
 		mm := *(updated.(*Model))
-		if mm.pickerModel == nil {
+		if _, ok := mm.dock.Panel().(*picker.Model); !ok {
 			t.Fatal("2 branches: picker should open")
 		}
 	})

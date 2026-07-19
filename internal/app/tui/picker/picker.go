@@ -147,6 +147,12 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 // View renders the picker as a centered panel with filter input, item list,
 // and footer.
 func (m *Model) View(maxW, maxH int) string {
+	// chrome.Panel always emits at least its top and bottom border rows, so
+	// it cannot honor a height budget under 3 (mirrors the identical guard
+	// in settings.BrowserPanel.View, the other dock.Panel implementation).
+	if maxH < 3 {
+		return ""
+	}
 	pw := min(64, maxW-8)
 	if pw < 30 {
 		pw = max(maxW-2, 30)

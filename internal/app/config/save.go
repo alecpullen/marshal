@@ -209,7 +209,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 			file.Models.Presets[name] = modelPresetConfig{
 				Provider: p.Provider, Model: p.Model, ContextWindow: p.ContextWindow,
 				MaxOutputTokens: p.MaxOutputTokens,
-				ToolCalling: p.ToolCalling, LocalOnly: p.LocalOnly,
+				ToolCalling:     p.ToolCalling, LocalOnly: p.LocalOnly,
 			}
 		}
 	}

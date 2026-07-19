@@ -25,4 +25,3 @@ func (db *DB) SaveTodos(sessionID string, todos []TodoItem) error {
 	}
 	return nil
 }
-

@@ -38,10 +38,10 @@ func newPerCwdLister() *perCwdLister {
 // the TTL. Otherwise it closes the stale handle, opens the database, runs
 // Migrate, and caches the new handle.
 //
-	// The whole check/open/store runs under l.mu. Opens are rare (TTL-cached),
-	// and the single lock removes both hazards of the old two-mutex scheme:
-	// the self-deadlock on TTL expiry (re-locking a held entry mutex) and the
-	// unsynchronized read of a handle another goroutine could be closing.
+// The whole check/open/store runs under l.mu. Opens are rare (TTL-cached),
+// and the single lock removes both hazards of the old two-mutex scheme:
+// the self-deadlock on TTL expiry (re-locking a held entry mutex) and the
+// unsynchronized read of a handle another goroutine could be closing.
 func (l *perCwdLister) getOrOpen(cwd string) (*db.DB, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -55,8 +55,8 @@ func (l *perCwdLister) getOrOpen(cwd string) (*db.DB, error) {
 		delete(l.cache, cwd)
 	}
 
-	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
-	d, err := db.Open(dbPath)
+	path := db.Path(cwd)
+	d, err := db.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +72,8 @@ func (l *perCwdLister) getOrOpen(cwd string) (*db.DB, error) {
 // database if the per-cwd database file does not exist. Otherwise it
 // uses the cached (or freshly opened) handle.
 func (l *perCwdLister) ListSessions(ctx context.Context, cwd, cursor string, limit int) ([]db.SessionEntry, string, error) {
-	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+	path := db.Path(cwd)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, "", nil // empty list, no error
 	}
 	d, err := l.getOrOpen(cwd)
@@ -86,8 +86,8 @@ func (l *perCwdLister) ListSessions(ctx context.Context, cwd, cursor string, lim
 // DeleteSession creates the directory if necessary, opens (or reuses)
 // the cached database handle, and deletes the session.
 func (l *perCwdLister) DeleteSession(ctx context.Context, cwd, sessionID string) (bool, error) {
-	dbPath := filepath.Join(cwd, ".marshal", "marshal.db")
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+	path := db.Path(cwd)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
 	d, err := l.getOrOpen(cwd)

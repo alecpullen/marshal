@@ -337,7 +337,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		return nil, fmt.Errorf("create .marshal directory: %w", err)
 	}
 
-	database, err := db.Open(dbPath(workingDir))
+	database, err := db.Open(db.Path(workingDir))
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -413,7 +413,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 	}
 
-	globalSkillsDir := filepath.Join(homeDir, ".config", "marshal", "skills")
+	globalSkillsDir := filepath.Join(config.UserDir(homeDir), "skills")
 	projectSkillsDir := filepath.Join(workingDir, ".marshal", "skills")
 	skillIndex, err := skills.LoadSkills(globalSkillsDir, projectSkillsDir)
 	if err != nil {

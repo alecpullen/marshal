@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 var (
@@ -130,14 +131,25 @@ func (r *StaticRouter) legacyRoute(role AgentRole) (Route, bool) {
 	}, true
 }
 
-// isLocalProvider returns true if the provider URL targets the local
+// IsLocalProvider reports whether the provider URL targets the local
 // machine. Used to bypass the remote_providers_allowed gate for
-// localhost-only deployments. See F-SEC-09.
-func isLocalProvider(provider string) bool {
+// localhost-only deployments (F-SEC-09) and by the TUI for local badges.
+func IsLocalProvider(provider string) bool {
 	u, err := url.Parse(provider)
 	if err != nil {
 		return false
 	}
 	host := u.Hostname()
-	return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == ""
+	switch host {
+	case "", "localhost", "127.0.0.1", "0.0.0.0", "::1":
+		return true
+	}
+	return strings.HasPrefix(host, "::1%")
+}
+
+// isLocalProvider returns true if the provider URL targets the local
+// machine. Used to bypass the remote_providers_allowed gate for
+// localhost-only deployments. See F-SEC-09.
+func isLocalProvider(provider string) bool {
+	return IsLocalProvider(provider)
 }

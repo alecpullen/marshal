@@ -43,17 +43,33 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "help",
 			Description: "Show available commands",
+			Args:        "[command]",
 			Handler: func(state *session.State, args []string) string {
-				var b strings.Builder
-				b.WriteString("Available commands:\n\n")
-				for _, cmd := range cmdReg.List() {
-					argStr := ""
-					if cmd.Args != "" {
-						argStr = " " + cmd.Args
+				if len(args) > 0 {
+					c, ok := cmdReg.Lookup(args[0])
+					if !ok {
+						return fmt.Sprintf("Unknown command: /%s", args[0])
 					}
-					b.WriteString(fmt.Sprintf("  /%s%s — %s\n", cmd.Name, argStr, cmd.Description))
+					out := "/" + c.Name
+					if c.Args != "" {
+						out += " " + c.Args
+					}
+					return out + "\n  " + c.Description
 				}
-				return b.String()
+				var b strings.Builder
+				b.WriteString("Keys\n")
+				b.WriteString("  ⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /model\n")
+				b.WriteString("  ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+r rollback\n")
+				b.WriteString("  pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom\n")
+				b.WriteString("Commands\n")
+				for _, c := range cmdReg.List() { // List already sorts and hides Hidden
+					line := "  /" + c.Name
+					if c.Args != "" {
+						line += " " + c.Args
+					}
+					b.WriteString(fmt.Sprintf("%-28s %s\n", line, c.Description))
+				}
+				return strings.TrimRight(b.String(), "\n")
 			},
 		},
 		{

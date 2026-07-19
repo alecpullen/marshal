@@ -116,17 +116,7 @@ func (c *Container) buildContainerEnv() []string {
 			continue
 		}
 		if v, ok := os.LookupEnv(key); ok {
-			found := false
-			for i, kv := range env {
-				if envutil.EnvKey(kv) == key {
-					env[i] = key + "=" + v
-					found = true
-					break
-				}
-			}
-			if !found {
-				env = append(env, key+"="+v)
-			}
+			env = envutil.Set(env, key, v)
 		}
 	}
 	return env

@@ -102,15 +102,7 @@ func (r *Restricted) buildEnv() []string {
 	}
 	// Nil: use AllowList — only pass safe vars minus denylist.
 	if r.cfg.EnvAllowlist == nil {
-		out := envutil.AllowList(parent)
-		filtered := make([]string, 0, len(out))
-		for _, kv := range out {
-			if r.denySet[envutil.EnvKey(kv)] {
-				continue
-			}
-			filtered = append(filtered, kv)
-		}
-		return filtered
+		return envutil.FilterKeys(envutil.AllowList(parent), r.denySet)
 	}
 	// Non-empty allowlist: start from AllowList then layer user entries.
 	out := envutil.AllowList(parent)
@@ -137,29 +129,11 @@ func (r *Restricted) buildEnv() []string {
 		if !ok {
 			continue
 		}
-		// Replace if already present (safe default), otherwise append.
-		replaced := false
-		for i, kv := range out {
-			if envutil.EnvKey(kv) == key {
-				out[i] = key + "=" + v
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			out = append(out, key+"="+v)
-		}
+		out = envutil.Set(out, key, v)
 	}
 
 	// Apply denylist to the final result.
-	filtered := make([]string, 0, len(out))
-	for _, kv := range out {
-		if r.denySet[envutil.EnvKey(kv)] {
-			continue
-		}
-		filtered = append(filtered, kv)
-	}
-	return filtered
+	return envutil.FilterKeys(out, r.denySet)
 }
 
 func denySet(keys []string) map[string]bool {

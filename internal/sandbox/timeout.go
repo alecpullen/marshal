@@ -15,5 +15,3 @@ func runWithTimeout(ctx context.Context, req native.CommandRequest) (context.Con
 	}
 	return ctx, func() {}
 }
-
-

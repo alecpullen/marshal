@@ -23,9 +23,6 @@ func mutedStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.
 func hintStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(theme.Current().StatusInfo) }
 func errStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
 func footerStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
-func successStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess)
-}
 
 type step int
 
@@ -58,7 +55,6 @@ type Model struct {
 	providerName   string
 	providerCfg    config.ProviderConfig
 	models         []string
-	probeErr       error
 	cfg            config.Config
 	discovered     map[string][]string
 	scopedProvider string
@@ -66,7 +62,6 @@ type Model struct {
 	height         int
 	probeStart     int64
 	spinner        int
-	pendingSave    bool
 	modelChosen    string
 }
 
@@ -81,7 +76,7 @@ func New(opts Opts) *Model {
 		scopedProvider: opts.ScopedProvider,
 	}
 	if opts.SkipToIntroModel {
-		m.enterPickModel(opts.ScopedProvider)
+		enterPickModelStep(m, opts.ScopedProvider)
 		return m
 	}
 	m.enterPickTemplate()
@@ -214,13 +209,6 @@ func (m *Model) back() tea.Cmd {
 		m.enterPickTemplate()
 	case stepBaseURL:
 		m.enterPickTemplate()
-	case stepPickModel:
-		if m.providerName != "" && m.template.ID != "" {
-			m.step = stepAPIKey
-			m.enterAPIKey()
-		} else {
-			m.enterPickTemplate()
-		}
 	default:
 		return m.cancel()
 	}
@@ -353,7 +341,6 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 
 func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
 	if msg.Err != nil {
-		m.probeErr = msg.Err
 		m.err = "✗ " + truncateErr(msg.Err.Error())
 		m.footer = "[r] retry  [s] skip  [Esc] cancel"
 		return m, nil
@@ -436,10 +423,6 @@ func (m *Model) confirmInput() (*Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) enterPickModel(providerName string) {
-	enterPickModelStep(m, providerName)
-}
-
 func (m *Model) enterProbing() (*Model, tea.Cmd) {
 	m.step = stepProbing
 	m.title = "Connecting"
@@ -449,13 +432,12 @@ func (m *Model) enterProbing() (*Model, tea.Cmd) {
 	m.picker = nil
 	m.providerName = m.uniqueName()
 	m.providerCfg.Type = orDefault(m.template.Type, "openai_compatible")
-	m.probeStart = nowNanos()
+	m.probeStart = time.Now().UnixNano()
 	m.spinner = 0
 	return m, tea.Batch(m.runProbe(), tick())
 }
 
 func (m *Model) skipProbe() (*Model, tea.Cmd) {
-	m.probeErr = nil
 	m.models = m.template.Models
 	return m.advanceToPickModel()
 }
@@ -493,6 +475,4 @@ func orDefault(v, def string) string {
 	return v
 }
 
-var nowNanos = func() int64 {
-	return time.Now().UnixNano()
-}
+

@@ -20,6 +20,7 @@ import (
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
 	"marshal/internal/skills"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/patch"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -360,7 +361,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.statsMu.Lock()
 	r.stats = &turnStats{m: TurnMetrics{
 		StartedAt: r.Now(),
-		Goal:      truncateGoal(goal, 200),
+		Goal:      strutil.Truncate(goal, 200, false),
 		Role:      string(r.role()),
 	}}
 	r.statsMu.Unlock()
@@ -1743,25 +1744,11 @@ func buildQuestionLabel(questions []session.Question) string {
 	if len(questions) == 0 {
 		return "waiting for your answer"
 	}
-	q := truncateRunes(questions[0].Question, 40)
+	q := strutil.Truncate(questions[0].Question, 40, true)
 	if len(questions) == 1 {
 		return "waiting for your answer: " + q
 	}
 	return fmt.Sprintf("waiting for your answer (Q1/%d): %s", len(questions), q)
-}
-
-// truncateRunes returns s shortened to at most max runes, appending "…"
-// when truncation occurred. Rune-aware so multi-byte characters (emoji,
-// CJK) are never split mid-codepoint.
-func truncateRunes(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max]) + "…"
 }
 
 func skillsChanged(prev, curr []string) bool {

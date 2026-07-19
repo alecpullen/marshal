@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/strutil"
 )
 
 // BrowserPanel is the docked settings browser. It presents a filterable flat
@@ -204,14 +205,6 @@ func browserDirectMatch(field *field, query string) bool {
 	)
 }
 
-func truncateErr(message string) string {
-	runes := []rune(message)
-	if len(runes) > 40 {
-		return string(runes[:37]) + "…"
-	}
-	return message
-}
-
 func (b *BrowserPanel) activeList() *fieldList {
 	if b.stack != nil {
 		return b.stack.top().list
@@ -231,7 +224,7 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 	case probe.ResultMsg:
 		label := fmt.Sprintf("✓ ok (%d models)", len(msg.Models))
 		if msg.Err != nil {
-			label = "✗ " + truncateErr(msg.Err.Error())
+			label = "✗ " + strutil.Truncate(msg.Err.Error(), 37, true)
 		}
 		b.reg.st.applyActionResult(msg.FieldID, label)
 		if msg.Err == nil && msg.Provider != "" {

@@ -37,6 +37,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/permissions"
 	"marshal/internal/pubsub"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 )
@@ -2411,7 +2412,7 @@ func (m *Model) rewindPickerItems() []picker.Item {
 		}
 		items = append(items, picker.Item{
 			Label:  fmt.Sprintf("turn %d", i+1),
-			Detail: truncateRunes(strings.ReplaceAll(turns[i].Content, "\n", " "), 50),
+			Detail: strutil.Truncate(strings.ReplaceAll(turns[i].Content, "\n", " "), 50, false),
 			Badge:  badge,
 			Value:  strconv.Itoa(i + 1),
 		})
@@ -2457,17 +2458,6 @@ func (m *Model) modePickerItems() []picker.Item {
 		{Label: "Auto", Detail: "classify each turn", Badge: badge("auto"), Value: "auto"},
 		{Label: "SDD", Detail: "plan-driven multi-task", Badge: badge("sdd"), Value: "sdd"},
 	}
-}
-
-func truncateRunes(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= limit {
-		return s
-	}
-	return string(runes[:limit])
 }
 
 func visibleRunes(s string) int {
@@ -2577,13 +2567,6 @@ func browserBarStyle() lipgloss.Style {
 		BorderForeground(theme.Current().BorderMuted)
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
-
-func compactTokenCount(tokens int) string {
-	if tokens >= 1000 {
-		return fmt.Sprintf("%dk", tokens/1000)
-	}
-	return fmt.Sprintf("%d", tokens)
-}
 
 func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string) uint64 {
 	h := fnv.New64a()

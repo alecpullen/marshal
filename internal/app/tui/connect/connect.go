@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/provider"
+	"marshal/internal/strutil"
 )
 
 func titleStyle() lipgloss.Style {
@@ -341,7 +342,7 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 
 func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
 	if msg.Err != nil {
-		m.err = "✗ " + truncateErr(msg.Err.Error())
+		m.err = "✗ " + strutil.Truncate(msg.Err.Error(), 48, true)
 		m.footer = "[r] retry  [s] skip  [Esc] cancel"
 		return m, nil
 	}
@@ -351,15 +352,6 @@ func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
 	}
 	_, advCmd := m.advanceToPickModel()
 	return m, advCmd
-}
-
-func truncateErr(s string) string {
-	const maxRunes = 48
-	r := []rune(s)
-	if len(r) <= maxRunes {
-		return s
-	}
-	return string(r[:maxRunes]) + "…"
 }
 
 func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
@@ -474,5 +466,3 @@ func orDefault(v, def string) string {
 	}
 	return v
 }
-
-

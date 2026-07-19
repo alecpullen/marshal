@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/export"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -122,8 +123,8 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					return b.String()
 				}
 				fmt.Fprintf(&b, "  Pack: %s/%s tokens, %d sections\n",
-					compactTokens(pack.TokenUsage.EstimatedTokens),
-					compactTokens(pack.TokenUsage.MaxTokens),
+					strutil.CompactTokens(pack.TokenUsage.EstimatedTokens),
+					strutil.CompactTokens(pack.TokenUsage.MaxTokens),
 					len(pack.Sections),
 				)
 				for i, section := range pack.Sections {
@@ -131,7 +132,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					if title == "" {
 						title = section.Source
 					}
-					fmt.Fprintf(&b, "    %d  %s  %s\n", i+1, title, compactTokens(section.EstimatedTokens))
+					fmt.Fprintf(&b, "    %d  %s  %s\n", i+1, title, strutil.CompactTokens(section.EstimatedTokens))
 				}
 				return strings.TrimRight(b.String(), "\n")
 			},
@@ -409,7 +410,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 						}
 					}
 				}
-				return fmt.Sprintf("Rewound to before: %q. Your next message starts a new branch (leaf %d).", truncateForDisplay(target.Content, 60), newLeaf)
+				return fmt.Sprintf("Rewound to before: %q. Your next message starts a new branch (leaf %d).", strutil.Truncate(target.Content, 60, true), newLeaf)
 			},
 		},
 		{
@@ -474,19 +475,4 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		}
 	}
 	return nil
-}
-
-// compactTokens renders a token count the way the TUI does: "842", "18k".
-func compactTokens(n int) string {
-	if n >= 1000 {
-		return fmt.Sprintf("%dk", n/1000)
-	}
-	return fmt.Sprintf("%d", n)
-}
-
-func truncateForDisplay(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }

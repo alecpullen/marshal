@@ -14,6 +14,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -27,15 +28,13 @@ func isBrowserTool(name string) bool {
 // transcript's prose treatment.
 func marshalStyleConfig() gansi.StyleConfig {
 	cfg := styles.DarkStyleConfig
-	cfg.Heading.StylePrimitive.Color = ptr("175") // violetColor
+	cfg.Heading.StylePrimitive.Color = strutil.Ptr("175") // violetColor
 	cfg.H1.StylePrimitive = gansi.StylePrimitive{
-		Color: ptr("209"), // coralColor
-		Bold:  ptr(true),
+		Color: strutil.Ptr("209"), // coralColor
+		Bold:  strutil.Ptr(true),
 	}
 	return cfg
 }
-
-func ptr[T any](v T) *T { return &v }
 
 const maxRenderers = 4
 
@@ -342,7 +341,7 @@ func renderToolResultLine(content string, width int) string {
 	}
 	var b strings.Builder
 	b.WriteString(toolBulletStyle().Render("⏺ "))
-	b.WriteString(truncateRunes(strings.TrimSpace(lines[0]), max(width-2, 1)))
+	b.WriteString(strutil.Truncate(strings.TrimSpace(lines[0]), max(width-2, 1), false))
 	b.WriteString("\n")
 	continuation := lines[1:]
 	for i, line := range continuation {
@@ -410,20 +409,20 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		b.WriteString(" ")
 		prefixed := browserPrefixStyle().Render("browser") + "." + strings.TrimPrefix(atc.Name, "browser.")
 		full := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", prefixed, formatElapsed(elapsed)))
-		b.WriteString(truncateRunes(full, max(width-4, 1)))
+		b.WriteString(strutil.Truncate(full, max(width-4, 1), false))
 	} else {
-		b.WriteString(toolBulletStyle().Render(truncateRunes(head, max(width-2, 1))))
+		b.WriteString(toolBulletStyle().Render(strutil.Truncate(head, max(width-2, 1), false)))
 	}
 	b.WriteString("\n")
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
-		b.WriteString(mutedStyle().Render(truncateRunes("  $ "+atc.Args, max(width-2, 1))))
+		b.WriteString(mutedStyle().Render(strutil.Truncate("  $ "+atc.Args, max(width-2, 1), false)))
 		b.WriteString("\n")
 		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
-			b.WriteString(mutedStyle().Render(truncateRunes("  "+iso, max(width-2, 1))))
+			b.WriteString(mutedStyle().Render(strutil.Truncate("  "+iso, max(width-2, 1), false)))
 			b.WriteString("\n")
 		}
 	} else if atc.Args != "" {
-		b.WriteString(mutedStyle().Render(truncateRunes("  "+atc.Args, max(width-2, 1))))
+		b.WriteString(mutedStyle().Render(strutil.Truncate("  "+atc.Args, max(width-2, 1), false)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
@@ -449,14 +448,14 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 		head += " · " + hookHint
 	}
 	var b strings.Builder
-	b.WriteString(style.Render(truncateRunes(head, max(width-2, 1))))
+	b.WriteString(style.Render(strutil.Truncate(head, max(width-2, 1), false)))
 	b.WriteString("\n")
 	summary := event.ResultSummary
 	if event.Error != "" {
 		summary = event.Error
 	}
 	if summary != "" {
-		b.WriteString(mutedStyle().Render(truncateRunes("  "+summary, max(width-2, 1))))
+		b.WriteString(mutedStyle().Render(strutil.Truncate("  "+summary, max(width-2, 1), false)))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -553,23 +552,23 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, al
 	if tc.Name == "shell.run" {
 		b.WriteString(muted.Render("Agent wants to run:"))
 		b.WriteString("\n")
-		b.WriteString(text.Render(truncateRunes(tc.Command, innerWidth)))
+		b.WriteString(text.Render(strutil.Truncate(tc.Command, innerWidth, false)))
 	} else {
 		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle().Render(tc.Name))
 		b.WriteString("\n")
 		if tc.Schema != "" {
-			b.WriteString(muted.Render("Description: ") + text.Render(truncateRunes(tc.Schema, innerWidth)))
+			b.WriteString(muted.Render("Description: ") + text.Render(strutil.Truncate(tc.Schema, innerWidth, false)))
 			b.WriteString("\n")
 		}
 		b.WriteString(muted.Render("Arguments: "))
-		b.WriteString(text.Render(truncateRunes(tc.Args, innerWidth)))
+		b.WriteString(text.Render(strutil.Truncate(tc.Args, innerWidth, false)))
 	}
 	b.WriteString("\n\n")
 	b.WriteString(riskLabelStyle().Render("Risk: "))
-	b.WriteString(text.Render(truncateRunes(riskText(tc), innerWidth)))
+	b.WriteString(text.Render(strutil.Truncate(riskText(tc), innerWidth, false)))
 	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
 		b.WriteString("\n")
-		b.WriteString(muted.Render(truncateRunes(iso, innerWidth)))
+		b.WriteString(muted.Render(strutil.Truncate(iso, innerWidth, false)))
 	}
 	b.WriteString("\n\n")
 	helpLine := key.Render("Enter") + muted.Render(" approve ") + key.Render("d") + muted.Render(" deny ") + key.Render("e") + muted.Render(" edit ") + key.Render("a") + muted.Render(" always")

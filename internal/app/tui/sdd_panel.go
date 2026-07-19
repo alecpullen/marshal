@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"marshal/internal/app/session"
+	"marshal/internal/strutil"
 )
 
 // renderSDDPanel renders the SDD progress panel. Returns the rendered body
@@ -17,7 +18,7 @@ func renderSDDPanel(p session.SDDProgress, spinnerFrame string, width int) (stri
 	inner := max(width-2, 1)
 
 	var b strings.Builder
-	b.WriteString(promptPrefixStyle().Render(truncateRunes("SDD: "+p.PlanName, inner)))
+	b.WriteString(promptPrefixStyle().Render(strutil.Truncate("SDD: "+p.PlanName, inner, false)))
 	for i, task := range p.Tasks {
 		if i >= 8 {
 			break
@@ -33,17 +34,17 @@ func renderSDDPanel(p session.SDDProgress, spinnerFrame string, width int) (stri
 		if task.Detail != "" {
 			line += "  " + task.Detail
 		}
-		b.WriteString(truncateRunes(line, inner))
+		b.WriteString(strutil.Truncate(line, inner, false))
 	}
 	// Branch review row.
 	b.WriteString("\n")
 	brGlyph := sddPhaseGlyph(p.BranchReview, spinnerFrame)
-	b.WriteString(truncateRunes(fmt.Sprintf("Branch review: %s", brGlyph), inner))
+	b.WriteString(strutil.Truncate(fmt.Sprintf("Branch review: %s", brGlyph), inner, false))
 
 	if p.TokensMax > 0 || p.TokensUsed > 0 {
 		b.WriteString("\n")
 		line := fmt.Sprintf("Tokens: %d / %d", p.TokensUsed, p.TokensMax)
-		b.WriteString(mutedStyle().Render(truncateRunes(line, inner)))
+		b.WriteString(mutedStyle().Render(strutil.Truncate(line, inner, false)))
 	}
 
 	body := indentBlock(b.String(), "  ")

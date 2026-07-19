@@ -266,68 +266,24 @@ func (s *Server) Serve(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			// Parent context cancelled.
-			cancel()
-			s.failOutbound(errors.New("acp: connection closed"))
-			s.closeInput()
-			handlerErr := s.waitHandlers()
-			// Drain any fatal errors reported during or after shutdown.
-			var late []error
-		drainLoop1:
-			for {
-				select {
-				case err := <-s.fatalErr:
-					late = append(late, err)
-				default:
-					break drainLoop1
-				}
-			}
-			return joinErrors(ctx.Err(), handlerErr, errors.Join(late...))
+			handlerErr, late := s.shutdown(cancel)
+			return joinErrors(ctx.Err(), handlerErr, late)
 
 		case scanErr := <-scannerDone:
 			// Scanner finished (EOF or error).
-			cancel()
-			s.failOutbound(errors.New("acp: connection closed"))
-			s.closeInput()
-			handlerErr := s.waitHandlers()
-
-			// Drain any fatal errors reported during shutdown.
-			var late []error
-		drainLoop2:
-			for {
-				select {
-				case err := <-s.fatalErr:
-					late = append(late, err)
-				default:
-					break drainLoop2
-				}
-			}
-
+			handlerErr, late := s.shutdown(cancel)
 			if ctx.Err() != nil {
-				return joinErrors(ctx.Err(), handlerErr, errors.Join(late...))
+				return joinErrors(ctx.Err(), handlerErr, late)
 			}
 			if scanErr != nil {
-				return joinErrors(scanErr, handlerErr, errors.Join(late...))
+				return joinErrors(scanErr, handlerErr, late)
 			}
-			return joinErrors(handlerErr, errors.Join(late...))
+			return joinErrors(handlerErr, late)
 
 		case fatalWrite := <-s.fatalErr:
 			// A handler goroutine reported a fatal write error.
-			cancel()
-			s.failOutbound(errors.New("acp: connection closed"))
-			s.closeInput()
-			handlerErr := s.waitHandlers()
-			// Drain any fatal errors reported after waitHandlers returned.
-			var late []error
-		drainLoop3:
-			for {
-				select {
-				case err := <-s.fatalErr:
-					late = append(late, err)
-				default:
-					break drainLoop3
-				}
-			}
-			return joinErrors(fatalWrite, handlerErr, errors.Join(late...))
+			handlerErr, late := s.shutdown(cancel)
+			return joinErrors(fatalWrite, handlerErr, late)
 
 		case line := <-frames:
 			s.handleFrame(serveCtx, line)
@@ -552,6 +508,26 @@ func (s *Server) waitHandlers() error {
 		return nil
 	case <-waitCtx.Done():
 		return waitCtx.Err()
+	}
+}
+
+// shutdown performs the common Serve teardown: cancel the serve context,
+// fail pending outbound calls, close input, wait for handlers, and drain
+// any fatal errors reported during or after the wait. The caller joins the
+// returned errors with its arm-specific cause.
+func (s *Server) shutdown(cancel context.CancelFunc) (handlerErr error, late error) {
+	cancel()
+	s.failOutbound(errors.New("acp: connection closed"))
+	s.closeInput()
+	handlerErr = s.waitHandlers()
+	var lateErrs []error
+	for {
+		select {
+		case err := <-s.fatalErr:
+			lateErrs = append(lateErrs, err)
+		default:
+			return handlerErr, errors.Join(lateErrs...)
+		}
 	}
 }
 

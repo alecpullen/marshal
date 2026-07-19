@@ -1299,3 +1299,11 @@ func TestBeginWorkAndBeginQuiesceConcurrent(t *testing.T) {
 		t.Fatalf("expected ErrSessionQuiescing after BeginQuiesce, got %v", err)
 	}
 }
+
+func TestUnansweredAnswers(t *testing.T) {
+	qs := []Question{{Question: "q1"}, {Question: "q2"}}
+	got := UnansweredAnswers(qs)
+	if len(got) != 2 || got[0].Question != "q1" || got[1].Answer != AnswerUnanswered {
+		t.Fatalf("UnansweredAnswers = %+v", got)
+	}
+}

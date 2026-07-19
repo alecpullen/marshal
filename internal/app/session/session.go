@@ -49,20 +49,16 @@ const (
 //
 // PendingApproval and PendingQuestion carry the full pointer (including
 // ResponseChan) for subscribers that need to respond (e.g., the ACP
-// permission bridge). PendingApprovalInfo and PendingQuestionInfo are
-// channel-free snapshots for subscribers that only need to inspect the
-// pending item (e.g., the TUI renderer).
+// permission bridge).
 type Event struct {
-	Message             *Message
-	Thinking            *InProgressMessage
-	Activity            *Activity
-	ActiveTool          *ActiveToolCall
-	Audit               *registry.AuditEvent
-	PendingApproval     *PendingToolCall
-	PendingQuestion     *PendingQuestion
-	PendingApprovalInfo *PendingToolCallInfo
-	PendingQuestionInfo *PendingQuestionInfo
-	Browser             *BrowserInfo
+	Message         *Message
+	Thinking        *InProgressMessage
+	Activity        *Activity
+	ActiveTool      *ActiveToolCall
+	Audit           *registry.AuditEvent
+	PendingApproval *PendingToolCall
+	PendingQuestion *PendingQuestion
+	Browser         *BrowserInfo
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -189,15 +185,6 @@ type Answer struct {
 // allUnanswered tracking).
 const AnswerUnanswered = "Unanswered"
 
-// PendingQuestionInfo is a safe, channel-free snapshot of a PendingQuestion
-// published in Event payloads. Subscribers that only need to inspect the
-// questions (e.g., the TUI's question panel renderer) should use this type
-// instead of reading the full PendingQuestion (which carries ResponseChan).
-type PendingQuestionInfo struct {
-	ID        string
-	Questions []Question
-}
-
 // PendingQuestion carries one or more Questions from the agent awaiting
 // user response. The runner blocks on ResponseChan; the TUI sends exactly
 // one value, one Answer per Question (in the same order).
@@ -225,21 +212,6 @@ func (p *PendingQuestion) Respond(a []Answer) {
 			close(p.ResponseChan)
 		}
 	})
-}
-
-// PendingToolCallInfo is a safe, channel-free snapshot of a PendingToolCall
-// published in Event payloads. Subscribers that only need to inspect the
-// pending call (e.g., the TUI's approval panel renderer) should use this
-// type instead of reading the full PendingToolCall (which carries ResponseChan).
-type PendingToolCallInfo struct {
-	ID        string
-	Name      string
-	Command   string
-	Args      string
-	RiskLevel string
-	Diff      string
-	Schema    string
-	HasBackup bool
 }
 
 type PendingToolCall struct {
@@ -1255,23 +1227,12 @@ func (s *State) SetPendingApproval(tc *PendingToolCall) {
 	s.mu.Lock()
 	s.pendingApproval = tc
 	var snap *PendingToolCall
-	var info *PendingToolCallInfo
 	if tc != nil {
 		copy := *tc
 		snap = &copy
-		info = &PendingToolCallInfo{
-			ID:        tc.ID,
-			Name:      tc.Name,
-			Command:   tc.Command,
-			Args:      tc.Args,
-			RiskLevel: tc.Risk,
-			Diff:      tc.Diff,
-			Schema:    tc.Schema,
-			HasBackup: len(s.lastBackup) > 0,
-		}
 	}
 	s.mu.Unlock()
-	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: snap, PendingApprovalInfo: info})
+	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: snap})
 }
 
 func (s *State) PendingApproval() *PendingToolCall {
@@ -1284,16 +1245,12 @@ func (s *State) SetPendingQuestion(q *PendingQuestion) {
 	s.mu.Lock()
 	s.pendingQuestion = q
 	var snap *PendingQuestion
-	var info *PendingQuestionInfo
 	if q != nil {
 		copy := *q
 		snap = &copy
-		info = &PendingQuestionInfo{
-			Questions: q.Questions,
-		}
 	}
 	s.mu.Unlock()
-	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: snap, PendingQuestionInfo: info})
+	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: snap})
 }
 
 func (s *State) PendingQuestion() *PendingQuestion {
@@ -1570,12 +1527,6 @@ func (s *State) ActivateSkill(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.activeSkills[name] = true
-}
-
-func (s *State) DeactivateSkill(name string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.activeSkills, name)
 }
 
 func (s *State) ActiveSkills() []string {

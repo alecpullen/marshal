@@ -42,7 +42,6 @@ type Orchestrator struct {
 
 	MaxFixRounds   int
 	MaxTotalTokens int
-	NewMeter       func() TokenMeter
 }
 
 func New(state *session.State, factory RunnerFactory) *Orchestrator {
@@ -62,9 +61,6 @@ func (o *Orchestrator) maxRounds() int {
 }
 
 func (o *Orchestrator) newMeter() TokenMeter {
-	if o.NewMeter != nil {
-		return o.NewMeter()
-	}
 	return NewEstimateMeter()
 }
 
@@ -184,9 +180,6 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 		ts.AddPatchNote(implTask.Summary)
 		o.State.UpdateSwarmRole("implementer", session.SwarmRoleDone, fmt.Sprintf("round %d/%d", round, rounds))
 
-		if o.overBudget(meter) {
-			break
-		}
 		o.State.UpdateSwarmRole("tester", session.SwarmRoleActive, fmt.Sprintf("round %d/%d", round, rounds))
 		testPrompt := testerPrompt(ts)
 		testTask, err := o.runRole(ctx, meter, agent.RoleTester, ScopeTester, testPrompt)

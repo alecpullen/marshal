@@ -52,9 +52,6 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
-	if m.connectOpen && m.connectModel != nil {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.connectModel.View(m.width, m.height))
-	}
 	if m.memoryOpen {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
 	}
@@ -309,9 +306,6 @@ func (m Model) tooSmallView() string {
 }
 
 func (m Model) fallbackView() string {
-	if m.connectOpen && m.connectModel != nil {
-		return m.connectModel.View(m.width, m.height)
-	}
 	if m.memoryOpen {
 		return m.memoryModel.View()
 	}

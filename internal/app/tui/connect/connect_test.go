@@ -7,9 +7,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 )
+
+func TestPanelSatisfiesDock(t *testing.T) {
+	var _ dock.Panel = Panel{}
+}
 
 func TestNewStartsAtPickTemplate(t *testing.T) {
 	m := New(Opts{Cfg: config.Default()})

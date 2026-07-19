@@ -3918,8 +3918,8 @@ func TestConnectOpensOverlay(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.dispatchCommand("/connect")
 	m = asModel(t, updated)
-	if !m.connectOpen {
-		t.Fatal("/connect should open the connect overlay")
+	if _, ok := m.dock.Panel().(connect.Panel); !ok {
+		t.Fatalf("/connect dock panel = %T, want connect.Panel", m.dock.Panel())
 	}
 }
 
@@ -3927,8 +3927,8 @@ func TestModelsOpensOverlay(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.dispatchCommand("/models")
 	m = asModel(t, updated)
-	if !m.connectOpen {
-		t.Fatal("/models should open the connect overlay")
+	if _, ok := m.dock.Panel().(connect.Panel); !ok {
+		t.Fatalf("/models dock panel = %T, want connect.Panel", m.dock.Panel())
 	}
 }
 
@@ -3936,7 +3936,7 @@ func TestModelsEmptyProvidersShowsAddProvider(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.dispatchCommand("/models")
 	m = asModel(t, updated)
-	if !m.connectOpen || m.connectModel == nil {
+	if _, ok := m.dock.Panel().(connect.Panel); !ok || m.connectModel == nil {
 		t.Fatal("/models with no providers should open the connect overlay")
 	}
 	view := stripANSI(m.connectModel.View(80, 24))
@@ -3970,7 +3970,8 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	if prov.BaseURL != "http://localhost:11434/v1" {
 		t.Fatalf(`expected provider base_url "http://localhost:11434/v1", got %q`, prov.BaseURL)
 	}
-	if updated.(Model).connectOpen {
+	um := updated.(Model)
+	if um.dock.IsOpen() {
 		t.Fatal("overlay should close after DoneMsg")
 	}
 	if updated.(Model).setReg != nil {
@@ -4046,7 +4047,8 @@ func TestConnectCancelledClosesOverlay(t *testing.T) {
 	updated, _ := m.dispatchCommand("/connect")
 	m = asModel(t, updated)
 	updated2, _ := m.Update(connect.CancelledMsg{})
-	if updated2.(Model).connectOpen {
+	um2 := updated2.(Model)
+	if um2.dock.IsOpen() {
 		t.Fatal("CancelledMsg should close the overlay")
 	}
 }

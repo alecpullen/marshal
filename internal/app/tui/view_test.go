@@ -86,6 +86,40 @@ func TestPickerRendersDockedAboveInput(t *testing.T) {
 	}
 }
 
+func TestConnectRendersDockedAboveInput(t *testing.T) {
+	m := newViewTestModel(t, 100, 40)
+	m.openConnect("")
+
+	view := stripANSI(m.viewString())
+	if !strings.Contains(view, "Connect a provider") {
+		t.Fatalf("connect panel content not rendered:\n%s", view)
+	}
+
+	lines := strings.Split(view, "\n")
+	// connect.Model.View renders its chrome.Panel border with the literal
+	// title "connect" (not the dynamic step title), so the border row is
+	// found by that label rather than by "Connect a provider".
+	panelLine, inputLine := -1, -1
+	for index, line := range lines {
+		if strings.Contains(line, "╭") && strings.Contains(line, "connect") {
+			panelLine = index
+		}
+		if panelLine != -1 && strings.Contains(line, "❯") {
+			inputLine = index
+			break
+		}
+	}
+	if panelLine == -1 {
+		t.Fatal("connect panel border not rendered")
+	}
+	if inputLine == -1 || inputLine < panelLine {
+		t.Fatalf("connect panel must sit above the input area (panel=%d input=%d)", panelLine, inputLine)
+	}
+	if !strings.HasPrefix(strings.TrimRight(lines[panelLine], " "), "╭") {
+		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
+	}
+}
+
 func TestTranscriptIsBorderless(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)

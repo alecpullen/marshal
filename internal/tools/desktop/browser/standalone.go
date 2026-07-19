@@ -56,17 +56,7 @@ func (b *StandaloneBackend) NewPage(ctx context.Context) (PageHandle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new browser context: %w", err)
 	}
-	page, err := pwCtx.NewPage()
-	if err != nil {
-		pwCtx.Close()
-		return nil, fmt.Errorf("new page: %w", err)
-	}
-	if b.timeout > 0 {
-		timeoutMs := float64(b.timeout / time.Millisecond)
-		page.SetDefaultTimeout(timeoutMs)
-		page.SetDefaultNavigationTimeout(timeoutMs)
-	}
-	return &standalonePage{page: page, ctx: pwCtx, owned: true}, nil
+	return newPage(pwCtx, true, b.timeout)
 }
 
 func (b *StandaloneBackend) Close() error {
@@ -95,6 +85,26 @@ func (b *StandaloneBackend) Close() error {
 
 func (b *StandaloneBackend) Mode() string {
 	return "standalone"
+}
+
+// newPage creates a page in pwCtx and wraps it in a standalonePage,
+// applying the backend's default timeouts. owned records whether the
+// caller created pwCtx (and therefore closes it on page-creation failure
+// and passes ownership to the page).
+func newPage(pwCtx playwright.BrowserContext, owned bool, timeout time.Duration) (PageHandle, error) {
+	page, err := pwCtx.NewPage()
+	if err != nil {
+		if owned {
+			_ = pwCtx.Close()
+		}
+		return nil, fmt.Errorf("new page: %w", err)
+	}
+	if timeout > 0 {
+		timeoutMs := float64(timeout / time.Millisecond)
+		page.SetDefaultTimeout(timeoutMs)
+		page.SetDefaultNavigationTimeout(timeoutMs)
+	}
+	return &standalonePage{page: page, ctx: pwCtx, owned: owned}, nil
 }
 
 type standalonePage struct {

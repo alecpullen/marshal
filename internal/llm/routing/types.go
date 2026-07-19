@@ -20,13 +20,13 @@ const (
 )
 
 type ModelPreset struct {
-	Name            string
-	Provider        string
-	Model           string
-	ContextWindow   int
-	MaxOutputTokens int
-	ToolCalling     string
-	LocalOnly       bool
+	Name            string `toml:"-"`
+	Provider        string `toml:"provider"`
+	Model           string `toml:"model"`
+	ContextWindow   int    `toml:"context_window"`
+	MaxOutputTokens int    `toml:"max_output_tokens"`
+	ToolCalling     string `toml:"tool_calling"`
+	LocalOnly       bool   `toml:"local_only"`
 }
 
 type AgentProfile struct {
@@ -35,7 +35,7 @@ type AgentProfile struct {
 }
 
 type ContextBudget struct {
-	MaxRepoContextTokens int
+	MaxRepoContextTokens int `toml:"max_repo_context_tokens"`
 }
 
 type TaskProfile struct {

@@ -42,19 +42,6 @@ type AgentRoleConfig struct {
 	Context routing.ContextBudget `toml:"context"`
 }
 
-type modelPresetConfig struct {
-	Provider        string `toml:"provider"`
-	Model           string `toml:"model"`
-	ContextWindow   int    `toml:"context_window"`
-	MaxOutputTokens int    `toml:"max_output_tokens"`
-	ToolCalling     string `toml:"tool_calling"`
-	LocalOnly       bool   `toml:"local_only"`
-}
-
-type contextBudgetConfig struct {
-	MaxRepoContextTokens int `toml:"max_repo_context_tokens"`
-}
-
 type ToolsConfig struct {
 	Shell ShellToolConfig `toml:"shell"`
 }
@@ -446,11 +433,11 @@ type fileHooks struct {
 }
 
 type fileModels struct {
-	Presets map[string]modelPresetConfig `toml:"presets"`
+	Presets map[string]routing.ModelPreset `toml:"presets"`
 }
 
 type fileAgentEntry struct {
-	Context contextBudgetConfig `toml:"context"`
+	Context routing.ContextBudget `toml:"context"`
 }
 
 type configFile struct {
@@ -725,29 +712,11 @@ func profileFromConfig(name string, in agentProfileConfig) routing.AgentProfile 
 	return routing.AgentProfile{Name: name, Roles: roles}
 }
 
-func presetFromConfig(name string, in modelPresetConfig) routing.ModelPreset {
-	return routing.ModelPreset{
-		Name:            name,
-		Provider:        in.Provider,
-		Model:           in.Model,
-		ContextWindow:   in.ContextWindow,
-		MaxOutputTokens: in.MaxOutputTokens,
-		ToolCalling:     in.ToolCalling,
-		LocalOnly:       in.LocalOnly,
-	}
-}
-
 // set assigns *src to *dst when src is non-nil. It collapses the
 // nullable-mirror merge stanzas to one line per field.
 func set[T any](dst *T, src *T) {
 	if src != nil {
 		*dst = *src
-	}
-}
-
-func contextBudgetFromConfig(in contextBudgetConfig) routing.ContextBudget {
-	return routing.ContextBudget{
-		MaxRepoContextTokens: in.MaxRepoContextTokens,
 	}
 }
 
@@ -808,7 +777,8 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Models.Presets = map[string]routing.ModelPreset{}
 		}
 		for name, preset := range file.Models.Presets {
-			cfg.Models.Presets[name] = presetFromConfig(name, preset)
+			preset.Name = name
+			cfg.Models.Presets[name] = preset
 		}
 	}
 	if file.AgentProfiles != nil {
@@ -824,7 +794,7 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Agents = map[routing.AgentRole]AgentRoleConfig{}
 		}
 		for role, agentCfg := range file.Agents {
-			cfg.Agents[role] = AgentRoleConfig{Context: contextBudgetFromConfig(agentCfg.Context)}
+			cfg.Agents[role] = AgentRoleConfig{Context: agentCfg.Context}
 		}
 	}
 	if file.Tools != nil && file.Tools.Shell != nil {

@@ -116,6 +116,16 @@ func newCompletionPopup(items []completionItem) *completionPopup {
 	return &completionPopup{items: items}
 }
 
+// showAll resets the popup to the full unfiltered item list (bare "/" or
+// "@" with no query).
+func (p *completionPopup) showAll() {
+	p.filtered = append([]completionItem(nil), p.items...)
+	p.index = 0
+	p.viewOffset = 0
+	p.acceptedText = ""
+	p.visible = len(p.filtered) > 0
+}
+
 func (p *completionPopup) update(query string) {
 	if query == "" {
 		p.visible = false

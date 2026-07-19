@@ -36,10 +36,7 @@ func (t *toolSet) toolsSelectTool() registry.Tool {
 		if t.sessionState == nil {
 			return registry.ToolResult{}, fmt.Errorf("session state not available")
 		}
-		store, ok := t.sessionState.(loadedToolsStore)
-		if !ok {
-			return registry.ToolResult{}, fmt.Errorf("session state does not support loaded tools")
-		}
+		store := loadedToolsStore(t.sessionState)
 
 		var unknown []string
 		var found []string

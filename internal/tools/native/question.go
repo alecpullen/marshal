@@ -37,10 +37,7 @@ func (t *toolSet) questionAskTool() registry.Tool {
 		if t.sessionState == nil {
 			return registry.ToolResult{}, fmt.Errorf("session state not available")
 		}
-		store, ok := t.sessionState.(questionStore)
-		if !ok {
-			return registry.ToolResult{}, fmt.Errorf("session state does not support questions")
-		}
+		store := questionStore(t.sessionState)
 		ch := make(chan []session.Answer, 1)
 		store.SetPendingQuestion(&session.PendingQuestion{
 			Questions:    args.Questions,

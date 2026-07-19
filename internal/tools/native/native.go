@@ -88,7 +88,7 @@ type toolSet struct {
 	runner          CommandRunner
 	testCommand     string
 	maxOutputBytes  int
-	sessionState    any
+	sessionState    *session.State
 	db              *db.DB
 	projectID       int64
 	fileTracker     FileTracker
@@ -208,9 +208,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		jobManager = NewJobManager(context.Background(), runner, root, maxBg, retention, maxOutputBytes)
 	}
 	if opts.SessionState != nil {
-		if counter, ok := any(opts.SessionState).(interface{ SetRunningJobsCount(int) }); ok {
-			jobManager.SetOnChange(counter.SetRunningJobsCount)
-		}
+		jobManager.SetOnChange(opts.SessionState.SetRunningJobsCount)
 	}
 	if opts.JobBroker != nil {
 		jobManager.SetBroker(opts.JobBroker)

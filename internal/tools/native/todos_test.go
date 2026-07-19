@@ -4,26 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
-type fakeTodoStore struct {
-	todos []TodoItem
-}
-
-func (f *fakeTodoStore) SetTodos(todos []TodoItem) error {
-	f.todos = append([]TodoItem(nil), todos...)
-	return nil
-}
-
-func (f *fakeTodoStore) Todos() []TodoItem {
-	return append([]TodoItem(nil), f.todos...)
-}
-
 func TestTodoWriteReplacesList(t *testing.T) {
-	store := &fakeTodoStore{}
-	tools := &toolSet{sessionState: store}
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	tools := &toolSet{sessionState: state}
 	tool := tools.todoWriteTool()
 
 	args, _ := json.Marshal(map[string]any{
@@ -40,15 +30,15 @@ func TestTodoWriteReplacesList(t *testing.T) {
 	if res.Summary != "todo list updated" {
 		t.Fatalf("summary = %q, want todo list updated", res.Summary)
 	}
-	got := store.Todos()
+	got := state.Todos()
 	if len(got) != 3 || got[1].Status != "in_progress" {
 		t.Fatalf("todos = %+v", got)
 	}
 }
 
 func TestTodoWriteRejectsTwoInProgress(t *testing.T) {
-	store := &fakeTodoStore{}
-	tools := &toolSet{sessionState: store}
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	tools := &toolSet{sessionState: state}
 	tool := tools.todoWriteTool()
 
 	args, _ := json.Marshal(map[string]any{

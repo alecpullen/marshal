@@ -3,7 +3,9 @@ package sdd
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +38,142 @@ func writePlan(t *testing.T, dir, name, content string) string {
 	return path
 }
 
+// initGitRepo makes dir a git repo on branch main with one commit. The
+// orchestrator shells out to git for diffs, and now that git failures are
+// surfaced instead of swallowed, tests need a real repo.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	cmds := [][]string{
+		{"git", "init", "-b", "main"},
+		{"git", "config", "user.email", "test@example.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	}
+	for _, c := range cmds {
+		cmd := exec.Command(c[0], c[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", c, err, out)
+		}
+	}
+}
+
+// trackingFactory records which roles were dispatched.
+func trackingFactory(summaries map[agent.AgentRole]string, calls *[]agent.AgentRole) RunnerFactory {
+	return func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		*calls = append(*calls, role)
+		r := &agent.Runner{}
+		summary := summaries[role]
+		r.RunTaskFunc = func(ctx context.Context, prompt string) (*agent.Task, error) {
+			return &agent.Task{Summary: summary}, nil
+		}
+		return r, nil
+	}
+}
+
+func systemMessages(state *session.State) string {
+	var b strings.Builder
+	for _, m := range state.Messages() {
+		if m.Role == session.RoleSystem {
+			b.WriteString(m.Content)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func TestParseImplementerStatusReadsStatusLine(t *testing.T) {
+	tests := []struct {
+		name    string
+		summary string
+		want    string
+	}{
+		{"blocked with 'not done' in body", "Status: BLOCKED\nTried but not done: missing API key", "BLOCKED"},
+		{"needs_context", "Status: NEEDS_CONTEXT\nWhich schema applies?", "NEEDS_CONTEXT"},
+		{"done with concerns", "Status: DONE_WITH_CONCERNS\nworks but flaky", "DONE_WITH_CONCERNS"},
+		{"plain done", "Status: DONE\nall good", "DONE"},
+		{"no status line, blocked word wins", "blocked: could not finish", "BLOCKED"},
+		{"no status line, default done", "implemented the thing", "DONE"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseImplementerStatus(tc.summary); got != tc.want {
+				t.Fatalf("parseImplementerStatus(%q) = %q, want %q", tc.summary, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOrchestratorSkipsBranchReviewOnEmptyDiff: when merge-base == HEAD
+// (nothing committed, or merge-base failed and fell back to HEAD), the
+// branch reviewer must NOT grade an empty diff.
+func TestOrchestratorSkipsBranchReviewOnEmptyDiff(t *testing.T) {
+	workDir := t.TempDir()
+	initGitRepo(t, workDir) // HEAD == merge-base on main
+	state := session.New(config.Default(), workDir, time.Now(), session.Persistence{})
+	planPath := writePlan(t, t.TempDir(), "plan.md", twoTaskPlan)
+
+	var calls []agent.AgentRole
+	factory := trackingFactory(map[agent.AgentRole]string{
+		agent.RoleSDDImplementer:    "DONE\ncommits: abc1234\ntests: 5/5 passing",
+		agent.RoleSDDReviewer:       "### Spec Compliance\n- ✅ Spec compliant\n\n### Assessment\n**Task quality:** Approved",
+	}, &calls)
+	o := New(state, factory, config.SDDConfig{MaxFixRounds: 3})
+	if err := o.Run(context.Background(), planPath); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, role := range calls {
+		if role == agent.RoleSDDBranchReviewer {
+			t.Fatal("branch reviewer graded an empty diff (merge-base == HEAD)")
+		}
+	}
+	if got := systemMessages(state); !strings.Contains(got, "Branch review skipped") {
+		t.Fatalf("expected a skip announcement, got:\n%s", got)
+	}
+}
+
+// TestOrchestratorBranchReviewRunsOnBranchDiff: with a real branch diff,
+// the branch reviewer runs and a ready verdict is announced.
+func TestOrchestratorBranchReviewRunsOnBranchDiff(t *testing.T) {
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	for _, c := range [][]string{
+		{"git", "checkout", "-b", "sdd/test"},
+		{"git", "commit", "--allow-empty", "-m", "task work"},
+	} {
+		cmd := exec.Command(c[0], c[1:]...)
+		cmd.Dir = workDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", c, err, out)
+		}
+	}
+	state := session.New(config.Default(), workDir, time.Now(), session.Persistence{})
+	planPath := writePlan(t, t.TempDir(), "plan.md", twoTaskPlan)
+
+	var calls []agent.AgentRole
+	factory := trackingFactory(map[agent.AgentRole]string{
+		agent.RoleSDDImplementer:    "DONE\ncommits: abc1234\ntests: 5/5 passing",
+		agent.RoleSDDReviewer:       "### Spec Compliance\n- ✅ Spec compliant\n\n### Assessment\n**Task quality:** Approved",
+		agent.RoleSDDBranchReviewer: "### Branch Verdict\n- ✅ Ready to merge",
+	}, &calls)
+	o := New(state, factory, config.SDDConfig{MaxFixRounds: 3})
+	if err := o.Run(context.Background(), planPath); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	found := false
+	for _, role := range calls {
+		if role == agent.RoleSDDBranchReviewer {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("branch reviewer was not dispatched on a real branch diff")
+	}
+	if got := systemMessages(state); !strings.Contains(got, "ready to merge") {
+		t.Fatalf("expected a ready-to-merge announcement, got:\n%s", got)
+	}
+}
+
 const twoTaskPlan = `# Test Plan Implementation Plan
 
 ## Global Constraints
@@ -55,7 +193,9 @@ Implement the second thing.
 `
 
 func TestOrchestratorRunsAllTasks(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	state := session.New(config.Default(), workDir, time.Now(), session.Persistence{})
 	planPath := writePlan(t, t.TempDir(), "plan.md", twoTaskPlan)
 	factory := scriptedFactory(map[agent.AgentRole]string{
 		agent.RoleSDDImplementer:    "DONE\ncommits: abc1234\ntests: 5/5 passing",
@@ -75,6 +215,7 @@ func TestOrchestratorRunsAllTasks(t *testing.T) {
 
 func TestOrchestratorResumesFromLedger(t *testing.T) {
 	workDir := t.TempDir()
+	initGitRepo(t, workDir)
 	state := session.New(config.Default(), workDir, time.Now(), session.Persistence{})
 	planPath := writePlan(t, workDir, "plan.md", twoTaskPlan)
 

@@ -82,6 +82,18 @@ func BuildBranchReviewerPrompt(planPath, reportsDir, diffPath, globalConstraints
 	return b.String()
 }
 
+// BuildBranchFixPrompt constructs a fix dispatch prompt for an implementer
+// subagent addressing branch-reviewer findings (the whole-branch fix wave).
+func BuildBranchFixPrompt(findings string) string {
+	var b strings.Builder
+	b.WriteString("You are fixing issues found by the branch reviewer across the whole branch.\n\n")
+	b.WriteString("## Findings to Fix\n\n")
+	b.WriteString(findings)
+	b.WriteString("\n\n## Your Job\n\n1. Fix each finding\n2. Re-run the tests that cover your changes\n")
+	b.WriteString("3. Report back with status and one-line test summary\n")
+	return b.String()
+}
+
 // BuildFixPrompt constructs a fix dispatch prompt for an implementer
 // subagent addressing reviewer findings.
 func BuildFixPrompt(reportPath, findings string, task PlanTask) string {

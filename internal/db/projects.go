@@ -15,51 +15,38 @@ type Project struct {
 	UpdatedAt time.Time
 }
 
-// GetProject returns the project row for the given ID.
-func (db *DB) GetProject(id int64) (Project, error) {
+// scanProject scans a single project row and parses its timestamps.
+// notFound is the error text returned when no row exists.
+func scanProject(row *sql.Row, notFound string) (Project, error) {
 	var p Project
 	var createdAt, updatedAt string
-	row := db.sqlDB.QueryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE id = ?`, id)
 	if err := row.Scan(&p.ID, &p.RootPath, &p.Name, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return Project{}, fmt.Errorf("project not found: %d", id)
+			return Project{}, errors.New(notFound)
 		}
 		return Project{}, fmt.Errorf("load project: %w", err)
 	}
-	var parseErr error
-	p.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
-	if parseErr != nil {
-		return Project{}, fmt.Errorf("parse created_at: %w", parseErr)
+	var err error
+	if p.CreatedAt, err = time.Parse(time.RFC3339, createdAt); err != nil {
+		return Project{}, fmt.Errorf("parse created_at: %w", err)
 	}
-	p.UpdatedAt, parseErr = time.Parse(time.RFC3339, updatedAt)
-	if parseErr != nil {
-		return Project{}, fmt.Errorf("parse updated_at: %w", parseErr)
+	if p.UpdatedAt, err = time.Parse(time.RFC3339, updatedAt); err != nil {
+		return Project{}, fmt.Errorf("parse updated_at: %w", err)
 	}
 	return p, nil
+}
+
+// GetProject returns the project row for the given ID.
+func (db *DB) GetProject(id int64) (Project, error) {
+	row := db.sqlDB.QueryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE id = ?`, id)
+	return scanProject(row, fmt.Sprintf("project not found: %d", id))
 }
 
 // GetProjectByRoot returns the project row for the given root path.
 // Returns a "project not found" error if no row exists. Never creates a row.
 func (db *DB) GetProjectByRoot(rootPath string) (Project, error) {
-	var p Project
-	var createdAt, updatedAt string
 	row := db.sqlDB.QueryRow(`SELECT id, root_path, name, created_at, updated_at FROM projects WHERE root_path = ?`, rootPath)
-	if err := row.Scan(&p.ID, &p.RootPath, &p.Name, &createdAt, &updatedAt); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Project{}, fmt.Errorf("project not found: %s", rootPath)
-		}
-		return Project{}, fmt.Errorf("load project by root: %w", err)
-	}
-	var parseErr error
-	p.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
-	if parseErr != nil {
-		return Project{}, fmt.Errorf("parse created_at: %w", parseErr)
-	}
-	p.UpdatedAt, parseErr = time.Parse(time.RFC3339, updatedAt)
-	if parseErr != nil {
-		return Project{}, fmt.Errorf("parse updated_at: %w", parseErr)
-	}
-	return p, nil
+	return scanProject(row, fmt.Sprintf("project not found: %s", rootPath))
 }
 
 // GetOrCreateProject returns the project ID for rootPath, creating the row

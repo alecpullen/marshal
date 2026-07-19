@@ -70,12 +70,6 @@ func (ts *TaskState) AddTestFailure(tf TestFailure) {
 	ts.testFailures = append(ts.testFailures, tf)
 }
 
-func (ts *TaskState) TestFailures() []TestFailure {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	return append([]TestFailure(nil), ts.testFailures...)
-}
-
 func (ts *TaskState) AddPatchNote(note string) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
@@ -86,12 +80,6 @@ func (ts *TaskState) SetFinalSummary(s string) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	ts.finalSummary = s
-}
-
-func (ts *TaskState) FinalSummary() string {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	return ts.finalSummary
 }
 
 // Render produces the markdown block injected into every role prompt.

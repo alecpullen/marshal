@@ -567,7 +567,6 @@ func buildSwarmRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	o := swarm.New(state, factory)
 	o.MaxFixRounds = cfg.Swarm.Budget.MaxFixRounds
 	o.MaxTotalTokens = cfg.Swarm.Budget.MaxTotalTokens
-	o.NewMeter = func() swarm.TokenMeter { return swarm.NewEstimateMeter() }
 	return o
 }
 

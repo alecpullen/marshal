@@ -433,7 +433,7 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 				return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: " + p}, nil
 			}
 		}
-		name := basenameLower(st.argv0)
+		name := strings.ToLower(lastSegment(st.argv0))
 		// argv-aware check for chmod/chown with recursive flags.
 		// Catches -r, -R (via lowercasing), and --recursive which the
 		// substring guardrailPatterns would miss. chmod -r and chown -r
@@ -457,15 +457,6 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 		return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: network installer (curl/wget to shell)"}, nil
 	}
 	return guardrailVerdict{}, nil
-}
-
-// basenameLower returns the lowercased last path component of argv0.
-func basenameLower(argv0 string) string {
-	name := argv0
-	if i := strings.LastIndex(name, "/"); i >= 0 {
-		name = name[i+1:]
-	}
-	return strings.ToLower(name)
 }
 
 // hasRecursiveFlag checks whether the stage's arguments include a recursive

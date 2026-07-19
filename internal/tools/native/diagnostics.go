@@ -3,8 +3,8 @@ package native
 import (
 	"context"
 	"encoding/json"
-	"strings"
 
+	"marshal/internal/repo"
 	"marshal/internal/tools/registry"
 )
 
@@ -42,22 +42,11 @@ func (t *toolSet) diagnosticsCheckTool() registry.Tool {
 	return tool
 }
 
+// languageOf returns the first detectable language among paths.
 func languageOf(paths []string) string {
 	for _, p := range paths {
-		lower := strings.ToLower(p)
-		switch {
-		case strings.HasSuffix(lower, ".go"):
-			return "go"
-		case strings.HasSuffix(lower, ".py"):
-			return "python"
-		case strings.HasSuffix(lower, ".rs"):
-			return "rust"
-		case strings.HasSuffix(lower, ".ts") || strings.HasSuffix(lower, ".tsx"):
-			return "typescript"
-		case strings.HasSuffix(lower, ".js") || strings.HasSuffix(lower, ".jsx") || strings.HasSuffix(lower, ".mjs") || strings.HasSuffix(lower, ".cjs"):
-			return "javascript"
-		case strings.HasSuffix(lower, ".rb"):
-			return "ruby"
+		if lang := repo.DetectLanguage(p); lang != "" {
+			return lang
 		}
 	}
 	return ""

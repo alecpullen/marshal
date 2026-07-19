@@ -35,7 +35,7 @@ func ClassifyCommand(input string) (Classification, error) {
 		return Classification{Risk: registry.RiskCommand, Reason: "empty command"}, nil
 	}
 
-	name := basename(args[0])
+	name := lastSegment(args[0])
 
 	switch name {
 	case "rm":
@@ -58,8 +58,8 @@ func ClassifyCommand(input string) (Classification, error) {
 	return Classification{Risk: registry.RiskCommand, Reason: "command"}, nil
 }
 
-// basename returns the last /-separated component of p.
-func basename(p string) string {
+// lastSegment returns the last /-separated component of p.
+func lastSegment(p string) string {
 	if idx := strings.LastIndex(p, "/"); idx >= 0 {
 		return p[idx+1:]
 	}

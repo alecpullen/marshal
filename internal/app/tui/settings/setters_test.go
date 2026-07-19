@@ -19,17 +19,6 @@ func TestIntSetterClampsToMin(t *testing.T) {
 	}
 }
 
-func TestFloatSetter(t *testing.T) {
-	var got float64
-	set := floatSetter(func(v float64) { got = v })
-	if err := set("3.14"); err != nil || got != 3.14 {
-		t.Fatalf("expected 3.14, got %v err %v", got, err)
-	}
-	if err := set("x"); err == nil {
-		t.Fatal("expected error for non-number")
-	}
-}
-
 func TestDurationSetter(t *testing.T) {
 	var got time.Duration
 	set := durationSetter(func(d time.Duration) { got = d })

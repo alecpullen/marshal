@@ -23,17 +23,6 @@ func intSetter(min int, apply func(int)) func(string) error {
 	}
 }
 
-func floatSetter(apply func(float64)) func(string) error {
-	return func(s string) error {
-		v, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			return fmt.Errorf("must be a number")
-		}
-		apply(v)
-		return nil
-	}
-}
-
 func durationSetter(apply func(time.Duration)) func(string) error {
 	return func(s string) error {
 		d, err := time.ParseDuration(s)

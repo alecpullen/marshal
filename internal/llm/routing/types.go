@@ -25,10 +25,7 @@ type ModelPreset struct {
 	Model           string
 	ContextWindow   int
 	MaxOutputTokens int
-	Temperature     float64
-	TopP            float64
 	ToolCalling     string
-	ReasoningEffort string
 	LocalOnly       bool
 }
 

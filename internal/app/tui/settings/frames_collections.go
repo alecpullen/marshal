@@ -329,24 +329,10 @@ func presetsFrame(s *state) *frame {
 					intField("presets."+k+".max_output", "Max output tokens",
 						func() int { return s.cfg.Models.Presets[k].MaxOutputTokens }, 0,
 						func(v int) { mut(func(p *routing.ModelPreset) { p.MaxOutputTokens = v }) }),
-					{id: "presets." + k + ".temperature", title: "Temperature", kind: kindScalar,
-						getStr: func() string {
-							return strconv.FormatFloat(s.cfg.Models.Presets[k].Temperature, 'f', -1, 64)
-						},
-						setStr: floatSetter(func(v float64) { mut(func(p *routing.ModelPreset) { p.Temperature = v }) })},
-					{id: "presets." + k + ".top_p", title: "Top P", kind: kindScalar,
-						getStr: func() string {
-							return strconv.FormatFloat(s.cfg.Models.Presets[k].TopP, 'f', -1, 64)
-						},
-						setStr: floatSetter(func(v float64) { mut(func(p *routing.ModelPreset) { p.TopP = v }) })},
 					enumField("presets."+k+".tool_calling", "Tool calling",
 						[]string{"native", "simulated", "none"},
 						func() string { return s.cfg.Models.Presets[k].ToolCalling },
 						func(v string) { mut(func(p *routing.ModelPreset) { p.ToolCalling = v }) }),
-					enumField("presets."+k+".reasoning", "Reasoning effort",
-						[]string{"low", "medium", "high", "none"},
-						func() string { return s.cfg.Models.Presets[k].ReasoningEffort },
-						func(v string) { mut(func(p *routing.ModelPreset) { p.ReasoningEffort = v }) }),
 					{id: "presets." + k + ".local_only", title: "Local only", kind: kindToggle,
 						desc:    "block remote providers for this preset",
 						getBool: func() bool { return s.cfg.Models.Presets[k].LocalOnly },

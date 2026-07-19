@@ -643,7 +643,7 @@ include_tests = true
 	if preset.Provider != "ollama" || preset.Model != "qwen2.5-coder:14b" || !preset.LocalOnly {
 		t.Fatalf("preset coder = %#v", preset)
 	}
-	if preset.ContextWindow != 32768 || preset.MaxOutputTokens != 4096 || preset.Temperature != 0.1 || preset.TopP != 1.0 {
+	if preset.ContextWindow != 32768 || preset.MaxOutputTokens != 4096 {
 		t.Fatalf("preset numeric fields = %#v", preset)
 	}
 	profile := cfg.AgentProfiles["local_balanced"]

@@ -344,7 +344,7 @@ func fullEditedConfig() Config {
 	cfg.Hooks = HooksConfig{FailClosed: true, Entries: []HookConfig{{Event: "pre_tool", Matcher: "shell.*", Command: "echo hi", TimeoutMS: 500}}}
 	cfg.Providers = map[string]ProviderConfig{"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "real-key", APIKeyEnv: "OLLAMA_KEY", ToolCalling: true}}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Name: "fast", Provider: "ollama", Model: "qwen3", ContextWindow: 32768, MaxOutputTokens: 4096, Temperature: 0.2, TopP: 0.9, ToolCalling: "native", ReasoningEffort: "low", LocalOnly: true},
+		"fast": {Name: "fast", Provider: "ollama", Model: "qwen3", ContextWindow: 32768, MaxOutputTokens: 4096, ToolCalling: "native", LocalOnly: true},
 	}
 	return cfg
 }

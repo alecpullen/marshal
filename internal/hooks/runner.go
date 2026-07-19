@@ -204,7 +204,7 @@ func scrubHookEnv(parentEnv []string) []string {
 	out := make([]string, 0, len(parentEnv))
 	for _, kv := range parentEnv {
 		key := envutil.EnvKey(kv)
-		if envutil.IsSecretBearer(key) {
+		if envutil.IsSecretKey(key) {
 			continue
 		}
 		out = append(out, kv)

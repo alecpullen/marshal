@@ -2,6 +2,7 @@ package contextpack
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -56,6 +57,45 @@ func PinFiles(pack Pack, snippets []FileSnippet) Pack {
 	return pack
 }
 
+// resolvePackParams applies the shared maxTokens/generatedAt defaulting
+// used by every pack-mutation entry point.
+func resolvePackParams(pack Pack, maxTokens int, now func() time.Time) (int, time.Time) {
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxTokens
+	}
+	generatedAt := pack.GeneratedAt.UTC()
+	if generatedAt.IsZero() {
+		generatedAt = time.Now().UTC()
+	}
+	if now != nil {
+		generatedAt = now().UTC()
+	}
+	return maxTokens, generatedAt
+}
+
+// replaceSection returns sections with every dropKind section removed and
+// sec inserted immediately before the first section whose kind is in
+// beforeKinds (appended when none match). When ok is false, sections are
+// only filtered.
+func replaceSection(sections []Section, dropKind SectionKind, sec Section, ok bool, beforeKinds ...SectionKind) []Section {
+	out := make([]Section, 0, len(sections)+1)
+	inserted := false
+	for _, s := range sections {
+		if s.Kind == dropKind {
+			continue
+		}
+		if ok && !inserted && slices.Contains(beforeKinds, s.Kind) {
+			out = append(out, sec)
+			inserted = true
+		}
+		out = append(out, s)
+	}
+	if ok && !inserted {
+		out = append(out, sec)
+	}
+	return out
+}
+
 func RefreshPlan(pack Pack, plan []string, now func() time.Time) Pack {
 	maxTokens := pack.TokenUsage.MaxTokens
 	if maxTokens <= 0 {
@@ -65,51 +105,14 @@ func RefreshPlan(pack Pack, plan []string, now func() time.Time) Pack {
 }
 
 func RefreshPlanWithBudget(pack Pack, plan []string, maxTokens int, now func() time.Time) Pack {
-	if maxTokens <= 0 {
-		maxTokens = DefaultMaxTokens
-	}
-
-	generatedAt := pack.GeneratedAt.UTC()
-	if generatedAt.IsZero() {
-		generatedAt = time.Now().UTC()
-	}
-	if now != nil {
-		generatedAt = now().UTC()
-	}
-
+	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
 	planSection, hasPlan := newPlanSection(plan)
-	sections := make([]Section, 0, len(pack.Sections)+1)
-	insertedPlan := false
-	for _, section := range pack.Sections {
-		if section.Kind == SectionPlan {
-			continue
-		}
-		if hasPlan && !insertedPlan && (section.Kind == SectionFileSnippet || section.Kind == SectionToolOutput) {
-			sections = append(sections, planSection)
-			insertedPlan = true
-		}
-		sections = append(sections, section)
-	}
-	if hasPlan && !insertedPlan {
-		sections = append(sections, planSection)
-	}
-
+	sections := replaceSection(pack.Sections, SectionPlan, planSection, hasPlan, SectionFileSnippet, SectionToolOutput)
 	return buildPackFromSections(sections, maxTokens, generatedAt)
 }
 
 func Rebudget(pack Pack, maxTokens int, now func() time.Time) Pack {
-	if maxTokens <= 0 {
-		maxTokens = DefaultMaxTokens
-	}
-
-	generatedAt := pack.GeneratedAt.UTC()
-	if generatedAt.IsZero() {
-		generatedAt = time.Now().UTC()
-	}
-	if now != nil {
-		generatedAt = now().UTC()
-	}
-
+	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
 	return buildPackFromSections(pack.Clone().Sections, maxTokens, generatedAt)
 }
 
@@ -138,27 +141,7 @@ func buildPackFromSections(sections []Section, maxTokens int, generatedAt time.T
 	}
 
 	remaining := maxTokens
-	for _, s := range pinned {
-		if s.EstimatedTokens <= remaining {
-			pack.Sections = append(pack.Sections, s)
-			pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
-			remaining -= s.EstimatedTokens
-			continue
-		}
-		truncated, ok := truncateToTokens(s.Content, remaining)
-		if !ok {
-			pack.TokenUsage.Truncated = true
-			continue
-		}
-		s.Content = truncated
-		s.EstimatedTokens = EstimateTokens(s.Content)
-		pack.Sections = append(pack.Sections, s)
-		pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
-		pack.TokenUsage.Truncated = true
-		remaining -= s.EstimatedTokens
-	}
-
-	for _, s := range regular {
+	for _, s := range slices.Concat(pinned, regular) {
 		if s.EstimatedTokens <= remaining {
 			pack.Sections = append(pack.Sections, s)
 			pack.TokenUsage.EstimatedTokens += s.EstimatedTokens
@@ -224,36 +207,9 @@ func newMemorySection(memories []MemoryNote) (Section, bool) {
 // appended if none exist), then rebuilds the pack within maxTokens. Mirrors
 // RefreshPlanWithBudget's replace-and-rebuild shape.
 func MergeMemories(pack Pack, memories []MemoryNote, maxTokens int, now func() time.Time) Pack {
-	if maxTokens <= 0 {
-		maxTokens = DefaultMaxTokens
-	}
-
-	generatedAt := pack.GeneratedAt.UTC()
-	if generatedAt.IsZero() {
-		generatedAt = time.Now().UTC()
-	}
-	if now != nil {
-		generatedAt = now().UTC()
-	}
-
+	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
 	memorySection, hasMemory := newMemorySection(memories)
-	sections := make([]Section, 0, len(pack.Sections)+1)
-	insertedMemory := false
-	for _, section := range pack.Sections {
-		if section.Kind == SectionMemory {
-			continue
-		}
-		if hasMemory && !insertedMemory &&
-			(section.Kind == SectionPlan || section.Kind == SectionFileSnippet || section.Kind == SectionToolOutput) {
-			sections = append(sections, memorySection)
-			insertedMemory = true
-		}
-		sections = append(sections, section)
-	}
-	if hasMemory && !insertedMemory {
-		sections = append(sections, memorySection)
-	}
-
+	sections := replaceSection(pack.Sections, SectionMemory, memorySection, hasMemory, SectionPlan, SectionFileSnippet, SectionToolOutput)
 	return buildPackFromSections(sections, maxTokens, generatedAt)
 }
 

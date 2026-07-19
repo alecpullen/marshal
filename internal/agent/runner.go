@@ -70,7 +70,7 @@ func normalizeArgs(args json.RawMessage) ([]byte, error) {
 }
 
 type RouteResolver interface {
-	Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error)
+	Resolve(class string) (routing.Route, provider.Provider, error)
 }
 
 // Snapshotter tracks and restores shadow-git snapshots of the working tree.
@@ -841,7 +841,7 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 		return turnProvider, turnModel, routing.Route{}
 	}
 
-	route, resolvedProvider, err := r.RouteResolver.Resolve(routing.TaskProfile{Class: string(task.Class)})
+	route, resolvedProvider, err := r.RouteResolver.Resolve(string(task.Class))
 	if err != nil {
 		r.State.SetProviderError(err)
 		r.State.SetActiveRoute(session.RouteInfo{})

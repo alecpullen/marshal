@@ -22,8 +22,8 @@ func NewStaticRouter(config Config) *StaticRouter {
 	return &StaticRouter{config: config}
 }
 
-func (r *StaticRouter) Resolve(task TaskProfile) (Route, error) {
-	return r.ResolveRole(roleForTaskClass(task.Class))
+func (r *StaticRouter) Resolve(class string) (Route, error) {
+	return r.ResolveRole(roleForTaskClass(class))
 }
 
 // ResolveRole resolves a route for an explicit agent role, with the same

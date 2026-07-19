@@ -89,8 +89,6 @@ func (w *Workspace) WriteReviewPackage(base, head string) (string, error) {
 	return path, nil
 }
 
-
-
 func shortSHA(sha string) string {
 	if len(sha) >= 7 {
 		return sha[:7]

@@ -49,4 +49,3 @@ func TestCreateWorktree(t *testing.T) {
 		t.Logf("cleanup worktree: %v", err)
 	}
 }
-

@@ -38,10 +38,6 @@ type ContextBudget struct {
 	MaxRepoContextTokens int `toml:"max_repo_context_tokens"`
 }
 
-type TaskProfile struct {
-	Class string
-}
-
 type Route struct {
 	Role          AgentRole
 	Profile       string

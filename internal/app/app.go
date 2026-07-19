@@ -229,8 +229,8 @@ func newRoutedProviderResolver(cfg config.Config) *routedProviderResolver {
 	}
 }
 
-func (r *routedProviderResolver) Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error) {
-	route, err := r.router.Resolve(task)
+func (r *routedProviderResolver) Resolve(class string) (routing.Route, provider.Provider, error) {
+	route, err := r.router.Resolve(class)
 	if err != nil {
 		return routing.Route{}, nil, err
 	}
@@ -321,7 +321,7 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), error) {
 	resolver := newRoutedProviderResolver(cfg)
-	route, resolvedProvider, err := resolver.Resolve(routing.TaskProfile{Class: "edit"})
+	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}

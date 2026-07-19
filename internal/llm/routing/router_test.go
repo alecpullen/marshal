@@ -48,7 +48,7 @@ func testRouter() *StaticRouter {
 }
 
 func TestResolveQuestionUsesRepoScout(t *testing.T) {
-	route, err := testRouter().Resolve(TaskProfile{Class: "question"})
+	route, err := testRouter().Resolve("question")
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestResolveQuestionUsesRepoScout(t *testing.T) {
 }
 
 func TestResolveEditUsesImplementerAndBudget(t *testing.T) {
-	route, err := testRouter().Resolve(TaskProfile{Class: "edit"})
+	route, err := testRouter().Resolve("edit")
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestResolveFallsBackToImplementerForMissingRole(t *testing.T) {
 			},
 		},
 	})
-	route, err := router.Resolve(TaskProfile{Class: "question"})
+	route, err := router.Resolve("question")
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestResolveQuestionMissingRepoScoutPresetDoesNotFallBackToImplementer(t *te
 			},
 		},
 	})
-	_, err := router.Resolve(TaskProfile{Class: "question"})
+	_, err := router.Resolve("question")
 	if !errors.Is(err, ErrPresetNotFound) {
 		t.Fatalf("err = %v, want ErrPresetNotFound", err)
 	}
@@ -140,7 +140,7 @@ func TestResolveQuestionRemoteBlockedDoesNotFallBackToImplementer(t *testing.T) 
 			},
 		},
 	})
-	_, err := router.Resolve(TaskProfile{Class: "question"})
+	_, err := router.Resolve("question")
 	if !errors.Is(err, ErrRemoteProviderBlocked) {
 		t.Fatalf("err = %v, want ErrRemoteProviderBlocked", err)
 	}
@@ -152,7 +152,7 @@ func TestResolveUsesLegacyWhenNoProfileRouteExists(t *testing.T) {
 		LegacyProvider: "ollama",
 		LegacyModel:    "qwen2.5-coder:14b",
 	})
-	route, err := router.Resolve(TaskProfile{Class: "question"})
+	route, err := router.Resolve("question")
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestResolveUsesLegacyWhenNoProfileRouteExists(t *testing.T) {
 }
 
 func TestResolveMissingProfileWithoutLegacyReturnsError(t *testing.T) {
-	_, err := NewStaticRouter(Config{DefaultProfile: "missing"}).Resolve(TaskProfile{Class: "question"})
+	_, err := NewStaticRouter(Config{DefaultProfile: "missing"}).Resolve("question")
 	if !errors.Is(err, ErrProfileNotFound) {
 		t.Fatalf("err = %v, want ErrProfileNotFound", err)
 	}
@@ -181,7 +181,7 @@ func TestResolveMissingPresetReturnsError(t *testing.T) {
 			"local_balanced": {Name: "local_balanced", Roles: map[AgentRole]string{RoleImplementer: "missing"}},
 		},
 	})
-	_, err := router.Resolve(TaskProfile{Class: "edit"})
+	_, err := router.Resolve("edit")
 	if !errors.Is(err, ErrPresetNotFound) {
 		t.Fatalf("err = %v, want ErrPresetNotFound", err)
 	}
@@ -198,7 +198,7 @@ func TestResolveBlocksRemotePresetWhenRemoteDisabled(t *testing.T) {
 			"remote_profile": {Name: "remote_profile", Roles: map[AgentRole]string{RoleImplementer: "remote"}},
 		},
 	})
-	_, err := router.Resolve(TaskProfile{Class: "edit"})
+	_, err := router.Resolve("edit")
 	if !errors.Is(err, ErrRemoteProviderBlocked) {
 		t.Fatalf("err = %v, want ErrRemoteProviderBlocked", err)
 	}
@@ -221,7 +221,7 @@ func TestResolveKnowledgeUsesKnowledgeRoleWhenConfigured(t *testing.T) {
 		},
 	})
 
-	route, err := router.Resolve(TaskProfile{Class: "knowledge"})
+	route, err := router.Resolve("knowledge")
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestResolveKnowledgeUsesKnowledgeRoleWhenConfigured(t *testing.T) {
 }
 
 func TestResolveKnowledgeFallsBackToImplementerWhenNotConfigured(t *testing.T) {
-	route, err := testRouter().Resolve(TaskProfile{Class: "knowledge"})
+	route, err := testRouter().Resolve("knowledge")
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestLegacyRouteHasSaneDefaults(t *testing.T) {
 		LegacyProvider: "ollama",
 		LegacyModel:    "qwen2.5-coder:7b",
 	})
-	route, err := router.Resolve(TaskProfile{Class: "edit"})
+	route, err := router.Resolve("edit")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

@@ -23,6 +23,7 @@ func CreateWorktree(workingDir, branchName string) (*Worktree, error) {
 	}
 	return &Worktree{Path: wtPath, Branch: branchName, parent: workingDir}, nil
 }
+
 // Remove removes the worktree directory but keeps the branch (so the user
 // can /merge or /pr). Errors are swallowed.
 func (wt *Worktree) Remove() error {

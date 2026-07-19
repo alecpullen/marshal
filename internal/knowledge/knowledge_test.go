@@ -52,7 +52,7 @@ type fakeRouteResolver struct {
 	err   error
 }
 
-func (r *fakeRouteResolver) Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error) {
+func (r *fakeRouteResolver) Resolve(class string) (routing.Route, provider.Provider, error) {
 	if r.err != nil {
 		return routing.Route{}, nil, r.err
 	}

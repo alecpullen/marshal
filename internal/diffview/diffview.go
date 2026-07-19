@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/alecthomas/chroma/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
@@ -36,9 +35,8 @@ const (
 type Options struct {
 	Width     int           // available terminal width
 	Mode      Mode          // layout selection
-	Highlight bool          // apply chroma syntax highlighting
-	Theme     *chroma.Style // nil → default theme (F17 R4: respect the active theme)
-	Language  string        // override lexer language (default: "go")
+	Highlight bool   // apply chroma syntax highlighting
+	Language  string // override lexer language (default: "go")
 }
 
 // LineKind classifies a diff line.
@@ -49,7 +47,6 @@ const (
 	LineAdded
 	LineRemoved
 	LineHunkHeader
-	LineFileHeader
 )
 
 // Line is a single parsed diff line.
@@ -269,7 +266,7 @@ func renderUnified(b *strings.Builder, h Hunk, opts Options) int {
 			return count
 		}
 		switch ln.Kind {
-		case LineHunkHeader, LineFileHeader:
+		case LineHunkHeader:
 			b.WriteString(hunkStyle.Render(ln.Content))
 		case LineAdded:
 			content := ln.Content
@@ -321,7 +318,7 @@ func pairLines(lines []Line) []sidePair {
 	i := 0
 	for i < len(lines) {
 		ln := lines[i]
-		if ln.Kind == LineHunkHeader || ln.Kind == LineFileHeader {
+		if ln.Kind == LineHunkHeader {
 			i++
 			continue
 		}

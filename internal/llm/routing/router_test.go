@@ -40,7 +40,7 @@ func testRouter() *StaticRouter {
 			},
 		},
 		ContextBudgets: map[AgentRole]ContextBudget{
-			RoleImplementer: {MaxRepoContextTokens: 48000, IncludeRawCode: true},
+			RoleImplementer: {MaxRepoContextTokens: 48000},
 		},
 		LegacyProvider: "legacy-provider",
 		LegacyModel:    "legacy-model",
@@ -71,7 +71,7 @@ func TestResolveEditUsesImplementerAndBudget(t *testing.T) {
 	if route.Role != RoleImplementer {
 		t.Fatalf("Role = %q, want %q", route.Role, RoleImplementer)
 	}
-	if route.ContextBudget.MaxRepoContextTokens != 48000 || !route.ContextBudget.IncludeRawCode {
+	if route.ContextBudget.MaxRepoContextTokens != 48000 {
 		t.Fatalf("ContextBudget = %#v", route.ContextBudget)
 	}
 }
@@ -340,9 +340,6 @@ func TestLegacyRouteHasSaneDefaults(t *testing.T) {
 	}
 	if route.ContextBudget.MaxRepoContextTokens == 0 {
 		t.Fatal("legacy route ContextBudget.MaxRepoContextTokens is 0, want > 0")
-	}
-	if route.ContextBudget.MaxConversationTokens == 0 {
-		t.Fatal("legacy route ContextBudget.MaxConversationTokens is 0, want > 0")
 	}
 }
 

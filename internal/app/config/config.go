@@ -53,13 +53,7 @@ type modelPresetConfig struct {
 }
 
 type contextBudgetConfig struct {
-	MaxRepoContextTokens  int  `toml:"max_repo_context_tokens"`
-	MaxConversationTokens int  `toml:"max_conversation_tokens"`
-	IncludeRawCode        bool `toml:"include_raw_code"`
-	IncludeSummaries      bool `toml:"include_summaries"`
-	IncludeSymbols        bool `toml:"include_symbols"`
-	IncludeDiff           bool `toml:"include_diff"`
-	IncludeTests          bool `toml:"include_tests"`
+	MaxRepoContextTokens int `toml:"max_repo_context_tokens"`
 }
 
 type ToolsConfig struct {
@@ -755,13 +749,7 @@ func presetFromConfig(name string, in modelPresetConfig) routing.ModelPreset {
 
 func contextBudgetFromConfig(in contextBudgetConfig) routing.ContextBudget {
 	return routing.ContextBudget{
-		MaxRepoContextTokens:  in.MaxRepoContextTokens,
-		MaxConversationTokens: in.MaxConversationTokens,
-		IncludeRawCode:        in.IncludeRawCode,
-		IncludeSummaries:      in.IncludeSummaries,
-		IncludeSymbols:        in.IncludeSymbols,
-		IncludeDiff:           in.IncludeDiff,
-		IncludeTests:          in.IncludeTests,
+		MaxRepoContextTokens: in.MaxRepoContextTokens,
 	}
 }
 

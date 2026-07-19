@@ -10,7 +10,6 @@ var (
 	ErrProfileNotFound       = errors.New("routing: profile not found")
 	ErrPresetNotFound        = errors.New("routing: preset not found")
 	ErrRemoteProviderBlocked = errors.New("routing: remote provider blocked")
-	ErrNoRoute               = errors.New("routing: no route available")
 
 	errRoleNotConfigured = errors.New("routing: role not configured")
 )
@@ -125,8 +124,7 @@ func (r *StaticRouter) legacyRoute(role AgentRole) (Route, bool) {
 			Model:    r.config.LegacyModel,
 		},
 		ContextBudget: ContextBudget{
-			MaxRepoContextTokens:  8000,
-			MaxConversationTokens: 4000,
+			MaxRepoContextTokens: 8000,
 		},
 		Legacy: true,
 	}, true

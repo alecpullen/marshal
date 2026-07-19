@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func (r *scriptedRouteResolver) Resolve(task routing.TaskProfile) (routing.Route
 		}
 	}
 	if len(r.routes) == 0 {
-		return routing.Route{}, nil, routing.ErrNoRoute
+		return routing.Route{}, nil, errors.New("no scripted route")
 	}
 	route := r.routes[0]
 	r.routes = r.routes[1:]

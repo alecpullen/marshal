@@ -185,6 +185,17 @@ type Answer struct {
 // allUnanswered tracking).
 const AnswerUnanswered = "Unanswered"
 
+// UnansweredAnswers returns one AnswerUnanswered answer per question, in
+// order. Used by shutdown paths and by transports that cannot ask
+// interactively (ACP) or pre-fill dismissals (TUI question form).
+func UnansweredAnswers(questions []Question) []Answer {
+	answers := make([]Answer, len(questions))
+	for i, q := range questions {
+		answers[i] = Answer{Question: q.Question, Answer: AnswerUnanswered}
+	}
+	return answers
+}
+
 // PendingQuestion carries one or more Questions from the agent awaiting
 // user response. The runner blocks on ResponseChan; the TUI sends exactly
 // one value, one Answer per Question (in the same order).
@@ -923,11 +934,7 @@ func (s *State) ResolvePendingForShutdown() {
 	// Answer every pending question with "Unanswered" (Respond handles
 	// nil channel and once-only guarantee).
 	if question != nil {
-		answers := make([]Answer, len(question.Questions))
-		for i, q := range question.Questions {
-			answers[i] = Answer{Question: q.Question, Answer: AnswerUnanswered}
-		}
-		question.Respond(answers)
+		question.Respond(UnansweredAnswers(question.Questions))
 	}
 }
 

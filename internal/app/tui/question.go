@@ -44,14 +44,11 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 	qm := &questionModel{
 		q:       q,
 		width:   max(width, 30),
-		answers: make([]session.Answer, len(q.Questions)),
+		answers: session.UnansweredAnswers(q.Questions),
 		inputs:  make([]*string, len(q.Questions)),
 		selects: make([]*string, len(q.Questions)),
 		multis:  make([]*[]string, len(q.Questions)),
 		others:  make([]*string, len(q.Questions)),
-	}
-	for i := range qm.answers {
-		qm.answers[i] = session.Answer{Question: q.Questions[i].Question, Answer: session.AnswerUnanswered}
 	}
 
 	var fields []huh.Field

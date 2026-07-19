@@ -63,10 +63,6 @@ func (p *blockingProvider) Name() string { return "blocking" }
 
 func (p *blockingProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) { return nil, nil }
 
-func (p *blockingProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
-	return schema.EmbedResponse{}, nil
-}
-
 func (p *blockingProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
 	return schema.ProviderCapabilities{}
 }

@@ -29,9 +29,6 @@ func (p *fakeProvider) Name() string { return "fake" }
 func (p *fakeProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 	return nil, nil
 }
-func (p *fakeProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
-	return schema.EmbedResponse{}, nil
-}
 func (p *fakeProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
 	return schema.ProviderCapabilities{}
 }

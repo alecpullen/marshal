@@ -43,9 +43,6 @@ func (r *recordingProvider) Chat(ctx context.Context, req schema.ChatRequest) (<
 	close(ch)
 	return ch, nil
 }
-func (r *recordingProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
-	return schema.EmbedResponse{}, nil
-}
 func (r *recordingProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
 	return schema.ProviderCapabilities{}
 }

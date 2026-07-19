@@ -145,9 +145,6 @@ type barrierProvider struct {
 
 func (p *barrierProvider) Name() string                                           { return "barrier" }
 func (p *barrierProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) { return nil, nil }
-func (p *barrierProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
-	return schema.EmbedResponse{}, nil
-}
 func (p *barrierProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
 	return schema.ProviderCapabilities{}
 }
@@ -473,9 +470,6 @@ type usageScriptedProvider struct {
 func (p *usageScriptedProvider) Name() string { return "usage-scripted" }
 func (p *usageScriptedProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 	return nil, nil
-}
-func (p *usageScriptedProvider) Embed(ctx context.Context, req schema.EmbedRequest) (schema.EmbedResponse, error) {
-	return schema.EmbedResponse{}, nil
 }
 func (p *usageScriptedProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
 	return schema.ProviderCapabilities{}

@@ -243,8 +243,6 @@ func renderMessage(msg session.Message, width int) string {
 	}
 }
 
-var promptPrefixStyle = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
-
 func renderUserMessage(content string, width int) string {
 	contentWidth := max(width-2, 1)
 	wrapped := ansi.Wrap(content, contentWidth, "")
@@ -316,10 +314,6 @@ func renderSystemNotice(content string, width int) string {
 	return b.String()
 }
 
-var toolBulletStyle = lipgloss.NewStyle().Foreground(goldColor)
-
-var queuedStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
-
 // renderQueuedMessages renders the F16 steering queue as a footer
 // beneath the live transcript so the user can see what they typed
 // while the agent was working. width is informational (no wrapping
@@ -330,7 +324,7 @@ func renderQueuedMessages(q []string, width int) string {
 	}
 	_ = width
 	var b strings.Builder
-	b.WriteString(queuedStyle.Render(" Queued (Ctrl+X to clear):"))
+	b.WriteString(warningStyle().Render(" Queued (Ctrl+X to clear):"))
 	b.WriteString("\n")
 	for _, msg := range q {
 		b.WriteString("  ")
@@ -349,7 +343,7 @@ func renderToolResultLine(content string, width int) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(toolBulletStyle.Render("⏺ "))
+	b.WriteString(toolBulletStyle().Render("⏺ "))
 	b.WriteString(truncateRunes(strings.TrimSpace(lines[0]), max(width-2, 1)))
 	b.WriteString("\n")
 	continuation := lines[1:]
@@ -370,7 +364,7 @@ func renderToolResultLine(content string, width int) string {
 
 func renderPlanBlock(content string, width int) string {
 	var b strings.Builder
-	b.WriteString(promptPrefixStyle.Render("⏺ Plan"))
+	b.WriteString(promptPrefixStyle().Render("⏺ Plan"))
 	b.WriteString("\n")
 	contentWidth := max(width-4, 1)
 	for _, line := range strings.Split(content, "\n") {
@@ -391,14 +385,12 @@ func renderPlanBlock(content string, width int) string {
 	return b.String()
 }
 
-var providerErrorStyle = lipgloss.NewStyle().Foreground(errorColor).Bold(true)
-
 func renderProviderError(err error, width int) string {
 	contentWidth := max(width-2, 1)
 	wrapped := ansi.Wrap("✘ provider: "+err.Error(), contentWidth, "")
 	var b strings.Builder
 	for _, line := range strings.Split(wrapped, "\n") {
-		b.WriteString(providerErrorStyle.Render(line))
+		b.WriteString(errorStyle().Render(line))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
@@ -422,7 +414,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		full := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", prefixed, formatElapsed(elapsed)))
 		b.WriteString(truncateRunes(full, max(width-4, 1)))
 	} else {
-		b.WriteString(toolBulletStyle.Render(truncateRunes(head, max(width-2, 1))))
+		b.WriteString(toolBulletStyle().Render(truncateRunes(head, max(width-2, 1))))
 	}
 	b.WriteString("\n")
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
@@ -442,11 +434,11 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 
 func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 	glyph := "✔"
-	style := statusOkStyle
+	style := statusOkStyle()
 	state := "done"
 	if event.Error != "" {
 		glyph = "✘"
-		style = statusErrStyle
+		style = errorStyle()
 		state = "failed"
 	}
 	var head string

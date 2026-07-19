@@ -2563,6 +2563,24 @@ func keyHintStyle() lipgloss.Style {
 func riskLabelStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning).Bold(true)
 }
+func warningStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning).Bold(true)
+}
+func errorStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().StatusError).Bold(true)
+}
+func statusOkStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess)
+}
+func statusBusyStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary)
+}
+func promptPrefixStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary).Bold(true)
+}
+func toolBulletStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)
+}
 func inputBoxStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

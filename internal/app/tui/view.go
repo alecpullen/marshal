@@ -190,7 +190,7 @@ func (m Model) renderActivityStrip() string {
 	default:
 		return ""
 	}
-	return statusBusyStyle.Render(truncateRunes(label, available))
+	return statusBusyStyle().Render(truncateRunes(label, available))
 }
 
 // renderHelpFooter returns the persistent keybinding hint bar shown below
@@ -269,7 +269,7 @@ func (m Model) renderCompletionPopup() string {
 		style := mutedStyle()
 		if mi == p.index {
 			marker = "▸ "
-			style = promptPrefixStyle
+			style = promptPrefixStyle()
 		}
 		display := matches[mi].Text
 		if matches[mi].Kind == completionCommand && !strings.HasPrefix(display, "/") {

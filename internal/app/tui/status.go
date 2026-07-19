@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
@@ -163,7 +162,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	}
 
 	if n := m.queuedCount; n > 0 {
-		segs = append(segs, statusSeg{text: statusWarnStyle.Render(fmt.Sprintf("queued %d", n)), priority: 8})
+		segs = append(segs, statusSeg{text: warningStyle().Render(fmt.Sprintf("queued %d", n)), priority: 8})
 	}
 
 	if m.ShouldShowStatusURL() {
@@ -186,27 +185,17 @@ func browserStatusText(bi session.BrowserInfo) string {
 	return glyph + " " + url
 }
 
-var (
-	// Foreground-only styles. No background is applied at either render site
-	// (the status strip and the in-transcript completed-tool line); both draw
-	// on the terminal's default background.
-	statusWarnStyle = lipgloss.NewStyle().Foreground(warningColor).Bold(true)
-	statusErrStyle  = lipgloss.NewStyle().Foreground(errorColor).Bold(true)
-	statusOkStyle   = lipgloss.NewStyle().Foreground(successColor)
-	statusBusyStyle = lipgloss.NewStyle().Foreground(accentColor)
-)
-
 func (m Model) statusRightSegment() string {
 	// Pending approvals are surfaced by the early return above the activity
 	// switch, so the ActivityKind case below only needs to handle active work.
 	if m.state.PendingApproval() != nil {
-		return statusWarnStyle.Render("⚠ approval")
+		return warningStyle().Render("⚠ approval")
 	}
 	activity := m.state.Activity()
 	spinner := m.activeSpinnerFrame(activity.Kind)
 	switch activity.Kind {
 	case session.ActivityThinking:
-		return statusBusyStyle.Render(spinnerLabel(spinner, "thinking"))
+		return statusBusyStyle().Render(spinnerLabel(spinner, "thinking"))
 	case session.ActivityTool:
 		elapsed := m.now().Sub(activity.StartedAt)
 		if elapsed < 0 {
@@ -216,13 +205,13 @@ func (m Model) statusRightSegment() string {
 		if b := m.state.ToolBudget(); b.Max > 0 {
 			label = fmt.Sprintf("%s · tools %d/%d", label, b.Used, b.Max)
 		}
-		return statusBusyStyle.Render(label)
+		return statusBusyStyle().Render(label)
 	}
 	if m.state.ProviderError() != nil {
-		return statusErrStyle.Render("✘ error")
+		return errorStyle().Render("✘ error")
 	}
 	if m.lastActivityLabel != "" && m.now().Sub(m.lastActivityDone) < doneDisplayDuration {
-		return statusOkStyle.Render("✔ " + m.lastActivityLabel)
+		return statusOkStyle().Render("✔ " + m.lastActivityLabel)
 	}
 	return ""
 }

@@ -2,32 +2,24 @@ package probe
 
 import (
 	"context"
-	"net/url"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/routing"
 )
 
 var Timeout = 5 * time.Second
 
+// IsLocalhost reports whether baseURL points at the local machine.
+// Empty input is not local. Shares the routing gate's definition.
 func IsLocalhost(baseURL string) bool {
 	if baseURL == "" {
 		return false
 	}
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	switch host {
-	case "localhost", "127.0.0.1", "0.0.0.0", "::1":
-		return true
-	}
-	return strings.HasPrefix(host, "::1%")
+	return routing.IsLocalProvider(baseURL)
 }
 
 func Provider(fieldID, name string, pc config.ProviderConfig) tea.Cmd {

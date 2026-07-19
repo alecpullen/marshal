@@ -63,7 +63,10 @@ func IsDangerousKey(key string) bool {
 		return true
 	}
 	switch key {
-	case "IFS", "SHELLOPTS", "BASH_ENV", "ENV", "ZDOTDIR", "PATH":
+	case "IFS", "SHELLOPTS", "BASH_ENV", "ENV", "ZDOTDIR", "PATH",
+		// Interpreter startup-injection vectors (previously only on the
+		// MCP manager's private deny-list).
+		"PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "RUBYOPT":
 		return true
 	}
 	return false

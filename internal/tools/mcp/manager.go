@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"marshal/internal/app/config"
+	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/registry"
 	"path/filepath"
 	"strings"
@@ -17,26 +18,12 @@ type caller interface {
 	Call(ctx context.Context, method string, params, result any) error
 }
 
-// mcpDenyListEnv is the set of env-var names that may hijack the spawned
-// process or its descendants. Configs that include any of these keys are
-// rejected at Start time. See F-SEC-05.
-var mcpDenyListEnv = map[string]bool{
-	"LD_PRELOAD":            true,
-	"LD_LIBRARY_PATH":       true,
-	"LD_AUDIT":              true,
-	"DYLD_INSERT_LIBRARIES": true,
-	"DYLD_LIBRARY_PATH":     true,
-	"PATH":                  true,
-	"IFS":                   true,
-	"PYTHONPATH":            true,
-	"PYTHONSTARTUP":         true,
-	"NODE_OPTIONS":          true,
-	"RUBYOPT":               true,
-}
-
+// validateServerEnv rejects env entries that could hijack the spawned
+// process or leak secrets. The key rules live in envutil so the manager,
+// the client (buildChildEnv), and the sandbox share one source. See F-SEC-05.
 func validateServerEnv(env map[string]string) error {
 	for k, v := range env {
-		if mcpDenyListEnv[k] {
+		if envutil.IsDangerousKey(k) || envutil.IsSecretKey(k) {
 			return fmt.Errorf("MCP server env: %q is on the deny-list", k)
 		}
 		if strings.ContainsAny(v, "\n\r\x00") {
@@ -153,7 +140,7 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 		name        string
 		description string
 		schema      []byte
-		clientName  string
+		client      *Client
 		mcpToolName string
 	}
 	var pending []pendingTool
@@ -175,7 +162,7 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 				name:        fmt.Sprintf("mcp.%s.%s", client.Name, tool.Name),
 				description: tool.Description,
 				schema:      tool.InputSchema,
-				clientName:  client.Name,
+				client:      client,
 				mcpToolName: tool.Name,
 			})
 		}
@@ -185,31 +172,16 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 
 	for i := range pending {
 		p := pending[i]
-		client := m.findClient(p.clientName)
-		if client == nil {
-			return fmt.Errorf("MCP client %q disappeared during registration", p.clientName)
-		}
 		err := reg.Register(registry.Tool{
 			Name:        p.name,
 			Description: p.description,
 			Schema:      p.schema,
 			Risk:        registry.RiskWorkspaceWrite, // secure default; configurable via policy
 			Deferred:    deferred,
-			Handler:     m.makeHandler(client, p.clientName, p.mcpToolName),
+			Handler:     m.makeHandler(p.client, p.client.Name, p.mcpToolName),
 		})
 		if err != nil {
 			return fmt.Errorf("register MCP tool %q: %w", p.name, err)
-		}
-	}
-	return nil
-}
-
-// findClient returns the MCP client with the given server name, or nil if
-// no matching client is currently started.
-func (m *Manager) findClient(name string) *Client {
-	for _, client := range m.clients {
-		if client.Name == name {
-			return client
 		}
 	}
 	return nil

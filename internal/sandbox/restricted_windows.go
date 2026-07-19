@@ -16,6 +16,11 @@ func restrictedResourceLimitsSupported() bool {
 	return false
 }
 
+// ulimitSupportsMem is false on windows: there is no ulimit equivalent.
+func ulimitSupportsMem() bool {
+	return false
+}
+
 // restrictedWrapCommand is a no-op on windows (no ulimit equivalent).
 func restrictedWrapCommand(command string, cfg Config) string {
 	return command

@@ -411,6 +411,24 @@ func TestFromConfigCarriesAllowNetwork(t *testing.T) {
 	}
 }
 
+// TestMetaForReportsMemoryOnlyWhenEnforced: on platforms where the
+// restricted backend cannot apply ulimit -v (darwin, windows), the audit
+// metadata must report 0 rather than a phantom limit.
+func TestMetaForReportsMemoryOnlyWhenEnforced(t *testing.T) {
+	cfg := Config{Backend: "restricted", MemoryLimitMB: 64, CPUSeconds: 10}
+	caps := Capabilities{Backend: "restricted"}
+	meta := metaFor(caps, cfg)
+	if ulimitSupportsMem() {
+		if meta.MemoryLimitBytes != 64*1024*1024 {
+			t.Fatalf("MemoryLimitBytes = %d, want 64MiB", meta.MemoryLimitBytes)
+		}
+		return
+	}
+	if meta.MemoryLimitBytes != 0 {
+		t.Fatalf("MemoryLimitBytes = %d, want 0 (ulimit -v unsupported on this platform)", meta.MemoryLimitBytes)
+	}
+}
+
 func TestSandboxMetaPassthroughRunsAndCapturesMeta(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell echo differs on windows")

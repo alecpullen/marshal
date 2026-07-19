@@ -11,19 +11,13 @@ const truncationMarker = "\n\n...[truncated]"
 
 // trimSectionContent trims surrounding whitespace and reports whether
 // the result is non-empty. Used as the shared skip/empty rule for
-// sections built by PinFiles and buildCandidateSections.
+// sections built by PinFiles.
 func trimSectionContent(s string) (string, bool) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
 		return "", false
 	}
 	return trimmed, true
-}
-
-type Builder struct{}
-
-func NewBuilder() Builder {
-	return Builder{}
 }
 
 func EstimateTokens(text string) int {
@@ -34,28 +28,12 @@ func EstimateTokens(text string) int {
 	return (runes + 3) / 4
 }
 
-func (b Builder) Build(input BuildInput) Pack {
-	maxTokens := input.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = DefaultMaxTokens
-	}
-
-	now := time.Now
-	if input.Now != nil {
-		now = input.Now
-	}
-
-	candidates := buildCandidateSections(input)
-	return buildPackFromSections(candidates, maxTokens, now().UTC())
-}
-
 // PinFiles adds the given snippets as pinned sections that bypass the
 // token-budget gate (F18 R2: accepted @file references are injected as
 // context, budget permitting — but pinning means they are not dropped by
 // the greedy rebudget pass). Each pinned snippet is appended to
 // pack.Sections with Priority 100 (higher than the 30/40 of normal
-// file-snippet/tool-output sections) and tracked on pack.Pinned for
-// downstream visibility.
+// file-snippet/tool-output sections).
 func PinFiles(pack Pack, snippets []FileSnippet) Pack {
 	for _, snip := range snippets {
 		content, ok := trimSectionContent(snip.Content)
@@ -75,7 +53,6 @@ func PinFiles(pack Pack, snippets []FileSnippet) Pack {
 			EstimatedTokens: EstimateTokens(content),
 		})
 	}
-	pack.Pinned = append(pack.Pinned, snippets...)
 	return pack
 }
 
@@ -134,67 +111,6 @@ func Rebudget(pack Pack, maxTokens int, now func() time.Time) Pack {
 	}
 
 	return buildPackFromSections(pack.Clone().Sections, maxTokens, generatedAt)
-}
-
-func buildCandidateSections(input BuildInput) []Section {
-	var sections []Section
-	if strings.TrimSpace(input.RepoCard) != "" {
-		sections = append(sections, Section{
-			Kind:     SectionRepoCard,
-			Title:    "Repo Card",
-			Source:   "repo.card",
-			Priority: 10,
-			Content:  strings.TrimSpace(input.RepoCard),
-		})
-	}
-	if len(input.Plan) > 0 {
-		sections = append(sections, Section{
-			Kind:     SectionPlan,
-			Title:    "Current Plan",
-			Priority: 20,
-			Content:  strings.Join(input.Plan, "\n"),
-		})
-	}
-	for _, snippet := range input.FileSnippets {
-		content, ok := trimSectionContent(snippet.Content)
-		if !ok {
-			continue
-		}
-		source := snippet.Path
-		if snippet.StartLine > 0 && snippet.EndLine > 0 {
-			source = fmt.Sprintf("%s:%d-%d", snippet.Path, snippet.StartLine, snippet.EndLine)
-		}
-		sections = append(sections, Section{
-			Kind:     SectionFileSnippet,
-			Title:    snippet.Path,
-			Source:   source,
-			Priority: 30,
-			Content:  content,
-		})
-	}
-	for _, output := range input.RecentToolOutput {
-		base, ok := trimSectionContent(output.Summary)
-		body, _ := trimSectionContent(output.Content)
-		if !ok && body == "" {
-			continue
-		}
-		content := base
-		if body != "" {
-			if content != "" {
-				content += "\n\n" + body
-			} else {
-				content = body
-			}
-		}
-		sections = append(sections, Section{
-			Kind:     SectionToolOutput,
-			Title:    output.ToolName,
-			Source:   output.ToolName,
-			Priority: 40,
-			Content:  content,
-		})
-	}
-	return sections
 }
 
 func buildPackFromSections(sections []Section, maxTokens int, generatedAt time.Time) Pack {

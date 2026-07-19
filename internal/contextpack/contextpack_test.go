@@ -24,62 +24,6 @@ func TestEstimateTokensRoundsUpByFourRunes(t *testing.T) {
 	}
 }
 
-func TestBuilderOrdersSectionsAndTracksTokens(t *testing.T) {
-	now := time.Unix(100, 0).UTC()
-	pack := NewBuilder().Build(BuildInput{
-		RepoCard: "Project: marshal",
-		Plan:     []string{"1. Read files", "2. Patch tests"},
-		FileSnippets: []FileSnippet{
-			{Path: "internal/app/app.go", StartLine: 1, EndLine: 3, Content: "package app"},
-		},
-		RecentToolOutput: []ToolOutput{
-			{ToolName: "go.test", Summary: "ok"},
-		},
-		MaxTokens: 12000,
-		Now:       func() time.Time { return now },
-	})
-
-	if pack.GeneratedAt != now {
-		t.Fatalf("GeneratedAt = %s, want %s", pack.GeneratedAt, now)
-	}
-	if len(pack.Sections) != 4 {
-		t.Fatalf("len(Sections) = %d, want 4: %#v", len(pack.Sections), pack.Sections)
-	}
-	wantKinds := []SectionKind{SectionRepoCard, SectionPlan, SectionFileSnippet, SectionToolOutput}
-	for i, want := range wantKinds {
-		if pack.Sections[i].Kind != want {
-			t.Fatalf("section %d kind = %q, want %q", i, pack.Sections[i].Kind, want)
-		}
-	}
-	if pack.TokenUsage.MaxTokens != 12000 || pack.TokenUsage.EstimatedTokens <= 0 {
-		t.Fatalf("TokenUsage = %#v", pack.TokenUsage)
-	}
-	if pack.TokenUsage.Truncated {
-		t.Fatalf("TokenUsage.Truncated = true, want false")
-	}
-}
-
-func TestBuilderTruncatesToBudget(t *testing.T) {
-	pack := NewBuilder().Build(BuildInput{
-		RepoCard:  strings.Repeat("a", 80),
-		MaxTokens: 5,
-		Now:       func() time.Time { return time.Unix(100, 0).UTC() },
-	})
-
-	if len(pack.Sections) != 1 {
-		t.Fatalf("len(Sections) = %d, want 1", len(pack.Sections))
-	}
-	if !strings.Contains(pack.Sections[0].Content, "...[truncated]") {
-		t.Fatalf("section content missing truncation marker: %q", pack.Sections[0].Content)
-	}
-	if !pack.TokenUsage.Truncated {
-		t.Fatalf("TokenUsage.Truncated = false, want true")
-	}
-	if pack.TokenUsage.EstimatedTokens > pack.TokenUsage.MaxTokens {
-		t.Fatalf("estimated tokens %d exceeds max %d", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens)
-	}
-}
-
 func TestRenderUsesStableSectionFormat(t *testing.T) {
 	pack := Pack{
 		Sections: []Section{
@@ -357,9 +301,6 @@ func TestPinFilesAppendsSections(t *testing.T) {
 	if pack.Sections[0].EstimatedTokens == 0 {
 		t.Fatal("pinned section should have non-zero EstimatedTokens")
 	}
-	if len(pack.Pinned) != 1 || pack.Pinned[0].Path != "a.go" {
-		t.Fatalf("pinned = %+v", pack.Pinned)
-	}
 }
 
 func TestPinFilesSurvivesRebudget(t *testing.T) {
@@ -369,9 +310,6 @@ func TestPinFilesSurvivesRebudget(t *testing.T) {
 	pack := Pack{}
 	big := strings.Repeat("a", 4000)
 	pack = PinFiles(pack, []FileSnippet{{Path: "big.go", Content: big}})
-	if len(pack.Pinned) != 1 {
-		t.Fatalf("pinned len = %d, want 1", len(pack.Pinned))
-	}
 	// The pack has 0 token usage (PinFiles is post-budget); sections
 	// carry the full content.
 	if len(pack.Sections) != 1 {
@@ -391,14 +329,12 @@ func TestPinFilesSkipsEmptyContent(t *testing.T) {
 }
 
 func TestPinnedSectionSurvivesBudgetPressure(t *testing.T) {
-	// A pinned section must survive even when the budget is exhausted
-	// by a large non-pinned file snippet.
-	pack := NewBuilder().Build(BuildInput{
-		MaxTokens: 50,
-		FileSnippets: []FileSnippet{
-			{Path: "big.go", Content: strings.Repeat("x", 4000)},
-		},
-	})
+	// A pinned section (Priority >= 100) must survive even when budget
+	// is exhausted by a large non-pinned file snippet.
+	sections := []Section{
+		{Kind: SectionFileSnippet, Title: "big.go", Content: strings.Repeat("x", 4000), Priority: 30},
+	}
+	pack := buildPackFromSections(sections, 50, time.Now().UTC())
 	pack = PinFiles(pack, []FileSnippet{{Path: "pinned.md", Content: "PINNED"}})
 
 	found := false
@@ -417,10 +353,10 @@ func TestRebudgetPutsPinnedSectionsFirst(t *testing.T) {
 	// Build a pack with a FileSnippet (regular) first, then PinFiles
 	// appends a pinned section. After Rebudget (which calls
 	// buildPackFromSections), the pinned section must be first.
-	pack := NewBuilder().Build(BuildInput{
-		MaxTokens:    10_000,
-		FileSnippets: []FileSnippet{{Path: "normal.go", Content: "normal"}},
-	})
+	sections := []Section{
+		{Kind: SectionFileSnippet, Title: "normal.go", Content: "normal", Priority: 30},
+	}
+	pack := buildPackFromSections(sections, 10_000, time.Now().UTC())
 	pack = PinFiles(pack, []FileSnippet{{Path: "pinned.md", Content: "PINNED"}})
 	// pack.Sections order is now: [file_snippet (30), pinned (100)]
 

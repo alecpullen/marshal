@@ -3,6 +3,7 @@ package connect
 import (
 	"errors"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -234,6 +235,20 @@ func TestPasteMsgIntoBaseURLInput(t *testing.T) {
 	updated, _ := m.Update(tea.PasteMsg{Content: "https://example.com/v1"})
 	if got := updated.input.Value(); got != "https://example.com/v1" {
 		t.Fatalf("input.Value() = %q, want %q", got, "https://example.com/v1")
+	}
+}
+
+// TestTickThrottlesSpinner pins the tick delay: an immediate tick is a
+// busy loop that spins a core for the duration of every probe.
+func TestTickThrottlesSpinner(t *testing.T) {
+	start := time.Now()
+	msg := tick()()
+	elapsed := time.Since(start)
+	if _, ok := msg.(TickMsg); !ok {
+		t.Fatalf("tick produced %T, want TickMsg", msg)
+	}
+	if elapsed < 90*time.Millisecond {
+		t.Fatalf("tick returned after %v — unthrottled busy loop", elapsed)
 	}
 }
 

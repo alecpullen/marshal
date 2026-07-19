@@ -21,16 +21,6 @@ type Skill struct {
 	Description string
 	Risk        string
 	Body        string
-	Tools       []ToolDef
-}
-
-type ToolDef struct {
-	Name        string
-	Description string
-	Risk        string
-	Schema      string
-	Handler     string
-	Command     string
 }
 
 type Index struct {
@@ -64,10 +54,9 @@ func (idx *Index) List() []Skill {
 }
 
 type frontmatter struct {
-	Name        string    `toml:"name"`
-	Description string    `toml:"description"`
-	Risk        string    `toml:"risk"`
-	Tools       []ToolDef `toml:"tools"`
+	Name        string `toml:"name"`
+	Description string `toml:"description"`
+	Risk        string `toml:"risk"`
 }
 
 func parseFrontmatter(raw string) (Skill, error) {
@@ -106,6 +95,5 @@ func parseFrontmatter(raw string) (Skill, error) {
 		Description: fm.Description,
 		Risk:        fm.Risk,
 		Body:        body,
-		Tools:       fm.Tools,
 	}, nil
 }

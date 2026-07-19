@@ -380,11 +380,20 @@ func (m *Model) handleSetCommand(args []string) {
 }
 
 func (m *Model) openSettingsBrowser(query string) {
-	m.dock.Open(settings.NewBrowser(
+	browser := settings.NewBrowser(
 		m.state.Config,
 		projectConfigPath(m.state.WorkingDir),
 		query,
-	))
+	)
+	// m.state.Config may already hold an unsaved change left behind by a
+	// previous failed save (browser or /set) — applyNewConfig keeps it
+	// applied in-memory so the edit isn't lost, which means this fresh
+	// panel's baseline is cloned from that already-advanced value and diffs
+	// empty on construction. Seed savePending so a repeated commit still
+	// retries persistence instead of silently no-op'ing (see
+	// BrowserPanel.SetSavePending and flushChanges).
+	browser.SetSavePending(m.configSavePending)
+	m.dock.Open(browser)
 }
 
 func New(state *session.State, opts ...Option) Model {

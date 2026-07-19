@@ -3648,6 +3648,142 @@ func TestBrowserSaveFailureCanBeRetriedWithUnchangedSet(t *testing.T) {
 	}
 }
 
+// TestBrowserRetrySurvivesDockCloseAndReopen is the regression for the gap
+// the reviewer found in the /set-equivalent retry fix: a failed browser save
+// leaves m.state.Config already advanced to the unsaved value (so the user
+// doesn't lose their edit), but closing the dock and reopening it built a
+// brand-new BrowserPanel whose baseline was cloned from that already-advanced
+// config and whose savePending started false. Baseline then diffed empty
+// against the still-unsaved value and savePending being false meant the
+// retry branch in flushChanges could never fire — the user was stuck unless
+// they made an unrelated change first. This drives the exact path a real
+// user hits: fail a save, close the dock (BrowserClosedMsg → dock.CloseNow),
+// reopen it via openSettingsBrowser (a *new* BrowserPanel instance, not the
+// live one), then re-confirm the same edit and expect it to actually retry.
+func TestBrowserRetrySurvivesDockCloseAndReopen(t *testing.T) {
+	m := newTestModel(t)
+	dir := t.TempDir()
+	blockingPath := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+
+	m.openSettingsBrowser("agent.max_retries")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("dock panel = %T, want settings browser", m.dock.Panel())
+	}
+
+	// commit opens the inline scalar edit for agent.max_retries, sets it to
+	// "9", and confirms — mirroring
+	// TestBrowserRetriesFailedSaveOnRepeatedCommit's commit gesture.
+	commit := func(setValue string) settings.ChangedMsg {
+		t.Helper()
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = updated.(Model)
+		if cmd != nil {
+			t.Fatal("opening an inline edit must not itself persist")
+		}
+		if setValue != "" {
+			for _, r := range setValue {
+				updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+				m = updated.(Model)
+				_ = cmd
+				updated, cmd = m.Update(tea.KeyPressMsg{Text: string(r)})
+				m = updated.(Model)
+				_ = cmd
+			}
+		}
+		updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = updated.(Model)
+		if cmd == nil {
+			t.Fatal("confirming an inline edit must emit a command")
+		}
+		msg := cmd()
+		changed, ok := msg.(settings.ChangedMsg)
+		if !ok {
+			t.Fatalf("want settings.ChangedMsg, got %T", msg)
+		}
+		// Route the ChangedMsg back through the model, exactly like the real
+		// bubbletea runtime would, so m.state.Config/m.configSavePending
+		// update the same way they do in production.
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+		return changed
+	}
+
+	// First commit: sets max_retries to "9". The parent directory is a file,
+	// so the save fails; the value stays applied in memory and
+	// m.configSavePending is set (mirrors the settings.ChangedMsg handler).
+	first := commit("9")
+	if first.SaveErr == nil {
+		t.Fatal("expected the first save to fail (parent path is a file)")
+	}
+	if m.state.Config.Agent.MaxRetries != 9 {
+		t.Fatalf("Agent.MaxRetries = %d, want 9 (save failure must preserve the in-memory edit)", m.state.Config.Agent.MaxRetries)
+	}
+	if !m.configSavePending {
+		t.Fatal("browser save failure must mark the config pending")
+	}
+
+	// Close the dock the way the real UI does: Esc from the browser's
+	// top-level view emits BrowserClosedMsg, which the model routes to
+	// dock.CloseNow().
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Esc from the browser's top level must close the dock")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.dock.IsOpen() {
+		t.Fatal("dock should be closed after BrowserClosedMsg")
+	}
+
+	// Fix the underlying problem: cfgPath's parent now exists as a real
+	// directory.
+	if err := os.Remove(blockingPath); err != nil {
+		t.Fatalf("remove blocking file: %v", err)
+	}
+	if err := os.Mkdir(blockingPath, 0o755); err != nil {
+		t.Fatalf("create real directory: %v", err)
+	}
+
+	// Reopen the dock through the model. This constructs a brand-new
+	// BrowserPanel — not the one used above — whose baseline is cloned from
+	// m.state.Config (already advanced to 9) and therefore diffs empty
+	// against the field's current value.
+	m.openSettingsBrowser("agent.max_retries")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("dock panel = %T, want settings browser", m.dock.Panel())
+	}
+
+	// Re-confirm the exact same value. Before the fix this silently no-op'd
+	// (empty diff, fresh savePending=false) and the user had no way to
+	// retry the failed save short of an unrelated edit.
+	second := commit("")
+	if second.SaveErr != nil {
+		t.Fatalf("retry save should succeed now that the path is fixed: %v", second.SaveErr)
+	}
+	if len(second.Receipts) == 0 {
+		t.Fatal("a successful retry must emit a receipt")
+	}
+	if m.configSavePending {
+		t.Fatal("a successful retry must clear the pending flag")
+	}
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(dir, "no-home"),
+		WorkingDir: blockingPath,
+	})
+	if err != nil {
+		t.Fatalf("load saved project config: %v", err)
+	}
+	if loaded.Agent.MaxRetries != 9 {
+		t.Fatalf("retried setting was not saved to disk: MaxRetries = %d, want 9", loaded.Agent.MaxRetries)
+	}
+}
+
 func TestSetCommandBadValuePrintsError(t *testing.T) {
 	m := newTestModel(t)
 	m.state.WorkingDir = t.TempDir()

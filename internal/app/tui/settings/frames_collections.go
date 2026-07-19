@@ -275,21 +275,6 @@ func uniqueCopyName(base string, existing map[string]bool) string {
 		}
 	}
 }
-
-func insertHook(e []config.HookConfig, at int, hc config.HookConfig) []config.HookConfig {
-	if at < 0 {
-		at = 0
-	}
-	if at > len(e) {
-		at = len(e)
-	}
-	out := make([]config.HookConfig, 0, len(e)+1)
-	out = append(out, e[:at]...)
-	out = append(out, hc)
-	out = append(out, e[at:]...)
-	return out
-}
-
 func presetsFrame(s *state) *frame {
 	drill := entriesDrillExt("presets", "Model Presets", "New preset name",
 		func() []string { return sortedKeys(s.cfg.Models.Presets) },
@@ -413,40 +398,7 @@ func hooksFrame(s *state) *frame {
 				s.cfg.Hooks.Entries = append(s.cfg.Hooks.Entries[:i], s.cfg.Hooks.Entries[i+1:]...)
 			}
 		},
-		entriesOpts{
-			moveUp: func(k string) {
-				i, _ := strconv.Atoi(k)
-				if i <= 0 {
-					return
-				}
-				e := s.cfg.Hooks.Entries
-				e[i-1], e[i] = e[i], e[i-1]
-			},
-			moveDown: func(k string) {
-				i, _ := strconv.Atoi(k)
-				e := s.cfg.Hooks.Entries
-				if i >= len(e)-1 {
-					return
-				}
-				e[i+1], e[i] = e[i], e[i+1]
-			},
-			yank: func(k string) any {
-				i, _ := strconv.Atoi(k)
-				if i >= len(s.cfg.Hooks.Entries) {
-					return nil
-				}
-				return s.cfg.Hooks.Entries[i]
-			},
-			paste: func(k string, data any) error {
-				hc, ok := data.(config.HookConfig)
-				if !ok {
-					return fmt.Errorf("nothing yanked")
-				}
-				i, _ := strconv.Atoi(k)
-				s.cfg.Hooks.Entries = insertHook(s.cfg.Hooks.Entries, i+1, hc)
-				return nil
-			},
-		})
+		sliceOpts(&s.cfg.Hooks.Entries))
 	return rootDrillFrame("Hooks", drill)
 }
 
@@ -519,53 +471,6 @@ func permissionsFrame(s *state) *frame {
 				s.cfg.Permissions.Rules = append(s.cfg.Permissions.Rules[:i], s.cfg.Permissions.Rules[i+1:]...)
 			}
 		},
-		entriesOpts{
-			moveUp: func(k string) {
-				i, _ := strconv.Atoi(k)
-				if i <= 0 {
-					return
-				}
-				r := s.cfg.Permissions.Rules
-				r[i-1], r[i] = r[i], r[i-1]
-			},
-			moveDown: func(k string) {
-				i, _ := strconv.Atoi(k)
-				r := s.cfg.Permissions.Rules
-				if i >= len(r)-1 {
-					return
-				}
-				r[i+1], r[i] = r[i], r[i+1]
-			},
-			yank: func(k string) any {
-				i, _ := strconv.Atoi(k)
-				if i >= len(s.cfg.Permissions.Rules) {
-					return nil
-				}
-				return s.cfg.Permissions.Rules[i]
-			},
-			paste: func(k string, data any) error {
-				rr, ok := data.(config.PermissionRule)
-				if !ok {
-					return fmt.Errorf("nothing yanked")
-				}
-				i, _ := strconv.Atoi(k)
-				s.cfg.Permissions.Rules = insertRule(s.cfg.Permissions.Rules, i+1, rr)
-				return nil
-			},
-		})
+		sliceOpts(&s.cfg.Permissions.Rules))
 	return rootDrillFrame("Permissions", drill)
-}
-
-func insertRule(r []config.PermissionRule, at int, rr config.PermissionRule) []config.PermissionRule {
-	if at < 0 {
-		at = 0
-	}
-	if at > len(r) {
-		at = len(r)
-	}
-	out := make([]config.PermissionRule, 0, len(r)+1)
-	out = append(out, r[:at]...)
-	out = append(out, rr)
-	out = append(out, r[at:]...)
-	return out
 }

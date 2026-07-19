@@ -291,6 +291,35 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 	loadTheme(cfg.TUI)
 }
 
+// persistAndReload saves cfg to the project config file, asks the runtime
+// to reload it, and applies the outcome to TUI state. It returns the save
+// error or, when saving succeeded, the reload error (nil on full success).
+// On any error the in-memory change is kept (and configSavePending set for
+// save failures) so the user can fix the underlying problem and retry
+// without losing their edit. Messaging is the caller's job.
+func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
+	path := projectConfigPath(m.state.WorkingDir)
+	if err := config.SaveProjectConfig(path, cfg); err != nil {
+		m.applyNewConfig(cfg)
+		m.configSavePending = true
+		return err, nil
+	}
+	m.configSavePending = false
+	if m.configReloader != nil {
+		// reloadAgentRuntime may install cfg before reporting a cleanup
+		// error; invalidate config-derived state before attempting it.
+		m.setReg = nil
+		if err := m.configReloader(cfg); err != nil {
+			// The runtime has already swapped cfg before cleanup can fail.
+			// Keep all TUI-derived state aligned with that live config.
+			m.applyNewConfig(cfg)
+			return nil, err
+		}
+	}
+	m.applyNewConfig(cfg)
+	return nil, nil
+}
+
 // settingsRegistry returns the cached /set registry, rebuilt after a config
 // change invalidates it.
 func (m *Model) settingsRegistry() *settings.Registry {
@@ -342,39 +371,19 @@ func (m *Model) handleSetCommand(args []string) {
 				return
 			}
 		}
-		path := projectConfigPath(m.state.WorkingDir)
-		saveErr := config.SaveProjectConfig(path, reg.Config())
-		// Keep the in-memory change even when persistence fails so users can
-		// correct filesystem permissions and retry without losing their edit.
-		if saveErr != nil {
-			m.applyNewConfig(reg.Config())
-			m.refreshOpenSettingsBrowser()
-			m.configSavePending = true
-			sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
-			return
-		}
-		m.configSavePending = false
-		if m.configReloader != nil {
-			// A reload can install cfg before a later resource cleanup fails.
-			// Do not retain a registry built from the previous config.
-			m.setReg = nil
-			if err := m.configReloader(reg.Config()); err != nil {
-				// The runtime has already swapped cfg before cleanup can
-				// fail (same contract as the settings.ChangedMsg handler).
-				// Keep all TUI-derived state aligned with that live config.
-				m.applyNewConfig(reg.Config())
-				m.refreshOpenSettingsBrowser()
-				sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
-				return
-			}
-		}
-		m.applyNewConfig(reg.Config())
+		saveErr, reloadErr := m.persistAndReload(reg.Config())
 		m.refreshOpenSettingsBrowser()
-		if !change.Changed {
-			sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, path)))
-			return
+		switch {
+		case saveErr != nil:
+			sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
+		case reloadErr != nil:
+			sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, reloadErr))
+		case !change.Changed:
+			sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
+		default:
+			sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
 		}
-		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, path)))
+		return
 	}
 }
 
@@ -600,32 +609,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		if msg.SaveErr != nil {
-			m.applyNewConfig(msg.Cfg)
-			m.configSavePending = true
+		saveErr, reloadErr := m.persistAndReload(msg.Cfg)
+		if saveErr != nil {
 			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("✗ save failed: %v", msg.SaveErr),
+				fmt.Sprintf("✗ save failed: %v", saveErr),
 				session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		}
-		m.configSavePending = false
-		if m.configReloader != nil {
-			// reloadAgentRuntime may install cfg before reporting a cleanup
-			// error, so discard every config-derived cache first.
-			m.setReg = nil
-			if err := m.configReloader(msg.Cfg); err != nil {
-				// The runtime has already swapped cfg before cleanup can fail.
-				// Keep all TUI-derived state aligned with that live config.
-				m.applyNewConfig(msg.Cfg)
-				m.state.AddMessage(session.RoleSystem,
-					fmt.Sprintf("✗ settings saved, but live reload failed: %v", err),
-					session.ContentTypePlain)
-				m.refreshViewport()
-				return m, nil
-			}
+		if reloadErr != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("✗ settings saved, but live reload failed: %v", reloadErr),
+				session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
 		}
-		m.applyNewConfig(msg.Cfg)
 		for _, receipt := range msg.Receipts {
 			m.state.AddMessage(session.RoleSystem,
 				"✓ "+receipt+" · "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),
@@ -2264,34 +2262,16 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	newCfg.Agent.Model = msg.Model
 	newCfg.Profile.Default = ""
 
-	// Persist before asking the runtime to reload so a save failure never
-	// leaves m.state.Config stale while the runtime already installed newCfg.
-	path := projectConfigPath(m.state.WorkingDir)
-	if err := config.SaveProjectConfig(path, newCfg); err != nil {
-		// Keep the in-memory change so the user can correct the filesystem
-		// issue and retry without losing their edit.
-		m.applyNewConfig(newCfg)
-		m.configSavePending = true
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model: %v", err), session.ContentTypePlain)
-		return
+	saveErr, reloadErr := m.persistAndReload(newCfg)
+	switch {
+	case saveErr != nil:
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model: %v", saveErr), session.ContentTypePlain)
+	case reloadErr != nil:
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", reloadErr), session.ContentTypePlain)
+	default:
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
 	}
-	m.configSavePending = false
-
-	if m.configReloader != nil {
-		// reloadAgentRuntime may install newCfg before reporting a cleanup
-		// error; invalidate config-derived state before attempting it.
-		m.setReg = nil
-		if err := m.configReloader(newCfg); err != nil {
-			// The runtime has already swapped cfg before cleanup can fail.
-			// Keep all TUI-derived state aligned with that live config.
-			m.applyNewConfig(newCfg)
-			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", err), session.ContentTypePlain)
-			return
-		}
-	}
-	m.applyNewConfig(newCfg)
-	m.state.AddMessage(session.RoleSystem,
-		fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
 }
 
 // switchModelPreset applies a model switch by routing every role of a
@@ -2317,35 +2297,13 @@ func (m *Model) switchModelPreset(presetName string) {
 		},
 	}
 
-	// Persist before asking the runtime to reload so a save failure never
-	// leaves m.state.Config stale while the runtime already installed newCfg.
-	path := projectConfigPath(m.state.WorkingDir)
-	if err := config.SaveProjectConfig(path, newCfg); err != nil {
-		// Keep the in-memory change so the user can correct the filesystem
-		// issue and retry without losing their edit.
-		m.applyNewConfig(newCfg)
-		m.configSavePending = true
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
-		return
-	}
-	m.configSavePending = false
-
-	if m.configReloader == nil {
-		m.applyNewConfig(newCfg)
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
-		return
-	}
-
-	// reloadAgentRuntime may install newCfg before reporting a cleanup
-	// error; invalidate config-derived state before attempting it.
-	m.setReg = nil
-	if err := m.configReloader(newCfg); err != nil {
-		// The runtime has already swapped cfg before cleanup can fail.
-		// Keep all TUI-derived state aligned with that live config.
-		m.applyNewConfig(newCfg)
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", err), session.ContentTypePlain)
-	} else {
-		m.applyNewConfig(newCfg)
+	saveErr, reloadErr := m.persistAndReload(newCfg)
+	switch {
+	case saveErr != nil:
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model preset: %v", saveErr), session.ContentTypePlain)
+	case reloadErr != nil:
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", reloadErr), session.ContentTypePlain)
+	default:
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
 	}
 }

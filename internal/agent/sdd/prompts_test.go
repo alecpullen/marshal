@@ -83,3 +83,16 @@ func TestBuildFixPrompt(t *testing.T) {
 		t.Errorf("fix prompt missing report path")
 	}
 }
+
+func TestBuildBranchFixPrompt(t *testing.T) {
+	p := BuildBranchFixPrompt("finding one\nfinding two")
+	if !strings.Contains(p, "finding one") {
+		t.Fatalf("prompt missing findings:\n%s", p)
+	}
+	if strings.Contains(p, "Task 0") {
+		t.Fatalf("prompt reuses per-task framing with a zero-value task:\n%s", p)
+	}
+	if strings.Contains(p, "previous report") {
+		t.Fatalf("branch fix prompt must not reference a per-task report:\n%s", p)
+	}
+}

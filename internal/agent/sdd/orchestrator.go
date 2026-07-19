@@ -76,7 +76,18 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 		if err == nil {
 			workingDir = wt.Path
 			ws, _ = NewWorkspace(workingDir)
-			ws.Ensure()
+			if _, werr := ws.Ensure(); werr != nil {
+				// Surface the failure instead of silently running on a
+				// half-built workspace; fall back to the original directory.
+				_ = wt.Remove()
+				wt = nil
+				workingDir = o.State.WorkingDir
+				o.announce("SDD worktree setup failed (" + werr.Error() + ") — continuing in the original directory")
+				ws, _ = NewWorkspace(workingDir)
+				if _, err := ws.Ensure(); err != nil {
+					return err
+				}
+			}
 			ledger = NewLedger(ws)
 			completed = ledger.CompletedTasks()
 		}
@@ -125,12 +136,33 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 		}
 	}
 
-	// Branch review — the whole-branch merge gate.
+	// Branch review — the whole-branch merge gate. Skipped (loudly) when
+	// the review package can't be written or there is no branch diff:
+	// gitMergeBase falls back to HEAD on failure, and base == head would
+	// hand the reviewer an empty diff to grade "ready to merge".
 	o.State.UpdateSDDBranchReview(session.SDDPhaseActive)
 	o.announce("Branch review dispatched.")
 	mergeBase := o.gitMergeBase(workingDir)
 	headSHA := o.gitHead(workingDir)
-	diffPath, _ := ws.WriteBranchReviewPackage(mergeBase, headSHA)
+	diffPath, err := ws.WriteBranchReviewPackage(mergeBase, headSHA)
+	switch {
+	case err != nil:
+		o.State.UpdateSDDBranchReview(session.SDDPhaseFailed)
+		o.announce("Branch review skipped — could not write review package: " + err.Error())
+	case mergeBase == "" || headSHA == "" || mergeBase == headSHA:
+		o.State.UpdateSDDBranchReview(session.SDDPhaseSkipped)
+		o.announce("Branch review skipped — no branch diff (merge-base equals HEAD).")
+	default:
+		o.runBranchReview(ctx, planPath, plan, ws, workingDir, mergeBase, headSHA, diffPath, minorFindings)
+	}
+
+	o.announce(fmt.Sprintf("▸ SDD complete. %d/%d tasks done. Use /merge or /pr to finish.", total, total))
+	return nil
+}
+
+// runBranchReview dispatches the whole-branch merge-gate review and, on
+// findings, one fix wave plus a single re-review.
+func (o *Orchestrator) runBranchReview(ctx context.Context, planPath string, plan *Plan, ws *Workspace, workingDir, mergeBase, headSHA, diffPath string, minorFindings []string) {
 	branchPrompt := BuildBranchReviewerPrompt(
 		planPath, ws.ReportsDir(), diffPath,
 		plan.GlobalConstraints, mergeBase, headSHA, minorFindings,
@@ -139,45 +171,53 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 	if err != nil {
 		o.State.UpdateSDDBranchReview(session.SDDPhaseFailed)
 		o.announce("Branch review failed: " + err.Error())
-	} else {
-		verdict := ParseBranchVerdict(branchTask.Summary)
-		o.State.UpdateSDDBranchReview(session.SDDPhaseDone)
-		if verdict.Ready {
-			o.announce("Branch review: ✅ ready to merge")
-		} else {
-			o.announce("⚠ Branch review: findings — fix wave dispatched, re-reviewing")
-			fixPrompt := BuildFixPrompt("", branchTask.Summary, PlanTask{})
-			_, _ = o.runRole(ctx, agent.RoleSDDImplementer, swarm.ScopeFull, fixPrompt)
-
-			// Re-review once.
-			headSHA = o.gitHead(workingDir)
-			mergeBase = o.gitMergeBase(workingDir)
-			diffPath, _ = ws.WriteBranchReviewPackage(mergeBase, headSHA)
-			reReviewPrompt := BuildBranchReviewerPrompt(
-				planPath, ws.ReportsDir(), diffPath,
-				plan.GlobalConstraints, mergeBase, headSHA, minorFindings,
-			)
-			reTask, _ := o.runRole(ctx, agent.RoleSDDBranchReviewer, swarm.ScopeReadOnly, reReviewPrompt)
-			if reTask != nil {
-				reVerdict := ParseBranchVerdict(reTask.Summary)
-				if reVerdict.Ready {
-					o.announce("Branch re-review: ✅ ready to merge")
-				} else {
-					o.announce("Branch re-review: ❌ still not ready — manual intervention needed")
-				}
-			}
-		}
+		return
+	}
+	verdict := ParseBranchVerdict(branchTask.Summary)
+	o.State.UpdateSDDBranchReview(session.SDDPhaseDone)
+	if verdict.Ready {
+		o.announce("Branch review: ✅ ready to merge")
+		return
+	}
+	o.announce("⚠ Branch review: findings — fix wave dispatched, re-reviewing")
+	fixPrompt := BuildBranchFixPrompt(branchTask.Summary)
+	if _, err := o.runRole(ctx, agent.RoleSDDImplementer, swarm.ScopeFull, fixPrompt); err != nil {
+		o.announce("Branch fix wave failed: " + err.Error())
 	}
 
-	o.announce(fmt.Sprintf("▸ SDD complete. %d/%d tasks done. Use /merge or /pr to finish.", total, total))
-	return nil
+	// Re-review once.
+	headSHA = o.gitHead(workingDir)
+	mergeBase = o.gitMergeBase(workingDir)
+	diffPath, err = ws.WriteBranchReviewPackage(mergeBase, headSHA)
+	if err != nil {
+		o.announce("Branch re-review skipped — could not write review package: " + err.Error())
+		return
+	}
+	reReviewPrompt := BuildBranchReviewerPrompt(
+		planPath, ws.ReportsDir(), diffPath,
+		plan.GlobalConstraints, mergeBase, headSHA, minorFindings,
+	)
+	reTask, err := o.runRole(ctx, agent.RoleSDDBranchReviewer, swarm.ScopeReadOnly, reReviewPrompt)
+	if err != nil {
+		o.announce("Branch re-review failed: " + err.Error())
+		return
+	}
+	reVerdict := ParseBranchVerdict(reTask.Summary)
+	if reVerdict.Ready {
+		o.announce("Branch re-review: ✅ ready to merge")
+	} else {
+		o.announce("Branch re-review: ❌ still not ready — manual intervention needed")
+	}
 }
 
 // runTask executes one task: implementer -> review loop (up to MaxFixRounds
 // times) -> ledger append. workingDir is the git working directory (may
 // differ from o.State.WorkingDir when AutoWorktree is enabled).
 func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledger, plan *Plan, task PlanTask, index, total int, minorFindings *[]string, workingDir string) error {
-	briefPath, _ := ws.WriteTaskBrief(task.Number, task.Body)
+	briefPath, err := ws.WriteTaskBrief(task.Number, task.Body)
+	if err != nil {
+		return fmt.Errorf("task %d brief: %w", task.Number, err)
+	}
 	reportPath := ws.ReportPath(task.Number)
 
 	o.State.UpdateSDDTask(index, func(ts *session.SDDTaskStatus) {
@@ -218,7 +258,14 @@ func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledge
 
 	// Review loop with bounded fix rounds.
 	for round := 0; round < o.MaxFixRounds; round++ {
-		diffPath, _ := ws.WriteReviewPackage(baseSHA, headSHA)
+		diffPath, err := ws.WriteReviewPackage(baseSHA, headSHA)
+		if err != nil {
+			o.State.UpdateSDDTask(index, func(ts *session.SDDTaskStatus) {
+				ts.Reviewer = session.SDDPhaseFailed
+				ts.Detail = "review package failed"
+			})
+			return fmt.Errorf("task %d review package: %w", task.Number, err)
+		}
 		reviewPrompt := BuildTaskReviewerPrompt(
 			briefPath, reportPath, diffPath,
 			plan.GlobalConstraints, baseSHA, headSHA,
@@ -327,11 +374,25 @@ func buildInitialTaskStatuses(tasks []PlanTask, completed map[int]bool, maxFixes
 }
 
 // parseImplementerStatus extracts the top-level status keyword from an
-// implementer's summary text. Returns one of DONE_WITH_CONCERNS, DONE,
-// BLOCKED, NEEDS_CONTEXT, or DONE as the default.
+// implementer's summary text. It prefers the "Status:" line the dispatch
+// prompt mandates (prompts.go); without one it falls back to a substring
+// scan ordered so failure words beat DONE (a BLOCKED summary saying "not
+// done" must not read as DONE). Defaults to DONE.
 func parseImplementerStatus(summary string) string {
+	for _, line := range strings.Split(summary, "\n") {
+		rest, ok := strings.CutPrefix(strings.ToUpper(strings.TrimSpace(line)), "STATUS:")
+		if !ok {
+			continue
+		}
+		status := strings.TrimSpace(rest)
+		for _, known := range []string{"DONE_WITH_CONCERNS", "BLOCKED", "NEEDS_CONTEXT", "DONE"} {
+			if strings.HasPrefix(status, known) {
+				return known
+			}
+		}
+	}
 	upper := strings.ToUpper(summary)
-	for _, status := range []string{"DONE_WITH_CONCERNS", "DONE", "BLOCKED", "NEEDS_CONTEXT"} {
+	for _, status := range []string{"BLOCKED", "NEEDS_CONTEXT", "DONE_WITH_CONCERNS", "DONE"} {
 		if strings.Contains(upper, status) {
 			return status
 		}

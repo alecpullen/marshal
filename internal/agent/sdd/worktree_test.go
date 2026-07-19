@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// initGitRepo creates a minimal git repo in a temp dir with one commit.
-func initGitRepo(t *testing.T) string {
+// initGitRepoDir creates a minimal git repo in a temp dir with one commit.
+func initGitRepoDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	run := func(args ...string) {
@@ -32,7 +32,7 @@ func TestCreateWorktree(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping git worktree test in short mode")
 	}
-	dir := initGitRepo(t)
+	dir := initGitRepoDir(t)
 	wt, err := CreateWorktree(dir, "sdd/test-plan")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
@@ -54,7 +54,7 @@ func TestMergeBase(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping git worktree test in short mode")
 	}
-	dir := initGitRepo(t)
+	dir := initGitRepoDir(t)
 	wt, err := CreateWorktree(dir, "sdd/test-plan")
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)

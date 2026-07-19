@@ -17,3 +17,27 @@ func EnvKey(kv string) string {
 	}
 	return kv
 }
+
+// Set returns env with key=value, replacing an existing entry for key if
+// present. env entries are "KEY=value" strings.
+func Set(env []string, key, value string) []string {
+	for i, kv := range env {
+		if EnvKey(kv) == key {
+			env[i] = key + "=" + value
+			return env
+		}
+	}
+	return append(env, key+"="+value)
+}
+
+// FilterKeys returns env without entries whose key is in deny.
+func FilterKeys(env []string, deny map[string]bool) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if deny[EnvKey(kv)] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}

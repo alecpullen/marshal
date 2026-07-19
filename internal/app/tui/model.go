@@ -952,16 +952,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshViewport()
 				return m, nil
 			}
-			if err := m.state.BeginWork(); err != nil {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
-				m.busy = false
-				m.refreshViewport()
-				return m, nil
-			}
-			m.busy = true
-			agentCtx, cancel := context.WithCancel(m.ctx)
-			m.agentCancel = cancel
-			return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.runner, value), tickCmd(), spinnerTickCmd())
+			return m.startAgentRun(m.runner, value)
 		}
 	}
 
@@ -1291,11 +1282,7 @@ func (m *Model) updateCompletionPopups() {
 		if cmdQuery == "" {
 			// Bare "/" → show every command, unfiltered, so the user can
 			// see what's available before typing.
-			m.cmdPopup.filtered = append([]completionItem(nil), m.cmdPopup.items...)
-			m.cmdPopup.index = 0
-			m.cmdPopup.viewOffset = 0
-			m.cmdPopup.acceptedText = ""
-			m.cmdPopup.visible = len(m.cmdPopup.filtered) > 0
+			m.cmdPopup.showAll()
 		} else {
 			m.cmdPopup.update(cmdQuery)
 		}
@@ -1321,11 +1308,7 @@ func (m *Model) updateCompletionPopups() {
 		}
 		if fileQuery == "" {
 			// Bare "@" → show every file item, unfiltered.
-			m.filePopup.filtered = append([]completionItem(nil), m.filePopup.items...)
-			m.filePopup.index = 0
-			m.filePopup.viewOffset = 0
-			m.filePopup.acceptedText = ""
-			m.filePopup.visible = len(m.filePopup.filtered) > 0
+			m.filePopup.showAll()
 		} else {
 			m.filePopup.update(fileQuery)
 		}
@@ -1369,11 +1352,7 @@ func (m *Model) updateSetCompletionPopup(rest string) {
 
 	m.setPopup = newCompletionPopup(items)
 	if query == "" {
-		m.setPopup.filtered = append([]completionItem(nil), m.setPopup.items...)
-		m.setPopup.index = 0
-		m.setPopup.viewOffset = 0
-		m.setPopup.acceptedText = ""
-		m.setPopup.visible = len(m.setPopup.filtered) > 0
+		m.setPopup.showAll()
 		return
 	}
 	m.setPopup.update(query)
@@ -1640,6 +1619,21 @@ func (m *Model) refreshViewport() {
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
 	}
+}
+
+// startAgentRun begins a turn on runner with goal, wiring cancellation and
+// the busy/spinner commands. On BeginWork failure it reports and stays idle.
+func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.Cmd) {
+	if err := m.state.BeginWork(); err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
+		m.busy = false
+		m.refreshViewport()
+		return *m, nil
+	}
+	m.busy = true
+	agentCtx, cancel := context.WithCancel(m.ctx)
+	m.agentCancel = cancel
+	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd())
 }
 
 type agentFinishedMsg struct{ err error }
@@ -1999,16 +1993,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		if m.busy {
 			return m, nil
 		}
-		if err := m.state.BeginWork(); err != nil {
-			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
-			m.busy = false
-			m.refreshViewport()
-			return m, nil
-		}
-		m.busy = true
-		agentCtx, cancel := context.WithCancel(m.ctx)
-		m.agentCancel = cancel
-		return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.swarmRunner, goal), tickCmd(), spinnerTickCmd())
+		return m.startAgentRun(m.swarmRunner, goal)
 
 	case "sdd":
 		planPath := strings.TrimSpace(strings.Join(args, " "))
@@ -2025,16 +2010,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		if m.busy {
 			return m, nil
 		}
-		if err := m.state.BeginWork(); err != nil {
-			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
-			m.busy = false
-			m.refreshViewport()
-			return m, nil
-		}
-		m.busy = true
-		agentCtx, cancel := context.WithCancel(m.ctx)
-		m.agentCancel = cancel
-		return m, tea.Batch(runAgentCmd(agentCtx, m.state, m.sddRunner, planPath), tickCmd(), spinnerTickCmd())
+		return m.startAgentRun(m.sddRunner, planPath)
 
 	case "connect":
 		m.openConnect("/")

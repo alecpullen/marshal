@@ -52,38 +52,4 @@ func (s *Service) RecordWrite(path string, at time.Time) error {
 	return nil
 }
 
-func (s *Service) ListReadFiles() ([]string, error) {
-	rows, err := s.db.Query(
-		`SELECT path FROM file_reads WHERE session_id = ? ORDER BY path`, s.sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("list reads: %w", err)
-	}
-	defer rows.Close()
-	var paths []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
-		paths = append(paths, p)
-	}
-	return paths, rows.Err()
-}
 
-func (s *Service) ListWrittenFiles() ([]string, error) {
-	rows, err := s.db.Query(
-		`SELECT path FROM file_writes WHERE session_id = ? ORDER BY path`, s.sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("list writes: %w", err)
-	}
-	defer rows.Close()
-	var paths []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
-		paths = append(paths, p)
-	}
-	return paths, rows.Err()
-}

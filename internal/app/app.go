@@ -357,14 +357,26 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		cfg.Tools.Shell.BackgroundRetention,
 		cfg.Tools.Shell.MaxOutputBytes,
 	)
-	var jmErr error
+	// Roll back partially-built resources on any later failure. Each
+	// resource appends its cleanup as it comes up; the deferred func runs
+	// them in reverse order, but only when a failure return set buildErr.
+	// This replaces per-branch Close calls that leaked the MCP manager
+	// when a registration after mcpMgr.Start failed.
+	var buildErr error
+	var cleanup []func()
 	defer func() {
-		if jmErr != nil {
-			sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			jobManager.Shutdown(sc)
+		if buildErr == nil {
+			return
+		}
+		for i := len(cleanup) - 1; i >= 0; i-- {
+			cleanup[i]()
 		}
 	}()
+	cleanup = append(cleanup, func() {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		jobManager.Shutdown(sc)
+	})
 
 	var fileTracker native.FileTracker
 	if database != nil {
@@ -395,7 +407,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		nativeOpts.AdditionalRoots = additionalDirs
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
-		jmErr = err
+		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
@@ -405,12 +417,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if len(cfg.MCP.Servers) > 0 {
 		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
 		if err := mcpMgr.Start(ctx); err != nil {
-			jmErr = err
+			buildErr = err
 			return nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
+		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
-			mcpMgr.Close()
-			jmErr = err
+			buildErr = err
 			return nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
@@ -420,7 +432,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		state,
 		2,
 	)); err != nil {
-		jmErr = err
+		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
@@ -492,7 +504,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		}
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {
-			jmErr = err
+			buildErr = err
 			return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
 		}
 		desktopCloser = closer

@@ -27,7 +27,8 @@ var specialLanguages = map[string]string{
 }
 
 var extensionLanguages = map[string]string{
-	"go": "go", "js": "javascript", "ts": "typescript",
+	"go": "go", "js": "javascript", "mjs": "javascript", "cjs": "javascript",
+	"ts":  "typescript",
 	"jsx": "javascript", "tsx": "typescript", "py": "python",
 	"rs": "rust", "java": "java", "kt": "kotlin",
 	"cpp": "cpp", "c": "c", "h": "c", "hpp": "cpp",

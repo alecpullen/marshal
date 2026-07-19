@@ -66,19 +66,7 @@ func (b *AttachBackend) NewPage(ctx context.Context) (PageHandle, error) {
 		}
 		isNewCtx = true
 	}
-	page, err := pwCtx.NewPage()
-	if err != nil {
-		if isNewCtx {
-			_ = pwCtx.Close()
-		}
-		return nil, fmt.Errorf("new page: %w", err)
-	}
-	if b.timeout > 0 {
-		timeoutMs := float64(b.timeout / time.Millisecond)
-		page.SetDefaultTimeout(timeoutMs)
-		page.SetDefaultNavigationTimeout(timeoutMs)
-	}
-	return &standalonePage{page: page, ctx: pwCtx, owned: isNewCtx}, nil
+	return newPage(pwCtx, isNewCtx, b.timeout)
 }
 
 func (b *AttachBackend) Close() error {

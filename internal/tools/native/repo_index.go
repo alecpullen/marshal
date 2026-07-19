@@ -16,7 +16,7 @@ import (
 
 // repoIndexTool builds the repo.index tool. It honours the configured
 // Indexing.Ignore patterns to exclude files from indexing, and respects
-// .gitignore rules (SkipGitignore is false by default).
+// .gitignore rules are always respected.
 func (t *toolSet) repoIndexTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.index",
@@ -32,7 +32,6 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 		scanner := repo.NewScanner(repo.Config{
 			Root:                  t.root,
 			Ignore:                t.config.Indexing.Ignore,
-			SkipGitignore:         false, // honour the user's .gitignore by default
 			MaxIndexableFileBytes: t.config.Indexing.MaxIndexableFileBytes,
 		})
 		scanned, err := scanner.ScanDetailed()

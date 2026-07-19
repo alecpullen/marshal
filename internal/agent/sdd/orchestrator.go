@@ -13,8 +13,9 @@ import (
 )
 
 // RunnerFactory builds a role-specific agent.Runner. Implementations must
-// return a fresh Runner per call (same contract as swarm.RunnerFactory).
-type RunnerFactory func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error)
+// return a fresh Runner per call (same contract as swarm.RunnerFactory —
+// this is the same type).
+type RunnerFactory = swarm.RunnerFactory
 
 // Orchestrator drives the SDD pipeline: parse plan -> per task
 // (implementer -> reviewer -> fix loop) -> branch review. It satisfies

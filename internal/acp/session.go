@@ -210,33 +210,62 @@ func validateLifecycleParams(p *sessionParams, requireSessionID bool) error {
 	return nil
 }
 
-// Create handles session/new. It calls StartRuntime with no session-id
-// option so the runtime allocates a fresh id, then publishes the pointer
-// under that id. If a pointer is already registered for the generated id
-// (an unlikely race in tests), the existing runtime is cancelled and
-// closed before the new one is published.
-func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (any, error) {
+// decodeParams unmarshals a JSON-RPC params blob into v, tolerating an
+// empty blob. method is used in the error message.
+func decodeParams(params json.RawMessage, v any, method string) error {
+	if len(params) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(params, v); err != nil {
+		return fmt.Errorf("acp: parse %s params: %w", method, err)
+	}
+	return nil
+}
+
+// decodeLifecycleParams decodes and validates session lifecycle params.
+func (m *SessionManager) decodeLifecycleParams(params json.RawMessage, method string, requireID bool) (sessionParams, error) {
+	var p sessionParams
+	if err := decodeParams(params, &p, method); err != nil {
+		return p, err
+	}
+	if err := validateLifecycleParams(&p, requireID); err != nil {
+		return p, err
+	}
+	return p, nil
+}
+
+// startRuntime starts a runtime bound to the params' cwd, applying extra
+// options before the additional-directories option.
+func (m *SessionManager) startRuntime(ctx context.Context, p sessionParams, extra ...app.Option) (*app.Runtime, error) {
 	if m.start == nil {
 		return nil, fmt.Errorf("acp: SessionManager has no StartRuntime configured")
 	}
-	var p sessionParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("acp: parse session/new params: %w", err)
-		}
-	}
-	if err := validateLifecycleParams(&p, false); err != nil {
-		return nil, err
-	}
-
 	opts := append([]app.Option{}, m.options...)
 	opts = append(opts, app.WithWorkingDir(p.Cwd))
+	opts = append(opts, extra...)
 	if len(p.AdditionalDirectories) > 0 {
 		opts = append(opts, app.WithAdditionalDirectories(p.AdditionalDirectories))
 	}
 	rt, err := m.start(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("acp: start runtime: %w", err)
+	}
+	return rt, nil
+}
+
+// Create handles session/new. It calls StartRuntime with no session-id
+// option so the runtime allocates a fresh id, then publishes the pointer
+// under that id. If a pointer is already registered for the generated id
+// (an unlikely race in tests), the existing runtime is cancelled and
+// closed before the new one is published.
+func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (any, error) {
+	p, err := m.decodeLifecycleParams(params, "session/new", false)
+	if err != nil {
+		return nil, err
+	}
+	rt, err := m.startRuntime(ctx, p)
+	if err != nil {
+		return nil, err
 	}
 	m.publishReplacement(ctx, rt.SessionID, rt)
 	return SessionResponse{SessionID: rt.SessionID}, nil
@@ -248,9 +277,6 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 // branch of the transcript via session/update notifications. Returns nil
 // on success — ACP v1 expects a null result.
 func (m *SessionManager) Load(ctx context.Context, params json.RawMessage) (any, error) {
-	if m.start == nil {
-		return nil, fmt.Errorf("acp: SessionManager has no StartRuntime configured")
-	}
 	if m.notify == nil {
 		return nil, serverErrorf("SessionManager has no Notify configured")
 	}
@@ -258,33 +284,20 @@ func (m *SessionManager) Load(ctx context.Context, params json.RawMessage) (any,
 	if err != nil {
 		return nil, err
 	}
-	var p sessionParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("acp: parse session/load params: %w", err)
-		}
-	}
-	if err := validateLifecycleParams(&p, true); err != nil {
+	p, err := m.decodeLifecycleParams(params, "session/load", true)
+	if err != nil {
 		return nil, err
 	}
-
-	loadErr := m.replaceExisting(ctx, p.SessionID, cancel)
-	if loadErr != nil {
-		return nil, loadErr
+	if err := m.replaceExisting(ctx, p.SessionID, cancel); err != nil {
+		return nil, err
 	}
-
-	opts := append([]app.Option{}, m.options...)
-	opts = append(opts, app.WithWorkingDir(p.Cwd), app.WithExistingSession(p.SessionID))
-	if len(p.AdditionalDirectories) > 0 {
-		opts = append(opts, app.WithAdditionalDirectories(p.AdditionalDirectories))
-	}
-	rt, err := m.start(ctx, opts...)
+	rt, err := m.startRuntime(ctx, p, app.WithExistingSession(p.SessionID))
 	if err != nil {
-		return nil, fmt.Errorf("acp: start runtime: %w", err)
+		return nil, err
 	}
 	m.publishReplacement(ctx, rt.SessionID, rt)
-	if replayErr := m.replay(ctx, rt); replayErr != nil {
-		return nil, replayErr
+	if err := m.replay(ctx, rt); err != nil {
+		return nil, err
 	}
 	return nil, nil
 }
@@ -295,37 +308,22 @@ func (m *SessionManager) Load(ctx context.Context, params json.RawMessage) (any,
 // same id, starts a new runtime with WithExistingSession, publishes it,
 // and returns an empty result object.
 func (m *SessionManager) Resume(ctx context.Context, params json.RawMessage) (any, error) {
-	if m.start == nil {
-		return nil, fmt.Errorf("acp: SessionManager has no StartRuntime configured")
-	}
 	cancel, err := m.requireReady()
 	if err != nil {
 		return nil, err
 	}
-	var p sessionParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("acp: parse session/resume params: %w", err)
-		}
-	}
-	if err := validateLifecycleParams(&p, true); err != nil {
+	p, err := m.decodeLifecycleParams(params, "session/resume", true)
+	if err != nil {
 		return nil, err
 	}
-
-	if replaceErr := m.replaceExisting(ctx, p.SessionID, cancel); replaceErr != nil {
-		return nil, replaceErr
+	if err := m.replaceExisting(ctx, p.SessionID, cancel); err != nil {
+		return nil, err
 	}
-
-	opts := append([]app.Option{}, m.options...)
-	opts = append(opts, app.WithWorkingDir(p.Cwd), app.WithExistingSession(p.SessionID))
-	if len(p.AdditionalDirectories) > 0 {
-		opts = append(opts, app.WithAdditionalDirectories(p.AdditionalDirectories))
-	}
-	rt, err := m.start(ctx, opts...)
+	rt, err := m.startRuntime(ctx, p, app.WithExistingSession(p.SessionID))
 	if err != nil {
-		return nil, fmt.Errorf("acp: start runtime: %w", err)
+		return nil, err
 	}
-	m.publishReplacement(ctx, p.SessionID, rt)
+	m.publishReplacement(ctx, rt.SessionID, rt)
 	return map[string]any{}, nil
 }
 
@@ -362,10 +360,8 @@ func (m *SessionManager) CloseSession(ctx context.Context, params json.RawMessag
 	var p struct {
 		SessionID string `json:"sessionId"`
 	}
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("acp: parse session/close params: %w", err)
-		}
+	if err := decodeParams(params, &p, "session/close"); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(p.SessionID) == "" {
 		return nil, invalidParamsError("sessionId is required")
@@ -385,10 +381,8 @@ func (m *SessionManager) Delete(ctx context.Context, params json.RawMessage) (an
 		return nil, err
 	}
 	var p sessionParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("acp: parse session/delete params: %w", err)
-		}
+	if err := decodeParams(params, &p, "session/delete"); err != nil {
+		return nil, err
 	}
 	if err := validateLifecycleParams(&p, true); err != nil {
 		return nil, err

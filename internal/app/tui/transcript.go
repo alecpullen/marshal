@@ -166,8 +166,6 @@ func formatThinkDuration(d time.Duration) string {
 	return fmt.Sprintf("%.0fs", d.Seconds())
 }
 
-const thinkingBoxTailLines = 6
-
 // renderThinkingBox renders live reasoning as a compact inline line. It
 // intentionally returns nothing until reasoning text has arrived; providers
 // that do not stream reasoning should not get an empty thinking panel.

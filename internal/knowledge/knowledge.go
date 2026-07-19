@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"marshal/internal/app/session"
@@ -65,7 +64,10 @@ func EndSession(ctx context.Context, in EndSessionInput) {
 	touchedFiles := readTouchedFiles(in.WorkingDir, auditLog)
 
 	prompt := BuildExtractionPrompt(messages, auditLog, touchedFiles)
-	raw, err := chatOnce(ctx, p, route.Preset.Model, prompt)
+	raw, err := provider.ChatText(ctx, p, schema.ChatRequest{
+		Model:    route.Preset.Model,
+		Messages: []schema.ChatMessage{prompt},
+	})
 	if err != nil {
 		in.Logger.Error("knowledge: chat call failed", "error", err, "session_id", in.SessionID)
 		return
@@ -127,28 +129,4 @@ func readTouchedFiles(workingDir string, auditLog []registry.AuditEvent) map[str
 		}
 	}
 	return files
-}
-
-func chatOnce(ctx context.Context, p provider.Provider, model string, message schema.ChatMessage) (string, error) {
-	events, err := p.Chat(ctx, schema.ChatRequest{
-		Model:    model,
-		Messages: []schema.ChatMessage{message},
-		Stream:   false,
-	})
-	if err != nil {
-		return "", err
-	}
-
-	var sb strings.Builder
-	for event := range events {
-		switch event.Type {
-		case schema.ChatEventDelta:
-			sb.WriteString(event.Delta)
-		case schema.ChatEventError:
-			return "", event.Err
-		case schema.ChatEventDone:
-			return sb.String(), nil
-		}
-	}
-	return sb.String(), nil
 }

@@ -18,16 +18,16 @@ func TestScannerFindsFiles(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	files, err := scanner.Scan()
+	scanned, err := scanner.ScanDetailed()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
 	paths := map[string]bool{}
-	for _, f := range files {
+	for _, f := range scanned {
 		paths[f.Path] = true
 	}
 	if !paths["main.go"] || !paths["README.md"] {
-		t.Fatalf("missing expected files: %+v", files)
+		t.Fatalf("missing expected files: %+v", scanned)
 	}
 }
 
@@ -44,7 +44,7 @@ func TestNewScannerContinuesOnBadGitignore(t *testing.T) {
 		t.Fatal("expected gitignore to be nil when parse fails")
 	}
 	// Scan must still succeed (the gitignore rules are simply not applied).
-	if _, err := s.Scan(); err != nil {
+	if _, err := s.ScanDetailed(); err != nil {
 		t.Errorf("Scan should succeed when gitignore fails to parse: %v", err)
 	}
 	// Warnings should contain the gitignore error.
@@ -63,11 +63,11 @@ func TestScannerWarningsResetBetweenScanCalls(t *testing.T) {
 		t.Fatal("expected loadErr to be set for malformed gitignore")
 	}
 	// First Scan.
-	if _, err := s.Scan(); err != nil {
+	if _, err := s.ScanDetailed(); err != nil {
 		t.Fatalf("first Scan failed: %v", err)
 	}
 	// Second Scan — without the fix, warnings would duplicate.
-	if _, err := s.Scan(); err != nil {
+	if _, err := s.ScanDetailed(); err != nil {
 		t.Fatalf("second Scan failed: %v", err)
 	}
 	if n := len(s.Warnings()); n != 1 {
@@ -88,12 +88,12 @@ func TestScannerSkipsIgnoredDirs(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	files, err := scanner.Scan()
+	scanned, err := scanner.ScanDetailed()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
-	if len(files) != 1 || files[0].Path != "main.go" {
-		t.Fatalf("expected only main.go, got %+v", files)
+	if len(scanned) != 1 || scanned[0].Path != "main.go" {
+		t.Fatalf("expected only main.go, got %+v", scanned)
 	}
 }
 
@@ -107,19 +107,19 @@ func TestScannerAppliesConfigIgnore(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir, Ignore: []string{"*_test.go"}})
-	files, err := scanner.Scan()
+	scanned, err := scanner.ScanDetailed()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
-	if len(files) != 1 || files[0].Path != "main.go" {
-		t.Fatalf("expected only main.go, got %+v", files)
+	if len(scanned) != 1 || scanned[0].Path != "main.go" {
+		t.Fatalf("expected only main.go, got %+v", scanned)
 	}
 }
 
 func TestScannerReturnsErrorForMissingRoot(t *testing.T) {
 	missingDir := filepath.Join(t.TempDir(), "does-not-exist")
 	scanner := NewScanner(Config{Root: missingDir})
-	_, err := scanner.Scan()
+	_, err := scanner.ScanDetailed()
 	if err == nil {
 		t.Fatalf("expected Scan to return an error for missing root, got nil")
 	}
@@ -132,7 +132,7 @@ func TestScannerInvalidIgnorePattern(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir, Ignore: []string{"["}})
-	_, err := scanner.Scan()
+	_, err := scanner.ScanDetailed()
 	if err == nil {
 		t.Fatalf("expected Scan to return an error for invalid ignore pattern, got nil")
 	}
@@ -151,12 +151,12 @@ func TestScannerIgnoresDirectoryPattern(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir, Ignore: []string{"ignored_dir"}})
-	files, err := scanner.Scan()
+	scanned, err := scanner.ScanDetailed()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
-	if len(files) != 1 || files[0].Path != "main.go" {
-		t.Fatalf("expected only main.go, got %+v", files)
+	if len(scanned) != 1 || scanned[0].Path != "main.go" {
+		t.Fatalf("expected only main.go, got %+v", scanned)
 	}
 	// ignored_dir was skipped as a directory, so its contents are not returned.
 }
@@ -174,41 +174,12 @@ func TestScannerRespectsGitignore(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	files, err := scanner.Scan()
+	scanned, err := scanner.ScanDetailed()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
-	if len(files) != 1 || files[0].Path != "main.go" {
-		t.Fatalf("expected only main.go, got %+v", files)
-	}
-}
-
-func TestScannerIncludesGitignoredFilesWhenConfigured(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("secret.txt\n"), 0644); err != nil {
-		t.Fatalf("write .gitignore: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("secret"), 0644); err != nil {
-		t.Fatalf("write secret.txt: %v", err)
-	}
-
-	scanner := NewScanner(Config{Root: dir, SkipGitignore: true})
-	files, err := scanner.Scan()
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
-	paths := map[string]bool{}
-	for _, f := range files {
-		paths[f.Path] = true
-	}
-	if !paths["main.go"] || !paths["secret.txt"] {
-		t.Fatalf("expected main.go and secret.txt, got %+v", files)
-	}
-	if paths[".gitignore"] {
-		t.Fatalf("expected .gitignore itself to be skipped, got %+v", files)
+	if len(scanned) != 1 || scanned[0].Path != "main.go" {
+		t.Fatalf("expected only main.go, got %+v", scanned)
 	}
 }
 
@@ -228,27 +199,27 @@ func TestScannerSkipsSymlinkWithReason(t *testing.T) {
 	}
 
 	s := NewScanner(Config{Root: root})
-	files, err := s.Scan()
+	scanned, err := s.ScanDetailed()
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
 
 	// The real file must be present.
 	foundReal := false
-	for _, f := range files {
+	for _, f := range scanned {
 		if f.Path == "real.txt" {
 			foundReal = true
 			break
 		}
 	}
 	if !foundReal {
-		t.Fatalf("expected real.txt in scanned files, got %+v", files)
+		t.Fatalf("expected real.txt in scanned files, got %+v", scanned)
 	}
 
 	// The symlink must NOT be in the scanned files.
-	for _, f := range files {
+	for _, f := range scanned {
 		if f.Path == "link.txt" {
-			t.Fatalf("symlink link.txt should not be in scanned files: %+v", files)
+			t.Fatalf("symlink link.txt should not be in scanned files: %+v", scanned)
 		}
 	}
 
@@ -283,11 +254,11 @@ func TestScanner_SkipsSymlinks(t *testing.T) {
 	}
 
 	s := NewScanner(Config{Root: root})
-	files, err := s.Scan()
+	scanned, err := s.ScanDetailed()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range files {
+	for _, f := range scanned {
 		if strings.Contains(f.Path, "link") || strings.Contains(f.Path, "secret") {
 			t.Errorf("scanner followed symlink: %s", f.Path)
 		}
@@ -301,14 +272,14 @@ func TestScannerComputesHashesAndLanguages(t *testing.T) {
 	}
 
 	scanner := NewScanner(Config{Root: dir})
-	files, err := scanner.Scan()
+	scanned, err := scanner.ScanDetailed()
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)
 	}
-	if len(files) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(files))
+	if len(scanned) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(scanned))
 	}
-	f := files[0]
+	f := scanned[0]
 	if f.Path != "main.go" {
 		t.Fatalf("expected main.go, got %s", f.Path)
 	}
@@ -444,13 +415,13 @@ func TestScannerSkipsOversizedFiles(t *testing.T) {
 	if err := os.WriteFile(big, make([]byte, 1024), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := NewScanner(Config{Root: dir, MaxIndexableFileBytes: 512, SkipGitignore: true})
-	files, err := s.Scan()
+	s := NewScanner(Config{Root: dir, MaxIndexableFileBytes: 512})
+	scanned, err := s.ScanDetailed()
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if len(files) != 0 {
-		t.Errorf("expected 0 files, got %d", len(files))
+	if len(scanned) != 0 {
+		t.Errorf("expected 0 files, got %d", len(scanned))
 	}
 	if len(s.Skipped()) == 0 {
 		t.Errorf("expected a skip entry for the oversized file")
@@ -480,19 +451,19 @@ func TestScanContinuesOnHashError(t *testing.T) {
 
 	scanner := NewScanner(Config{Root: dir})
 
-	// Scan (which reads file contents via hashFile) should also continue.
-	files, err := scanner.Scan()
+	// ScanDetailed should continue on read errors.
+	scanned, err := scanner.ScanDetailed()
 	if err != nil {
-		t.Fatalf("Scan should not abort on hash errors: %v", err)
+		t.Fatalf("ScanDetailed should not abort on read errors: %v", err)
 	}
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files from Scan, got %d", len(files))
+	if len(scanned) != 2 {
+		t.Fatalf("expected 2 files from ScanDetailed, got %d", len(scanned))
 	}
 
 	// The readable file should have a hash, the unreadable one should have an
-	// empty hash (because hashFile failed).
+	// empty hash (because reading failed).
 	var goodHash, badHash string
-	for _, f := range files {
+	for _, f := range scanned {
 		switch f.Path {
 		case "good.go":
 			goodHash = f.Hash

@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,10 +18,6 @@ import (
 type Config struct {
 	Root   string
 	Ignore []string
-	// SkipGitignore controls whether .gitignore files are ignored.
-	// When false (the default), .gitignore rules are applied.
-	// When true, .gitignore files are skipped entirely.
-	SkipGitignore bool
 	// MaxIndexableFileBytes caps the size of files that will be hashed and
 	// indexed during scanning. Files larger than this threshold are skipped
 	// and recorded in Skipped(). Zero means no limit.
@@ -65,15 +60,13 @@ func NewScanner(config Config) *Scanner {
 
 	config.Root = root
 	s := &Scanner{config: config}
-	if !config.SkipGitignore {
-		// Current limitation: only the root .gitignore is loaded.
-		// Per-directory .gitignore files are not yet supported.
-		g, err := LoadGitignore(filepath.Join(root, ".gitignore"))
-		if err != nil {
-			s.loadErr = err
-		} else {
-			s.gitignore = g
-		}
+	// Current limitation: only the root .gitignore is loaded.
+	// Per-directory .gitignore files are not yet supported.
+	g, err := LoadGitignore(filepath.Join(root, ".gitignore"))
+	if err != nil {
+		s.loadErr = err
+	} else {
+		s.gitignore = g
 	}
 	return s
 }
@@ -175,33 +168,7 @@ func (s *Scanner) walk(fn func(path, rel string) (db.FileIndex, []byte, error)) 
 	return results, nil
 }
 
-func (s *Scanner) Scan() ([]db.FileIndex, error) {
-	scanned, err := s.walk(func(path, rel string) (db.FileIndex, []byte, error) {
-		hash, size, hashErr := hashFile(path)
-		if hashErr != nil {
-			return db.FileIndex{
-				Path:     rel,
-				Language: DetectLanguage(rel),
-			}, nil, fmt.Errorf("hash %s: %w", rel, hashErr)
-		}
-		return db.FileIndex{
-			Path:      rel,
-			Language:  DetectLanguage(rel),
-			Hash:      hash,
-			SizeBytes: size,
-		}, nil, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	files := make([]db.FileIndex, len(scanned))
-	for i, sf := range scanned {
-		files[i] = sf.FileIndex
-	}
-	return files, nil
-}
-
-// ScanDetailed scans the repo root like Scan but also captures each file's
+// ScanDetailed scans the repo root, computing file hashes and capturing each file's
 // content so callers can use it without re-reading from disk.
 // Per-file read failures are non-fatal: the returned ScannedFile will have a
 // nil Content and a non-nil ReadErr. The scan continues to other files.
@@ -240,20 +207,6 @@ func (s *Scanner) Skipped() []skippedEntry {
 // gitignore parse errors. The caller must not modify the returned slice.
 func (s *Scanner) Warnings() []string {
 	return s.warnings
-}
-
-func hashFile(path string) (string, int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
-	h := sha256.New()
-	size, err := io.Copy(h, f)
-	if err != nil {
-		return "", 0, err
-	}
-	return hex.EncodeToString(h.Sum(nil)), size, nil
 }
 
 // hashBytes computes the SHA-256 hash of content and returns the hex-encoded

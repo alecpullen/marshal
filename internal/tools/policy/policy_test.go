@@ -290,6 +290,33 @@ func TestPolicyEngine_Evaluate_MCPPatternMatching(t *testing.T) {
 	}
 }
 
+// TestPolicyEngine_Evaluate_MCPDenyAlwaysWins pins two-pass deny-first semantics
+// : when both a deny and allow/confirm pattern match an MCP tool, deny must win.
+func TestPolicyEngine_Evaluate_MCPDenyAlwaysWins(t *testing.T) {
+	cfg := config.Default()
+	cfg.MCP.Policies = map[string]string{
+		"mcp.*":        "deny",
+		"mcp.github.*": "allow",
+		"mcp.gitlab.*": "confirm",
+	}
+	pe := NewEngine(&cfg, nil)
+
+	// repeat to smoke out map-order dependance
+	for i := 0; i < 50; i++ {
+		dec, _, err := pe.Evaluate("mcp.github.create_issue", nil)
+		if err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		if dec != DecisionDeny {
+			t.Fatalf("iteration %d: decision = %s, want deny (deny must beat allow)", i, dec)
+		}
+		dec, _, err = pe.Evaluate("mcp.gitlab.get_project", nil)
+		if dec != DecisionDeny {
+			t.Fatalf("iteration %d: decision = %s, want deny (deny must beat confirm)", i, dec)
+		}
+	}
+}
+
 func TestPolicyEngine_Evaluate_DynamicArgv0Knob(t *testing.T) {
 	tests := []struct {
 		name    string

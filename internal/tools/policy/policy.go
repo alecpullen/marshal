@@ -155,20 +155,25 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 
 			// 2. Pattern Match (prefix, wildcard, regex) — deny returns immediately
 			if !mcpMatched {
-				for pattern, policyStr := range pe.config.MCP.Policies {
-					if matchMCPPolicy(pattern, toolName) {
-						switch Decision(policyStr) {
+				for _, want := range []Decision{DecisionDeny, DecisionConfirm, DecisionAllow} {
+					for pattern, policyStr := range pe.config.MCP.Policies {
+						if Decision(policyStr) != want || !matchMCPPolicy(pattern, toolName) {
+							continue
+						}
+						switch want {
 						case DecisionDeny:
 							return DecisionDeny, "blocked by MCP policy match: " + pattern, nil
-						case DecisionAllow:
-							mcpDecision = DecisionAllow
-							mcpReason = "allowed by MCP policy match: " + pattern
-							mcpMatched = true
 						case DecisionConfirm:
 							mcpDecision = DecisionConfirm
 							mcpReason = "requires approval by MCP policy match: " + pattern
-							mcpMatched = true
+						case DecisionAllow:
+							mcpDecision = DecisionAllow
+							mcpReason = "allowed by MCP policy match: " + pattern
 						}
+						mcpMatched = true
+						break
+					}
+					if mcpMatched {
 						break
 					}
 				}

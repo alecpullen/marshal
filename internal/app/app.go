@@ -659,8 +659,6 @@ func resolveActionDecoding(toolCalling string, caps schema.ProviderCapabilities)
 		return actionDecodingConfig{ResponseFormat: fallbackResponseFormat(caps)}
 	case "json_schema":
 		return actionDecodingConfig{ResponseFormat: fallbackResponseFormat(caps)}
-	case "json":
-		return actionDecodingConfig{}
 	}
 	return actionDecodingConfig{}
 }
@@ -675,7 +673,7 @@ func fallbackResponseFormat(caps schema.ProviderCapabilities) *schema.ResponseFo
 	return nil
 }
 
-func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option) error {
+func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -762,7 +760,7 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		return fmt.Errorf("register commands: %w", err)
 	}
 
-	jobBrokerCtx := ctx
+
 	var tuiOpts []tui.Option
 	tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
 	tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
@@ -776,8 +774,8 @@ func Run(ctx context.Context, stdout io.Writer, stderr io.Writer, opts ...Option
 		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 		tuiOpts = append(tuiOpts, tui.WithSDDRunner(ctx, sddRunner))
-		tuiOpts = append(tuiOpts, tui.WithJobBroker(jobBrokerCtx, jobBroker))
-		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(jobBrokerCtx, steeringBroker))
+		tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
+		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
 		configReloader := func(newCfg config.Config) error {
 			return reloadAgentRuntime(ctx, newCfg, rt)
 		}
@@ -850,7 +848,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	rt.mu.Lock()
 	oldMCP := rt.MCPManager
 	oldJobMgr := rt.JobManager
-	oldSnap := rt.Snapshot
 	oldDesktopCloser := rt.DesktopCloser
 
 	// Copy in-place fields.
@@ -893,7 +890,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}
-	_ = oldSnap
 	if oldDesktopCloser != nil {
 		oldDesktopCloser()
 	}

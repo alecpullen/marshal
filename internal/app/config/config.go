@@ -654,7 +654,9 @@ func Load(opts LoadOptions) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	merge(&cfg, userFile)
+	if err := merge(&cfg, userFile); err != nil {
+		return Config{}, fmt.Errorf("merge config %s: %w", userPath, err)
+	}
 
 	projectPath := filepath.Join(work, ".marshal", "config.toml")
 	hasProject := trust.HasProjectConfig(work)
@@ -679,7 +681,7 @@ func Load(opts LoadOptions) (Config, error) {
 			return Config{}, err
 		}
 		if err := merge(&cfg, projectFile); err != nil {
-			return Config{}, err
+			return Config{}, fmt.Errorf("merge config %s: %w", projectPath, err)
 		}
 	}
 	return cfg, nil

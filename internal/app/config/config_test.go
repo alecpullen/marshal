@@ -905,3 +905,27 @@ name = "trusted"
 		t.Fatal("Trusted = false, want true for session trust")
 	}
 }
+
+// TestLoadReturnsUserConfigMergeError: a bad value in the *user* config
+// must surface with the file path, not be silently swallowed (previously
+// merge's error was ignored at config.go:656, dropping the rest of the
+// user's settings without a word).
+func TestLoadReturnsUserConfigMergeError(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, home+"/.config/marshal/config.toml", `
+[tools.shell]
+background_retention = "banana"
+`)
+
+	_, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err == nil {
+		t.Fatal("Load succeeded with an invalid user config, want error")
+	}
+	if !strings.Contains(err.Error(), "background_retention") {
+		t.Fatalf("error = %v, want it to name the bad field", err)
+	}
+	if !strings.Contains(err.Error(), ".config/marshal/config.toml") {
+		t.Fatalf("error = %v, want it to name the user config path", err)
+	}
+}

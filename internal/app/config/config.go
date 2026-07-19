@@ -737,6 +737,14 @@ func presetFromConfig(name string, in modelPresetConfig) routing.ModelPreset {
 	}
 }
 
+// set assigns *src to *dst when src is non-nil. It collapses the
+// nullable-mirror merge stanzas to one line per field.
+func set[T any](dst *T, src *T) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
 func contextBudgetFromConfig(in contextBudgetConfig) routing.ContextBudget {
 	return routing.ContextBudget{
 		MaxRepoContextTokens: in.MaxRepoContextTokens,
@@ -745,83 +753,43 @@ func contextBudgetFromConfig(in contextBudgetConfig) routing.ContextBudget {
 
 func merge(cfg *Config, file configFile) error {
 	if file.Project != nil {
-		if file.Project.Name != nil {
-			cfg.Project.Name = *file.Project.Name
-		}
+		set(&cfg.Project.Name, file.Project.Name)
 		if file.Project.Languages != nil {
 			cfg.Project.Languages = file.Project.Languages
 		}
 	}
 	if file.Commands != nil {
-		if file.Commands.Test != nil {
-			cfg.Commands.Test = *file.Commands.Test
-		}
-		if file.Commands.Format != nil {
-			cfg.Commands.Format = *file.Commands.Format
-		}
-		if file.Commands.Vet != nil {
-			cfg.Commands.Vet = *file.Commands.Vet
-		}
+		set(&cfg.Commands.Test, file.Commands.Test)
+		set(&cfg.Commands.Format, file.Commands.Format)
+		set(&cfg.Commands.Vet, file.Commands.Vet)
 	}
-	if file.Profile != nil && file.Profile.Default != nil {
-		cfg.Profile.Default = *file.Profile.Default
+	if file.Profile != nil {
+		set(&cfg.Profile.Default, file.Profile.Default)
 	}
 	if file.Agent != nil {
-		if file.Agent.Provider != nil {
-			cfg.Agent.Provider = *file.Agent.Provider
-		}
-		if file.Agent.Model != nil {
-			cfg.Agent.Model = *file.Agent.Model
-		}
-		if file.Agent.MaxToolIterations != nil {
-			cfg.Agent.MaxToolIterations = *file.Agent.MaxToolIterations
-		}
-		if file.Agent.MaxRetries != nil {
-			cfg.Agent.MaxRetries = *file.Agent.MaxRetries
-		}
-		if file.Agent.MaxTurnContextTokens != nil {
-			cfg.Agent.MaxTurnContextTokens = *file.Agent.MaxTurnContextTokens
-		}
-		if file.Agent.MaxStructuredOutputChars != nil {
-			cfg.Agent.MaxStructuredOutputChars = *file.Agent.MaxStructuredOutputChars
-		}
-		if file.Agent.PlanFirst != nil {
-			cfg.Agent.PlanFirst = *file.Agent.PlanFirst
-		}
-		if file.Agent.SubtaskIterations != nil {
-			cfg.Agent.SubtaskIterations = *file.Agent.SubtaskIterations
-		}
+		set(&cfg.Agent.Provider, file.Agent.Provider)
+		set(&cfg.Agent.Model, file.Agent.Model)
+		set(&cfg.Agent.MaxToolIterations, file.Agent.MaxToolIterations)
+		set(&cfg.Agent.MaxRetries, file.Agent.MaxRetries)
+		set(&cfg.Agent.MaxTurnContextTokens, file.Agent.MaxTurnContextTokens)
+		set(&cfg.Agent.MaxStructuredOutputChars, file.Agent.MaxStructuredOutputChars)
+		set(&cfg.Agent.PlanFirst, file.Agent.PlanFirst)
+		set(&cfg.Agent.SubtaskIterations, file.Agent.SubtaskIterations)
 	}
 	if file.Privacy != nil {
-		if file.Privacy.RemoteProvidersAllowed != nil {
-			cfg.Privacy.RemoteProvidersAllowed = *file.Privacy.RemoteProvidersAllowed
-		}
-		if file.Privacy.RedactSecrets != nil {
-			cfg.Privacy.RedactSecrets = *file.Privacy.RedactSecrets
-		}
-		if file.Privacy.IncludeGitignoredFiles != nil {
-			cfg.Privacy.IncludeGitignoredFiles = *file.Privacy.IncludeGitignoredFiles
-		}
+		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)
+		set(&cfg.Privacy.RedactSecrets, file.Privacy.RedactSecrets)
+		set(&cfg.Privacy.IncludeGitignoredFiles, file.Privacy.IncludeGitignoredFiles)
 	}
 	if file.Indexing != nil {
-		if file.Indexing.UseTreesitter != nil {
-			cfg.Indexing.UseTreesitter = *file.Indexing.UseTreesitter
-		}
-		if file.Indexing.UseEmbeddings != nil {
-			cfg.Indexing.UseEmbeddings = *file.Indexing.UseEmbeddings
-		}
-		if file.Indexing.SummariseFiles != nil {
-			cfg.Indexing.SummariseFiles = *file.Indexing.SummariseFiles
-		}
+		set(&cfg.Indexing.UseTreesitter, file.Indexing.UseTreesitter)
+		set(&cfg.Indexing.UseEmbeddings, file.Indexing.UseEmbeddings)
+		set(&cfg.Indexing.SummariseFiles, file.Indexing.SummariseFiles)
 		if file.Indexing.Ignore != nil {
 			cfg.Indexing.Ignore = file.Indexing.Ignore
 		}
-		if file.Indexing.MaxIndexableFileBytes != nil {
-			cfg.Indexing.MaxIndexableFileBytes = *file.Indexing.MaxIndexableFileBytes
-		}
-		if file.Indexing.MaxSearchableFileBytes != nil {
-			cfg.Indexing.MaxSearchableFileBytes = *file.Indexing.MaxSearchableFileBytes
-		}
+		set(&cfg.Indexing.MaxIndexableFileBytes, file.Indexing.MaxIndexableFileBytes)
+		set(&cfg.Indexing.MaxSearchableFileBytes, file.Indexing.MaxSearchableFileBytes)
 	}
 	if file.Providers != nil {
 		if cfg.Providers == nil {
@@ -861,15 +829,9 @@ func merge(cfg *Config, file configFile) error {
 	}
 	if file.Tools != nil && file.Tools.Shell != nil {
 		s := file.Tools.Shell
-		if s.DefaultTimeoutSeconds != nil {
-			cfg.Tools.Shell.DefaultTimeoutSeconds = *s.DefaultTimeoutSeconds
-		}
-		if s.MaxOutputBytes != nil {
-			cfg.Tools.Shell.MaxOutputBytes = *s.MaxOutputBytes
-		}
-		if s.MaxBackgroundJobs != nil {
-			cfg.Tools.Shell.MaxBackgroundJobs = *s.MaxBackgroundJobs
-		}
+		set(&cfg.Tools.Shell.DefaultTimeoutSeconds, s.DefaultTimeoutSeconds)
+		set(&cfg.Tools.Shell.MaxOutputBytes, s.MaxOutputBytes)
+		set(&cfg.Tools.Shell.MaxBackgroundJobs, s.MaxBackgroundJobs)
 		if s.BackgroundRetention != nil && *s.BackgroundRetention != "" {
 			d, err := time.ParseDuration(*s.BackgroundRetention)
 			if err != nil {
@@ -877,12 +839,8 @@ func merge(cfg *Config, file configFile) error {
 			}
 			cfg.Tools.Shell.BackgroundRetention = d
 		}
-		if s.AllowNetwork != nil {
-			cfg.Tools.Shell.AllowNetwork = *s.AllowNetwork
-		}
-		if s.AutoApprove != nil {
-			cfg.Tools.Shell.AutoApprove = *s.AutoApprove
-		}
+		set(&cfg.Tools.Shell.AllowNetwork, s.AllowNetwork)
+		set(&cfg.Tools.Shell.AutoApprove, s.AutoApprove)
 		if s.GuardrailDynamicArgv0 != nil {
 			cfg.Tools.Shell.GuardrailDynamicArgv0 = *s.GuardrailDynamicArgv0
 		}
@@ -896,33 +854,15 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Tools.Shell.Deny.Patterns = s.Deny.Patterns
 		}
 		if s.Sandbox != nil {
-			if s.Sandbox.Backend != nil {
-				cfg.Tools.Shell.Sandbox.Backend = *s.Sandbox.Backend
-			}
-			if s.Sandbox.MemoryLimitMB != nil {
-				cfg.Tools.Shell.Sandbox.MemoryLimitMB = *s.Sandbox.MemoryLimitMB
-			}
-			if s.Sandbox.CPUSeconds != nil {
-				cfg.Tools.Shell.Sandbox.CPUSeconds = *s.Sandbox.CPUSeconds
-			}
-			if s.Sandbox.MaxProcesses != nil {
-				cfg.Tools.Shell.Sandbox.MaxProcesses = *s.Sandbox.MaxProcesses
-			}
-			if s.Sandbox.FileSizeLimitMB != nil {
-				cfg.Tools.Shell.Sandbox.FileSizeLimitMB = *s.Sandbox.FileSizeLimitMB
-			}
-			if s.Sandbox.ContainerRuntime != nil {
-				cfg.Tools.Shell.Sandbox.ContainerRuntime = *s.Sandbox.ContainerRuntime
-			}
-			if s.Sandbox.ContainerImage != nil {
-				cfg.Tools.Shell.Sandbox.ContainerImage = *s.Sandbox.ContainerImage
-			}
-			if s.Sandbox.AllowFallback != nil {
-				cfg.Tools.Shell.Sandbox.AllowFallback = *s.Sandbox.AllowFallback
-			}
-			if s.Sandbox.UnsafePassthrough != nil {
-				cfg.Tools.Shell.Sandbox.UnsafePassthrough = *s.Sandbox.UnsafePassthrough
-			}
+			set(&cfg.Tools.Shell.Sandbox.Backend, s.Sandbox.Backend)
+			set(&cfg.Tools.Shell.Sandbox.MemoryLimitMB, s.Sandbox.MemoryLimitMB)
+			set(&cfg.Tools.Shell.Sandbox.CPUSeconds, s.Sandbox.CPUSeconds)
+			set(&cfg.Tools.Shell.Sandbox.MaxProcesses, s.Sandbox.MaxProcesses)
+			set(&cfg.Tools.Shell.Sandbox.FileSizeLimitMB, s.Sandbox.FileSizeLimitMB)
+			set(&cfg.Tools.Shell.Sandbox.ContainerRuntime, s.Sandbox.ContainerRuntime)
+			set(&cfg.Tools.Shell.Sandbox.ContainerImage, s.Sandbox.ContainerImage)
+			set(&cfg.Tools.Shell.Sandbox.AllowFallback, s.Sandbox.AllowFallback)
+			set(&cfg.Tools.Shell.Sandbox.UnsafePassthrough, s.Sandbox.UnsafePassthrough)
 			if s.Sandbox.EnvAllowlist != nil {
 				cfg.Tools.Shell.Sandbox.EnvAllowlist = s.Sandbox.EnvAllowlist
 			}
@@ -933,12 +873,8 @@ func merge(cfg *Config, file configFile) error {
 	}
 	if file.Swarm != nil && file.Swarm.Budget != nil {
 		b := file.Swarm.Budget
-		if b.MaxFixRounds != nil {
-			cfg.Swarm.Budget.MaxFixRounds = *b.MaxFixRounds
-		}
-		if b.MaxTotalTokens != nil {
-			cfg.Swarm.Budget.MaxTotalTokens = *b.MaxTotalTokens
-		}
+		set(&cfg.Swarm.Budget.MaxFixRounds, b.MaxFixRounds)
+		set(&cfg.Swarm.Budget.MaxTotalTokens, b.MaxTotalTokens)
 		for role, iters := range b.ToolIters {
 			if cfg.Swarm.Budget.ToolIters == nil {
 				cfg.Swarm.Budget.ToolIters = map[string]int{}
@@ -947,16 +883,9 @@ func merge(cfg *Config, file configFile) error {
 		}
 	}
 	if file.SDD != nil {
-		s := file.SDD
-		if s.AutoWorktree != nil {
-			cfg.SDD.AutoWorktree = *s.AutoWorktree
-		}
-		if s.MaxFixRounds != nil {
-			cfg.SDD.MaxFixRounds = *s.MaxFixRounds
-		}
-		if s.PlansDir != nil {
-			cfg.SDD.PlansDir = *s.PlansDir
-		}
+		set(&cfg.SDD.AutoWorktree, file.SDD.AutoWorktree)
+		set(&cfg.SDD.MaxFixRounds, file.SDD.MaxFixRounds)
+		set(&cfg.SDD.PlansDir, file.SDD.PlansDir)
 	}
 	if file.MCP != nil {
 		for name, srv := range file.MCP.Servers {
@@ -980,24 +909,16 @@ func merge(cfg *Config, file configFile) error {
 			cfg.MCP.Policies[k] = v
 		}
 		if file.MCP.DisclosureThresholdTools != nil {
-			cfg.MCP.DisclosureThresholdTools = *file.MCP.DisclosureThresholdTools
+			set(&cfg.MCP.DisclosureThresholdTools, file.MCP.DisclosureThresholdTools)
 		}
 	}
 	if file.Snapshots != nil {
-		if file.Snapshots.Enabled != nil {
-			cfg.Snapshots.Enabled = *file.Snapshots.Enabled
-		}
-		if file.Snapshots.RetentionDays != nil {
-			cfg.Snapshots.RetentionDays = *file.Snapshots.RetentionDays
-		}
-		if file.Snapshots.MaxFileBytes != nil {
-			cfg.Snapshots.MaxFileBytes = *file.Snapshots.MaxFileBytes
-		}
+		set(&cfg.Snapshots.Enabled, file.Snapshots.Enabled)
+		set(&cfg.Snapshots.RetentionDays, file.Snapshots.RetentionDays)
+		set(&cfg.Snapshots.MaxFileBytes, file.Snapshots.MaxFileBytes)
 	}
 	if file.TUI != nil {
-		if file.TUI.Theme != nil {
-			cfg.TUI.Theme = *file.TUI.Theme
-		}
+		set(&cfg.TUI.Theme, file.TUI.Theme)
 		if file.TUI.Palette != nil {
 			if cfg.TUI.Palette == nil {
 				cfg.TUI.Palette = map[string]string{}
@@ -1006,9 +927,7 @@ func merge(cfg *Config, file configFile) error {
 				cfg.TUI.Palette[k] = v
 			}
 		}
-		if file.TUI.Mode != nil {
-			cfg.TUI.Mode = *file.TUI.Mode
-		}
+		set(&cfg.TUI.Mode, file.TUI.Mode)
 	}
 	if file.Permissions != nil && file.Permissions.Rules != nil {
 		cfg.Permissions.Rules = file.Permissions.Rules
@@ -1022,9 +941,7 @@ func merge(cfg *Config, file configFile) error {
 		}
 	}
 	if file.Web != nil {
-		if file.Web.Enabled != nil {
-			cfg.Web.Enabled = *file.Web.Enabled
-		}
+		set(&cfg.Web.Enabled, file.Web.Enabled)
 		if file.Web.FetchTimeout != nil && *file.Web.FetchTimeout != "" {
 			d, err := time.ParseDuration(*file.Web.FetchTimeout)
 			if err != nil {
@@ -1032,29 +949,15 @@ func merge(cfg *Config, file configFile) error {
 			}
 			cfg.Web.FetchTimeout = d
 		}
-		if file.Web.SearchProvider != nil {
-			cfg.Web.SearchProvider = *file.Web.SearchProvider
-		}
-		if file.Web.SearchURL != nil {
-			cfg.Web.SearchURL = *file.Web.SearchURL
-		}
-		if file.Web.SearchKey != nil {
-			cfg.Web.SearchKey = *file.Web.SearchKey
-		}
+		set(&cfg.Web.SearchProvider, file.Web.SearchProvider)
+		set(&cfg.Web.SearchURL, file.Web.SearchURL)
+		set(&cfg.Web.SearchKey, file.Web.SearchKey)
 	}
 	if file.Desktop != nil {
-		if file.Desktop.Enabled != nil {
-			cfg.Desktop.Enabled = *file.Desktop.Enabled
-		}
-		if file.Desktop.Mode != nil {
-			cfg.Desktop.Mode = *file.Desktop.Mode
-		}
-		if file.Desktop.Headless != nil {
-			cfg.Desktop.Headless = *file.Desktop.Headless
-		}
-		if file.Desktop.CDPURL != nil {
-			cfg.Desktop.CDPURL = *file.Desktop.CDPURL
-		}
+		set(&cfg.Desktop.Enabled, file.Desktop.Enabled)
+		set(&cfg.Desktop.Mode, file.Desktop.Mode)
+		set(&cfg.Desktop.Headless, file.Desktop.Headless)
+		set(&cfg.Desktop.CDPURL, file.Desktop.CDPURL)
 		if file.Desktop.URLAllowlist != nil {
 			cfg.Desktop.URLAllowlist = file.Desktop.URLAllowlist
 		}
@@ -1068,30 +971,18 @@ func merge(cfg *Config, file configFile) error {
 			}
 			cfg.Desktop.DefaultTimeout = d
 		}
-		if file.Desktop.ScreenshotFormat != nil {
-			cfg.Desktop.ScreenshotFormat = *file.Desktop.ScreenshotFormat
-		}
+		set(&cfg.Desktop.ScreenshotFormat, file.Desktop.ScreenshotFormat)
 	}
 	if file.Hooks != nil {
-		if file.Hooks.FailClosed != nil {
-			cfg.Hooks.FailClosed = *file.Hooks.FailClosed
-		}
+		set(&cfg.Hooks.FailClosed, file.Hooks.FailClosed)
 		if file.Hooks.Entries != nil {
 			cfg.Hooks.Entries = nil
 			for _, entry := range file.Hooks.Entries {
 				var hc HookConfig
-				if entry.Event != nil {
-					hc.Event = *entry.Event
-				}
-				if entry.Matcher != nil {
-					hc.Matcher = *entry.Matcher
-				}
-				if entry.Command != nil {
-					hc.Command = *entry.Command
-				}
-				if entry.TimeoutMS != nil {
-					hc.TimeoutMS = *entry.TimeoutMS
-				}
+				set(&hc.Event, entry.Event)
+				set(&hc.Matcher, entry.Matcher)
+				set(&hc.Command, entry.Command)
+				set(&hc.TimeoutMS, entry.TimeoutMS)
 				cfg.Hooks.Entries = append(cfg.Hooks.Entries, hc)
 			}
 		}

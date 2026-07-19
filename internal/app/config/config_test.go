@@ -18,6 +18,19 @@ type staticTrustResolver struct {
 	decision trust.Decision
 }
 
+func TestSet(t *testing.T) {
+	dst := "keep"
+	set(&dst, (*string)(nil))
+	if dst != "keep" {
+		t.Fatalf("nil src overwrote dst: %q", dst)
+	}
+	v := "new"
+	set(&dst, &v)
+	if dst != "new" {
+		t.Fatalf("set did not assign: %q", dst)
+	}
+}
+
 func (s staticTrustResolver) Resolve(workingDir string, hasProjectConfig bool) (trust.Decision, error) {
 	return s.decision, nil
 }

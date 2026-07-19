@@ -7,40 +7,32 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const defaultReadPoolSize = 4
-
-// DB wraps a single-writer *sql.DB connection (sqlDB) and a multi-connection
-// read pool (readDB). All access goes through db.sqlDB — callers obtain the
-// raw *sql.DB via SQLDB() and pass their own contexts to queries directly.
-// There is no helper/exec/query layer in this package; this is intentional so
-// that every call site controls its own context lifecycle.
+// DB wraps a single-writer *sql.DB connection. All access goes through
+// db.sqlDB — callers obtain the raw *sql.DB via SQLDB() and pass their own
+// contexts to queries directly. There is no helper/exec/query layer in this
+// package; this is intentional so that every call site controls its own
+// context lifecycle.
 type DB struct {
-	sqlDB  *sql.DB
-	readDB *sql.DB
-	locks  *ProjectLocks
+	sqlDB *sql.DB
+	locks *ProjectLocks
 }
 
-// Open opens a SQLite database with WAL mode, a single writer connection,
-// and a read pool of defaultReadPoolSize (4) connections.
+// Open opens a SQLite database with WAL mode and a single connection.
 func Open(path string) (*DB, error) {
-	return OpenWithPool(path, defaultReadPoolSize)
+	sqlDB, err := openOneConnection(path)
+	if err != nil {
+		return nil, err
+	}
+	return &DB{sqlDB: sqlDB, locks: NewProjectLocks()}, nil
 }
 
 func (db *DB) SQLDB() *sql.DB { return db.sqlDB }
 
 func (db *DB) Close() error {
-	var first error
 	if db.sqlDB != nil {
-		if err := db.sqlDB.Close(); err != nil {
-			first = err
-		}
+		return db.sqlDB.Close()
 	}
-	if db.readDB != nil {
-		if err := db.readDB.Close(); err != nil && first == nil {
-			first = err
-		}
-	}
-	return first
+	return nil
 }
 
 func (db *DB) Migrate() error {

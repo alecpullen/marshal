@@ -411,8 +411,8 @@ type State struct {
 	childrenOf map[int64][]int64
 	msgByID    map[int64]*Message
 	// dbIDToImID maps a persisted DB message id to the in-memory id
-	// allocated for it at cold start. Only used during loadFromDB; left
-	// empty during normal operation. Holding s.mu around accesses.
+	// allocated for it at cold start. Only used during loadFromDB and set
+	// to nil when the load completes. Holding s.mu around accesses.
 	dbIDToImID map[int64]int64
 }
 
@@ -598,6 +598,9 @@ func (s *State) loadFromDB() {
 	s.leafID = imLeaf
 	s.leafDBID = leaf.ID
 	s.rebuildActiveBranch()
+	// The translation map is only needed while loading; drop it so the
+	// session doesn't carry a stale dual-id mapping for its lifetime.
+	s.dbIDToImID = nil
 }
 
 func (s *State) SessionID() string { return s.sessionID }
@@ -988,10 +991,12 @@ func (s *State) persistenceEnabled() bool {
 }
 
 // appendMessage is the shared body for AddMessage / AddMessageFinal /
-// AddMessageSalvaged. It records the message in the in-memory tree (with
-// its parent being the current leaf) and best-effort persists to the DB,
-// promoting the in-memory id to the DB-assigned id on success so the tree
-// stays consistent with the database.
+// AddMessageSalvaged. It persists first (best effort) and then inserts the
+// message into the in-memory tree exactly once, with its final id, so no
+// transient id is ever published to event subscribers or re-keyed later.
+// s.mu is held across the DB write: appends are per-session serialized
+// anyway, and holding it closes the race where a concurrent Rewind /
+// SwitchBranch could orphan a stashed pointer mid-promotion.
 func (s *State) appendMessage(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string) {
 	s.mu.Lock()
 	reasoning := s.inProgress.Reasoning
@@ -1004,17 +1009,29 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 	}
 	s.inProgress = InProgressMessage{}
 
-	id := s.nextMsgID
-	s.nextMsgID++
 	parent := s.leafID
-	var parentDBID int64
+	createdAt := time.Now()
+
+	var id int64
+	persisted := false
 	if s.persistenceEnabled() {
-		parentDBID = s.leafDBID
-	} else {
-		// In in-memory mode, the leaf id is the in-memory id and is
-		// used as the parent for the next message.
-		parentDBID = 0
+		dbID, err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), createdAt, reasoning, thinkDuration, final, s.leafDBID)
+		if err != nil {
+			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
+		} else {
+			id = dbID
+			s.leafDBID = dbID
+			persisted = true
+		}
 	}
+	if !persisted {
+		// In-memory mode (or DB write failed): fall back to the transient
+		// counter. The message still lands in the tree, it just isn't
+		// persisted — same degrade semantics as before.
+		id = s.nextMsgID
+		s.nextMsgID++
+	}
+
 	msg := Message{
 		ID:            id,
 		ParentID:      parent,
@@ -1023,7 +1040,7 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 		ContentType:   contentType,
 		Reasoning:     reasoning,
 		ThinkDuration: thinkDuration,
-		CreatedAt:     time.Now(),
+		CreatedAt:     createdAt,
 		Final:         final,
 		Salvaged:      salvaged,
 		SalvageReason: salvageReason,
@@ -1033,45 +1050,12 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 	if parent != 0 {
 		s.childrenOf[parent] = append(s.childrenOf[parent], id)
 	}
-	ptr := &s.messages[len(s.messages)-1]
-	s.msgByID[id] = ptr
+	s.msgByID[id] = &s.messages[len(s.messages)-1]
 	s.leafID = id
-	published := *ptr
+	published := msg
 	s.mu.Unlock()
 
 	s.publishEvent(EventMessageAdded, Event{Message: &published})
-
-	if s.persistenceEnabled() {
-		dbID, err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), msg.CreatedAt, reasoning, thinkDuration, final, parentDBID)
-		if err != nil {
-			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
-			return
-		}
-		s.mu.Lock()
-		ptr.ID = dbID
-		s.leafDBID = dbID
-		// promote the in-memory map key from transient id to DB id so
-		// parentOf / childrenOf stay consistent with persisted ids.
-		if _, ok := s.msgByID[id]; ok {
-			delete(s.msgByID, id)
-			s.msgByID[dbID] = ptr
-		}
-		// re-record the parent / child relations using the DB id.
-		if parent != 0 {
-			delete(s.parentOf, id)
-			s.parentOf[dbID] = parent
-			children := s.childrenOf[parent]
-			for i, c := range children {
-				if c == id {
-					children[i] = dbID
-					break
-				}
-			}
-			s.childrenOf[parent] = children
-		}
-		s.leafID = dbID
-		s.mu.Unlock()
-	}
 }
 
 func (s *State) AddMessage(role Role, content string, contentType ContentType) {

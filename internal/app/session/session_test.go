@@ -1237,6 +1237,104 @@ func TestStatePublishesApprovalEvent(t *testing.T) {
 	}
 }
 
+// TestAddMessagePublishesPersistedID verifies that the EventMessageAdded
+// payload carries the final persisted id — not a transient in-memory id
+// that is re-keyed away milliseconds later (ACP forwards this id).
+func TestAddMessagePublishesPersistedID(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	if err := dbConn.CreateSession("evt-sess", projectID, "evt", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Advance the DB id sequence via another session so the transient
+	// in-memory id (starts at 1) and the next persisted id differ — in a
+	// fresh DB both are 1 and the bug is invisible.
+	if err := dbConn.CreateSession("other-sess", projectID, "other", time.Now().UTC()); err != nil {
+		t.Fatalf("create other session: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := dbConn.SaveMessage("other-sess", "user", "seed", "plain", time.Now().UTC(), "", 0, false, 0); err != nil {
+			t.Fatalf("seed save: %v", err)
+		}
+	}
+
+	state := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: "evt-sess", Logger: logger})
+
+	broker := pubsub.NewBroker[Event]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := broker.Subscribe(ctx)
+	state.SetEventBroker(broker)
+
+	state.AddMessage(RoleUser, "hello", ContentTypePlain)
+
+	var evtID int64
+	select {
+	case ev := <-ch:
+		if ev.Type != EventMessageAdded || ev.Payload.Message == nil {
+			t.Fatalf("event = %+v", ev)
+		}
+		evtID = ev.Payload.Message.ID
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for message event")
+	}
+
+	msgs := state.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %d, want 1", len(msgs))
+	}
+	if msgs[0].ID != evtID {
+		t.Fatalf("event carried id %d but tree holds id %d — transient id leaked to subscribers", evtID, msgs[0].ID)
+	}
+	if state.LeafID() != evtID {
+		t.Fatalf("LeafID = %d, want %d", state.LeafID(), evtID)
+	}
+}
+
+// TestLoadFromDBDropsTranslationMap: dbIDToImID is only meaningful during
+// loadFromDB; it must not be kept for the session's lifetime.
+func TestLoadFromDBDropsTranslationMap(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	if err := dbConn.CreateSession("nilmap-sess", projectID, "nilmap", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	first := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: "nilmap-sess", Logger: logger})
+	first.AddMessage(RoleUser, "hello", ContentTypePlain)
+
+	second := New(config.Default(), "/repo", time.Unix(200, 0), Persistence{DB: dbConn, SessionID: "nilmap-sess", Logger: logger})
+	if len(second.Messages()) != 1 {
+		t.Fatalf("cold-start messages = %d, want 1", len(second.Messages()))
+	}
+	if second.dbIDToImID != nil {
+		t.Fatal("dbIDToImID should be nil after loadFromDB completes")
+	}
+}
+
 // TestEventInfoHidesResponseChan verifies that SetPendingApproval publishes
 // a PendingApprovalInfo (channel-free) alongside the full PendingApproval.
 // Subscribers that only need to inspect the pending call should read the

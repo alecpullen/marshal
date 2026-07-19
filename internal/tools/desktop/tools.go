@@ -32,17 +32,8 @@ func (ts *toolSet) getSession(ctx context.Context) (*browser.Session, error) {
 		return nil, fmt.Errorf("create browser backend: %w", err)
 	}
 	ts.session = browser.NewSession(backend)
-	ts.updateBrowserState(session.BrowserInfo{
-		SessionOpen: true,
-		Mode:        ts.cfg.Mode,
-	})
+	ts.setActive(false, "")
 	return ts.session, nil
-}
-
-func (ts *toolSet) updateBrowserState(info session.BrowserInfo) {
-	if ts.sessionState != nil {
-		ts.sessionState.SetBrowserInfo(info)
-	}
 }
 
 // setActive marks the browser session busy/idle around a tool call,

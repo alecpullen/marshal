@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/db"
 )
 
@@ -209,5 +210,26 @@ func TestMemoryPanelRendersWithinTinyHeight(t *testing.T) {
 		if !strings.Contains(v, "Memory") {
 			t.Fatalf("panel title missing at height %d:\n%s", h, v)
 		}
+	}
+}
+
+func TestMemoryPanelNoColorOmitsANSIEscapes(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "xterm-256color")
+	// Reload the package-wide theme so theme.Current() reports monochrome.
+	th := theme.LoadWithConfig("warm-sunset", theme.ModeDark, nil)
+	if _, ok := th.FGDefault.(lipgloss.NoColor); !ok {
+		t.Fatal("expected monochrome theme with NO_COLOR=1")
+	}
+	theme.Reload(th)
+
+	database, projectID := newTestDB(t)
+	if err := database.SaveMemory(projectID, "fact", "Uses SQLite", "sess-1", time.Unix(100, 0)); err != nil {
+		t.Fatalf("SaveMemory failed: %v", err)
+	}
+	p := NewPanel(database, projectID)
+	v := p.View(80, 12)
+	if strings.Contains(v, "\x1b[") {
+		t.Fatalf("NO_COLOR panel view must not contain ANSI escapes:\n%q", v)
 	}
 }

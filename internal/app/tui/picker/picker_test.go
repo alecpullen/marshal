@@ -172,3 +172,17 @@ func TestAllowCustomDisabledNoSentinel(t *testing.T) {
 		}
 	}
 }
+
+func TestPasteIntoFilter(t *testing.T) {
+	m := New("Switch model", "", testItems())
+	m.Update(tea.PasteMsg{Content: "llama-local"})
+	if got := m.filter.Value(); got != "llama-local" {
+		t.Fatalf("filter value = %q, want %q", got, "llama-local")
+	}
+	if len(m.matches) != 1 {
+		t.Fatalf("paste should refilter to 1 match, got %d", len(m.matches))
+	}
+	if m.items[m.matches[0]].Value != "llama-local" {
+		t.Fatalf("paste should match llama-local, got %v", m.items[m.matches[0]])
+	}
+}

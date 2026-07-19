@@ -107,41 +107,48 @@ func (m *Model) refilter() {
 	}
 }
 
-// Update handles key events for the picker.
+// Update handles key and paste events for the picker.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
-	k, ok := msg.(tea.KeyPressMsg)
-	if !ok {
-		return nil
-	}
-	switch k.String() {
-	case "esc":
-		return func() tea.Msg { return CancelledMsg{} }
-	case "enter":
-		if m.cursor < len(m.matches) && len(m.matches) > 0 {
-			idx := m.matches[m.cursor]
-			if idx == -1 {
-				return func() tea.Msg { return PickedMsg{Value: m.filter.Value()} }
+	switch msg := msg.(type) {
+	case tea.PasteMsg:
+		var cmd tea.Cmd
+		m.filter, cmd = m.filter.Update(msg)
+		m.refilter()
+		m.cursor = 0
+		return cmd
+	case tea.KeyPressMsg:
+		k := msg
+		switch k.String() {
+		case "esc":
+			return func() tea.Msg { return CancelledMsg{} }
+		case "enter":
+			if m.cursor < len(m.matches) && len(m.matches) > 0 {
+				idx := m.matches[m.cursor]
+				if idx == -1 {
+					return func() tea.Msg { return PickedMsg{Value: m.filter.Value()} }
+				}
+				v := m.items[idx].Value
+				return func() tea.Msg { return PickedMsg{Value: v} }
 			}
-			v := m.items[idx].Value
-			return func() tea.Msg { return PickedMsg{Value: v} }
+			return nil
+		case "up":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+			return nil
+		case "down":
+			if m.cursor < len(m.matches)-1 {
+				m.cursor++
+			}
+			return nil
 		}
-		return nil
-	case "up":
-		if m.cursor > 0 {
-			m.cursor--
-		}
-		return nil
-	case "down":
-		if m.cursor < len(m.matches)-1 {
-			m.cursor++
-		}
-		return nil
+		var cmd tea.Cmd
+		m.filter, cmd = m.filter.Update(k)
+		m.refilter()
+		m.cursor = 0
+		return cmd
 	}
-	var cmd tea.Cmd
-	m.filter, cmd = m.filter.Update(k)
-	m.refilter()
-	m.cursor = 0
-	return cmd
+	return nil
 }
 
 // View renders the picker as a centered panel with filter input, item list,

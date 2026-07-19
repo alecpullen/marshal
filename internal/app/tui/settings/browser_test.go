@@ -293,3 +293,20 @@ func TestBrowserEscEmitsClosed(t *testing.T) {
 		t.Fatal("want BrowserClosedMsg")
 	}
 }
+
+func TestBrowserPasteIntoFilter(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	if got := b.FilterValue(); got != "" {
+		t.Fatalf("initial filter should be empty, got %q", got)
+	}
+
+	b.Update(tea.PasteMsg{Content: "shell"})
+	if got := b.FilterValue(); got != "shell" {
+		t.Fatalf("filter value = %q, want \"shell\"", got)
+	}
+
+	view := b.View(80, 12)
+	if !strings.Contains(view, "shell.allow_network") {
+		t.Fatalf("pasted filter should refresh the list, got:\n%s", view)
+	}
+}

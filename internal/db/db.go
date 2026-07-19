@@ -35,94 +35,70 @@ func (db *DB) Close() error {
 	return nil
 }
 
+// columnAdd is one backward-compatible column addition applied by Migrate
+// when the column is absent (new databases already have it via schema).
+type columnAdd struct {
+	table string
+	name  string
+	def   string
+}
+
+var migrationColumns = []columnAdd{
+	{"tool_calls", "command_exit_code", "INTEGER"},
+	{"tool_calls", "files_changed", "TEXT"},
+	{"tool_calls", "error", "TEXT"},
+	{"tool_calls", "sandbox_backend", "TEXT"},
+	{"tool_calls", "sandbox_network_isolated", "INTEGER"},
+	{"tool_calls", "sandbox_limits_json", "TEXT"},
+	{"tool_calls", "sandbox_killed_reason", "TEXT"},
+	{"tool_calls", "duration_ms", "INTEGER"},
+	{"tool_calls", "hooks_json", "TEXT NOT NULL DEFAULT '[]'"},
+	{"tool_calls", "original_args_json", "TEXT"},
+	{"tool_calls", "rewritten", "INTEGER DEFAULT 0"},
+	{"tool_calls", "sandbox_enabled", "INTEGER NOT NULL DEFAULT 0"},
+	{"tool_calls", "resource_limits", "INTEGER NOT NULL DEFAULT 0"},
+	{"tool_calls", "output_truncated", "INTEGER NOT NULL DEFAULT 0"},
+	{"files", "summary", "TEXT"},
+	{"messages", "content_type", "TEXT"},
+	{"messages", "reasoning", "TEXT"},
+	{"messages", "think_duration_ms", "INTEGER"},
+	{"messages", "final", "INTEGER DEFAULT 0"},
+	// F14: message tree + session leaf.
+	{"messages", "parent_id", "INTEGER REFERENCES messages(id) ON DELETE SET NULL"},
+	{"agent_sessions", "leaf_message_id", "INTEGER"},
+}
+
 func (db *DB) Migrate() error {
 	_, err := db.sqlDB.Exec(schema)
 	if err != nil {
 		return fmt.Errorf("execute database schema migrations: %w", err)
 	}
 
-	// Backward-compatible schema extensions: add any columns introduced after
-	// the initial tool_calls table creation. New databases already contain
-	// these columns, so the additions are no-ops in that case.
-	columns, err := db.tableColumns("tool_calls")
-	if err != nil {
-		return fmt.Errorf("inspect tool_calls columns: %w", err)
-	}
-	columnDefs := map[string]string{
-		"command_exit_code":        "INTEGER",
-		"files_changed":            "TEXT",
-		"error":                    "TEXT",
-		"sandbox_backend":          "TEXT",
-		"sandbox_network_isolated": "INTEGER",
-		"sandbox_limits_json":      "TEXT",
-		"sandbox_killed_reason":    "TEXT",
-		"duration_ms":              "INTEGER",
-		"hooks_json":               "TEXT NOT NULL DEFAULT '[]'",
-		"original_args_json":       "TEXT",
-		"rewritten":                "INTEGER DEFAULT 0",
-		"sandbox_enabled":          "INTEGER NOT NULL DEFAULT 0",
-		"resource_limits":          "INTEGER NOT NULL DEFAULT 0",
-		"output_truncated":         "INTEGER NOT NULL DEFAULT 0",
-	}
-	for name, def := range columnDefs {
-		if columns[name] {
+	// Backward-compatible schema extensions: add any columns introduced
+	// after the initial table creation. New databases already contain
+	// these columns, so the additions are no-ops in that case. Each table
+	// is introspected once.
+	checked := map[string]map[string]bool{}
+	for _, c := range migrationColumns {
+		cols, ok := checked[c.table]
+		if !ok {
+			var err error
+			cols, err = db.tableColumns(c.table)
+			if err != nil {
+				return fmt.Errorf("inspect %s columns: %w", c.table, err)
+			}
+			checked[c.table] = cols
+		}
+		if cols[c.name] {
 			continue
 		}
-		query := fmt.Sprintf("ALTER TABLE tool_calls ADD COLUMN %s %s", name, def)
+		query := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", c.table, c.name, c.def)
 		if _, err := db.sqlDB.Exec(query); err != nil {
-			return fmt.Errorf("add column %s to tool_calls: %w", name, err)
+			return fmt.Errorf("add column %s to %s: %w", c.name, c.table, err)
 		}
+		cols[c.name] = true
 	}
 
-	fileColumns, err := db.tableColumns("files")
-	if err != nil {
-		return fmt.Errorf("inspect files columns: %w", err)
-	}
-	if !fileColumns["summary"] {
-		if _, err := db.sqlDB.Exec(`ALTER TABLE files ADD COLUMN summary TEXT`); err != nil {
-			return fmt.Errorf("add column summary to files: %w", err)
-		}
-	}
-
-	messageColumns, err := db.tableColumns("messages")
-	if err != nil {
-		return fmt.Errorf("inspect messages columns: %w", err)
-	}
-	messageColumnDefs := map[string]string{
-		"content_type":      "TEXT",
-		"reasoning":         "TEXT",
-		"think_duration_ms": "INTEGER",
-		"final":             "INTEGER DEFAULT 0",
-	}
-	for name, def := range messageColumnDefs {
-		if messageColumns[name] {
-			continue
-		}
-		query := fmt.Sprintf("ALTER TABLE messages ADD COLUMN %s %s", name, def)
-		if _, err := db.sqlDB.Exec(query); err != nil {
-			return fmt.Errorf("add column %s to messages: %w", name, err)
-		}
-	}
-
-	// F14: message tree + session leaf.
-	messageTreeCols, err := db.tableColumns("messages")
-	if err != nil {
-		return fmt.Errorf("inspect messages columns for parent_id: %w", err)
-	}
-	if !messageTreeCols["parent_id"] {
-		if _, err := db.sqlDB.Exec(`ALTER TABLE messages ADD COLUMN parent_id INTEGER REFERENCES messages(id) ON DELETE SET NULL`); err != nil {
-			return fmt.Errorf("add column parent_id to messages: %w", err)
-		}
-	}
-	sessionCols, err := db.tableColumns("agent_sessions")
-	if err != nil {
-		return fmt.Errorf("inspect agent_sessions columns for leaf: %w", err)
-	}
-	if !sessionCols["leaf_message_id"] {
-		if _, err := db.sqlDB.Exec(`ALTER TABLE agent_sessions ADD COLUMN leaf_message_id INTEGER`); err != nil {
-			return fmt.Errorf("add column leaf_message_id to agent_sessions: %w", err)
-		}
-	}
 	// Backfill existing linear rows: parent = previous row in the same session.
 	if _, err := db.sqlDB.Exec(`
 		UPDATE messages SET parent_id = (

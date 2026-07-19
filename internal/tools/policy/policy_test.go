@@ -752,6 +752,32 @@ func TestEvaluate_NoRegistryKeepsLegacyLowRiskAllow(t *testing.T) {
 	}
 }
 
+// TestPolicyEngineEvaluateNilConfigDoesNotPanic: NewEngine(nil, nil) must
+// degrade to secure defaults, not panic on a nil config dereference.
+func TestPolicyEngineEvaluateNilConfigDoesNotPanic(t *testing.T) {
+	pe := NewEngine(nil, nil)
+
+	// Use a command that matches no SafeCommands allow rule, so evaluation
+	// reaches the config rule sections (the nil-deref sites).
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "xyzzy-notarealcmd --force"})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Fatalf("decision = %s, want confirm (secure default with no config)", dec)
+	}
+
+	// test.run without an explicit command reads config.Commands.Test —
+	// the nil-deref path from the audit.
+	dec, _, err = pe.Evaluate("test.run", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("Evaluate test.run: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Fatalf("test.run decision = %s, want confirm", dec)
+	}
+}
+
 // TestPolicyEngineEvaluateConcurrentWithSetters: the TUI calls SetRules
 // from the UI goroutine while the agent goroutine is mid-Evaluate. Run
 // with -race: Evaluate must snapshot the mutable fields under the lock.

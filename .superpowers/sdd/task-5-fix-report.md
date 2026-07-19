@@ -188,11 +188,16 @@ dock's panel (`model.go:2144-2145` `openPicker`, `model.go:2247-2248`
 `chrome.Panel(title, content, w, h, ...)` (`internal/app/tui/chrome/chrome.go:19`)
 always emits **exactly `h` rows when `h >= 2`** (1 top-border row + `h-2`
 body rows + 1 bottom-border row, clamped/truncated as needed) — but when
-`h < 2`, `innerH` clamps to `0` and it still emits the top and bottom
-border rows unconditionally, i.e. **2 rows regardless of `h`**. So any
-caller that lets `h` (or the `maxHeight` fed into a `min(natural+2,
-maxHeight)` computation) drop below 2 gets an output that exceeds the
-requested budget.
+`h < 2`, `innerH` clamps to `0`, so the `body` slice built at
+`chrome.go:46-58` is empty. The return statement at `chrome.go:60` is
+`top + "\n" + strings.Join(body, "\n") + "\n" + bottom`: with `body` empty,
+`strings.Join` yields `""`, but the two literal `"\n"` separators around it
+still produce a blank line between the top and bottom borders. The result is
+**3 rows regardless of `h`** whenever `h < 2` (top border, one blank line,
+bottom border) — not 2 as originally written here. So any caller that lets
+`h` (or the `maxHeight` fed into a `min(natural+2, maxHeight)` computation)
+drop below 2 gets an output that exceeds the requested budget by even more
+than a first read of this section suggested.
 
 `BrowserPanel.View` already guards this (added in the base commit,
 cec6064): `if maxHeight < 3 { return "" }`, applied *before* the
@@ -309,3 +314,87 @@ Full `go test ./internal/...` output: all `ok`, no `FAIL`.
    addition)
 
 Base commit: `cec6064` (`fix(tui): retry unsaved browser settings`).
+
+## Addendum: reviewer follow-up on Finding 1 (dock close/reopen gap)
+
+A task reviewer examined commits `1c24707`, `a3dadf1`, `78b9bf0`, `f55c8da`
+and found one Important issue: Finding 1's retry fix did not survive a dock
+close/reopen cycle.
+
+### What was wrong
+
+`BrowserPanel.savePending` (added in `1c24707`) is instance-scoped, and
+`NewBrowser` never accepted or restored it. `openSettingsBrowser`
+(`internal/app/tui/model.go:382-388` at the time of review) constructed a
+brand-new `BrowserPanel` on every open, with `baseline = cloneConfig(m.state.Config)`.
+But `m.state.Config` had already been advanced to the unsaved value by the
+`settings.ChangedMsg` handler's `applyNewConfig` call on the original save
+failure (`model.go:573-582`) — that rollforward is deliberate, matching
+`/set`'s retry-friendly behavior of never losing the edit. So closing the
+dock (Esc) and reopening it built a panel whose baseline already equaled the
+unsaved value (empty diff) and whose `savePending` reset to `false`,
+reintroducing the exact bug Finding 1 fixed — "no way to retry a failed save
+except by making an unrelated change first" — via the ordinary Esc-then-
+reopen path. Neither of the two tests added for Finding 1
+(`TestBrowserRetriesFailedSaveOnRepeatedCommit`,
+`TestBrowserPendingSaveDoesNotRetryOnNavigationOrFilterTyping`) caught this
+because both operate on a single long-lived `BrowserPanel` instance and never
+exercise `openSettingsBrowser`'s reconstruction path.
+
+### What changed
+
+- `internal/app/tui/settings/browser.go`: added
+  `BrowserPanel.SetSavePending(pending bool)`, a setter that seeds the
+  existing `savePending` field on a freshly constructed panel. The browser's
+  own `committed`/`savePending`/`flushChanges` retry machinery from `1c24707`
+  is unchanged — this only seeds its initial state.
+- `internal/app/tui/model.go`: `openSettingsBrowser` now calls
+  `browser.SetSavePending(m.configSavePending)` immediately after
+  `settings.NewBrowser(...)`, threading the model-level flag (already used by
+  `handleSetCommand` for the equivalent `/set` case) into every newly opened
+  panel.
+
+### New test
+
+`TestBrowserRetrySurvivesDockCloseAndReopen`
+(`internal/app/tui/model_test.go`) drives the path a real user hits: open the
+browser, fail a save (blocking-file obstruction, same technique as
+`TestBrowserSaveFailurePreservesConfigWithoutReceipt`), route the resulting
+`ChangedMsg` back through the model so `m.state.Config` and
+`m.configSavePending` update exactly as the live runtime would, close the
+dock via the real `Esc → BrowserClosedMsg → dock.CloseNow()` path, remove the
+obstruction, reopen the dock through `openSettingsBrowser` (a *new*
+`BrowserPanel`, not the one used above), and re-confirm the same inline edit
+value. Before the fix this silently no-op'd (no command emitted on the
+second confirm); confirmed the test fails on the pre-fix code with
+`confirming an inline edit must emit a command`. After the fix it retries and
+succeeds, and the value is verified on disk.
+
+### Also fixed: Minor prose issue
+
+Corrected the Finding 3 write-up's description of the
+`chrome.Panel`/`h < 2` bug: it previously claimed the unconditional top/bottom
+border rows produce "2 rows regardless of `h`". The actual output is **3
+rows** — `top + "\n" + strings.Join(body, "\n") + "\n" + bottom` with an
+empty `body` still yields a blank line between the two literal `"\n"`
+separators — matching the report's own captured test output
+(`View(80, 0..2)` all render 3 rows). This doesn't affect the correctness of
+the `< 3` guard already chosen, only the report's rationale.
+
+### Verification
+
+```
+gofmt -w .              # clean on touched files
+go vet ./...             # same two pre-existing, unrelated warnings in
+                          # internal/app/session/session.go, present before
+                          # this change
+go test ./internal/...   # all packages pass
+```
+
+Manually reverted the fix (`git stash` of `model.go`/`browser.go`) and
+re-ran `TestBrowserRetrySurvivesDockCloseAndReopen` to confirm it fails
+without the fix, then restored the fix and confirmed it passes.
+
+### Commit
+
+`2867a5f` — `fix(settings): seed browser retry state on dock reopen after a failed save`

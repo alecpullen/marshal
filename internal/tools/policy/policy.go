@@ -138,14 +138,21 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	reg := pe.registry
 	pe.mu.RUnlock()
 
+	// Evaluate must work with a nil engine config (tests, legacy callers):
+	// treat it as a zero config, which lands on the secure-confirm fallback.
+	cfg := pe.config
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+
 	if strings.HasPrefix(toolName, "mcp.") {
 		var mcpMatched bool
 		var mcpDecision Decision
 		var mcpReason string
 
-		if pe.config != nil && pe.config.MCP.Policies != nil {
+		if cfg.MCP.Policies != nil {
 			// 1. Exact Match (highest priority) — deny returns immediately
-			if policyStr, ok := pe.config.MCP.Policies[toolName]; ok {
+			if policyStr, ok := cfg.MCP.Policies[toolName]; ok {
 				switch Decision(policyStr) {
 				case DecisionDeny:
 					return DecisionDeny, "blocked by MCP policy config exact match", nil
@@ -163,7 +170,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 			// 2. Pattern Match (prefix, wildcard, regex) — deny returns immediately
 			if !mcpMatched {
 				for _, want := range []Decision{DecisionDeny, DecisionConfirm, DecisionAllow} {
-					for pattern, policyStr := range pe.config.MCP.Policies {
+					for pattern, policyStr := range cfg.MCP.Policies {
 						if Decision(policyStr) != want || !matchMCPPolicy(pattern, toolName) {
 							continue
 						}
@@ -209,7 +216,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		cmdRaw, ok := args["command"]
 		if !ok {
 			if toolName == "test.run" {
-				cmd = pe.config.Commands.Test
+				cmd = cfg.Commands.Test
 			} else {
 				return DecisionConfirm, "missing command arg", nil
 			}
@@ -228,8 +235,8 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 
 		// 1. Conservative Safety Guardrails (AST-based; legacy fallback on parse error)
 		dynSetting := "deny"
-		if pe.config != nil && pe.config.Tools.Shell.GuardrailDynamicArgv0 != "" {
-			dynSetting = pe.config.Tools.Shell.GuardrailDynamicArgv0
+		if cfg.Tools.Shell.GuardrailDynamicArgv0 != "" {
+			dynSetting = cfg.Tools.Shell.GuardrailDynamicArgv0
 		}
 		dec, reason := pe.EvaluateGuardrails(normCmd, dynSetting)
 		if dec != "" {
@@ -277,7 +284,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	}
 
 	// 2. Config Deny Rules
-	for _, pattern := range pe.config.Tools.Shell.Deny.Patterns {
+	for _, pattern := range cfg.Tools.Shell.Deny.Patterns {
 		if matchPattern(pattern, normCmd) {
 			return DecisionDeny, "blocked by user deny rule: " + pattern, nil
 		}
@@ -294,21 +301,21 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	}
 
 	// 4. Config Allow Rules
-	for _, prefix := range pe.config.Tools.Shell.Allow.Commands {
+	for _, prefix := range cfg.Tools.Shell.Allow.Commands {
 		if matchRule(normCmd, prefix) {
 			return DecisionAllow, "allowed by config allow rule: " + prefix, nil
 		}
 	}
 
 	// 5. Config Confirm Rules
-	for _, prefix := range pe.config.Tools.Shell.Confirm.Commands {
+	for _, prefix := range cfg.Tools.Shell.Confirm.Commands {
 		if matchRule(normCmd, prefix) {
 			return DecisionConfirm, "requires confirmation by config confirm rule: " + prefix, nil
 		}
 	}
 
 	// 6. Default Fallback
-	if pe.config.Tools.Shell.AutoApprove {
+	if cfg.Tools.Shell.AutoApprove {
 		return DecisionAllow, "allowed by auto-approve fallback", nil
 	}
 

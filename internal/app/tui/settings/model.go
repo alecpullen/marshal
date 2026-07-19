@@ -140,7 +140,19 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	k, isKey := msg.(tea.KeyPressMsg)
 	if !isKey {
-		return *m, nil
+		// Non-key messages (paste, internal clipboard replies, etc.) only matter
+		// when a text field is actively being edited. Overlays consume them.
+		if m.overlay != overlayNone {
+			return *m, nil
+		}
+		if !m.activePane().top().list.Editing() {
+			return *m, nil
+		}
+		cmd := m.activePane().Update(msg)
+		if req := m.activePane().top().list.TakePushPicker(); req != nil {
+			m.openPicker(req)
+		}
+		return *m, cmd
 	}
 	ks := k.String()
 	if ks != "esc" {

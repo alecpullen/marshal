@@ -130,6 +130,29 @@ func TestScalarInlineEditAppliesAndValidates(t *testing.T) {
 	}
 }
 
+func TestScalarInlineEditAcceptsPaste(t *testing.T) {
+	var got string
+	fl := newFieldList(func() []*field {
+		return []*field{scalarField("t.paste", "Token",
+			func() string { return got },
+			func(v string) error { got = v; return nil })}
+	})
+	fl.SetSize(60, 20)
+
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open edit
+	if !fl.Editing() {
+		t.Fatal("enter should open inline edit")
+	}
+	fl.Update(tea.PasteMsg{Content: "pasted-secret"})
+	if fl.input.Value() != "pasted-secret" {
+		t.Fatalf("paste should insert into the input, got %q", fl.input.Value())
+	}
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got != "pasted-secret" {
+		t.Fatalf("pasted value should apply, got %q", got)
+	}
+}
+
 func TestScalarReadOnlyRowIgnoresEnter(t *testing.T) {
 	fl := newFieldList(func() []*field {
 		return []*field{{id: "t.ro", title: "Preset", kind: kindScalar, getStr: func() string { return "qwen" }}}

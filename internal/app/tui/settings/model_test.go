@@ -417,3 +417,22 @@ func TestDrillIntoNewestProviderClearedOnNoWizard(t *testing.T) {
 		t.Fatalf("expected depth 1 (no drill), got %d", pane.depth())
 	}
 }
+
+func TestModelForwardsPasteToInlineEdit(t *testing.T) {
+	m := newTestModel(t)
+	// Navigate to Shell › Background retention and open the inline edit.
+	m = press(m, kp("j"), kp("j"), kp("j"), kp("j"), tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = press(m, kp("j"), kp("j"), kp("j"), tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.activePane().top().list.Editing() {
+		t.Fatal("expected an open inline edit on Background retention")
+	}
+
+	// Clear the pre-filled value, paste a new duration, and apply it.
+	m = press(m, tea.KeyPressMsg{Text: "ctrl+u"})
+	m, _ = m.Update(tea.PasteMsg{Content: "5m"})
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.state.cfg.Tools.Shell.BackgroundRetention != 5*60*1e9 {
+		t.Fatalf("pasted value should apply, got %v", m.state.cfg.Tools.Shell.BackgroundRetention)
+	}
+}

@@ -16,6 +16,9 @@ import (
 
 func newViewTestModel(t *testing.T, width, height int) Model {
 	t.Helper()
+	// View tests assert on color styling; force the default warm-sunset
+	// palette even when the outer environment sets NO_COLOR.
+	t.Setenv("NO_COLOR", "")
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	m.resize(width, height)

@@ -131,16 +131,17 @@ func (fl *fieldList) TakePushRequest() *frame {
 }
 
 func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
+	fl.Refresh()
+	if fl.adding {
+		return fl.updateAdd(msg)
+	}
+	if fl.editing {
+		return fl.updateEdit(msg)
+	}
+
 	k, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
-	}
-	fl.Refresh()
-	if fl.adding {
-		return fl.updateAdd(k)
-	}
-	if fl.editing {
-		return fl.updateEdit(k)
 	}
 	if fl.picking {
 		fl.updatePick(k)
@@ -294,31 +295,33 @@ func (fl *fieldList) cycleEnum(row *field, forward bool) {
 	}
 }
 
-func (fl *fieldList) updateEdit(k tea.KeyPressMsg) tea.Cmd {
+func (fl *fieldList) updateEdit(msg tea.Msg) tea.Cmd {
 	row := fl.CursorRow()
 	if row == nil {
 		fl.CancelEdit()
 		return nil
 	}
-	switch k.String() {
-	case "enter":
-		val := strings.TrimSpace(fl.input.Value())
-		if row.masked && val == "" {
-			fl.CancelEdit() // empty keeps the stored secret
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		switch k.String() {
+		case "enter":
+			val := strings.TrimSpace(fl.input.Value())
+			if row.masked && val == "" {
+				fl.CancelEdit() // empty keeps the stored secret
+				return nil
+			}
+			if err := row.setStr(val); err != nil {
+				fl.errMsg = err.Error()
+				return nil
+			}
+			fl.CancelEdit()
+			return nil
+		case "esc":
+			fl.CancelEdit()
 			return nil
 		}
-		if err := row.setStr(val); err != nil {
-			fl.errMsg = err.Error()
-			return nil
-		}
-		fl.CancelEdit()
-		return nil
-	case "esc":
-		fl.CancelEdit()
-		return nil
 	}
 	var cmd tea.Cmd
-	fl.input, cmd = fl.input.Update(k)
+	fl.input, cmd = fl.input.Update(msg)
 	return cmd
 }
 
@@ -351,24 +354,26 @@ func (fl *fieldList) updatePick(k tea.KeyPressMsg) {
 	}
 }
 
-func (fl *fieldList) updateAdd(k tea.KeyPressMsg) tea.Cmd {
-	switch k.String() {
-	case "enter":
-		newKey := strings.TrimSpace(fl.keyInput.Value())
-		if err := fl.onAdd(newKey); err != nil {
-			fl.errMsg = err.Error()
+func (fl *fieldList) updateAdd(msg tea.Msg) tea.Cmd {
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		switch k.String() {
+		case "enter":
+			newKey := strings.TrimSpace(fl.keyInput.Value())
+			if err := fl.onAdd(newKey); err != nil {
+				fl.errMsg = err.Error()
+				return nil
+			}
+			fl.CancelEdit()
+			fl.Refresh()
+			fl.cursor = fl.findAddedRow(newKey)
+			return nil
+		case "esc":
+			fl.CancelEdit()
 			return nil
 		}
-		fl.CancelEdit()
-		fl.Refresh()
-		fl.cursor = fl.findAddedRow(newKey)
-		return nil
-	case "esc":
-		fl.CancelEdit()
-		return nil
 	}
 	var cmd tea.Cmd
-	fl.keyInput, cmd = fl.keyInput.Update(k)
+	fl.keyInput, cmd = fl.keyInput.Update(msg)
 	return cmd
 }
 

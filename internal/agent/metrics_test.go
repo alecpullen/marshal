@@ -34,7 +34,7 @@ func TestTruncateGoal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := strutil.Truncate(tc.goal, 200, false)
 			if got != tc.want {
-				t.Fatalf("truncateGoal length = %d runes, want %d", len([]rune(got)), len([]rune(tc.want)))
+				t.Fatalf("goal length = %d runes, want %d", len([]rune(got)), len([]rune(tc.want)))
 			}
 		})
 	}

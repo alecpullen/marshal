@@ -424,7 +424,7 @@ func writeGlobalProviderAPIKey(path, providerName, key string) error {
 		if err != nil {
 			return fmt.Errorf("find home dir: %w", err)
 		}
-		path = filepath.Join(home, ".config", "marshal", "config.toml")
+		path = config.UserConfigPath(home)
 	}
 	return config.SaveUserConfigProviderAPIKey(path, providerName, key)
 }

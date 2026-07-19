@@ -183,10 +183,6 @@ func WithAdditionalDirectories(dirs []string) Option {
 	}
 }
 
-func dbPath(workingDir string) string {
-	return filepath.Join(workingDir, ".marshal", "marshal.db")
-}
-
 func logPath(workingDir string) string {
 	return filepath.Join(workingDir, ".marshal", "marshal.log")
 }
@@ -758,7 +754,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
 		return fmt.Errorf("register commands: %w", err)
 	}
-
 
 	var tuiOpts []tui.Option
 	tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))

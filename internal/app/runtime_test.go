@@ -258,17 +258,17 @@ func TestRuntimeCloseClosesResourcesAfterQuiesce(t *testing.T) {
 
 	workCtx, workCancel := context.WithCancel(ctx)
 	rt := &Runtime{
-		Config:         config.Default(),
-		State:          state,
-		workCtx:        workCtx,
-		workCancel:     workCancel,
-		MCPManager:     mcp,
-		JobBroker:      jobBroker,
-		SteeringBroker: steeringBroker,
-		EventBroker:    eventBroker,
-		Snapshot:       snap,
-		DB:             database,
-		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:          config.Default(),
+		State:           state,
+		workCtx:         workCtx,
+		workCancel:      workCancel,
+		MCPManager:      mcp,
+		JobBroker:       jobBroker,
+		SteeringBroker:  steeringBroker,
+		EventBroker:     eventBroker,
+		Snapshot:        snap,
+		DB:              database,
+		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 		resourceClosers: []func(){closeFn1, closeFn2},
 	}
 
@@ -333,9 +333,9 @@ func TestRuntimeCloseIsIdempotent(t *testing.T) {
 
 	workCtx, workCancel := context.WithCancel(ctx)
 	rt := &Runtime{
-		State:      state,
-		workCtx:    workCtx,
-		workCancel: workCancel,
+		State:           state,
+		workCtx:         workCtx,
+		workCancel:      workCancel,
 		resourceClosers: []func(){closeFn},
 	}
 

@@ -270,7 +270,7 @@ func WithSteeringBroker(ctx context.Context, broker *pubsub.Broker[session.Steer
 }
 
 func projectConfigPath(workingDir string) string {
-	return filepath.Join(workingDir, ".marshal", "config.toml")
+	return config.ProjectConfigPath(workingDir)
 }
 
 func relPath(workingDir, path string) string {

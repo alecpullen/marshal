@@ -97,4 +97,3 @@ func (db *DB) PruneSnapshotsOlderThan(days int) error {
 	}
 	return nil
 }
-

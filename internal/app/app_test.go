@@ -956,7 +956,7 @@ func TestRunCreatesDatabase(t *testing.T) {
 		t.Fatal("program runner was not called")
 	}
 
-	dbPath := filepath.Join(dir, ".marshal", "marshal.db")
+	dbPath := db.Path(dir)
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Fatalf("database file was not created at %s", dbPath)
 	}
@@ -1110,7 +1110,7 @@ func TestRunTriggersKnowledgeEndSessionButSkipsWithNoMessages(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	database, dberr := db.Open(dbPath(dir))
+	database, dberr := db.Open(db.Path(dir))
 	if dberr != nil {
 		t.Fatalf("open db: %v", dberr)
 	}
@@ -1198,7 +1198,7 @@ func TestRunUsesLiveConfigForShutdownKnowledgePass(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	database, dberr := db.Open(dbPath(dir))
+	database, dberr := db.Open(db.Path(dir))
 	if dberr != nil {
 		t.Fatalf("open db: %v", dberr)
 	}
@@ -1247,7 +1247,7 @@ func TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession(t *testing.T) {
 		t.Fatalf("Run error = %v, want %v", err, wantErr)
 	}
 
-	database, dberr := db.Open(dbPath(dir))
+	database, dberr := db.Open(db.Path(dir))
 	if dberr != nil {
 		t.Fatalf("open db: %v", dberr)
 	}
@@ -1633,7 +1633,7 @@ func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
 
 	// Verify the database was usable for the knowledge pass: the
 	// session should have been ended with the knowledge summary.
-	database, dberr := db.Open(dbPath(dir))
+	database, dberr := db.Open(db.Path(dir))
 	if dberr != nil {
 		t.Fatalf("open db: %v", dberr)
 	}
@@ -1703,7 +1703,7 @@ reviewer = "mock_preset"
 	rt1.Close(ctx)
 
 	// Count rows via direct DB.
-	countDB, err := db.Open(dbPath(tmp))
+	countDB, err := db.Open(db.Path(tmp))
 	if err != nil {
 		t.Fatalf("open db for counting: %v", err)
 	}
@@ -1741,7 +1741,7 @@ reviewer = "mock_preset"
 	}
 
 	// Verify counts unchanged.
-	countDB2, err := db.Open(dbPath(tmp))
+	countDB2, err := db.Open(db.Path(tmp))
 	if err != nil {
 		t.Fatalf("open db for recount: %v", err)
 	}
@@ -1790,7 +1790,7 @@ reviewer = "mock_preset"
 	}
 
 	// Create the project row via direct DB (no session).
-	database, err := db.Open(dbPath(tmp))
+	database, err := db.Open(db.Path(tmp))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -1805,7 +1805,7 @@ reviewer = "mock_preset"
 	database.Close()
 
 	// Count sessions before.
-	countDB, err := db.Open(dbPath(tmp))
+	countDB, err := db.Open(db.Path(tmp))
 	if err != nil {
 		t.Fatalf("open db for count: %v", err)
 	}
@@ -1823,7 +1823,7 @@ reviewer = "mock_preset"
 	}
 
 	// Verify no session was created.
-	countDB2, err := db.Open(dbPath(tmp))
+	countDB2, err := db.Open(db.Path(tmp))
 	if err != nil {
 		t.Fatalf("open db for second count: %v", err)
 	}
@@ -1865,7 +1865,7 @@ reviewer = "mock_preset"
 
 	// Create two project rows: one for tmp, one for another path.
 	// Attach the session to the OTHER project.
-	database, err := db.Open(dbPath(tmp))
+	database, err := db.Open(db.Path(tmp))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

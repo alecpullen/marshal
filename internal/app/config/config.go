@@ -5,7 +5,6 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/trust"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
@@ -631,7 +630,7 @@ func Load(opts LoadOptions) (Config, error) {
 		}
 	}
 
-	userPath := filepath.Join(home, ".config", "marshal", "config.toml")
+	userPath := UserConfigPath(home)
 	userFile, err := loadFile(userPath)
 	if err != nil {
 		return Config{}, err
@@ -640,7 +639,7 @@ func Load(opts LoadOptions) (Config, error) {
 		return Config{}, fmt.Errorf("merge config %s: %w", userPath, err)
 	}
 
-	projectPath := filepath.Join(work, ".marshal", "config.toml")
+	projectPath := ProjectConfigPath(work)
 	hasProject := trust.HasProjectConfig(work)
 	applyProject := true
 	if hasProject && opts.TrustResolver != nil {
@@ -1120,8 +1119,8 @@ func HasConfig(opts LoadOptions) bool {
 	}
 
 	for _, path := range []string{
-		filepath.Join(home, ".config", "marshal", "config.toml"),
-		filepath.Join(work, ".marshal", "config.toml"),
+		UserConfigPath(home),
+		ProjectConfigPath(work),
 	} {
 		if _, err := os.Stat(path); err == nil {
 			return true

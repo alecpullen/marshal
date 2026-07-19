@@ -41,9 +41,9 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		`INSERT INTO turn_metrics (
 			project_id, session_id, started_at, duration_ms, class, role,
 			provider, model, goal, iterations, tool_calls, tool_errors,
-			cache_hits, parse_failures, hard_stalls, outcome,
+			cache_hits, parse_failures, soft_stalls, hard_stalls, outcome,
 			salvage_reason, prompt_tokens, completion_tokens
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ProjectID,
 		sessionID,
 		row.StartedAt.UTC().Format(time.RFC3339),
@@ -58,6 +58,7 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		row.ToolErrors,
 		row.CacheHits,
 		row.ParseFailures,
+		0, // soft_stalls - always 0 after removal
 		row.HardStalls,
 		row.Outcome,
 		row.SalvageReason,

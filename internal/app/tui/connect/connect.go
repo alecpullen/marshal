@@ -367,11 +367,12 @@ func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
 }
 
 func truncateErr(s string) string {
-	const max = 48
-	if len(s) <= max {
+	const maxRunes = 48
+	r := []rune(s)
+	if len(r) <= maxRunes {
 		return s
 	}
-	return s[:max] + "…"
+	return string(r[:maxRunes]) + "…"
 }
 
 func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {

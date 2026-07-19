@@ -2,8 +2,10 @@ package connect
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -253,3 +255,14 @@ func TestTickThrottlesSpinner(t *testing.T) {
 }
 
 func pickerPicked(value string) tea.Msg { return picker.PickedMsg{Value: value} }
+
+func TestTruncateErrRuneSafe(t *testing.T) {
+	out := truncateErr(strings.Repeat("é", 60)) // 2-byte runes
+	if !utf8.ValidString(out) {
+		t.Fatalf("truncateErr produced invalid UTF-8: %q", out)
+	}
+	// 48 runes + ellipsis
+	if n := utf8.RuneCountInString(out); n != 49 {
+		t.Fatalf("truncateErr length = %d runes, want 49", n)
+	}
+}

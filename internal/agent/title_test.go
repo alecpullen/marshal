@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
@@ -152,3 +153,20 @@ var (
 	_ provider.Provider = (*recordingProvider)(nil)
 	_ provider.Provider = (*failProvider)(nil)
 )
+
+// TestGenerateTitleTruncatesRuneSafely: the title clamp must not split a
+// multi-byte rune (title[:titleMaxChars] sliced bytes).
+func TestGenerateTitleTruncatesRuneSafely(t *testing.T) {
+	p := &recordingProvider{responses: []string{strings.Repeat("界", 60)}}
+	state := newTestState(t)
+	tg := &titleGenerator{provider: p, model: "tiny", state: state, timeout: 2 * time.Second}
+	tg.generate(context.Background(), "anything")
+
+	got := state.Title()
+	if !utf8.ValidString(got) {
+		t.Fatalf("title is invalid UTF-8: %q", got)
+	}
+	if n := utf8.RuneCountInString(got); n != titleMaxChars {
+		t.Fatalf("title = %d runes, want %d", n, titleMaxChars)
+	}
+}

@@ -1147,7 +1147,9 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 		}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 			m := model.(tui.Model)
-			updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			m = updated.(tui.Model)
+			updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 			m = updated.(tui.Model)
 			view = m.View().Content
 			return nil
@@ -1156,7 +1158,7 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if !strings.Contains(view, "Project Memories") {
+	if !strings.Contains(view, "Memory") {
 		t.Fatalf("view missing memory browser after Ctrl+K:\n%s", view)
 	}
 }

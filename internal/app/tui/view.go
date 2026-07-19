@@ -52,9 +52,6 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
-	if m.memoryOpen {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.memoryModel.View())
-	}
 	dockView := m.dock.View(m.width, m.height)
 	m.updateViewportHeight()
 
@@ -306,9 +303,6 @@ func (m Model) tooSmallView() string {
 }
 
 func (m Model) fallbackView() string {
-	if m.memoryOpen {
-		return m.memoryModel.View()
-	}
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		mutedStyle().Render("Marshal — waiting for terminal resize..."),
 	)

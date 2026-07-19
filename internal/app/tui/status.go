@@ -67,9 +67,6 @@ func joinSegs(segs []statusSeg) string {
 // It prioritises transient UI modes that answer "what will Esc do?",
 // falling back to the persistent mode (/ask, /edit, /auto).
 func (m Model) modeSegment() string {
-	if m.helpOpen {
-		return "help open"
-	}
 	if m.state.SDDProgress().Active {
 		return "sdd"
 	}

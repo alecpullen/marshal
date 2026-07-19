@@ -11,7 +11,15 @@ import (
 	"marshal/internal/app/tui/picker"
 )
 
+func isMono() bool {
+	_, ok := settingsTheme().FGDefault.(lipgloss.NoColor)
+	return ok
+}
+
 func flCursorStyle() lipgloss.Style {
+	if isMono() {
+		return lipgloss.NewStyle()
+	}
 	return lipgloss.NewStyle().Bold(true).Background(settingsTheme().BGSelection)
 }
 func flTitleStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGDefault) }
@@ -36,6 +44,15 @@ type fieldList struct {
 	editing bool
 	input   textinput.Model
 	errMsg  string
+
+	// committed reports whether the most recent Update call actually
+	// invoked a field setter successfully (toggle, enum cycle/pick, scalar
+	// edit confirm, collection add, or paste) as opposed to pure cursor
+	// navigation or filter typing. It is reset at the top of every Update
+	// call. BrowserPanel uses it to decide whether a no-diff Update is a
+	// cheap navigation no-op or an explicit commit gesture eligible to
+	// retry a previously failed save.
+	committed bool
 
 	// enum picker (inline dropdown under the row)
 	picking bool
@@ -114,6 +131,10 @@ func (fl *fieldList) DisarmCurrent() {
 
 func (fl *fieldList) Editing() bool { return fl.editing || fl.picking || fl.adding }
 
+// Committed reports whether the most recent Update call invoked a field
+// setter successfully. See the committed field doc for why this matters.
+func (fl *fieldList) Committed() bool { return fl.committed }
+
 func (fl *fieldList) CancelEdit() {
 	fl.editing = false
 	fl.picking = false
@@ -131,17 +152,17 @@ func (fl *fieldList) TakePushRequest() *frame {
 }
 
 func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
-	fl.Refresh()
-	if fl.adding {
-		return fl.updateAdd(msg)
-	}
-	if fl.editing {
-		return fl.updateEdit(msg)
-	}
-
 	k, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
+	}
+	fl.Refresh()
+	fl.committed = false
+	if fl.adding {
+		return fl.updateAdd(k)
+	}
+	if fl.editing {
+		return fl.updateEdit(k)
 	}
 	if fl.picking {
 		fl.updatePick(k)
@@ -168,6 +189,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 	case "space":
 		if row != nil && row.kind == kindToggle {
 			row.setBool(!row.getBool())
+			fl.committed = true
 		}
 	case "left", "right":
 		if row != nil && row.kind == kindEnum {
@@ -186,6 +208,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 					fl.errMsg = err.Error()
 					return nil
 				}
+				fl.committed = true
 				fl.Refresh()
 				fl.cursor = fl.findAddedRow("")
 				return nil
@@ -206,6 +229,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 			if err := row.paste(fl.yankedData); err != nil {
 				fl.errMsg = err.Error()
 			} else {
+				fl.committed = true
 				fl.yankedID = ""
 				fl.yankedData = nil
 				fl.Refresh()
@@ -240,6 +264,7 @@ func (fl *fieldList) openRow(row *field) tea.Cmd {
 	switch row.kind {
 	case kindToggle:
 		row.setBool(!row.getBool())
+		fl.committed = true
 	case kindScalar:
 		if row.setStr == nil {
 			return nil // read-only
@@ -292,36 +317,37 @@ func (fl *fieldList) cycleEnum(row *field, forward bool) {
 	}
 	if err := row.setStr(opts[i]); err != nil {
 		fl.errMsg = err.Error()
+		return
 	}
+	fl.committed = true
 }
 
-func (fl *fieldList) updateEdit(msg tea.Msg) tea.Cmd {
+func (fl *fieldList) updateEdit(k tea.KeyPressMsg) tea.Cmd {
 	row := fl.CursorRow()
 	if row == nil {
 		fl.CancelEdit()
 		return nil
 	}
-	if k, ok := msg.(tea.KeyPressMsg); ok {
-		switch k.String() {
-		case "enter":
-			val := strings.TrimSpace(fl.input.Value())
-			if row.masked && val == "" {
-				fl.CancelEdit() // empty keeps the stored secret
-				return nil
-			}
-			if err := row.setStr(val); err != nil {
-				fl.errMsg = err.Error()
-				return nil
-			}
-			fl.CancelEdit()
-			return nil
-		case "esc":
-			fl.CancelEdit()
+	switch k.String() {
+	case "enter":
+		val := strings.TrimSpace(fl.input.Value())
+		if row.masked && val == "" {
+			fl.CancelEdit() // empty keeps the stored secret
 			return nil
 		}
+		if err := row.setStr(val); err != nil {
+			fl.errMsg = err.Error()
+			return nil
+		}
+		fl.committed = true
+		fl.CancelEdit()
+		return nil
+	case "esc":
+		fl.CancelEdit()
+		return nil
 	}
 	var cmd tea.Cmd
-	fl.input, cmd = fl.input.Update(msg)
+	fl.input, cmd = fl.input.Update(k)
 	return cmd
 }
 
@@ -347,6 +373,7 @@ func (fl *fieldList) updatePick(k tea.KeyPressMsg) {
 				fl.errMsg = err.Error()
 				return
 			}
+			fl.committed = true
 		}
 		fl.picking = false
 	case "esc":
@@ -354,26 +381,25 @@ func (fl *fieldList) updatePick(k tea.KeyPressMsg) {
 	}
 }
 
-func (fl *fieldList) updateAdd(msg tea.Msg) tea.Cmd {
-	if k, ok := msg.(tea.KeyPressMsg); ok {
-		switch k.String() {
-		case "enter":
-			newKey := strings.TrimSpace(fl.keyInput.Value())
-			if err := fl.onAdd(newKey); err != nil {
-				fl.errMsg = err.Error()
-				return nil
-			}
-			fl.CancelEdit()
-			fl.Refresh()
-			fl.cursor = fl.findAddedRow(newKey)
-			return nil
-		case "esc":
-			fl.CancelEdit()
+func (fl *fieldList) updateAdd(k tea.KeyPressMsg) tea.Cmd {
+	switch k.String() {
+	case "enter":
+		newKey := strings.TrimSpace(fl.keyInput.Value())
+		if err := fl.onAdd(newKey); err != nil {
+			fl.errMsg = err.Error()
 			return nil
 		}
+		fl.committed = true
+		fl.CancelEdit()
+		fl.Refresh()
+		fl.cursor = fl.findAddedRow(newKey)
+		return nil
+	case "esc":
+		fl.CancelEdit()
+		return nil
 	}
 	var cmd tea.Cmd
-	fl.keyInput, cmd = fl.keyInput.Update(msg)
+	fl.keyInput, cmd = fl.keyInput.Update(k)
 	return cmd
 }
 

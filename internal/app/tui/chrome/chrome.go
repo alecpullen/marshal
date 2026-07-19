@@ -1,7 +1,6 @@
 // Package chrome provides shared TUI dressing: bordered panels with
-// embedded titles, focus-aware border colors, line windowing, and overlay
-// compositing. Extracted from the settings TUI so pickers and overlays
-// render consistently.
+// embedded titles, focus-aware border colors, and line windowing.
+// Extracted from the settings TUI so pickers and docked panels render consistently.
 package chrome
 
 import (
@@ -13,15 +12,25 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
+func isMonochrome(th theme.Theme) bool {
+	_, ok := th.FGDefault.(lipgloss.NoColor)
+	return ok
+}
+
 // Panel draws a rounded-border box with the title embedded in the top
 // border. The border uses accent.primary when focused, border.muted when
-// not.
+// not. In monochrome mode no SGR styling is emitted.
 func Panel(title, content string, w, h int, focused bool, th theme.Theme) string {
+	mono := isMonochrome(th)
 	borderColor := th.BorderMuted
 	titleStyle := lipgloss.NewStyle().Foreground(th.FGMuted)
 	if focused {
 		borderColor = th.AccentPrimary
-		titleStyle = lipgloss.NewStyle().Bold(true).Foreground(th.AccentPrimary)
+		if mono {
+			titleStyle = lipgloss.NewStyle().Foreground(th.AccentPrimary)
+		} else {
+			titleStyle = lipgloss.NewStyle().Bold(true).Foreground(th.AccentPrimary)
+		}
 	}
 	bs := lipgloss.NewStyle().Foreground(borderColor)
 	inner := w - 2
@@ -91,50 +100,6 @@ func ClipLines(lines []string, focusLine, height int, th theme.Theme) string {
 	}
 	if len(out) > height {
 		out = out[:height]
-	}
-	return strings.Join(out, "\n")
-}
-
-// Overlay splices panel into bg, centered horizontally and vertically.
-// Both strings are full rendered views and may contain SGR sequences;
-// background lines are cut at column boundaries with ansi.Cut so styling
-// survives on both sides of the panel.
-func Overlay(bg, panel string, width, height int) string {
-	bgLines := strings.Split(bg, "\n")
-	pLines := strings.Split(panel, "\n")
-	pw := 0
-	for _, l := range pLines {
-		if w := ansi.StringWidth(l); w > pw {
-			pw = w
-		}
-	}
-	if pw > width {
-		pw = width
-	}
-	x := max((width-pw)/2, 0)
-	y := max((height-len(pLines))/2, 0)
-
-	n := max(len(bgLines), y+len(pLines))
-	out := make([]string, n)
-	for i := 0; i < n; i++ {
-		line := ""
-		if i < len(bgLines) {
-			line = bgLines[i]
-		}
-		pi := i - y
-		if pi >= 0 && pi < len(pLines) {
-			p := pLines[pi]
-			if pad := pw - ansi.StringWidth(p); pad > 0 {
-				p += strings.Repeat(" ", pad)
-			}
-			left := ansi.Cut(line, 0, x)
-			if lw := ansi.StringWidth(left); lw < x {
-				left += strings.Repeat(" ", x-lw)
-			}
-			right := ansi.Cut(line, x+pw, width)
-			line = left + p + right
-		}
-		out[i] = line
 	}
 	return strings.Join(out, "\n")
 }

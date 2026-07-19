@@ -20,6 +20,8 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 	cfg.Agent.Provider = "ollama"
 	cfg.Agent.Model = "qwen2.5-coder:14b"
 	cfg.Privacy.RemoteProvidersAllowed = false
+	cfg.Privacy.RedactSecrets = false
+	cfg.Privacy.IncludeGitignoredFiles = true
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local_balanced": {
 			Name: "local_balanced",
@@ -54,6 +56,12 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 	}
 	if loaded.Privacy.RemoteProvidersAllowed {
 		t.Fatal("remote_providers_allowed = true, want false")
+	}
+	if loaded.Privacy.RedactSecrets {
+		t.Fatal("redact_secrets = true, want false")
+	}
+	if !loaded.Privacy.IncludeGitignoredFiles {
+		t.Fatal("include_gitignored_files = false, want true")
 	}
 	preset := loaded.Models.Presets["coder"]
 	if preset.Provider != "ollama" || preset.Model != "qwen2.5-coder:14b" || !preset.LocalOnly {
@@ -253,6 +261,29 @@ func TestSaveProjectConfigRoundTripsPlanFirst(t *testing.T) {
 	}
 	if !loaded.Agent.PlanFirst {
 		t.Fatalf("Agent.PlanFirst = %v, want true", loaded.Agent.PlanFirst)
+	}
+}
+
+func TestSaveProjectConfigRoundTripsTUI(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+	cfg := Default()
+	cfg.TUI = TUIConfig{
+		Theme:   "catppuccin",
+		Palette: map[string]string{"accent": "#cba6f7"},
+		Mode:    "ask",
+	}
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.TUI, cfg.TUI) {
+		t.Fatalf("TUI = %+v, want %+v", loaded.TUI, cfg.TUI)
 	}
 }
 

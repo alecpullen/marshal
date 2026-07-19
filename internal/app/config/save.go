@@ -47,10 +47,14 @@ func SaveProjectConfig(path string, cfg Config) error {
 	}
 
 	remoteAllowed := cfg.Privacy.RemoteProvidersAllowed
+	redactSecrets := cfg.Privacy.RedactSecrets
+	includeGitignoredFiles := cfg.Privacy.IncludeGitignoredFiles
 	if file.Privacy == nil {
 		file.Privacy = &filePrivacy{}
 	}
 	file.Privacy.RemoteProvidersAllowed = &remoteAllowed
+	file.Privacy.RedactSecrets = &redactSecrets
+	file.Privacy.IncludeGitignoredFiles = &includeGitignoredFiles
 
 	if file.Tools == nil {
 		file.Tools = &fileTools{}
@@ -143,6 +147,13 @@ func SaveProjectConfig(path string, cfg Config) error {
 			URLDenylist:      cfg.Desktop.URLDenylist,
 			DefaultTimeout:   ptr(cfg.Desktop.DefaultTimeout.String()),
 			ScreenshotFormat: ptr(cfg.Desktop.ScreenshotFormat),
+		}
+	}
+	if file.TUI != nil || !reflect.DeepEqual(cfg.TUI, def.TUI) {
+		file.TUI = &fileTUI{
+			Theme:   ptr(cfg.TUI.Theme),
+			Palette: cfg.TUI.Palette,
+			Mode:    ptr(cfg.TUI.Mode),
 		}
 	}
 	if file.Swarm != nil || !reflect.DeepEqual(cfg.Swarm, def.Swarm) {

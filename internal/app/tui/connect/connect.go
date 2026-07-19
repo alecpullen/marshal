@@ -116,6 +116,15 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	return m, nil
 }
 
+// Panel adapts Model to the dock.Panel interface: Model.Update returns
+// (*Model, tea.Cmd) for historical reasons but mutates in place.
+type Panel struct{ *Model }
+
+func (p Panel) Update(msg tea.Msg) tea.Cmd {
+	_, cmd := p.Model.Update(msg)
+	return cmd
+}
+
 func (m *Model) View(maxW, maxH int) string {
 	pw := min(64, maxW-8)
 	if pw < 40 {

@@ -122,8 +122,34 @@ func TestHelpCommand(t *testing.T) {
 
 	cmd, _ := cmdReg.Lookup("help")
 	result := cmd.Handler(newTestState(), nil)
-	if !strings.Contains(result, "Available commands") {
+	if !strings.Contains(result, "Keys") || !strings.Contains(result, "Commands") {
 		t.Errorf("help output missing header: %s", result)
+	}
+}
+
+func TestHelpPrintsCheatsheet(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, _ := cmdReg.Lookup("help")
+	out := cmd.Handler(nil, nil)
+	for _, want := range []string{"Keys", "Commands", "/set", "/model", "⏎ send", "esc"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("cheatsheet missing %q", want)
+		}
+	}
+}
+
+func TestHelpForSingleCommand(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, _ := cmdReg.Lookup("help")
+	out := cmd.Handler(nil, []string{"set"})
+	if !strings.Contains(out, "/set") || !strings.Contains(out, "<key> [value]") {
+		t.Errorf("per-command help incomplete: %q", out)
 	}
 }
 
@@ -457,23 +483,32 @@ func TestHelpHidesUnimplementedCommands(t *testing.T) {
 	}
 	result := cmd.Handler(newTestState(), nil)
 
+	// The Keys section references a couple of commands by name (e.g.
+	// "/model" for the Alt+M hotkey), so hidden-command gating is only
+	// meaningful within the Commands section's command listing.
+	idx := strings.Index(result, "Commands\n")
+	if idx < 0 {
+		t.Fatalf("help output missing Commands section:\n%s", result)
+	}
+	commandsSection := result[idx:]
+
 	// Unimplemented commands must NOT appear in /help output.
 	for _, name := range []string{"swarm", "sdd", "settings", "memory", "connect", "models"} {
-		if strings.Contains(result, "/"+name) {
+		if strings.Contains(commandsSection, "/"+name) {
 			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
 		}
 	}
 
 	// Mode commands are stubs; they should also be hidden.
 	for _, name := range []string{"ask", "edit", "auto", "mode", "stop"} {
-		if strings.Contains(result, "/"+name) {
+		if strings.Contains(commandsSection, "/"+name) {
 			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
 		}
 	}
 
 	// Implemented commands must still appear.
-	for _, name := range []string{"help", "new", "config", "route", "context", "log", "diff", "rollback", "undo", "redo", "export", "rename", "rewind", "branches", "trust", "tools", "exit", "quit", "clear"} {
-		if !strings.Contains(result, "/"+name) {
+	for _, name := range []string{"help", "new", "config", "route", "context", "log", "diff", "rollback", "undo", "redo", "export", "rename", "rewind", "branches", "trust", "tools", "exit", "quit", "clear", "set"} {
+		if !strings.Contains(commandsSection, "/"+name) {
 			t.Errorf("help output should contain /%s, got:\n%s", name, result)
 		}
 	}

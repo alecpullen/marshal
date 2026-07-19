@@ -15,6 +15,10 @@ type diffLine struct {
 	Detail string
 }
 
+func (line diffLine) String() string {
+	return line.Prefix + " " + line.Path + line.Detail
+}
+
 var secretFieldNames = map[string]bool{"APIKey": true, "SearchKey": true}
 
 func configDiff(before, after config.Config) []diffLine {

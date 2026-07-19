@@ -56,6 +56,12 @@ func drainCmds(m Model, cmd tea.Cmd) Model {
 		if msg == nil {
 			return m
 		}
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, sub := range batch {
+				m = drainCmds(m, sub)
+			}
+			return m
+		}
 		updated, next := m.Update(msg)
 		m = updated.(Model)
 		cmd = next
@@ -544,12 +550,17 @@ func TestCtrlKOpensMemoryBrowser(t *testing.T) {
 	}
 
 	m := New(state, WithMemoryStore(database, projectID))
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	if !m.memoryOpen {
-		t.Fatal("expected memoryOpen to be true")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock to be open")
 	}
-	if !strings.Contains(stripANSI(m.View().Content), "Project Memories") {
+	if _, ok := m.dock.Panel().(*memory.BrowserPanel); !ok {
+		t.Fatalf("expected *memory.BrowserPanel, got %T", m.dock.Panel())
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "Memory") {
 		t.Fatalf("View() missing memory browser:\n%s", stripANSI(m.View().Content))
 	}
 }
@@ -572,13 +583,13 @@ func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
 	m := New(state, WithMemoryStore(database, projectID))
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	m = updated.(Model)
-	if !m.memoryOpen {
-		t.Fatal("expected memoryOpen")
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock to be open")
 	}
 	updated, _ = m.Update(memory.ClosedMsg{})
 	m = updated.(Model)
-	if m.memoryOpen {
-		t.Fatal("expected memoryOpen to be false after ClosedMsg")
+	if m.dock.IsOpen() {
+		t.Fatal("expected dock to be closed after ClosedMsg")
 	}
 }
 
@@ -592,12 +603,14 @@ func TestCtrlKWithoutMemoryStoreDoesNothing(t *testing.T) {
 		}
 	}()
 
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	if m.memoryOpen {
-		t.Fatal("expected memoryOpen to remain false without memory store")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if m.dock.IsOpen() {
+		t.Fatal("expected dock to remain closed without memory store")
 	}
-	if strings.Contains(stripANSI(m.View().Content), "Project Memories") {
+	if strings.Contains(stripANSI(m.View().Content), "Memory") {
 		t.Fatalf("View() should not show memory browser without memory store:\n%s", stripANSI(m.View().Content))
 	}
 }
@@ -1265,28 +1278,26 @@ func TestEnterWhileBusyIsIgnored(t *testing.T) {
 	}
 }
 
-func TestCtrlOOpensSettings(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+func TestCtrlOOpensDockedSettingsBrowserAndEscClosesIt(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state)
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen to be true")
-	}
-}
+	m.resize(100, 40)
 
-func TestSettingsCancelClosesOverlay(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("Ctrl+O dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
 	}
-	updated, _ = m.Update(settings.CancelledMsg{})
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	m = updated.(Model)
-	if m.settingsOpen {
-		t.Fatal("expected settingsOpen to be false after cancel")
+	if cmd == nil {
+		t.Fatal("Esc at browser root must emit BrowserClosedMsg")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.dock.IsOpen() {
+		t.Fatal("BrowserClosedMsg must close the dock")
 	}
 }
 
@@ -1359,7 +1370,7 @@ func TestEscDuringApprovalDenies(t *testing.T) {
 	}
 }
 
-func TestCtrlKTogglesMemory(t *testing.T) {
+func TestCtrlKOpensMemoryAndClosedMsgCloses(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	db, err := db.Open(":memory:")
 	if err != nil {
@@ -1377,13 +1388,13 @@ func TestCtrlKTogglesMemory(t *testing.T) {
 	model := New(state, WithMemoryStore(db, pid))
 	updated, _ := model.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	model = updated.(Model)
-	if !model.memoryOpen {
-		t.Fatal("Ctrl+K did not open memory")
+	if !model.dock.IsOpen() {
+		t.Fatal("Ctrl+K did not open memory browser")
 	}
-	updated, _ = model.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	updated, _ = model.Update(memory.ClosedMsg{})
 	model = updated.(Model)
-	if model.memoryOpen {
-		t.Fatal("Ctrl+K did not close memory")
+	if model.dock.IsOpen() {
+		t.Fatal("memory browser did not close after ClosedMsg")
 	}
 }
 func TestBusyTickRefreshesViewport(t *testing.T) {
@@ -1600,149 +1611,6 @@ func TestBusyTickRefreshesViewportOnReasoningGrowthAlone(t *testing.T) {
 	}
 }
 
-func TestSettingsNavigationThroughMainModel(t *testing.T) {
-	cfg := config.Default()
-	cfg.Profile.Default = "local_balanced"
-	cfg.AgentProfiles = map[string]routing.AgentProfile{
-		"local_balanced": {
-			Name: "local_balanced",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
-			},
-		},
-	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
-	}
-	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	m = updated.(Model)
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen")
-	}
-
-	// Sidebar starts focused. FocusedFieldTitle returns the section title.
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Agent" {
-		t.Fatalf("first section = %q, want Agent", got)
-	}
-
-	// Tab enters the agent pane. The first field there is "Default profile".
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Default profile" {
-		t.Fatalf("Tab should focus first field of Agent pane, got %q", got)
-	}
-}
-
-func TestSettingsTypingThroughMainModel(t *testing.T) {
-	cfg := config.Default()
-	cfg.Profile.Default = "local_balanced"
-	cfg.AgentProfiles = map[string]routing.AgentProfile{
-		"local_balanced": {
-			Name: "local_balanced",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
-			},
-		},
-	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
-	}
-	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-
-	// Enter the agent pane and navigate to the Provider field.
-	// (In the new fieldList model, Enter opens/selects the current
-	// row; use j to advance.)
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})   // Focus pane
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})          // Past Default profile
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})          // Past Preset -> Provider
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Open inline edit
-
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Provider" {
-		t.Fatalf("expected Provider field focused, got %q", got)
-	}
-
-	updated, _ = m.Update(tea.KeyPressMsg{Text: "z"})
-	m = updated.(Model)
-
-	if !m.settingsModel.BoolValue("Local only") {
-		t.Fatal("typing into Provider must not toggle Local only off")
-	}
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Provider" {
-		t.Fatalf("focused field = %q, want Provider", got)
-	}
-}
-
-func TestSettingsBoolFieldToggleThroughMainModel(t *testing.T) {
-	cfg := config.Default()
-	cfg.Profile.Default = "local_balanced"
-	cfg.AgentProfiles = map[string]routing.AgentProfile{
-		"local_balanced": {
-			Name: "local_balanced",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
-			},
-		},
-	}
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
-	}
-	state := session.New(cfg, "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-
-	// Enter the agent pane and navigate to the Local only toggle.
-	// (In the new fieldList model, use j to advance; Enter opens/selects.)
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab}) // Focus pane
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Default profile
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Preset
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Provider
-	m = sendKey(m, tea.KeyPressMsg{Text: "j"})        // Past Model -> Local only
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Local only" {
-		t.Fatalf("expected Local only focused, got %q", got)
-	}
-	if !m.settingsModel.BoolValue("Local only") {
-		t.Fatalf("expected Local only to start true (preset default)")
-	}
-
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
-
-	if m.settingsModel.BoolValue("Local only") {
-		t.Fatalf("Space should have toggled Local only to false")
-	}
-}
-
-func TestSettingsNavigationWithDefaultConfig(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen")
-	}
-
-	// With the default config the sidebar shows the Agent section selected.
-	if got := m.settingsModel.FocusedFieldTitle(); got != "Agent" {
-		t.Fatalf("default section = %q, want Agent", got)
-	}
-}
-
 func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.SetPendingApproval(&session.PendingToolCall{
@@ -1874,7 +1742,7 @@ func TestSlashCommandHelp(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("expected system message from /help")
 	}
-	if !strings.Contains(msgs[0].Content, "Available commands") {
+	if !strings.Contains(msgs[0].Content, "Keys") || !strings.Contains(msgs[0].Content, "Commands") {
 		t.Errorf("help output missing header: %s", msgs[0].Content)
 	}
 }
@@ -2753,105 +2621,59 @@ func TestCommandTriggerDismissesFilePopup(t *testing.T) {
 	}
 }
 
-func TestHelpOpenWithQuestionMarkKey(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
+// TestQuestionMarkPrintsHelpToTranscript verifies ? on an empty textarea
+// behaves like typing /help: it prints the cheatsheet to the transcript
+// instead of opening a full-screen overlay.
+func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
 
-	// Press ? to open help overlay.
+	before := len(m.state.Messages())
 	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
-	m = updated.(Model)
+	m = asModel(t, updated)
 
-	if !m.helpOpen {
-		t.Fatal("expected helpOpen to be true after pressing ?")
+	msgs := m.state.Messages()
+	if len(msgs) != before+1 {
+		t.Fatalf("expected ? to print one transcript message, got %d -> %d", before, len(msgs))
 	}
-
-	view := m.View().Content
-	if !strings.Contains(view, "marshal keys") {
-		t.Fatalf("help overlay missing title:\n%s", view)
-	}
-
-	// Press Esc to close help overlay.
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	m = updated.(Model)
-
-	if m.helpOpen {
-		t.Fatal("expected helpOpen to be false after pressing Esc")
-	}
-
-	view = m.View().Content
-	if strings.Contains(view, "marshal keys") {
-		t.Fatalf("help overlay should be closed after Esc:\n%s", view)
+	last := msgs[len(msgs)-1]
+	if !strings.Contains(last.Content, "Keys") || !strings.Contains(last.Content, "Commands") {
+		t.Fatalf("? did not print the help cheatsheet, got: %q", last.Content)
 	}
 }
 
 func TestQuestionMarkDoesNotLeakIntoInput(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
 
-	// Press ? — it should toggle help, not type ? into the textarea.
+	// Press ? — it should print help, not type ? into the textarea.
 	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
-	m = updated.(Model)
-	if !m.helpOpen {
-		t.Fatal("expected helpOpen to be true")
-	}
+	m = asModel(t, updated)
 	if m.input.Value() != "" {
 		t.Fatalf("expected empty input after ?, got %q", m.input.Value())
 	}
 }
 
-func TestHelpToggleWithQuestionMark(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
-
-	// Press ? to open.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
-	m = updated.(Model)
-	if !m.helpOpen {
-		t.Fatal("expected helpOpen after first ?")
-	}
-
-	// Press ? again to close.
-	updated, _ = m.Update(tea.KeyPressMsg{Code: '?'})
-	m = updated.(Model)
-	if m.helpOpen {
-		t.Fatal("expected helpOpen to be false after second ?")
-	}
-}
-
 // TestQuestionMarkTypesLiterallyInNonEmptyInput verifies that ? is inserted
-// as a literal character when the textarea has content — the help overlay
-// should NOT open in that case, because ? is a very common character in
-// chat prompts (e.g. "What is X? How do I Y?").
+// as a literal character when the textarea has content — /help should NOT
+// fire in that case, because ? is a very common character in chat prompts
+// (e.g. "What is X? How do I Y?").
 func TestQuestionMarkTypesLiterallyInNonEmptyInput(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m.resize(80, 24)
 
 	// Type some text first.
 	m = sendKey(m, tea.KeyPressMsg{Text: "hello"})
+	before := len(m.state.Messages())
 
-	// Press ? — should append to the input, NOT open help.
+	// Press ? — should append to the input, NOT print help.
 	m = sendKey(m, tea.KeyPressMsg{Text: "?"})
 
-	if m.helpOpen {
-		t.Fatal("? should not open help overlay when input has content")
+	if len(m.state.Messages()) != before {
+		t.Fatal("? should not print help when input has content")
 	}
 	if !strings.Contains(m.input.Value(), "?") {
 		t.Fatalf("? should be a literal char in input, got %q", m.input.Value())
-	}
-}
-
-func TestHelpOverlayDoesNotSwallowAgentFinishedMsg(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	m.resize(100, 30)
-	m.helpOpen = true
-	m.busy = true
-	m.lastActivityKind = session.ActivityThinking
-
-	updated, _ := m.Update(agentFinishedMsg{})
-	m = updated.(Model)
-
-	if m.busy {
-		t.Fatal("help overlay should not swallow agentFinishedMsg")
-	}
-	if !m.helpOpen {
-		t.Fatal("non-key runtime messages should not close the help overlay")
 	}
 }
 
@@ -2865,7 +2687,7 @@ func TestPickerRoutingOpenPickCancel(t *testing.T) {
 		{Label: "branch 1", Value: "1"},
 		{Label: "branch 2", Value: "2", Badge: "● now"},
 	}, "")
-	if m.pickerModel == nil || m.pickerCommand != "branches" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "branches" {
 		t.Fatal("openPicker should set the modal state")
 	}
 
@@ -2883,7 +2705,7 @@ func TestPickerRoutingOpenPickCancel(t *testing.T) {
 	}
 	updated, _ = m.Update(cmd())
 	m = asModel(t, updated)
-	if m.pickerModel != nil || m.pickerCommand != "" {
+	if m.dock.IsOpen() || m.pickerCommand != "" {
 		t.Fatal("CancelledMsg should close the picker")
 	}
 }
@@ -2906,11 +2728,11 @@ func TestModelBareOpensPicker(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "model" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "model" {
 		t.Fatal("bare /model should open the picker")
 	}
 	view := stripANSI(m.View().Content)
-	for _, want := range []string{"test-a", "test-b", "ollama/qwen2.5", "local", "session only"} {
+	for _, want := range []string{"Switch model", "test-b", "anthropic/sonnet-5", "session only"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("picker view missing %q:\n%s", want, view)
 		}
@@ -2923,7 +2745,7 @@ func TestModelExactArgBypassesPicker(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model test-b")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("exact preset arg must switch directly, no picker")
 	}
 	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-b" {
@@ -2936,7 +2758,7 @@ func TestModelUnknownArgOpensPrefilteredPicker(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model test-a-typo-b")
 	m = asModel(t, updated)
-	if m.pickerModel == nil {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok {
 		t.Fatal("unknown arg should open the picker instead of erroring")
 	}
 }
@@ -2949,7 +2771,7 @@ func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	m = asModel(t, updated)
 	updated, _ = m.Update(picker.PickedMsg{Value: "test-a"})
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("pick should close the modal")
 	}
 	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-a" {
@@ -2965,7 +2787,7 @@ func TestModelNoPresetsPointsAtSettings(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("no presets: picker must not open")
 	}
 	msgs := state.Messages()
@@ -2994,7 +2816,7 @@ func TestRewindBareOpensPickerNewestFirst(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "rewind" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "rewind" {
 		t.Fatal("bare /rewind should open the picker, not rewind immediately")
 	}
 	view := stripANSI(m.View().Content)
@@ -3015,7 +2837,7 @@ func TestRewindWithArgSkipsPicker(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind 1")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("/rewind 1 must run directly")
 	}
 }
@@ -3029,7 +2851,7 @@ func TestBranchesBareOpensPickerWithCurrentBadge(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/branches")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "branches" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "branches" {
 		t.Fatal("bare /branches should open the picker")
 	}
 	if !strings.Contains(stripANSI(m.View().Content), "● now") {
@@ -3042,7 +2864,7 @@ func TestRewindNoTurnsFallsThroughToHandler(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("no turns: picker must not open")
 	}
 	msgs := state.Messages()
@@ -3082,11 +2904,11 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 
 	updated, _ := m.dispatchCommand("/mode")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "mode" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "mode" {
 		t.Fatal("/mode should open the picker")
 	}
 	view := stripANSI(m.View().Content)
-	for _, want := range []string{"Ask", "Edit", "Auto", "● now"} {
+	for _, want := range []string{"Interaction mode", "Edit", "planning + full tools", "● now"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("mode picker missing %q:\n%s", want, view)
 		}
@@ -3115,7 +2937,7 @@ func TestModePickerSelectingSDDOpensPlanPicker(t *testing.T) {
 	// Open the mode picker first
 	updated, _ := m.dispatchCommand("/mode")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "mode" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "mode" {
 		t.Fatal("/mode should open the picker")
 	}
 
@@ -3124,8 +2946,8 @@ func TestModePickerSelectingSDDOpensPlanPicker(t *testing.T) {
 	m = asModel(t, updated)
 
 	// Verify the SDD plan picker opened instead of dispatching "/sdd" directly
-	if m.pickerModel == nil {
-		t.Fatal("picking SDD should open the plan picker, but pickerModel is nil")
+	if _, ok := m.dock.Panel().(*picker.Model); !ok {
+		t.Fatal("picking SDD should open the plan picker")
 	}
 	if m.pickerCommand != "sdd-plan" {
 		t.Fatalf("picking SDD should set pickerCommand to %q, got %q", "sdd-plan", m.pickerCommand)
@@ -3151,7 +2973,7 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/mode edit")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("/mode edit must not open the picker")
 	}
 	if m.forceMode != "edit" {
@@ -3566,71 +3388,614 @@ func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
 	}
 }
 
-// ── Task 8: Settings save guard ──────────────────────────────────────────
-
-func TestSettingsSaveBlockedDuringAgentTurn(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	m.resize(100, 40)
+func TestDockedSettingsBrowserAppliesChangeWhenBlockedAndRetriesOnUnblock(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
 	m.busy = true
-
-	// Open settings while busy.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-
-	dirty := config.Default()
-	dirty.Privacy.RemoteProvidersAllowed = true
-	m.settingsModel.SetWorkingConfig(dirty)
-
-	// Ctrl+S opens the diff overlay; Enter commits and should be blocked.
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if cmd != nil {
-		t.Fatal("ctrl+s should open the diff overlay, not save directly")
-	}
-	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(Model)
-
-	if cmd != nil {
-		t.Fatal("expected nil cmd when save is blocked by busy turn")
-	}
-	if m.settingsModel.Footer() != settingsBusyMessage {
-		t.Fatalf("footer = %q, want %q", m.settingsModel.Footer(), settingsBusyMessage)
-	}
-}
-
-func TestSettingsSaveBlockedDuringBackgroundJob(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
 	m.resize(100, 40)
-	m.state.SetRunningJobsCount(1)
 
-	// Open settings while jobs are running.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-
-	dirty := config.Default()
-	dirty.Privacy.RemoteProvidersAllowed = true
-	m.settingsModel.SetWorkingConfig(dirty)
-
-	// Ctrl+S opens the diff overlay; Enter commits and should be blocked.
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if cmd != nil {
-		t.Fatal("ctrl+s should open the diff overlay, not save directly")
+	m.openSettingsBrowser("shell.allow_network")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("dock panel = %T, want settings browser", m.dock.Panel())
 	}
-	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(Model)
 
-	if cmd != nil {
-		t.Fatal("expected nil cmd when save is blocked by background jobs")
+	// Toggle while an agent turn is active: the edit must apply in memory
+	// even though persistence is blocked, and a blocked receipt is emitted.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("blocked browser edit must keep the change in memory")
 	}
-	if m.settingsModel.Footer() != settingsBusyMessage {
-		t.Fatalf("footer = %q, want %q", m.settingsModel.Footer(), settingsBusyMessage)
+	if !m.configSavePending {
+		t.Fatal("blocked browser edit must mark config save pending")
+	}
+	msgs := m.state.Messages()
+	last := msgs[len(msgs)-1].Content
+	if !strings.Contains(last, "✗") || !strings.Contains(last, "save blocked") {
+		t.Fatalf("blocked edit receipt = %q", last)
+	}
+
+	// Unblock by clearing busy state. The next browser message should retry
+	// the pending save automatically.
+	m.busy = false
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.configSavePending {
+		t.Fatal("successful unblock retry must clear pending flag")
+	}
+	last = m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.Contains(last, "✓") {
+		t.Fatalf("unblock retry receipt = %q", last)
+	}
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
+		WorkingDir: m.state.WorkingDir,
+	})
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if !loaded.Tools.Shell.AllowNetwork {
+		t.Fatal("unblock retry did not save the setting")
 	}
 }
 
 // ── Task 5: /connect and /models overlay ──────────────────────────────────
+
+func TestSetCommandAppliesAndPrintsReceipt(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.dispatchCommand("/set shell.allow_network on")
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Error("config not applied")
+	}
+	msgs := m.state.Messages()
+	last := msgs[len(msgs)-1].Content
+	for _, want := range []string{"✓", "shell.allow_network", "→ on", ".marshal/config.toml"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("receipt %q missing %q", last, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(m.state.WorkingDir, ".marshal", "config.toml")); err != nil {
+		t.Errorf("project config not written: %v", err)
+	}
+}
+
+func TestSetCommandPersistsPrivacyToggles(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+
+	m.dispatchCommand("/set privacy.redact_secrets off")
+	m.dispatchCommand("/set privacy.include_gitignored on")
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
+		WorkingDir: m.state.WorkingDir,
+	})
+	if err != nil {
+		t.Fatalf("load saved project config: %v", err)
+	}
+	if loaded.Privacy.RedactSecrets {
+		t.Fatal("redact_secrets = true, want false after /set")
+	}
+	if !loaded.Privacy.IncludeGitignoredFiles {
+		t.Fatal("include_gitignored_files = false, want true after /set")
+	}
+}
+
+func TestSetCommandReloadsRuntimeBeforeReportingSuccess(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	var reloaded config.Config
+	m.configReloader = func(cfg config.Config) error {
+		reloaded = cfg
+		return nil
+	}
+
+	m.dispatchCommand("/set shell.allow_network on")
+
+	if !reloaded.Tools.Shell.AllowNetwork {
+		t.Fatal("configReloader did not receive the /set config")
+	}
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("successful /set did not apply the config to the session")
+	}
+	if got := m.state.Messages()[len(m.state.Messages())-1].Content; !strings.Contains(got, "✓") {
+		t.Fatalf("successful /set receipt = %q, want success", got)
+	}
+}
+
+func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.settingsRegistry()
+	m.configReloader = func(config.Config) error {
+		return errors.New("runtime unavailable")
+	}
+
+	m.dispatchCommand("/set shell.allow_network on")
+
+	// The runtime reloader has already swapped the new config into the live
+	// runtime before its cleanup step failed (same contract as the
+	// settings.ChangedMsg handler) — the save itself succeeded too, so
+	// m.state.Config must reflect what's actually on disk and in the
+	// runtime, not the pre-/set value. See
+	// TestSetCommandReloadFailureSyncsStateConfig for the focused
+	// regression covering this specifically.
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("failed runtime reload must still sync the live session config with what was saved")
+	}
+	if m.setReg != nil {
+		t.Fatal("failed runtime reload must invalidate the stale /set registry")
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if strings.Contains(got, "✓") || !strings.Contains(got, "live reload failed") {
+		t.Fatalf("reload failure receipt = %q", got)
+	}
+}
+
+// TestSetCommandReloadFailureSyncsStateConfig is the focused regression for
+// the handleSetCommand reload-error path: config.SaveProjectConfig already
+// wrote the new value to disk and m.configReloader already swapped it into
+// the live runtime before its cleanup failed, so m.state.Config (and
+// everything applyNewConfig invalidates/refreshes) must stay aligned with
+// that saved/live config — exactly like the settings.ChangedMsg handler's
+// reload-error branch already does. Before the fix, handleSetCommand left
+// m.state.Config pointing at the stale pre-/set value while m.setReg was
+// invalidated, so the next /set would rebuild its registry from the stale
+// config and silently revert the change that was just persisted.
+func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error {
+		return errors.New("runtime unavailable")
+	}
+
+	m.dispatchCommand("/set shell.allow_network on")
+
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("m.state.Config must reflect the saved value after a reload failure")
+	}
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
+		WorkingDir: m.state.WorkingDir,
+	})
+	if err != nil {
+		t.Fatalf("load saved project config: %v", err)
+	}
+	if !loaded.Tools.Shell.AllowNetwork {
+		t.Fatal("the value should have been saved to disk before the reload failed")
+	}
+	if m.state.Config.Tools.Shell.AllowNetwork != loaded.Tools.Shell.AllowNetwork {
+		t.Fatalf("m.state.Config (AllowNetwork=%v) diverges from what was saved to disk (AllowNetwork=%v)",
+			m.state.Config.Tools.Shell.AllowNetwork, loaded.Tools.Shell.AllowNetwork)
+	}
+}
+
+// TestSetRefreshesOpenBrowserRegression verifies that a /set applied while the
+// settings browser is docked refreshes the browser's registry and baseline,
+// so a later edit/save in the browser does not silently revert the /set change.
+func TestSetRefreshesOpenBrowserRegression(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+
+	// Open the browser filtered to a setting other than the one /set will touch.
+	m.openSettingsBrowser("privacy.redact_secrets")
+	browser, ok := m.dock.Panel().(*settings.BrowserPanel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
+	}
+	if got := browser.FilterValue(); got != "privacy.redact_secrets" {
+		t.Fatalf("browser filter = %q, want privacy.redact_secrets", got)
+	}
+
+	// Apply a /set mutation while the browser is open.
+	m.dispatchCommand("/set shell.allow_network on")
+
+	// The browser must still be open and must now reflect the post-/set config.
+	browser, ok = m.dock.Panel().(*settings.BrowserPanel)
+	if !ok {
+		t.Fatalf("dock panel = %T after /set, want *settings.BrowserPanel", m.dock.Panel())
+	}
+	if got := browser.FilterValue(); got != "privacy.redact_secrets" {
+		t.Fatalf("browser filter lost after /set = %q, want privacy.redact_secrets", got)
+	}
+
+	// Mutate a different setting through the browser; before the fix this save
+	// wrote the browser's stale pre-/set config back to disk.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+
+	if m.state.Config.Tools.Shell.AllowNetwork != true {
+		t.Fatal("/set shell.allow_network on was reverted by the browser save")
+	}
+	if m.state.Config.Privacy.RedactSecrets != false {
+		t.Fatal("browser toggle of privacy.redact_secrets did not apply")
+	}
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
+		WorkingDir: m.state.WorkingDir,
+	})
+	if err != nil {
+		t.Fatalf("load saved project config: %v", err)
+	}
+	if !loaded.Tools.Shell.AllowNetwork {
+		t.Fatal("saved config reverted /set shell.allow_network on")
+	}
+	if loaded.Privacy.RedactSecrets {
+		t.Fatal("saved config did not reflect browser toggle of privacy.redact_secrets")
+	}
+}
+
+func TestSetCommandSaveFailureKeepsSessionConfig(t *testing.T) {
+	m := newTestModel(t)
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+
+	m.dispatchCommand("/set shell.allow_network on")
+
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("save failure must keep the /set change in the session")
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.Contains(got, "applied in session, but save failed") {
+		t.Fatalf("save failure receipt = %q", got)
+	}
+}
+
+func TestBrowserSaveFailureCanBeRetriedWithUnchangedSet(t *testing.T) {
+	m := newTestModel(t)
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+	m.openSettingsBrowser("shell.allow_network")
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("browser toggle must emit ChangedMsg")
+	}
+	msg := cmd()
+	changed, ok := msg.(settings.ChangedMsg)
+	if !ok || changed.SaveErr == nil {
+		t.Fatalf("browser save failure = %#v, want ChangedMsg with SaveErr", msg)
+	}
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("browser save failure must preserve the session config")
+	}
+	if !m.configSavePending {
+		t.Fatal("browser save failure must mark the config pending")
+	}
+	if got := m.state.Messages()[len(m.state.Messages())-1].Content; strings.Contains(got, "✓") {
+		t.Fatalf("browser save failure emitted a success receipt: %q", got)
+	}
+
+	retryDir := t.TempDir()
+	m.state.WorkingDir = retryDir
+	m.dispatchCommand("/set shell.allow_network on")
+
+	if m.configSavePending {
+		t.Fatal("successful unchanged /set retry must clear pending persistence")
+	}
+	if got := m.state.Messages()[len(m.state.Messages())-1].Content; !strings.Contains(got, "✓ shell.allow_network persisted") {
+		t.Fatalf("unchanged /set retry receipt = %q", got)
+	}
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(retryDir, "no-home"),
+		WorkingDir: retryDir,
+	})
+	if err != nil {
+		t.Fatalf("load retried config: %v", err)
+	}
+	if !loaded.Tools.Shell.AllowNetwork {
+		t.Fatal("unchanged /set retry did not persist the browser setting")
+	}
+}
+
+// TestBrowserRetrySurvivesDockCloseAndReopen is the regression for the gap
+// the reviewer found in the /set-equivalent retry fix: a failed browser save
+// leaves m.state.Config already advanced to the unsaved value (so the user
+// doesn't lose their edit), but closing the dock and reopening it built a
+// brand-new BrowserPanel whose baseline was cloned from that already-advanced
+// config and whose savePending started false. Baseline then diffed empty
+// against the still-unsaved value and savePending being false meant the
+// retry branch in flushChanges could never fire — the user was stuck unless
+// they made an unrelated change first. This drives the exact path a real
+// user hits: fail a save, close the dock (BrowserClosedMsg → dock.CloseNow),
+// reopen it via openSettingsBrowser (a *new* BrowserPanel instance, not the
+// live one), then re-confirm the same edit and expect it to actually retry.
+func TestBrowserRetrySurvivesDockCloseAndReopen(t *testing.T) {
+	m := newTestModel(t)
+	dir := t.TempDir()
+	blockingPath := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+
+	m.openSettingsBrowser("agent.max_retries")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("dock panel = %T, want settings browser", m.dock.Panel())
+	}
+
+	// commit opens the inline scalar edit for agent.max_retries, sets it to
+	// "9", and confirms — mirroring
+	// TestBrowserRetriesFailedSaveOnRepeatedCommit's commit gesture.
+	commit := func(setValue string) settings.ChangedMsg {
+		t.Helper()
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = updated.(Model)
+		if cmd != nil {
+			t.Fatal("opening an inline edit must not itself persist")
+		}
+		if setValue != "" {
+			for _, r := range setValue {
+				updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+				m = updated.(Model)
+				_ = cmd
+				updated, cmd = m.Update(tea.KeyPressMsg{Text: string(r)})
+				m = updated.(Model)
+				_ = cmd
+			}
+		}
+		updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = updated.(Model)
+		if cmd == nil {
+			t.Fatal("confirming an inline edit must emit a command")
+		}
+		msg := cmd()
+		changed, ok := msg.(settings.ChangedMsg)
+		if !ok {
+			t.Fatalf("want settings.ChangedMsg, got %T", msg)
+		}
+		// Route the ChangedMsg back through the model, exactly like the real
+		// bubbletea runtime would, so m.state.Config/m.configSavePending
+		// update the same way they do in production.
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+		return changed
+	}
+
+	// First commit: sets max_retries to "9". The parent directory is a file,
+	// so the save fails; the value stays applied in memory and
+	// m.configSavePending is set (mirrors the settings.ChangedMsg handler).
+	first := commit("9")
+	if first.SaveErr == nil {
+		t.Fatal("expected the first save to fail (parent path is a file)")
+	}
+	if m.state.Config.Agent.MaxRetries != 9 {
+		t.Fatalf("Agent.MaxRetries = %d, want 9 (save failure must preserve the in-memory edit)", m.state.Config.Agent.MaxRetries)
+	}
+	if !m.configSavePending {
+		t.Fatal("browser save failure must mark the config pending")
+	}
+
+	// Close the dock the way the real UI does: Esc from the browser's
+	// top-level view emits BrowserClosedMsg, which the model routes to
+	// dock.CloseNow().
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Esc from the browser's top level must close the dock")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.dock.IsOpen() {
+		t.Fatal("dock should be closed after BrowserClosedMsg")
+	}
+
+	// Fix the underlying problem: cfgPath's parent now exists as a real
+	// directory.
+	if err := os.Remove(blockingPath); err != nil {
+		t.Fatalf("remove blocking file: %v", err)
+	}
+	if err := os.Mkdir(blockingPath, 0o755); err != nil {
+		t.Fatalf("create real directory: %v", err)
+	}
+
+	// Reopen the dock through the model. This constructs a brand-new
+	// BrowserPanel — not the one used above — whose baseline is cloned from
+	// m.state.Config (already advanced to 9) and therefore diffs empty
+	// against the field's current value.
+	m.openSettingsBrowser("agent.max_retries")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("dock panel = %T, want settings browser", m.dock.Panel())
+	}
+
+	// Re-confirm the exact same value. Before the fix this silently no-op'd
+	// (empty diff, fresh savePending=false) and the user had no way to
+	// retry the failed save short of an unrelated edit.
+	second := commit("")
+	if second.SaveErr != nil {
+		t.Fatalf("retry save should succeed now that the path is fixed: %v", second.SaveErr)
+	}
+	if len(second.Receipts) == 0 {
+		t.Fatal("a successful retry must emit a receipt")
+	}
+	if m.configSavePending {
+		t.Fatal("a successful retry must clear the pending flag")
+	}
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(dir, "no-home"),
+		WorkingDir: blockingPath,
+	})
+	if err != nil {
+		t.Fatalf("load saved project config: %v", err)
+	}
+	if loaded.Agent.MaxRetries != 9 {
+		t.Fatalf("retried setting was not saved to disk: MaxRetries = %d, want 9", loaded.Agent.MaxRetries)
+	}
+}
+
+func TestSetCommandBadValuePrintsError(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.dispatchCommand("/set shell.allow_network maybe")
+	msgs := m.state.Messages()
+	if !strings.Contains(msgs[len(msgs)-1].Content, "✗") {
+		t.Errorf("want error receipt, got %q", msgs[len(msgs)-1].Content)
+	}
+	if m.state.Config.Tools.Shell.AllowNetwork {
+		t.Error("failed set must not mutate session config")
+	}
+}
+
+func TestSetCommandUnavailableAgentToggleDoesNotSaveOrReportSuccess(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+
+	m.dispatchCommand("/set agent.local_only on")
+
+	if _, err := os.Stat(filepath.Join(m.state.WorkingDir, ".marshal", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("unavailable setting should not be persisted, stat error = %v", err)
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if strings.Contains(got, "✓") || !strings.Contains(got, "unavailable") {
+		t.Fatalf("unavailable setting receipt = %q", got)
+	}
+}
+
+func TestSetCommandKeyOnlyPrintsCurrentValue(t *testing.T) {
+	m := newTestModel(t)
+	m.dispatchCommand("/set shell.allow_network")
+	msgs := m.state.Messages()
+	last := msgs[len(msgs)-1].Content
+	if !strings.Contains(last, "shell.allow_network") || !strings.Contains(last, "toggle") {
+		t.Errorf("want current-value print with kind, got %q", last)
+	}
+}
+
+func TestSettingsAndPartialSetCommandsOpenDockedBrowser(t *testing.T) {
+	m := newTestModel(t)
+
+	m.dispatchCommand("/settings shell")
+	browser, ok := m.dock.Panel().(*settings.BrowserPanel)
+	if !ok {
+		t.Fatalf("/settings dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
+	}
+	if !strings.Contains(stripANSI(browser.View(80, 12)), "shell.allow_network") {
+		t.Fatal("/settings query should pre-filter the browser")
+	}
+
+	m.dispatchCommand("/set")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("/set dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
+	}
+
+	m.dispatchCommand("/set shell.allow")
+	browser, ok = m.dock.Panel().(*settings.BrowserPanel)
+	if !ok {
+		t.Fatalf("/set partial dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
+	}
+	if !strings.Contains(stripANSI(browser.View(80, 12)), "shell.allow_network") {
+		t.Fatal("non-exact /set key should pre-filter the browser")
+	}
+}
+
+func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
+	tests := []struct {
+		name   string
+		block  func(*Model)
+		reason string
+	}{
+		{
+			name:   "agent turn active",
+			block:  func(m *Model) { m.busy = true },
+			reason: settingsBusyMessage,
+		},
+		{
+			name: "background job active",
+			block: func(m *Model) {
+				m.state.SetRunningJobsCount(1)
+			},
+			reason: settingsBusyMessage,
+		},
+		{
+			name: "tool approval pending",
+			block: func(m *Model) {
+				m.state.SetPendingApproval(&session.PendingToolCall{
+					ID:           "pending-approval",
+					Name:         "shell.run",
+					ResponseChan: make(chan session.UserApprovalDecision, 1),
+				})
+			},
+			reason: "Resolve the pending tool approval to save.",
+		},
+		{
+			name: "question pending",
+			block: func(m *Model) {
+				m.state.SetPendingQuestion(&session.PendingQuestion{
+					ResponseChan: make(chan []session.Answer, 1),
+				})
+			},
+			reason: "Answer the pending question to save.",
+		},
+		{
+			name: "picker open",
+			block: func(m *Model) {
+				m.dock.Open(&picker.Model{})
+			},
+			reason: "Close the picker to save.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel(t)
+			reloads := 0
+			m.configReloader = func(config.Config) error {
+				reloads++
+				return nil
+			}
+			tt.block(&m)
+
+			m.dispatchCommand("/set shell.allow_network on")
+
+			if m.state.Config.Tools.Shell.AllowNetwork {
+				t.Fatal("guarded /set mutated the live config")
+			}
+			if reloads != 0 {
+				t.Fatalf("guarded /set reloaded runtime %d times", reloads)
+			}
+			path := projectConfigPath(m.state.WorkingDir)
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("guarded /set persisted config, stat error = %v", err)
+			}
+			msgs := m.state.Messages()
+			if got := msgs[len(msgs)-1].Content; got != tt.reason {
+				t.Fatalf("guarded /set message = %q, want %q", got, tt.reason)
+			}
+		})
+	}
+}
+
+func TestApplyNewConfigInvalidatesSetRegistry(t *testing.T) {
+	m := newTestModel(t)
+	previous := m.settingsRegistry()
+	cfg := m.state.Config
+	cfg.Tools.Shell.AllowNetwork = true
+
+	m.applyNewConfig(cfg)
+
+	if m.setReg != nil {
+		t.Fatal("applyNewConfig should clear the cached /set registry")
+	}
+	if current := m.settingsRegistry(); current == previous {
+		t.Fatal("settingsRegistry should rebuild after a config change")
+	}
+	_, value, _, err := m.settingsRegistry().Describe("shell.allow_network")
+	if err != nil || value != "on" {
+		t.Fatalf("rebuilt registry value = %q, %v; want on, nil", value, err)
+	}
+}
 
 func newTestModel(t *testing.T) Model {
 	t.Helper()
@@ -3649,8 +4014,8 @@ func TestConnectOpensOverlay(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.dispatchCommand("/connect")
 	m = asModel(t, updated)
-	if !m.connectOpen {
-		t.Fatal("/connect should open the connect overlay")
+	if _, ok := m.dock.Panel().(connect.Panel); !ok {
+		t.Fatalf("/connect dock panel = %T, want connect.Panel", m.dock.Panel())
 	}
 }
 
@@ -3658,8 +4023,8 @@ func TestModelsOpensOverlay(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.dispatchCommand("/models")
 	m = asModel(t, updated)
-	if !m.connectOpen {
-		t.Fatal("/models should open the connect overlay")
+	if _, ok := m.dock.Panel().(connect.Panel); !ok {
+		t.Fatalf("/models dock panel = %T, want connect.Panel", m.dock.Panel())
 	}
 }
 
@@ -3667,7 +4032,7 @@ func TestModelsEmptyProvidersShowsAddProvider(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.dispatchCommand("/models")
 	m = asModel(t, updated)
-	if !m.connectOpen || m.connectModel == nil {
+	if _, ok := m.dock.Panel().(connect.Panel); !ok || m.connectModel == nil {
 		t.Fatal("/models with no providers should open the connect overlay")
 	}
 	view := stripANSI(m.connectModel.View(80, 24))
@@ -3678,6 +4043,7 @@ func TestModelsEmptyProvidersShowsAddProvider(t *testing.T) {
 
 func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	m := newTestModel(t)
+	m.settingsRegistry()
 	reloaded := false
 	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
 	updated, _ := m.Update(connect.DoneMsg{Provider: "ollama", Model: "qwen2.5-coder:7b", ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"}})
@@ -3700,8 +4066,225 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	if prov.BaseURL != "http://localhost:11434/v1" {
 		t.Fatalf(`expected provider base_url "http://localhost:11434/v1", got %q`, prov.BaseURL)
 	}
-	if updated.(Model).connectOpen {
+	um := updated.(Model)
+	if um.dock.IsOpen() {
 		t.Fatal("overlay should close after DoneMsg")
+	}
+	if updated.(Model).setReg != nil {
+		t.Fatal("connect config update should invalidate the cached /set registry")
+	}
+}
+
+func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
+	m := newTestModel(t)
+	m.settingsRegistry()
+	m.configReloader = func(cfg config.Config) error {
+		// reloadAgentRuntime installs the config before cleaning up old
+		// resources, whose failure is returned to the TUI.
+		m.state.Config = cfg
+		return errors.New("old runtime cleanup failed")
+	}
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
+	})
+	m = updated.(Model)
+
+	if m.setReg != nil {
+		t.Fatal("failed connect reload must invalidate the cached /set registry")
+	}
+	if m.state.Config.Agent.Provider != "ollama" || m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("failed connect reload must align m.state.Config, got %+v", m.state.Config.Agent)
+	}
+	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
+		t.Fatal("failed connect reload must align m.state.Config.Providers")
+	}
+}
+
+func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
+	m := newTestModel(t)
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+	m.settingsRegistry()
+	reloaded := false
+	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
+	})
+	m = updated.(Model)
+
+	if reloaded {
+		t.Fatal("save failure must not call configReloader")
+	}
+	if m.state.Config.Agent.Provider != "ollama" || m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("save failure must keep the new config in session, got %+v", m.state.Config.Agent)
+	}
+	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
+		t.Fatal("save failure must keep the new provider in session config")
+	}
+	if !m.configSavePending {
+		t.Fatal("save failure must mark config save pending")
+	}
+	if m.setReg != nil {
+		t.Fatal("save failure must invalidate the cached /set registry")
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to save model") {
+		t.Fatalf("save failure receipt = %q", got)
+	}
+}
+
+func TestConnectDoneSuccessReceiptHasCheckGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error { return nil }
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
+	})
+	m = updated.(Model)
+
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
+		t.Fatalf("connect success receipt = %q", got)
+	}
+}
+
+func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error { return errors.New("cleanup failed") }
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
+	})
+	m = updated.(Model)
+
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
+		t.Fatalf("connect reload failure receipt = %q", got)
+	}
+}
+
+func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	m.settingsRegistry()
+	m.configReloader = func(config.Config) error { return nil }
+
+	m.switchModelPreset("fast")
+
+	if m.setReg != nil {
+		t.Fatal("model switch should invalidate the cached /set registry")
+	}
+}
+
+func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	m.settingsRegistry()
+	m.configReloader = func(cfg config.Config) error {
+		// reloadAgentRuntime installs the config before cleaning up old
+		// resources, whose failure is returned to the TUI.
+		m.state.Config = cfg
+		return errors.New("old runtime cleanup failed")
+	}
+
+	m.switchModelPreset("fast")
+
+	if m.setReg != nil {
+		t.Fatal("failed model reload must invalidate the cached /set registry")
+	}
+	if m.state.Config.Profile.Default != "switched" {
+		t.Fatalf("failed model reload must align m.state.Config profile, got %q", m.state.Config.Profile.Default)
+	}
+	if switched, ok := m.state.Config.AgentProfiles["switched"]; !ok || switched.Roles[routing.RoleImplementer] != "fast" {
+		t.Fatal("failed model reload must align m.state.Config.AgentProfiles")
+	}
+}
+
+func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+	m.settingsRegistry()
+	reloaded := false
+	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
+
+	m.switchModelPreset("fast")
+
+	if reloaded {
+		t.Fatal("save failure must not call configReloader")
+	}
+	if m.state.Config.Profile.Default != "switched" {
+		t.Fatalf("save failure must keep the switched profile in session, got %q", m.state.Config.Profile.Default)
+	}
+	if switched, ok := m.state.Config.AgentProfiles["switched"]; !ok || switched.Roles[routing.RoleImplementer] != "fast" {
+		t.Fatal("save failure must keep the switched profile roles in session config")
+	}
+	if !m.configSavePending {
+		t.Fatal("save failure must mark config save pending")
+	}
+	if m.setReg != nil {
+		t.Fatal("save failure must invalidate the cached /set registry")
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to save model preset") {
+		t.Fatalf("save failure receipt = %q", got)
+	}
+}
+
+func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error { return nil }
+
+	m.switchModelPreset("fast")
+
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
+		t.Fatalf("preset switch success receipt = %q", got)
+	}
+}
+
+func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error { return errors.New("cleanup failed") }
+
+	m.switchModelPreset("fast")
+
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
+		t.Fatalf("preset reload failure receipt = %q", got)
 	}
 }
 
@@ -3710,12 +4293,13 @@ func TestConnectCancelledClosesOverlay(t *testing.T) {
 	updated, _ := m.dispatchCommand("/connect")
 	m = asModel(t, updated)
 	updated2, _ := m.Update(connect.CancelledMsg{})
-	if updated2.(Model).connectOpen {
+	um2 := updated2.(Model)
+	if um2.dock.IsOpen() {
 		t.Fatal("CancelledMsg should close the overlay")
 	}
 }
 
-func TestSettingsSaveAllowedWhenIdle(t *testing.T) {
+func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 	var reloaded bool
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state, WithConfigReloader(func(cfg config.Config) error {
@@ -3724,72 +4308,102 @@ func TestSettingsSaveAllowedWhenIdle(t *testing.T) {
 	}))
 	m.resize(100, 40)
 
-	// Open settings while idle.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	m.openSettingsBrowser("shell.allow_network")
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 	m = updated.(Model)
-
-	dirty := config.Default()
-	dirty.Privacy.RemoteProvidersAllowed = true
-	m.settingsModel.SetWorkingConfig(dirty)
-
-	// Ctrl+S opens the diff overlay; Enter commits the save.
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(Model)
-
 	if cmd == nil {
-		t.Fatal("expected a non-nil cmd when save is allowed")
+		t.Fatal("expected toggle to emit ChangedMsg")
 	}
-
-	// Execute the command to get SavedMsg, then feed it back to trigger the reloader.
 	msg := cmd()
-	sm, ok := msg.(settings.SavedMsg)
+	_, ok := msg.(settings.ChangedMsg)
 	if !ok {
-		t.Fatalf("expected SavedMsg, got %T", msg)
+		t.Fatalf("expected ChangedMsg, got %T", msg)
 	}
-	updated, _ = m.Update(sm)
-	_ = updated.(Model)
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
 
 	if !reloaded {
 		t.Fatal("configReloader should have been called")
 	}
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("ChangedMsg should apply the browser config")
+	}
+	messages := m.state.Messages()
+	last := messages[len(messages)-1].Content
+	for _, want := range []string{"✓", "shell.allow_network", ".marshal/config.toml"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("receipt %q missing %q", last, want)
+		}
+	}
 }
 
-func TestSettingsOverlayDoesNotSwallowAgentFinishedOrJobCount(t *testing.T) {
+func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	m := newTestModel(t)
+	m.settingsRegistry()
+	m.setPopup = &completionPopup{}
+	m.lastInputForPopups = "/set shell"
+	reloaded := m.state.Config
+	reloaded.TUI.Theme = "warm-sunset"
+	reloaded.TUI.Mode = theme.ModeLight
+	expectedTheme := theme.LoadWithConfig(reloaded.TUI.Theme, reloaded.TUI.Mode, nil)
+	m.configReloader = func(cfg config.Config) error {
+		// reloadAgentRuntime swaps the config before old-resource cleanup.
+		m.state.Config = cfg
+		return errors.New("old runtime cleanup failed")
+	}
+
+	updated, _ := m.Update(settings.ChangedMsg{
+		Cfg:      reloaded,
+		Receipts: []string{"shell.allow_network: off → on"},
+	})
+	m = updated.(Model)
+
+	if m.state.Config.TUI.Mode != theme.ModeLight {
+		t.Fatal("post-swap cleanup failure must retain the live config")
+	}
+	if m.setReg != nil || m.setPopup != nil || m.lastInputForPopups != "" {
+		t.Fatal("post-swap cleanup failure must refresh config-derived UI caches")
+	}
+	if activeTheme.AccentPrimary != expectedTheme.AccentPrimary {
+		t.Fatalf("active theme = %#v, want %#v", activeTheme.AccentPrimary, expectedTheme.AccentPrimary)
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if strings.Contains(got, "✓") || !strings.Contains(got, "live reload failed") {
+		t.Fatalf("reload cleanup failure receipt = %q", got)
+	}
+}
+
+func TestDockedSettingsBrowserDoesNotSwallowRuntimeMessages(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	m.resize(100, 40)
 	m.busy = true
 	m.lastActivityKind = session.ActivityThinking
 
-	// Open settings.
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
-	m = updated.(Model)
-	if !m.settingsOpen {
-		t.Fatal("expected settingsOpen")
+	m.openSettingsBrowser("")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatalf("dock panel = %T, want settings browser", m.dock.Panel())
 	}
 
-	// Feed agentFinishedMsg while settings is open.
-	updated, _ = m.Update(agentFinishedMsg{err: nil})
+	updated, _ := m.Update(agentFinishedMsg{err: nil})
 	m = updated.(Model)
 
 	if m.busy {
 		t.Fatal("busy should be cleared after agentFinishedMsg even with settings open")
 	}
-	if !m.settingsOpen {
-		t.Fatal("settings should stay open after agentFinishedMsg")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatal("settings browser should stay open after agentFinishedMsg")
 	}
 
-	// Feed jobCountMsg while settings is open.
 	updated, _ = m.Update(jobCountMsg{count: 3})
 	m = updated.(Model)
 
 	if m.jobCount != 3 {
 		t.Fatalf("jobCount = %d, want 3", m.jobCount)
 	}
-	if !m.settingsOpen {
-		t.Fatal("settings should stay open after jobCountMsg")
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
+		t.Fatal("settings browser should stay open after jobCountMsg")
 	}
 }
 
@@ -3915,7 +4529,7 @@ func TestPatternForApproval_SecurityProperty(t *testing.T) {
 }
 
 // TestSettingsBlockedByApproval verifies that Ctrl+O does not open the
-// settings overlay when a tool approval is pending (F-BUG-147).
+// settings browser when a tool approval is pending (F-BUG-147).
 func TestSettingsBlockedByApproval(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	tc := &session.PendingToolCall{
@@ -3935,8 +4549,8 @@ func TestSettingsBlockedByApproval(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	if m.settingsOpen {
-		t.Fatal("settingsOpen should be false when approval is pending")
+	if m.dock.IsOpen() {
+		t.Fatal("settings browser should stay closed when approval is pending")
 	}
 
 	// A system message should have been added.
@@ -3974,8 +4588,8 @@ func TestMemoryBlockedByApproval(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
-	if m.memoryOpen {
-		t.Fatal("memoryOpen should be false when approval is pending")
+	if m.dock.IsOpen() {
+		t.Fatal("dock should be closed when approval is pending")
 	}
 
 	// A system message should have been added.
@@ -4048,7 +4662,7 @@ func TestSettingsBlockReason(t *testing.T) {
 
 	t.Run("picker open", func(t *testing.T) {
 		m := New(state)
-		m.pickerModel = &picker.Model{}
+		m.dock.Open(&picker.Model{})
 		want := "Close the picker to save."
 		if got := m.settingsBlockReason(); got != want {
 			t.Fatalf("settingsBlockReason = %q, want %q", got, want)

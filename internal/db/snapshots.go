@@ -98,20 +98,3 @@ func (db *DB) PruneSnapshotsOlderThan(days int) error {
 	return nil
 }
 
-func (db *DB) SnapshotFiles(snapshotID int64) ([]string, error) {
-	rows, err := db.sqlDB.Query(
-		`SELECT path FROM snapshot_files WHERE snapshot_id = ? ORDER BY path`, snapshotID)
-	if err != nil {
-		return nil, fmt.Errorf("query snapshot files: %w", err)
-	}
-	defer rows.Close()
-	var paths []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
-		paths = append(paths, p)
-	}
-	return paths, rows.Err()
-}

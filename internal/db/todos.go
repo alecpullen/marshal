@@ -26,18 +26,3 @@ func (db *DB) SaveTodos(sessionID string, todos []TodoItem) error {
 	return nil
 }
 
-func (db *DB) LoadTodos(sessionID string) ([]TodoItem, error) {
-	var raw string
-	err := db.sqlDB.QueryRow(
-		`SELECT value FROM session_state WHERE session_id = ? AND key = 'todos'`,
-		sessionID,
-	).Scan(&raw)
-	if err != nil {
-		return nil, fmt.Errorf("load todos: %w", err)
-	}
-	var todos []TodoItem
-	if err := json.Unmarshal([]byte(raw), &todos); err != nil {
-		return nil, fmt.Errorf("unmarshal todos: %w", err)
-	}
-	return todos, nil
-}

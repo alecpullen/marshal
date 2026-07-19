@@ -3,7 +3,6 @@ package snapshot
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -109,29 +108,6 @@ func (s *Service) Restore(ctx context.Context, hash string) error {
 	}
 	if err := s.runGit(ctx, "checkout", hash, "--", "."); err != nil {
 		return fmt.Errorf("restore snapshot %s: %w", hash, err)
-	}
-	return nil
-}
-
-// Revert reverse-applies the change-set from toHash back to fromHash.
-// Equivalent to applying the diff that transforms toHash into fromHash.
-func (s *Service) Revert(ctx context.Context, fromHash, toHash string) error {
-	if !s.enabled {
-		return nil
-	}
-	diff, err := s.runGitOut(ctx, "diff", toHash, fromHash)
-	if err != nil {
-		return fmt.Errorf("diff for revert: %w", err)
-	}
-	if diff == "" {
-		return nil
-	}
-	cmd := exec.CommandContext(ctx, "git", "--git-dir="+s.shadowDir, "--work-tree="+s.workTree, "apply")
-	cmd.Dir = s.workTree
-	cmd.Stdin = strings.NewReader(diff)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("apply revert patch: %w\n%s", err, string(out))
 	}
 	return nil
 }

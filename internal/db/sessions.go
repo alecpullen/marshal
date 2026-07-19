@@ -193,6 +193,40 @@ SELECT m.id, m.role, m.content, m.content_type, m.reasoning, m.think_duration_ms
   JOIN chain c ON m.id = c.id
  ORDER BY m.id ASC`
 
+// scanMessage scans one message row, resolving nullable columns and
+// parsing the RFC3339 timestamp.
+func scanMessage(rows *sql.Rows) (Message, error) {
+	var m Message
+	var created string
+	var reasoning sql.NullString
+	var thinkDurationMs sql.NullInt64
+	var contentType sql.NullString
+	var final sql.NullInt64
+	var parentID sql.NullInt64
+	if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final, &parentID); err != nil {
+		return Message{}, fmt.Errorf("scan message: %w", err)
+	}
+	if contentType.Valid {
+		m.ContentType = contentType.String
+	}
+	if reasoning.Valid {
+		m.Reasoning = reasoning.String
+	}
+	if thinkDurationMs.Valid {
+		m.ThinkDurationMs = thinkDurationMs.Int64
+	}
+	m.Final = final.Valid && final.Int64 != 0
+	if parentID.Valid {
+		m.ParentID = parentID.Int64
+	}
+	parsed, err := time.Parse(time.RFC3339, created)
+	if err != nil {
+		return Message{}, fmt.Errorf("parse created_at: %w", err)
+	}
+	m.CreatedAt = parsed.UTC()
+	return m, nil
+}
+
 // MessagesOnBranch returns the message rows from the root down to leafID
 // (inclusive), following parent_id links. The slice is in chronological order.
 func (db *DB) MessagesOnBranch(sessionID string, leafID int64) ([]Message, error) {
@@ -207,34 +241,10 @@ func (db *DB) MessagesOnBranch(sessionID string, leafID int64) ([]Message, error
 
 	var out []Message
 	for rows.Next() {
-		var m Message
-		var created string
-		var reasoning sql.NullString
-		var thinkDurationMs sql.NullInt64
-		var contentType sql.NullString
-		var final sql.NullInt64
-		var parentID sql.NullInt64
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final, &parentID); err != nil {
-			return nil, fmt.Errorf("scan branch message: %w", err)
-		}
-		if contentType.Valid {
-			m.ContentType = contentType.String
-		}
-		if reasoning.Valid {
-			m.Reasoning = reasoning.String
-		}
-		if thinkDurationMs.Valid {
-			m.ThinkDurationMs = thinkDurationMs.Int64
-		}
-		m.Final = final.Valid && final.Int64 != 0
-		if parentID.Valid {
-			m.ParentID = parentID.Int64
-		}
-		parsed, err := time.Parse(time.RFC3339, created)
+		m, err := scanMessage(rows)
 		if err != nil {
-			return nil, fmt.Errorf("parse created_at: %w", err)
+			return nil, err
 		}
-		m.CreatedAt = parsed.UTC()
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -282,34 +292,10 @@ func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 
 	var messages []Message
 	for rows.Next() {
-		var m Message
-		var created string
-		var reasoning sql.NullString
-		var thinkDurationMs sql.NullInt64
-		var contentType sql.NullString
-		var final sql.NullInt64
-		var parentID sql.NullInt64
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final, &parentID); err != nil {
-			return nil, fmt.Errorf("scan message row: %w", err)
-		}
-		if contentType.Valid {
-			m.ContentType = contentType.String
-		}
-		if reasoning.Valid {
-			m.Reasoning = reasoning.String
-		}
-		if thinkDurationMs.Valid {
-			m.ThinkDurationMs = thinkDurationMs.Int64
-		}
-		m.Final = final.Valid && final.Int64 != 0
-		if parentID.Valid {
-			m.ParentID = parentID.Int64
-		}
-		parsed, err := time.Parse(time.RFC3339, created)
+		m, err := scanMessage(rows)
 		if err != nil {
-			return nil, fmt.Errorf("parse created_at: %w", err)
+			return nil, err
 		}
-		m.CreatedAt = parsed.UTC()
 		messages = append(messages, m)
 	}
 

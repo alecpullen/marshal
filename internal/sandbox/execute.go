@@ -58,40 +58,30 @@ func executeCommand(ctx context.Context, cmd *exec.Cmd, req native.CommandReques
 		waitCh <- cmd.Wait()
 	}()
 
+	var waitErr error
 	select {
-	case waitErr := <-waitCh:
+	case waitErr = <-waitCh:
 		// Command completed before the context was cancelled.
-		meta.DurationMS = time.Since(start).Milliseconds()
-		meta.OutputTruncated = stdout.Truncated() || stderr.Truncated()
-		result := native.CommandResult{
-			Stdout:   stdout.String(),
-			Stderr:   stderr.String(),
-			Meta:     meta,
-			ExitCode: exitCodeFromState(cmd.ProcessState),
-		}
-		return result, waitErr
-
 	case <-ctx.Done():
 		// Context cancelled or deadline exceeded. Terminate the
 		// process tree, then drain the wait result.
 		_ = terminateProcessTree(cmd, terminationGrace)
-		waitErr := <-waitCh
-
-		meta.DurationMS = time.Since(start).Milliseconds()
+		waitErr = <-waitCh
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			meta.KilledReason = "timeout"
 		} else {
 			meta.KilledReason = "cancelled"
 		}
-		meta.OutputTruncated = stdout.Truncated() || stderr.Truncated()
-		result := native.CommandResult{
-			Stdout:   stdout.String(),
-			Stderr:   stderr.String(),
-			Meta:     meta,
-			ExitCode: exitCodeFromState(cmd.ProcessState),
-		}
-		return result, waitErr
 	}
+	meta.DurationMS = time.Since(start).Milliseconds()
+	meta.OutputTruncated = stdout.Truncated() || stderr.Truncated()
+	result := native.CommandResult{
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		Meta:     meta,
+		ExitCode: exitCodeFromState(cmd.ProcessState),
+	}
+	return result, waitErr
 }
 
 // exitCodeFromState returns the exit code from a process state, or 0

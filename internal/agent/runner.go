@@ -74,13 +74,9 @@ type RouteResolver interface {
 }
 
 // Snapshotter tracks and restores shadow-git snapshots of the working tree.
-// It is defined here so the agent package can use snapshots without importing
-// internal/snapshot.
-type Snapshotter interface {
-	Track(ctx context.Context) (string, error)
-	Diff(ctx context.Context, hash string) (string, error)
-	Restore(ctx context.Context, hash string) error
-}
+// Aliased to session.Snapshotter so the TUI/commands and the runner share
+// one definition without either package importing internal/snapshot.
+type Snapshotter = session.Snapshotter
 
 // SnapshotRecorder persists snapshot metadata to durable storage.
 type SnapshotRecorder interface {

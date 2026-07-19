@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExecRunnerBoundsAndObservesOutput(t *testing.T) {
@@ -120,5 +121,25 @@ func TestExecRunnerDestructiveGoesThroughShell(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Errorf("exit code = %d, want 0", result.ExitCode)
+	}
+}
+
+// TestExecRunnerEnforcesTimeout: req.Timeout must bound execution on the
+// default runner too, not just the sandbox runners — otherwise shell.run's
+// timeout_seconds is silently ignored.
+func TestExecRunnerEnforcesTimeout(t *testing.T) {
+	runner := execRunner{}
+	req := CommandRequest{
+		Command: "sleep 30",
+		Timeout: 50 * time.Millisecond,
+	}
+	start := time.Now()
+	_, err := runner.Run(context.Background(), req)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected a timeout error from a killed sleep, got nil")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("command ran %v — timeout not enforced", elapsed)
 	}
 }

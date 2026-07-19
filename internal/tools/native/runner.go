@@ -14,6 +14,15 @@ import (
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	// Honour the caller's timeout on both execution paths; previously only
+	// the sandbox runners applied req.Timeout, making shell.run's
+	// timeout_seconds a silent no-op on this default runner.
+	if req.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
+		defer cancel()
+	}
+
 	// Attempt argv path for shell-free, non-destructive commands.
 	// This avoids shell-wrapping overhead and shell-injection surface.
 	argv, splitErr := shlex.Split(req.Command)

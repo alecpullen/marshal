@@ -56,10 +56,7 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 		if t.sessionState == nil {
 			return registry.ToolResult{}, fmt.Errorf("todo store not available")
 		}
-		store, ok := t.sessionState.(TodoStore)
-		if !ok {
-			return registry.ToolResult{}, fmt.Errorf("session state does not support todos")
-		}
+		store := TodoStore(t.sessionState)
 		if err := store.SetTodos(args.Todos); err != nil {
 			return registry.ToolResult{}, err
 		}

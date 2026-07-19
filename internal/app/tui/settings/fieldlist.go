@@ -11,7 +11,15 @@ import (
 	"marshal/internal/app/tui/picker"
 )
 
+func isMono() bool {
+	_, ok := settingsTheme().FGDefault.(lipgloss.NoColor)
+	return ok
+}
+
 func flCursorStyle() lipgloss.Style {
+	if isMono() {
+		return lipgloss.NewStyle()
+	}
 	return lipgloss.NewStyle().Bold(true).Background(settingsTheme().BGSelection)
 }
 func flTitleStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGDefault) }

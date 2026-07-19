@@ -155,6 +155,7 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 		return mutedStyle().Render("Memory")
 	}
 
+	p.syncFilterStyles()
 	p.filter.SetWidth(max(inner-2, 1))
 
 	var rows []string
@@ -213,10 +214,46 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 	return chrome.Panel("Memory", content, pw, ph, true, theme.Current())
 }
 
+func isMono() bool {
+	_, ok := theme.Current().FGDefault.(lipgloss.NoColor)
+	return ok
+}
+
+func (p *BrowserPanel) syncFilterStyles() {
+	if !isMono() {
+		return
+	}
+	empty := lipgloss.NewStyle()
+	p.filter.SetVirtualCursor(false)
+	p.filter.SetStyles(textinput.Styles{
+		Focused: textinput.StyleState{
+			Text:        empty,
+			Placeholder: empty,
+			Suggestion:  empty,
+			Prompt:      empty,
+		},
+		Blurred: textinput.StyleState{
+			Text:        empty,
+			Placeholder: empty,
+			Suggestion:  empty,
+			Prompt:      empty,
+		},
+		Cursor: textinput.CursorStyle{
+			Color: lipgloss.NoColor{},
+		},
+	})
+}
+
 func mutedStyle() lipgloss.Style {
+	if isMono() {
+		return lipgloss.NewStyle()
+	}
 	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
 }
 
 func cursorStyle() lipgloss.Style {
+	if isMono() {
+		return lipgloss.NewStyle()
+	}
 	return lipgloss.NewStyle().Bold(true).Background(theme.Current().BGSelection)
 }

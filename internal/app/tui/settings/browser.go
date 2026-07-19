@@ -55,6 +55,20 @@ func NewBrowser(cfg config.Config, cfgPath, query string) *BrowserPanel {
 	filter.Focus()
 	filter.SetValue(query)
 	filter.CursorEnd()
+	if _, ok := settingsTheme().FGDefault.(lipgloss.NoColor); ok {
+		styles := textinput.DefaultDarkStyles()
+		styles.Focused.Prompt = lipgloss.NewStyle()
+		styles.Focused.Text = lipgloss.NewStyle()
+		styles.Focused.Placeholder = lipgloss.NewStyle()
+		styles.Focused.Suggestion = lipgloss.NewStyle()
+		styles.Blurred.Prompt = lipgloss.NewStyle()
+		styles.Blurred.Text = lipgloss.NewStyle()
+		styles.Blurred.Placeholder = lipgloss.NewStyle()
+		styles.Blurred.Suggestion = lipgloss.NewStyle()
+		styles.Cursor = textinput.CursorStyle{}
+		filter.SetStyles(styles)
+		filter.SetVirtualCursor(false)
+	}
 
 	browser := &BrowserPanel{
 		reg:      BuildRegistry(cfg),
@@ -66,9 +80,22 @@ func NewBrowser(cfg config.Config, cfgPath, query string) *BrowserPanel {
 	return browser
 }
 
+// FilterValue returns the current browser filter text so callers can reopen
+// the browser with the same query after an external config change.
+func (b *BrowserPanel) FilterValue() string { return b.filter.Value() }
+
 // SetSaveBlocked prevents immediate settings writes while runtime work or a
 // decision is active. The parent updates this before forwarding a key.
-func (b *BrowserPanel) SetSaveBlocked(reason string) { b.saveBlocked = reason }
+// When the reason transitions from non-empty to empty and a save is still
+// pending, it returns a command that retries flushing the pending change.
+func (b *BrowserPanel) SetSaveBlocked(reason string) tea.Cmd {
+	wasBlocked := b.saveBlocked != ""
+	b.saveBlocked = reason
+	if wasBlocked && reason == "" && b.savePending {
+		return b.flushChanges(nil, true)
+	}
+	return nil
+}
 
 // SetSavePending seeds the browser's retry-on-repeated-commit state (see
 // flushChanges) for a freshly constructed panel. It exists because the
@@ -327,8 +354,9 @@ func (b *BrowserPanel) drillIntoNewestProvider() {
 }
 
 // flushChanges persists mutations and turns the reflected config diff into
-// transcript-ready receipts. The working config stays applied on save error,
-// matching /set's retry-friendly behavior.
+// transcript-ready receipts. The working config stays applied on save error
+// or when a write is temporarily blocked, matching /set's immediate-apply
+// contract.
 //
 // commitAttempted reports whether this call was triggered by an explicit
 // commit gesture (toggle, inline edit confirm, enum cycle/pick, collection
@@ -345,16 +373,22 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 		return inner
 	}
 	if b.saveBlocked != "" {
-		b.reg.st.cfg = cloneConfig(b.baseline)
-		// Nested frames can hold closures over collection entries that no
-		// longer exist after restoring the baseline. Return to the flat
-		// registry so the next edit always starts from fresh bindings.
+		b.savePending = true
+		receipts := b.receipts(lines)
+		// Return to the flat registry so nested frames do not hold closures
+		// over collection entries that may be mutated while the save is
+		// blocked. The in-memory edit itself is preserved.
 		b.stack = nil
 		b.list.CancelEdit()
-		b.list.Refresh()
 		b.list.errMsg = b.saveBlocked
 		b.pendingKey = ""
-		return inner
+		changed := func() tea.Msg {
+			return ChangedMsg{Receipts: receipts, Cfg: b.reg.Config(), BlockedReason: b.saveBlocked}
+		}
+		if inner == nil {
+			return changed
+		}
+		return tea.Batch(inner, changed)
 	}
 
 	saveErr := config.SaveProjectConfig(b.cfgPath, b.reg.Config())

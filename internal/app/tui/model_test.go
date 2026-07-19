@@ -56,6 +56,12 @@ func drainCmds(m Model, cmd tea.Cmd) Model {
 		if msg == nil {
 			return m
 		}
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, sub := range batch {
+				m = drainCmds(m, sub)
+			}
+			return m
+		}
 		updated, next := m.Update(msg)
 		m = updated.(Model)
 		cmd = next
@@ -2681,7 +2687,7 @@ func TestPickerRoutingOpenPickCancel(t *testing.T) {
 		{Label: "branch 1", Value: "1"},
 		{Label: "branch 2", Value: "2", Badge: "● now"},
 	}, "")
-	if m.pickerModel == nil || m.pickerCommand != "branches" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "branches" {
 		t.Fatal("openPicker should set the modal state")
 	}
 
@@ -2699,7 +2705,7 @@ func TestPickerRoutingOpenPickCancel(t *testing.T) {
 	}
 	updated, _ = m.Update(cmd())
 	m = asModel(t, updated)
-	if m.pickerModel != nil || m.pickerCommand != "" {
+	if m.dock.IsOpen() || m.pickerCommand != "" {
 		t.Fatal("CancelledMsg should close the picker")
 	}
 }
@@ -2722,7 +2728,7 @@ func TestModelBareOpensPicker(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "model" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "model" {
 		t.Fatal("bare /model should open the picker")
 	}
 	view := stripANSI(m.View().Content)
@@ -2739,7 +2745,7 @@ func TestModelExactArgBypassesPicker(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model test-b")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("exact preset arg must switch directly, no picker")
 	}
 	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-b" {
@@ -2752,7 +2758,7 @@ func TestModelUnknownArgOpensPrefilteredPicker(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model test-a-typo-b")
 	m = asModel(t, updated)
-	if m.pickerModel == nil {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok {
 		t.Fatal("unknown arg should open the picker instead of erroring")
 	}
 }
@@ -2765,7 +2771,7 @@ func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	m = asModel(t, updated)
 	updated, _ = m.Update(picker.PickedMsg{Value: "test-a"})
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("pick should close the modal")
 	}
 	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer] != "test-a" {
@@ -2781,7 +2787,7 @@ func TestModelNoPresetsPointsAtSettings(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/model")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("no presets: picker must not open")
 	}
 	msgs := state.Messages()
@@ -2810,7 +2816,7 @@ func TestRewindBareOpensPickerNewestFirst(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "rewind" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "rewind" {
 		t.Fatal("bare /rewind should open the picker, not rewind immediately")
 	}
 	view := stripANSI(m.View().Content)
@@ -2831,7 +2837,7 @@ func TestRewindWithArgSkipsPicker(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind 1")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("/rewind 1 must run directly")
 	}
 }
@@ -2845,7 +2851,7 @@ func TestBranchesBareOpensPickerWithCurrentBadge(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/branches")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "branches" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "branches" {
 		t.Fatal("bare /branches should open the picker")
 	}
 	if !strings.Contains(stripANSI(m.View().Content), "● now") {
@@ -2858,7 +2864,7 @@ func TestRewindNoTurnsFallsThroughToHandler(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("no turns: picker must not open")
 	}
 	msgs := state.Messages()
@@ -2898,7 +2904,7 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 
 	updated, _ := m.dispatchCommand("/mode")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "mode" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "mode" {
 		t.Fatal("/mode should open the picker")
 	}
 	view := stripANSI(m.View().Content)
@@ -2931,7 +2937,7 @@ func TestModePickerSelectingSDDOpensPlanPicker(t *testing.T) {
 	// Open the mode picker first
 	updated, _ := m.dispatchCommand("/mode")
 	m = asModel(t, updated)
-	if m.pickerModel == nil || m.pickerCommand != "mode" {
+	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "mode" {
 		t.Fatal("/mode should open the picker")
 	}
 
@@ -2940,8 +2946,8 @@ func TestModePickerSelectingSDDOpensPlanPicker(t *testing.T) {
 	m = asModel(t, updated)
 
 	// Verify the SDD plan picker opened instead of dispatching "/sdd" directly
-	if m.pickerModel == nil {
-		t.Fatal("picking SDD should open the plan picker, but pickerModel is nil")
+	if _, ok := m.dock.Panel().(*picker.Model); !ok {
+		t.Fatal("picking SDD should open the plan picker")
 	}
 	if m.pickerCommand != "sdd-plan" {
 		t.Fatalf("picking SDD should set pickerCommand to %q, got %q", "sdd-plan", m.pickerCommand)
@@ -2967,7 +2973,7 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/mode edit")
 	m = asModel(t, updated)
-	if m.pickerModel != nil {
+	if m.dock.IsOpen() {
 		t.Fatal("/mode edit must not open the picker")
 	}
 	if m.forceMode != "edit" {
@@ -3382,24 +3388,53 @@ func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
 	}
 }
 
-func TestDockedSettingsBrowserBlocksChangesDuringAgentTurn(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	m.resize(100, 40)
+func TestDockedSettingsBrowserAppliesChangeWhenBlockedAndRetriesOnUnblock(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
 	m.busy = true
+	m.resize(100, 40)
 
 	m.openSettingsBrowser("shell.allow_network")
 	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
 		t.Fatalf("dock panel = %T, want settings browser", m.dock.Panel())
 	}
 
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
-	m = updated.(Model)
-	if cmd != nil {
-		t.Fatal("expected nil cmd when save is blocked by busy turn")
+	// Toggle while an agent turn is active: the edit must apply in memory
+	// even though persistence is blocked, and a blocked receipt is emitted.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	if !m.state.Config.Tools.Shell.AllowNetwork {
+		t.Fatal("blocked browser edit must keep the change in memory")
 	}
-	if m.state.Config.Tools.Shell.AllowNetwork {
-		t.Fatal("blocked browser change must not update the live config")
+	if !m.configSavePending {
+		t.Fatal("blocked browser edit must mark config save pending")
+	}
+	msgs := m.state.Messages()
+	last := msgs[len(msgs)-1].Content
+	if !strings.Contains(last, "✗") || !strings.Contains(last, "save blocked") {
+		t.Fatalf("blocked edit receipt = %q", last)
+	}
+
+	// Unblock by clearing busy state. The next browser message should retry
+	// the pending save automatically.
+	m.busy = false
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.configSavePending {
+		t.Fatal("successful unblock retry must clear pending flag")
+	}
+	last = m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.Contains(last, "✓") {
+		t.Fatalf("unblock retry receipt = %q", last)
+	}
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
+		WorkingDir: m.state.WorkingDir,
+	})
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if !loaded.Tools.Shell.AllowNetwork {
+		t.Fatal("unblock retry did not save the setting")
 	}
 }
 
@@ -3533,6 +3568,61 @@ func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
 	if m.state.Config.Tools.Shell.AllowNetwork != loaded.Tools.Shell.AllowNetwork {
 		t.Fatalf("m.state.Config (AllowNetwork=%v) diverges from what was saved to disk (AllowNetwork=%v)",
 			m.state.Config.Tools.Shell.AllowNetwork, loaded.Tools.Shell.AllowNetwork)
+	}
+}
+
+// TestSetRefreshesOpenBrowserRegression verifies that a /set applied while the
+// settings browser is docked refreshes the browser's registry and baseline,
+// so a later edit/save in the browser does not silently revert the /set change.
+func TestSetRefreshesOpenBrowserRegression(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+
+	// Open the browser filtered to a setting other than the one /set will touch.
+	m.openSettingsBrowser("privacy.redact_secrets")
+	browser, ok := m.dock.Panel().(*settings.BrowserPanel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
+	}
+	if got := browser.FilterValue(); got != "privacy.redact_secrets" {
+		t.Fatalf("browser filter = %q, want privacy.redact_secrets", got)
+	}
+
+	// Apply a /set mutation while the browser is open.
+	m.dispatchCommand("/set shell.allow_network on")
+
+	// The browser must still be open and must now reflect the post-/set config.
+	browser, ok = m.dock.Panel().(*settings.BrowserPanel)
+	if !ok {
+		t.Fatalf("dock panel = %T after /set, want *settings.BrowserPanel", m.dock.Panel())
+	}
+	if got := browser.FilterValue(); got != "privacy.redact_secrets" {
+		t.Fatalf("browser filter lost after /set = %q, want privacy.redact_secrets", got)
+	}
+
+	// Mutate a different setting through the browser; before the fix this save
+	// wrote the browser's stale pre-/set config back to disk.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+
+	if m.state.Config.Tools.Shell.AllowNetwork != true {
+		t.Fatal("/set shell.allow_network on was reverted by the browser save")
+	}
+	if m.state.Config.Privacy.RedactSecrets != false {
+		t.Fatal("browser toggle of privacy.redact_secrets did not apply")
+	}
+
+	loaded, err := config.Load(config.LoadOptions{
+		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
+		WorkingDir: m.state.WorkingDir,
+	})
+	if err != nil {
+		t.Fatalf("load saved project config: %v", err)
+	}
+	if !loaded.Tools.Shell.AllowNetwork {
+		t.Fatal("saved config reverted /set shell.allow_network on")
+	}
+	if loaded.Privacy.RedactSecrets {
+		t.Fatal("saved config did not reflect browser toggle of privacy.redact_secrets")
 	}
 }
 
@@ -3851,8 +3941,7 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 		{
 			name: "picker open",
 			block: func(m *Model) {
-				m.pickerModel = &picker.Model{}
-				m.dock.Open(m.pickerModel)
+				m.dock.Open(&picker.Model{})
 			},
 			reason: "Close the picker to save.",
 		},
@@ -4006,8 +4095,86 @@ func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	if m.setReg != nil {
 		t.Fatal("failed connect reload must invalidate the cached /set registry")
 	}
-	if m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
-		t.Fatal("test setup did not simulate a config swap before cleanup failure")
+	if m.state.Config.Agent.Provider != "ollama" || m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("failed connect reload must align m.state.Config, got %+v", m.state.Config.Agent)
+	}
+	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
+		t.Fatal("failed connect reload must align m.state.Config.Providers")
+	}
+}
+
+func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
+	m := newTestModel(t)
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+	m.settingsRegistry()
+	reloaded := false
+	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
+	})
+	m = updated.(Model)
+
+	if reloaded {
+		t.Fatal("save failure must not call configReloader")
+	}
+	if m.state.Config.Agent.Provider != "ollama" || m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("save failure must keep the new config in session, got %+v", m.state.Config.Agent)
+	}
+	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
+		t.Fatal("save failure must keep the new provider in session config")
+	}
+	if !m.configSavePending {
+		t.Fatal("save failure must mark config save pending")
+	}
+	if m.setReg != nil {
+		t.Fatal("save failure must invalidate the cached /set registry")
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to save model") {
+		t.Fatalf("save failure receipt = %q", got)
+	}
+}
+
+func TestConnectDoneSuccessReceiptHasCheckGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error { return nil }
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
+	})
+	m = updated.(Model)
+
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
+		t.Fatalf("connect success receipt = %q", got)
+	}
+}
+
+func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error { return errors.New("cleanup failed") }
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
+	})
+	m = updated.(Model)
+
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
+		t.Fatalf("connect reload failure receipt = %q", got)
 	}
 }
 
@@ -4045,7 +4212,79 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 		t.Fatal("failed model reload must invalidate the cached /set registry")
 	}
 	if m.state.Config.Profile.Default != "switched" {
-		t.Fatal("test setup did not simulate a config swap before cleanup failure")
+		t.Fatalf("failed model reload must align m.state.Config profile, got %q", m.state.Config.Profile.Default)
+	}
+	if switched, ok := m.state.Config.AgentProfiles["switched"]; !ok || switched.Roles[routing.RoleImplementer] != "fast" {
+		t.Fatal("failed model reload must align m.state.Config.AgentProfiles")
+	}
+}
+
+func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.state.WorkingDir = blockingPath
+	m.settingsRegistry()
+	reloaded := false
+	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
+
+	m.switchModelPreset("fast")
+
+	if reloaded {
+		t.Fatal("save failure must not call configReloader")
+	}
+	if m.state.Config.Profile.Default != "switched" {
+		t.Fatalf("save failure must keep the switched profile in session, got %q", m.state.Config.Profile.Default)
+	}
+	if switched, ok := m.state.Config.AgentProfiles["switched"]; !ok || switched.Roles[routing.RoleImplementer] != "fast" {
+		t.Fatal("save failure must keep the switched profile roles in session config")
+	}
+	if !m.configSavePending {
+		t.Fatal("save failure must mark config save pending")
+	}
+	if m.setReg != nil {
+		t.Fatal("save failure must invalidate the cached /set registry")
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to save model preset") {
+		t.Fatalf("save failure receipt = %q", got)
+	}
+}
+
+func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error { return nil }
+
+	m.switchModelPreset("fast")
+
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
+		t.Fatalf("preset switch success receipt = %q", got)
+	}
+}
+
+func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["fast"] = routing.ModelPreset{
+		Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b",
+	}
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(config.Config) error { return errors.New("cleanup failed") }
+
+	m.switchModelPreset("fast")
+
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
+		t.Fatalf("preset reload failure receipt = %q", got)
 	}
 }
 
@@ -4423,8 +4662,7 @@ func TestSettingsBlockReason(t *testing.T) {
 
 	t.Run("picker open", func(t *testing.T) {
 		m := New(state)
-		m.pickerModel = &picker.Model{}
-		m.dock.Open(m.pickerModel)
+		m.dock.Open(&picker.Model{})
 		want := "Close the picker to save."
 		if got := m.settingsBlockReason(); got != want {
 			t.Fatalf("settingsBlockReason = %q, want %q", got, want)

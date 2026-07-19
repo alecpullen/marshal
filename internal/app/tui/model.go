@@ -145,8 +145,9 @@ type Model struct {
 	discovered   map[string][]string
 
 	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
-	pickerModel   *picker.Model
-	pickerCommand string // which command opened the modal: "model", "mode", "branches", "rewind"
+	// The picker itself is hosted in m.dock; pickerCommand records which
+	// command opened it so PickedMsg can dispatch correctly.
+	pickerCommand string
 	dock          dock.Host
 
 	spinner           Spinner
@@ -346,6 +347,7 @@ func (m *Model) handleSetCommand(args []string) {
 		// correct filesystem permissions and retry without losing their edit.
 		if saveErr != nil {
 			m.applyNewConfig(reg.Config())
+			m.refreshOpenSettingsBrowser()
 			m.configSavePending = true
 			sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
 			return
@@ -360,11 +362,13 @@ func (m *Model) handleSetCommand(args []string) {
 				// fail (same contract as the settings.ChangedMsg handler).
 				// Keep all TUI-derived state aligned with that live config.
 				m.applyNewConfig(reg.Config())
+				m.refreshOpenSettingsBrowser()
 				sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
 				return
 			}
 		}
 		m.applyNewConfig(reg.Config())
+		m.refreshOpenSettingsBrowser()
 		if !change.Changed {
 			sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, path)))
 			return
@@ -388,6 +392,17 @@ func (m *Model) openSettingsBrowser(query string) {
 	// BrowserPanel.SetSavePending and flushChanges).
 	browser.SetSavePending(m.configSavePending)
 	m.dock.Open(browser)
+}
+
+// refreshOpenSettingsBrowser rebuilds an open settings browser from the
+// current session config so that a preceding /set (or other external config
+// change) isn't reverted by the next browser edit/save. The filter query is
+// preserved; cursor and drill stack are reset because field closures are bound
+// to the old registry's state.
+func (m *Model) refreshOpenSettingsBrowser() {
+	if browser, ok := m.dock.Panel().(*settings.BrowserPanel); ok {
+		m.openSettingsBrowser(browser.FilterValue())
+	}
 }
 
 func New(state *session.State, opts ...Option) Model {
@@ -573,6 +588,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case settings.ChangedMsg:
+		if msg.BlockedReason != "" {
+			m.applyNewConfig(msg.Cfg)
+			m.configSavePending = true
+			for _, receipt := range msg.Receipts {
+				m.state.AddMessage(session.RoleSystem,
+					"✗ "+receipt+" · save blocked: "+msg.BlockedReason,
+					session.ContentTypePlain)
+			}
+			m.refreshViewport()
+			return m, nil
+		}
 		if msg.SaveErr != nil {
 			m.applyNewConfig(msg.Cfg)
 			m.configSavePending = true
@@ -642,15 +668,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// them. The browser itself is the dock panel, so it can safely handle
 	// every remaining message here.
 	if browser, ok := m.dock.Panel().(*settings.BrowserPanel); ok {
-		browser.SetSaveBlocked(m.settingsBlockReason())
-		return m, m.dock.Update(msg)
+		blockedCmd := browser.SetSaveBlocked(m.settingsBlockReason())
+		cmd := m.dock.Update(msg)
+		if blockedCmd != nil {
+			return m, tea.Batch(blockedCmd, cmd)
+		}
+		return m, cmd
 	}
 
-	// pickerModel is pointer-updated: m.pickerModel.Update(msg) mutates
-	// the picker in place via its embedded pointer, and returns the same
-	// *picker.Model. We forward the returned command but discard the
-	// model — assigning back is a no-op. The picker keeps its own
-	// state.
+	// Picker messages: the picker itself lives in m.dock and is updated
+	// through the dock. We only handle the terminal messages here.
 	switch pm := msg.(type) {
 	case connect.DoneMsg:
 		m.applyConnectDone(pm)
@@ -679,7 +706,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case picker.PickedMsg:
 		cmdName := m.pickerCommand
-		m.pickerModel = nil
 		m.dock.CloseNow()
 		m.pickerCommand = ""
 		switch {
@@ -699,15 +725,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case cmdName == "mode":
 			return m.dispatchCommand("/" + pm.Value)
 		case cmdName == "sdd-plan":
-			// Close the picker, dispatch /sdd with the picked path.
-			m.pickerModel = nil
-			m.dock.CloseNow()
+			// Dock already closed above; dispatch /sdd with the picked path.
 			return m.dispatchCommand("/sdd " + pm.Value)
 		default:
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
 	case picker.CancelledMsg:
-		m.pickerModel = nil
 		m.dock.CloseNow()
 		m.pickerCommand = ""
 		m.refreshViewport()
@@ -2122,7 +2145,6 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	if prefilter != "" {
 		p.SetFilter(prefilter)
 	}
-	m.pickerModel = p
 	m.dock.Open(p)
 	m.pickerCommand = cmdName
 }
@@ -2225,7 +2247,6 @@ func (m *Model) openSDDPlanPicker() {
 	}
 	p := picker.New("Pick a plan", "SDD workflow", items)
 	p.SetAllowCustom(true)
-	m.pickerModel = p
 	m.dock.Open(p)
 	m.pickerCommand = "sdd-plan"
 }
@@ -2253,36 +2274,46 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	newCfg.Agent.Provider = msg.Provider
 	newCfg.Agent.Model = msg.Model
 	newCfg.Profile.Default = ""
+
+	// Persist before asking the runtime to reload so a save failure never
+	// leaves m.state.Config stale while the runtime already installed newCfg.
+	path := projectConfigPath(m.state.WorkingDir)
+	if err := config.SaveProjectConfig(path, newCfg); err != nil {
+		// Keep the in-memory change so the user can correct the filesystem
+		// issue and retry without losing their edit.
+		m.applyNewConfig(newCfg)
+		m.configSavePending = true
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model: %v", err), session.ContentTypePlain)
+		return
+	}
+	m.configSavePending = false
+
 	if m.configReloader != nil {
 		// reloadAgentRuntime may install newCfg before reporting a cleanup
 		// error; invalidate config-derived state before attempting it.
 		m.setReg = nil
 		if err := m.configReloader(newCfg); err != nil {
-			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
+			// The runtime has already swapped cfg before cleanup can fail.
+			// Keep all TUI-derived state aligned with that live config.
+			m.applyNewConfig(newCfg)
+			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", err), session.ContentTypePlain)
 			return
 		}
 	}
-	if err := config.SaveProjectConfig(projectConfigPath(m.state.WorkingDir), newCfg); err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to save model: %v", err), session.ContentTypePlain)
-		return
-	}
-	m.configSavePending = false
 	m.applyNewConfig(newCfg)
 	m.state.AddMessage(session.RoleSystem,
-		fmt.Sprintf("Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
+		fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
 }
 
-// switchModelPreset applies a session-only model switch by routing every
-// role of a synthetic "switched" profile at the preset. Nothing is written
-// to config files; /settings owns persistence.
+// switchModelPreset applies a model switch by routing every role of a
+// synthetic "switched" profile at the preset. The change is persisted before
+// the runtime is asked to reload, matching the /set and settings.ChangedMsg
+// contracts.
 func (m *Model) switchModelPreset(presetName string) {
-	if m.configReloader == nil {
-		return
-	}
 	newCfg := m.state.Config
 	preset, ok := newCfg.Models.Presets[presetName]
 	if !ok {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown preset: %s", presetName), session.ContentTypePlain)
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Unknown preset: %s", presetName), session.ContentTypePlain)
 		return
 	}
 	newCfg.Profile.Default = "switched"
@@ -2296,14 +2327,37 @@ func (m *Model) switchModelPreset(presetName string) {
 			},
 		},
 	}
+
+	// Persist before asking the runtime to reload so a save failure never
+	// leaves m.state.Config stale while the runtime already installed newCfg.
+	path := projectConfigPath(m.state.WorkingDir)
+	if err := config.SaveProjectConfig(path, newCfg); err != nil {
+		// Keep the in-memory change so the user can correct the filesystem
+		// issue and retry without losing their edit.
+		m.applyNewConfig(newCfg)
+		m.configSavePending = true
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
+		return
+	}
+	m.configSavePending = false
+
+	if m.configReloader == nil {
+		m.applyNewConfig(newCfg)
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
+		return
+	}
+
 	// reloadAgentRuntime may install newCfg before reporting a cleanup
 	// error; invalidate config-derived state before attempting it.
 	m.setReg = nil
 	if err := m.configReloader(newCfg); err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to switch model: %v", err), session.ContentTypePlain)
+		// The runtime has already swapped cfg before cleanup can fail.
+		// Keep all TUI-derived state aligned with that live config.
+		m.applyNewConfig(newCfg)
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", err), session.ContentTypePlain)
 	} else {
 		m.applyNewConfig(newCfg)
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
 	}
 }
 

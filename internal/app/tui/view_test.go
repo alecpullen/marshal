@@ -540,6 +540,23 @@ func TestNormalViewRendersAtMinSize(t *testing.T) {
 	}
 }
 
+// No full-screen takeover survives: with a dock panel open, the title
+// bar, transcript, input, footer, and status line are all still present.
+func TestNoFullScreenTakeovers(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.openSettingsBrowser("")
+	out := stripANSI(m.viewString())
+	for _, want := range []string{"marshal", "Settings"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("frame missing %q while dock open", want)
+		}
+	}
+	if got := strings.Count(out, "\n") + 1; got != 40 {
+		t.Errorf("frame height %d, want 40", got)
+	}
+}
+
 // newViewTestModelWithRegistry builds a model with a small in-memory
 // commands registry. Used by F18 completion tests that need a real
 // /command source to fuzzy-filter against.

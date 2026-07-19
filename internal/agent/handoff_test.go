@@ -20,7 +20,7 @@ func TestSummarizeAndContinueRebuildsMessages(t *testing.T) {
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
 	old := []schema.ChatMessage{
-		BuildSystemPrompt(RoleGeneral, nil, nil, nil),
+		BuildSystemPrompt(RoleGeneral, nil, nil, nil, false),
 		{Role: schema.RoleUser, Content: "fix the bug"},
 		{Role: schema.RoleUser, Content: "Tool file.read result: huge old output"},
 	}

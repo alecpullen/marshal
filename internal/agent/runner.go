@@ -966,17 +966,13 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 	return chatResult{}, lastErr
 }
 
-func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeToolsOpt ...bool) (chatResult, error) {
+func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
 	if r.RequestTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.RequestTimeout)
 		defer cancel()
 	}
 
-	includeNativeTools := true
-	if len(includeNativeToolsOpt) > 0 {
-		includeNativeTools = includeNativeToolsOpt[0]
-	}
 	var tools []schema.ToolDefinition
 	if r.NativeTools {
 		if includeNativeTools {

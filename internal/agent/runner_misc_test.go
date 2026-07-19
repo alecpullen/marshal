@@ -80,7 +80,7 @@ func TestChatOnceRoutesThinkingDeltasToStateAndReturnsAnswerText(t *testing.T) {
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
-	res, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+	res, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)
 	if err != nil {
 		t.Fatalf("chatOnce returned error: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestChatOnceEndsStreamingEvenOnProviderError(t *testing.T) {
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
-	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)
 	if err == nil {
 		t.Fatal("chatOnce returned nil error, want the provider error")
 	}
@@ -532,7 +532,7 @@ func TestChatOnceTimesOutPerRequest(t *testing.T) {
 	runner.RequestTimeout = 50 * time.Millisecond
 
 	start := time.Now()
-	_, err := runner.chatOnce(context.Background(), &blockingProvider{}, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+	_, err := runner.chatOnce(context.Background(), &blockingProvider{}, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -603,7 +603,7 @@ func TestRunnerChatOnceSetsThinkingActivity(t *testing.T) {
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
-	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+	_, err := runner.chatOnce(context.Background(), p, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)
 	if err != nil {
 		t.Fatalf("chatOnce returned error: %v", err)
 	}

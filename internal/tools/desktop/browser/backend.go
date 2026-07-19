@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"time"
 )
 
 type BrowserBackend interface {
@@ -16,14 +15,11 @@ type PageHandle interface {
 	Title(ctx context.Context) (string, error)
 	URL(ctx context.Context) (string, error)
 	Text(ctx context.Context, selector string) (string, error)
-	HTML(ctx context.Context, selector string) (string, error)
 	ReadableText(ctx context.Context) (string, error)
 	Click(ctx context.Context, selector string) error
 	Fill(ctx context.Context, selector, value string) error
 	PressKey(ctx context.Context, key string) error
 	Submit(ctx context.Context, selector string) error
-	WaitForSelector(ctx context.Context, selector string, timeout time.Duration) error
-	WaitForLoadState(ctx context.Context, state string) error
 	Screenshot(ctx context.Context, opts ScreenshotOpts) ([]byte, error)
 	Close() error
 }

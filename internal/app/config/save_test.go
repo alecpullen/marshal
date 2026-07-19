@@ -551,3 +551,24 @@ func TestSaveProjectConfigPreservesAgentProfiles(t *testing.T) {
 		t.Errorf("agent_profiles dropped by save: implementer=%q want %q", got, "fast")
 	}
 }
+
+func TestSaveProjectConfigRoundTripsMCPServerTrust(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.MCP.Servers = map[string]MCPServerConfig{
+		"local": {Command: "node", Trust: "unrestricted"},
+	}
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.MCP.Servers["local"].Trust; got != "unrestricted" {
+		t.Fatalf("round-tripped trust = %q, want unrestricted", got)
+	}
+}

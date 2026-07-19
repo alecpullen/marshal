@@ -174,7 +174,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 	if file.MCP != nil || !reflect.DeepEqual(cfg.MCP, def.MCP) {
 		servers := map[string]fileMCPServer{}
 		for name, srv := range cfg.MCP.Servers {
-			servers[name] = fileMCPServer{Command: ptr(srv.Command), Args: srv.Args, Env: srv.Env}
+			servers[name] = fileMCPServer{Command: ptr(srv.Command), Args: srv.Args, Env: srv.Env, Trust: ptr(srv.Trust)}
 		}
 		file.MCP = &fileMCP{
 			Servers:                  servers,

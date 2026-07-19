@@ -740,6 +740,27 @@ env = { KEY = "VALUE" }
 	}
 }
 
+func TestMCPConfigParsesServerTrust(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[mcp.servers.local]
+command = "node"
+trust = "unrestricted"
+`)
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	srv, ok := cfg.MCP.Servers["local"]
+	if !ok {
+		t.Fatal("local server config missing")
+	}
+	if srv.Trust != "unrestricted" {
+		t.Errorf("trust = %q, want unrestricted (was silently discarded)", srv.Trust)
+	}
+}
+
 func TestHasConfig(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

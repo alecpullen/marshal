@@ -22,10 +22,10 @@ type scriptedRouteResolver struct {
 	routes    []routing.Route
 	providers []provider.Provider
 	errs      []error
-	tasks     []routing.TaskProfile
+	tasks     []string
 }
 
-func (r *scriptedRouteResolver) Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error) {
+func (r *scriptedRouteResolver) Resolve(task string) (routing.Route, provider.Provider, error) {
 	r.tasks = append(r.tasks, task)
 	if len(r.errs) > 0 {
 		err := r.errs[0]
@@ -96,7 +96,7 @@ type staticResolver struct {
 	provider provider.Provider
 }
 
-func (s *staticResolver) Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error) {
+func (s *staticResolver) Resolve(class string) (routing.Route, provider.Provider, error) {
 	return s.route, s.provider, nil
 }
 

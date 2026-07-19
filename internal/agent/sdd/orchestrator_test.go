@@ -115,8 +115,8 @@ func TestOrchestratorSkipsBranchReviewOnEmptyDiff(t *testing.T) {
 
 	var calls []agent.AgentRole
 	factory := trackingFactory(map[agent.AgentRole]string{
-		agent.RoleSDDImplementer:    "DONE\ncommits: abc1234\ntests: 5/5 passing",
-		agent.RoleSDDReviewer:       "### Spec Compliance\n- ✅ Spec compliant\n\n### Assessment\n**Task quality:** Approved",
+		agent.RoleSDDImplementer: "DONE\ncommits: abc1234\ntests: 5/5 passing",
+		agent.RoleSDDReviewer:    "### Spec Compliance\n- ✅ Spec compliant\n\n### Assessment\n**Task quality:** Approved",
 	}, &calls)
 	o := New(state, factory, config.SDDConfig{MaxFixRounds: 3})
 	if err := o.Run(context.Background(), planPath); err != nil {

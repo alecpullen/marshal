@@ -24,7 +24,7 @@ import (
 // *routedProviderResolver constructed in internal/app/app.go satisfies
 // both without either package importing the other.
 type RouteResolver interface {
-	Resolve(task routing.TaskProfile) (routing.Route, provider.Provider, error)
+	Resolve(class string) (routing.Route, provider.Provider, error)
 }
 
 type EndSessionInput struct {
@@ -54,7 +54,7 @@ func EndSession(ctx context.Context, in EndSessionInput) {
 		now = time.Now
 	}
 
-	route, p, err := in.RouteResolver.Resolve(routing.TaskProfile{Class: "knowledge"})
+	route, p, err := in.RouteResolver.Resolve("knowledge")
 	if err != nil {
 		in.Logger.Error("knowledge: resolve route failed", "error", err, "session_id", in.SessionID)
 		return

@@ -564,7 +564,7 @@ func TestRunResolvesQuestionRouteAndUpdatesModel(t *testing.T) {
 	if err := runner.Run(context.Background(), "What does this project do?"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if len(resolver.tasks) != 1 || resolver.tasks[0].Class != "question" {
+	if len(resolver.tasks) != 1 || resolver.tasks[0] != "question" {
 		t.Fatalf("resolved tasks = %#v", resolver.tasks)
 	}
 	if p.Requests[0].Model != "fast-model" {

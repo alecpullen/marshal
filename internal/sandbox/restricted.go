@@ -162,14 +162,6 @@ func (r *Restricted) buildEnv() []string {
 	return filtered
 }
 
-func allowSet(keys []string) map[string]bool {
-	m := make(map[string]bool, len(keys))
-	for _, k := range keys {
-		m[k] = true
-	}
-	return m
-}
-
 func denySet(keys []string) map[string]bool {
 	m := make(map[string]bool, len(keys))
 	for _, k := range keys {

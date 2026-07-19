@@ -16,17 +16,4 @@ func runWithTimeout(ctx context.Context, req native.CommandRequest) (context.Con
 	return ctx, func() {}
 }
 
-// killedReason returns a short string explaining why a command terminated
-// early based on the error and context state.
-func killedReason(err error, ctx context.Context) string {
-	if err == nil {
-		return ""
-	}
-	if ctx.Err() == context.DeadlineExceeded {
-		return "timeout"
-	}
-	if ctx.Err() == context.Canceled {
-		return "cancelled"
-	}
-	return err.Error()
-}
+

@@ -188,26 +188,19 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 			shellFree = false
 		}
 	}
+	var inner []string
 	if shellFree {
-		cmdArgs := strings.Fields(command)
-		if c.cfg.CPUSeconds > 0 {
-			args = append(args,
-				"timeout", "--preserve-status", "-s", "KILL",
-				strconv.Itoa(c.cfg.CPUSeconds),
-			)
-		}
-		args = append(args, cmdArgs...)
+		inner = strings.Fields(command)
 	} else {
-		if c.cfg.CPUSeconds > 0 {
-			args = append(args,
-				"timeout", "--preserve-status", "-s", "KILL",
-				strconv.Itoa(c.cfg.CPUSeconds),
-				"/bin/sh", "-lc", command,
-			)
-		} else {
-			args = append(args, "/bin/sh", "-lc", command)
-		}
+		inner = []string{"/bin/sh", "-lc", command}
 	}
+	if c.cfg.CPUSeconds > 0 {
+		args = append(args,
+			"timeout", "--preserve-status", "-s", "KILL",
+			strconv.Itoa(c.cfg.CPUSeconds),
+		)
+	}
+	args = append(args, inner...)
 	return args
 }
 

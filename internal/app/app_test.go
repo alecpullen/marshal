@@ -107,7 +107,7 @@ func TestRunSkipsProgramAndConfigLoadWhenContextIsCancelled(t *testing.T) {
 
 	runnerCalled := false
 	loaderCalled := false
-	err = Run(ctx, bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(ctx, bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			loaderCalled = true
@@ -143,7 +143,7 @@ func TestRunStartsProgram(t *testing.T) {
 	stdout := bytes.NewBuffer(nil)
 
 	called := false
-	err = Run(context.Background(), stdout, bytes.NewBuffer(nil),
+	err = Run(context.Background(), stdout,
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
@@ -183,7 +183,7 @@ func TestRunPassesAppContextToRunner(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(ctx, bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+		errCh <- Run(ctx, bytes.NewBuffer(nil),
 			WithNow(func() time.Time { return time.Unix(100, 0) }),
 			WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 				return config.Default(), nil
@@ -229,7 +229,7 @@ func TestWithProgramRunnerNilLeavesRunnerConfigurable(t *testing.T) {
 
 	called := false
 
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
@@ -903,7 +903,7 @@ func TestRunReturnsInjectedConfigLoadError(t *testing.T) {
 
 	wantErr := errors.New("load failed")
 
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Config{}, wantErr
@@ -945,7 +945,7 @@ func TestRunCreatesDatabase(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = Run(ctx, bytes.NewBuffer(nil), bytes.NewBuffer(nil), WithNow(func() time.Time {
+	err = Run(ctx, bytes.NewBuffer(nil), WithNow(func() time.Time {
 		return time.Unix(1000, 0)
 	}), WithProgramRunner(runner), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
@@ -989,7 +989,7 @@ func TestRunLogsToFileNotTerminal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = Run(ctx, stdout, stderr, WithNow(func() time.Time {
+	err = Run(ctx, stdout, WithNow(func() time.Time {
 		return time.Unix(1000, 0)
 	}), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
 		return nil
@@ -1024,7 +1024,7 @@ func TestRunDisplaysInactiveRouteWhenNoProviderConfigured(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	var view string
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
@@ -1062,7 +1062,7 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 	}
 
 	var view string
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return cfg, nil
@@ -1097,7 +1097,7 @@ func TestRunTriggersKnowledgeEndSessionButSkipsWithNoMessages(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	now := time.Unix(100, 0)
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return now }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
@@ -1138,7 +1138,7 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	var view string
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
@@ -1179,7 +1179,7 @@ func TestRunUsesLiveConfigForShutdownKnowledgePass(t *testing.T) {
 	initialCfg := knowledgeEnabledConfig(oldServer.URL, "old-provider")
 	reloadedCfg := knowledgeEnabledConfig(newServer.URL, "new-provider")
 
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return now }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return initialCfg, nil
@@ -1232,7 +1232,7 @@ func TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession(t *testing.T) {
 
 	now := time.Unix(100, 0)
 	wantErr := errors.New("program runner failed")
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return now }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
@@ -1292,7 +1292,7 @@ func TestRunBoundsShutdownKnowledgePass(t *testing.T) {
 	defer func() { shutdownKnowledgeTimeout = previousTimeout }()
 
 	start := time.Now()
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return now }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
@@ -1521,10 +1521,9 @@ security_reviewer = "mock_preset"
 	}
 
 	stdout := bytes.NewBuffer(nil)
-	stderr := bytes.NewBuffer(nil)
 
 	called := false
-	err = Run(context.Background(), stdout, stderr,
+	err = Run(context.Background(), stdout,
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
@@ -1608,7 +1607,7 @@ func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
 		close(knowledgeRan)
 	}
 
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return now }),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithProgramRunner(programRunner),
@@ -2192,7 +2191,7 @@ func TestRunDistinguishesOnboardingCancelled(t *testing.T) {
 		return nil
 	}
 
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithSkipOnboarding(false),
 		WithOnboardingProgramRunner(onboardingRunner),
@@ -2276,7 +2275,7 @@ func TestRunResolvesOptionsOnce(t *testing.T) {
 		applyCount++
 	}
 
-	err = Run(context.Background(), bytes.NewBuffer(nil), bytes.NewBuffer(nil),
+	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil

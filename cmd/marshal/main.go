@@ -24,5 +24,5 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if len(args) > 0 && args[0] == "acp" {
 		return acpRunner(ctx, stdin, stdout, stderr)
 	}
-	return appRunner(ctx, stdout, stderr)
+	return appRunner(ctx, stdout)
 }

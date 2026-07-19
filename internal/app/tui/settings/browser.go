@@ -70,6 +70,19 @@ func NewBrowser(cfg config.Config, cfgPath, query string) *BrowserPanel {
 // decision is active. The parent updates this before forwarding a key.
 func (b *BrowserPanel) SetSaveBlocked(reason string) { b.saveBlocked = reason }
 
+// SetSavePending seeds the browser's retry-on-repeated-commit state (see
+// flushChanges) for a freshly constructed panel. It exists because the
+// browser's own baseline/savePending pair only tracks failures that happen
+// during its own lifetime: cfg passed to NewBrowser may already carry an
+// unsaved change left behind by a previous, now-discarded BrowserPanel (or by
+// /set) — applyNewConfig keeps the session's live config advanced to that
+// value even on save failure so the edit isn't lost. Without this, baseline
+// is cloned from that already-advanced cfg, diffs empty immediately, and
+// savePending starts false, so a commit that repeats the same value silently
+// no-ops instead of retrying the save — the caller must call this right
+// after NewBrowser whenever it knows persistence is still pending.
+func (b *BrowserPanel) SetSavePending(pending bool) { b.savePending = pending }
+
 func (b *BrowserPanel) matchedFields() []*field {
 	query := strings.TrimSpace(b.filter.Value())
 	fields := make([]*field, 0)

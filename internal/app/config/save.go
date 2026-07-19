@@ -213,8 +213,8 @@ func SaveProjectConfig(path string, cfg Config) error {
 		for name, p := range cfg.Models.Presets {
 			file.Models.Presets[name] = modelPresetConfig{
 				Provider: p.Provider, Model: p.Model, ContextWindow: p.ContextWindow,
-				MaxOutputTokens: p.MaxOutputTokens, Temperature: p.Temperature, TopP: p.TopP,
-				ToolCalling: p.ToolCalling, ReasoningEffort: p.ReasoningEffort, LocalOnly: p.LocalOnly,
+				MaxOutputTokens: p.MaxOutputTokens,
+				ToolCalling: p.ToolCalling, LocalOnly: p.LocalOnly,
 			}
 		}
 	}

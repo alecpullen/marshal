@@ -44,15 +44,12 @@ type AgentRoleConfig struct {
 }
 
 type modelPresetConfig struct {
-	Provider        string  `toml:"provider"`
-	Model           string  `toml:"model"`
-	ContextWindow   int     `toml:"context_window"`
-	MaxOutputTokens int     `toml:"max_output_tokens"`
-	Temperature     float64 `toml:"temperature"`
-	TopP            float64 `toml:"top_p"`
-	ToolCalling     string  `toml:"tool_calling"`
-	ReasoningEffort string  `toml:"reasoning_effort"`
-	LocalOnly       bool    `toml:"local_only"`
+	Provider        string `toml:"provider"`
+	Model           string `toml:"model"`
+	ContextWindow   int    `toml:"context_window"`
+	MaxOutputTokens int    `toml:"max_output_tokens"`
+	ToolCalling     string `toml:"tool_calling"`
+	LocalOnly       bool   `toml:"local_only"`
 }
 
 type contextBudgetConfig struct {
@@ -751,10 +748,7 @@ func presetFromConfig(name string, in modelPresetConfig) routing.ModelPreset {
 		Model:           in.Model,
 		ContextWindow:   in.ContextWindow,
 		MaxOutputTokens: in.MaxOutputTokens,
-		Temperature:     in.Temperature,
-		TopP:            in.TopP,
 		ToolCalling:     in.ToolCalling,
-		ReasoningEffort: in.ReasoningEffort,
 		LocalOnly:       in.LocalOnly,
 	}
 }

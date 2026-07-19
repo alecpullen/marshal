@@ -18,13 +18,6 @@ type Pack struct {
 	Sections    []Section
 	TokenUsage  TokenUsage
 	GeneratedAt time.Time
-
-	// Pinned tracks @file references accepted by the F18 editor
-	// completion popup. The runner extracts these from the user's goal
-	// and adds them via PinFiles; the pinned sections are appended to
-	// pack.Sections with a high Priority so they survive a token-budget
-	// rebudget (the user explicitly asked for the file's content).
-	Pinned []FileSnippet
 }
 
 type Section struct {
@@ -42,26 +35,11 @@ type TokenUsage struct {
 	Truncated       bool
 }
 
-type BuildInput struct {
-	RepoCard         string
-	FileSnippets     []FileSnippet
-	RecentToolOutput []ToolOutput
-	Plan             []string
-	MaxTokens        int
-	Now              func() time.Time
-}
-
 type FileSnippet struct {
 	Path      string
 	StartLine int
 	EndLine   int
 	Content   string
-}
-
-type ToolOutput struct {
-	ToolName string
-	Summary  string
-	Content  string
 }
 
 // MemoryNote is contextpack's own view of a durable memory — just enough

@@ -234,16 +234,7 @@ func TestRunTaskPinsAtFileReferences(t *testing.T) {
 		t.Fatalf("RunTask: %v", err)
 	}
 	pack := state.ContextPack()
-	if len(pack.Pinned) != 1 {
-		t.Fatalf("pack.Pinned = %+v, want 1 snippet", pack.Pinned)
-	}
-	if pack.Pinned[0].Path != "ref.go" {
-		t.Fatalf("pinned path = %q, want ref.go", pack.Pinned[0].Path)
-	}
-	if !strings.Contains(pack.Pinned[0].Content, "MARKER: ref-go-file") {
-		t.Fatalf("pinned content missing file body: %q", pack.Pinned[0].Content)
-	}
-	// The pinned section must also be present in the pack's Sections.
+	// The pinned section must be present in the pack's Sections.
 	found := false
 	for _, sec := range pack.Sections {
 		if sec.Kind == "file_snippet" && sec.Source == "ref.go" && sec.Priority == 100 {
@@ -253,6 +244,17 @@ func TestRunTaskPinsAtFileReferences(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("pinned file_snippet section with Priority 100 not found in pack sections")
+	}
+	// The content must be present in at least one section.
+	contentFound := false
+	for _, sec := range pack.Sections {
+		if strings.Contains(sec.Content, "MARKER: ref-go-file") {
+			contentFound = true
+			break
+		}
+	}
+	if !contentFound {
+		t.Fatalf("no section contains the pinned file body")
 	}
 }
 
@@ -313,8 +315,16 @@ func TestRunTaskPinsAtFileReferencesFromDrainedSteering(t *testing.T) {
 		t.Fatalf("second provider request missing steered file content:\n%v", p.Requests[1].Messages)
 	}
 	pack := state.ContextPack()
-	if len(pack.Pinned) != 1 || pack.Pinned[0].Path != "steered.go" {
-		t.Fatalf("pack.Pinned = %+v, want steered.go", pack.Pinned)
+	// Must have content in at least one section.
+	contentFound := false
+	for _, sec := range pack.Sections {
+		if strings.Contains(sec.Content, "MARKER: steered-go-file") {
+			contentFound = true
+			break
+		}
+	}
+	if !contentFound {
+		t.Fatalf("no section contains the steered file content")
 	}
 }
 

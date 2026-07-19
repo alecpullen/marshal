@@ -459,25 +459,10 @@ type configFile struct {
 	Diagnostics *fileDiagnostics `toml:"diagnostics"`
 	Hooks       *fileHooks       `toml:"hooks"`
 	// Providers stays a plain map: nil already distinguishes absent/present.
-	Providers     map[string]ProviderConfig            `toml:"providers"`
-	Models        *fileModels                          `toml:"models"`
-	AgentProfiles map[string]agentProfileConfig        `toml:"agent_profiles"`
-	Agents        map[routing.AgentRole]fileAgentEntry `toml:"agents"`
-}
-
-type agentProfileConfig struct {
-	Router            string `toml:"router"`
-	Knowledge         string `toml:"knowledge"`
-	Summarizer        string `toml:"summarizer"`
-	RepoScout         string `toml:"repo_scout"`
-	Tester            string `toml:"tester"`
-	Planner           string `toml:"planner"`
-	Implementer       string `toml:"implementer"`
-	Reviewer          string `toml:"reviewer"`
-	SecurityReviewer  string `toml:"security_reviewer"`
-	SDDImplementer    string `toml:"sdd_implementer"`
-	SDDReviewer       string `toml:"sdd_reviewer"`
-	SDDBranchReviewer string `toml:"sdd_branch_reviewer"`
+	Providers     map[string]ProviderConfig               `toml:"providers"`
+	Models        *fileModels                             `toml:"models"`
+	AgentProfiles map[string]map[routing.AgentRole]string `toml:"agent_profiles"`
+	Agents        map[routing.AgentRole]fileAgentEntry    `toml:"agents"`
 }
 
 func Default() Config {
@@ -671,47 +656,6 @@ func loadFile(path string) (configFile, error) {
 	return file, nil
 }
 
-func profileFromConfig(name string, in agentProfileConfig) routing.AgentProfile {
-	roles := map[routing.AgentRole]string{}
-	if in.Router != "" {
-		roles[routing.RoleRouter] = in.Router
-	}
-	if in.Knowledge != "" {
-		roles[routing.RoleKnowledge] = in.Knowledge
-	}
-	if in.Summarizer != "" {
-		roles[routing.RoleSummarizer] = in.Summarizer
-	}
-	if in.RepoScout != "" {
-		roles[routing.RoleRepoScout] = in.RepoScout
-	}
-	if in.Tester != "" {
-		roles[routing.RoleTester] = in.Tester
-	}
-	if in.Planner != "" {
-		roles[routing.RolePlanner] = in.Planner
-	}
-	if in.Implementer != "" {
-		roles[routing.RoleImplementer] = in.Implementer
-	}
-	if in.Reviewer != "" {
-		roles[routing.RoleReviewer] = in.Reviewer
-	}
-	if in.SecurityReviewer != "" {
-		roles[routing.RoleSecurityReviewer] = in.SecurityReviewer
-	}
-	if in.SDDImplementer != "" {
-		roles[routing.RoleSDDImplementer] = in.SDDImplementer
-	}
-	if in.SDDReviewer != "" {
-		roles[routing.RoleSDDReviewer] = in.SDDReviewer
-	}
-	if in.SDDBranchReviewer != "" {
-		roles[routing.RoleSDDBranchReviewer] = in.SDDBranchReviewer
-	}
-	return routing.AgentProfile{Name: name, Roles: roles}
-}
-
 // set assigns *src to *dst when src is non-nil. It collapses the
 // nullable-mirror merge stanzas to one line per field.
 func set[T any](dst *T, src *T) {
@@ -785,8 +729,8 @@ func merge(cfg *Config, file configFile) error {
 		if cfg.AgentProfiles == nil {
 			cfg.AgentProfiles = map[string]routing.AgentProfile{}
 		}
-		for name, profile := range file.AgentProfiles {
-			cfg.AgentProfiles[name] = profileFromConfig(name, profile)
+		for name, roles := range file.AgentProfiles {
+			cfg.AgentProfiles[name] = routing.AgentProfile{Name: name, Roles: roles}
 		}
 	}
 	if file.Agents != nil {

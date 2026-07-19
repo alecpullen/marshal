@@ -926,3 +926,27 @@ background_retention = "banana"
 		t.Fatalf("error = %v, want it to name the user config path", err)
 	}
 }
+
+// TestAgentProfilesDecodeRoleKeys verifies that agent_profiles decode
+// arbitrary AgentRole keys directly, without a fixed struct. A role
+// added after the old 12-field struct (e.g. sdd_branch_reviewer) must
+// still decode correctly.
+func TestAgentProfilesDecodeRoleKeys(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[agent_profiles.mine]
+router = "fast"
+sdd_branch_reviewer = "big"
+`)
+	cfg, err := Load(LoadOptions{HomeDir: work, WorkingDir: work})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.AgentProfiles["mine"]
+	if p.Roles[routing.RoleRouter] != "fast" {
+		t.Errorf("router role = %q", p.Roles[routing.RoleRouter])
+	}
+	if p.Roles[routing.RoleSDDBranchReviewer] != "big" {
+		t.Errorf("sdd_branch_reviewer role = %q", p.Roles[routing.RoleSDDBranchReviewer])
+	}
+}

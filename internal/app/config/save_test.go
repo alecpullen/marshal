@@ -541,7 +541,7 @@ func TestSaveProjectConfigPreservesAgentProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadFile: %v", err)
 	}
-	if got := loadedFile.AgentProfiles["local_balanced"].Implementer; got != "fast" {
+	if got := loadedFile.AgentProfiles["local_balanced"][routing.RoleImplementer]; got != "fast" {
 		t.Errorf("agent_profiles dropped by save: implementer=%q want %q", got, "fast")
 	}
 }

@@ -791,19 +791,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		// Handled above; kept for exhaustiveness but unreachable.
-		return m, nil
-	case agentFinishedMsg:
-		return m.handleAgentFinished(msg)
-	case jobCountMsg:
-		return m.handleJobCount(msg)
-	case steeringMsg:
-		return m.handleSteering(msg)
-	case agentTickMsg:
-		return m.handleAgentTick(msg)
-	case spinnerTickMsg:
-		return m.handleSpinnerTick(msg)
 	case tea.KeyPressMsg:
 		// Global hotkeys — input is always focused. (Approval and question
 		// pending states are routed above, before this switch.)
@@ -2481,19 +2468,6 @@ func truncateRunes(s string, limit int) string {
 		return s
 	}
 	return string(runes[:limit])
-}
-
-// tailRunes returns the last limit runes of s (the most recent text),
-// unlike truncateRunes which keeps the first limit runes.
-func tailRunes(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= limit {
-		return s
-	}
-	return string(runes[len(runes)-limit:])
 }
 
 func visibleRunes(s string) int {

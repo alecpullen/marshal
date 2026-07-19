@@ -231,6 +231,53 @@ func TestClientReadLoopLogsScannerError(t *testing.T) {
 	}
 }
 
+// TestClientReadLoopHandlesOversizedLines reproduces the 64KB bufio limit:
+// a single MCP response larger than 64KB must be delivered, not poison the
+// client with bufio.ErrTooLong.
+func TestClientReadLoopHandlesOversizedLines(t *testing.T) {
+	big := strings.Repeat("x", 128*1024)
+	line := []byte(`{"jsonrpc":"2.0","id":1,"result":{"text":"` + big + `"}}` + "\n")
+
+	c := NewClient("test", "ignored", nil, nil)
+	c.stdin = &nopWriteCloser{}
+	ch := make(chan Response, 1)
+	c.pending[json.Number("1")] = ch
+	c.stdout = &oversizedLineReader{data: line}
+
+	c.wg.Add(1)
+	c.readLoop()
+
+	select {
+	case res := <-ch:
+		if res.Error != nil {
+			t.Fatalf("oversized line poisoned the client: %s", res.Error.Message)
+		}
+		if !strings.Contains(string(res.Result), big[:64]) {
+			t.Fatalf("oversized payload not delivered; result has %d bytes", len(res.Result))
+		}
+	default:
+		t.Fatal("no response delivered for oversized line")
+	}
+}
+
+// oversizedLineReader yields its whole payload (one giant JSON-RPC line),
+// then EOF.
+type oversizedLineReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *oversizedLineReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func (r *oversizedLineReader) Close() error { return nil }
+
 // nopWriteCloser is an io.WriteCloser that discards all writes.
 type nopWriteCloser struct{}
 

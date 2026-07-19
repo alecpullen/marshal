@@ -219,6 +219,10 @@ func (c *Client) write(v interface{}) error {
 func (c *Client) readLoop() {
 	defer c.wg.Done()
 	scanner := bufio.NewScanner(c.stdout)
+	// MCP tool results routinely exceed bufio's 64KB default token limit
+	// (file contents, DOM dumps). Without this, one oversized line ends the
+	// scan with ErrTooLong, poisons c.err, and kills the client permanently.
+	scanner.Buffer(make([]byte, 0, 64*1024), 16<<20)
 	for scanner.Scan() {
 		var res Response
 		if err := json.Unmarshal(scanner.Bytes(), &res); err != nil {

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const sampleUnified = `--- a/foo.go
@@ -122,6 +125,22 @@ func TestComputeEmphasisNoDiff(t *testing.T) {
 	le, re := computeEmphasis("same", "same")
 	if le != nil || re != nil {
 		t.Fatalf("expected nil emph for equal lines: %v %v", le, re)
+	}
+}
+
+// TestTruncateVisibleKeepsANSISequencesIntact: truncation must happen on
+// visible cells, not raw runes — slicing styled text by runes cuts through
+// escape sequences and bleeds color into the next column.
+func TestTruncateVisibleKeepsANSISequencesIntact(t *testing.T) {
+	plain := strings.Repeat("x", 100)
+	styled := "\x1b[38;5;196m" + plain + "\x1b[0m"
+
+	out := truncateVisible(styled, 40)
+	if w := lipgloss.Width(out); w > 40 {
+		t.Fatalf("visible width = %d, want <= 40", w)
+	}
+	if got := ansi.Strip(out); got != strings.Repeat("x", 40) {
+		t.Fatalf("visible text = %q, want %q", got, strings.Repeat("x", 40))
 	}
 }
 

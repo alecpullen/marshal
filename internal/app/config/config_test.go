@@ -626,12 +626,6 @@ reviewer = "coder"
 
 [agents.implementer.context]
 max_repo_context_tokens = 48000
-max_conversation_tokens = 8000
-include_raw_code = true
-include_summaries = true
-include_symbols = true
-include_diff = false
-include_tests = true
 `)
 
 	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
@@ -651,7 +645,7 @@ include_tests = true
 		t.Fatalf("profile roles = %#v", profile.Roles)
 	}
 	budget := cfg.Agents[routing.RoleImplementer].Context
-	if budget.MaxRepoContextTokens != 48000 || budget.MaxConversationTokens != 8000 || !budget.IncludeRawCode || !budget.IncludeTests {
+	if budget.MaxRepoContextTokens != 48000 {
 		t.Fatalf("budget = %#v", budget)
 	}
 }

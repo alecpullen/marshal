@@ -35,13 +35,7 @@ type AgentProfile struct {
 }
 
 type ContextBudget struct {
-	MaxRepoContextTokens  int
-	MaxConversationTokens int
-	IncludeRawCode        bool
-	IncludeSummaries      bool
-	IncludeSymbols        bool
-	IncludeDiff           bool
-	IncludeTests          bool
+	MaxRepoContextTokens int
 }
 
 type TaskProfile struct {

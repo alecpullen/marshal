@@ -201,6 +201,26 @@ func TestOnboardingProjectNameCustomValue(t *testing.T) {
 	}
 }
 
+func TestFetchOllamaModelsFallsBackOn404(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:14b"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	msg := fetchOllamaModels(ts.URL + "/v1")()
+	loaded, ok := msg.(ollamaModelsLoadedMsg)
+	if !ok {
+		t.Fatalf("expected ollamaModelsLoadedMsg, got %T", msg)
+	}
+	if len(loaded) != 1 || loaded[0] != "qwen2.5-coder:14b" {
+		t.Fatalf("models = %v", loaded)
+	}
+}
+
 func TestFetchOllamaModelsNon200Status(t *testing.T) {
 	// Start a test server that returns 500 with a JSON body.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

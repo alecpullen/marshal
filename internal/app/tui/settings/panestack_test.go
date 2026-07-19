@@ -21,8 +21,8 @@ func TestListDrillEditsSlice(t *testing.T) {
 	}
 
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill in
-	if ps.depth() != 2 {
-		t.Fatalf("enter should push the list frame, depth=%d", ps.depth())
+	if len(ps.stack) != 2 {
+		t.Fatalf("enter should push the list frame, depth=%d", len(ps.stack))
 	}
 	if got := ps.breadcrumb("Shell"); got != "Shell › Deny patterns" {
 		t.Fatalf("breadcrumb wrong: %q", got)
@@ -104,8 +104,8 @@ func TestEntriesDrillBuildsSubFrame(t *testing.T) {
 	ps.top().list.SetSize(60, 20)
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill into collection
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill into "local"
-	if ps.depth() != 3 {
-		t.Fatalf("expected depth 3, got %d", ps.depth())
+	if len(ps.stack) != 3 {
+		t.Fatalf("expected depth 3, got %d", len(ps.stack))
 	}
 	if got := ps.breadcrumb("Providers"); got != "Providers › Providers › local" {
 		t.Fatalf("breadcrumb wrong: %q", got)

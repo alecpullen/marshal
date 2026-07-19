@@ -128,8 +128,7 @@ func providersFrame(s *state) *frame {
 			},
 		})
 	f := rootDrillFrame("Providers", drill)
-	f.addWizard = providersWizard(s)
-	f.list.addWizard = f.addWizard
+	f.list.addWizard = providersWizard(s)
 	return f
 }
 
@@ -473,7 +472,7 @@ func testConnectionField(s *state, k string) *field {
 			if !probe.IsLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
 				return nil
 			}
-			s.actionState[fieldID] = actionState{pending: true, label: "\u2026"}
+			s.actionState[fieldID] = actionState{label: "\u2026"}
 			return probe.Provider(fieldID, k, pc)
 		},
 	}

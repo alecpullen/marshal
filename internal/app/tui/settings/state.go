@@ -8,39 +8,35 @@ import (
 )
 
 // state holds the single mutable working copy of the config that every
-// section pane binds to by pointer, plus an immutable snapshot used for
-// dirty detection. It is heap-allocated (Model stores *state) so pointer
-// bindings survive Model value copies.
+// section pane binds to by pointer. It is heap-allocated (Model stores
+// *state) so pointer bindings survive Model value copies.
 type state struct {
 	cfg                   config.Config
-	snapshot              config.Config
 	discovered            map[string][]string
 	actionState           map[string]actionState
 	wizardCreatedProvider string
 }
 
 type actionState struct {
-	pending bool
-	label   string
+	label string
 }
 
 func newState(cfg config.Config) *state {
 	working := cloneConfig(cfg)
 	return &state{
 		cfg:         working,
-		snapshot:    cloneConfig(working),
 		discovered:  map[string][]string{},
 		actionState: map[string]actionState{},
 	}
 }
 
 func (s *state) applyActionResult(fieldID, label string) {
-	s.actionState[fieldID] = actionState{pending: false, label: label}
+	s.actionState[fieldID] = actionState{label: label}
 }
 
 // cloneConfig deep-copies every map and slice reachable from cfg that the
 // settings panes can mutate, so edits to the working copy never leak into
-// the snapshot (or the caller's config).
+// the caller's config.
 func cloneConfig(cfg config.Config) config.Config {
 	out := cfg
 	out.Project.Languages = slices.Clone(cfg.Project.Languages)

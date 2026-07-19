@@ -70,10 +70,9 @@ type fieldList struct {
 	// picker overlay request picked up by the owning pane after Update
 	pushPicker *pickerRequest
 
-	// add-wizard picker for collection frames (set by frame.addWizard)
+	// add-wizard picker for collection frames (set by the field during add operations)
 	addWizard func() *pickerRequest
 
-	yankedID   string
 	yankedData any
 }
 
@@ -221,7 +220,6 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 		}
 	case "y":
 		if row != nil && row.yank != nil {
-			fl.yankedID = row.id
 			fl.yankedData = row.yank()
 		}
 		return nil
@@ -231,7 +229,6 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 				fl.errMsg = err.Error()
 			} else {
 				fl.committed = true
-				fl.yankedID = ""
 				fl.yankedData = nil
 				fl.Refresh()
 			}

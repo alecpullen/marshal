@@ -546,44 +546,6 @@ func TestEvaluate_DestructiveRequiresApproval(t *testing.T) {
 	}
 }
 
-// TestEvaluate_DestructiveFlagAffectsReason verifies that when
-// AllowDestructive is true, the reason includes "(flagged allowed)" but the
-// decision is still DecisionDeny (the user must still confirm at the TUI).
-func TestEvaluate_DestructiveFlagAffectsReason(t *testing.T) {
-	cfg := config.Default()
-	cfg.Tools.Shell.AllowDestructive = true
-	pe := NewEngine(&cfg, []string{})
-	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "rm -rf /tmp/build"})
-	if err != nil {
-		t.Fatalf("Evaluate error: %v", err)
-	}
-	if dec != DecisionDeny {
-		t.Errorf("destructive with AllowDestructive got %v, want %v (still denied)", dec, DecisionDeny)
-	}
-	if !strings.Contains(reason, "flagged allowed") {
-		t.Errorf("with AllowDestructive, reason should contain '(flagged allowed)', got %q", reason)
-	}
-}
-
-// TestEvaluate_SudoFlagAffectsReason verifies that when AllowSudo is true,
-// the reason includes "(flagged allowed)" but the decision is still
-// DecisionDeny (the user must still confirm at the TUI).
-func TestEvaluate_SudoFlagAffectsReason(t *testing.T) {
-	cfg := config.Default()
-	cfg.Tools.Shell.AllowSudo = true
-	pe := NewEngine(&cfg, []string{})
-	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "sudo apt-get update"})
-	if err != nil {
-		t.Fatalf("Evaluate error: %v", err)
-	}
-	if dec != DecisionDeny {
-		t.Errorf("sudo with AllowSudo got %v, want %v (still denied)", dec, DecisionDeny)
-	}
-	if !strings.Contains(reason, "flagged allowed") {
-		t.Errorf("with AllowSudo, reason should contain '(flagged allowed)', got %q", reason)
-	}
-}
-
 // TestEvaluate_ChmodR_Capital verifies that chmod -R (capital R) is denied
 // by the guardrail. This was previously a gap (F-SEC-16) where the substring
 // patterns only matched lowercase -r, missing -R and --recursive.

@@ -508,9 +508,6 @@ patterns = ["rm -rf"]
 	if !s.AutoApprove {
 		t.Fatal("AutoApprove not merged, want true")
 	}
-	if !s.AllowDestructive {
-		t.Fatal("AllowDestructive not merged, want true")
-	}
 	if !reflect.DeepEqual(s.Allow.Commands, []string{"go test", "git status"}) {
 		t.Errorf("Allow.Commands = %#v", s.Allow.Commands)
 	}

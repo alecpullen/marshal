@@ -32,18 +32,6 @@ var guardrailPatterns = []string{
 	"mkfs", "shutdown", "reboot",
 }
 
-// destructivePatterns is the subset of guardrailPatterns that are considered
-// genuinely destructive. Matches from these patterns trigger the
-// AllowDestructive config flag check.
-var destructivePatterns = map[string]bool{
-	"rm -rf":           true,
-	"git reset --hard": true,
-	"git clean -fd":    true,
-	"mkfs":             true,
-	"shutdown":         true,
-	"reboot":           true,
-}
-
 type PolicyEngine struct {
 	config       *config.Config
 	sessionRules []string
@@ -405,8 +393,6 @@ type guardrailVerdict struct {
 	blocked      bool
 	reason       string
 	dynamicArgv0 bool
-	destructive  bool   // true when the matching pattern is in destructivePatterns
-	pattern      string // the matched guardrail pattern, if any
 }
 
 // analyzeCommand parses cmd and classifies it against the hardcoded guardrail
@@ -428,9 +414,8 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 	cls, clsErr := ClassifyCommand(cmd)
 	if clsErr == nil && cls.Risk == registry.RiskDestructive {
 		return guardrailVerdict{
-			blocked:     true,
-			reason:      "blocked by conservative guardrail: " + cls.Reason,
-			destructive: true,
+			blocked: true,
+			reason:  "blocked by conservative guardrail: " + cls.Reason,
 		}, nil
 	}
 
@@ -445,8 +430,7 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 		ft := strings.ToLower(st.fullText)
 		for _, p := range guardrailPatterns {
 			if strings.Contains(ft, p) {
-				destructive := destructivePatterns[p]
-				return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: " + p, destructive: destructive, pattern: p}, nil
+				return guardrailVerdict{blocked: true, reason: "blocked by conservative guardrail: " + p}, nil
 			}
 		}
 		name := basenameLower(st.argv0)
@@ -457,10 +441,8 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 		if name == "chmod" || name == "chown" {
 			if hasRecursiveFlag(st) {
 				return guardrailVerdict{
-					blocked:     true,
-					reason:      "blocked by conservative guardrail: " + name + " --recursive",
-					destructive: true,
-					pattern:     name + " -r",
+					blocked: true,
+					reason:  "blocked by conservative guardrail: " + name + " --recursive",
 				}, nil
 			}
 		}
@@ -502,14 +484,7 @@ func hasRecursiveFlag(st stage) bool {
 // EvaluateGuardrails runs the AST-based guardrail analysis and returns the
 // resulting Decision + reason. Returns Decision("") (empty) to signal
 // "not blocked — continue to rule matching".
-//
-// allowSudo and allowDestructive are read from pe.config.Tools.Shell. When
-// true they change the reason text to "(flagged allowed)" so the audit log
-// records that the user opted in, but the decision remains DecisionDeny (the
-// TUI is still expected to confirm destructive/sudo commands).
 func (pe *PolicyEngine) EvaluateGuardrails(cmd, dynSetting string) (Decision, string) {
-	allowSudo := pe.config != nil && pe.config.Tools.Shell.AllowSudo
-	allowDestructive := pe.config != nil && pe.config.Tools.Shell.AllowDestructive
 	verdict, err := analyzeCommand(cmd)
 	if err != nil {
 		pe.Logger().Debug("policy guardrail parse failed, falling back to legacy", "cmd", cmd, "err", err)
@@ -519,13 +494,7 @@ func (pe *PolicyEngine) EvaluateGuardrails(cmd, dynSetting string) (Decision, st
 		return "", ""
 	}
 	if verdict.blocked {
-		reason := verdict.reason
-		if verdict.destructive && allowDestructive {
-			reason += " (flagged allowed)"
-		} else if verdict.pattern == "sudo" && allowSudo {
-			reason += " (flagged allowed)"
-		}
-		return DecisionDeny, reason
+		return DecisionDeny, verdict.reason
 	}
 	if verdict.dynamicArgv0 {
 		switch dynSetting {

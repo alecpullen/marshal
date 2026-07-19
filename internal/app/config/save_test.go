@@ -104,8 +104,6 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	cfg.Tools.Shell.DefaultTimeoutSeconds = 45
 	cfg.Tools.Shell.MaxOutputBytes = 98765
 	cfg.Tools.Shell.AllowNetwork = true
-	cfg.Tools.Shell.AllowSudo = true
-	cfg.Tools.Shell.AllowDestructive = true
 	cfg.Tools.Shell.AutoApprove = true
 	cfg.Tools.Shell.Sandbox.Backend = "container"
 	cfg.Tools.Shell.Sandbox.MemoryLimitMB = 512
@@ -142,7 +140,7 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	}
 	shell := loaded.Tools.Shell
 	if shell.DefaultTimeoutSeconds != 45 || shell.MaxOutputBytes != 98765 ||
-		!shell.AllowNetwork || !shell.AllowSudo || !shell.AllowDestructive || !shell.AutoApprove {
+		!shell.AllowNetwork || !shell.AutoApprove {
 		t.Fatalf("shell settings = %+v", shell)
 	}
 	sb := shell.Sandbox

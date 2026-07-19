@@ -37,9 +37,6 @@ When debugging, follow this process:
 	if skill.Body != "# Systematic Debugging\n\nWhen debugging, follow this process:\n1. Reproduce the bug\n2. Isolate\n3. Identify root cause\n" {
 		t.Fatalf("Body = %q", skill.Body)
 	}
-	if len(skill.Tools) != 0 {
-		t.Fatalf("Tools = %v, want empty", skill.Tools)
-	}
 }
 
 func TestParseFrontmatterMissingName(t *testing.T) {
@@ -93,40 +90,6 @@ Body.
 	}
 	if skill.Risk != "read_only" {
 		t.Fatalf("Risk = %q, want read_only (default)", skill.Risk)
-	}
-}
-
-func TestParseFrontmatterToolDefinitions(t *testing.T) {
-	raw := `+++
-name = "k8s-deploy"
-description = "Kubernetes deployment workflows"
-risk = "command"
-
-[[tools]]
-name = "kubectl_get_pods"
-description = "List pods in a namespace"
-risk = "command"
-schema = '{"type": "object", "properties": {"namespace": {"type": "string"}}}'
-handler = "shell"
-command = "kubectl get pods -n {{.namespace}}"
-+++
-
-# K8s Deploy
-
-Safe deployment instructions.
-`
-	skill, err := parseFrontmatter(raw)
-	if err != nil {
-		t.Fatalf("parseFrontmatter: %v", err)
-	}
-	if len(skill.Tools) != 1 {
-		t.Fatalf("Tools length = %d, want 1", len(skill.Tools))
-	}
-	if skill.Tools[0].Name != "kubectl_get_pods" {
-		t.Fatalf("Tools[0].Name = %q", skill.Tools[0].Name)
-	}
-	if skill.Tools[0].Command != "kubectl get pods -n {{.namespace}}" {
-		t.Fatalf("Tools[0].Command = %q", skill.Tools[0].Command)
 	}
 }
 

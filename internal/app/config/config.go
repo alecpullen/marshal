@@ -420,6 +420,7 @@ type fileMCPServer struct {
 	Command *string           `toml:"command"`
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
+	Trust   *string           `toml:"trust"`
 }
 
 type fileMCP struct {
@@ -1000,6 +1001,9 @@ func merge(cfg *Config, file configFile) error {
 			cfgSrv := MCPServerConfig{Env: srv.Env}
 			if srv.Command != nil {
 				cfgSrv.Command = *srv.Command
+			}
+			if srv.Trust != nil {
+				cfgSrv.Trust = *srv.Trust
 			}
 			cfgSrv.Args = srv.Args
 			cfg.MCP.Servers[name] = cfgSrv

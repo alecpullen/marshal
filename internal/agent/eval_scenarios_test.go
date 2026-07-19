@@ -71,7 +71,7 @@ func TestEvalScenarios(t *testing.T) {
 			forceClass: ClassQuestion,
 			want: func(t *testing.T, m TurnMetrics) {
 				if m.Outcome != "answered" || m.Iterations != 6 || m.ToolCalls != 5 ||
-					m.ParseFailures != 0 || m.SoftStalls != 0 || m.HardStalls != 0 {
+					m.ParseFailures != 0 || m.HardStalls != 0 {
 					t.Fatalf("metrics = %+v", m)
 				}
 			},

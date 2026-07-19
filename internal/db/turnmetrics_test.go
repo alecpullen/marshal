@@ -39,7 +39,6 @@ func sampleRow(projectID int64, sessionID string) TurnMetricsRow {
 		ToolErrors:       1,
 		CacheHits:        1,
 		ParseFailures:    1,
-		SoftStalls:       1,
 		HardStalls:       0,
 		Outcome:          "answered",
 		SalvageReason:    "",

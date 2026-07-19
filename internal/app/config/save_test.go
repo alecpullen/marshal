@@ -486,7 +486,6 @@ func TestSaveSDDConfig(t *testing.T) {
 	cfg := Default()
 	cfg.SDD.AutoWorktree = false
 	cfg.SDD.MaxFixRounds = 7
-	cfg.SDD.MaxTotalTokens = 50000
 	cfg.SDD.PlansDir = "custom/plans"
 
 	if err := SaveProjectConfig(path, cfg); err != nil {
@@ -501,9 +500,6 @@ func TestSaveSDDConfig(t *testing.T) {
 	}
 	if loaded.SDD.MaxFixRounds != 7 {
 		t.Errorf("MaxFixRounds = %d, want 7", loaded.SDD.MaxFixRounds)
-	}
-	if loaded.SDD.MaxTotalTokens != 50000 {
-		t.Errorf("MaxTotalTokens = %d, want 50000", loaded.SDD.MaxTotalTokens)
 	}
 	if loaded.SDD.PlansDir != "custom/plans" {
 		t.Errorf("PlansDir = %q, want %q", loaded.SDD.PlansDir, "custom/plans")

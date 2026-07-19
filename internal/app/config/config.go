@@ -73,10 +73,9 @@ type SwarmBudgetConfig struct {
 
 // SDDConfig holds run-level subagent-driven-development settings.
 type SDDConfig struct {
-	AutoWorktree   bool   `toml:"auto_worktree"`
-	MaxFixRounds   int    `toml:"max_fix_rounds"`
-	MaxTotalTokens int    `toml:"max_total_tokens"`
-	PlansDir       string `toml:"plans_dir"`
+	AutoWorktree bool   `toml:"auto_worktree"`
+	MaxFixRounds int    `toml:"max_fix_rounds"`
+	PlansDir     string `toml:"plans_dir"`
 }
 
 type MCPConfig struct {
@@ -397,10 +396,9 @@ type fileSwarm struct {
 }
 
 type fileSDD struct {
-	AutoWorktree   *bool   `toml:"auto_worktree"`
-	MaxFixRounds   *int    `toml:"max_fix_rounds"`
-	MaxTotalTokens *int    `toml:"max_total_tokens"`
-	PlansDir       *string `toml:"plans_dir"`
+	AutoWorktree *bool   `toml:"auto_worktree"`
+	MaxFixRounds *int    `toml:"max_fix_rounds"`
+	PlansDir     *string `toml:"plans_dir"`
 }
 
 type fileMCPServer struct {
@@ -571,10 +569,9 @@ func Default() Config {
 			},
 		},
 		SDD: SDDConfig{
-			AutoWorktree:   true,
-			MaxFixRounds:   3,
-			MaxTotalTokens: 0,
-			PlansDir:       ".marshal/plans",
+			AutoWorktree: true,
+			MaxFixRounds: 3,
+			PlansDir:     ".marshal/plans",
 		},
 		Web: WebConfig{
 			Enabled:      false,
@@ -957,9 +954,6 @@ func merge(cfg *Config, file configFile) error {
 		}
 		if s.MaxFixRounds != nil {
 			cfg.SDD.MaxFixRounds = *s.MaxFixRounds
-		}
-		if s.MaxTotalTokens != nil {
-			cfg.SDD.MaxTotalTokens = *s.MaxTotalTokens
 		}
 		if s.PlansDir != nil {
 			cfg.SDD.PlansDir = *s.PlansDir

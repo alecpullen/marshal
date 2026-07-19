@@ -167,28 +167,27 @@ func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 	return b.String()
 }
 
-func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeToolsOpt...)
+func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools)
 }
 
 // BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
 // list of deferred MCP tools appended as a compact announcement. The
 // runner passes the registry's ListDeferred() so the agent can see what
 // it might want to opt into via tools.select.
-func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeToolsOpt...)
+func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools)
 }
 
 // buildSystemPrompt accepts an additional deferredTools list (used by the
 // runner to advertise MCP tools the agent hasn't loaded yet but may want
 // to opt into). Tests that pass nil get the old behavior with no
 // announcement appended.
-func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeToolsOpt ...bool) schema.ChatMessage {
+func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
 	}
-	nativeTools := len(nativeToolsOpt) > 0 && nativeToolsOpt[0]
 
 	var b strings.Builder
 	b.WriteString(baseIdentity)

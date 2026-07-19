@@ -538,12 +538,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					if consecutiveEmpty >= 2 {
 						return r.finalize(ctx, turnProvider, turnModel, messages, task, reasonEmpty, effectiveRF)
 					}
-					if !steeringArrived {
-						if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
-							return resTask, ferr
-						} else if nudge != "" {
-							messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
-						}
+					var finalized *Task
+					messages, finalized, err = r.checkStall(ctx, turnProvider, turnModel, messages, task, effectiveRF, steeringArrived)
+					if finalized != nil {
+						return finalized, err
 					}
 					continue
 				}
@@ -591,12 +589,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				return task, r.fail(task, execErr)
 			}
 			messages = append(messages, resultMsgs...)
-			if !steeringArrived {
-				if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
-					return resTask, ferr
-				} else if nudge != "" {
-					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
-				}
+			var finalized *Task
+			messages, finalized, err = r.checkStall(ctx, turnProvider, turnModel, messages, task, effectiveRF, steeringArrived)
+			if finalized != nil {
+				return finalized, err
 			}
 			continue
 		}
@@ -654,12 +650,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				return task, r.fail(task, execErr)
 			}
 			messages = append(messages, resultMsgs...)
-			if !steeringArrived {
-				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
-					return res, ferr
-				} else if nudge != "" {
-					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
-				}
+			var finalized *Task
+			messages, finalized, err = r.checkStall(ctx, turnProvider, turnModel, messages, task, effectiveRF, steeringArrived)
+			if finalized != nil {
+				return finalized, err
 			}
 			continue
 		}
@@ -682,12 +676,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				return task, r.fail(task, err)
 			}
 			messages = append(messages, resultMsgs...)
-			if !steeringArrived {
-				if finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
-					return res, ferr
-				} else if nudge != "" {
-					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
-				}
+			var finalized *Task
+			messages, finalized, err = r.checkStall(ctx, turnProvider, turnModel, messages, task, effectiveRF, steeringArrived)
+			if finalized != nil {
+				return finalized, err
 			}
 		case ActionAskUser:
 			if r.role() != RoleGeneral {
@@ -711,12 +703,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.tracker.recordIdle("ask_user declined")
 				r.trackerMu.Unlock()
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."})
-				if !steeringArrived {
-					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
-						return resTask, ferr
-					} else if nudge != "" {
-						messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
-					}
+				var finalized *Task
+				messages, finalized, err = r.checkStall(ctx, turnProvider, turnModel, messages, task, effectiveRF, steeringArrived)
+				if finalized != nil {
+					return finalized, err
 				}
 			} else {
 				consecutiveEmpty = 0
@@ -751,12 +741,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.tracker.recordIdle("question.ask declined")
 				r.trackerMu.Unlock()
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The user declined to answer every question. Proceed with your best judgment and state the assumptions you made."})
-				if !steeringArrived {
-					if finalized, resTask, ferr, nudge := r.maybeFinalizeOnStall(ctx, turnProvider, turnModel, messages, task, effectiveRF); finalized {
-						return resTask, ferr
-					} else if nudge != "" {
-						messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
-					}
+				var finalized *Task
+				messages, finalized, err = r.checkStall(ctx, turnProvider, turnModel, messages, task, effectiveRF, steeringArrived)
+				if finalized != nil {
+					return finalized, err
 				}
 			} else {
 				consecutiveEmpty = 0
@@ -830,6 +818,24 @@ func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, 
 
 	res, ferr := r.finalize(ctx, p, model, messages, task, reasonStalled, responseFormat)
 	return true, res, ferr, ""
+}
+
+// checkStall runs the hard-stall finalize/nudge check for one loop branch.
+// When steeringArrived is true the check is skipped (the user just
+// intervened, so the loop is no longer auto-iterating). A non-nil finalized
+// result means the caller must return it with err.
+func (r *Runner) checkStall(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, task *Task, rf *schema.ResponseFormat, steeringArrived bool) ([]schema.ChatMessage, *Task, error) {
+	if steeringArrived {
+		return messages, nil, nil
+	}
+	finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, p, model, messages, task, rf)
+	if finalized {
+		return messages, res, ferr
+	}
+	if nudge != "" {
+		messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: nudge})
+	}
+	return messages, nil, nil
 }
 
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {

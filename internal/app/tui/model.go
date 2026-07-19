@@ -142,9 +142,8 @@ type Model struct {
 	thinkingExpanded   bool
 	viewportFollow     bool
 
-	// Connect overlay (opened by /connect, /models, Ctrl+P).
+	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
-	connectOpen  bool
 	discovered   map[string][]string
 
 	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
@@ -653,26 +652,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch pm := msg.(type) {
 	case connect.DoneMsg:
 		m.applyConnectDone(pm)
-		m.connectOpen = false
+		m.dock.CloseNow()
 		m.connectModel = nil
 		m.refreshViewport()
 		return m, nil
 	case connect.CancelledMsg:
-		m.connectOpen = false
+		m.dock.CloseNow()
 		m.connectModel = nil
 		m.refreshViewport()
 		return m, nil
 	case connect.TickMsg:
-		if m.connectOpen && m.connectModel != nil {
-			var cmd tea.Cmd
-			m.connectModel, cmd = m.connectModel.Update(pm)
-			return m, cmd
+		if _, ok := m.dock.Panel().(connect.Panel); ok {
+			return m, m.dock.Update(pm)
 		}
 		return m, nil
 	case probe.ResultMsg:
-		if m.connectOpen && m.connectModel != nil {
-			var cmd tea.Cmd
-			m.connectModel, cmd = m.connectModel.Update(pm)
+		if _, ok := m.dock.Panel().(connect.Panel); ok {
+			cmd := m.dock.Update(pm)
 			if pm.Err == nil && pm.Provider != "" {
 				m.discovered[pm.Provider] = pm.Models
 			}
@@ -721,15 +717,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// non-key messages (ticks, agent events) keep flowing to the
 		// normal handlers below so background work continues.
-	}
-
-	if m.connectOpen && m.connectModel != nil {
-		if _, ok := msg.(tea.KeyPressMsg); ok {
-			var cmd tea.Cmd
-			m.connectModel, cmd = m.connectModel.Update(msg)
-			return m, cmd
-		}
-		return m, nil
 	}
 
 	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
@@ -2084,7 +2071,7 @@ func (m *Model) openConnect(_ string) {
 		Discovered: m.discovered,
 	})
 	m.connectModel.SetSize(m.width, m.height)
-	m.connectOpen = true
+	m.dock.Open(connect.Panel{Model: m.connectModel})
 }
 
 // openModels opens the connect overlay scoped to the first provider for model
@@ -2103,7 +2090,7 @@ func (m *Model) openModels() tea.Cmd {
 		ScopedProvider:   names[0],
 	})
 	m.connectModel.SetSize(m.width, m.height)
-	m.connectOpen = true
+	m.dock.Open(connect.Panel{Model: m.connectModel})
 	var cmds []tea.Cmd
 	for _, n := range names {
 		if cached, ok := m.discovered[n]; ok && len(cached) > 0 {

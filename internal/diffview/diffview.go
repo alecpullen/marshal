@@ -14,6 +14,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/alecthomas/chroma/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
@@ -503,13 +504,12 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-w)
 }
 
+// truncateVisible cuts s to at most width visible cells, preserving ANSI
+// escape sequences (chroma highlighting / emphasis are applied before this
+// runs in side-by-side mode).
 func truncateVisible(s string, width int) string {
 	if lipgloss.Width(s) <= width {
 		return s
 	}
-	r := []rune(s)
-	if len(r) > width {
-		r = r[:width]
-	}
-	return string(r)
+	return ansi.Truncate(s, width, "")
 }

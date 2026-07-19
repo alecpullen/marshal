@@ -57,7 +57,7 @@ func (t *titleGenerator) generate(ctx context.Context, firstUserMessage string) 
 		{Role: schema.RoleUser, Content: firstUserMessage},
 		{Role: schema.RoleSystem, Content: titleDirectiveText},
 	}
-	res, err := chatNoTools(ctx, t.provider, t.model, req)
+	res, err := provider.ChatText(ctx, t.provider, schema.ChatRequest{Model: t.model, Messages: req})
 	if err != nil || strings.TrimSpace(res) == "" {
 		return
 	}
@@ -77,25 +77,4 @@ func (t *titleGenerator) generate(ctx context.Context, firstUserMessage string) 
 	if db := t.state.DB(); db != nil {
 		_ = db.UpdateSessionTitle(t.state.SessionID(), title)
 	}
-}
-
-// chatNoTools is a thin wrapper that drains a Chat stream to a single text
-// string. It deliberately passes no tools — the title call must never call
-// tools. Reuses the provider streaming protocol already used elsewhere
-// (events are ChatEventDelta/Done/Error — see internal/llm/schema/event.go).
-func chatNoTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage) (string, error) {
-	ch, err := p.Chat(ctx, schema.ChatRequest{Model: model, Messages: messages})
-	if err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	for ev := range ch {
-		if ev.Type == schema.ChatEventDelta {
-			b.WriteString(ev.Delta)
-		}
-		if ev.Type == schema.ChatEventError {
-			return "", ev.Err
-		}
-	}
-	return b.String(), nil
 }

@@ -272,6 +272,18 @@ func toolCallsFromStreamBuffers(buffers map[int]*streamingToolCallBuffer) []sche
 	return out
 }
 
+// tokenUsageFrom maps the wire usage body to the schema type.
+func tokenUsageFrom(u *usageBody) *schema.TokenUsage {
+	if u == nil {
+		return nil
+	}
+	return &schema.TokenUsage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+	}
+}
+
 func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	defer close(events)
 	defer body.Close()
@@ -300,11 +312,7 @@ func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 			return
 		}
 		if chunk.Usage != nil {
-			usage = &schema.TokenUsage{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
-			}
+			usage = tokenUsageFrom(chunk.Usage)
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -363,11 +371,7 @@ func readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	}
 	var usage *schema.TokenUsage
 	if parsed.Usage != nil {
-		usage = &schema.TokenUsage{
-			PromptTokens:     parsed.Usage.PromptTokens,
-			CompletionTokens: parsed.Usage.CompletionTokens,
-			TotalTokens:      parsed.Usage.TotalTokens,
-		}
+		usage = tokenUsageFrom(parsed.Usage)
 	}
 	events <- schema.ChatEvent{
 		Type:         schema.ChatEventDone,
@@ -376,5 +380,3 @@ func readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 		ToolCalls:    toolCallsFromWire(choice.Message.ToolCalls),
 	}
 }
-
-

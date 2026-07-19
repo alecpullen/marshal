@@ -53,35 +53,14 @@ func (r *Registry) Lookup(name string) (Tool, bool) {
 }
 
 func (r *Registry) List() []Tool {
-	tools := make([]Tool, 0, len(r.tools))
-	for _, tool := range r.tools {
-		tools = append(tools, cloneTool(tool))
-	}
-
-	sort.Slice(tools, func(i, j int) bool {
-		return tools[i].Name < tools[j].Name
-	})
-
-	return tools
+	return r.listWhere(nil)
 }
 
 // ListDeferred returns all registered tools flagged with Deferred=true,
 // sorted by name. Used by the prompt builder and disclosure tools to
 // enumerate MCP tools hidden from the default tool list.
 func (r *Registry) ListDeferred() []Tool {
-	tools := make([]Tool, 0)
-	for _, tool := range r.tools {
-		if !tool.Deferred {
-			continue
-		}
-		tools = append(tools, cloneTool(tool))
-	}
-
-	sort.Slice(tools, func(i, j int) bool {
-		return tools[i].Name < tools[j].Name
-	})
-
-	return tools
+	return r.listWhere(func(t Tool) bool { return t.Deferred })
 }
 
 // ListLoaded returns the subset of all tools whose name appears in the
@@ -96,18 +75,22 @@ func (r *Registry) ListLoaded(names []string) []Tool {
 	for _, name := range names {
 		loaded[name] = true
 	}
-	tools := make([]Tool, 0, len(loaded))
+	return r.listWhere(func(t Tool) bool { return loaded[t.Name] })
+}
+
+// listWhere returns clones of all registered tools passing keep (nil keeps
+// all), sorted by name.
+func (r *Registry) listWhere(keep func(Tool) bool) []Tool {
+	tools := make([]Tool, 0, len(r.tools))
 	for _, tool := range r.tools {
-		if !loaded[tool.Name] {
+		if keep != nil && !keep(tool) {
 			continue
 		}
 		tools = append(tools, cloneTool(tool))
 	}
-
 	sort.Slice(tools, func(i, j int) bool {
 		return tools[i].Name < tools[j].Name
 	})
-
 	return tools
 }
 

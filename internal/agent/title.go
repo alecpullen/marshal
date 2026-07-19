@@ -63,8 +63,8 @@ func (t *titleGenerator) generate(ctx context.Context, firstUserMessage string) 
 	title := strings.TrimSpace(res)
 	title = strings.Join(strings.Fields(title), " ")
 	title = strings.Trim(title, "\"'`.,;:!?")
-	if len(title) > titleMaxChars {
-		title = title[:titleMaxChars]
+	if runes := []rune(title); len(runes) > titleMaxChars {
+		title = string(runes[:titleMaxChars])
 	}
 	// Re-check the manual-title guard immediately before persisting.
 	// A /rename issued after the early-return check at the top of

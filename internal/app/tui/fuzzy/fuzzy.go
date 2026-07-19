@@ -29,11 +29,12 @@ func Rank(query string, haystacks []string) []int {
 }
 
 func isSubsequence(needle, hay string) bool {
+	nr := []rune(needle)
 	i := 0
 	for _, c := range hay {
-		if i < len(needle) && rune(needle[i]) == c {
+		if i < len(nr) && nr[i] == c {
 			i++
 		}
 	}
-	return i == len(needle)
+	return i == len(nr)
 }

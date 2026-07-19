@@ -30,3 +30,13 @@ func TestRankCaseInsensitive(t *testing.T) {
 		t.Fatalf("matching must be case-insensitive, got %v", got)
 	}
 }
+
+// TestRankNonASCIISubsequence: isSubsequence compared a hay rune against a
+// needle *byte*, so non-ASCII queries never subsequence-matched.
+func TestRankNonASCIISubsequence(t *testing.T) {
+	// "üe" is a subsequence (not a substring) of "übersee".
+	got := Rank("üe", []string{"übersee", "other"})
+	if len(got) != 1 || got[0] != 0 {
+		t.Fatalf("Rank = %v, want [0] (übersee matches ü…e as subsequence)", got)
+	}
+}

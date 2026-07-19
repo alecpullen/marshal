@@ -312,8 +312,8 @@ func BuildContextPackMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
 }
 
 // BuildToolResultMessage formats a tool result for the model. The first line
-// "Tool <name> result:" is a load-bearing marker: compactMessages identifies
-// tool results by this prefix to decide which messages to shrink.
+// "Tool <name> result:" is a conventional marker used by the summarization
+// path and spill logic to recognise tool-result messages.
 func BuildToolResultMessage(name string, result registry.ToolResult) schema.ChatMessage {
 	return buildToolResultMessage(name, result, "")
 }

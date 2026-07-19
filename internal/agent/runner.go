@@ -30,7 +30,6 @@ const (
 	DefaultMaxRetries           = 2
 	DefaultMaxParallelActions   = 4
 	DefaultMaxTurnContextTokens = 60000
-	compactKeepRecentMessages   = 6
 	finalizePressureThreshold   = 2
 	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
 	maxConsecutiveParseFailures = 3

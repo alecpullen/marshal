@@ -200,9 +200,7 @@ type CancelledMsg struct{}
 type TickMsg struct{}
 
 func tick() tea.Cmd {
-	return func() tea.Msg {
-		return TickMsg{}
-	}
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return TickMsg{} })
 }
 
 func (m *Model) cancel() tea.Cmd {

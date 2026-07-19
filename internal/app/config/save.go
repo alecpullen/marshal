@@ -10,9 +10,8 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"marshal/internal/llm/routing"
+	"marshal/internal/strutil"
 )
-
-func ptr[T any](v T) *T { return &v }
 
 // SaveProjectConfig writes the essential settings-editable sections of cfg to
 // path (typically .marshal/config.toml). It preserves any unrelated sections
@@ -29,32 +28,35 @@ func SaveProjectConfig(path string, cfg Config) error {
 		}
 	}
 
-	defaultProfile := cfg.Profile.Default
-	file.Profile = &fileProfile{Default: &defaultProfile}
+	file.Profile = &fileProfile{Default: strutil.Ptr(cfg.Profile.Default)}
 
 	activePresetName := activePresetName(cfg)
-	maxToolIterations := cfg.Agent.MaxToolIterations
-	maxRetries := cfg.Agent.MaxRetries
-	maxTurnContextTokens := cfg.Agent.MaxTurnContextTokens
-	planFirst := cfg.Agent.PlanFirst
-	subtaskIterations := cfg.Agent.SubtaskIterations
 	if activePresetName == "" {
-		agentProvider := cfg.Agent.Provider
-		agentModel := cfg.Agent.Model
-		file.Agent = &fileAgent{Provider: &agentProvider, Model: &agentModel, MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst, SubtaskIterations: &subtaskIterations}
+		file.Agent = &fileAgent{
+			Provider:             strutil.Ptr(cfg.Agent.Provider),
+			Model:                strutil.Ptr(cfg.Agent.Model),
+			MaxToolIterations:    strutil.Ptr(cfg.Agent.MaxToolIterations),
+			MaxRetries:           strutil.Ptr(cfg.Agent.MaxRetries),
+			MaxTurnContextTokens: strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
+			PlanFirst:            strutil.Ptr(cfg.Agent.PlanFirst),
+			SubtaskIterations:    strutil.Ptr(cfg.Agent.SubtaskIterations),
+		}
 	} else {
-		file.Agent = &fileAgent{MaxToolIterations: &maxToolIterations, MaxRetries: &maxRetries, MaxTurnContextTokens: &maxTurnContextTokens, PlanFirst: &planFirst, SubtaskIterations: &subtaskIterations}
+		file.Agent = &fileAgent{
+			MaxToolIterations:    strutil.Ptr(cfg.Agent.MaxToolIterations),
+			MaxRetries:           strutil.Ptr(cfg.Agent.MaxRetries),
+			MaxTurnContextTokens: strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
+			PlanFirst:            strutil.Ptr(cfg.Agent.PlanFirst),
+			SubtaskIterations:    strutil.Ptr(cfg.Agent.SubtaskIterations),
+		}
 	}
 
-	remoteAllowed := cfg.Privacy.RemoteProvidersAllowed
-	redactSecrets := cfg.Privacy.RedactSecrets
-	includeGitignoredFiles := cfg.Privacy.IncludeGitignoredFiles
 	if file.Privacy == nil {
 		file.Privacy = &filePrivacy{}
 	}
-	file.Privacy.RemoteProvidersAllowed = &remoteAllowed
-	file.Privacy.RedactSecrets = &redactSecrets
-	file.Privacy.IncludeGitignoredFiles = &includeGitignoredFiles
+	file.Privacy.RemoteProvidersAllowed = strutil.Ptr(cfg.Privacy.RemoteProvidersAllowed)
+	file.Privacy.RedactSecrets = strutil.Ptr(cfg.Privacy.RedactSecrets)
+	file.Privacy.IncludeGitignoredFiles = strutil.Ptr(cfg.Privacy.IncludeGitignoredFiles)
 
 	if file.Tools == nil {
 		file.Tools = &fileTools{}
@@ -62,43 +64,27 @@ func SaveProjectConfig(path string, cfg Config) error {
 	if file.Tools.Shell == nil {
 		file.Tools.Shell = &fileShell{}
 	}
-	shellTimeout := cfg.Tools.Shell.DefaultTimeoutSeconds
-	maxOutputBytes := cfg.Tools.Shell.MaxOutputBytes
-	maxBackgroundJobs := cfg.Tools.Shell.MaxBackgroundJobs
-	backgroundRetention := cfg.Tools.Shell.BackgroundRetention.String()
-	allowNetwork := cfg.Tools.Shell.AllowNetwork
-	autoApprove := cfg.Tools.Shell.AutoApprove
-	file.Tools.Shell.DefaultTimeoutSeconds = &shellTimeout
-	file.Tools.Shell.MaxOutputBytes = &maxOutputBytes
-	file.Tools.Shell.MaxBackgroundJobs = &maxBackgroundJobs
-	file.Tools.Shell.BackgroundRetention = &backgroundRetention
-	file.Tools.Shell.AllowNetwork = &allowNetwork
-	file.Tools.Shell.AutoApprove = &autoApprove
+	file.Tools.Shell.DefaultTimeoutSeconds = strutil.Ptr(cfg.Tools.Shell.DefaultTimeoutSeconds)
+	file.Tools.Shell.MaxOutputBytes = strutil.Ptr(cfg.Tools.Shell.MaxOutputBytes)
+	file.Tools.Shell.MaxBackgroundJobs = strutil.Ptr(cfg.Tools.Shell.MaxBackgroundJobs)
+	file.Tools.Shell.BackgroundRetention = strutil.Ptr(cfg.Tools.Shell.BackgroundRetention.String())
+	file.Tools.Shell.AllowNetwork = strutil.Ptr(cfg.Tools.Shell.AllowNetwork)
+	file.Tools.Shell.AutoApprove = strutil.Ptr(cfg.Tools.Shell.AutoApprove)
 
-	guardrailDyn := cfg.Tools.Shell.GuardrailDynamicArgv0
-	file.Tools.Shell.GuardrailDynamicArgv0 = &guardrailDyn
+	file.Tools.Shell.GuardrailDynamicArgv0 = strutil.Ptr(cfg.Tools.Shell.GuardrailDynamicArgv0)
 
 	if file.Tools.Shell.Sandbox == nil {
 		file.Tools.Shell.Sandbox = &sandboxFile{}
 	}
-	sandboxBackend := cfg.Tools.Shell.Sandbox.Backend
-	sandboxMemory := cfg.Tools.Shell.Sandbox.MemoryLimitMB
-	sandboxCPU := cfg.Tools.Shell.Sandbox.CPUSeconds
-	sandboxMaxProcs := cfg.Tools.Shell.Sandbox.MaxProcesses
-	sandboxFileSize := cfg.Tools.Shell.Sandbox.FileSizeLimitMB
-	sandboxRuntime := cfg.Tools.Shell.Sandbox.ContainerRuntime
-	sandboxImage := cfg.Tools.Shell.Sandbox.ContainerImage
-	sandboxAllowFallback := cfg.Tools.Shell.Sandbox.AllowFallback
-	sandboxUnsafePassthrough := cfg.Tools.Shell.Sandbox.UnsafePassthrough
-	file.Tools.Shell.Sandbox.Backend = &sandboxBackend
-	file.Tools.Shell.Sandbox.MemoryLimitMB = &sandboxMemory
-	file.Tools.Shell.Sandbox.CPUSeconds = &sandboxCPU
-	file.Tools.Shell.Sandbox.MaxProcesses = &sandboxMaxProcs
-	file.Tools.Shell.Sandbox.FileSizeLimitMB = &sandboxFileSize
-	file.Tools.Shell.Sandbox.ContainerRuntime = &sandboxRuntime
-	file.Tools.Shell.Sandbox.ContainerImage = &sandboxImage
-	file.Tools.Shell.Sandbox.AllowFallback = &sandboxAllowFallback
-	file.Tools.Shell.Sandbox.UnsafePassthrough = &sandboxUnsafePassthrough
+	file.Tools.Shell.Sandbox.Backend = strutil.Ptr(cfg.Tools.Shell.Sandbox.Backend)
+	file.Tools.Shell.Sandbox.MemoryLimitMB = strutil.Ptr(cfg.Tools.Shell.Sandbox.MemoryLimitMB)
+	file.Tools.Shell.Sandbox.CPUSeconds = strutil.Ptr(cfg.Tools.Shell.Sandbox.CPUSeconds)
+	file.Tools.Shell.Sandbox.MaxProcesses = strutil.Ptr(cfg.Tools.Shell.Sandbox.MaxProcesses)
+	file.Tools.Shell.Sandbox.FileSizeLimitMB = strutil.Ptr(cfg.Tools.Shell.Sandbox.FileSizeLimitMB)
+	file.Tools.Shell.Sandbox.ContainerRuntime = strutil.Ptr(cfg.Tools.Shell.Sandbox.ContainerRuntime)
+	file.Tools.Shell.Sandbox.ContainerImage = strutil.Ptr(cfg.Tools.Shell.Sandbox.ContainerImage)
+	file.Tools.Shell.Sandbox.AllowFallback = strutil.Ptr(cfg.Tools.Shell.Sandbox.AllowFallback)
+	file.Tools.Shell.Sandbox.UnsafePassthrough = strutil.Ptr(cfg.Tools.Shell.Sandbox.UnsafePassthrough)
 	if cfg.Tools.Shell.Sandbox.EnvAllowlist != nil {
 		file.Tools.Shell.Sandbox.EnvAllowlist = cfg.Tools.Shell.Sandbox.EnvAllowlist
 	}
@@ -106,82 +92,88 @@ func SaveProjectConfig(path string, cfg Config) error {
 		file.Tools.Shell.Sandbox.EnvDenylist = cfg.Tools.Shell.Sandbox.EnvDenylist
 	}
 
+	// Guard policy: profile/agent/privacy/shell/sandbox sections are written
+	// unconditionally (they are the settings UI's primary targets); every
+	// other section is written only when the file already has it or the
+	// value differs from Default(). Callers pass merged user+project
+	// config, so unconditional sections bake user-global values into the
+	// project file — that is deliberate for the primary sections.
 	def := Default()
 
 	if file.Project != nil || !reflect.DeepEqual(cfg.Project, def.Project) {
-		file.Project = &fileProject{Name: ptr(cfg.Project.Name), Languages: cfg.Project.Languages}
+		file.Project = &fileProject{Name: strutil.Ptr(cfg.Project.Name), Languages: cfg.Project.Languages}
 	}
 	if file.Commands != nil || cfg.Commands != def.Commands {
-		file.Commands = &fileCommands{Test: ptr(cfg.Commands.Test), Format: ptr(cfg.Commands.Format), Vet: ptr(cfg.Commands.Vet)}
+		file.Commands = &fileCommands{Test: strutil.Ptr(cfg.Commands.Test), Format: strutil.Ptr(cfg.Commands.Format), Vet: strutil.Ptr(cfg.Commands.Vet)}
 	}
 	if file.Indexing != nil || !reflect.DeepEqual(cfg.Indexing, def.Indexing) {
 		file.Indexing = &fileIndexing{
-			UseTreesitter:          ptr(cfg.Indexing.UseTreesitter),
-			UseEmbeddings:          ptr(cfg.Indexing.UseEmbeddings),
-			SummariseFiles:         ptr(cfg.Indexing.SummariseFiles),
+			UseTreesitter:          strutil.Ptr(cfg.Indexing.UseTreesitter),
+			UseEmbeddings:          strutil.Ptr(cfg.Indexing.UseEmbeddings),
+			SummariseFiles:         strutil.Ptr(cfg.Indexing.SummariseFiles),
 			Ignore:                 cfg.Indexing.Ignore,
-			MaxIndexableFileBytes:  ptr(cfg.Indexing.MaxIndexableFileBytes),
-			MaxSearchableFileBytes: ptr(cfg.Indexing.MaxSearchableFileBytes),
+			MaxIndexableFileBytes:  strutil.Ptr(cfg.Indexing.MaxIndexableFileBytes),
+			MaxSearchableFileBytes: strutil.Ptr(cfg.Indexing.MaxSearchableFileBytes),
 		}
 	}
 	if file.Web != nil || cfg.Web != def.Web {
 		file.Web = &fileWeb{
-			Enabled:        ptr(cfg.Web.Enabled),
-			FetchTimeout:   ptr(cfg.Web.FetchTimeout.String()),
-			SearchProvider: ptr(cfg.Web.SearchProvider),
-			SearchURL:      ptr(cfg.Web.SearchURL),
-			SearchKey:      ptr(cfg.Web.SearchKey),
+			Enabled:        strutil.Ptr(cfg.Web.Enabled),
+			FetchTimeout:   strutil.Ptr(cfg.Web.FetchTimeout.String()),
+			SearchProvider: strutil.Ptr(cfg.Web.SearchProvider),
+			SearchURL:      strutil.Ptr(cfg.Web.SearchURL),
+			SearchKey:      strutil.Ptr(cfg.Web.SearchKey),
 		}
 	}
 	if file.Desktop != nil || !reflect.DeepEqual(cfg.Desktop, def.Desktop) {
 		file.Desktop = &fileDesktop{
-			Enabled:          ptr(cfg.Desktop.Enabled),
-			Mode:             ptr(cfg.Desktop.Mode),
-			Headless:         ptr(cfg.Desktop.Headless),
-			CDPURL:           ptr(cfg.Desktop.CDPURL),
+			Enabled:          strutil.Ptr(cfg.Desktop.Enabled),
+			Mode:             strutil.Ptr(cfg.Desktop.Mode),
+			Headless:         strutil.Ptr(cfg.Desktop.Headless),
+			CDPURL:           strutil.Ptr(cfg.Desktop.CDPURL),
 			URLAllowlist:     cfg.Desktop.URLAllowlist,
 			URLDenylist:      cfg.Desktop.URLDenylist,
-			DefaultTimeout:   ptr(cfg.Desktop.DefaultTimeout.String()),
-			ScreenshotFormat: ptr(cfg.Desktop.ScreenshotFormat),
+			DefaultTimeout:   strutil.Ptr(cfg.Desktop.DefaultTimeout.String()),
+			ScreenshotFormat: strutil.Ptr(cfg.Desktop.ScreenshotFormat),
 		}
 	}
 	if file.TUI != nil || !reflect.DeepEqual(cfg.TUI, def.TUI) {
 		file.TUI = &fileTUI{
-			Theme:   ptr(cfg.TUI.Theme),
+			Theme:   strutil.Ptr(cfg.TUI.Theme),
 			Palette: cfg.TUI.Palette,
-			Mode:    ptr(cfg.TUI.Mode),
+			Mode:    strutil.Ptr(cfg.TUI.Mode),
 		}
 	}
 	if file.Swarm != nil || !reflect.DeepEqual(cfg.Swarm, def.Swarm) {
 		file.Swarm = &fileSwarm{Budget: &fileSwarmBudget{
-			MaxFixRounds:   ptr(cfg.Swarm.Budget.MaxFixRounds),
-			MaxTotalTokens: ptr(cfg.Swarm.Budget.MaxTotalTokens),
+			MaxFixRounds:   strutil.Ptr(cfg.Swarm.Budget.MaxFixRounds),
+			MaxTotalTokens: strutil.Ptr(cfg.Swarm.Budget.MaxTotalTokens),
 			ToolIters:      cfg.Swarm.Budget.ToolIters,
 		}}
 	}
 	if file.SDD != nil || !reflect.DeepEqual(cfg.SDD, def.SDD) {
 		file.SDD = &fileSDD{
-			AutoWorktree: ptr(cfg.SDD.AutoWorktree),
-			MaxFixRounds: ptr(cfg.SDD.MaxFixRounds),
-			PlansDir:     ptr(cfg.SDD.PlansDir),
+			AutoWorktree: strutil.Ptr(cfg.SDD.AutoWorktree),
+			MaxFixRounds: strutil.Ptr(cfg.SDD.MaxFixRounds),
+			PlansDir:     strutil.Ptr(cfg.SDD.PlansDir),
 		}
 	}
 	if file.MCP != nil || !reflect.DeepEqual(cfg.MCP, def.MCP) {
 		servers := map[string]fileMCPServer{}
 		for name, srv := range cfg.MCP.Servers {
-			servers[name] = fileMCPServer{Command: ptr(srv.Command), Args: srv.Args, Env: srv.Env, Trust: ptr(srv.Trust)}
+			servers[name] = fileMCPServer{Command: strutil.Ptr(srv.Command), Args: srv.Args, Env: srv.Env, Trust: strutil.Ptr(srv.Trust)}
 		}
 		file.MCP = &fileMCP{
 			Servers:                  servers,
 			Policies:                 cfg.MCP.Policies,
-			DisclosureThresholdTools: ptr(cfg.MCP.DisclosureThresholdTools),
+			DisclosureThresholdTools: strutil.Ptr(cfg.MCP.DisclosureThresholdTools),
 		}
 	}
 	if file.Snapshots != nil || cfg.Snapshots != def.Snapshots {
 		file.Snapshots = &fileSnapshots{
-			Enabled:       ptr(cfg.Snapshots.Enabled),
-			RetentionDays: ptr(cfg.Snapshots.RetentionDays),
-			MaxFileBytes:  ptr(cfg.Snapshots.MaxFileBytes),
+			Enabled:       strutil.Ptr(cfg.Snapshots.Enabled),
+			RetentionDays: strutil.Ptr(cfg.Snapshots.RetentionDays),
+			MaxFileBytes:  strutil.Ptr(cfg.Snapshots.MaxFileBytes),
 		}
 	}
 	if file.Permissions != nil || len(cfg.Permissions.Rules) > 0 {
@@ -193,9 +185,9 @@ func SaveProjectConfig(path string, cfg Config) error {
 	if file.Hooks != nil || !reflect.DeepEqual(cfg.Hooks, def.Hooks) {
 		entries := make([]fileHookEntry, 0, len(cfg.Hooks.Entries))
 		for _, h := range cfg.Hooks.Entries {
-			entries = append(entries, fileHookEntry{Event: ptr(h.Event), Matcher: ptr(h.Matcher), Command: ptr(h.Command), TimeoutMS: ptr(h.TimeoutMS)})
+			entries = append(entries, fileHookEntry{Event: strutil.Ptr(h.Event), Matcher: strutil.Ptr(h.Matcher), Command: strutil.Ptr(h.Command), TimeoutMS: strutil.Ptr(h.TimeoutMS)})
 		}
-		file.Hooks = &fileHooks{FailClosed: ptr(cfg.Hooks.FailClosed), Entries: entries}
+		file.Hooks = &fileHooks{FailClosed: strutil.Ptr(cfg.Hooks.FailClosed), Entries: entries}
 	}
 	if file.Providers != nil || len(cfg.Providers) > 0 {
 		file.Providers = cfg.Providers

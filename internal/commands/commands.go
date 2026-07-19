@@ -8,10 +8,25 @@ import (
 	"strings"
 
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/export"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
+
+// snapshotContext returns the snapshot service and database, or a
+// user-facing error message when either is unavailable.
+func snapshotContext(state *session.State) (session.Snapshotter, *db.DB, string) {
+	sp := state.Snapshotter()
+	if sp == nil {
+		return nil, nil, "Snapshot service is not available."
+	}
+	database := state.DB()
+	if database == nil {
+		return nil, nil, "No database available to look up snapshots."
+	}
+	return sp, database, ""
+}
 
 func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 	commands := []Command{
@@ -275,13 +290,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "undo",
 			Description: "Restore the working tree to the snapshot before the current turn",
 			Handler: func(state *session.State, args []string) string {
-				sp := state.Snapshotter()
-				if sp == nil {
-					return "Snapshot service is not available."
-				}
-				database := state.DB()
-				if database == nil {
-					return "No database available to look up snapshots."
+				sp, database, errMsg := snapshotContext(state)
+				if errMsg != "" {
+					return errMsg
 				}
 				hash, err := database.SnapshotBefore(state.SessionID(), state.TurnIndex())
 				if err != nil {
@@ -300,13 +311,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "redo",
 			Description: "Redo the last undo by restoring the latest snapshot (experimental)",
 			Handler: func(state *session.State, args []string) string {
-				sp := state.Snapshotter()
-				if sp == nil {
-					return "Snapshot service is not available."
-				}
-				database := state.DB()
-				if database == nil {
-					return "No database available to look up snapshots."
+				sp, database, errMsg := snapshotContext(state)
+				if errMsg != "" {
+					return errMsg
 				}
 				_, hash, _, err := database.LatestSnapshot(state.SessionID())
 				if err != nil {
@@ -325,13 +332,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "diff",
 			Description: "Show the current turn's cumulative changes from the last snapshot",
 			Handler: func(state *session.State, args []string) string {
-				sp := state.Snapshotter()
-				if sp == nil {
-					return "Snapshots unavailable (git not installed or disabled)."
-				}
-				database := state.DB()
-				if database == nil {
-					return "No database available to look up snapshots."
+				sp, database, errMsg := snapshotContext(state)
+				if errMsg != "" {
+					return errMsg
 				}
 				hash, err := database.SnapshotBefore(state.SessionID(), state.TurnIndex())
 				if err != nil || hash == "" {
@@ -403,11 +406,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				target := turns[n]
 				newLeaf := state.Rewind(target.ID)
 
-				if sp := state.Snapshotter(); sp != nil {
-					if database := state.DB(); database != nil {
-						if hash, err := database.SnapshotBefore(state.SessionID(), state.TurnIndex()); err == nil && hash != "" {
-							_ = sp.Restore(context.Background(), hash)
-						}
+				if sp, database, _ := snapshotContext(state); sp != nil {
+					if hash, err := database.SnapshotBefore(state.SessionID(), state.TurnIndex()); err == nil && hash != "" {
+						_ = sp.Restore(context.Background(), hash)
 					}
 				}
 				return fmt.Sprintf("Rewound to before: %q. Your next message starts a new branch (leaf %d).", strutil.Truncate(target.Content, 60, true), newLeaf)

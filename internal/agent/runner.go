@@ -129,10 +129,11 @@ type MemoryProvider interface {
 //     ForceClass, SkillIndex, Role, WriteGate, UsageObserver,
 //     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleGenerator,
 //     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID,
-//     fileIndexCache) are initialised once; resolveRoute may grow
-//     MaxTurnContextTokens (monotonically) when the route-resolved context
-//     window exceeds the configured value. The seed persists across RunTask
-//     calls.
+//     fileIndexCache) are initialised once; resolveRoute may lower
+//     MaxTurnContextTokens (never raise it) when the route-resolved model's
+//     context window is smaller than the configured value — the configured
+//     value is a ceiling, and a reduction persists into later RunTask
+//     calls. The seed persists across RunTask calls.
 //
 //   - Per-turn state (tracker, stats, route, pressureMessageSent,
 //     consecutiveParseFailures, consecutiveEmpty) is reset at the top of

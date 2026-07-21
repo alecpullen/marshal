@@ -23,14 +23,11 @@ func EstimateText(s string) int {
 	return contextpack.EstimateTokens(s)
 }
 
-// Provider-usage-backed meters are deferred to a later milestone:
-// the provider layer does not yet surface real token-usage
-// reporting. Until it does, EstimateMeter is the only default and
-// all callers can be migrated without churn.
-//
-// EstimateMeter is the active default: it sums the prompt and completion
-// token counts it is given (themselves derived from EstimateText). It is
-// approximate but self-contained and identical across all local providers.
+// EstimateMeter is the default TokenMeter: it sums whatever prompt and
+// completion counts it is given. The orchestrator feeds it real
+// provider-reported usage via Runner.UsageObserver when the provider
+// surfaces usage, and EstimateText-derived estimates when it does not.
+// It is self-contained and behaves identically across all providers.
 type EstimateMeter struct {
 	mu    sync.Mutex
 	total int

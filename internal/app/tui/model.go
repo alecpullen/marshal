@@ -1752,141 +1752,24 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	msg := cmd.Handler(m.state, args)
-
-	if msg != "" {
-		m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+	if cmd.Handler != nil {
+		if msg := cmd.Handler(m.state, args); msg != "" {
+			m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+		}
 	}
 
-	switch cmd.Name {
-	case "exit", "quit":
-		return m, m.beginShutdown()
-
-	case "set":
-		m.handleSetCommand(args)
-		m.refreshViewport()
-		return m, nil
-
-	case "settings":
-		m.openSettingsBrowser(strings.Join(args, " "))
-		m.refreshViewport()
-		return m, nil
-
-	case "memory":
-		if m.memoryDB == nil {
-			m.state.AddMessage(session.RoleSystem, "Memory browser not available (no database configured).", session.ContentTypePlain)
+	if cmd.TUIOnly {
+		effect, ok := tuiCommandEffects[cmd.Name]
+		if !ok {
+			m.state.AddMessage(session.RoleSystem, "Command /"+cmd.Name+" is not available in this build.", session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		}
-		m.dock.Open(memory.NewPanel(m.memoryDB, m.memoryProject))
-		m.refreshViewport()
-		return m, nil
-
-	case "stop":
-		if !m.cancelTurn() {
-			m.refreshViewport()
-		}
-		return m, nil
-
-	case "ask":
-		m.setMode("ask")
-		m.refreshViewport()
-		return m, nil
-
-	case "edit":
-		m.setMode("edit")
-		m.refreshViewport()
-		return m, nil
-
-	case "auto":
-		m.setMode("")
-		m.refreshViewport()
-		return m, nil
-
-	case "mode":
-		if len(args) > 0 {
-			switch v := strings.ToLower(args[0]); v {
-			case "ask", "edit", "auto":
-				return m.dispatchCommand("/" + v)
-			case "sdd":
-				m.openSDDPlanPicker()
-				m.refreshViewport()
-				return m, nil
-			}
-		}
-		m.openPicker("mode", "Interaction mode", "", m.modePickerItems(), "")
-		m.refreshViewport()
-		return m, nil
-
-	case "swarm":
-		goal := strings.TrimSpace(strings.Join(args, " "))
-		if goal == "" {
-			m.state.AddMessage(session.RoleSystem, "Usage: /swarm <goal>", session.ContentTypePlain)
-			m.refreshViewport()
-			return m, nil
-		}
-		if m.swarmRunner == nil {
-			m.state.AddMessage(session.RoleSystem, "Swarm is not available (agent failed to initialise).", session.ContentTypePlain)
-			m.refreshViewport()
-			return m, nil
-		}
-		if m.busy {
-			return m, nil
-		}
-		return m.startAgentRun(m.swarmRunner, goal)
-
-	case "sdd":
-		planPath := strings.TrimSpace(strings.Join(args, " "))
-		if planPath == "" {
-			m.state.AddMessage(session.RoleSystem, "Usage: /sdd <plan-file>", session.ContentTypePlain)
-			m.refreshViewport()
-			return m, nil
-		}
-		if m.sddRunner == nil {
-			m.state.AddMessage(session.RoleSystem, "SDD is not available (agent failed to initialise).", session.ContentTypePlain)
-			m.refreshViewport()
-			return m, nil
-		}
-		if m.busy {
-			return m, nil
-		}
-		return m.startAgentRun(m.sddRunner, planPath)
-
-	case "connect":
-		m.openConnect("/")
-		m.refreshViewport()
-		return m, nil
-
-	case "models":
-		cmd := m.openModels()
-		m.refreshViewport()
-		return m, cmd
-
-	case "model":
-		presets := m.state.Config.Models.Presets
-		if len(presets) == 0 {
-			m.state.AddMessage(session.RoleSystem, "No model presets configured. Add one in /settings → Model Presets.", session.ContentTypePlain)
-			m.refreshViewport()
-			return m, nil
-		}
-		if len(args) > 0 {
-			if _, ok := presets[args[0]]; ok {
-				m.switchModelPreset(args[0])
-				m.refreshViewport()
-				return m, nil
-			}
-		}
-		// bare, or an argument that doesn't resolve: open the picker,
-		// pre-filtered with whatever was typed
-		m.openPicker("model", "Switch model", "session only — /settings to persist",
-			m.modelPickerItems(), strings.Join(args, " "))
-		m.refreshViewport()
-		return m, nil
-
-	default:
-		m.refreshViewport()
-		return m, nil
+		return effect(m, args)
 	}
+
+	m.refreshViewport()
+	return m, nil
 }
 
 // openConnect opens the connect overlay for adding/reconnecting a provider.

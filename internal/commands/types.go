@@ -21,7 +21,12 @@ type Command struct {
 	Description string
 	Args        string // human-readable, e.g. "<model-name>" or "" for no args
 	Hidden      bool   // when true, excluded from /help listing
-	Handler     Handler
+	// TUIOnly marks a command whose logic is interactive and lives in the
+	// TUI dispatch table (internal/app/tui/commands_dispatch.go). Such
+	// commands carry no Handler; headless callers should treat them as
+	// unavailable.
+	TUIOnly bool
+	Handler Handler
 }
 
 type Registry struct {
@@ -37,7 +42,7 @@ func (r *Registry) Register(cmd Command) error {
 	if name == "" {
 		return fmt.Errorf("%w: name is required", ErrInvalidCommand)
 	}
-	if cmd.Handler == nil {
+	if cmd.Handler == nil && !cmd.TUIOnly {
 		return fmt.Errorf("%w: handler is required for %q", ErrInvalidCommand, name)
 	}
 	if _, exists := r.commands[name]; exists {

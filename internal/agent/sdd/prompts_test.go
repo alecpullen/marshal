@@ -7,7 +7,7 @@ import (
 
 func TestBuildImplementerPrompt(t *testing.T) {
 	task := PlanTask{Number: 1, Title: "Hook installation", Body: "Implement the hook."}
-	prompt := BuildImplementerPrompt(task, "/repo/.marshal/sdd/task-1-brief.md", "/repo/.marshal/sdd/task-1-report.md", "This is the first task in the project.")
+	prompt := BuildImplementerPrompt(task, "/repo/.marshal/sdd/task-1-brief.md", "/repo/.marshal/sdd/task-1-report.md", "/repo/worktree", "This is the first task in the project.")
 	if !strings.Contains(prompt, "Task 1: Hook installation") {
 		t.Errorf("prompt missing task title: %s", prompt)
 	}
@@ -19,6 +19,21 @@ func TestBuildImplementerPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "This is the first task in the project.") {
 		t.Errorf("prompt missing context: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Worktree Discipline") {
+		t.Errorf("prompt missing worktree discipline section: %s", prompt)
+	}
+	if !strings.Contains(prompt, "/repo/worktree") {
+		t.Errorf("prompt missing worktree directory: %s", prompt)
+	}
+	if !strings.Contains(prompt, "git rev-parse --abbrev-ref HEAD") {
+		t.Errorf("prompt missing branch verification instruction: %s", prompt)
+	}
+	if !strings.Contains(prompt, "git reset --soft HEAD~1") {
+		t.Errorf("prompt missing safe reset instruction: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Self-review Limits") {
+		t.Errorf("prompt missing self-review limits section: %s", prompt)
 	}
 }
 
@@ -40,6 +55,9 @@ func TestBuildTaskReviewerPrompt(t *testing.T) {
 		"def5678",
 		"Spec Compliance",
 		"Task quality",
+		"Do Not Trust the Report",
+		"Deviated",
+		"deviation",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("reviewer prompt missing %q", want)
@@ -66,6 +84,9 @@ func TestBuildBranchReviewerPrompt(t *testing.T) {
 		"minor style",
 		"Branch Verdict",
 		"Whole-Plan Coverage",
+		"Deviation Rule",
+		"What You Do NOT Do",
+		"Accumulated Minor Triage",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("branch reviewer prompt missing %q", want)
@@ -75,19 +96,31 @@ func TestBuildBranchReviewerPrompt(t *testing.T) {
 
 func TestBuildFixPrompt(t *testing.T) {
 	task := PlanTask{Number: 2, Title: "Recovery modes", Body: "Add recovery modes."}
-	prompt := BuildFixPrompt("/repo/.marshal/sdd/task-2-report.md", "#### Important\n- Missing progress reporting at parser.go:55", task)
+	prompt := BuildFixPrompt(task, "/repo/.marshal/sdd/task-2-report.md", "/repo/worktree", "#### Important\n- Missing progress reporting at parser.go:55")
 	if !strings.Contains(prompt, "fix") || !strings.Contains(prompt, "Missing progress reporting") {
 		t.Errorf("fix prompt missing findings: %s", prompt)
 	}
 	if !strings.Contains(prompt, "/repo/.marshal/sdd/task-2-report.md") {
 		t.Errorf("fix prompt missing report path")
 	}
+	if !strings.Contains(prompt, "/repo/worktree") {
+		t.Errorf("fix prompt missing worktree directory")
+	}
+	if !strings.Contains(prompt, "git rev-parse --abbrev-ref HEAD") {
+		t.Errorf("fix prompt missing branch verification instruction")
+	}
+	if !strings.Contains(prompt, "git reset --soft HEAD~1") {
+		t.Errorf("fix prompt missing safe reset instruction")
+	}
 }
 
 func TestBuildBranchFixPrompt(t *testing.T) {
-	p := BuildBranchFixPrompt("finding one\nfinding two")
+	p := BuildBranchFixPrompt("finding one\nfinding two", "/repo/worktree")
 	if !strings.Contains(p, "finding one") {
 		t.Fatalf("prompt missing findings:\n%s", p)
+	}
+	if !strings.Contains(p, "/repo/worktree") {
+		t.Fatalf("branch fix prompt missing worktree directory:\n%s", p)
 	}
 	if strings.Contains(p, "Task 0") {
 		t.Fatalf("prompt reuses per-task framing with a zero-value task:\n%s", p)

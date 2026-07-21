@@ -25,6 +25,7 @@ type TaskVerdict struct {
 	SpecCompliance VerdictStatus
 	TaskQuality    VerdictStatus
 	Findings       []Finding
+	Deviations     []string // differences between the brief and the implemented code
 }
 
 // BranchVerdict is the parsed output of the branch reviewer.
@@ -70,15 +71,18 @@ func ParseTaskVerdict(text string) TaskVerdict {
 			currentSeverity = "Important"
 		case strings.HasPrefix(trimmed, "#### Minor"):
 			currentSeverity = "Minor"
-		case strings.HasPrefix(trimmed, "- ") && currentSeverity != "":
+		case strings.HasPrefix(trimmed, "-") && currentSeverity != "":
 			v.Findings = append(v.Findings, Finding{
 				Severity: currentSeverity,
 				Text:     strings.TrimPrefix(trimmed, "- "),
 			})
+			if strings.Contains(strings.ToLower(trimmed), "deviat") {
+				v.Deviations = append(v.Deviations, strings.TrimPrefix(trimmed, "- "))
+			}
 		default:
 			// A non-empty line that isn't a heading or bullet resets the
 			// current severity section (e.g. ### Assessment closes Issues).
-			if trimmed != "" && !strings.HasPrefix(trimmed, "- ") && !strings.HasPrefix(trimmed, "####") {
+			if trimmed != "" && !strings.HasPrefix(trimmed, "-") && !strings.HasPrefix(trimmed, "####") {
 				currentSeverity = ""
 			}
 		}

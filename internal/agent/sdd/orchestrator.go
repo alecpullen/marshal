@@ -71,11 +71,13 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 
 	// Optionally create a worktree for isolation.
 	var wt *Worktree
+	expectedBranch := o.gitCurrentBranch(workingDir)
 	if o.Cfg.AutoWorktree {
 		branchName := "sdd/" + planSlug(plan.Title)
 		wt, err = CreateWorktree(workingDir, branchName)
 		if err == nil {
 			workingDir = wt.Path
+			expectedBranch = branchName
 			ws, _ = NewWorkspace(workingDir)
 			if _, werr := ws.Ensure(); werr != nil {
 				// Surface the failure instead of silently running on a
@@ -88,6 +90,7 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 				if _, err := ws.Ensure(); err != nil {
 					return err
 				}
+				expectedBranch = o.gitCurrentBranch(workingDir)
 			}
 			ledger = NewLedger(ws)
 			completed = ledger.CompletedTasks()
@@ -100,6 +103,11 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 			_ = wt.Remove()
 		}
 	}()
+
+	mainDir := o.State.WorkingDir
+
+	// Pre-flight plan review: scan for hazards before dispatching Task 1.
+	o.preflightPlanReview(plan)
 
 	tasks := plan.Tasks
 	total := len(tasks)
@@ -116,6 +124,7 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 	o.announce(fmt.Sprintf("▸ SDD started: %s (%d tasks)", plan.Title, total))
 
 	var minorFindings []string
+	var deviations []string
 
 	for i, task := range tasks {
 		if ctx.Err() != nil {
@@ -132,9 +141,18 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 			continue
 		}
 
-		if err := o.runTask(ctx, ws, ledger, plan, task, i, total, &minorFindings, workingDir); err != nil {
+		if err := o.runTask(ctx, ws, ledger, plan, task, i, total, &minorFindings, &deviations, workingDir, mainDir, expectedBranch); err != nil {
 			return err
 		}
+	}
+
+	// Surface accumulated deviations at the final checkpoint before branch review.
+	if len(deviations) > 0 {
+		o.announce("⚠ Deviations from the brief were detected during the run:")
+		for _, d := range deviations {
+			o.announce("  - " + d)
+		}
+		o.announce("Review these deviations before merging. If any are rejected, re-run the affected tasks.")
 	}
 
 	// Branch review — the whole-branch merge gate. Skipped (loudly) when
@@ -154,7 +172,7 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 		o.State.UpdateSDDBranchReview(session.SDDPhaseSkipped)
 		o.announce("Branch review skipped — no branch diff (merge-base equals HEAD).")
 	default:
-		o.runBranchReview(ctx, planPath, plan, ws, workingDir, mergeBase, headSHA, diffPath, minorFindings)
+		o.runBranchReview(ctx, planPath, plan, ws, workingDir, mainDir, mergeBase, headSHA, diffPath, minorFindings, deviations)
 	}
 
 	o.announce(fmt.Sprintf("▸ SDD complete. %d/%d tasks done. Use /merge or /pr to finish.", total, total))
@@ -163,7 +181,7 @@ func (o *Orchestrator) Run(ctx context.Context, planPath string) error {
 
 // runBranchReview dispatches the whole-branch merge-gate review and, on
 // findings, one fix wave plus a single re-review.
-func (o *Orchestrator) runBranchReview(ctx context.Context, planPath string, plan *Plan, ws *Workspace, workingDir, mergeBase, headSHA, diffPath string, minorFindings []string) {
+func (o *Orchestrator) runBranchReview(ctx context.Context, planPath string, plan *Plan, ws *Workspace, workingDir, mainDir, mergeBase, headSHA, diffPath string, minorFindings, deviations []string) {
 	branchPrompt := BuildBranchReviewerPrompt(
 		planPath, ws.ReportsDir(), diffPath,
 		plan.GlobalConstraints, mergeBase, headSHA, minorFindings,
@@ -181,7 +199,7 @@ func (o *Orchestrator) runBranchReview(ctx context.Context, planPath string, pla
 		return
 	}
 	o.announce("⚠ Branch review: findings — fix wave dispatched, re-reviewing")
-	fixPrompt := BuildBranchFixPrompt(branchTask.Summary)
+	fixPrompt := BuildBranchFixPrompt(branchTask.Summary, workingDir)
 	if _, err := o.runRole(ctx, agent.RoleSDDImplementer, swarm.ScopeFull, fixPrompt); err != nil {
 		o.announce("Branch fix wave failed: " + err.Error())
 	}
@@ -213,8 +231,10 @@ func (o *Orchestrator) runBranchReview(ctx context.Context, planPath string, pla
 
 // runTask executes one task: implementer -> review loop (up to MaxFixRounds
 // times) -> ledger append. workingDir is the git working directory (may
-// differ from o.State.WorkingDir when AutoWorktree is enabled).
-func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledger, plan *Plan, task PlanTask, index, total int, minorFindings *[]string, workingDir string) error {
+// differ from o.State.WorkingDir when AutoWorktree is enabled). mainDir is
+// the original working directory, used to check that commits do not leak to
+// main. expectedBranch is the branch the implementer should commit to.
+func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledger, plan *Plan, task PlanTask, index, total int, minorFindings, deviations *[]string, workingDir, mainDir, expectedBranch string) error {
 	briefPath, err := ws.WriteTaskBrief(task.Number, task.Body)
 	if err != nil {
 		return fmt.Errorf("task %d brief: %w", task.Number, err)
@@ -229,7 +249,8 @@ func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledge
 	o.announce(fmt.Sprintf("Task %d/%d: %s — implementer dispatched", task.Number, total, task.Title))
 
 	baseSHA := o.gitHead(workingDir)
-	implPrompt := BuildImplementerPrompt(task, briefPath, reportPath, "See the task brief for full details.")
+	beforeBranch := o.gitCurrentBranch(workingDir)
+	implPrompt := BuildImplementerPrompt(task, briefPath, reportPath, workingDir, "See the task brief for full details.")
 	implTask, err := o.runRole(ctx, agent.RoleSDDImplementer, swarm.ScopeFull, implPrompt)
 	if err != nil {
 		o.State.UpdateSDDTask(index, func(ts *session.SDDTaskStatus) {
@@ -248,8 +269,19 @@ func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledge
 		return fmt.Errorf("task %d implementer %s", task.Number, status)
 	}
 
+	reportedCommit := parseImplementerCommit(implTask.Summary)
+	if err := o.verifyBranchState(workingDir, mainDir, expectedBranch, beforeBranch, reportedCommit); err != nil {
+		o.State.UpdateSDDTask(index, func(ts *session.SDDTaskStatus) {
+			ts.Phase = session.SDDPhaseFailed
+			ts.Detail = "wrong-branch incident"
+		})
+		o.announce(fmt.Sprintf("Task %d/%d: wrong-branch incident — %v", task.Number, total, err))
+		o.announce("Recover manually with git update-ref / git reset; do not dispatch a fix subagent for this.")
+		return fmt.Errorf("task %d wrong-branch incident: %w", task.Number, err)
+	}
+
 	headSHA := o.gitHead(workingDir)
-	o.announce(fmt.Sprintf("Task %d/%d: implementer DONE (commits %s..%s)", task.Number, total, shortSHA(baseSHA), shortSHA(headSHA)))
+	o.announce(fmt.Sprintf("Task %d/%d: implementer DONE (commits %s..%s, branch %s)", task.Number, total, shortSHA(baseSHA), shortSHA(headSHA), expectedBranch))
 
 	o.State.UpdateSDDTask(index, func(ts *session.SDDTaskStatus) {
 		ts.Implementer = session.SDDPhaseDone
@@ -285,8 +317,14 @@ func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledge
 			tag := fmt.Sprintf("task-%d: %s: %s", task.Number, f.Severity, f.Text)
 			*minorFindings = append(*minorFindings, tag)
 		}
+		// Track deviations separately.
+		for _, d := range verdict.Deviations {
+			*deviations = append(*deviations, fmt.Sprintf("task-%d: %s", task.Number, d))
+		}
 		if !verdict.HasBlockingFindings() {
 			o.announce(fmt.Sprintf("Task %d/%d: review clean — spec ✅, quality approved", task.Number, total))
+			// Post-review state sweep before marking the task complete.
+			o.postReviewStateSweep(workingDir, mainDir)
 			o.State.UpdateSDDTask(index, func(ts *session.SDDTaskStatus) {
 				ts.Reviewer = session.SDDPhaseDone
 				ts.Phase = session.SDDPhaseDone
@@ -306,7 +344,7 @@ func (o *Orchestrator) runTask(ctx context.Context, ws *Workspace, ledger *Ledge
 			ts.FixRound = round + 1
 			ts.Detail = fmt.Sprintf("fix %d/%d", round+1, o.MaxFixRounds)
 		})
-		fixPrompt := BuildFixPrompt(reportPath, reviewTask.Summary, task)
+		fixPrompt := BuildFixPrompt(task, reportPath, workingDir, reviewTask.Summary)
 		_, err = o.runRole(ctx, agent.RoleSDDImplementer, swarm.ScopeFull, fixPrompt)
 		if err != nil {
 			return fmt.Errorf("task %d fix failed: %w", task.Number, err)
@@ -335,9 +373,105 @@ func (o *Orchestrator) announce(text string) {
 	o.State.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
 }
 
+// verifyBranchState checks that the worktree is still on the expected branch
+// and that the reported commit did not leak to main. beforeBranch is the
+// branch recorded before dispatching the implementer; it must match the
+// expected branch. reportedCommit may be empty if the implementer did not
+// report one, in which case the SHA check is skipped.
+func (o *Orchestrator) verifyBranchState(workingDir, mainDir, expectedBranch, beforeBranch, reportedCommit string) error {
+	if beforeBranch != expectedBranch {
+		return fmt.Errorf("branch before dispatch was %q, expected %q", beforeBranch, expectedBranch)
+	}
+	currentBranch := o.gitCurrentBranch(workingDir)
+	if currentBranch != expectedBranch {
+		return fmt.Errorf("worktree is on branch %q, expected %q", currentBranch, expectedBranch)
+	}
+	if reportedCommit != "" {
+		headSHA := o.gitHead(workingDir)
+		// Allow either the reported commit or HEAD to be a prefix of the other
+		// so short-SHA reports still match.
+		if !strings.HasPrefix(headSHA, reportedCommit) && !strings.HasPrefix(reportedCommit, headSHA) {
+			return fmt.Errorf("implementer reported commit %q but worktree HEAD is %q", reportedCommit, headSHA)
+		}
+		mainLog := o.gitLogOneline(mainDir, "main", 10)
+		short := reportedCommit
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		if strings.Contains(mainLog, short) {
+			return fmt.Errorf("reported commit %q appears in main log", reportedCommit)
+		}
+	}
+	return nil
+}
+
+// postReviewStateSweep confirms the worktree and main branches are in the
+// expected state before the next task dispatch.
+func (o *Orchestrator) postReviewStateSweep(workingDir, mainDir string) {
+	o.announce("State sweep:")
+	if status := o.gitStatus(workingDir); status != "" {
+		o.announce("  worktree uncommitted changes:\n" + status)
+	} else {
+		o.announce("  worktree clean")
+	}
+	if wtLog := o.gitLogOneline(workingDir, "HEAD", 3); wtLog != "" {
+		o.announce("  worktree log: " + wtLog)
+	}
+	if mainLog := o.gitLogOneline(mainDir, "main", 3); mainLog != "" {
+		o.announce("  main log: " + mainLog)
+	}
+}
+
+// preflightPlanReview scans the plan for common hazards and announces them
+// before Task 1 is dispatched. It does not block execution; the human decides
+// whether to proceed.
+func (o *Orchestrator) preflightPlanReview(plan *Plan) {
+	var text strings.Builder
+	text.WriteString(plan.Title)
+	text.WriteString("\n")
+	text.WriteString(plan.GlobalConstraints)
+	for _, t := range plan.Tasks {
+		text.WriteString("\n")
+		text.WriteString(t.Body)
+	}
+	lower := strings.ToLower(text.String())
+
+	var findings []string
+	if strings.Contains(lower, "git reset --hard") {
+		findings = append(findings, "plan contains `git reset --hard` — destructive resets are forbidden")
+	}
+	if strings.Contains(lower, "git checkout") && !strings.Contains(lower, "git checkout -b") {
+		findings = append(findings, "plan contains `git checkout` without `-b` — may be destructive or ambiguous")
+	}
+	if strings.Contains(lower, "npx ") && !strings.Contains(lower, "npx --yes") && !strings.Contains(lower, "npx -y") {
+		findings = append(findings, "plan contains `npx` invocation without `--yes` or `-y` — may be interactive")
+	}
+	if strings.Contains(lower, "package.json") && !strings.Contains(lower, "package-lock.json") {
+		findings = append(findings, "plan mentions package.json but not package-lock.json — ensure dependency lockfile changes are staged")
+	}
+
+	if len(findings) == 0 {
+		return
+	}
+	o.announce("⚠ Pre-flight plan review findings:")
+	for _, f := range findings {
+		o.announce("  - " + f)
+	}
+	o.announce("Review these findings before proceeding. The SDD run will continue, but some steps may need explicit approval.")
+}
+
 // gitHead returns the current HEAD SHA of the given working directory.
 func (o *Orchestrator) gitHead(workingDir string) string {
 	out, err := exec.Command("git", "-C", workingDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitCurrentBranch returns the current branch name of the working directory.
+func (o *Orchestrator) gitCurrentBranch(workingDir string) string {
+	out, err := exec.Command("git", "-C", workingDir, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		return ""
 	}
@@ -349,6 +483,24 @@ func (o *Orchestrator) gitMergeBase(workingDir string) string {
 	out, err := exec.Command("git", "-C", workingDir, "merge-base", "main", "HEAD").Output()
 	if err != nil {
 		return o.gitHead(workingDir)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitLogOneline returns the recent oneline log of the given ref.
+func (o *Orchestrator) gitLogOneline(workingDir, ref string, n int) string {
+	out, err := exec.Command("git", "-C", workingDir, "log", "--oneline", "-n", fmt.Sprintf("%d", n), ref).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitStatus returns the short status of the working directory.
+func (o *Orchestrator) gitStatus(workingDir string) string {
+	out, err := exec.Command("git", "-C", workingDir, "status", "--short").Output()
+	if err != nil {
+		return ""
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -399,6 +551,39 @@ func parseImplementerStatus(summary string) string {
 		}
 	}
 	return "DONE"
+}
+
+// parseImplementerCommit extracts the first commit-like hex token from the
+// implementer's summary. It looks for hex strings of at least 7 characters
+// on lines that mention commits. Returns an empty string if none is found.
+func parseImplementerCommit(summary string) string {
+	for _, line := range strings.Split(summary, "\n") {
+		lower := strings.ToLower(line)
+		if !strings.Contains(lower, "commit") {
+			continue
+		}
+		for _, f := range strings.Fields(line) {
+			clean := strings.TrimFunc(f, func(r rune) bool {
+				return r == '(' || r == ')' || r == ':' || r == ',' || r == '.' || r == ';'
+			})
+			if isHex(clean) && len(clean) >= 7 {
+				return clean
+			}
+		}
+	}
+	return ""
+}
+
+func isHex(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // planSlug converts a plan title into a filesystem-safe slug.

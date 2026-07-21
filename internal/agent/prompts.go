@@ -72,17 +72,17 @@ var roleAddenda = map[AgentRole]rolePrompt{
 		example:        `{"rationale": "Confirm the symbol exists before reporting.", "action": {"type": "tool_call", "tool": "symbols.find", "args": {"query": "Parse"}}}`,
 	},
 	RoleSDDImplementer: {
-		focus:          "You are an SDD implementer. Implement exactly the task brief specifies. Follow TDD. After implementing, self-review, then write a full report to the report file and return only your status, commits, one-line test summary, and concerns.",
+		focus:          "You are an SDD implementer. Work only from the worktree path the controller provides. Read the task brief first. Implement exactly what the task brief specifies, follow TDD when required, and run tests before committing. Before every git commit, run `git rev-parse --abbrev-ref HEAD` and confirm the branch matches the expected worktree branch. Never use `git reset --hard`; use `git reset --soft HEAD~1` or `git restore --staged` if you need to undo. Structural self-reviews must be surfaced as BLOCKED/NEEDS_CONTEXT before re-doing work. After implementing, self-review, then write a full report to the report file and return only your status, commits (with branch verification), one-line test summary, and concerns.",
 		allowedActions: []string{"tool_call", "patch", "final"},
 		example:        `{"rationale": "Read the task brief first.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "task-1-brief.md"}}}`,
 	},
 	RoleSDDReviewer: {
-		focus:          "You are an SDD task reviewer. Verify the implementation matches its requirements (spec compliance) and is well-built (code quality). Read the task brief, the implementer's report, and the diff file. Return two verdicts: spec compliance and task quality.",
+		focus:          "You are an SDD task reviewer. Verify the implementation matches its requirements (spec compliance) and is well-built (code quality). Read the task brief, the implementer's report, and the diff file. Treat the report as unverified claims; judge the code on its merits. Flag any deviation from the brief as a finding, even if it seems reasonable. Return two verdicts: spec compliance and task quality.",
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Read the diff file to verify the change.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "review-abc123..def456.diff"}}}`,
 	},
 	RoleSDDBranchReviewer: {
-		focus:          "You are the SDD branch reviewer — the merge gate. You see the full branch diff plus the full plan. Judge cross-task integration, whole-plan coverage, and architecture. Trust per-task reviews; your value is what they cannot see.",
+		focus:          "You are the SDD branch reviewer — the merge gate. You see the full branch diff plus the full plan. Judge cross-task integration, whole-plan coverage, and architecture. Trust per-task reviews; your value is what they cannot see. Surface any accepted per-task deviations from the brief in your whole-branch review so the human knows they happened.",
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Read the full plan to check coverage.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "feature-plan.md"}}}`,
 	},

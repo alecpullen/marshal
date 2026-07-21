@@ -119,11 +119,13 @@ func (pe *PolicyEngine) Logger() *slog.Logger {
 }
 
 func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {
-	// Snapshot the mutable fields under the lock: SetRules / WithRegistry
-	// run from the UI goroutine and must not race a mid-Evaluate read.
+	// Snapshot the mutable fields under the lock: SetRules / WithRegistry /
+	// SetSessionRules run from the UI goroutine and must not race a
+	// mid-Evaluate read.
 	pe.mu.RLock()
 	rules := pe.rules
 	reg := pe.registry
+	sessionRules := pe.sessionRules
 	pe.mu.RUnlock()
 
 	// Evaluate must work with a nil engine config (tests, legacy callers):
@@ -134,70 +136,88 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 	}
 
 	if strings.HasPrefix(toolName, "mcp.") {
-		var mcpMatched bool
-		var mcpDecision Decision
-		var mcpReason string
+		decision, reason := evaluateMCP(cfg, rules, toolName, args)
+		return decision, reason, nil
+	}
+	decision, reason := pe.evaluateShell(cfg, rules, reg, sessionRules, toolName, args)
+	return decision, reason, nil
+}
 
-		if cfg.MCP.Policies != nil {
-			// 1. Exact Match (highest priority) — deny returns immediately
-			if policyStr, ok := cfg.MCP.Policies[toolName]; ok {
-				switch Decision(policyStr) {
-				case DecisionDeny:
-					return DecisionDeny, "blocked by MCP policy config exact match", nil
-				case DecisionAllow:
-					mcpDecision = DecisionAllow
-					mcpReason = "allowed by MCP policy config exact match"
+// evaluateMCP evaluates an mcp.* tool against the configured MCP policies
+// and the F4 permission rules. Precedence: exact-match deny > pattern deny
+// (two-pass, deny-first) > F4 rule > exact/pattern allow-or-confirm >
+// secure-default confirm.
+func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, args map[string]interface{}) (Decision, string) {
+	var mcpMatched bool
+	var mcpDecision Decision
+	var mcpReason string
+
+	if cfg.MCP.Policies != nil {
+		// 1. Exact match (highest priority) — deny returns immediately.
+		if policyStr, ok := cfg.MCP.Policies[toolName]; ok {
+			switch Decision(policyStr) {
+			case DecisionDeny:
+				return DecisionDeny, "blocked by MCP policy config exact match"
+			case DecisionAllow:
+				mcpDecision = DecisionAllow
+				mcpReason = "allowed by MCP policy config exact match"
+				mcpMatched = true
+			case DecisionConfirm:
+				mcpDecision = DecisionConfirm
+				mcpReason = "requires approval by MCP policy config exact match"
+				mcpMatched = true
+			}
+		}
+
+		// 2. Pattern match (prefix, wildcard, regex), most restrictive
+		// first — deny returns immediately.
+		if !mcpMatched {
+			for _, want := range []Decision{DecisionDeny, DecisionConfirm, DecisionAllow} {
+				for pattern, policyStr := range cfg.MCP.Policies {
+					if Decision(policyStr) != want || !matchMCPPolicy(pattern, toolName) {
+						continue
+					}
+					switch want {
+					case DecisionDeny:
+						return DecisionDeny, "blocked by MCP policy match: " + pattern
+					case DecisionConfirm:
+						mcpDecision = DecisionConfirm
+						mcpReason = "requires approval by MCP policy match: " + pattern
+					case DecisionAllow:
+						mcpDecision = DecisionAllow
+						mcpReason = "allowed by MCP policy match: " + pattern
+					}
 					mcpMatched = true
-				case DecisionConfirm:
-					mcpDecision = DecisionConfirm
-					mcpReason = "requires approval by MCP policy config exact match"
-					mcpMatched = true
+					break
+				}
+				if mcpMatched {
+					break
 				}
 			}
-
-			// 2. Pattern Match (prefix, wildcard, regex) — deny returns immediately
-			if !mcpMatched {
-				for _, want := range []Decision{DecisionDeny, DecisionConfirm, DecisionAllow} {
-					for pattern, policyStr := range cfg.MCP.Policies {
-						if Decision(policyStr) != want || !matchMCPPolicy(pattern, toolName) {
-							continue
-						}
-						switch want {
-						case DecisionDeny:
-							return DecisionDeny, "blocked by MCP policy match: " + pattern, nil
-						case DecisionConfirm:
-							mcpDecision = DecisionConfirm
-							mcpReason = "requires approval by MCP policy match: " + pattern
-						case DecisionAllow:
-							mcpDecision = DecisionAllow
-							mcpReason = "allowed by MCP policy match: " + pattern
-						}
-						mcpMatched = true
-						break
-					}
-					if mcpMatched {
-						break
-					}
-				}
-			}
 		}
-
-		// 4. F4 rules — can override allow/confirm from MCP policies
-		subjects := subjectsForTool(toolName, args, "")
-		if len(subjects) > 0 {
-			decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(toolName), subjects)
-			if matched {
-				return decision, "resolved by permission rule", nil
-			}
-		}
-
-		// Fallback to MCP policy decision, or secure default confirm
-		if mcpMatched {
-			return mcpDecision, mcpReason, nil
-		}
-		return DecisionConfirm, "requires approval (unconfigured MCP tool secure default)", nil
 	}
 
+	// 3. F4 rules — can override allow/confirm from MCP policies.
+	subjects := subjectsForTool(toolName, args, "")
+	if len(subjects) > 0 {
+		decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(toolName), subjects)
+		if matched {
+			return decision, "resolved by permission rule"
+		}
+	}
+
+	// 4. Fall back to the MCP policy decision, or the secure default.
+	if mcpMatched {
+		return mcpDecision, mcpReason
+	}
+	return DecisionConfirm, "requires approval (unconfigured MCP tool secure default)"
+}
+
+// evaluateShell evaluates a non-MCP tool: shell.run/test.run commands run
+// the guardrail analysis and then the shell rule lists; every other tool
+// resolves through F4 rules, the network-tool confirm, and the registry
+// risk fallback.
+func (pe *PolicyEngine) evaluateShell(cfg *config.Config, rules []permissions.Rule, reg *registry.Registry, sessionRules []string, toolName string, args map[string]interface{}) (Decision, string) {
 	var normCmd string
 	if toolName == "shell.run" || toolName == "test.run" {
 		var cmd string
@@ -206,108 +226,106 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 			if toolName == "test.run" {
 				cmd = cfg.Commands.Test
 			} else {
-				return DecisionConfirm, "missing command arg", nil
+				return DecisionConfirm, "missing command arg"
 			}
 		} else {
 			var typeOk bool
 			cmd, typeOk = cmdRaw.(string)
 			if !typeOk {
-				return DecisionConfirm, "invalid command arg type", nil
+				return DecisionConfirm, "invalid command arg type"
 			}
 		}
 
 		normCmd = normalizeCommand(cmd)
 		if normCmd == "" {
-			return DecisionConfirm, "empty command", nil
+			return DecisionConfirm, "empty command"
 		}
 
-		// 1. Conservative Safety Guardrails (AST-based; legacy fallback on parse error)
+		// 1. Conservative safety guardrails (AST-based; legacy fallback on
+		// parse error).
 		dynSetting := "deny"
 		if cfg.Tools.Shell.GuardrailDynamicArgv0 != "" {
 			dynSetting = cfg.Tools.Shell.GuardrailDynamicArgv0
 		}
 		dec, reason := pe.EvaluateGuardrails(normCmd, dynSetting)
 		if dec != "" {
-			return dec, reason, nil
+			return dec, reason
 		}
 	}
 
-	// 1b. F4 pattern rules (last-matching-rule-wins). Applied AFTER intrinsic
+	// 2. F4 pattern rules (last-matching-rule-wins). Applied AFTER intrinsic
 	// guardrails so a structural deny is never overridden by an allow rule.
 	// An allow rule here can downgrade an ask to allow; a deny rule forces deny.
 	subjects := subjectsForTool(toolName, args, normCmd)
 	if len(subjects) > 0 {
 		decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(toolName), subjects)
 		if matched {
-			return decision, "resolved by permission rule", nil
+			return decision, "resolved by permission rule"
 		}
 	}
 
-	// Network tools always require explicit approval by default regardless of
-	// any later auto-allow path. MUST stay above the generic low-risk fallback
-	// below; TestPolicyEngine_Evaluate_WebToolsAlwaysConfirm pins behavior.
-	// Users can opt into specific URLs/commands by writing an F4 rule with
-	// matching subject (subjectsForTool returns {"web.fetch"} / {"web.search"}).
+	// 3. Network tools always require explicit approval by default regardless
+	// of any later auto-allow path. MUST stay above the generic low-risk
+	// fallback below; TestPolicyEngine_Evaluate_WebToolsAlwaysConfirm pins
+	// behavior. Users can opt into specific URLs/commands by writing an F4
+	// rule with matching subject (subjectsForTool returns {"web.fetch"} /
+	// {"web.search"}).
 	if toolName == "web.fetch" || toolName == "web.search" {
-		return DecisionConfirm, "network access requires approval", nil
+		return DecisionConfirm, "network access requires approval"
 	}
 
+	// 4. Non-shell tools resolve via the registered risk level.
 	if toolName != "shell.run" && toolName != "test.run" {
 		if reg != nil {
 			if tool, ok := reg.Lookup(toolName); ok {
 				switch tool.Risk {
 				case registry.RiskReadOnly:
-					return DecisionAllow, "read-only tool", nil
+					return DecisionAllow, "read-only tool"
 				case registry.RiskWorkspaceWrite, registry.RiskCommand,
 					registry.RiskNetwork, registry.RiskDestructive:
 					return DecisionConfirm,
-						fmt.Sprintf("%s tool requires approval", tool.Risk), nil
+						fmt.Sprintf("%s tool requires approval", tool.Risk)
 				}
 				// Unknown risk: fall through to the existing
 				// "low-risk read tool" allow (preserves current behavior
 				// for tools that didn't declare Risk).
 			}
 		}
-		return DecisionAllow, "low-risk read tool", nil
+		return DecisionAllow, "low-risk read tool"
 	}
 
-	// 2. Config Deny Rules
+	// 5. Shell commands fall through to the configured rule lists.
+	return evaluateShellRules(cfg, sessionRules, normCmd)
+}
+
+// evaluateShellRules applies, in order: config deny rules, session-approved
+// prefixes, config allow rules, config confirm rules, then the auto-approve
+// or secure-confirm fallback.
+func evaluateShellRules(cfg *config.Config, sessionRules []string, normCmd string) (Decision, string) {
 	for _, pattern := range cfg.Tools.Shell.Deny.Patterns {
 		if matchPattern(pattern, normCmd) {
-			return DecisionDeny, "blocked by user deny rule: " + pattern, nil
+			return DecisionDeny, "blocked by user deny rule: " + pattern
 		}
 	}
-
-	// 3. Session Rules
-	pe.mu.RLock()
-	sessionRules := pe.sessionRules
-	pe.mu.RUnlock()
 	for _, prefix := range sessionRules {
 		if matchRule(normCmd, prefix) {
-			return DecisionAllow, "allowed by session-approved command: " + prefix, nil
+			return DecisionAllow, "allowed by session-approved command: " + prefix
 		}
 	}
-
-	// 4. Config Allow Rules
 	for _, prefix := range cfg.Tools.Shell.Allow.Commands {
 		if matchRule(normCmd, prefix) {
-			return DecisionAllow, "allowed by config allow rule: " + prefix, nil
+			return DecisionAllow, "allowed by config allow rule: " + prefix
 		}
 	}
-
-	// 5. Config Confirm Rules
 	for _, prefix := range cfg.Tools.Shell.Confirm.Commands {
 		if matchRule(normCmd, prefix) {
-			return DecisionConfirm, "requires confirmation by config confirm rule: " + prefix, nil
+			return DecisionConfirm, "requires confirmation by config confirm rule: " + prefix
 		}
 	}
-
-	// 6. Default Fallback
 	if cfg.Tools.Shell.AutoApprove {
-		return DecisionAllow, "allowed by auto-approve fallback", nil
+		return DecisionAllow, "allowed by auto-approve fallback"
 	}
-
-	return DecisionConfirm, "requires approval (default secure configuration)", nil
+	return DecisionConfirm, "requires approval (default secure configuration)"
 }
 
 func isBlockedByGuardrailLegacy(cmd string) bool {

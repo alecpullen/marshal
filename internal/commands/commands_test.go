@@ -253,17 +253,20 @@ func TestExitQuitCommands(t *testing.T) {
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
-	state := newTestState()
-	cmd, _ := cmdReg.Lookup("exit")
-	result := cmd.Handler(state, nil)
-	if result != "Goodbye!" {
-		t.Errorf("expected Goodbye!, got %s", result)
+	cmd, ok := cmdReg.Lookup("exit")
+	if !ok {
+		t.Fatal("exit command not registered")
+	}
+	if !cmd.TUIOnly {
+		t.Error("exit should be TUIOnly")
 	}
 
-	cmd, _ = cmdReg.Lookup("quit")
-	result = cmd.Handler(state, nil)
-	if result != "Goodbye!" {
-		t.Errorf("expected Goodbye!, got %s", result)
+	cmd, ok = cmdReg.Lookup("quit")
+	if !ok {
+		t.Fatal("quit command not registered")
+	}
+	if !cmd.TUIOnly {
+		t.Error("quit should be TUIOnly")
 	}
 }
 
@@ -272,23 +275,14 @@ func TestModeSwitchCommands(t *testing.T) {
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
-	state := newTestState()
-	cmd, _ := cmdReg.Lookup("ask")
-	result := cmd.Handler(state, nil)
-	if !strings.Contains(result, "Ask mode") {
-		t.Errorf("ask output wrong: %s", result)
-	}
-
-	cmd, _ = cmdReg.Lookup("edit")
-	result = cmd.Handler(state, nil)
-	if !strings.Contains(result, "Edit mode") {
-		t.Errorf("edit output wrong: %s", result)
-	}
-
-	cmd, _ = cmdReg.Lookup("auto")
-	result = cmd.Handler(state, nil)
-	if !strings.Contains(result, "Auto mode") {
-		t.Errorf("auto output wrong: %s", result)
+	for _, name := range []string{"ask", "edit", "auto"} {
+		cmd, ok := cmdReg.Lookup(name)
+		if !ok {
+			t.Fatalf("%s command not registered", name)
+		}
+		if !cmd.TUIOnly {
+			t.Errorf("%s should be TUIOnly", name)
+		}
 	}
 }
 
@@ -297,11 +291,12 @@ func TestStopCommand(t *testing.T) {
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
-	state := newTestState()
-	cmd, _ := cmdReg.Lookup("stop")
-	result := cmd.Handler(state, nil)
-	if result != "" {
-		t.Errorf("stop handler should return empty string, got %s", result)
+	cmd, ok := cmdReg.Lookup("stop")
+	if !ok {
+		t.Fatal("stop command not registered")
+	}
+	if !cmd.TUIOnly {
+		t.Error("stop should be TUIOnly")
 	}
 }
 
@@ -310,11 +305,12 @@ func TestModelCommandEmptyArgs(t *testing.T) {
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
-	state := newTestState()
-	cmd, _ := cmdReg.Lookup("model")
-	result := cmd.Handler(state, nil)
-	if result != "" {
-		t.Errorf("model handler should return empty string when no args, got %s", result)
+	cmd, ok := cmdReg.Lookup("model")
+	if !ok {
+		t.Fatal("model command not registered")
+	}
+	if !cmd.TUIOnly {
+		t.Error("model should be TUIOnly")
 	}
 }
 
@@ -330,9 +326,8 @@ func TestRegisterAllIncludesSwarmCommand(t *testing.T) {
 	if cmd.Args != "<goal>" {
 		t.Fatalf("swarm Args = %q, want \"<goal>\"", cmd.Args)
 	}
-	// The handler is a no-op; the TUI special-cases dispatch like /ask.
-	if got := cmd.Handler(nil, []string{"fix", "bug"}); got != "" {
-		t.Fatalf("swarm handler returned %q, want empty", got)
+	if !cmd.TUIOnly {
+		t.Error("swarm should be TUIOnly")
 	}
 }
 
@@ -611,6 +606,26 @@ func TestHiddenCommandsStillRunnable(t *testing.T) {
 		if !ok {
 			t.Errorf("hidden command /%s must still be registered for Lookup", name)
 		}
+	}
+}
+
+func TestRegisterTUIOnlyCommandWithoutHandler(t *testing.T) {
+	r := New()
+	err := r.Register(Command{Name: "tuitest", Description: "d", Hidden: true, TUIOnly: true})
+	if err != nil {
+		t.Fatalf("Register TUIOnly without Handler: %v", err)
+	}
+	cmd, ok := r.Lookup("tuitest")
+	if !ok || !cmd.TUIOnly {
+		t.Fatalf("Lookup: ok=%v TUIOnly=%v", ok, cmd.TUIOnly)
+	}
+}
+
+func TestRegisterNonTUICommandStillRequiresHandler(t *testing.T) {
+	r := New()
+	err := r.Register(Command{Name: "nohandler", Description: "d"})
+	if err == nil {
+		t.Fatal("Register without Handler and without TUIOnly: want error, got nil")
 	}
 }
 

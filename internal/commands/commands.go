@@ -33,12 +33,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "exit",
 			Description: "Exit Marshal",
-			Handler:     func(state *session.State, args []string) string { return "Goodbye!" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "quit",
 			Description: "Exit Marshal (alias for /exit)",
-			Handler:     func(state *session.State, args []string) string { return "Goodbye!" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "new",
@@ -177,71 +177,65 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "stop",
 			Description: "Cancel the current agent turn",
 			Hidden:      true,
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "ask",
 			Description: "Switch to Ask mode (read-only, no planning)",
 			Hidden:      true,
-			Handler: func(state *session.State, args []string) string {
-				return "Switched to Ask mode. Agent will answer questions without planning or editing."
-			},
+			TUIOnly:     true,
 		},
 		{
 			Name:        "edit",
 			Description: "Switch to Edit mode (planning + full tools)",
 			Hidden:      true,
-			Handler: func(state *session.State, args []string) string {
-				return "Switched to Edit mode. Agent will plan and execute changes."
-			},
+			TUIOnly:     true,
 		},
 		{
 			Name:        "auto",
 			Description: "Switch to Auto mode (classify each turn)",
 			Hidden:      true,
-			Handler: func(state *session.State, args []string) string {
-				return "Switched to Auto mode. Agent will classify each turn automatically."
-			},
+			TUIOnly:     true,
 		},
 		{
 			Name:        "mode",
 			Description: "Pick the interaction mode (Ask / Edit / Auto)",
 			Args:        "[ask|edit|auto]",
 			Hidden:      true,
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "swarm",
 			Description: "Run a goal through the swarm (planner → scouts → implementer → reviewer)",
 			Args:        "<goal>",
 			Hidden:      true,
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "sdd",
 			Description: "Run a plan through subagent-driven development (implementer → reviewer → branch review)",
 			Args:        "[plan-file]",
 			Hidden:      true,
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "connect",
 			Description: "Add or reconnect a provider",
 			Hidden:      true,
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "models",
 			Description: "Pick a model from connected providers",
 			Hidden:      true,
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "model",
 			Description: "Switch to a model preset by name",
 			Args:        "<preset-name>",
 			Hidden:      true,
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "config",
@@ -259,19 +253,19 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "settings",
 			Description: "Open settings panel",
 			Hidden:      true,
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "set",
 			Description: "Change a setting inline (\"/set\" alone browses)",
 			Args:        "<key> [value]",
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "memory",
 			Description: "Open memory browser",
 			Hidden:      true,
-			Handler:     func(state *session.State, args []string) string { return "" },
+			TUIOnly:     true,
 		},
 		{
 			Name:        "rollback",

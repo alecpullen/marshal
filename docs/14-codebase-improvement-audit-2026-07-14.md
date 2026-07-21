@@ -2106,7 +2106,7 @@ fixes" above).
 
 ---
 
-## Resolution status (updated 2026-07-18)
+## Resolution status (updated 2026-07-22)
 
 ### Batch 1 (A1 — sandbox execution hardening): RESOLVED on branch `feature/domain-a-security-and-sandbox`
 
@@ -2172,6 +2172,43 @@ fixes" above).
 | F-BUG-105 | RESOLVED | MessagesOnBranch uses recursive CTE; no IN-clause limit |
 | F-BUG-115 | RESOLVED | Same change eliminates N+1 |
 | F-BUG-116 | RESOLVED | ListSessions joins against aggregated CTE |
+
+### Batch 5 (C — ACP/MCP/swarm, part 1): RESOLVED (merged 32e5168)
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-c-acp-mcp-swarm.md` (Tasks 1-7)
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-BUG-47 | RESOLVED | MCP `id` normalized to a single Go type on both send and receive |
+| F-CON-53 | RESOLVED | `readLoop` no longer sends to channels while holding `c.mu` |
+| F-BUG-48 | RESOLVED | `tools/call` handler surfaces server `isError` as an error |
+| F-POL-64 | RESOLVED | `MCPClient.Call` wraps the raw `client closed` error |
+| F-CON-52 | RESOLVED | `deliverOutbound` / `failOutbound` channel send races closed |
+| F-CON-55 | RESOLVED | `Server.fatalErr` no longer drops excess fatal errors silently |
+| F-CON-56 | RESOLVED | `Server.Serve` shutdown waits for fatalErr reporting goroutines |
+| F-BUG-57 | RESOLVED | `Server.dispatch` recovers from handler panics |
+| F-POL-59 | RESOLVED | Duplicate JSON unmarshal in `handleFrame` removed |
+| F-POL-60 | RESOLVED | `Server.Serve` scanner buffer size no longer hard-coded |
+| F-POL-61 | RESOLVED | `Server.Request` validates the method name |
+
+### Batch 6 (C — ACP/MCP/swarm, part 2): RESOLVED (merged 32e5168)
+
+Plan: `docs/superpowers/plans/2026-07-15-domain-c-acp-mcp-swarm.md` (Tasks 8-13)
+
+| Finding | Status | Notes |
+|---|---|---|
+| F-BUG-50 | RESOLVED | `CancelAndWait` only returns success after the runner actually finishes |
+| F-BUG-51 | RESOLVED | `pending.ResponseChan` send in `forward()` respects the runner context |
+| F-CON-54 | RESOLVED | `PermissionBridge.Request` no longer blocks the forwarder goroutine |
+| F-BUG-49 | RESOLVED | `publishReplacement` double-close of the prior runtime fixed |
+| F-POL-62 | RESOLVED | `SessionManager.publishReplacement` honours the caller's context |
+| F-POL-65 | RESOLVED | `validateLifecycleParams` resolves symlinks |
+| F-POL-63 | RESOLVED | `lister.go` `MkdirAll` no longer runs on every `ListSessions` call |
+| F-POL-66 | RESOLVED | `PerCwdLister` no longer opens a SQLite database per call |
+| F-POL-58 | RESOLVED | Dead `ProviderUsageMeter` wrapper removed; `EstimateMeter` is the only meter |
+| F-POL-67 | RESOLVED | Swarm `overBudget` check made atomic with the observe |
+| F-POL-68 | RESOLVED | `ImplementerPrompt` surfaces structured tester failure details |
+| F-POL-69 | RESOLVED | `TestSessionLoadUsesExistingSessionOption` uses fake seams instead of a real DB |
 
 ### Batch 7 (D1 — Runner state hygiene & reentrancy): RESOLVED on branch `feature/domain-d-agent-runtime`
 
@@ -2278,7 +2315,7 @@ fixes" above).
 | F-PERF-117 | RESOLVED | searchFiles short-circuits the walk when the cap is reached |
 | F-SEC-120 | RESOLVED | Process-local per-project mutex around SaveFileIndex / SaveSymbols |
 
-### Batch 17 (F1 — onboarding hardening): PLANNED
+### Batch 17 (F1 — onboarding hardening): RESOLVED (merged 251e838)
 
 Plan: `docs/superpowers/plans/2026-07-15-domain-f1-onboarding.md`
 
@@ -2291,7 +2328,7 @@ the user explicitly pastes inline); `OnboardingModel` uses pointer
 receivers; `Run()` resolves options once; `@`-completion explains
 empty results; Ollama HTTP status checked; project name prompted.
 
-### Batch 18 (F2 — help overlay & footer polish): PLANNED
+### Batch 18 (F2 — help overlay & footer polish): RESOLVED (merged 2e0f07c)
 
 Plan: `docs/superpowers/plans/2026-07-15-domain-f2-help.md`
 
@@ -2302,7 +2339,7 @@ Highlights: help overlay rendered as a real two-column table with
 approval-mode footer says `Enter: arm · Enter⏎: submit · Esc: deny`
 instead of `Enter×2`.
 
-### Batch 19 (F3 — approval/question overlay correctness): PLANNED
+### Batch 19 (F3 — approval/question overlay correctness): RESOLVED (merged 36b2fb5)
 
 Plan: `docs/superpowers/plans/2026-07-15-domain-f3-overlays.md`
 
@@ -2317,7 +2354,7 @@ memory while a tool is pending is blocked; channel sends to
 `ResponseChan`); `settingsBlockReason` checks pending decisions and
 open pickers; `permissionForTool` deleted.
 
-### Batch 20 (F4 — session state races & lifecycle): PLANNED
+### Batch 20 (F4 — session state races & lifecycle): RESOLVED (merged d0e66fe)
 
 Plan: `docs/superpowers/plans/2026-07-15-domain-f4-session-state.md`
 
@@ -2329,7 +2366,7 @@ Highlights: `cancelTurn` only mutates state in
 content fingerprint; `BeginWork`/`BeginQuiesce` lock-hold verified
 under `-race`.
 
-### Batch 21 (F5 — view rendering polish): PLANNED
+### Batch 21 (F5 — view rendering polish): RESOLVED (merged fdadb55)
 
 Plan: `docs/superpowers/plans/2026-07-15-domain-f5-view-polish.md`
 

@@ -123,6 +123,19 @@ func boolToInt(b bool) int64 {
 	return 0
 }
 
+// sandboxLimitsBlob mirrors the keys registry.SandboxMeta.LimitsJSON writes.
+// Pointer fields keep an absent key distinguishable from a zero value, which
+// preserves the merge semantics with the dedicated sandbox columns (the
+// columns win; the blob only backfills fields that have no column).
+type sandboxLimitsBlob struct {
+	MemoryLimitBytes   *int64  `json:"memory_limit_bytes"`
+	CPUSeconds         *int    `json:"cpu_seconds"`
+	MaxProcesses       *int    `json:"max_processes"`
+	NetworkIsolated    *bool   `json:"network_isolated"`
+	FilesystemIsolated *bool   `json:"filesystem_isolated"`
+	KilledReason       *string `json:"killed_reason"`
+}
+
 // GetToolCalls returns all audit events for a session in chronological order.
 func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 	rows, err := db.sqlDB.Query(
@@ -224,41 +237,29 @@ func (db *DB) GetToolCalls(sessionID string) ([]registry.AuditEvent, error) {
 		}
 		if sbLimits.Valid && sbLimits.String != "" {
 			// Parse the JSON blob the SandboxMeta.LimitsJSON writer
-			// produced on Save. Only the structured fields that were
-			// written (limit values and capability flags) flow back;
-			// Backend/NetworkIsolated/KilledReason/DurationMS above
-			// are already populated from dedicated columns.
-			var blob map[string]any
+			// produced on Save. Backend/NetworkIsolated/KilledReason/
+			// DurationMS are already populated from dedicated columns;
+			// the blob only backfills the fields without columns, and
+			// never clobbers a column value.
+			var blob sandboxLimitsBlob
 			if err := json.Unmarshal([]byte(sbLimits.String), &blob); err == nil {
-				if v, ok := blob["memory_limit_bytes"]; ok {
-					if f, fok := v.(float64); fok {
-						e.Sandbox.MemoryLimitBytes = int64(f)
-					}
+				if blob.MemoryLimitBytes != nil {
+					e.Sandbox.MemoryLimitBytes = *blob.MemoryLimitBytes
 				}
-				if v, ok := blob["cpu_seconds"]; ok {
-					if f, fok := v.(float64); fok {
-						e.Sandbox.CPUSeconds = int(f)
-					}
+				if blob.CPUSeconds != nil {
+					e.Sandbox.CPUSeconds = *blob.CPUSeconds
 				}
-				if v, ok := blob["max_processes"]; ok {
-					if f, fok := v.(float64); fok {
-						e.Sandbox.MaxProcesses = int(f)
-					}
+				if blob.MaxProcesses != nil {
+					e.Sandbox.MaxProcesses = *blob.MaxProcesses
 				}
-				if v, ok := blob["network_isolated"]; ok {
-					if b, bok := v.(bool); bok {
-						e.Sandbox.NetworkIsolated = e.Sandbox.NetworkIsolated || b
-					}
+				if blob.NetworkIsolated != nil {
+					e.Sandbox.NetworkIsolated = e.Sandbox.NetworkIsolated || *blob.NetworkIsolated
 				}
-				if v, ok := blob["filesystem_isolated"]; ok {
-					if b, bok := v.(bool); bok {
-						e.Sandbox.FilesystemIsolated = b
-					}
+				if blob.FilesystemIsolated != nil {
+					e.Sandbox.FilesystemIsolated = *blob.FilesystemIsolated
 				}
-				if v, ok := blob["killed_reason"]; ok {
-					if s, sok := v.(string); sok && e.Sandbox.KilledReason == "" {
-						e.Sandbox.KilledReason = s
-					}
+				if blob.KilledReason != nil && e.Sandbox.KilledReason == "" {
+					e.Sandbox.KilledReason = *blob.KilledReason
 				}
 			}
 		}

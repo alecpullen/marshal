@@ -495,4 +495,47 @@ func TestSaveToolCallNormalizesFilesChanged(t *testing.T) {
 	}
 }
 
+func TestGetToolCallsSandboxLimitsFilesystemIsolated(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+	sessionID := "session-sandbox-fs-iso"
+	if err := db.CreateSession(sessionID, projectID, "fs isolation test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	event := registry.AuditEvent{
+		Timestamp: time.Now().UTC(),
+		ToolName:  "shell.run",
+		Args:      argsJSON(`{"command":"make"}`),
+		Sandbox: registry.SandboxMeta{
+			Enabled:            true,
+			Backend:            "container",
+			FilesystemIsolated: true,
+		},
+	}
+	if err := db.SaveToolCall(sessionID, event); err != nil {
+		t.Fatalf("SaveToolCall failed: %v", err)
+	}
+	calls, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolCalls failed: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+	if !calls[0].Sandbox.FilesystemIsolated {
+		t.Errorf("FilesystemIsolated not round-tripped: %+v", calls[0].Sandbox)
+	}
+}
+
 func argsJSON(s string) []byte { return []byte(s) }

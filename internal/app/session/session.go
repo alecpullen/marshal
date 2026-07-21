@@ -5,10 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
-
-	"sort"
 
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"

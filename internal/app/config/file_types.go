@@ -1,0 +1,194 @@
+package config
+
+import "marshal/internal/llm/routing"
+
+// sandboxFile is the TOML-mirror nullable form of SandboxConfig, used both
+// by configFile (load path) and by SaveProjectConfig (save path) so all
+// mirror copies share a single definition — adding/renaming a SandboxConfig
+// field requires editing just this struct plus SandboxConfig itself, plus
+// the merge block.
+type sandboxFile struct {
+	Backend           *string  `toml:"backend"`
+	MemoryLimitMB     *int     `toml:"memory_limit_mb"`
+	CPUSeconds        *int     `toml:"cpu_seconds"`
+	MaxProcesses      *int     `toml:"max_processes"`
+	FileSizeLimitMB   *int     `toml:"file_size_limit_mb"`
+	ContainerRuntime  *string  `toml:"container_runtime"`
+	ContainerImage    *string  `toml:"container_image"`
+	AllowFallback     *bool    `toml:"allow_fallback"`
+	UnsafePassthrough *bool    `toml:"unsafe_passthrough"`
+	EnvAllowlist      []string `toml:"env_allowlist"`
+	EnvDenylist       []string `toml:"env_denylist"`
+}
+
+type fileProject struct {
+	Name      *string  `toml:"name"`
+	Languages []string `toml:"languages"`
+}
+
+type fileCommands struct {
+	Test   *string `toml:"test"`
+	Format *string `toml:"format"`
+	Vet    *string `toml:"vet"`
+}
+
+type fileProfile struct {
+	Default *string `toml:"default"`
+}
+
+type fileAgent struct {
+	Provider                 *string `toml:"provider"`
+	Model                    *string `toml:"model"`
+	MaxToolIterations        *int    `toml:"max_tool_iterations"`
+	MaxRetries               *int    `toml:"max_retries"`
+	MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
+	MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
+	PlanFirst                *bool   `toml:"plan_first"`
+	SubtaskIterations        *int    `toml:"subtask_iterations"`
+}
+
+type filePrivacy struct {
+	RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
+	RedactSecrets          *bool `toml:"redact_secrets"`
+	IncludeGitignoredFiles *bool `toml:"include_gitignored_files"`
+}
+
+type fileIndexing struct {
+	UseTreesitter          *bool    `toml:"use_treesitter"`
+	UseEmbeddings          *bool    `toml:"use_embeddings"`
+	SummariseFiles         *bool    `toml:"summarise_files"`
+	Ignore                 []string `toml:"ignore"`
+	MaxIndexableFileBytes  *int64   `toml:"max_indexable_file_bytes"`
+	MaxSearchableFileBytes *int64   `toml:"max_searchable_file_bytes"`
+}
+
+type fileShell struct {
+	DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
+	MaxOutputBytes        *int          `toml:"max_output_bytes"`
+	MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
+	BackgroundRetention   *string       `toml:"background_retention"`
+	AllowNetwork          *bool         `toml:"allow_network"`
+	AutoApprove           *bool         `toml:"auto_approve"`
+	GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
+	Allow                 *CommandRules `toml:"allow"`
+	Confirm               *CommandRules `toml:"confirm"`
+	Deny                  *PatternRules `toml:"deny"`
+	Sandbox               *sandboxFile  `toml:"sandbox"`
+}
+
+type fileTools struct {
+	Shell *fileShell `toml:"shell"`
+}
+
+type fileWeb struct {
+	Enabled        *bool   `toml:"enabled"`
+	FetchTimeout   *string `toml:"fetch_timeout"`
+	SearchProvider *string `toml:"search_provider"`
+	SearchURL      *string `toml:"search_url"`
+	SearchKey      *string `toml:"search_key"`
+}
+
+type fileDesktop struct {
+	Enabled          *bool    `toml:"enabled"`
+	Mode             *string  `toml:"mode"`
+	Headless         *bool    `toml:"headless"`
+	CDPURL           *string  `toml:"cdp_url"`
+	URLAllowlist     []string `toml:"url_allowlist"`
+	URLDenylist      []string `toml:"url_denylist"`
+	DefaultTimeout   *string  `toml:"default_timeout"`
+	ScreenshotFormat *string  `toml:"screenshot_format"`
+}
+
+type fileSwarmBudget struct {
+	MaxFixRounds   *int           `toml:"max_fix_rounds"`
+	MaxTotalTokens *int           `toml:"max_total_tokens"`
+	ToolIters      map[string]int `toml:"tool_iters"`
+}
+
+type fileSwarm struct {
+	Budget *fileSwarmBudget `toml:"budget"`
+}
+
+type fileSDD struct {
+	AutoWorktree *bool   `toml:"auto_worktree"`
+	MaxFixRounds *int    `toml:"max_fix_rounds"`
+	PlansDir     *string `toml:"plans_dir"`
+}
+
+type fileMCPServer struct {
+	Command *string           `toml:"command"`
+	Args    []string          `toml:"args"`
+	Env     map[string]string `toml:"env"`
+	Trust   *string           `toml:"trust"`
+}
+
+type fileMCP struct {
+	Servers                  map[string]fileMCPServer `toml:"servers"`
+	Policies                 map[string]string        `toml:"policies"`
+	DisclosureThresholdTools *int                     `toml:"disclosure_threshold_tools"`
+}
+
+type fileSnapshots struct {
+	Enabled       *bool `toml:"enabled"`
+	RetentionDays *int  `toml:"retention_days"`
+	MaxFileBytes  *int  `toml:"max_file_bytes"`
+}
+
+type fileTUI struct {
+	Theme   *string           `toml:"theme"`
+	Palette map[string]string `toml:"palette"`
+	Mode    *string           `toml:"mode"`
+}
+
+type filePermissions struct {
+	Rules []PermissionRule `toml:"rules"`
+}
+
+type fileDiagnostics struct {
+	Commands map[string]string `toml:"commands"`
+}
+
+type fileHookEntry struct {
+	Event     *string `toml:"event"`
+	Matcher   *string `toml:"matcher"`
+	Command   *string `toml:"command"`
+	TimeoutMS *int    `toml:"timeout_ms"`
+}
+
+type fileHooks struct {
+	FailClosed *bool           `toml:"fail_closed"`
+	Entries    []fileHookEntry `toml:"entries"`
+}
+
+type fileModels struct {
+	Presets map[string]routing.ModelPreset `toml:"presets"`
+}
+
+type fileAgentEntry struct {
+	Context routing.ContextBudget `toml:"context"`
+}
+
+type configFile struct {
+	Project     *fileProject     `toml:"project"`
+	Commands    *fileCommands    `toml:"commands"`
+	Profile     *fileProfile     `toml:"profile"`
+	Agent       *fileAgent       `toml:"agent"`
+	Privacy     *filePrivacy     `toml:"privacy"`
+	Indexing    *fileIndexing    `toml:"indexing"`
+	Tools       *fileTools       `toml:"tools"`
+	Web         *fileWeb         `toml:"web"`
+	Desktop     *fileDesktop     `toml:"desktop"`
+	Swarm       *fileSwarm       `toml:"swarm"`
+	SDD         *fileSDD         `toml:"sdd"`
+	MCP         *fileMCP         `toml:"mcp"`
+	Snapshots   *fileSnapshots   `toml:"snapshots"`
+	TUI         *fileTUI         `toml:"tui"`
+	Permissions *filePermissions `toml:"permissions"`
+	Diagnostics *fileDiagnostics `toml:"diagnostics"`
+	Hooks       *fileHooks       `toml:"hooks"`
+	// Providers stays a plain map: nil already distinguishes absent/present.
+	Providers     map[string]ProviderConfig               `toml:"providers"`
+	Models        *fileModels                             `toml:"models"`
+	AgentProfiles map[string]map[routing.AgentRole]string `toml:"agent_profiles"`
+	Agents        map[routing.AgentRole]fileAgentEntry    `toml:"agents"`
+}

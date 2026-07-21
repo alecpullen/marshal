@@ -1,5 +1,7 @@
 # Milestone G: Patch Workflow Implementation Plan
 
+**Status:** SHIPPED — Milestone G is complete (patch tool, approval flow, and in-memory rollback are in production). Retained as a historical record.
+
 > **For Antigravity:** REQUIRED WORKFLOW: Use `.agent/workflows/execute-plan.md` to execute this plan in single-flow mode.
 
 **Goal:** Implement the safe search/replace patch workflow for Marshal, including block parsing, dry-run validation, unified diff rendering in the TUI, file updates, and in-memory backups for interactive rollback.

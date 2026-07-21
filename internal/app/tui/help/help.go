@@ -38,8 +38,9 @@ func pair(k, label string) string { return keyStyle.Render(k) + " " + label }
 
 // Footer returns the single-row keybinding bar.
 func Footer(h FooterHints) string {
-	// ? is only appended when it actually opens the help overlay. During
-	// approval/question/popup/edit forms ? is consumed by the form itself.
+	// ? is only appended when it actually triggers /help (which prints the
+	// cheatsheet to the transcript). During approval/question/popup/edit
+	// forms ? is consumed by the form itself.
 	showHelpHint := !h.QuestionPending && !h.ApprovalPending && !h.PopupOpen && !h.EditingCommand
 
 	var segs []string

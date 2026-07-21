@@ -19,8 +19,8 @@ const (
 )
 
 // field is one row in a fieldList. Exactly one kind-group of closures is
-// set. Setters write straight into the working config (the settings screen
-// is a single transaction guarded by Ctrl+S / double-Esc at the top).
+// set. Setters write straight into the working config; every mutation is
+// persisted immediately on commit (see BrowserPanel.flushChanges).
 type field struct {
 	id       string // stable id for the search registry ("shell.allow_network")
 	title    string

@@ -50,7 +50,7 @@ func resetField(s *state, sectionID, title string) *field {
 		id:    id,
 		title: "Reset " + title + " to defaults",
 		kind:  kindAction,
-		desc:  "restore this section to built-in defaults (undoable until save)",
+		desc:  "restore this section to built-in defaults (applies immediately)",
 		actLabel: func() string {
 			if as, ok := s.actionState[id]; ok && as.label != "" {
 				return as.label

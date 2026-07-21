@@ -7,11 +7,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps a single-writer *sql.DB connection. All access goes through
-// db.sqlDB — callers obtain the raw *sql.DB via SQLDB() and pass their own
-// contexts to queries directly. There is no helper/exec/query layer in this
-// package; this is intentional so that every call site controls its own
-// context lifecycle.
+// DB wraps a single-writer *sql.DB connection. Domain queries live in
+// per-topic files (sessions.go, symbols.go, files.go, memories.go, …) as
+// methods on *DB; SQLDB() exposes the raw *sql.DB for the few call sites
+// that need it. Every query call site controls its own context lifecycle.
 type DB struct {
 	sqlDB *sql.DB
 	locks *ProjectLocks

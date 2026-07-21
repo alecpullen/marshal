@@ -112,3 +112,26 @@ func TestParseBranchVerdictNotReady(t *testing.T) {
 		t.Error("Ready = true, want false")
 	}
 }
+
+func TestParseTaskVerdictExtractsDeviations(t *testing.T) {
+	text := `### Issues
+#### Important (Should Fix)
+- Deviated: changed assertion from wantErr to wantErrMsg in foo_test.go:42
+
+#### Minor (Nice to Have)
+- parser.go:42 — name could be clearer
+
+### Assessment
+**Task quality:** Approved`
+	v := ParseTaskVerdict(text)
+	if len(v.Deviations) != 1 {
+		t.Fatalf("Deviations count = %d, want 1", len(v.Deviations))
+	}
+	want := "Deviated: changed assertion from wantErr to wantErrMsg in foo_test.go:42"
+	if v.Deviations[0] != want {
+		t.Errorf("Deviation = %q, want %q", v.Deviations[0], want)
+	}
+	if len(v.Findings) != 2 {
+		t.Fatalf("Findings count = %d, want 2", len(v.Findings))
+	}
+}

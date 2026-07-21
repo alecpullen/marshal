@@ -115,7 +115,7 @@ func TestOrchestratorSkipsBranchReviewOnEmptyDiff(t *testing.T) {
 
 	var calls []agent.AgentRole
 	factory := trackingFactory(map[agent.AgentRole]string{
-		agent.RoleSDDImplementer: "DONE\ncommits: abc1234\ntests: 5/5 passing",
+		agent.RoleSDDImplementer: "DONE\ncommits: none\ntests: 5/5 passing",
 		agent.RoleSDDReviewer:    "### Spec Compliance\n- ✅ Spec compliant\n\n### Assessment\n**Task quality:** Approved",
 	}, &calls)
 	o := New(state, factory, config.SDDConfig{MaxFixRounds: 3})
@@ -152,7 +152,7 @@ func TestOrchestratorBranchReviewRunsOnBranchDiff(t *testing.T) {
 
 	var calls []agent.AgentRole
 	factory := trackingFactory(map[agent.AgentRole]string{
-		agent.RoleSDDImplementer:    "DONE\ncommits: abc1234\ntests: 5/5 passing",
+		agent.RoleSDDImplementer:    "DONE\ncommits: none\ntests: 5/5 passing",
 		agent.RoleSDDReviewer:       "### Spec Compliance\n- ✅ Spec compliant\n\n### Assessment\n**Task quality:** Approved",
 		agent.RoleSDDBranchReviewer: "### Branch Verdict\n- ✅ Ready to merge",
 	}, &calls)
@@ -198,7 +198,7 @@ func TestOrchestratorRunsAllTasks(t *testing.T) {
 	state := session.New(config.Default(), workDir, time.Now(), session.Persistence{})
 	planPath := writePlan(t, t.TempDir(), "plan.md", twoTaskPlan)
 	factory := scriptedFactory(map[agent.AgentRole]string{
-		agent.RoleSDDImplementer:    "DONE\ncommits: abc1234\ntests: 5/5 passing",
+		agent.RoleSDDImplementer:    "DONE\ncommits: none\ntests: 5/5 passing",
 		agent.RoleSDDReviewer:       "### Spec Compliance\n- ✅ Spec compliant\n\n### Assessment\n**Task quality:** Approved",
 		agent.RoleSDDBranchReviewer: "### Branch Verdict\n- ✅ Ready to merge",
 	})
@@ -226,7 +226,7 @@ func TestOrchestratorResumesFromLedger(t *testing.T) {
 	ledger.Append(LedgerEntry{TaskNumber: 1, BaseSHA: "aaa", HeadSHA: "bbb"})
 
 	factory := scriptedFactory(map[agent.AgentRole]string{
-		agent.RoleSDDImplementer:    "DONE\ncommits: ccc1234\ntests: 3/3 passing",
+		agent.RoleSDDImplementer:    "DONE\ncommits: none\ntests: 3/3 passing",
 		agent.RoleSDDReviewer:       "### Spec Compliance\n- ✅ Spec compliant\n\n### Assessment\n**Task quality:** Approved",
 		agent.RoleSDDBranchReviewer: "### Branch Verdict\n- ✅ Ready to merge",
 	})
@@ -239,6 +239,79 @@ func TestOrchestratorResumesFromLedger(t *testing.T) {
 	entries := ledger.Read()
 	if len(entries) != 2 {
 		t.Fatalf("ledger entries = %d, want 2 (1 pre-existing + 1 new)", len(entries))
+	}
+}
+
+func TestParseImplementerCommit(t *testing.T) {
+	sha := "739801df0f5a6bde9d9819aff47385d11e2d2192"
+	tests := []struct {
+		name    string
+		summary string
+		want    string
+	}{
+		{
+			name:    "full sha in commits line",
+			summary: "Status: DONE\ncommits: " + sha + " task work\nbranch: main\ntests: 5/5 passing",
+			want:    sha,
+		},
+		{
+			name:    "short sha in commits line",
+			summary: "Status: DONE\ncommits: abc1234 task work\ntests: 5/5 passing",
+			want:    "abc1234",
+		},
+		{
+			name:    "no commit reported",
+			summary: "Status: DONE\ncommits: none\ntests: 5/5 passing",
+			want:    "",
+		},
+		{
+			name:    "no commits line",
+			summary: "Status: DONE\ntests: 5/5 passing",
+			want:    "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseImplementerCommit(tc.summary); got != tc.want {
+				t.Fatalf("parseImplementerCommit(%q) = %q, want %q", tc.summary, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifyBranchState(t *testing.T) {
+	workDir := t.TempDir()
+	mainDir := t.TempDir()
+	initGitRepo(t, workDir)
+	initGitRepo(t, mainDir)
+
+	state := session.New(config.Default(), workDir, time.Now(), session.Persistence{})
+	o := New(state, scriptedFactory(nil), config.SDDConfig{})
+
+	// Worktree is on main; expected branch is main; no commit reported.
+	if err := o.verifyBranchState(workDir, mainDir, "main", "main", ""); err != nil {
+		t.Fatalf("verifyBranchState with matching branch and no commit: %v", err)
+	}
+
+	// Wrong branch should fail.
+	if err := o.verifyBranchState(workDir, mainDir, "sdd/feature", "main", ""); err == nil {
+		t.Fatal("verifyBranchState should fail on wrong branch")
+	}
+
+	// Create a commit and verify it is reported correctly.
+	if out, err := exec.Command("git", "-C", workDir, "commit", "--allow-empty", "-m", "task work").CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v\n%s", err, out)
+	}
+	out, err := exec.Command("git", "-C", workDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	sha := strings.TrimSpace(string(out))
+	if err := o.verifyBranchState(workDir, mainDir, "main", "main", sha); err != nil {
+		t.Fatalf("verifyBranchState with matching commit: %v", err)
+	}
+	if err := o.verifyBranchState(workDir, mainDir, "main", "main", "abc1234"); err == nil {
+		t.Fatal("verifyBranchState should fail when reported commit does not match HEAD")
 	}
 }
 

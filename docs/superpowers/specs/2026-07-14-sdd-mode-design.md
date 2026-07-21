@@ -122,47 +122,63 @@ Run(ctx, planPath):
   3. If auto_worktree: create git worktree, cd into it
   4. Read ledger (.marshal/sdd/progress.md)
      → tasks the ledger marks complete are DONE — skip them
-  5. SetSDDProgress({Active, PlanName, Tasks: [pending...]})
-  6. For each remaining task N:
-       a. Record BASE = git rev-parse HEAD
-       b. Write task-N-brief.md
-       c. UpdateSDDTask(N, implementer=active)
-       d. Dispatch implementer subagent (sdd_implementer role)
-          with: brief path, report path, scene-setting context,
-          global constraints, interfaces from earlier tasks
-       e. Handle implementer status:
-          - DONE              → proceed to review
-          - DONE_WITH_CONCERNS → assess concerns, proceed to review
-          - NEEDS_CONTEXT      → provide missing context, re-dispatch
-          - BLOCKED            → escalate to user (stop)
-       f. Write review package: git log/diff -U10 BASE..HEAD
-          → .marshal/sdd/review-<base7>..<head7>.diff
-       g. UpdateSDDTask(N, reviewer=active)
-       h. Dispatch task reviewer (sdd_reviewer role)
-          with: brief path, report path, diff path, global constraints
-       i. Parse reviewer verdict:
-          - Spec ✅ + quality Approved → mark task complete
-          - Issues found (Critical/Important):
-            → dispatch fix subagent (sdd_implementer, bounded MaxFixRounds)
-            → re-review (go to step h)
-            → if MaxFixRounds exhausted: escalate to user
-          - Minor findings: record in ledger, proceed
-       j. On clean review:
-          - Append ledger line: "Task N: complete (commits <base7>..<head7>)"
-          - UpdateSDDTask(N, phase=done, implementer=done, reviewer=done)
-          - Announce "✔ Task N complete" in transcript
-  7. After all tasks:
-       a. Write branch review package: git log/diff -U10 MERGE_BASE..HEAD
-          (MERGE_BASE = git merge-base main HEAD)
-       b. UpdateSDDBranchReview(active)
-       c. Dispatch branch reviewer (sdd_branch_reviewer role)
-          with: full plan path, task reports dir, branch diff path,
-          global constraints, accumulated Minor findings list
-       d. Parse branch verdict:
-          - ✅ Ready to merge → announce completion
-          - Findings → ONE fix subagent for all findings, re-review once
-  8. Announce "SDD complete" + finishing-a-development-branch guidance
-  9. ClearSDDProgress()
+  5. Pre-flight plan review: scan plan text for destructive git commands,
+     interactive npx/CLI invocations without non-interactive flags, and
+     dependency changes that omit the lockfile. Announce findings before
+     dispatching Task 1.
+  6. SetSDDProgress({Active, PlanName, Tasks: [pending...]})
+  7. For each remaining task N:
+        a. Record BASE = git -C <worktree> rev-parse HEAD
+        b. Record BRANCH = git -C <worktree> rev-parse --abbrev-ref HEAD
+        c. Write task-N-brief.md
+        d. UpdateSDDTask(N, implementer=active)
+        e. Dispatch implementer subagent (sdd_implementer role)
+           with: brief path, report path, worktree path, scene-setting context,
+           global constraints, interfaces from earlier tasks
+        f. Handle implementer status:
+           - DONE              → verify branch state (see Controller Discipline)
+           - DONE_WITH_CONCERNS → assess concerns, verify branch state, proceed to review
+           - NEEDS_CONTEXT      → provide missing context, re-dispatch
+           - BLOCKED            → escalate to user (stop)
+        g. Verify branch state:
+           - HEAD matches the SHA the implementer reported
+           - git rev-parse --abbrev-ref HEAD matches the expected branch
+           - the reported commit is not in main's recent log
+           If verification fails, treat as a wrong-branch incident and escalate.
+        h. Write review package: git log/diff -U10 BASE..HEAD
+           → .marshal/sdd/review-<base7>..<head7>.diff
+        i. UpdateSDDTask(N, reviewer=active)
+        j. Dispatch task reviewer (sdd_reviewer role)
+           with: brief path, report path, diff path, global constraints
+        k. Parse reviewer verdict:
+           - Spec ✅ + quality Approved → proceed to state sweep
+           - Issues found (Critical/Important):
+             → dispatch fix subagent (sdd_implementer, bounded MaxFixRounds)
+             → re-review (go to step j)
+             → if MaxFixRounds exhausted: escalate to user
+           - Minor findings: record in ledger, proceed
+        l. Deviations from the brief are tracked separately from Minor findings
+           and surfaced at the final checkpoint.
+        m. Post-review state sweep (git status, worktree log, main log) before
+           marking the task complete.
+        n. On clean review:
+           - Append ledger line: "Task N: complete (commits <base7>..<head7>)"
+           - UpdateSDDTask(N, phase=done, implementer=done, reviewer=done)
+           - Announce "✔ Task N complete" in transcript
+  8. Surface any accumulated deviations from the brief to the user before the
+     final branch review.
+  9. After all tasks:
+        a. Write branch review package: git log/diff -U10 MERGE_BASE..HEAD
+           (MERGE_BASE = git merge-base main HEAD)
+        b. UpdateSDDBranchReview(active)
+        c. Dispatch branch reviewer (sdd_branch_reviewer role)
+           with: full plan path, task reports dir, branch diff path,
+           global constraints, accumulated Minor findings list, deviations list
+        d. Parse branch verdict:
+           - ✅ Ready to merge → announce completion
+           - Findings → ONE fix subagent for all findings, re-review once
+  10. Announce "SDD complete" + finishing-a-development-branch guidance
+  11. ClearSDDProgress()
 ```
 
 **Continuous execution:** the loop does not pause between tasks. The only
@@ -224,15 +240,77 @@ placeholders:
 - `[BASE_SHA]` / `[HEAD_SHA]` / `[MERGE_BASE_SHA]` — git commit refs
 - `[PLAN_FILE]` — the full plan path (branch reviewer only)
 - `[TASK_REPORTS_DIR]` — the reports directory (branch reviewer only)
+- `[WORKTREE_DIR]` — the git working directory the implementer must use
 
-The prompts preserve the kilocode contracts:
-- Implementer reports with status (DONE / DONE_WITH_CONCERNS / BLOCKED /
-  NEEDS_CONTEXT), commits, one-line test summary, concerns, report path.
-- Task reviewer returns two verdicts: spec compliance (✅/❌/⚠️) and
-  task quality (Approved / Needs fixes), with file:line findings.
-- Branch reviewer returns a merge verdict (Ready / Not ready) with
-  whole-plan coverage, cross-task integration, architecture, and Minor
-  triage.
+The prompts preserve the kilocode contracts and add the discipline that
+mirrors the custom kilo SDD agent:
+
+- **Implementer** must work from the supplied worktree, run
+  `git rev-parse --abbrev-ref HEAD` before every commit, never use
+  `git reset --hard`, and report commits with branch verification. It
+  includes a "Self-review limits" section: structural self-reviews must be
+  surfaced as BLOCKED/NEEDS_CONTEXT before re-doing work.
+- **Task reviewer** must treat the implementer's report as unverified claims,
+  never silently absorb deviations from the brief, and include a
+  **Deviated** category in spec compliance. Every deviation from the brief
+  is reported as a finding, even if it seems reasonable.
+- **Branch reviewer** must surface accepted per-task deviations in the
+  whole-branch review (Accumulated Minor Triage / Deviation rule), and must
+  not re-flag per-task findings that were already fixed or accepted.
+- Fix dispatches (per-task and whole-branch) re-state the worktree
+  discipline and branch-check rules so the fix subagent does not introduce a
+  wrong-branch incident.
+
+Implementer reports with status (DONE / DONE_WITH_CONCERNS / BLOCKED /
+NEEDS_CONTEXT), commits, branch verification, one-line test summary,
+concerns, and report path. Task reviewer returns two verdicts: spec
+compliance (✅/❌/⚠️) and task quality (Approved / Needs fixes), with
+file:line findings. Branch reviewer returns a merge verdict (Ready / Not
+ready) with whole-plan coverage, cross-task integration, architecture,
+deviation triage, and Minor triage.
+
+## Controller Discipline: Branch State Checks
+
+The orchestrator records the expected branch before dispatching the first
+implementer (`git rev-parse --abbrev-ref HEAD` on the worktree). Before each
+task it records `BASE_SHA`; after the implementer reports DONE it verifies:
+
+1. The branch before dispatch matched the expected branch.
+2. The worktree is still on the expected branch (`git rev-parse --abbrev-ref HEAD`).
+3. The implementer's reported commit SHA matches the worktree HEAD.
+4. The reported commit does not appear in `main`'s recent log (`git log --oneline -3`).
+
+If any check fails, the task is treated as a **wrong-branch incident**. The
+orchestrator escalates to the user and does **not** dispatch a fix subagent
+for it — a fix subagent is likely to re-introduce the same working-directory
+mistake. Manual recovery (e.g., `git update-ref`, `git reset`) is required.
+
+## Handling Deviations from the Brief
+
+If the task reviewer reports a deviation from the brief (changed assertion,
+renamed identifier, altered behavior, etc.), the orchestrator:
+
+- Tracks the deviation separately from "⚠️ Cannot verify from diff" items.
+- Adds it to the deviations list that is surfaced at the final checkpoint.
+- Does not let the reviewer's "this is reasonable" judgement absorb the
+departure silently.
+- Surfaces the accumulated deviations to the user before the final branch
+review so the human can decide whether to accept or reject them.
+
+If the final branch reviewer sees accepted per-task deviations, those are
+surfaced in the Accumulated Minor Triage / Deviation rule section.
+
+## Post-Review State Sweep
+
+Before marking a task complete, the orchestrator runs a short state sweep:
+
+- `git -C <worktree> status` — confirm no uncommitted package files or stray changes.
+- `git -C <worktree> log --oneline -3` — confirm the branch tip moved as expected.
+- `git -C <main> log --oneline -3` — confirm no commits leaked to main.
+
+This catches wrong-branch incidents and forgotten-stage incidents before the
+next task dispatch. The sweep is announced in the transcript so it is visible
+in the TUI.
 
 ## Durable Workspace + Ledger
 

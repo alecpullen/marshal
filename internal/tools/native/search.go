@@ -80,7 +80,7 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 	capped := false
 
 	err := filepath.WalkDir(start, func(path string, entry fs.DirEntry, walkErr error) error {
-		// Collect walk errors instead of swallowing them (F-SEC-19).
+		// Collect walk errors instead of swallowing them.
 		if walkErr != nil {
 			walkErrs = append(walkErrs, fmt.Errorf("%s: %w", path, walkErr))
 			if entry != nil && entry.IsDir() {
@@ -91,7 +91,7 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// Short-circuit once the cap is reached (F-PERF-117).
+		// Short-circuit once the cap is reached.
 		if len(matches) >= limit {
 			return filepath.SkipAll
 		}

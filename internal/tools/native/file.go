@@ -254,7 +254,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 				patched = strings.ReplaceAll(patched, "\n", "\r\n")
 			}
 
-			// F-SAFE-22: TOCTOU re-check — verify file hasn't been modified
+			// TOCTOU re-check — verify file hasn't been modified
 			// between the validate loop and this write. This closes the window
 			// between the fileTracker check in the validate loop and the actual
 			// write. When fileTracker is nil (e.g. no session active) the check

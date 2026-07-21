@@ -3,8 +3,8 @@ package session
 import "marshal/internal/pubsub"
 
 // SteeringEvent is the broker payload published when a message is pushed
-// to the steering queue (F16). The session package owns the event type
-// per F19 R4 — "event types are defined next to their owning service".
+// to the steering queue. The session package owns the event type: event
+// types are defined next to their owning service, never centrally.
 type SteeringEvent struct {
 	QueueLen int
 	Message  string

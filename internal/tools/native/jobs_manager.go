@@ -18,7 +18,7 @@ var ErrJobManagerClosed = errors.New("job manager is closed")
 
 // JobEvent is the broker payload published by JobManager whenever the
 // running-job count changes. The TUI's pump converts it into a jobCountMsg
-// to drive the status line without polling. Per F19 R4 the type lives next
+// to drive the status line without polling. The type lives next
 // to the service that publishes it; the tui package imports this native
 // type directly.
 type JobEvent struct {

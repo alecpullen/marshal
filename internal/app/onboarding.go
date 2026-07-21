@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/routing"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -401,7 +402,7 @@ func (m *OnboardingModel) saveConfig() error {
 	}
 
 	tomlContent.WriteString("[agent_profiles.onboarded]\n")
-	for _, role := range []string{"router", "knowledge", "summarizer", "repo_scout", "tester", "planner", "implementer", "reviewer", "security_reviewer"} {
+	for _, role := range routing.AllRoles {
 		tomlContent.WriteString(fmt.Sprintf("%s = \"onboarded_preset\"\n", role))
 	}
 	tomlContent.WriteString("\n")

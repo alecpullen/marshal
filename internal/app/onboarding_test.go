@@ -11,6 +11,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"marshal/internal/app/config"
+	"marshal/internal/llm/routing"
 )
 
 func TestOnboardingWizardTransitionsAndSaves(t *testing.T) {
@@ -314,5 +315,29 @@ func TestOnboardingUnsetModeWritesCommentedPlaceholder(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "# api_key_env") {
 		t.Fatalf("expected commented-out api_key_env placeholder, got: %s", data)
+	}
+}
+
+func TestSaveConfigAssignsPresetToEveryRoutingRole(t *testing.T) {
+	m := newTestOnboardingModel()
+	dir := t.TempDir()
+	m.workingDir = dir
+
+	if err := m.saveConfig(); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".marshal", "config.toml"))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	content := string(data)
+	for _, role := range routing.AllRoles {
+		want := string(role) + ` = "onboarded_preset"`
+		if !strings.Contains(content, want) {
+			t.Errorf("project config missing role assignment %q", want)
+		}
+	}
+	if got := strings.Count(content, ` = "onboarded_preset"`); got != len(routing.AllRoles) {
+		t.Errorf("onboarded_preset assignments = %d, want %d (one per routing role)", got, len(routing.AllRoles))
 	}
 }

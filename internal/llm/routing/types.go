@@ -19,6 +19,26 @@ const (
 	RoleSDDBranchReviewer AgentRole = "sdd_branch_reviewer"
 )
 
+// AllRoles lists every AgentRole in declaration order. Callers that need
+// to enumerate roles (onboarding, settings) iterate this instead of
+// hardcoding role strings so the list cannot drift from the constants.
+var AllRoles = []AgentRole{
+	RoleRouter,
+	RoleKnowledge,
+	RoleSummarizer,
+	RoleRepoScout,
+	RoleTester,
+	RolePlanner,
+	RoleImplementer,
+	RoleReviewer,
+	RoleSecurityReviewer,
+	RoleSubtask,
+	RoleTitle,
+	RoleSDDImplementer,
+	RoleSDDReviewer,
+	RoleSDDBranchReviewer,
+}
+
 type ModelPreset struct {
 	Name            string `toml:"-"`
 	Provider        string `toml:"provider"`

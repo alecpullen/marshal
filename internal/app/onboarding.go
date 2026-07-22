@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/connect"
 	"marshal/internal/llm/routing"
 
 	"charm.land/bubbles/v2/textinput"
@@ -24,6 +25,7 @@ type onboardingState int
 const (
 	stateSelectProvider onboardingState = iota
 	stateProjectName
+	stateConnect
 	stateConfigureURL
 	stateKeyMode
 	stateConfigureKey
@@ -81,6 +83,10 @@ type OnboardingModel struct {
 	// field, so we can distinguish "pressed Enter on the default" from
 	// "typed then cleared the input" (F-POL-168).
 	projectNameTouched bool
+
+	// connectModel is the embedded connect wizard model, active during
+	// stateConnect. It replaces the old inline key/model steps.
+	connectModel *connect.Model
 
 	// attempts is a plain int field used only by the pointer-receiver
 	// regression test (F-BUG-158). It is incremented on each "enter" key
@@ -175,6 +181,58 @@ func fetchOllamaModels(url string) tea.Cmd {
 func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
+	// Forward messages to the connect model when in stateConnect.
+	if m.state == stateConnect && m.connectModel != nil {
+		switch typed := msg.(type) {
+		case tea.KeyPressMsg:
+			ks := typed.String()
+			if ks == "esc" {
+				// Esc during connect: return to project name step.
+				m.state = stateProjectName
+				m.connectModel = nil
+				m.textInput.SetValue("")
+				m.textInput.Placeholder = filepath.Base(m.workingDir)
+				m.textInput.Focus()
+				return m, nil
+			}
+			if ks == "ctrl+c" {
+				m.cancelled = true
+				return m, tea.Quit
+			}
+		case connect.DoneMsg:
+			// Persist the provider/model from the connect wizard.
+			m.selectedProvider = typed.Provider
+			m.modelName = typed.Model
+			m.baseURL = typed.ProviderCfg.BaseURL
+			if typed.ProviderCfg.APIKey != "" {
+				m.keyMode = keyModeInline
+				m.keySecret = typed.ProviderCfg.APIKey
+				m.apiKey = marshalGlobalAPIKey
+			} else if typed.ProviderCfg.APIKeyEnv != "" {
+				m.keyMode = keyModeEnvName
+				m.apiKey = typed.ProviderCfg.APIKeyEnv
+			}
+			m.connectModel = nil
+			if err := m.saveConfig(); err != nil {
+				m.err = fmt.Sprintf("Failed to write config: %v", err)
+				return m, nil
+			}
+			m.state = stateDone
+			return m, tea.Quit
+		case connect.CancelledMsg:
+			// User cancelled the connect wizard; return to project name.
+			m.state = stateProjectName
+			m.connectModel = nil
+			m.textInput.SetValue("")
+			m.textInput.Placeholder = filepath.Base(m.workingDir)
+			m.textInput.Focus()
+			return m, nil
+		}
+		cm, ccmd := m.connectModel.Update(msg)
+		m.connectModel = cm
+		return m, ccmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
@@ -243,15 +301,13 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					name = filepath.Base(m.workingDir)
 				}
 				m.projectName = name
-				if m.selectedProvider == "Ollama (Local)" {
-					m.state = stateConfigureURL
-					m.textInput.Placeholder = "http://localhost:11434/v1"
-					m.textInput.SetValue("http://localhost:11434/v1")
-				} else {
-					m.state = stateKeyMode
-					m.keyMode = keyModeEnvName // default
-				}
-				m.textInput.Focus()
+				// Transition to the connect wizard for provider/model setup.
+				m.state = stateConnect
+				m.connectModel = connect.New(connect.Opts{
+					Cfg:     config.Default(),
+					CfgPath: filepath.Join(m.workingDir, ".marshal", "config.toml"),
+				})
+				return m, m.connectModel.Init()
 
 			case stateConfigureURL:
 				m.baseURL = strings.TrimSpace(m.textInput.Value())

@@ -3900,7 +3900,7 @@ func TestSettingsAndPartialSetCommandsOpenDockedBrowser(t *testing.T) {
 	if !ok {
 		t.Fatalf("/settings dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
 	}
-	if !strings.Contains(stripANSI(browser.View(80, 12)), "shell.allow_network") {
+	if !strings.Contains(stripANSI(browser.View(80, 12)), "Shell · Allow network") {
 		t.Fatal("/settings query should pre-filter the browser")
 	}
 
@@ -3914,7 +3914,7 @@ func TestSettingsAndPartialSetCommandsOpenDockedBrowser(t *testing.T) {
 	if !ok {
 		t.Fatalf("/set partial dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
 	}
-	if !strings.Contains(stripANSI(browser.View(80, 12)), "shell.allow_network") {
+	if !strings.Contains(stripANSI(browser.View(80, 12)), "Shell · Allow network") {
 		t.Fatal("non-exact /set key should pre-filter the browser")
 	}
 }

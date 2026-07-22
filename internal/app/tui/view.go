@@ -48,6 +48,9 @@ func (m *Model) viewString() string {
 	m.updateViewportHeight()
 
 	rows := []string{m.renderTranscriptFrame()}
+	if todo := m.renderTodoPanel(); todo != "" {
+		rows = append(rows, todo)
+	}
 	if strip := m.renderLiveStrip(); strip != "" {
 		rows = append(rows, strip)
 	}

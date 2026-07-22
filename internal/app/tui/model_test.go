@@ -1600,8 +1600,12 @@ func TestCtrlGTogglesThinkingExpansion(t *testing.T) {
 
 	updated, _ = model.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	model = updated.(Model)
-	if !strings.Contains(stripANSI(model.View().Content), "checking the auth flow") {
-		t.Fatalf("expected expanded reasoning after Ctrl+G:\n%s", stripANSI(model.View().Content))
+	expanded := stripANSI(model.View().Content)
+	if !strings.Contains(expanded, "checking the auth flow") {
+		t.Fatalf("expected expanded reasoning after Ctrl+G:\n%s", expanded)
+	}
+	if !strings.Contains(expanded, " ▍ ") {
+		t.Fatalf("expanded reasoning should use ▍ gutter:\n%s", expanded)
 	}
 
 	updated, _ = model.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})

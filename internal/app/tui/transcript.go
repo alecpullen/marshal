@@ -189,7 +189,7 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 	if reasoning == "" {
 		return ""
 	}
-	contentWidth := max(width-4, 1)
+	contentWidth := max(width-3, 1)
 	lines := strings.Split(reasoning, "\n")
 	tailLines := lines
 	if len(lines) > 3 {
@@ -197,12 +197,14 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 	}
 	var b strings.Builder
 	header := spinnerLabel(spinnerFrame, "thinking")
+	b.WriteString(gutterPrefix("·", dimColor))
 	b.WriteString(thinkingLineStyle().Render(header))
 	b.WriteString("\n")
 	for _, line := range tailLines {
 		wrapped := ansi.Wrap(line, contentWidth, "")
 		for _, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString(thinkingLineStyle().Render("  " + wl))
+			b.WriteString(gutterPrefix("▍", dimColor))
+			b.WriteString(thinkingLineStyle().Render(wl))
 			b.WriteString("\n")
 		}
 	}
@@ -216,14 +218,16 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 	if !expanded {
 		return thinkingLineStyle().Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))) + "\n"
 	}
-	contentWidth := max(width-4, 1)
+	contentWidth := max(width-3, 1)
 	var b strings.Builder
-	b.WriteString(thinkingLineStyle().Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))))
+	b.WriteString(gutterPrefix("▍", dimColor))
+	b.WriteString(thinkingLineStyle().Render(fmt.Sprintf("⚙ thought for %s", formatThinkDuration(duration))))
 	b.WriteString("\n")
 	for _, line := range strings.Split(strings.TrimSpace(reasoning), "\n") {
 		wrapped := ansi.Wrap(line, contentWidth, "")
 		for _, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString(thinkingLineStyle().Render("    " + wl))
+			b.WriteString(gutterPrefix("▍", dimColor))
+			b.WriteString(thinkingLineStyle().Render(wl))
 			b.WriteString("\n")
 		}
 	}

@@ -74,13 +74,20 @@ func TestRenderAgentProseDoesNotAddBlankTrailingLine(t *testing.T) {
 	}
 }
 
-func TestRenderThinkingBoxIsCompactInline(t *testing.T) {
+func TestRenderThinkingBoxUsesGutter(t *testing.T) {
 	out := renderThinkingBox("checking the auth flow", "⠋", 80)
-	if strings.Contains(out, "╭") {
+	plain := stripANSI(out)
+	if strings.Contains(plain, "╭") {
 		t.Fatalf("live thinking should be inline, not boxed:\n%s", out)
 	}
-	if !strings.Contains(out, "⠋ thinking") || !strings.Contains(out, "checking the auth flow") {
+	if !strings.HasPrefix(plain, " · ") {
+		t.Fatalf("live thinking header missing · gutter:\n%s", out)
+	}
+	if !strings.Contains(plain, "⠋ thinking") || !strings.Contains(plain, "checking the auth flow") {
 		t.Fatalf("live thinking missing spinner or text:\n%s", out)
+	}
+	if !strings.Contains(plain, " ▍ ") {
+		t.Fatalf("live thinking tail lines missing ▍ gutter:\n%s", out)
 	}
 	if strings.HasSuffix(out, "\n\n") {
 		t.Fatalf("live thinking should not add a blank trailing line:\n%q", out)

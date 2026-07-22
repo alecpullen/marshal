@@ -438,9 +438,8 @@ func (b *BrowserPanel) receipts(lines []diffLine) []string {
 // View renders the active flat browser, collection drill, or picker within
 // the dock's dimensions.
 func (b *BrowserPanel) View(width, maxHeight int) string {
-	// chrome.Panel needs three rows for its borders and body. The dock owns
-	// the normal six-row usability floor; direct callers may supply less.
-	if maxHeight < 3 {
+	// The panel needs a header row plus one content row.
+	if maxHeight < 2 {
 		return ""
 	}
 	if b.pickerModel != nil {
@@ -448,25 +447,25 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 	}
 
 	panelWidth := min(72, max(width-2, 30))
-	innerWidth := panelWidth - 2
+	innerWidth := panelWidth - 3
 
 	title := "Settings"
+	hints := "↵ edit · Esc close"
 	var body string
 	var footer string
 	if b.stack != nil {
 		rootTitle := b.stack.stack[0].title
 		title += " › " + b.stack.breadcrumb(rootTitle)
-		b.stack.SetSize(innerWidth, max(maxHeight-4, 1))
+		hints = "↵ edit · Esc back"
+		b.stack.SetSize(innerWidth, max(maxHeight-3, 1))
 		body = b.stack.top().list.View()
-		footer = fmt.Sprintf("%d settings · [Esc] back", len(b.stack.top().list.Rows()))
+		footer = fmt.Sprintf("%d settings", len(b.stack.top().list.Rows()))
 	} else {
-		b.list.SetSize(innerWidth, max(maxHeight-6, 1))
-		body = "/ " + b.filter.View() + "\n" +
-			flDescStyle().Render(strings.Repeat("─", innerWidth)) + "\n" +
-			b.list.View()
-		footer = fmt.Sprintf("%d settings · [↵] edit · [Esc] close", len(b.list.Rows()))
+		b.list.SetSize(innerWidth, max(maxHeight-4, 1))
+		body = "/ " + b.filter.View() + "\n" + b.list.View()
+		footer = fmt.Sprintf("%d settings", len(b.list.Rows()))
 	}
 	content := body + "\n" + flDescStyle().Render(footer)
-	panelHeight := min(lipgloss.Height(content)+2, maxHeight)
-	return chrome.Panel(title, content, panelWidth, panelHeight, true, settingsTheme())
+	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
+	return chrome.PanelWithHints(title, hints, content, panelWidth, panelHeight, true, settingsTheme())
 }

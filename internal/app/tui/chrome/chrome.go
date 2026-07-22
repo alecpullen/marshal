@@ -1,5 +1,5 @@
-// Package chrome provides shared TUI dressing: bordered panels with
-// embedded titles, focus-aware border colors, and line windowing.
+// Package chrome provides shared TUI dressing: gutter-framed panels with
+// embedded titles, focus-aware gutter colors, and line windowing.
 // Extracted from the settings TUI so pickers and docked panels render consistently.
 package chrome
 
@@ -17,56 +17,59 @@ func isMonochrome(th theme.Theme) bool {
 	return ok
 }
 
-// Panel draws a rounded-border box with the title embedded in the top
-// border. The border uses accent.primary when focused, border.muted when
-// not. In monochrome mode no SGR styling is emitted.
+// Panel draws a gutter-framed panel: a ▍ column down the left with the
+// title as a bold header line. The gutter uses accent.secondary when
+// focused, fg.muted when not. Output is at most h rows and is not
+// padded to h. In monochrome mode the ▍ glyph alone marks the panel.
 func Panel(title, content string, w, h int, focused bool, th theme.Theme) string {
+	return PanelWithHints(title, "", content, w, h, focused, th)
+}
+
+// PanelWithHints is Panel with dim key hints right-aligned on the
+// header line (e.g. "↵ edit · Esc back"). Hints are dropped when the
+// header has no room for them.
+func PanelWithHints(title, hints, content string, w, h int, focused bool, th theme.Theme) string {
 	mono := isMonochrome(th)
-	borderColor := th.BorderMuted
+	gutterColor := th.FGMuted
 	titleStyle := lipgloss.NewStyle().Foreground(th.FGMuted)
 	if focused {
-		borderColor = th.AccentPrimary
+		gutterColor = th.AccentSecondary
 		if mono {
-			titleStyle = lipgloss.NewStyle().Foreground(th.AccentPrimary)
+			titleStyle = lipgloss.NewStyle().Foreground(th.AccentSecondary)
 		} else {
-			titleStyle = lipgloss.NewStyle().Bold(true).Foreground(th.AccentPrimary)
+			titleStyle = lipgloss.NewStyle().Bold(true).Foreground(th.AccentSecondary)
 		}
 	}
-	bs := lipgloss.NewStyle().Foreground(borderColor)
-	inner := w - 2
-	innerH := h - 2
+	gutter := " " + lipgloss.NewStyle().Foreground(gutterColor).Render("▍") + " "
+	inner := w - 3
 	if inner < 1 {
 		inner = 1
 	}
-	if innerH < 0 {
-		innerH = 0
-	}
 
-	// Top border with embedded title: ╭─ Title ────╮
-	label := " " + title + " "
-	fill := inner - 1 - ansi.StringWidth(label)
-	if fill < 0 {
-		label = ansi.Truncate(label, inner-1, "…")
-		fill = inner - 1 - ansi.StringWidth(label)
+	out := make([]string, 0, h)
+	if title != "" {
+		label := ansi.Truncate(title, inner, "…")
+		head := titleStyle.Render(label)
+		if hints != "" {
+			gap := inner - ansi.StringWidth(label) - ansi.StringWidth(hints)
+			if gap >= 2 {
+				head += strings.Repeat(" ", gap) + lipgloss.NewStyle().Foreground(th.FGMuted).Render(hints)
+			}
+		}
+		out = append(out, gutter+head)
 	}
-	top := bs.Render("╭─") + titleStyle.Render(label) + bs.Render(strings.Repeat("─", max(fill, 0))+"╮")
-
+	budget := h - len(out)
+	if budget < 0 {
+		budget = 0
+	}
 	lines := strings.Split(content, "\n")
-	body := make([]string, 0, innerH)
-	for i := 0; i < innerH; i++ {
-		l := ""
-		if i < len(lines) {
-			l = lines[i]
-		}
-		l = ansi.Truncate(l, inner, "…")
-		pad := inner - ansi.StringWidth(l)
-		if pad < 0 {
-			pad = 0
-		}
-		body = append(body, bs.Render("│")+l+strings.Repeat(" ", pad)+bs.Render("│"))
+	if len(lines) > budget {
+		lines = lines[:budget]
 	}
-	bottom := bs.Render("╰" + strings.Repeat("─", inner) + "╯")
-	return top + "\n" + strings.Join(body, "\n") + "\n" + bottom
+	for _, l := range lines {
+		out = append(out, gutter+ansi.Truncate(l, inner, "…"))
+	}
+	return strings.Join(out, "\n")
 }
 
 // ClipLines windows lines to at most height rows, keeping focusLine

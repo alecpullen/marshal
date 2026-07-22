@@ -44,7 +44,7 @@ frame; SDD didn't.
 section) with the three fields plus a drill to the SDD role assignments from
 F-UX-201.
 
-### F-UX-203 — `/sdd` bare-invocation dead-ends instead of opening the plan picker  `P2`
+### F-UX-203 — `/sdd` bare-invocation dead-ends instead of opening the plan picker  `P2` — implemented (Phase 2)
 `/mode` → SDD opens `openSDDPlanPicker()`; bare `/sdd` prints
 `Usage: /sdd <plan-file>` (`commands_dispatch.go:107`). Two entry points to
 the same workflow behave differently; the one users will try first is the
@@ -53,7 +53,7 @@ worse one.
 **Suggestion:** bare `/sdd` should open the same plan picker. Keep the arg
 form for power users.
 
-### F-UX-204 — No pre-flight "cast list" before an SDD/swarm run  `P2`
+### F-UX-204 — No pre-flight "cast list" before an SDD/swarm run  `P2` — implemented (Phase 2)
 A multi-model run silently resolves roles → presets → providers at start.
 `/route` shows only the single active route. If a role resolves to a
 misconfigured preset you find out mid-run.
@@ -64,7 +64,7 @@ provider/model, budget caps (fix rounds, tokens), worktree yes/no. Enter to
 start, Esc to cancel. Also makes the multi-model behavior *visible*, which is
 the product's differentiator.
 
-### F-UX-205 — Agent section silently writes through to a preset  `P2`
+### F-UX-205 — Agent section silently writes through to a preset  `P2` — implemented (Phase 2)
 `agent.provider` / `agent.model` setters write into the default profile's
 implementer preset when one exists, else into legacy `cfg.Agent`
 (`frames_agent.go:11-31`). The read-only "Preset" row hints at this, but
@@ -160,7 +160,7 @@ Commands test/format/vet fields could live there too as "Project commands").
 
 ## 3. Provider connection
 
-### F-UX-214 — Three parallel provider-setup implementations  `P2`
+### F-UX-214 — Three parallel provider-setup implementations  `P2` — implemented (Phase 2, settings-side)
 First-run onboarding (`app/onboarding.go`, hardcoded to 3 providers, its own
 key-mode logic), the `/connect` wizard (`tui/connect`, template → URL → key →
 probe → model), and the settings Providers add-wizard + drill each implement
@@ -171,7 +171,7 @@ provider creation separately with different capabilities and visuals.
 the same stepper instead of its own template-pick-then-drill variant. One
 place to fix bugs, one mental model for users.
 
-### F-UX-215 — Connect wizard skips the privacy gate  `P2`
+### F-UX-215 — Connect wizard skips the privacy gate  `P2` — implemented (Phase 2)
 The settings "Test connection" action refuses remote probes when
 `privacy.remote_providers_allowed=false` ("✗ blocked (enable Remote providers
 in Privacy)", `frames_collections.go:417`). The `/connect` wizard runs
@@ -188,7 +188,7 @@ inline edit input echoes typed characters.
 
 **Suggestion:** `EchoPassword` (or bullet echo) for all secret inputs.
 
-### F-UX-217 — No completion receipt; provider name is invisible  `P2`
+### F-UX-217 — No completion receipt; provider name is invisible  `P2` — implemented (Phase 2)
 The wizard auto-generates the provider name (`uniqueName()`), never shows it,
 and emits `DoneMsg` with no summary step. Users end up with `ollama-2` style
 entries they didn't knowingly create, and don't learn where the config was
@@ -198,7 +198,7 @@ written.
 URL, key source (env var vs stored), chosen model, and destination config
 file. Doubles as the teaching moment for the providers/presets vocabulary.
 
-### F-UX-218 — Dead-end errors where an action should be  `P2`
+### F-UX-218 — Dead-end errors where an action should be  `P2` — implemented (Phase 2)
 `providerPickerField`: picking "Add a provider…" returns the *error* "add a
 provider first in the Providers section". `modelPickerField`: "test the
 provider connection first to discover models". Both name the fix and refuse

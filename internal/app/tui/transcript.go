@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/chrome"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
@@ -593,19 +592,14 @@ func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, title, lipgloss.NewStyle().Width(max(width-2, 1)).Render(b.String()), hint)
 }
 
+// renderWelcomeBanner prints the one-time startup identity as plain
+// transcript lines — brand chrome pays rent once, at startup, not as a
+// persistent title bar.
 func renderWelcomeBanner(width int) string {
+	_ = width
 	dot := lipgloss.NewStyle().Foreground(coralColor).Render("●")
 	brand := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")
 	tagline := mutedStyle().Render("local-first coding agent")
 	cta := mutedStyle().Render("Type a question, or " + lipgloss.NewStyle().Bold(true).Render("/") + " for commands.")
-
-	headline := dot + " " + brand + dimSeparator + tagline
-	body := lipgloss.JoinVertical(lipgloss.Left, headline, "", cta)
-
-	cardW := width
-	if cardW > 48 {
-		cardW = 48
-	}
-	cardH := 5
-	return chrome.Panel("", body, cardW, cardH, true, activeTheme) + "\n"
+	return "  " + dot + " " + brand + dimSeparator + tagline + "\n\n  " + cta + "\n\n"
 }

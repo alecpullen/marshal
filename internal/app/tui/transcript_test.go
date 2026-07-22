@@ -241,20 +241,7 @@ func TestTranscriptLinesFitWidth(t *testing.T) {
 	}
 }
 
-func TestWelcomeBannerHasCoralDotAndName(t *testing.T) {
-	out := renderWelcomeBanner(80)
-	plain := stripANSI(out)
-	if !strings.Contains(plain, "● marshal") {
-		t.Fatalf("banner missing '● marshal' icon+name: %q", plain)
-	}
-	if !strings.Contains(plain, "local-first coding agent") {
-		t.Fatalf("banner missing tagline: %q", plain)
-	}
-	// The dot/name must be styled (not terminal default colour).
-	if out == stripANSI(out) {
-		t.Fatalf("banner not styled with accent colour:\n%q", out)
-	}
-}
+
 
 func TestUserMessageUsesChevronPrefix(t *testing.T) {
 	out := strings.TrimLeft(stripANSI(renderUserMessage("hi there", 40)), " ")
@@ -392,16 +379,18 @@ func TestRenderActiveToolCallNonBrowserGlyph(t *testing.T) {
 	}
 }
 
-func TestWelcomeBannerIsCenteredHero(t *testing.T) {
+func TestWelcomeBannerIsPlainLines(t *testing.T) {
 	out := renderWelcomeBanner(60)
 	plain := stripANSI(out)
-	if !strings.Contains(plain, "marshal") {
+	if !strings.Contains(plain, "marshal") || !strings.Contains(plain, "●") {
 		t.Fatalf("welcome banner missing brand:\n%s", plain)
 	}
-	if !strings.Contains(plain, "▍") {
-		t.Fatalf("welcome banner should be a gutter-framed card:\n%s", plain)
+	for _, glyph := range []string{"╭", "╰", "│"} {
+		if strings.Contains(plain, glyph) {
+			t.Fatalf("welcome banner should be borderless (%q):\n%s", glyph, plain)
+		}
 	}
-	if !strings.Contains(plain, "Type a question") {
+	if !strings.Contains(plain, "/") {
 		t.Fatalf("welcome banner missing call-to-action:\n%s", plain)
 	}
 }

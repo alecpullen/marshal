@@ -18,6 +18,11 @@ type ChangedMsg struct {
 // BrowserClosedMsg is emitted when the browser closes at its root.
 type BrowserClosedMsg struct{}
 
+// OpenConnectMsg is emitted when the settings browser wants to open the
+// connect wizard (pressing a in the Providers collection or picking
+// "Add a provider…" in a provider picker).
+type OpenConnectMsg struct{}
+
 type actionResultMsg struct {
 	FieldID string
 	Label   string

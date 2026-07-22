@@ -39,20 +39,19 @@ func TestPresetProviderFieldIsKindPicker(t *testing.T) {
 
 func TestProvidersAddAndEditType(t *testing.T) {
 	s := newState(config.Default())
+	// Add a provider directly via config
+	s.cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
 	ps := newPaneStack(providersFrame(s))
 	ps.SetSize(80, 24)
-	// Use the wizard to add a provider instead of the old bare 'a' prompt
-	req := providersWizard(s)()
-	if err := req.onPick("ollama"); err != nil {
-		t.Fatalf("wizard onPick(ollama) = %v", err)
-	}
 	ps.top().list.Refresh()
 	pc, ok := s.cfg.Providers["ollama"]
 	if !ok {
-		t.Fatalf("wizard should create provider, got %v", s.cfg.Providers)
+		t.Fatalf("should have provider, got %v", s.cfg.Providers)
 	}
 	if pc.Type != "openai_compatible" {
-		t.Fatalf("new provider from ollama template should default to openai_compatible, got %q", pc.Type)
+		t.Fatalf("provider should default to openai_compatible, got %q", pc.Type)
 	}
 	// drill into it and edit Type
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -164,63 +163,28 @@ func TestLocalProviderTestConnectionNotBlocked(t *testing.T) {
 	}
 }
 
-func TestWizardCreatesProviderFromTemplate(t *testing.T) {
-	cfg := config.Default()
-	st := newState(cfg)
-
-	req := providersWizard(st)()
-	if req == nil {
-		t.Fatal("providersWizard should return a pickerRequest")
-	}
-
-	var foundOllama bool
-	for _, item := range req.items {
-		if item.Value == "ollama" {
-			foundOllama = true
-		}
-	}
-	if !foundOllama {
-		t.Fatal("wizard items should include the ollama template")
-	}
-
-	if err := req.onPick("ollama"); err != nil {
-		t.Fatalf("wizard onPick(ollama) = %v", err)
-	}
-	pc, ok := st.cfg.Providers["ollama"]
-	if !ok {
-		t.Fatal("wizard should have created providers.ollama")
-	}
-	if pc.BaseURL != "http://localhost:11434/v1" {
-		t.Fatalf("created provider BaseURL = %q, want http://localhost:11434/v1", pc.BaseURL)
-	}
-}
-
-func TestWizardCollisionAppendsSuffix(t *testing.T) {
-	cfg := config.Default()
-	cfg.Providers = map[string]config.ProviderConfig{
-		"ollama":   {Type: "openai_compatible"},
-		"ollama-2": {Type: "openai_compatible"},
-	}
-	st := newState(cfg)
-
-	req := providersWizard(st)()
-	if err := req.onPick("ollama"); err != nil {
-		t.Fatalf("wizard onPick = %v", err)
-	}
-	if _, ok := st.cfg.Providers["ollama-3"]; !ok {
-		t.Fatal("wizard should have created providers.ollama-3 on collision")
-	}
-}
-
-func TestProvidersFrameHasAddWizard(t *testing.T) {
+func TestProvidersFrameHasOnAddMsg(t *testing.T) {
 	st := newState(config.Default())
 	f := providersFrame(st)
-	if f.list.addWizard == nil {
-		t.Fatal("providers root frame must have addWizard set")
+	if f.list.onAddMsg == nil {
+		t.Fatal("providers root frame must have onAddMsg set")
 	}
-	req := f.list.addWizard()
-	if req == nil || req.title != "Add provider" {
-		t.Fatalf("addWizard request = %+v, want title 'Add provider'", req)
+	msg := f.list.onAddMsg()
+	if _, ok := msg.(OpenConnectMsg); !ok {
+		t.Fatalf("onAddMsg should return OpenConnectMsg, got %T", msg)
+	}
+}
+
+func TestProviderPickerAddProviderSetsConnectRequested(t *testing.T) {
+	st := newState(config.Default())
+	setProvider := func(v string) error { return nil }
+	f := providerPickerField(st, "test.provider", func() string { return "" }, setProvider)
+	err := f.pickOnPick("__add_provider__")
+	if err != nil {
+		t.Fatalf("pickOnPick(__add_provider__) = %v, want nil", err)
+	}
+	if !st.connectRequested {
+		t.Fatal("pickOnPick(__add_provider__) should set state.connectRequested")
 	}
 }
 

@@ -128,52 +128,8 @@ func providersFrame(s *state) *frame {
 			},
 		})
 	f := rootDrillFrame("Providers", drill)
-	f.list.addWizard = providersWizard(s)
+	f.list.onAddMsg = func() tea.Msg { return OpenConnectMsg{} }
 	return f
-}
-
-func providersWizard(s *state) func() *pickerRequest {
-	return func() *pickerRequest {
-		all := provider.All()
-		items := make([]picker.Item, 0, len(all))
-		for _, tpl := range all {
-			items = append(items, picker.Item{
-				Label:  tpl.Label,
-				Detail: tpl.BaseURL,
-				Badge:  badgeForTemplate(tpl),
-				Value:  tpl.ID,
-			})
-		}
-		return &pickerRequest{
-			fieldID:     wizardFieldID,
-			items:       items,
-			title:       "Add provider",
-			footer:      "pick a template",
-			allowCustom: true,
-			onPick: func(tplID string) error {
-				tpl, ok := provider.Lookup(tplID)
-				if !ok {
-					return fmt.Errorf("unknown template %q", tplID)
-				}
-				existing := map[string]bool{}
-				for k := range s.cfg.Providers {
-					existing[k] = true
-				}
-				name := provider.UniqueName(tpl.ID, existing)
-				if s.cfg.Providers == nil {
-					s.cfg.Providers = map[string]config.ProviderConfig{}
-				}
-				s.cfg.Providers[name] = config.ProviderConfig{
-					Type:        tpl.Type,
-					BaseURL:     tpl.BaseURL,
-					APIKeyEnv:   tpl.KeyEnv,
-					ToolCalling: tpl.ToolCalling,
-				}
-				s.wizardCreatedProvider = name
-				return nil
-			},
-		}
-	}
 }
 
 func providerPickerField(s *state, id string, getProvider func() string, setProvider func(string) error) *field {
@@ -207,7 +163,8 @@ func providerPickerField(s *state, id string, getProvider func() string, setProv
 		},
 		pickOnPick: func(v string) error {
 			if v == "__add_provider__" {
-				return fmt.Errorf("add a provider first in the Providers section")
+				s.connectRequested = true
+				return nil
 			}
 			return setProvider(v)
 		},

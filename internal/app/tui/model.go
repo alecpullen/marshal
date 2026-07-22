@@ -151,6 +151,14 @@ type Model struct {
 	lastActivityKind  session.ActivityKind
 	successPulse      bool
 	now               func() time.Time
+
+	// Pinned todo panel (Ctrl+T cycles expanded → collapsed → hidden).
+	// todosDismissed hides the all-done summary from the next turn
+	// onward; todosSig detects the agent rewriting the list, which
+	// un-dismisses it.
+	todoPanelMode  todoPanelMode
+	todosDismissed bool
+	todosSig       string
 }
 
 type Option func(*Model)
@@ -562,7 +570,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport spans the full terminal width (borderless).
 	m.viewport.SetWidth(max(width, 1))
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1014,6 +1022,26 @@ func (m Model) liveStripRows() int {
 	return 1
 }
 
+// renderTodoPanel renders the pinned todo panel for the current frame.
+// The all-done summary is suppressed once the user has started another
+// turn (spec: the summary "clears on the next user turn").
+func (m Model) renderTodoPanel() string {
+	todos := m.state.Todos()
+	if m.todosDismissed && todosAllDone(todos) {
+		return ""
+	}
+	return renderTodoPanelBody(todos, m.todoPanelMode, m.height, m.width)
+}
+
+// todoPanelRows reports the rows the pinned todo panel occupies.
+func (m Model) todoPanelRows() int {
+	body := m.renderTodoPanel()
+	if body == "" {
+		return 0
+	}
+	return lipgloss.Height(body)
+}
+
 // stripShowsBrowser reports whether the live strip is currently rendering
 // the browser session (rather than a swarm or SDD run).
 func (m Model) stripShowsBrowser() bool {
@@ -1034,7 +1062,7 @@ func (m Model) ShouldShowStatusURL() bool {
 func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-transcriptFrameRows-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -1397,6 +1425,10 @@ func (m *Model) refreshViewport() {
 	busy := m.busy || activeTool || streamLen > 0
 
 	todos := m.state.Todos()
+	if sig := todoSignature(todos); sig != m.todosSig {
+		m.todosSig = sig
+		m.todosDismissed = false
+	}
 	queued := m.state.SteeringQueue()
 	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued)
 	if hash == m.lastTranscriptHash {
@@ -1405,10 +1437,6 @@ func (m *Model) refreshViewport() {
 	m.lastTranscriptHash = hash
 
 	var b strings.Builder
-	if todoPanel := renderTodos(todos, m.viewport.Width()); todoPanel != "" {
-		b.WriteString(todoPanel)
-		b.WriteString("\n")
-	}
 	if len(items) == 0 {
 		b.WriteString(renderWelcomeBanner(m.viewport.Width()))
 	}

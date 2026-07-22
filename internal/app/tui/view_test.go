@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
+	"marshal/internal/tools/native"
 )
 
 func newViewTestModel(t *testing.T, width, height int) Model {
@@ -557,4 +558,41 @@ func newViewTestModelWithRegistryAndFileIndex(t *testing.T, width, height int, p
 	m.resize(width, height)
 	m.refreshViewport()
 	return m
+}
+
+func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "scaffold parser", Status: native.TodoCompleted},
+		{Content: "implement parser", Status: native.TodoInProgress},
+		{Content: "add tests", Status: native.TodoPending},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.refreshViewport()
+
+	frame := stripANSI(m.viewString())
+	lines := strings.Split(frame, "\n")
+	if len(lines) != m.height {
+		t.Fatalf("frame height = %d, want %d", len(lines), m.height)
+	}
+	todoRow, inputRow := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "▶ implement parser") {
+			todoRow = i
+		}
+		if strings.Contains(line, "▍") && strings.Contains(line, "❯") {
+			inputRow = i
+		}
+	}
+	if todoRow < 0 {
+		t.Fatalf("todo panel missing from the frame:\n%s", frame)
+	}
+	if inputRow >= 0 && todoRow > inputRow {
+		t.Fatalf("todo panel must render above the input row (todo=%d input=%d)", todoRow, inputRow)
+	}
+	// The transcript no longer carries todos.
+	if strings.Contains(stripANSI(m.viewport.View()), "implement parser") {
+		t.Fatal("todos must not be rendered into the transcript any more")
+	}
 }

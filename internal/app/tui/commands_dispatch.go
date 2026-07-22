@@ -102,14 +102,14 @@ func init() {
 			return m.startAgentRun(m.swarmRunner, goal)
 		},
 		"sdd": func(m *Model, args []string) (tea.Model, tea.Cmd) {
-			planPath := strings.TrimSpace(strings.Join(args, " "))
-			if planPath == "" {
-				m.state.AddMessage(session.RoleSystem, "Usage: /sdd <plan-file>", session.ContentTypePlain)
+			if m.sddRunner == nil {
+				m.state.AddMessage(session.RoleSystem, "SDD is not available (agent failed to initialise).", session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
 			}
-			if m.sddRunner == nil {
-				m.state.AddMessage(session.RoleSystem, "SDD is not available (agent failed to initialise).", session.ContentTypePlain)
+			planPath := strings.TrimSpace(strings.Join(args, " "))
+			if planPath == "" {
+				m.openSDDPlanPicker()
 				m.refreshViewport()
 				return m, nil
 			}

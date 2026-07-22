@@ -304,7 +304,7 @@ func (m *Model) enterSummary() {
 	m.step = stepSummary
 	m.title = "Review provider"
 	m.subtitle = ""
-	m.footer = "[↵] confirm  [n] rename  [Esc] cancel"
+	m.footer = "[↵] confirm  [n] rename  [Esc] back"
 	m.err = ""
 	m.picker = nil
 }
@@ -323,23 +323,25 @@ func (m *Model) enterRename() {
 	m.picker = nil
 }
 
-func (m *Model) renderSummary(pw int) string {
-	keySrc := "manual"
+func (m *Model) keySourceLabel() string {
 	if m.providerCfg.APIKey != "" {
-		keySrc = "pasted"
-	} else if m.providerCfg.APIKeyEnv != "" {
-		keySrc = "$" + m.providerCfg.APIKeyEnv
+		return "key stored in config"
 	}
-	cfgPath := m.cfgPath
-	if cfgPath == "" {
-		cfgPath = ".marshal/config.toml"
+	if m.providerCfg.APIKeyEnv != "" {
+		return "$" + m.providerCfg.APIKeyEnv + " (env)"
 	}
+	return "none"
+}
+
+func (m *Model) renderSummary(pw int) string {
 	var b strings.Builder
 	b.WriteString(mutedStyle().Render("provider: ") + titleStyle().Render(m.providerName) + "\n")
-	b.WriteString(mutedStyle().Render("endpoint: ") + titleStyle().Render(m.providerCfg.BaseURL) + "\n")
-	b.WriteString(mutedStyle().Render("key:      ") + titleStyle().Render(keySrc) + "\n")
+	b.WriteString(mutedStyle().Render("endpoint: ") + titleStyle().Render(strutil.Truncate(m.providerCfg.BaseURL, pw-12, true)) + "\n")
+	b.WriteString(mutedStyle().Render("key:      ") + titleStyle().Render(m.keySourceLabel()) + "\n")
 	b.WriteString(mutedStyle().Render("model:    ") + titleStyle().Render(m.modelChosen) + "\n")
-	b.WriteString(mutedStyle().Render("save to:  ") + titleStyle().Render(cfgPath) + "\n")
+	if m.cfgPath != "" {
+		b.WriteString(mutedStyle().Render("save to:  ") + titleStyle().Render(strutil.Truncate(m.cfgPath, pw-12, true)) + "\n")
+	}
 	return b.String()
 }
 
@@ -505,7 +507,8 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			m.enterRename()
 			return m, nil
 		case "esc":
-			return m, m.cancel()
+			enterPickModelStep(m, m.providerName)
+			return m, nil
 		}
 		return m, nil
 	case stepRename:
@@ -555,6 +558,10 @@ func (m *Model) confirmRename() (*Model, tea.Cmd) {
 	v := strings.TrimSpace(m.renameInput.Value())
 	if v == "" {
 		m.err = "name cannot be empty"
+		return m, nil
+	}
+	if _, exists := m.cfg.Providers[v]; exists && v != m.providerName {
+		m.err = "a provider with that name already exists"
 		return m, nil
 	}
 	m.providerName = v

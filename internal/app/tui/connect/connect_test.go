@@ -462,7 +462,7 @@ func TestScopedModelSwitchSkipsSummary(t *testing.T) {
 	}
 }
 
-func TestSummaryEscCancels(t *testing.T) {
+func TestSummaryEscGoesBackToModelPick(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
@@ -470,13 +470,12 @@ func TestSummaryEscCancels(t *testing.T) {
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 27})
-	if cmd == nil {
-		t.Fatal("Esc on summary should emit CancelledMsg")
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 27})
+	if cmd != nil {
+		t.Fatal("Esc on summary should not emit a cmd")
 	}
-	msg := cmd()
-	if _, ok := msg.(CancelledMsg); !ok {
-		t.Fatalf("cmd produced %T, want CancelledMsg", msg)
+	if updated.step != stepPickModel {
+		t.Fatalf("Esc on summary should go back to pickModel, got %v", updated.step)
 	}
 }
 
@@ -490,6 +489,50 @@ func TestRenameEmptyNameShowsError(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
 	if updated.err == "" {
 		t.Fatal("expected error for empty rename")
+	}
+}
+
+func TestRenameDuplicateNameShowsError(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m := New(Opts{Cfg: cfg, Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
+	m.renameInput.SetValue("ollama")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
+	if updated.err == "" {
+		t.Fatal("expected error for duplicate provider name")
+	}
+	if !strings.Contains(updated.err, "already exists") {
+		t.Fatalf("error message = %q, want 'already exists'", updated.err)
+	}
+}
+
+func TestRenameToOwnNameIsAllowed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m := New(Opts{Cfg: cfg, Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
+	// The uniqueName() will produce "ollama-2" or similar, but we set it to "ollama" to test
+	// that renaming to the same name is allowed.
+	m.renameInput.SetValue("ollama")
+	// Set providerName to "ollama" to match the existing provider
+	m.providerName = "ollama"
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
+	if updated.err != "" {
+		t.Fatalf("unexpected error for renaming to own name: %q", updated.err)
+	}
+	if updated.step != stepSummary {
+		t.Fatalf("expected stepSummary after rename, got %v", updated.step)
 	}
 }
 

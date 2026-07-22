@@ -17,7 +17,7 @@ func TestBrowserFiltersAndRendersRows(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "shell")
 
 	view := b.View(80, 12)
-	if !strings.Contains(view, "shell.allow_network") {
+	if !strings.Contains(view, "Shell · Allow network") {
 		t.Fatalf("filtered view should list shell keys, got:\n%s", view)
 	}
 	if !strings.Contains(view, "Settings") {
@@ -206,6 +206,33 @@ func TestBrowserPendingSaveDoesNotRetryOnNavigationOrFilterTyping(t *testing.T) 
 	}
 }
 
+func TestBrowserRowsShowHumanTitlesWithSection(t *testing.T) {
+	b := NewBrowser(config.Default(), "", "remote providers")
+	view := b.View(80, 24)
+	if !strings.Contains(view, "Privacy · Remote providers allowed") {
+		t.Fatalf("row label should show section + human title, got:\n%s", view)
+	}
+	if strings.Contains(view, "▸ privacy.remote_providers") {
+		t.Errorf("row label must not show the dotted key as the primary label:\n%s", view)
+	}
+}
+
+func TestBrowserCursorDescShowsDottedKey(t *testing.T) {
+	b := NewBrowser(config.Default(), "", "remote providers")
+	view := b.View(80, 24)
+	if !strings.Contains(view, "privacy.remote_providers") {
+		t.Fatalf("dotted key should appear in the description line, got:\n%s", view)
+	}
+}
+
+func TestBrowserCollectionRowShowsSectionTitle(t *testing.T) {
+	b := NewBrowser(config.Default(), "", "providers collection")
+	view := b.View(80, 24)
+	if !strings.Contains(view, "Providers") {
+		t.Fatalf("collection row should show the section title, got:\n%s", view)
+	}
+}
+
 func TestBrowserViewHonorsMaxHeight(t *testing.T) {
 	for _, pickerOpen := range []bool{false, true} {
 		b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
@@ -306,7 +333,7 @@ func TestBrowserPasteIntoFilter(t *testing.T) {
 	}
 
 	view := b.View(80, 12)
-	if !strings.Contains(view, "shell.allow_network") {
+	if !strings.Contains(view, "Shell · Allow network") {
 		t.Fatalf("pasted filter should refresh the list, got:\n%s", view)
 	}
 }

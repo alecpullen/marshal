@@ -114,8 +114,12 @@ func (b *BrowserPanel) SetSavePending(pending bool) { b.savePending = pending }
 func (b *BrowserPanel) matchedFields() []*field {
 	query := strings.TrimSpace(b.filter.Value())
 	fields := make([]*field, 0)
-	for _, field := range b.reg.matchFields(query) {
-		fields = append(fields, browserField(field))
+	for _, key := range b.reg.MatchKeys(query) {
+		f, ok := b.reg.Lookup(key)
+		if !ok {
+			continue
+		}
+		fields = append(fields, browserField(f, b.reg.SectionOf(key)))
 	}
 	fields = append(fields, b.collectionFields(query)...)
 	if query != "" {
@@ -132,18 +136,21 @@ func (b *BrowserPanel) matchedFields() []*field {
 	return fields
 }
 
-// browserField keeps the existing field behavior while rendering the
-// registry's canonical dotted key in the flat browser.
-func browserField(field *field) *field {
+// browserField renders a registry field for the flat browser: the human
+// title (prefixed with its owning section) is the row label, and the
+// canonical dotted key — the /set address — moves into the description.
+func browserField(field *field, section string) *field {
 	copy := *field
-	title := field.title
-	copy.title = field.id
-	if title != "" && title != field.id {
-		if copy.desc == "" {
-			copy.desc = title
-		} else {
-			copy.desc = title + " · " + copy.desc
-		}
+	if copy.title == "" {
+		copy.title = field.id
+	}
+	if section != "" {
+		copy.title = section + " · " + copy.title
+	}
+	if copy.desc == "" {
+		copy.desc = field.id
+	} else {
+		copy.desc = field.id + " · " + copy.desc
 	}
 	return &copy
 }
@@ -164,8 +171,8 @@ func (b *BrowserPanel) collectionFields(query string) []*field {
 		spec := spec
 		fields = append(fields, &field{
 			id:    "section." + spec.id,
-			title: spec.id,
-			desc:  spec.title + " collection",
+			title: spec.title,
+			desc:  "section." + spec.id + " · collection — ↵ to browse entries",
 			kind:  kindDrill,
 			summary: func() string {
 				return fmt.Sprintf("%d entries", len(spec.root(b.reg.st).list.Rows()))
@@ -186,7 +193,7 @@ func (b *BrowserPanel) resetFields(query string) []*field {
 		if !browserMatches(query, spec.id+" "+spec.title+" reset defaults") {
 			continue
 		}
-		fields = append(fields, browserField(resetField(b.reg.st, spec.id, spec.title)))
+		fields = append(fields, browserField(resetField(b.reg.st, spec.id, spec.title), ""))
 	}
 	return fields
 }

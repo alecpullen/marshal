@@ -559,41 +559,24 @@ func sandboxIsolationText(sb session.SandboxInfo, allowNetwork bool) string {
 }
 
 func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int) string {
-	innerWidth := max(width-2, 1)
-
-	titleStyle := panelTitleStyle().Foreground(warningColor)
-	muted := mutedStyle()
-	text := lipgloss.NewStyle()
-	key := keyHintStyle()
-
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⚠ Approval needed"))
+	b.WriteString(gutterPrefix("⚠", warningColor))
+	headParts := []string{}
+	if tc.Name == "shell.run" {
+		headParts = append(headParts, tc.Command)
+	} else {
+		headParts = append(headParts, tc.Name)
+	}
+	headParts = append(headParts, riskText(tc))
+	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
+		headParts = append(headParts, iso)
+	}
+	b.WriteString(warningStyle().Render(strings.Join(headParts, dimSeparator)))
 	b.WriteString("\n")
 
-	if tc.Name == "shell.run" {
-		b.WriteString(muted.Render("Agent wants to run:"))
-		b.WriteString("\n")
-		b.WriteString(text.Render(strutil.Truncate(tc.Command, innerWidth, false)))
-	} else {
-		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle().Render(tc.Name))
-		b.WriteString("\n")
-		if tc.Schema != "" {
-			b.WriteString(muted.Render("Description: ") + text.Render(strutil.Truncate(tc.Schema, innerWidth, false)))
-			b.WriteString("\n")
-		}
-		b.WriteString(muted.Render("Arguments: "))
-		b.WriteString(text.Render(strutil.Truncate(tc.Args, innerWidth, false)))
-	}
-	b.WriteString("\n\n")
-	b.WriteString(riskLabelStyle().Render("Risk: "))
-	b.WriteString(text.Render(strutil.Truncate(riskText(tc), innerWidth, false)))
-	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
-		b.WriteString("\n")
-		b.WriteString(muted.Render(strutil.Truncate(iso, innerWidth, false)))
-	}
-	b.WriteString("\n\n")
-	helpLine := key.Render("Enter") + muted.Render(" approve ") + key.Render("d") + muted.Render(" deny ") + key.Render("e") + muted.Render(" edit ") + key.Render("a") + muted.Render(" always")
-	b.WriteString(helpLine)
+	b.WriteString(gutterPrefix(" ", warningColor))
+	b.WriteString(mutedStyle().Render("▸ allow   always   session   edit   deny"))
+	b.WriteString("\n")
 	return b.String()
 }
 

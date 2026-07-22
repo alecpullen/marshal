@@ -343,6 +343,68 @@ func TestLegacyRouteHasSaneDefaults(t *testing.T) {
 	}
 }
 
+func TestCastResolvesEveryRequestedRole(t *testing.T) {
+	router := testRouter()
+
+	t.Run("SwarmCastRoles", func(t *testing.T) {
+		entries := router.Cast(SwarmCastRoles)
+		if len(entries) != len(SwarmCastRoles) {
+			t.Fatalf("got %d entries, want %d", len(entries), len(SwarmCastRoles))
+		}
+		for i, entry := range entries {
+			if entry.Role != SwarmCastRoles[i] {
+				t.Errorf("entry[%d].Role = %q, want %q", i, entry.Role, SwarmCastRoles[i])
+			}
+			// Every swarm role should resolve without error in testRouter
+			// (RolePlanner and RoleReviewer fall back to implementer).
+			if entry.Err != nil {
+				t.Errorf("entry[%d] (%s): unexpected error: %v", i, entry.Role, entry.Err)
+			}
+			if entry.Route.Role == "" {
+				t.Errorf("entry[%d] (%s): empty Route", i, entry.Role)
+			}
+		}
+	})
+
+	t.Run("SDDCastRoles", func(t *testing.T) {
+		entries := router.Cast(SDDCastRoles)
+		if len(entries) != len(SDDCastRoles) {
+			t.Fatalf("got %d entries, want %d", len(entries), len(SDDCastRoles))
+		}
+		for i, entry := range entries {
+			if entry.Role != SDDCastRoles[i] {
+				t.Errorf("entry[%d].Role = %q, want %q", i, entry.Role, SDDCastRoles[i])
+			}
+			// SDD roles fall back to implementer in testRouter.
+			if entry.Err != nil {
+				t.Errorf("entry[%d] (%s): unexpected error: %v", i, entry.Role, entry.Err)
+			}
+			if entry.Route.Role == "" {
+				t.Errorf("entry[%d] (%s): empty Route", i, entry.Role)
+			}
+		}
+	})
+
+	t.Run("never_short_circuits_on_errors", func(t *testing.T) {
+		// A router with no profiles at all — every role should error,
+		// but Cast should still return one entry per role.
+		empty := NewStaticRouter(Config{DefaultProfile: "missing"})
+		roles := []AgentRole{RolePlanner, RoleImplementer, RoleSDDImplementer}
+		entries := empty.Cast(roles)
+		if len(entries) != len(roles) {
+			t.Fatalf("got %d entries, want %d", len(entries), len(roles))
+		}
+		for i, entry := range entries {
+			if entry.Role != roles[i] {
+				t.Errorf("entry[%d].Role = %q, want %q", i, entry.Role, roles[i])
+			}
+			if entry.Err == nil {
+				t.Errorf("entry[%d] (%s): expected error, got nil", i, entry.Role)
+			}
+		}
+	})
+}
+
 func TestLegacyRouteBlockedWhenRemoteNotAllowed(t *testing.T) {
 	r := NewStaticRouter(Config{
 		RemoteAllowed:  false,

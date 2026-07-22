@@ -274,12 +274,13 @@ func (m *Model) enterAPIKey() {
 	m.footer = "[↵] save  [Esc] back"
 	m.err = ""
 	ti := textinput.New()
+	ti.EchoMode = textinput.EchoPassword
 	ti.SetVirtualCursor(true)
 	ti.Focus()
 	if m.template.KeyEnv != "" {
-		ti.Placeholder = "paste key, or leave blank to use $" + m.template.KeyEnv
+		ti.Placeholder = "paste key · $ENV_NAME · blank uses $" + m.template.KeyEnv
 	} else {
-		ti.Placeholder = "paste key"
+		ti.Placeholder = "paste key, or $ENV_NAME to read from an env var"
 	}
 	m.input = ti
 	m.picker = nil
@@ -441,7 +442,10 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 
 func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
 	if msg.Err != nil {
-		m.err = "✗ " + strutil.Truncate(msg.Err.Error(), 48, true)
+		m.err = "✗ " + strutil.Truncate(msg.Err.Error(), 72, true)
+		if hint := probeHint(msg.Err); hint != "" {
+			m.err += "\n  ↳ " + hint
+		}
 		m.footer = "[r] retry  [s] skip  [Esc] cancel"
 		return m, nil
 	}
@@ -451,6 +455,24 @@ func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
 	}
 	_, advCmd := m.advanceToPickModel()
 	return m, advCmd
+}
+
+// probeHint maps common connection failures to a one-line remediation.
+func probeHint(err error) string {
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "connection refused"):
+		return "is the server running at this URL?"
+	case strings.Contains(msg, "no such host"):
+		return "hostname not found — check the base URL"
+	case strings.Contains(msg, "401") || strings.Contains(msg, "unauthorized"):
+		return "key rejected — check the API key or env var"
+	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded"):
+		return "timed out — server unreachable or slow"
+	case strings.Contains(msg, "certificate"):
+		return "TLS problem — check https vs http in the base URL"
+	}
+	return ""
 }
 
 func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
@@ -546,7 +568,15 @@ func (m *Model) confirmInput() (*Model, tea.Cmd) {
 		m.enterAPIKey()
 		return m, nil
 	case stepAPIKey:
-		if v != "" {
+		if strings.HasPrefix(v, "$") {
+			name := strings.TrimPrefix(v, "$")
+			if name == "" {
+				m.err = "env var name cannot be empty"
+				return m, nil
+			}
+			m.providerCfg.APIKeyEnv = name
+			m.providerCfg.APIKey = ""
+		} else if v != "" {
 			m.providerCfg.APIKey = v
 		}
 		return m.enterProbing()

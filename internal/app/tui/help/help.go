@@ -12,10 +12,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// Rows is the vertical budget the persistent footer occupies in the main
-// layout; the transcript viewport shrinks by this amount.
-const Rows = 1
-
 // FooterHints describes which mode-driven hints are currently actionable.
 // The footer shows the union of always-on hints plus the mode-specific ones
 // so a user never sees a hint they can't act on right now.

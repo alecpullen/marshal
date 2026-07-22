@@ -51,14 +51,14 @@ func TestViewContainsStatusLine(t *testing.T) {
 	}
 }
 
-func TestViewContainsFooter(t *testing.T) {
+func TestViewShowsIdleHintsInStatusLine(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	view := m.View().Content
-	// Assert on the full hint labels (not substrings) so a regression that
-	// drops a hotkey or the help hint cannot silently pass.
-	for _, want := range []string{"Tab", "mode", "help"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("view missing footer hint %q:\n%s", want, view)
+	view := stripANSI(m.View().Content)
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	last := lines[len(lines)-1]
+	for _, want := range []string{"Tab mode", "? help"} {
+		if !strings.Contains(last, want) {
+			t.Fatalf("status line (last row) missing hint %q:\n%s", want, last)
 		}
 	}
 }
@@ -154,7 +154,7 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	if idleLines[0] != busyLines[0] {
 		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
 	}
-	inputTop := 30 - m.inputAreaRows() - commandBarRows - statusLineRows
+	inputTop := 30 - m.inputAreaRows() - statusLineRows
 	if !strings.HasPrefix(stripANSI(busyLines[inputTop]), "╭") {
 		t.Fatalf("input box top moved; line %d = %q", inputTop, busyLines[inputTop])
 	}
@@ -226,7 +226,7 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	if m.viewport.Width() != 100 {
 		t.Fatalf("viewport.Width = %d, want 100 (full terminal width, borderless transcript)", m.viewport.Width())
 	}
-	wantHeight := 30 - titleBarRows - m.inputAreaRows() - commandBarRows - statusLineRows
+	wantHeight := 30 - titleBarRows - m.inputAreaRows() - statusLineRows
 	if m.viewport.Height() != wantHeight {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
 	}
@@ -456,15 +456,14 @@ func TestInputWrapsBeforeBoxContentWidth(t *testing.T) {
 	}
 }
 
-func TestCommandBarHasTopBorder(t *testing.T) {
+func TestViewHasNoFooterRule(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	bar := m.renderHelpFooter()
-	plain := stripANSI(bar)
-	if !strings.Contains(plain, "─") {
-		t.Fatalf("command bar should have a top border rule:\n%s", plain)
-	}
-	if !strings.Contains(plain, "cmd") || !strings.Contains(plain, "help") {
-		t.Fatalf("command bar should still show the keybinding footer:\n%s", plain)
+	view := stripANSI(m.View().Content)
+	for _, line := range strings.Split(view, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) > 20 && strings.Count(trimmed, "─") == len([]rune(trimmed)) {
+			t.Fatalf("view still contains a full-width rule:\n%q", line)
+		}
 	}
 }
 

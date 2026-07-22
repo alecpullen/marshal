@@ -62,7 +62,9 @@ func TestPickTemplateOllamaSkipsAPIKey(t *testing.T) {
 }
 
 func TestPickTemplateOpenRouterEntersAPIKey(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
 	updated, _ := m.Update(pickerPicked("openrouter"))
 	if updated.step != stepAPIKey {
 		t.Fatalf("remote template should enter apiKey, got step = %v", updated.step)
@@ -81,7 +83,9 @@ func TestPickCustomEntersBaseURL(t *testing.T) {
 }
 
 func TestAPIKeyEnterAdvancesToProbing(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	m.input.SetValue("sk-test-1234")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -97,7 +101,9 @@ func TestAPIKeyEnterAdvancesToProbing(t *testing.T) {
 }
 
 func TestCustomBaseURLThenKey(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("https://myhost/v1")
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
@@ -218,7 +224,9 @@ func TestPickModelKeyForwardedToPicker(t *testing.T) {
 }
 
 func TestPasteMsgIntoAPIKeyInput(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	if m.step != stepAPIKey {
 		t.Fatalf("expected stepAPIKey, got %v", m.step)
@@ -252,6 +260,100 @@ func TestTickThrottlesSpinner(t *testing.T) {
 	}
 	if elapsed < 90*time.Millisecond {
 		t.Fatalf("tick returned after %v — unthrottled busy loop", elapsed)
+	}
+}
+
+func TestRemoteTemplateGatedWhenRemoteDisallowed(t *testing.T) {
+	// Default config has RemoteProvidersAllowed = false.
+	m := New(Opts{Cfg: config.Default()})
+	updated, _ := m.Update(pickerPicked("openrouter"))
+	if updated.step != stepRemoteGate {
+		t.Fatalf("remote template should land on stepRemoteGate, got step = %v", updated.step)
+	}
+	if updated.title != "Remote providers are disabled" {
+		t.Fatalf("title = %q, want 'Remote providers are disabled'", updated.title)
+	}
+}
+
+func TestRemoteTemplateNotGatedWhenAllowed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openrouter"))
+	if updated.step != stepAPIKey {
+		t.Fatalf("remote template should skip gate and enter apiKey, got step = %v", updated.step)
+	}
+}
+
+func TestRemoteGateEscGoesBackToTemplates(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	m, _ = m.Update(pickerPicked("openrouter"))
+	if m.step != stepRemoteGate {
+		t.Fatalf("expected stepRemoteGate, got %v", m.step)
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 27})
+	if updated.step != stepPickTemplate {
+		t.Fatalf("Esc on remote gate should go back to pickTemplate, got step = %v", updated.step)
+	}
+}
+
+func TestRemoteGateYEnablesAndEntersAPIKey(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	m, _ = m.Update(pickerPicked("openrouter"))
+	if m.step != stepRemoteGate {
+		t.Fatalf("expected stepRemoteGate, got %v", m.step)
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 121}) // 'y'
+	if updated.step != stepAPIKey {
+		t.Fatalf("y on remote gate should enter apiKey, got step = %v", updated.step)
+	}
+	if !updated.remoteEnabled {
+		t.Fatal("remoteEnabled should be true after pressing y")
+	}
+}
+
+func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
+	// Simulate: pick remote template -> gate -> y -> apiKey -> enter -> probe -> pick model
+	cfg := config.Default()
+	m := New(Opts{Cfg: cfg, Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("openrouter"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 121}) // y
+	m.input.SetValue("sk-test")
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13}) // enter -> probing
+	// Skip probe
+	m, _ = m.Update(tea.KeyPressMsg{Code: 115}) // s -> skip
+	// Pick a model
+	_, cmd := m.Update(pickerPicked("gpt-4o"))
+	if cmd == nil {
+		t.Fatal("expected a DoneMsg cmd")
+	}
+	msg := cmd()
+	dm, ok := msg.(DoneMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want DoneMsg", msg)
+	}
+	if !dm.EnabledRemote {
+		t.Fatal("DoneMsg.EnabledRemote should be true after gate flow")
+	}
+}
+
+func TestCustomBaseURLGatedWhenRemoteDisallowed(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	m, _ = m.Update(pickerPicked("custom"))
+	m.input.SetValue("https://remotehost/v1")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
+	if updated.step != stepRemoteGate {
+		t.Fatalf("non-localhost baseURL should land on stepRemoteGate, got step = %v", updated.step)
+	}
+}
+
+func TestCustomLocalhostBaseURLSkipsGate(t *testing.T) {
+	m := New(Opts{Cfg: config.Default()})
+	m, _ = m.Update(pickerPicked("custom"))
+	m.input.SetValue("http://localhost:11434/v1")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
+	if updated.step != stepAPIKey {
+		t.Fatalf("localhost baseURL should skip gate and enter apiKey, got step = %v", updated.step)
 	}
 }
 

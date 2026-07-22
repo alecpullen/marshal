@@ -35,6 +35,7 @@ const (
 	stepPickModel
 	stepDone
 	stepCancelled
+	stepRemoteGate
 )
 
 type Opts struct {
@@ -64,6 +65,7 @@ type Model struct {
 	probeStart     int64
 	spinner        int
 	modelChosen    string
+	remoteEnabled  bool
 }
 
 func New(opts Opts) *Model {
@@ -186,9 +188,10 @@ func (m *Model) renderProbing(pw int) string {
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type DoneMsg struct {
-	Provider    string
-	Model       string
-	ProviderCfg config.ProviderConfig
+	Provider      string
+	Model         string
+	ProviderCfg   config.ProviderConfig
+	EnabledRemote bool
 }
 
 type CancelledMsg struct{}
@@ -252,6 +255,21 @@ func (m *Model) enterAPIKey() {
 		ti.Placeholder = "paste key"
 	}
 	m.input = ti
+	m.picker = nil
+}
+
+func (m *Model) remoteBlocked(baseURL string) bool {
+	return !probe.IsLocalhost(baseURL) &&
+		!m.cfg.Privacy.RemoteProvidersAllowed &&
+		!m.remoteEnabled
+}
+
+func (m *Model) enterRemoteGate() {
+	m.step = stepRemoteGate
+	m.title = "Remote providers are disabled"
+	m.subtitle = "this endpoint is not on localhost (privacy.remote_providers)"
+	m.footer = "[y] enable remote providers and continue  [Esc] back"
+	m.err = ""
 	m.picker = nil
 }
 
@@ -336,6 +354,10 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 	if tpl.Local {
 		return m.enterProbing()
 	}
+	if m.remoteBlocked(tpl.BaseURL) {
+		m.enterRemoteGate()
+		return m, nil
+	}
 	m.enterAPIKey()
 	return m, nil
 }
@@ -388,6 +410,17 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			return m.skipProbe()
 		}
 		return m, nil
+	case stepRemoteGate:
+		switch ks {
+		case "y":
+			m.remoteEnabled = true
+			m.enterAPIKey()
+			return m, nil
+		case "esc":
+			m.enterPickTemplate()
+			return m, nil
+		}
+		return m, nil
 	}
 	if ks == "esc" {
 		return m, m.cancel()
@@ -404,6 +437,10 @@ func (m *Model) confirmInput() (*Model, tea.Cmd) {
 			return m, nil
 		}
 		m.providerCfg.BaseURL = v
+		if m.remoteBlocked(v) {
+			m.enterRemoteGate()
+			return m, nil
+		}
 		m.enterAPIKey()
 		return m, nil
 	case stepAPIKey:
@@ -445,7 +482,12 @@ func (m *Model) runProbe() tea.Cmd {
 
 func (m *Model) done() tea.Cmd {
 	return func() tea.Msg {
-		return DoneMsg{Provider: m.providerName, Model: m.modelChosen, ProviderCfg: m.providerCfg}
+		return DoneMsg{
+			Provider:      m.providerName,
+			Model:         m.modelChosen,
+			ProviderCfg:   m.providerCfg,
+			EnabledRemote: m.remoteEnabled,
+		}
 	}
 }
 

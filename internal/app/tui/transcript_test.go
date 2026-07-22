@@ -163,17 +163,24 @@ func TestRenderFinalAnswerNotSalvagedHasNoMarker(t *testing.T) {
 	}
 }
 
-func TestRenderActiveToolCallIsBorderless(t *testing.T) {
+func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)}
 	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(104, 0), 80)
-	if !strings.Contains(out, "shell.run") || !strings.Contains(out, "4s") {
+	plain := stripANSI(out)
+	if !strings.HasPrefix(plain, " · ") {
+		t.Fatalf("active tool call missing · gutter:\n%s", out)
+	}
+	if !strings.Contains(plain, "shell.run") || !strings.Contains(plain, "4s") {
 		t.Fatalf("active tool call missing name/elapsed:\n%s", out)
 	}
-	if !strings.Contains(out, "$ go test ./...") {
+	if !strings.Contains(plain, "$ go test ./...") {
 		t.Fatalf("command tool call missing $ line:\n%s", out)
 	}
-	if strings.Contains(out, "╭") {
+	if strings.Contains(plain, "╭") {
 		t.Fatalf("active tool call must not be bordered:\n%s", out)
+	}
+	if strings.Contains(plain, "🌐") {
+		t.Fatalf("active tool call should not use browser glyph:\n%s", out)
 	}
 }
 
@@ -211,8 +218,11 @@ func TestRenderTranscriptItem(t *testing.T) {
 			},
 		}
 		result := renderTranscriptItem(item, false, width)
-		if !strings.Contains(result, "file.read done") {
+		if !strings.Contains(result, "file.read") {
 			t.Errorf("expected completed tool call, got: %s", result)
+		}
+		if strings.Contains(result, "done") {
+			t.Errorf("should not contain 'done', got: %s", result)
 		}
 		if strings.Contains(result, "ago") {
 			t.Errorf("should not contain elapsed suffix, got: %s", result)
@@ -266,14 +276,17 @@ func TestUserMessageUsesCoralGutter(t *testing.T) {
 	}
 }
 
-func TestCompletedToolCallUsesCheckAndCross(t *testing.T) {
+func TestCompletedToolCallUsesGutterGlyphs(t *testing.T) {
 	ok := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "read"}, 40))
-	if !strings.Contains(ok, "✔") {
-		t.Fatalf("successful tool call should show ✔: %q", ok)
+	if !strings.Contains(ok, "·") {
+		t.Fatalf("successful tool call should show · gutter: %q", ok)
+	}
+	if strings.Contains(ok, "done") {
+		t.Fatalf("successful tool call should not say 'done': %q", ok)
 	}
 	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "shell", Error: "boom"}, 40))
-	if !strings.Contains(bad, "✘") {
-		t.Fatalf("failed tool call should show ✘: %q", bad)
+	if !strings.Contains(bad, "✗") {
+		t.Fatalf("failed tool call should show ✗ gutter: %q", bad)
 	}
 }
 
@@ -363,7 +376,7 @@ func TestAgentMarkdownRendersRichBlocksWithinWidth(t *testing.T) {
 	t.Logf("rendered:\n%s", out)
 }
 
-func TestRenderActiveToolCallBrowserGlyph(t *testing.T) {
+func TestRenderActiveToolCallBrowserGlyphRemoved(t *testing.T) {
 	atc := session.ActiveToolCall{
 		Name:      "browser.navigate",
 		Args:      "https://example.com",
@@ -371,8 +384,8 @@ func TestRenderActiveToolCallBrowserGlyph(t *testing.T) {
 	}
 	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(103, 0), 80)
 	stripped := stripANSI(out)
-	if !strings.Contains(stripped, "🌐") {
-		t.Fatalf("browser active tool call missing 🌐 glyph:\n%s", out)
+	if strings.Contains(stripped, "🌐") {
+		t.Fatalf("browser active tool call should not render 🌐:\n%s", out)
 	}
 	if !strings.Contains(stripped, "browser.navigate") {
 		t.Fatalf("missing tool name:\n%s", out)
@@ -425,17 +438,20 @@ func TestRenderCodeBlockIsSurfaceTinted(t *testing.T) {
 	}
 }
 
-func TestRenderCompletedToolCallBrowserGlyph(t *testing.T) {
+func TestRenderCompletedToolCallBrowserGlyphRemoved(t *testing.T) {
 	event := registry.AuditEvent{
 		ToolName:      "browser.navigate",
 		ResultSummary: "Navigated to https://example.com",
 	}
 	out := renderCompletedToolCall(event, 80)
 	stripped := stripANSI(out)
+	if strings.Contains(stripped, "🌐") {
+		t.Fatalf("browser completed tool call should not render 🌐:\n%s", out)
+	}
 	if !strings.Contains(stripped, "browser.navigate") {
 		t.Fatalf("missing tool name:\n%s", out)
 	}
-	if !strings.Contains(stripped, "done") {
-		t.Fatalf("missing 'done':\n%s", out)
+	if strings.Contains(stripped, "done") {
+		t.Fatalf("completed tool call should not say 'done':\n%s", out)
 	}
 }

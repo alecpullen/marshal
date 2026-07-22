@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/routing"
 )
 
 func TestAgentProviderFieldIsKindPicker(t *testing.T) {
@@ -102,6 +103,72 @@ func TestAgentFrameProviderWritesToActivePreset(t *testing.T) {
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if s.cfg.Models.Presets[preset].Provider != "vllm" {
 		t.Fatalf("provider should write to preset %q, got %q", preset, s.cfg.Models.Presets[preset].Provider)
+	}
+}
+
+func TestAgentFrameTitlesShowActivePreset(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets["my-preset"] = routing.ModelPreset{
+		Name:     "my-preset",
+		Provider: "ollama",
+		Model:    "llama3.1:8b",
+	}
+	cfg.AgentProfiles["local_balanced"] = routing.AgentProfile{
+		Name:  "local_balanced",
+		Roles: map[routing.AgentRole]string{routing.RoleImplementer: "my-preset"},
+	}
+	st := newState(cfg)
+	f := agentFrame(st)
+
+	var providerRow, modelRow *field
+	for _, r := range f.list.Rows() {
+		if r.title == "Provider (preset: my-preset)" {
+			providerRow = r
+		}
+		if r.title == "Model (preset: my-preset)" {
+			modelRow = r
+		}
+	}
+	if providerRow == nil {
+		t.Fatal("Agent frame must have a Provider (preset: my-preset) row when preset is active")
+	}
+	if modelRow == nil {
+		t.Fatal("Agent frame must have a Model (preset: my-preset) row when preset is active")
+	}
+	wantDesc := "writes into preset my-preset — shared by every role that uses it"
+	if providerRow.desc != wantDesc {
+		t.Fatalf("Provider row desc = %q, want %q", providerRow.desc, wantDesc)
+	}
+	if modelRow.desc != wantDesc {
+		t.Fatalf("Model row desc = %q, want %q", modelRow.desc, wantDesc)
+	}
+}
+
+func TestAgentFrameTitlesPlainWithoutPreset(t *testing.T) {
+	// Default config has no AgentProfiles, so no preset is active.
+	st := newState(config.Default())
+	f := agentFrame(st)
+
+	var providerRow, modelRow *field
+	for _, r := range f.list.Rows() {
+		if r.title == "Provider" {
+			providerRow = r
+		}
+		if r.title == "Model" {
+			modelRow = r
+		}
+	}
+	if providerRow == nil {
+		t.Fatal("Agent frame must have a plain Provider row when no preset is active")
+	}
+	if modelRow == nil {
+		t.Fatal("Agent frame must have a plain Model row when no preset is active")
+	}
+	if providerRow.desc != "configured provider for this role" {
+		t.Fatalf("Provider row desc = %q, want default desc", providerRow.desc)
+	}
+	if modelRow.desc != "model id for this role" {
+		t.Fatalf("Model row desc = %q, want default desc", modelRow.desc)
 	}
 }
 

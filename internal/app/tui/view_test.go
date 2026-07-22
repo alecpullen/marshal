@@ -154,12 +154,8 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
 	}
 	inputTop := 30 - m.inputAreaRows() - statusLineRows
-	if !strings.HasPrefix(stripANSI(busyLines[inputTop]), "╭") {
-		t.Fatalf("input box top moved; line %d = %q", inputTop, busyLines[inputTop])
-	}
-	activityRow := inputTop + activityStripRows
-	if !strings.Contains(busyLines[activityRow], "thinking") {
-		t.Fatalf("activity row moved; line %d = %q", activityRow, busyLines[activityRow])
+	if !strings.Contains(stripANSI(busyLines[inputTop]), "▍") {
+		t.Fatalf("input area missing state bar; line %d = %q", inputTop, busyLines[inputTop])
 	}
 }
 
@@ -210,19 +206,17 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	}
 }
 
-func TestInputBorderPulsesTealOnSuccess(t *testing.T) {
+func TestInputBarPulsesTealOnSuccess(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.successPulse = true
-	out := m.renderInputArea()
-	if out == stripANSI(out) {
-		t.Fatalf("input border should carry ANSI color when successPulse is set:\n%s", out)
-	}
-	// Verify it's specifically the success color, not the coral default.
 	teal := m.renderInputArea()
 	m.successPulse = false
 	neutral := m.renderInputArea()
 	if teal == neutral {
-		t.Fatalf("success pulse border should differ from the default focused border")
+		t.Fatal("success pulse bar should differ from the default focused bar")
+	}
+	if !strings.Contains(stripANSI(teal), "▍") {
+		t.Fatalf("input area missing state bar:\n%s", stripANSI(teal))
 	}
 }
 
@@ -238,17 +232,29 @@ func TestInputAreaHasNoBackgroundFill(t *testing.T) {
 	}
 }
 
-func TestInputBorderColorReflectsFocus(t *testing.T) {
+func TestInputBarColorReflectsFocus(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	focused := m.renderInputArea()
 	m.input.Blur()
 	blurred := m.renderInputArea()
 	if focused == blurred {
-		t.Fatal("focused and blurred input box should have different border colors")
+		t.Fatal("focused and blurred input should have different bar colors")
 	}
-	// Both must be styled (have ANSI sequences).
 	if focused == stripANSI(focused) {
 		t.Fatalf("focused input area has no ANSI styling:\n%q", focused)
+	}
+}
+
+func TestInputAreaHasNoBorderBox(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	out := stripANSI(m.renderInputArea())
+	for _, glyph := range []string{"╭", "╰", "│"} {
+		if strings.Contains(out, glyph) {
+			t.Fatalf("input area still box-bordered (%q):\n%s", glyph, out)
+		}
+	}
+	if !strings.Contains(out, "▍❯") {
+		t.Fatalf("input area missing ▍❯ prompt:\n%s", out)
 	}
 }
 
@@ -275,7 +281,7 @@ func TestMultilineInputAlignsContinuationLines(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 
 	// Type a line long enough to soft-wrap at the textarea's text width
-	// (80 - 4 box frame - 2 prompt = 74 text columns). Use 90 chars.
+	// (80 - 2 reserved - 2 prompt = 76 text columns). Use 90 chars.
 	longInput := strings.Repeat("a", 90)
 	updated, _ := m.Update(tea.KeyPressMsg{Text: longInput})
 	m = updated.(Model)
@@ -336,100 +342,51 @@ func TestInputAreaHasNoBlankRowsWhenIdle(t *testing.T) {
 	out := stripANSI(m.renderInputArea())
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 
-	if len(lines) < 3 {
-		t.Fatalf("expected at least 3 lines (border + content + border), got %d:\n%s", len(lines), out)
-	}
-
-	contentStart := -1
-	contentEnd := -1
-	for i, line := range lines {
-		if strings.Contains(line, "╭") {
-			contentStart = i + 1
-		}
-		if strings.Contains(line, "╰") && contentEnd < 0 {
-			contentEnd = i
-		}
-	}
-	if contentStart < 0 || contentEnd < 0 || contentStart >= contentEnd {
-		t.Fatalf("could not find content rows between borders:\n%s", out)
+	if len(lines) < 1 {
+		t.Fatalf("expected at least 1 line, got %d:\n%s", len(lines), out)
 	}
 
 	promptCount := 0
-	blankCount := 0
-	for i := contentStart; i < contentEnd; i++ {
-		line := lines[i]
-		if strings.Contains(line, "❯") {
+	for _, line := range lines {
+		if strings.Contains(line, "▍❯") {
 			promptCount++
-		}
-		inner := strings.TrimPrefix(line, "│")
-		inner = strings.TrimSuffix(inner, "│")
-		if strings.TrimSpace(inner) == "" {
-			blankCount++
 		}
 	}
 
 	if promptCount != 1 {
-		t.Fatalf("expected exactly 1 content row with ❯, got %d:\n%s", promptCount, out)
-	}
-	if blankCount != 0 {
-		t.Fatalf("expected 0 blank content rows, got %d:\n%s", blankCount, out)
+		t.Fatalf("expected exactly 1 line with ▍❯, got %d:\n%s", promptCount, out)
 	}
 }
 
-func TestInputWrapsBeforeBoxContentWidth(t *testing.T) {
+func TestInputWrapsBeforeTerminalWidth(t *testing.T) {
 	for _, w := range []int{80, 100} {
 		m := newViewTestModel(t, w, 24)
 		m.input.SetValue(strings.Repeat("a", 400))
 		out := stripANSI(m.renderInputArea())
 		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 
-		if len(lines) < 3 {
-			t.Fatalf("width=%d: expected at least 3 lines, got %d:\n%s", w, len(lines), out)
+		if len(lines) < 1 {
+			t.Fatalf("width=%d: expected at least 1 line, got %d:\n%s", w, len(lines), out)
 		}
 
-		contentStart := -1
-		contentEnd := -1
-		contentWidth := 0
-		for i, line := range lines {
-			if strings.Contains(line, "╭") {
-				contentStart = i + 1
-				contentWidth = visibleRunes(line) - 2
+		for _, line := range lines {
+			if visibleRunes(line) > w {
+				t.Fatalf("width=%d: rendered line exceeds terminal width %d (%d): %q", w, w, visibleRunes(line), line)
 			}
-			if strings.Contains(line, "╰") && contentEnd < 0 {
-				contentEnd = i
-			}
-		}
-		if contentStart < 0 || contentEnd < 0 || contentStart >= contentEnd {
-			t.Fatalf("width=%d: could not find content rows between borders:\n%s", w, out)
-		}
-
-		promptOnOwnRow := false
-		for i := contentStart; i < contentEnd; i++ {
-			line := lines[i]
-			inner := strings.TrimPrefix(line, "│")
-			inner = strings.TrimSuffix(inner, "│")
-			trimmed := strings.TrimSpace(inner)
-			if trimmed == "❯" {
-				promptOnOwnRow = true
-			}
-			if visibleRunes(inner) > contentWidth {
-				t.Fatalf("width=%d: content row exceeds content width %d (%d): %q", w, contentWidth, visibleRunes(inner), line)
-			}
-		}
-
-		if promptOnOwnRow {
-			t.Fatalf("width=%d: ❯ is on its own row (prompt split from text):\n%s", w, out)
 		}
 
 		promptRow := ""
-		for i := contentStart; i < contentEnd; i++ {
-			if strings.Contains(lines[i], "❯") {
-				promptRow = lines[i]
+		for _, line := range lines {
+			if strings.Contains(line, "▍❯") {
+				promptRow = line
 				break
 			}
 		}
+		if promptRow == "" {
+			t.Fatalf("width=%d: no prompt row found:\n%s", w, out)
+		}
 		if !strings.Contains(promptRow, "a") {
-			t.Fatalf("width=%d: prompt row has no text after ❯:\n%s", w, out)
+			t.Fatalf("width=%d: prompt row has no text after ▍❯:\n%s", w, out)
 		}
 	}
 }

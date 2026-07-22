@@ -2,6 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/strutil"
@@ -93,4 +96,35 @@ func browserStripText(bi session.BrowserInfo, spinner string) string {
 		text += dimSep(spinnerLabel(spinner, bi.ToolName))
 	}
 	return text
+}
+
+// dimSep prefixes a dim ` · ` separator, used to join strip fragments.
+func dimSep(text string) string {
+	return mutedStyle().Render(" · ") + text
+}
+
+// truncateURL strips the scheme and shortens long URLs to host/…/last
+// segment so the strip and the status segment stay inside their budget.
+func truncateURL(raw string, maxWidth int) string {
+	raw = strings.TrimPrefix(strings.TrimPrefix(raw, "https://"), "http://")
+	if maxWidth <= 0 || ansi.StringWidth(raw) <= maxWidth {
+		return raw
+	}
+	if maxWidth < 8 {
+		return ansi.Cut(raw, 0, maxWidth)
+	}
+	hostEnd := strings.Index(raw, "/")
+	if hostEnd < 0 {
+		return ansi.Cut(raw, 0, maxWidth-1) + "…"
+	}
+	lastSlash := strings.LastIndex(raw, "/")
+	if lastSlash <= hostEnd {
+		return ansi.Cut(raw, 0, maxWidth-1) + "…"
+	}
+	host := raw[:hostEnd]
+	suffix := raw[lastSlash:]
+	if ansi.StringWidth(host)+2+ansi.StringWidth(suffix) > maxWidth {
+		return ansi.Cut(raw, 0, maxWidth-1) + "…"
+	}
+	return host + "/…" + suffix
 }

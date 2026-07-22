@@ -508,17 +508,6 @@ func hookIndicatorText(hooks []registry.HookMetadata) string {
 	return fmt.Sprintf("hooks %d", len(hooks))
 }
 
-// indentBlock prefixes every non-empty line of a rendered block.
-func indentBlock(block, prefix string) string {
-	lines := strings.Split(block, "\n")
-	for i, line := range lines {
-		if line != "" {
-			lines[i] = prefix + line
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
 func formatElapsed(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))

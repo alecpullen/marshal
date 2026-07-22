@@ -383,10 +383,14 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		},
 		{
 			Name:        "trust",
-			Description: "Re-open the project trust decision",
+			Description: "Show or re-open the project trust decision",
 			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) string {
-				return "Use --trust (permanent) or restart to re-prompt. Project trust is set at startup."
+				trusted := state.Trusted()
+				if trusted {
+					return "Project is trusted. Use --trust (permanent) or restart to re-prompt."
+				}
+				return "Project is not trusted. Use --trust (permanent) or restart to re-prompt."
 			},
 		},
 		{

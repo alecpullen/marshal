@@ -647,6 +647,34 @@ func TestRegisterNonTUICommandStillRequiresHandler(t *testing.T) {
 	}
 }
 
+func TestTrustReportsCurrentStatus(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, ok := cmdReg.Lookup("trust")
+	if !ok {
+		t.Fatal("trust command not registered")
+	}
+
+	// Default state: not trusted.
+	state := newTestState()
+	out := cmd.Handler(state, nil)
+	if !strings.Contains(out, "not trusted") {
+		t.Fatalf("expected 'not trusted' in output, got: %q", out)
+	}
+
+	// After marking trusted.
+	state.SetTrusted(true)
+	out = cmd.Handler(state, nil)
+	if !strings.Contains(out, "trusted") {
+		t.Fatalf("expected 'trusted' in output, got: %q", out)
+	}
+	if strings.Contains(out, "not trusted") {
+		t.Fatalf("trusted state should not say 'not trusted', got: %q", out)
+	}
+}
+
 func TestListAllIncludesHiddenCommands(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()

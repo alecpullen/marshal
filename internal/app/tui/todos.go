@@ -6,9 +6,9 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
-	"marshal/internal/app/tui/theme"
 )
 
 func renderTodos(todos []native.TodoItem, width int) string {

@@ -11,6 +11,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/connect"
 	"marshal/internal/llm/routing"
 )
 
@@ -32,56 +33,11 @@ func TestOnboardingWizardTransitionsAndSaves(t *testing.T) {
 	// 2. Enter project name (accept default derived from working dir)
 	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = m2.(*OnboardingModel)
-	if m.state != stateConfigureURL {
-		t.Fatalf("after entering project name, state = %d, want stateConfigureURL", m.state)
+	if m.state != stateConnect {
+		t.Fatalf("after entering project name, state = %d, want stateConnect", m.state)
 	}
-
-	// 3. Configure URL
-	m.textInput.SetValue("http://localhost:11434/v1")
-	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = m2.(*OnboardingModel)
-	if m.state != stateModelSelection {
-		t.Fatalf("after entering URL, state = %d, want stateModelSelection", m.state)
-	}
-
-	// Simulate Ollama tags fetch failing
-	m2, _ = m.Update(ollamaModelsFailedMsg{})
-	m = m2.(*OnboardingModel)
-	if !m.ollamaErr {
-		t.Fatal("expected ollamaErr to be true")
-	}
-
-	// 3. Model selection (enter custom model name)
-	m.textInput.SetValue("my-test-model")
-	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = m2.(*OnboardingModel)
-	if m.state != stateDone {
-		t.Fatalf("after selecting model, state = %d, want stateDone", m.state)
-	}
-
-	// 4. Verify config file was written successfully
-	configPath := filepath.Join(tempDir, ".marshal", "config.toml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("failed to read config file: %v", err)
-	}
-
-	content := string(data)
-	if !strings.Contains(content, `model = "my-test-model"`) {
-		t.Errorf("config does not contain model name, content:\n%s", content)
-	}
-	if !strings.Contains(content, `base_url = "http://localhost:11434/v1"`) {
-		t.Errorf("config does not contain base url, content:\n%s", content)
-	}
-
-	// 5. Verify the config is loadable by our loader
-	cfg, err := config.Load(config.LoadOptions{WorkingDir: tempDir})
-	if err != nil {
-		t.Fatalf("failed to load generated config: %v", err)
-	}
-	expectedName := filepath.Base(tempDir)
-	if cfg.Project.Name != expectedName {
-		t.Errorf("loaded config project name = %q, want %q", cfg.Project.Name, expectedName)
+	if m.connectModel == nil {
+		t.Fatal("expected connectModel to be non-nil after transitioning to stateConnect")
 	}
 }
 
@@ -315,6 +271,130 @@ func TestOnboardingUnsetModeWritesCommentedPlaceholder(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "# api_key_env") {
 		t.Fatalf("expected commented-out api_key_env placeholder, got: %s", data)
+	}
+}
+
+func TestOnboardingEmbedsConnectAfterProjectName(t *testing.T) {
+	// After entering the project name, the onboarding should transition to
+	// the connect wizard (stateConnect).
+	m := NewOnboardingModel(t.TempDir())
+
+	// Press Enter to go to project name
+	m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = m2.(*OnboardingModel)
+	if m.state != stateProjectName {
+		t.Fatalf("after selecting provider, state = %d, want stateProjectName", m.state)
+	}
+
+	// Press Enter to accept default project name
+	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = m2.(*OnboardingModel)
+	if m.state != stateConnect {
+		t.Fatalf("after entering project name, state = %d, want stateConnect", m.state)
+	}
+	if m.connectModel == nil {
+		t.Fatal("expected connectModel to be non-nil")
+	}
+}
+
+func TestOnboardingSaveConfigFromDoneMsg(t *testing.T) {
+	// Simulate the full flow: select provider -> project name -> connect wizard
+	// -> DoneMsg -> config saved.
+	dir := t.TempDir()
+	m := NewOnboardingModel(dir)
+
+	// Select provider (default Ollama)
+	m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = m2.(*OnboardingModel)
+
+	// Enter project name
+	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = m2.(*OnboardingModel)
+	if m.state != stateConnect {
+		t.Fatalf("expected stateConnect, got %d", m.state)
+	}
+
+	// Send DoneMsg as if the connect wizard completed
+	doneMsg := connect.DoneMsg{
+		Provider: "ollama",
+		Model:    "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{
+			Type:    "openai_compatible",
+			BaseURL: "http://localhost:11434/v1",
+		},
+	}
+	m2, _ = m.Update(doneMsg)
+	m = m2.(*OnboardingModel)
+	if m.state != stateDone {
+		t.Fatalf("after DoneMsg, state = %d, want stateDone", m.state)
+	}
+
+	// Verify config was written
+	configPath := filepath.Join(dir, ".marshal", "config.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `model = "qwen2.5-coder:7b"`) {
+		t.Errorf("config does not contain model name, content:\n%s", content)
+	}
+	if !strings.Contains(content, `base_url = "http://localhost:11434/v1"`) {
+		t.Errorf("config does not contain base url, content:\n%s", content)
+	}
+}
+
+func TestOnboardingInlineKeyGoesToGlobalConfigOnly(t *testing.T) {
+	// When the connect wizard returns a DoneMsg with an inline API key,
+	// the key should be written to the global config, not the project config.
+	dir := t.TempDir()
+	globalDir := t.TempDir()
+	m := NewOnboardingModel(dir)
+	m.globalConfigPath = filepath.Join(globalDir, "config.toml")
+
+	// Select provider
+	m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = m2.(*OnboardingModel)
+
+	// Enter project name -> stateConnect
+	m2, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = m2.(*OnboardingModel)
+	if m.state != stateConnect {
+		t.Fatalf("expected stateConnect, got %d", m.state)
+	}
+
+	// Send DoneMsg with inline API key
+	doneMsg := connect.DoneMsg{
+		Provider: "openai",
+		Model:    "gpt-4o",
+		ProviderCfg: config.ProviderConfig{
+			Type:    "openai_compatible",
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test-inline-key",
+		},
+	}
+	m2, _ = m.Update(doneMsg)
+	m = m2.(*OnboardingModel)
+	if m.state != stateDone {
+		t.Fatalf("after DoneMsg, state = %d, want stateDone", m.state)
+	}
+
+	// Project config must NOT contain the raw key.
+	projectData, err := os.ReadFile(filepath.Join(dir, ".marshal", "config.toml"))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if strings.Contains(string(projectData), "sk-test-inline-key") {
+		t.Fatalf("raw key leaked into project config: %s", projectData)
+	}
+
+	// Global config must contain the raw key.
+	globalData, err := os.ReadFile(m.globalConfigPath)
+	if err != nil {
+		t.Fatalf("read global config: %v", err)
+	}
+	if !strings.Contains(string(globalData), "sk-test-inline-key") {
+		t.Fatalf("raw key not found in global config: %s", globalData)
 	}
 }
 

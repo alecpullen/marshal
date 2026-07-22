@@ -338,6 +338,9 @@ func (b *BrowserPanel) handlePickerPicked(value string) tea.Cmd {
 	if fieldID == wizardFieldID {
 		b.drillIntoNewestProvider()
 	}
+	if probeCmd := b.reg.st.takePendingCmd(); probeCmd != nil {
+		return probeCmd
+	}
 	// A pick is always an explicit commit gesture (even if it reproduces the
 	// value already held in memory from a previously failed save).
 	return b.flushChanges(nil, true)

@@ -58,3 +58,10 @@ func TestFooterApprovalWording(t *testing.T) {
 		t.Fatalf("expected arm/submit labels, got %q", out)
 	}
 }
+
+func TestFooterIdleShowsClearQueue(t *testing.T) {
+	out := stripANSI(Footer(FooterHints{QueueNonEmpty: true}))
+	if !strings.Contains(out, "Ctrl+X") || !strings.Contains(out, "clear queue") {
+		t.Fatalf("footer missing clear-queue hint:\n%s", out)
+	}
+}

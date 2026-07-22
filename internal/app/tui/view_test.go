@@ -187,7 +187,7 @@ func TestProviderErrorShowsInlineNotFullScreen(t *testing.T) {
 	m.refreshViewport()
 	view := m.View().Content
 
-	if !strings.Contains(view, "✘ provider: connection refused") {
+	if !strings.Contains(view, "✗") || !strings.Contains(view, "provider: connection refused") {
 		t.Fatalf("provider error not rendered inline:\n%s", view)
 	}
 	if !strings.Contains(view, "hello") {

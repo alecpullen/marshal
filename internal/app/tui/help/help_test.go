@@ -65,3 +65,13 @@ func TestFooterIdleShowsClearQueue(t *testing.T) {
 		t.Fatalf("footer missing clear-queue hint:\n%s", out)
 	}
 }
+
+func TestFooterShowsTodoToggleWhenTodosActive(t *testing.T) {
+	out := Footer(FooterHints{TodosActive: true})
+	if !strings.Contains(out, "Ctrl+T") || !strings.Contains(out, "tasks") {
+		t.Fatalf("idle footer should hint the todo toggle:\n%s", out)
+	}
+	if busy := Footer(FooterHints{Busy: true, TodosActive: true}); strings.Contains(busy, "Ctrl+T") {
+		t.Fatalf("busy footer must keep its cancel-focused hints:\n%s", busy)
+	}
+}

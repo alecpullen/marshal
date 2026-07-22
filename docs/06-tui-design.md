@@ -59,7 +59,7 @@ Swarm    multi-agent workflow
 ```text
 Ctrl+P    command palette
 Ctrl+M    switch model/profile
-Ctrl+T    tool log
+Ctrl+T    todo panel (expanded → collapsed → hidden)
 Ctrl+D    diff view
 Ctrl+R    repo map
 Ctrl+A    agents

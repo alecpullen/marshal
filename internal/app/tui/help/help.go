@@ -25,6 +25,9 @@ type FooterHints struct {
 	IdleRollbackEligible bool
 	// QueueNonEmpty is true when the steering queue has items waiting.
 	QueueNonEmpty bool
+	// TodosActive is true when the session has a non-empty todo list, so
+	// the Ctrl+T panel toggle is actionable.
+	TodosActive bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -67,6 +70,9 @@ func Footer(h FooterHints) string {
 		)
 		if h.IdleRollbackEligible {
 			segs = append(segs, pair("Ctrl+R", "rollback"))
+		}
+		if h.TodosActive {
+			segs = append(segs, pair("Ctrl+T", "tasks"))
 		}
 	}
 	if h.QueueNonEmpty {

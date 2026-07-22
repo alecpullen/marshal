@@ -10,6 +10,50 @@ import (
 	"marshal/internal/llm/routing"
 )
 
+func TestProviderRowShowsEndpointAndKeySource(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama":     {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+		"openrouter": {Type: "openai_compatible", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "OPENROUTER_KEY"},
+		"anthropic":  {Type: "openai_compatible", BaseURL: "https://api.anthropic.com", APIKey: "sk-ant-xxxx"},
+	}
+	st := newState(cfg)
+	f := providersFrame(st)
+	rows := f.list.Rows()
+
+	tests := []struct {
+		name     string
+		wantPart string // substring the row label must contain
+	}{
+		{"ollama", "localhost"},
+		{"ollama", "local"},
+		{"ollama", "no key"},
+		{"openrouter", "openrouter.ai"},
+		{"openrouter", "remote"},
+		{"openrouter", "$OPENROUTER_KEY"},
+		{"anthropic", "api.anthropic.com"},
+		{"anthropic", "remote"},
+		{"anthropic", "key stored"},
+	}
+
+	for _, tt := range tests {
+		var row *field
+		for _, r := range rows {
+			if r.id == "providers."+tt.name {
+				row = r
+				break
+			}
+		}
+		if row == nil {
+			t.Fatalf("no row for provider %q", tt.name)
+		}
+		label := row.title
+		if !strings.Contains(label, tt.wantPart) {
+			t.Errorf("provider %q row label = %q, want substring %q", tt.name, label, tt.wantPart)
+		}
+	}
+}
+
 func TestPresetProviderFieldIsKindPicker(t *testing.T) {
 	cfg := config.Default()
 	cfg.Providers = map[string]config.ProviderConfig{

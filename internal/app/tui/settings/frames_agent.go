@@ -53,6 +53,19 @@ func agentFrame(s *state) *frame {
 		if presetTitle == "" {
 			presetTitle = "(none)"
 		}
+		providerRow := providerPickerField(s, "agent.provider",
+			func() string { return provider },
+			setProvider)
+		modelRow := modelPickerField(s, "agent.model",
+			func() string { return provider },
+			func() string { return model },
+			setModel)
+		if active.Name != "" {
+			providerRow.title = "Provider (preset: " + active.Name + ")"
+			providerRow.desc = "writes into preset " + active.Name + " — shared by every role that uses it"
+			modelRow.title = "Model (preset: " + active.Name + ")"
+			modelRow.desc = "writes into preset " + active.Name + " — shared by every role that uses it"
+		}
 		return []*field{
 			enumField("agent.default_profile", "Default profile", sortedKeys(s.cfg.AgentProfiles),
 				func() string { return s.cfg.Profile.Default },
@@ -61,13 +74,8 @@ func agentFrame(s *state) *frame {
 			{id: "agent.preset", title: "Preset", kind: kindScalar,
 				desc:   "resolved from the default profile's implementer role",
 				getStr: func() string { return presetTitle }},
-			providerPickerField(s, "agent.provider",
-				func() string { return provider },
-				setProvider),
-			modelPickerField(s, "agent.model",
-				func() string { return provider },
-				func() string { return model },
-				setModel),
+			providerRow,
+			modelRow,
 			{id: "agent.local_only", title: "Local only", kind: kindToggle,
 				desc:    "block remote providers for this preset",
 				getBool: func() bool { return getActive().LocalOnly },

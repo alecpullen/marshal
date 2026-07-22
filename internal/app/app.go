@@ -192,22 +192,6 @@ func logPath(workingDir string) string {
 	return filepath.Join(workingDir, ".marshal", "marshal.log")
 }
 
-func routingConfigFromAppConfig(cfg config.Config) routing.Config {
-	contextBudgets := make(map[routing.AgentRole]routing.ContextBudget, len(cfg.Agents))
-	for role, agentCfg := range cfg.Agents {
-		contextBudgets[role] = agentCfg.Context
-	}
-	return routing.Config{
-		DefaultProfile: cfg.Profile.Default,
-		RemoteAllowed:  cfg.Privacy.RemoteProvidersAllowed,
-		Presets:        cfg.Models.Presets,
-		Profiles:       cfg.AgentProfiles,
-		ContextBudgets: contextBudgets,
-		LegacyProvider: cfg.Agent.Provider,
-		LegacyModel:    cfg.Agent.Model,
-	}
-}
-
 type routedProviderResolver struct {
 	router    *routing.StaticRouter
 	cfg       config.Config
@@ -223,7 +207,7 @@ type dbMemoryProvider struct {
 
 func newRoutedProviderResolver(cfg config.Config) *routedProviderResolver {
 	return &routedProviderResolver{
-		router:    routing.NewStaticRouter(routingConfigFromAppConfig(cfg)),
+		router:    routing.NewStaticRouter(cfg.RoutingConfig()),
 		cfg:       cfg,
 		providers: make(map[string]provider.Provider),
 	}

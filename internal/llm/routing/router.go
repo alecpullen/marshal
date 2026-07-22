@@ -153,3 +153,33 @@ func IsLocalProvider(provider string) bool {
 func isLocalProvider(provider string) bool {
 	return IsLocalProvider(provider)
 }
+
+// CastEntry holds the result of resolving a single role via Cast.
+type CastEntry struct {
+	Role  AgentRole
+	Route Route
+	Err   error
+}
+
+// Cast resolves every role in the given list using the same resolution and
+// fallback chain as ResolveRole. Unlike ResolveRole, Cast never short-circuits
+// on errors — it resolves every requested role and returns all results. It is
+// used only for pre-flight display (e.g. the startup banner).
+func (r *StaticRouter) Cast(roles []AgentRole) []CastEntry {
+	entries := make([]CastEntry, 0, len(roles))
+	for _, role := range roles {
+		route, err := r.ResolveRole(role)
+		entries = append(entries, CastEntry{Role: role, Route: route, Err: err})
+	}
+	return entries
+}
+
+var (
+	// SwarmCastRoles lists the agent roles used by the swarm orchestrator.
+	// Used by Cast for pre-flight display.
+	SwarmCastRoles = []AgentRole{RolePlanner, RoleRepoScout, RoleImplementer, RoleTester, RoleReviewer}
+
+	// SDDCastRoles lists the agent roles used by the SDD orchestrator.
+	// Used by Cast for pre-flight display.
+	SDDCastRoles = []AgentRole{RoleSDDImplementer, RoleSDDReviewer, RoleSDDBranchReviewer}
+)

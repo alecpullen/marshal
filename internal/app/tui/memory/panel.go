@@ -157,7 +157,7 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 		pw = max(width-2, 40)
 	}
 	pw = min(pw, width-2)
-	inner := pw - 2
+	inner := pw - 3
 
 	if maxHeight < 3 {
 		return mutedStyle().Render("Memory")
@@ -199,27 +199,21 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 		rows = append(rows, mutedStyle().Render("  no matches"))
 	}
 
-	listH := maxHeight - 5
+	listH := maxHeight - 3
 	if listH < 1 {
 		listH = 1
 	}
 	body := chrome.ClipLines(rows, focusLine, listH, theme.Current())
 
-	footer := "⏎ show · ctrl+d delete · esc close"
+	content := "/ " + p.filter.View() + "\n" + body
 	if p.deleteArmed {
-		footer = "press ctrl+d again to confirm delete · esc cancel"
+		content += "\n" + mutedStyle().Render("press ctrl+d again to confirm delete · esc cancel")
 	}
 	if p.loadErr != nil {
-		footer = "load failed: " + p.loadErr.Error()
+		content += "\n" + mutedStyle().Render("load failed: " + p.loadErr.Error())
 	}
-
-	content := "/ " + p.filter.View() + "\n" +
-		mutedStyle().Render(strings.Repeat("─", inner)) + "\n" +
-		body + "\n" +
-		mutedStyle().Render(footer)
-
-	ph := min(lipgloss.Height(content)+2, maxHeight)
-	return chrome.Panel("Memory", content, pw, ph, true, theme.Current())
+	ph := min(lipgloss.Height(content)+1, maxHeight)
+	return chrome.PanelWithHints("Memory", "⏎ show · ctrl+d delete · esc close", content, pw, ph, true, theme.Current())
 }
 
 func isMono() bool {

@@ -17,6 +17,8 @@ func resetSection(cfg *config.Config, sectionID string) {
 		cfg.Providers = nil
 	case "presets":
 		cfg.Models.Presets = map[string]routing.ModelPreset{}
+	case "profiles":
+		cfg.AgentProfiles = map[string]routing.AgentProfile{}
 	case "privacy":
 		cfg.Privacy = def.Privacy
 	case "shell":

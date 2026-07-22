@@ -169,7 +169,7 @@ func (m *Model) View(maxW, maxH int) string {
 	} else if m.step == stepSummary {
 		b.WriteString(m.renderSummary(pw))
 	} else if m.step == stepRename {
-		b.WriteString(m.renderInput(pw))
+		b.WriteString(m.renderRenameInput(pw))
 	}
 	if m.err != "" {
 		b.WriteString("\n")
@@ -185,6 +185,15 @@ func (m *Model) View(maxW, maxH int) string {
 func (m *Model) renderInput(pw int) string {
 	inner := pw - 2
 	line := m.input.View()
+	if len(line) > inner {
+		line = line[:inner]
+	}
+	return line
+}
+
+func (m *Model) renderRenameInput(pw int) string {
+	inner := pw - 2
+	line := m.renameInput.View()
 	if len(line) > inner {
 		line = line[:inner]
 	}
@@ -310,7 +319,7 @@ func (m *Model) enterRename() {
 	ri.SetVirtualCursor(true)
 	ri.Focus()
 	ri.SetValue(m.providerName)
-	m.input = ri
+	m.renameInput = ri
 	m.picker = nil
 }
 
@@ -508,7 +517,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			return m, nil
 		default:
 			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(k)
+			m.renameInput, cmd = m.renameInput.Update(k)
 			return m, cmd
 		}
 	}
@@ -543,7 +552,7 @@ func (m *Model) confirmInput() (*Model, tea.Cmd) {
 }
 
 func (m *Model) confirmRename() (*Model, tea.Cmd) {
-	v := strings.TrimSpace(m.input.Value())
+	v := strings.TrimSpace(m.renameInput.Value())
 	if v == "" {
 		m.err = "name cannot be empty"
 		return m, nil

@@ -419,7 +419,7 @@ func TestSummaryRenameChangesProviderName(t *testing.T) {
 		t.Fatalf("expected stepRename, got %v", m.step)
 	}
 	// Change the name
-	m.input.SetValue("my-ollama")
+	m.renameInput.SetValue("my-ollama")
 	// Press Enter to confirm rename
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
@@ -486,7 +486,7 @@ func TestRenameEmptyNameShowsError(t *testing.T) {
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
-	m.input.SetValue("")
+	m.renameInput.SetValue("")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
 	if updated.err == "" {
 		t.Fatal("expected error for empty rename")

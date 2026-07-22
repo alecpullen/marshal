@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"strconv"
 	"time"
 )
 
@@ -121,12 +122,14 @@ func sddFrame(s *state) *frame {
 				desc:    "create an isolated git worktree for each SDD task",
 				getBool: func() bool { return s.cfg.SDD.AutoWorktree },
 				setBool: func(v bool) { s.cfg.SDD.AutoWorktree = v }},
-			intField("sdd.max_fix_rounds", "Max fix rounds",
-				func() int { return s.cfg.SDD.MaxFixRounds }, 0,
-				func(v int) { s.cfg.SDD.MaxFixRounds = v }),
-			scalarField("sdd.plans_dir", "Plans dir",
-				func() string { return s.cfg.SDD.PlansDir },
-				func(v string) error { s.cfg.SDD.PlansDir = v; return nil }),
+			{id: "sdd.max_fix_rounds", title: "Max fix rounds", kind: kindScalar,
+				desc:   "max LLM retry rounds per SDD task before escalation",
+				getStr: func() string { return strconv.Itoa(s.cfg.SDD.MaxFixRounds) },
+				setStr: intSetter(0, func(v int) { s.cfg.SDD.MaxFixRounds = v })},
+			{id: "sdd.plans_dir", title: "Plans dir", kind: kindScalar,
+				desc:   "directory for SDD plan files (relative to project root)",
+				getStr: func() string { return s.cfg.SDD.PlansDir },
+				setStr: func(v string) error { s.cfg.SDD.PlansDir = v; return nil }},
 		}
 	})
 }

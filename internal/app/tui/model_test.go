@@ -16,6 +16,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
@@ -965,7 +966,7 @@ func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
 func (f *fakeSwarmRunner) SetForceClass(string)                   {}
 func (f *fakeSwarmRunner) SetPolicyRules([]config.PermissionRule) {}
 
-func TestSwarmCommandDispatchesGoalToSwarmRunner(t *testing.T) {
+func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	fake := &fakeSwarmRunner{}
 	cmdReg := commands.New()
@@ -976,13 +977,44 @@ func TestSwarmCommandDispatchesGoalToSwarmRunner(t *testing.T) {
 		WithCommandRegistry(cmdReg),
 		WithSwarmRunner(context.Background(), fake),
 	)
+	model.resize(100, 40)
 
-	_, cmd := model.dispatchCommand("/swarm add a regression test")
-	if cmd == nil {
-		t.Fatal("dispatchCommand returned nil cmd")
+	// /swarm with a goal should open the cast list panel (not start the run).
+	updated, cmd := model.dispatchCommand("/swarm add a regression test")
+	m := asModel(t, updated)
+	if cmd != nil {
+		t.Fatal("dispatchCommand should return nil cmd (preflight panel is modal)")
 	}
-	if !model.busy {
-		t.Fatal("model should be busy while the swarm runs")
+	if m.busy {
+		t.Fatal("model should not be busy while preflight panel is open")
+	}
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock to be open with cast list panel")
+	}
+	if _, ok := m.dock.Panel().(*castlist.Panel); !ok {
+		t.Fatalf("expected *castlist.Panel, got %T", m.dock.Panel())
+	}
+	if m.pendingRun == nil {
+		t.Fatal("expected pendingRun to be set")
+	}
+	if m.pendingRun.goal != "add a regression test" {
+		t.Fatalf("pendingRun.goal = %q, want %q", m.pendingRun.goal, "add a regression test")
+	}
+
+	// Simulate Enter on the cast list panel (StartMsg).
+	updated, cmd = m.Update(castlist.StartMsg{})
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("StartMsg should return a non-nil cmd (startAgentRun)")
+	}
+	if !m.busy {
+		t.Fatal("model should be busy after StartMsg")
+	}
+	if m.pendingRun != nil {
+		t.Fatal("pendingRun should be cleared after StartMsg")
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("dock should be closed after StartMsg")
 	}
 
 	// Execute the batched commands; one of them runs the swarm.
@@ -1001,6 +1033,43 @@ func TestSwarmCommandDispatchesGoalToSwarmRunner(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.goals) != 1 || fake.goals[0] != "add a regression test" {
 		t.Fatalf("swarm runner goals = %v, want [\"add a regression test\"]", fake.goals)
+	}
+}
+
+func TestSwarmCommandPreflightCancelClearsPendingRun(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	fake := &fakeSwarmRunner{}
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	model := New(state,
+		WithCommandRegistry(cmdReg),
+		WithSwarmRunner(context.Background(), fake),
+	)
+	model.resize(100, 40)
+
+	// Open the preflight panel.
+	updated, _ := model.dispatchCommand("/swarm add a regression test")
+	m := asModel(t, updated)
+	if m.pendingRun == nil {
+		t.Fatal("expected pendingRun to be set")
+	}
+
+	// Simulate Esc on the cast list panel (CancelMsg).
+	updated, cmd := m.Update(castlist.CancelMsg{})
+	m = asModel(t, updated)
+	if cmd != nil {
+		t.Fatal("CancelMsg should return nil cmd")
+	}
+	if m.pendingRun != nil {
+		t.Fatal("pendingRun should be cleared after CancelMsg")
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("dock should be closed after CancelMsg")
+	}
+	if m.busy {
+		t.Fatal("model should not be busy after CancelMsg")
 	}
 }
 
@@ -1041,7 +1110,7 @@ func (f *fakeSDDRunner) Run(ctx context.Context, planPath string) error {
 func (f *fakeSDDRunner) SetForceClass(string)                   {}
 func (f *fakeSDDRunner) SetPolicyRules([]config.PermissionRule) {}
 
-func TestSDDCommandDispatchesPlanToSDDRunner(t *testing.T) {
+func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	fake := &fakeSDDRunner{}
 	cmdReg := commands.New()
@@ -1052,15 +1121,47 @@ func TestSDDCommandDispatchesPlanToSDDRunner(t *testing.T) {
 		WithCommandRegistry(cmdReg),
 		WithSDDRunner(context.Background(), fake),
 	)
+	model.resize(100, 40)
 
-	_, cmd := model.dispatchCommand("/sdd /repo/docs/plans/feature-plan.md")
+	// /sdd with a plan path should open the cast list panel (not start the run).
+	updated, cmd := model.dispatchCommand("/sdd /repo/docs/plans/feature-plan.md")
+	m := asModel(t, updated)
+	if cmd != nil {
+		t.Fatal("dispatchCommand should return nil cmd (preflight panel is modal)")
+	}
+	if m.busy {
+		t.Fatal("model should not be busy while preflight panel is open")
+	}
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock to be open with cast list panel")
+	}
+	if _, ok := m.dock.Panel().(*castlist.Panel); !ok {
+		t.Fatalf("expected *castlist.Panel, got %T", m.dock.Panel())
+	}
+	if m.pendingRun == nil {
+		t.Fatal("expected pendingRun to be set")
+	}
+	if m.pendingRun.goal != "/repo/docs/plans/feature-plan.md" {
+		t.Fatalf("pendingRun.goal = %q, want %q", m.pendingRun.goal, "/repo/docs/plans/feature-plan.md")
+	}
+
+	// Simulate Enter on the cast list panel (StartMsg).
+	updated, cmd = m.Update(castlist.StartMsg{})
+	m = asModel(t, updated)
 	if cmd == nil {
-		t.Fatal("dispatchCommand returned nil cmd")
+		t.Fatal("StartMsg should return a non-nil cmd (startAgentRun)")
 	}
-	if !model.busy {
-		t.Fatal("model should be busy while SDD runs")
+	if !m.busy {
+		t.Fatal("model should be busy after StartMsg")
+	}
+	if m.pendingRun != nil {
+		t.Fatal("pendingRun should be cleared after StartMsg")
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("dock should be closed after StartMsg")
 	}
 
+	// Execute the batched commands.
 	msg := cmd()
 	batch, ok := msg.(tea.BatchMsg)
 	if !ok {
@@ -1076,6 +1177,43 @@ func TestSDDCommandDispatchesPlanToSDDRunner(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.plans) != 1 || fake.plans[0] != "/repo/docs/plans/feature-plan.md" {
 		t.Fatalf("SDD runner plans = %v, want [\"/repo/docs/plans/feature-plan.md\"]", fake.plans)
+	}
+}
+
+func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	fake := &fakeSDDRunner{}
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	model := New(state,
+		WithCommandRegistry(cmdReg),
+		WithSDDRunner(context.Background(), fake),
+	)
+	model.resize(100, 40)
+
+	// Open the preflight panel.
+	updated, _ := model.dispatchCommand("/sdd /repo/docs/plans/feature-plan.md")
+	m := asModel(t, updated)
+	if m.pendingRun == nil {
+		t.Fatal("expected pendingRun to be set")
+	}
+
+	// Simulate Esc on the cast list panel (CancelMsg).
+	updated, cmd := m.Update(castlist.CancelMsg{})
+	m = asModel(t, updated)
+	if cmd != nil {
+		t.Fatal("CancelMsg should return nil cmd")
+	}
+	if m.pendingRun != nil {
+		t.Fatal("pendingRun should be cleared after CancelMsg")
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("dock should be closed after CancelMsg")
+	}
+	if m.busy {
+		t.Fatal("model should not be busy after CancelMsg")
 	}
 }
 

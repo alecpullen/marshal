@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/help"
 	"marshal/internal/strutil"
 )
 
@@ -214,5 +215,19 @@ func (m Model) statusRightSegment() string {
 	if m.lastActivityLabel != "" && m.now().Sub(m.lastActivityDone) < doneDisplayDuration {
 		return statusOkStyle().Render("✔ " + m.lastActivityLabel)
 	}
-	return ""
+	return help.Footer(m.footerHints())
+}
+
+// footerHints snapshots the mode flags the hint cluster needs. This is
+// the FooterHints construction that used to live in the dedicated
+// footer row (deleted in the hairline-gutter redesign).
+func (m Model) footerHints() help.FooterHints {
+	return help.FooterHints{
+		Busy:                 m.busy,
+		EditingCommand:       m.editingCommand,
+		ApprovalPending:      m.state.PendingApproval() != nil,
+		QuestionPending:      m.state.PendingQuestion() != nil,
+		PopupOpen:            m.activeCompletionPopup() != nil,
+		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
+	}
 }

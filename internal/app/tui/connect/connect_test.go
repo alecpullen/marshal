@@ -9,6 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"charm.land/bubbles/v2/textinput"
+
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/picker"
@@ -552,6 +554,103 @@ func TestRenameEscReturnsToSummary(t *testing.T) {
 }
 
 func pickerPicked(value string) tea.Msg { return picker.PickedMsg{Value: value} }
+
+func TestAPIKeyInputIsMasked(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	m, _ = m.Update(pickerPicked("openrouter"))
+	if m.step != stepAPIKey {
+		t.Fatalf("expected stepAPIKey, got %v", m.step)
+	}
+	if m.input.EchoMode != textinput.EchoPassword {
+		t.Fatalf("input.EchoMode = %v, want EchoPassword", m.input.EchoMode)
+	}
+}
+
+func TestDollarPrefixSetsEnvVarKey(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	m, _ = m.Update(pickerPicked("openrouter"))
+	if m.step != stepAPIKey {
+		t.Fatalf("expected stepAPIKey, got %v", m.step)
+	}
+	m.input.SetValue("$MY_CUSTOM_KEY")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
+	if updated.step != stepProbing {
+		t.Fatalf("after $ENV Enter should advance to probing, got step = %v", updated.step)
+	}
+	if updated.providerCfg.APIKey != "" {
+		t.Fatalf("APIKey should be empty when using env var, got %q", updated.providerCfg.APIKey)
+	}
+	if updated.providerCfg.APIKeyEnv != "MY_CUSTOM_KEY" {
+		t.Fatalf("APIKeyEnv = %q, want %q", updated.providerCfg.APIKeyEnv, "MY_CUSTOM_KEY")
+	}
+}
+
+func TestDollarPrefixEmptyNameShowsError(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	m, _ = m.Update(pickerPicked("openrouter"))
+	m.input.SetValue("$")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
+	if updated.err == "" {
+		t.Fatal("expected error for empty env var name")
+	}
+	if !strings.Contains(updated.err, "empty") {
+		t.Fatalf("error message = %q, want 'empty'", updated.err)
+	}
+}
+
+func TestProbeFailureShowsHint(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")})
+	if updated.step != stepProbing {
+		t.Fatalf("failure should stay probing, got %v", updated.step)
+	}
+	if !strings.Contains(updated.err, "is the server running") {
+		t.Fatalf("expected probe hint in error, got: %q", updated.err)
+	}
+}
+
+func TestProbeFailureHintForNoSuchHost(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("no such host")})
+	if !strings.Contains(updated.err, "hostname not found") {
+		t.Fatalf("expected hostname hint, got: %q", updated.err)
+	}
+}
+
+func TestProbeFailureHintForUnauthorized(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("401 unauthorized")})
+	if !strings.Contains(updated.err, "key rejected") {
+		t.Fatalf("expected key rejected hint, got: %q", updated.err)
+	}
+}
+
+func TestProbeFailureHintForTimeout(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("deadline exceeded")})
+	if !strings.Contains(updated.err, "timed out") {
+		t.Fatalf("expected timeout hint, got: %q", updated.err)
+	}
+}
+
+func TestProbeFailureHintForCertificate(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("certificate signed by unknown authority")})
+	if !strings.Contains(updated.err, "TLS problem") {
+		t.Fatalf("expected TLS hint, got: %q", updated.err)
+	}
+}
 
 func TestTruncateErrRuneSafe(t *testing.T) {
 	out := strutil.Truncate(strings.Repeat("é", 60), 48, true) // 2-byte runes

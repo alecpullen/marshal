@@ -14,9 +14,16 @@ func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 func TestFooterIdle(t *testing.T) {
 	out := stripANSI(Footer(FooterHints{}))
-	for _, want := range []string{"Tab", "Alt+M", "?", "/", "@"} {
+	for _, want := range []string{"Tab mode", "/ cmd", "? help"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("idle footer missing %q: %q", want, out)
+		}
+	}
+	// The idle set is deliberately minimal; the full cheatsheet lives
+	// behind ? (/help). These must NOT appear:
+	for _, gone := range []string{"Alt+M", "@", "Ctrl+G"} {
+		if strings.Contains(out, gone) {
+			t.Fatalf("idle footer still shows %q (moved behind ?): %q", gone, out)
 		}
 	}
 }
@@ -32,13 +39,6 @@ func TestFooterQuestionShowsAnswer(t *testing.T) {
 	out := stripANSI(Footer(FooterHints{QuestionPending: true}))
 	if !strings.Contains(out, "Enter answer") {
 		t.Fatalf("question footer missing answer hint: %q", out)
-	}
-}
-
-func TestFooterIdleShowsThinkingToggle(t *testing.T) {
-	out := stripANSI(Footer(FooterHints{}))
-	if !strings.Contains(out, "Ctrl+G") {
-		t.Fatalf("idle footer missing Ctrl+G: %q", out)
 	}
 }
 

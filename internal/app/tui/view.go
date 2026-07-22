@@ -9,8 +9,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-
-	"marshal/internal/app/session"
 )
 
 // ansiRe matches SGR (and empty) escape sequences that lipgloss emits.
@@ -50,20 +48,11 @@ func (m *Model) viewString() string {
 	m.updateViewportHeight()
 
 	rows := []string{m.renderTranscriptFrame()}
-	// Swarm roles are tool-driven; use ActivityTool as the gating kind.
-	swarmSpinner := m.activeSpinnerFrame(session.ActivityTool)
-	if panel := renderSwarmPanel(m.state.SwarmProgress(), swarmSpinner, m.width); panel != "" {
-		rows = append(rows, panel)
+	if todo := m.renderTodoPanel(); todo != "" {
+		rows = append(rows, todo)
 	}
-	if bar := m.renderBrowserBar(); bar != "" {
-		rows = append(rows, bar)
-	}
-	// Compute the SDD panel once and cache it so sddPanelRows() can reuse
-	// the result instead of calling renderSDDPanel a second time.
-	sddSpinner := m.activeSpinnerFrame(session.ActivityTool)
-	m.sddPanelBody, m.sddPanelCachedRows = renderSDDPanel(m.state.SDDProgress(), sddSpinner, m.width)
-	if m.sddPanelBody != "" {
-		rows = append(rows, m.sddPanelBody)
+	if strip := m.renderLiveStrip(); strip != "" {
+		rows = append(rows, strip)
 	}
 	if dockView != "" {
 		rows = append(rows, dockView)

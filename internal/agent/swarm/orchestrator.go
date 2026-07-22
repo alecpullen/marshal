@@ -12,6 +12,7 @@ import (
 	"marshal/internal/agent"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/strutil"
 )
 
 // RegistryScope selects which tool registry view a role's runner receives.
@@ -89,22 +90,22 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 	o.announce("Swarm run started.")
 
 	// 1. Planner (read-only): produces the shared plan.
-	o.State.UpdateSwarmRole("planner", session.SwarmRoleActive, "")
+	o.setRole(meter, "planner", session.SwarmRoleActive, "")
 	planPrompt := plannerPrompt(ts)
 	plannerTask, err := o.runRole(ctx, meter, agent.RolePlanner, ScopeReadOnly, planPrompt)
 	if err != nil {
-		o.State.UpdateSwarmRole("planner", session.SwarmRoleFailed, "")
+		o.setRole(meter, "planner", session.SwarmRoleFailed, "")
 		o.announce("Swarm aborted: planner failed.")
 		return err
 	}
 	ts.SetPlan(planLines(plannerTask.Summary))
-	o.State.UpdateSwarmRole("planner", session.SwarmRoleDone, "")
+	o.setRole(meter, "planner", session.SwarmRoleDone, "")
 
 	// 2. Repo scouts (read-only, parallel). Runners are constructed before
 	// the goroutines start so the factory is never called concurrently.
 	if !o.overBudget(meter) {
 		focuses := o.focuses()
-		o.State.UpdateSwarmRole("scouts", session.SwarmRoleActive, fmt.Sprintf("0/%d", len(focuses)))
+		o.setRole(meter, "scouts", session.SwarmRoleActive, fmt.Sprintf("0/%d", len(focuses)))
 		type scoutJob struct {
 			focus        ScoutFocus
 			runner       *agent.Runner
@@ -115,7 +116,7 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 		for _, focus := range focuses {
 			runner, err := o.NewRunner(agent.RoleRepoScout, ScopeReadOnly)
 			if err != nil {
-				o.State.UpdateSwarmRole("scouts", session.SwarmRoleFailed, "")
+				o.setRole(meter, "scouts", session.SwarmRoleFailed, "")
 				o.announce("Swarm aborted: could not build repo scout.")
 				return err
 			}
@@ -147,16 +148,16 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 					}
 				}
 				n := atomic.AddInt32(&done, 1)
-				o.State.UpdateSwarmRole("scouts", session.SwarmRoleActive, fmt.Sprintf("%d/%d", n, len(jobs)))
+				o.setRole(meter, "scouts", session.SwarmRoleActive, fmt.Sprintf("%d/%d", n, len(jobs)))
 			}(job)
 		}
 		wg.Wait()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		o.State.UpdateSwarmRole("scouts", session.SwarmRoleDone, fmt.Sprintf("%d/%d", len(jobs), len(jobs)))
+		o.setRole(meter, "scouts", session.SwarmRoleDone, fmt.Sprintf("%d/%d", len(jobs), len(jobs)))
 	} else {
-		o.State.UpdateSwarmRole("scouts", session.SwarmRoleDone, "skipped (budget)")
+		o.setRole(meter, "scouts", session.SwarmRoleDone, "skipped (budget)")
 	}
 
 	// 3. Implementer/tester loop. The implementer is the only writer; the
@@ -166,11 +167,11 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 		if o.overBudget(meter) {
 			break
 		}
-		o.State.UpdateSwarmRole("implementer", session.SwarmRoleActive, fmt.Sprintf("round %d/%d", round, rounds))
+		o.setRole(meter, "implementer", session.SwarmRoleActive, fmt.Sprintf("round %d/%d", round, rounds))
 		implPrompt := implementerPrompt(ts)
 		implTask, err := o.runRole(ctx, meter, agent.RoleImplementer, ScopeFull, implPrompt)
 		if err != nil {
-			o.State.UpdateSwarmRole("implementer", session.SwarmRoleFailed, "")
+			o.setRole(meter, "implementer", session.SwarmRoleFailed, "")
 			o.announce("Swarm aborted: implementer failed.")
 			return err
 		}
@@ -178,14 +179,14 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 			break
 		}
 		ts.AddPatchNote(implTask.Summary)
-		o.State.UpdateSwarmRole("implementer", session.SwarmRoleDone, fmt.Sprintf("round %d/%d", round, rounds))
+		o.setRole(meter, "implementer", session.SwarmRoleDone, fmt.Sprintf("round %d/%d", round, rounds))
 
-		o.State.UpdateSwarmRole("tester", session.SwarmRoleActive, fmt.Sprintf("round %d/%d", round, rounds))
+		o.setRole(meter, "tester", session.SwarmRoleActive, fmt.Sprintf("round %d/%d", round, rounds))
 		testPrompt := testerPrompt(ts)
 		testTask, err := o.runRole(ctx, meter, agent.RoleTester, ScopeTester, testPrompt)
 		if err != nil {
 			ts.AddFinding(Finding{Agent: "tester", Area: "tests", Content: "tester failed: " + err.Error()})
-			o.State.UpdateSwarmRole("tester", session.SwarmRoleFailed, "")
+			o.setRole(meter, "tester", session.SwarmRoleFailed, "")
 			break
 		}
 		if o.overBudget(meter) {
@@ -198,23 +199,23 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 
 		pass, ok := ParseVerdict(testTask.Summary)
 		if pass || !ok {
-			o.State.UpdateSwarmRole("tester", session.SwarmRoleDone, fmt.Sprintf("round %d/%d", round, rounds))
+			o.setRole(meter, "tester", session.SwarmRoleDone, fmt.Sprintf("round %d/%d", round, rounds))
 			break
 		}
-		o.State.UpdateSwarmRole("tester", session.SwarmRoleDone, fmt.Sprintf("round %d/%d FAIL", round, rounds))
+		o.setRole(meter, "tester", session.SwarmRoleDone, fmt.Sprintf("round %d/%d FAIL", round, rounds))
 	}
 
 	// 4. Reviewer (read-only). A reviewer failure is reported, not fatal:
 	// the implementer's work is already in the working tree.
-	o.State.UpdateSwarmRole("reviewer", session.SwarmRoleActive, "")
+	o.setRole(meter, "reviewer", session.SwarmRoleActive, "")
 	reviewPrompt := reviewerPrompt(ts)
 	reviewTask, err := o.runRole(ctx, meter, agent.RoleReviewer, ScopeReadOnly, reviewPrompt)
 	if err != nil {
 		ts.SetFinalSummary("Reviewer failed: " + err.Error())
-		o.State.UpdateSwarmRole("reviewer", session.SwarmRoleFailed, "")
+		o.setRole(meter, "reviewer", session.SwarmRoleFailed, "")
 	} else {
 		ts.SetFinalSummary(reviewTask.Summary)
-		o.State.UpdateSwarmRole("reviewer", session.SwarmRoleDone, "")
+		o.setRole(meter, "reviewer", session.SwarmRoleDone, "")
 	}
 
 	summary := ts.Render()
@@ -261,6 +262,41 @@ func (o *Orchestrator) focuses() []ScoutFocus {
 
 func (o *Orchestrator) announce(text string) {
 	o.State.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+}
+
+// setRole updates the swarm roster and, on a role's first terminal
+// transition, prints a `·` transcript event. The persistent roster panel
+// that used to carry this information was deleted in the hairline-gutter
+// redesign; live progress is the one-row strip, history is the
+// transcript. Repeated Done updates (the tester loop reports one per
+// round) announce only once.
+func (o *Orchestrator) setRole(meter TokenMeter, name string, status session.SwarmRoleStatus, detail string) {
+	prev := roleStatus(o.State.SwarmProgress(), name)
+	o.State.UpdateSwarmRole(name, status, detail)
+	if !terminalRoleStatus(status) || terminalRoleStatus(prev) {
+		return
+	}
+	line := name + " " + string(status)
+	if detail != "" {
+		line += " · " + detail
+	}
+	if meter != nil && meter.Total() > 0 {
+		line += " · ~" + strutil.CompactTokens(meter.Total()) + " tokens"
+	}
+	o.announce(line)
+}
+
+func terminalRoleStatus(s session.SwarmRoleStatus) bool {
+	return s == session.SwarmRoleDone || s == session.SwarmRoleFailed
+}
+
+func roleStatus(p session.SwarmProgress, name string) session.SwarmRoleStatus {
+	for _, r := range p.Roles {
+		if r.Name == name {
+			return r.Status
+		}
+	}
+	return session.SwarmRolePending
 }
 
 // parseTestFailures extracts the TEST_FAILURES_JSON: [...] block from

@@ -209,7 +209,7 @@ func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
 	}
 }
 
-func TestStatusLineHidesBrowserSegmentWhenBrowserBarVisible(t *testing.T) {
+func TestStatusLineHidesBrowserSegmentWhenStripShowsBrowser(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetBrowserInfo(session.BrowserInfo{
 		SessionOpen: true,
@@ -219,10 +219,10 @@ func TestStatusLineHidesBrowserSegmentWhenBrowserBarVisible(t *testing.T) {
 	line := m.renderStatusLine(100)
 	stripped := stripANSI(line)
 	if strings.Contains(stripped, "🌐") {
-		t.Fatalf("status line should not show 🌐 when browser bar is visible:\n%s", line)
+		t.Fatalf("status line should not show 🌐 when strip shows browser:\n%s", line)
 	}
 	if strings.Contains(stripped, "example.com/docs") {
-		t.Fatalf("status line should not show browser URL when browser bar is visible:\n%s", line)
+		t.Fatalf("status line should not show browser URL when strip shows browser:\n%s", line)
 	}
 }
 
@@ -240,8 +240,9 @@ func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetTrusted(true)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder:14b", Provider: "ollama", LocalOnly: true})
-	// Browser segment is never added when browser bar is visible (SessionOpen=true
-	// means ShouldShowStatusURL() returns false). Verify the route survives.
+	// Browser segment is never added when the strip shows the browser
+	// (SessionOpen=true means ShouldShowStatusURL() returns false).
+	// Verify the route survives.
 	m.state.SetBrowserInfo(session.BrowserInfo{
 		SessionOpen: true,
 		URL:         "https://example.com",
@@ -253,26 +254,45 @@ func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
 		t.Fatalf("model segment should survive on narrow width:\n%s", line)
 	}
 	if strings.Contains(stripped, "example.com") {
-		t.Fatalf("browser segment should not appear when browser bar is visible:\n%s", line)
+		t.Fatalf("browser segment should not appear when strip shows browser:\n%s", line)
 	}
 }
 
-func TestShouldShowStatusURLReturnsFalseWhenBrowserBarVisible(t *testing.T) {
+func TestShouldShowStatusURLReturnsFalseWhenStripShowsBrowser(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetBrowserInfo(session.BrowserInfo{
 		SessionOpen: true,
 		URL:         "http://example.com",
 	})
 	if m.ShouldShowStatusURL() {
-		t.Fatal("ShouldShowStatusURL should return false when browser bar is visible")
+		t.Fatal("ShouldShowStatusURL should return false when strip shows browser")
 	}
 }
 
-func TestShouldShowStatusURLReturnsTrueWhenBrowserBarHidden(t *testing.T) {
+func TestShouldShowStatusURLReturnsTrueWhenNoBrowserSession(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetBrowserInfo(session.BrowserInfo{SessionOpen: false})
 	if !m.ShouldShowStatusURL() {
-		t.Fatal("ShouldShowStatusURL should return true when browser bar is hidden")
+		t.Fatal("ShouldShowStatusURL should return true when no browser session")
+	}
+}
+
+func TestStatusLineShowsBrowserSegmentWhenStripIsBusyWithSwarm(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetBrowserInfo(session.BrowserInfo{
+		SessionOpen: true,
+		URL:         "https://example.com/docs",
+		Mode:        "standalone",
+	})
+	m.state.SetSwarmProgress(session.SwarmProgress{
+		Active: true,
+		Roles:  []session.SwarmRole{{Name: "planner", Status: session.SwarmRoleActive}},
+	})
+	if !m.ShouldShowStatusURL() {
+		t.Fatal("status URL must reappear when the live strip is showing swarm progress")
+	}
+	if !strings.Contains(stripANSI(m.renderStatusLine(100)), "example.com") {
+		t.Fatal("status line should carry the browser URL while swarm owns the strip")
 	}
 }
 

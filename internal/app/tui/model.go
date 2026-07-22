@@ -62,8 +62,6 @@ const (
 	// settingsBusyMessage is shown when runtime work makes a settings change
 	// unsafe to persist.
 	settingsBusyMessage = "Stop the active turn and background jobs before applying settings."
-
-	browserBarRows = 1
 )
 
 type Model struct {
@@ -81,13 +79,8 @@ type Model struct {
 	cmdRegistry    *commands.Registry
 	agentCancel    context.CancelFunc
 	forceMode      string // current interaction mode: "ask", "edit", or "" (auto). Rendered in the help overlay and status line.
-	// sddPanelBody and sddPanelCachedRows are computed once per View() call
-	// to avoid double-rendering the SDD panel (once for height, once for
-	// content). They are reset at the start of each viewString().
-	sddPanelBody       string
-	sddPanelCachedRows int
-	approvalModel      *approvalModel
-	questionModel      *questionModel
+	approvalModel  *approvalModel
+	questionModel  *questionModel
 
 	// F18: editor completions. cmdPopup is fed by the commands registry
 	// (triggered by `/` at position 0) and filePopup is fed by the repo
@@ -158,6 +151,14 @@ type Model struct {
 	lastActivityKind  session.ActivityKind
 	successPulse      bool
 	now               func() time.Time
+
+	// Pinned todo panel (Ctrl+T cycles expanded → collapsed → hidden).
+	// todosDismissed hides the all-done summary from the next turn
+	// onward; todosSig detects the agent rewriting the list, which
+	// un-dismisses it.
+	todoPanelMode  todoPanelMode
+	todosDismissed bool
+	todosSig       string
 }
 
 type Option func(*Model)
@@ -569,7 +570,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport spans the full terminal width (borderless).
 	m.viewport.SetWidth(max(width, 1))
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1012,39 +1013,48 @@ func (m Model) inputAreaRows() int {
 	return rows
 }
 
-func (m Model) swarmPanelRows() int {
-	if m.state.SwarmProgress().Active {
-		return swarmPanelRows
-	}
-	return 0
-}
-
-func (m Model) browserBarRows() int {
-	if m.state.BrowserInfo().SessionOpen {
-		return browserBarRows
-	}
-	return 0
-}
-
-// ShouldShowStatusURL returns false when the browser bar is visible, because
-// the browser bar already shows the URL and tool name. The right-side status
-// segment should omit the URL line to avoid duplication.
-func (m Model) ShouldShowStatusURL() bool {
-	return !m.state.BrowserInfo().SessionOpen
-}
-
-func (m Model) sddPanelRows() int {
-	if !m.state.SDDProgress().Active {
+// liveStripRows reports the rows the live strip occupies: 1 while a
+// swarm/SDD run or browser session is live, 0 otherwise.
+func (m Model) liveStripRows() int {
+	if m.renderLiveStrip() == "" {
 		return 0
 	}
-	// Use the cached value from the last viewString() call. If the cache is
-	// stale (e.g. called outside of View), fall back to computing it fresh.
-	if m.sddPanelCachedRows > 0 || m.sddPanelBody != "" {
-		return m.sddPanelCachedRows
+	return 1
+}
+
+// renderTodoPanel renders the pinned todo panel for the current frame.
+// The all-done summary is suppressed once the user has started another
+// turn (spec: the summary "clears on the next user turn").
+func (m Model) renderTodoPanel() string {
+	todos := m.state.Todos()
+	if m.todosDismissed && todosAllDone(todos) {
+		return ""
 	}
-	spinner := m.activeSpinnerFrame(session.ActivityTool)
-	_, rows := renderSDDPanel(m.state.SDDProgress(), spinner, m.width)
-	return rows
+	return renderTodoPanelBody(todos, m.todoPanelMode, m.height, m.width)
+}
+
+// todoPanelRows reports the rows the pinned todo panel occupies.
+func (m Model) todoPanelRows() int {
+	body := m.renderTodoPanel()
+	if body == "" {
+		return 0
+	}
+	return lipgloss.Height(body)
+}
+
+// stripShowsBrowser reports whether the live strip is currently rendering
+// the browser session (rather than a swarm or SDD run).
+func (m Model) stripShowsBrowser() bool {
+	return m.state.BrowserInfo().SessionOpen &&
+		!m.state.SwarmProgress().Active &&
+		!m.state.SDDProgress().Active
+}
+
+// ShouldShowStatusURL returns false when the live strip already shows the
+// browser URL and tool name. The right-side status segment omits the URL
+// then to avoid duplication.
+func (m Model) ShouldShowStatusURL() bool {
+	return !m.stripShowsBrowser()
 }
 
 // dockRows reports the rows the docked panel occupied at last render, so the
@@ -1052,7 +1062,7 @@ func (m Model) sddPanelRows() int {
 func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -1415,6 +1425,10 @@ func (m *Model) refreshViewport() {
 	busy := m.busy || activeTool || streamLen > 0
 
 	todos := m.state.Todos()
+	if sig := todoSignature(todos); sig != m.todosSig {
+		m.todosSig = sig
+		m.todosDismissed = false
+	}
 	queued := m.state.SteeringQueue()
 	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued)
 	if hash == m.lastTranscriptHash {
@@ -1423,10 +1437,6 @@ func (m *Model) refreshViewport() {
 	m.lastTranscriptHash = hash
 
 	var b strings.Builder
-	if todoPanel := renderTodos(todos, m.viewport.Width()); todoPanel != "" {
-		b.WriteString(todoPanel)
-		b.WriteString("\n")
-	}
 	if len(items) == 0 {
 		b.WriteString(renderWelcomeBanner(m.viewport.Width()))
 	}
@@ -2201,15 +2211,6 @@ func statusBarStyle() lipgloss.Style {
 }
 func browserGlyphStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)
-}
-func browserPrefixStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary)
-}
-func browserBarStyle() lipgloss.Style {
-	return lipgloss.NewStyle().
-		Background(theme.Current().BGSurface).
-		BorderTop(true).
-		BorderForeground(theme.Current().BorderMuted)
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 

@@ -4,6 +4,8 @@ import (
 	"maps"
 	"slices"
 
+	tea "charm.land/bubbletea/v2"
+
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
 )
@@ -16,6 +18,7 @@ type state struct {
 	discovered            map[string][]string
 	actionState           map[string]actionState
 	wizardCreatedProvider string
+	pendingCmd            tea.Cmd
 }
 
 type actionState struct {
@@ -29,6 +32,12 @@ func newState(cfg config.Config) *state {
 		discovered:  map[string][]string{},
 		actionState: map[string]actionState{},
 	}
+}
+
+func (s *state) takePendingCmd() tea.Cmd {
+	cmd := s.pendingCmd
+	s.pendingCmd = nil
+	return cmd
 }
 
 func (s *state) applyActionResult(fieldID, label string) {

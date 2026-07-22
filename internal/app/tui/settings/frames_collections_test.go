@@ -416,6 +416,75 @@ func TestLanguagesReorderMoveDown(t *testing.T) {
 	}
 }
 
+func TestModelPickerDiscoverRunsProbe(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:14b"},
+	}
+	st := newState(cfg)
+	drill := presetsFrame(st).list.Rows()[0]
+	detail := drill.build()
+
+	var modelRow *field
+	for _, r := range detail.list.Rows() {
+		if r.title == "Model" {
+			modelRow = r
+			break
+		}
+	}
+	if modelRow == nil {
+		t.Fatal("preset detail must have a Model row")
+	}
+
+	// pickOnPick with __discover__ for a local provider should queue a command
+	// and return nil error.
+	err := modelRow.pickOnPick("__discover__")
+	if err != nil {
+		t.Fatalf("pickOnPick(__discover__) for local provider = %v, want nil", err)
+	}
+	if st.pendingCmd == nil {
+		t.Fatal("pickOnPick(__discover__) should set state.pendingCmd")
+	}
+}
+
+func TestModelPickerDiscoverBlockedForRemote(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = false
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openrouter": {Type: "openai_compatible", BaseURL: "https://openrouter.ai/api/v1"},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {Name: "coder", Provider: "openrouter", Model: "claude-3.5-sonnet"},
+	}
+	st := newState(cfg)
+	drill := presetsFrame(st).list.Rows()[0]
+	detail := drill.build()
+
+	var modelRow *field
+	for _, r := range detail.list.Rows() {
+		if r.title == "Model" {
+			modelRow = r
+			break
+		}
+	}
+	if modelRow == nil {
+		t.Fatal("preset detail must have a Model row")
+	}
+
+	// pickOnPick with __discover__ for a remote provider with privacy off
+	// should return an error and NOT queue a command.
+	err := modelRow.pickOnPick("__discover__")
+	if err == nil {
+		t.Fatal("pickOnPick(__discover__) for remote provider with privacy off should return error")
+	}
+	if st.pendingCmd != nil {
+		t.Fatal("pickOnPick(__discover__) for remote provider should NOT set state.pendingCmd")
+	}
+}
+
 func TestHooksAddWithoutPromptAndDelete(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(hooksFrame(s))

@@ -243,13 +243,22 @@ func modelPickerField(s *state, id string, providerName func() string, getModel 
 					items = append(items, picker.Item{Label: m, Value: m, Badge: badge})
 				}
 			} else {
-				items = []picker.Item{{Label: "Test connection to discover", Value: "__discover__", Badge: "refresh"}}
+				items = []picker.Item{{Label: "Discover models via probe", Value: "__discover__", Badge: "refresh"}}
 			}
 			return items
 		},
 		pickOnPick: func(v string) error {
 			if v == "__discover__" {
-				return fmt.Errorf("test the provider connection first to discover models")
+				pn := providerName()
+				pc, ok := s.cfg.Providers[pn]
+				if !ok {
+					return fmt.Errorf("provider %q is not configured", pn)
+				}
+				if !probe.IsLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
+					return fmt.Errorf("remote providers are disabled (enable Remote providers in Privacy)")
+				}
+				s.pendingCmd = probe.Provider("discover."+id, pn, pc)
+				return nil
 			}
 			return setModel(v)
 		},

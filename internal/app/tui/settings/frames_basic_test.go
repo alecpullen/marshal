@@ -115,6 +115,57 @@ func TestUnsafePassthroughExposedAndRiskyFieldsFlagged(t *testing.T) {
 	}
 }
 
+func TestProjectSectionOwnsNameLanguagesAndCommands(t *testing.T) {
+	s := newState(config.Default())
+	ps := newPaneStack(projectFrame(s))
+	ps.SetSize(60, 20)
+
+	// First row should be Project name
+	if ps.top().list.CursorRow().title != "Project name" {
+		t.Fatalf("first row should be Project name, got %q", ps.top().list.CursorRow().title)
+	}
+
+	// Navigate to Languages
+	for ps.top().list.CursorRow().title != "Languages" {
+		ps.Update(kp("j"))
+	}
+	if ps.top().list.CursorRow().id != "project.languages" {
+		t.Fatalf("expected id project.languages, got %q", ps.top().list.CursorRow().id)
+	}
+
+	// Navigate to Test command
+	for ps.top().list.CursorRow().title != "Test command" {
+		ps.Update(kp("j"))
+	}
+	if ps.top().list.CursorRow().id != "commands.test" {
+		t.Fatalf("expected id commands.test, got %q", ps.top().list.CursorRow().id)
+	}
+
+	// Navigate to Format command
+	for ps.top().list.CursorRow().title != "Format command" {
+		ps.Update(kp("j"))
+	}
+	if ps.top().list.CursorRow().id != "commands.format" {
+		t.Fatalf("expected id commands.format, got %q", ps.top().list.CursorRow().id)
+	}
+
+	// Navigate to Vet command
+	for ps.top().list.CursorRow().title != "Vet command" {
+		ps.Update(kp("j"))
+	}
+	if ps.top().list.CursorRow().id != "commands.vet" {
+		t.Fatalf("expected id commands.vet, got %q", ps.top().list.CursorRow().id)
+	}
+
+	// Verify setting ids never changed — /set commands.test etc. keeps working
+	registry := BuildRegistry(config.Default())
+	for _, key := range []string{"commands.test", "commands.format", "commands.vet", "project.name", "project.languages"} {
+		if _, ok := registry.Lookup(key); !ok {
+			t.Errorf("registry missing %s", key)
+		}
+	}
+}
+
 func TestDiagnosticsFrameIsMapAtRoot(t *testing.T) {
 	s := newState(config.Default())
 	s.cfg.Diagnostics.Commands = map[string]string{"lint": "go vet ./..."}

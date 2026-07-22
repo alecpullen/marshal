@@ -41,9 +41,13 @@ func snapshotsFrame(s *state) *frame {
 	})
 }
 
-func commandsFrame(s *state) *frame {
-	return newFrame("Commands", func() []*field {
+func projectFrame(s *state) *frame {
+	return newFrame("Project", func() []*field {
 		return []*field{
+			scalarField("project.name", "Project name",
+				func() string { return s.cfg.Project.Name },
+				func(v string) error { s.cfg.Project.Name = v; return nil }),
+			listDrillExt("project.languages", "Languages", &s.cfg.Project.Languages, sliceOpts(&s.cfg.Project.Languages)),
 			scalarField("commands.test", "Test command",
 				func() string { return s.cfg.Commands.Test },
 				func(v string) error { s.cfg.Commands.Test = v; return nil }),
@@ -53,10 +57,6 @@ func commandsFrame(s *state) *frame {
 			scalarField("commands.vet", "Vet command",
 				func() string { return s.cfg.Commands.Vet },
 				func(v string) error { s.cfg.Commands.Vet = v; return nil }),
-			scalarField("project.name", "Project name",
-				func() string { return s.cfg.Project.Name },
-				func(v string) error { s.cfg.Project.Name = v; return nil }),
-			listDrillExt("project.languages", "Languages", &s.cfg.Project.Languages, sliceOpts(&s.cfg.Project.Languages)),
 		}
 	})
 }

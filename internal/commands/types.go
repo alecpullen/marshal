@@ -20,6 +20,7 @@ type Command struct {
 	Name        string
 	Description string
 	Args        string // human-readable, e.g. "<model-name>" or "" for no args
+	Group       string // group heading in /help listing, e.g. "Chat", "Models & providers"
 	Hidden      bool   // when true, excluded from /help listing
 	// TUIOnly marks a command whose logic is interactive and lives in the
 	// TUI dispatch table (internal/app/tui/commands_dispatch.go). Such

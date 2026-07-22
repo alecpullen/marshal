@@ -1764,7 +1764,7 @@ func TestSlashCommandHelp(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("expected system message from /help")
 	}
-	if !strings.Contains(msgs[0].Content, "Keys") || !strings.Contains(msgs[0].Content, "Commands") {
+	if !strings.Contains(msgs[0].Content, "Keys") || !strings.Contains(msgs[0].Content, "Chat") {
 		t.Errorf("help output missing header: %s", msgs[0].Content)
 	}
 }
@@ -2656,7 +2656,7 @@ func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
 		t.Fatalf("expected ? to print one transcript message, got %d -> %d", before, len(msgs))
 	}
 	last := msgs[len(msgs)-1]
-	if !strings.Contains(last.Content, "Keys") || !strings.Contains(last.Content, "Commands") {
+	if !strings.Contains(last.Content, "Keys") || !strings.Contains(last.Content, "Chat") {
 		t.Fatalf("? did not print the help cheatsheet, got: %q", last.Content)
 	}
 }

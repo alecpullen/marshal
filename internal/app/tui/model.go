@@ -1962,6 +1962,9 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	if msg.ProviderCfg.Type != "" {
 		newCfg.Providers[msg.Provider] = msg.ProviderCfg
 	}
+	if msg.EnabledRemote {
+		newCfg.Privacy.RemoteProvidersAllowed = true
+	}
 	newCfg.Agent.Provider = msg.Provider
 	newCfg.Agent.Model = msg.Model
 	newCfg.Profile.Default = ""

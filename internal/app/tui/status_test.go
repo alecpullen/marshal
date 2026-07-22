@@ -322,3 +322,12 @@ func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 		t.Fatalf("status line missing route:\n%q", stripANSI(out))
 	}
 }
+
+func TestStatusLineShowsQueueHint(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.queuedCount = 2
+	line := stripANSI(m.renderStatusLine(100))
+	if !strings.Contains(line, "Ctrl+X") || !strings.Contains(line, "clear queue") {
+		t.Fatalf("status line missing queue hint:\n%s", line)
+	}
+}

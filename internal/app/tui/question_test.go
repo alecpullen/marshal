@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -108,5 +109,22 @@ func TestQuestionSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	case got := <-ch2:
 		t.Fatalf("sub-form dispatched on completion: %v", got)
 	default:
+	}
+}
+
+func TestQuestionModelViewUsesGutter(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "What is your favorite color?", Options: []string{"red", "green", "blue"}}},
+	}
+	qm := newQuestionModel(q, 80)
+	view := stripANSI(qm.View())
+	if !strings.HasPrefix(view, " ? ") {
+		t.Fatalf("question view missing ? gutter:\n%s", view)
+	}
+	if strings.Contains(view, "Marshal asks") {
+		t.Fatalf("question view must not show old title:\n%s", view)
+	}
+	if !strings.Contains(view, "red / green / blue") {
+		t.Fatalf("question view missing options:\n%s", view)
 	}
 }

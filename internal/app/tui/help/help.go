@@ -23,6 +23,8 @@ type FooterHints struct {
 	PopupOpen       bool
 	// IdleRollbackEligible is true when a backup exists and the user is idle.
 	IdleRollbackEligible bool
+	// QueueNonEmpty is true when the steering queue has items waiting.
+	QueueNonEmpty bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -66,6 +68,9 @@ func Footer(h FooterHints) string {
 		if h.IdleRollbackEligible {
 			segs = append(segs, pair("Ctrl+R", "rollback"))
 		}
+	}
+	if h.QueueNonEmpty {
+		segs = append(segs, pair("Ctrl+X", "clear queue"))
 	}
 	if showHelpHint {
 		segs = append(segs, pair("?", "help"))

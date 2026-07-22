@@ -655,13 +655,11 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 
 	view := stripANSI(m.View().Content)
 	for _, want := range []string{
-		"Approval needed",
-		"Agent wants to run",
+		"⚠",
 		"go test ./...",
-		"Risk",
-		"Approve",
-		"Deny",
-		"Edit",
+		"allow",
+		"deny",
+		"edit",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing approval item %q:\n%s", want, view)
@@ -769,8 +767,8 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	m = updated.(Model)
 
 	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "Approval") {
-		t.Fatal("View() missing Approval panel")
+	if !strings.Contains(view, "⚠") {
+		t.Fatal("View() missing approval warning glyph")
 	}
 	if !strings.Contains(view, "go test") {
 		t.Fatal("View() missing proposed command")
@@ -1498,8 +1496,8 @@ func TestApprovalBannerHasSingleBorder(t *testing.T) {
 	if strings.Count(view, "Diff") > 0 {
 		t.Fatalf("approval should not show a Diff panel:\n%s", view)
 	}
-	if !strings.Contains(view, "⚠ Approval needed") {
-		t.Fatalf("approval banner missing title:\n%s", view)
+	if !strings.Contains(view, "⚠") {
+		t.Fatalf("approval banner missing warning glyph:\n%s", view)
 	}
 	if !strings.Contains(view, "go test") {
 		t.Fatalf("approval banner missing command:\n%s", view)
@@ -1600,8 +1598,12 @@ func TestCtrlGTogglesThinkingExpansion(t *testing.T) {
 
 	updated, _ = model.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	model = updated.(Model)
-	if !strings.Contains(stripANSI(model.View().Content), "checking the auth flow") {
-		t.Fatalf("expected expanded reasoning after Ctrl+G:\n%s", stripANSI(model.View().Content))
+	expanded := stripANSI(model.View().Content)
+	if !strings.Contains(expanded, "checking the auth flow") {
+		t.Fatalf("expected expanded reasoning after Ctrl+G:\n%s", expanded)
+	}
+	if !strings.Contains(expanded, " ▍ ") {
+		t.Fatalf("expanded reasoning should use ▍ gutter:\n%s", expanded)
 	}
 
 	updated, _ = model.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
@@ -1650,25 +1652,19 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 
 	view := stripANSI(m.View().Content)
 	for _, want := range []string{
-		"Approval needed",
-		"Agent wants to run",
+		"⚠",
 		"go test",
-		"Risk",
-		"Approve",
-		"Deny",
-		"Edit",
+		"Low - test command",
+		"allow",
+		"deny",
+		"edit",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing approval copy %q:\n%s", want, view)
 		}
 	}
-
-	// The risk label must show the actual risk classification, not the Reason text.
-	if !strings.Contains(view, "Low - test command") {
-		t.Fatalf("View() did not render the Risk classification text:\n%s", view)
-	}
-	if strings.Contains(view, "Validate layout bounds") {
-		t.Fatalf("Risk section shows Reason content instead of Risk content:\n%s", view)
+	if strings.Contains(view, "Approval needed") {
+		t.Fatalf("View() still shows old title:\n%s", view)
 	}
 }
 
@@ -1720,7 +1716,7 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 	}
 }
 
-func TestFinalAnswerRendersWithResponseLabel(t *testing.T) {
+func TestFinalAnswerRendersWithGutter(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	m.resize(100, 30)
@@ -1730,8 +1726,11 @@ func TestFinalAnswerRendersWithResponseLabel(t *testing.T) {
 	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 
-	if !strings.Contains(view, "Response") {
-		t.Fatalf("View() does not show Response label for final answer:\n%s", view)
+	if strings.Contains(view, "Response") {
+		t.Fatalf("View() should not show Response label for final answer:\n%s", view)
+	}
+	if !strings.Contains(view, "▍") {
+		t.Fatalf("View() missing answer gutter for final answer:\n%s", view)
 	}
 }
 
@@ -1912,8 +1911,8 @@ func TestApprovalRendersInlineInChat(t *testing.T) {
 	if !strings.Contains(view, "go test ./...") {
 		t.Fatalf("View() does not contain the approval command:\n%s", view)
 	}
-	if !strings.Contains(view, "Approval") {
-		t.Fatalf("View() does not contain the Approval panel title:\n%s", view)
+	if !strings.Contains(view, "⚠") {
+		t.Fatalf("View() does not contain the approval warning glyph:\n%s", view)
 	}
 	if !strings.Contains(view, "run the tests") {
 		t.Fatalf("View() does not contain the prior user message (approval took over chat):\n%s", view)
@@ -2110,11 +2109,8 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 	if !strings.Contains(view, "mcp.github.create_issue") {
 		t.Fatalf("View() missing tool name:\n%s", view)
 	}
-	if !strings.Contains(view, "creates a new github issue") {
-		t.Fatalf("View() missing tool description:\n%s", view)
-	}
-	if !strings.Contains(view, `{"title":"some issue"}`) {
-		t.Fatalf("View() missing JSON arguments:\n%s", view)
+	if !strings.Contains(view, "workspace_write") {
+		t.Fatalf("View() missing risk text:\n%s", view)
 	}
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})

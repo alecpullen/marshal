@@ -2164,11 +2164,10 @@ func panelTitleStyle() lipgloss.Style {
 func thinkingLineStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Italic(true)
 }
-func codeBorderStyle() lipgloss.Style {
+func codeSurfaceStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		Foreground(theme.Current().FGMuted).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Current().FGMuted)
+		Background(theme.Current().BGSurface).
+		Padding(0, 1)
 }
 func toolNameStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)

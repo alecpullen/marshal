@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 	"sync"
 	"time"
@@ -13,13 +14,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
-
-func isBrowserTool(name string) bool {
-	return strings.HasPrefix(name, "browser.")
-}
 
 // marshalStyleConfig adapts glamour's dark style to the Warm Sunset
 // palette: coral H1 instead of the banner-style default, violet section
@@ -118,46 +116,62 @@ func renderPlainProse(content string, width int) string {
 	return b.String()
 }
 
+// gutterPrefix renders the hairline gutter marker: a single glyph preceded
+// and followed by one space. In NO_COLOR mode the glyph survives because
+// lipgloss emits no SGR when the color is NoColor{}.
+func gutterPrefix(glyph string, c color.Color) string {
+	return lipgloss.NewStyle().Foreground(c).Render(" " + glyph + " ")
+}
+
 func renderCodeBlock(content string, width int) string {
 	if width < 1 {
 		width = 1
 	}
 	trimmed := strings.TrimSpace(content)
-	return codeBorderStyle().Width(width).Render(trimmed)
+	if trimmed == "" {
+		return ""
+	}
+	// Reserve 2 cells for left/right surface padding.
+	inner := max(width-2, 1)
+	style := codeSurfaceStyle().Width(inner)
+	var b strings.Builder
+	for i, line := range strings.Split(trimmed, "\n") {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(style.Render(ansi.Truncate(line, inner, "…")))
+	}
+	return b.String()
 }
 
 func renderFinalAnswer(msg session.Message, width int) string {
 	if width < 10 {
 		width = 10
 	}
-	labelText := "Response"
-	if msg.Salvaged {
-		labelText = "Response · salvaged"
-	}
-	label := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(labelText)
+	gutter := gutterPrefix("▍", accentColor)
+	contentWidth := max(width-3, 1)
 
 	var b strings.Builder
-	b.WriteString(label)
-	if msg.Salvaged && msg.SalvageReason != "" {
-		b.WriteString("  ")
-		b.WriteString(mutedStyle().Render(msg.SalvageReason))
+	if msg.Salvaged {
+		note := "salvaged"
+		if msg.SalvageReason != "" {
+			note += dimSeparator + msg.SalvageReason
+		}
+		b.WriteString(gutter)
+		b.WriteString(mutedStyle().Render(note))
+		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 
-	// Border (1) + padding (1) sit left of the body; glamour's own
-	// 2-space margin indents the prose inside that.
-	contentWidth := max(width-6, 1)
 	body, ok := renderMarkdown(msg.Content, contentWidth)
 	if !ok {
 		body = renderPlainProse(msg.Content, contentWidth)
 	}
-	b.WriteString(strings.Trim(body, "\n"))
-
-	borderStyle := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(accentColor).
-		PaddingLeft(1)
-	return borderStyle.Render(strings.TrimRight(b.String(), "\n")) + "\n"
+	for _, line := range strings.Split(strings.Trim(body, "\n"), "\n") {
+		b.WriteString(gutter)
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func formatThinkDuration(d time.Duration) string {
@@ -172,7 +186,7 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 	if reasoning == "" {
 		return ""
 	}
-	contentWidth := max(width-4, 1)
+	contentWidth := max(width-3, 1)
 	lines := strings.Split(reasoning, "\n")
 	tailLines := lines
 	if len(lines) > 3 {
@@ -180,12 +194,14 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 	}
 	var b strings.Builder
 	header := spinnerLabel(spinnerFrame, "thinking")
+	b.WriteString(gutterPrefix("·", dimColor))
 	b.WriteString(thinkingLineStyle().Render(header))
 	b.WriteString("\n")
 	for _, line := range tailLines {
 		wrapped := ansi.Wrap(line, contentWidth, "")
 		for _, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString(thinkingLineStyle().Render("  " + wl))
+			b.WriteString(gutterPrefix("▍", dimColor))
+			b.WriteString(thinkingLineStyle().Render(wl))
 			b.WriteString("\n")
 		}
 	}
@@ -199,24 +215,26 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 	if !expanded {
 		return thinkingLineStyle().Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))) + "\n"
 	}
-	contentWidth := max(width-4, 1)
+	contentWidth := max(width-3, 1)
 	var b strings.Builder
-	b.WriteString(thinkingLineStyle().Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))))
+	b.WriteString(gutterPrefix("▍", dimColor))
+	b.WriteString(thinkingLineStyle().Render(fmt.Sprintf("⚙ thought for %s", formatThinkDuration(duration))))
 	b.WriteString("\n")
 	for _, line := range strings.Split(strings.TrimSpace(reasoning), "\n") {
 		wrapped := ansi.Wrap(line, contentWidth, "")
 		for _, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString(thinkingLineStyle().Render("    " + wl))
+			b.WriteString(gutterPrefix("▍", dimColor))
+			b.WriteString(thinkingLineStyle().Render(wl))
 			b.WriteString("\n")
 		}
 	}
 	return b.String()
 }
 
-// renderMessage formats one transcript entry in the symbol-bullet style:
+// renderMessage formats one transcript entry with gutter-prefixed lines:
 // user prompts get a ❯ prefix, agent prose renders as plain markdown with
-// no role label, tool results render as ⏺/⎿ bullets, system notices are
-// dim. Final answers keep the rich-content Response treatment.
+// no role label, tool results render with a · gutter, system notices are
+// dim. Final answers use a ▍ gutter and rich-content rendering.
 func renderMessage(msg session.Message, width int) string {
 	if msg.Final {
 		return renderFinalAnswer(msg, width)
@@ -233,24 +251,24 @@ func renderMessage(msg session.Message, width int) string {
 	case session.ContentTypeToolResult:
 		return renderToolResultLine(msg.Content, width)
 	case session.ContentTypeCode:
-		return indentBlock(renderCodeBlock(msg.Content, max(width-4, 1)), "  ") + "\n"
+		return gutterPrefix("▍", accentColor) + renderCodeBlock(msg.Content, max(width-3, 1)) + "\n"
 	default: // plain and markdown prose render identically
 		return renderAgentMarkdown(msg.Content, width)
 	}
 }
 
 func renderUserMessage(content string, width int) string {
-	contentWidth := max(width-2, 1)
+	gutter := gutterPrefix("❯", coralColor)
+	contentWidth := max(width-3, 1)
 	wrapped := ansi.Wrap(content, contentWidth, "")
-	userPrefix := lipgloss.NewStyle().Foreground(userColor).Bold(true).Render("› ")
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {
-			b.WriteString(userPrefix)
+			b.WriteString(gutter)
 		} else {
-			b.WriteString("  ")
+			b.WriteString(strings.Repeat(" ", 3))
 		}
-		b.WriteString(line)
+		b.WriteString(lipgloss.NewStyle().Foreground(userColor).Render(line))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
@@ -318,15 +336,11 @@ func renderQueuedMessages(q []string, width int) string {
 	if len(q) == 0 {
 		return ""
 	}
-	_ = width
+	gutter := gutterPrefix("·", dimColor)
 	var b strings.Builder
-	b.WriteString(warningStyle().Render(" Queued (Ctrl+X to clear):"))
-	b.WriteString("\n")
 	for _, msg := range q {
-		b.WriteString("  ")
-		b.WriteString(mutedStyle().Render("›"))
-		b.WriteString(" ")
-		b.WriteString(msg)
+		b.WriteString(gutter)
+		b.WriteString(mutedStyle().Render("queued: " + strutil.Truncate(msg, max(width-12, 1), false)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
@@ -338,19 +352,17 @@ func renderToolResultLine(content string, width int) string {
 	if len(lines) == 0 {
 		return ""
 	}
+	gutter := gutterPrefix("·", dimColor)
 	var b strings.Builder
-	b.WriteString(toolBulletStyle().Render("⏺ "))
-	b.WriteString(strutil.Truncate(strings.TrimSpace(lines[0]), max(width-2, 1), false))
+	b.WriteString(gutter)
+	b.WriteString(strutil.Truncate(strings.TrimSpace(lines[0]), max(width-3, 1), false))
 	b.WriteString("\n")
 	continuation := lines[1:]
-	for i, line := range continuation {
-		wrapped := ansi.Wrap(line, max(width-4, 1), "")
-		for j, wl := range strings.Split(wrapped, "\n") {
-			if i == 0 && j == 0 {
-				b.WriteString(mutedStyle().Render("  ⎿ " + wl))
-			} else {
-				b.WriteString(mutedStyle().Render("    " + wl))
-			}
+	for _, line := range continuation {
+		wrapped := ansi.Wrap(line, max(width-3, 1), "")
+		for _, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
 	}
@@ -359,16 +371,19 @@ func renderToolResultLine(content string, width int) string {
 }
 
 func renderPlanBlock(content string, width int) string {
+	gutter := gutterPrefix("·", dimColor)
+	contentWidth := max(width-3, 1)
 	var b strings.Builder
-	b.WriteString(promptPrefixStyle().Render("⏺ Plan"))
+	b.WriteString(gutter)
+	b.WriteString(mutedStyle().Render("plan"))
 	b.WriteString("\n")
-	contentWidth := max(width-4, 1)
 	for _, line := range strings.Split(content, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		wrapped := ansi.Wrap(line, contentWidth, "")
 		for j, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(strings.Repeat(" ", 3))
 			if j == 0 {
 				b.WriteString("  " + wl)
 			} else {
@@ -382,46 +397,54 @@ func renderPlanBlock(content string, width int) string {
 }
 
 func renderProviderError(err error, width int) string {
-	contentWidth := max(width-2, 1)
-	wrapped := ansi.Wrap("✘ provider: "+err.Error(), contentWidth, "")
+	contentWidth := max(width-3, 1)
+	wrapped := ansi.Wrap("provider: "+err.Error(), contentWidth, "")
+	lines := strings.Split(wrapped, "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	gutter := gutterPrefix("✗", errorColor)
 	var b strings.Builder
-	for _, line := range strings.Split(wrapped, "\n") {
-		b.WriteString(errorStyle().Render(line))
+	b.WriteString(gutter)
+	b.WriteString(errorStyle().Render(lines[0]))
+	b.WriteString("\n")
+	for _, line := range lines[1:] {
+		b.WriteString(strings.Repeat(" ", 3))
+		b.WriteString(mutedStyle().Render(line))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
 	return b.String()
 }
 
-// renderActiveToolCall shows the in-flight tool as a spinner line — no
-// border, matching the ⏺ bullet style. Command tools get a second $ line
-// and, when a sandbox backend is active, an isolation-status line.
+// renderActiveToolCall shows the in-flight tool as a spinner line with a
+// hairline gutter — no border. Command tools get a $ line and, when a
+// sandbox backend is active, an isolation-status line, both dim-indented
+// under the gutter.
 func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, width int) string {
 	elapsed := now.Sub(atc.StartedAt)
 	if elapsed < 0 {
 		elapsed = 0
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", atc.Name, formatElapsed(elapsed)))
+	gutter := gutterPrefix("·", dimColor)
 	var b strings.Builder
-	if isBrowserTool(atc.Name) {
-		b.WriteString(browserGlyphStyle().Render("🌐"))
-		b.WriteString(" ")
-		prefixed := browserPrefixStyle().Render("browser") + "." + strings.TrimPrefix(atc.Name, "browser.")
-		full := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", prefixed, formatElapsed(elapsed)))
-		b.WriteString(strutil.Truncate(full, max(width-4, 1), false))
-	} else {
-		b.WriteString(toolBulletStyle().Render(strutil.Truncate(head, max(width-2, 1), false)))
-	}
+	b.WriteString(gutter)
+	b.WriteString(toolBulletStyle().Render(strutil.Truncate(head, max(width-3, 1), false)))
 	b.WriteString("\n")
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
-		b.WriteString(mutedStyle().Render(strutil.Truncate("  $ "+atc.Args, max(width-2, 1), false)))
+		cmdLine := "$ " + atc.Args
+		b.WriteString(strings.Repeat(" ", 3))
+		b.WriteString(mutedStyle().Render(strutil.Truncate(cmdLine, max(width-3, 1), false)))
 		b.WriteString("\n")
 		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
-			b.WriteString(mutedStyle().Render(strutil.Truncate("  "+iso, max(width-2, 1), false)))
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(mutedStyle().Render(strutil.Truncate(iso, max(width-3, 1), false)))
 			b.WriteString("\n")
 		}
 	} else if atc.Args != "" {
-		b.WriteString(mutedStyle().Render(strutil.Truncate("  "+atc.Args, max(width-2, 1), false)))
+		b.WriteString(strings.Repeat(" ", 3))
+		b.WriteString(mutedStyle().Render(strutil.Truncate(atc.Args, max(width-3, 1), false)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
@@ -429,34 +452,33 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 }
 
 func renderCompletedToolCall(event registry.AuditEvent, width int) string {
-	glyph := "✔"
+	glyph := "·"
 	style := statusOkStyle()
-	state := "done"
 	if event.Error != "" {
-		glyph = "✘"
+		glyph = "✗"
 		style = errorStyle()
-		state = "failed"
 	}
-	var head string
-	if isBrowserTool(event.ToolName) {
-		head = fmt.Sprintf("%s %s %s", glyph, browserPrefixStyle().Render("browser")+"."+strings.TrimPrefix(event.ToolName, "browser."), state)
-	} else {
-		head = fmt.Sprintf("%s %s %s", glyph, event.ToolName, state)
-	}
-	if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-		head += " · " + hookHint
-	}
-	var b strings.Builder
-	b.WriteString(style.Render(strutil.Truncate(head, max(width-2, 1), false)))
-	b.WriteString("\n")
-	summary := event.ResultSummary
+	var gutterColor color.Color
 	if event.Error != "" {
-		summary = event.Error
+		gutterColor = theme.Current().StatusError
+	} else {
+		gutterColor = theme.Current().FGMuted
 	}
-	if summary != "" {
-		b.WriteString(mutedStyle().Render(strutil.Truncate("  "+summary, max(width-2, 1), false)))
-		b.WriteString("\n")
+	gutter := gutterPrefix(glyph, gutterColor)
+	head := event.ToolName
+	if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
+		head += dimSeparator + hookHint
 	}
+	if event.Error != "" {
+		head += dimSeparator + event.Error
+	} else if event.ResultSummary != "" {
+		head += dimSeparator + event.ResultSummary
+	}
+
+	var b strings.Builder
+	b.WriteString(gutter)
+	b.WriteString(style.Render(strutil.Truncate(head, max(width-3, 1), false)))
+	b.WriteString("\n")
 	return b.String()
 }
 
@@ -537,59 +559,41 @@ func sandboxIsolationText(sb session.SandboxInfo, allowNetwork bool) string {
 }
 
 func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int) string {
-	innerWidth := max(width-2, 1)
-
-	titleStyle := panelTitleStyle().Foreground(warningColor)
-	muted := mutedStyle()
-	text := lipgloss.NewStyle()
-	key := keyHintStyle()
-
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⚠ Approval needed"))
+	b.WriteString(gutterPrefix("⚠", warningColor))
+	headParts := []string{}
+	if tc.Name == "shell.run" {
+		headParts = append(headParts, tc.Command)
+	} else {
+		headParts = append(headParts, tc.Name)
+	}
+	headParts = append(headParts, riskText(tc))
+	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
+		headParts = append(headParts, iso)
+	}
+	b.WriteString(warningStyle().Render(strings.Join(headParts, dimSeparator)))
 	b.WriteString("\n")
 
-	if tc.Name == "shell.run" {
-		b.WriteString(muted.Render("Agent wants to run:"))
-		b.WriteString("\n")
-		b.WriteString(text.Render(strutil.Truncate(tc.Command, innerWidth, false)))
-	} else {
-		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle().Render(tc.Name))
-		b.WriteString("\n")
-		if tc.Schema != "" {
-			b.WriteString(muted.Render("Description: ") + text.Render(strutil.Truncate(tc.Schema, innerWidth, false)))
-			b.WriteString("\n")
-		}
-		b.WriteString(muted.Render("Arguments: "))
-		b.WriteString(text.Render(strutil.Truncate(tc.Args, innerWidth, false)))
-	}
-	b.WriteString("\n\n")
-	b.WriteString(riskLabelStyle().Render("Risk: "))
-	b.WriteString(text.Render(strutil.Truncate(riskText(tc), innerWidth, false)))
-	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
-		b.WriteString("\n")
-		b.WriteString(muted.Render(strutil.Truncate(iso, innerWidth, false)))
-	}
-	b.WriteString("\n\n")
-	helpLine := key.Render("Enter") + muted.Render(" approve ") + key.Render("d") + muted.Render(" deny ") + key.Render("e") + muted.Render(" edit ") + key.Render("a") + muted.Render(" always")
-	b.WriteString(helpLine)
+	b.WriteString(gutterPrefix(" ", warningColor))
+	b.WriteString(mutedStyle().Render("▸ allow   always   session   edit   deny"))
+	b.WriteString("\n")
 	return b.String()
 }
 
 func renderQuestionPanel(q *session.PendingQuestion, width int) string {
-	title := lipgloss.NewStyle().Bold(true).Render("Marshal asks:")
+	gutter := gutterPrefix("?", violetColor)
 	var b strings.Builder
 	for _, qs := range q.Questions {
-		b.WriteString("• ")
-		b.WriteString(qs.Question)
-		if len(qs.Options) > 0 {
-			b.WriteString("  (")
-			b.WriteString(strings.Join(qs.Options, " / "))
-			b.WriteString(")")
-		}
+		b.WriteString(gutter)
+		b.WriteString(lipgloss.NewStyle().Foreground(violetColor).Bold(true).Render(qs.Question))
 		b.WriteString("\n")
+		if len(qs.Options) > 0 {
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(mutedStyle().Render("(" + strings.Join(qs.Options, " / ") + ")"))
+			b.WriteString("\n")
+		}
 	}
-	hint := lipgloss.NewStyle().Faint(true).Render("answer each question and press Enter · Esc to skip the rest")
-	return lipgloss.JoinVertical(lipgloss.Left, title, lipgloss.NewStyle().Width(max(width-2, 1)).Render(b.String()), hint)
+	return b.String()
 }
 
 // renderWelcomeBanner prints the one-time startup identity as plain

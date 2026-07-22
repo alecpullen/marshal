@@ -1,9 +1,13 @@
 package tui
 
 import (
-	"fmt"
+	"image/color"
 	"strings"
 
+	"charm.land/lipgloss/v2"
+
+	"marshal/internal/app/tui/theme"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 )
 
@@ -12,16 +16,33 @@ func renderTodos(todos []native.TodoItem, width int) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Tasks:\n")
 	for _, t := range todos {
-		mark := "○"
+		var glyph string
+		var c color.Color
 		switch t.Status {
 		case native.TodoCompleted:
-			mark = "✓"
+			glyph = "✓"
+			c = theme.Current().StatusSuccess
 		case native.TodoInProgress:
-			mark = "▶"
+			glyph = "▶"
+			c = theme.Current().AccentPrimary
+		default:
+			glyph = "·"
+			c = theme.Current().FGMuted
 		}
-		b.WriteString(fmt.Sprintf("  %s %s\n", mark, t.Content))
+		gutter := gutterPrefix(glyph, c)
+		labelStyle := lipgloss.NewStyle().Foreground(theme.Current().FGDefault)
+		if t.Status == native.TodoCompleted {
+			labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
+		}
+		if t.Status == native.TodoInProgress {
+			labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGDefault).Bold(true)
+		}
+		// -6: 3-cell gutter + 3-cell glyph-aware margin
+		line := labelStyle.Render(strutil.Truncate(t.Content, max(width-6, 1), false))
+		b.WriteString(gutter)
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
 	return b.String()
 }

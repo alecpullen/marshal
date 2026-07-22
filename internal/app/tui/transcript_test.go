@@ -241,8 +241,6 @@ func TestTranscriptLinesFitWidth(t *testing.T) {
 	}
 }
 
-
-
 func TestUserMessageUsesChevronPrefix(t *testing.T) {
 	out := strings.TrimLeft(stripANSI(renderUserMessage("hi there", 40)), " ")
 	if !strings.HasPrefix(out, "› ") {

@@ -393,6 +393,20 @@ func TestWelcomeBannerIsPlainLines(t *testing.T) {
 	}
 }
 
+func TestRenderCodeBlockIsSurfaceTinted(t *testing.T) {
+	out := renderCodeBlock("func main() {}", 40)
+	plain := stripANSI(out)
+	if strings.Contains(plain, "╭") || strings.Contains(plain, "╰") || strings.Contains(plain, "│") {
+		t.Fatalf("code block still uses border glyphs:\n%s", plain)
+	}
+	if !strings.Contains(plain, "func main() {}") {
+		t.Fatalf("code block missing content:\n%s", plain)
+	}
+	if visibleRunes(out) > 40 {
+		t.Fatalf("code block exceeds width: %d > 40", visibleRunes(out))
+	}
+}
+
 func TestRenderCompletedToolCallBrowserGlyph(t *testing.T) {
 	event := registry.AuditEvent{
 		ToolName:      "browser.navigate",

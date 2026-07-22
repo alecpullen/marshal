@@ -210,7 +210,7 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 		content += "\n" + mutedStyle().Render("press ctrl+d again to confirm delete · esc cancel")
 	}
 	if p.loadErr != nil {
-		content += "\n" + mutedStyle().Render("load failed: " + p.loadErr.Error())
+		content += "\n" + mutedStyle().Render("load failed: "+p.loadErr.Error())
 	}
 	ph := min(lipgloss.Height(content)+1, maxHeight)
 	return chrome.PanelWithHints("Memory", "⏎ show · ctrl+d delete · esc close", content, pw, ph, true, theme.Current())

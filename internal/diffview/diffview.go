@@ -33,8 +33,8 @@ const (
 
 // Options configures a render.
 type Options struct {
-	Width     int           // available terminal width
-	Mode      Mode          // layout selection
+	Width     int    // available terminal width
+	Mode      Mode   // layout selection
 	Highlight bool   // apply chroma syntax highlighting
 	Language  string // override lexer language (default: "go")
 }

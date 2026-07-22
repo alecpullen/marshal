@@ -51,5 +51,3 @@ func (s *Service) RecordWrite(path string, at time.Time) error {
 	}
 	return nil
 }
-
-

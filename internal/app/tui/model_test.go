@@ -1720,7 +1720,7 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 	}
 }
 
-func TestFinalAnswerRendersWithResponseLabel(t *testing.T) {
+func TestFinalAnswerRendersWithGutter(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	m.resize(100, 30)
@@ -1730,8 +1730,11 @@ func TestFinalAnswerRendersWithResponseLabel(t *testing.T) {
 	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 
-	if !strings.Contains(view, "Response") {
-		t.Fatalf("View() does not show Response label for final answer:\n%s", view)
+	if strings.Contains(view, "Response") {
+		t.Fatalf("View() should not show Response label for final answer:\n%s", view)
+	}
+	if !strings.Contains(view, "▍") {
+		t.Fatalf("View() missing answer gutter for final answer:\n%s", view)
 	}
 }
 

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 	"sync"
 	"time"
@@ -118,12 +119,32 @@ func renderPlainProse(content string, width int) string {
 	return b.String()
 }
 
+// gutterPrefix renders the hairline gutter marker: a single glyph preceded
+// and followed by one space. In NO_COLOR mode the glyph survives because
+// lipgloss emits no SGR when the color is NoColor{}.
+func gutterPrefix(glyph string, c color.Color) string {
+	return lipgloss.NewStyle().Foreground(c).Render(" " + glyph + " ")
+}
+
 func renderCodeBlock(content string, width int) string {
 	if width < 1 {
 		width = 1
 	}
 	trimmed := strings.TrimSpace(content)
-	return codeBorderStyle().Width(width).Render(trimmed)
+	if trimmed == "" {
+		return ""
+	}
+	// Reserve 2 cells for left/right surface padding.
+	inner := max(width-2, 1)
+	style := codeSurfaceStyle().Width(inner)
+	var b strings.Builder
+	for i, line := range strings.Split(trimmed, "\n") {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(style.Render(ansi.Truncate(line, inner, "…")))
+	}
+	return b.String()
 }
 
 func renderFinalAnswer(msg session.Message, width int) string {
@@ -233,7 +254,7 @@ func renderMessage(msg session.Message, width int) string {
 	case session.ContentTypeToolResult:
 		return renderToolResultLine(msg.Content, width)
 	case session.ContentTypeCode:
-		return indentBlock(renderCodeBlock(msg.Content, max(width-4, 1)), "  ") + "\n"
+		return gutterPrefix("▍", accentColor) + renderCodeBlock(msg.Content, max(width-3, 1)) + "\n"
 	default: // plain and markdown prose render identically
 		return renderAgentMarkdown(msg.Content, width)
 	}

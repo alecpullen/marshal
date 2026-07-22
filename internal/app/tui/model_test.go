@@ -4745,3 +4745,78 @@ func TestReplaceTriggerTokenHandlesConsecutiveAt(t *testing.T) {
 		t.Fatalf("expected 'hello X', got %q", got2)
 	}
 }
+
+func TestCtrlTCyclesTodoPanelMode(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "implement parser", Status: native.TodoInProgress},
+		{Content: "add tests", Status: native.TodoPending},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.refreshViewport()
+
+	if m.todoPanelMode != todoPanelExpanded {
+		t.Fatalf("initial mode = %v, want expanded", m.todoPanelMode)
+	}
+	press := func() {
+		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+		if !handled {
+			t.Fatal("ctrl+t must be handled globally")
+		}
+		m = mm.(Model)
+	}
+	press()
+	if m.todoPanelMode != todoPanelCollapsed {
+		t.Fatalf("after one press mode = %v, want collapsed", m.todoPanelMode)
+	}
+	if strings.Contains(m.renderTodoPanel(), "\n") {
+		t.Fatal("collapsed panel must be a single row")
+	}
+	press()
+	if m.todoPanelMode != todoPanelHidden {
+		t.Fatalf("after two presses mode = %v, want hidden", m.todoPanelMode)
+	}
+	if m.renderTodoPanel() != "" {
+		t.Fatal("hidden panel must render nothing")
+	}
+	press()
+	if m.todoPanelMode != todoPanelExpanded {
+		t.Fatalf("after three presses mode = %v, want expanded again", m.todoPanelMode)
+	}
+}
+
+func TestAllDoneTodoSummaryClearsOnNextTurn(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "scaffold parser", Status: native.TodoCompleted},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.refreshViewport()
+	if !strings.Contains(stripANSI(m.renderTodoPanel()), "1 tasks done") {
+		t.Fatalf("all-done summary should show before the next turn:\n%s", m.renderTodoPanel())
+	}
+
+	m.input.SetValue("next thing")
+	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !handled {
+		t.Fatal("enter must be handled")
+	}
+	m = mm.(Model)
+	m.refreshViewport()
+	if m.renderTodoPanel() != "" {
+		t.Fatalf("all-done summary must clear on the next user turn:\n%s", m.renderTodoPanel())
+	}
+
+	// An agent rewrite brings the panel back.
+	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "new work", Status: native.TodoInProgress},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.refreshViewport()
+	if !strings.Contains(stripANSI(m.renderTodoPanel()), "new work") {
+		t.Fatal("a rewritten todo list must un-dismiss the panel")
+	}
+}

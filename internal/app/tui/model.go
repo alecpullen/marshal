@@ -561,17 +561,15 @@ func (m *Model) resize(width, height int) {
 	m.width = width
 	m.height = height
 
-	// Input interior: the box border (1 each side) + padding (1 each side)
-	// = 4 horizontal frame cells. The textarea's SetWidth sets the text
-	// wrap width and internally subtracts promptWidth (2). Reserve 4 (box
-	// frame) + 2 (safety margin from box width clipping) + 2 (prompt,
-	// handled inside SetWidth) = 8 so rendered lines stay inside the box
-	// content area and avoid boundary-case trailing-space wrap artifacts.
-	m.input.SetWidth(max(width-8, 1))
+	// Input interior: the ▍ bar (1 cell) + 1 right margin = 2 reserved
+	// cells. The textarea's SetWidth sets the text wrap width and
+	// internally subtracts promptWidth (2). Reserve 2 so rendered lines
+	// stay inside the terminal width.
+	m.input.SetWidth(max(width-2, 1))
 
 	// Transcript viewport spans the full terminal width (borderless).
 	m.viewport.SetWidth(max(width, 1))
-	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -978,10 +976,7 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 }
 
 func (m Model) inputAreaRows() int {
-	rows := inputBorderRows
-	if m.state.Activity().Kind != session.ActivityIdle {
-		rows += activityStripRows
-	}
+	rows := 0
 	if sd := m.state.SDDProgress(); sd.Active {
 		rows++ // SDD hint row
 	}
@@ -1057,7 +1052,7 @@ func (m Model) sddPanelRows() int {
 func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -2201,12 +2196,6 @@ func promptPrefixStyle() lipgloss.Style {
 }
 func toolBulletStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)
-}
-func inputBoxStyle() lipgloss.Style {
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Current().AccentPrimary).
-		Padding(0, 1)
 }
 func statusBarStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().FGDefault)

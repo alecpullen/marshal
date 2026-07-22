@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -194,7 +195,7 @@ func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
 		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 1000, MaxTokens: 8000},
 		Sections:   []contextpack.Section{{Title: "ctx", EstimatedTokens: 1000}},
 	})
-	line := m.renderStatusLine(50)
+	line := m.renderStatusLine(70)
 	// mode + route must remain; ctx segment should be dropped (priority 3 vs 0/1/2)
 	if !strings.Contains(line, "qwen") || !strings.Contains(line, "ollama") {
 		t.Fatalf("route dropped on narrow line:\n%s", line)
@@ -246,7 +247,7 @@ func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
 		URL:         "https://example.com",
 		Mode:        "standalone",
 	})
-	line := m.renderStatusLine(38)
+	line := m.renderStatusLine(70)
 	stripped := stripANSI(line)
 	if !strings.Contains(stripped, "qwen2.5-coder:14b @ ollama") {
 		t.Fatalf("model segment should survive on narrow width:\n%s", line)
@@ -272,6 +273,41 @@ func TestShouldShowStatusURLReturnsTrueWhenBrowserBarHidden(t *testing.T) {
 	m.state.SetBrowserInfo(session.BrowserInfo{SessionOpen: false})
 	if !m.ShouldShowStatusURL() {
 		t.Fatal("ShouldShowStatusURL should return true when browser bar is hidden")
+	}
+}
+
+func TestStatusLineShowsIdleHints(t *testing.T) {
+	m := newStatusTestModel(t)
+	line := stripANSI(m.renderStatusLine(100))
+	for _, want := range []string{"Tab mode", "/ cmd", "? help"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("idle status line missing hint %q:\n%s", want, line)
+		}
+	}
+}
+
+func TestStatusLineHintsYieldToActivity(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.spinnerFrame = "⠋"
+	m.now = func() time.Time { return time.Unix(104, 0) }
+	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Unix(100, 0)})
+	line := stripANSI(m.renderStatusLine(100))
+	if strings.Contains(line, "Tab mode") {
+		t.Fatalf("hints must yield to activity in the right cluster:\n%s", line)
+	}
+	if !strings.Contains(line, "shell.run: go test") {
+		t.Fatalf("activity missing from status line:\n%s", line)
+	}
+}
+
+func TestStatusLineShowsWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	line := stripANSI(m.renderStatusLine(100))
+	if !strings.Contains(line, filepath.Base(dir)) {
+		t.Fatalf("status line missing working dir base %q:\n%s", filepath.Base(dir), line)
 	}
 }
 

@@ -2,7 +2,7 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
+	"image/color"
 	"regexp"
 	"strings"
 
@@ -11,8 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/help"
-	"marshal/internal/strutil"
 )
 
 // ansiRe matches SGR (and empty) escape sequences that lipgloss emits.
@@ -23,12 +21,7 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 const (
-	titleBarRows        = 1
-	inputBorderRows     = 2
-	activityStripRows   = 1
 	transcriptFrameRows = 0
-	footerRows          = help.Rows
-	commandBarRows      = footerRows + 1
 	statusLineRows      = 1
 	completionPopupMax  = 8
 )
@@ -56,7 +49,7 @@ func (m *Model) viewString() string {
 	dockView := m.dock.View(m.width, m.height)
 	m.updateViewportHeight()
 
-	rows := []string{m.renderTitleBar(m.width), m.renderTranscriptFrame()}
+	rows := []string{m.renderTranscriptFrame()}
 	// Swarm roles are tool-driven; use ActivityTool as the gating kind.
 	swarmSpinner := m.activeSpinnerFrame(session.ActivityTool)
 	if panel := renderSwarmPanel(m.state.SwarmProgress(), swarmSpinner, m.width); panel != "" {
@@ -75,43 +68,8 @@ func (m *Model) viewString() string {
 	if dockView != "" {
 		rows = append(rows, dockView)
 	}
-	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
+	rows = append(rows, m.renderInputArea(), m.renderStatusLine(m.width))
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
-}
-
-// renderTitleBar draws the single-line persistent header: brand on the
-// left, working dir + branch on the right. No background fill — it sits
-// on the terminal's default background, matching the status line.
-func (m Model) renderTitleBar(width int) string {
-	dot := lipgloss.NewStyle().Foreground(coralColor).Render("●")
-	brand := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")
-
-	right := ""
-	if wd := m.state.WorkingDir; wd != "" {
-		right = filepath.Base(wd)
-	}
-	if leaves := m.state.Branches(); len(leaves) > 1 {
-		cur := m.state.LeafID()
-		idx := 1
-		for i, id := range leaves {
-			if id == cur {
-				idx = i + 1
-				break
-			}
-		}
-		if right != "" {
-			right += dimSeparator
-		}
-		right += fmt.Sprintf("branch %d/%d", idx, len(leaves))
-	}
-
-	left := " " + dot + " " + brand
-	gap := width - visibleRunes(left) - visibleRunes(right) - 1
-	if gap < 1 {
-		gap = 1
-	}
-	line := left + strings.Repeat(" ", gap) + right + " "
-	return lipgloss.NewStyle().Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
 }
 
 func (m Model) renderTranscriptFrame() string {
@@ -127,7 +85,6 @@ func (m Model) renderTranscriptFrame() string {
 
 func (m Model) renderInputArea() string {
 	inputInnerWidth := max(m.width-4, 1)
-
 	rows := make([]string, 0, 4)
 
 	if q := m.state.PendingQuestion(); q != nil {
@@ -135,12 +92,11 @@ func (m Model) renderInputArea() string {
 			rows = append(rows, m.questionModel.View())
 		} else {
 			rows = append(rows, renderQuestionPanel(q, inputInnerWidth))
-			// The ❯ prompt is rendered inside the textarea by SetPromptFunc.
-			rows = append(rows, m.input.View())
+			rows = append(rows, m.gutteredInput())
 		}
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		if m.editingCommand {
-			rows = append(rows, m.input.View())
+			rows = append(rows, m.gutteredInput())
 		} else if m.approvalModel != nil {
 			rows = append(rows, m.approvalModel.View())
 		} else {
@@ -148,74 +104,43 @@ func (m Model) renderInputArea() string {
 		}
 	} else {
 		if m.state.SDDProgress().Active {
-			hint := mutedStyle().Render("SDD running — /stop to cancel, wait for completion to resume typing")
-			rows = append(rows, hint)
-			rows = append(rows, m.input.View())
-			content := lipgloss.JoinVertical(lipgloss.Left, rows...)
-			border := mauveColor
-			return inputBoxStyle().BorderForeground(border).Width(inputInnerWidth).Render(content)
-		}
-		if strip := m.renderActivityStrip(); strip != "" {
-			rows = append(rows, strip)
+			rows = append(rows, mutedStyle().Render("SDD running — /stop to cancel, wait for completion to resume typing"))
 		}
 		if popup := m.renderCompletionPopup(); popup != "" {
 			rows = append(rows, popup)
 		}
-		rows = append(rows, m.input.View())
+		rows = append(rows, m.gutteredInput())
 	}
-
-	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	border := coralColor
-	if m.successPulse {
-		border = tealColor
-	} else if !m.input.Focused() {
-		border = mauveColor
-	}
-	return inputBoxStyle().BorderForeground(border).Width(inputInnerWidth).Render(content)
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
-func (m Model) renderActivityStrip() string {
-	available := max(m.width-4, 1)
-	activity := m.state.Activity()
-	spinner := m.activeSpinnerFrame(activity.Kind)
-	label := ""
-	switch activity.Kind {
-	case session.ActivityThinking:
-		label = spinnerLabel(spinner, "thinking")
-	case session.ActivityTool:
-		elapsed := m.now().Sub(activity.StartedAt)
-		if elapsed < 0 {
-			elapsed = 0
-		}
-		label = spinnerLabel(spinner, fmt.Sprintf("%s · %s", activity.Label, formatElapsed(elapsed)))
+// inputBarColor picks the ▍ state-bar color. This is the input box's old
+// border-color semantics compressed into one cell (spec: "state moves to
+// the ▍❯ prompt").
+func (m Model) inputBarColor() color.Color {
+	switch {
+	case m.successPulse:
+		return tealColor
+	case m.state.PendingQuestion() != nil:
+		return violetColor
+	case m.state.PendingApproval() != nil:
+		return warningColor
+	case m.state.SDDProgress().Active, !m.input.Focused():
+		return dimColor
 	default:
-		return ""
+		return coralColor
 	}
-	return statusBusyStyle().Render(strutil.Truncate(label, available, false))
 }
 
-// renderHelpFooter returns the persistent keybinding hint bar shown below
-// the input area and above the status line.
-func (m Model) renderHelpFooter() string {
-	hints := help.FooterHints{
-		Busy:                 m.busy,
-		EditingCommand:       m.editingCommand,
-		ApprovalPending:      m.state.PendingApproval() != nil,
-		QuestionPending:      m.state.PendingQuestion() != nil,
-		PopupOpen:            m.activeCompletionPopup() != nil,
-		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
-		ThinkingVisible:      m.thinkingExpanded,
+// gutteredInput renders the textarea with the ▍ state bar prepended to
+// every display line.
+func (m Model) gutteredInput() string {
+	bar := lipgloss.NewStyle().Foreground(m.inputBarColor()).Render("▍")
+	lines := strings.Split(m.input.View(), "\n")
+	for i := range lines {
+		lines[i] = bar + lines[i]
 	}
-	body := help.Footer(hints)
-	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderTop(true).
-		BorderBottom(false).
-		BorderRight(false).
-		BorderLeft(false).
-		BorderForeground(activeTheme.BorderMuted).
-		Width(max(m.width, 1)).
-		Render(body)
+	return strings.Join(lines, "\n")
 }
 
 // highlightMatches bolds runes at the given byte indices using the

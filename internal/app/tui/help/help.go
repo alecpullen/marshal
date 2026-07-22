@@ -12,10 +12,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// Rows is the vertical budget the persistent footer occupies in the main
-// layout; the transcript viewport shrinks by this amount.
-const Rows = 1
-
 // FooterHints describes which mode-driven hints are currently actionable.
 // The footer shows the union of always-on hints plus the mode-specific ones
 // so a user never sees a hint they can't act on right now.
@@ -27,8 +23,6 @@ type FooterHints struct {
 	PopupOpen       bool
 	// IdleRollbackEligible is true when a backup exists and the user is idle.
 	IdleRollbackEligible bool
-	// ThinkingVisible reflects the current thinking-block visibility toggle.
-	ThinkingVisible bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -67,17 +61,10 @@ func Footer(h FooterHints) string {
 	} else {
 		segs = append(segs,
 			pair("Tab", "mode"),
-			pair("Alt+M", "model"),
-			pair("/", "command"),
-			pair("@", "file"),
+			pair("/", "cmd"),
 		)
 		if h.IdleRollbackEligible {
 			segs = append(segs, pair("Ctrl+R", "rollback"))
-		}
-		if h.ThinkingVisible {
-			segs = append(segs, pair("Ctrl+G", "hide thinking"))
-		} else {
-			segs = append(segs, pair("Ctrl+G", "show thinking"))
 		}
 	}
 	if showHelpHint {

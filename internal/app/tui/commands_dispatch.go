@@ -99,7 +99,9 @@ func init() {
 			if m.busy {
 				return m, nil
 			}
-			return m.startAgentRun(m.swarmRunner, goal)
+			m.openRunPreflight("swarm", m.swarmRunner, goal)
+			m.refreshViewport()
+			return m, nil
 		},
 		"sdd": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if m.sddRunner == nil {
@@ -116,7 +118,9 @@ func init() {
 			if m.busy {
 				return m, nil
 			}
-			return m.startAgentRun(m.sddRunner, planPath)
+			m.openRunPreflight("sdd", m.sddRunner, planPath)
+			m.refreshViewport()
+			return m, nil
 		},
 		"connect": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.openConnect("/")

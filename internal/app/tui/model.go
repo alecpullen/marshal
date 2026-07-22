@@ -25,6 +25,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/memory"
@@ -165,6 +166,18 @@ type Model struct {
 	// or canceling the wizard returns to the browser with the same filter.
 	connectReturnToSettings bool
 	connectReturnFilter     string
+
+	// pendingRun holds the pre-flight state while the cast list panel is
+	// open. It is set by openRunPreflight and consumed by the castlist
+	// StartMsg/CancelMsg handlers.
+	pendingRun *pendingAgentRun
+}
+
+// pendingAgentRun captures the runner and goal for a run that is waiting
+// for the user to confirm via the cast list panel.
+type pendingAgentRun struct {
+	runner AgentRunner
+	goal   string
 }
 
 type Option func(*Model)
@@ -760,6 +773,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case picker.CancelledMsg:
 		m.dock.CloseNow()
 		m.pickerCommand = ""
+		m.refreshViewport()
+		return m, nil
+	case castlist.StartMsg:
+		m.dock.CloseNow()
+		run := m.pendingRun
+		m.pendingRun = nil
+		if run == nil || m.busy {
+			m.refreshViewport()
+			return m, nil
+		}
+		return m.startAgentRun(run.runner, run.goal)
+	case castlist.CancelMsg:
+		m.dock.CloseNow()
+		m.pendingRun = nil
 		m.refreshViewport()
 		return m, nil
 	}
@@ -1493,6 +1520,44 @@ func (m *Model) refreshViewport() {
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
 	}
+}
+
+// openRunPreflight opens the cast list panel for the given kind ("sdd" or
+// "swarm") and waits for the user to confirm before starting the run.
+func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
+	router := routing.NewStaticRouter(m.state.Config.RoutingConfig())
+	roles := routing.SwarmCastRoles
+	title := "Start swarm run?"
+	meta := []string{
+		"goal: " + strutil.Truncate(goal, 56, true),
+		fmt.Sprintf("fix rounds: %d · token budget: %d",
+			m.state.Config.Swarm.Budget.MaxFixRounds, m.state.Config.Swarm.Budget.MaxTotalTokens),
+	}
+	if kind == "sdd" {
+		roles = routing.SDDCastRoles
+		title = "Start SDD run?"
+		worktree := "off"
+		if m.state.Config.SDD.AutoWorktree {
+			worktree = "on"
+		}
+		meta = []string{
+			"plan: " + strutil.Truncate(goal, 56, true),
+			fmt.Sprintf("fix rounds: %d · worktree: %s", m.state.Config.SDD.MaxFixRounds, worktree),
+		}
+	}
+	rows := make([]castlist.Row, 0, len(roles))
+	for _, entry := range router.Cast(roles) {
+		row := castlist.Row{Title: strings.ReplaceAll(string(entry.Role), "_", " ")}
+		if entry.Err != nil {
+			row.Err = strutil.Truncate(entry.Err.Error(), 44, true)
+		} else {
+			row.Detail = entry.Route.Preset.Provider + "/" + entry.Route.Preset.Model
+			row.Badge = entry.Route.Preset.Name
+		}
+		rows = append(rows, row)
+	}
+	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal}
+	m.dock.Open(castlist.New(title, rows, meta))
 }
 
 // startAgentRun begins a turn on runner with goal, wiring cancellation and

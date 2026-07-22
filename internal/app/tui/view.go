@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"regexp"
 	"strings"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/strutil"
 )
 
 // ansiRe matches SGR (and empty) escape sequences that lipgloss emits.
@@ -21,8 +21,6 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 const (
-	inputBorderRows     = 2
-	activityStripRows   = 1
 	transcriptFrameRows = 0
 	statusLineRows      = 1
 	completionPopupMax  = 8
@@ -87,7 +85,6 @@ func (m Model) renderTranscriptFrame() string {
 
 func (m Model) renderInputArea() string {
 	inputInnerWidth := max(m.width-4, 1)
-
 	rows := make([]string, 0, 4)
 
 	if q := m.state.PendingQuestion(); q != nil {
@@ -95,12 +92,11 @@ func (m Model) renderInputArea() string {
 			rows = append(rows, m.questionModel.View())
 		} else {
 			rows = append(rows, renderQuestionPanel(q, inputInnerWidth))
-			// The ❯ prompt is rendered inside the textarea by SetPromptFunc.
-			rows = append(rows, m.input.View())
+			rows = append(rows, m.gutteredInput())
 		}
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		if m.editingCommand {
-			rows = append(rows, m.input.View())
+			rows = append(rows, m.gutteredInput())
 		} else if m.approvalModel != nil {
 			rows = append(rows, m.approvalModel.View())
 		} else {
@@ -108,50 +104,43 @@ func (m Model) renderInputArea() string {
 		}
 	} else {
 		if m.state.SDDProgress().Active {
-			hint := mutedStyle().Render("SDD running — /stop to cancel, wait for completion to resume typing")
-			rows = append(rows, hint)
-			rows = append(rows, m.input.View())
-			content := lipgloss.JoinVertical(lipgloss.Left, rows...)
-			border := mauveColor
-			return inputBoxStyle().BorderForeground(border).Width(inputInnerWidth).Render(content)
-		}
-		if strip := m.renderActivityStrip(); strip != "" {
-			rows = append(rows, strip)
+			rows = append(rows, mutedStyle().Render("SDD running — /stop to cancel, wait for completion to resume typing"))
 		}
 		if popup := m.renderCompletionPopup(); popup != "" {
 			rows = append(rows, popup)
 		}
-		rows = append(rows, m.input.View())
+		rows = append(rows, m.gutteredInput())
 	}
-
-	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	border := coralColor
-	if m.successPulse {
-		border = tealColor
-	} else if !m.input.Focused() {
-		border = mauveColor
-	}
-	return inputBoxStyle().BorderForeground(border).Width(inputInnerWidth).Render(content)
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
-func (m Model) renderActivityStrip() string {
-	available := max(m.width-4, 1)
-	activity := m.state.Activity()
-	spinner := m.activeSpinnerFrame(activity.Kind)
-	label := ""
-	switch activity.Kind {
-	case session.ActivityThinking:
-		label = spinnerLabel(spinner, "thinking")
-	case session.ActivityTool:
-		elapsed := m.now().Sub(activity.StartedAt)
-		if elapsed < 0 {
-			elapsed = 0
-		}
-		label = spinnerLabel(spinner, fmt.Sprintf("%s · %s", activity.Label, formatElapsed(elapsed)))
+// inputBarColor picks the ▍ state-bar color. This is the input box's old
+// border-color semantics compressed into one cell (spec: "state moves to
+// the ▍❯ prompt").
+func (m Model) inputBarColor() color.Color {
+	switch {
+	case m.successPulse:
+		return tealColor
+	case m.state.PendingQuestion() != nil:
+		return violetColor
+	case m.state.PendingApproval() != nil:
+		return warningColor
+	case m.state.SDDProgress().Active, !m.input.Focused():
+		return dimColor
 	default:
-		return ""
+		return coralColor
 	}
-	return statusBusyStyle().Render(strutil.Truncate(label, available, false))
+}
+
+// gutteredInput renders the textarea with the ▍ state bar prepended to
+// every display line.
+func (m Model) gutteredInput() string {
+	bar := lipgloss.NewStyle().Foreground(m.inputBarColor()).Render("▍")
+	lines := strings.Split(m.input.View(), "\n")
+	for i := range lines {
+		lines[i] = bar + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // highlightMatches bolds runes at the given byte indices using the

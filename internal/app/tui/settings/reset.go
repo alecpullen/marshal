@@ -43,7 +43,8 @@ func resetSection(cfg *config.Config, sectionID string) {
 		cfg.Permissions = def.Permissions
 	case "diagnostics":
 		cfg.Diagnostics = def.Diagnostics
-	case "commands":
+	case "project":
+		cfg.Project = def.Project
 		cfg.Commands = def.Commands
 	}
 }

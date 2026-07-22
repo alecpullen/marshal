@@ -354,7 +354,7 @@ func TestLanguagesReorderMoveDown(t *testing.T) {
 	cfg.Project.Languages = []string{"go", "markdown"}
 	st := newState(cfg)
 
-	f := commandsFrame(st)
+	f := projectFrame(st)
 	var langDrill *field
 	for _, r := range f.list.Rows() {
 		if r.id == "project.languages" {

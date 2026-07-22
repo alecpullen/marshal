@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -22,7 +21,6 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 const (
-	titleBarRows        = 1
 	inputBorderRows     = 2
 	activityStripRows   = 1
 	transcriptFrameRows = 0
@@ -53,7 +51,7 @@ func (m *Model) viewString() string {
 	dockView := m.dock.View(m.width, m.height)
 	m.updateViewportHeight()
 
-	rows := []string{m.renderTitleBar(m.width), m.renderTranscriptFrame()}
+	rows := []string{m.renderTranscriptFrame()}
 	// Swarm roles are tool-driven; use ActivityTool as the gating kind.
 	swarmSpinner := m.activeSpinnerFrame(session.ActivityTool)
 	if panel := renderSwarmPanel(m.state.SwarmProgress(), swarmSpinner, m.width); panel != "" {
@@ -74,41 +72,6 @@ func (m *Model) viewString() string {
 	}
 	rows = append(rows, m.renderInputArea(), m.renderStatusLine(m.width))
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
-}
-
-// renderTitleBar draws the single-line persistent header: brand on the
-// left, working dir + branch on the right. No background fill — it sits
-// on the terminal's default background, matching the status line.
-func (m Model) renderTitleBar(width int) string {
-	dot := lipgloss.NewStyle().Foreground(coralColor).Render("●")
-	brand := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")
-
-	right := ""
-	if wd := m.state.WorkingDir; wd != "" {
-		right = filepath.Base(wd)
-	}
-	if leaves := m.state.Branches(); len(leaves) > 1 {
-		cur := m.state.LeafID()
-		idx := 1
-		for i, id := range leaves {
-			if id == cur {
-				idx = i + 1
-				break
-			}
-		}
-		if right != "" {
-			right += dimSeparator
-		}
-		right += fmt.Sprintf("branch %d/%d", idx, len(leaves))
-	}
-
-	left := " " + dot + " " + brand
-	gap := width - visibleRunes(left) - visibleRunes(right) - 1
-	if gap < 1 {
-		gap = 1
-	}
-	line := left + strings.Repeat(" ", gap) + right + " "
-	return lipgloss.NewStyle().Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
 }
 
 func (m Model) renderTranscriptFrame() string {

@@ -122,8 +122,17 @@ func (s *State) SetPendingApproval(tc *PendingToolCall) {
 	s.pendingApproval = tc
 	var snap *PendingToolCall
 	if tc != nil {
-		copy := *tc
-		snap = &copy
+		snap = &PendingToolCall{
+			ID:           tc.ID,
+			Name:         tc.Name,
+			Args:         tc.Args,
+			Command:      tc.Command,
+			Risk:         tc.Risk,
+			Reason:       tc.Reason,
+			Diff:         tc.Diff,
+			Schema:       tc.Schema,
+			ResponseChan: tc.ResponseChan,
+		}
 	}
 	s.mu.Unlock()
 	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: snap})
@@ -140,8 +149,10 @@ func (s *State) SetPendingQuestion(q *PendingQuestion) {
 	s.pendingQuestion = q
 	var snap *PendingQuestion
 	if q != nil {
-		copy := *q
-		snap = &copy
+		snap = &PendingQuestion{
+			Questions:    append([]Question(nil), q.Questions...),
+			ResponseChan: q.ResponseChan,
+		}
 	}
 	s.mu.Unlock()
 	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: snap})

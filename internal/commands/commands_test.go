@@ -122,8 +122,10 @@ func TestHelpCommand(t *testing.T) {
 
 	cmd, _ := cmdReg.Lookup("help")
 	result := cmd.Handler(newTestState(), nil)
-	if !strings.Contains(result, "Keys") || !strings.Contains(result, "Commands") {
-		t.Errorf("help output missing header: %s", result)
+	for _, want := range []string{"Keys", "Chat", "Models & providers", "Workflows", "Changes", "Settings & info"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("help output missing group %q: %s", want, result)
+		}
 	}
 }
 
@@ -134,7 +136,7 @@ func TestHelpPrintsCheatsheet(t *testing.T) {
 
 	cmd, _ := cmdReg.Lookup("help")
 	out := cmd.Handler(nil, nil)
-	for _, want := range []string{"Keys", "Commands", "/set", "/model", "⏎ send", "esc"} {
+	for _, want := range []string{"Keys", "Chat", "Models & providers", "/set", "/model", "⏎ send", "esc"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cheatsheet missing %q", want)
 		}
@@ -467,7 +469,7 @@ func TestModeCommandRegistered(t *testing.T) {
 	}
 }
 
-func TestHelpHidesUnimplementedCommands(t *testing.T) {
+func TestHelpListsFlagshipCommands(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
@@ -478,34 +480,50 @@ func TestHelpHidesUnimplementedCommands(t *testing.T) {
 	}
 	result := cmd.Handler(newTestState(), nil)
 
-	// The Keys section references a couple of commands by name (e.g.
-	// "/model" for the Alt+M hotkey), so hidden-command gating is only
-	// meaningful within the Commands section's command listing.
-	idx := strings.Index(result, "Commands\n")
-	if idx < 0 {
-		t.Fatalf("help output missing Commands section:\n%s", result)
-	}
-	commandsSection := result[idx:]
-
-	// Unimplemented commands must NOT appear in /help output.
-	for _, name := range []string{"swarm", "sdd", "settings", "memory", "connect", "models"} {
-		if strings.Contains(commandsSection, "/"+name) {
-			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
-		}
-	}
-
-	// Mode commands are stubs; they should also be hidden.
-	for _, name := range []string{"ask", "edit", "auto", "mode", "stop"} {
-		if strings.Contains(commandsSection, "/"+name) {
-			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
-		}
-	}
-
-	// Implemented commands must still appear.
-	for _, name := range []string{"help", "new", "config", "route", "context", "log", "diff", "rollback", "undo", "redo", "export", "rename", "rewind", "branches", "trust", "tools", "exit", "quit", "clear", "set"} {
-		if !strings.Contains(commandsSection, "/"+name) {
+	// Flagship commands that were previously hidden must now appear in /help.
+	for _, name := range []string{"connect", "models", "model", "mode", "swarm", "sdd", "settings", "memory"} {
+		if !strings.Contains(result, "/"+name) {
 			t.Errorf("help output should contain /%s, got:\n%s", name, result)
 		}
+	}
+
+	// Truly hidden commands (ask, edit, auto, stop) must NOT appear.
+	for _, name := range []string{"ask", "edit", "auto", "stop"} {
+		if strings.Contains(result, "/"+name) {
+			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
+		}
+	}
+}
+
+func TestHelpGroupsCommands(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, ok := cmdReg.Lookup("help")
+	if !ok {
+		t.Fatal("help command not registered")
+	}
+	result := cmd.Handler(newTestState(), nil)
+
+	// All five groups must appear in the fixed order.
+	groups := []string{"Keys", "Chat", "Models & providers", "Workflows", "Changes", "Settings & info"}
+	lastIdx := -1
+	for _, g := range groups {
+		idx := strings.Index(result, g+"\n")
+		if idx < 0 {
+			t.Errorf("help output missing group %q", g)
+			continue
+		}
+		if idx <= lastIdx {
+			t.Errorf("group %q appears out of order (idx=%d, last=%d)", g, idx, lastIdx)
+		}
+		lastIdx = idx
+	}
+
+	// No "Other" group should appear because every visible command is grouped.
+	if strings.Contains(result, "Other\n") {
+		t.Errorf("help output should not contain an 'Other' group, got:\n%s", result)
 	}
 }
 

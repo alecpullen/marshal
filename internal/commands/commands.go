@@ -29,20 +29,30 @@ func snapshotContext(state *session.State) (session.Snapshotter, *db.DB, string)
 }
 
 func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
+	const (
+		groupChat     = "Chat"
+		groupModels   = "Models & providers"
+		groupWorkflow = "Workflows"
+		groupChanges  = "Changes"
+		groupSettings = "Settings & info"
+	)
 	commands := []Command{
 		{
 			Name:        "exit",
 			Description: "Exit Marshal",
+			Group:       groupChat,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "quit",
 			Description: "Exit Marshal (alias for /exit)",
+			Group:       groupChat,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "new",
 			Description: "Start a new conversation",
+			Group:       groupChat,
 			Handler: func(state *session.State, args []string) string {
 				count := state.ClearMessages()
 				return fmt.Sprintf("Started new conversation. Cleared %d messages.", count)
@@ -51,6 +61,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "clear",
 			Description: "Start a new conversation (alias for /new)",
+			Group:       groupChat,
 			Handler: func(state *session.State, args []string) string {
 				count := state.ClearMessages()
 				return fmt.Sprintf("Started new conversation. Cleared %d messages.", count)
@@ -60,6 +71,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "help",
 			Description: "Show available commands",
 			Args:        "[command]",
+			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) string {
 				if len(args) > 0 {
 					c, ok := cmdReg.Lookup(args[0])
@@ -77,13 +89,28 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				b.WriteString("  ⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /model\n")
 				b.WriteString("  ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n")
 				b.WriteString("  pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom\n")
-				b.WriteString("Commands\n")
+				groupOrder := []string{groupChat, groupModels, groupWorkflow, groupChanges, groupSettings, "Other"}
+				byGroup := map[string][]Command{}
 				for _, c := range cmdReg.List() { // List already sorts and hides Hidden
-					line := "  /" + c.Name
-					if c.Args != "" {
-						line += " " + c.Args
+					g := c.Group
+					if g == "" {
+						g = "Other"
 					}
-					b.WriteString(fmt.Sprintf("%-28s %s\n", line, c.Description))
+					byGroup[g] = append(byGroup[g], c)
+				}
+				for _, g := range groupOrder {
+					cmds := byGroup[g]
+					if len(cmds) == 0 {
+						continue
+					}
+					b.WriteString(g + "\n")
+					for _, c := range cmds {
+						line := "  /" + c.Name
+						if c.Args != "" {
+							line += " " + c.Args
+						}
+						b.WriteString(fmt.Sprintf("%-28s %s\n", line, c.Description))
+					}
 				}
 				return strings.TrimRight(b.String(), "\n")
 			},
@@ -91,6 +118,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "tools",
 			Description: "List available tools",
+			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) string {
 				if toolReg == nil {
 					return "Tools unavailable (agent failed to initialise). Fix the provider config and restart, or use /settings."
@@ -106,6 +134,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "route",
 			Description: "Show current model route",
+			Group:       groupModels,
 			Handler: func(state *session.State, args []string) string {
 				route := state.ActiveRoute()
 				if !route.Active {
@@ -124,6 +153,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "context",
 			Description: "Show context window usage",
+			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) string {
 				msgs := state.Messages()
 				var totalChars int
@@ -155,6 +185,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "log",
 			Description: "Show recent tool calls (audit log)",
+			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) string {
 				events := state.AuditLog()
 				if len(events) == 0 {
@@ -201,45 +232,46 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "mode",
 			Description: "Pick the interaction mode (Ask / Edit / Auto)",
 			Args:        "[ask|edit|auto]",
-			Hidden:      true,
+			Group:       groupWorkflow,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "swarm",
 			Description: "Run a goal through the swarm (planner → scouts → implementer → reviewer)",
 			Args:        "<goal>",
-			Hidden:      true,
+			Group:       groupWorkflow,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "sdd",
 			Description: "Run a plan through subagent-driven development (implementer → reviewer → branch review)",
 			Args:        "[plan-file]",
-			Hidden:      true,
+			Group:       groupWorkflow,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "connect",
 			Description: "Add or reconnect a provider",
-			Hidden:      true,
+			Group:       groupModels,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "models",
 			Description: "Pick a model from connected providers",
-			Hidden:      true,
+			Group:       groupModels,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "model",
 			Description: "Switch to a model preset by name",
 			Args:        "<preset-name>",
-			Hidden:      true,
+			Group:       groupModels,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "config",
 			Description: "Show current configuration summary",
+			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) string {
 				cfg := state.Config
 				route := state.ActiveRoute()
@@ -252,24 +284,26 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "settings",
 			Description: "Open settings panel",
-			Hidden:      true,
+			Group:       groupSettings,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "set",
 			Description: "Change a setting inline (\"/set\" alone browses)",
 			Args:        "<key> [value]",
+			Group:       groupSettings,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "memory",
 			Description: "Open memory browser",
-			Hidden:      true,
+			Group:       groupSettings,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "rollback",
 			Description: "Rollback last patch",
+			Group:       groupChanges,
 			Handler: func(state *session.State, args []string) string {
 				if !state.HasBackup() {
 					return "No backup available to rollback."
@@ -283,6 +317,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "undo",
 			Description: "Restore the working tree to the snapshot before the current turn",
+			Group:       groupChanges,
 			Handler: func(state *session.State, args []string) string {
 				sp, database, errMsg := snapshotContext(state)
 				if errMsg != "" {
@@ -304,6 +339,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "redo",
 			Description: "Redo the last undo by restoring the latest snapshot (experimental)",
+			Group:       groupChanges,
 			Handler: func(state *session.State, args []string) string {
 				sp, database, errMsg := snapshotContext(state)
 				if errMsg != "" {
@@ -325,6 +361,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "diff",
 			Description: "Show the current turn's cumulative changes from the last snapshot",
+			Group:       groupChanges,
 			Handler: func(state *session.State, args []string) string {
 				sp, database, errMsg := snapshotContext(state)
 				if errMsg != "" {
@@ -347,6 +384,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		{
 			Name:        "trust",
 			Description: "Re-open the project trust decision",
+			Group:       groupSettings,
 			Handler: func(state *session.State, args []string) string {
 				return "Use --trust (permanent) or restart to re-prompt. Project trust is set at startup."
 			},
@@ -355,6 +393,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "rename",
 			Description: "Rename the current session (overrides auto-title)",
 			Args:        "<title>",
+			Group:       groupChat,
 			Handler: func(state *session.State, args []string) string {
 				title := strings.Join(args, " ")
 				if title == "" {
@@ -376,6 +415,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "rewind",
 			Description: "Rewind the conversation to before a prior user turn (starts a new branch)",
 			Args:        "[turn-number]",
+			Group:       groupChat,
 			Handler: func(state *session.State, args []string) string {
 				msgs := state.Messages()
 				var turns []session.Message
@@ -412,6 +452,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "branches",
 			Description: "List branches and switch to one (e.g. /branches 2)",
 			Args:        "[branch-number]",
+			Group:       groupChat,
 			Handler: func(state *session.State, args []string) string {
 				leaves := state.Branches()
 				if len(leaves) == 0 {
@@ -441,6 +482,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "export",
 			Description: "Export this session to a self-contained HTML file",
 			Args:        "[relative-path]",
+			Group:       groupChat,
 			Handler: func(state *session.State, args []string) string {
 				rel := strings.TrimSpace(strings.Join(args, " "))
 				if rel == "" {

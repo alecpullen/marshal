@@ -14,13 +14,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
-
-func isBrowserTool(name string) bool {
-	return strings.HasPrefix(name, "browser.")
-}
 
 // marshalStyleConfig adapts glamour's dark style to the Warm Sunset
 // palette: coral H1 instead of the banner-style default, violet section
@@ -414,35 +411,34 @@ func renderProviderError(err error, width int) string {
 	return b.String()
 }
 
-// renderActiveToolCall shows the in-flight tool as a spinner line — no
-// border, matching the ⏺ bullet style. Command tools get a second $ line
-// and, when a sandbox backend is active, an isolation-status line.
+// renderActiveToolCall shows the in-flight tool as a spinner line with a
+// hairline gutter — no border. Command tools get a $ line and, when a
+// sandbox backend is active, an isolation-status line, both dim-indented
+// under the gutter.
 func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, width int) string {
 	elapsed := now.Sub(atc.StartedAt)
 	if elapsed < 0 {
 		elapsed = 0
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", atc.Name, formatElapsed(elapsed)))
+	gutter := gutterPrefix("·", dimColor)
 	var b strings.Builder
-	if isBrowserTool(atc.Name) {
-		b.WriteString(browserGlyphStyle().Render("🌐"))
-		b.WriteString(" ")
-		prefixed := browserPrefixStyle().Render("browser") + "." + strings.TrimPrefix(atc.Name, "browser.")
-		full := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", prefixed, formatElapsed(elapsed)))
-		b.WriteString(strutil.Truncate(full, max(width-4, 1), false))
-	} else {
-		b.WriteString(toolBulletStyle().Render(strutil.Truncate(head, max(width-2, 1), false)))
-	}
+	b.WriteString(gutter)
+	b.WriteString(toolBulletStyle().Render(strutil.Truncate(head, max(width-3, 1), false)))
 	b.WriteString("\n")
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
-		b.WriteString(mutedStyle().Render(strutil.Truncate("  $ "+atc.Args, max(width-2, 1), false)))
+		cmdLine := "$ " + atc.Args
+		b.WriteString(strings.Repeat(" ", 3))
+		b.WriteString(mutedStyle().Render(strutil.Truncate(cmdLine, max(width-3, 1), false)))
 		b.WriteString("\n")
 		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
-			b.WriteString(mutedStyle().Render(strutil.Truncate("  "+iso, max(width-2, 1), false)))
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(mutedStyle().Render(strutil.Truncate(iso, max(width-3, 1), false)))
 			b.WriteString("\n")
 		}
 	} else if atc.Args != "" {
-		b.WriteString(mutedStyle().Render(strutil.Truncate("  "+atc.Args, max(width-2, 1), false)))
+		b.WriteString(strings.Repeat(" ", 3))
+		b.WriteString(mutedStyle().Render(strutil.Truncate(atc.Args, max(width-3, 1), false)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
@@ -450,34 +446,33 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 }
 
 func renderCompletedToolCall(event registry.AuditEvent, width int) string {
-	glyph := "✔"
+	glyph := "·"
 	style := statusOkStyle()
-	state := "done"
 	if event.Error != "" {
-		glyph = "✘"
+		glyph = "✗"
 		style = errorStyle()
-		state = "failed"
 	}
-	var head string
-	if isBrowserTool(event.ToolName) {
-		head = fmt.Sprintf("%s %s %s", glyph, browserPrefixStyle().Render("browser")+"."+strings.TrimPrefix(event.ToolName, "browser."), state)
-	} else {
-		head = fmt.Sprintf("%s %s %s", glyph, event.ToolName, state)
-	}
-	if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-		head += " · " + hookHint
-	}
-	var b strings.Builder
-	b.WriteString(style.Render(strutil.Truncate(head, max(width-2, 1), false)))
-	b.WriteString("\n")
-	summary := event.ResultSummary
+	var gutterColor color.Color
 	if event.Error != "" {
-		summary = event.Error
+		gutterColor = theme.Current().StatusError
+	} else {
+		gutterColor = theme.Current().FGMuted
 	}
-	if summary != "" {
-		b.WriteString(mutedStyle().Render(strutil.Truncate("  "+summary, max(width-2, 1), false)))
-		b.WriteString("\n")
+	gutter := gutterPrefix(glyph, gutterColor)
+	head := event.ToolName
+	if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
+		head += dimSeparator + hookHint
 	}
+	if event.Error != "" {
+		head += dimSeparator + event.Error
+	} else if event.ResultSummary != "" {
+		head += dimSeparator + event.ResultSummary
+	}
+
+	var b strings.Builder
+	b.WriteString(gutter)
+	b.WriteString(style.Render(strutil.Truncate(head, max(width-3, 1), false)))
+	b.WriteString("\n")
 	return b.String()
 }
 

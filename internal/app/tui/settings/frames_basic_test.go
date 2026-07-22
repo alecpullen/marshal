@@ -78,6 +78,43 @@ func TestSDDSectionRegistered(t *testing.T) {
 	}
 }
 
+func TestUnsafePassthroughExposedAndRiskyFieldsFlagged(t *testing.T) {
+	s := newState(config.Default())
+	ps := newPaneStack(sandboxFrame(s))
+	ps.SetSize(60, 20)
+
+	// Navigate to the "Allow passthrough backend" row (last row)
+	for ps.top().list.CursorRow().title != "Allow passthrough backend" {
+		ps.Update(kp("j"))
+	}
+	row := ps.top().list.CursorRow()
+	if row == nil {
+		t.Fatal("expected a row for unsafe_passthrough")
+	}
+	if row.id != "sandbox.unsafe_passthrough" {
+		t.Fatalf("expected id sandbox.unsafe_passthrough, got %q", row.id)
+	}
+	if !row.warn {
+		t.Fatal("expected warn=true for unsafe_passthrough")
+	}
+	if row.kind != kindToggle {
+		t.Fatalf("expected kindToggle, got %v", row.kind)
+	}
+
+	// Verify it toggles the working copy
+	before := s.cfg.Tools.Shell.Sandbox.UnsafePassthrough
+	ps.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	if s.cfg.Tools.Shell.Sandbox.UnsafePassthrough == before {
+		t.Fatal("space should toggle UnsafePassthrough")
+	}
+
+	// Verify the warning indicator appears in the view
+	view := ps.top().list.View()
+	if !strings.Contains(view, "⚠") {
+		t.Fatalf("expected warning indicator in view for risky field, got:\n%s", view)
+	}
+}
+
 func TestDiagnosticsFrameIsMapAtRoot(t *testing.T) {
 	s := newState(config.Default())
 	s.cfg.Diagnostics.Commands = map[string]string{"lint": "go vet ./..."}

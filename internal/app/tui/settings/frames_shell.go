@@ -61,6 +61,11 @@ func sandboxFrame(s *state) *frame {
 			{id: "sandbox.allow_fallback", title: "Allow fallback", kind: kindToggle,
 				getBool: func() bool { return sb.AllowFallback },
 				setBool: func(v bool) { sb.AllowFallback = v }},
+			{id: "sandbox.unsafe_passthrough", title: "Allow passthrough backend", kind: kindToggle, warn: true,
+				desc:     "required opt-in for backend=passthrough — disables ALL process isolation",
+				keywords: []string{"dangerous", "no sandbox"},
+				getBool:  func() bool { return sb.UnsafePassthrough },
+				setBool:  func(v bool) { sb.UnsafePassthrough = v }},
 			listDrill("sandbox.env_allowlist", "Env allowlist", &sb.EnvAllowlist),
 			listDrill("sandbox.env_denylist", "Env denylist", &sb.EnvDenylist),
 		}

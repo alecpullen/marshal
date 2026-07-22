@@ -48,8 +48,8 @@ func Footer(h FooterHints) string {
 	} else if h.ApprovalPending && !h.EditingCommand {
 		segs = append(segs,
 			pair("↑↓", "choose"),
-			pair("Enter", "arm"),
-			pair("Enter⏎", "submit"),
+			pair("Enter", "select"),
+			pair("Enter", "again confirm"),
 			pair("Esc", "deny"),
 		)
 	} else if h.EditingCommand {

@@ -204,7 +204,6 @@ func (m Model) renderHelpFooter() string {
 		QuestionPending:      m.state.PendingQuestion() != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
-		ThinkingVisible:      m.thinkingExpanded,
 	}
 	body := help.Footer(hints)
 	return lipgloss.NewStyle().

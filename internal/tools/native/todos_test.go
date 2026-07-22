@@ -27,8 +27,8 @@ func TestTodoWriteReplacesList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
-	if res.Summary != "todo list updated" {
-		t.Fatalf("summary = %q, want todo list updated", res.Summary)
+	if res.Summary != "tasks updated · 3 items" {
+		t.Fatalf("summary = %q, want tasks updated · 3 items", res.Summary)
 	}
 	got := state.Todos()
 	if len(got) != 3 || got[1].Status != "in_progress" {

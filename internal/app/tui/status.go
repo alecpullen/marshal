@@ -235,5 +235,6 @@ func (m Model) footerHints() help.FooterHints {
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
 		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
+		TodosActive:          len(m.state.Todos()) > 0,
 	}
 }

@@ -75,7 +75,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				var b strings.Builder
 				b.WriteString("Keys\n")
 				b.WriteString("  ⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /model\n")
-				b.WriteString("  ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+r rollback\n")
+				b.WriteString("  ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n")
 				b.WriteString("  pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom\n")
 				b.WriteString("Commands\n")
 				for _, c := range cmdReg.List() { // List already sorts and hides Hidden

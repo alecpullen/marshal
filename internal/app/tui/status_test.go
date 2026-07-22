@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -296,6 +297,17 @@ func TestStatusLineHintsYieldToActivity(t *testing.T) {
 	}
 	if !strings.Contains(line, "shell.run: go test") {
 		t.Fatalf("activity missing from status line:\n%s", line)
+	}
+}
+
+func TestStatusLineShowsWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	line := stripANSI(m.renderStatusLine(100))
+	if !strings.Contains(line, filepath.Base(dir)) {
+		t.Fatalf("status line missing working dir base %q:\n%s", filepath.Base(dir), line)
 	}
 }
 

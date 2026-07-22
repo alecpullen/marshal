@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
@@ -93,7 +94,7 @@ func (m Model) modeSegment() string {
 // statusLeftSegments returns the left-side status segments with priorities.
 // Priorities (lower = higher priority, kept first when collapsing):
 //
-//	mode=0, untrusted=0, route=1, local=2, ctx=3, turn=4, branch=5,
+//	mode=0, untrusted=0, route=1, local=2, ctx=3, turn=4, branch=5, dir=5,
 //	swarm tokens=6, jobs=7, queued=8
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
@@ -138,6 +139,10 @@ func (m Model) statusLeftSegments() []statusSeg {
 			}
 		}
 		segs = append(segs, statusSeg{text: fmt.Sprintf("branch %d/%d", idx, len(leaves)), priority: 5})
+	}
+
+	if wd := m.state.WorkingDir; wd != "" {
+		segs = append(segs, statusSeg{text: filepath.Base(wd), priority: 5})
 	}
 
 	if sp := m.state.SwarmProgress(); sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {

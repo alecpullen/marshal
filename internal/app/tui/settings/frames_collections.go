@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
+	"marshal/internal/strutil"
 )
 
 // rootDrillFrame unwraps a single drill field into a section root frame, so
@@ -25,7 +26,22 @@ func rootDrillFrame(title string, drill *field) *frame {
 func providersFrame(s *state) *frame {
 	drill := entriesDrillExt("providers", "Providers", "New provider name",
 		func() []string { return sortedKeys(s.cfg.Providers) },
-		func(k string) string { return k + "  (" + maskKey(s.cfg.Providers[k].APIKey) + ")" },
+		func(k string) string {
+			pc := s.cfg.Providers[k]
+			locality := "remote"
+			if probe.IsLocalhost(pc.BaseURL) {
+				locality = "local"
+			}
+			keySource := "no key"
+			switch {
+			case pc.APIKeyEnv != "":
+				keySource = "$" + pc.APIKeyEnv
+			case pc.APIKey != "":
+				keySource = "key stored"
+			}
+			return fmt.Sprintf("%s  %s · %s · %s",
+				k, strutil.Truncate(pc.BaseURL, 28, true), locality, keySource)
+		},
 		func(k string) error {
 			if k == "" {
 				return fmt.Errorf("name cannot be empty")

@@ -1079,7 +1079,7 @@ func TestSDDCommandDispatchesPlanToSDDRunner(t *testing.T) {
 	}
 }
 
-func TestSDDCommandWithoutPlanShowsUsage(t *testing.T) {
+func TestSDDCommandWithoutPlanOpensPlanPicker(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
@@ -1090,14 +1090,46 @@ func TestSDDCommandWithoutPlanShowsUsage(t *testing.T) {
 		WithSDDRunner(context.Background(), &fakeSDDRunner{}),
 	)
 
+	updated, _ := model.dispatchCommand("/sdd")
+	m := asModel(t, updated)
+
+	if _, ok := m.dock.Panel().(*picker.Model); !ok {
+		t.Fatal("bare /sdd should open the plan picker")
+	}
+	if m.pickerCommand != "sdd-plan" {
+		t.Fatalf("bare /sdd should set pickerCommand to %q, got %q", "sdd-plan", m.pickerCommand)
+	}
+	if m.busy {
+		t.Fatal("model must not be busy after opening the picker")
+	}
+
+	// Verify no usage message was printed.
+	msgs := state.Messages()
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "Usage: /sdd") {
+			t.Fatal("bare /sdd should not print a usage message")
+		}
+	}
+}
+
+func TestSDDCommandWithoutRunnerReportsUnavailable(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	model := New(state,
+		WithCommandRegistry(cmdReg),
+	)
+
 	_, _ = model.dispatchCommand("/sdd")
 	messages := state.Messages()
 	last := messages[len(messages)-1]
-	if !strings.Contains(last.Content, "Usage: /sdd") {
-		t.Fatalf("expected usage message, got %q", last.Content)
+	if !strings.Contains(last.Content, "SDD is not available") {
+		t.Fatalf("expected unavailable message, got %q", last.Content)
 	}
 	if model.busy {
-		t.Fatal("model must not be busy after a usage error")
+		t.Fatal("model must not be busy after unavailable message")
 	}
 }
 

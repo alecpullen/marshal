@@ -33,6 +33,8 @@ const (
 	stepAPIKey
 	stepProbing
 	stepPickModel
+	stepSummary
+	stepRename
 	stepDone
 	stepCancelled
 	stepRemoteGate
@@ -43,12 +45,14 @@ type Opts struct {
 	Discovered       map[string][]string
 	SkipToIntroModel bool
 	ScopedProvider   string
+	CfgPath          string
 }
 
 type Model struct {
 	step           step
 	picker         *picker.Model
 	input          textinput.Model
+	renameInput    textinput.Model
 	title          string
 	subtitle       string
 	footer         string
@@ -60,6 +64,7 @@ type Model struct {
 	cfg            config.Config
 	discovered     map[string][]string
 	scopedProvider string
+	cfgPath        string
 	width          int
 	height         int
 	probeStart     int64
@@ -72,11 +77,16 @@ func New(opts Opts) *Model {
 	ti := textinput.New()
 	ti.SetVirtualCursor(true)
 	ti.Focus()
+	ri := textinput.New()
+	ri.SetVirtualCursor(true)
+	ri.Focus()
 	m := &Model{
 		cfg:            opts.Cfg,
 		discovered:     opts.Discovered,
 		input:          ti,
+		renameInput:    ri,
 		scopedProvider: opts.ScopedProvider,
+		cfgPath:        opts.CfgPath,
 	}
 	if opts.SkipToIntroModel {
 		enterPickModelStep(m, opts.ScopedProvider)
@@ -156,6 +166,10 @@ func (m *Model) View(maxW, maxH int) string {
 		b.WriteString(m.renderProbing(pw))
 	} else if m.step == stepBaseURL || m.step == stepAPIKey {
 		b.WriteString(m.renderInput(pw))
+	} else if m.step == stepSummary {
+		b.WriteString(m.renderSummary(pw))
+	} else if m.step == stepRename {
+		b.WriteString(m.renderInput(pw))
 	}
 	if m.err != "" {
 		b.WriteString("\n")
@@ -213,6 +227,10 @@ func (m *Model) back() tea.Cmd {
 		m.enterPickTemplate()
 	case stepBaseURL:
 		m.enterPickTemplate()
+	case stepSummary:
+		m.enterPickTemplate()
+	case stepRename:
+		m.enterSummary()
 	default:
 		return m.cancel()
 	}
@@ -271,6 +289,49 @@ func (m *Model) enterRemoteGate() {
 	m.footer = "[y] enable remote providers and continue  [Esc] back"
 	m.err = ""
 	m.picker = nil
+}
+
+func (m *Model) enterSummary() {
+	m.step = stepSummary
+	m.title = "Review provider"
+	m.subtitle = ""
+	m.footer = "[↵] confirm  [n] rename  [Esc] cancel"
+	m.err = ""
+	m.picker = nil
+}
+
+func (m *Model) enterRename() {
+	m.step = stepRename
+	m.title = "Rename provider"
+	m.subtitle = "enter a new name for this provider"
+	m.footer = "[↵] save  [Esc] back"
+	m.err = ""
+	ri := textinput.New()
+	ri.SetVirtualCursor(true)
+	ri.Focus()
+	ri.SetValue(m.providerName)
+	m.input = ri
+	m.picker = nil
+}
+
+func (m *Model) renderSummary(pw int) string {
+	keySrc := "manual"
+	if m.providerCfg.APIKey != "" {
+		keySrc = "pasted"
+	} else if m.providerCfg.APIKeyEnv != "" {
+		keySrc = "$" + m.providerCfg.APIKeyEnv
+	}
+	cfgPath := m.cfgPath
+	if cfgPath == "" {
+		cfgPath = ".marshal/config.toml"
+	}
+	var b strings.Builder
+	b.WriteString(mutedStyle().Render("provider: ") + titleStyle().Render(m.providerName) + "\n")
+	b.WriteString(mutedStyle().Render("endpoint: ") + titleStyle().Render(m.providerCfg.BaseURL) + "\n")
+	b.WriteString(mutedStyle().Render("key:      ") + titleStyle().Render(keySrc) + "\n")
+	b.WriteString(mutedStyle().Render("model:    ") + titleStyle().Render(m.modelChosen) + "\n")
+	b.WriteString(mutedStyle().Render("save to:  ") + titleStyle().Render(cfgPath) + "\n")
+	return b.String()
 }
 
 func enterBaseURLStep(m *Model) {
@@ -335,8 +396,13 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 			return m, nil
 		}
 		m.modelChosen = value
-		m.step = stepDone
-		return m, m.done()
+		// Scoped /models flow skips summary; new-provider flow shows summary.
+		if m.scopedProvider != "" {
+			m.step = stepDone
+			return m, m.done()
+		}
+		m.enterSummary()
+		return m, nil
 	}
 	tpl, ok := provider.Lookup(value)
 	if !ok {
@@ -421,6 +487,30 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+	case stepSummary:
+		switch ks {
+		case "enter":
+			m.step = stepDone
+			return m, m.done()
+		case "n":
+			m.enterRename()
+			return m, nil
+		case "esc":
+			return m, m.cancel()
+		}
+		return m, nil
+	case stepRename:
+		switch ks {
+		case "enter":
+			return m.confirmRename()
+		case "esc":
+			m.enterSummary()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(k)
+			return m, cmd
+		}
 	}
 	if ks == "esc" {
 		return m, m.cancel()
@@ -449,6 +539,17 @@ func (m *Model) confirmInput() (*Model, tea.Cmd) {
 		}
 		return m.enterProbing()
 	}
+	return m, nil
+}
+
+func (m *Model) confirmRename() (*Model, tea.Cmd) {
+	v := strings.TrimSpace(m.input.Value())
+	if v == "" {
+		m.err = "name cannot be empty"
+		return m, nil
+	}
+	m.providerName = v
+	m.enterSummary()
 	return m, nil
 }
 

@@ -234,5 +234,6 @@ func (m Model) footerHints() help.FooterHints {
 		QuestionPending:      m.state.PendingQuestion() != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
+		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
 	}
 }

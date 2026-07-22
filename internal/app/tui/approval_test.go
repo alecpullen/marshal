@@ -25,7 +25,7 @@ func keyPress(key string) tea.KeyPressMsg {
 	}
 }
 
-func TestApprovalDialogRendersDiff(t *testing.T) {
+func TestApprovalDialogRendersDiffAsTintedBlock(t *testing.T) {
 	tc := &session.PendingToolCall{
 		Name: "file.write_patch",
 		Args: `{"path":"a.go"}`,
@@ -37,6 +37,12 @@ func TestApprovalDialogRendersDiff(t *testing.T) {
 	if !strings.Contains(view, "old") || !strings.Contains(view, "new") {
 		t.Fatalf("approval dialog missing diff content:\n%s", view)
 	}
+	// No old-form box-drawing border glyphs in the output (the diffview
+	// may use │ in side-by-side mode, which is fine — we only check for
+	// the old form's ─ border).
+	if strings.Contains(view, "───") {
+		t.Fatalf("approval dialog should not contain old form border glyphs:\n%s", view)
+	}
 }
 
 func TestApprovalDialogNoDiffWhenEmpty(t *testing.T) {
@@ -46,8 +52,8 @@ func TestApprovalDialogNoDiffWhenEmpty(t *testing.T) {
 	}
 	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
 	view := am.View()
-	// No diff → just the form.
-	if strings.Contains(view, "───") && !strings.Contains(view, "Approval") {
+	// No diff → just the warning line and selector.
+	if strings.Contains(view, "───") {
 		t.Fatalf("view should not contain diff artifacts when tc.Diff is empty:\n%s", view)
 	}
 }
@@ -126,26 +132,21 @@ func TestEscAfterOtherKeyResetsPendingDeny(t *testing.T) {
 	}
 }
 
-func TestApprovalDialogLabelsContainSubmitIndicator(t *testing.T) {
+func TestApprovalDialogLabelsContainFlatSelector(t *testing.T) {
 	tc := &session.PendingToolCall{
-		Name: "file.write_patch",
-		Args: `{"path":"a.go"}`,
+		Name: "shell.run",
+		Args: `{"command":"ls"}`,
 	}
 	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
 	view := am.View()
-
-	// The explicit submit row should be present.
-	if !strings.Contains(view, "Submit selected action") {
-		t.Errorf("approval view missing explicit submit row:\n%s", view)
+	for _, want := range []string{"⚠", "allow", "deny", "edit"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("approval view missing %q:\n%s", want, view)
+		}
 	}
-
-	// The edit option should show its descriptive label.
-	if !strings.Contains(view, "Edit command/args") {
-		t.Errorf("approval view missing descriptive 'Edit command/args' label:\n%s", view)
-	}
-
-	// The title should include a j/k navigation hint.
-	if !strings.Contains(view, "j/k") {
-		t.Errorf("approval view missing j/k navigation hint:\n%s", view)
+	for _, gone := range []string{"Approve", "Deny", "j/k"} {
+		if strings.Contains(view, gone) {
+			t.Errorf("approval view still contains old form label %q", gone)
+		}
 	}
 }

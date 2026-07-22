@@ -26,6 +26,24 @@ const (
 	choiceRollback     approvalChoice = "rollback"
 )
 
+var choiceLabels = map[approvalChoice]string{
+	choiceApprove:      "allow",
+	choiceAlways:       "always",
+	choiceSessionAllow: "session",
+	choiceEdit:         "edit",
+	choiceDeny:         "deny",
+	choiceRollback:     "rollback",
+}
+
+func indexOf(s []approvalChoice, v approvalChoice) int {
+	for i, x := range s {
+		if x == v {
+			return i
+		}
+	}
+	return -1
+}
+
 // approvalModel wraps a *huh.Form that lets the user choose how to respond
 // to a pending tool-call approval. It renders inline inside the chat input
 // area (the transcript stays visible above). The form's select title carries
@@ -48,6 +66,8 @@ type approvalModel struct {
 	// pendingDenyAt is set to time.Now() on the first Esc press. A second
 	// Esc within 1.5s confirms the deny. Any other key resets it to zero.
 	pendingDenyAt time.Time
+	sb            session.SandboxInfo
+	allowNetwork  bool
 }
 
 func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int) *approvalModel {
@@ -66,11 +86,13 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 		candidates[i] = o.Value
 	}
 	am := &approvalModel{
-		tc:         tc,
-		width:      width,
-		choice:     choiceApprove,
-		candidates: candidates,
-		selected:   0,
+		tc:           tc,
+		width:        width,
+		choice:       choiceApprove,
+		candidates:   candidates,
+		selected:     0,
+		sb:           sb,
+		allowNetwork: allowNetwork,
 	}
 
 	summary := approvalSummary(tc, sb, allowNetwork)
@@ -182,29 +204,68 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 }
 
 func (am *approvalModel) View() string {
-	if am.form == nil {
+	if am.form == nil || am.tc == nil {
 		return ""
 	}
 	var b strings.Builder
-	if am.tc != nil && am.tc.Diff != "" && am.width > 0 {
+	if am.tc.Diff != "" && am.width > 0 {
 		diff := diffview.Render(am.tc.Diff, diffview.Options{
 			Width:     am.width,
 			Mode:      diffview.ModeAuto,
 			Highlight: true,
 		})
-		b.WriteString(diff)
+		// Render the diff as a surface-tinted block.
+		for _, line := range strings.Split(diff, "\n") {
+			if line == "" {
+				continue
+			}
+			b.WriteString(codeSurfaceStyle().Width(max(am.width-2, 1)).Render(line))
+			b.WriteString("\n")
+		}
 		b.WriteString("\n")
 	}
-	b.WriteString(am.form.View())
-	if !am.pendingDenyAt.IsZero() {
-		b.WriteString("\n")
-		b.WriteString(warningStyle().Render("▸ Press Esc again to deny · any other key cancels"))
-	} else if am.submitPending {
-		b.WriteString("\n")
-		b.WriteString(promptPrefixStyle().Render("▸ Submit selected action"))
+
+	b.WriteString(gutterPrefix("⚠", warningColor))
+	headParts := []string{}
+	if am.tc.Name == "shell.run" {
+		headParts = append(headParts, am.tc.Command)
 	} else {
+		headParts = append(headParts, am.tc.Name)
+	}
+	headParts = append(headParts, riskText(am.tc))
+	if iso := sandboxIsolationText(am.sb, am.allowNetwork); iso != "" {
+		headParts = append(headParts, iso)
+	}
+	b.WriteString(warningStyle().Render(strings.Join(headParts, dimSeparator)))
+	b.WriteString("\n")
+
+	var choices []string
+	for _, ch := range am.candidates {
+		label := choiceLabels[ch]
+		selected := am.selected == indexOf(am.candidates, ch)
+		style := mutedStyle()
+		prefix := "  "
+		if selected {
+			style = lipgloss.NewStyle().Foreground(coralColor).Bold(true)
+			prefix = "▸ "
+			if am.submitPending {
+				prefix = "▸ "
+			}
+		}
+		choices = append(choices, style.Render(prefix+label))
+	}
+	b.WriteString(gutterPrefix(" ", warningColor)) // blank gutter for selector row
+	b.WriteString(strings.Join(choices, mutedStyle().Render("  ")))
+	b.WriteString("\n")
+
+	if !am.pendingDenyAt.IsZero() {
+		b.WriteString(gutterPrefix(" ", warningColor))
+		b.WriteString(warningStyle().Render("Press Esc again to deny · any other key cancels"))
 		b.WriteString("\n")
-		b.WriteString(mutedStyle().Render("  Submit selected action"))
+	} else if am.submitPending {
+		b.WriteString(gutterPrefix(" ", warningColor))
+		b.WriteString(promptPrefixStyle().Render("Press Enter again to confirm"))
+		b.WriteString("\n")
 	}
 	return b.String()
 }

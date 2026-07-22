@@ -92,8 +92,8 @@ func (m Model) renderInputArea() string {
 			rows = append(rows, m.questionModel.View())
 		} else {
 			rows = append(rows, renderQuestionPanel(q, inputInnerWidth))
-			rows = append(rows, m.gutteredInput())
 		}
+		rows = append(rows, m.gutteredInput())
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		if m.editingCommand {
 			rows = append(rows, m.gutteredInput())

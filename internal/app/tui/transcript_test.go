@@ -44,8 +44,11 @@ func TestTranscriptHashDistinguishesContent(t *testing.T) {
 
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}, 80)
-	if !strings.Contains(out, "›") || !strings.Contains(out, "fix the tests") {
-		t.Fatalf("user message missing › prefix:\n%s", out)
+	if !strings.Contains(out, "❯") || !strings.Contains(out, "fix the tests") {
+		t.Fatalf("user message missing ❯ prefix:\n%s", out)
+	}
+	if strings.Contains(stripANSI(out), "›") {
+		t.Fatalf("user message still uses old › prefix:\n%s", out)
 	}
 	if strings.Contains(strings.ToLower(out), "user") {
 		t.Fatalf("user message must not contain a role label:\n%s", out)
@@ -71,28 +74,36 @@ func TestRenderAgentProseDoesNotAddBlankTrailingLine(t *testing.T) {
 	}
 }
 
-func TestRenderThinkingBoxIsCompactInline(t *testing.T) {
+func TestRenderThinkingBoxUsesGutter(t *testing.T) {
 	out := renderThinkingBox("checking the auth flow", "⠋", 80)
-	if strings.Contains(out, "╭") {
+	plain := stripANSI(out)
+	if strings.Contains(plain, "╭") {
 		t.Fatalf("live thinking should be inline, not boxed:\n%s", out)
 	}
-	if !strings.Contains(out, "⠋ thinking") || !strings.Contains(out, "checking the auth flow") {
+	if !strings.HasPrefix(plain, " · ") {
+		t.Fatalf("live thinking header missing · gutter:\n%s", out)
+	}
+	if !strings.Contains(plain, "⠋ thinking") || !strings.Contains(plain, "checking the auth flow") {
 		t.Fatalf("live thinking missing spinner or text:\n%s", out)
+	}
+	if !strings.Contains(plain, " ▍ ") {
+		t.Fatalf("live thinking tail lines missing ▍ gutter:\n%s", out)
 	}
 	if strings.HasSuffix(out, "\n\n") {
 		t.Fatalf("live thinking should not add a blank trailing line:\n%q", out)
 	}
 }
 
-func TestRenderToolResultUsesBullets(t *testing.T) {
+func TestRenderToolResultUsesGutter(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "shell.run: go test ./...\nFAIL: TestX", ContentType: session.ContentTypeToolResult}, 80)
-	if !strings.Contains(out, "⏺") {
-		t.Fatalf("tool result missing ⏺ bullet:\n%s", out)
+	plain := stripANSI(out)
+	if !strings.HasPrefix(plain, " · ") {
+		t.Fatalf("tool result missing · gutter:\n%s", out)
 	}
-	if !strings.Contains(out, "⎿") {
-		t.Fatalf("tool result missing ⎿ continuation:\n%s", out)
+	if strings.Contains(plain, "⏺") || strings.Contains(plain, "⎿") {
+		t.Fatalf("tool result still uses retired bullets:\n%s", out)
 	}
-	if !strings.Contains(out, "FAIL: TestX") {
+	if !strings.Contains(plain, "FAIL: TestX") {
 		t.Fatalf("tool result missing detail line:\n%s", out)
 	}
 }
@@ -104,37 +115,61 @@ func TestRenderSystemNoticeIsDim(t *testing.T) {
 	}
 }
 
-func TestRenderPlanBlockShowsHeaderAndSteps(t *testing.T) {
+func TestRenderPlanBlockUsesGutter(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "1. read parser.go\n2. patch it", ContentType: session.ContentTypePlan}, 80)
-	if !strings.Contains(out, "⏺ Plan") {
-		t.Fatalf("plan block missing header:\n%s", out)
+	plain := stripANSI(out)
+	if !strings.HasPrefix(plain, " · plan") {
+		t.Fatalf("plan block missing · plan gutter header:\n%s", out)
 	}
-	if !strings.Contains(out, "1. read parser.go") || !strings.Contains(out, "2. patch it") {
+	if !strings.Contains(plain, "1. read parser.go") || !strings.Contains(plain, "2. patch it") {
 		t.Fatalf("plan block missing steps:\n%s", out)
 	}
-	// No bordered panel around plans anymore.
-	if strings.Contains(out, "╭") {
+	if strings.Contains(plain, "⏺") {
+		t.Fatalf("plan block must not use retired ⏺ header:\n%s", out)
+	}
+	if strings.Contains(plain, "╭") {
 		t.Fatalf("plan block must not be bordered:\n%s", out)
 	}
 }
 
-func TestRenderFinalAnswerKeepsResponseTreatment(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true}, 80)
-	if !strings.Contains(out, "Response") {
-		t.Fatalf("final answer must keep its Response label:\n%s", out)
+func TestRenderQueuedMessagesHaveGutter(t *testing.T) {
+	out := renderQueuedMessages([]string{"follow up about tests", "and docs"}, 80)
+	plain := stripANSI(out)
+	if strings.Contains(plain, "Queued") {
+		t.Fatalf("queued rendering must not keep old header:\n%s", out)
+	}
+	for _, want := range []string{"· queued: follow up", "· queued: and docs"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("queued output missing %q:\n%s", want, out)
+		}
 	}
 }
 
-func TestRenderFinalAnswerSalvagedMarker(t *testing.T) {
+func TestRenderFinalAnswerUsesGutter(t *testing.T) {
+	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true}, 80)
+	plain := stripANSI(out)
+	if strings.Contains(plain, "Response") {
+		t.Fatalf("final answer must not show Response label:\n%s", plain)
+	}
+	if !strings.Contains(plain, "▍") {
+		t.Fatalf("final answer missing ▍ gutter:\n%s", plain)
+	}
+	if !strings.Contains(plain, "All done.") {
+		t.Fatalf("final answer missing content:\n%s", plain)
+	}
+}
+
+func TestRenderFinalAnswerSalvagedNote(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true, Salvaged: true, SalvageReason: "truncated"}, 80)
-	if !strings.Contains(out, "Response") {
-		t.Fatalf("salvaged final answer must keep its Response label:\n%s", out)
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "salvaged") {
+		t.Fatalf("salvaged final answer missing salvage marker:\n%s", plain)
 	}
-	if !strings.Contains(out, "salvaged") {
-		t.Fatalf("salvaged final answer missing salvage marker:\n%s", out)
+	if !strings.Contains(plain, "truncated") {
+		t.Fatalf("salvaged final answer missing salvage reason:\n%s", plain)
 	}
-	if !strings.Contains(out, "truncated") {
-		t.Fatalf("salvaged final answer missing salvage reason:\n%s", out)
+	if strings.Contains(plain, "Response") {
+		t.Fatalf("salvaged final answer must not show Response label:\n%s", plain)
 	}
 }
 
@@ -145,24 +180,35 @@ func TestRenderFinalAnswerNotSalvagedHasNoMarker(t *testing.T) {
 	}
 }
 
-func TestRenderActiveToolCallIsBorderless(t *testing.T) {
+func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)}
 	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(104, 0), 80)
-	if !strings.Contains(out, "shell.run") || !strings.Contains(out, "4s") {
+	plain := stripANSI(out)
+	if !strings.HasPrefix(plain, " · ") {
+		t.Fatalf("active tool call missing · gutter:\n%s", out)
+	}
+	if !strings.Contains(plain, "shell.run") || !strings.Contains(plain, "4s") {
 		t.Fatalf("active tool call missing name/elapsed:\n%s", out)
 	}
-	if !strings.Contains(out, "$ go test ./...") {
+	if !strings.Contains(plain, "$ go test ./...") {
 		t.Fatalf("command tool call missing $ line:\n%s", out)
 	}
-	if strings.Contains(out, "╭") {
+	if strings.Contains(plain, "╭") {
 		t.Fatalf("active tool call must not be bordered:\n%s", out)
+	}
+	if strings.Contains(plain, "🌐") {
+		t.Fatalf("active tool call should not use browser glyph:\n%s", out)
 	}
 }
 
 func TestRenderProviderErrorInline(t *testing.T) {
 	out := renderProviderError(errors.New("connection refused"), 80)
-	if !strings.Contains(out, "✘ provider: connection refused") {
-		t.Fatalf("provider error missing ✘ line:\n%s", out)
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "✗") {
+		t.Fatalf("provider error missing ✗ gutter:\n%s", out)
+	}
+	if !strings.Contains(plain, "provider: connection refused") {
+		t.Fatalf("provider error missing error text:\n%s", out)
 	}
 }
 
@@ -193,8 +239,11 @@ func TestRenderTranscriptItem(t *testing.T) {
 			},
 		}
 		result := renderTranscriptItem(item, false, width)
-		if !strings.Contains(result, "file.read done") {
+		if !strings.Contains(result, "file.read") {
 			t.Errorf("expected completed tool call, got: %s", result)
+		}
+		if strings.Contains(result, "done") {
+			t.Errorf("should not contain 'done', got: %s", result)
 		}
 		if strings.Contains(result, "ago") {
 			t.Errorf("should not contain elapsed suffix, got: %s", result)
@@ -241,21 +290,24 @@ func TestTranscriptLinesFitWidth(t *testing.T) {
 	}
 }
 
-func TestUserMessageUsesChevronPrefix(t *testing.T) {
+func TestUserMessageUsesCoralGutter(t *testing.T) {
 	out := strings.TrimLeft(stripANSI(renderUserMessage("hi there", 40)), " ")
-	if !strings.HasPrefix(out, "› ") {
-		t.Fatalf("user message should start with '› ' prefix: %q", out)
+	if !strings.HasPrefix(out, "❯ ") {
+		t.Fatalf("user message should start with gutter '❯ ': %q", out)
 	}
 }
 
-func TestCompletedToolCallUsesCheckAndCross(t *testing.T) {
+func TestCompletedToolCallUsesGutterGlyphs(t *testing.T) {
 	ok := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "read"}, 40))
-	if !strings.Contains(ok, "✔") {
-		t.Fatalf("successful tool call should show ✔: %q", ok)
+	if !strings.Contains(ok, "·") {
+		t.Fatalf("successful tool call should show · gutter: %q", ok)
+	}
+	if strings.Contains(ok, "done") {
+		t.Fatalf("successful tool call should not say 'done': %q", ok)
 	}
 	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "shell", Error: "boom"}, 40))
-	if !strings.Contains(bad, "✘") {
-		t.Fatalf("failed tool call should show ✘: %q", bad)
+	if !strings.Contains(bad, "✗") {
+		t.Fatalf("failed tool call should show ✗ gutter: %q", bad)
 	}
 }
 
@@ -345,7 +397,7 @@ func TestAgentMarkdownRendersRichBlocksWithinWidth(t *testing.T) {
 	t.Logf("rendered:\n%s", out)
 }
 
-func TestRenderActiveToolCallBrowserGlyph(t *testing.T) {
+func TestRenderActiveToolCallBrowserGlyphRemoved(t *testing.T) {
 	atc := session.ActiveToolCall{
 		Name:      "browser.navigate",
 		Args:      "https://example.com",
@@ -353,8 +405,8 @@ func TestRenderActiveToolCallBrowserGlyph(t *testing.T) {
 	}
 	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(103, 0), 80)
 	stripped := stripANSI(out)
-	if !strings.Contains(stripped, "🌐") {
-		t.Fatalf("browser active tool call missing 🌐 glyph:\n%s", out)
+	if strings.Contains(stripped, "🌐") {
+		t.Fatalf("browser active tool call should not render 🌐:\n%s", out)
 	}
 	if !strings.Contains(stripped, "browser.navigate") {
 		t.Fatalf("missing tool name:\n%s", out)
@@ -393,17 +445,34 @@ func TestWelcomeBannerIsPlainLines(t *testing.T) {
 	}
 }
 
-func TestRenderCompletedToolCallBrowserGlyph(t *testing.T) {
+func TestRenderCodeBlockIsSurfaceTinted(t *testing.T) {
+	out := renderCodeBlock("func main() {}", 40)
+	plain := stripANSI(out)
+	if strings.Contains(plain, "╭") || strings.Contains(plain, "╰") || strings.Contains(plain, "│") {
+		t.Fatalf("code block still uses border glyphs:\n%s", plain)
+	}
+	if !strings.Contains(plain, "func main() {}") {
+		t.Fatalf("code block missing content:\n%s", plain)
+	}
+	if visibleRunes(out) > 40 {
+		t.Fatalf("code block exceeds width: %d > 40", visibleRunes(out))
+	}
+}
+
+func TestRenderCompletedToolCallBrowserGlyphRemoved(t *testing.T) {
 	event := registry.AuditEvent{
 		ToolName:      "browser.navigate",
 		ResultSummary: "Navigated to https://example.com",
 	}
 	out := renderCompletedToolCall(event, 80)
 	stripped := stripANSI(out)
+	if strings.Contains(stripped, "🌐") {
+		t.Fatalf("browser completed tool call should not render 🌐:\n%s", out)
+	}
 	if !strings.Contains(stripped, "browser.navigate") {
 		t.Fatalf("missing tool name:\n%s", out)
 	}
-	if !strings.Contains(stripped, "done") {
-		t.Fatalf("missing 'done':\n%s", out)
+	if strings.Contains(stripped, "done") {
+		t.Fatalf("completed tool call should not say 'done':\n%s", out)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/routing"
 )
 
 // state holds the single mutable working copy of the config that every
@@ -43,7 +44,13 @@ func cloneConfig(cfg config.Config) config.Config {
 	out.Indexing.Ignore = slices.Clone(cfg.Indexing.Ignore)
 	out.Providers = maps.Clone(cfg.Providers)
 	out.Models.Presets = maps.Clone(cfg.Models.Presets)
-	out.AgentProfiles = maps.Clone(cfg.AgentProfiles)
+	if cfg.AgentProfiles != nil {
+		out.AgentProfiles = make(map[string]routing.AgentProfile, len(cfg.AgentProfiles))
+		for name, profile := range cfg.AgentProfiles {
+			profile.Roles = maps.Clone(profile.Roles)
+			out.AgentProfiles[name] = profile
+		}
+	}
 	out.Agents = maps.Clone(cfg.Agents)
 	out.Tools.Shell.Allow.Commands = slices.Clone(cfg.Tools.Shell.Allow.Commands)
 	out.Tools.Shell.Confirm.Commands = slices.Clone(cfg.Tools.Shell.Confirm.Commands)

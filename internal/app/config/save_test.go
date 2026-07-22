@@ -546,6 +546,44 @@ func TestSaveProjectConfigPreservesAgentProfiles(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigWritesAgentProfiles(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"fast": {
+			Name: "fast",
+			Roles: map[routing.AgentRole]string{
+				routing.RoleImplementer: "small",
+				routing.RoleSDDReviewer: "large",
+			},
+		},
+	}
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatalf("loadFile failed: %v", err)
+	}
+
+	if file.AgentProfiles == nil {
+		t.Fatal("agent_profiles not written to file")
+	}
+	if file.AgentProfiles["fast"] == nil {
+		t.Fatal("agent_profiles.fast not written")
+	}
+	if got := file.AgentProfiles["fast"][routing.RoleImplementer]; got != "small" {
+		t.Errorf("agent_profiles.fast[implementer] = %q, want %q", got, "small")
+	}
+	if got := file.AgentProfiles["fast"][routing.RoleSDDReviewer]; got != "large" {
+		t.Errorf("agent_profiles.fast[sdd_reviewer] = %q, want %q", got, "large")
+	}
+}
+
 func TestSaveProjectConfigRoundTripsMCPServerTrust(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".marshal", "config.toml")

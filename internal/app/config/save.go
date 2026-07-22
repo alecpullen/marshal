@@ -207,6 +207,16 @@ func SaveProjectConfig(path string, cfg Config) error {
 			file.Models.Presets[name] = preset
 		}
 	}
+	if file.AgentProfiles != nil || len(cfg.AgentProfiles) > 0 {
+		file.AgentProfiles = map[string]map[routing.AgentRole]string{}
+		for name, profile := range cfg.AgentProfiles {
+			roles := profile.Roles
+			if roles == nil {
+				roles = map[routing.AgentRole]string{}
+			}
+			file.AgentProfiles[name] = roles
+		}
+	}
 
 	data, err := toml.Marshal(&file)
 	if err != nil {

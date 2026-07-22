@@ -69,6 +69,15 @@ func TestSliceOpts(t *testing.T) {
 	}
 }
 
+func TestSDDSectionRegistered(t *testing.T) {
+	registry := BuildRegistry(config.Default())
+	for _, key := range []string{"sdd.auto_worktree", "sdd.max_fix_rounds", "sdd.plans_dir"} {
+		if _, ok := registry.Lookup(key); !ok {
+			t.Errorf("registry missing %s", key)
+		}
+	}
+}
+
 func TestDiagnosticsFrameIsMapAtRoot(t *testing.T) {
 	s := newState(config.Default())
 	s.cfg.Diagnostics.Commands = map[string]string{"lint": "go vet ./..."}

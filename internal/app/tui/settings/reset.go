@@ -29,6 +29,8 @@ func resetSection(cfg *config.Config, sectionID string) {
 		cfg.Web = def.Web
 	case "swarm":
 		cfg.Swarm = def.Swarm
+	case "sdd":
+		cfg.SDD = def.SDD
 	case "mcp":
 		cfg.MCP = def.MCP
 	case "snapshots":

@@ -18,6 +18,7 @@ func sectionList() []sectionSpec {
 		{id: "indexing", title: "Indexing", root: indexingFrame},
 		{id: "web", title: "Web", root: webFrame},
 		{id: "swarm", title: "Swarm", root: swarmFrame},
+		{id: "sdd", title: "SDD", root: sddFrame},
 		{id: "mcp", title: "MCP", root: mcpFrame},
 		{id: "snapshots", title: "Snapshots", root: snapshotsFrame},
 		{id: "hooks", title: "Hooks", root: hooksFrame},

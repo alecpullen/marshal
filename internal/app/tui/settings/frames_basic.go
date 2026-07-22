@@ -114,6 +114,23 @@ func swarmFrame(s *state) *frame {
 	})
 }
 
+func sddFrame(s *state) *frame {
+	return newFrame("SDD", func() []*field {
+		return []*field{
+			{id: "sdd.auto_worktree", title: "Auto worktree", kind: kindToggle,
+				desc:    "create an isolated git worktree for each SDD task",
+				getBool: func() bool { return s.cfg.SDD.AutoWorktree },
+				setBool: func(v bool) { s.cfg.SDD.AutoWorktree = v }},
+			intField("sdd.max_fix_rounds", "Max fix rounds",
+				func() int { return s.cfg.SDD.MaxFixRounds }, 0,
+				func(v int) { s.cfg.SDD.MaxFixRounds = v }),
+			scalarField("sdd.plans_dir", "Plans dir",
+				func() string { return s.cfg.SDD.PlansDir },
+				func(v string) error { s.cfg.SDD.PlansDir = v; return nil }),
+		}
+	})
+}
+
 // diagnosticsFrame is nothing but the commands map, so the root frame IS the
 // map frame (no pointless single-row drill).
 func diagnosticsFrame(s *state) *frame {

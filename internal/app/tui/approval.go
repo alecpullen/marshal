@@ -35,24 +35,6 @@ var choiceLabels = map[approvalChoice]string{
 	choiceRollback:     "rollback",
 }
 
-func choiceKey(ch approvalChoice) string {
-	switch ch {
-	case choiceApprove:
-		return "a"
-	case choiceAlways:
-		return "A"
-	case choiceSessionAllow:
-		return "s"
-	case choiceEdit:
-		return "e"
-	case choiceDeny:
-		return "d"
-	case choiceRollback:
-		return "r"
-	}
-	return ""
-}
-
 func indexOf(s []approvalChoice, v approvalChoice) int {
 	for i, x := range s {
 		if x == v {

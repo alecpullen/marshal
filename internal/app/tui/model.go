@@ -1782,6 +1782,7 @@ func (m *Model) openConnect(_ string) {
 	m.connectModel = connect.New(connect.Opts{
 		Cfg:        m.state.Config,
 		Discovered: m.discovered,
+		CfgPath:    projectConfigPath(m.state.WorkingDir),
 	})
 	m.connectModel.SetSize(m.width, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})

@@ -176,9 +176,14 @@ func TestPickModelEmitsDone(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
-	_, cmd := m.Update(pickerPicked("qwen2.5-coder:7b"))
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Non-scoped flow lands on summary; press Enter to emit DoneMsg.
+	if m.step != stepSummary {
+		t.Fatalf("after pickModel should be stepSummary, got %v", m.step)
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	if cmd == nil {
-		t.Fatal("pickModel should emit a DoneMsg cmd")
+		t.Fatal("Enter on summary should emit a DoneMsg cmd")
 	}
 	msg := cmd()
 	dm, ok := msg.(DoneMsg)
@@ -313,7 +318,7 @@ func TestRemoteGateYEnablesAndEntersAPIKey(t *testing.T) {
 }
 
 func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
-	// Simulate: pick remote template -> gate -> y -> apiKey -> enter -> probe -> pick model
+	// Simulate: pick remote template -> gate -> y -> apiKey -> enter -> probe -> pick model -> summary enter
 	cfg := config.Default()
 	m := New(Opts{Cfg: cfg, Discovered: map[string][]string{}})
 	m, _ = m.Update(pickerPicked("openrouter"))
@@ -322,8 +327,13 @@ func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13}) // enter -> probing
 	// Skip probe
 	m, _ = m.Update(tea.KeyPressMsg{Code: 115}) // s -> skip
-	// Pick a model
-	_, cmd := m.Update(pickerPicked("gpt-4o"))
+	// Pick a model -> lands on summary
+	m, _ = m.Update(pickerPicked("gpt-4o"))
+	if m.step != stepSummary {
+		t.Fatalf("after pickModel should be stepSummary, got %v", m.step)
+	}
+	// Press Enter on summary to emit DoneMsg
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	if cmd == nil {
 		t.Fatal("expected a DoneMsg cmd")
 	}
@@ -354,6 +364,147 @@ func TestCustomLocalhostBaseURLSkipsGate(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
 	if updated.step != stepAPIKey {
 		t.Fatalf("localhost baseURL should skip gate and enter apiKey, got step = %v", updated.step)
+	}
+}
+
+func TestSummaryShowsNameModelAndDestination(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}, CfgPath: "/tmp/.marshal/config.toml"})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	if m.step != stepSummary {
+		t.Fatalf("expected stepSummary, got %v", m.step)
+	}
+	view := m.View(80, 24)
+	if !strings.Contains(view, m.providerName) {
+		t.Fatalf("summary should show provider name %q", m.providerName)
+	}
+	if !strings.Contains(view, "qwen2.5-coder:7b") {
+		t.Fatal("summary should show model name")
+	}
+	if !strings.Contains(view, "/tmp/.marshal/config.toml") {
+		t.Fatal("summary should show destination config path")
+	}
+}
+
+func TestSummaryEnterEmitsDone(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	if m.step != stepSummary {
+		t.Fatalf("expected stepSummary, got %v", m.step)
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
+	if cmd == nil {
+		t.Fatal("Enter on summary should emit a DoneMsg cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(DoneMsg); !ok {
+		t.Fatalf("cmd produced %T, want DoneMsg", msg)
+	}
+}
+
+func TestSummaryRenameChangesProviderName(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	if m.step != stepSummary {
+		t.Fatalf("expected stepSummary, got %v", m.step)
+	}
+	// Press 'n' to enter rename
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
+	if m.step != stepRename {
+		t.Fatalf("expected stepRename, got %v", m.step)
+	}
+	// Change the name
+	m.input.SetValue("my-ollama")
+	// Press Enter to confirm rename
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	if m.step != stepSummary {
+		t.Fatalf("after rename should return to stepSummary, got %v", m.step)
+	}
+	if m.providerName != "my-ollama" {
+		t.Fatalf("providerName = %q, want %q", m.providerName, "my-ollama")
+	}
+	// Press Enter on summary to emit DoneMsg
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
+	if cmd == nil {
+		t.Fatal("Enter on summary should emit a DoneMsg cmd")
+	}
+	msg := cmd()
+	dm, ok := msg.(DoneMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want DoneMsg", msg)
+	}
+	if dm.Provider != "my-ollama" {
+		t.Fatalf("DoneMsg.Provider = %q, want %q", dm.Provider, "my-ollama")
+	}
+}
+
+func TestScopedModelSwitchSkipsSummary(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama", Discovered: map[string][]string{}})
+	if m.step != stepPickModel {
+		t.Fatalf("expected stepPickModel, got %v", m.step)
+	}
+	_, cmd := m.Update(pickerPicked("qwen2.5-coder:7b"))
+	if cmd == nil {
+		t.Fatal("scoped pickModel should emit a DoneMsg cmd directly")
+	}
+	msg := cmd()
+	dm, ok := msg.(DoneMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want DoneMsg", msg)
+	}
+	if dm.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("DoneMsg.Model = %q", dm.Model)
+	}
+}
+
+func TestSummaryEscCancels(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	if m.step != stepSummary {
+		t.Fatalf("expected stepSummary, got %v", m.step)
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 27})
+	if cmd == nil {
+		t.Fatal("Esc on summary should emit CancelledMsg")
+	}
+	msg := cmd()
+	if _, ok := msg.(CancelledMsg); !ok {
+		t.Fatalf("cmd produced %T, want CancelledMsg", msg)
+	}
+}
+
+func TestRenameEmptyNameShowsError(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
+	m.input.SetValue("")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
+	if updated.err == "" {
+		t.Fatal("expected error for empty rename")
+	}
+}
+
+func TestRenameEscReturnsToSummary(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
+	if m.step != stepRename {
+		t.Fatalf("expected stepRename, got %v", m.step)
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 27})
+	if updated.step != stepSummary {
+		t.Fatalf("Esc on rename should return to summary, got %v", updated.step)
 	}
 }
 

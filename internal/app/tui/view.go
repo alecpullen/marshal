@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/help"
 	"marshal/internal/strutil"
 )
 
@@ -27,8 +26,6 @@ const (
 	inputBorderRows     = 2
 	activityStripRows   = 1
 	transcriptFrameRows = 0
-	footerRows          = help.Rows
-	commandBarRows      = footerRows + 1
 	statusLineRows      = 1
 	completionPopupMax  = 8
 )
@@ -75,7 +72,7 @@ func (m *Model) viewString() string {
 	if dockView != "" {
 		rows = append(rows, dockView)
 	}
-	rows = append(rows, m.renderInputArea(), m.renderHelpFooter(), m.renderStatusLine(m.width))
+	rows = append(rows, m.renderInputArea(), m.renderStatusLine(m.width))
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
@@ -192,29 +189,6 @@ func (m Model) renderActivityStrip() string {
 		return ""
 	}
 	return statusBusyStyle().Render(strutil.Truncate(label, available, false))
-}
-
-// renderHelpFooter returns the persistent keybinding hint bar shown below
-// the input area and above the status line.
-func (m Model) renderHelpFooter() string {
-	hints := help.FooterHints{
-		Busy:                 m.busy,
-		EditingCommand:       m.editingCommand,
-		ApprovalPending:      m.state.PendingApproval() != nil,
-		QuestionPending:      m.state.PendingQuestion() != nil,
-		PopupOpen:            m.activeCompletionPopup() != nil,
-		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
-	}
-	body := help.Footer(hints)
-	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderTop(true).
-		BorderBottom(false).
-		BorderRight(false).
-		BorderLeft(false).
-		BorderForeground(activeTheme.BorderMuted).
-		Width(max(m.width, 1)).
-		Render(body)
 }
 
 // highlightMatches bolds runes at the given byte indices using the

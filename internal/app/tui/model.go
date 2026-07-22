@@ -571,7 +571,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport spans the full terminal width (borderless).
 	m.viewport.SetWidth(max(width, 1))
-	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1057,7 +1057,7 @@ func (m Model) sddPanelRows() int {
 func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
-	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-commandBarRows-statusLineRows, 1)
+	newViewportHeight := max(m.height-titleBarRows-transcriptFrameRows-m.swarmPanelRows()-m.sddPanelRows()-m.browserBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}

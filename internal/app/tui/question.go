@@ -6,6 +6,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/huhtheme"
@@ -193,7 +194,38 @@ func (qm *questionModel) View() string {
 	if qm.form == nil {
 		return ""
 	}
-	return qm.form.View()
+	// Infer the focused field index from answer state (huh.Form does not
+	// expose a public Fields() method).
+	focusedIdx := 0
+	for i, a := range qm.answers {
+		if a.Answer == session.AnswerUnanswered || a.Answer == "" {
+			focusedIdx = i
+			break
+		}
+	}
+
+	gutter := gutterPrefix("?", violetColor)
+	var b strings.Builder
+	for i, qs := range qm.q.Questions {
+		if i == focusedIdx {
+			b.WriteString(gutter)
+			b.WriteString(lipgloss.NewStyle().Foreground(violetColor).Bold(true).Render(qs.Question))
+		} else if qm.answers[i].Answer != "" && qm.answers[i].Answer != session.AnswerUnanswered {
+			b.WriteString(gutter)
+			b.WriteString(mutedStyle().Render(qs.Question + " · " + qm.answers[i].Answer))
+		} else {
+			b.WriteString(gutter)
+			b.WriteString(mutedStyle().Render(qs.Question))
+		}
+		b.WriteString("\n")
+		if i == focusedIdx && len(qs.Options) > 0 {
+			opts := "(" + strings.Join(qs.Options, " / ") + ")"
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(mutedStyle().Render(opts))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 func (qm *questionModel) Answers() []session.Answer { return qm.answers }

@@ -38,6 +38,7 @@ func renderTodos(todos []native.TodoItem, width int) string {
 		if t.Status == native.TodoInProgress {
 			labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGDefault).Bold(true)
 		}
+		// -6: 3-cell gutter + 3-cell glyph-aware margin
 		line := labelStyle.Render(strutil.Truncate(t.Content, max(width-6, 1), false))
 		b.WriteString(gutter)
 		b.WriteString(line)

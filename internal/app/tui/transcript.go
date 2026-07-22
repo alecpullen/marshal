@@ -231,10 +231,10 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 	return b.String()
 }
 
-// renderMessage formats one transcript entry in the symbol-bullet style:
+// renderMessage formats one transcript entry with gutter-prefixed lines:
 // user prompts get a ❯ prefix, agent prose renders as plain markdown with
-// no role label, tool results render as ⏺/⎿ bullets, system notices are
-// dim. Final answers keep the rich-content Response treatment.
+// no role label, tool results render with a · gutter, system notices are
+// dim. Final answers use a ▍ gutter and rich-content rendering.
 func renderMessage(msg session.Message, width int) string {
 	if msg.Final {
 		return renderFinalAnswer(msg, width)

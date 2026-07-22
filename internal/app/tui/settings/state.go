@@ -14,11 +14,11 @@ import (
 // section pane binds to by pointer. It is heap-allocated (Model stores
 // *state) so pointer bindings survive Model value copies.
 type state struct {
-	cfg                   config.Config
-	discovered            map[string][]string
-	actionState           map[string]actionState
-	wizardCreatedProvider string
-	pendingCmd            tea.Cmd
+	cfg              config.Config
+	discovered       map[string][]string
+	actionState      map[string]actionState
+	connectRequested bool
+	pendingCmd       tea.Cmd
 }
 
 type actionState struct {
@@ -38,6 +38,12 @@ func (s *state) takePendingCmd() tea.Cmd {
 	cmd := s.pendingCmd
 	s.pendingCmd = nil
 	return cmd
+}
+
+func (s *state) takeConnectRequested() bool {
+	requested := s.connectRequested
+	s.connectRequested = false
+	return requested
 }
 
 func (s *state) applyActionResult(fieldID, label string) {

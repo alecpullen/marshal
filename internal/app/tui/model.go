@@ -159,6 +159,12 @@ type Model struct {
 	todoPanelMode  todoPanelMode
 	todosDismissed bool
 	todosSig       string
+
+	// connectReturnToSettings and connectReturnFilter track whether the
+	// connect wizard was opened from the settings browser, so completing
+	// or canceling the wizard returns to the browser with the same filter.
+	connectReturnToSettings bool
+	connectReturnFilter     string
 }
 
 type Option func(*Model)
@@ -661,6 +667,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRuntimeMessage(msg)
 	}
 
+	// OpenConnectMsg from the settings browser: capture the current filter,
+	// close the browser, and open the connect wizard.
+	if _, ok := msg.(settings.OpenConnectMsg); ok {
+		if bp, ok := m.dock.Panel().(*settings.BrowserPanel); ok {
+			m.connectReturnFilter = bp.FilterValue()
+		}
+		m.connectReturnToSettings = true
+		m.dock.CloseNow()
+		m.openConnect("/")
+		m.refreshViewport()
+		return m, nil
+	}
+
 	// Browser-owned picker and probe/action messages must return to the
 	// browser before the model's command-picker and connect handlers see
 	// them. The browser itself is the dock panel, so it can safely handle
@@ -681,11 +700,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyConnectDone(pm)
 		m.dock.CloseNow()
 		m.connectModel = nil
+		if m.connectReturnToSettings {
+			m.connectReturnToSettings = false
+			m.openSettingsBrowser(m.connectReturnFilter)
+			m.connectReturnFilter = ""
+		}
 		m.refreshViewport()
 		return m, nil
 	case connect.CancelledMsg:
 		m.dock.CloseNow()
 		m.connectModel = nil
+		if m.connectReturnToSettings {
+			m.connectReturnToSettings = false
+			m.openSettingsBrowser(m.connectReturnFilter)
+			m.connectReturnFilter = ""
+		}
 		m.refreshViewport()
 		return m, nil
 	case connect.TickMsg:

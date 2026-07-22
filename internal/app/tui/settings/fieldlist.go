@@ -64,14 +64,17 @@ type fieldList struct {
 	onAdd     func(string) error
 	keyInput  textinput.Model
 
+	// onAddMsg is an alternative to onAdd: when set, pressing a emits a
+	// tea.Cmd that returns the message from this function instead of
+	// opening an inline key prompt. Used by the Providers collection to
+	// emit OpenConnectMsg.
+	onAddMsg func() tea.Msg
+
 	// drill request picked up by the owning pane after Update
 	pushRequest *frame
 
 	// picker overlay request picked up by the owning pane after Update
 	pushPicker *pickerRequest
-
-	// add-wizard picker for collection frames (set by the field during add operations)
-	addWizard func() *pickerRequest
 
 	yankedData any
 }
@@ -198,9 +201,8 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 	case "enter", "e":
 		return fl.openRow(row)
 	case "a":
-		if fl.addWizard != nil {
-			fl.pushPicker = fl.addWizard()
-			return nil
+		if fl.onAddMsg != nil {
+			return func() tea.Msg { return fl.onAddMsg() }
 		}
 		if fl.onAdd != nil {
 			if fl.keyPrompt == "" {
@@ -549,8 +551,6 @@ func (fl *fieldList) View() string {
 func clipLines(lines []string, focusLine, height int) string {
 	return chrome.ClipLines(lines, focusLine, height, settingsTheme())
 }
-
-const wizardFieldID = "__wizard__"
 
 type pickerRequest struct {
 	fieldID     string

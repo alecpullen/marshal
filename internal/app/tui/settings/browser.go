@@ -161,7 +161,7 @@ func (b *BrowserPanel) collectionFields(query string) []*field {
 	var fields []*field
 	for _, spec := range sectionList() {
 		root := spec.root(b.reg.st)
-		if root.list.onAdd == nil && root.list.addWizard == nil {
+		if root.list.onAdd == nil && root.list.onAddMsg == nil {
 			continue
 		}
 		haystack := spec.id + " " + spec.title + " collection"
@@ -333,10 +333,9 @@ func (b *BrowserPanel) handlePickerPicked(value string) tea.Cmd {
 			return nil
 		}
 	}
-	fieldID := b.pickerField
 	b.closePicker()
-	if fieldID == wizardFieldID {
-		b.drillIntoNewestProvider()
+	if b.reg.st.takeConnectRequested() {
+		return func() tea.Msg { return OpenConnectMsg{} }
 	}
 	if probeCmd := b.reg.st.takePendingCmd(); probeCmd != nil {
 		return probeCmd
@@ -350,26 +349,6 @@ func (b *BrowserPanel) closePicker() {
 	b.pickerModel = nil
 	b.pickerOnPick = nil
 	b.pickerField = ""
-}
-
-func (b *BrowserPanel) drillIntoNewestProvider() {
-	name := b.reg.st.wizardCreatedProvider
-	b.reg.st.wizardCreatedProvider = ""
-	if name == "" || b.stack == nil {
-		return
-	}
-	for b.stack.pop() {
-	}
-	for index, row := range b.stack.top().list.Rows() {
-		if row.id != "providers."+name || row.kind != kindDrill {
-			continue
-		}
-		b.stack.top().list.SetCursor(index)
-		if frame := row.build(); frame != nil {
-			b.stack.push(frame)
-		}
-		return
-	}
 }
 
 // flushChanges persists mutations and turns the reflected config diff into

@@ -151,34 +151,30 @@ func renderFinalAnswer(msg session.Message, width int) string {
 	if width < 10 {
 		width = 10
 	}
-	labelText := "Response"
-	if msg.Salvaged {
-		labelText = "Response · salvaged"
-	}
-	label := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(labelText)
+	gutter := gutterPrefix("▍", accentColor)
+	contentWidth := max(width-3, 1)
 
 	var b strings.Builder
-	b.WriteString(label)
-	if msg.Salvaged && msg.SalvageReason != "" {
-		b.WriteString("  ")
-		b.WriteString(mutedStyle().Render(msg.SalvageReason))
+	if msg.Salvaged {
+		note := "salvaged"
+		if msg.SalvageReason != "" {
+			note += dimSeparator + msg.SalvageReason
+		}
+		b.WriteString(gutter)
+		b.WriteString(mutedStyle().Render(note))
+		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 
-	// Border (1) + padding (1) sit left of the body; glamour's own
-	// 2-space margin indents the prose inside that.
-	contentWidth := max(width-6, 1)
 	body, ok := renderMarkdown(msg.Content, contentWidth)
 	if !ok {
 		body = renderPlainProse(msg.Content, contentWidth)
 	}
-	b.WriteString(strings.Trim(body, "\n"))
-
-	borderStyle := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(accentColor).
-		PaddingLeft(1)
-	return borderStyle.Render(strings.TrimRight(b.String(), "\n")) + "\n"
+	for _, line := range strings.Split(strings.Trim(body, "\n"), "\n") {
+		b.WriteString(gutter)
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func formatThinkDuration(d time.Duration) string {
@@ -261,17 +257,17 @@ func renderMessage(msg session.Message, width int) string {
 }
 
 func renderUserMessage(content string, width int) string {
-	contentWidth := max(width-2, 1)
+	gutter := gutterPrefix("❯", coralColor)
+	contentWidth := max(width-3, 1)
 	wrapped := ansi.Wrap(content, contentWidth, "")
-	userPrefix := lipgloss.NewStyle().Foreground(userColor).Bold(true).Render("› ")
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {
-			b.WriteString(userPrefix)
+			b.WriteString(gutter)
 		} else {
-			b.WriteString("  ")
+			b.WriteString(strings.Repeat(" ", 3))
 		}
-		b.WriteString(line)
+		b.WriteString(lipgloss.NewStyle().Foreground(userColor).Render(line))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")

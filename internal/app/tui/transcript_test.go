@@ -44,8 +44,11 @@ func TestTranscriptHashDistinguishesContent(t *testing.T) {
 
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}, 80)
-	if !strings.Contains(out, "›") || !strings.Contains(out, "fix the tests") {
-		t.Fatalf("user message missing › prefix:\n%s", out)
+	if !strings.Contains(out, "❯") || !strings.Contains(out, "fix the tests") {
+		t.Fatalf("user message missing ❯ prefix:\n%s", out)
+	}
+	if strings.Contains(stripANSI(out), "›") {
+		t.Fatalf("user message still uses old › prefix:\n%s", out)
 	}
 	if strings.Contains(strings.ToLower(out), "user") {
 		t.Fatalf("user message must not contain a role label:\n%s", out)
@@ -118,23 +121,31 @@ func TestRenderPlanBlockShowsHeaderAndSteps(t *testing.T) {
 	}
 }
 
-func TestRenderFinalAnswerKeepsResponseTreatment(t *testing.T) {
+func TestRenderFinalAnswerUsesGutter(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true}, 80)
-	if !strings.Contains(out, "Response") {
-		t.Fatalf("final answer must keep its Response label:\n%s", out)
+	plain := stripANSI(out)
+	if strings.Contains(plain, "Response") {
+		t.Fatalf("final answer must not show Response label:\n%s", plain)
+	}
+	if !strings.Contains(plain, "▍") {
+		t.Fatalf("final answer missing ▍ gutter:\n%s", plain)
+	}
+	if !strings.Contains(plain, "All done.") {
+		t.Fatalf("final answer missing content:\n%s", plain)
 	}
 }
 
-func TestRenderFinalAnswerSalvagedMarker(t *testing.T) {
+func TestRenderFinalAnswerSalvagedNote(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true, Salvaged: true, SalvageReason: "truncated"}, 80)
-	if !strings.Contains(out, "Response") {
-		t.Fatalf("salvaged final answer must keep its Response label:\n%s", out)
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "salvaged") {
+		t.Fatalf("salvaged final answer missing salvage marker:\n%s", plain)
 	}
-	if !strings.Contains(out, "salvaged") {
-		t.Fatalf("salvaged final answer missing salvage marker:\n%s", out)
+	if !strings.Contains(plain, "truncated") {
+		t.Fatalf("salvaged final answer missing salvage reason:\n%s", plain)
 	}
-	if !strings.Contains(out, "truncated") {
-		t.Fatalf("salvaged final answer missing salvage reason:\n%s", out)
+	if strings.Contains(plain, "Response") {
+		t.Fatalf("salvaged final answer must not show Response label:\n%s", plain)
 	}
 }
 
@@ -241,10 +252,10 @@ func TestTranscriptLinesFitWidth(t *testing.T) {
 	}
 }
 
-func TestUserMessageUsesChevronPrefix(t *testing.T) {
+func TestUserMessageUsesCoralGutter(t *testing.T) {
 	out := strings.TrimLeft(stripANSI(renderUserMessage("hi there", 40)), " ")
-	if !strings.HasPrefix(out, "› ") {
-		t.Fatalf("user message should start with '› ' prefix: %q", out)
+	if !strings.HasPrefix(out, "❯ ") {
+		t.Fatalf("user message should start with gutter '❯ ': %q", out)
 	}
 }
 

@@ -28,8 +28,11 @@ func flValueStyle() lipgloss.Style {
 }
 func flDescStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
 func flErrStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().StatusError) }
-func flOnStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess) }
-func flOffStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
+func flWarnStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(settingsTheme().StatusWarning)
+}
+func flOnStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess) }
+func flOffStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
 
 // fieldList renders and edits a vertical list of typed rows. It is the one
 // widget behind every settings pane and drill-down frame.
@@ -272,8 +275,10 @@ func (fl *fieldList) openRow(row *field) tea.Cmd {
 		fl.editing = true
 		fl.errMsg = ""
 		if row.masked {
+			fl.input.EchoMode = textinput.EchoPassword
 			fl.input.SetValue("")
 		} else {
+			fl.input.EchoMode = textinput.EchoNormal
 			fl.input.SetValue(row.getStr())
 			fl.input.CursorEnd()
 		}
@@ -511,6 +516,9 @@ func (fl *fieldList) View() string {
 		}
 		val := fl.valueCell(row, isCursor)
 		title := row.title
+		if row.warn {
+			title = flWarnStyle().Render("⚠ ") + title
+		}
 		gap := fl.width - lipgloss.Width(marker) - lipgloss.Width(title) - lipgloss.Width(val)
 		if gap < 1 {
 			gap = 1

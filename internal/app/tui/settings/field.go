@@ -39,6 +39,7 @@ type field struct {
 	getStr func() string
 	setStr func(string) error
 	masked bool // render via maskKey; edits replace, empty input keeps
+	warn   bool // render with warning style for risky settings
 
 	// kindEnum
 	options func() []string

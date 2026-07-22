@@ -94,15 +94,16 @@ func TestRenderThinkingBoxUsesGutter(t *testing.T) {
 	}
 }
 
-func TestRenderToolResultUsesBullets(t *testing.T) {
+func TestRenderToolResultUsesGutter(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "shell.run: go test ./...\nFAIL: TestX", ContentType: session.ContentTypeToolResult}, 80)
-	if !strings.Contains(out, "⏺") {
-		t.Fatalf("tool result missing ⏺ bullet:\n%s", out)
+	plain := stripANSI(out)
+	if !strings.HasPrefix(plain, " · ") {
+		t.Fatalf("tool result missing · gutter:\n%s", out)
 	}
-	if !strings.Contains(out, "⎿") {
-		t.Fatalf("tool result missing ⎿ continuation:\n%s", out)
+	if strings.Contains(plain, "⏺") || strings.Contains(plain, "⎿") {
+		t.Fatalf("tool result still uses retired bullets:\n%s", out)
 	}
-	if !strings.Contains(out, "FAIL: TestX") {
+	if !strings.Contains(plain, "FAIL: TestX") {
 		t.Fatalf("tool result missing detail line:\n%s", out)
 	}
 }
@@ -114,17 +115,33 @@ func TestRenderSystemNoticeIsDim(t *testing.T) {
 	}
 }
 
-func TestRenderPlanBlockShowsHeaderAndSteps(t *testing.T) {
+func TestRenderPlanBlockUsesGutter(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "1. read parser.go\n2. patch it", ContentType: session.ContentTypePlan}, 80)
-	if !strings.Contains(out, "⏺ Plan") {
-		t.Fatalf("plan block missing header:\n%s", out)
+	plain := stripANSI(out)
+	if !strings.HasPrefix(plain, " · plan") {
+		t.Fatalf("plan block missing · plan gutter header:\n%s", out)
 	}
-	if !strings.Contains(out, "1. read parser.go") || !strings.Contains(out, "2. patch it") {
+	if !strings.Contains(plain, "1. read parser.go") || !strings.Contains(plain, "2. patch it") {
 		t.Fatalf("plan block missing steps:\n%s", out)
 	}
-	// No bordered panel around plans anymore.
-	if strings.Contains(out, "╭") {
+	if strings.Contains(plain, "⏺") {
+		t.Fatalf("plan block must not use retired ⏺ header:\n%s", out)
+	}
+	if strings.Contains(plain, "╭") {
 		t.Fatalf("plan block must not be bordered:\n%s", out)
+	}
+}
+
+func TestRenderQueuedMessagesHaveGutter(t *testing.T) {
+	out := renderQueuedMessages([]string{"follow up about tests", "and docs"}, 80)
+	plain := stripANSI(out)
+	if strings.Contains(plain, "Queued") {
+		t.Fatalf("queued rendering must not keep old header:\n%s", out)
+	}
+	for _, want := range []string{"· queued: follow up", "· queued: and docs"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("queued output missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -186,8 +203,12 @@ func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 
 func TestRenderProviderErrorInline(t *testing.T) {
 	out := renderProviderError(errors.New("connection refused"), 80)
-	if !strings.Contains(out, "✘ provider: connection refused") {
-		t.Fatalf("provider error missing ✘ line:\n%s", out)
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "✗") {
+		t.Fatalf("provider error missing ✗ gutter:\n%s", out)
+	}
+	if !strings.Contains(plain, "provider: connection refused") {
+		t.Fatalf("provider error missing error text:\n%s", out)
 	}
 }
 

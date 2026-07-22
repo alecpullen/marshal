@@ -336,15 +336,11 @@ func renderQueuedMessages(q []string, width int) string {
 	if len(q) == 0 {
 		return ""
 	}
-	_ = width
+	gutter := gutterPrefix("·", dimColor)
 	var b strings.Builder
-	b.WriteString(warningStyle().Render(" Queued (Ctrl+X to clear):"))
-	b.WriteString("\n")
 	for _, msg := range q {
-		b.WriteString("  ")
-		b.WriteString(mutedStyle().Render("›"))
-		b.WriteString(" ")
-		b.WriteString(msg)
+		b.WriteString(gutter)
+		b.WriteString(mutedStyle().Render("queued: " + strutil.Truncate(msg, max(width-12, 1), false)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
@@ -356,19 +352,17 @@ func renderToolResultLine(content string, width int) string {
 	if len(lines) == 0 {
 		return ""
 	}
+	gutter := gutterPrefix("·", dimColor)
 	var b strings.Builder
-	b.WriteString(toolBulletStyle().Render("⏺ "))
-	b.WriteString(strutil.Truncate(strings.TrimSpace(lines[0]), max(width-2, 1), false))
+	b.WriteString(gutter)
+	b.WriteString(strutil.Truncate(strings.TrimSpace(lines[0]), max(width-3, 1), false))
 	b.WriteString("\n")
 	continuation := lines[1:]
-	for i, line := range continuation {
-		wrapped := ansi.Wrap(line, max(width-4, 1), "")
-		for j, wl := range strings.Split(wrapped, "\n") {
-			if i == 0 && j == 0 {
-				b.WriteString(mutedStyle().Render("  ⎿ " + wl))
-			} else {
-				b.WriteString(mutedStyle().Render("    " + wl))
-			}
+	for _, line := range continuation {
+		wrapped := ansi.Wrap(line, max(width-3, 1), "")
+		for _, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
 	}
@@ -377,16 +371,19 @@ func renderToolResultLine(content string, width int) string {
 }
 
 func renderPlanBlock(content string, width int) string {
+	gutter := gutterPrefix("·", dimColor)
+	contentWidth := max(width-3, 1)
 	var b strings.Builder
-	b.WriteString(promptPrefixStyle().Render("⏺ Plan"))
+	b.WriteString(gutter)
+	b.WriteString(mutedStyle().Render("plan"))
 	b.WriteString("\n")
-	contentWidth := max(width-4, 1)
 	for _, line := range strings.Split(content, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		wrapped := ansi.Wrap(line, contentWidth, "")
 		for j, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(strings.Repeat(" ", 3))
 			if j == 0 {
 				b.WriteString("  " + wl)
 			} else {
@@ -400,11 +397,20 @@ func renderPlanBlock(content string, width int) string {
 }
 
 func renderProviderError(err error, width int) string {
-	contentWidth := max(width-2, 1)
-	wrapped := ansi.Wrap("✘ provider: "+err.Error(), contentWidth, "")
+	contentWidth := max(width-3, 1)
+	wrapped := ansi.Wrap("provider: "+err.Error(), contentWidth, "")
+	lines := strings.Split(wrapped, "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	gutter := gutterPrefix("✗", errorColor)
 	var b strings.Builder
-	for _, line := range strings.Split(wrapped, "\n") {
-		b.WriteString(errorStyle().Render(line))
+	b.WriteString(gutter)
+	b.WriteString(errorStyle().Render(lines[0]))
+	b.WriteString("\n")
+	for _, line := range lines[1:] {
+		b.WriteString(strings.Repeat(" ", 3))
+		b.WriteString(mutedStyle().Render(line))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")

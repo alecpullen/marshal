@@ -61,7 +61,7 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 			return registry.ToolResult{}, err
 		}
 		return registry.ToolResult{
-			Summary: "todo list updated",
+			Summary: fmt.Sprintf("tasks updated · %d items", len(args.Todos)),
 			Content: fmt.Sprintf("%d todo(s) recorded", len(args.Todos)),
 		}, nil
 	}

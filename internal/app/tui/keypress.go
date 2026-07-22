@@ -58,6 +58,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.lastTranscriptHash = 0
 		m.refreshViewport()
 		return *m, nil, true
+	case "ctrl+t":
+		// Cycle the pinned todo panel: expanded → collapsed → hidden.
+		// State persists for the session.
+		m.todoPanelMode = (m.todoPanelMode + 1) % todoPanelModeCount
+		m.updateViewportHeight()
+		return *m, nil, true
 	case "ctrl+r":
 		if m.state.HasBackup() {
 			_ = m.state.RollbackBackup()
@@ -163,6 +169,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return *m, nil, true
 		}
 		m.input.Reset()
+		// The all-done todo summary belongs to the finished turn; the next
+		// user turn clears it (a fresh list from the agent brings it back —
+		// see refreshViewport).
+		if todosAllDone(m.state.Todos()) {
+			m.todosDismissed = true
+		}
 		m.dismissCompletionPopups()
 		m.updateViewportHeight()
 		m.viewportFollow = true

@@ -474,6 +474,37 @@ func (p *usageScriptedProvider) Models(ctx context.Context) ([]schema.ModelInfo,
 func (p *usageScriptedProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
 	return schema.ProviderCapabilities{}
 }
+func TestSetRoleAnnouncesTerminalTransitionsOnce(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.SetSwarmProgress(session.SwarmProgress{
+		Active: true,
+		Roles: []session.SwarmRole{
+			{Name: "tester", Status: session.SwarmRolePending},
+		},
+	})
+	o := &Orchestrator{State: state}
+
+	o.setRole(nil, "tester", session.SwarmRoleActive, "round 1/2")
+	o.setRole(nil, "tester", session.SwarmRoleDone, "round 1/2")
+	o.setRole(nil, "tester", session.SwarmRoleDone, "round 2/2")
+
+	var notices []string
+	for _, item := range state.Transcript() {
+		if item.Message != nil && item.Message.Role == session.RoleSystem {
+			notices = append(notices, item.Message.Content)
+		}
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected exactly one role event, got %d: %v", len(notices), notices)
+	}
+	if !strings.Contains(notices[0], "tester done") || !strings.Contains(notices[0], "round 1/2") {
+		t.Fatalf("event text = %q, want `tester done · round 1/2`", notices[0])
+	}
+	if got := state.SwarmProgress().Roles[0].Detail; got != "round 2/2" {
+		t.Fatalf("roster detail = %q, want the latest value %q", got, "round 2/2")
+	}
+}
+
 func (p *usageScriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
 	ch := make(chan schema.ChatEvent, 2)
 	ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: p.response}

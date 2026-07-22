@@ -154,17 +154,14 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 // View renders the picker as a centered panel with filter input, item list,
 // and footer.
 func (m *Model) View(maxW, maxH int) string {
-	// chrome.Panel always emits at least its top and bottom border rows, so
-	// it cannot honor a height budget under 3 (mirrors the identical guard
-	// in settings.BrowserPanel.View, the other dock.Panel implementation).
-	if maxH < 3 {
+	if maxH < 2 {
 		return ""
 	}
 	pw := min(64, maxW-8)
 	if pw < 30 {
 		pw = max(maxW-2, 30)
 	}
-	inner := pw - 2
+	inner := pw - 3
 
 	filtering := strings.TrimSpace(m.filter.Value()) != ""
 	var rows []string
@@ -208,19 +205,15 @@ func (m *Model) View(maxW, maxH int) string {
 		rows = append(rows, mutedStyle().Render("  no matches"))
 	}
 
-	// panel = filter line + separator + windowed rows + footer
-	listH := maxH - 7 // borders(2) + filter + separator + footer + margin(2)
+	listH := maxH - 3 // header + filter + margin
 	if listH < 3 {
 		listH = 3
 	}
 	body := chrome.ClipLines(rows, focusLine, listH, theme.Current())
-	footer := mutedStyle().Render("[↑↓] move [↵] pick [Esc] cancel")
+	content := "/ " + m.filter.View() + "\n" + body
 	if m.footer != "" {
-		footer += mutedStyle().Render(" · " + m.footer)
+		content += "\n" + mutedStyle().Render(m.footer)
 	}
-	content := "/ " + m.filter.View() + "\n" +
-		mutedStyle().Render(strings.Repeat("─", inner)) + "\n" +
-		body + "\n" + footer
-	ph := min(lipgloss.Height(content)+2, maxH)
-	return chrome.Panel(m.title, content, pw, ph, true, theme.Current())
+	ph := min(lipgloss.Height(content)+1, maxH)
+	return chrome.PanelWithHints(m.title, "↵ pick · Esc cancel", content, pw, ph, true, theme.Current())
 }

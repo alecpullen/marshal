@@ -22,7 +22,7 @@ func TestViewUsableWhenColorStripped(t *testing.T) {
 	browser.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 	v := browser.View(80, 12)
 	plain := ansi.Strip(v)
-	for _, want := range []string{"▸", "╭", "on", "off"} {
+	for _, want := range []string{"▸", "▍", "on", "off"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("structure marker %q must survive color stripping:\n%s", want, plain)
 		}

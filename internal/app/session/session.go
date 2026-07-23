@@ -216,6 +216,46 @@ type State struct {
 	// allocated for it at cold start. Only used during loadFromDB and set
 	// to nil when the load completes. Holding s.mu around accesses.
 	dbIDToImID map[int64]int64
+
+	// T10: generation boundary for context rollover. BeginGeneration
+	// records the current leaf message ID as StartMsgID so history
+	// replay can scope correctly. A zero StartMsgID means replay
+	// everything.
+	generation GenerationInfo
+}
+
+// GenerationInfo records where the live rollover generation begins.
+// A zero StartMsgID means replay everything.
+type GenerationInfo struct {
+	ID         string
+	Seq        int
+	SeedDigest string
+	StartMsgID int64
+}
+
+// BeginGeneration records the current leaf message ID as StartMsgID
+// and stores the generation boundary. A zero StartMsgID means replay
+// everything (no messages yet).
+func (s *State) BeginGeneration(id string, seq int, seedDigest string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var startMsgID int64
+	if n := len(s.messages); n > 0 {
+		startMsgID = s.messages[n-1].ID
+	}
+	s.generation = GenerationInfo{
+		ID:         id,
+		Seq:        seq,
+		SeedDigest: seedDigest,
+		StartMsgID: startMsgID,
+	}
+}
+
+// Generation returns the stored generation boundary.
+func (s *State) Generation() GenerationInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation
 }
 
 type turnUsage struct {

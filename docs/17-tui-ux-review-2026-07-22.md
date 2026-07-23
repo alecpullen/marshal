@@ -91,7 +91,7 @@ key rendered dim after/below it and always searchable. In the unfiltered
 view, prefix with the section ("Shell · Unrecognized-command policy"). Keep
 `/set` addressing by dotted key unchanged.
 
-### F-UX-207 — The default view is an unstructured wall of ~100 rows  `P2`
+### F-UX-207 — The default view is an unstructured wall of ~100 rows  `P2` — open
 With no filter, every leaf field renders in one flat list sorted by id.
 Sections exist only as search haystacks and collection drills; the sidebar
 described by `sectionSpec` ("maps a sidebar entry…") was never rendered.
@@ -101,7 +101,7 @@ the flat list (Agent, Providers, Privacy, …) and let `g`/`G`/typing jump.
 Better — a two-pane root: section list left, fields right (the paneStack and
 frames already exist; this is a rendering change, not a data-model change).
 
-### F-UX-208 — Missing descriptions and units  `P3`
+### F-UX-208 — Missing descriptions and units  `P3` — open
 Many fields have no `desc` (all of Indexing's toggles, most Sandbox ints,
 Interface theme/mode, agent.plan_first). Byte/token/MB fields display raw
 ints with mixed unit conventions ("Max file bytes", "Memory limit (MB)",
@@ -111,14 +111,14 @@ ints with mixed unit conventions ("Max file bytes", "Memory limit (MB)",
 the only in-app documentation surface). Render sizes humanized ("2 MB") and
 accept humanized input; standardize unit-in-title format ("Max output (bytes)").
 
-### F-UX-209 — No modified-from-default indicator  `P3`
+### F-UX-209 — No modified-from-default indicator  `P3` — open
 `configDiff` and the reset machinery already exist, but the list gives no cue
 which values diverge from `config.Default()`.
 
 **Suggestion:** a dim `●` marker (plus a "modified" search keyword) on
 non-default rows; makes the existing per-section reset rows meaningful.
 
-### F-UX-210 — Collection gestures are undiscoverable  `P3`
+### F-UX-210 — Collection gestures are undiscoverable  `P3` — open
 `fieldList` supports `a` add, `d` delete, `y`/`p` yank/paste, `shift+↑/↓`
 reorder, `e` edit, `space` toggle, `←/→` enum cycle — but the panel hint line
 is a static "↵ edit · Esc close" and the footer just says "N settings".
@@ -127,7 +127,7 @@ is a static "↵ edit · Esc close" and the footer just says "N settings".
 row: "↵ open · a add · d delete · y/p duplicate"; enum: "←→ cycle · ↵ pick"),
 exactly the progressive-disclosure pattern the chat footer already follows.
 
-### F-UX-211 — Risky settings look like ordinary settings  `P3`
+### F-UX-211 — Risky settings look like ordinary settings  `P3` — implemented
 `sandbox.backend=passthrough`, `shell.auto_approve`,
 `privacy.remote_providers`, `hooks` entries — all render identically to
 `tui.theme`. Worse, `sandbox.unsafe_passthrough` (the opt-in required for
@@ -140,7 +140,7 @@ security-sensitive rows with `status.warning` styling and a one-line
 consequence in desc; consider the two-press arm/confirm pattern already used
 for reset rows.
 
-### F-UX-212 — Project-scope-only saves  `P3`
+### F-UX-212 — Project-scope-only saves  `P3` — open
 The browser persists only to the project config (`SaveProjectConfig`).
 `~/.config/marshal/config.toml` is writable only by onboarding or by hand,
 yet things like theme and providers are naturally global.
@@ -149,7 +149,7 @@ yet things like theme and providers are naturally global.
 User-vs-Workspace style), defaulting to project, with the effective merged
 value shown either way.
 
-### F-UX-213 — Miscategorized fields  `P3`
+### F-UX-213 — Miscategorized fields  `P3` — implemented
 `project.name` and `project.languages` live in the **Commands** frame
 (`frames_basic.go:55-58`). "Interface" holds only theme + mode.
 
@@ -181,7 +181,7 @@ a local-first product whose default forbids it.
 **Suggestion:** apply the same gate in the wizard, but as an *interactive*
 step: "Remote providers are disabled. [Enable and continue] [Cancel]".
 
-### F-UX-216 — API keys are typed in cleartext  `P3`
+### F-UX-216 — API keys are typed in cleartext  `P3` — implemented
 The connect wizard's key input (`connect.go:246`) and onboarding's input use
 default echo; the settings api_key field masks the *stored* value but the
 inline edit input echoes typed characters.
@@ -208,7 +208,7 @@ to do it.
 discover item should run the probe (the picker already supports async pending
 state via `pickPending`).
 
-### F-UX-219 — Probe errors truncated to ~48 chars  `P3`
+### F-UX-219 — Probe errors truncated to ~48 chars  `P3` — implemented
 `connect.go:345` truncates the error, which routinely amputates the useful
 part ("connection refused" vs 401 vs TLS). No remediation hints.
 
@@ -216,7 +216,7 @@ part ("connection refused" vs 401 vs TLS). No remediation hints.
 failures to hints ("connection refused → is Ollama running on this URL?",
 "401 → key rejected; check $OPENROUTER_API_KEY").
 
-### F-UX-220 — Provider list rows lead with the masked key  `P3`
+### F-UX-220 — Provider list rows lead with the masked key  `P3` — implemented
 Provider entries render as `name  (sk-…abc)` (`frames_collections.go:28`).
 The key fragment is the least identifying attribute.
 
@@ -238,7 +238,7 @@ provider. The product's headline features are undocumented in-app.
 Models & providers · Workflows · History · Settings) so the list stays
 scannable. Keep true aliases (`/quit`, `/ask`/`/edit`/`/auto`) hidden.
 
-### F-UX-222 — Jargon labels  `P3`
+### F-UX-222 — Jargon labels  `P3` — open
 Worst offenders: "Dynamic argv0 guardrail" (→ "Unrecognized-command policy"),
 "Tool iters" (→ "Tool-call budget per role"), "Max turn context tokens"
 (→ "Context budget per turn (tokens)"), "Subtask iterations" (→ "Subagent
@@ -247,7 +247,7 @@ Only two fields in the whole registry define search `keywords`; add synonyms
 ("dark mode", "api key", "docker", "autonomy") so fuzzy search hits on the
 words users actually type.
 
-### F-UX-223 — Displayed setting ids diverge from TOML paths  `P3`
+### F-UX-223 — Displayed setting ids diverge from TOML paths  `P3` — open
 The browser shows `shell.timeout` for `[tools.shell] default_timeout_seconds`,
 `swarm.max_fix_rounds` for `[swarm.budget]`, `snapshots.max_file_bytes` etc.
 Users who edit `config.toml` (a local-first audience *will*) can't map one
@@ -260,13 +260,13 @@ to the other, and `/set` keys don't match the file.
 
 ## 5. Smaller observations (things that are working well noted at the end)
 
-- **F-UX-224 `P3`** — Settings hint says "↵ edit" even when the cursor row is
+- **F-UX-224 `P3` — open** — Settings hint says "↵ edit" even when the cursor row is
   read-only (`agent.preset`) or an action; value cell glyphs (`›`, `▾`, `↵`)
   are the only kind cue. Contextual hints (F-UX-210) fix this too.
-- **F-UX-225 `P3`** — `/trust` answers "use --trust or restart" — a command
+- **F-UX-225 `P3` — implemented** — `/trust` answers "use --trust or restart" — a command
   that exists only to say it can't do anything. Either implement re-prompt or
   drop it from the registry.
-- **F-UX-226 `P3`** — Approval footer "Enter arm / Enter⏎ submit" reads as a
+- **F-UX-226 `P3` — implemented** — Approval footer "Enter arm / Enter⏎ submit" reads as a
   riddle; consider "Enter select · Enter again confirm".
 
 **Working well (keep):** semantic theme slots with NO_COLOR/mono fallbacks;

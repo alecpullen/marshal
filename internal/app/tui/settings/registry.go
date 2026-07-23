@@ -141,7 +141,7 @@ func (r *Registry) SectionOf(key string) string { return r.section[key] }
 
 // Describe reports a field's type, display value, and available choices.
 func (r *Registry) Describe(key string) (kind, current string, options []string, err error) {
-	field, ok := r.byID[key]
+	field, ok := r.Lookup(key)
 	if !ok {
 		return "", "", nil, fmt.Errorf("unknown setting %q", key)
 	}
@@ -164,7 +164,7 @@ func (r *Registry) Describe(key string) (kind, current string, options []string,
 
 // Apply validates and applies a value without persisting it.
 func (r *Registry) Apply(key, value string) (Change, error) {
-	field, ok := r.byID[key]
+	field, ok := r.Lookup(key)
 	if !ok {
 		return Change{}, fmt.Errorf("unknown setting %q", key)
 	}

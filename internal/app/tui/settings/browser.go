@@ -458,6 +458,27 @@ func (b *BrowserPanel) receipts(lines []diffLine) []string {
 	return receipts
 }
 
+// hintForRow returns a contextual hint string for the given field row based
+// on its kind. The hint is rendered below the field list while the cursor is
+// on that row.
+func (b *BrowserPanel) hintForRow(row *field) string {
+	switch row.kind {
+	case kindToggle:
+		return "[Space] toggle"
+	case kindScalar:
+		return "[↵] edit"
+	case kindEnum:
+		return "←/→ cycle  [↵] pick"
+	case kindDrill:
+		return "[↵] open"
+	case kindAction:
+		return "[↵] run"
+	case kindPicker:
+		return "[↵] pick"
+	}
+	return ""
+}
+
 // View renders the active flat browser, collection drill, or picker within
 // the dock's dimensions.
 func (b *BrowserPanel) View(width, maxHeight int) string {
@@ -488,7 +509,13 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 		body = "/ " + b.filter.View() + "\n" + b.list.View()
 		footer = fmt.Sprintf("%d settings", len(b.list.Rows()))
 	}
-	content := body + "\n" + flDescStyle().Render(footer)
+	hint := ""
+	if row := b.activeList().CursorRow(); row != nil && !b.activeList().Editing() {
+		if h := b.hintForRow(row); h != "" {
+			hint = "\n" + flDescStyle().Render(h)
+		}
+	}
+	content := body + hint + "\n" + flDescStyle().Render(footer)
 	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
 	return chrome.PanelWithHints(title, hints, content, panelWidth, panelHeight, true, settingsTheme())
 }

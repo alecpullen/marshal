@@ -61,22 +61,44 @@ func (db *DB) EndGeneration(generationID string, endedAt time.Time, endReason st
 // bytes) is stored inline in the content column. Large content is stored as a
 // content-addressed blob via PutBlob, and the content_blob_hash column is set
 // instead. The FTS5 index is populated for both inline and blob-backed content.
+//
+// The per-turn inserts are wrapped in a single database transaction so a
+// partial archive never leaves orphaned FTS rows. Blob puts happen before the
+// transaction begins to avoid deadlock on the single-connection pool.
 func (db *DB) ArchiveTurns(generationID string, turns []ArchivedTurn, blobThreshold int, at time.Time) error {
+	// First pass: store large content as blobs. This runs outside the
+	// transaction because PutBlob uses db.sqlDB.Exec and would deadlock
+	// while a transaction holds the single connection. Blobs are content-
+	// addressed, so orphaned blobs are harmless.
+	blobHashes := make(map[int]string, len(turns))
 	for _, t := range turns {
-		var contentArg sql.NullString
-		var blobHashArg sql.NullString
-
 		if len(t.Content) > blobThreshold {
 			hash, err := db.PutBlob(t.Content, at)
 			if err != nil {
 				return fmt.Errorf("archive turn %d: put blob: %w", t.TurnSeq, err)
 			}
+			blobHashes[t.TurnSeq] = hash
+		}
+	}
+
+	// Second pass: insert turns and FTS rows in a single transaction.
+	tx, err := db.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("archive turns: begin tx: %w", err)
+	}
+	defer tx.Rollback() // no-op after Commit
+
+	for _, t := range turns {
+		var contentArg sql.NullString
+		var blobHashArg sql.NullString
+
+		if hash, ok := blobHashes[t.TurnSeq]; ok {
 			blobHashArg = sql.NullString{String: hash, Valid: true}
 		} else {
 			contentArg = sql.NullString{String: t.Content, Valid: true}
 		}
 
-		res, err := db.sqlDB.Exec(
+		res, err := tx.Exec(
 			`INSERT INTO generation_turns
 			 (generation_id, turn_seq, role, content, content_blob_hash, tool_calls, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -89,20 +111,22 @@ func (db *DB) ArchiveTurns(generationID string, turns []ArchivedTurn, blobThresh
 			return fmt.Errorf("archive turn %d: %w", t.TurnSeq, err)
 		}
 
-		// Populate the FTS5 index. For blob-backed turns, use the resolved
-		// content; for inline turns, use the content column value.
+		// Populate the FTS5 index.
 		turnID, err := res.LastInsertId()
 		if err != nil {
 			return fmt.Errorf("archive turn %d: last insert id: %w", t.TurnSeq, err)
 		}
-		ftsContent := t.Content
-		_, err = db.sqlDB.Exec(
+		_, err = tx.Exec(
 			`INSERT INTO generation_turns_fts (rowid, content) VALUES (?, ?)`,
-			turnID, ftsContent,
+			turnID, t.Content,
 		)
 		if err != nil {
 			return fmt.Errorf("archive turn %d: fts insert: %w", t.TurnSeq, err)
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("archive turns: commit tx: %w", err)
 	}
 	return nil
 }

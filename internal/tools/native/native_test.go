@@ -37,6 +37,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"ask_user":          registry.RiskReadOnly,
 		"diagnostics.check": registry.RiskReadOnly,
 		"tools.select":      registry.RiskReadOnly,
+		"recall_history":    registry.RiskReadOnly,
 	}
 	if got := reg.List(); len(got) != len(want) {
 		t.Fatalf("len(List()) = %d, want %d", len(got), len(want))

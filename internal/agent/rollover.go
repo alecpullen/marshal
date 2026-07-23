@@ -70,8 +70,14 @@ func (r *Rollover) maybeRollover(ctx context.Context, wire []schema.ChatMessage,
 // if due. It is called from rolloverAndContinue. Returns the seed digest if
 // a rollover occurred, or "" if not. When rollover is disabled (nil
 // Controller), it is a no-op.
+//
+// flushArchive is only called when a rollover is actually due, so archived
+// turns always correspond to a rolled-over generation (retry fix: T13).
 func (r *Rollover) compactContext(ctx context.Context, wire []schema.ChatMessage, contextWindow int) (string, error) {
 	if r == nil || r.Controller == nil {
+		return "", nil
+	}
+	if !r.Controller.Due(ctx, wire, contextWindow) {
 		return "", nil
 	}
 	if _, err := r.flushArchive(ctx, wire); err != nil {

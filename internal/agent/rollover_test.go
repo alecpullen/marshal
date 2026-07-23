@@ -292,6 +292,36 @@ func TestRolloverCompactContextNoopWhenNil(t *testing.T) {
 	}
 }
 
+// TestRolloverCompactContextNoopWhenNotDue verifies that when rollover is
+// enabled but not due, compactContext returns ("", nil) and does NOT advance
+// the cursor (i.e., flushArchive is not called). This is the retry fix for
+// T13: archived turns must correspond to rolled-over generations.
+func TestRolloverCompactContextNoopWhenNotDue(t *testing.T) {
+	ctrl := newTestController(true)
+	// Set a turn-count policy that will NOT fire (needs 100 turns).
+	ctrl.Policy = rollover.Policy{
+		Mode:      rollover.PolicyTurnCount,
+		TurnCount: 100,
+	}
+	r := &Rollover{
+		Controller: ctrl,
+		Cursor:     0,
+	}
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hello"},
+	}
+	seedDigest, err := r.compactContext(context.Background(), wire, 1000)
+	if err != nil {
+		t.Fatalf("compactContext should not error when not due: %v", err)
+	}
+	if seedDigest != "" {
+		t.Fatalf("seedDigest = %q, want empty when not due", seedDigest)
+	}
+	if r.Cursor != 0 {
+		t.Fatalf("cursor = %d, want 0 (flushArchive should not have been called)", r.Cursor)
+	}
+}
+
 // TestRolloverNilOnRunner verifies that a Runner with Rollover == nil works
 // without panics (acceptance criterion 5).
 func TestRolloverNilOnRunner(t *testing.T) {

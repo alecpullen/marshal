@@ -33,6 +33,12 @@ func flWarnStyle() lipgloss.Style {
 }
 func flOnStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess) }
 func flOffStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
+func flHeaderStyle() lipgloss.Style {
+	if isMono() {
+		return lipgloss.NewStyle()
+	}
+	return lipgloss.NewStyle().Bold(true).Foreground(settingsTheme().AccentSecondary)
+}
 
 // fieldList renders and edits a vertical list of typed rows. It is the one
 // widget behind every settings pane and drill-down frame.
@@ -100,6 +106,16 @@ func (fl *fieldList) Refresh() {
 	if fl.cursor < 0 {
 		fl.cursor = 0
 	}
+	// Clamp cursor away from header rows.
+	for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].kind == kindHeader {
+		fl.cursor++
+	}
+	if fl.cursor >= len(fl.rows) {
+		fl.cursor = len(fl.rows) - 1
+	}
+	if fl.cursor < 0 {
+		fl.cursor = 0
+	}
 }
 
 func (fl *fieldList) Rows() []*field { fl.Refresh(); return fl.rows }
@@ -109,6 +125,16 @@ func (fl *fieldList) SetCursor(i int) {
 	fl.Refresh()
 	if i >= 0 && i < len(fl.rows) {
 		fl.cursor = i
+	}
+	// Skip past header rows.
+	for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].kind == kindHeader {
+		fl.cursor++
+	}
+	if fl.cursor >= len(fl.rows) {
+		fl.cursor = len(fl.rows) - 1
+	}
+	if fl.cursor < 0 {
+		fl.cursor = 0
 	}
 }
 
@@ -179,19 +205,42 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 	case "up", "k":
 		if fl.cursor > 0 {
 			fl.disarmRow(fl.cursor)
+			orig := fl.cursor
 			fl.cursor--
+			for fl.cursor >= 0 && fl.rows[fl.cursor].kind == kindHeader {
+				fl.cursor--
+			}
+			if fl.cursor < 0 {
+				fl.cursor = orig
+			}
 		}
 	case "down", "j":
 		if fl.cursor < len(fl.rows)-1 {
 			fl.disarmRow(fl.cursor)
+			orig := fl.cursor
 			fl.cursor++
+			for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].kind == kindHeader {
+				fl.cursor++
+			}
+			if fl.cursor >= len(fl.rows) {
+				fl.cursor = orig
+			}
 		}
 	case "g":
 		fl.disarmRow(fl.cursor)
 		fl.cursor = 0
+		for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].kind == kindHeader {
+			fl.cursor++
+		}
 	case "G":
 		fl.disarmRow(fl.cursor)
 		fl.cursor = len(fl.rows) - 1
+		for fl.cursor >= 0 && fl.rows[fl.cursor].kind == kindHeader {
+			fl.cursor--
+		}
+		if fl.cursor < 0 {
+			fl.cursor = 0
+		}
 	case "space":
 		if row != nil && row.kind == kindToggle {
 			row.setBool(!row.getBool())
@@ -491,6 +540,8 @@ func (fl *fieldList) valueCell(row *field, isCursor bool) string {
 			suffix = " \u2026"
 		}
 		return flValueStyle().Render(v + suffix)
+	case kindHeader:
+		return ""
 	}
 	return ""
 }
@@ -510,6 +561,15 @@ func (fl *fieldList) View() string {
 	}
 	for i, row := range fl.rows {
 		isCursor := i == fl.cursor
+		if row.kind == kindHeader {
+			header := flHeaderStyle().Render(row.title)
+			gap := fl.width - lipgloss.Width(header)
+			if gap < 0 {
+				gap = 0
+			}
+			lines = append(lines, header+strings.Repeat(" ", gap))
+			continue
+		}
 		marker := "  "
 		if isCursor {
 			marker = "▸ "

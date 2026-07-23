@@ -504,6 +504,57 @@ func TestDisarmCalledOnCursorMove(t *testing.T) {
 	}
 }
 
+func TestHeaderRowRendersAndCursorSkips(t *testing.T) {
+	a, b := false, false
+	fl := newFieldList(func() []*field {
+		return []*field{
+			{id: "header.x", title: "Section X", kind: kindHeader},
+			testToggleField("Alpha", &a),
+			{id: "header.y", title: "Section Y", kind: kindHeader},
+			testToggleField("Beta", &b),
+		}
+	})
+	fl.SetSize(60, 20)
+
+	// Cursor should start on the first non-header row (Alpha).
+	if fl.CursorRow().title != "Alpha" {
+		t.Fatalf("cursor should start on Alpha, got %q", fl.CursorRow().title)
+	}
+
+	// View should contain both section headers.
+	view := fl.View()
+	if !strings.Contains(view, "Section X") {
+		t.Fatalf("view should contain Section X header, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Section Y") {
+		t.Fatalf("view should contain Section Y header, got:\n%s", view)
+	}
+
+	// Navigate down: should skip Section Y header and land on Beta.
+	fl.Update(kp("j"))
+	if fl.CursorRow().title != "Beta" {
+		t.Fatalf("j should skip Section Y header and land on Beta, got %q", fl.CursorRow().title)
+	}
+
+	// Navigate up: should skip Section X header and land on Alpha.
+	fl.Update(kp("k"))
+	if fl.CursorRow().title != "Alpha" {
+		t.Fatalf("k should skip Section X header and land on Alpha, got %q", fl.CursorRow().title)
+	}
+
+	// g should land on Alpha (skipping Section X header).
+	fl.Update(kp("g"))
+	if fl.CursorRow().title != "Alpha" {
+		t.Fatalf("g should land on Alpha, got %q", fl.CursorRow().title)
+	}
+
+	// G should land on Beta (skipping Section Y header).
+	fl.Update(kp("G"))
+	if fl.CursorRow().title != "Beta" {
+		t.Fatalf("G should land on Beta, got %q", fl.CursorRow().title)
+	}
+}
+
 func TestDisarmCurrent(t *testing.T) {
 	disarmed := false
 	fl := newFieldList(func() []*field {

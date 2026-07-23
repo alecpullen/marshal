@@ -16,6 +16,7 @@ const (
 	kindDrill                   // Enter pushes build() as a new frame
 	kindAction                  // Enter runs act() and returns a Cmd
 	kindPicker                  // Enter opens a picker overlay
+	kindHeader                  // section header (unfiltered browser only, not selectable)
 )
 
 // field is one row in a fieldList. Exactly one kind-group of closures is

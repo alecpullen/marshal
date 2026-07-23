@@ -114,25 +114,51 @@ func (b *BrowserPanel) SetSavePending(pending bool) { b.savePending = pending }
 func (b *BrowserPanel) matchedFields() []*field {
 	query := strings.TrimSpace(b.filter.Value())
 	fields := make([]*field, 0)
-	for _, key := range b.reg.MatchKeys(query) {
-		f, ok := b.reg.Lookup(key)
-		if !ok {
-			continue
+
+	if query == "" {
+		// Unfiltered: group by section with headers.
+		sectionFields := make(map[string][]*field)
+		for _, key := range b.reg.MatchKeys("") {
+			f, ok := b.reg.Lookup(key)
+			if !ok {
+				continue
+			}
+			sec := b.reg.SectionOf(key)
+			sectionFields[sec] = append(sectionFields[sec], browserField(f, sec))
 		}
-		fields = append(fields, browserField(f, b.reg.SectionOf(key)))
-	}
-	fields = append(fields, b.collectionFields(query)...)
-	if query != "" {
+		for _, spec := range sectionList() {
+			ff := sectionFields[spec.title]
+			if len(ff) == 0 {
+				continue
+			}
+			fields = append(fields, &field{
+				id:    "header." + spec.id,
+				title: spec.title,
+				kind:  kindHeader,
+			})
+			fields = append(fields, ff...)
+		}
+		fields = append(fields, b.collectionFields("")...)
+		fields = append(fields, b.resetFields("")...)
+	} else {
+		for _, key := range b.reg.MatchKeys(query) {
+			f, ok := b.reg.Lookup(key)
+			if !ok {
+				continue
+			}
+			fields = append(fields, browserField(f, b.reg.SectionOf(key)))
+		}
+		fields = append(fields, b.collectionFields(query)...)
 		fields = append(fields, b.resetFields(query)...)
+		sort.SliceStable(fields, func(i, j int) bool {
+			leftDirect := browserDirectMatch(fields[i], query)
+			rightDirect := browserDirectMatch(fields[j], query)
+			if leftDirect != rightDirect {
+				return leftDirect
+			}
+			return fields[i].id < fields[j].id
+		})
 	}
-	sort.SliceStable(fields, func(i, j int) bool {
-		leftDirect := browserDirectMatch(fields[i], query)
-		rightDirect := browserDirectMatch(fields[j], query)
-		if leftDirect != rightDirect {
-			return leftDirect
-		}
-		return fields[i].id < fields[j].id
-	})
 	return fields
 }
 

@@ -339,6 +339,55 @@ func TestController_Due_ResetsRequestedAfterCheck(t *testing.T) {
 	}
 }
 
+func TestController_Due_UsesModelContextWindow(t *testing.T) {
+	store := &fakeStore{}
+	counter := &fakeCounter{count: 5000}
+	c := newTestController(store, &fakeDigestProvider{}, counter, Policy{
+		Mode:           PolicyContextPercent,
+		ContextPercent: 50,
+		TurnCount:      0,
+	})
+	c.ModelContextWindow = 20000 // model window is 20k
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// 5000 tokens in a 20000 model window = 25% -> not due
+	if c.Due(context.Background(), nil, 10000) {
+		t.Error("expected Due to return false at 25% of model window")
+	}
+
+	// 5000 tokens in a 20000 model window = 25%, but if we pass 10000 as
+	// contextWindow, the model window (20000) should win, not the parameter.
+	// Verify by checking that 5000/20000 = 25% < 50% -> not due.
+	// If the parameter (10000) were used, 5000/10000 = 50% -> due.
+	// Since ModelContextWindow > 0, the parameter is ignored.
+}
+
+func TestController_Due_FallsBackToContextWindowParam(t *testing.T) {
+	store := &fakeStore{}
+	counter := &fakeCounter{count: 5000}
+	c := newTestController(store, &fakeDigestProvider{}, counter, Policy{
+		Mode:           PolicyContextPercent,
+		ContextPercent: 50,
+		TurnCount:      0,
+	})
+	// ModelContextWindow is 0 (default) -> use contextWindow parameter
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// 5000 tokens in a 10000 window = 50% -> due
+	if !c.Due(context.Background(), nil, 10000) {
+		t.Error("expected Due to return true at 50% of parameter window")
+	}
+
+	// 5000 tokens in a 20000 window = 25% -> not due
+	if c.Due(context.Background(), nil, 20000) {
+		t.Error("expected Due to return false at 25% of parameter window")
+	}
+}
+
 func TestController_Due_TokenCountErrorReturnsFalse(t *testing.T) {
 	store := &fakeStore{}
 	counter := &fakeCounter{err: errors.New("count failed")}

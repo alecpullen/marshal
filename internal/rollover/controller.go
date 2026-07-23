@@ -23,15 +23,16 @@ type Store interface {
 
 // Controller sequences Archive -> EndGeneration -> Digest -> BeginGeneration.
 type Controller struct {
-	SessionID     string
-	Store         Store
-	Counter       TokenCounter
-	Digest        DigestProvider
-	Policy        Policy
-	BlobThreshold int
-	Now           func() time.Time
-	NewID         func() string
-	Logger        *slog.Logger
+	SessionID          string
+	Store              Store
+	Counter            TokenCounter
+	Digest             DigestProvider
+	Policy             Policy
+	BlobThreshold      int
+	ModelContextWindow int // model's full context window in tokens; when >0, Due uses this instead of the contextWindow parameter
+	Now                func() time.Time
+	NewID              func() string
+	Logger             *slog.Logger
 
 	mu         sync.Mutex
 	genID      string
@@ -100,6 +101,8 @@ func (c *Controller) EndTurn() {
 }
 
 // Due reports whether a rollover is due based on policy and current state.
+// contextWindow is the per-turn compaction budget; when c.ModelContextWindow > 0,
+// the model's full context window is used instead for the percentage calculation.
 func (c *Controller) Due(ctx context.Context, wire []schema.ChatMessage, contextWindow int) bool {
 	c.mu.Lock()
 	turnsInGen := c.turnsInGen
@@ -114,10 +117,18 @@ func (c *Controller) Due(ctx context.Context, wire []schema.ChatMessage, context
 		return false
 	}
 
+	// Use the model's full context window when set, falling back to the
+	// per-turn compaction budget (contextWindow parameter) for backward
+	// compatibility with callers that pass the correct value directly.
+	window := contextWindow
+	if c.ModelContextWindow > 0 {
+		window = c.ModelContextWindow
+	}
+
 	sig := Signal{
 		TurnsInGeneration: turnsInGen,
 		Tokens:            tokens,
-		ContextWindow:     contextWindow,
+		ContextWindow:     window,
 		Requested:         requested,
 	}
 	return Decide(c.Policy, sig)

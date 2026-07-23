@@ -160,35 +160,72 @@ func TestModifiedDetectsDivergenceFromDefaults(t *testing.T) {
 	}
 }
 
-func TestTOMLAliasesResolve(t *testing.T) {
-	// Verify that the Registry's Lookup method resolves dotted keys that
-	// correspond to TOML config paths. This tests that every key in the
-	// registry is reachable via Lookup and that the key format matches
-	// the expected TOML path convention (dot-separated, lowercase).
+func TestTomlPathAliasesResolve(t *testing.T) {
+	// Verify that the Registry's Lookup method resolves both stable ids and
+	// TOML path aliases. This ensures /set works with both the settings
+	// browser id (e.g. "shell.allow_network") and the real TOML config path
+	// (e.g. "tools.shell.allow_network").
 	registry := BuildRegistry(config.Default())
 
-	// Every key in the registry must be Lookup-able.
+	// Every key in the registry must be Lookup-able by its id.
 	for _, key := range registry.Keys() {
 		f, ok := registry.Lookup(key)
 		if !ok {
 			t.Errorf("Keys() entry %q not found via Lookup", key)
 			continue
 		}
-		// The key should match the field's id.
 		if f.id != key {
 			t.Errorf("Lookup(%q) returned field with id %q", key, f.id)
 		}
 	}
 
-	// Verify that the registry contains expected TOML-path-like keys.
-	expectedKeys := []string{
-		"shell.allow_network",
-		"agent.local_only",
-		"tui.theme",
+	// Verify that fields with a tomlPath can be resolved by that path.
+	for _, key := range registry.Keys() {
+		f, ok := registry.Lookup(key)
+		if !ok {
+			continue
+		}
+		if f.tomlPath == "" {
+			continue
+		}
+		// Lookup by tomlPath must find the same field.
+		byPath, ok := registry.Lookup(f.tomlPath)
+		if !ok {
+			t.Errorf("tomlPath %q (field %q) not found via Lookup", f.tomlPath, f.id)
+			continue
+		}
+		if byPath != f {
+			t.Errorf("Lookup(%q) = %p, want same pointer as Lookup(%q) = %p", f.tomlPath, byPath, f.id, f)
+		}
 	}
-	for _, key := range expectedKeys {
-		if _, ok := registry.Lookup(key); !ok {
-			t.Errorf("expected TOML alias %q not found in registry", key)
+
+	// Verify specific known aliases.
+	cases := []struct {
+		id       string
+		tomlPath string
+	}{
+		{"shell.allow_network", "tools.shell.allow_network"},
+		{"shell.timeout", "tools.shell.default_timeout_seconds"},
+		{"sandbox.backend", "tools.shell.sandbox.backend"},
+		{"privacy.remote_providers", "privacy.remote_providers_allowed"},
+		{"privacy.include_gitignored", "privacy.include_gitignored_files"},
+		{"indexing.treesitter", "indexing.use_treesitter"},
+		{"indexing.embeddings", "indexing.use_embeddings"},
+		{"indexing.summarise", "indexing.summarise_files"},
+		{"commands.test", "commands.test"},
+	}
+	for _, c := range cases {
+		f, ok := registry.Lookup(c.id)
+		if !ok {
+			t.Errorf("known id %q not found in registry", c.id)
+			continue
+		}
+		if f.tomlPath != c.tomlPath {
+			t.Errorf("field %q: tomlPath = %q, want %q", c.id, f.tomlPath, c.tomlPath)
+		}
+		// Lookup by tomlPath must work.
+		if _, ok := registry.Lookup(c.tomlPath); !ok {
+			t.Errorf("tomlPath %q not resolvable via Lookup", c.tomlPath)
 		}
 	}
 }

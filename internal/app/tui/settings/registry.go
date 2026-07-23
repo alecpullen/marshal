@@ -59,10 +59,18 @@ func BuildRegistry(cfg config.Config) *Registry {
 // Config returns the registry's mutable working config.
 func (r *Registry) Config() config.Config { return r.st.cfg }
 
-// Lookup returns a field by dotted key.
+// Lookup returns a field by dotted key, matching both the stable id and the
+// TOML path alias.
 func (r *Registry) Lookup(key string) (*field, bool) {
-	field, ok := r.byID[key]
-	return field, ok
+	if field, ok := r.byID[key]; ok {
+		return field, true
+	}
+	for _, f := range r.byID {
+		if f.tomlPath == key {
+			return f, true
+		}
+	}
+	return nil, false
 }
 
 // fieldString returns the string representation of a field's current value,

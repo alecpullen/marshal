@@ -24,6 +24,7 @@ const (
 // persisted immediately on commit (see BrowserPanel.flushChanges).
 type field struct {
 	id       string // stable id for the search registry ("shell.allow_network")
+	tomlPath string // real TOML config path ("tools.shell.allow_network") for /set
 	title    string
 	desc     string   // one-liner rendered under the row while the cursor is on it
 	keywords []string // extra search terms beyond the title

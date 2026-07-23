@@ -149,7 +149,7 @@ func TestReconcileOpenGenerations(t *testing.T) {
 		t.Fatalf("BeginGeneration failed: %v", err)
 	}
 
-	// End only the second one.
+	// End only the second one (simulating a clean close).
 	if err := db.EndGeneration("gen-open-2", now.Add(2*time.Second), "completed"); err != nil {
 		t.Fatalf("EndGeneration failed: %v", err)
 	}
@@ -171,25 +171,44 @@ func TestReconcileOpenGenerations(t *testing.T) {
 		t.Fatal("expected gen-open-2 to be closed (EndedAt set)")
 	}
 
-	// Idempotent re-close: closing gen-open-1 twice should be a no-op.
-	if err := db.EndGeneration("gen-open-1", now.Add(3*time.Second), "interrupted"); err != nil {
-		t.Fatalf("first EndGeneration failed: %v", err)
+	// --- Acceptance criteria 1 & 2: ReconcileOpenGenerations closes only open
+	//     generations with end_reason 'error'.
+	n, err := db.ReconcileOpenGenerations(now.Add(5 * time.Second))
+	if err != nil {
+		t.Fatalf("ReconcileOpenGenerations failed: %v", err)
 	}
-	if err := db.EndGeneration("gen-open-1", now.Add(4*time.Second), "interrupted-again"); err != nil {
-		t.Fatalf("second EndGeneration (idempotent) failed: %v", err)
+	if n != 1 {
+		t.Fatalf("expected 1 reconciled generation, got %d", n)
 	}
 
-	// Verify the end_reason is the first one written.
+	// Verify gen-open-1 is now closed with end_reason 'error'.
 	gens, err = db.GenerationsForSession(sessionID)
 	if err != nil {
 		t.Fatalf("GenerationsForSession failed: %v", err)
 	}
 	for _, g := range gens {
 		if g.ID == "gen-open-1" {
-			if g.EndReason != "interrupted" {
-				t.Fatalf("expected end_reason 'interrupted' (first close), got %q", g.EndReason)
+			if g.EndedAt == nil {
+				t.Fatal("expected gen-open-1 to be closed after reconcile")
 			}
-			break
+			if g.EndReason != "error" {
+				t.Fatalf("expected end_reason 'error', got %q", g.EndReason)
+			}
 		}
+		if g.ID == "gen-open-2" {
+			// --- Acceptance criteria 3: Already-closed generations are left untouched.
+			if g.EndReason != "completed" {
+				t.Fatalf("expected gen-open-2 end_reason to remain 'completed', got %q", g.EndReason)
+			}
+		}
+	}
+
+	// --- Acceptance criteria 4: Second run is a no-op.
+	n, err = db.ReconcileOpenGenerations(now.Add(10 * time.Second))
+	if err != nil {
+		t.Fatalf("second ReconcileOpenGenerations failed: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 reconciled generations on second run, got %d", n)
 	}
 }

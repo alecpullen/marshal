@@ -29,6 +29,7 @@ func TestSearchArchivedTurns(t *testing.T) {
 		{TurnSeq: 1, Role: "user", Content: "hello world", ToolCalls: "", CreatedAt: now},
 		{TurnSeq: 2, Role: "assistant", Content: "the quick brown fox", ToolCalls: "", CreatedAt: now},
 		{TurnSeq: 3, Role: "user", Content: "jumps over the lazy dog", ToolCalls: "", CreatedAt: now},
+		{TurnSeq: 4, Role: "user", Content: "hello OR world test", ToolCalls: "", CreatedAt: now},
 	}
 	if err := db.ArchiveTurns("gen-search-1", turns, 1024, now); err != nil {
 		t.Fatalf("ArchiveTurns failed: %v", err)
@@ -111,22 +112,27 @@ func TestSearchArchivedTurns(t *testing.T) {
 				t.Fatalf("expected all results to have generation_id gen-search-1, got %s", h.GenerationID)
 			}
 		}
-		// "hello" appears in both gen-search-1 and gen-search-2, but scoped
-		// to gen-search-1 we should only get the gen-search-1 match.
-		if len(results) != 1 {
-			t.Fatalf("expected 1 result scoped to gen-search-1, got %d", len(results))
+		// "hello" appears in gen-search-1 (turns 1 and 4) and gen-search-2,
+		// but scoped to gen-search-1 we should only get the gen-search-1 matches.
+		if len(results) != 2 {
+			t.Fatalf("expected 2 results scoped to gen-search-1, got %d", len(results))
 		}
 	})
 
 	t.Run("FTS5 operator characters in queries are treated as literal text", func(t *testing.T) {
-		// Characters like * and " are FTS5 operators. ftsPhrase wraps them
-		// in double quotes so they are treated literally.
-		results, err := db.SearchArchivedTurns("", "the quick brown fox", "", 10)
+		// "OR" is an FTS5 boolean operator. ftsPhrase wraps the query in
+		// double quotes so "hello OR world" is treated as a literal phrase
+		// matching only the turn with that exact content, rather than as
+		// a boolean OR matching any turn containing "hello" or "world".
+		results, err := db.SearchArchivedTurns("", "hello OR world", "", 10)
 		if err != nil {
 			t.Fatalf("SearchArchivedTurns failed: %v", err)
 		}
-		if len(results) == 0 {
-			t.Fatal("expected results for literal phrase query")
+		if len(results) != 1 {
+			t.Fatalf("expected exactly 1 result for literal phrase 'hello OR world', got %d", len(results))
+		}
+		if results[0].Turn.Content != "hello OR world test" {
+			t.Fatalf("expected turn with literal 'hello OR world test', got %q", results[0].Turn.Content)
 		}
 	})
 

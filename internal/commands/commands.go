@@ -483,6 +483,27 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			},
 		},
 		{
+			Name:        "history",
+			Description: "List generations, dump a transcript, or search archived turns",
+			Args:        "[dump <seq>|search <query>]",
+			Group:       groupChat,
+			Handler: func(state *session.State, args []string) string {
+				database := state.DB()
+				if database == nil {
+					return "No database available."
+				}
+				cmd := &historyCommand{
+					database:  database,
+					sessionID: state.SessionID(),
+				}
+				out, err := cmd.Run(context.Background(), args)
+				if err != nil {
+					return err.Error()
+				}
+				return out
+			},
+		},
+		{
 			Name:        "export",
 			Description: "Export this session to a self-contained HTML file",
 			Args:        "[relative-path]",

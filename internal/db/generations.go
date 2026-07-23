@@ -60,7 +60,7 @@ func (db *DB) EndGeneration(generationID string, endedAt time.Time, endReason st
 // ArchiveTurns stores turns for a generation. Small content (<= blobThreshold
 // bytes) is stored inline in the content column. Large content is stored as a
 // content-addressed blob via PutBlob, and the content_blob_hash column is set
-// instead.
+// instead. The FTS5 index is populated for both inline and blob-backed content.
 func (db *DB) ArchiveTurns(generationID string, turns []ArchivedTurn, blobThreshold int, at time.Time) error {
 	for _, t := range turns {
 		var contentArg sql.NullString
@@ -76,7 +76,7 @@ func (db *DB) ArchiveTurns(generationID string, turns []ArchivedTurn, blobThresh
 			contentArg = sql.NullString{String: t.Content, Valid: true}
 		}
 
-		_, err := db.sqlDB.Exec(
+		res, err := db.sqlDB.Exec(
 			`INSERT INTO generation_turns
 			 (generation_id, turn_seq, role, content, content_blob_hash, tool_calls, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -87,6 +87,21 @@ func (db *DB) ArchiveTurns(generationID string, turns []ArchivedTurn, blobThresh
 		)
 		if err != nil {
 			return fmt.Errorf("archive turn %d: %w", t.TurnSeq, err)
+		}
+
+		// Populate the FTS5 index. For blob-backed turns, use the resolved
+		// content; for inline turns, use the content column value.
+		turnID, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("archive turn %d: last insert id: %w", t.TurnSeq, err)
+		}
+		ftsContent := t.Content
+		_, err = db.sqlDB.Exec(
+			`INSERT INTO generation_turns_fts (rowid, content) VALUES (?, ?)`,
+			turnID, ftsContent,
+		)
+		if err != nil {
+			return fmt.Errorf("archive turn %d: fts insert: %w", t.TurnSeq, err)
 		}
 	}
 	return nil

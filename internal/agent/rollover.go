@@ -67,13 +67,34 @@ func (r *Rollover) maybeRollover(ctx context.Context, wire []schema.ChatMessage,
 }
 
 // compactContext archives the current wire messages and performs a rollover
-// if due. It is called from the overflow branch in runner.go. Returns the
-// seed digest if a rollover occurred, or "" if not.
+// if due. It is called from rolloverAndContinue. Returns the seed digest if
+// a rollover occurred, or "" if not. When rollover is disabled (nil
+// Controller), it is a no-op.
 func (r *Rollover) compactContext(ctx context.Context, wire []schema.ChatMessage, contextWindow int) (string, error) {
+	if r == nil || r.Controller == nil {
+		return "", nil
+	}
 	if _, err := r.flushArchive(ctx, wire); err != nil {
-		return "", err
+		return "", fmt.Errorf("compact context: %w", err)
 	}
 	return r.maybeRollover(ctx, wire, contextWindow)
+}
+
+// rolloverAndContinue is the unified intra-turn compaction entry point. When
+// rollover is enabled it archives, optionally rolls over, and returns a short
+// fresh window with the seed digest. When rollover is disabled it falls back
+// to summarizeAndContinue.
+func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessage, goal string) ([]schema.ChatMessage, error) {
+	if r == nil || r.Rollover == nil || r.Rollover.Controller == nil {
+		return r.summarizeAndContinue(ctx, r.Provider, r.Model, wire, goal, nil)
+	}
+	seedDigest, err := r.Rollover.compactContext(ctx, wire, r.MaxTurnContextTokens)
+	if err != nil {
+		return nil, fmt.Errorf("rollover and continue: %w", err)
+	}
+	return []schema.ChatMessage{
+		{Role: "system", Content: seedDigest},
+	}, nil
 }
 
 // Close ends the live generation on the controller. It is a no-op when

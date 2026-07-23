@@ -3,14 +3,18 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/llm/schema"
 	"marshal/internal/rollover"
+	"marshal/internal/tools/policy"
+	"marshal/internal/tools/registry"
 )
 
 func newRolloverTestState(t *testing.T) *session.State {
@@ -309,6 +313,110 @@ func TestRolloverFlushArchiveErrorPropagation(t *testing.T) {
 	_, err := r.flushArchive(context.Background(), wire)
 	if err != nil {
 		t.Fatalf("flushArchive should not error with fake store: %v", err)
+	}
+}
+
+// TestRolloverAndContinueFallsBackToSummarize verifies that when rollover
+// is disabled (nil Rollover), rolloverAndContinue calls summarizeAndContinue.
+func TestRolloverAndContinueFallsBackToSummarize(t *testing.T) {
+	p := &agenttest.ScriptedProvider{Responses: []string{"## Current State\nRead a.go; still need to patch b.go."}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	// Rollover is nil by default.
+
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "fix the bug"},
+		{Role: schema.RoleUser, Content: "some large output"},
+	}
+	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "fix the bug")
+	if err != nil {
+		t.Fatalf("rolloverAndContinue: %v", err)
+	}
+	// Must have rebuilt messages (summarizeAndContinue path).
+	if len(fresh) == 0 {
+		t.Fatal("rolloverAndContinue returned empty messages")
+	}
+	if fresh[0].Role != schema.RoleSystem {
+		t.Fatal("first message must be system prompt")
+	}
+	// Verify the summary is present.
+	var joined strings.Builder
+	for _, m := range fresh {
+		joined.WriteString(m.Content)
+		joined.WriteString("\n")
+	}
+	if !strings.Contains(joined.String(), "still need to patch b.go") {
+		t.Fatal("rebuilt messages missing the summary")
+	}
+}
+
+// TestRolloverAndContinueWithRolloverEnabled verifies that when rollover is
+// enabled and due, rolloverAndContinue returns a short fresh window with the
+// seed digest.
+func TestRolloverAndContinueWithRolloverEnabled(t *testing.T) {
+	ctrl := newTestController(true)
+	ctrl.Policy = rollover.Policy{
+		Mode:           rollover.PolicyContextPercent,
+		ContextPercent: 0,
+	}
+	state := newRolloverTestState(t)
+	runner := &Runner{
+		Provider:             nil,
+		Registry:             registry.New(),
+		Policy:               policy.NewEngine(&config.Config{}, nil),
+		State:                state,
+		Model:                "test-model",
+		MaxTurnContextTokens: 1000,
+		Rollover: &Rollover{
+			Controller: ctrl,
+			State:      state,
+			Cursor:     0,
+		},
+	}
+
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hello"},
+	}
+	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "test goal")
+	if err != nil {
+		t.Fatalf("rolloverAndContinue: %v", err)
+	}
+	// Must return a single system message with the seed digest.
+	if len(fresh) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(fresh))
+	}
+	if fresh[0].Role != "system" {
+		t.Fatalf("expected system role, got %q", fresh[0].Role)
+	}
+	if fresh[0].Content != "test-digest" {
+		t.Fatalf("expected content %q, got %q", "test-digest", fresh[0].Content)
+	}
+}
+
+// TestRolloverAndContinueNilRollover verifies that a Runner with nil Rollover
+// falls back to summarizeAndContinue.
+func TestRolloverAndContinueNilRollover(t *testing.T) {
+	p := &agenttest.ScriptedProvider{Responses: []string{"## Current State\nsummary."}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	// Rollover is nil by default.
+
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "goal"},
+	}
+	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "goal")
+	if err != nil {
+		t.Fatalf("rolloverAndContinue: %v", err)
+	}
+	if len(fresh) == 0 {
+		t.Fatal("rolloverAndContinue returned empty messages")
+	}
+	if fresh[0].Role != schema.RoleSystem {
+		t.Fatal("first message must be system prompt")
 	}
 }
 

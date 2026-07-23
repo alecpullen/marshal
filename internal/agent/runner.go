@@ -496,16 +496,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 
 		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
-			// T12: archive and optionally rollover before summarization.
-			if _, cerr := r.Rollover.compactContext(ctx, messages, r.MaxTurnContextTokens); cerr != nil {
-				r.State.Logger().Warn("rollover compact failed", "error", cerr)
-			}
-			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal, effectiveRF); serr == nil {
+			// T13: unified intra-turn compaction — rollover when enabled,
+			// fall back to summarizeAndContinue when disabled.
+			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal); cerr == nil {
 				messages = fresh
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
-				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and summarization failed: %s. The turn is being terminated to prevent transcript corruption.", serr), session.ContentTypePlain)
-				return task, r.fail(task, fmt.Errorf("context overflow and summarization failed: %w", serr))
+				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and compaction failed: %s. The turn is being terminated to prevent transcript corruption.", cerr), session.ContentTypePlain)
+				return task, r.fail(task, fmt.Errorf("context overflow and compaction failed: %w", cerr))
 			}
 		}
 

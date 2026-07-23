@@ -114,6 +114,9 @@ func TestNewRolloverController_Enabled(t *testing.T) {
 	if ctrl.Counter == nil {
 		t.Error("ctrl.Counter is nil, expected a TokenCounter")
 	}
+	if ctrl.Digest == nil {
+		t.Error("ctrl.Digest is nil, expected a DigestProvider")
+	}
 }
 
 func TestNewRolloverController_StartsGenerationZero(t *testing.T) {

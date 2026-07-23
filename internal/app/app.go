@@ -316,6 +316,15 @@ func rolloverPolicyFromConfig(cfg config.RolloverConfig) rollover.Policy {
 	return rollover.Policy{Mode: cfg.Policy}
 }
 
+// minimalDigestProvider implements rollover.DigestProvider by returning a
+// minimal placeholder digest. It is used as a safe fallback when no LLM-based
+// digest provider is configured, ensuring Controller.Digest is never nil.
+type minimalDigestProvider struct{}
+
+func (minimalDigestProvider) Digest(_ context.Context, h rollover.GenerationHandle) (string, string, error) {
+	return rollover.MinimalDigest(h.Seq), rollover.SourceMinimal, nil
+}
+
 // NewRolloverController creates a rollover.Controller from config. When
 // rollover is disabled, it returns nil, nil (no generation rows are created).
 func NewRolloverController(sessionID string, cfg config.RolloverConfig, database *db.DB) (*rollover.Controller, error) {
@@ -328,6 +337,7 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 		SessionID:     sessionID,
 		Store:         database,
 		Counter:       counter,
+		Digest:        minimalDigestProvider{},
 		Policy:        pol,
 		BlobThreshold: cfg.BlobThresholdBytes,
 		Now:           time.Now,

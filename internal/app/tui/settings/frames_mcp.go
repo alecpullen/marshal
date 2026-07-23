@@ -80,7 +80,7 @@ func mcpArgsDrill(s *state, server string) *field {
 			i := i
 			out[i] = &field{
 				id: fmt.Sprintf("mcp.servers.%s.args.%d", server, i), title: args[i], kind: kindScalar,
-				desc: "MCP server command-line argument",
+				desc:   "MCP server command-line argument",
 				getStr: func() string { return get()[i] },
 				setStr: func(v string) error {
 					if v == "" {

@@ -168,6 +168,22 @@ type fileAgentEntry struct {
 	Context routing.ContextBudget `toml:"context"`
 }
 
+type fileRollover struct {
+	Enabled                 *bool   `toml:"enabled"`
+	Policy                  *string `toml:"policy"`
+	ContextPercentThreshold *int    `toml:"context_percent_threshold"`
+	TurnCountThreshold      *int    `toml:"turn_count_threshold"`
+	TokenCounter            *string `toml:"token_counter"`
+	DigestModel             *string `toml:"digest_model"`
+	RecallToolEnabled       *string `toml:"recall_tool_enabled"`
+	Retention               *string `toml:"retention"`
+	BlobThresholdBytes      *int    `toml:"blob_threshold_bytes"`
+}
+
+type fileSession struct {
+	Rollover *fileRollover `toml:"rollover"`
+}
+
 type configFile struct {
 	Project     *fileProject     `toml:"project"`
 	Commands    *fileCommands    `toml:"commands"`
@@ -186,6 +202,7 @@ type configFile struct {
 	Permissions *filePermissions `toml:"permissions"`
 	Diagnostics *fileDiagnostics `toml:"diagnostics"`
 	Hooks       *fileHooks       `toml:"hooks"`
+	Session     *fileSession     `toml:"session"`
 	// Providers stays a plain map: nil already distinguishes absent/present.
 	Providers     map[string]ProviderConfig               `toml:"providers"`
 	Models        *fileModels                             `toml:"models"`

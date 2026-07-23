@@ -29,6 +29,7 @@ type Config struct {
 	Permissions   PermissionsConfig                     `toml:"permissions"`
 	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
 	Hooks         HooksConfig                           `toml:"hooks"`
+	Session       SessionConfig                         `toml:"session"`
 }
 
 type ModelsConfig struct {
@@ -122,6 +123,24 @@ type HookConfig struct {
 	Matcher   string `toml:"matcher"`
 	Command   string `toml:"command"`
 	TimeoutMS int    `toml:"timeout_ms"`
+}
+
+// SessionConfig holds session-level settings including context rollover.
+type SessionConfig struct {
+	Rollover RolloverConfig `toml:"rollover"`
+}
+
+// RolloverConfig controls automatic context rollover behaviour.
+type RolloverConfig struct {
+	Enabled                 bool   `toml:"enabled"`
+	Policy                  string `toml:"policy"`
+	ContextPercentThreshold int    `toml:"context_percent_threshold"`
+	TurnCountThreshold      int    `toml:"turn_count_threshold"`
+	TokenCounter            string `toml:"token_counter"`
+	DigestModel             string `toml:"digest_model"`
+	RecallToolEnabled       string `toml:"recall_tool_enabled"`
+	Retention               string `toml:"retention"`
+	BlobThresholdBytes      int    `toml:"blob_threshold_bytes"`
 }
 
 // WebConfig gates outbound network access from agent-side tools (web.fetch

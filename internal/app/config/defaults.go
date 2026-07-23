@@ -112,6 +112,18 @@ func Default() Config {
 		Permissions: PermissionsConfig{
 			Rules: nil,
 		},
+		Session: SessionConfig{
+			Rollover: RolloverConfig{
+				Enabled:                 false,
+				Policy:                  "context_percent",
+				ContextPercentThreshold: 70,
+				TurnCountThreshold:      40,
+				TokenCounter:            "auto",
+				RecallToolEnabled:       "auto",
+				Retention:               "forever",
+				BlobThresholdBytes:      2048,
+			},
+		},
 		Hooks: HooksConfig{
 			FailClosed: false,
 			Entries:    nil,

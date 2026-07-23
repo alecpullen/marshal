@@ -220,6 +220,10 @@ type Runner struct {
 	// ActionQuestionAsk). Nil outside of RunTask.
 	iterationBudget *int
 
+	// Rollover manages context-window archival and cross-turn generation
+	// rollover. When nil, all rollover operations are no-ops.
+	Rollover *Rollover
+
 	// fileIndexCache memoises the per-project file index across RunTask
 	// calls and across steering-message drains. Auto-invalidates when the
 	// projectID changes (see fileIndexCache.get).
@@ -492,6 +496,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 
 		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
+			// T12: archive and optionally rollover before summarization.
+			if _, cerr := r.Rollover.compactContext(ctx, messages, r.MaxTurnContextTokens); cerr != nil {
+				r.State.Logger().Warn("rollover compact failed", "error", cerr)
+			}
 			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal, effectiveRF); serr == nil {
 				messages = fresh
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again

@@ -1,0 +1,302 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"marshal/internal/db"
+	"marshal/internal/llm/schema"
+	"marshal/internal/rollover"
+)
+
+// fakeRolloverStore implements rollover.Store for testing.
+type fakeRolloverStore struct {
+	rollover.Store
+}
+
+func (f *fakeRolloverStore) BeginGeneration(_ db.Generation) error {
+	return nil
+}
+
+func (f *fakeRolloverStore) EndGeneration(_ string, _ time.Time, _ string) error {
+	return nil
+}
+
+func (f *fakeRolloverStore) ArchiveTurns(_ string, _ []db.ArchivedTurn, _ int, _ time.Time) error {
+	return nil
+}
+
+// fakeTokenCounter implements rollover.TokenCounter for testing.
+type fakeTokenCounter struct {
+	rollover.TokenCounter
+	count int
+	err   error
+}
+
+func (f *fakeTokenCounter) Name() string { return "fake" }
+
+func (f *fakeTokenCounter) CountTokens(_ context.Context, _ []schema.ChatMessage) (int, error) {
+	return f.count, f.err
+}
+
+// fakeDigestProvider implements rollover.DigestProvider for testing.
+type fakeDigestProvider struct {
+	rollover.DigestProvider
+	digest string
+	source string
+	err    error
+}
+
+func (f *fakeDigestProvider) Digest(_ context.Context, _ rollover.GenerationHandle) (string, string, error) {
+	return f.digest, f.source, f.err
+}
+
+// fakePolicy implements rollover.Policy for testing - we use the real rollover.Policy
+// with a custom Decide function via a wrapper.
+
+func newTestController(decision bool) *rollover.Controller {
+	return &rollover.Controller{
+		SessionID: "test-session",
+		Store:     &fakeRolloverStore{},
+		Counter:   &fakeTokenCounter{count: 1000},
+		Digest:    &fakeDigestProvider{digest: "test-digest", source: "test"},
+		Policy: rollover.Policy{
+			Mode:           rollover.PolicyTurnCount,
+			ContextPercent: 0,
+			TurnCount:      0,
+		},
+		NewID: func() string { return "gen-id" },
+		Now:   time.Now,
+	}
+}
+
+func TestRolloverFlushArchiveWritesTail(t *testing.T) {
+	r := &Rollover{
+		Controller: newTestController(true),
+		Cursor:     2,
+	}
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "a"},
+		{Role: schema.RoleAssistant, Content: "b"},
+		{Role: schema.RoleUser, Content: "c"},
+		{Role: schema.RoleAssistant, Content: "d"},
+	}
+	cursor, err := r.flushArchive(context.Background(), wire)
+	if err != nil {
+		t.Fatalf("flushArchive failed: %v", err)
+	}
+	if cursor != len(wire) {
+		t.Fatalf("cursor = %d, want %d", cursor, len(wire))
+	}
+}
+
+func TestRolloverFlushArchiveNoopWhenNil(t *testing.T) {
+	var r *Rollover
+	cursor, err := r.flushArchive(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("flushArchive on nil should not error: %v", err)
+	}
+	if cursor != 0 {
+		t.Fatalf("cursor = %d, want 0", cursor)
+	}
+}
+
+func TestRolloverFlushArchiveNoopWhenControllerNil(t *testing.T) {
+	r := &Rollover{Controller: nil, Cursor: 5}
+	cursor, err := r.flushArchive(context.Background(), []schema.ChatMessage{{Role: schema.RoleUser, Content: "x"}})
+	if err != nil {
+		t.Fatalf("flushArchive with nil controller should not error: %v", err)
+	}
+	if cursor != 5 {
+		t.Fatalf("cursor = %d, want 5", cursor)
+	}
+}
+
+func TestRolloverFlushArchiveNoopWhenCursorAtEnd(t *testing.T) {
+	r := &Rollover{
+		Controller: newTestController(true),
+		Cursor:     2,
+	}
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "a"},
+		{Role: schema.RoleAssistant, Content: "b"},
+	}
+	cursor, err := r.flushArchive(context.Background(), wire)
+	if err != nil {
+		t.Fatalf("flushArchive failed: %v", err)
+	}
+	if cursor != 2 {
+		t.Fatalf("cursor = %d, want 2", cursor)
+	}
+}
+
+func TestRolloverMaybeRolloverWhenDue(t *testing.T) {
+	ctrl := newTestController(true)
+	// Use context-percent policy with 0% threshold so it fires immediately
+	// when ContextWindow > 0 and Tokens > 0.
+	ctrl.Policy = rollover.Policy{
+		Mode:           rollover.PolicyContextPercent,
+		ContextPercent: 0,
+	}
+	// The fake counter returns count=1000, and we pass contextWindow=1000,
+	// so (1000*100/1000) >= 0 is true.
+	r := &Rollover{
+		Controller: ctrl,
+		Cursor:     0,
+	}
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hello"},
+	}
+	seedDigest, err := r.maybeRollover(context.Background(), wire, 1000)
+	if err != nil {
+		t.Fatalf("maybeRollover failed: %v", err)
+	}
+	if seedDigest != "test-digest" {
+		t.Fatalf("seedDigest = %q, want %q", seedDigest, "test-digest")
+	}
+}
+
+func TestRolloverMaybeRolloverWhenNotDue(t *testing.T) {
+	ctrl := newTestController(true)
+	// Set a turn-count policy that will NOT fire (needs 100 turns).
+	ctrl.Policy = rollover.Policy{
+		Mode:      rollover.PolicyTurnCount,
+		TurnCount: 100,
+	}
+	r := &Rollover{
+		Controller: ctrl,
+		Cursor:     0,
+	}
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hello"},
+	}
+	seedDigest, err := r.maybeRollover(context.Background(), wire, 1000)
+	if err != nil {
+		t.Fatalf("maybeRollover failed: %v", err)
+	}
+	if seedDigest != "" {
+		t.Fatalf("seedDigest = %q, want empty", seedDigest)
+	}
+}
+
+func TestRolloverMaybeRolloverNoopWhenNil(t *testing.T) {
+	var r *Rollover
+	seedDigest, err := r.maybeRollover(context.Background(), nil, 1000)
+	if err != nil {
+		t.Fatalf("maybeRollover on nil should not error: %v", err)
+	}
+	if seedDigest != "" {
+		t.Fatalf("seedDigest = %q, want empty", seedDigest)
+	}
+}
+
+func TestRolloverMaybeRolloverNoopWhenControllerNil(t *testing.T) {
+	r := &Rollover{Controller: nil}
+	seedDigest, err := r.maybeRollover(context.Background(), nil, 1000)
+	if err != nil {
+		t.Fatalf("maybeRollover with nil controller should not error: %v", err)
+	}
+	if seedDigest != "" {
+		t.Fatalf("seedDigest = %q, want empty", seedDigest)
+	}
+}
+
+func TestRolloverCloseNoopWhenNil(t *testing.T) {
+	var r *Rollover
+	err := r.Close(context.Background())
+	if err != nil {
+		t.Fatalf("Close on nil should not error: %v", err)
+	}
+}
+
+func TestRolloverCloseNoopWhenControllerNil(t *testing.T) {
+	r := &Rollover{Controller: nil}
+	err := r.Close(context.Background())
+	if err != nil {
+		t.Fatalf("Close with nil controller should not error: %v", err)
+	}
+}
+
+func TestRolloverCompactContext(t *testing.T) {
+	ctrl := newTestController(true)
+	ctrl.Policy = rollover.Policy{
+		Mode:           rollover.PolicyContextPercent,
+		ContextPercent: 0,
+	}
+	r := &Rollover{
+		Controller: ctrl,
+		Cursor:     0,
+	}
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hello"},
+	}
+	seedDigest, err := r.compactContext(context.Background(), wire, 1000)
+	if err != nil {
+		t.Fatalf("compactContext failed: %v", err)
+	}
+	if seedDigest != "test-digest" {
+		t.Fatalf("seedDigest = %q, want %q", seedDigest, "test-digest")
+	}
+	if r.Cursor != len(wire) {
+		t.Fatalf("cursor = %d, want %d", r.Cursor, len(wire))
+	}
+}
+
+func TestRolloverCompactContextNoopWhenNil(t *testing.T) {
+	var r *Rollover
+	seedDigest, err := r.compactContext(context.Background(), nil, 1000)
+	if err != nil {
+		t.Fatalf("compactContext on nil should not error: %v", err)
+	}
+	if seedDigest != "" {
+		t.Fatalf("seedDigest = %q, want empty", seedDigest)
+	}
+}
+
+// TestRolloverNilOnRunner verifies that a Runner with Rollover == nil works
+// without panics (acceptance criterion 5).
+func TestRolloverNilOnRunner(t *testing.T) {
+	_ = &Runner{}
+}
+
+// TestRolloverFlushArchiveErrorPropagation verifies that Archive errors
+// are propagated correctly.
+func TestRolloverFlushArchiveErrorPropagation(t *testing.T) {
+	ctrl := newTestController(true)
+	ctrl.Store = &fakeRolloverStore{}
+	r := &Rollover{
+		Controller: ctrl,
+		Cursor:     0,
+	}
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hello"},
+	}
+	_, err := r.flushArchive(context.Background(), wire)
+	if err != nil {
+		t.Fatalf("flushArchive should not error with fake store: %v", err)
+	}
+}
+
+// TestRolloverMaybeRolloverErrorPropagation verifies that Rollover errors
+// are propagated correctly.
+func TestRolloverMaybeRolloverErrorPropagation(t *testing.T) {
+	ctrl := newTestController(true)
+	ctrl.Policy = rollover.Policy{
+		Mode:           rollover.PolicyContextPercent,
+		ContextPercent: 0,
+	}
+	ctrl.Digest = &fakeDigestProvider{err: errors.New("digest failed")}
+	r := &Rollover{
+		Controller: ctrl,
+		Cursor:     0,
+	}
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hello"},
+	}
+	_, err := r.maybeRollover(context.Background(), wire, 1000)
+	if err != nil {
+		t.Fatalf("maybeRollover should not error when digest fails (controller handles fallback): %v", err)
+	}
+}

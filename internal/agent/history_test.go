@@ -94,6 +94,29 @@ func TestBuildHistoryMessagesZeroBoundaryReplaysAll(t *testing.T) {
 	}
 }
 
+func TestBuildHistoryMessagesOffBranchBoundaryFallsBackToFullReplay(t *testing.T) {
+	prior := []session.Message{
+		{ID: 1, Role: session.RoleUser, Content: "pre-boundary question", ContentType: session.ContentTypePlain},
+		{ID: 2, Role: session.RoleAssistant, Content: "pre-boundary answer", ContentType: session.ContentTypeMarkdown, Final: true},
+		{ID: 5, Role: session.RoleUser, Content: "post-boundary question", ContentType: session.ContentTypePlain},
+		{ID: 6, Role: session.RoleAssistant, Content: "post-boundary answer", ContentType: session.ContentTypeMarkdown, Final: true},
+	}
+	// StartMsgID=3 is absent from the branch (IDs jump from 2 to 5).
+	// The boundary must be ignored and all messages replayed.
+	genInfo := session.GenerationInfo{ID: "gen-2", Seq: 2, SeedDigest: "summary of gen-1", StartMsgID: 3}
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, genInfo)
+	// Expect all 4 messages replayed (no boundary filtering, no digest prepended).
+	if len(msgs) != 4 {
+		t.Fatalf("got %d messages, want 4 (full replay, off-branch boundary ignored): %+v", len(msgs), msgs)
+	}
+	if msgs[0].Content != "pre-boundary question" {
+		t.Fatalf("msgs[0] = %+v, want pre-boundary question (full replay)", msgs[0])
+	}
+	if msgs[2].Content != "post-boundary question" {
+		t.Fatalf("msgs[2] = %+v, want post-boundary question", msgs[2])
+	}
+}
+
 func TestBuildHistoryMessagesSkipsSalvagedAnswers(t *testing.T) {
 	prior := []session.Message{
 		{Role: session.RoleUser, Content: "q", ContentType: session.ContentTypePlain},

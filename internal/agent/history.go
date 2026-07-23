@@ -19,15 +19,36 @@ const defaultHistoryBudgetTokens = 8000
 // When genInfo.StartMsgID > 0, only messages after the generation boundary
 // are included, and the generation's seed digest is prepended as a system
 // message. A zero-value genInfo replays everything (backward compatible).
+//
+// The boundary is resolved by membership: the function walks prior looking
+// for a message whose ID equals genInfo.StartMsgID. If found, only messages
+// after that point are replayed. If NOT found (off-branch / rollback case),
+// the boundary is ignored and all messages are replayed — this prevents
+// silent history blanking when the boundary ID is absent from the active
+// branch.
 func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo session.GenerationInfo) []schema.ChatMessage {
 	if maxTokens <= 0 {
 		maxTokens = defaultHistoryBudgetTokens
 	}
 
+	// Membership-based boundary resolution: walk prior for m.ID == StartMsgID.
+	// If found, skip all messages up to and including that ID. If not found
+	// (off-branch / rollback case), fall back to full replay.
+	boundaryFound := false
+	if genInfo.StartMsgID > 0 {
+		for _, m := range prior {
+			if m.ID == genInfo.StartMsgID {
+				boundaryFound = true
+				break
+			}
+		}
+	}
+
 	var candidates []schema.ChatMessage
 	for _, m := range prior {
-		// When a generation boundary is set, skip messages before it.
-		if genInfo.StartMsgID > 0 && m.ID <= genInfo.StartMsgID {
+		// When a generation boundary is found on the active branch, skip
+		// messages up to and including the boundary ID.
+		if boundaryFound && m.ID <= genInfo.StartMsgID {
 			continue
 		}
 		switch m.Role {
@@ -41,9 +62,11 @@ func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo sessio
 	}
 
 	// Prepend the seed digest as a system message when a generation boundary
-	// is set and a digest exists. This gives the model context about what
-	// happened before the boundary without replaying the full transcript.
-	if genInfo.StartMsgID > 0 && genInfo.SeedDigest != "" {
+	// is found on the active branch and a digest exists. This gives the model
+	// context about what happened before the boundary without replaying the
+	// full transcript. When the boundary is not found (off-branch), the
+	// digest is also omitted since the full transcript is replayed.
+	if boundaryFound && genInfo.SeedDigest != "" {
 		digestMsg := schema.ChatMessage{
 			Role:    schema.RoleSystem,
 			Content: "Previous generation summary: " + genInfo.SeedDigest,

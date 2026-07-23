@@ -498,7 +498,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
 			// T13: unified intra-turn compaction — rollover when enabled,
 			// fall back to summarizeAndContinue when disabled.
-			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, effectiveRF); cerr == nil {
+			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal); cerr == nil {
 				messages = fresh
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {

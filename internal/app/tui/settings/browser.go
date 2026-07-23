@@ -463,25 +463,42 @@ func (b *BrowserPanel) receipts(lines []diffLine) []string {
 	return receipts
 }
 
-// hintForRow returns a contextual hint string for the given field row based
-// on its kind. The hint is rendered below the field list while the cursor is
-// on that row.
-func (b *BrowserPanel) hintForRow(row *field) string {
+// rowHints returns a contextual hint line for the given field list based on
+// the cursor row's kind and whether the panel is at root or inside a section.
+func rowHints(list *fieldList, atRoot bool) string {
+	back := "Esc back"
+	if atRoot {
+		back = "Esc close"
+	}
+	if list.Editing() {
+		return "↵ save · Esc cancel"
+	}
+	row := list.CursorRow()
+	if row == nil {
+		return back
+	}
+	var h string
 	switch row.kind {
 	case kindToggle:
-		return "[Space] toggle"
+		h = "Space toggle"
 	case kindScalar:
-		return "[↵] edit"
+		if row.setStr == nil {
+			h = "read-only"
+		} else {
+			h = "↵ edit"
+		}
 	case kindEnum:
-		return "←/→ cycle  [↵] pick"
+		h = "←→ cycle · ↵ pick"
 	case kindDrill:
-		return "[↵] open"
+		h = "↵ open"
 	case kindAction:
-		return "[↵] run"
+		h = "↵ run"
 	case kindPicker:
-		return "[↵] pick"
+		h = "↵ pick"
+	case kindHeader:
+		h = "↓ select"
 	}
-	return ""
+	return h + " · " + back
 }
 
 // View renders the active flat browser, collection drill, or picker within
@@ -499,13 +516,11 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 	innerWidth := panelWidth - 3
 
 	title := "Settings"
-	hints := "↵ edit · Esc close"
 	var body string
 	var footer string
 	if b.stack != nil {
 		rootTitle := b.stack.stack[0].title
 		title += " › " + b.stack.breadcrumb(rootTitle)
-		hints = "↵ edit · Esc back"
 		b.stack.SetSize(innerWidth, max(maxHeight-3, 1))
 		body = b.stack.top().list.View()
 		footer = fmt.Sprintf("%d settings", len(b.stack.top().list.Rows()))
@@ -514,13 +529,8 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 		body = "/ " + b.filter.View() + "\n" + b.list.View()
 		footer = fmt.Sprintf("%d settings", len(b.list.Rows()))
 	}
-	hint := ""
-	if row := b.activeList().CursorRow(); row != nil && !b.activeList().Editing() {
-		if h := b.hintForRow(row); h != "" {
-			hint = "\n" + flDescStyle().Render(h)
-		}
-	}
-	content := body + hint + "\n" + flDescStyle().Render(footer)
+	hints := rowHints(b.activeList(), b.stack == nil)
+	content := body + "\n" + flDescStyle().Render(footer)
 	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
 	return chrome.PanelWithHints(title, hints, content, panelWidth, panelHeight, true, settingsTheme())
 }

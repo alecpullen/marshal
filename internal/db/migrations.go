@@ -156,4 +156,11 @@ CREATE TABLE IF NOT EXISTS session_state (
     value TEXT NOT NULL,
     PRIMARY KEY (session_id, key)
 );
+
+CREATE TABLE IF NOT EXISTS content_blobs (
+    hash TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
 `

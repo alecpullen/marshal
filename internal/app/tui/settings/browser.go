@@ -170,6 +170,8 @@ func (b *BrowserPanel) matchedFields() []*field {
 // title (prefixed with its owning section) is the row label, and the
 // canonical dotted key — the /set address — moves into the description.
 // When modified is true, a "● " marker is prepended to the title.
+// When the field has a tomlPath that differs from its id, the TOML path is
+// shown as an alias in the description.
 func browserField(field *field, section string, modified bool) *field {
 	copy := *field
 	if copy.title == "" {
@@ -185,6 +187,9 @@ func browserField(field *field, section string, modified bool) *field {
 		copy.desc = field.id
 	} else {
 		copy.desc = field.id + " · " + copy.desc
+	}
+	if field.tomlPath != "" && field.tomlPath != field.id {
+		copy.desc += " [toml: " + field.tomlPath + "]"
 	}
 	return &copy
 }

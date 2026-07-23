@@ -148,11 +148,16 @@ func (p Panel) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) View(maxW, maxH int) string {
+	// The picker already renders its own gutter-framed panel with a
+	// title, hints, and footer; wrapping it in a second chrome.Panel here
+	// would stack two gutters and duplicate the footer text.
+	if m.picker != nil {
+		return m.picker.View(maxW, maxH)
+	}
 	pw := min(64, maxW-8)
 	if pw < 40 {
 		pw = max(maxW-2, 40)
 	}
-	ph := min(14, maxH)
 	var b strings.Builder
 	b.WriteString(titleStyle().Render(m.title))
 	b.WriteString("\n")
@@ -160,15 +165,14 @@ func (m *Model) View(maxW, maxH int) string {
 		b.WriteString(hintStyle().Render(m.subtitle))
 		b.WriteString("\n")
 	}
-	if m.picker != nil {
-		b.WriteString(m.picker.View(pw, ph-4))
-	} else if m.step == stepProbing {
+	switch m.step {
+	case stepProbing:
 		b.WriteString(m.renderProbing(pw))
-	} else if m.step == stepBaseURL || m.step == stepAPIKey {
+	case stepBaseURL, stepAPIKey:
 		b.WriteString(m.renderInput(pw))
-	} else if m.step == stepSummary {
+	case stepSummary:
 		b.WriteString(m.renderSummary(pw))
-	} else if m.step == stepRename {
+	case stepRename:
 		b.WriteString(m.renderRenameInput(pw))
 	}
 	if m.err != "" {
@@ -262,7 +266,7 @@ func (m *Model) enterPickTemplate() {
 			Value:  tpl.ID,
 		})
 	}
-	p := picker.New("Add provider", "pick a template", items)
+	p := picker.New(m.title, "pick a template", items)
 	p.SetAllowCustom(true)
 	m.picker = p
 }
@@ -390,7 +394,7 @@ func buildModelPicker(m *Model, providerName string) *picker.Model {
 	if len(items) == 0 {
 		items = append(items, picker.Item{Label: "Enter model id manually", Value: "__manual__", Badge: "custom"})
 	}
-	p := picker.New("Select model", "pick a model", items)
+	p := picker.New(m.title, "pick a model for "+providerName, items)
 	p.SetAllowCustom(true)
 	return p
 }

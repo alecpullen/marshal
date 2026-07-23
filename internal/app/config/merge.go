@@ -238,6 +238,18 @@ func merge(cfg *Config, file configFile) error {
 		}
 		set(&cfg.Desktop.ScreenshotFormat, file.Desktop.ScreenshotFormat)
 	}
+	if file.Session != nil && file.Session.Rollover != nil {
+		r := file.Session.Rollover
+		set(&cfg.Session.Rollover.Enabled, r.Enabled)
+		set(&cfg.Session.Rollover.Policy, r.Policy)
+		set(&cfg.Session.Rollover.ContextPercentThreshold, r.ContextPercentThreshold)
+		set(&cfg.Session.Rollover.TurnCountThreshold, r.TurnCountThreshold)
+		set(&cfg.Session.Rollover.TokenCounter, r.TokenCounter)
+		set(&cfg.Session.Rollover.DigestModel, r.DigestModel)
+		set(&cfg.Session.Rollover.RecallToolEnabled, r.RecallToolEnabled)
+		set(&cfg.Session.Rollover.Retention, r.Retention)
+		set(&cfg.Session.Rollover.BlobThresholdBytes, r.BlobThresholdBytes)
+	}
 	if file.Hooks != nil {
 		set(&cfg.Hooks.FailClosed, file.Hooks.FailClosed)
 		if file.Hooks.Entries != nil {

@@ -15,13 +15,21 @@ const defaultHistoryBudgetTokens = 8000
 // (non-salvaged) assistant answers are replayed: intermediate reasoning,
 // plans, system notices, and salvaged fallbacks are noise or unreliable.
 // When the total exceeds maxTokens, the oldest turns are dropped first.
-func buildHistoryMessages(prior []session.Message, maxTokens int) []schema.ChatMessage {
+//
+// When genInfo.StartMsgID > 0, only messages after the generation boundary
+// are included, and the generation's seed digest is prepended as a system
+// message. A zero-value genInfo replays everything (backward compatible).
+func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo session.GenerationInfo) []schema.ChatMessage {
 	if maxTokens <= 0 {
 		maxTokens = defaultHistoryBudgetTokens
 	}
 
 	var candidates []schema.ChatMessage
 	for _, m := range prior {
+		// When a generation boundary is set, skip messages before it.
+		if genInfo.StartMsgID > 0 && m.ID <= genInfo.StartMsgID {
+			continue
+		}
 		switch m.Role {
 		case session.RoleUser:
 			candidates = append(candidates, schema.ChatMessage{Role: schema.RoleUser, Content: m.Content})
@@ -30,6 +38,17 @@ func buildHistoryMessages(prior []session.Message, maxTokens int) []schema.ChatM
 				candidates = append(candidates, schema.ChatMessage{Role: schema.RoleAssistant, Content: m.Content})
 			}
 		}
+	}
+
+	// Prepend the seed digest as a system message when a generation boundary
+	// is set and a digest exists. This gives the model context about what
+	// happened before the boundary without replaying the full transcript.
+	if genInfo.StartMsgID > 0 && genInfo.SeedDigest != "" {
+		digestMsg := schema.ChatMessage{
+			Role:    schema.RoleSystem,
+			Content: "Previous generation summary: " + genInfo.SeedDigest,
+		}
+		candidates = append([]schema.ChatMessage{digestMsg}, candidates...)
 	}
 
 	// Walk backwards accumulating until the budget is spent, then restore order.

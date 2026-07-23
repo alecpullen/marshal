@@ -393,7 +393,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
 	if r.role() == RoleGeneral {
-		messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
+		messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens, r.State.Generation())...)
 	}
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
@@ -417,7 +417,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			messages = []schema.ChatMessage{BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools)}
 			messages = appendContextPackMessage(messages, updatedPack)
 			if r.role() == RoleGeneral {
-				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
+				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens, r.State.Generation())...)
 			}
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}

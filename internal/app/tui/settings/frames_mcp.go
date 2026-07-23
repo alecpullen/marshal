@@ -31,14 +31,16 @@ func mcpFrame(s *state) *frame {
 			return newFrame(k, func() []*field {
 				srv := s.cfg.MCP.Servers[k]
 				writeback := func() { s.cfg.MCP.Servers[k] = srv }
+				cmdField := scalarField("mcp.servers."+k+".command", "Command",
+					func() string { return s.cfg.MCP.Servers[k].Command },
+					func(v string) error {
+						srv.Command = v
+						writeback()
+						return nil
+					})
+				cmdField.desc = "MCP server command to execute"
 				return []*field{
-					scalarField("mcp.servers."+k+".command", "Command",
-						func() string { return s.cfg.MCP.Servers[k].Command },
-						func(v string) error {
-							srv.Command = v
-							writeback()
-							return nil
-						}),
+					cmdField,
 					// Args/Env drills operate on fresh copies bound through
 					// closures that write back on every mutation.
 					mcpArgsDrill(s, k),
@@ -49,10 +51,12 @@ func mcpFrame(s *state) *frame {
 		func(k string) { delete(s.cfg.MCP.Servers, k) })
 
 	return newFrame("MCP", func() []*field {
+		dtField := intField("mcp.disclosure_threshold", "Disclosure threshold tools",
+			func() int { return s.cfg.MCP.DisclosureThresholdTools }, 0,
+			func(v int) { s.cfg.MCP.DisclosureThresholdTools = v })
+		dtField.desc = "max tools before MCP capabilities are disclosed"
 		return []*field{
-			intField("mcp.disclosure_threshold", "Disclosure threshold tools",
-				func() int { return s.cfg.MCP.DisclosureThresholdTools }, 0,
-				func(v int) { s.cfg.MCP.DisclosureThresholdTools = v }),
+			dtField,
 			serversDrill,
 			mapStringDrill("mcp.policies", "Policies", &s.cfg.MCP.Policies),
 		}
@@ -76,6 +80,7 @@ func mcpArgsDrill(s *state, server string) *field {
 			i := i
 			out[i] = &field{
 				id: fmt.Sprintf("mcp.servers.%s.args.%d", server, i), title: args[i], kind: kindScalar,
+				desc: "MCP server command-line argument",
 				getStr: func() string { return get()[i] },
 				setStr: func(v string) error {
 					if v == "" {
@@ -129,6 +134,7 @@ func mcpEnvDrill(s *state, server string) *field {
 			k := k
 			out[i] = &field{
 				id: "mcp.servers." + server + ".env." + k, title: k, kind: kindScalar,
+				desc:   "MCP server environment variable",
 				getStr: func() string { return ensure()[k] },
 				setStr: func(v string) error { ensure()[k] = v; return nil },
 				del:    func() { delete(ensure(), k) },

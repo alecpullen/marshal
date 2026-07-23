@@ -321,6 +321,65 @@ func TestBrowserEscEmitsClosed(t *testing.T) {
 	}
 }
 
+func TestUnfilteredBrowserGroupsBySection(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	view := b.View(80, 40)
+	if !strings.Contains(view, "Agent") {
+		t.Fatalf("unfiltered view should show Agent section header, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Shell") {
+		t.Fatalf("unfiltered view should show Shell section header, got:\n%s", view)
+	}
+	// Verify that header rows exist in the field list with kindHeader.
+	rows := b.list.Rows()
+	headerCount := 0
+	for _, row := range rows {
+		if row.kind == kindHeader {
+			headerCount++
+		}
+	}
+	if headerCount < 2 {
+		t.Fatalf("expected at least 2 header rows, got %d", headerCount)
+	}
+}
+
+func TestFilteredBrowserHasNoHeaders(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "shell")
+	// When filtered, the matchedFields path should not produce kindHeader rows.
+	for _, row := range b.list.Rows() {
+		if row.kind == kindHeader {
+			t.Fatalf("filtered browser should not have header rows, got id=%q", row.id)
+		}
+	}
+}
+
+func TestCursorSkipsHeaders(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	// In the unfiltered view, the first non-header row should be the cursor.
+	rows := b.list.Rows()
+	if len(rows) == 0 {
+		t.Fatal("unfiltered browser should have rows")
+	}
+	// Cursor should not be on a header row.
+	if rows[b.list.Cursor()].kind == kindHeader {
+		t.Fatal("cursor must not land on a header row")
+	}
+	// Navigate down through all rows and verify cursor never lands on a header.
+	for i := 0; i < len(rows)*2; i++ {
+		b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		if rows[b.list.Cursor()].kind == kindHeader {
+			t.Fatalf("cursor landed on header row %q at index %d", rows[b.list.Cursor()].title, b.list.Cursor())
+		}
+	}
+	// Navigate up through all rows and verify cursor never lands on a header.
+	for i := 0; i < len(rows)*2; i++ {
+		b.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+		if rows[b.list.Cursor()].kind == kindHeader {
+			t.Fatalf("cursor landed on header row %q at index %d", rows[b.list.Cursor()].title, b.list.Cursor())
+		}
+	}
+}
+
 func TestBrowserPasteIntoFilter(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
 	if got := b.FilterValue(); got != "" {

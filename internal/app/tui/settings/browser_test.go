@@ -380,6 +380,70 @@ func TestCursorSkipsHeaders(t *testing.T) {
 	}
 }
 
+func TestHintsFollowCursorRowKind(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	rows := b.list.Rows()
+	if len(rows) == 0 {
+		t.Fatal("unfiltered browser should have rows")
+	}
+
+	// Find the first non-header row and set cursor there.
+	cursorIdx := -1
+	for i, row := range rows {
+		if row.kind != kindHeader {
+			cursorIdx = i
+			break
+		}
+	}
+	if cursorIdx < 0 {
+		t.Fatal("no non-header rows found")
+	}
+	b.list.SetCursor(cursorIdx)
+
+	// Walk through all non-header rows and verify the hint matches the kind.
+	for i := 0; i < len(rows); i++ {
+		row := rows[b.list.Cursor()]
+		if row.kind == kindHeader {
+			b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			continue
+		}
+		hint := b.hintForRow(row)
+		view := b.View(80, 24)
+		switch row.kind {
+		case kindToggle:
+			if !strings.Contains(view, "[Space] toggle") {
+				t.Errorf("cursor on kindToggle row %q: expected hint [Space] toggle, view:\n%s", row.id, view)
+			}
+		case kindScalar:
+			if !strings.Contains(view, "[↵] edit") {
+				t.Errorf("cursor on kindScalar row %q: expected hint [↵] edit, view:\n%s", row.id, view)
+			}
+		case kindEnum:
+			if !strings.Contains(view, "←/→ cycle  [↵] pick") {
+				t.Errorf("cursor on kindEnum row %q: expected hint ←/→ cycle  [↵] pick, view:\n%s", row.id, view)
+			}
+		case kindDrill:
+			if !strings.Contains(view, "[↵] open") {
+				t.Errorf("cursor on kindDrill row %q: expected hint [↵] open, view:\n%s", row.id, view)
+			}
+		case kindAction:
+			if !strings.Contains(view, "[↵] run") {
+				t.Errorf("cursor on kindAction row %q: expected hint [↵] run, view:\n%s", row.id, view)
+			}
+		case kindPicker:
+			if !strings.Contains(view, "[↵] pick") {
+				t.Errorf("cursor on kindPicker row %q: expected hint [↵] pick, view:\n%s", row.id, view)
+			}
+		}
+		// Verify the hint text matches what hintForRow returns.
+		if hint != "" && !strings.Contains(view, hint) {
+			t.Errorf("cursor on row %q (kind=%v): hintForRow returned %q but view does not contain it:\n%s", row.id, row.kind, hint, view)
+		}
+		// Move cursor down for next iteration.
+		b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+}
+
 func TestBrowserPasteIntoFilter(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
 	if got := b.FilterValue(); got != "" {

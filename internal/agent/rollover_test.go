@@ -258,12 +258,15 @@ func TestRolloverCompactContext(t *testing.T) {
 	wire := []schema.ChatMessage{
 		{Role: schema.RoleUser, Content: "hello"},
 	}
-	seedDigest, err := r.compactContext(context.Background(), wire, 1000)
+	fresh, err := r.compactContext(context.Background(), nil, wire, 1000, "test goal", nil)
 	if err != nil {
 		t.Fatalf("compactContext failed: %v", err)
 	}
-	if seedDigest != "test-digest" {
-		t.Fatalf("seedDigest = %q, want %q", seedDigest, "test-digest")
+	if len(fresh) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(fresh))
+	}
+	if fresh[0].Content != "test-digest" {
+		t.Fatalf("content = %q, want %q", fresh[0].Content, "test-digest")
 	}
 	if r.Cursor != len(wire) {
 		t.Fatalf("cursor = %d, want %d", r.Cursor, len(wire))
@@ -281,14 +284,26 @@ func TestRolloverCompactContext(t *testing.T) {
 	}
 }
 
-func TestRolloverCompactContextNoopWhenNil(t *testing.T) {
+func TestRolloverCompactContextFallsBackToSummarizeWhenNil(t *testing.T) {
+	p := &agenttest.ScriptedProvider{Responses: []string{"## Current State\nsummary."}}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
 	var r *Rollover
-	seedDigest, err := r.compactContext(context.Background(), nil, 1000)
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "goal"},
+	}
+	fresh, err := r.compactContext(context.Background(), runner, wire, 1000, "goal", nil)
 	if err != nil {
 		t.Fatalf("compactContext on nil should not error: %v", err)
 	}
-	if seedDigest != "" {
-		t.Fatalf("seedDigest = %q, want empty", seedDigest)
+	if len(fresh) == 0 {
+		t.Fatal("compactContext returned empty messages")
+	}
+	if fresh[0].Role != schema.RoleSystem {
+		t.Fatal("first message must be system prompt")
 	}
 }
 
@@ -330,7 +345,7 @@ func TestRolloverAndContinueFallsBackToSummarize(t *testing.T) {
 		{Role: schema.RoleUser, Content: "fix the bug"},
 		{Role: schema.RoleUser, Content: "some large output"},
 	}
-	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "fix the bug")
+	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "fix the bug", nil)
 	if err != nil {
 		t.Fatalf("rolloverAndContinue: %v", err)
 	}
@@ -379,7 +394,7 @@ func TestRolloverAndContinueWithRolloverEnabled(t *testing.T) {
 	wire := []schema.ChatMessage{
 		{Role: schema.RoleUser, Content: "hello"},
 	}
-	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "test goal")
+	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "test goal", nil)
 	if err != nil {
 		t.Fatalf("rolloverAndContinue: %v", err)
 	}
@@ -408,7 +423,7 @@ func TestRolloverAndContinueNilRollover(t *testing.T) {
 	wire := []schema.ChatMessage{
 		{Role: schema.RoleUser, Content: "goal"},
 	}
-	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "goal")
+	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "goal", nil)
 	if err != nil {
 		t.Fatalf("rolloverAndContinue: %v", err)
 	}

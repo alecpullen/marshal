@@ -99,12 +99,12 @@ func TestConnectRendersDockedAboveInput(t *testing.T) {
 	}
 
 	lines := strings.Split(view, "\n")
-	// connect.Model.View renders its chrome.Panel gutter with the literal
-	// title "connect" (not the dynamic step title), so the gutter row is
-	// found by that label rather than by "Connect a provider".
+	// connect.Model.View delegates straight to the active picker's own
+	// gutter-framed panel (single border, titled with the step name) rather
+	// than wrapping it in a second outer panel.
 	panelLine, inputLine := -1, -1
 	for index, line := range lines {
-		if strings.Contains(line, "▍") && strings.Contains(line, "connect") {
+		if strings.Contains(line, "▍") && strings.Contains(line, "Connect a provider") {
 			panelLine = index
 		}
 		if panelLine != -1 && strings.Contains(line, "❯") {
@@ -120,6 +120,11 @@ func TestConnectRendersDockedAboveInput(t *testing.T) {
 	}
 	if !strings.HasPrefix(lines[panelLine], " ▍") {
 		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
+	}
+	for _, line := range lines {
+		if strings.Count(line, "▍") > 1 {
+			t.Errorf("connect panel should have a single gutter, got nested gutters: %q", line)
+		}
 	}
 }
 

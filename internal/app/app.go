@@ -310,10 +310,16 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 // rollover.Policy. An empty or "auto" policy string defaults to
 // context_percent mode. Unknown policy strings are passed through unchanged.
 func rolloverPolicyFromConfig(cfg config.RolloverConfig) rollover.Policy {
-	if cfg.Policy == "" || cfg.Policy == "auto" {
-		return rollover.Policy{Mode: "context_percent"}
+	pol := rollover.Policy{
+		ContextPercent: cfg.ContextPercentThreshold,
+		TurnCount:      cfg.TurnCountThreshold,
 	}
-	return rollover.Policy{Mode: cfg.Policy}
+	if cfg.Policy == "" || cfg.Policy == "auto" {
+		pol.Mode = "context_percent"
+		return pol
+	}
+	pol.Mode = cfg.Policy
+	return pol
 }
 
 // minimalDigestProvider implements rollover.DigestProvider by returning a
@@ -327,21 +333,25 @@ func (minimalDigestProvider) Digest(_ context.Context, h rollover.GenerationHand
 
 // NewRolloverController creates a rollover.Controller from config. When
 // rollover is disabled, it returns nil, nil (no generation rows are created).
-func NewRolloverController(sessionID string, cfg config.RolloverConfig, database *db.DB) (*rollover.Controller, error) {
+// modelContextWindow is the model's full context window in tokens; when >0,
+// the controller uses it for context_percent calculations instead of the
+// per-turn compaction budget.
+func NewRolloverController(sessionID string, cfg config.RolloverConfig, database *db.DB, modelContextWindow int) (*rollover.Controller, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
 	pol := rolloverPolicyFromConfig(cfg)
 	counter := rollover.ResolveCounter(cfg.TokenCounter, nil)
 	ctrl := &rollover.Controller{
-		SessionID:     sessionID,
-		Store:         database,
-		Counter:       counter,
-		Digest:        minimalDigestProvider{},
-		Policy:        pol,
-		BlobThreshold: cfg.BlobThresholdBytes,
-		Now:           time.Now,
-		NewID:         func() string { return uuid.New().String() },
+		SessionID:          sessionID,
+		Store:              database,
+		Counter:            counter,
+		Digest:             minimalDigestProvider{},
+		Policy:             pol,
+		BlobThreshold:      cfg.BlobThresholdBytes,
+		ModelContextWindow: modelContextWindow,
+		Now:                time.Now,
+		NewID:              func() string { return uuid.New().String() },
 	}
 	return ctrl, nil
 }
@@ -488,7 +498,10 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 
 	// T17: wire rollover controller into the runner when enabled.
-	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database); rerr != nil {
+	// Pass the model's full context window so context_percent fires against
+	// the correct denominator (branch review finding #7).
+	modelCtxWindow := route.Preset.ContextWindow
+	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow); rerr != nil {
 		buildErr = rerr
 		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {

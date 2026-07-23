@@ -58,9 +58,42 @@ func TestRolloverPolicyFromConfig(t *testing.T) {
 	}
 }
 
+func TestRolloverPolicyFromConfig_CopiesThresholds(t *testing.T) {
+	cfg := config.RolloverConfig{
+		Policy:                  "context_percent",
+		ContextPercentThreshold: 70,
+		TurnCountThreshold:      40,
+	}
+	got := rolloverPolicyFromConfig(cfg)
+	if got.ContextPercent != 70 {
+		t.Errorf("ContextPercent = %d, want 70", got.ContextPercent)
+	}
+	if got.TurnCount != 40 {
+		t.Errorf("TurnCount = %d, want 40", got.TurnCount)
+	}
+}
+
+func TestRolloverPolicyFromConfig_DefaultsUseThresholds(t *testing.T) {
+	cfg := config.RolloverConfig{
+		Policy:                  "",
+		ContextPercentThreshold: 85,
+		TurnCountThreshold:      50,
+	}
+	got := rolloverPolicyFromConfig(cfg)
+	if got.Mode != rollover.PolicyContextPercent {
+		t.Errorf("Mode = %q, want %q", got.Mode, rollover.PolicyContextPercent)
+	}
+	if got.ContextPercent != 85 {
+		t.Errorf("ContextPercent = %d, want 85", got.ContextPercent)
+	}
+	if got.TurnCount != 50 {
+		t.Errorf("TurnCount = %d, want 50", got.TurnCount)
+	}
+}
+
 func TestNewRolloverController_Disabled(t *testing.T) {
 	cfg := config.RolloverConfig{Enabled: false}
-	ctrl, err := NewRolloverController("sess_test", cfg, nil)
+	ctrl, err := NewRolloverController("sess_test", cfg, nil, 0)
 	if err != nil {
 		t.Fatalf("NewRolloverController disabled: %v", err)
 	}
@@ -98,7 +131,7 @@ func TestNewRolloverController_Enabled(t *testing.T) {
 		Enabled: true,
 		Policy:  "context_percent",
 	}
-	ctrl, err := NewRolloverController("sess_test", cfg, database)
+	ctrl, err := NewRolloverController("sess_test", cfg, database, 0)
 	if err != nil {
 		t.Fatalf("NewRolloverController enabled: %v", err)
 	}
@@ -116,6 +149,47 @@ func TestNewRolloverController_Enabled(t *testing.T) {
 	}
 	if ctrl.Digest == nil {
 		t.Error("ctrl.Digest is nil, expected a DigestProvider")
+	}
+}
+
+func TestNewRolloverController_Enabled_SetsModelContextWindow(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+
+	database, err := db.Open(db.Path(tmp))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	projectID, err := database.GetOrCreateProject(tmp, "test-project")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	now := time.Unix(100, 0)
+	if err := database.CreateSession("sess_test", projectID, "", now); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	cfg := config.RolloverConfig{
+		Enabled: true,
+		Policy:  "context_percent",
+	}
+	// Pass a non-zero model context window and verify it's set on the controller.
+	ctrl, err := NewRolloverController("sess_test", cfg, database, 128000)
+	if err != nil {
+		t.Fatalf("NewRolloverController: %v", err)
+	}
+	if ctrl == nil {
+		t.Fatal("expected non-nil controller")
+	}
+	if ctrl.ModelContextWindow != 128000 {
+		t.Errorf("ctrl.ModelContextWindow = %d, want %d", ctrl.ModelContextWindow, 128000)
 	}
 }
 
@@ -147,7 +221,7 @@ func TestNewRolloverController_StartsGenerationZero(t *testing.T) {
 		Enabled: true,
 		Policy:  "context_percent",
 	}
-	ctrl, err := NewRolloverController("sess_test", cfg, database)
+	ctrl, err := NewRolloverController("sess_test", cfg, database, 0)
 	if err != nil {
 		t.Fatalf("NewRolloverController: %v", err)
 	}
@@ -214,7 +288,7 @@ func TestNewRolloverController_DisabledNoGenerationRows(t *testing.T) {
 
 	// Disabled config: controller is nil, no generation rows created.
 	cfg := config.RolloverConfig{Enabled: false}
-	ctrl, err := NewRolloverController("sess_test", cfg, database)
+	ctrl, err := NewRolloverController("sess_test", cfg, database, 0)
 	if err != nil {
 		t.Fatalf("NewRolloverController disabled: %v", err)
 	}

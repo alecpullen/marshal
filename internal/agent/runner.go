@@ -397,6 +397,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
+	// T12: end-of-turn flushArchive and maybeRollover so cross-turn rollover
+	// actually fires. The defer captures the final value of messages at return
+	// time. Both methods are no-ops when Rollover is nil.
+	defer func() {
+		if r.Rollover != nil {
+			r.Rollover.flushArchive(ctx, messages)
+			r.Rollover.maybeRollover(ctx, messages, r.MaxTurnContextTokens)
+		}
+	}()
+
 	if r.PlanFirst && task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))

@@ -114,6 +114,10 @@ func (b *BrowserPanel) SetSavePending(pending bool) { b.savePending = pending }
 func (b *BrowserPanel) matchedFields() []*field {
 	query := strings.TrimSpace(b.filter.Value())
 	fields := make([]*field, 0)
+	modified := make(map[string]bool, len(b.reg.Modified()))
+	for _, id := range b.reg.Modified() {
+		modified[id] = true
+	}
 
 	if query == "" {
 		// Unfiltered: group by section with headers.
@@ -124,7 +128,7 @@ func (b *BrowserPanel) matchedFields() []*field {
 				continue
 			}
 			sec := b.reg.SectionOf(key)
-			sectionFields[sec] = append(sectionFields[sec], browserField(f, sec))
+			sectionFields[sec] = append(sectionFields[sec], browserField(f, sec, modified[key]))
 		}
 		for _, spec := range sectionList() {
 			ff := sectionFields[spec.title]
@@ -146,7 +150,7 @@ func (b *BrowserPanel) matchedFields() []*field {
 			if !ok {
 				continue
 			}
-			fields = append(fields, browserField(f, b.reg.SectionOf(key)))
+			fields = append(fields, browserField(f, b.reg.SectionOf(key), modified[key]))
 		}
 		fields = append(fields, b.collectionFields(query)...)
 		fields = append(fields, b.resetFields(query)...)
@@ -165,13 +169,17 @@ func (b *BrowserPanel) matchedFields() []*field {
 // browserField renders a registry field for the flat browser: the human
 // title (prefixed with its owning section) is the row label, and the
 // canonical dotted key — the /set address — moves into the description.
-func browserField(field *field, section string) *field {
+// When modified is true, a "● " marker is prepended to the title.
+func browserField(field *field, section string, modified bool) *field {
 	copy := *field
 	if copy.title == "" {
 		copy.title = field.id
 	}
 	if section != "" {
 		copy.title = section + " · " + copy.title
+	}
+	if modified {
+		copy.title = "● " + copy.title
 	}
 	if copy.desc == "" {
 		copy.desc = field.id
@@ -219,7 +227,7 @@ func (b *BrowserPanel) resetFields(query string) []*field {
 		if !browserMatches(query, spec.id+" "+spec.title+" reset defaults") {
 			continue
 		}
-		fields = append(fields, browserField(resetField(b.reg.st, spec.id, spec.title), ""))
+		fields = append(fields, browserField(resetField(b.reg.st, spec.id, spec.title), "", false))
 	}
 	return fields
 }

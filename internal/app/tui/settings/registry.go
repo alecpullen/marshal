@@ -11,10 +11,11 @@ import (
 
 // Registry is a flat, screen-independent index of root-frame leaf fields.
 type Registry struct {
-	st      *state
-	order   []string
-	byID    map[string]*field
-	section map[string]string
+	st       *state
+	order    []string
+	byID     map[string]*field
+	section  map[string]string
+	defaults map[string]string // baseline string values at BuildRegistry time
 }
 
 // Change is the observed result of applying a setting. Changed is based on
@@ -29,9 +30,10 @@ type Change struct {
 func BuildRegistry(cfg config.Config) *Registry {
 	st := newState(cfg)
 	registry := &Registry{
-		st:      st,
-		byID:    map[string]*field{},
-		section: map[string]string{},
+		st:       st,
+		byID:     map[string]*field{},
+		section:  map[string]string{},
+		defaults: map[string]string{},
 	}
 	for _, section := range sectionList() {
 		for _, field := range section.root(st).list.Rows() {
@@ -44,6 +46,11 @@ func BuildRegistry(cfg config.Config) *Registry {
 			registry.order = append(registry.order, field.id)
 			registry.byID[field.id] = field
 			registry.section[field.id] = section.title
+			if field.getStr != nil {
+				registry.defaults[field.id] = field.getStr()
+			} else {
+				registry.defaults[field.id] = fieldString(field)
+			}
 		}
 	}
 	return registry
@@ -56,6 +63,44 @@ func (r *Registry) Config() config.Config { return r.st.cfg }
 func (r *Registry) Lookup(key string) (*field, bool) {
 	field, ok := r.byID[key]
 	return field, ok
+}
+
+// fieldString returns the string representation of a field's current value,
+// suitable for comparison against a baseline default.
+func fieldString(f *field) string {
+	switch f.kind {
+	case kindToggle:
+		if f.getBool() {
+			return "on"
+		}
+		return "off"
+	case kindScalar, kindEnum:
+		if f.getStr != nil {
+			return f.getStr()
+		}
+	}
+	return ""
+}
+
+// Modified returns the IDs of fields whose current value differs from the
+// baseline default captured at BuildRegistry time.
+func (r *Registry) Modified() []string {
+	var out []string
+	for _, id := range r.order {
+		f, ok := r.byID[id]
+		if !ok {
+			continue
+		}
+		if fieldString(f) != r.defaults[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// OrderedKeys returns setting keys in insertion order (deterministic).
+func (r *Registry) OrderedKeys() []string {
+	return append([]string(nil), r.order...)
 }
 
 // Keys returns sorted dotted setting keys.

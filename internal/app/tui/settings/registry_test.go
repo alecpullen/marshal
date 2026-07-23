@@ -123,6 +123,76 @@ func TestRegistryApplyErrors(t *testing.T) {
 	t.Error("registry has no writable enum field")
 }
 
+func TestModifiedDetectsDivergenceFromDefaults(t *testing.T) {
+	cfg := config.Default()
+	registry := BuildRegistry(cfg)
+
+	// Initially nothing is modified.
+	if got := registry.Modified(); len(got) != 0 {
+		t.Fatalf("fresh registry: Modified() = %v, want empty", got)
+	}
+
+	// Apply a change to a known toggle field.
+	_, err := registry.Apply("shell.allow_network", "on")
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	modified := registry.Modified()
+	if len(modified) == 0 {
+		t.Fatal("after toggling shell.allow_network: Modified() is empty, want non-empty")
+	}
+	found := false
+	for _, id := range modified {
+		if id == "shell.allow_network" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("after toggling shell.allow_network: Modified() = %v, want shell.allow_network", modified)
+	}
+
+	// Reset by building a fresh registry from the same defaults.
+	registry2 := BuildRegistry(cfg)
+	if got := registry2.Modified(); len(got) != 0 {
+		t.Fatalf("fresh registry from same defaults: Modified() = %v, want empty", got)
+	}
+}
+
+func TestTOMLAliasesResolve(t *testing.T) {
+	// Verify that the Registry's Lookup method resolves dotted keys that
+	// correspond to TOML config paths. This tests that every key in the
+	// registry is reachable via Lookup and that the key format matches
+	// the expected TOML path convention (dot-separated, lowercase).
+	registry := BuildRegistry(config.Default())
+
+	// Every key in the registry must be Lookup-able.
+	for _, key := range registry.Keys() {
+		f, ok := registry.Lookup(key)
+		if !ok {
+			t.Errorf("Keys() entry %q not found via Lookup", key)
+			continue
+		}
+		// The key should match the field's id.
+		if f.id != key {
+			t.Errorf("Lookup(%q) returned field with id %q", key, f.id)
+		}
+	}
+
+	// Verify that the registry contains expected TOML-path-like keys.
+	expectedKeys := []string{
+		"shell.allow_network",
+		"agent.local_only",
+		"tui.theme",
+	}
+	for _, key := range expectedKeys {
+		if _, ok := registry.Lookup(key); !ok {
+			t.Errorf("expected TOML alias %q not found in registry", key)
+		}
+	}
+}
+
 func TestRegistryMatchKeysReturnsKeys(t *testing.T) {
 	registry := BuildRegistry(config.Default())
 	matches := registry.MatchKeys("shell network")

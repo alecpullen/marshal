@@ -230,6 +230,48 @@ func TestTomlPathAliasesResolve(t *testing.T) {
 	}
 }
 
+func TestApplyViaTomlAlias(t *testing.T) {
+	// Verify that Apply resolves TOML path aliases, not just stable ids.
+	// /set tools.shell.default_timeout_seconds 90 must work.
+	registry := BuildRegistry(config.Default())
+
+	// Confirm the TOML alias resolves via Lookup.
+	_, ok := registry.Lookup("tools.shell.default_timeout_seconds")
+	if !ok {
+		t.Fatal("toml alias tools.shell.default_timeout_seconds must be resolvable")
+	}
+
+	// Apply via the TOML alias.
+	change, err := registry.Apply("tools.shell.default_timeout_seconds", "90")
+	if err != nil {
+		t.Fatalf("Apply via toml alias: %v", err)
+	}
+	if !change.Changed {
+		t.Fatal("Apply via toml alias must report a change")
+	}
+	if change.NewValue != "90" {
+		t.Errorf("NewValue = %q, want 90", change.NewValue)
+	}
+
+	// Verify the underlying config was mutated.
+	cfg := registry.Config()
+	if cfg.Tools.Shell.DefaultTimeoutSeconds != 90 {
+		t.Errorf("DefaultTimeoutSeconds = %d, want 90", cfg.Tools.Shell.DefaultTimeoutSeconds)
+	}
+
+	// Describe via the TOML alias must also work.
+	kind, current, _, err := registry.Describe("tools.shell.default_timeout_seconds")
+	if err != nil {
+		t.Fatalf("Describe via toml alias: %v", err)
+	}
+	if kind != "scalar" {
+		t.Errorf("kind = %q, want scalar", kind)
+	}
+	if current != "90" {
+		t.Errorf("current = %q, want 90", current)
+	}
+}
+
 func TestRegistryMatchKeysReturnsKeys(t *testing.T) {
 	registry := BuildRegistry(config.Default())
 	matches := registry.MatchKeys("shell network")

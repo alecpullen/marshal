@@ -73,7 +73,7 @@ func MinimalDigest(seq int) string {
 
 const (
 	// SourceLLMSummary indicates the digest was produced by an LLM summary.
-	SourceLLMSummary = "llm-summary"
+	SourceLLMSummary = "llm_summary"
 
 	// SourceStructured indicates the digest was produced by a structured
 	// extraction process.

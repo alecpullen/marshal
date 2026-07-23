@@ -126,8 +126,8 @@ func TestMinimalDigest_Zero(t *testing.T) {
 }
 
 func TestSourceConstants(t *testing.T) {
-	if SourceLLMSummary != "llm-summary" {
-		t.Errorf("SourceLLMSummary = %q, want %q", SourceLLMSummary, "llm-summary")
+	if SourceLLMSummary != "llm_summary" {
+		t.Errorf("SourceLLMSummary = %q, want %q", SourceLLMSummary, "llm_summary")
 	}
 	if SourceStructured != "structured" {
 		t.Errorf("SourceStructured = %q, want %q", SourceStructured, "structured")

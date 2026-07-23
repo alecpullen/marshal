@@ -71,6 +71,24 @@ func MinimalDigest(seq int) string {
 	return fmt.Sprintf("generation %d — resumed from marshal history", seq)
 }
 
+// SummaryDirective is the prompt appended to the wire when requesting a
+// handoff summary from the model. It is the single source of truth for both
+// the rollover digest path and the summarizeAndContinue fallback path, so
+// the two compaction paths cannot drift.
+const SummaryDirective = `Summarize this conversation so the task can continue with no other context. This summary will be the ONLY context available afterwards, so be thorough and specific. Do not call tools; respond with plain text only, covering:
+
+## Current State
+The exact original request, what has been completed, what is in progress, and what remains.
+
+## Files & Changes
+Files modified (with what changed), files read and why they matter, and important file paths / line numbers.
+
+## Technical Context
+Commands that worked and commands that failed (exact commands), key decisions made and why, gotchas discovered, assumptions made.
+
+## Exact Next Steps
+Numbered, concrete steps with file paths — "3. Update parseAction in internal/agent/protocol.go to accept the actions array", not "continue implementing".`
+
 const (
 	// SourceLLMSummary indicates the digest was produced by an LLM summary.
 	SourceLLMSummary = "llm_summary"

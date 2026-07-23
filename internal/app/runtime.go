@@ -235,6 +235,13 @@ func (rt *Runtime) Close(ctx context.Context) error {
 			rt.EventBroker.Close()
 		}
 
+		// 5b. rollover close — end the live generation with session_end.
+		if rt.Runner != nil && rt.Runner.Rollover != nil {
+			if err := rt.Runner.Rollover.Close(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("rollover close: %w", err))
+			}
+		}
+
 		// 6. bounded snapshot DB prune and filesystem prune.
 		if rt.Snapshot != nil {
 			if rt.DB != nil && rt.Logger != nil {
@@ -345,6 +352,12 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if err := database.Migrate(); err != nil {
 		_ = database.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
+	}
+
+	// Reconcile any generations left open by a crashed process.
+	if _, err := database.ReconcileOpenGenerations(runOpts.now()); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("reconcile open generations: %w", err)
 	}
 
 	var projectID int64

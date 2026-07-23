@@ -293,9 +293,9 @@ func TestRolloverCompactContextNoopWhenNil(t *testing.T) {
 }
 
 // TestRolloverCompactContextNoopWhenNotDue verifies that when rollover is
-// enabled but not due, compactContext returns ("", nil) and does NOT advance
-// the cursor (i.e., flushArchive is not called). This is the retry fix for
-// T13: archived turns must correspond to rolled-over generations.
+// enabled but not due, compactContext returns ("", nil) and advances the
+// cursor (flushArchive always runs) but does not roll over (seedDigest is
+// empty). The single Due check is owned by maybeRollover.
 func TestRolloverCompactContextNoopWhenNotDue(t *testing.T) {
 	ctrl := newTestController(true)
 	// Set a turn-count policy that will NOT fire (needs 100 turns).
@@ -317,8 +317,9 @@ func TestRolloverCompactContextNoopWhenNotDue(t *testing.T) {
 	if seedDigest != "" {
 		t.Fatalf("seedDigest = %q, want empty when not due", seedDigest)
 	}
-	if r.Cursor != 0 {
-		t.Fatalf("cursor = %d, want 0 (flushArchive should not have been called)", r.Cursor)
+	// flushArchive always runs, so cursor advances even when not due.
+	if r.Cursor != len(wire) {
+		t.Fatalf("cursor = %d, want %d (flushArchive should have been called)", r.Cursor, len(wire))
 	}
 }
 
@@ -383,8 +384,9 @@ func TestRolloverAndContinueFallsBackToSummarize(t *testing.T) {
 }
 
 // TestRolloverAndContinueWithRolloverEnabled verifies that when rollover is
-// enabled and due, rolloverAndContinue returns a short fresh window with the
-// seed digest.
+// enabled and due, rolloverAndContinue returns a fresh window matching
+// summarizeAndContinue's shape: [systemPrompt, contextPack (if non-empty),
+// goal, digest-as-assistant, continue-instruction].
 func TestRolloverAndContinueWithRolloverEnabled(t *testing.T) {
 	ctrl := newTestController(true)
 	ctrl.Policy = rollover.Policy{
@@ -413,15 +415,25 @@ func TestRolloverAndContinueWithRolloverEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rolloverAndContinue: %v", err)
 	}
-	// Must return a single system message with the seed digest.
-	if len(fresh) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(fresh))
+	// Must return 4 messages (context pack is empty in test): system prompt,
+	// goal, digest-as-assistant, continue-instruction.
+	if len(fresh) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(fresh))
 	}
-	if fresh[0].Role != "system" {
-		t.Fatalf("expected system role, got %q", fresh[0].Role)
+	if fresh[0].Role != schema.RoleSystem {
+		t.Fatalf("expected system role for message 0, got %q", fresh[0].Role)
 	}
-	if fresh[0].Content != "test-digest" {
-		t.Fatalf("expected content %q, got %q", "test-digest", fresh[0].Content)
+	if fresh[1].Role != schema.RoleUser || fresh[1].Content != "test goal" {
+		t.Fatalf("expected goal at message 1, got role=%q content=%q", fresh[1].Role, fresh[1].Content)
+	}
+	if fresh[2].Role != schema.RoleAssistant {
+		t.Fatalf("expected assistant role for digest at message 2, got %q", fresh[2].Role)
+	}
+	if !strings.Contains(fresh[2].Content, "test-digest") {
+		t.Fatalf("expected digest in message 2 content, got %q", fresh[2].Content)
+	}
+	if fresh[3].Role != schema.RoleUser {
+		t.Fatalf("expected user role for continue-instruction at message 3, got %q", fresh[3].Role)
 	}
 }
 

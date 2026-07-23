@@ -71,13 +71,10 @@ func (r *Rollover) maybeRollover(ctx context.Context, wire []schema.ChatMessage,
 // a rollover occurred, or "" if not. When rollover is disabled (nil
 // Controller), it is a no-op.
 //
-// flushArchive is only called when a rollover is actually due, so archived
-// turns always correspond to a rolled-over generation (retry fix: T13).
+// The single Due check is owned by maybeRollover; compactContext always
+// archives first, then lets maybeRollover decide whether to roll over.
 func (r *Rollover) compactContext(ctx context.Context, wire []schema.ChatMessage, contextWindow int) (string, error) {
 	if r == nil || r.Controller == nil {
-		return "", nil
-	}
-	if !r.Controller.Due(ctx, wire, contextWindow) {
 		return "", nil
 	}
 	if _, err := r.flushArchive(ctx, wire); err != nil {
@@ -88,10 +85,11 @@ func (r *Rollover) compactContext(ctx context.Context, wire []schema.ChatMessage
 
 // rolloverAndContinue is the unified intra-turn compaction entry point. When
 // rollover is enabled it archives, optionally rolls over, and returns a short
-// fresh window with the seed digest. When rollover is disabled it falls back
-// to summarizeAndContinue. When rollover is enabled but not due (seedDigest
-// is empty), it also falls back to summarizeAndContinue so the prior wire is
-// not silently discarded.
+// fresh window matching summarizeAndContinue's shape: [systemPrompt,
+// contextPack, goal, digest-as-assistant, continue-instruction]. When rollover
+// is disabled it falls back to summarizeAndContinue. When rollover is enabled
+// but not due (seedDigest is empty), it also falls back to
+// summarizeAndContinue so the prior wire is not silently discarded.
 func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessage, goal string) ([]schema.ChatMessage, error) {
 	if r == nil || r.Rollover == nil || r.Rollover.Controller == nil {
 		return r.summarizeAndContinue(ctx, r.Provider, r.Model, wire, goal, r.ResponseFormat)
@@ -105,9 +103,17 @@ func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessa
 		// so the prior wire is not silently discarded.
 		return r.summarizeAndContinue(ctx, r.Provider, r.Model, wire, goal, r.ResponseFormat)
 	}
-	return []schema.ChatMessage{
-		{Role: "system", Content: seedDigest},
-	}, nil
+	// Rebuild the full window matching summarizeAndContinue's shape.
+	fresh := []schema.ChatMessage{
+		BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
+	}
+	fresh = appendContextPackMessage(fresh, r.State.ContextPack())
+	fresh = append(fresh,
+		schema.ChatMessage{Role: schema.RoleUser, Content: goal},
+		schema.ChatMessage{Role: schema.RoleAssistant, Content: "Progress summary (earlier transcript was compacted to fit the context budget):\n\n" + seedDigest},
+		schema.ChatMessage{Role: schema.RoleUser, Content: "Continue the task from that summary. Do not repeat work the summary marks as completed."},
+	)
+	return fresh, nil
 }
 
 // Close ends the live generation on the controller. It is a no-op when

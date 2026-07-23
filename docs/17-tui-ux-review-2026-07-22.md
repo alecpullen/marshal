@@ -91,7 +91,7 @@ key rendered dim after/below it and always searchable. In the unfiltered
 view, prefix with the section ("Shell · Unrecognized-command policy"). Keep
 `/set` addressing by dotted key unchanged.
 
-### F-UX-207 — The default view is an unstructured wall of ~100 rows  `P2` — open
+### F-UX-207 — The default view is an unstructured wall of ~100 rows  `P2` — implemented
 With no filter, every leaf field renders in one flat list sorted by id.
 Sections exist only as search haystacks and collection drills; the sidebar
 described by `sectionSpec` ("maps a sidebar entry…") was never rendered.
@@ -101,7 +101,7 @@ the flat list (Agent, Providers, Privacy, …) and let `g`/`G`/typing jump.
 Better — a two-pane root: section list left, fields right (the paneStack and
 frames already exist; this is a rendering change, not a data-model change).
 
-### F-UX-208 — Missing descriptions and units  `P3` — open
+### F-UX-208 — Missing descriptions and units  `P3` — implemented
 Many fields have no `desc` (all of Indexing's toggles, most Sandbox ints,
 Interface theme/mode, agent.plan_first). Byte/token/MB fields display raw
 ints with mixed unit conventions ("Max file bytes", "Memory limit (MB)",
@@ -111,14 +111,14 @@ ints with mixed unit conventions ("Max file bytes", "Memory limit (MB)",
 the only in-app documentation surface). Render sizes humanized ("2 MB") and
 accept humanized input; standardize unit-in-title format ("Max output (bytes)").
 
-### F-UX-209 — No modified-from-default indicator  `P3` — open
+### F-UX-209 — No modified-from-default indicator  `P3` — implemented
 `configDiff` and the reset machinery already exist, but the list gives no cue
 which values diverge from `config.Default()`.
 
 **Suggestion:** a dim `●` marker (plus a "modified" search keyword) on
 non-default rows; makes the existing per-section reset rows meaningful.
 
-### F-UX-210 — Collection gestures are undiscoverable  `P3` — open
+### F-UX-210 — Collection gestures are undiscoverable  `P3` — implemented
 `fieldList` supports `a` add, `d` delete, `y`/`p` yank/paste, `shift+↑/↓`
 reorder, `e` edit, `space` toggle, `←/→` enum cycle — but the panel hint line
 is a static "↵ edit · Esc close" and the footer just says "N settings".
@@ -238,7 +238,7 @@ provider. The product's headline features are undocumented in-app.
 Models & providers · Workflows · History · Settings) so the list stays
 scannable. Keep true aliases (`/quit`, `/ask`/`/edit`/`/auto`) hidden.
 
-### F-UX-222 — Jargon labels  `P3` — open
+### F-UX-222 — Jargon labels  `P3` — implemented
 Worst offenders: "Dynamic argv0 guardrail" (→ "Unrecognized-command policy"),
 "Tool iters" (→ "Tool-call budget per role"), "Max turn context tokens"
 (→ "Context budget per turn (tokens)"), "Subtask iterations" (→ "Subagent
@@ -247,7 +247,7 @@ Only two fields in the whole registry define search `keywords`; add synonyms
 ("dark mode", "api key", "docker", "autonomy") so fuzzy search hits on the
 words users actually type.
 
-### F-UX-223 — Displayed setting ids diverge from TOML paths  `P3` — open
+### F-UX-223 — Displayed setting ids diverge from TOML paths  `P3` — implemented
 The browser shows `shell.timeout` for `[tools.shell] default_timeout_seconds`,
 `swarm.max_fix_rounds` for `[swarm.budget]`, `snapshots.max_file_bytes` etc.
 Users who edit `config.toml` (a local-first audience *will*) can't map one
@@ -260,7 +260,7 @@ to the other, and `/set` keys don't match the file.
 
 ## 5. Smaller observations (things that are working well noted at the end)
 
-- **F-UX-224 `P3` — open** — Settings hint says "↵ edit" even when the cursor row is
+- **F-UX-224 `P3` — implemented** — Settings hint says "↵ edit" even when the cursor row is
   read-only (`agent.preset`) or an action; value cell glyphs (`›`, `▾`, `↵`)
   are the only kind cue. Contextual hints (F-UX-210) fix this too.
 - **F-UX-225 `P3` — implemented** — `/trust` answers "use --trust or restart" — a command

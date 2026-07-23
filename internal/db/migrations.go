@@ -185,4 +185,10 @@ CREATE TABLE IF NOT EXISTS generation_turns (
     tool_calls TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS generation_turns_fts USING fts5(
+    content,
+    content='',
+    tokenize='porter unicode61'
+);
 `

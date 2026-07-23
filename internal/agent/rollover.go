@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"marshal/internal/app/session"
 	"marshal/internal/llm/schema"
 	"marshal/internal/rollover"
 )
@@ -13,6 +14,7 @@ import (
 // methods, so existing runners without rollover support work unchanged.
 type Rollover struct {
 	Controller *rollover.Controller
+	State      *session.State
 	Cursor     int
 }
 
@@ -38,10 +40,9 @@ func (r *Rollover) flushArchive(ctx context.Context, wire []schema.ChatMessage) 
 }
 
 // maybeRollover checks whether a generation rollover is due via
-// Controller.Due. When due, it calls Controller.Rollover and returns the
-// seed digest. The caller is responsible for updating session state with
-// the new generation info. It is a no-op when Rollover or its Controller is
-// nil, or when the rollover is not due.
+// Controller.Due. When due, it calls Controller.Rollover and updates
+// session state with the new generation info. It is a no-op when Rollover
+// or its Controller is nil, or when the rollover is not due.
 func (r *Rollover) maybeRollover(ctx context.Context, wire []schema.ChatMessage, contextWindow int) (string, error) {
 	if r == nil || r.Controller == nil {
 		return "", nil
@@ -56,6 +57,11 @@ func (r *Rollover) maybeRollover(ctx context.Context, wire []schema.ChatMessage,
 	seedDigest, err := r.Controller.Rollover(ctx, h)
 	if err != nil {
 		return "", fmt.Errorf("maybe rollover: %w", err)
+	}
+	// Update session state with the new generation info (AC #3, Constraints).
+	if r.State != nil {
+		genID, genSeq, genSeed := r.Controller.Current()
+		r.State.BeginGeneration(genID, genSeq, genSeed)
 	}
 	return seedDigest, nil
 }

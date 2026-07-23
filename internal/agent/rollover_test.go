@@ -6,10 +6,17 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/llm/schema"
 	"marshal/internal/rollover"
 )
+
+func newRolloverTestState(t *testing.T) *session.State {
+	t.Helper()
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+}
 
 // fakeRolloverStore implements rollover.Store for testing.
 type fakeRolloverStore struct {
@@ -142,8 +149,10 @@ func TestRolloverMaybeRolloverWhenDue(t *testing.T) {
 	}
 	// The fake counter returns count=1000, and we pass contextWindow=1000,
 	// so (1000*100/1000) >= 0 is true.
+	state := newRolloverTestState(t)
 	r := &Rollover{
 		Controller: ctrl,
+		State:      state,
 		Cursor:     0,
 	}
 	wire := []schema.ChatMessage{
@@ -155,6 +164,17 @@ func TestRolloverMaybeRolloverWhenDue(t *testing.T) {
 	}
 	if seedDigest != "test-digest" {
 		t.Fatalf("seedDigest = %q, want %q", seedDigest, "test-digest")
+	}
+	// Verify session state was updated with the new generation info (AC #3).
+	gen := state.Generation()
+	if gen.ID != "gen-id" {
+		t.Fatalf("generation ID = %q, want %q", gen.ID, "gen-id")
+	}
+	if gen.Seq != 1 {
+		t.Fatalf("generation seq = %d, want 1", gen.Seq)
+	}
+	if gen.SeedDigest != "test-digest" {
+		t.Fatalf("generation seedDigest = %q, want %q", gen.SeedDigest, "test-digest")
 	}
 }
 
@@ -225,8 +245,10 @@ func TestRolloverCompactContext(t *testing.T) {
 		Mode:           rollover.PolicyContextPercent,
 		ContextPercent: 0,
 	}
+	state := newRolloverTestState(t)
 	r := &Rollover{
 		Controller: ctrl,
+		State:      state,
 		Cursor:     0,
 	}
 	wire := []schema.ChatMessage{
@@ -241,6 +263,17 @@ func TestRolloverCompactContext(t *testing.T) {
 	}
 	if r.Cursor != len(wire) {
 		t.Fatalf("cursor = %d, want %d", r.Cursor, len(wire))
+	}
+	// Verify session state was updated with the new generation info.
+	gen := state.Generation()
+	if gen.ID != "gen-id" {
+		t.Fatalf("generation ID = %q, want %q", gen.ID, "gen-id")
+	}
+	if gen.Seq != 1 {
+		t.Fatalf("generation seq = %d, want 1", gen.Seq)
+	}
+	if gen.SeedDigest != "test-digest" {
+		t.Fatalf("generation seedDigest = %q, want %q", gen.SeedDigest, "test-digest")
 	}
 }
 

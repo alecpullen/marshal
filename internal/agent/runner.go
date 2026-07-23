@@ -220,6 +220,10 @@ type Runner struct {
 	// ActionQuestionAsk). Nil outside of RunTask.
 	iterationBudget *int
 
+	// DigestModel is the model name to use for LLM-based digest generation
+	// during rollover. When empty, the runner's primary Model is used.
+	DigestModel string
+
 	// Rollover manages context-window archival and cross-turn generation
 	// rollover. When nil, all rollover operations are no-ops.
 	Rollover *Rollover
@@ -298,6 +302,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.MetricsObserver = other.MetricsObserver
 	r.Snapshotter = other.Snapshotter
 	r.SnapshotRecorder = other.SnapshotRecorder
+	r.DigestModel = other.DigestModel
 }
 
 func (r *Runner) role() AgentRole {
@@ -862,6 +867,36 @@ func skillsChanged(prev, curr []string) bool {
 		}
 	}
 	return false
+}
+
+// Chat calls the runner's provider with the given messages and returns
+// a single ChatMessage response. It satisfies the rollover.chatModel interface
+// used by LLMSummaryProvider for digest generation.
+func (r *Runner) Chat(ctx context.Context, messages []schema.ChatMessage) (schema.ChatMessage, error) {
+	model := r.Model
+	if r.DigestModel != "" {
+		model = r.DigestModel
+	}
+	events, err := r.Provider.Chat(ctx, schema.ChatRequest{
+		Model:    model,
+		Messages: messages,
+		Stream:   false,
+	})
+	if err != nil {
+		return schema.ChatMessage{}, err
+	}
+	var resp schema.ChatMessage
+	for event := range events {
+		switch event.Type {
+		case schema.ChatEventDelta:
+			resp.Content += event.Delta
+		case schema.ChatEventError:
+			return schema.ChatMessage{}, event.Err
+		case schema.ChatEventDone:
+			resp.Content += event.Delta
+		}
+	}
+	return resp, nil
 }
 
 func changedFilesForTool(toolName string, argsMap map[string]interface{}) []string {

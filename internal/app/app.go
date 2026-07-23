@@ -336,17 +336,24 @@ func (minimalDigestProvider) Digest(_ context.Context, h rollover.GenerationHand
 // modelContextWindow is the model's full context window in tokens; when >0,
 // the controller uses it for context_percent calculations instead of the
 // per-turn compaction budget.
-func NewRolloverController(sessionID string, cfg config.RolloverConfig, database *db.DB, modelContextWindow int) (*rollover.Controller, error) {
+// digestProvider is the DigestProvider to use; when nil, minimalDigestProvider
+// is used as a safe fallback. usageCounter, when non-nil, is passed to
+// ResolveCounter so the "usage" counter can observe provider-reported tokens.
+func NewRolloverController(sessionID string, cfg config.RolloverConfig, database *db.DB, modelContextWindow int, digestProvider rollover.DigestProvider, usageCounter *rollover.UsageCounter) (*rollover.Controller, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
 	pol := rolloverPolicyFromConfig(cfg)
-	counter := rollover.ResolveCounter(cfg.TokenCounter, nil)
+	counter := rollover.ResolveCounter(cfg.TokenCounter, usageCounter)
+	digest := digestProvider
+	if digest == nil {
+		digest = minimalDigestProvider{}
+	}
 	ctrl := &rollover.Controller{
 		SessionID:          sessionID,
 		Store:              database,
 		Counter:            counter,
-		Digest:             minimalDigestProvider{},
+		Digest:             digest,
 		Policy:             pol,
 		BlobThreshold:      cfg.BlobThresholdBytes,
 		ModelContextWindow: modelContextWindow,
@@ -477,9 +484,28 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
+
+	// T17: wire UsageCounter so the rollover controller can use
+	// provider-reported prompt_tokens as the numerator for context_percent
+	// (branch review finding #2). Create the counter before the UsageObserver
+	// so the observer can feed it.
+	var usageCounter *rollover.UsageCounter
+	if cfg.Session.Rollover.Enabled && cfg.Session.Rollover.TokenCounter == "usage" {
+		usageCounter = rollover.NewUsageCounter()
+	}
 	runner.UsageObserver = func(promptTokens, completionTokens int) {
 		state.SetTurnUsage(promptTokens + completionTokens)
+		if usageCounter != nil {
+			usageCounter.Observe(promptTokens)
+		}
 	}
+
+	// T17: set DigestModel on the runner so DigestChat can use a different
+	// model for digest generation than the primary turn model.
+	if cfg.Session.Rollover.DigestModel != "" {
+		runner.DigestModel = cfg.Session.Rollover.DigestModel
+	}
+
 	decoding := resolveActionDecoding(route.Preset.ToolCalling, resolvedProvider.Capabilities(ctx))
 	runner.NativeTools = decoding.Native
 	runner.ResponseFormat = decoding.ResponseFormat
@@ -500,8 +526,15 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// T17: wire rollover controller into the runner when enabled.
 	// Pass the model's full context window so context_percent fires against
 	// the correct denominator (branch review finding #7).
+	// Use LLMSummaryProvider as the primary digest provider, falling back to
+	// minimalDigestProvider only when the runner's provider is not available
+	// (branch review finding #1).
 	modelCtxWindow := route.Preset.ContextWindow
-	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow); rerr != nil {
+	var digestProvider rollover.DigestProvider
+	if runner.Provider != nil {
+		digestProvider = rollover.NewLLMSummaryProvider(runner, rollover.SummaryDirective)
+	}
+	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
 		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {

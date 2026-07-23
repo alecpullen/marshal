@@ -24,7 +24,7 @@ func TestPanelRendersGutterFrame(t *testing.T) {
 		t.Fatalf("want header + 2 content rows = 3, got %d:\n%s", len(lines), plain)
 	}
 	for i, l := range lines {
-		if !strings.HasPrefix(l, " ▍ ") {
+		if !strings.HasPrefix(l, "▍ ") {
 			t.Fatalf("row %d missing gutter prefix: %q", i, l)
 		}
 	}

@@ -40,8 +40,8 @@ func PanelWithHints(title, hints, content string, w, h int, focused bool, th the
 			titleStyle = lipgloss.NewStyle().Bold(true).Foreground(th.AccentSecondary)
 		}
 	}
-	gutter := " " + lipgloss.NewStyle().Foreground(gutterColor).Render("▍") + " "
-	inner := w - 3
+	gutter := lipgloss.NewStyle().Foreground(gutterColor).Render("▍") + " "
+	inner := w - 2
 	if inner < 1 {
 		inner = 1
 	}

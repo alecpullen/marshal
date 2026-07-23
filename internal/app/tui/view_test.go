@@ -84,7 +84,7 @@ func TestPickerRendersDockedAboveInput(t *testing.T) {
 	if inputLine == -1 || inputLine < panelLine {
 		t.Fatalf("picker must sit above the input area (panel=%d input=%d)", panelLine, inputLine)
 	}
-	if !strings.HasPrefix(lines[panelLine], " ▍") {
+	if !strings.HasPrefix(lines[panelLine], "▍") {
 		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
 	}
 }
@@ -118,7 +118,7 @@ func TestConnectRendersDockedAboveInput(t *testing.T) {
 	if inputLine == -1 || inputLine < panelLine {
 		t.Fatalf("connect panel must sit above the input area (panel=%d input=%d)", panelLine, inputLine)
 	}
-	if !strings.HasPrefix(lines[panelLine], " ▍") {
+	if !strings.HasPrefix(lines[panelLine], "▍") {
 		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
 	}
 	for _, line := range lines {

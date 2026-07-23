@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/agent"
@@ -31,6 +33,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
+	"marshal/internal/rollover"
 	"marshal/internal/sandbox"
 	"marshal/internal/skills"
 	"marshal/internal/snapshot"
@@ -303,6 +306,36 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 	}
 }
 
+// rolloverPolicyFromConfig translates a config.RolloverConfig into a
+// rollover.Policy. An empty or "auto" policy string defaults to
+// context_percent mode. Unknown policy strings are passed through unchanged.
+func rolloverPolicyFromConfig(cfg config.RolloverConfig) rollover.Policy {
+	if cfg.Policy == "" || cfg.Policy == "auto" {
+		return rollover.Policy{Mode: "context_percent"}
+	}
+	return rollover.Policy{Mode: cfg.Policy}
+}
+
+// NewRolloverController creates a rollover.Controller from config. When
+// rollover is disabled, it returns nil, nil (no generation rows are created).
+func NewRolloverController(sessionID string, cfg config.RolloverConfig, database *db.DB) (*rollover.Controller, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	pol := rolloverPolicyFromConfig(cfg)
+	counter := rollover.ResolveCounter(cfg.TokenCounter, nil)
+	ctrl := &rollover.Controller{
+		SessionID:     sessionID,
+		Store:         database,
+		Counter:       counter,
+		Policy:        pol,
+		BlobThreshold: cfg.BlobThresholdBytes,
+		Now:           time.Now,
+		NewID:         func() string { return uuid.New().String() },
+	}
+	return ctrl, nil
+}
+
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve("edit")
@@ -442,6 +475,25 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.PlanFirst = cfg.Agent.PlanFirst
 	if runner.RequestTimeout == 0 {
 		runner.RequestTimeout = agentRequestTimeout
+	}
+
+	// T17: wire rollover controller into the runner when enabled.
+	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database); rerr != nil {
+		buildErr = rerr
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+	} else if rolloverCtrl != nil {
+		runner.Rollover = &agent.Rollover{
+			Controller: rolloverCtrl,
+			State:      state,
+		}
+		// Start generation 0.
+		if err := rolloverCtrl.Start(ctx); err != nil {
+			buildErr = err
+			return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+		}
+		// Record generation 0 in session state.
+		genID, genSeq, genSeed := rolloverCtrl.Current()
+		state.BeginGeneration(genID, genSeq, genSeed)
 	}
 
 	var snapSvc *snapshot.Service

@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/routing"
 )
 
 func TestPrivacyFrameTogglesRemoteProviders(t *testing.T) {
@@ -163,6 +164,52 @@ func TestProjectSectionOwnsNameLanguagesAndCommands(t *testing.T) {
 		if _, ok := registry.Lookup(key); !ok {
 			t.Errorf("registry missing %s", key)
 		}
+	}
+}
+
+func TestEveryLeafFieldHasADescription(t *testing.T) {
+	s := newState(config.Default())
+	// Populate collections so drill sub-frames are exercised.
+	if s.cfg.Providers == nil {
+		s.cfg.Providers = map[string]config.ProviderConfig{}
+	}
+	s.cfg.Providers["test-provider"] = config.ProviderConfig{Type: "openai_compatible"}
+	s.cfg.Models.Presets["test-preset"] = routing.ModelPreset{Name: "test-preset"}
+	if s.cfg.AgentProfiles == nil {
+		s.cfg.AgentProfiles = map[string]routing.AgentProfile{}
+	}
+	s.cfg.AgentProfiles["test-profile"] = routing.AgentProfile{Name: "test-profile", Roles: map[routing.AgentRole]string{}}
+	s.cfg.Hooks.Entries = append(s.cfg.Hooks.Entries, config.HookConfig{Event: "pre_tool"})
+	s.cfg.Permissions.Rules = append(s.cfg.Permissions.Rules, config.PermissionRule{Permission: "shell", Pattern: "*", Action: "confirm"})
+	s.cfg.MCP.Servers["test-server"] = config.MCPServerConfig{Command: "test", Args: []string{"arg1"}, Env: map[string]string{"KEY": "val"}}
+
+	seen := map[string]bool{}
+
+	var checkFields func(fields []*field, path string)
+	checkFields = func(fields []*field, path string) {
+		for _, f := range fields {
+			if f.kind == kindDrill {
+				if f.build != nil && !seen[f.id] {
+					seen[f.id] = true
+					sub := f.build()
+					if sub != nil && sub.list != nil {
+						checkFields(sub.list.Rows(), path+" > "+sub.title)
+					}
+				}
+				continue
+			}
+			if f.desc == "" {
+				t.Errorf("field %q (id=%s) at %s has empty desc", f.title, f.id, path)
+			}
+		}
+	}
+
+	for _, sec := range sectionList() {
+		f := sec.root(s)
+		if f == nil || f.list == nil {
+			continue
+		}
+		checkFields(f.list.Rows(), sec.title)
 	}
 }
 

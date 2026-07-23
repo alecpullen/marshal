@@ -106,9 +106,9 @@ func agentFrame(s *state) *frame {
 				return f
 			}(),
 			func() *field {
-				f := bytesField("agent.max_turn_context_tokens", "Max turn context tokens",
-					func() int64 { return int64(s.cfg.Agent.MaxTurnContextTokens) },
-					func(v int64) { s.cfg.Agent.MaxTurnContextTokens = int(v) })
+				f := intField("agent.max_turn_context_tokens", "Max turn context tokens",
+					func() int { return s.cfg.Agent.MaxTurnContextTokens }, 0,
+					func(v int) { s.cfg.Agent.MaxTurnContextTokens = v })
 				f.desc = "max context tokens per agent turn (truncates oldest)"
 				return f
 			}(),

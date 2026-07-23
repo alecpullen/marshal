@@ -65,33 +65,39 @@ func providersFrame(s *state) *frame {
 				delete(s.discovered, k)
 			}
 			return newFrame(k, func() []*field {
-				return []*field{
-					scalarField("providers."+k+".name", "Name",
-						func() string { return k },
-						func(v string) error {
-							v = strings.TrimSpace(v)
-							if v == "" {
-								return fmt.Errorf("name cannot be empty")
-							}
-							if v == k {
-								return nil
-							}
-							if _, ok := s.cfg.Providers[v]; ok {
-								return fmt.Errorf("name already exists")
-							}
-							pc := s.cfg.Providers[k]
-							delete(s.cfg.Providers, k)
-							s.cfg.Providers[v] = pc
-							delete(s.discovered, k)
-							k = v
+				nameField := scalarField("providers."+k+".name", "Name",
+					func() string { return k },
+					func(v string) error {
+						v = strings.TrimSpace(v)
+						if v == "" {
+							return fmt.Errorf("name cannot be empty")
+						}
+						if v == k {
 							return nil
-						}),
-					scalarField("providers."+k+".type", "Type",
-						func() string { return s.cfg.Providers[k].Type },
-						func(v string) error { mut(func(p *config.ProviderConfig) { p.Type = v }); return nil }),
-					scalarField("providers."+k+".base_url", "Base URL",
-						func() string { return s.cfg.Providers[k].BaseURL },
-						func(v string) error { mut(func(p *config.ProviderConfig) { p.BaseURL = v }); invalidate(); return nil }),
+						}
+						if _, ok := s.cfg.Providers[v]; ok {
+							return fmt.Errorf("name already exists")
+						}
+						pc := s.cfg.Providers[k]
+						delete(s.cfg.Providers, k)
+						s.cfg.Providers[v] = pc
+						delete(s.discovered, k)
+						k = v
+						return nil
+					})
+				nameField.desc = "unique provider name used in presets and profiles"
+				typeField := scalarField("providers."+k+".type", "Type",
+					func() string { return s.cfg.Providers[k].Type },
+					func(v string) error { mut(func(p *config.ProviderConfig) { p.Type = v }); return nil })
+				typeField.desc = "provider protocol (openai_compatible, anthropic, etc.)"
+				urlField := scalarField("providers."+k+".base_url", "Base URL",
+					func() string { return s.cfg.Providers[k].BaseURL },
+					func(v string) error { mut(func(p *config.ProviderConfig) { p.BaseURL = v }); invalidate(); return nil })
+				urlField.desc = "API endpoint URL for this provider"
+				return []*field{
+					nameField,
+					typeField,
+					urlField,
 					{id: "providers." + k + ".api_key_env", title: "API key env", kind: kindScalar,
 						desc:   "env var name resolved at provider construction — preferred over storing the key",
 						getStr: func() string { return s.cfg.Providers[k].APIKeyEnv },
@@ -281,6 +287,19 @@ func presetsFrame(s *state) *frame {
 				s.cfg.Models.Presets[k] = p
 			}
 			return newFrame(k, func() []*field {
+				ctxField := intField("presets."+k+".context_window", "Context window",
+					func() int { return s.cfg.Models.Presets[k].ContextWindow }, 0,
+					func(v int) { mut(func(p *routing.ModelPreset) { p.ContextWindow = v }) })
+				ctxField.desc = "max context tokens for this preset"
+				maxOutField := intField("presets."+k+".max_output", "Max output tokens",
+					func() int { return s.cfg.Models.Presets[k].MaxOutputTokens }, 0,
+					func(v int) { mut(func(p *routing.ModelPreset) { p.MaxOutputTokens = v }) })
+				maxOutField.desc = "max output tokens per request"
+				tcField := enumField("presets."+k+".tool_calling", "Tool calling",
+					[]string{"native", "simulated", "none"},
+					func() string { return s.cfg.Models.Presets[k].ToolCalling },
+					func(v string) { mut(func(p *routing.ModelPreset) { p.ToolCalling = v }) })
+				tcField.desc = "how this preset handles tool calls"
 				return []*field{
 					providerPickerField(s, "presets."+k+".provider",
 						func() string { return s.cfg.Models.Presets[k].Provider },
@@ -289,16 +308,9 @@ func presetsFrame(s *state) *frame {
 						func() string { return s.cfg.Models.Presets[k].Provider },
 						func() string { return s.cfg.Models.Presets[k].Model },
 						func(v string) error { mut(func(p *routing.ModelPreset) { p.Model = v }); return nil }),
-					intField("presets."+k+".context_window", "Context window",
-						func() int { return s.cfg.Models.Presets[k].ContextWindow }, 0,
-						func(v int) { mut(func(p *routing.ModelPreset) { p.ContextWindow = v }) }),
-					intField("presets."+k+".max_output", "Max output tokens",
-						func() int { return s.cfg.Models.Presets[k].MaxOutputTokens }, 0,
-						func(v int) { mut(func(p *routing.ModelPreset) { p.MaxOutputTokens = v }) }),
-					enumField("presets."+k+".tool_calling", "Tool calling",
-						[]string{"native", "simulated", "none"},
-						func() string { return s.cfg.Models.Presets[k].ToolCalling },
-						func(v string) { mut(func(p *routing.ModelPreset) { p.ToolCalling = v }) }),
+					ctxField,
+					maxOutField,
+					tcField,
 					{id: "presets." + k + ".local_only", title: "Local only", kind: kindToggle,
 						desc:    "block remote providers for this preset",
 						getBool: func() bool { return s.cfg.Models.Presets[k].LocalOnly },
@@ -359,18 +371,26 @@ func hooksFrame(s *state) *frame {
 					return nil
 				}
 				h := &s.cfg.Hooks.Entries[i]
+				eventField := scalarField("hooks."+k+".event", "Event",
+					func() string { return h.Event },
+					func(v string) error { h.Event = v; return nil })
+				eventField.desc = "hook event trigger (e.g. pre_tool, post_tool)"
+				matcherField := scalarField("hooks."+k+".matcher", "Matcher",
+					func() string { return h.Matcher },
+					func(v string) error { h.Matcher = v; return nil })
+				matcherField.desc = "pattern to match against the event payload"
+				cmdField := scalarField("hooks."+k+".command", "Command",
+					func() string { return h.Command },
+					func(v string) error { h.Command = v; return nil })
+				cmdField.desc = "shell command to run when the hook fires"
+				timeoutField := intField("hooks."+k+".timeout_ms", "Timeout (ms)",
+					func() int { return h.TimeoutMS }, 0, func(v int) { h.TimeoutMS = v })
+				timeoutField.desc = "max milliseconds for hook execution"
 				return []*field{
-					scalarField("hooks."+k+".event", "Event",
-						func() string { return h.Event },
-						func(v string) error { h.Event = v; return nil }),
-					scalarField("hooks."+k+".matcher", "Matcher",
-						func() string { return h.Matcher },
-						func(v string) error { h.Matcher = v; return nil }),
-					scalarField("hooks."+k+".command", "Command",
-						func() string { return h.Command },
-						func(v string) error { h.Command = v; return nil }),
-					intField("hooks."+k+".timeout_ms", "Timeout (ms)",
-						func() int { return h.TimeoutMS }, 0, func(v int) { h.TimeoutMS = v }),
+					eventField,
+					matcherField,
+					cmdField,
+					timeoutField,
 				}
 			})
 		},
@@ -433,17 +453,23 @@ func permissionsFrame(s *state) *frame {
 					return nil
 				}
 				r := &s.cfg.Permissions.Rules[i]
+				permField := scalarField("permissions."+k+".permission", "Permission",
+					func() string { return r.Permission },
+					func(v string) error { r.Permission = v; return nil })
+				permField.desc = "permission name this rule applies to (e.g. shell)"
+				patField := scalarField("permissions."+k+".pattern", "Pattern",
+					func() string { return r.Pattern },
+					func(v string) error { r.Pattern = v; return nil })
+				patField.desc = "glob pattern the rule matches"
+				actField := enumField("permissions."+k+".action", "Action",
+					[]string{"allow", "confirm", "deny"},
+					func() string { return r.Action },
+					func(v string) { r.Action = v })
+				actField.desc = "action to take when the rule matches"
 				return []*field{
-					scalarField("permissions."+k+".permission", "Permission",
-						func() string { return r.Permission },
-						func(v string) error { r.Permission = v; return nil }),
-					scalarField("permissions."+k+".pattern", "Pattern",
-						func() string { return r.Pattern },
-						func(v string) error { r.Pattern = v; return nil }),
-					enumField("permissions."+k+".action", "Action",
-						[]string{"allow", "confirm", "deny"},
-						func() string { return r.Action },
-						func(v string) { r.Action = v }),
+					permField,
+					patField,
+					actField,
 				}
 			})
 		},

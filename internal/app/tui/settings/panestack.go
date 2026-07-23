@@ -88,6 +88,7 @@ func mapDrill[T any](id, title string, values *map[string]T, parse func(string) 
 			k := k
 			out[i] = &field{
 				id: id + "." + k, title: k, kind: kindScalar,
+				desc:   "value for key " + k,
 				getStr: func() string { return format((*values)[k]) },
 				setStr: func(v string) error {
 					pv, err := parse(v)
@@ -211,6 +212,7 @@ func listDrillExt(id, title string, items *[]string, opts entriesOpts) *field {
 			i := i
 			row := &field{
 				id: fmt.Sprintf("%s.%d", id, i), title: (*items)[i], kind: kindScalar,
+				desc:   "item in " + title,
 				getStr: func() string { return (*items)[i] },
 				setStr: func(v string) error {
 					if v == "" {

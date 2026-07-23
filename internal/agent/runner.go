@@ -399,11 +399,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	// T12: end-of-turn flushArchive and maybeRollover so cross-turn rollover
 	// actually fires. The defer captures the final value of messages at return
-	// time. Both methods are no-ops when Rollover is nil.
+	// time. Both methods are no-ops when Rollover is nil. Errors are logged
+	// (not silently discarded) since defers cannot return values.
 	defer func() {
 		if r.Rollover != nil {
-			r.Rollover.flushArchive(ctx, messages)
-			r.Rollover.maybeRollover(ctx, messages, r.MaxTurnContextTokens)
+			if _, err := r.Rollover.flushArchive(ctx, messages); err != nil {
+				r.State.Logger().Warn("end-of-turn flush archive failed", "error", err)
+			}
+			if _, err := r.Rollover.maybeRollover(ctx, messages, r.MaxTurnContextTokens); err != nil {
+				r.State.Logger().Warn("end-of-turn maybe rollover failed", "error", err)
+			}
 		}
 	}()
 

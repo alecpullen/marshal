@@ -67,9 +67,13 @@ func agentFrame(s *state) *frame {
 			modelRow.desc = "writes into preset " + active.Name + " — shared by every role that uses it"
 		}
 		return []*field{
-			enumField("agent.default_profile", "Default profile", sortedKeys(s.cfg.AgentProfiles),
-				func() string { return s.cfg.Profile.Default },
-				func(v string) { s.cfg.Profile.Default = v }),
+			func() *field {
+				f := enumField("agent.default_profile", "Default profile", sortedKeys(s.cfg.AgentProfiles),
+					func() string { return s.cfg.Profile.Default },
+					func(v string) { s.cfg.Profile.Default = v })
+				f.desc = "active agent profile that sets model routing roles"
+				return f
+			}(),
 			// Read-only: shows which preset the profile resolves to.
 			{id: "agent.preset", title: "Preset", kind: kindScalar,
 				desc:   "resolved from the default profile's implementer role",
@@ -87,19 +91,36 @@ func agentFrame(s *state) *frame {
 						}
 					}
 				}},
-			intField("agent.max_tool_iterations", "Max tool iterations",
-				func() int { return s.cfg.Agent.MaxToolIterations }, 1,
-				func(v int) { s.cfg.Agent.MaxToolIterations = v }),
-			intField("agent.max_retries", "Max retries",
-				func() int { return s.cfg.Agent.MaxRetries }, 0,
-				func(v int) { s.cfg.Agent.MaxRetries = v }),
-			intField("agent.max_turn_context_tokens", "Max turn context tokens",
-				func() int { return s.cfg.Agent.MaxTurnContextTokens }, 0,
-				func(v int) { s.cfg.Agent.MaxTurnContextTokens = v }),
-			intField("agent.subtask_iterations", "Subtask iterations",
-				func() int { return s.cfg.Agent.SubtaskIterations }, 0,
-				func(v int) { s.cfg.Agent.SubtaskIterations = v }),
+			func() *field {
+				f := intField("agent.max_tool_iterations", "Max tool iterations",
+					func() int { return s.cfg.Agent.MaxToolIterations }, 1,
+					func(v int) { s.cfg.Agent.MaxToolIterations = v })
+				f.desc = "max tool calls per agent turn"
+				return f
+			}(),
+			func() *field {
+				f := intField("agent.max_retries", "Max retries",
+					func() int { return s.cfg.Agent.MaxRetries }, 0,
+					func(v int) { s.cfg.Agent.MaxRetries = v })
+				f.desc = "LLM retries before giving up on a turn"
+				return f
+			}(),
+			func() *field {
+				f := bytesField("agent.max_turn_context_tokens", "Max turn context tokens",
+					func() int64 { return int64(s.cfg.Agent.MaxTurnContextTokens) },
+					func(v int64) { s.cfg.Agent.MaxTurnContextTokens = int(v) })
+				f.desc = "max context tokens per agent turn (truncates oldest)"
+				return f
+			}(),
+			func() *field {
+				f := intField("agent.subtask_iterations", "Subtask iterations",
+					func() int { return s.cfg.Agent.SubtaskIterations }, 0,
+					func(v int) { s.cfg.Agent.SubtaskIterations = v })
+				f.desc = "max sub-agent iterations per task"
+				return f
+			}(),
 			{id: "agent.plan_first", title: "Plan first", kind: kindToggle,
+				desc:    "require a plan step before implementation",
 				getBool: func() bool { return s.cfg.Agent.PlanFirst },
 				setBool: func(v bool) { s.cfg.Agent.PlanFirst = v }},
 		}

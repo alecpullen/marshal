@@ -455,6 +455,9 @@ func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall)
 	if r.role() != RoleGeneral {
 		return BuildNativeToolErrorMessage(call.Name, fmt.Sprintf("%s is not available for the %s role", call.Name, r.role()), call.ID), nil
 	}
+	if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+		return BuildNativeToolErrorMessage(call.Name, "ask_user is not available in auto mode; proceed with your best judgment and state the assumption you made", call.ID), nil
+	}
 	var payload struct {
 		Question string `json:"question"`
 	}
@@ -486,6 +489,9 @@ func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall)
 func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolCall) (schema.ChatMessage, error) {
 	if r.role() != RoleGeneral {
 		return BuildNativeToolErrorMessage(call.Name, fmt.Sprintf("%s is not available for the %s role", call.Name, r.role()), call.ID), nil
+	}
+	if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+		return BuildNativeToolErrorMessage(call.Name, "question.ask is not available in auto mode; proceed with your best judgment and state the assumption you made", call.ID), nil
 	}
 	var payload struct {
 		Questions []session.Question `json:"questions"`

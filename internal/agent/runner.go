@@ -261,6 +261,15 @@ func (r *Runner) SetForceClass(class string) {
 	r.forceClassMu.Unlock()
 }
 
+// SetApprovalMode sets the active approval mode on the policy engine.
+// Called by the TUI on mode switch and by app.StartRuntime to seed from
+// config. Satisfies the AgentRunner interface's SetApprovalMode method.
+func (r *Runner) SetApprovalMode(m policy.ApprovalMode) {
+	if r.Policy != nil {
+		r.Policy.SetApprovalMode(m)
+	}
+}
+
 func (r *Runner) SetPolicyRules(rules []config.PermissionRule) {
 	prules := make([]permissions.Rule, 0, len(rules))
 	for _, rl := range rules {
@@ -701,6 +710,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available for the %s role; proceed with your best judgment or report findings", r.role())))
 				continue
 			}
+			if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available in auto mode; proceed with your best judgment and state the assumption you made")))
+				continue
+			}
 			answer, waitErr := r.requestAnswer(ctx, action.Content)
 			if waitErr != nil {
 				return task, r.fail(task, waitErr)
@@ -731,6 +744,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		case ActionQuestionAsk:
 			if r.role() != RoleGeneral {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available for the %s role; proceed with your best judgment or report findings", r.role())))
+				continue
+			}
+			if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available in auto mode; proceed with your best judgment and state the assumption you made")))
 				continue
 			}
 			if len(action.Questions) == 0 {

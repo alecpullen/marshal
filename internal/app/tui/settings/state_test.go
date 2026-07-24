@@ -12,9 +12,9 @@ func TestCloneConfigDeepCopiesAgentProfileRoles(t *testing.T) {
 		AgentProfiles: map[string]routing.AgentProfile{
 			"fast": {
 				Name: "fast",
-				Roles: map[routing.AgentRole]string{
-					routing.RoleImplementer: "small",
-				},
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "small"},
+			},
 			},
 		},
 	}
@@ -22,10 +22,10 @@ func TestCloneConfigDeepCopiesAgentProfileRoles(t *testing.T) {
 	out := cloneConfig(src)
 
 	// Mutate the clone's inner Roles map directly.
-	out.AgentProfiles["fast"].Roles[routing.RoleImplementer] = "large"
+	out.AgentProfiles["fast"].Roles[routing.RoleImplementer] = routing.RoleBinding{Preset: "large"}
 
 	// The source must be unchanged.
-	if src.AgentProfiles["fast"].Roles[routing.RoleImplementer] != "small" {
+	if src.AgentProfiles["fast"].Roles[routing.RoleImplementer].Preset != "small" {
 		t.Fatalf("clone shares Roles map with source: got %q, want %q",
 			src.AgentProfiles["fast"].Roles[routing.RoleImplementer], "small")
 	}

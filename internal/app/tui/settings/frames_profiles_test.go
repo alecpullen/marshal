@@ -17,8 +17,8 @@ func profilesTestState() *state {
 		"large": {Name: "large", Provider: "ollama", Model: "qwen3:32b"},
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
-		"local": {Name: "local", Roles: map[routing.AgentRole]string{
-			routing.RoleImplementer: "large",
+		"local": {Name: "local", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "large"},
 		}},
 	}
 	return newState(cfg)

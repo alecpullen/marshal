@@ -27,6 +27,9 @@ type paneStack struct {
 	height int
 }
 
+// PaneStack is an exported alias for paneStack.
+type PaneStack = paneStack
+
 func newPaneStack(root *frame) *paneStack { return &paneStack{stack: []*frame{root}} }
 
 func (p *paneStack) top() *frame { return p.stack[len(p.stack)-1] }

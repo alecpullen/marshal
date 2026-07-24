@@ -178,7 +178,7 @@ func TestEveryLeafFieldHasADescription(t *testing.T) {
 	if s.cfg.AgentProfiles == nil {
 		s.cfg.AgentProfiles = map[string]routing.AgentProfile{}
 	}
-	s.cfg.AgentProfiles["test-profile"] = routing.AgentProfile{Name: "test-profile", Roles: map[routing.AgentRole]string{}}
+	s.cfg.AgentProfiles["test-profile"] = routing.AgentProfile{Name: "test-profile", Roles: map[routing.AgentRole]routing.RoleBinding{}}
 	s.cfg.Hooks.Entries = append(s.cfg.Hooks.Entries, config.HookConfig{Event: "pre_tool"})
 	s.cfg.Permissions.Rules = append(s.cfg.Permissions.Rules, config.PermissionRule{Permission: "shell", Pattern: "*", Action: "confirm"})
 	s.cfg.MCP.Servers["test-server"] = config.MCPServerConfig{Command: "test", Args: []string{"arg1"}, Env: map[string]string{"KEY": "val"}}

@@ -151,5 +151,5 @@ func activePresetNameFor(cfg config.Config) string {
 	if !ok {
 		return ""
 	}
-	return profile.Roles[routing.RoleImplementer]
+	return profile.Roles[routing.RoleImplementer].Preset
 }

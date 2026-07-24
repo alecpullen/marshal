@@ -34,6 +34,9 @@ func newState(cfg config.Config) *state {
 	}
 }
 
+// NewState is the exported constructor for *State (alias for *state).
+func NewState(cfg config.Config) *state { return newState(cfg) }
+
 func (s *state) takePendingCmd() tea.Cmd {
 	cmd := s.pendingCmd
 	s.pendingCmd = nil
@@ -49,6 +52,9 @@ func (s *state) takeConnectRequested() bool {
 func (s *state) applyActionResult(fieldID, label string) {
 	s.actionState[fieldID] = actionState{label: label}
 }
+
+// State is an exported alias for state.
+type State = state
 
 // cloneConfig deep-copies every map and slice reachable from cfg that the
 // settings panes can mutate, so edits to the working copy never leak into

@@ -5088,8 +5088,49 @@ func TestBuildCustomAgentRunnerWithFactory(t *testing.T) {
 	}
 }
 
+// TestBuildCustomAgentRunnerUnknownAgentSurfacesError verifies that when the
+// factory returns an error for an unknown agent name, the error is surfaced
+// to the user via AddMessage and nil is returned (no silent swarm fallback).
+func TestBuildCustomAgentRunnerUnknownAgentSurfacesError(t *testing.T) {
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+
+	// Wire a factory that returns an error for unknown agents.
+	m.customAgentFactory = func(agentName string) (AgentRunner, error) {
+		if agentName == "known" {
+			return &testAgentRunner{}, nil
+		}
+		return nil, fmt.Errorf("unknown custom agent: %q", agentName)
+	}
+
+	// With a swarm runner available, unknown agent should still surface error.
+	m.swarmRunner = &testAgentRunner{}
+
+	r := m.buildCustomAgentRunner("nonexistent")
+	if r != nil {
+		t.Fatal("expected nil runner for unknown agent, not swarm fallback")
+	}
+	msgs := m.state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected an error message to be surfaced")
+	}
+	last := msgs[len(msgs)-1].Content
+	if !strings.Contains(last, "unknown custom agent") {
+		t.Fatalf("error message should contain 'unknown custom agent', got: %q", last)
+	}
+
+	// Known agent should still work.
+	m.state.ClearMessages()
+	r = m.buildCustomAgentRunner("known")
+	if r == nil {
+		t.Fatal("expected non-nil runner for known agent")
+	}
+}
+
 // TestBuildCustomAgentRunnerFactoryError verifies that when the factory
-// returns an error, buildCustomAgentRunner falls back to the swarm runner.
+// returns an error, buildCustomAgentRunner surfaces the error and returns
+// nil, even when a swarm runner is available.
 func TestBuildCustomAgentRunnerFactoryError(t *testing.T) {
 	cfg := config.Default()
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
@@ -5100,16 +5141,33 @@ func TestBuildCustomAgentRunnerFactoryError(t *testing.T) {
 		return nil, fmt.Errorf("factory error")
 	}
 
-	// Without a swarm runner, should return nil.
+	// Without a swarm runner, should return nil and surface error.
 	if r := m.buildCustomAgentRunner("test"); r != nil {
 		t.Fatal("expected nil when factory errors and no swarm runner")
 	}
+	msgs := m.state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected an error message to be surfaced")
+	}
+	last := msgs[len(msgs)-1].Content
+	if !strings.Contains(last, "factory error") {
+		t.Fatalf("error message should contain 'factory error', got: %q", last)
+	}
 
-	// With a swarm runner, should fall back to it.
+	// With a swarm runner, should still return nil and surface error (no fallback).
+	m.state.ClearMessages()
 	m.swarmRunner = &testAgentRunner{}
 	r := m.buildCustomAgentRunner("test")
-	if r == nil {
-		t.Fatal("expected non-nil fallback runner")
+	if r != nil {
+		t.Fatal("expected nil when factory errors, even with swarm runner available")
+	}
+	msgs = m.state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected an error message to be surfaced")
+	}
+	last = msgs[len(msgs)-1].Content
+	if !strings.Contains(last, "factory error") {
+		t.Fatalf("error message should contain 'factory error', got: %q", last)
 	}
 }
 

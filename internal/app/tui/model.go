@@ -463,11 +463,9 @@ func (m *Model) openAgentsRoster(arg string) {
 			return nil
 		}
 		// Build a custom-agent runner and start the run.
+		// buildCustomAgentRunner surfaces its own error messages.
 		runner := m.buildCustomAgentRunner(agentName)
 		if runner == nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("Cannot run custom agent %q: runner not available", agentName),
-				session.ContentTypePlain)
 			m.refreshViewport()
 			return nil
 		}
@@ -484,19 +482,28 @@ func (m *Model) openAgentsRoster(arg string) {
 }
 
 // buildCustomAgentRunner builds an AgentRunner for the named custom agent.
-// Returns nil when the runner or factory is not available.
+// Returns nil when the runner or factory is not available. When the factory
+// returns an error, the error is surfaced to the user and nil is returned.
+// The swarm fallback is only used when the factory is not wired (nil).
 func (m *Model) buildCustomAgentRunner(name string) AgentRunner {
 	if m.customAgentFactory != nil {
 		runner, err := m.customAgentFactory(name)
-		if err == nil && runner != nil {
+		if err != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("Cannot run custom agent %q: %v", name, err),
+				session.ContentTypePlain)
+			m.refreshViewport()
+			return nil
+		}
+		if runner != nil {
 			return runner
 		}
 	}
-	// Fallback: use the swarm runner when the factory is not wired or fails.
-	if m.swarmRunner == nil {
-		return nil
+	// Fallback: use the swarm runner only when the factory is not wired.
+	if m.customAgentFactory == nil && m.swarmRunner != nil {
+		return m.swarmRunner
 	}
-	return m.swarmRunner
+	return nil
 }
 
 // refreshOpenSettingsBrowser rebuilds an open settings browser from the

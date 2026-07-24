@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"marshal/internal/agent"
+	"marshal/internal/llm/schema"
 	"testing"
 )
 
@@ -10,8 +11,8 @@ func TestEstimateMeterAccumulates(t *testing.T) {
 	if m.Total() != 0 {
 		t.Fatalf("new meter Total = %d, want 0", m.Total())
 	}
-	m.Observe(agent.RolePlanner, 100, 50)
-	m.Observe(agent.RoleImplementer, 200, 80)
+	m.Observe(agent.RolePlanner, schema.TokenUsage{PromptTokens: 100, CompletionTokens: 50})
+	m.Observe(agent.RoleImplementer, schema.TokenUsage{PromptTokens: 200, CompletionTokens: 80})
 	if got := m.Total(); got != 430 {
 		t.Fatalf("Total = %d, want 430", got)
 	}

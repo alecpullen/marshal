@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/policy"
@@ -230,5 +231,50 @@ func TestRunTaskMetricsAccumulatesTokens(t *testing.T) {
 	}
 	if m.PromptTokens != 17 || m.CompletionTokens != 8 {
 		t.Fatalf("tokens = %d/%d, want 17/8 accumulated across calls", m.PromptTokens, m.CompletionTokens)
+	}
+}
+
+func TestTurnMetricsRecordsAllUsageFields(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"done"},
+		Usages: []*schema.TokenUsage{
+			{PromptTokens: 100_000, CompletionTokens: 50_000, TotalTokens: 150_000, ReasoningTokens: 20_000, CacheReadTokens: 30_000, CacheWriteTokens: 10_000},
+		},
+		FinishReasons: []string{"stop"},
+		ProviderCaps:  schema.ProviderCapabilities{},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "gpt-4o")
+	runner.NativeTools = true
+	runner.Pricing = pricing.ModelPricing{
+		InputPerMTokCents:      250,
+		OutputPerMTokCents:     1000,
+		ReasoningPerMTokCents:  1000,
+		CacheReadPerMTokCents:  125,
+		CacheWritePerMTokCents: 300,
+	}
+
+	var got *TurnMetrics
+	runner.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	if err := runner.Run(context.Background(), "test"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got == nil {
+		t.Fatal("no TurnMetrics emitted")
+	}
+	if got.ReasoningTokens != 20_000 {
+		t.Errorf("ReasoningTokens = %d, want 20000", got.ReasoningTokens)
+	}
+	if got.CacheReadTokens != 30_000 {
+		t.Errorf("CacheReadTokens = %d, want 30000", got.CacheReadTokens)
+	}
+	if got.CacheWriteTokens != 10_000 {
+		t.Errorf("CacheWriteTokens = %d, want 10000", got.CacheWriteTokens)
+	}
+	if got.EstimatedCostCents <= 0 {
+		t.Errorf("EstimatedCostCents = %d, want > 0 for a priced model", got.EstimatedCostCents)
 	}
 }

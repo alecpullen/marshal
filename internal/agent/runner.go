@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/hooks"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -143,7 +144,7 @@ type MemoryProvider interface {
 //     accessor methods (withStats, trackerMu, forceClassMu). All other
 //     field reads and writes are not synchronised — hence the
 //     single-caller-at-a-time rule.
-type UsageObserver func(promptTokens, completionTokens int)
+type UsageObserver func(usage schema.TokenUsage)
 
 type Runner struct {
 	Provider             provider.Provider
@@ -165,6 +166,12 @@ type Runner struct {
 	MaxToolResultChars   int
 	ForceClass           string // if set, overrides Classify() in Run()
 	SkillIndex           *skills.Index
+
+	// Pricing holds the resolved per-token-category rates for the active
+	// model, used by emitMetrics to compute EstimatedCostCents. Set by
+	// app.go from the resolved route preset via pricing.Lookup. Zero value
+	// means local/unpriced (cost = 0).
+	Pricing pricing.ModelPricing
 
 	// PlanFirst enables the legacy pre-loop planning round-trip. Default
 	// false: planning happens inside the loop like every mainstream agent
@@ -319,6 +326,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.Snapshotter = other.Snapshotter
 	r.SnapshotRecorder = other.SnapshotRecorder
 	r.DigestModel = other.DigestModel
+	r.Pricing = other.Pricing
 }
 
 func (r *Runner) role() AgentRole {

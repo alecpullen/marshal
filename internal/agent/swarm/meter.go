@@ -5,6 +5,7 @@ import (
 
 	"marshal/internal/agent"
 	"marshal/internal/contextpack"
+	"marshal/internal/llm/schema"
 )
 
 // TokenMeter accumulates token consumption across a swarm run so the
@@ -12,7 +13,7 @@ import (
 // once per role turn. Implementations must be safe for concurrent use:
 // parallel scouts observe from separate goroutines.
 type TokenMeter interface {
-	Observe(role agent.AgentRole, promptTokens, completionTokens int)
+	Observe(role agent.AgentRole, usage schema.TokenUsage)
 	Total() int
 }
 
@@ -35,10 +36,10 @@ type EstimateMeter struct {
 
 func NewEstimateMeter() *EstimateMeter { return &EstimateMeter{} }
 
-func (m *EstimateMeter) Observe(_ agent.AgentRole, promptTokens, completionTokens int) {
+func (m *EstimateMeter) Observe(_ agent.AgentRole, usage schema.TokenUsage) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.total += promptTokens + completionTokens
+	m.total += usage.PromptTokens + usage.CompletionTokens
 }
 
 func (m *EstimateMeter) Total() int {

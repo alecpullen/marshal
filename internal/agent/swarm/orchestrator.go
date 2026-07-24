@@ -12,6 +12,7 @@ import (
 	"marshal/internal/agent"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/policy"
 )
@@ -123,9 +124,9 @@ func (o *Orchestrator) Run(ctx context.Context, goal string) error {
 				return err
 			}
 			var hasRealUsage bool
-			runner.UsageObserver = func(promptTokens, completionTokens int) {
+			runner.UsageObserver = func(usage schema.TokenUsage) {
 				hasRealUsage = true
-				meter.Observe(agent.RoleRepoScout, promptTokens, completionTokens)
+				meter.Observe(agent.RoleRepoScout, usage)
 			}
 			jobs = append(jobs, scoutJob{
 				focus:        focus,
@@ -235,9 +236,9 @@ func (o *Orchestrator) runRole(ctx context.Context, meter TokenMeter, role agent
 		return nil, err
 	}
 	var hasRealUsage bool
-	runner.UsageObserver = func(promptTokens, completionTokens int) {
+	runner.UsageObserver = func(usage schema.TokenUsage) {
 		hasRealUsage = true
-		meter.Observe(role, promptTokens, completionTokens)
+		meter.Observe(role, usage)
 		o.State.UpdateSwarmTokens(meter.Total(), o.MaxTotalTokens)
 	}
 	task, err := runner.RunTask(ctx, prompt)
@@ -251,7 +252,10 @@ func (o *Orchestrator) runRole(ctx context.Context, meter TokenMeter, role agent
 }
 
 func (o *Orchestrator) observe(meter TokenMeter, role agent.AgentRole, prompt, answer string) {
-	meter.Observe(role, EstimateText(prompt), EstimateText(answer))
+	meter.Observe(role, schema.TokenUsage{
+		PromptTokens:     EstimateText(prompt),
+		CompletionTokens: EstimateText(answer),
+	})
 	o.State.UpdateSwarmTokens(meter.Total(), o.MaxTotalTokens)
 }
 

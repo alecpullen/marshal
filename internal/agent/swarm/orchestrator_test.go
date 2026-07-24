@@ -371,11 +371,11 @@ func TestOverBudgetRechecksAfterRole(t *testing.T) {
 	o := &Orchestrator{MaxTotalTokens: 100}
 	m := NewEstimateMeter()
 	// Pre-fill to 90, then run a "role" that adds 20.
-	m.Observe(agent.RolePlanner, 0, 90)
+	m.Observe(agent.RolePlanner, schema.TokenUsage{CompletionTokens: 90})
 	if o.overBudget(m) {
 		t.Fatal("pre-fill should not be over budget")
 	}
-	m.Observe(agent.RoleImplementer, 0, 20)
+	m.Observe(agent.RoleImplementer, schema.TokenUsage{CompletionTokens: 20})
 	if !o.overBudget(m) {
 		t.Fatal("post-role observation should put us over budget")
 	}

@@ -1,6 +1,11 @@
 package agent
 
-import "time"
+import (
+	"time"
+
+	"marshal/internal/llm/pricing"
+	"marshal/internal/llm/schema"
+)
 
 // TurnMetrics summarises one RunTask execution. It is emitted exactly once
 // per turn via Runner.MetricsObserver, including on error exits, so every
@@ -26,6 +31,13 @@ type TurnMetrics struct {
 	SalvageReason    string // non-empty when Outcome is "salvaged": "exhausted", "stalled", or "malformed"
 	PromptTokens     int
 	CompletionTokens int
+	ReasoningTokens  int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	// EstimatedCostCents is the estimated cost in hundredths of a cent
+	// (1/10000 of a dollar), computed from the token counts and the
+	// pricing table at metrics-emission time. 0 for local/unpriced models.
+	EstimatedCostCents int64
 }
 
 // turnStats is the mutable per-turn collector behind TurnMetrics. It has no
@@ -87,5 +99,12 @@ func (r *Runner) emitMetrics(task *Task) {
 	m.Class = string(task.Class)
 	m.Outcome = outcomeFor(task)
 	m.SalvageReason = task.SalvagedReason
+	m.EstimatedCostCents = pricing.EstimateCostCents(schema.TokenUsage{
+		PromptTokens:     m.PromptTokens,
+		CompletionTokens: m.CompletionTokens,
+		ReasoningTokens:  m.ReasoningTokens,
+		CacheReadTokens:  m.CacheReadTokens,
+		CacheWriteTokens: m.CacheWriteTokens,
+	}, r.Pricing)
 	r.MetricsObserver(m)
 }

@@ -97,7 +97,7 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 		}
 	}
 	if r.UsageObserver != nil && usage != nil {
-		r.UsageObserver(usage.PromptTokens, usage.CompletionTokens)
+		r.UsageObserver(*usage)
 	}
 	if r.CalibrationObserver != nil && usage != nil {
 		r.CalibrationObserver(messages, usage.PromptTokens)
@@ -106,6 +106,9 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 		r.withStats(func(s *turnStats) {
 			s.m.PromptTokens += usage.PromptTokens
 			s.m.CompletionTokens += usage.CompletionTokens
+			s.m.ReasoningTokens += usage.ReasoningTokens
+			s.m.CacheReadTokens += usage.CacheReadTokens
+			s.m.CacheWriteTokens += usage.CacheWriteTokens
 		})
 	}
 	return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, nil

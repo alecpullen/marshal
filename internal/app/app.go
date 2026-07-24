@@ -29,6 +29,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
 	"marshal/internal/knowledge"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -512,6 +513,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
+	runner.Pricing = pricing.Lookup(route.Preset)
 
 	// T17: wire UsageCounter so the rollover controller can use
 	// provider-reported prompt_tokens as the numerator for context_percent
@@ -521,10 +523,10 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if cfg.Session.Rollover.Enabled && cfg.Session.Rollover.TokenCounter == "usage" {
 		usageCounter = rollover.NewUsageCounter()
 	}
-	runner.UsageObserver = func(promptTokens, completionTokens int) {
-		state.SetTurnUsage(promptTokens + completionTokens)
+	runner.UsageObserver = func(usage schema.TokenUsage) {
+		state.SetTurnUsage(usage.PromptTokens + usage.CompletionTokens)
 		if usageCounter != nil {
-			usageCounter.Observe(promptTokens)
+			usageCounter.Observe(usage.PromptTokens)
 		}
 	}
 

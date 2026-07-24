@@ -10,6 +10,7 @@ import (
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/tools/policy"
 )
 
 // RunnerFactory builds a role-specific agent.Runner. Implementations must
@@ -49,6 +50,10 @@ func (o *Orchestrator) SetForceClass(string) {}
 // SetPolicyRules is a no-op for SDD; policy is inherited from the parent
 // agent runner factory.
 func (o *Orchestrator) SetPolicyRules([]config.PermissionRule) {}
+
+// SetApprovalMode is a no-op for SDD; approval mode is inherited from the
+// parent agent runner factory.
+func (o *Orchestrator) SetApprovalMode(policy.ApprovalMode) {}
 
 // Run executes the plan at planPath. Satisfies tui.AgentRunner.
 func (o *Orchestrator) Run(ctx context.Context, planPath string) error {

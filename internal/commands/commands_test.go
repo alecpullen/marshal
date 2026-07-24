@@ -277,7 +277,7 @@ func TestModeSwitchCommands(t *testing.T) {
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
-	for _, name := range []string{"ask", "edit", "auto"} {
+	for _, name := range []string{"plan", "default", "edit", "copilot", "auto"} {
 		cmd, ok := cmdReg.Lookup(name)
 		if !ok {
 			t.Fatalf("%s command not registered", name)
@@ -487,8 +487,8 @@ func TestHelpListsFlagshipCommands(t *testing.T) {
 		}
 	}
 
-	// Truly hidden commands (ask, edit, auto, stop) must NOT appear.
-	for _, name := range []string{"ask", "edit", "auto", "stop"} {
+	// Truly hidden commands (plan, default, edit, copilot, auto, stop) must NOT appear.
+	for _, name := range []string{"plan", "default", "edit", "copilot", "auto", "stop"} {
 		if strings.Contains(result, "/"+name) {
 			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
 		}
@@ -619,7 +619,7 @@ func TestHiddenCommandsStillRunnable(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	// Hidden commands must still be findable via Lookup.
-	for _, name := range []string{"stop", "ask", "edit", "auto", "mode", "swarm", "sdd", "settings", "memory", "model", "connect", "models"} {
+	for _, name := range []string{"stop", "plan", "default", "edit", "copilot", "auto", "mode", "swarm", "sdd", "settings", "memory", "model", "connect", "models"} {
 		_, ok := cmdReg.Lookup(name)
 		if !ok {
 			t.Errorf("hidden command /%s must still be registered for Lookup", name)
@@ -686,7 +686,7 @@ func TestListAllIncludesHiddenCommands(t *testing.T) {
 	}
 	// Hidden commands are excluded from List (/help) but must appear in
 	// ListAll (completion popup).
-	for _, name := range []string{"settings", "model", "models", "memory", "connect", "swarm", "sdd", "mode", "ask", "edit", "auto", "stop"} {
+	for _, name := range []string{"settings", "model", "models", "memory", "connect", "swarm", "sdd", "mode", "plan", "default", "edit", "copilot", "auto", "stop"} {
 		if !all[name] {
 			t.Errorf("ListAll() missing hidden command /%s", name)
 		}

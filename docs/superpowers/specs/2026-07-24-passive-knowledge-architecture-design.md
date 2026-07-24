@@ -141,6 +141,14 @@ thin wrappers over the same Sources / LSP.
 - **Diagnostics are never persisted** — pulled live from the LSP server at
   pack-build time.
 
+**Migration mechanism (already exists).** New tables (`chunks`, `embeddings`)
+are added to the idempotent `schema` const (`CREATE TABLE IF NOT EXISTS`). The
+additive `symbols.source` column uses the existing `migrationColumns` slice in
+`internal/db/db.go`, applied by `Migrate()` as `ALTER TABLE symbols ADD COLUMN
+source TEXT` and guarded by a `PRAGMA table_info` existence check — the same
+path already used for backward-compatible column additions. No new migration
+machinery is needed.
+
 ## Embedding seam
 
 - `Embedder` interface: `Embed(ctx, texts []string) ([][]float32, error)`,
@@ -171,6 +179,29 @@ Each gets its own spec → plan → build cycle after this umbrella:
 4. **LSP integration** — client + server manager, layered `source`-column
    symbols, live tools (`definition` / `references` / `hover`), **diagnostics
    injection**. Independent of 1–3; plugs into retrieval + index.
+   - **Reconcile with the existing `diagnostics.check` tool.** A native
+     `diagnostics.check` tool already exists (`internal/tools/native/diagnostics.go`),
+     backed by `t.diagnostics.Check` running configured external language
+     checkers. The LSP work must extend/unify this surface, not add a competing
+     `diagnostics` tool. Passive diagnostics injection into the context pack is
+     new and does not collide; if an LSP-backed diagnostics *tool* is exposed,
+     it either becomes an additional backend behind `diagnostics.check` or is
+     clearly namespaced.
+
+## Compatibility with current `main` (audited 2026-07-24)
+
+Checked against the recent rollover / approval-modes / provider-repair work on
+`main`. No blocking conflicts. Notes folded into this design:
+
+- **DB** — migration mechanism confirmed present (see above). No conflict.
+- **`diagnostics.check`** — pre-existing tool; LSP must reconcile (see #4).
+- **Routing roles** — `AllRoles` enumerates *chat* roles for onboarding /
+  settings; the `embedding` role is not a chat role. Spec #1 decides placement
+  (see open questions).
+- **Provider `toolcall_repair` / `openai_compatible`** — chat-path only; the
+  `Embedder` uses `/v1/embeddings` or Ollama `/api/embed`, a separate path.
+- **`contextpack`** — untouched by recent work; passive-injection changes land
+  on stable code.
 
 ## Deferred / documented extensions
 
@@ -209,3 +240,6 @@ Each subsystem spec owns its own tests. At the seams:
   configured (LSP spec).
 - Fusion weighting: how semantic vs. lexical vs. LSP scores combine, and how
   strong the git-churn boost is (semantic/retrieval spec, tuned empirically).
+- **`embedding` role placement** — whether `RoleEmbedding` joins `routing.AllRoles`
+  (and settings/onboarding treat it specially since it is not a chat role) or is
+  resolved via a dedicated lookup outside `AllRoles` (embedding-foundation spec).

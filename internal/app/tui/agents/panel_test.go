@@ -2,10 +2,15 @@ package agents
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
+
+	tea "charm.land/bubbletea/v2"
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
@@ -117,9 +122,9 @@ func TestToolDenylistValidation(t *testing.T) {
 	cfg := config.Default()
 	cfg.CustomAgents = map[string]routing.CustomAgent{"x": {Name: "x", Preset: "p"}}
 	p := NewRosterPanel(cfg, "", "", nil)
-	// validateToolDenylist checks names against a live registry.
+	// ValidateToolDenylist checks names against a live registry.
 	// With no registry passed, it should still validate (empty registry).
-	err := p.validateToolDenylist([]string{"nonexistent_tool"})
+	err := p.ValidateToolDenylist([]string{"nonexistent_tool"})
 	if err == nil {
 		t.Fatal("invalid tool name should fail validation")
 	}
@@ -129,11 +134,11 @@ func TestToolDenylistValidation(t *testing.T) {
 		return registry.ToolResult{}, nil
 	}})
 	p2 := NewRosterPanelWithRegistry(cfg, "", "", nil, reg)
-	err2 := p2.validateToolDenylist([]string{"file.read"})
+	err2 := p2.ValidateToolDenylist([]string{"file.read"})
 	if err2 != nil {
 		t.Fatalf("valid tool name should pass validation: %v", err2)
 	}
-	err3 := p2.validateToolDenylist([]string{"file.read", "nonexistent"})
+	err3 := p2.ValidateToolDenylist([]string{"file.read", "nonexistent"})
 	if err3 == nil {
 		t.Fatal("mix of valid and invalid should fail")
 	}
@@ -141,4 +146,82 @@ func TestToolDenylistValidation(t *testing.T) {
 
 func containsGlyph(s string, g string) bool {
 	return strings.Contains(s, g)
+}
+
+// TestRosterPersistViaDirectPickedMsg tests that a PickedMsg with a
+// pre-configured pendingPick callback persists correctly via ChangedMsg.
+func TestRosterPersistViaDirectPickedMsg(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".marshal", "config.toml")
+
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "tiny"},
+		"slow": {Provider: "ollama", Model: "big"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"default": {Name: "default", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+	cfg.Profile.Default = "default"
+
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveProjectConfig(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewRosterPanel(cfg, cfgPath, "", nil)
+
+	// Set up pendingPick to mutate the state's config (the one persistNow reads).
+	p.pendingPick = func(v string) error {
+		stateCfg := settings.StateCfg(p.state)
+		profile := stateCfg.AgentProfiles["default"]
+		profile.Roles[routing.RoleImplementer] = routing.RoleBinding{Preset: v}
+		stateCfg.AgentProfiles["default"] = profile
+		return nil
+	}
+
+	cmd := p.Update(picker.PickedMsg{Value: "slow"})
+	if cmd == nil {
+		t.Fatal("expected a Cmd after picker commit, got nil")
+	}
+
+	got := cmd()
+	changed, ok := got.(settings.ChangedMsg)
+	if !ok {
+		t.Fatalf("expected settings.ChangedMsg, got %T: %+v", got, got)
+	}
+	if changed.SaveErr != nil {
+		t.Fatalf("ChangedMsg.SaveErr = %v", changed.SaveErr)
+	}
+	profile, ok := changed.Cfg.AgentProfiles["default"]
+	if !ok {
+		t.Fatal("ChangedMsg.Cfg missing default profile")
+	}
+	binding, ok := profile.Roles[routing.RoleImplementer]
+	if !ok {
+		t.Fatal("ChangedMsg.Cfg missing implementer role")
+	}
+	if binding.Preset != "slow" {
+		t.Fatalf("implementer preset = %q, want %q", binding.Preset, "slow")
+	}
+}
+
+func TestRosterPersistNoopWhenNoCommit(t *testing.T) {
+	cfg := config.Default()
+	p := NewRosterPanel(cfg, "", "", nil)
+
+	// A plain key press (filter typing) should NOT trigger persistence.
+	cmd := p.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(settings.ChangedMsg); ok {
+				t.Fatal("filter typing should not emit ChangedMsg")
+			}
+		}
+	}
 }

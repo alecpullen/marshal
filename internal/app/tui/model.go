@@ -57,6 +57,12 @@ type AgentRunner interface {
 	SetApprovalMode(mode policy.ApprovalMode)
 }
 
+// CustomAgentRunnerFactory builds a one-shot AgentRunner for a named custom
+// agent. It is wired from app.go via WithCustomAgentRunnerFactory and used
+// by buildCustomAgentRunner to dispatch Run-now. Returns nil when the agent
+// name is unknown or the factory is not available.
+type CustomAgentRunnerFactory func(agentName string) (AgentRunner, error)
+
 const (
 	minTerminalWidth  = 80
 	minTerminalHeight = 24
@@ -169,6 +175,14 @@ type Model struct {
 	// or canceling the wizard returns to the browser with the same filter.
 	connectReturnToSettings bool
 	connectReturnFilter     string
+
+	// customAgentFactory builds a one-shot AgentRunner for a named custom
+	// agent. Wired from app.go; used by buildCustomAgentRunner for Run-now.
+	customAgentFactory CustomAgentRunnerFactory
+
+	// toolRegistry is the live tool registry, used by the agents roster
+	// panel for tool denylist validation. Wired from app.go.
+	toolRegistry *registry.Registry
 
 	// pendingRun holds the pre-flight state while the cast list panel is
 	// open. It is set by openRunPreflight and consumed by the castlist
@@ -289,6 +303,22 @@ func WithSteeringBroker(ctx context.Context, broker *pubsub.Broker[session.Steer
 	return func(m *Model) {
 		m.ctx = ctx
 		m.steeringBroker = broker
+	}
+}
+
+// WithCustomAgentRunnerFactory wires a factory that builds a one-shot
+// AgentRunner for a named custom agent. Used by the /agents Run-now action.
+func WithCustomAgentRunnerFactory(fn CustomAgentRunnerFactory) Option {
+	return func(m *Model) {
+		m.customAgentFactory = fn
+	}
+}
+
+// WithToolRegistry wires the live tool registry into the model so the
+// agents roster panel can validate tool denylist entries.
+func WithToolRegistry(reg *registry.Registry) Option {
+	return func(m *Model) {
+		m.toolRegistry = reg
 	}
 }
 
@@ -449,17 +479,20 @@ func (m *Model) openAgentsRoster(arg string) {
 		projectConfigPath(m.state.WorkingDir),
 		arg,
 		dispatch,
-		nil, // tool registry not available on Model; validation skipped in TUI
+		m.toolRegistry,
 	))
 }
 
 // buildCustomAgentRunner builds an AgentRunner for the named custom agent.
-// Returns nil when the runner or router is not available.
+// Returns nil when the runner or factory is not available.
 func (m *Model) buildCustomAgentRunner(name string) AgentRunner {
-	// Use the swarm runner as the base, since it's the general-purpose
-	// orchestrator runner. In a full implementation this would use the
-	// agent-aware subagent factory from Task 6 to resolve the custom
-	// agent's overrides. For v1, fall back to the swarm runner.
+	if m.customAgentFactory != nil {
+		runner, err := m.customAgentFactory(name)
+		if err == nil && runner != nil {
+			return runner
+		}
+	}
+	// Fallback: use the swarm runner when the factory is not wired or fails.
 	if m.swarmRunner == nil {
 		return nil
 	}

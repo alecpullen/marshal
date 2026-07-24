@@ -5058,3 +5058,96 @@ func TestAllDoneTodoSummaryClearsOnNextTurn(t *testing.T) {
 		t.Fatal("a rewritten todo list must un-dismiss the panel")
 	}
 }
+
+// TestBuildCustomAgentRunnerWithFactory verifies that buildCustomAgentRunner
+// uses the customAgentFactory when wired, returning a runner for the named
+// agent instead of falling back to the swarm runner.
+func TestBuildCustomAgentRunnerWithFactory(t *testing.T) {
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+
+	// Without a factory, buildCustomAgentRunner should return nil (no swarm runner).
+	if r := m.buildCustomAgentRunner("test-agent"); r != nil {
+		t.Fatal("expected nil runner when no factory and no swarm runner")
+	}
+
+	// Wire a factory that returns a test runner for a specific agent name.
+	var capturedName string
+	m.customAgentFactory = func(agentName string) (AgentRunner, error) {
+		capturedName = agentName
+		return &testAgentRunner{}, nil
+	}
+
+	r := m.buildCustomAgentRunner("my-custom-agent")
+	if r == nil {
+		t.Fatal("expected non-nil runner from factory")
+	}
+	if capturedName != "my-custom-agent" {
+		t.Fatalf("factory called with agentName=%q, want %q", capturedName, "my-custom-agent")
+	}
+}
+
+// TestBuildCustomAgentRunnerFactoryError verifies that when the factory
+// returns an error, buildCustomAgentRunner falls back to the swarm runner.
+func TestBuildCustomAgentRunnerFactoryError(t *testing.T) {
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+
+	// Wire a factory that always errors.
+	m.customAgentFactory = func(agentName string) (AgentRunner, error) {
+		return nil, fmt.Errorf("factory error")
+	}
+
+	// Without a swarm runner, should return nil.
+	if r := m.buildCustomAgentRunner("test"); r != nil {
+		t.Fatal("expected nil when factory errors and no swarm runner")
+	}
+
+	// With a swarm runner, should fall back to it.
+	m.swarmRunner = &testAgentRunner{}
+	r := m.buildCustomAgentRunner("test")
+	if r == nil {
+		t.Fatal("expected non-nil fallback runner")
+	}
+}
+
+// TestOpenAgentsRosterThreadsToolRegistry verifies that openAgentsRoster
+// passes the model's toolRegistry to the roster panel.
+func TestOpenAgentsRosterThreadsToolRegistry(t *testing.T) {
+	cfg := config.Default()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+
+	// Wire a tool registry with a known tool.
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		return registry.ToolResult{}, nil
+	}})
+	m.toolRegistry = reg
+
+	// openAgentsRoster opens the dock with a roster panel.
+	m.openAgentsRoster("")
+
+	// Verify the dock panel is an *agents.Panel with the registry set.
+	p, ok := m.dock.Panel().(*agents.Panel)
+	if !ok {
+		t.Fatal("expected agents.Panel in dock")
+	}
+	// Validate a known tool name against the panel's registry.
+	if err := p.ValidateToolDenylist([]string{"file.read"}); err != nil {
+		t.Fatalf("valid tool should pass: %v", err)
+	}
+	if err := p.ValidateToolDenylist([]string{"nonexistent"}); err == nil {
+		t.Fatal("invalid tool should fail")
+	}
+}
+
+// testAgentRunner is a minimal AgentRunner implementation for tests.
+type testAgentRunner struct{}
+
+func (r *testAgentRunner) Run(ctx context.Context, goal string) error   { return nil }
+func (r *testAgentRunner) SetForceClass(class string)                   {}
+func (r *testAgentRunner) SetPolicyRules(rules []config.PermissionRule) {}
+func (r *testAgentRunner) SetApprovalMode(mode policy.ApprovalMode)     {}

@@ -78,7 +78,11 @@ type Runtime struct {
 	SkillIndex     *skills.Index
 	JobManager     *native.JobManager
 	DesktopCloser  func()
-	additionalDirs []string
+
+	// CustomAgentFactory builds a one-shot *agent.Runner for a named custom
+	// agent. Used by the TUI's Run-now dispatch. Set by startRuntime.
+	CustomAgentFactory func(agentName string) (*agent.Runner, error)
+	additionalDirs     []string
 
 	workCtx    context.Context
 	workCancel context.CancelFunc
@@ -444,7 +448,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 
-	runner, toolReg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
+	runner, toolReg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -453,28 +457,29 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	}
 
 	rt := &Runtime{
-		Config:         cfg,
-		State:          state,
-		Runner:         runner,
-		ToolRegistry:   toolReg,
-		SwarmRunner:    swarmRunner,
-		SDDRunner:      sddRunner,
-		DB:             database,
-		ProjectID:      projectID,
-		SessionID:      sessionID,
-		JobBroker:      jobBroker,
-		SteeringBroker: steeringBroker,
-		EventBroker:    eventBroker,
-		JobManager:     jobMgr,
-		DesktopCloser:  desktopCloser,
-		Logger:         logger,
-		WorkingDir:     workingDir,
-		HomeDir:        homeDir,
-		DataDir:        dataDir,
-		SkillIndex:     skillIndex,
-		additionalDirs: runOpts.additionalDirs,
-		workCtx:        workCtx,
-		workCancel:     workCancel,
+		Config:             cfg,
+		State:              state,
+		Runner:             runner,
+		ToolRegistry:       toolReg,
+		SwarmRunner:        swarmRunner,
+		SDDRunner:          sddRunner,
+		DB:                 database,
+		ProjectID:          projectID,
+		SessionID:          sessionID,
+		JobBroker:          jobBroker,
+		SteeringBroker:     steeringBroker,
+		EventBroker:        eventBroker,
+		JobManager:         jobMgr,
+		DesktopCloser:      desktopCloser,
+		CustomAgentFactory: subagentFactory,
+		Logger:             logger,
+		WorkingDir:         workingDir,
+		HomeDir:            homeDir,
+		DataDir:            dataDir,
+		SkillIndex:         skillIndex,
+		additionalDirs:     runOpts.additionalDirs,
+		workCtx:            workCtx,
+		workCancel:         workCancel,
 	}
 	// Assign MCP and snapshot only on success AND only when the underlying
 	// concrete pointer is non-nil. A nil *mcp.Manager assigned to an MCPCloser

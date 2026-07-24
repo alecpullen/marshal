@@ -29,6 +29,44 @@ supported and which are intentionally omitted.
 delete }` (each an empty object). No other lifecycle, content, or MCP
 capabilities are advertised.
 
+## Approval Modes (ACP)
+
+The five approval modes (`plan`, `default`, `edit`, `copilot`, `auto`) are
+exposed over ACP with the following behavior:
+
+| Mode | Config-only | Elevation | Approval Bridge |
+|------|-------------|-----------|-----------------|
+| plan | yes | mode.request | Confirm → editor |
+| default | yes | mode.request | Confirm → editor |
+| edit | yes | no | Allow |
+| copilot | yes | mode.request | Allow (downgrade) |
+| auto | yes | mode.request | Allow (downgrade) |
+
+### Config-only mode selection
+
+Mode selection over ACP is **config-only** — there is no Tab/slash runtime
+toggle. The mode is seeded from `config.toml` at runtime construction, matching
+the TUI's default path. ACP clients cannot switch modes mid-session.
+
+### Elevation via `mode.request`
+
+When a mode change requires elevation (e.g., switching from `edit` to `plan`),
+the ACP layer reuses the existing `request_permission` wire shape rather than
+inventing a new ACP-specific message. The same allow/deny/always semantics
+apply as for tool permission requests.
+
+### Permission bridge delegation
+
+Over ACP, approvals delegate to the editor via `PermissionBridge`. The bridge
+intercepts permission decisions and forwards them to the ACP client through the
+standard `request_permission` notification flow.
+
+For `copilot` and `auto` modes, the `Confirm` decision is downgraded to `Allow`
+before the bridge fires, so no permission request is sent to the ACP client
+while the floor still forwards to the editor. This means copilot and auto modes
+are fully autonomous over ACP — the client never sees permission prompts for
+these modes.
+
 ## Prompt content blocks
 
 | Block type | Status | Notes |

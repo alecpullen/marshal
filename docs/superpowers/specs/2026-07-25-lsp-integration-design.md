@@ -28,7 +28,9 @@ tree-sitter symbol index.
 
 **Out (later / documented extensions):**
 - Passive **injection of diagnostics into context packs** — rides the later
-  retrieval/passive-context spec (avoids the in-flight `contextpack` churn).
+  retrieval/passive-context spec, where it is fused/ranked alongside semantic +
+  lexical + LSP-symbol sources. (Deferred for the source-count reason, not any
+  `contextpack` collision — that work never touched `contextpack`.)
 - The **call/reference graph** (umbrella extension #5).
 - Non-symbol LSP features: rename, formatting, completion, code actions.
 

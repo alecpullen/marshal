@@ -13,31 +13,39 @@ token-metrics work in `internal/contextpack`).
 **In:** the `chunks`/`embeddings` tables, a symbol-aware enriched chunker, an
 incremental hash-diff embedding pass folded into the existing `repo.index`
 tool, float32-blob vector storage with in-Go cosine KNN, a retrieval `Source`
-interface with a single semantic implementation, and the model-facing
-`codebase_search` tool.
+interface with a single semantic implementation, the model-facing
+`codebase_search` tool, and **passive semantic injection into the context
+pack** (semantic-only).
 
 **Out (later specs):**
-- Passive context-pack injection and multi-source **fusion** + **git-churn
-  ranking** — a later "retrieval fusion / passive context" spec, sequenced
-  after the token-metrics work lands so it doesn't fight that churn in
-  `internal/contextpack`.
+- Multi-source **fusion** + **git-churn ranking** + **LSP diagnostics
+  injection** — a later "retrieval fusion / passive context" spec. Deferred not
+  because of any collision, but because fusion only earns its keep once there
+  is more than one real source to fuse: it lands after LSP (#4) so it can
+  combine semantic + lexical + LSP symbols + diagnostics under one ranking.
+  This subsystem injects the **single** semantic source directly (no fusion
+  layer yet); the later spec generalizes that injection into ranked fusion.
 - The background **watcher** (spec #3) — indexing here is triggered explicitly
   via `repo.index`.
 - **LSP** symbols/diagnostics (spec #4).
 
-**Why this split:** the user paused execution because token-metrics work is
-modifying `internal/contextpack`. Scoping this subsystem to *not* touch
-`contextpack` lets the whole index + active search tool be built and merged
-safely now; the passive read-through lands once that work settles.
+> **Scope note (2026-07-25):** an earlier draft deferred *all* context-pack
+> wiring on the belief that in-flight token-metrics work was churning
+> `internal/contextpack`. That work has since landed and it never touched
+> `contextpack` (it modified `agent`/`db`/`pricing`/`provider`/`routing`), so
+> passive semantic injection is folded back in here. Only fusion/git-churn/
+> LSP-diagnostics remain deferred, for the source-count reason above.
 
 ## Motivation
 
 Symbol search today is lexical and Go-only. Developers ask questions like
 "where do we resolve the embedding provider" that no substring match answers.
 Semantic search over the codebase — local-first, via the nomic-embed-text
-embedder from subsystem #1 — closes that gap. This subsystem delivers working
-semantic search the model can call (`codebase_search`), while leaving the
-passive "inject relevant code into every context pack" behavior to a later spec.
+embedder from subsystem #1 — closes that gap. This subsystem delivers semantic
+search two ways: **actively** (the model calls `codebase_search`) and
+**passively** (relevant code is injected into the context pack from the user's
+goal, no tool call needed). Multi-source ranked fusion is the only piece left
+for later, once LSP gives fusion a second and third source to combine.
 
 ## Data model (SQLite)
 
@@ -187,7 +195,8 @@ it already produced:
   tool failure.
 - The tool's output summary gains one line: `Embedded N files (M chunks)` — or
   `Semantic index: not configured` when off.
-- No other `repo.index` behavior changes; nothing in `contextpack` changes.
+- No other `repo.index` behavior changes. The `contextpack` change (below) is an
+  additive, separate seam and does not affect the write path.
 
 The tool set (`internal/tools/native`) gains the `routing.Router` (or a
 resolved embedder factory) as a dependency so the handler can build the
@@ -197,8 +206,10 @@ embedder. This is additive wiring in the native tool layer only.
 
 ### Retrieval `Source` — `internal/retrieval/retrieval.go`
 
-The umbrella's spine, introduced here with a **single** implementation. No
-fusion function yet (fusion + git-churn belong to the later passive spec).
+The umbrella's spine, introduced here with a **single** implementation and
+consumed by *both* the active `codebase_search` tool and the passive
+context-pack injection below. No fusion function yet — a lone source needs no
+ranking layer; fusion + git-churn arrive with LSP (the later retrieval spec).
 
 ```go
 type Candidate struct {
@@ -255,6 +266,53 @@ vectors and no DB.
     `repo.index` to build it."
   - Zero hits → "No semantic matches for that query."
 
+## Passive context-pack injection
+
+Beyond the active tool, the semantic source feeds the context pack directly:
+relevant code is retrieved from the user's **goal** and injected each turn, no
+tool call required. This mirrors the existing `@file` pin path
+(`internal/agent/atfile.go` already extracts `contextpack.FileSnippet`s from the
+goal) and the existing `Merge*` pattern — the additions are small and follow
+established seams.
+
+### contextpack additions (pure) — `internal/contextpack`
+
+- New section kind `SectionSemantic SectionKind = "semantic"`, priority **35**
+  (below explicit `@file` pins at 100 and regular file snippets at 30, above
+  tool output at 40 — retrieved context yields budget to repo card, memories,
+  plan, and user-pinned files, but outranks tool output).
+- New function mirroring `MergeMemories`:
+
+  ```go
+  // MergeSemanticContext replaces any existing semantic section with one built
+  // from snippets (each rendered as `path:start-end` + content), inserted
+  // before the file-snippet/tool-output sections, then rebudgets within
+  // maxTokens. Empty snippets removes the section.
+  func MergeSemanticContext(pack Pack, snippets []FileSnippet, maxTokens int, now func() time.Time) Pack
+  ```
+
+  Pure and table-testable, exactly like `MergeMemories`/`RefreshPlanWithBudget`.
+
+### agent wiring — `internal/agent/semantic.go`
+
+- `retrieveSemanticContext(ctx, goal string, r *Runner, projectID int64)
+  []contextpack.FileSnippet` — builds the `semanticSource` (embedder via
+  `ResolveEmbedding`; **graceful-off** returns `nil` when unconfigured / index
+  empty), runs one `Retrieve{Text: goal, Limit: N}`, and maps `Candidate`s to
+  `FileSnippet`s. Mirrors `extractPinnedFiles` in `atfile.go`.
+- The runner calls it where memories/pins are merged (alongside the
+  `MergeMemories` call in `route.go`), storing the result via
+  `MergeSemanticContext` → `State.SetContextPack`. It runs when the goal changes,
+  not on every turn, to avoid redundant embeds.
+- **Graceful-off is total:** no embedder or empty index → `nil` snippets →
+  `MergeSemanticContext` removes/omits the section → packs are byte-identical to
+  today. Nothing regresses for users without embeddings configured.
+
+This is the only `contextpack`/`agent` surface this subsystem touches; the later
+retrieval spec generalizes `retrieveSemanticContext` into multi-source fusion
+(semantic + lexical + LSP + git-churn) behind the same `MergeSemanticContext`
+injection point.
+
 ## Testing strategy
 
 - **Chunker** (`chunker_test.go`) — table tests: a Go file with
@@ -277,13 +335,24 @@ vectors and no DB.
 - **`codebase_search`** (`codebase_search_test.go`) — configured returns ranked
   hits with `path:line` formatting; each of the three graceful-off cases returns
   its message and no error.
+- **`MergeSemanticContext`** (`contextpack` test) — snippets produce a
+  `SectionSemantic` at priority 35 inserted before file-snippet/tool-output;
+  empty snippets remove the section; the pack rebudgets within `maxTokens`
+  (pure, no DB).
+- **`retrieveSemanticContext`** (`agent` test) — a fake source returns snippets
+  that reach the pack; a `nil` embedder / empty index yields `nil` snippets and
+  a pack byte-identical to the no-semantic baseline (graceful-off).
 
 ## Open questions handed to implementation
 
 - Default `Limit` (10) and `maxChunkLines` (200) / window size (60/10) — start
   with these, tune if retrieval quality argues otherwise.
-- Whether the in-memory vector cache is per-`Indexer`/per-source instance or a
-  process-level singleton — default to per-source instance for the single-tool
-  read path; revisit when the passive spec adds a second reader.
+- Whether the in-memory vector cache is per-source instance or a process-level
+  singleton — both `codebase_search` and passive injection now read, so a
+  shared/process-level cache may be worth it; default to per-source instance and
+  revisit if double-loading shows up.
+- Passive retrieval `Limit` (how many snippets to inject) and its token budget
+  share — start small (e.g. 5 snippets) so passive context never dominates the
+  pack; tune empirically.
 - Exact enriched-header format (delimiter, whether to include package name) —
   a rendering detail the chunker owns; keep it one line and stable.

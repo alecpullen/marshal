@@ -183,6 +183,13 @@ API-key resolution reuses the existing `resolveAPIKey` behavior (literal
 - Any TUI/settings surface for configuring or testing the embedding provider
   (the `Probe` helper is the seam; wiring is later).
 - Managed local inference service lifecycle (documented umbrella extension).
+- **Usage/cost metering of embedding calls.** The token-metrics work (landed
+  2026-07-25) added `agent.UsageAggregator` + a pricing table, but it is
+  turn/chat-shaped (`Observe(TurnMetrics)`) and embedding calls do not flow
+  through it. For local nomic-embed-text this is free and moot; for a **remote**
+  embedding provider it is an accounting gap. Documented as a future seam: a
+  later change could route embedding token usage into `UsageAggregator` (or a
+  sibling), keyed by the embedding model in the pricing table. Not built here.
 
 ## Open questions handed to implementation
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStoreRoundTrip(t *testing.T) {
@@ -188,6 +189,58 @@ func TestStoreStoredConfigHash(t *testing.T) {
 	}
 	if hash != "abc123" {
 		t.Fatalf("StoredConfigHash = %q, want abc123", hash)
+	}
+}
+
+func TestStoreLoadToleratesZonelessTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	// Write a trust store with a zoneless timestamp (no timezone offset).
+	trustData := `{"/some/project": {"trusted": true, "config_hash": "abc123", "trusted_at": "2026-07-24T15:30:00"}}`
+	if err := os.WriteFile(store.path, []byte(trustData), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	records, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load with zoneless timestamp: %v", err)
+	}
+	r, ok := records["/some/project"]
+	if !ok {
+		t.Fatal("expected record for /some/project")
+	}
+	if !r.Trusted {
+		t.Fatal("expected trusted = true")
+	}
+	if r.ConfigHash != "abc123" {
+		t.Fatalf("config_hash = %q, want abc123", r.ConfigHash)
+	}
+	if r.TrustedAt.IsZero() {
+		t.Fatal("expected non-zero TrustedAt")
+	}
+	// Verify it was parsed as UTC.
+	if r.TrustedAt.Location() != time.UTC {
+		t.Fatalf("expected UTC location, got %v", r.TrustedAt.Location())
+	}
+}
+
+func TestStoreIsTrustedToleratesZonelessTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	// Write a trust store with a zoneless timestamp.
+	trustData := `{"/some/project": {"trusted": true, "config_hash": "abc123", "trusted_at": "2026-07-24T15:30:00"}}`
+	if err := os.WriteFile(store.path, []byte(trustData), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	trusted, err := store.IsTrusted("/some/project")
+	if err != nil {
+		t.Fatalf("IsTrusted: %v", err)
+	}
+	if !trusted {
+		t.Fatal("expected trusted = true")
 	}
 }
 

@@ -10,8 +10,9 @@ backends, and config/resolution. Nothing consumes embeddings yet.
 ## Scope
 
 **In:** the `Embedder` interface, an Ollama-native and an OpenAI-compatible
-backend, a factory, the `embedding` routing role + a dedicated resolver, and
-tests.
+backend, a factory, the `embedding` routing role + a dedicated resolver,
+formalizing `"ollama"` as a recognized `ProviderConfig.Type` value (embedding
+backend selection only), and tests.
 
 **Out (later specs):** chunking, DB tables (`chunks`/`embeddings`), the index
 engine, context-pack wiring, any TUI/settings surface, and the managed local
@@ -116,13 +117,27 @@ Driven by the provider entry's `Type`:
 | `"ollama"` | Ollama-native `/api/embed` |
 | `"openai_compatible"` or `""` | OpenAI-compatible `/v1/embeddings` |
 
-This adds one new recognized value (`"ollama"`) to `ProviderConfig.Type`, used
-only by the embedding factory. The chat provider factory
-(`provider.NewFromConfig`) is untouched and still only supports
-`openai_compatible`; a provider entry typed `"ollama"` is intended for embedding
-use (and paves the way for a future native Ollama chat provider, out of scope
-here). Ollama users who prefer the OpenAI-compatible path can simply leave
-`type` unset and point `base_url` at Ollama's `/v1` endpoint.
+**Formalizing `"ollama"` as a recognized `Type`.** This spec makes `"ollama"` a
+first-class value of `ProviderConfig.Type`, not an ad-hoc string the embedding
+factory happens to match:
+
+- Update the `Type` field doc comment in `internal/app/config/types.go` (line
+  294) to document `"ollama"` as a recognized value used for embedding backend
+  selection, alongside `"openai_compatible"`.
+- There is **no central config-load validation** of `Type` today — it is only
+  resolved at construction time — so no validator needs changing. Both factories
+  switch on `Type` at construction.
+- The **embedding factory** switches on it as above (native vs OpenAI-compatible).
+- The **chat factory** (`provider.NewFromConfig`) is intentionally **not**
+  extended to build a chat backend for `"ollama"`: a provider entry typed
+  `"ollama"` is meant for embedding. If used as a chat provider it continues to
+  return the existing `unsupported type` error (a native Ollama chat provider is
+  a documented future extension, out of scope here). A test pins this intended
+  rejection so the boundary is explicit.
+
+Ollama users who prefer the OpenAI-compatible path can instead leave `type`
+unset and point `base_url` at Ollama's `/v1` endpoint — that routes through the
+OpenAI-compatible embedding backend and also yields a working chat provider.
 
 API-key resolution reuses the existing `resolveAPIKey` behavior (literal
 `api_key` wins over `api_key_env`; absent auth is normal for local endpoints).
@@ -154,6 +169,9 @@ API-key resolution reuses the existing `resolveAPIKey` behavior (literal
   survives load→merge→save with the key intact.
 - **Factory test**: `type="ollama"` builds the native backend; `""` /
   `"openai_compatible"` builds the OpenAI-compatible backend.
+- **Chat-factory boundary test**: `provider.NewFromConfig` with `type="ollama"`
+  returns the existing `unsupported type` error — pinning that `"ollama"` is an
+  embedding-only type for now.
 - **Live contract tests**: gated/skipped when no local endpoint is reachable,
   mirroring the existing provider `integration_test.go` gating.
 

@@ -533,6 +533,16 @@ func TestBuildSystemPromptWithModeDefaultAdvertisesModeRequest(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptWithAddendum(t *testing.T) {
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "Be extra careful with diffs.")
+	if !strings.Contains(msg.Content, "Be extra careful with diffs.") {
+		t.Fatalf("addendum missing from prompt:\n%s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, baseRules) {
+		t.Fatalf("base rules dropped when addendum present")
+	}
+}
+
 func TestBaseRulesEncourageEarlyFinal(t *testing.T) {
 	for _, want := range []string{
 		"only to obtain facts",

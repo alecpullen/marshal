@@ -30,7 +30,7 @@ func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, 
 	}
 
 	fresh := []schema.ChatMessage{
-		BuildSystemPromptWithMode(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode()),
+		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum),
 	}
 	fresh = appendContextPackMessage(fresh, r.State.ContextPack())
 	fresh = append(fresh,

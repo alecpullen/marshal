@@ -219,7 +219,7 @@ func modeDirective(mode policy.ApprovalMode) string {
 }
 
 func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools, policy.ModeEdit)
+	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "")
 }
 
 // BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
@@ -227,21 +227,27 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 // runner passes the registry's ListDeferred() so the agent can see what
 // it might want to opt into via tools.select.
 func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, policy.ModeEdit)
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, policy.ModeEdit, "")
 }
 
 // BuildSystemPromptWithMode is BuildSystemPromptWithDeferred with an
 // explicit approval mode. The runner calls this to inject the per-mode
 // directive into the system prompt.
 func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode)
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, "")
+}
+
+// BuildSystemPromptWithAddendum is BuildSystemPromptWithMode plus a
+// custom-agent system-prompt addendum appended after the role addendum.
+func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode, addendum)
 }
 
 // buildSystemPrompt accepts an additional deferredTools list (used by the
 // runner to advertise MCP tools the agent hasn't loaded yet but may want
 // to opt into). Tests that pass nil get the old behavior with no
 // announcement appended.
-func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode) schema.ChatMessage {
+func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
@@ -311,6 +317,10 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	}
 	b.WriteString("\n\n")
 	b.WriteString(renderRoleAddendum(rp, nativeTools))
+	if addendum != "" {
+		b.WriteString("\n\n## Agent Instructions\n\n")
+		b.WriteString(addendum)
+	}
 
 	return schema.ChatMessage{
 		Role:    schema.RoleSystem,

@@ -2263,6 +2263,83 @@ func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
 	}
 }
 
+func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+	}
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"my-scout": {Name: "my-scout", Preset: "fast"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	pol := policy.NewEngine(&cfg, nil)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	child, err := factory("my-scout")
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.Pricing.InputPerMTokCents == 0 && child.Pricing.OutputPerMTokCents == 0 {
+		t.Fatal("child.Pricing should be resolved from the custom agent's preset (gpt-4o-mini is priced)")
+	}
+	if child.MetricsObserver == nil {
+		t.Fatal("child.MetricsObserver should be set so subagent turns persist to turn_metrics")
+	}
+	if child.UsageObserver == nil {
+		t.Fatal("child.UsageObserver should be set so subagent usage rolls up to the parent session")
+	}
+	// The UsageObserver folds into the parent session's running total.
+	child.UsageObserver(schema.TokenUsage{PromptTokens: 100, CompletionTokens: 50})
+	used, _ := parentState.TurnUsage()
+	if used != 150 {
+		t.Fatalf("parent usage after child observe = %d, want 150", used)
+	}
+}
+
+func TestSubagentFactoryAdHocHasObserversToo(t *testing.T) {
+	// The ad-hoc path (no agent name) must ALSO wire observers, closing
+	// the gap for today's plain agent.run children, not just named agents.
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	pol := policy.NewEngine(&cfg, nil)
+	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
+	child, err := factory("")
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.UsageObserver == nil || child.MetricsObserver == nil {
+		t.Fatal("ad-hoc subagent children must also carry UsageObserver + MetricsObserver")
+	}
+}
+
 func TestDesktopRegisterAllRegistersTools(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {

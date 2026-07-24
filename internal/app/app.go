@@ -500,8 +500,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 			return nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
 	if err := reg.Register(agent.NewSubagentTool(
-		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model),
+		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID),
 		reg,
 		state,
 	)); err != nil {
@@ -848,18 +849,59 @@ const defaultSubtaskIterations = 12
 // agent.run), and binds RoleSubtask so the system prompt enforces the
 // appropriate scope. The child session's depth is parent+1 so its own
 // depth guard rejects any attempt to spawn nested subagents.
-func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string) agent.SubagentRunnerFactory {
+//
+// When agentName is non-empty, the factory resolves the named custom agent
+// via the router and applies its overrides (system prompt, tool denylist,
+// max iterations). Both named-agent and ad-hoc paths wire Pricing,
+// UsageObserver, and MetricsObserver so subagent token usage and cost
+// are visible to the parent session.
+func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, database *db.DB, projectID int64) agent.SubagentRunnerFactory {
 	subtaskIters := cfg.Agent.SubtaskIterations
 	if subtaskIters <= 0 {
 		subtaskIters = defaultSubtaskIterations
 	}
-	return func() (*agent.Runner, error) {
+	metricsObserver := metricsRecorder(database, projectID, parentState.SessionID(), parentState.Logger())
+	return func(agentName string) (*agent.Runner, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
 		roReg := agent.SubtaskScopeView(parentReg)
-		child := agent.NewRunner(parentProvider, roReg, pol, childState, defaultModel)
-		child.Role = agent.RoleSubtask
-		child.MaxToolIterations = subtaskIters
+		role := agent.RoleSubtask
+		model := defaultModel
+		var addendum string
+		var pricingRates pricing.ModelPricing
+		iters := subtaskIters
+		if agentName != "" && router != nil {
+			route, err := router.ResolveCustomAgent(agentName, agent.RoleSubtask)
+			if err != nil {
+				return nil, fmt.Errorf("agent.run: %w", err)
+			}
+			model = route.Preset.Model
+			pricingRates = pricing.Lookup(route.Preset)
+			if route.CustomAgent != nil {
+				ca := route.CustomAgent
+				addendum = ca.SystemPrompt
+				if len(ca.ToolDenylist) > 0 {
+					roReg = agent.DenylistView(roReg, ca.ToolDenylist)
+				}
+				if ca.MaxIterations > 0 {
+					iters = ca.MaxIterations
+				}
+			}
+		}
+		child := agent.NewRunner(parentProvider, roReg, pol, childState, model)
+		child.Role = role
+		child.MaxToolIterations = iters
 		child.NativeTools = true
+		child.SystemPromptAddendum = addendum
+		child.Pricing = pricingRates
+		child.MetricsObserver = metricsObserver
+		// Fold the child's token usage into the parent session's running
+		// total so /context and the session usage view include subagent
+		// work. The child session is separate; this is additive to the
+		// parent's own turns, not a double-count.
+		child.UsageObserver = func(usage schema.TokenUsage) {
+			used, _ := parentState.TurnUsage()
+			parentState.SetTurnUsage(used + usage.PromptTokens + usage.CompletionTokens)
+		}
 		return child, nil
 	}
 }

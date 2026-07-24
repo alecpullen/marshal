@@ -828,3 +828,103 @@ func TestActionEnvelopeResponseFormatReachesWire(t *testing.T) {
 		t.Errorf("expected required=[rationale], got %v", required)
 	}
 }
+
+func TestChatStreamingTokenUsageWithCacheAndReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			`data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens_details":{"reasoning_tokens":20}}}` + "\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	var done schema.ChatEvent
+	for ev := range events {
+		if ev.Type == schema.ChatEventDone {
+			done = ev
+		}
+	}
+	if done.Usage == nil {
+		t.Fatal("expected token usage in done event, got nil")
+	}
+	if done.Usage.CacheReadTokens != 40 {
+		t.Errorf("CacheReadTokens = %d, want 40", done.Usage.CacheReadTokens)
+	}
+	if done.Usage.ReasoningTokens != 20 {
+		t.Errorf("ReasoningTokens = %d, want 20", done.Usage.ReasoningTokens)
+	}
+	if done.Usage.CacheWriteTokens != 0 {
+		t.Errorf("CacheWriteTokens = %d, want 0 (OpenAI doesn't report cache writes)", done.Usage.CacheWriteTokens)
+	}
+}
+
+func TestChatNonStreamingTokenUsageWithDeepSeekCache(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			`{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":200,"completion_tokens":80,"total_tokens":280,"prompt_cache_hit_tokens":150,"prompt_cache_miss_tokens":50}}`,
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(false))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	var done schema.ChatEvent
+	for ev := range events {
+		if ev.Type == schema.ChatEventDone {
+			done = ev
+		}
+	}
+	if done.Usage == nil {
+		t.Fatal("expected token usage, got nil")
+	}
+	if done.Usage.CacheReadTokens != 150 {
+		t.Errorf("CacheReadTokens = %d, want 150 (DeepSeek prompt_cache_hit_tokens)", done.Usage.CacheReadTokens)
+	}
+	if done.Usage.CacheWriteTokens != 50 {
+		t.Errorf("CacheWriteTokens = %d, want 50 (DeepSeek prompt_cache_miss_tokens)", done.Usage.CacheWriteTokens)
+	}
+}
+
+func TestChatTokenUsageNoCacheFieldsZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			`{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(false))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	var done schema.ChatEvent
+	for ev := range events {
+		if ev.Type == schema.ChatEventDone {
+			done = ev
+		}
+	}
+	if done.Usage == nil {
+		t.Fatal("expected token usage, got nil")
+	}
+	if done.Usage.ReasoningTokens != 0 || done.Usage.CacheReadTokens != 0 || done.Usage.CacheWriteTokens != 0 {
+		t.Errorf("provider without cache/reasoning fields should be zero: %+v", done.Usage)
+	}
+}

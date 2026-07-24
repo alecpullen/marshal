@@ -26,6 +26,20 @@ type usageBody struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// OpenAI usage detail breakdowns.
+	PromptTokensDetails     *tokenDetails `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *tokenDetails `json:"completion_tokens_details,omitempty"`
+	// DeepSeek extends the top-level usage object directly (not under
+	// _details). Pointers so absent = nil: a 0 cache hit is meaningful
+	// and distinct from "not reported".
+	PromptCacheHitTokens  *int `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens *int `json:"prompt_cache_miss_tokens,omitempty"`
+}
+
+// tokenDetails holds the OpenAI usage detail breakdowns.
+type tokenDetails struct {
+	CachedTokens    int `json:"cached_tokens"`    // prompt cache hits
+	ReasoningTokens int `json:"reasoning_tokens"` // reasoning model output
 }
 
 type chatCompletionRequestBody struct {

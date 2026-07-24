@@ -333,6 +333,96 @@ func TestRunNativeAskUserFeedsAnswerAsRoleTool(t *testing.T) {
 	}
 }
 
+func TestRunNativeTruncatedToolNameResolves(t *testing.T) {
+	var gotArgs json.RawMessage
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name:        "file.read",
+		Description: "reads a file",
+		Risk:        registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			gotArgs = call.Args
+			return registry.ToolResult{Summary: "read ok", Content: "file content"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Reading.", "Done."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "call_1", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)}},
+			nil,
+		},
+	}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.NativeTools = true
+	runner.SetForceClass(string(ClassQuestion))
+
+	task, err := runner.RunTask(context.Background(), "Read main.go")
+	if err != nil {
+		t.Fatalf("RunTask returned error: %v", err)
+	}
+	if task.Summary != "Done." {
+		t.Fatalf("Summary = %q, want Done.", task.Summary)
+	}
+	if string(gotArgs) != `{"path":"main.go"}` {
+		t.Fatalf("tool handler args = %s", gotArgs)
+	}
+	// Verify the tool result was fed back under the resolved name.
+	found := false
+	for _, msg := range p.Requests[1].Messages {
+		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_1" && strings.Contains(msg.Content, "file content") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tool result not fed back for truncated name: %#v", p.Requests[1].Messages)
+	}
+}
+
+func TestRunNativeTruncatedToolNameAmbiguousFails(t *testing.T) {
+	reg := registry.New()
+	for _, name := range []string{"file.read", "db.read"} {
+		toolName := name
+		if err := reg.Register(registry.Tool{
+			Name: toolName,
+			Risk: registry.RiskReadOnly,
+			Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+				return registry.ToolResult{Summary: toolName + " ok"}, nil
+			},
+		}); err != nil {
+			t.Fatalf("Register %s: %v", toolName, err)
+		}
+	}
+
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"Trying read.", "Recovered."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "call_ambig", Name: "read", Args: json.RawMessage(`{}`)}},
+		},
+	}
+	state := newTestState(t)
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.NativeTools = true
+	runner.SetForceClass(string(ClassQuestion))
+
+	if _, err := runner.RunTask(context.Background(), "try ambiguous read"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	// Ambiguous suffix must pass through unchanged -> "unknown tool" error.
+	found := false
+	for _, msg := range p.Requests[1].Messages {
+		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_ambig" && strings.Contains(msg.Content, "unknown tool") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ambiguous truncated name did not produce unknown tool error: %#v", p.Requests[1].Messages)
+	}
+}
+
 func TestRunNativeUnknownToolAnswersToolCallIDWithError(t *testing.T) {
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"Trying unknown.", "Recovered."},

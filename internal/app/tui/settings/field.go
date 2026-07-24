@@ -234,6 +234,17 @@ func SetFrameList(f *Frame, list *FieldList) { f.list = list }
 // StateCfg returns the config from a state.
 func StateCfg(s *State) config.Config { return s.cfg }
 
+// PickerRequest carries the data needed to open a picker overlay for a
+// picker-kind field. It mirrors the internal pickerRequest struct.
+type PickerRequest struct {
+	FieldID     string
+	Items       []picker.Item
+	OnPick      func(string) error
+	Title       string
+	Footer      string
+	AllowCustom bool
+}
+
 // FieldListRefresh refreshes a field list.
 func FieldListRefresh(fl *FieldList) { fl.Refresh() }
 
@@ -245,6 +256,28 @@ func FieldListRows(fl *FieldList) []*Field { return fl.Rows() }
 
 // FieldListUpdate updates a field list with a message.
 func FieldListUpdate(fl *FieldList, msg tea.Msg) tea.Cmd { return fl.Update(msg) }
+
+// FieldListCommitted reports whether the most recent Update call invoked a
+// field setter successfully (toggle, enum cycle/pick, scalar edit confirm,
+// collection add, or paste).
+func FieldListCommitted(fl *FieldList) bool { return fl.Committed() }
+
+// FieldListTakePushPicker returns and clears the picker request a picker row
+// asked to open. Returns nil if no picker was requested.
+func FieldListTakePushPicker(fl *FieldList) *PickerRequest {
+	pr := fl.TakePushPicker()
+	if pr == nil {
+		return nil
+	}
+	return &PickerRequest{
+		FieldID:     pr.fieldID,
+		Items:       pr.items,
+		OnPick:      pr.onPick,
+		Title:       pr.title,
+		Footer:      pr.footer,
+		AllowCustom: pr.allowCustom,
+	}
+}
 
 // FieldListView returns the view of a field list.
 func FieldListView(fl *FieldList) string { return fl.View() }

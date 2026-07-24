@@ -392,11 +392,11 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -411,7 +411,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -482,7 +482,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -492,12 +492,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
 		if err := mcpMgr.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -507,7 +507,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		state,
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.SkillIndex = skillIndex
@@ -612,7 +612,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
-		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {
 		runner.Rollover = &agent.Rollover{
 			Controller: rolloverCtrl,
@@ -621,7 +621,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		// Start generation 0.
 		if err := rolloverCtrl.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
 		}
 		// Record generation 0 in session state.
 		genID, genSeq, genSeed := rolloverCtrl.Current()
@@ -672,13 +672,14 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
 		}
 		desktopCloser = closer
 	}
 
 	sddRunner := buildSDDRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
-	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, nil
+	subagentFactory := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID)
+	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, nil
 }
 
 // roleRunnerSpec holds the dependencies shared by the swarm and SDD
@@ -1033,6 +1034,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts = append(tuiOpts, tui.WithSDDRunner(ctx, sddRunner))
 		tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
 		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
+		tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
+		tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
+			func(agentName string) (tui.AgentRunner, error) {
+				return rt.CustomAgentFactory(agentName)
+			},
+		))
 		configReloader := func(newCfg config.Config) error {
 			return reloadAgentRuntime(ctx, newCfg, rt)
 		}
@@ -1085,7 +1092,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
+	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
@@ -1127,6 +1134,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	rt.JobManager = newJobMgr
 	rt.DesktopCloser = newDesktopCloser
+	rt.CustomAgentFactory = newSubagentFactory
 	rt.mu.Unlock()
 
 	// Cleanup old resources outside the lock.

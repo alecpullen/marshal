@@ -31,13 +31,14 @@ type DispatchFn func(agentName, goal string) tea.Cmd
 // reuses the field/picker/persistence machinery) and a flat FieldList
 // built from the resolved cast.
 type Panel struct {
-	state      *settings.State
-	cfgPath    string
-	filter     textinput.Model
-	list       *settings.FieldList
-	dispatch   DispatchFn
-	reg        *registry.Registry // live tool registry for denylist validation
-	showLegend bool               // ? toggles the glyph legend overlay
+	state       *settings.State
+	cfgPath     string
+	filter      textinput.Model
+	list        *settings.FieldList
+	dispatch    DispatchFn
+	reg         *registry.Registry // live tool registry for denylist validation
+	showLegend  bool               // ? toggles the glyph legend overlay
+	pendingPick func(string) error // stored from a picker push, consumed by PickedMsg
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -226,7 +227,9 @@ func (p *Panel) roleField(cfg config.Config, role routing.AgentRole, ce routing.
 		return items
 	})
 	settings.SetFieldPickOnPick(f, func(v string) error {
-		profile, ok := cfg.AgentProfiles[cfg.Profile.Default]
+		// Mutate the working config (p.state.cfg) so persistNow captures the change.
+		stateCfg := settings.StateCfg(p.state)
+		profile, ok := stateCfg.AgentProfiles[stateCfg.Profile.Default]
 		if !ok {
 			return fmt.Errorf("no active profile")
 		}
@@ -242,7 +245,7 @@ func (p *Panel) roleField(cfg config.Config, role routing.AgentRole, ce routing.
 		default:
 			profile.Roles[role] = routing.RoleBinding{Preset: v}
 		}
-		cfg.AgentProfiles[cfg.Profile.Default] = profile
+		stateCfg.AgentProfiles[stateCfg.Profile.Default] = profile
 		return nil
 	})
 	return f
@@ -251,7 +254,7 @@ func (p *Panel) roleField(cfg config.Config, role routing.AgentRole, ce routing.
 // validateToolDenylist checks that every name in the list is registered
 // in the panel's tool registry. When reg is nil, no tools are known so
 // every name fails validation.
-func (p *Panel) validateToolDenylist(names []string) error {
+func (p *Panel) ValidateToolDenylist(names []string) error {
 	for _, name := range names {
 		if p.reg == nil {
 			return fmt.Errorf("unknown tool: %q (no registry available)", name)
@@ -314,7 +317,7 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 					}
 				}
 			}
-			if err := p.validateToolDenylist(names); err != nil {
+			if err := p.ValidateToolDenylist(names); err != nil {
 				return err
 			}
 			ca2 := cfg.CustomAgents[name]
@@ -406,6 +409,18 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 // Update handles messages for the roster panel.
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case picker.PickedMsg:
+		if p.pendingPick != nil {
+			if err := p.pendingPick(msg.Value); err != nil {
+				// Error rendering is handled by the field list; just clear.
+			}
+			p.pendingPick = nil
+		}
+		// A picker commit is always a commit gesture — persist immediately.
+		return p.persistNow()
+	case picker.CancelledMsg:
+		p.pendingPick = nil
+		return nil
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "esc":
@@ -414,7 +429,14 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.showLegend = !p.showLegend
 			return nil
 		case "enter":
-			return settings.FieldListUpdate(p.list, msg)
+			cmd := settings.FieldListUpdate(p.list, msg)
+			// Check if the field list pushed a picker request.
+			if pr := settings.FieldListTakePushPicker(p.list); pr != nil {
+				p.pendingPick = pr.OnPick
+				// The picker is handled externally by the model; we just
+				// store the callback. The model will send picker.PickedMsg.
+			}
+			return p.maybePersist(cmd)
 		default:
 			var cmd tea.Cmd
 			p.filter, cmd = p.filter.Update(msg)
@@ -422,8 +444,43 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return cmd
 		}
 	default:
-		return settings.FieldListUpdate(p.list, msg)
+		cmd := settings.FieldListUpdate(p.list, msg)
+		return p.maybePersist(cmd)
 	}
+}
+
+// persistNow saves the working config to disk and emits a ChangedMsg
+// unconditionally. Used for picker commits and other explicit gestures.
+func (p *Panel) persistNow() tea.Cmd {
+	cfg := settings.StateCfg(p.state)
+	return func() tea.Msg {
+		if p.cfgPath == "" {
+			return settings.ChangedMsg{Cfg: cfg, Receipts: nil}
+		}
+		saveErr := config.SaveProjectConfig(p.cfgPath, cfg)
+		return settings.ChangedMsg{Cfg: cfg, Receipts: nil, SaveErr: saveErr}
+	}
+}
+
+// maybePersist wraps cmd with a persistence check: if the field list committed
+// a change, save the config to disk and emit a ChangedMsg so the model can
+// apply and reload it.
+func (p *Panel) maybePersist(inner tea.Cmd) tea.Cmd {
+	if !settings.FieldListCommitted(p.list) {
+		return inner
+	}
+	cfg := settings.StateCfg(p.state)
+	changed := func() tea.Msg {
+		if p.cfgPath == "" {
+			return settings.ChangedMsg{Cfg: cfg, Receipts: nil}
+		}
+		saveErr := config.SaveProjectConfig(p.cfgPath, cfg)
+		return settings.ChangedMsg{Cfg: cfg, Receipts: nil, SaveErr: saveErr}
+	}
+	if inner == nil {
+		return changed
+	}
+	return tea.Batch(inner, changed)
 }
 
 // View renders the roster panel.

@@ -432,6 +432,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		pol.SetLogger(state.Logger())
 	}
 	pol.WithRegistry(reg)
+	pol.SetApprovalMode(policy.ApprovalMode(cfg.Agent.ApprovalMode))
 
 	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,

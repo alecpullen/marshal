@@ -770,12 +770,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case cmdName == "sdd-plan":
 			// Dock already closed above; dispatch /sdd with the picked path.
 			return m.dispatchCommand("/sdd " + pm.Value)
+		case cmdName == "mode-elevation":
+			chosen := pm.Value
+			if tc := m.state.PendingApproval(); tc != nil {
+				tc.Respond(session.UserApprovalDecision{Approved: true, Edited: chosen})
+			}
+			m.state.SetPendingApproval(nil)
+			m.setMode(chosen)
+			newCfg := m.state.Config
+			newCfg.Agent.ApprovalMode = chosen
+			saveErr, reloadErr := m.persistAndReload(newCfg)
+			if saveErr != nil {
+				m.state.AddMessage(session.RoleSystem,
+					fmt.Sprintf("✗ mode elevation saved in session, but config save failed: %v", saveErr),
+					session.ContentTypePlain)
+			} else if reloadErr != nil {
+				m.state.AddMessage(session.RoleSystem,
+					fmt.Sprintf("✗ mode elevation saved, but live reload failed: %v", reloadErr),
+					session.ContentTypePlain)
+			}
+			msg, ok := modeSwitchMessage[chosen]
+			if !ok {
+				msg = fmt.Sprintf("Switched to %s mode.", chosen)
+			}
+			m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
 		default:
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
 	case picker.CancelledMsg:
+		cmdName := m.pickerCommand
 		m.dock.CloseNow()
 		m.pickerCommand = ""
+		if cmdName == "mode-elevation" {
+			if tc := m.state.PendingApproval(); tc != nil {
+				tc.Respond(session.UserApprovalDecision{Approved: false})
+			}
+			m.state.SetPendingApproval(nil)
+		}
 		m.refreshViewport()
 		return m, nil
 	case castlist.StartMsg:
@@ -874,6 +907,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // is called before the main keypress switch so huh's internal navigation
 // messages (nextFieldMsg/nextGroupMsg) round-trip back to the form.
 func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Model, tea.Cmd) {
+	// mode.request: show the editing-variant picker instead of the normal
+	// approval dialog. The picker opens via the dock; while the dock is
+	// open, keypresses are routed to the picker and non-key messages
+	// return early here. On PickedMsg the main Update switch handles the
+	// response and mode change.
+	if tc.Name == "mode.request" || strings.HasPrefix(tc.Reason, "mode-elevation:") {
+		if m.dock.IsOpen() {
+			// Picker already open; don't interfere.
+			return m, nil
+		}
+		items := []picker.Item{
+			{Label: "Edit", Detail: "plan + confirm each", Value: "edit"},
+			{Label: "Copilot", Detail: "auto-approve, may ask", Value: "copilot"},
+			{Label: "Auto", Detail: "fully autonomous", Value: "auto"},
+		}
+		m.openPicker("mode-elevation", "Elevate to editing mode", "choose an editing mode", items, "")
+		m.refreshViewport()
+		return m, nil
+	}
+
 	// Edit sub-mode: the main textarea captures the edited command/args.
 	if m.editingCommand {
 		if k, ok := msg.(tea.KeyPressMsg); ok {

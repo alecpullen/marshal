@@ -45,6 +45,7 @@ type fileAgent struct {
 	MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
 	PlanFirst                *bool   `toml:"plan_first"`
 	SubtaskIterations        *int    `toml:"subtask_iterations"`
+	ApprovalMode             *string `toml:"approval_mode"`
 }
 
 type filePrivacy struct {

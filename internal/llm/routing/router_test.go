@@ -33,9 +33,9 @@ func testRouter() *StaticRouter {
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
-				Roles: map[AgentRole]string{
-					RoleRepoScout:   "fast",
-					RoleImplementer: "coder",
+				Roles: map[AgentRole]RoleBinding{
+					RoleRepoScout:   {Preset: "fast"},
+					RoleImplementer: {Preset: "coder"},
 				},
 			},
 		},
@@ -45,6 +45,41 @@ func testRouter() *StaticRouter {
 		LegacyProvider: "legacy-provider",
 		LegacyModel:    "legacy-model",
 	})
+}
+
+func TestRoleBindingUnmarshalBareString(t *testing.T) {
+	// Test UnmarshalTOML directly with a string value (the path go-toml
+	// takes when decoding inline tables and dotted tables).
+	var b RoleBinding
+	if err := b.UnmarshalTOML("reasoning"); err != nil {
+		t.Fatalf("bare string unmarshal: %v", err)
+	}
+	if b.Preset != "reasoning" || b.CustomAgent != "" {
+		t.Fatalf("got %+v, want Preset=reasoning", b)
+	}
+}
+
+func TestRoleBindingUnmarshalTableCustomAgent(t *testing.T) {
+	// Test UnmarshalTOML with a map (the path go-toml takes for
+	// inline tables like `custom_agent = "my-reviewer"`).
+	var b RoleBinding
+	if err := b.UnmarshalTOML(map[string]any{"custom_agent": "my-reviewer"}); err != nil {
+		t.Fatalf("table unmarshal: %v", err)
+	}
+	if b.CustomAgent != "my-reviewer" || b.Preset != "" {
+		t.Fatalf("got %+v, want CustomAgent=my-reviewer", b)
+	}
+}
+
+func TestRoleBindingUnmarshalTablePreset(t *testing.T) {
+	// Test UnmarshalTOML with a map containing preset.
+	var b RoleBinding
+	if err := b.UnmarshalTOML(map[string]any{"preset": "reasoning"}); err != nil {
+		t.Fatalf("table unmarshal: %v", err)
+	}
+	if b.Preset != "reasoning" || b.CustomAgent != "" {
+		t.Fatalf("got %+v, want Preset=reasoning", b)
+	}
 }
 
 func TestResolveQuestionUsesRepoScout(t *testing.T) {
@@ -85,8 +120,8 @@ func TestResolveFallsBackToImplementerForMissingRole(t *testing.T) {
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
-				Roles: map[AgentRole]string{
-					RoleImplementer: "coder",
+				Roles: map[AgentRole]RoleBinding{
+					RoleImplementer: {Preset: "coder"},
 				},
 			},
 		},
@@ -109,9 +144,9 @@ func TestResolveQuestionMissingRepoScoutPresetDoesNotFallBackToImplementer(t *te
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
-				Roles: map[AgentRole]string{
-					RoleRepoScout:   "missing",
-					RoleImplementer: "coder",
+				Roles: map[AgentRole]RoleBinding{
+					RoleRepoScout:   {Preset: "missing"},
+					RoleImplementer: {Preset: "coder"},
 				},
 			},
 		},
@@ -133,9 +168,9 @@ func TestResolveQuestionRemoteBlockedDoesNotFallBackToImplementer(t *testing.T) 
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
-				Roles: map[AgentRole]string{
-					RoleRepoScout:   "remote",
-					RoleImplementer: "coder",
+				Roles: map[AgentRole]RoleBinding{
+					RoleRepoScout:   {Preset: "remote"},
+					RoleImplementer: {Preset: "coder"},
 				},
 			},
 		},
@@ -178,7 +213,7 @@ func TestResolveMissingPresetReturnsError(t *testing.T) {
 	router := NewStaticRouter(Config{
 		DefaultProfile: "local_balanced",
 		Profiles: map[string]AgentProfile{
-			"local_balanced": {Name: "local_balanced", Roles: map[AgentRole]string{RoleImplementer: "missing"}},
+			"local_balanced": {Name: "local_balanced", Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "missing"}}},
 		},
 	})
 	_, err := router.Resolve("edit")
@@ -195,7 +230,7 @@ func TestResolveBlocksRemotePresetWhenRemoteDisabled(t *testing.T) {
 			"remote": {Name: "remote", Provider: "openrouter", Model: "model", LocalOnly: false},
 		},
 		Profiles: map[string]AgentProfile{
-			"remote_profile": {Name: "remote_profile", Roles: map[AgentRole]string{RoleImplementer: "remote"}},
+			"remote_profile": {Name: "remote_profile", Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "remote"}}},
 		},
 	})
 	_, err := router.Resolve("edit")
@@ -214,8 +249,8 @@ func TestResolveKnowledgeUsesKnowledgeRoleWhenConfigured(t *testing.T) {
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
-				Roles: map[AgentRole]string{
-					RoleKnowledge: "tiny",
+				Roles: map[AgentRole]RoleBinding{
+					RoleKnowledge: {Preset: "tiny"},
 				},
 			},
 		},
@@ -257,9 +292,9 @@ func TestResolveRoleReturnsConfiguredPreset(t *testing.T) {
 		Profiles: map[string]AgentProfile{
 			"default": {
 				Name: "default",
-				Roles: map[AgentRole]string{
-					RolePlanner:     "local-big",
-					RoleImplementer: "local-small",
+				Roles: map[AgentRole]RoleBinding{
+					RolePlanner:     {Preset: "local-big"},
+					RoleImplementer: {Preset: "local-small"},
 				},
 			},
 		},
@@ -283,8 +318,8 @@ func TestResolveSDDRolesFallBackToImplementer(t *testing.T) {
 		Profiles: map[string]AgentProfile{
 			"local_balanced": {
 				Name: "local_balanced",
-				Roles: map[AgentRole]string{
-					RoleImplementer: "coder",
+				Roles: map[AgentRole]RoleBinding{
+					RoleImplementer: {Preset: "coder"},
 				},
 			},
 		},
@@ -309,7 +344,7 @@ func TestResolveRoleFallsBackToImplementerForUnconfiguredRole(t *testing.T) {
 		Profiles: map[string]AgentProfile{
 			"default": {
 				Name:  "default",
-				Roles: map[AgentRole]string{RoleImplementer: "local-small"},
+				Roles: map[AgentRole]RoleBinding{RoleImplementer: {Preset: "local-small"}},
 			},
 		},
 	})
@@ -443,7 +478,7 @@ func TestResolveRoleReturnsFallbackErrorOnExhaustion(t *testing.T) {
 		Profiles: map[string]AgentProfile{
 			"default": {
 				Name:  "default",
-				Roles: map[AgentRole]string{}, // no roles at all
+				Roles: map[AgentRole]RoleBinding{}, // no roles at all
 			},
 		},
 	})

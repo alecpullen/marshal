@@ -51,28 +51,40 @@ func init() {
 			}
 			return m, nil
 		},
-		"ask": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.setMode("ask")
-			m.state.AddMessage(session.RoleSystem, "Switched to Ask mode. Agent will answer questions without planning or editing.", session.ContentTypePlain)
+		"plan": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.setMode("plan")
+			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["plan"], session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		},
+		"default": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.setMode("default")
+			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["default"], session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		},
 		"edit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.setMode("edit")
-			m.state.AddMessage(session.RoleSystem, "Switched to Edit mode. Agent will plan and execute changes.", session.ContentTypePlain)
+			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["edit"], session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		},
+		"copilot": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.setMode("copilot")
+			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["copilot"], session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		},
 		"auto": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.setMode("")
-			m.state.AddMessage(session.RoleSystem, "Switched to Auto mode. Agent will classify each turn automatically.", session.ContentTypePlain)
+			m.setMode("auto")
+			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["auto"], session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		},
 		"mode": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if len(args) > 0 {
 				switch strings.ToLower(args[0]) {
-				case "ask", "edit", "auto":
+				case "plan", "default", "edit", "copilot", "auto":
 					return m.dispatchCommand("/" + strings.ToLower(args[0]))
 				case "sdd":
 					m.openSDDPlanPicker()

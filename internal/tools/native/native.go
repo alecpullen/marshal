@@ -140,8 +140,12 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.jobListTool(),
 		tools.questionAskTool(),
 		tools.askUserTool(),
+		tools.modeRequestTool(),
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
+	}
+	if recallToolEnabled(tools.config.Session.Rollover) {
+		all = append(all, tools.recallHistoryTool())
 	}
 	// agent.run is registered separately by app.Run after the policy engine
 	// is constructed; the native toolset does not have access to the engine

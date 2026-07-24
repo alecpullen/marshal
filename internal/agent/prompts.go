@@ -8,6 +8,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -142,7 +143,37 @@ For parallel read-only work, you may return multiple tool calls in one response 
 
 For patch actions use search/replace blocks, one block per file. Do not use unified diff syntax.`
 
-const nativeOutputFormat = `Use the available native tools when you need repository facts or need to make changes. When the task is complete, respond with a concise final answer in normal prose.`
+const nativeOutputFormat = `Use the available native tools when you need repository facts or need to make changes. When the task is complete, respond with a concise final answer in normal prose.
+
+Rules for native tool calls:
+- Each tool call's arguments must be a single valid JSON object matching the tool's schema. Do not concatenate multiple JSON objects together. Do not include extra keys not declared in the schema.`
+
+const nativePatchFormat = `## file.write_patch format
+
+The file.write_patch tool takes a single "patch" string argument containing one or more search/replace blocks. Each block has this exact syntax:
+
+File: path/to/file.go
+<<<<<<< SEARCH
+exact existing text to find
+=======
+replacement text
+>>>>>>> REPLACE
+
+Rules:
+- The SEARCH section must match the file content exactly (including whitespace and indentation).
+- Use one block per file; chain multiple files in the same patch string.
+- For new file creation, use an empty SEARCH section.
+- Do not use unified diff syntax.
+
+Example:
+
+File: internal/app/config/types.go
+<<<<<<< SEARCH
+    DigestModel             string ` + "`toml:\"digest_model\"`" + `
+=======
+    DigestModel             string ` + "`toml:\"digest_model\"`" + `
+    DigestProvider          string ` + "`toml:\"digest_provider\"`" + `
+>>>>>>> REPLACE`
 
 func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 	var b strings.Builder
@@ -167,8 +198,28 @@ func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 	return b.String()
 }
 
+// modeDirective returns the per-mode behavioral directive prepended to
+// the system prompt. Each directive tells the agent its current mode and
+// the constraints that apply. See the approval-modes design spec.
+func modeDirective(mode policy.ApprovalMode) string {
+	switch mode {
+	case policy.ModePlan:
+		return "You are in plan mode. You are read-only and cannot modify files. Produce a numbered plan as your final answer, then stop. You may ask the user clarifying questions about requirements before planning."
+	case policy.ModeDefault:
+		return "You are in default mode. You are read-only and cannot modify files. If you need to make changes, call the mode.request tool to ask the user to switch to an editing mode. Do not attempt write tools directly."
+	case policy.ModeEdit:
+		return "You are in edit mode. Each file change requires user approval before it is applied."
+	case policy.ModeCopilot:
+		return "You are in copilot mode. File changes are auto-approved except for destructive guardrails and git push. You may ask the user a question if you hit a genuine ambiguity that would materially change the outcome."
+	case policy.ModeAuto:
+		return "You are in auto mode. File changes are auto-approved except for destructive guardrails and git push. You cannot ask the user questions — proceed with your best judgment and state the assumptions you make."
+	default:
+		return ""
+	}
+}
+
 func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools)
+	return buildSystemPrompt(role, tools, nil, skillIndex, activeSkills, nativeTools, policy.ModeEdit)
 }
 
 // BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
@@ -176,14 +227,21 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 // runner passes the registry's ListDeferred() so the agent can see what
 // it might want to opt into via tools.select.
 func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
-	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools)
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, policy.ModeEdit)
+}
+
+// BuildSystemPromptWithMode is BuildSystemPromptWithDeferred with an
+// explicit approval mode. The runner calls this to inject the per-mode
+// directive into the system prompt.
+func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode) schema.ChatMessage {
+	return buildSystemPrompt(role, tools, deferred, skillIndex, activeSkills, nativeTools, mode)
 }
 
 // buildSystemPrompt accepts an additional deferredTools list (used by the
 // runner to advertise MCP tools the agent hasn't loaded yet but may want
 // to opt into). Tests that pass nil get the old behavior with no
 // announcement appended.
-func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
+func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode) schema.ChatMessage {
 	rp, ok := roleAddenda[role]
 	if !ok {
 		rp = roleAddenda[RoleGeneral]
@@ -196,9 +254,16 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	b.WriteString("\n\n")
 	b.WriteString(baseRules)
 	b.WriteString(todoAddendum)
+	if d := modeDirective(mode); d != "" {
+		b.WriteString("\n\n")
+		b.WriteString(d)
+	}
 	b.WriteString("\n\nAvailable tools:\n")
 	for _, tool := range tools {
 		b.WriteString(fmt.Sprintf("- %s (%s): %s\n", tool.Name, tool.Risk, tool.Description))
+	}
+	if mode == policy.ModeDefault {
+		b.WriteString("- mode.request: Ask the user to switch to an editing mode (edit, copilot, or auto) so you can make changes.\n")
 	}
 	writeDeferredAnnouncement(&b, deferredTools)
 	activeMap := make(map[string]bool, len(activeSkills))
@@ -230,6 +295,17 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	b.WriteString("\n")
 	if nativeTools {
 		b.WriteString(nativeOutputFormat)
+		hasWritePatch := false
+		for _, tool := range tools {
+			if tool.Name == "file.write_patch" {
+				hasWritePatch = true
+				break
+			}
+		}
+		if hasWritePatch {
+			b.WriteString("\n\n")
+			b.WriteString(nativePatchFormat)
+		}
 	} else {
 		b.WriteString(baseOutputFormat)
 	}

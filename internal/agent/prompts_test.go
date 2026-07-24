@@ -9,6 +9,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -426,6 +427,109 @@ func TestSDDRoleAddenda(t *testing.T) {
 		if len(addendum.allowedActions) == 0 {
 			t.Errorf("role %s: addendum has no allowed actions", role)
 		}
+	}
+}
+
+func TestModeDirectivePlan(t *testing.T) {
+	d := modeDirective(policy.ModePlan)
+	if !strings.Contains(d, "plan mode") {
+		t.Errorf("plan directive %q should mention 'plan mode'", d)
+	}
+	if !strings.Contains(d, "numbered plan") {
+		t.Errorf("plan directive %q should mention 'numbered plan'", d)
+	}
+}
+
+func TestModeDirectiveDefault(t *testing.T) {
+	d := modeDirective(policy.ModeDefault)
+	if !strings.Contains(d, "default mode") {
+		t.Errorf("default directive %q should mention 'default mode'", d)
+	}
+	if !strings.Contains(d, "mode.request") {
+		t.Errorf("default directive %q should mention mode.request", d)
+	}
+}
+
+func TestModeDirectiveCopilot(t *testing.T) {
+	d := modeDirective(policy.ModeCopilot)
+	if !strings.Contains(d, "copilot mode") {
+		t.Errorf("copilot directive %q should mention 'copilot mode'", d)
+	}
+	if !strings.Contains(d, "auto-approved") {
+		t.Errorf("copilot directive %q should mention auto-approved", d)
+	}
+}
+
+func TestModeDirectiveAuto(t *testing.T) {
+	d := modeDirective(policy.ModeAuto)
+	if !strings.Contains(d, "auto mode") {
+		t.Errorf("auto directive %q should mention 'auto mode'", d)
+	}
+	if !strings.Contains(d, "cannot ask the user") {
+		t.Errorf("auto directive %q should mention cannot ask the user", d)
+	}
+}
+
+func TestBuildSystemPromptWithModeDirectives(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    policy.ApprovalMode
+		want    string // substring the content must contain
+		notWant string // substring the content must NOT contain (empty = skip)
+	}{
+		{
+			name:    "plan mode",
+			mode:    policy.ModePlan,
+			want:    "plan mode",
+			notWant: "mode.request: Ask the user to switch",
+		},
+		{
+			name:    "default mode",
+			mode:    policy.ModeDefault,
+			want:    "default mode",
+			notWant: "",
+		},
+		{
+			name:    "edit mode",
+			mode:    policy.ModeEdit,
+			want:    "edit mode",
+			notWant: "mode.request: Ask the user to switch",
+		},
+		{
+			name:    "copilot mode",
+			mode:    policy.ModeCopilot,
+			want:    "copilot mode",
+			notWant: "mode.request: Ask the user to switch",
+		},
+		{
+			name:    "auto mode",
+			mode:    policy.ModeAuto,
+			want:    "auto mode",
+			notWant: "mode.request: Ask the user to switch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, tt.mode)
+			content := msg.Content
+
+			if !strings.Contains(content, tt.want) {
+				t.Errorf("BuildSystemPromptWithMode(%s) content missing %q\n%s", tt.mode, tt.want, content)
+			}
+			if tt.notWant != "" && strings.Contains(content, tt.notWant) {
+				t.Errorf("BuildSystemPromptWithMode(%s) content contains unexpected %q\n%s", tt.mode, tt.notWant, content)
+			}
+		})
+	}
+}
+
+func TestBuildSystemPromptWithModeDefaultAdvertisesModeRequest(t *testing.T) {
+	msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeDefault)
+	content := msg.Content
+
+	if !strings.Contains(content, "mode.request: Ask the user to switch") {
+		t.Errorf("default mode prompt should advertise mode.request tool\n%s", content)
 	}
 }
 

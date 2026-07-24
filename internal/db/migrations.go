@@ -156,4 +156,51 @@ CREATE TABLE IF NOT EXISTS session_state (
     value TEXT NOT NULL,
     PRIMARY KEY (session_id, key)
 );
+
+CREATE TABLE IF NOT EXISTS content_blobs (
+    hash TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_generations (
+    generation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    seed_digest TEXT,
+    digest_source TEXT,
+    end_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS generation_turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    generation_id TEXT NOT NULL REFERENCES session_generations(generation_id) ON DELETE CASCADE,
+    turn_seq INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT,
+    content_blob_hash TEXT,
+    tool_calls TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS generation_turns_fts USING fts5(
+    content,
+    content='',
+    tokenize='porter unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS token_calibration (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    session_id TEXT,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    estimator_tokens INTEGER NOT NULL,
+    provider_tokens INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_token_cal_project ON token_calibration(project_id, session_id);
 `

@@ -248,6 +248,7 @@ func toolCallsFromWire(calls []toolCallBody) []schema.ToolCall {
 			Args: json.RawMessage(call.Function.Arguments),
 		})
 	}
+	out, _ = repairToolCalls(out)
 	return out
 }
 
@@ -269,6 +270,7 @@ func toolCallsFromStreamBuffers(buffers map[int]*streamingToolCallBuffer) []sche
 			Args: json.RawMessage(buf.argument.String()),
 		})
 	}
+	out, _ = repairToolCalls(out)
 	return out
 }
 

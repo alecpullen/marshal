@@ -84,9 +84,9 @@ func (m Model) modeSegment() string {
 	if m.state.PendingQuestion() != nil {
 		return "answering"
 	}
-	mode := m.forceMode
+	mode := string(m.approvalMode)
 	if mode == "" {
-		mode = "auto"
+		mode = "default"
 	}
 	return mode
 }

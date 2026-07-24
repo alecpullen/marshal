@@ -18,7 +18,7 @@ func (t *toolSet) gitStatusTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "git.status",
 		Description: "Show git status --short for the workspace.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{}}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -39,7 +39,7 @@ func (t *toolSet) gitDiffTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "git.diff",
 		Description: "Show git diff for the workspace or a relative path.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

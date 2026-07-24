@@ -23,7 +23,7 @@ func (t *toolSet) questionAskTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "question.ask",
 		Description: "Ask the user one or more clarifying questions in a single round-trip. Each question may offer options; otherwise it is free-text.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"multi":{"type":"boolean"},"allow_other":{"type":"boolean"}},"required":["question"]}}},"required":["questions"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"multi":{"type":"boolean"},"allow_other":{"type":"boolean"}},"required":["question"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -61,7 +61,7 @@ func (t *toolSet) askUserTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "ask_user",
 		Description: "Alias for question.ask with a single free-text question.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"question":{"type":"string"}},"required":["question"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"question":{"type":"string"}},"required":["question"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

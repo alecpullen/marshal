@@ -407,37 +407,43 @@ func TestHintsFollowCursorRowKind(t *testing.T) {
 			b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 			continue
 		}
-		hint := b.hintForRow(row)
+		hint := rowHints(b.list, true)
 		view := b.View(80, 24)
 		switch row.kind {
 		case kindToggle:
-			if !strings.Contains(view, "[Space] toggle") {
-				t.Errorf("cursor on kindToggle row %q: expected hint [Space] toggle, view:\n%s", row.id, view)
+			if !strings.Contains(view, "Space toggle") {
+				t.Errorf("cursor on kindToggle row %q: expected hint containing 'Space toggle', view:\n%s", row.id, view)
 			}
 		case kindScalar:
-			if !strings.Contains(view, "[↵] edit") {
-				t.Errorf("cursor on kindScalar row %q: expected hint [↵] edit, view:\n%s", row.id, view)
+			if row.setStr == nil {
+				if !strings.Contains(view, "read-only") {
+					t.Errorf("cursor on read-only kindScalar row %q: expected hint containing 'read-only', view:\n%s", row.id, view)
+				}
+			} else {
+				if !strings.Contains(view, "↵ edit") {
+					t.Errorf("cursor on editable kindScalar row %q: expected hint containing '↵ edit', view:\n%s", row.id, view)
+				}
 			}
 		case kindEnum:
-			if !strings.Contains(view, "←/→ cycle  [↵] pick") {
-				t.Errorf("cursor on kindEnum row %q: expected hint ←/→ cycle  [↵] pick, view:\n%s", row.id, view)
+			if !strings.Contains(view, "←→ cycle · ↵ pick") {
+				t.Errorf("cursor on kindEnum row %q: expected hint containing '←→ cycle · ↵ pick', view:\n%s", row.id, view)
 			}
 		case kindDrill:
-			if !strings.Contains(view, "[↵] open") {
-				t.Errorf("cursor on kindDrill row %q: expected hint [↵] open, view:\n%s", row.id, view)
+			if !strings.Contains(view, "↵ open") {
+				t.Errorf("cursor on kindDrill row %q: expected hint containing '↵ open', view:\n%s", row.id, view)
 			}
 		case kindAction:
-			if !strings.Contains(view, "[↵] run") {
-				t.Errorf("cursor on kindAction row %q: expected hint [↵] run, view:\n%s", row.id, view)
+			if !strings.Contains(view, "↵ run") {
+				t.Errorf("cursor on kindAction row %q: expected hint containing '↵ run', view:\n%s", row.id, view)
 			}
 		case kindPicker:
-			if !strings.Contains(view, "[↵] pick") {
-				t.Errorf("cursor on kindPicker row %q: expected hint [↵] pick, view:\n%s", row.id, view)
+			if !strings.Contains(view, "↵ pick") {
+				t.Errorf("cursor on kindPicker row %q: expected hint containing '↵ pick', view:\n%s", row.id, view)
 			}
 		}
-		// Verify the hint text matches what hintForRow returns.
+		// Verify the hint text matches what rowHints returns.
 		if hint != "" && !strings.Contains(view, hint) {
-			t.Errorf("cursor on row %q (kind=%v): hintForRow returned %q but view does not contain it:\n%s", row.id, row.kind, hint, view)
+			t.Errorf("cursor on row %q (kind=%v): rowHints returned %q but view does not contain it:\n%s", row.id, row.kind, hint, view)
 		}
 		// Move cursor down for next iteration.
 		b.Update(tea.KeyPressMsg{Code: tea.KeyDown})

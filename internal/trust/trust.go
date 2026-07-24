@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,30 @@ type Record struct {
 	Trusted    bool      `json:"trusted"`
 	ConfigHash string    `json:"config_hash,omitempty"`
 	TrustedAt  time.Time `json:"trusted_at"`
+}
+
+// flexTime is a JSON-unmarshalling helper that tolerates both RFC3339
+// timestamps (with timezone) and zoneless timestamps (parsed as UTC).
+type flexTime struct {
+	time.Time
+}
+
+func (f *flexTime) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(string(data), `"`)
+	if s == "" || s == "null" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err == nil {
+		f.Time = t
+		return nil
+	}
+	t, err = time.Parse("2006-01-02T15:04:05", s)
+	if err == nil {
+		f.Time = t.UTC()
+		return nil
+	}
+	return fmt.Errorf("parse time %q: %w", s, err)
 }
 
 type Store struct {
@@ -40,11 +65,27 @@ func (s *Store) Load() (map[string]Record, error) {
 		}
 		return nil, fmt.Errorf("read trust store: %w", err)
 	}
-	var records map[string]Record
-	if err := json.Unmarshal(data, &records); err != nil {
+	var raws map[string]loadRecord
+	if err := json.Unmarshal(data, &raws); err != nil {
 		return nil, fmt.Errorf("parse trust store: %w", err)
 	}
+	records := make(map[string]Record, len(raws))
+	for k, v := range raws {
+		records[k] = Record{
+			Trusted:    v.Trusted,
+			ConfigHash: v.ConfigHash,
+			TrustedAt:  v.TrustedAt.Time,
+		}
+	}
 	return records, nil
+}
+
+// loadRecord is the JSON intermediate for Load, using flexTime
+// to tolerate zoneless timestamps.
+type loadRecord struct {
+	Trusted    bool     `json:"trusted"`
+	ConfigHash string   `json:"config_hash,omitempty"`
+	TrustedAt  flexTime `json:"trusted_at"`
 }
 
 func (s *Store) Save(records map[string]Record) error {

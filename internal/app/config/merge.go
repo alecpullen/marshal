@@ -39,6 +39,7 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.MaxStructuredOutputChars, file.Agent.MaxStructuredOutputChars)
 		set(&cfg.Agent.PlanFirst, file.Agent.PlanFirst)
 		set(&cfg.Agent.SubtaskIterations, file.Agent.SubtaskIterations)
+		set(&cfg.Agent.ApprovalMode, file.Agent.ApprovalMode)
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)
@@ -237,6 +238,30 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Desktop.DefaultTimeout = d
 		}
 		set(&cfg.Desktop.ScreenshotFormat, file.Desktop.ScreenshotFormat)
+	}
+	if file.Session != nil && file.Session.Rollover != nil {
+		r := file.Session.Rollover
+		set(&cfg.Session.Rollover.Enabled, r.Enabled)
+		set(&cfg.Session.Rollover.Policy, r.Policy)
+		set(&cfg.Session.Rollover.ContextPercentThreshold, r.ContextPercentThreshold)
+		set(&cfg.Session.Rollover.TurnCountThreshold, r.TurnCountThreshold)
+		set(&cfg.Session.Rollover.TokenCounter, r.TokenCounter)
+		set(&cfg.Session.Rollover.DigestModel, r.DigestModel)
+		set(&cfg.Session.Rollover.DigestProvider, r.DigestProvider)
+		switch cfg.Session.Rollover.DigestProvider {
+		case "", "auto":
+			cfg.Session.Rollover.DigestProvider = "llm_summary"
+		case "llm_summary", "files", "minimal":
+			// valid
+		default:
+			return fmt.Errorf("session.rollover.digest_provider: unrecognized value %q (want llm_summary, files, minimal, or auto)", cfg.Session.Rollover.DigestProvider)
+		}
+		set(&cfg.Session.Rollover.RecallToolEnabled, r.RecallToolEnabled)
+		set(&cfg.Session.Rollover.Retention, r.Retention)
+		set(&cfg.Session.Rollover.BlobThresholdBytes, r.BlobThresholdBytes)
+		if r.Calibration != nil {
+			set(&cfg.Session.Rollover.Calibration.Enabled, r.Calibration.Enabled)
+		}
 	}
 	if file.Hooks != nil {
 		set(&cfg.Hooks.FailClosed, file.Hooks.FailClosed)

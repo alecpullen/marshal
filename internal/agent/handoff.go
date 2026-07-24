@@ -8,24 +8,8 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
+	"marshal/internal/rollover"
 )
-
-// handoffSummaryDirective asks the model for a self-contained mid-task
-// handoff. Adapted from crush's summary prompt: the summary is the ONLY
-// context that survives, so vague next steps are useless.
-const handoffSummaryDirective = `Summarize this conversation so the task can continue with no other context. This summary will be the ONLY context available afterwards, so be thorough and specific. Do not call tools; respond with plain text only, covering:
-
-## Current State
-The exact original request, what has been completed, what is in progress, and what remains.
-
-## Files & Changes
-Files modified (with what changed), files read and why they matter, and important file paths / line numbers.
-
-## Technical Context
-Commands that worked and commands that failed (exact commands), key decisions made and why, gotchas discovered, assumptions made.
-
-## Exact Next Steps
-Numbered, concrete steps with file paths — "3. Update parseAction in internal/agent/protocol.go to accept the actions array", not "continue implementing".`
 
 var errEmptyHandoffSummary = errors.New("agent: handoff summarization returned empty text")
 
@@ -35,7 +19,7 @@ var errEmptyHandoffSummary = errors.New("agent: handoff summarization returned e
 // keep working with full instructions intact.
 func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, goal string, responseFormat *schema.ResponseFormat) ([]schema.ChatMessage, error) {
 	req := append(append([]schema.ChatMessage{}, messages...),
-		schema.ChatMessage{Role: schema.RoleSystem, Content: handoffSummaryDirective})
+		schema.ChatMessage{Role: schema.RoleSystem, Content: rollover.SummaryDirective})
 	res, err := r.chatWithRetryNoNativeTools(ctx, p, model, req, responseFormat)
 	if err != nil {
 		return nil, err
@@ -46,7 +30,7 @@ func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, 
 	}
 
 	fresh := []schema.ChatMessage{
-		BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
+		BuildSystemPromptWithMode(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode()),
 	}
 	fresh = appendContextPackMessage(fresh, r.State.ContextPack())
 	fresh = append(fresh,

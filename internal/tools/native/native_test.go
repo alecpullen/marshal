@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/tools/registry"
 )
 
@@ -35,6 +36,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"job.list":          registry.RiskReadOnly,
 		"question.ask":      registry.RiskReadOnly,
 		"ask_user":          registry.RiskReadOnly,
+		"mode.request":      registry.RiskReadOnly,
 		"diagnostics.check": registry.RiskReadOnly,
 		"tools.select":      registry.RiskReadOnly,
 	}
@@ -55,6 +57,49 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		if len(tool.Schema) == 0 {
 			t.Fatalf("%s Schema is empty", name)
 		}
+	}
+}
+
+func TestRegisterAll_RecallHistoryGatedByRolloverConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		enabled bool
+		policy  string
+		rollPol string
+		want    bool
+	}{
+		{"rollover disabled", false, "context_percent", "context_percent", false},
+		{"rollover enabled + never", true, "never", "context_percent", false},
+		{"rollover enabled + always", true, "always", "context_percent", true},
+		{"rollover enabled + auto + context_percent", true, "auto", "context_percent", true},
+		{"rollover enabled + auto + turn_count", true, "auto", "turn_count", true},
+		{"rollover enabled + auto + caller_checkpoint", true, "auto", "caller_checkpoint", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			reg := registry.New()
+			opts := Options{
+				WorkspaceRoot: root,
+				CommandRunner: &fakeRunner{},
+				Config: config.Config{
+					Session: config.SessionConfig{
+						Rollover: config.RolloverConfig{
+							Enabled:           tt.enabled,
+							RecallToolEnabled: tt.policy,
+							Policy:            tt.rollPol,
+						},
+					},
+				},
+			}
+			if err := RegisterAll(reg, opts); err != nil {
+				t.Fatalf("RegisterAll returned error: %v", err)
+			}
+			_, ok := reg.Lookup("recall_history")
+			if ok != tt.want {
+				t.Errorf("recall_history present = %v, want %v", ok, tt.want)
+			}
+		})
 	}
 }
 

@@ -389,9 +389,38 @@ func (r *Runner) buildToolErrorMessage(name, reason, toolCallID string) schema.C
 	return BuildToolErrorMessage(name, reason)
 }
 
+// normalizeToolName resolves truncated provider tool names (e.g. "read"
+// for "file.read") to their fully-qualified registered name. If the name
+// is already registered, it passes through unchanged. If the name is not
+// registered but exactly one registered tool ends with "."+name, that
+// tool's full name is returned. Otherwise the original name is returned
+// unchanged (the caller will produce an "unknown tool" error).
+func normalizeToolName(reg *registry.Registry, name string) string {
+	if reg == nil {
+		return name
+	}
+	if _, ok := reg.Lookup(name); ok {
+		return name
+	}
+	suffix := "." + name
+	var match string
+	count := 0
+	for _, tool := range reg.List() {
+		if strings.HasSuffix(tool.Name, suffix) {
+			match = tool.Name
+			count++
+		}
+	}
+	if count == 1 {
+		return match
+	}
+	return name
+}
+
 func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.ToolCall) ([]schema.ChatMessage, error) {
 	msgs := make([]schema.ChatMessage, 0, len(calls))
 	for _, call := range calls {
+		call.Name = normalizeToolName(r.Registry, call.Name)
 		if call.Name == "ask_user" {
 			msg, err := r.executeNativeAskUser(ctx, call)
 			if err != nil {

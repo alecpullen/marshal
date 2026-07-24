@@ -170,16 +170,16 @@ type fileAgentEntry struct {
 }
 
 type fileRollover struct {
-	Enabled                 *bool   `toml:"enabled"`
-	Policy                  *string `toml:"policy"`
-	ContextPercentThreshold *int    `toml:"context_percent_threshold"`
-	TurnCountThreshold      *int    `toml:"turn_count_threshold"`
-	TokenCounter            *string `toml:"token_counter"`
-	DigestModel             *string `toml:"digest_model"`
-	DigestProvider          *string `toml:"digest_provider"`
-	RecallToolEnabled       *string `toml:"recall_tool_enabled"`
-	Retention               *string `toml:"retention"`
-	BlobThresholdBytes      *int    `toml:"blob_threshold_bytes"`
+	Enabled                 *bool            `toml:"enabled"`
+	Policy                  *string          `toml:"policy"`
+	ContextPercentThreshold *int             `toml:"context_percent_threshold"`
+	TurnCountThreshold      *int             `toml:"turn_count_threshold"`
+	TokenCounter            *string          `toml:"token_counter"`
+	DigestModel             *string          `toml:"digest_model"`
+	DigestProvider          *string          `toml:"digest_provider"`
+	RecallToolEnabled       *string          `toml:"recall_tool_enabled"`
+	Retention               *string          `toml:"retention"`
+	BlobThresholdBytes      *int             `toml:"blob_threshold_bytes"`
 	Calibration             *fileCalibration `toml:"calibration"`
 }
 

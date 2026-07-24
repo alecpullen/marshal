@@ -19,6 +19,7 @@
 - `ToolDenylist` semantics: denylist (remove named tools from role default); empty = inherit.
 - Config persistence is durable (project TOML), not session-only. Receipts land in the transcript.
 - Bare-string TOML (`planner = "reasoning"`) must keep deserializing into `RoleBinding{Preset:"reasoning"}`.
+- Token-tracking seam (origin/main): `agent.UsageObserver` is `func(schema.TokenUsage)`, `agent.Runner.Pricing` is `pricing.ModelPricing` (set via `pricing.Lookup(route.Preset)`), and `metricsRecorder(db, projectID, sessionID, logger) func(agent.TurnMetrics)` persists turns. `buildSubagentFactory` currently sets none of these — the subagent token gap is closed by Task 6, and the role-runner pricing gap by Task 5. `agent.UsageAggregator` exists but is not yet wired into any session; the plan does not depend on it.
 
 ---
 
@@ -860,15 +861,15 @@ git commit -m "feat(agent): SystemPromptAddendum + DenylistView for custom agent
 
 ---
 
-## Task 5: Runner factory applies custom-agent overrides
+## Task 5: Runner factory applies custom-agent overrides + role-runner pricing
 
 **Files:**
 - Modify: `internal/app/app.go` (`roleRunnerSpec.newRunner`, `buildSubagentFactory`)
 - Test: `internal/app/app_test.go` (added)
 
 **Interfaces:**
-- Consumes: `Route.CustomAgent`, `Runner.SystemPromptAddendum`, `DenylistView` (Tasks 1, 3, 4).
-- Produces: role runners and subagent runners that honor custom-agent overrides (prompt, tool denylist, approval mode, max iterations).
+- Consumes: `Route.CustomAgent`, `Runner.SystemPromptAddendum`, `DenylistView` (Tasks 1, 3, 4), `pricing.Lookup`, `Runner.Pricing` (token-tracking work on origin/main).
+- Produces: role runners and subagent runners that honor custom-agent overrides (prompt, tool denylist, approval mode, max iterations) **and** carry `Pricing` so cost is non-zero. Closes the role-runner pricing gap left by the token-tracking work (only `buildAgentRunner` set `Pricing`; swarm/SDD role runners did not).
 
 - [ ] **Step 1: Write failing test**
 
@@ -884,7 +885,7 @@ func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
 		}},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"fast": {Provider: "ollama", Model: "qwen"},
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini"}, // priced in builtInTable
 	}
 	cfg.CustomAgents = map[string]routing.CustomAgent{
 		"strict": {Name: "strict", Preset: "fast", SystemPrompt: "be strict", ToolDenylist: []string{"file.write_patch"}, ApprovalMode: "plan", MaxIterations: 5},
@@ -907,6 +908,9 @@ func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
 	if _, ok := runner.Registry.Lookup("file.write_patch"); ok {
 		t.Fatal("file.write_patch should be denylisted")
 	}
+	if runner.Pricing.InputPerMTokCents == 0 && runner.Pricing.OutputPerMTokCents == 0 {
+		t.Fatal("Pricing should be set from the resolved preset (non-zero for a priced preset)")
+	}
 	// ApprovalMode is set on the policy engine, asserted indirectly: the
 	// policy engine's mode equals policy.ModePlan.
 }
@@ -921,9 +925,10 @@ Expected: FAIL — overrides not applied (`SystemPromptAddendum` empty, `file.wr
 
 - [ ] **Step 3: Implement override application in `newRunner`**
 
-In `internal/app/app.go`, in `roleRunnerSpec.newRunner` (lines 702-743), after the existing `applyAgentLimits` block and before `return r, nil`, add:
+In `internal/app/app.go`, in `roleRunnerSpec.newRunner` (lines 702-743), after the existing `applyAgentLimits` block, **first** add the pricing line (origin/main's `newRunner` does not set `Pricing` — only `buildAgentRunner` does; role runners currently report zero cost), then the custom-agent overrides, before `return r, nil`:
 
 ```go
+	r.Pricing = pricing.Lookup(route.Preset) // closes role-runner pricing gap
 	if route.CustomAgent != nil {
 		ca := route.CustomAgent
 		if ca.SystemPrompt != "" {
@@ -942,6 +947,8 @@ In `internal/app/app.go`, in `roleRunnerSpec.newRunner` (lines 702-743), after t
 	return r, nil
 }
 ```
+
+Add the `pricing` import to `internal/app/app.go` if absent (the token-tracking commit added it to `buildAgentRunner`'s scope; confirm it's imported at file level).
 
 Add the helper (near `roleToolIterations`):
 
@@ -988,15 +995,15 @@ git commit -m "feat(app): role runner applies custom-agent overrides"
 
 ---
 
-## Task 6: `agent.run` optional `agent` arg + agent-aware subagent factory
+## Task 6: `agent.run` optional `agent` arg + agent-aware subagent factory (with token tracking)
 
 **Files:**
 - Modify: `internal/agent/subagent.go`, `internal/app/app.go`
 - Test: `internal/agent/subagent_test.go` (added or existing)
 
 **Interfaces:**
-- Consumes: `routing.Config.CustomAgents`, `StaticRouter.ResolveCustomAgent` (Task 3).
-- Produces: `agent.run` schema gains `agent`; `agentRunArgs.Agent` field; `SubagentRunnerFactory` becomes `func(agentName string) (*Runner, error)`.
+- Consumes: `routing.Config.CustomAgents`, `StaticRouter.ResolveCustomAgent` (Task 3), `pricing.Lookup`, `metricsRecorder`, `state.SetTurnUsage` (token-tracking work on origin/main).
+- Produces: `agent.run` schema gains `agent`; `agentRunArgs.Agent` field; `SubagentRunnerFactory` becomes `func(agentName string) (*Runner, error)`. Closes the subagent token-tracking gap: today `buildSubagentFactory` sets no `Pricing`, `UsageObserver`, or `MetricsObserver`, so every `agent.run` child's tokens/cost are invisible to the parent turn and to `/context`.
 
 - [ ] **Step 1: Write failing test**
 
@@ -1094,26 +1101,29 @@ Schema: json.RawMessage(
 
 - [ ] **Step 4: Update `buildSubagentFactory` in `internal/app/app.go`**
 
-Change `buildSubagentFactory` (lines 814-828) to accept `agentName` and resolve a custom agent when set:
+Change `buildSubagentFactory` (lines 814-828) to accept `agentName`, resolve a custom agent when set, **and** wire token tracking. Today the factory sets no `Pricing`, `UsageObserver`, or `MetricsObserver`, so subagent tokens/cost are invisible to the parent turn and `/context`. The child's `UsageObserver` folds into the **parent** session's `state.SetTurnUsage` total (so `/context` reflects subagent work), and the child's `MetricsObserver` records against the **parent** session's `turn_metrics` (so subagent turns are queryable via `/history`). The child session stays separate (no double-counting: parent turns observed by parent runner, child turns by child runner, both to the parent session).
 
 ```go
-func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter) agent.SubagentRunnerFactory {
+func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, database *db.DB, projectID int64) agent.SubagentRunnerFactory {
 	subtaskIters := cfg.Agent.SubtaskIterations
 	if subtaskIters <= 0 {
 		subtaskIters = defaultSubtaskIterations
 	}
+	metricsObserver := metricsRecorder(database, projectID, parentState.SessionID(), parentState.Logger())
 	return func(agentName string) (*agent.Runner, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
 		roReg := agent.SubtaskScopeView(parentReg)
 		role := agent.RoleSubtask
 		model := defaultModel
 		var addendum string
+		var pricingRates pricing.ModelPricing
 		if agentName != "" && router != nil {
 			route, err := router.ResolveCustomAgent(agentName, agent.RoleSubtask)
 			if err != nil {
 				return nil, fmt.Errorf("agent.run: %w", err)
 			}
 			model = route.Preset.Model
+			pricingRates = pricing.Lookup(route.Preset)
 			roReg = agent.SubtaskScopeView(parentReg)
 			if route.CustomAgent != nil {
 				ca := route.CustomAgent
@@ -1131,35 +1141,113 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		child.MaxToolIterations = subtaskIters
 		child.NativeTools = true
 		child.SystemPromptAddendum = addendum
+		child.Pricing = pricingRates
+		child.MetricsObserver = metricsObserver
+		// Fold the child's token usage into the parent session's running
+		// total so /context and the session usage view include subagent
+		// work. The child session is separate; this is additive to the
+		// parent's own turns, not a double-count.
+		child.UsageObserver = func(usage schema.TokenUsage) {
+			parentState.SetTurnUsage(parentState.TurnUsageAsInt() + usage.PromptTokens + usage.CompletionTokens)
+		}
 		return child, nil
 	}
 }
 ```
 
-Update the call site of `buildSubagentFactory` (search for it in `app.go`) to pass a `*routing.StaticRouter` built from `cfg.RoutingConfig()`. Build it once where the subagent tool is registered (around line 501):
+`parentState.TurnUsageAsInt()` — if `session.State` does not expose the current usage as an int (it exposes `TurnUsage() (used, window int)`), use `used, _ := parentState.TurnUsage(); parentState.SetTurnUsage(used + ...)`. Adapt to the real accessor.
+
+Update the call site (around line 502) to pass the new deps — `database` and `projectID` are already in `buildAgentRunner`'s scope:
 
 ```go
-router := routing.NewStaticRouter(cfg.RoutingConfig())
-// ... pass router to buildSubagentFactory
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	if err := reg.Register(agent.NewSubagentTool(
+		buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID),
+		reg,
+		state,
+	)); err != nil {
 ```
 
-Add the `routing` import to `internal/app/app.go` if absent.
+Add imports to `internal/app/app.go` if absent: `"marshal/internal/llm/pricing"`, `"marshal/internal/llm/schema"` (schema may already be imported for the parent's UsageObserver).
 
 - [ ] **Step 5: Run the failing test**
 
 Run: `go test ./internal/agent/ -run TestNewSubagentToolAgentArg -v`
 Expected: PASS.
 
-- [ ] **Step 6: Run the full agent + app packages**
+- [ ] **Step 6: Add a subagent token-tracking test**
+
+Add to `internal/app/app_test.go` (or a new `internal/app/subagent_tracking_test.go`), exercising `buildSubagentFactory` directly. The test asserts a child runner built with a named agent carries `Pricing`, `MetricsObserver`, and a `UsageObserver` that folds into the parent session's total:
+
+```go
+func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{"fast": {Provider: "ollama", Model: "gpt-4o-mini"}}
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"my-scout": {Name: "my-scout", Preset: "fast"},
+	}
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	// Fake provider not needed: we call the factory closure, not RunTask.
+	prov := (provider.Provider)(nil)
+	reg := registry.New()
+	factory := buildSubagentFactory(cfg, parentState, prov, reg, policyEngine(t), "fallback", router, nil, 1)
+	child, err := factory("my-scout")
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.Pricing.InputPerMTokCents == 0 && child.Pricing.OutputPerMTokCents == 0 {
+		t.Fatal("child.Pricing should be resolved from the custom agent's preset (gpt-4o-mini is priced)")
+	}
+	if child.MetricsObserver == nil {
+		t.Fatal("child.MetricsObserver should be set so subagent turns persist to turn_metrics")
+	}
+	if child.UsageObserver == nil {
+		t.Fatal("child.UsageObserver should be set so subagent usage rolls up to the parent session")
+	}
+	// The UsageObserver folds into the parent session's running total.
+	child.UsageObserver(schema.TokenUsage{PromptTokens: 100, CompletionTokens: 50})
+	used, _ := parentState.TurnUsage()
+	if used != 150 {
+		t.Fatalf("parent usage after child observe = %d, want 150", used)
+	}
+}
+
+func TestSubagentFactoryAdHocHasObserversToo(t *testing.T) {
+	// The ad-hoc path (no agent name) must ALSO wire observers, closing
+	// the gap for today's plain agent.run children, not just named agents.
+	cfg := config.Default()
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	factory := buildSubagentFactory(cfg, parentState nil, reg, policyEngine(t), "fallback", router, nil, 1)
+	child, err := factory("")
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.UsageObserver == nil || child.MetricsObserver == nil {
+		t.Fatal("ad-hoc subagent children must also carry UsageObserver + MetricsObserver")
+	}
+}
+```
+
+Note: `database` may be nil for the MetricsObserver test path — `metricsRecorder` returns a closure that calls `database.InsertTurnMetrics`; passing nil will panic when the observer fires. For the test, pass a real or stub `*db.DB` if your helpers provide one, or assert only `child.MetricsObserver != nil` and skip firing it. Adapt to the existing test helpers in `app_test.go`.
+
+- [ ] **Step 7: Run the token-tracking test**
+
+Run: `go test ./internal/app/ -run 'TestSubagentFactoryWiresTokenTracking|TestSubagentFactoryAdHocHasObserversToo' -v`
+Expected: PASS.
+
+- [ ] **Step 8: Run the full agent + app packages**
 
 Run: `go test ./internal/agent/... ./internal/app/...`
 Expected: PASS. If existing subagent tests call `NewSubagentTool` with the old factory arity, update them to `func(agentName string) (*Runner, error)`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add internal/agent/subagent.go internal/agent/subagent_test.go internal/app/app.go
-git commit -m "feat(agent): agent.run optional custom-agent arg + agent-aware factory"
+git add internal/agent/subagent.go internal/agent/subagent_test.go internal/app/app.go internal/app/app_test.go
+git commit -m "feat(agent): agent.run optional custom-agent arg + subagent token tracking"
 ```
 
 ---

@@ -195,6 +195,43 @@ appends it after the role base prompt). `denylistView` is a new helper
 that filters the registry to remove the named tools — the inverse of
 `SubtaskScopeView`. No other `Runner` changes.
 
+### Token tracking & cost (closes the subagent gap)
+
+The token-metrics system (commits `fd6ef97`–`efd3368`) widened
+`UsageObserver` to `func(schema.TokenUsage)`, added `Runner.Pricing`
+(resolved via `pricing.Lookup(route.Preset)`), a session-scope
+`agent.UsageAggregator`, and per-turn `turn_metrics` persistence. It
+wired the single-agent loop (`buildAgentRunner`) but **left subagents
+untracked**: `buildSubagentFactory` sets neither `Pricing`,
+`UsageObserver`, nor `MetricsObserver`, so every `agent.run` child's
+tokens and cost are invisible to the parent turn and to `/context`.
+
+This design closes that gap as part of the factory change, because the
+custom-agent wiring touches the same construction seam:
+
+- **Role runners** (`roleRunnerSpec.newRunner`, used by swarm/SDD): now
+  also set `runner.Pricing = pricing.Lookup(route.Preset)`. Today only
+  `buildAgentRunner` does; role runners report zero cost. Custom-agent
+  bindings resolve through the agent's preset, so `pricing.Lookup` uses
+  the right rates automatically.
+- **Subagent children** (`buildSubagentFactory`, ad-hoc and named): set
+  `Pricing` from the resolved custom-agent preset (zero/unpriced for the
+  ad-hoc `defaultModel` path, which has no preset context), and a
+  `UsageObserver` that folds the child's `schema.TokenUsage` into the
+  **parent** session's `state.SetTurnUsage` total so `/context` reflects
+  subagent work. They also get a `MetricsObserver` (the existing
+  `metricsRecorder`) keyed to the **parent** session, so subagent turns
+  persist as `turn_metrics` rows queryable via `/history` and aggregate
+  queries. The child session remains separate (its own transcript), so
+  there is no double-counting: the parent's own turns are observed by the
+  parent runner, the child's by the child runner — both roll up to the
+  parent session's accounting.
+- **`UsageAggregator`**: not yet wired into any session, so this design
+  does not depend on it. When a future change attaches a live aggregator
+  to the session, the subagent `UsageObserver` should also call
+  `aggregator.Observe(turnMetrics)` so subagent tokens appear in the
+  per-model breakdown. Noted as Future; out of scope here.
+
 ### Path 1 — Model dispatch via `agent.run`
 
 `agent.run`'s schema gains an optional `agent` field:

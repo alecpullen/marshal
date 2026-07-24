@@ -2150,10 +2150,10 @@ func (m *Model) switchModelPreset(presetName string) {
 	newCfg.AgentProfiles = map[string]routing.AgentProfile{
 		"switched": {
 			Name: "switched",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: presetName,
-				routing.RoleRepoScout:   presetName,
-				routing.RoleKnowledge:   presetName,
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: presetName},
+				routing.RoleRepoScout:   {Preset: presetName},
+				routing.RoleKnowledge:   {Preset: presetName},
 			},
 		},
 	}

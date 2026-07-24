@@ -397,12 +397,12 @@ func rolloverTestConfig() config.Config {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		cfg.Profile.Default: {
 			Name: cfg.Profile.Default,
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "test-preset",
-				routing.RolePlanner:     "test-preset",
-				routing.RoleRepoScout:   "test-preset",
-				routing.RoleTester:      "test-preset",
-				routing.RoleReviewer:    "test-preset",
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "test-preset"},
+				routing.RolePlanner:     {Preset: "test-preset"},
+				routing.RoleRepoScout:   {Preset: "test-preset"},
+				routing.RoleTester:      {Preset: "test-preset"},
+				routing.RoleReviewer:    {Preset: "test-preset"},
 			},
 		},
 	}

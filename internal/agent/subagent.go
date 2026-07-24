@@ -10,14 +10,16 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// SubagentRunnerFactory builds a fresh Runner bound to a fresh child session
-// state. The factory deliberately does NOT take the prompt as an argument:
-// the caller (agent.run) constructs the runner with the parent's provider,
-// session config, and shared policy engine, and then passes the prompt to
-// RunTask on the returned runner. This keeps the per-session construction
+// SubagentRunnerFactory builds a fresh Runner bound to a fresh child
+// session state. agentName is "" for an ad-hoc subtask (today's behavior)
+// or the name of a configured custom agent to run as. The factory
+// deliberately does NOT take the prompt as an argument: the caller
+// (agent.run) constructs the runner with the parent's provider, session
+// config, and shared policy engine, and then passes the prompt to RunTask
+// on the returned runner. This keeps the per-session construction
 // (provider resolution, route, registry view sizing, role binding) in one
 // place while leaving the prompt fetching/decoding to the tool handler.
-type SubagentRunnerFactory func() (*Runner, error)
+type SubagentRunnerFactory func(agentName string) (*Runner, error)
 
 // runSubagentChild is the default runner runtime the agent.run tool uses to
 // execute a child runner. It is a small wrapper around RunTask that returns
@@ -84,9 +86,12 @@ func WithSubagentExec(exec func(ctx context.Context, child *Runner, prompt strin
 // agentRunArgs captures the JSON payload the agent passes to agent.run.
 // Description is a short human label used in the tool result summary so the
 // parent agent can identify which subtask produced which artefact.
+// Agent is an optional custom-agent name; when set, the factory resolves
+// the named agent's overrides.
 type agentRunArgs struct {
 	Prompt      string `json:"prompt"`
 	Description string `json:"description"`
+	Agent       string `json:"agent,omitempty"`
 }
 
 // NewSubagentTool returns the registry.Tool entry for agent.run. The
@@ -99,9 +104,9 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 	}
 	tool := registry.Tool{
 		Name:        "agent.run",
-		Description: "Delegate a scoped, read-only subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. The child has no access to write/command tools and cannot spawn further subagents.",
+		Description: "Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc read-only subtask. The child has no access to nested agent.run.",
 		Schema: json.RawMessage(
-			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."}},"required":["prompt","description"],"additionalProperties":false}`,
+			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
 		Risk: registry.RiskReadOnly,
 	}
@@ -115,7 +120,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 		}
 		defer state.ExitSubagent()
 
-		child, err := factory()
+		child, err := factory(args.Agent)
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)
 		}

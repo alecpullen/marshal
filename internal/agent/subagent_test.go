@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,7 +20,7 @@ import (
 // factory never gets a chance to "build" it into a parent).
 func TestSubagentDepthLimit(t *testing.T) {
 	called := false
-	factory := func() (*Runner, error) {
+	factory := func(_ string) (*Runner, error) {
 		called = true
 		return &Runner{}, nil
 	}
@@ -78,7 +80,7 @@ func TestSubagentConcurrencyLimit(t *testing.T) {
 	}
 
 	factoryCalls := 0
-	factory := func() (*Runner, error) {
+	factory := func(_ string) (*Runner, error) {
 		factoryCalls++
 		return &Runner{}, nil
 	}
@@ -172,6 +174,47 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	if _, ok := view.Lookup("agent.run"); ok {
 		t.Fatal("Lookup(agent.run) must fail in subtask view")
+	}
+}
+
+func TestNewSubagentToolAgentArgResolves(t *testing.T) {
+	called := ""
+	factory := func(agentName string) (*Runner, error) {
+		called = agentName
+		r := &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+			return &Task{Summary: "ok"}, nil
+		}}
+		return r, nil
+	}
+	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	res, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d","agent":"my-scout"}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if called != "my-scout" {
+		t.Fatalf("factory called with %q, want my-scout", called)
+	}
+	if !strings.Contains(res.Summary, "subagent completed") {
+		t.Fatalf("summary = %q", res.Summary)
+	}
+}
+
+func TestNewSubagentToolNoAgentArgStillWorks(t *testing.T) {
+	factory := func(agentName string) (*Runner, error) {
+		if agentName != "" {
+			t.Fatalf("factory called with %q, want empty", agentName)
+		}
+		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
+			return &Task{Summary: "ok"}, nil
+		}}, nil
+	}
+	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"do it","description":"d"}`),
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
 	}
 }
 

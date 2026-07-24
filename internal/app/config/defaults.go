@@ -40,6 +40,7 @@ func Default() Config {
 			Presets: map[string]routing.ModelPreset{},
 		},
 		AgentProfiles: map[string]routing.AgentProfile{},
+		CustomAgents:  map[string]routing.CustomAgent{},
 		Agents:        map[routing.AgentRole]AgentRoleConfig{},
 		Tools: ToolsConfig{
 			Shell: ShellToolConfig{

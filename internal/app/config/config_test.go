@@ -644,7 +644,7 @@ max_repo_context_tokens = 48000
 		t.Fatalf("preset numeric fields = %#v", preset)
 	}
 	profile := cfg.AgentProfiles["local_balanced"]
-	if profile.Roles[routing.RoleRepoScout] != "coder" || profile.Roles[routing.RoleImplementer] != "coder" {
+	if profile.Roles[routing.RoleRepoScout].Preset != "coder" || profile.Roles[routing.RoleImplementer].Preset != "coder" {
 		t.Fatalf("profile roles = %#v", profile.Roles)
 	}
 	budget := cfg.Agents[routing.RoleImplementer].Context
@@ -697,7 +697,7 @@ max_repo_context_tokens = 48000
 	if cfg.Models.Presets["fast"].Model != "fast" {
 		t.Fatalf("fast preset missing: %#v", cfg.Models.Presets)
 	}
-	if cfg.AgentProfiles["local_balanced"].Roles[routing.RoleRepoScout] != "fast" {
+	if cfg.AgentProfiles["local_balanced"].Roles[routing.RoleRepoScout].Preset != "fast" {
 		t.Fatalf("profile = %#v", cfg.AgentProfiles["local_balanced"])
 	}
 	if cfg.Agents[routing.RoleImplementer].Context.MaxRepoContextTokens != 48000 {
@@ -971,10 +971,10 @@ sdd_branch_reviewer = "big"
 		t.Fatal(err)
 	}
 	p := cfg.AgentProfiles["mine"]
-	if p.Roles[routing.RoleRouter] != "fast" {
-		t.Errorf("router role = %q", p.Roles[routing.RoleRouter])
+	if p.Roles[routing.RoleRouter].Preset != "fast" {
+		t.Errorf("router role = %+v", p.Roles[routing.RoleRouter])
 	}
-	if p.Roles[routing.RoleSDDBranchReviewer] != "big" {
-		t.Errorf("sdd_branch_reviewer role = %q", p.Roles[routing.RoleSDDBranchReviewer])
+	if p.Roles[routing.RoleSDDBranchReviewer].Preset != "big" {
+		t.Errorf("sdd_branch_reviewer role = %+v", p.Roles[routing.RoleSDDBranchReviewer])
 	}
 }

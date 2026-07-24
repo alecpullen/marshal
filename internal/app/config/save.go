@@ -210,14 +210,30 @@ func SaveProjectConfig(path string, cfg Config) error {
 			file.Models.Presets[name] = preset
 		}
 	}
-	if file.AgentProfiles != nil || len(cfg.AgentProfiles) > 0 {
-		file.AgentProfiles = map[string]map[routing.AgentRole]string{}
+	if file.AgentProfilesRaw != nil || len(cfg.AgentProfiles) > 0 {
+		file.AgentProfilesRaw = map[string]map[string]any{}
 		for name, profile := range cfg.AgentProfiles {
 			roles := profile.Roles
 			if roles == nil {
-				roles = map[routing.AgentRole]string{}
+				roles = map[routing.AgentRole]routing.RoleBinding{}
 			}
-			file.AgentProfiles[name] = roles
+			roleMap := map[string]any{}
+			for role, binding := range roles {
+				if binding.CustomAgent != "" {
+					roleMap[string(role)] = map[string]any{"custom_agent": binding.CustomAgent}
+				} else {
+					roleMap[string(role)] = binding.Preset
+				}
+			}
+			file.AgentProfilesRaw[name] = roleMap
+		}
+	}
+	if file.CustomAgents != nil || len(cfg.CustomAgents) > 0 {
+		file.CustomAgents = map[string]routing.CustomAgent{}
+		for name, a := range cfg.CustomAgents {
+			ca := a
+			ca.Name = name
+			file.CustomAgents[name] = ca
 		}
 	}
 
@@ -240,11 +256,17 @@ func activePresetName(cfg Config) string {
 	if !ok {
 		return ""
 	}
-	presetName, ok := profile.Roles[routing.RoleImplementer]
+	binding, ok := profile.Roles[routing.RoleImplementer]
 	if !ok {
 		return ""
 	}
-	return presetName
+	if binding.CustomAgent != "" {
+		if a, ok := cfg.CustomAgents[binding.CustomAgent]; ok {
+			return a.Preset
+		}
+		return ""
+	}
+	return binding.Preset
 }
 
 func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {

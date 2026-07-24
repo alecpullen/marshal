@@ -57,7 +57,7 @@ func profilesFrame(s *state) *frame {
 			}
 			s.cfg.AgentProfiles[k] = routing.AgentProfile{
 				Name:  k,
-				Roles: map[routing.AgentRole]string{},
+				Roles: map[routing.AgentRole]routing.RoleBinding{},
 			}
 			return nil
 		},
@@ -101,16 +101,16 @@ func profilesFrame(s *state) *frame {
 }
 
 func rolePresetField(s *state, profile string, role routing.AgentRole) *field {
-	get := func() string { return s.cfg.AgentProfiles[profile].Roles[role] }
+	get := func() string { return s.cfg.AgentProfiles[profile].Roles[role].Preset }
 	set := func(v string) {
 		p := s.cfg.AgentProfiles[profile]
 		if p.Roles == nil {
-			p.Roles = map[routing.AgentRole]string{}
+			p.Roles = map[routing.AgentRole]routing.RoleBinding{}
 		}
 		if v == "" {
 			delete(p.Roles, role)
 		} else {
-			p.Roles[role] = v
+			p.Roles[role] = routing.RoleBinding{Preset: v}
 		}
 		p.Name = profile
 		s.cfg.AgentProfiles[profile] = p

@@ -88,6 +88,9 @@ type fieldList struct {
 	yankedData any
 }
 
+// FieldList is an exported alias for fieldList.
+type FieldList = fieldList
+
 func newFieldList(fields func() []*field) *fieldList {
 	ti := textinput.New()
 	ti.SetVirtualCursor(true)
@@ -96,6 +99,18 @@ func newFieldList(fields func() []*field) *fieldList {
 	fl := &fieldList{fields: fields, input: ti, keyInput: ki}
 	fl.Refresh()
 	return fl
+}
+
+// NewFieldList is the exported constructor for *FieldList.
+func NewFieldList(fields func() []*Field) *FieldList {
+	return newFieldList(func() []*field {
+		result := fields()
+		out := make([]*field, len(result))
+		for i, f := range result {
+			out[i] = f
+		}
+		return out
+	})
 }
 
 func (fl *fieldList) Refresh() {

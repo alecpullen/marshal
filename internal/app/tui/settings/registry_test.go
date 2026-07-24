@@ -78,7 +78,7 @@ func TestRegistryApplyAgentToggleWithActivePreset(t *testing.T) {
 	cfg.Profile.Default = "default"
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"default": {
-			Roles: map[routing.AgentRole]string{routing.RoleImplementer: "local"},
+			Roles: map[routing.AgentRole]routing.RoleBinding{routing.RoleImplementer: {Preset: "local"}},
 		},
 	}
 	cfg.Models.Presets = map[string]routing.ModelPreset{"local": {}}

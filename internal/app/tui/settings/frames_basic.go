@@ -222,6 +222,12 @@ func sddFrame(s *state) *frame {
 	})
 }
 
+// SwarmFrame returns the swarm budget frame for the given state.
+func SwarmFrame(s *State) *Frame { return swarmFrame(s) }
+
+// SDDFrame returns the SDD budget frame for the given state.
+func SDDFrame(s *State) *Frame { return sddFrame(s) }
+
 // diagnosticsFrame is nothing but the commands map, so the root frame IS the
 // map frame (no pointless single-row drill).
 func diagnosticsFrame(s *state) *frame {

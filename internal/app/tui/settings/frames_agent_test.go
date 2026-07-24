@@ -115,7 +115,7 @@ func TestAgentFrameTitlesShowActivePreset(t *testing.T) {
 	}
 	cfg.AgentProfiles["local_balanced"] = routing.AgentProfile{
 		Name:  "local_balanced",
-		Roles: map[routing.AgentRole]string{routing.RoleImplementer: "my-preset"},
+		Roles: map[routing.AgentRole]routing.RoleBinding{routing.RoleImplementer: {Preset: "my-preset"}},
 	}
 	st := newState(cfg)
 	f := agentFrame(st)

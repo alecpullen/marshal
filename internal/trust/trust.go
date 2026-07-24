@@ -65,7 +65,7 @@ func (s *Store) Load() (map[string]Record, error) {
 		}
 		return nil, fmt.Errorf("read trust store: %w", err)
 	}
-	var raws map[string]flexTimeRecord
+	var raws map[string]loadRecord
 	if err := json.Unmarshal(data, &raws); err != nil {
 		return nil, fmt.Errorf("parse trust store: %w", err)
 	}
@@ -80,9 +80,9 @@ func (s *Store) Load() (map[string]Record, error) {
 	return records, nil
 }
 
-// flexTimeRecord is the JSON intermediate for Load, using flexTime
+// loadRecord is the JSON intermediate for Load, using flexTime
 // to tolerate zoneless timestamps.
-type flexTimeRecord struct {
+type loadRecord struct {
 	Trusted    bool     `json:"trusted"`
 	ConfigHash string   `json:"config_hash,omitempty"`
 	TrustedAt  flexTime `json:"trusted_at"`

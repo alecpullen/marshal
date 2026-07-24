@@ -31,12 +31,13 @@ type DispatchFn func(agentName, goal string) tea.Cmd
 // reuses the field/picker/persistence machinery) and a flat FieldList
 // built from the resolved cast.
 type Panel struct {
-	state    *settings.State
-	cfgPath  string
-	filter   textinput.Model
-	list     *settings.FieldList
-	dispatch DispatchFn
-	reg      *registry.Registry // live tool registry for denylist validation
+	state      *settings.State
+	cfgPath    string
+	filter     textinput.Model
+	list       *settings.FieldList
+	dispatch   DispatchFn
+	reg        *registry.Registry // live tool registry for denylist validation
+	showLegend bool               // ? toggles the glyph legend overlay
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -219,7 +220,7 @@ func (p *Panel) roleField(cfg config.Config, role routing.AgentRole, ce routing.
 		}
 		// Add custom agents as pickable items.
 		for _, caName := range sortedKeys(cfg.CustomAgents) {
-			items = append(items, picker.Item{Label: "◆ "+caName, Detail: "custom agent", Value: "__ca:" + caName})
+			items = append(items, picker.Item{Label: "◆ " + caName, Detail: "custom agent", Value: "__ca:" + caName})
 		}
 		items = append(items, picker.Item{Label: "(unset — fallback)", Value: "__unset__", Badge: "clear"})
 		return items
@@ -409,6 +410,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		switch msg.String() {
 		case "esc":
 			return func() tea.Msg { return settings.BrowserClosedMsg{} }
+		case "?":
+			p.showLegend = !p.showLegend
+			return nil
 		case "enter":
 			return settings.FieldListUpdate(p.list, msg)
 		default:
@@ -433,7 +437,12 @@ func (p *Panel) View(width, maxHeight int) string {
 
 	title := "Agents"
 	settings.FieldListSetSize(p.list, innerWidth, max(maxHeight-4, 1))
-	body := "/ " + p.filter.View() + "\n" + settings.FieldListView(p.list)
+	body := "/ " + p.filter.View() + "\n"
+	if p.showLegend {
+		legend := "● preset bound  ◆ custom agent bound  ↩ impl fallback  legacy  ⚠ unresolved  ←/→ drill"
+		body += lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(legend) + "\n"
+	}
+	body += settings.FieldListView(p.list)
 	footer := fmt.Sprintf("%d entries", len(settings.FieldListRows(p.list)))
 
 	content := body + "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(footer)

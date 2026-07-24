@@ -39,6 +39,10 @@ type Panel struct {
 	reg         *registry.Registry // live tool registry for denylist validation
 	showLegend  bool               // ? toggles the glyph legend overlay
 	pendingPick func(string) error // stored from a picker push, consumed by PickedMsg
+
+	// pickerActive tracks whether a picker overlay is open.
+	pickerActive bool
+	pickerModel  *picker.Model
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -416,12 +420,20 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			}
 			p.pendingPick = nil
 		}
+		p.pickerActive = false
+		p.pickerModel = nil
 		// A picker commit is always a commit gesture — persist immediately.
 		return p.persistNow()
 	case picker.CancelledMsg:
 		p.pendingPick = nil
+		p.pickerActive = false
+		p.pickerModel = nil
 		return nil
 	case tea.KeyPressMsg:
+		// When a picker overlay is active, forward all key events to it.
+		if p.pickerActive && p.pickerModel != nil {
+			return p.pickerModel.Update(msg)
+		}
 		switch msg.String() {
 		case "esc":
 			return func() tea.Msg { return settings.BrowserClosedMsg{} }
@@ -433,8 +445,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			// Check if the field list pushed a picker request.
 			if pr := settings.FieldListTakePushPicker(p.list); pr != nil {
 				p.pendingPick = pr.OnPick
-				// The picker is handled externally by the model; we just
-				// store the callback. The model will send picker.PickedMsg.
+				// Open a picker overlay locally.
+				p.pickerModel = picker.New(pr.Title, pr.Footer, pr.Items)
+				if pr.AllowCustom {
+					p.pickerModel.SetAllowCustom(true)
+				}
+				p.pickerActive = true
 			}
 			return p.maybePersist(cmd)
 		default:
@@ -487,6 +503,11 @@ func (p *Panel) maybePersist(inner tea.Cmd) tea.Cmd {
 func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 2 {
 		return ""
+	}
+
+	// When a picker overlay is active, render it instead of the roster.
+	if p.pickerActive && p.pickerModel != nil {
+		return p.pickerModel.View(width, maxHeight)
 	}
 
 	panelWidth := min(72, max(width-2, 30))

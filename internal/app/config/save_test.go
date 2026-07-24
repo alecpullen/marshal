@@ -564,8 +564,8 @@ func TestSaveProjectConfigWritesAgentProfiles(t *testing.T) {
 		"fast": {
 			Name: "fast",
 			Roles: map[routing.AgentRole]routing.RoleBinding{
-				routing.RoleImplementer:  {Preset: "small"},
-				routing.RoleSDDReviewer:  {CustomAgent: "large"},
+				routing.RoleImplementer: {Preset: "small"},
+				routing.RoleSDDReviewer: {CustomAgent: "large"},
 			},
 		},
 	}

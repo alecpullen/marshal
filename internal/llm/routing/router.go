@@ -12,7 +12,7 @@ var (
 	ErrPresetNotFound        = errors.New("routing: preset not found")
 	ErrRemoteProviderBlocked = errors.New("routing: remote provider blocked")
 
-	errRoleNotConfigured    = errors.New("routing: role not configured")
+	errRoleNotConfigured   = errors.New("routing: role not configured")
 	errCustomAgentNotFound = errors.New("routing: custom agent not found")
 )
 

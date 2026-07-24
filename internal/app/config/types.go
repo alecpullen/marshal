@@ -17,7 +17,7 @@ type Config struct {
 	Providers     map[string]ProviderConfig             `toml:"providers"`
 	Models        ModelsConfig                          `toml:"models"`
 	AgentProfiles map[string]routing.AgentProfile       `toml:"agent_profiles"`
-	CustomAgents  map[string]routing.CustomAgent         `toml:"custom_agents"`
+	CustomAgents  map[string]routing.CustomAgent        `toml:"custom_agents"`
 	Agents        map[routing.AgentRole]AgentRoleConfig `toml:"agents"`
 	Tools         ToolsConfig                           `toml:"tools"`
 	Web           WebConfig                             `toml:"web"`

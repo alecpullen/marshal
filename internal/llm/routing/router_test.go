@@ -498,7 +498,7 @@ func TestResolveRoleReturnsFallbackErrorOnExhaustion(t *testing.T) {
 func TestResolveCustomAgentWithPreset(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",
-		Presets: map[string]ModelPreset{"fast": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
+		Presets:        map[string]ModelPreset{"fast": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
 		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
 			RoleImplementer: {Preset: "fast"},
 		}}},
@@ -521,7 +521,7 @@ func TestResolveCustomAgentWithPreset(t *testing.T) {
 func TestResolveCustomAgentFallsBackToRole(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",
-		Presets: map[string]ModelPreset{"impl": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
+		Presets:        map[string]ModelPreset{"impl": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
 		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
 			RoleImplementer: {Preset: "impl"},
 		}}},
@@ -555,7 +555,7 @@ func TestResolveCustomAgentMissing(t *testing.T) {
 func TestResolveRoleCustomAgentBinding(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",
-		Presets: map[string]ModelPreset{"reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
+		Presets:        map[string]ModelPreset{"reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
 		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
 			RoleReviewer:    {CustomAgent: "my-reviewer"},
 			RoleImplementer: {Preset: "reason"},
@@ -579,7 +579,7 @@ func TestResolveRoleCustomAgentBinding(t *testing.T) {
 func TestResolveRolePresetBindingUnchanged(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",
-		Presets: map[string]ModelPreset{"reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
+		Presets:        map[string]ModelPreset{"reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
 		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
 			RoleReviewer: {Preset: "reason"},
 		}}},

@@ -828,6 +828,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case picker.PickedMsg:
+		// Forward to the agents roster panel if it owns the picker overlay.
+		if _, ok := m.dock.Panel().(*agents.Panel); ok {
+			return m, m.dock.Update(pm)
+		}
 		cmdName := m.pickerCommand
 		m.dock.CloseNow()
 		m.pickerCommand = ""
@@ -880,6 +884,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
 	case picker.CancelledMsg:
+		// Forward to the agents roster panel if it owns the picker overlay.
+		if _, ok := m.dock.Panel().(*agents.Panel); ok {
+			return m, m.dock.Update(pm)
+		}
 		cmdName := m.pickerCommand
 		m.dock.CloseNow()
 		m.pickerCommand = ""

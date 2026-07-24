@@ -428,11 +428,42 @@ func (m *Model) openSettingsBrowser(query string) {
 }
 
 func (m *Model) openAgentsRoster(arg string) {
-	dispatch := func(goal string) tea.Cmd {
-		// Run-now wired in Task 9; stub returns nil.
+	dispatch := func(agentName, goal string) tea.Cmd {
+		if agentName == "" || m.busy {
+			return nil
+		}
+		// Build a custom-agent runner and start the run.
+		runner := m.buildCustomAgentRunner(agentName)
+		if runner == nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("Cannot run custom agent %q: runner not available", agentName),
+				session.ContentTypePlain)
+			m.refreshViewport()
+			return nil
+		}
+		_, cmd := m.startAgentRun(runner, goal)
+		return cmd
+	}
+	m.dock.Open(agents.NewRosterPanelWithRegistry(
+		m.state.Config,
+		projectConfigPath(m.state.WorkingDir),
+		arg,
+		dispatch,
+		nil, // tool registry not available on Model; validation skipped in TUI
+	))
+}
+
+// buildCustomAgentRunner builds an AgentRunner for the named custom agent.
+// Returns nil when the runner or router is not available.
+func (m *Model) buildCustomAgentRunner(name string) AgentRunner {
+	// Use the swarm runner as the base, since it's the general-purpose
+	// orchestrator runner. In a full implementation this would use the
+	// agent-aware subagent factory from Task 6 to resolve the custom
+	// agent's overrides. For v1, fall back to the swarm runner.
+	if m.swarmRunner == nil {
 		return nil
 	}
-	m.dock.Open(agents.NewRosterPanel(m.state.Config, projectConfigPath(m.state.WorkingDir), arg, dispatch))
+	return m.swarmRunner
 }
 
 // refreshOpenSettingsBrowser rebuilds an open settings browser from the

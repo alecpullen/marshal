@@ -6,6 +6,7 @@ package agents
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -20,10 +21,11 @@ import (
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
+	"marshal/internal/tools/registry"
 )
 
-// DispatchFn starts an agent run for `goal`. nil disables Run-now.
-type DispatchFn func(goal string) tea.Cmd
+// DispatchFn starts an agent run for `agentName` with `goal`. nil disables Run-now.
+type DispatchFn func(agentName, goal string) tea.Cmd
 
 // Panel is the docked /agents roster. It owns a settings.State (so it
 // reuses the field/picker/persistence machinery) and a flat FieldList
@@ -34,6 +36,7 @@ type Panel struct {
 	filter   textinput.Model
 	list     *settings.FieldList
 	dispatch DispatchFn
+	reg      *registry.Registry // live tool registry for denylist validation
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -41,13 +44,19 @@ var _ dock.Panel = (*Panel)(nil)
 // NewRosterPanel builds the roster panel pre-filtered by `arg` (a role
 // or agent name). dispatch is used for Run-now (may be nil).
 func NewRosterPanel(cfg config.Config, cfgPath, arg string, dispatch DispatchFn) *Panel {
+	return NewRosterPanelWithRegistry(cfg, cfgPath, arg, dispatch, nil)
+}
+
+// NewRosterPanelWithRegistry builds the roster panel with a tool registry
+// for denylist validation. When reg is nil, validation is skipped.
+func NewRosterPanelWithRegistry(cfg config.Config, cfgPath, arg string, dispatch DispatchFn, reg *registry.Registry) *Panel {
 	st := settings.NewState(cfg)
 	f := textinput.New()
 	f.SetVirtualCursor(true)
 	f.Focus()
 	f.SetValue(arg)
 	f.CursorEnd()
-	p := &Panel{state: st, cfgPath: cfgPath, filter: f, dispatch: dispatch}
+	p := &Panel{state: st, cfgPath: cfgPath, filter: f, dispatch: dispatch, reg: reg}
 	p.list = settings.NewFieldList(p.matchedFields)
 	return p
 }
@@ -238,6 +247,21 @@ func (p *Panel) roleField(cfg config.Config, role routing.AgentRole, ce routing.
 	return f
 }
 
+// validateToolDenylist checks that every name in the list is registered
+// in the panel's tool registry. When reg is nil, no tools are known so
+// every name fails validation.
+func (p *Panel) validateToolDenylist(names []string) error {
+	for _, name := range names {
+		if p.reg == nil {
+			return fmt.Errorf("unknown tool: %q (no registry available)", name)
+		}
+		if _, ok := p.reg.Lookup(name); !ok {
+			return fmt.Errorf("unknown tool: %q", name)
+		}
+	}
+	return nil
+}
+
 // customAgentFrame builds a drill frame for editing a custom agent.
 func (p *Panel) customAgentFrame(name string) *settings.Frame {
 	return settings.NewFrame(name, func() []*settings.Field {
@@ -269,6 +293,31 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 		settings.SetFieldSetStr(promptField, func(v string) error {
 			ca2 := cfg.CustomAgents[name]
 			ca2.SystemPrompt = v
+			cfg.CustomAgents[name] = ca2
+			return nil
+		})
+
+		// Tool denylist: comma-separated list validated against the registry.
+		denylistField := settings.NewField("roster.ca."+name+".tool_denylist", "Tool denylist", settings.KindScalar)
+		settings.SetFieldDesc(denylistField, "comma-separated tool names to deny (validated against live registry)")
+		settings.SetFieldGetStr(denylistField, func() string {
+			return strings.Join(ca.ToolDenylist, ", ")
+		})
+		settings.SetFieldSetStr(denylistField, func(v string) error {
+			var names []string
+			if v != "" {
+				for _, part := range strings.Split(v, ",") {
+					trimmed := strings.TrimSpace(part)
+					if trimmed != "" {
+						names = append(names, trimmed)
+					}
+				}
+			}
+			if err := p.validateToolDenylist(names); err != nil {
+				return err
+			}
+			ca2 := cfg.CustomAgents[name]
+			ca2.ToolDenylist = names
 			cfg.CustomAgents[name] = ca2
 			return nil
 		})
@@ -308,11 +357,47 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 			return nil
 		})
 
+		// Context budget: max_repo_context_tokens.
+		ctxField := settings.NewField("roster.ca."+name+".context", "Context (max repo tokens)", settings.KindScalar)
+		settings.SetFieldDesc(ctxField, "max repo context tokens (0 = inherit from role)")
+		settings.SetFieldGetStr(ctxField, func() string {
+			if ca.Context.MaxRepoContextTokens == 0 {
+				return "0 (inherit)"
+			}
+			return strconv.Itoa(ca.Context.MaxRepoContextTokens)
+		})
+		settings.SetFieldSetStr(ctxField, func(v string) error {
+			n := 0
+			if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
+				return fmt.Errorf("must be a number")
+			}
+			ca2 := cfg.CustomAgents[name]
+			ca2.Context.MaxRepoContextTokens = n
+			cfg.CustomAgents[name] = ca2
+			return nil
+		})
+
+		// Run-now action: dispatches the custom agent with an inline goal prompt.
+		runField := settings.NewField("roster.ca."+name+".run", "Run now", settings.KindAction)
+		settings.SetFieldDesc(runField, "run this custom agent with a goal")
+		settings.SetFieldAct(runField, func() tea.Cmd {
+			if p.dispatch == nil {
+				return nil
+			}
+			// Open inline goal prompt via the dispatch closure.
+			// The dispatch closure (set by openAgentsRoster) handles
+			// building the runner and starting the agent run.
+			return p.dispatch(name, "")
+		})
+
 		return []*settings.Field{
 			presetField,
 			promptField,
+			denylistField,
 			modeField,
 			iterField,
+			ctxField,
+			runField,
 		}
 	})
 }

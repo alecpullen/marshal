@@ -31,6 +31,10 @@ func TestScriptedHelpOpenClose(t *testing.T) {
 		BinaryPath: binaryPath(t),
 		WorkDir:    t.TempDir(),
 		ReportDir:  "/tmp/marshal-usability",
+		// The /help cheatsheet printed by "?" is taller than the default
+		// 40-row terminal; at 40 rows its "Keys" header scrolls above the
+		// viewport before the harness's PTY buffer ever captures it.
+		Height: 80,
 	})
 	defer r.WriteReport()
 	res, err := r.Run(context.Background(), scenario.Scenario{

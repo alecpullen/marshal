@@ -16,7 +16,7 @@ func extractState(content string, lines []string) UIState {
 	state := UIState{}
 	lower := strings.ToLower(content)
 
-	if strings.Contains(lower, "marshal keys") {
+	if strings.Contains(lower, "keys") {
 		state.HelpOpen = true
 	}
 	if strings.Contains(content, "Agent wants to run:") {

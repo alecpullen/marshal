@@ -47,6 +47,15 @@ type ModelPreset struct {
 	MaxOutputTokens int    `toml:"max_output_tokens"`
 	ToolCalling     string `toml:"tool_calling"`
 	LocalOnly       bool   `toml:"local_only"`
+	// Pricing is an optional per-preset override for the built-in pricing
+	// table in the pricing package. Nil means "use the built-in table by
+	// Model name (or zero if the model is unpriced)". Set to a non-nil
+	// *pricing.ModelPricing to override input/output/reasoning/cache rates
+	// for a specific preset, e.g. for a self-hosted deployment with custom
+	// rates. Typed as `any` (rather than `*pricing.ModelPricing`) to avoid
+	// an import cycle: routing is consumed by pricing, not the other way
+	// around. pricing.Lookup type-asserts this back to *pricing.ModelPricing.
+	Pricing any `toml:"pricing,omitempty"`
 }
 
 type AgentProfile struct {

@@ -67,6 +67,7 @@ func Footer(h FooterHints) string {
 		segs = append(segs,
 			pair("Tab", "mode"),
 			pair("/", "cmd"),
+			pair("/agents", "roster"),
 		)
 		if h.IdleRollbackEligible {
 			segs = append(segs, pair("Ctrl+R", "rollback"))

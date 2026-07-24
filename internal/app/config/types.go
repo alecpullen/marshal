@@ -138,6 +138,7 @@ type RolloverConfig struct {
 	TurnCountThreshold      int    `toml:"turn_count_threshold"`
 	TokenCounter            string `toml:"token_counter"`
 	DigestModel             string `toml:"digest_model"`
+	DigestProvider          string `toml:"digest_provider"`
 	RecallToolEnabled       string `toml:"recall_tool_enabled"`
 	Retention               string `toml:"retention"`
 	BlobThresholdBytes      int    `toml:"blob_threshold_bytes"`

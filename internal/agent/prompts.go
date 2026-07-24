@@ -143,7 +143,37 @@ For parallel read-only work, you may return multiple tool calls in one response 
 
 For patch actions use search/replace blocks, one block per file. Do not use unified diff syntax.`
 
-const nativeOutputFormat = `Use the available native tools when you need repository facts or need to make changes. When the task is complete, respond with a concise final answer in normal prose.`
+const nativeOutputFormat = `Use the available native tools when you need repository facts or need to make changes. When the task is complete, respond with a concise final answer in normal prose.
+
+Rules for native tool calls:
+- Each tool call's arguments must be a single valid JSON object matching the tool's schema. Do not concatenate multiple JSON objects together. Do not include extra keys not declared in the schema.`
+
+const nativePatchFormat = `## file.write_patch format
+
+The file.write_patch tool takes a single "patch" string argument containing one or more search/replace blocks. Each block has this exact syntax:
+
+File: path/to/file.go
+<<<<<<< SEARCH
+exact existing text to find
+=======
+replacement text
+>>>>>>> REPLACE
+
+Rules:
+- The SEARCH section must match the file content exactly (including whitespace and indentation).
+- Use one block per file; chain multiple files in the same patch string.
+- For new file creation, use an empty SEARCH section.
+- Do not use unified diff syntax.
+
+Example:
+
+File: internal/app/config/types.go
+<<<<<<< SEARCH
+    DigestModel             string ` + "`toml:\"digest_model\"`" + `
+=======
+    DigestModel             string ` + "`toml:\"digest_model\"`" + `
+    DigestProvider          string ` + "`toml:\"digest_provider\"`" + `
+>>>>>>> REPLACE`
 
 func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 	var b strings.Builder
@@ -265,6 +295,17 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	b.WriteString("\n")
 	if nativeTools {
 		b.WriteString(nativeOutputFormat)
+		hasWritePatch := false
+		for _, tool := range tools {
+			if tool.Name == "file.write_patch" {
+				hasWritePatch = true
+				break
+			}
+		}
+		if hasWritePatch {
+			b.WriteString("\n\n")
+			b.WriteString(nativePatchFormat)
+		}
 	} else {
 		b.WriteString(baseOutputFormat)
 	}

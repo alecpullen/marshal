@@ -32,7 +32,7 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "mode.request",
 		Description: "Request the user to switch from default mode to an editing mode (edit, copilot, or auto). Use this when you need to modify files but are in default mode.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","description":"The editing intent, e.g. \"edit\""}},"required":["mode"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","description":"The editing intent, e.g. \"edit\""}},"required":["mode"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

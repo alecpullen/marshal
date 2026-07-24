@@ -28,7 +28,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.search",
 		Description: "Search workspace files for a case-sensitive substring.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

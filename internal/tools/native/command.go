@@ -31,7 +31,7 @@ func (t *toolSet) shellRunTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "shell.run",
 		Description: "Run a shell command in the workspace with conservative guardrails.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer"},"background":{"type":"boolean"}},"required":["command"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer"},"background":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`),
 		Risk:        registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -68,7 +68,7 @@ func (t *toolSet) testRunTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "test.run",
 		Description: "Run the configured test command in the workspace.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}}}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"additionalProperties":false}`),
 		Risk:        registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

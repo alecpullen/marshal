@@ -23,7 +23,7 @@ func NewRecallTool(database *db.DB, cfg config.RolloverConfig) registry.Tool {
 	return registry.Tool{
 		Name:        "recall_history",
 		Description: "Search archived conversation turns and return formatted excerpts.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 			if !recallToolEnabled(t.config) {

@@ -21,7 +21,7 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.index",
 		Description: "Scan the workspace, compute file hashes and languages, and store the file index in the project database.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{},"required":[]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

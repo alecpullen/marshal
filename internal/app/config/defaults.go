@@ -122,6 +122,7 @@ func Default() Config {
 				ContextPercentThreshold: 70,
 				TurnCountThreshold:      40,
 				TokenCounter:            "auto",
+				DigestProvider:          "llm_summary",
 				RecallToolEnabled:       "auto",
 				Retention:               "forever",
 				BlobThresholdBytes:      2048,

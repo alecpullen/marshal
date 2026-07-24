@@ -12,9 +12,9 @@ func TestCloneConfigDeepCopiesAgentProfileRoles(t *testing.T) {
 		AgentProfiles: map[string]routing.AgentProfile{
 			"fast": {
 				Name: "fast",
-			Roles: map[routing.AgentRole]routing.RoleBinding{
-				routing.RoleImplementer: {Preset: "small"},
-			},
+				Roles: map[routing.AgentRole]routing.RoleBinding{
+					routing.RoleImplementer: {Preset: "small"},
+				},
 			},
 		},
 	}

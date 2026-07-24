@@ -48,8 +48,8 @@ func Footer(h FooterHints) string {
 	} else if h.ApprovalPending && !h.EditingCommand {
 		segs = append(segs,
 			pair("↑↓", "choose"),
-			pair("Enter", "select"),
-			pair("Enter", "again confirm"),
+			pair("Enter", "arm"),
+			pair("Enter", "submit"),
 			pair("Esc", "deny"),
 		)
 	} else if h.EditingCommand {
@@ -67,7 +67,6 @@ func Footer(h FooterHints) string {
 		segs = append(segs,
 			pair("Tab", "mode"),
 			pair("/", "cmd"),
-			pair("/agents", "roster"),
 		)
 		if h.IdleRollbackEligible {
 			segs = append(segs, pair("Ctrl+R", "rollback"))

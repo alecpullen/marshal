@@ -211,14 +211,14 @@ type configFile struct {
 	Hooks       *fileHooks       `toml:"hooks"`
 	Session     *fileSession     `toml:"session"`
 	// Providers stays a plain map: nil already distinguishes absent/present.
-	Providers     map[string]ProviderConfig               `toml:"providers"`
-	Models        *fileModels                             `toml:"models"`
+	Providers map[string]ProviderConfig `toml:"providers"`
+	Models    *fileModels               `toml:"models"`
 	// AgentProfilesRaw is decoded as raw tables so bare-string values
 	// (e.g. planner = "reasoning") are preserved as strings rather than
 	// failing to decode into RoleBinding. The conversion to typed
 	// RoleBinding values happens in merge().
 	AgentProfilesRaw map[string]map[string]any `toml:"agent_profiles"`
 	// CustomAgents mirrors config.CustomAgents for the file layer.
-	CustomAgents  map[string]routing.CustomAgent                       `toml:"custom_agents"`
-	Agents        map[routing.AgentRole]fileAgentEntry    `toml:"agents"`
+	CustomAgents map[string]routing.CustomAgent       `toml:"custom_agents"`
+	Agents       map[routing.AgentRole]fileAgentEntry `toml:"agents"`
 }

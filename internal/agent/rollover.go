@@ -105,7 +105,7 @@ func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessa
 	}
 	// Rebuild the full window matching summarizeAndContinue's shape.
 	fresh := []schema.ChatMessage{
-		BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
+		BuildSystemPromptWithMode(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode()),
 	}
 	fresh = appendContextPackMessage(fresh, r.State.ContextPack())
 	fresh = append(fresh,

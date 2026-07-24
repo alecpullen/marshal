@@ -29,7 +29,7 @@ func TestStatusLineShowsRouteAndContext(t *testing.T) {
 	})
 
 	line := m.renderStatusLine(100)
-	for _, want := range []string{"auto", "qwen2.5-coder:14b @ ollama", "local", "ctx 18k/32k"} {
+	for _, want := range []string{"default", "qwen2.5-coder:14b @ ollama", "local", "ctx 18k/32k"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("status line missing %q:\n%s", want, line)
 		}

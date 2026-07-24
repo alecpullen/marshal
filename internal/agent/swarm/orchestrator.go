@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/strutil"
+	"marshal/internal/tools/policy"
 )
 
 // RegistryScope selects which tool registry view a role's runner receives.
@@ -53,6 +54,7 @@ func New(state *session.State, factory RunnerFactory) *Orchestrator {
 // classes, so forcing has no effect.
 func (o *Orchestrator) SetForceClass(string)                   {}
 func (o *Orchestrator) SetPolicyRules([]config.PermissionRule) {}
+func (o *Orchestrator) SetApprovalMode(policy.ApprovalMode)    {}
 
 func (o *Orchestrator) maxRounds() int {
 	if o.MaxFixRounds < 1 {

@@ -28,6 +28,7 @@ import (
 	"marshal/internal/permissions"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -934,6 +935,7 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 
 func (f *fakeAgentRunner) SetForceClass(string)                   {}
 func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
+func (f *fakeAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
 
 // blockingAgentRunner blocks on a channel in Run until the channel is
 // closed. Used by TestAgentCommandRegistersAndReleasesSessionWork to
@@ -950,6 +952,7 @@ func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
 
 func (b *blockingAgentRunner) SetForceClass(string)                   {}
 func (b *blockingAgentRunner) SetPolicyRules([]config.PermissionRule) {}
+func (b *blockingAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
 
 type fakeSwarmRunner struct {
 	mu    sync.Mutex
@@ -965,6 +968,7 @@ func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
 
 func (f *fakeSwarmRunner) SetForceClass(string)                   {}
 func (f *fakeSwarmRunner) SetPolicyRules([]config.PermissionRule) {}
+func (f *fakeSwarmRunner) SetApprovalMode(policy.ApprovalMode)    {}
 
 func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -1109,6 +1113,7 @@ func (f *fakeSDDRunner) Run(ctx context.Context, planPath string) error {
 
 func (f *fakeSDDRunner) SetForceClass(string)                   {}
 func (f *fakeSDDRunner) SetPolicyRules([]config.PermissionRule) {}
+func (f *fakeSDDRunner) SetApprovalMode(policy.ApprovalMode)    {}
 
 func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -1881,7 +1886,7 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 	if strings.Contains(view, "✔") {
 		t.Fatalf("done badge should have expired after %v:\n%s", doneDisplayDuration, view)
 	}
-	if !strings.Contains(view, "auto") {
+	if !strings.Contains(view, "default") {
 		t.Fatalf("View() missing idle status after done badge expiry:\n%s", view)
 	}
 }
@@ -2391,10 +2396,10 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 // instead of m.state.RunningJobsCount().
 func TestStatusLineJobCountFromBroker(t *testing.T) {
 	b := pubsub.NewBroker[native.JobEvent]()
-	m := newViewTestModel(t, 80, 24)
+	m := newViewTestModel(t, 100, 24)
 	m.jobBroker = b
 	m.jobCount = 5
-	line := m.renderStatusLine(80)
+	line := m.renderStatusLine(100)
 	if !strings.Contains(stripANSI(line), "jobs 5") {
 		t.Fatalf("status line missing broker job count:\n%s", line)
 	}
@@ -2403,9 +2408,9 @@ func TestStatusLineJobCountFromBroker(t *testing.T) {
 // TestStatusLineJobCountFallbackWhenNoBroker verifies the polled fallback
 // is used when no broker is wired (e.g. test harnesses).
 func TestStatusLineJobCountFallbackWhenNoBroker(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
+	m := newViewTestModel(t, 100, 24)
 	m.state.SetRunningJobsCount(3)
-	line := m.renderStatusLine(80)
+	line := m.renderStatusLine(100)
 	if !strings.Contains(stripANSI(line), "jobs 3") {
 		t.Fatalf("status line missing polled job count:\n%s", line)
 	}
@@ -3089,7 +3094,7 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 	}
 	m := New(state, WithCommandRegistry(reg))
 	m.resize(80, 24)
-	m.forceMode = "edit"
+	m.approvalMode = policy.ModeEdit
 
 	updated, _ := m.dispatchCommand("/mode")
 	m = asModel(t, updated)
@@ -3097,20 +3102,20 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 		t.Fatal("/mode should open the picker")
 	}
 	view := stripANSI(m.View().Content)
-	for _, want := range []string{"Interaction mode", "Edit", "planning + full tools", "● now"} {
+	for _, want := range []string{"Interaction mode", "Edit", "plan + confirm each", "● now"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("mode picker missing %q:\n%s", want, view)
 		}
 	}
 
-	updated, _ = m.Update(picker.PickedMsg{Value: "ask"})
+	updated, _ = m.Update(picker.PickedMsg{Value: "default"})
 	m = asModel(t, updated)
-	if m.forceMode != "ask" {
-		t.Fatalf("picking Ask should set forceMode, got %q", m.forceMode)
+	if m.approvalMode != "default" {
+		t.Fatalf("picking Default should set approvalMode, got %q", m.approvalMode)
 	}
 	msgs := state.Messages()
-	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Ask mode") {
-		t.Fatal("the /ask handler's confirmation message should appear")
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Default mode") {
+		t.Fatal("the /default handler's confirmation message should appear")
 	}
 }
 
@@ -3165,8 +3170,8 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("/mode edit must not open the picker")
 	}
-	if m.forceMode != "edit" {
-		t.Fatalf("forceMode = %q, want edit", m.forceMode)
+	if string(m.approvalMode) != "edit" {
+		t.Fatalf("approvalMode = %q, want edit", string(m.approvalMode))
 	}
 }
 
@@ -3177,27 +3182,77 @@ func TestTabCyclesModeForward(t *testing.T) {
 	m := New(state)
 	m.resize(80, 24)
 
-	// Start in auto mode (forceMode == "")
-	if m.forceMode != "" {
-		t.Fatalf("initial forceMode = %q, want \"\"", m.forceMode)
-	}
-
-	// Tab → ask
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if m.forceMode != "ask" {
-		t.Fatalf("after 1st Tab: forceMode = %q, want \"ask\"", m.forceMode)
+	// Start in default mode
+	if string(m.approvalMode) != "default" {
+		t.Fatalf("initial approvalMode = %q, want \"default\"", string(m.approvalMode))
 	}
 
 	// Tab → edit
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if m.forceMode != "edit" {
-		t.Fatalf("after 2nd Tab: forceMode = %q, want \"edit\"", m.forceMode)
+	if string(m.approvalMode) != "edit" {
+		t.Fatalf("after 1st Tab: approvalMode = %q, want \"edit\"", string(m.approvalMode))
 	}
 
-	// Tab → auto (wrap)
+	// Tab → copilot
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if m.forceMode != "" {
-		t.Fatalf("after 3rd Tab: forceMode = %q, want \"\" (auto)", m.forceMode)
+	if string(m.approvalMode) != "copilot" {
+		t.Fatalf("after 2nd Tab: approvalMode = %q, want \"copilot\"", string(m.approvalMode))
+	}
+
+	// Tab → auto
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if string(m.approvalMode) != "auto" {
+		t.Fatalf("after 3rd Tab: approvalMode = %q, want \"auto\"", string(m.approvalMode))
+	}
+
+	// Tab → plan
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if string(m.approvalMode) != "plan" {
+		t.Fatalf("after 4th Tab: approvalMode = %q, want \"plan\"", string(m.approvalMode))
+	}
+
+	// Tab → default (wrap)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if string(m.approvalMode) != "default" {
+		t.Fatalf("after 5th Tab: approvalMode = %q, want \"default\"", string(m.approvalMode))
+	}
+
+	// Verify the last system message is the default confirmation
+	msgs := state.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one system message")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != session.RoleSystem {
+		t.Fatal("last message should be system role")
+	}
+	if !strings.Contains(last.Content, "Default mode") {
+		t.Fatalf("last message = %q, want 'Default mode' confirmation", last.Content)
+	}
+}
+
+func TestShiftTabCyclesModeBackward(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(80, 24)
+	m.approvalMode = policy.ModeEdit
+
+	// Shift+Tab → default
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if string(m.approvalMode) != "default" {
+		t.Fatalf("after 1st Shift+Tab: approvalMode = %q, want \"default\"", string(m.approvalMode))
+	}
+
+	// Shift+Tab → plan
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if string(m.approvalMode) != "plan" {
+		t.Fatalf("after 2nd Shift+Tab: approvalMode = %q, want \"plan\"", string(m.approvalMode))
+	}
+
+	// Shift+Tab → auto (wrap)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if string(m.approvalMode) != "auto" {
+		t.Fatalf("after 3rd Shift+Tab: approvalMode = %q, want \"auto\"", string(m.approvalMode))
 	}
 
 	// Verify the last system message is the auto confirmation
@@ -3211,44 +3266,6 @@ func TestTabCyclesModeForward(t *testing.T) {
 	}
 	if !strings.Contains(last.Content, "Auto mode") {
 		t.Fatalf("last message = %q, want 'Auto mode' confirmation", last.Content)
-	}
-}
-
-func TestShiftTabCyclesModeBackward(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
-	m.resize(80, 24)
-	m.forceMode = "edit"
-
-	// Shift+Tab → ask
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if m.forceMode != "ask" {
-		t.Fatalf("after 1st Shift+Tab: forceMode = %q, want \"ask\"", m.forceMode)
-	}
-
-	// Shift+Tab → auto
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if m.forceMode != "" {
-		t.Fatalf("after 2nd Shift+Tab: forceMode = %q, want \"\" (auto)", m.forceMode)
-	}
-
-	// Shift+Tab → edit (wrap)
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if m.forceMode != "edit" {
-		t.Fatalf("after 3rd Shift+Tab: forceMode = %q, want \"edit\"", m.forceMode)
-	}
-
-	// Verify the last system message is the edit confirmation
-	msgs := state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("expected at least one system message")
-	}
-	last := msgs[len(msgs)-1]
-	if last.Role != session.RoleSystem {
-		t.Fatal("last message should be system role")
-	}
-	if !strings.Contains(last.Content, "Edit mode") {
-		t.Fatalf("last message = %q, want 'Edit mode' confirmation", last.Content)
 	}
 }
 
@@ -3271,7 +3288,7 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 		t.Fatal("cmd popup should be visible after /")
 	}
 
-	initialMode := m.forceMode // should be ""
+	initialMode := string(m.approvalMode) // should be "default"
 
 	// Tab should accept the completion, not cycle mode
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
@@ -3279,8 +3296,8 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 	if m.cmdPopup.isVisible() {
 		t.Fatal("cmd popup should be dismissed after Tab")
 	}
-	if m.forceMode != initialMode {
-		t.Fatalf("forceMode changed from %q to %q, should be unchanged", initialMode, m.forceMode)
+	if string(m.approvalMode) != initialMode {
+		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.approvalMode))
 	}
 	// Input should have been replaced with the accepted command
 	if !strings.HasPrefix(m.input.Value(), "/test") {
@@ -3301,13 +3318,13 @@ func TestTabIgnoredDuringApproval(t *testing.T) {
 	state.SetPendingApproval(tc)
 	m := New(state)
 	m.resize(80, 24)
-	m.forceMode = "ask"
+	m.approvalMode = policy.ModeDefault
 
 	// Tab while approval is pending should not cycle mode
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
 
-	if m.forceMode != "ask" {
-		t.Fatalf("forceMode = %q, want \"ask\" (unchanged during approval)", m.forceMode)
+	if string(m.approvalMode) != "default" {
+		t.Fatalf("approvalMode = %q, want \"default\" (unchanged during approval)", string(m.approvalMode))
 	}
 	if state.PendingApproval() == nil {
 		t.Fatal("pending approval was cleared by Tab")
@@ -3439,14 +3456,14 @@ func TestShiftTabDuringPopupIsNoOp(t *testing.T) {
 		t.Fatal("cmd popup should be visible after /")
 	}
 
-	initialMode := m.forceMode
+	initialMode := string(m.approvalMode)
 	initialInput := m.input.Value()
 
 	// Shift+Tab while popup is visible should be a no-op
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 
-	if m.forceMode != initialMode {
-		t.Fatalf("forceMode changed from %q to %q, should be unchanged", initialMode, m.forceMode)
+	if string(m.approvalMode) != initialMode {
+		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.approvalMode))
 	}
 	if m.input.Value() != initialInput {
 		t.Fatalf("input changed from %q to %q, should be unchanged", initialInput, m.input.Value())
@@ -4900,6 +4917,33 @@ func TestUserConfigDirIsUnderHome(t *testing.T) {
 	rel, err := filepath.Rel(resHome, resDir)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		t.Fatalf("userConfigDir %q escaped home %q", resDir, resHome)
+	}
+}
+
+func TestModeCycleOrder(t *testing.T) {
+	if len(modeOrder) != 5 {
+		t.Fatalf("modeOrder has %d entries, want 5", len(modeOrder))
+	}
+	want := []string{"plan", "default", "edit", "copilot", "auto"}
+	for i, m := range modeOrder {
+		if string(m) != want[i] {
+			t.Errorf("modeOrder[%d] = %q, want %q", i, m, want[i])
+		}
+	}
+}
+
+func TestSetModeMapsForceClass(t *testing.T) {
+	m := newTestModel(t)
+	runner := &fakeAgentRunner{}
+	m.runner = runner
+
+	m.setMode("plan")
+	if m.approvalMode != "plan" {
+		t.Fatalf("approvalMode = %q, want plan", m.approvalMode)
+	}
+	m.setMode("auto")
+	if m.approvalMode != "auto" {
+		t.Fatalf("approvalMode = %q, want auto", m.approvalMode)
 	}
 }
 

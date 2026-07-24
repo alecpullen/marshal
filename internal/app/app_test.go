@@ -33,6 +33,7 @@ import (
 	"marshal/internal/tools/desktop"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/native"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 )
@@ -608,12 +609,12 @@ func nativeToolAgentConfig(providerName string) config.Config {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		cfg.Profile.Default: {
 			Name: cfg.Profile.Default,
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "native-coder",
-				routing.RolePlanner:     "native-coder",
-				routing.RoleRepoScout:   "native-coder",
-				routing.RoleTester:      "native-coder",
-				routing.RoleReviewer:    "native-coder",
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "native-coder"},
+				routing.RolePlanner:     {Preset: "native-coder"},
+				routing.RoleRepoScout:   {Preset: "native-coder"},
+				routing.RoleTester:      {Preset: "native-coder"},
+				routing.RoleReviewer:    {Preset: "native-coder"},
 			},
 		},
 	}
@@ -1387,9 +1388,9 @@ func knowledgeEnabledConfig(baseURL, providerName string) config.Config {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		cfg.Profile.Default: {
 			Name: cfg.Profile.Default,
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "implementer",
-				routing.RoleKnowledge:   "knowledge",
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "implementer"},
+				routing.RoleKnowledge:   {Preset: "knowledge"},
 			},
 		},
 	}
@@ -1417,12 +1418,12 @@ func reloadableAgentConfig(providerName string) config.Config {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		cfg.Profile.Default: {
 			Name: cfg.Profile.Default,
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
-				routing.RolePlanner:     "coder",
-				routing.RoleRepoScout:   "coder",
-				routing.RoleTester:      "coder",
-				routing.RoleReviewer:    "coder",
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "coder"},
+				routing.RolePlanner:     {Preset: "coder"},
+				routing.RoleRepoScout:   {Preset: "coder"},
+				routing.RoleTester:      {Preset: "coder"},
+				routing.RoleReviewer:    {Preset: "coder"},
 			},
 		},
 	}
@@ -2088,10 +2089,10 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		cfg.Profile.Default: {
 			Name: cfg.Profile.Default,
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "broken-preset",
-				routing.RoleRepoScout:   "broken-preset",
-				routing.RoleKnowledge:   "broken-preset",
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "broken-preset"},
+				routing.RoleRepoScout:   {Preset: "broken-preset"},
+				routing.RoleKnowledge:   {Preset: "broken-preset"},
 			},
 		},
 	}
@@ -2208,6 +2209,57 @@ func TestRunDistinguishesOnboardingCancelled(t *testing.T) {
 	}
 	if !mainRunnerCalled {
 		t.Fatal("main program runner should have been called after cancelled onboarding (Run must fall through to StartRuntime)")
+	}
+}
+
+func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+			routing.RoleReviewer:    {CustomAgent: "strict"},
+		}},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+	}
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"strict": {Name: "strict", Preset: "fast", SystemPrompt: "be strict", ToolDenylist: []string{"file.write_patch"}, ApprovalMode: "plan", MaxIterations: 5},
+	}
+	resolver := newRoutedProviderResolver(cfg)
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	_ = reg.Register(registry.Tool{Name: "file.write_patch", Risk: registry.RiskWorkspaceWrite})
+	_ = reg.Register(registry.Tool{Name: "shell.run", Risk: registry.RiskCommand})
+	pol := policy.NewEngine(&cfg, nil)
+	spec := roleRunnerSpec{
+		cfg:         cfg,
+		resolver:    resolver,
+		reg:         reg,
+		readOnlyReg: registry.ReadOnlyView(reg),
+		pol:         pol,
+		state:       session.New(cfg, t.TempDir(), time.Now(), session.Persistence{}),
+	}
+	runner, err := spec.newRunner(agent.RoleReviewer, swarm.ScopeReadOnly)
+	if err != nil {
+		t.Fatalf("newRunner: %v", err)
+	}
+	if runner.SystemPromptAddendum != "be strict" {
+		t.Fatalf("addendum = %q, want be strict", runner.SystemPromptAddendum)
+	}
+	if runner.MaxToolIterations != 5 {
+		t.Fatalf("iterations = %d, want 5", runner.MaxToolIterations)
+	}
+	if _, ok := runner.Registry.Lookup("file.write_patch"); ok {
+		t.Fatal("file.write_patch should be denylisted")
+	}
+	if runner.Pricing.InputPerMTokCents == 0 && runner.Pricing.OutputPerMTokCents == 0 {
+		t.Fatal("Pricing should be set from the resolved preset (non-zero for a priced preset)")
 	}
 }
 

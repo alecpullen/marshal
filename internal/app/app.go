@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -741,6 +742,22 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		}
 		r.PlanFirst = s.cfg.Agent.PlanFirst
 	}
+	r.Pricing = pricing.Lookup(route.Preset) // closes role-runner pricing gap
+	if route.CustomAgent != nil {
+		ca := route.CustomAgent
+		if ca.SystemPrompt != "" {
+			r.SystemPromptAddendum = ca.SystemPrompt
+		}
+		if len(ca.ToolDenylist) > 0 {
+			r.Registry = agent.DenylistView(r.Registry, ca.ToolDenylist)
+		}
+		if ca.ApprovalMode != "" {
+			r.SetApprovalMode(parseApprovalMode(ca.ApprovalMode))
+		}
+		if ca.MaxIterations > 0 {
+			r.MaxToolIterations = ca.MaxIterations
+		}
+	}
 	return r, nil
 }
 
@@ -796,6 +813,24 @@ func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
 		return n
 	}
 	return cfg.Agent.MaxToolIterations
+}
+
+// parseApprovalMode converts a string to a policy.ApprovalMode.
+// Unknown or empty values default to ModeDefault.
+func parseApprovalMode(s string) policy.ApprovalMode {
+	switch strings.ToLower(s) {
+	case "plan":
+		return policy.ModePlan
+	case "default":
+		return policy.ModeDefault
+	case "edit":
+		return policy.ModeEdit
+	case "copilot":
+		return policy.ModeCopilot
+	case "auto":
+		return policy.ModeAuto
+	}
+	return policy.ModeDefault
 }
 
 // defaultSubtaskIterations is the tool-iteration cap for an ad-hoc agent.run

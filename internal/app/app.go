@@ -216,6 +216,33 @@ func newRoutedProviderResolver(cfg config.Config) *routedProviderResolver {
 	}
 }
 
+// rolloverRunnerAdapter wraps a native.CommandRunner so it satisfies
+// rollover.CommandRunner. The two interfaces are structurally identical in
+// spirit but use different request/result types because internal/rollover
+// must not import internal/tools/native (see filesstate.go for the import
+// cycle rationale). Only the fields FilesState actually uses are mapped;
+// any io.Writer / callback fields on native.CommandRequest are dropped here
+// because FilesState never sets them.
+type rolloverRunnerAdapter struct {
+	inner native.CommandRunner
+}
+
+func newRolloverRunnerAdapter(inner native.CommandRunner) *rolloverRunnerAdapter {
+	return &rolloverRunnerAdapter{inner: inner}
+}
+
+func (a *rolloverRunnerAdapter) Run(ctx context.Context, req rollover.CommandRequest) (rollover.CommandResult, error) {
+	res, err := a.inner.Run(ctx, native.CommandRequest{
+		Command: req.Command,
+		Dir:     req.Dir,
+		Timeout: req.Timeout,
+	})
+	return rollover.CommandResult{
+		Stdout:   res.Stdout,
+		ExitCode: res.ExitCode,
+	}, err
+}
+
 func (r *routedProviderResolver) Resolve(class string) (routing.Route, provider.Provider, error) {
 	route, err := r.router.Resolve(class)
 	if err != nil {
@@ -532,8 +559,25 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// (branch review finding #1).
 	modelCtxWindow := route.Preset.ContextWindow
 	var digestProvider rollover.DigestProvider
-	if runner.Provider != nil {
-		digestProvider = rollover.NewLLMSummaryProvider(runner, rollover.SummaryDirective)
+	switch cfg.Session.Rollover.DigestProvider {
+	case "files":
+		// Structured digest from on-disk state: zero LLM cost. Uses the
+		// same sandboxed CommandRunner as the native git tool so it
+		// inherits the workspace's command policy.
+		// rollover.FilesState needs its own narrow CommandRunner interface
+		// (plain Go types) so internal/rollover can avoid importing
+		// internal/tools/native and breaking the import cycle. Wrap the
+		// sandboxed native.CommandRunner in a tiny adapter that maps
+		// native.CommandRequest/Result to rollover.CommandRequest/Result.
+		rolloverRunner := newRolloverRunnerAdapter(commandRunner)
+		fileState := rollover.NewFilesState(database.SQLDB(), state.SessionID(), rolloverRunner, state.WorkingDir)
+		digestProvider = rollover.NewFilesDigestProvider(fileState)
+	case "minimal":
+		digestProvider = minimalDigestProvider{}
+	default: // "llm_summary" and any unset value
+		if runner.Provider != nil {
+			digestProvider = rollover.NewLLMSummaryProvider(runner, rollover.SummaryDirective)
+		}
 	}
 	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr

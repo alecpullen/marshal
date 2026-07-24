@@ -31,7 +31,7 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "todo.write",
 		Description: "Replace the entire session todo list. Use for any task with 3+ steps or multiple requirements; mark items completed immediately, never batch-complete at the end.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"]}}},"required":["todos"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}}},"required":["todos"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

@@ -22,7 +22,7 @@ func (t *toolSet) toolsSelectTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "tools.select",
 		Description: "Load the schemas for the named deferred MCP tools so they become callable for the rest of the session.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"names":{"type":"array","items":{"type":"string"}}},"required":["names"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"names":{"type":"array","items":{"type":"string"}}},"required":["names"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

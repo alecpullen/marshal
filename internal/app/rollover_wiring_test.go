@@ -408,3 +408,83 @@ func rolloverTestConfig() config.Config {
 	}
 	return cfg
 }
+
+func TestBuildAgentRunnerWiresFilesDigestProvider(t *testing.T) {
+	ctx := context.Background()
+	cfg := rolloverTestConfig()
+	cfg.Session.Rollover.Enabled = true
+	cfg.Session.Rollover.Policy = "turn_count"
+	cfg.Session.Rollover.DigestProvider = "files"
+
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	database, err := db.Open(db.Path(tmp))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(tmp, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := database.CreateSession("sess_test", projectID, "", time.Unix(100, 0)); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	state := session.New(cfg, tmp, time.Unix(100, 0), session.Persistence{DB: database, SessionID: "sess_test"})
+
+	runner, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if runner.Rollover == nil || runner.Rollover.Controller == nil {
+		t.Fatal("rollover controller not wired")
+	}
+	if _, ok := runner.Rollover.Controller.Digest.(*rollover.FilesDigestProvider); !ok {
+		t.Fatalf("Digest = %T, want *rollover.FilesDigestProvider", runner.Rollover.Controller.Digest)
+	}
+}
+
+func TestBuildAgentRunnerDefaultsToLLMSummaryProvider(t *testing.T) {
+	ctx := context.Background()
+	cfg := rolloverTestConfig()
+	cfg.Session.Rollover.Enabled = true
+	cfg.Session.Rollover.Policy = "context_percent"
+	// DigestProvider unset -> default "llm_summary"
+
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	database, err := db.Open(db.Path(tmp))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(tmp, "test")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := database.CreateSession("sess_test", projectID, "", time.Unix(100, 0)); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	state := session.New(cfg, tmp, time.Unix(100, 0), session.Persistence{DB: database, SessionID: "sess_test"})
+
+	runner, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	if runner.Rollover == nil || runner.Rollover.Controller == nil {
+		t.Fatal("rollover controller not wired")
+	}
+	if _, ok := runner.Rollover.Controller.Digest.(*rollover.LLMSummaryProvider); !ok {
+		t.Fatalf("Digest = %T, want *rollover.LLMSummaryProvider (default)", runner.Rollover.Controller.Digest)
+	}
+}

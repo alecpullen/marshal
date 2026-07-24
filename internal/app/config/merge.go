@@ -247,6 +247,15 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Session.Rollover.TurnCountThreshold, r.TurnCountThreshold)
 		set(&cfg.Session.Rollover.TokenCounter, r.TokenCounter)
 		set(&cfg.Session.Rollover.DigestModel, r.DigestModel)
+		set(&cfg.Session.Rollover.DigestProvider, r.DigestProvider)
+		switch cfg.Session.Rollover.DigestProvider {
+		case "", "auto":
+			cfg.Session.Rollover.DigestProvider = "llm_summary"
+		case "llm_summary", "files", "minimal":
+			// valid
+		default:
+			return fmt.Errorf("session.rollover.digest_provider: unrecognized value %q (want llm_summary, files, minimal, or auto)", cfg.Session.Rollover.DigestProvider)
+		}
 		set(&cfg.Session.Rollover.RecallToolEnabled, r.RecallToolEnabled)
 		set(&cfg.Session.Rollover.Retention, r.Retention)
 		set(&cfg.Session.Rollover.BlobThresholdBytes, r.BlobThresholdBytes)

@@ -25,7 +25,7 @@ func (t *toolSet) fileReadTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "file.read",
 		Description: "Read a workspace file, optionally limited to a 1-based line range.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer"},"end_line":{"type":"integer"}},"required":["path"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer"},"end_line":{"type":"integer"}},"required":["path"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -143,7 +143,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "file.write_patch",
 		Description: "Apply a search/replace patch block format to files in the workspace.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

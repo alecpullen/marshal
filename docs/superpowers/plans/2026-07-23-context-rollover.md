@@ -1159,6 +1159,10 @@ type RolloverConfig struct {
 	// DigestModel overrides the model used to summarize an outgoing
 	// generation. Empty means use the session's main model.
 	DigestModel string `toml:"digest_model"`
+	// DigestProvider selects the digest source: "llm_summary" (default),
+	// "files" (zero-LLM built-in `FilesDigestProvider`), "minimal", or
+	// "auto" (treated as "llm_summary"). Validated at merge time.
+	DigestProvider string `toml:"digest_provider"`
 	// RecallToolEnabled is "auto", "always", or "never".
 	RecallToolEnabled string `toml:"recall_tool_enabled"`
 	// Retention is "forever" (the only value honoured today; pruning
@@ -1183,6 +1187,7 @@ In `internal/app/config/defaults.go`, inside the `Default()` struct literal (alo
 				TurnCountThreshold:      40,
 				TokenCounter:            "auto",
 				DigestModel:             "",
+				DigestProvider:          "llm_summary",
 				RecallToolEnabled:       "auto",
 				Retention:               "forever",
 				BlobThresholdBytes:      2048,
@@ -1206,6 +1211,7 @@ type fileRollover struct {
 	TurnCountThreshold      *int    `toml:"turn_count_threshold"`
 	TokenCounter            *string `toml:"token_counter"`
 	DigestModel             *string `toml:"digest_model"`
+	DigestProvider          *string `toml:"digest_provider"`
 	RecallToolEnabled       *string `toml:"recall_tool_enabled"`
 	Retention               *string `toml:"retention"`
 	BlobThresholdBytes      *int    `toml:"blob_threshold_bytes"`
@@ -1231,6 +1237,15 @@ In `internal/app/config/merge.go`, add after the `file.Snapshots` block:
 		set(&cfg.Session.Rollover.TurnCountThreshold, r.TurnCountThreshold)
 		set(&cfg.Session.Rollover.TokenCounter, r.TokenCounter)
 		set(&cfg.Session.Rollover.DigestModel, r.DigestModel)
+		set(&cfg.Session.Rollover.DigestProvider, r.DigestProvider)
+		switch cfg.Session.Rollover.DigestProvider {
+		case "", "auto":
+			cfg.Session.Rollover.DigestProvider = "llm_summary"
+		case "llm_summary", "files", "minimal":
+			// valid
+		default:
+			return fmt.Errorf("session.rollover.digest_provider: unrecognized value %q (want llm_summary, files, minimal, or auto)", cfg.Session.Rollover.DigestProvider)
+		}
 		set(&cfg.Session.Rollover.RecallToolEnabled, r.RecallToolEnabled)
 		set(&cfg.Session.Rollover.Retention, r.Retention)
 		set(&cfg.Session.Rollover.BlobThresholdBytes, r.BlobThresholdBytes)
@@ -4377,6 +4392,6 @@ Verified by the tests and manual steps above:
 ## Deferred (P2, explicitly not in this plan)
 
 - Retention pruning beyond `retention = "forever"`. The setting is parsed and stored but only `forever` is honoured. Note that pruning a contentless FTS5 table requires the `INSERT INTO ... VALUES('delete', rowid, body)` form, and blob rows would need reference counting before deletion.
-- A built-in structured digest provider for Marshal's own loops. The `DigestProvider` seam exists (Task 7); nothing ships against it besides `LLMSummaryProvider`.
+- A built-in structured digest provider for Marshal's own non-sdd2 agent loops. Implemented as `FilesDigestProvider` (`internal/rollover/filesdigest.go`), selected by `digest_provider = "files"`. It derives a "files written + files read + git status + outstanding TODO/FIXME/XXX markers" digest from the session's `file_reads`/`file_writes` tables and a read-only `git status --short` / `git grep` scan via the same sandboxed `CommandRunner` the native tools use — zero LLM cost. It degrades gracefully (files-only) outside a git repo and fails over to the minimal digest on a real git error, relying on the controller's archive-before-digest ordering.
 - sdd2 orchestrator integration. `caller_checkpoint` and `Controller.RequestRollover` exist and are tested, but nothing calls `RequestRollover` yet — that is the sdd2 pipeline's job when it is built.
 - A calibration pass comparing `EstimatorCounter` against real provider usage. `UsageCounter` already reports the larger of the two, which bounds the error in the safe direction; the measurement itself is still worth doing.

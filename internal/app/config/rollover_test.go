@@ -1,8 +1,52 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
+
+func TestDefaultRolloverDigestProvider(t *testing.T) {
+	if got := Default().Session.Rollover.DigestProvider; got != "llm_summary" {
+		t.Errorf("default Rollover.DigestProvider = %q, want %q", got, "llm_summary")
+	}
+}
+
+func TestMergeRolloverDigestProvider(t *testing.T) {
+	cfg := Default()
+	dp := "files"
+	if err := merge(&cfg, configFile{
+		Session: &fileSession{Rollover: &fileRollover{DigestProvider: &dp}},
+	}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if cfg.Session.Rollover.DigestProvider != "files" {
+		t.Errorf("Rollover.DigestProvider = %q, want %q", cfg.Session.Rollover.DigestProvider, "files")
+	}
+}
+
+func TestMergeRolloverDigestProviderAutoNormalizes(t *testing.T) {
+	cfg := Default()
+	dp := "auto"
+	if err := merge(&cfg, configFile{
+		Session: &fileSession{Rollover: &fileRollover{DigestProvider: &dp}},
+	}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if cfg.Session.Rollover.DigestProvider != "llm_summary" {
+		t.Errorf("auto normalized to %q, want %q", cfg.Session.Rollover.DigestProvider, "llm_summary")
+	}
+}
+
+func TestMergeRolloverDigestProviderRejectsUnknown(t *testing.T) {
+	cfg := Default()
+	dp := "magic"
+	err := merge(&cfg, configFile{
+		Session: &fileSession{Rollover: &fileRollover{DigestProvider: &dp}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "digest_provider") {
+		t.Fatalf("merge err = %v, want error mentioning digest_provider", err)
+	}
+}
 
 func TestDefaultRollover(t *testing.T) {
 	cfg := Default()

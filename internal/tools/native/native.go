@@ -140,6 +140,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.jobListTool(),
 		tools.questionAskTool(),
 		tools.askUserTool(),
+		tools.modeRequestTool(),
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
 	}

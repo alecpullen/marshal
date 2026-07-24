@@ -36,6 +36,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"job.list":          registry.RiskReadOnly,
 		"question.ask":      registry.RiskReadOnly,
 		"ask_user":          registry.RiskReadOnly,
+		"mode.request":      registry.RiskReadOnly,
 		"diagnostics.check": registry.RiskReadOnly,
 		"tools.select":      registry.RiskReadOnly,
 	}

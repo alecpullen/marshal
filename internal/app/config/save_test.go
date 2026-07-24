@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/routing"
 )
 
@@ -619,5 +620,43 @@ func TestSaveProjectConfigRoundTripsMCPServerTrust(t *testing.T) {
 	}
 	if got := loaded.MCP.Servers["local"].Trust; got != "unrestricted" {
 		t.Fatalf("round-tripped trust = %q, want unrestricted", got)
+	}
+}
+
+func TestPresetPricingRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/.marshal/config.toml"
+	cfg := Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"hosted": {
+			Name:     "hosted",
+			Provider: "openai",
+			Model:    "gpt-4o",
+			Pricing: &pricing.ModelPricing{
+				InputPerMTokCents:  250,
+				OutputPerMTokCents: 1000,
+			},
+		},
+	}
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, ok := loaded.Models.Presets["hosted"]
+	if !ok {
+		t.Fatal("preset 'hosted' not found after round-trip")
+	}
+	if got.Pricing == nil {
+		t.Fatal("Pricing is nil after round-trip")
+	}
+	priced, ok := got.Pricing.(*pricing.ModelPricing)
+	if !ok {
+		t.Fatalf("Pricing has type %T, want *pricing.ModelPricing", got.Pricing)
+	}
+	if priced.InputPerMTokCents != 250 || priced.OutputPerMTokCents != 1000 {
+		t.Errorf("Pricing = %+v, want Input=250 Output=1000", priced)
 	}
 }

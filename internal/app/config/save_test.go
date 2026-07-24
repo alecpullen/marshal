@@ -26,8 +26,8 @@ func TestSaveProjectConfigRoundTrip(t *testing.T) {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local_balanced": {
 			Name: "local_balanced",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "coder"},
 			},
 		},
 	}
@@ -118,8 +118,8 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local_balanced": {
 			Name: "local_balanced",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "coder"},
 			},
 		},
 	}
@@ -169,8 +169,8 @@ func TestSaveProjectConfigOmitsAgentWhenPresetActive(t *testing.T) {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local_balanced": {
 			Name: "local_balanced",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "coder",
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "coder"},
 			},
 		},
 	}
@@ -542,8 +542,16 @@ func TestSaveProjectConfigPreservesAgentProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadFile: %v", err)
 	}
-	if got := loadedFile.AgentProfiles["local_balanced"][routing.RoleImplementer]; got != "fast" {
-		t.Errorf("agent_profiles dropped by save: implementer=%q want %q", got, "fast")
+	rawRoles := loadedFile.AgentProfilesRaw["local_balanced"]
+	if rawRoles == nil {
+		t.Fatal("agent_profiles.local_balanced not found")
+	}
+	implVal, ok := rawRoles[string(routing.RoleImplementer)]
+	if !ok {
+		t.Fatal("agent_profiles.local_balanced.implementer not found")
+	}
+	if s, ok := implVal.(string); !ok || s != "fast" {
+		t.Errorf("agent_profiles.local_balanced.implementer = %v (%T), want string(fast)", implVal, implVal)
 	}
 }
 
@@ -555,9 +563,9 @@ func TestSaveProjectConfigWritesAgentProfiles(t *testing.T) {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"fast": {
 			Name: "fast",
-			Roles: map[routing.AgentRole]string{
-				routing.RoleImplementer: "small",
-				routing.RoleSDDReviewer: "large",
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer:  {Preset: "small"},
+				routing.RoleSDDReviewer:  {CustomAgent: "large"},
 			},
 		},
 	}
@@ -571,17 +579,46 @@ func TestSaveProjectConfigWritesAgentProfiles(t *testing.T) {
 		t.Fatalf("loadFile failed: %v", err)
 	}
 
-	if file.AgentProfiles == nil {
+	if file.AgentProfilesRaw == nil {
 		t.Fatal("agent_profiles not written to file")
 	}
-	if file.AgentProfiles["fast"] == nil {
+	if file.AgentProfilesRaw["fast"] == nil {
 		t.Fatal("agent_profiles.fast not written")
 	}
-	if got := file.AgentProfiles["fast"][routing.RoleImplementer]; got != "small" {
-		t.Errorf("agent_profiles.fast[implementer] = %q, want %q", got, "small")
+	implVal := file.AgentProfilesRaw["fast"][string(routing.RoleImplementer)]
+	if s, ok := implVal.(string); !ok || s != "small" {
+		t.Errorf("agent_profiles.fast[implementer] = %v (%T), want string(small)", implVal, implVal)
 	}
-	if got := file.AgentProfiles["fast"][routing.RoleSDDReviewer]; got != "large" {
-		t.Errorf("agent_profiles.fast[sdd_reviewer] = %q, want %q", got, "large")
+	reviewerVal := file.AgentProfilesRaw["fast"][string(routing.RoleSDDReviewer)]
+	reviewerMap, ok := reviewerVal.(map[string]any)
+	if !ok || reviewerMap["custom_agent"] != "large" {
+		t.Errorf("agent_profiles.fast[sdd_reviewer] = %v (%T), want {custom_agent: large}", reviewerVal, reviewerVal)
+	}
+}
+
+func TestLoadBareStringRoleBinding(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`
+[agent_profiles.mine]
+planner = "reasoning"
+implementer = "coder"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	p := loaded.AgentProfiles["mine"]
+	if p.Roles[routing.RolePlanner].Preset != "reasoning" {
+		t.Fatalf("planner = %+v, want Preset=reasoning", p.Roles[routing.RolePlanner])
+	}
+	if p.Roles[routing.RoleImplementer].Preset != "coder" {
+		t.Fatalf("implementer = %+v, want Preset=coder", p.Roles[routing.RoleImplementer])
 	}
 }
 

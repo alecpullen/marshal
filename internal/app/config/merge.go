@@ -77,12 +77,37 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Models.Presets[name] = preset
 		}
 	}
-	if file.AgentProfiles != nil {
+	if file.AgentProfilesRaw != nil {
 		if cfg.AgentProfiles == nil {
 			cfg.AgentProfiles = map[string]routing.AgentProfile{}
 		}
-		for name, roles := range file.AgentProfiles {
+		for name, rawRoles := range file.AgentProfilesRaw {
+			roles := map[routing.AgentRole]routing.RoleBinding{}
+			for roleKey, roleVal := range rawRoles {
+				role := routing.AgentRole(roleKey)
+				var rb routing.RoleBinding
+				if s, ok := roleVal.(string); ok {
+					rb.Preset = s
+				} else if m, ok := roleVal.(map[string]any); ok {
+					if ca, ok := m["custom_agent"].(string); ok {
+						rb.CustomAgent = ca
+					}
+					if p, ok := m["preset"].(string); ok {
+						rb.Preset = p
+					}
+				}
+				roles[role] = rb
+			}
 			cfg.AgentProfiles[name] = routing.AgentProfile{Name: name, Roles: roles}
+		}
+	}
+	if file.CustomAgents != nil {
+		if cfg.CustomAgents == nil {
+			cfg.CustomAgents = map[string]routing.CustomAgent{}
+		}
+		for name, a := range file.CustomAgents {
+			a.Name = name
+			cfg.CustomAgents[name] = a
 		}
 	}
 	if file.Agents != nil {

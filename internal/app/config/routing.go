@@ -15,6 +15,7 @@ func (c Config) RoutingConfig() routing.Config {
 		RemoteAllowed:  c.Privacy.RemoteProvidersAllowed,
 		Presets:        c.Models.Presets,
 		Profiles:       c.AgentProfiles,
+		CustomAgents:   c.CustomAgents,
 		ContextBudgets: contextBudgets,
 		LegacyProvider: c.Agent.Provider,
 		LegacyModel:    c.Agent.Model,

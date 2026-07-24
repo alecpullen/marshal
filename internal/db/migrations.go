@@ -191,4 +191,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS generation_turns_fts USING fts5(
     content='',
     tokenize='porter unicode61'
 );
+
+CREATE TABLE IF NOT EXISTS token_calibration (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    session_id TEXT,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    estimator_tokens INTEGER NOT NULL,
+    provider_tokens INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_token_cal_project ON token_calibration(project_id, session_id);
 `

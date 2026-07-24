@@ -186,6 +186,12 @@ type Runner struct {
 
 	UsageObserver UsageObserver
 
+	// CalibrationObserver, when set, receives the wire messages and the
+	// provider-reported prompt-token count after each chatOnce that reports
+	// usage. Used by the rollover calibration harness to record paired
+	// estimator-vs-provider observations. Nil disables recording.
+	CalibrationObserver func(wire []schema.ChatMessage, promptTokens int)
+
 	// MetricsObserver, when set, receives one TurnMetrics per RunTask,
 	// emitted on every exit path (answer, salvage, failure). Nil disables
 	// collection output; counter bookkeeping still runs.
@@ -308,6 +314,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.Role = other.Role
 	r.WriteGate = other.WriteGate
 	r.UsageObserver = other.UsageObserver
+	r.CalibrationObserver = other.CalibrationObserver
 	r.MetricsObserver = other.MetricsObserver
 	r.Snapshotter = other.Snapshotter
 	r.SnapshotRecorder = other.SnapshotRecorder

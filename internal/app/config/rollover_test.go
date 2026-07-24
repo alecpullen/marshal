@@ -148,3 +148,24 @@ func TestMergeRollover(t *testing.T) {
 		t.Errorf("Rollover.BlobThresholdBytes = %d after partial merge, want %d", cfg.Session.Rollover.BlobThresholdBytes, 2048)
 	}
 }
+
+func TestDefaultRolloverCalibrationDisabled(t *testing.T) {
+	if Default().Session.Rollover.Calibration.Enabled {
+		t.Error("default calibration.Enabled = true, want false")
+	}
+}
+
+func TestMergeRolloverCalibration(t *testing.T) {
+	cfg := Default()
+	enabled := true
+	if err := merge(&cfg, configFile{
+		Session: &fileSession{Rollover: &fileRollover{
+			Calibration: &fileCalibration{Enabled: &enabled},
+		}},
+	}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if !cfg.Session.Rollover.Calibration.Enabled {
+		t.Error("calibration.Enabled not merged")
+	}
+}

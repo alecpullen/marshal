@@ -259,6 +259,9 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Session.Rollover.RecallToolEnabled, r.RecallToolEnabled)
 		set(&cfg.Session.Rollover.Retention, r.Retention)
 		set(&cfg.Session.Rollover.BlobThresholdBytes, r.BlobThresholdBytes)
+		if r.Calibration != nil {
+			set(&cfg.Session.Rollover.Calibration.Enabled, r.Calibration.Enabled)
+		}
 	}
 	if file.Hooks != nil {
 		set(&cfg.Hooks.FailClosed, file.Hooks.FailClosed)

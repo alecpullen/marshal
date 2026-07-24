@@ -528,6 +528,33 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		}
 	}
 
+	// Calibration harness: when enabled, record a paired estimator-vs-provider
+	// observation for every turn that reports provider usage. The insert is
+	// best-effort — telemetry never breaks a turn.
+	if cfg.Session.Rollover.Calibration.Enabled {
+		estCounter := rollover.EstimatorCounter{}
+		prov := route.Preset.Provider
+		model := route.Preset.Model
+		sid := state.SessionID()
+		runner.CalibrationObserver = func(wire []schema.ChatMessage, promptTokens int) {
+			est, err := estCounter.CountTokens(context.Background(), wire)
+			if err != nil {
+				return
+			}
+			if _, err := database.InsertCalibrationSample(db.CalibrationSample{
+				ProjectID:       projectID,
+				SessionID:       sid,
+				Provider:        prov,
+				Model:           model,
+				EstimatorTokens: est,
+				ProviderTokens:  promptTokens,
+				CreatedAt:       time.Now(),
+			}); err != nil && state.Logger() != nil {
+				state.Logger().Warn("calibration sample insert failed", "error", err)
+			}
+		}
+	}
+
 	// T17: set DigestModel on the runner so DigestChat can use a different
 	// model for digest generation than the primary turn model.
 	if cfg.Session.Rollover.DigestModel != "" {

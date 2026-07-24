@@ -180,6 +180,11 @@ type fileRollover struct {
 	RecallToolEnabled       *string `toml:"recall_tool_enabled"`
 	Retention               *string `toml:"retention"`
 	BlobThresholdBytes      *int    `toml:"blob_threshold_bytes"`
+	Calibration             *fileCalibration `toml:"calibration"`
+}
+
+type fileCalibration struct {
+	Enabled *bool `toml:"enabled"`
 }
 
 type fileSession struct {

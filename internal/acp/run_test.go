@@ -428,6 +428,80 @@ func TestRunReturnsJoinedServeAndCleanupErrors(t *testing.T) {
 	_ = pw.Close()
 }
 
+func TestRunPromptTurnNilRunnerReturnsError(t *testing.T) {
+	pr, pw := io.Pipe()
+	out := &lockedBuffer{}
+
+	cfg := runConfig{
+		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+			return &app.Runtime{SessionID: "sess_nilrunner"}, nil
+		},
+		closeRuntime: func(ctx context.Context, rt *app.Runtime) error { return nil },
+		shutdown:     time.Second,
+	}
+
+	ctx := context.Background()
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- runWithConfig(ctx, pr, out, cfg)
+	}()
+
+	absCwd := t.TempDir()
+
+	// Create a session (startRuntime returns a runtime with nil Runner).
+	mustMarshalWrite(t, pw, map[string]any{
+		"jsonrpc": "2.0", "id": float64(1), "method": "session/new",
+		"params": map[string]any{"cwd": absCwd, "mcpServers": []any{}},
+	})
+
+	// Wait for session response.
+	pollUntil(t, 2*time.Second, func() bool {
+		return strings.Contains(out.String(), `"sessionId"`)
+	})
+
+	// Send a prompt to the session whose runtime has a nil Runner.
+	mustMarshalWrite(t, pw, map[string]any{
+		"jsonrpc": "2.0", "id": float64(2), "method": "session/prompt",
+		"params": map[string]any{
+			"sessionId": "sess_nilrunner",
+			"prompt":    []map[string]any{{"type": "text", "text": "hello"}},
+		},
+	})
+
+	// Wait for the prompt response.
+	pollUntil(t, 2*time.Second, func() bool {
+		return strings.Contains(out.String(), `"id":2`)
+	})
+
+	pw.Close()
+	<-runErr
+
+	// Parse the response with id=2.
+	scan := bufio.NewScanner(bytes.NewReader(out.Bytes()))
+	scan.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var resp Response
+	for scan.Scan() {
+		line := scan.Text()
+		var r Response
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			continue
+		}
+		if r.ID != nil {
+			var id float64
+			if err := json.Unmarshal(*r.ID, &id); err == nil && id == 2 {
+				resp = r
+				break
+			}
+		}
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error for nil runner, got success")
+	}
+	if resp.Error.Code != internalError {
+		t.Fatalf("error code = %d, want %d", resp.Error.Code, internalError)
+	}
+}
+
 func TestRunRespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -93,10 +93,19 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 			if !ok || rt == nil {
 				return nil, false
 			}
-			var run RunnerFunc
-			if rt.Runner != nil {
-				run = rt.Runner.Run
+			if rt.Runner == nil {
+				reason := "agent runner not built"
+				if rt.State != nil {
+					if perr := rt.State.ProviderError(); perr != nil {
+						reason = perr.Error()
+					}
+				}
+				log.Warn("acp: session has no runner; rejecting prompt",
+					"session", sessionID, "reason", reason)
+				return nil, false
 			}
+			var run RunnerFunc
+			run = rt.Runner.Run
 			evBroker, _ := rt.EventBroker.(*pubsub.Broker[session.Event])
 			return &TurnRuntime{
 				SessionID: sessionID,

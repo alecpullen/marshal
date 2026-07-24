@@ -204,6 +204,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 				Provider: p.Provider, Model: p.Model, ContextWindow: p.ContextWindow,
 				MaxOutputTokens: p.MaxOutputTokens,
 				ToolCalling:     p.ToolCalling, LocalOnly: p.LocalOnly,
+				Pricing: p.Pricing,
 			}
 			preset.Name = name
 			file.Models.Presets[name] = preset

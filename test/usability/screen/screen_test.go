@@ -19,8 +19,8 @@ func TestParseHelpOpen(t *testing.T) {
 	snap := harness.Snapshot{
 		Width:   80,
 		Height:  24,
-		Content: []byte("marshal keys\n  Enter send message\n"),
-		Lines:   []string{"marshal keys", "  Enter send message"},
+		Content: []byte("Keys\n  Enter send message\n"),
+		Lines:   []string{"Keys", "  Enter send message"},
 	}
 	scr, err := Parse(snap)
 	if err != nil {

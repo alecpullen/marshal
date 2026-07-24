@@ -132,3 +132,178 @@ func TestRecentTurnMetricsNewestFirstAndLimited(t *testing.T) {
 		t.Fatalf("order = %d,%d; want newest first (3,2)", rows[0].Iterations, rows[1].Iterations)
 	}
 }
+
+func TestInsertAndRecentTurnMetricsWithNewFields(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	if err := database.CreateSession("sess_newfields", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	want := sampleRow(projectID, "sess_newfields")
+	want.ReasoningTokens = 42
+	want.CacheReadTokens = 10
+	want.CacheWriteTokens = 5
+	want.EstimatedCostCents = 99
+
+	id, err := database.InsertTurnMetrics(want)
+	if err != nil {
+		t.Fatalf("InsertTurnMetrics: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("InsertTurnMetrics returned id 0")
+	}
+
+	rows, err := database.RecentTurnMetrics(projectID, 10)
+	if err != nil {
+		t.Fatalf("RecentTurnMetrics: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
+	}
+	got := rows[0]
+	want.ID = got.ID
+	if got != want {
+		t.Fatalf("row mismatch:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestAggregateTurnMetrics(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	if err := database.CreateSession("sess_agg", projectID, "", time.Now()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Insert three rows: two gpt-4o (different costs), one local.
+	rows := []TurnMetricsRow{
+		{
+			ProjectID: projectID, SessionID: "sess_agg",
+			StartedAt:  time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC),
+			DurationMs: 100, Class: "question", Role: "general",
+			Provider: "openai", Model: "gpt-4o",
+			Goal: "q1", Iterations: 1, ToolCalls: 0, ToolErrors: 0,
+			CacheHits: 0, ParseFailures: 0, HardStalls: 0,
+			Outcome: "answered", SalvageReason: "",
+			PromptTokens: 10, CompletionTokens: 20,
+			ReasoningTokens: 0, CacheReadTokens: 5, CacheWriteTokens: 2,
+			EstimatedCostCents: 30,
+		},
+		{
+			ProjectID: projectID, SessionID: "sess_agg",
+			StartedAt:  time.Date(2026, 7, 7, 13, 0, 0, 0, time.UTC),
+			DurationMs: 200, Class: "question", Role: "general",
+			Provider: "openai", Model: "gpt-4o",
+			Goal: "q2", Iterations: 2, ToolCalls: 1, ToolErrors: 0,
+			CacheHits: 1, ParseFailures: 0, HardStalls: 0,
+			Outcome: "answered", SalvageReason: "",
+			PromptTokens: 15, CompletionTokens: 25,
+			ReasoningTokens: 5, CacheReadTokens: 3, CacheWriteTokens: 1,
+			EstimatedCostCents: 50,
+		},
+		{
+			ProjectID: projectID, SessionID: "sess_agg",
+			StartedAt:  time.Date(2026, 7, 7, 14, 0, 0, 0, time.UTC),
+			DurationMs: 50, Class: "question", Role: "general",
+			Provider: "ollama", Model: "local-model",
+			Goal: "q3", Iterations: 1, ToolCalls: 0, ToolErrors: 0,
+			CacheHits: 0, ParseFailures: 0, HardStalls: 0,
+			Outcome: "answered", SalvageReason: "",
+			PromptTokens: 5, CompletionTokens: 3,
+			ReasoningTokens: 0, CacheReadTokens: 0, CacheWriteTokens: 0,
+			EstimatedCostCents: 2,
+		},
+	}
+	for i, r := range rows {
+		if _, err := database.InsertTurnMetrics(r); err != nil {
+			t.Fatalf("InsertTurnMetrics[%d]: %v", i, err)
+		}
+	}
+
+	totals, breakdown, err := database.AggregateTurnMetrics(projectID)
+	if err != nil {
+		t.Fatalf("AggregateTurnMetrics: %v", err)
+	}
+
+	// Grand totals: (10+15+5)=30 prompt, (20+25+3)=48 completion,
+	// (0+5+0)=5 reasoning, (5+3+0)=8 cache_read, (2+1+0)=3 cache_write,
+	// (30+50+2)=82 cost, 3 turns.
+	if totals.PromptTokens != 30 {
+		t.Errorf("PromptTokens = %d, want 30", totals.PromptTokens)
+	}
+	if totals.CompletionTokens != 48 {
+		t.Errorf("CompletionTokens = %d, want 48", totals.CompletionTokens)
+	}
+	if totals.ReasoningTokens != 5 {
+		t.Errorf("ReasoningTokens = %d, want 5", totals.ReasoningTokens)
+	}
+	if totals.CacheReadTokens != 8 {
+		t.Errorf("CacheReadTokens = %d, want 8", totals.CacheReadTokens)
+	}
+	if totals.CacheWriteTokens != 3 {
+		t.Errorf("CacheWriteTokens = %d, want 3", totals.CacheWriteTokens)
+	}
+	if totals.EstimatedCostCents != 82 {
+		t.Errorf("EstimatedCostCents = %d, want 82", totals.EstimatedCostCents)
+	}
+	if totals.Turns != 3 {
+		t.Errorf("Turns = %d, want 3", totals.Turns)
+	}
+
+	// Breakdown: two entries, sorted by cost DESC (gpt-4o first, then local).
+	if len(breakdown) != 2 {
+		t.Fatalf("len(breakdown) = %d, want 2", len(breakdown))
+	}
+
+	// First: gpt-4o (cost 30+50=80)
+	b0 := breakdown[0]
+	if b0.Provider != "openai" || b0.Model != "gpt-4o" {
+		t.Errorf("breakdown[0] = %s/%s, want openai/gpt-4o", b0.Provider, b0.Model)
+	}
+	if b0.PromptTokens != 25 {
+		t.Errorf("b0.PromptTokens = %d, want 25", b0.PromptTokens)
+	}
+	if b0.CompletionTokens != 45 {
+		t.Errorf("b0.CompletionTokens = %d, want 45", b0.CompletionTokens)
+	}
+	if b0.ReasoningTokens != 5 {
+		t.Errorf("b0.ReasoningTokens = %d, want 5", b0.ReasoningTokens)
+	}
+	if b0.CacheReadTokens != 8 {
+		t.Errorf("b0.CacheReadTokens = %d, want 8", b0.CacheReadTokens)
+	}
+	if b0.CacheWriteTokens != 3 {
+		t.Errorf("b0.CacheWriteTokens = %d, want 3", b0.CacheWriteTokens)
+	}
+	if b0.EstimatedCostCents != 80 {
+		t.Errorf("b0.EstimatedCostCents = %d, want 80", b0.EstimatedCostCents)
+	}
+	if b0.Turns != 2 {
+		t.Errorf("b0.Turns = %d, want 2", b0.Turns)
+	}
+
+	// Second: local-model (cost 2)
+	b1 := breakdown[1]
+	if b1.Provider != "ollama" || b1.Model != "local-model" {
+		t.Errorf("breakdown[1] = %s/%s, want ollama/local-model", b1.Provider, b1.Model)
+	}
+	if b1.PromptTokens != 5 {
+		t.Errorf("b1.PromptTokens = %d, want 5", b1.PromptTokens)
+	}
+	if b1.CompletionTokens != 3 {
+		t.Errorf("b1.CompletionTokens = %d, want 3", b1.CompletionTokens)
+	}
+	if b1.ReasoningTokens != 0 {
+		t.Errorf("b1.ReasoningTokens = %d, want 0", b1.ReasoningTokens)
+	}
+	if b1.CacheReadTokens != 0 {
+		t.Errorf("b1.CacheReadTokens = %d, want 0", b1.CacheReadTokens)
+	}
+	if b1.CacheWriteTokens != 0 {
+		t.Errorf("b1.CacheWriteTokens = %d, want 0", b1.CacheWriteTokens)
+	}
+	if b1.EstimatedCostCents != 2 {
+		t.Errorf("b1.EstimatedCostCents = %d, want 2", b1.EstimatedCostCents)
+	}
+	if b1.Turns != 1 {
+		t.Errorf("b1.Turns = %d, want 1", b1.Turns)
+	}
+}

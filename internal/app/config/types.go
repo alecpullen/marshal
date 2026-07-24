@@ -142,6 +142,16 @@ type RolloverConfig struct {
 	RecallToolEnabled       string `toml:"recall_tool_enabled"`
 	Retention               string `toml:"retention"`
 	BlobThresholdBytes      int    `toml:"blob_threshold_bytes"`
+	Calibration             CalibrationConfig `toml:"calibration"`
+}
+
+// CalibrationConfig controls EstimatorCounter calibration recording.
+// When enabled, each turn that reports provider usage also persists a
+// paired estimator-vs-provider token observation to the token_calibration
+// table, so the estimator's error can be measured later. Disabled by
+// default — it is a measurement tool, not a runtime dependency.
+type CalibrationConfig struct {
+	Enabled bool `toml:"enabled"`
 }
 
 // WebConfig gates outbound network access from agent-side tools (web.fetch

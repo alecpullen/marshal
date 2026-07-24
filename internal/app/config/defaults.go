@@ -126,6 +126,7 @@ func Default() Config {
 				RecallToolEnabled:       "auto",
 				Retention:               "forever",
 				BlobThresholdBytes:      2048,
+				Calibration:             CalibrationConfig{Enabled: false},
 			},
 		},
 		Hooks: HooksConfig{

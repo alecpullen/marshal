@@ -57,4 +57,16 @@ type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// ReasoningTokens is the reasoning/thinking token count reported by
+	// reasoning models (DeepSeek-R1, o1, etc.). Part of completion tokens
+	// on some providers; reported separately on others. 0 when absent.
+	ReasoningTokens int
+	// CacheReadTokens is prompt-billing tokens served from a prompt cache
+	// (OpenAI cached_tokens, Anthropic cache_read_input_tokens, DeepSeek
+	// prompt_cache_hit_tokens). 0 when the provider doesn't report it.
+	CacheReadTokens int
+	// CacheWriteTokens is prompt tokens written to a prompt cache for
+	// future reuse (Anthropic cache_creation_input_tokens, DeepSeek
+	// prompt_cache_miss_tokens). 0 when absent.
+	CacheWriteTokens int
 }

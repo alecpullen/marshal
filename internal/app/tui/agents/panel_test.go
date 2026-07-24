@@ -225,3 +225,95 @@ func TestRosterPersistNoopWhenNoCommit(t *testing.T) {
 		}
 	}
 }
+
+// TestRosterRolePickerOpensOverlay tests that pressing Enter on a role field
+// opens a picker overlay locally, and that PickedMsg triggers persistence.
+func TestRosterRolePickerOpensOverlay(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".marshal", "config.toml")
+
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "tiny"},
+		"slow": {Provider: "ollama", Model: "big"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"default": {Name: "default", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+	cfg.Profile.Default = "default"
+
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveProjectConfig(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewRosterPanel(cfg, cfgPath, "", nil)
+
+	// Navigate down to the Planner role field.
+	// Cursor starts at 0 (Profile). Press down once to reach Planner:
+	//   0 = Profile (kindPicker)
+	//   1 = header.swarm_roles (kindHeader, skipped by cursor)
+	//   2 = Planner (kindPicker)
+	p.Update(tea.KeyPressMsg{Code: tea.KeyDown, Text: "down"})
+
+	// Press Enter on the Planner role field to trigger the picker.
+	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Text: "enter"})
+
+	// Verify a picker overlay was opened.
+	if !p.pickerActive {
+		t.Fatal("expected pickerActive to be true after Enter on a role field")
+	}
+	if p.pickerModel == nil {
+		t.Fatal("expected pickerModel to be non-nil after Enter on a role field")
+	}
+	if p.pendingPick == nil {
+		t.Fatal("expected pendingPick to be set after Enter on a role field")
+	}
+
+	// The field list's openRow for kindPicker returns nil (it just stores the
+	// picker request). The panel opens the picker model itself, so cmd may be
+	// nil here — that's fine. The important thing is pickerActive/pickerModel.
+
+	// Simulate a picker selection: PickedMsg with value "slow".
+	cmd = p.Update(picker.PickedMsg{Value: "slow"})
+	if cmd == nil {
+		t.Fatal("expected a Cmd after picker commit, got nil")
+	}
+
+	// Verify picker state is cleared.
+	if p.pickerActive {
+		t.Fatal("expected pickerActive to be false after PickedMsg")
+	}
+	if p.pickerModel != nil {
+		t.Fatal("expected pickerModel to be nil after PickedMsg")
+	}
+	if p.pendingPick != nil {
+		t.Fatal("expected pendingPick to be nil after PickedMsg")
+	}
+
+	// Verify persistence via ChangedMsg.
+	got := cmd()
+	changed, ok := got.(settings.ChangedMsg)
+	if !ok {
+		t.Fatalf("expected settings.ChangedMsg, got %T: %+v", got, got)
+	}
+	if changed.SaveErr != nil {
+		t.Fatalf("ChangedMsg.SaveErr = %v", changed.SaveErr)
+	}
+	profile, ok := changed.Cfg.AgentProfiles["default"]
+	if !ok {
+		t.Fatal("ChangedMsg.Cfg missing default profile")
+	}
+	binding, ok := profile.Roles[routing.RolePlanner]
+	if !ok {
+		t.Fatal("ChangedMsg.Cfg missing planner role")
+	}
+	if binding.Preset != "slow" {
+		t.Fatalf("planner preset = %q, want %q", binding.Preset, "slow")
+	}
+}

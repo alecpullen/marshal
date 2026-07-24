@@ -440,6 +440,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		case "?":
 			p.showLegend = !p.showLegend
 			return nil
+		case "up", "down":
+			cmd := settings.FieldListUpdate(p.list, msg)
+			return p.maybePersist(cmd)
 		case "enter":
 			cmd := settings.FieldListUpdate(p.list, msg)
 			// Check if the field list pushed a picker request.

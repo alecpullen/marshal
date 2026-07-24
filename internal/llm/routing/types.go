@@ -1,5 +1,7 @@
 package routing
 
+import "github.com/pelletier/go-toml/v2"
+
 type AgentRole string
 
 const (
@@ -58,9 +60,54 @@ type ModelPreset struct {
 	Pricing any `toml:"pricing,omitempty"`
 }
 
+// RoleBinding is a oneOf: exactly one of Preset or CustomAgent is set.
+// A bare TOML string ("reasoning") decodes as Preset (see UnmarshalTOML).
+type RoleBinding struct {
+	Preset      string `toml:"preset,omitempty"`
+	CustomAgent string `toml:"custom_agent,omitempty"`
+}
+
+// UnmarshalTOML accepts a bare string as Preset, or a table with
+// preset/custom_agent. This preserves the pre-custom-agents TOML shape.
+func (b *RoleBinding) UnmarshalTOML(v any) error {
+	switch raw := v.(type) {
+	case string:
+		b.Preset = raw
+		return nil
+	default:
+		// Use the standard struct decoder by re-marshalling/unmarshalling.
+		data, err := toml.Marshal(map[string]any{"__rb": v})
+		if err != nil {
+			return err
+		}
+		var wrap struct {
+			RB RoleBinding `toml:"__rb"`
+		}
+		if err := toml.Unmarshal(data, &wrap); err != nil {
+			return err
+		}
+		*b = wrap.RB
+		return nil
+	}
+}
+
 type AgentProfile struct {
 	Name  string
-	Roles map[AgentRole]string
+	Roles map[AgentRole]RoleBinding
+}
+
+// CustomAgent is a user-defined, named agent that layers prompt, tool
+// denylist, approval mode, context budget, and iteration cap on top of a
+// referenced ModelPreset. It can fill a role slot (via RoleBinding) or be
+// dispatched ad-hoc by name (agent.run / /agents Run now).
+type CustomAgent struct {
+	Name          string         `toml:"name"`
+	Preset        string         `toml:"preset"`
+	SystemPrompt  string         `toml:"system_prompt,omitempty"`
+	ToolDenylist  []string       `toml:"tool_denylist,omitempty"`
+	ApprovalMode  string         `toml:"approval_mode,omitempty"`
+	MaxIterations int            `toml:"max_iterations,omitempty"`
+	Context       ContextBudget  `toml:"context,omitempty"`
 }
 
 type ContextBudget struct {
@@ -73,6 +120,7 @@ type Route struct {
 	Preset        ModelPreset
 	ContextBudget ContextBudget
 	Legacy        bool
+	CustomAgent   *CustomAgent // nil unless resolved from a RoleBinding.CustomAgent
 }
 
 type Config struct {
@@ -80,6 +128,7 @@ type Config struct {
 	RemoteAllowed  bool
 	Presets        map[string]ModelPreset
 	Profiles       map[string]AgentProfile
+	CustomAgents   map[string]CustomAgent
 	ContextBudgets map[AgentRole]ContextBudget
 	LegacyProvider string
 	LegacyModel    string

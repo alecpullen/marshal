@@ -12,7 +12,8 @@ var (
 	ErrPresetNotFound        = errors.New("routing: preset not found")
 	ErrRemoteProviderBlocked = errors.New("routing: remote provider blocked")
 
-	errRoleNotConfigured = errors.New("routing: role not configured")
+	errRoleNotConfigured    = errors.New("routing: role not configured")
+	errCustomAgentNotFound = errors.New("routing: custom agent not found")
 )
 
 type StaticRouter struct {
@@ -77,10 +78,17 @@ func (r *StaticRouter) resolveProfileRole(role AgentRole) (Route, error) {
 	if !ok {
 		return Route{}, fmt.Errorf("%w: %s", ErrProfileNotFound, r.config.DefaultProfile)
 	}
-	presetName, ok := profile.Roles[role]
-	if !ok || presetName == "" {
+	binding, ok := profile.Roles[role]
+	if !ok || (binding.Preset == "" && binding.CustomAgent == "") {
 		return Route{}, fmt.Errorf("%w: %s role %s", errRoleNotConfigured, profile.Name, role)
 	}
+	if binding.CustomAgent != "" {
+		return r.resolveAgentBinding(binding.CustomAgent, role, profile.Name)
+	}
+	return r.resolvePresetBinding(binding.Preset, role, profile.Name)
+}
+
+func (r *StaticRouter) resolvePresetBinding(presetName string, role AgentRole, profileName string) (Route, error) {
 	preset, ok := r.config.Presets[presetName]
 	if !ok {
 		return Route{}, fmt.Errorf("%w: %s", ErrPresetNotFound, presetName)
@@ -93,10 +101,83 @@ func (r *StaticRouter) resolveProfileRole(role AgentRole) (Route, error) {
 	}
 	return Route{
 		Role:          role,
-		Profile:       profile.Name,
+		Profile:       profileName,
 		Preset:        preset,
 		ContextBudget: r.config.ContextBudgets[role],
 	}, nil
+}
+
+// ResolveCustomAgent resolves a named custom agent. If the agent's own
+// Preset is empty, it falls back through the role it was invoked as
+// (ResolveRole's implementer→legacy chain). The agent's overrides are
+// attached as Route.CustomAgent so runner construction can apply them.
+func (r *StaticRouter) ResolveCustomAgent(name string, asRole AgentRole) (Route, error) {
+	agent, ok := r.config.CustomAgents[name]
+	if !ok {
+		return Route{}, fmt.Errorf("%w: custom agent %s", errCustomAgentNotFound, name)
+	}
+	agent.Name = name
+	if agent.Preset != "" {
+		profileName := r.config.DefaultProfile
+		route, err := r.resolvePresetBinding(agent.Preset, asRole, profileName)
+		if err != nil {
+			return Route{}, err
+		}
+		route.CustomAgent = &agent
+		if agent.Context.MaxRepoContextTokens > 0 {
+			route.ContextBudget = agent.Context
+		}
+		return route, nil
+	}
+	// No preset: fall back through the role's resolution, but attach the agent.
+	route, err := r.ResolveRole(asRole)
+	if err != nil {
+		return Route{}, err
+	}
+	route.CustomAgent = &agent
+	return route, nil
+}
+
+func (r *StaticRouter) resolveAgentBinding(name string, role AgentRole, profileName string) (Route, error) {
+	agent, ok := r.config.CustomAgents[name]
+	if !ok {
+		return Route{}, fmt.Errorf("%w: custom agent %s", errCustomAgentNotFound, name)
+	}
+	agent.Name = name
+	if agent.Preset == "" {
+		// Fall back through ResolveRole (implementer→legacy), attach agent.
+		route, err := r.ResolveRole(role)
+		if err != nil {
+			return Route{}, err
+		}
+		route.CustomAgent = &agent
+		route.Profile = profileName
+		if agent.Context.MaxRepoContextTokens > 0 {
+			route.ContextBudget = agent.Context
+		}
+		return route, nil
+	}
+	preset, ok := r.config.Presets[agent.Preset]
+	if !ok {
+		return Route{}, fmt.Errorf("%w: custom agent %s preset %s", ErrPresetNotFound, name, agent.Preset)
+	}
+	if preset.Name == "" {
+		preset.Name = agent.Preset
+	}
+	if !preset.LocalOnly && !r.config.RemoteAllowed {
+		return Route{}, fmt.Errorf("%w: custom agent %s", ErrRemoteProviderBlocked, name)
+	}
+	route := Route{
+		Role:          role,
+		Profile:       profileName,
+		Preset:        preset,
+		ContextBudget: r.config.ContextBudgets[role],
+		CustomAgent:   &agent,
+	}
+	if agent.Context.MaxRepoContextTokens > 0 {
+		route.ContextBudget = agent.Context
+	}
+	return route, nil
 }
 
 func isNoConfiguredRoute(err error) bool {

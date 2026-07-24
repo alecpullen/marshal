@@ -16,6 +16,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/memory"
@@ -4214,6 +4215,29 @@ func newTestModel(t *testing.T) Model {
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
+}
+
+func TestAgentsCommandOpensRoster(t *testing.T) {
+	m := newTestModel(t)
+	m.dispatchCommand("/agents")
+	if !m.dock.IsOpen() {
+		t.Fatal("/agents did not open the dock")
+	}
+	if _, ok := m.dock.Panel().(*agents.Panel); !ok {
+		t.Fatalf("dock panel = %T, want *agents.Panel", m.dock.Panel())
+	}
+}
+
+func TestAgentsCommandArgPreFilters(t *testing.T) {
+	m := newTestModel(t)
+	m.dispatchCommand("/agents planner")
+	panel, ok := m.dock.Panel().(*agents.Panel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want *agents.Panel", m.dock.Panel())
+	}
+	if panel.FilterValue() != "planner" {
+		t.Fatalf("filter = %q, want planner", panel.FilterValue())
+	}
 }
 
 func TestConnectOpensOverlay(t *testing.T) {

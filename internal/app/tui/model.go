@@ -25,6 +25,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
@@ -424,6 +425,14 @@ func (m *Model) openSettingsBrowser(query string) {
 	// BrowserPanel.SetSavePending and flushChanges).
 	browser.SetSavePending(m.configSavePending)
 	m.dock.Open(browser)
+}
+
+func (m *Model) openAgentsRoster(arg string) {
+	dispatch := func(goal string) tea.Cmd {
+		// Run-now wired in Task 9; stub returns nil.
+		return nil
+	}
+	m.dock.Open(agents.NewRosterPanel(m.state.Config, projectConfigPath(m.state.WorkingDir), arg, dispatch))
 }
 
 // refreshOpenSettingsBrowser rebuilds an open settings browser from the

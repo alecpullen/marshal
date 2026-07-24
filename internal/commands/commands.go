@@ -262,6 +262,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "agents",
+			Description: "Configure the agent roster: roles, models, custom agents, swarm & SDD budgets",
+			Group:       groupWorkflow,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "connect",
 			Description: "Add or reconnect a provider",
 			Group:       groupModels,

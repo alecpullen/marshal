@@ -13,6 +13,7 @@ func sectionList() []sectionSpec {
 		{id: "providers", title: "Providers", root: providersFrame},
 		{id: "presets", title: "Model Presets", root: presetsFrame},
 		{id: "profiles", title: "Profiles", root: profilesFrame},
+		{id: "custom_agents", title: "Custom Agents", root: customAgentsFrame},
 		{id: "privacy", title: "Privacy", root: privacyFrame},
 		{id: "shell", title: "Shell", root: shellFrame},
 		{id: "sandbox", title: "Sandbox", root: sandboxFrame},

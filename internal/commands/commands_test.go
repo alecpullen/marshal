@@ -459,6 +459,20 @@ func TestDiffCommandRegistered(t *testing.T) {
 	}
 }
 
+func TestAgentsCommandListed(t *testing.T) {
+	reg := New()
+	if err := RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	c, ok := reg.Lookup("agents")
+	if !ok {
+		t.Fatal("/agents not registered")
+	}
+	if c.Group != "Workflows" {
+		t.Fatalf("group = %q, want Workflows", c.Group)
+	}
+}
+
 func TestModeCommandRegistered(t *testing.T) {
 	reg := New()
 	if err := RegisterAll(reg, nil); err != nil {

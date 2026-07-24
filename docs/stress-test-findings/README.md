@@ -44,16 +44,17 @@ Neither prevented the bug under larger/complex prompts. The issue is in the mode
 **Workaround used**
 Switching the model preset from `tool_calling = "native"` to `tool_calling = "json"` avoided the provider-side tool-calling path entirely. Marshal then parses the tool calls from the JSON response itself.
 
-**Proposed longer-term fixes**
-- **Client-side argument repair**: before sending tool results back to the provider, detect non-valid single-object `arguments`, split concatenated objects, and synthesize separate tool-call entries. This would make native mode robust to the adapter bug.
-- **Parallel tool-call pressure reduction**: if the concatenation is triggered by many simultaneous tool calls, reducing the number of tools or enforcing single-call turns for adapters known to be fragile may help.
-- **Provider-specific preset defaults**: mark Ollama Cloud + minimax-m3 as defaulting to `tool_calling = "json"` until the adapter is fixed.
+**Fix implemented**
+`internal/llm/provider/toolcall_repair.go` now post-processes every native tool-call response. If a single `function.arguments` string is not valid JSON but is a concatenation of valid JSON objects, the provider splits it into separate `schema.ToolCall` entries with synthetic `tool_call_id` suffixes before surfacing them to the runner. This lets native mode continue working against adapters that concatenate objects, without requiring a second provider request.
+
+**Graceful degradation still recommended**
+If repair fails repeatedly (or the adapter produces other unrecoverable garbage), the runner should be able to fall back to `tool_calling = "json"` for the rest of the session. That broader degradation path is not yet implemented.
 
 **Related code**
-- `internal/agent/prompts.go` (native tool-call JSON rule)
-- `internal/tools/native/*.go` (tool schemas)
-- `internal/llm/provider/openai_compatible.go` (request/response path)
-- Captured failing request: `/tmp/marshal_last_request.json` (tool call at message index 6)
+- `internal/llm/provider/toolcall_repair.go` — heuristic repair
+- `internal/llm/provider/openai_compatible.go` — wired into both streaming and non-streaming tool-call parsing
+- `internal/agent/prompts.go` — native tool-call JSON rule
+- `internal/tools/native/*.go` — tool schemas with `additionalProperties: false`
 
 ---
 

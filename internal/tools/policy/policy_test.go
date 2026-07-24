@@ -373,12 +373,14 @@ func TestPolicyEngine_F4PermissionRuleAllow(t *testing.T) {
 		t.Errorf("git status should be allowed by F4 rule, got %v", dec)
 	}
 
+	// git push is intercepted by the non-bypassable floor before F4 rules
+	// are evaluated, so it returns Confirm regardless of F4 allow rules.
 	dec, _, err = pe.Evaluate("shell.run", map[string]interface{}{"command": "git push"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if dec != DecisionAllow {
-		t.Errorf("git push should be allowed by F4 rule, got %v", dec)
+	if dec != DecisionConfirm {
+		t.Errorf("git push should be Confirm (floor), got %v", dec)
 	}
 }
 
@@ -656,6 +658,176 @@ func TestEvaluate_ChownR_Lowercase(t *testing.T) {
 	}
 	if dec != DecisionDeny {
 		t.Errorf("chown -r should be denied, got %v", dec)
+	}
+}
+
+func TestIsGitPushFloor(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want bool
+	}{
+		{"git push", true},
+		{"git push origin main", true},
+		{"git push --force", true},
+		{"git push -f", true},
+		{"git push --tags", true},
+		{"git push --force-with-lease", true},
+		{"git commit -m foo", false},
+		{"git status", false},
+		{"echo git push", false},
+		{"git pushd", false},
+		{"  git push  ", true},
+	}
+	for _, tc := range cases {
+		got := isGitPushFloor(tc.cmd)
+		if got != tc.want {
+			t.Errorf("isGitPushFloor(%q) = %v, want %v", tc.cmd, got, tc.want)
+		}
+	}
+}
+
+func TestGitPushFloorAlwaysConfirms(t *testing.T) {
+	for _, mode := range []ApprovalMode{ModeEdit, ModeCopilot, ModeAuto} {
+		pe := NewEngine(&config.Config{}, nil)
+		pe.SetApprovalMode(mode)
+		dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "git push"})
+		if err != nil {
+			t.Fatalf("mode %s: Evaluate error: %v", mode, err)
+		}
+		if dec != DecisionConfirm {
+			t.Errorf("mode %s: git push floor = %v, want Confirm; reason=%q", mode, dec, reason)
+		}
+		if !strings.Contains(reason, "git push") {
+			t.Errorf("mode %s: floor reason %q should mention git push", mode, reason)
+		}
+	}
+}
+
+func TestPlanModeDeniesWriteTools(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModePlan)
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "file.write_patch", Description: "write", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pe.WithRegistry(reg)
+	dec, reason, err := pe.Evaluate("file.write_patch", map[string]interface{}{"patch": "File: a\n<<<<<<< SEARCH\n=======\nnew\n>>>>>>> REPLACE"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Fatalf("plan mode file.write_patch = %v, want Deny; reason=%q", dec, reason)
+	}
+	if !strings.Contains(reason, "mode.request") {
+		t.Errorf("plan mode deny reason %q should mention mode.request", reason)
+	}
+}
+
+func TestPlanModeAllowsReadOnlyTools(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModePlan)
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "file.read", Description: "read", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pe.WithRegistry(reg)
+	dec, _, err := pe.Evaluate("file.read", map[string]interface{}{"path": "a.go"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionAllow {
+		t.Fatalf("plan mode file.read = %v, want Allow", dec)
+	}
+}
+
+func TestDefaultModeDeniesShellWrites(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeDefault)
+	// Use a non-guardrail command that would normally be a confirm, so the
+	// mode transform is the one denying it (not the guardrail).
+	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "go test ./..."})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionDeny {
+		t.Fatalf("default mode go test = %v, want Deny; reason=%q", dec, reason)
+	}
+	if !strings.Contains(reason, "mode.request") {
+		t.Errorf("default mode deny reason %q should mention mode.request", reason)
+	}
+}
+
+func TestCopilotAutoApprovesWriteTools(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeCopilot)
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "file.write_patch", Description: "write", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pe.WithRegistry(reg)
+	dec, reason, err := pe.Evaluate("file.write_patch", map[string]interface{}{"patch": "File: a\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionAllow {
+		t.Fatalf("copilot mode file.write_patch = %v, want Allow; reason=%q", dec, reason)
+	}
+	if !strings.Contains(reason, "auto-approved") {
+		t.Errorf("copilot reason %q should mention auto-approved", reason)
+	}
+}
+
+func TestAutoModeAutoApprovesShellWrites(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeAuto)
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "go test ./..."})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionAllow {
+		t.Fatalf("auto mode go test = %v, want Allow", dec)
+	}
+}
+
+func TestAutoModeDoesNotAutoApproveGitPush(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeAuto)
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "git push origin main"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Fatalf("auto mode git push = %v, want Confirm (floor)", dec)
+	}
+}
+
+func TestEditModeIsNoOp(t *testing.T) {
+	// edit mode must behave exactly as today (confirm-each for writes).
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeEdit)
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "file.write_patch", Description: "write", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pe.WithRegistry(reg)
+	dec, _, err := pe.Evaluate("file.write_patch", map[string]interface{}{"patch": "File: a\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"})
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if dec != DecisionConfirm {
+		t.Fatalf("edit mode file.write_patch = %v, want Confirm", dec)
 	}
 }
 

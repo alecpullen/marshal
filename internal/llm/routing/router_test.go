@@ -494,3 +494,104 @@ func TestResolveRoleReturnsFallbackErrorOnExhaustion(t *testing.T) {
 		t.Fatalf("returned error should reference implementer (fallback), got: %v", err)
 	}
 }
+
+func TestResolveCustomAgentWithPreset(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		Presets: map[string]ModelPreset{"fast": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+			RoleImplementer: {Preset: "fast"},
+		}}},
+		CustomAgents: map[string]CustomAgent{
+			"my-scout": {Name: "my-scout", Preset: "fast", SystemPrompt: "be fast"},
+		},
+	})
+	route, err := r.ResolveCustomAgent("my-scout", RoleSubtask)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if route.Preset.Model != "qwen" {
+		t.Fatalf("model = %s, want qwen", route.Preset.Model)
+	}
+	if route.CustomAgent == nil || route.CustomAgent.SystemPrompt != "be fast" {
+		t.Fatalf("CustomAgent not attached: %+v", route.CustomAgent)
+	}
+}
+
+func TestResolveCustomAgentFallsBackToRole(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		Presets: map[string]ModelPreset{"impl": {Provider: "ollama", Model: "qwen", LocalOnly: true}},
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+			RoleImplementer: {Preset: "impl"},
+		}}},
+		CustomAgents: map[string]CustomAgent{
+			"my-scout": {Name: "my-scout", Preset: ""}, // no preset, no role bound
+		},
+	})
+	route, err := r.ResolveCustomAgent("my-scout", RoleSubtask)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if route.Preset.Model != "qwen" {
+		t.Fatalf("fallback model = %s, want qwen (implementer)", route.Preset.Model)
+	}
+	if route.CustomAgent == nil || route.CustomAgent.Name != "my-scout" {
+		t.Fatalf("CustomAgent not attached")
+	}
+}
+
+func TestResolveCustomAgentMissing(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		Profiles:       map[string]AgentProfile{"p": {Name: "p"}},
+		CustomAgents:   map[string]CustomAgent{},
+	})
+	if _, err := r.ResolveCustomAgent("ghost", RoleSubtask); err == nil {
+		t.Fatal("want error for missing agent")
+	}
+}
+
+func TestResolveRoleCustomAgentBinding(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		Presets: map[string]ModelPreset{"reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+			RoleReviewer:    {CustomAgent: "my-reviewer"},
+			RoleImplementer: {Preset: "reason"},
+		}}},
+		CustomAgents: map[string]CustomAgent{
+			"my-reviewer": {Name: "my-reviewer", Preset: "reason", SystemPrompt: "strict"},
+		},
+	})
+	route, err := r.ResolveRole(RoleReviewer)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if route.CustomAgent == nil || route.CustomAgent.Name != "my-reviewer" {
+		t.Fatalf("reviewer not bound to custom agent: %+v", route.CustomAgent)
+	}
+	if route.Preset.Model != "qwen-reason" {
+		t.Fatalf("preset = %s, want qwen-reason", route.Preset.Model)
+	}
+}
+
+func TestResolveRolePresetBindingUnchanged(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		Presets: map[string]ModelPreset{"reason": {Provider: "ollama", Model: "qwen-reason", LocalOnly: true}},
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+			RoleReviewer: {Preset: "reason"},
+		}}},
+	})
+	route, err := r.ResolveRole(RoleReviewer)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if route.CustomAgent != nil {
+		t.Fatalf("preset binding should not attach CustomAgent: %+v", route.CustomAgent)
+	}
+	if route.Preset.Model != "qwen-reason" {
+		t.Fatalf("preset = %s, want qwen-reason", route.Preset.Model)
+	}
+}

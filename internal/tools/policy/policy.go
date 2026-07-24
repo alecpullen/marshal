@@ -151,12 +151,13 @@ func (pe *PolicyEngine) Logger() *slog.Logger {
 
 func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (Decision, string, error) {
 	// Snapshot the mutable fields under the lock: SetRules / WithRegistry /
-	// SetSessionRules run from the UI goroutine and must not race a
-	// mid-Evaluate read.
+	// SetSessionRules / SetApprovalMode run from the UI goroutine and must
+	// not race a mid-Evaluate read.
 	pe.mu.RLock()
 	rules := pe.rules
 	reg := pe.registry
 	sessionRules := pe.sessionRules
+	mode := pe.approvalMode
 	pe.mu.RUnlock()
 
 	// Evaluate must work with a nil engine config (tests, legacy callers):
@@ -166,12 +167,71 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 		cfg = &config.Config{}
 	}
 
-	if strings.HasPrefix(toolName, "mcp.") {
-		decision, reason := evaluateMCP(cfg, rules, toolName, args)
-		return decision, reason, nil
+	// git push floor: non-bypassable in every mode. Runs before the mode
+	// transform so a floor Confirm is returned directly, never downgraded.
+	if toolName == "shell.run" || toolName == "test.run" {
+		if cmdRaw, ok := args["command"]; ok {
+			if cmd, ok := cmdRaw.(string); ok && isGitPushFloor(cmd) {
+				return DecisionConfirm, "git push requires approval (non-bypassable floor)", nil
+			}
+		}
 	}
-	decision, reason := pe.evaluateShell(cfg, rules, reg, sessionRules, toolName, args)
+
+	var decision Decision
+	var reason string
+	if strings.HasPrefix(toolName, "mcp.") {
+		decision, reason = evaluateMCP(cfg, rules, toolName, args)
+	} else {
+		decision, reason = pe.evaluateShell(cfg, rules, reg, sessionRules, toolName, args)
+	}
+
+	// Mode transform: the final step, applied after guardrails, the floor,
+	// F4 rules, and risk fallbacks have computed a decision.
+	decision, reason = applyModeTransform(mode, toolName, args, decision, reason, reg)
 	return decision, reason, nil
+}
+
+// applyModeTransform rewrites the computed decision based on the active
+// approval mode. It runs as the final step in Evaluate, after guardrails,
+// the git-push floor, F4 rules, and risk fallbacks.
+//
+//   - plan / default: write-capable tools and shell writes are denied
+//     (directing the agent to mode.request). Read-only tools pass.
+//   - edit: no transform (today's confirm-each behavior).
+//   - copilot / auto: a computed Confirm is downgraded to Allow
+//     (auto-approve), EXCEPT the floor and guardrails already returned
+//     early in Evaluate, so any Confirm reaching here is auto-approvable.
+func applyModeTransform(mode ApprovalMode, toolName string, args map[string]interface{}, decision Decision, reason string, reg *registry.Registry) (Decision, string) {
+	switch mode {
+	case ModePlan, ModeDefault:
+		if decision == DecisionAllow {
+			// Read-only tools and explicitly-allowed read commands pass.
+			return decision, reason
+		}
+		// Everything else (Confirm, Deny that isn't a guardrail) is denied
+		// with a mode.request directive. Guardrail Denys are preserved.
+		if decision == DecisionDeny && isGuardrailDeny(reason) {
+			return decision, reason
+		}
+		return DecisionDeny, fmt.Sprintf("denied: in %s mode, cannot modify files; call mode.request to switch to an editing mode", mode)
+	case ModeEdit:
+		return decision, reason
+	case ModeCopilot, ModeAuto:
+		if decision == DecisionConfirm {
+			return DecisionAllow, fmt.Sprintf("auto-approved in %s mode", mode)
+		}
+		return decision, reason
+	default:
+		return decision, reason
+	}
+}
+
+// isGuardrailDeny reports whether a Deny reason originated from a
+// conservative guardrail (not from the mode transform). Guardrail denies
+// must be preserved even in plan/default modes so destructive commands
+// are never silently allowed.
+func isGuardrailDeny(reason string) bool {
+	return strings.Contains(reason, "guardrail") || strings.Contains(reason, "blocked by conservative")
 }
 
 // evaluateMCP evaluates an mcp.* tool against the configured MCP policies
@@ -565,6 +625,31 @@ func normalizeCommand(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	words := strings.Fields(s)
 	return strings.Join(words, " ")
+}
+
+// isGitPushFloor reports whether cmd is a `git push` invocation (any
+// variant: --force, -f, --tags, --force-with-lease, with a remote, etc.).
+// It is the non-bypassable floor: no mode downgrades a git-push Confirm.
+// It uses the AST parser to distinguish `git push` from `git pushd` and
+// to handle pipes/subshells; on parse failure it falls back to a trimmed
+// prefix check.
+func isGitPushFloor(cmd string) bool {
+	stages, err := parseStages(cmd)
+	if err == nil {
+		for _, s := range stages {
+			if s.argv0 == "git" && len(s.args) > 0 && s.args[0] == "push" {
+				return true
+			}
+		}
+		return false
+	}
+	// Legacy fallback: trimmed, lowercased, words-based.
+	trimmed := strings.TrimSpace(strings.ToLower(cmd))
+	words := strings.Fields(trimmed)
+	if len(words) >= 2 && words[0] == "git" && words[1] == "push" {
+		return true
+	}
+	return false
 }
 
 func matchRule(command, prefix string) bool {

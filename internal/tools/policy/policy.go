@@ -22,6 +22,20 @@ const (
 	DecisionDeny    Decision = "deny"
 )
 
+// ApprovalMode is the active interaction/approval mode. It bundles
+// turn-classification and approval-gating into one concept. The zero
+// value is ModeEdit (confirm-each), preserving pre-modes behavior for
+// engines constructed without calling SetApprovalMode.
+type ApprovalMode string
+
+const (
+	ModePlan    ApprovalMode = "plan"
+	ModeDefault ApprovalMode = "default"
+	ModeEdit    ApprovalMode = "edit"
+	ModeCopilot ApprovalMode = "copilot"
+	ModeAuto    ApprovalMode = "auto"
+)
+
 // guardrailPatterns are conservative hard-coded command patterns that are
 // always blocked regardless of user allow rules.
 // Note: chmod -r and chown -r were removed from this list in favor of
@@ -38,6 +52,7 @@ type PolicyEngine struct {
 	rules        []permissions.Rule
 	mu           sync.RWMutex
 	logger       *slog.Logger
+	approvalMode ApprovalMode
 	registry     *registry.Registry
 }
 
@@ -62,6 +77,7 @@ func NewEngine(cfg *config.Config, sessionRules []string) *PolicyEngine {
 		sessionRules: sessionRules,
 		rules:        rules,
 		logger:       slog.Default(),
+		approvalMode: ModeEdit,
 	}
 }
 
@@ -95,6 +111,21 @@ func (pe *PolicyEngine) SetLogger(l *slog.Logger) {
 		return
 	}
 	pe.logger = l
+}
+
+// SetApprovalMode replaces the active approval mode. Safe for concurrent
+// use with Evaluate (mirrors SetSessionRules / SetRules).
+func (pe *PolicyEngine) SetApprovalMode(m ApprovalMode) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	pe.approvalMode = m
+}
+
+// ApprovalMode returns the active approval mode. Safe for concurrent use.
+func (pe *PolicyEngine) ApprovalMode() ApprovalMode {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	return pe.approvalMode
 }
 
 // WithRegistry sets the tool registry the policy engine consults to look

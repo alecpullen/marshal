@@ -16,7 +16,7 @@ func (t *toolSet) diagnosticsCheckTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "diagnostics.check",
 		Description: "Run the configured language checker on a file or package and return findings.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

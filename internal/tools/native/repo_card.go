@@ -14,7 +14,7 @@ func (t *toolSet) repoCardTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.card",
 		Description: "Render a short project card from the indexed repository. Run repo.index first if no index exists.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{},"required":[]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

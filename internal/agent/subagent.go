@@ -101,7 +101,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 		Name:        "agent.run",
 		Description: "Delegate a scoped, read-only subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. The child has no access to write/command tools and cannot spawn further subagents.",
 		Schema: json.RawMessage(
-			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."}},"required":["prompt","description"]}`,
+			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
 		Risk: registry.RiskReadOnly,
 	}

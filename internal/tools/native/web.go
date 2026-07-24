@@ -34,7 +34,7 @@ func (t *toolSet) webFetchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "web.fetch",
 		Description: "Fetch a URL and return its content as plain text. Only available when web tools are enabled.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"}},"required":["url"],"additionalProperties":false}`),
 		Risk:        registry.RiskNetwork,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -110,7 +110,7 @@ func (t *toolSet) webSearchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "web.search",
 		Description: "Search the web using the configured JSON search provider and return top results as JSON. Only available when both web tools are enabled and a search provider URL is configured.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}`),
 		Risk:        registry.RiskNetwork,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

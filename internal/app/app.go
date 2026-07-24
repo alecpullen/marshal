@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/agent"
@@ -31,6 +33,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
+	"marshal/internal/rollover"
 	"marshal/internal/sandbox"
 	"marshal/internal/skills"
 	"marshal/internal/snapshot"
@@ -213,6 +216,33 @@ func newRoutedProviderResolver(cfg config.Config) *routedProviderResolver {
 	}
 }
 
+// rolloverRunnerAdapter wraps a native.CommandRunner so it satisfies
+// rollover.CommandRunner. The two interfaces are structurally identical in
+// spirit but use different request/result types because internal/rollover
+// must not import internal/tools/native (see filesstate.go for the import
+// cycle rationale). Only the fields FilesState actually uses are mapped;
+// any io.Writer / callback fields on native.CommandRequest are dropped here
+// because FilesState never sets them.
+type rolloverRunnerAdapter struct {
+	inner native.CommandRunner
+}
+
+func newRolloverRunnerAdapter(inner native.CommandRunner) *rolloverRunnerAdapter {
+	return &rolloverRunnerAdapter{inner: inner}
+}
+
+func (a *rolloverRunnerAdapter) Run(ctx context.Context, req rollover.CommandRequest) (rollover.CommandResult, error) {
+	res, err := a.inner.Run(ctx, native.CommandRequest{
+		Command: req.Command,
+		Dir:     req.Dir,
+		Timeout: req.Timeout,
+	})
+	return rollover.CommandResult{
+		Stdout:   res.Stdout,
+		ExitCode: res.ExitCode,
+	}, err
+}
+
 func (r *routedProviderResolver) Resolve(class string) (routing.Route, provider.Provider, error) {
 	route, err := r.router.Resolve(class)
 	if err != nil {
@@ -303,6 +333,63 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 	}
 }
 
+// rolloverPolicyFromConfig translates a config.RolloverConfig into a
+// rollover.Policy. An empty or "auto" policy string defaults to
+// context_percent mode. Unknown policy strings are passed through unchanged.
+func rolloverPolicyFromConfig(cfg config.RolloverConfig) rollover.Policy {
+	pol := rollover.Policy{
+		ContextPercent: cfg.ContextPercentThreshold,
+		TurnCount:      cfg.TurnCountThreshold,
+	}
+	if cfg.Policy == "" || cfg.Policy == "auto" {
+		pol.Mode = "context_percent"
+		return pol
+	}
+	pol.Mode = cfg.Policy
+	return pol
+}
+
+// minimalDigestProvider implements rollover.DigestProvider by returning a
+// minimal placeholder digest. It is used as a safe fallback when no LLM-based
+// digest provider is configured, ensuring Controller.Digest is never nil.
+type minimalDigestProvider struct{}
+
+func (minimalDigestProvider) Digest(_ context.Context, h rollover.GenerationHandle) (string, string, error) {
+	return rollover.MinimalDigest(h.Seq), rollover.SourceMinimal, nil
+}
+
+// NewRolloverController creates a rollover.Controller from config. When
+// rollover is disabled, it returns nil, nil (no generation rows are created).
+// modelContextWindow is the model's full context window in tokens; when >0,
+// the controller uses it for context_percent calculations instead of the
+// per-turn compaction budget.
+// digestProvider is the DigestProvider to use; when nil, minimalDigestProvider
+// is used as a safe fallback. usageCounter, when non-nil, is passed to
+// ResolveCounter so the "usage" counter can observe provider-reported tokens.
+func NewRolloverController(sessionID string, cfg config.RolloverConfig, database *db.DB, modelContextWindow int, digestProvider rollover.DigestProvider, usageCounter *rollover.UsageCounter) (*rollover.Controller, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	pol := rolloverPolicyFromConfig(cfg)
+	counter := rollover.ResolveCounter(cfg.TokenCounter, usageCounter)
+	digest := digestProvider
+	if digest == nil {
+		digest = minimalDigestProvider{}
+	}
+	ctrl := &rollover.Controller{
+		SessionID:          sessionID,
+		Store:              database,
+		Counter:            counter,
+		Digest:             digest,
+		Policy:             pol,
+		BlobThreshold:      cfg.BlobThresholdBytes,
+		ModelContextWindow: modelContextWindow,
+		Now:                time.Now,
+		NewID:              func() string { return uuid.New().String() },
+	}
+	return ctrl, nil
+}
+
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve("edit")
@@ -372,6 +459,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		pol.SetLogger(state.Logger())
 	}
 	pol.WithRegistry(reg)
+	pol.SetApprovalMode(policy.ApprovalMode(cfg.Agent.ApprovalMode))
 
 	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,
@@ -424,9 +512,55 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.MemoryProvider = &dbMemoryProvider{db: database}
 	runner.ProjectID = projectID
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
+
+	// T17: wire UsageCounter so the rollover controller can use
+	// provider-reported prompt_tokens as the numerator for context_percent
+	// (branch review finding #2). Create the counter before the UsageObserver
+	// so the observer can feed it.
+	var usageCounter *rollover.UsageCounter
+	if cfg.Session.Rollover.Enabled && cfg.Session.Rollover.TokenCounter == "usage" {
+		usageCounter = rollover.NewUsageCounter()
+	}
 	runner.UsageObserver = func(promptTokens, completionTokens int) {
 		state.SetTurnUsage(promptTokens + completionTokens)
+		if usageCounter != nil {
+			usageCounter.Observe(promptTokens)
+		}
 	}
+
+	// Calibration harness: when enabled, record a paired estimator-vs-provider
+	// observation for every turn that reports provider usage. The insert is
+	// best-effort — telemetry never breaks a turn.
+	if cfg.Session.Rollover.Calibration.Enabled {
+		estCounter := rollover.EstimatorCounter{}
+		prov := route.Preset.Provider
+		model := route.Preset.Model
+		sid := state.SessionID()
+		runner.CalibrationObserver = func(wire []schema.ChatMessage, promptTokens int) {
+			est, err := estCounter.CountTokens(context.Background(), wire)
+			if err != nil {
+				return
+			}
+			if _, err := database.InsertCalibrationSample(db.CalibrationSample{
+				ProjectID:       projectID,
+				SessionID:       sid,
+				Provider:        prov,
+				Model:           model,
+				EstimatorTokens: est,
+				ProviderTokens:  promptTokens,
+				CreatedAt:       time.Now(),
+			}); err != nil && state.Logger() != nil {
+				state.Logger().Warn("calibration sample insert failed", "error", err)
+			}
+		}
+	}
+
+	// T17: set DigestModel on the runner so DigestChat can use a different
+	// model for digest generation than the primary turn model.
+	if cfg.Session.Rollover.DigestModel != "" {
+		runner.DigestModel = cfg.Session.Rollover.DigestModel
+	}
+
 	decoding := resolveActionDecoding(route.Preset.ToolCalling, resolvedProvider.Capabilities(ctx))
 	runner.NativeTools = decoding.Native
 	runner.ResponseFormat = decoding.ResponseFormat
@@ -442,6 +576,52 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.PlanFirst = cfg.Agent.PlanFirst
 	if runner.RequestTimeout == 0 {
 		runner.RequestTimeout = agentRequestTimeout
+	}
+
+	// T17: wire rollover controller into the runner when enabled.
+	// Pass the model's full context window so context_percent fires against
+	// the correct denominator (branch review finding #7).
+	// Use LLMSummaryProvider as the primary digest provider, falling back to
+	// minimalDigestProvider only when the runner's provider is not available
+	// (branch review finding #1).
+	modelCtxWindow := route.Preset.ContextWindow
+	var digestProvider rollover.DigestProvider
+	switch cfg.Session.Rollover.DigestProvider {
+	case "files":
+		// Structured digest from on-disk state: zero LLM cost. Uses the
+		// same sandboxed CommandRunner as the native git tool so it
+		// inherits the workspace's command policy.
+		// rollover.FilesState needs its own narrow CommandRunner interface
+		// (plain Go types) so internal/rollover can avoid importing
+		// internal/tools/native and breaking the import cycle. Wrap the
+		// sandboxed native.CommandRunner in a tiny adapter that maps
+		// native.CommandRequest/Result to rollover.CommandRequest/Result.
+		rolloverRunner := newRolloverRunnerAdapter(commandRunner)
+		fileState := rollover.NewFilesState(database.SQLDB(), state.SessionID(), rolloverRunner, state.WorkingDir)
+		digestProvider = rollover.NewFilesDigestProvider(fileState)
+	case "minimal":
+		digestProvider = minimalDigestProvider{}
+	default: // "llm_summary" and any unset value
+		if runner.Provider != nil {
+			digestProvider = rollover.NewLLMSummaryProvider(runner, rollover.SummaryDirective)
+		}
+	}
+	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
+		buildErr = rerr
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+	} else if rolloverCtrl != nil {
+		runner.Rollover = &agent.Rollover{
+			Controller: rolloverCtrl,
+			State:      state,
+		}
+		// Start generation 0.
+		if err := rolloverCtrl.Start(ctx); err != nil {
+			buildErr = err
+			return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+		}
+		// Record generation 0 in session state.
+		genID, genSeq, genSeed := rolloverCtrl.Current()
+		state.BeginGeneration(genID, genSeq, genSeed)
 	}
 
 	var snapSvc *snapshot.Service

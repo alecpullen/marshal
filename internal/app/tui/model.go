@@ -40,6 +40,7 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -52,6 +53,7 @@ type AgentRunner interface {
 	Run(ctx context.Context, goal string) error
 	SetForceClass(class string)
 	SetPolicyRules(rules []config.PermissionRule)
+	SetApprovalMode(mode policy.ApprovalMode)
 }
 
 const (
@@ -79,7 +81,7 @@ type Model struct {
 	memoryProject  int64
 	cmdRegistry    *commands.Registry
 	agentCancel    context.CancelFunc
-	forceMode      string // current interaction mode: "ask", "edit", or "" (auto). Rendered in the help overlay and status line.
+	approvalMode   policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
 	approvalModel  *approvalModel
 	questionModel  *questionModel
 
@@ -511,6 +513,7 @@ func New(state *session.State, opts ...Option) Model {
 		state:          state,
 		input:          input,
 		editingCommand: false,
+		approvalMode:   policy.ModeDefault,
 		ctx:            context.Background(),
 		viewport:       viewport.New(),
 		spinner:        NewSpinner(),
@@ -767,12 +770,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case cmdName == "sdd-plan":
 			// Dock already closed above; dispatch /sdd with the picked path.
 			return m.dispatchCommand("/sdd " + pm.Value)
+		case cmdName == "mode-elevation":
+			chosen := pm.Value
+			if tc := m.state.PendingApproval(); tc != nil {
+				tc.Respond(session.UserApprovalDecision{Approved: true, Edited: chosen})
+			}
+			m.state.SetPendingApproval(nil)
+			m.setMode(chosen)
+			newCfg := m.state.Config
+			newCfg.Agent.ApprovalMode = chosen
+			saveErr, reloadErr := m.persistAndReload(newCfg)
+			if saveErr != nil {
+				m.state.AddMessage(session.RoleSystem,
+					fmt.Sprintf("✗ mode elevation saved in session, but config save failed: %v", saveErr),
+					session.ContentTypePlain)
+			} else if reloadErr != nil {
+				m.state.AddMessage(session.RoleSystem,
+					fmt.Sprintf("✗ mode elevation saved, but live reload failed: %v", reloadErr),
+					session.ContentTypePlain)
+			}
+			msg, ok := modeSwitchMessage[chosen]
+			if !ok {
+				msg = fmt.Sprintf("Switched to %s mode.", chosen)
+			}
+			m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
 		default:
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
 	case picker.CancelledMsg:
+		cmdName := m.pickerCommand
 		m.dock.CloseNow()
 		m.pickerCommand = ""
+		if cmdName == "mode-elevation" {
+			if tc := m.state.PendingApproval(); tc != nil {
+				tc.Respond(session.UserApprovalDecision{Approved: false})
+			}
+			m.state.SetPendingApproval(nil)
+		}
 		m.refreshViewport()
 		return m, nil
 	case castlist.StartMsg:
@@ -871,6 +907,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // is called before the main keypress switch so huh's internal navigation
 // messages (nextFieldMsg/nextGroupMsg) round-trip back to the form.
 func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Model, tea.Cmd) {
+	// mode.request: show the editing-variant picker instead of the normal
+	// approval dialog. The picker opens via the dock; while the dock is
+	// open, keypresses are routed to the picker and non-key messages
+	// return early here. On PickedMsg the main Update switch handles the
+	// response and mode change.
+	if tc.Name == "mode.request" || strings.HasPrefix(tc.Reason, "mode-elevation:") {
+		if m.dock.IsOpen() {
+			// Picker already open; don't interfere.
+			return m, nil
+		}
+		items := []picker.Item{
+			{Label: "Edit", Detail: "plan + confirm each", Value: "edit"},
+			{Label: "Copilot", Detail: "auto-approve, may ask", Value: "copilot"},
+			{Label: "Auto", Detail: "fully autonomous", Value: "auto"},
+		}
+		m.openPicker("mode-elevation", "Elevate to editing mode", "choose an editing mode", items, "")
+		m.refreshViewport()
+		return m, nil
+	}
+
 	// Edit sub-mode: the main textarea captures the edited command/args.
 	if m.editingCommand {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
@@ -1935,39 +1991,42 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	m.pickerCommand = cmdName
 }
 
-// setMode applies an interaction mode ("ask", "edit", or "" for auto) for
-// the next turn. Shared by the /ask, /edit, /auto, /mode commands and the
+// setMode applies an interaction mode for the next turn. Shared by the
+// /plan, /default, /edit, /copilot, /auto, /mode commands and the
 // Tab/Shift+Tab mode-cycling hotkeys.
 func (m *Model) setMode(mode string) {
-	class := mode
-	if mode == "ask" {
+	class := "edit"
+	if mode == "plan" || mode == "default" {
 		class = "question"
 	}
 	if m.runner != nil {
-		m.runner.SetForceClass(class) // "" => auto (classifier runs)
+		m.runner.SetForceClass(class)
+		m.runner.SetApprovalMode(policy.ApprovalMode(mode))
 	}
-	m.forceMode = mode
+	m.approvalMode = policy.ApprovalMode(mode)
 }
 
 // modeOrder is the canonical cycle order used by Tab/Shift+Tab.
-// "" represents auto (the classifier-driven default).
-var modeOrder = []string{"", "ask", "edit"}
+var modeOrder = []policy.ApprovalMode{policy.ModePlan, policy.ModeDefault, policy.ModeEdit, policy.ModeCopilot, policy.ModeAuto}
 
 // modeSwitchMessage maps each mode value to the exact confirmation
-// message used by the /ask, /edit, /auto command handlers, so the
-// transcript looks identical whether the user pressed Tab or typed /ask.
+// message used by the /plan, /default, /edit, /copilot, /auto command
+// handlers, so the transcript looks identical whether the user pressed
+// Tab or typed /plan.
 var modeSwitchMessage = map[string]string{
-	"":     "Switched to Auto mode. Agent will classify each turn automatically.",
-	"ask":  "Switched to Ask mode. Agent will answer questions without planning or editing.",
-	"edit": "Switched to Edit mode. Agent will plan and execute changes.",
+	"plan":    "Switched to Plan mode. Agent will produce a numbered plan, then stop.",
+	"default": "Switched to Default mode. Agent is read-only; it will request elevation to edit.",
+	"edit":    "Switched to Edit mode. Each file change requires approval.",
+	"copilot": "Switched to Copilot mode. Changes auto-approve; agent may ask on ambiguity.",
+	"auto":    "Switched to Auto mode. Fully autonomous; no questions asked.",
 }
 
 // cycleMode advances (forward=true) or reverses the interaction mode,
 // wrapping around. It applies the result via setMode and emits the same
 // confirmation message the /<mode> commands use.
 func (m *Model) cycleMode(forward bool) {
-	cur := m.forceMode
-	idx := slices.Index(modeOrder, cur)
+	cur := string(m.approvalMode)
+	idx := slices.IndexFunc(modeOrder, func(m policy.ApprovalMode) bool { return string(m) == cur })
 	if idx < 0 {
 		idx = 0
 	}
@@ -1975,7 +2034,7 @@ func (m *Model) cycleMode(forward bool) {
 	if !forward {
 		step = -1
 	}
-	next := modeOrder[(idx+step+len(modeOrder))%len(modeOrder)]
+	next := string(modeOrder[(idx+step+len(modeOrder))%len(modeOrder)])
 	m.setMode(next)
 	msg, ok := modeSwitchMessage[next]
 	if !ok {
@@ -2203,19 +2262,21 @@ func (m *Model) branchesPickerItems() []picker.Item {
 }
 
 // modePickerItems builds picker items for the interaction modes.
-// The current mode (or "auto" when forceMode is empty) carries a "● now" badge.
+// The current mode carries a "● now" badge.
 func (m *Model) modePickerItems() []picker.Item {
-	current := m.forceMode // "ask", "edit", or "" (auto)
+	current := string(m.approvalMode)
 	badge := func(v string) string {
-		if v == current || (v == "auto" && current == "") {
+		if v == current {
 			return "● now"
 		}
 		return ""
 	}
 	return []picker.Item{
-		{Label: "Ask", Detail: "read-only, no planning", Badge: badge("ask"), Value: "ask"},
-		{Label: "Edit", Detail: "planning + full tools", Badge: badge("edit"), Value: "edit"},
-		{Label: "Auto", Detail: "classify each turn", Badge: badge("auto"), Value: "auto"},
+		{Label: "Plan", Detail: "read-only, forced plan", Badge: badge("plan"), Value: "plan"},
+		{Label: "Default", Detail: "read-only, request elevation", Badge: badge("default"), Value: "default"},
+		{Label: "Edit", Detail: "plan + confirm each", Badge: badge("edit"), Value: "edit"},
+		{Label: "Copilot", Detail: "auto-approve, may ask", Badge: badge("copilot"), Value: "copilot"},
+		{Label: "Auto", Detail: "fully autonomous", Badge: badge("auto"), Value: "auto"},
 		{Label: "SDD", Detail: "plan-driven multi-task", Badge: badge("sdd"), Value: "sdd"},
 	}
 }

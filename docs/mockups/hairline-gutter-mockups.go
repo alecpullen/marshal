@@ -115,10 +115,10 @@ func current() {
 	}
 	p(g + dim("╰"+strings.Repeat("─", inner)+"╯"))
 	// input box
-	p(c(coral, "╭" + strings.Repeat("─", W-2) + "╮"))
+	p(c(coral, "╭"+strings.Repeat("─", W-2)+"╮"))
 	line := " " + c(coral, "❯") + " " + dim("ask marshal…")
 	p(c(coral, "│") + line + strings.Repeat(" ", W-2-vis(line)) + c(coral, "│"))
-	p(c(coral, "╰" + strings.Repeat("─", W-2) + "╯"))
+	p(c(coral, "╰"+strings.Repeat("─", W-2)+"╯"))
 	// footer rule + hints
 	p(c(bordMu, strings.Repeat("─", W)))
 	p(bold("Tab") + " mode" + dim(" · ") + bold("Alt+M") + " model" + dim(" · ") + bold("/") + " command" + dim(" · ") + bold("@") + " file" + dim(" · ") + bold("Ctrl+G") + " thinking")
@@ -231,7 +231,7 @@ func dockPanelsB() {
 	boxRow("   " + dim("timeout_seconds") + strings.Repeat(" ", 10) + dim("120"))
 	boxRow("   " + dim("sandbox_backend") + strings.Repeat(" ", 10) + dim("restricted"))
 	boxRow(" " + dim("12 settings · [↵] edit · [Esc] close"))
-	p(c(coral, "╰" + strings.Repeat("─", aw) + "╯"))
+	p(c(coral, "╰"+strings.Repeat("─", aw)+"╯"))
 
 	fmt.Println()
 	fmt.Println(dim("  style B — same panel, gutter instead of box; breadcrumb becomes a header line:"))

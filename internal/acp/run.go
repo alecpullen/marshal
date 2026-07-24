@@ -4,14 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
 	"marshal/internal/app"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
+	"marshal/internal/trust"
 )
 
 // InitializeParams is the parameter type for the initialize method.
@@ -93,10 +97,19 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 			if !ok || rt == nil {
 				return nil, false
 			}
-			var run RunnerFunc
-			if rt.Runner != nil {
-				run = rt.Runner.Run
+			if rt.Runner == nil {
+				reason := "agent runner not built"
+				if rt.State != nil {
+					if perr := rt.State.ProviderError(); perr != nil {
+						reason = perr.Error()
+					}
+				}
+				log.Warn("acp: session has no runner; rejecting prompt",
+					"session", sessionID, "reason", reason)
+				return nil, false
 			}
+			var run RunnerFunc
+			run = rt.Runner.Run
 			evBroker, _ := rt.EventBroker.(*pubsub.Broker[session.Event])
 			return &TurnRuntime{
 				SessionID: sessionID,
@@ -124,10 +137,20 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 // production dependencies, serves until the connection closes, then
 // performs bounded cleanup.
 func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
+	log := logging.New(stderr, slog.LevelInfo)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("acp: find home directory: %w", err)
+	}
+	dataDir := filepath.Join(home, ".local", "share", "marshal")
+	trustStore := trust.NewStore(dataDir)
 	return runWithConfig(ctx, stdin, stdout, runConfig{
-		startRuntime: app.StartRuntime,
-		lister:       newPerCwdLister(),
-		shutdown:     connectionShutdownTimeout,
-		logger:       logging.New(stderr, slog.LevelInfo),
+		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+			opts = append(opts, app.WithTrustResolver(trust.NewHeadlessResolver(trustStore, log)))
+			return app.StartRuntime(ctx, opts...)
+		},
+		lister:   newPerCwdLister(),
+		shutdown: connectionShutdownTimeout,
+		logger:   log,
 	})
 }

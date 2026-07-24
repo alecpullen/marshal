@@ -29,6 +29,7 @@ type Config struct {
 	Permissions   PermissionsConfig                     `toml:"permissions"`
 	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
 	Hooks         HooksConfig                           `toml:"hooks"`
+	Session       SessionConfig                         `toml:"session"`
 }
 
 type ModelsConfig struct {
@@ -122,6 +123,35 @@ type HookConfig struct {
 	Matcher   string `toml:"matcher"`
 	Command   string `toml:"command"`
 	TimeoutMS int    `toml:"timeout_ms"`
+}
+
+// SessionConfig holds session-level settings including context rollover.
+type SessionConfig struct {
+	Rollover RolloverConfig `toml:"rollover"`
+}
+
+// RolloverConfig controls automatic context rollover behaviour.
+type RolloverConfig struct {
+	Enabled                 bool              `toml:"enabled"`
+	Policy                  string            `toml:"policy"`
+	ContextPercentThreshold int               `toml:"context_percent_threshold"`
+	TurnCountThreshold      int               `toml:"turn_count_threshold"`
+	TokenCounter            string            `toml:"token_counter"`
+	DigestModel             string            `toml:"digest_model"`
+	DigestProvider          string            `toml:"digest_provider"`
+	RecallToolEnabled       string            `toml:"recall_tool_enabled"`
+	Retention               string            `toml:"retention"`
+	BlobThresholdBytes      int               `toml:"blob_threshold_bytes"`
+	Calibration             CalibrationConfig `toml:"calibration"`
+}
+
+// CalibrationConfig controls EstimatorCounter calibration recording.
+// When enabled, each turn that reports provider usage also persists a
+// paired estimator-vs-provider token observation to the token_calibration
+// table, so the estimator's error can be measured later. Disabled by
+// default — it is a measurement tool, not a runtime dependency.
+type CalibrationConfig struct {
+	Enabled bool `toml:"enabled"`
 }
 
 // WebConfig gates outbound network access from agent-side tools (web.fetch
@@ -237,6 +267,10 @@ type AgentConfig struct {
 	// A subtask that exhausts its budget is salvaged: the parent receives
 	// whatever partial answer the child produced instead of a hard error.
 	SubtaskIterations int `toml:"subtask_iterations"`
+	// ApprovalMode is the active interaction/approval mode: "plan",
+	// "default", "edit", "copilot", or "auto". Default "default". See
+	// docs/superpowers/specs/2026-07-24-approval-modes-design.md.
+	ApprovalMode string `toml:"approval_mode"`
 }
 
 type PrivacyConfig struct {

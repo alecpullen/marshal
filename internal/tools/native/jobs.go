@@ -22,7 +22,7 @@ func (t *toolSet) jobOutputTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "job.output",
 		Description: "Return buffered stdout/stderr and status for a background job.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"job_id":{"type":"string"},"tail_lines":{"type":"integer"}},"required":["job_id"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"job_id":{"type":"string"},"tail_lines":{"type":"integer"}},"required":["job_id"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -46,7 +46,7 @@ func (t *toolSet) jobKillTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "job.kill",
 		Description: "Terminate a running background shell job by job ID.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"job_id":{"type":"string"}},"required":["job_id"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"job_id":{"type":"string"}},"required":["job_id"],"additionalProperties":false}`),
 		Risk:        registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -69,7 +69,7 @@ func (t *toolSet) jobListTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "job.list",
 		Description: "List all tracked background shell jobs and their statuses.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{}}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

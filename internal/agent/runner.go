@@ -186,6 +186,12 @@ type Runner struct {
 
 	UsageObserver UsageObserver
 
+	// CalibrationObserver, when set, receives the wire messages and the
+	// provider-reported prompt-token count after each chatOnce that reports
+	// usage. Used by the rollover calibration harness to record paired
+	// estimator-vs-provider observations. Nil disables recording.
+	CalibrationObserver func(wire []schema.ChatMessage, promptTokens int)
+
 	// MetricsObserver, when set, receives one TurnMetrics per RunTask,
 	// emitted on every exit path (answer, salvage, failure). Nil disables
 	// collection output; counter bookkeeping still runs.
@@ -220,6 +226,14 @@ type Runner struct {
 	// ActionQuestionAsk). Nil outside of RunTask.
 	iterationBudget *int
 
+	// DigestModel is the model name to use for LLM-based digest generation
+	// during rollover. When empty, the runner's primary Model is used.
+	DigestModel string
+
+	// Rollover manages context-window archival and cross-turn generation
+	// rollover. When nil, all rollover operations are no-ops.
+	Rollover *Rollover
+
 	// fileIndexCache memoises the per-project file index across RunTask
 	// calls and across steering-message drains. Auto-invalidates when the
 	// projectID changes (see fileIndexCache.get).
@@ -251,6 +265,15 @@ func (r *Runner) SetForceClass(class string) {
 	r.forceClassMu.Lock()
 	r.ForceClass = class
 	r.forceClassMu.Unlock()
+}
+
+// SetApprovalMode sets the active approval mode on the policy engine.
+// Called by the TUI on mode switch and by app.StartRuntime to seed from
+// config. Satisfies the AgentRunner interface's SetApprovalMode method.
+func (r *Runner) SetApprovalMode(m policy.ApprovalMode) {
+	if r.Policy != nil {
+		r.Policy.SetApprovalMode(m)
+	}
 }
 
 func (r *Runner) SetPolicyRules(rules []config.PermissionRule) {
@@ -291,9 +314,11 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.Role = other.Role
 	r.WriteGate = other.WriteGate
 	r.UsageObserver = other.UsageObserver
+	r.CalibrationObserver = other.CalibrationObserver
 	r.MetricsObserver = other.MetricsObserver
 	r.Snapshotter = other.Snapshotter
 	r.SnapshotRecorder = other.SnapshotRecorder
+	r.DigestModel = other.DigestModel
 }
 
 func (r *Runner) role() AgentRole {
@@ -385,13 +410,28 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 
 	messages := []schema.ChatMessage{
-		BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools),
+		BuildSystemPromptWithMode(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode()),
 	}
 	messages = appendContextPackMessage(messages, r.State.ContextPack())
 	if r.role() == RoleGeneral {
-		messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
+		messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens, r.State.Generation())...)
 	}
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
+
+	// T12: end-of-turn flushArchive and maybeRollover so cross-turn rollover
+	// actually fires. The defer captures the final value of messages at return
+	// time. Both methods are no-ops when Rollover is nil. Errors are logged
+	// (not silently discarded) since defers cannot return values.
+	defer func() {
+		if r.Rollover != nil {
+			if _, err := r.Rollover.flushArchive(ctx, messages); err != nil {
+				r.State.Logger().Warn("end-of-turn flush archive failed", "error", err)
+			}
+			if _, err := r.Rollover.maybeRollover(ctx, messages, r.MaxTurnContextTokens); err != nil {
+				r.State.Logger().Warn("end-of-turn maybe rollover failed", "error", err)
+			}
+		}
+	}()
 
 	if r.PlanFirst && task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
@@ -410,10 +450,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
-			messages = []schema.ChatMessage{BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools)}
+			messages = []schema.ChatMessage{BuildSystemPromptWithMode(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode())}
 			messages = appendContextPackMessage(messages, updatedPack)
 			if r.role() == RoleGeneral {
-				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens)...)
+				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens, r.State.Generation())...)
 			}
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}
@@ -487,17 +527,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		currentSkills := r.State.ActiveSkills()
 		if skillsChanged(lastRenderedSkills, currentSkills) {
-			messages[0] = BuildSystemPromptWithDeferred(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools)
+			messages[0] = BuildSystemPromptWithMode(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools, r.Policy.ApprovalMode())
 			lastRenderedSkills = currentSkills
 		}
 
 		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
-			if fresh, serr := r.summarizeAndContinue(ctx, turnProvider, turnModel, messages, goal, effectiveRF); serr == nil {
+			// T13: unified intra-turn compaction — rollover when enabled,
+			// fall back to summarizeAndContinue when disabled.
+			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal); cerr == nil {
 				messages = fresh
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {
-				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and summarization failed: %s. The turn is being terminated to prevent transcript corruption.", serr), session.ContentTypePlain)
-				return task, r.fail(task, fmt.Errorf("context overflow and summarization failed: %w", serr))
+				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and compaction failed: %s. The turn is being terminated to prevent transcript corruption.", cerr), session.ContentTypePlain)
+				return task, r.fail(task, fmt.Errorf("context overflow and compaction failed: %w", cerr))
 			}
 		}
 
@@ -675,6 +717,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available for the %s role; proceed with your best judgment or report findings", r.role())))
 				continue
 			}
+			if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available in auto mode; proceed with your best judgment and state the assumption you made")))
+				continue
+			}
 			answer, waitErr := r.requestAnswer(ctx, action.Content)
 			if waitErr != nil {
 				return task, r.fail(task, waitErr)
@@ -705,6 +751,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		case ActionQuestionAsk:
 			if r.role() != RoleGeneral {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available for the %s role; proceed with your best judgment or report findings", r.role())))
+				continue
+			}
+			if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available in auto mode; proceed with your best judgment and state the assumption you made")))
 				continue
 			}
 			if len(action.Questions) == 0 {
@@ -841,6 +891,36 @@ func skillsChanged(prev, curr []string) bool {
 		}
 	}
 	return false
+}
+
+// Chat calls the runner's provider with the given messages and returns
+// a single ChatMessage response. It satisfies the rollover.chatModel interface
+// used by LLMSummaryProvider for digest generation.
+func (r *Runner) Chat(ctx context.Context, messages []schema.ChatMessage) (schema.ChatMessage, error) {
+	model := r.Model
+	if r.DigestModel != "" {
+		model = r.DigestModel
+	}
+	events, err := r.Provider.Chat(ctx, schema.ChatRequest{
+		Model:    model,
+		Messages: messages,
+		Stream:   false,
+	})
+	if err != nil {
+		return schema.ChatMessage{}, err
+	}
+	var resp schema.ChatMessage
+	for event := range events {
+		switch event.Type {
+		case schema.ChatEventDelta:
+			resp.Content += event.Delta
+		case schema.ChatEventError:
+			return schema.ChatMessage{}, event.Err
+		case schema.ChatEventDone:
+			resp.Content += event.Delta
+		}
+	}
+	return resp, nil
 }
 
 func changedFilesForTool(toolName string, argsMap map[string]interface{}) []string {

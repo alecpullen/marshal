@@ -20,6 +20,9 @@ func Default() Config {
 		Profile: ProfileConfig{
 			Default: "local_balanced",
 		},
+		Agent: AgentConfig{
+			ApprovalMode: "default",
+		},
 		Privacy: PrivacyConfig{
 			RemoteProvidersAllowed: false,
 			RedactSecrets:          true,
@@ -111,6 +114,20 @@ func Default() Config {
 		},
 		Permissions: PermissionsConfig{
 			Rules: nil,
+		},
+		Session: SessionConfig{
+			Rollover: RolloverConfig{
+				Enabled:                 false,
+				Policy:                  "context_percent",
+				ContextPercentThreshold: 70,
+				TurnCountThreshold:      40,
+				TokenCounter:            "auto",
+				DigestProvider:          "llm_summary",
+				RecallToolEnabled:       "auto",
+				Retention:               "forever",
+				BlobThresholdBytes:      2048,
+				Calibration:             CalibrationConfig{Enabled: false},
+			},
 		},
 		Hooks: HooksConfig{
 			FailClosed: false,

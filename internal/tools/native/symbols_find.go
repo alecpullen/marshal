@@ -24,7 +24,7 @@ func (t *toolSet) symbolsFindTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "symbols.find",
 		Description: "Find functions, methods, types, and imports in the indexed repository by name and/or kind. Run repo.index first if no index exists.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Optional case-insensitive substring to filter symbol names"},"kind":{"type":"string","enum":["function","method","type","import"],"description":"Optional exact symbol kind filter"},"limit":{"type":"integer","minimum":1,"maximum":200,"description":"Maximum number of symbols to return (default 50, clamped to 200)"}},"required":[]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Optional case-insensitive substring to filter symbol names"},"kind":{"type":"string","enum":["function","method","type","import"],"description":"Optional exact symbol kind filter"},"limit":{"type":"integer","minimum":1,"maximum":200,"description":"Maximum number of symbols to return (default 50, clamped to 200)"}},"required":[],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

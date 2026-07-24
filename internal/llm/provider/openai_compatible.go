@@ -279,11 +279,27 @@ func tokenUsageFrom(u *usageBody) *schema.TokenUsage {
 	if u == nil {
 		return nil
 	}
-	return &schema.TokenUsage{
+	out := &schema.TokenUsage{
 		PromptTokens:     u.PromptTokens,
 		CompletionTokens: u.CompletionTokens,
 		TotalTokens:      u.TotalTokens,
 	}
+	// OpenAI detail objects.
+	if u.PromptTokensDetails != nil {
+		out.CacheReadTokens = u.PromptTokensDetails.CachedTokens
+	}
+	if u.CompletionTokensDetails != nil {
+		out.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+	}
+	// DeepSeek top-level cache fields override only when the OpenAI
+	// detail objects didn't populate them (DeepSeek doesn't use _details).
+	if out.CacheReadTokens == 0 && u.PromptCacheHitTokens != nil {
+		out.CacheReadTokens = *u.PromptCacheHitTokens
+	}
+	if u.PromptCacheMissTokens != nil {
+		out.CacheWriteTokens = *u.PromptCacheMissTokens
+	}
+	return out
 }
 
 func streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {

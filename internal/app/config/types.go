@@ -256,6 +256,10 @@ type AgentConfig struct {
 	// A subtask that exhausts its budget is salvaged: the parent receives
 	// whatever partial answer the child produced instead of a hard error.
 	SubtaskIterations int `toml:"subtask_iterations"`
+	// ApprovalMode is the active interaction/approval mode: "plan",
+	// "default", "edit", "copilot", or "auto". Default "default". See
+	// docs/superpowers/specs/2026-07-24-approval-modes-design.md.
+	ApprovalMode string `toml:"approval_mode"`
 }
 
 type PrivacyConfig struct {

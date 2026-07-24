@@ -931,6 +931,34 @@ background_retention = "banana"
 // arbitrary AgentRole keys directly, without a fixed struct. A role
 // added after the old 12-field struct (e.g. sdd_branch_reviewer) must
 // still decode correctly.
+func TestApprovalModeMerge(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+
+	writeFile(t, home+"/.config/marshal/config.toml", `
+[agent]
+approval_mode = "edit"
+`)
+	writeFile(t, work+"/.marshal/config.toml", `
+[agent]
+approval_mode = "copilot"
+`)
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.ApprovalMode != "copilot" {
+		t.Fatalf("ApprovalMode = %q, want %q (project wins)", cfg.Agent.ApprovalMode, "copilot")
+	}
+}
+
+func TestApprovalModeDefault(t *testing.T) {
+	cfg := Default()
+	if cfg.Agent.ApprovalMode != "default" {
+		t.Fatalf("default ApprovalMode = %q, want %q", cfg.Agent.ApprovalMode, "default")
+	}
+}
+
 func TestAgentProfilesDecodeRoleKeys(t *testing.T) {
 	work := t.TempDir()
 	writeFile(t, work+"/.marshal/config.toml", `

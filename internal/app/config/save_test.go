@@ -584,6 +584,23 @@ func TestSaveProjectConfigWritesAgentProfiles(t *testing.T) {
 	}
 }
 
+func TestApprovalModeRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/.marshal/config.toml"
+	cfg := Default()
+	cfg.Agent.ApprovalMode = "auto"
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Agent.ApprovalMode != "auto" {
+		t.Fatalf("round-trip ApprovalMode = %q, want %q", loaded.Agent.ApprovalMode, "auto")
+	}
+}
+
 func TestSaveProjectConfigRoundTripsMCPServerTrust(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".marshal", "config.toml")

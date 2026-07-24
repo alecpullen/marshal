@@ -20,6 +20,9 @@ func Default() Config {
 		Profile: ProfileConfig{
 			Default: "local_balanced",
 		},
+		Agent: AgentConfig{
+			ApprovalMode: "default",
+		},
 		Privacy: PrivacyConfig{
 			RemoteProvidersAllowed: false,
 			RedactSecrets:          true,

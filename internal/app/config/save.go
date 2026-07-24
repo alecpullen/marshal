@@ -40,6 +40,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 			MaxTurnContextTokens: strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
 			PlanFirst:            strutil.Ptr(cfg.Agent.PlanFirst),
 			SubtaskIterations:    strutil.Ptr(cfg.Agent.SubtaskIterations),
+			ApprovalMode:         strutil.Ptr(cfg.Agent.ApprovalMode),
 		}
 	} else {
 		file.Agent = &fileAgent{
@@ -48,6 +49,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 			MaxTurnContextTokens: strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
 			PlanFirst:            strutil.Ptr(cfg.Agent.PlanFirst),
 			SubtaskIterations:    strutil.Ptr(cfg.Agent.SubtaskIterations),
+			ApprovalMode:         strutil.Ptr(cfg.Agent.ApprovalMode),
 		}
 	}
 

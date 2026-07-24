@@ -764,3 +764,22 @@ func TestPolicyEngineEvaluateConcurrentWithSetters(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestApprovalModeDefaultsToEdit(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	if pe.ApprovalMode() != ModeEdit {
+		t.Fatalf("default ApprovalMode = %q, want %q", pe.ApprovalMode(), ModeEdit)
+	}
+}
+
+func TestSetApprovalModeIsThreadSafe(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeAuto)
+	if pe.ApprovalMode() != ModeAuto {
+		t.Fatalf("after SetApprovalMode(ModeAuto), ApprovalMode = %q, want %q", pe.ApprovalMode(), ModeAuto)
+	}
+	pe.SetApprovalMode(ModePlan)
+	if pe.ApprovalMode() != ModePlan {
+		t.Fatalf("after SetApprovalMode(ModePlan), ApprovalMode = %q, want %q", pe.ApprovalMode(), ModePlan)
+	}
+}

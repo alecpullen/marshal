@@ -95,6 +95,18 @@ func (w *Workspace) Reset() error {
 	return nil
 }
 
+// RepoPath returns the path to the pipeline branch state file
+// (<dir>/state/repo.json). Used by P2's RepoState load/save.
+func (w *Workspace) RepoPath() string {
+	return filepath.Join(w.dir, "state", "repo.json")
+}
+
+// ProgressPath returns the path to the append-only event log
+// (<dir>/progress.md). Used by P2's Progress logger.
+func (w *Workspace) ProgressPath() string {
+	return filepath.Join(w.dir, "progress.md")
+}
+
 // Resume reports whether a prior run's dag.json exists (resumable). It does
 // NOT reset; the controller calls this to decide between Reset and continue.
 func (w *Workspace) Resume() (bool, error) {

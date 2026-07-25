@@ -59,9 +59,14 @@ type SwarmBudgetConfig struct {
 
 // SDDConfig holds run-level subagent-driven-development settings.
 type SDDConfig struct {
-	AutoWorktree bool   `toml:"auto_worktree"`
-	MaxFixRounds int    `toml:"max_fix_rounds"`
-	PlansDir     string `toml:"plans_dir"`
+	AutoWorktree         bool   `toml:"auto_worktree"`
+	MaxFixRounds         int    `toml:"max_fix_rounds"`
+	PlansDir             string `toml:"plans_dir"`
+	VerifyTimeoutMS      int    `toml:"verify_timeout_ms"`
+	DefaultModelTier     string `toml:"default_model_tier"`
+	CleanupAtStart       bool   `toml:"cleanup_at_start"`
+	MaxTotalTokens       int    `toml:"max_total_tokens"`
+	MaxWorkerConcurrency int    `toml:"max_worker_concurrency"`
 }
 
 type MCPConfig struct {

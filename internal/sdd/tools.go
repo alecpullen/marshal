@@ -376,13 +376,59 @@ func sddBranchPackageTool(opts SDDToolOpts) registry.Tool {
 			if err := json.Unmarshal(call.Args, &args); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("sdd.branch_package: parse args: %w", err)
 			}
-			path, err := AssembleBranchPackage(opts.WS, args.Branch)
+			path, err := assembleBranchPackage(opts.WS, args.Branch)
 			if err != nil {
 				return registry.ToolResult{}, fmt.Errorf("sdd.branch_package: %w", err)
 			}
 			return registry.ToolResult{Summary: "packaged at " + path, Content: "branch package written to " + path}, nil
 		},
 	}
+}
+
+// assembleBranchPackage writes <ws.Dir()>/reports/branch-package-<branch>.md
+// containing the DAG, RepoState, and progress log for the given branch.
+// Returns the package path.
+func assembleBranchPackage(ws *Workspace, branch string) (string, error) {
+	if _, err := ws.Ensure(); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.WriteString("# Branch Package: ")
+	b.WriteString(branch)
+	b.WriteString("\n\n")
+
+	b.WriteString("## DAG (dag.json)\n\n```\n")
+	dag, err := LoadDAG(ws)
+	if err == nil && dag != nil {
+		b.WriteString(formatDAG(dag))
+	} else if err != nil {
+		b.WriteString("error: " + err.Error())
+	}
+	b.WriteString("\n```\n\n")
+
+	b.WriteString("## RepoState (state/repo.json)\n\n```\n")
+	rs, err := LoadRepoState(ws)
+	if err == nil && rs != nil {
+		b.WriteString(fmt.Sprintf("branch=%s target=%s head=%s merged=%v\n", rs.Branch, rs.TargetBranch, rs.Head, rs.Merged))
+	} else if err != nil {
+		b.WriteString("error: " + err.Error())
+	}
+	b.WriteString("\n```\n\n")
+
+	b.WriteString("## Progress (last 50 lines)\n\n```\n")
+	var p Progress
+	lines, _ := p.Tail(ws, 50)
+	for _, line := range lines {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	b.WriteString("```\n")
+
+	path := filepath.Join(ws.Dir(), "reports", "branch-package-"+branch+".md")
+	if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
+		return "", fmt.Errorf("sdd branch package: write: %w", err)
+	}
+	return path, nil
 }
 
 func sddRescueBundleTool(opts SDDToolOpts) registry.Tool {

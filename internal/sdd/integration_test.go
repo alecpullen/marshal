@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -301,8 +302,9 @@ func TestIntegrationResume(t *testing.T) {
 	if err != nil && !errors.Is(err, sdd.ErrHumanGateRequired) {
 		t.Fatalf("second Run: %v", err)
 	}
-	if len(rs.Merged) != 3 {
-		t.Errorf("after second run: merged = %v, want 3 tasks", rs.Merged)
+	want := []string{"T1", "T2", "T3"}
+	if !reflect.DeepEqual(rs.Merged, want) {
+		t.Errorf("after second run: merged = %v, want %v", rs.Merged, want)
 	}
 	if c2.State != sdd.StateFinalMergeGate && c2.State != sdd.StateFinalize {
 		t.Errorf("final state = %v, want StateFinalMergeGate or StateFinalize", c2.State)

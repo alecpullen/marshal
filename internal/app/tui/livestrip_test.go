@@ -61,18 +61,28 @@ func TestLiveStripShowsSDDProgress(t *testing.T) {
 		DoneTasks:  2,
 		Tasks: []session.SDDTaskStatus{
 			{Name: "task one", Phase: session.SDDPhaseDone},
-			{Name: "implement parser", Phase: session.SDDPhaseActive},
+			{Name: "implement parser", Phase: session.SDDPhaseActive, Implementer: session.SDDPhaseActive},
 		},
 	})
 	out := stripANSI(m.renderLiveStrip())
 	if !strings.Contains(out, "sdd task 2/7") {
 		t.Fatalf("live strip missing sdd counts:\n%s", out)
 	}
-	if !strings.Contains(out, "implement parser") {
-		t.Fatalf("live strip missing active task:\n%s", out)
+	if !strings.Contains(out, "implementer") {
+		t.Fatalf("live strip missing active phase:\n%s", out)
 	}
 	if strings.Count(out, "\n") != 0 {
 		t.Fatalf("live strip must be one row:\n%s", out)
+	}
+}
+
+func TestSDDStripTextShowsAuditPhase(t *testing.T) {
+	p := session.SDDProgress{DoneTasks: 2, TotalTasks: 5, Tasks: []session.SDDTaskStatus{
+		{Name: "T3", Phase: session.SDDPhaseActive, Audit: session.SDDPhaseActive},
+	}}
+	text := sddStripText(p)
+	if !strings.Contains(text, "audit") {
+		t.Errorf("strip text missing audit phase: %q", text)
 	}
 }
 

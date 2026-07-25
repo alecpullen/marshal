@@ -63,17 +63,23 @@ func swarmStripText(p session.SwarmProgress) string {
 	return text
 }
 
-// sddStripText renders `sdd task 3/7 · implement parser`.
+// sddStripText renders `sdd task 3/7 · implementer` (or audit/review/branch
+// review) showing the deepest active sub-phase of the current task.
 func sddStripText(p session.SDDProgress) string {
 	text := fmt.Sprintf("sdd task %d/%d", p.DoneTasks, p.TotalTasks)
 	for _, t := range p.Tasks {
-		if t.Phase == session.SDDPhaseActive {
-			text += " · " + t.Name
-			if t.Detail != "" {
-				text += " — " + t.Detail
-			}
-			return text
+		if t.Phase != session.SDDPhaseActive {
+			continue
 		}
+		switch {
+		case t.Implementer == session.SDDPhaseActive:
+			text += " · implementer"
+		case t.Audit == session.SDDPhaseActive:
+			text += " · audit"
+		case t.Review == session.SDDPhaseActive:
+			text += " · review"
+		}
+		break
 	}
 	if p.BranchReview == session.SDDPhaseActive {
 		text += " · branch review"

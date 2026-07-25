@@ -86,9 +86,13 @@ func Default() Config {
 			},
 		},
 		SDD: SDDConfig{
-			AutoWorktree: true,
-			MaxFixRounds: 3,
-			PlansDir:     ".marshal/plans",
+			AutoWorktree:         true,
+			MaxFixRounds:         3,
+			PlansDir:             ".marshal/plans",
+			VerifyTimeoutMS:      300000,
+			DefaultModelTier:     "fast",
+			CleanupAtStart:       true,
+			MaxWorkerConcurrency: 2,
 		},
 		Web: WebConfig{
 			Enabled:      false,

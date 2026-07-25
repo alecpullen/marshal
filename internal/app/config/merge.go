@@ -181,6 +181,11 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.SDD.AutoWorktree, file.SDD.AutoWorktree)
 		set(&cfg.SDD.MaxFixRounds, file.SDD.MaxFixRounds)
 		set(&cfg.SDD.PlansDir, file.SDD.PlansDir)
+		set(&cfg.SDD.VerifyTimeoutMS, file.SDD.VerifyTimeoutMS)
+		set(&cfg.SDD.DefaultModelTier, file.SDD.DefaultModelTier)
+		set(&cfg.SDD.CleanupAtStart, file.SDD.CleanupAtStart)
+		set(&cfg.SDD.MaxTotalTokens, file.SDD.MaxTotalTokens)
+		set(&cfg.SDD.MaxWorkerConcurrency, file.SDD.MaxWorkerConcurrency)
 	}
 	if file.MCP != nil {
 		for name, srv := range file.MCP.Servers {

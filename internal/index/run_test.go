@@ -5,7 +5,42 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"marshal/internal/db"
 )
+
+type fakeLSP struct{ lang string }
+
+func (f fakeLSP) DocumentSymbols(_ context.Context, lang, filePath string, _ []byte) ([]db.Symbol, bool) {
+	if lang != f.lang {
+		return nil, false
+	}
+	return []db.Symbol{{FilePath: filePath, Kind: "function", Name: "L", Signature: "fn L", LineStart: 1, LineEnd: 1, Source: "lsp"}}, true
+}
+
+func TestRunPrefersLSPSymbols(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "a.go"), []byte("package p\nfunc F(){}\n"), 0o644)
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, root)
+
+	_, err := Run(context.Background(), Deps{DB: database, Root: root, LSP: fakeLSP{lang: "go"}}, pid)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	syms, err := database.GetSymbols(pid, 0)
+	if err != nil {
+		t.Fatalf("GetSymbols: %v", err)
+	}
+	if len(syms) == 0 {
+		t.Fatal("no symbols")
+	}
+	for _, s := range syms {
+		if s.Source != "lsp" {
+			t.Fatalf("expected source=lsp, got %#v", s)
+		}
+	}
+}
 
 func TestRunIndexesFilesSymbolsEmbeddings(t *testing.T) {
 	root := t.TempDir()

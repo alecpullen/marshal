@@ -10,12 +10,19 @@ import (
 	"marshal/internal/repo"
 )
 
+// LSPSymbols is an abstraction over an LSP document-symbol provider.
+// The bool reports whether a ready server handled the request.
+type LSPSymbols interface {
+	DocumentSymbols(ctx context.Context, lang, filePath string, content []byte) ([]db.Symbol, bool)
+}
+
 type Deps struct {
 	DB       *db.DB
 	Root     string
 	Ignore   []string
 	MaxBytes int64
 	Embedder embedding.Embedder // nil => embeddings skipped
+	LSP      LSPSymbols         // nil => LSP symbols not available
 }
 
 type Report struct {
@@ -59,6 +66,13 @@ func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
 			rep.Warnings = append(rep.Warnings, sf.Path+": read error")
 			continue
 		}
+		if deps.LSP != nil {
+			if lspSyms, ok := deps.LSP.DocumentSymbols(ctx, sf.Language, sf.Path, sf.Content); ok {
+				symbols = append(symbols, lspSyms...)
+				symbolsByFile[sf.Path] = lspSyms
+				continue
+			}
+		}
 		if sf.Language != "go" {
 			continue
 		}
@@ -66,6 +80,9 @@ func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
 		if extractErr != nil {
 			rep.Warnings = append(rep.Warnings, sf.Path+": parse error")
 			continue
+		}
+		for i := range fileSyms {
+			fileSyms[i].Source = "treesitter"
 		}
 		symbols = append(symbols, fileSyms...)
 		symbolsByFile[sf.Path] = fileSyms

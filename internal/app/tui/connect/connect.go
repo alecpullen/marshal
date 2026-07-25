@@ -370,6 +370,10 @@ func enterPickModelStep(m *Model, providerName string) {
 	m.subtitle = providerName
 	m.footer = "[↑↓] move [↵] pick [Esc] done"
 	m.err = ""
+	m.providerName = providerName
+	if pc, ok := m.cfg.Providers[providerName]; ok {
+		m.providerCfg = pc
+	}
 	m.picker = buildModelPicker(m, providerName)
 }
 

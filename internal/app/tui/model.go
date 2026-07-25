@@ -842,8 +842,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case picker.PickedMsg:
-		// Forward to the agents roster panel if it owns the picker overlay.
-		if _, ok := m.dock.Panel().(*agents.Panel); ok {
+		// Forward to panel overlays that host their own picker (agents roster,
+		// connect wizard). Their internal handlers will emit their own done
+		// messages; we must not close the dock or treat this as a top-level
+		// picker pick here.
+		switch m.dock.Panel().(type) {
+		case *agents.Panel, connect.Panel:
 			return m, m.dock.Update(pm)
 		}
 		cmdName := m.pickerCommand
@@ -898,8 +902,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
 	case picker.CancelledMsg:
-		// Forward to the agents roster panel if it owns the picker overlay.
-		if _, ok := m.dock.Panel().(*agents.Panel); ok {
+		// Forward to panel overlays that host their own picker.
+		switch m.dock.Panel().(type) {
+		case *agents.Panel, connect.Panel:
 			return m, m.dock.Update(pm)
 		}
 		cmdName := m.pickerCommand

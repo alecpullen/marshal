@@ -4272,6 +4272,46 @@ func TestModelsEmptyProvidersShowsAddProvider(t *testing.T) {
 	}
 }
 
+func TestModelsPickAppliesSwitch(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m.discovered["ollama"] = []string{"qwen2.5-coder:7b"}
+	m.state.WorkingDir = t.TempDir()
+	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
+
+	updated, _ := m.dispatchCommand("/models")
+	m = asModel(t, updated)
+	if _, ok := m.dock.Panel().(connect.Panel); !ok || m.connectModel == nil {
+		t.Fatal("/models should open the connect overlay")
+	}
+
+	// Simulate selecting a discovered model from the scoped provider picker.
+	updated, cmd := m.Update(picker.PickedMsg{Value: "qwen2.5-coder:7b"})
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("picker pick should produce a connect.DoneMsg command")
+	}
+	// Run the command to deliver the DoneMsg, just as Bubble Tea would.
+	updated, _ = m.Update(cmd())
+	m = asModel(t, updated)
+
+	if m.dock.IsOpen() {
+		t.Fatal("selecting a model should close the overlay")
+	}
+	if m.state.Config.Agent.Provider != "ollama" || m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("model not switched: got provider=%q model=%q", m.state.Config.Agent.Provider, m.state.Config.Agent.Model)
+	}
+	if m.state.Config.Profile.Default != "" {
+		t.Fatalf("profile default should be cleared, got %q", m.state.Config.Profile.Default)
+	}
+	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
+		t.Fatalf("success receipt = %q", got)
+	}
+}
+
 func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	m := newTestModel(t)
 	m.settingsRegistry()

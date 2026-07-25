@@ -94,10 +94,13 @@ func hashToolResult(content string) string {
 // record notes one executed tool call and returns how many times this exact
 // (name, args, output) signature has now occurred since the last mutating
 // call.
-func (t *progressTracker) record(name, normalizedArgs, resultHash string) int {
-	if mutating(categorize(name)) {
-		// State changed: earlier observations are stale, future repeats are
-		// fresh progress.
+func (t *progressTracker) record(name, normalizedArgs, resultHash string, success bool) int {
+	if success && mutating(categorize(name)) {
+		// State actually changed: earlier observations are stale, future
+		// repeats are fresh progress. A FAILING mutating call changes
+		// nothing, so it must not reset the streak — otherwise identical
+		// futile calls (e.g. the same malformed patch) never accumulate
+		// enough repeats to trip loop detection.
 		t.counts = make(map[string]int)
 	}
 	key := name + "\x00" + normalizedArgs + "\x00" + resultHash

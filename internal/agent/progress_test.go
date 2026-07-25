@@ -8,21 +8,21 @@ import (
 func TestRecordReturnsRepeatCountForIdenticalSignature(t *testing.T) {
 	tr := newProgressTracker()
 	h := hashToolResult("same output")
-	if got := tr.record("file.read", `{"path":"a.go"}`, h); got != 1 {
+	if got := tr.record("file.read", `{"path":"a.go"}`, h, true); got != 1 {
 		t.Fatalf("first record count = %d, want 1", got)
 	}
-	if got := tr.record("file.read", `{"path":"a.go"}`, h); got != 2 {
+	if got := tr.record("file.read", `{"path":"a.go"}`, h, true); got != 2 {
 		t.Fatalf("second record count = %d, want 2", got)
 	}
-	if got := tr.record("file.read", `{"path":"a.go"}`, h); got != 3 {
+	if got := tr.record("file.read", `{"path":"a.go"}`, h, true); got != 3 {
 		t.Fatalf("third record count = %d, want 3", got)
 	}
 }
 
 func TestDifferentOutputIsNotARepeat(t *testing.T) {
 	tr := newProgressTracker()
-	tr.record("shell.run", `{"command":"go test"}`, hashToolResult("FAIL: TestX"))
-	got := tr.record("shell.run", `{"command":"go test"}`, hashToolResult("ok"))
+	tr.record("shell.run", `{"command":"go test"}`, hashToolResult("FAIL: TestX"), true)
+	got := tr.record("shell.run", `{"command":"go test"}`, hashToolResult("ok"), true)
 	if got != 1 {
 		t.Fatalf("same call with different output counted as repeat: count = %d, want 1", got)
 	}
@@ -31,10 +31,10 @@ func TestDifferentOutputIsNotARepeat(t *testing.T) {
 func TestMutatingCallResetsRepeatCounts(t *testing.T) {
 	tr := newProgressTracker()
 	h := hashToolResult("x")
-	tr.record("file.read", `{"path":"a.go"}`, h)
-	tr.record("file.read", `{"path":"a.go"}`, h)
-	tr.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"))
-	if got := tr.record("file.read", `{"path":"a.go"}`, h); got != 1 {
+	tr.record("file.read", `{"path":"a.go"}`, h, true)
+	tr.record("file.read", `{"path":"a.go"}`, h, true)
+	tr.record("file.write_patch", `{"patch":"p"}`, hashToolResult("applied"), true)
+	if got := tr.record("file.read", `{"path":"a.go"}`, h, true); got != 1 {
 		t.Fatalf("count after mutating call = %d, want 1 (state changed, re-read is fresh)", got)
 	}
 }
@@ -43,12 +43,12 @@ func TestAssessHardStallOnlyAtThreshold(t *testing.T) {
 	tr := newProgressTracker()
 	h := hashToolResult("out")
 	for i := 0; i < repeatHardStall-1; i++ {
-		tr.record("repo.search", `{"query":"q"}`, h)
+		tr.record("repo.search", `{"query":"q"}`, h, true)
 		if a := tr.assess(); a != assessProgressing {
 			t.Fatalf("assess after %d repeats = %v, want assessProgressing", i+1, a)
 		}
 	}
-	tr.record("repo.search", `{"query":"q"}`, h)
+	tr.record("repo.search", `{"query":"q"}`, h, true)
 	if a := tr.assess(); a != assessHardStall {
 		t.Fatalf("assess at %d repeats = %v, want assessHardStall", repeatHardStall, a)
 	}
@@ -58,13 +58,13 @@ func TestResetCountsClearsStreakButKeepsIdleHistory(t *testing.T) {
 	tr := newProgressTracker()
 	h := hashToolResult("out")
 	for i := 0; i < repeatHardStall; i++ {
-		tr.record("repo.search", `{"query":"q"}`, h)
+		tr.record("repo.search", `{"query":"q"}`, h, true)
 	}
 	tr.resetCounts()
 	if a := tr.assess(); a != assessProgressing {
 		t.Fatalf("assess after resetCounts = %v, want assessProgressing", a)
 	}
-	if got := tr.record("repo.search", `{"query":"q"}`, h); got != 1 {
+	if got := tr.record("repo.search", `{"query":"q"}`, h, true); got != 1 {
 		t.Fatalf("count after resetCounts = %d, want 1", got)
 	}
 }
@@ -86,7 +86,7 @@ func TestToolCallBreaksIdleRun(t *testing.T) {
 	tr := newProgressTracker()
 	tr.recordIdle("empty")
 	tr.recordIdle("empty")
-	tr.record("file.read", `{"path":"a.go"}`, hashToolResult("x"))
+	tr.record("file.read", `{"path":"a.go"}`, hashToolResult("x"), true)
 	tr.recordIdle("empty")
 	if a := tr.assess(); a == assessHardStall {
 		t.Fatal("idle run interrupted by a tool call must not hard stall")
@@ -122,7 +122,7 @@ func TestLastCallReportsMostRecent(t *testing.T) {
 	if _, _, ok := tr.lastCall(); ok {
 		t.Fatal("lastCall on empty tracker reported ok")
 	}
-	tr.record("repo.search", `{"query":"q"}`, hashToolResult("x"))
+	tr.record("repo.search", `{"query":"q"}`, hashToolResult("x"), true)
 	name, args, ok := tr.lastCall()
 	if !ok || name != "repo.search" || args != `{"query":"q"}` {
 		t.Fatalf("lastCall = (%q, %q, %v)", name, args, ok)

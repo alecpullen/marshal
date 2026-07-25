@@ -212,7 +212,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if tool.Cacheable {
 		if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
 			r.trackerMu.Lock()
-			count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(cached.Content))
+			count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(cached.Content), true)
 			r.trackerMu.Unlock()
 			logged := cached
 			logged.Summary = "(cached) " + logged.Summary
@@ -340,7 +340,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		event.Rewritten = toolWasRewritten
 		r.State.LogToolCall(event)
 		r.trackerMu.Lock()
-		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()))
+		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()), false)
 		r.trackerMu.Unlock()
 		r.countToolCall(true, false)
 		msg := r.buildToolErrorMessage(toolName, execErr.Error(), toolCallID)
@@ -361,7 +361,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 
 	msg := r.buildToolResultMessage(toolName, summarized, toolCallID)
 	r.trackerMu.Lock()
-	count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(summarized.Content))
+	count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(summarized.Content), true)
 	r.trackerMu.Unlock()
 	msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
 	r.countToolCall(false, false)

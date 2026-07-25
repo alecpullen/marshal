@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/diagnostics"
+	"marshal/internal/index"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
@@ -66,6 +67,10 @@ type Options struct {
 	// LSPSource is an optional diagnostics source consulted before the
 	// configured command checkers. nil when LSP is unavailable.
 	LSPSource diagnostics.LSPSource
+
+	// LSPIndex is an optional LSP-backed symbol provider consulted during
+	// repo.index. nil when LSP is unavailable.
+	LSPIndex index.LSPSymbols
 }
 
 type CommandRunner interface {
@@ -131,6 +136,10 @@ type toolSet struct {
 	// lsp is an optional LSPQuerier for symbol-name-addressed definition,
 	// references, and hover tools. nil when LSP is unavailable.
 	lsp LSPQuerier
+
+	// lspIndex is an optional LSP-backed symbol provider consulted during
+	// repo.index. nil when LSP is unavailable.
+	lspIndex index.LSPSymbols
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -270,11 +279,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 			pc := opts.Config.Providers[route.Preset.Provider]
 			return embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
 		},
-		lsp: opts.LSP,
+		lsp:      opts.LSP,
+		lspIndex: opts.LSPIndex,
 	}, nil
-}
-
-func init() {
-	// Ensure diagnostics import is used (it's used in newToolSet).
-	_ = diagnostics.Checker{}
 }

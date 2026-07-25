@@ -41,6 +41,7 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			Ignore:   t.config.Indexing.Ignore,
 			MaxBytes: t.config.Indexing.MaxIndexableFileBytes,
 			Embedder: embedder,
+			LSP:      t.lspIndex,
 		}, t.projectID)
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("index run: %w", err)

@@ -5,7 +5,13 @@ import (
 	"log/slog"
 	"os/exec"
 	"sync"
+	"time"
 )
+
+// initializeTimeout bounds how long we wait for a language server to respond
+// to the LSP initialize handshake. If a server hangs during init, the
+// goroutine returns cleanly and the language is simply never marked ready.
+const initializeTimeout = 30 * time.Second
 
 type ServerSpec struct {
 	Command string
@@ -67,12 +73,20 @@ func NewManager(root string, servers map[string]ServerSpec, log *slog.Logger) *M
 func (m *Manager) Name() string { return "lsp-manager" }
 
 // Run spawns configured servers and supervises them until ctx is cancelled.
+// Each server is started in its own goroutine so a hung Initialize does not
+// block other languages from starting.
 func (m *Manager) Run(ctx context.Context) error {
+	var wg sync.WaitGroup
 	for lang, spec := range m.servers {
-		m.startServer(ctx, lang, spec)
+		wg.Add(1)
+		go func(lang string, spec ServerSpec) {
+			defer wg.Done()
+			m.startServer(ctx, lang, spec)
+		}(lang, spec)
 	}
 	<-ctx.Done()
 	m.shutdownAll()
+	wg.Wait()
 	return nil
 }
 
@@ -94,8 +108,12 @@ func (m *Manager) startServer(ctx context.Context, lang string, spec ServerSpec)
 		return
 	}
 	client := newClient(stdin, stdout)
-	if err := client.Initialize(ctx, "file://"+m.root); err != nil {
+	initCtx, cancel := context.WithTimeout(ctx, initializeTimeout)
+	defer cancel()
+	if err := client.Initialize(initCtx, "file://"+m.root); err != nil {
 		m.log.Debug("lsp initialize", "lang", lang, "err", err)
+		// Kill the child process on init failure so it does not leak.
+		cmd.Process.Kill()
 		return
 	}
 	m.mu.Lock()

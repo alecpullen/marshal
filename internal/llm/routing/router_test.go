@@ -630,6 +630,44 @@ func TestRoleEmbeddingExcludedFromAllRoles(t *testing.T) {
 	}
 }
 
+func TestAllRolesIncludesSDDProductionRoles(t *testing.T) {
+	want := []AgentRole{
+		RoleSDDOrchestrator,
+		RoleSDDAuditor,
+		RoleSDDInvestigator,
+		RoleSDDRescue,
+	}
+	for _, r := range want {
+		found := false
+		for _, existing := range AllRoles {
+			if existing == r {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("AllRoles missing production SDD role %q", r)
+		}
+	}
+}
+
+func TestSDDRoleConstants(t *testing.T) {
+	cases := []struct {
+		role AgentRole
+		want string
+	}{
+		{RoleSDDOrchestrator, "sdd_orchestrator"},
+		{RoleSDDAuditor, "sdd_auditor"},
+		{RoleSDDInvestigator, "sdd_investigator"},
+		{RoleSDDRescue, "sdd_rescue"},
+	}
+	for _, c := range cases {
+		if string(c.role) != c.want {
+			t.Fatalf("%+v = %q, want %q", c.role, c.role, c.want)
+		}
+	}
+}
+
 func TestResolveRolePresetBindingUnchanged(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",

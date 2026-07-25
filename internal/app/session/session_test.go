@@ -1318,3 +1318,21 @@ func TestAppendActiveToolCallOutput(t *testing.T) {
 		t.Fatalf("Output = %q, want %q", atc.Output, "hello world")
 	}
 }
+
+// ── Task 7: SDDGate ─────────────────────────────────────────────────────
+
+func TestStateSDDGate(t *testing.T) {
+	s := newTestState()
+	if g := s.SDDGate(); g.Kind != "" {
+		t.Fatalf("initial gate should be empty, got %+v", g)
+	}
+	s.SetSDDGate(SDDGate{Kind: "spec_approval", Reason: "spec.md needs approval"})
+	g := s.SDDGate()
+	if g.Kind != "spec_approval" || g.Reason != "spec.md needs approval" {
+		t.Fatalf("gate = %+v", g)
+	}
+	s.ClearSDDGate()
+	if g := s.SDDGate(); g.Kind != "" {
+		t.Fatalf("cleared gate should be empty, got %+v", g)
+	}
+}

@@ -17,7 +17,10 @@ import (
 //
 // dataDir is the application data directory used for the on-disk limit
 // cache. Pass "" to skip limit table loading.
-func NewFromConfig(name string, pc config.ProviderConfig, dataDir string) (Provider, error) {
+//
+// remoteLimitDiscovery controls whether the limit table is fetched from
+// remote sources (OpenRouter, LiteLLM) when no local cache exists.
+func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool) (Provider, error) {
 	switch pc.Type {
 	case "", "openai_compatible":
 		apiKey, err := resolveAPIKey(pc)
@@ -28,7 +31,7 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string) (Provi
 		caps.ToolCalling = pc.ToolCalling
 
 		var table *limits.Table
-		if dataDir != "" {
+		if dataDir != "" && remoteLimitDiscovery {
 			if t, err := limits.LoadTable(context.Background(), dataDir, limits.DefaultTTL); err == nil {
 				table = &t
 			}

@@ -26,7 +26,7 @@ func TestNewFromConfigUsesLiteralAPIKey(t *testing.T) {
 		BaseURL: server.URL,
 		APIKey:  "literal-key",
 	}
-	p, err := NewFromConfig("test", pc, "")
+	p, err := NewFromConfig("test", pc, "", false)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestNewFromConfigResolvesAPIKeyEnv(t *testing.T) {
 		BaseURL:   server.URL,
 		APIKeyEnv: "SOME_ENV_VAR",
 	}
-	p, err := NewFromConfig("test", pc, "")
+	p, err := NewFromConfig("test", pc, "", false)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestNewFromConfigPrefersLiteralAPIKeyOverAPIKeyEnv(t *testing.T) {
 		APIKey:    "literal-key",
 		APIKeyEnv: "SOME_ENV_VAR",
 	}
-	p, err := NewFromConfig("test", pc, "")
+	p, err := NewFromConfig("test", pc, "", false)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestNewFromConfigErrorsWhenAPIKeyEnvUnset(t *testing.T) {
 		BaseURL:   "http://example.invalid",
 		APIKeyEnv: "DEFINITELY_NOT_SET_ENV_VAR",
 	}
-	_, err := NewFromConfig("test", pc, "")
+	_, err := NewFromConfig("test", pc, "", false)
 	if err == nil {
 		t.Fatal("expected NewFromConfig to return an error when api_key_env is unset")
 	}
@@ -142,7 +142,7 @@ func TestNewFromConfigPropagatesToolCallingCapability(t *testing.T) {
 		APIKey:      "literal-key",
 		ToolCalling: true,
 	}
-	p, err := NewFromConfig("test", pc, "")
+	p, err := NewFromConfig("test", pc, "", false)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestNewFromConfigToolCallingDefaultsToFalse(t *testing.T) {
 		Type:    "openai_compatible",
 		BaseURL: server.URL,
 	}
-	p, err := NewFromConfig("test", pc, "")
+	p, err := NewFromConfig("test", pc, "", false)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestNewFromConfigErrorsOnUnsupportedProviderType(t *testing.T) {
 		Type:    "native_anthropic",
 		BaseURL: "https://api.anthropic.com",
 	}
-	_, err := NewFromConfig("test", pc, "")
+	_, err := NewFromConfig("test", pc, "", false)
 	if err == nil {
 		t.Fatal("expected NewFromConfig to return an error for unsupported provider type")
 	}

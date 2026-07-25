@@ -431,6 +431,16 @@ func TestRenderActiveToolCallNonBrowserGlyph(t *testing.T) {
 	}
 }
 
+func TestRenderQuestionPanelEmpty(t *testing.T) {
+	q := &session.PendingQuestion{Questions: []session.Question{}}
+	if out := renderQuestionPanel(q, 80); out != "" {
+		t.Fatalf("empty question panel should render nothing; got %q", out)
+	}
+	if out := renderQuestionPanel(nil, 80); out != "" {
+		t.Fatalf("nil question panel should render nothing; got %q", out)
+	}
+}
+
 func TestWelcomeBannerIsPlainLines(t *testing.T) {
 	out := renderWelcomeBanner(60)
 	plain := stripANSI(out)

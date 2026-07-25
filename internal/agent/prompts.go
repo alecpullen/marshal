@@ -204,7 +204,10 @@ func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 func modeDirective(mode policy.ApprovalMode) string {
 	switch mode {
 	case policy.ModePlan:
-		return "You are in plan mode. You are read-only and cannot modify files. Produce a numbered plan as your final answer, then stop. You may ask the user clarifying questions about requirements before planning."
+		return "You are in plan mode. You are read-only and cannot modify files. " +
+			"If you need clarifying questions, ask ALL of them in a single question.ask tool call, " +
+			"then produce a numbered plan as your final answer and stop. " +
+			"Do not ask more than one round of questions, and do not call any write tools."
 	case policy.ModeDefault:
 		return "You are in default mode. You are read-only and cannot modify files. If you need to make changes, call the mode.request tool to ask the user to switch to an editing mode. Do not attempt write tools directly."
 	case policy.ModeEdit:

@@ -440,6 +440,19 @@ func TestModeDirectivePlan(t *testing.T) {
 	}
 }
 
+func TestPlanModeDirectiveAsksQuestionsInSingleCall(t *testing.T) {
+	d := modeDirective(policy.ModePlan)
+	if !strings.Contains(d, "single question.ask") {
+		t.Fatalf("plan directive should require a single question.ask call; got:\n%s", d)
+	}
+	if !strings.Contains(d, "numbered plan") {
+		t.Fatalf("plan directive should require a numbered plan; got:\n%s", d)
+	}
+	if !strings.Contains(d, "one round") {
+		t.Fatalf("plan directive should limit clarifications to one round; got:\n%s", d)
+	}
+}
+
 func TestModeDirectiveDefault(t *testing.T) {
 	d := modeDirective(policy.ModeDefault)
 	if !strings.Contains(d, "default mode") {

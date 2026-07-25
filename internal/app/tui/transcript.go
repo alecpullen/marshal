@@ -616,6 +616,9 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, al
 }
 
 func renderQuestionPanel(q *session.PendingQuestion, width int) string {
+	if q == nil || len(q.Questions) == 0 {
+		return ""
+	}
 	gutter := gutterPrefix("?", violetColor)
 	var b strings.Builder
 	for _, qs := range q.Questions {

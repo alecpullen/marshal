@@ -1,14 +1,17 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/catalog"
+	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/retrieval"
 )
 
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {
@@ -100,6 +103,58 @@ func (r *Runner) mergeMemories(maxTokenOverride int) {
 		maxTokens = contextpack.DefaultMaxTokens
 	}
 	r.State.SetContextPack(contextpack.MergeMemories(current, memories, maxTokens, r.Now))
+}
+
+// semanticSource resolves the embedding source for passive semantic context
+// injection. Returns nil when embeddings are not configured (graceful-off).
+func (r *Runner) semanticSource(projectID int64) retrieval.Source {
+	if r.RouteResolver == nil {
+		return nil
+	}
+	// Build a fresh StaticRouter from the runner's config to resolve the
+	// embedding role. The runner's RouteResolver interface does not expose
+	// ResolveEmbedding, so we reconstruct the router from the config.
+	cfg := r.State.Config
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	route, err := router.ResolveEmbedding()
+	if err != nil {
+		return nil // includes routing.ErrEmbeddingNotConfigured
+	}
+	pc, ok := cfg.Providers[route.Preset.Provider]
+	if !ok {
+		return nil
+	}
+	embedder, err := embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
+	if err != nil {
+		return nil
+	}
+	db := r.State.DB()
+	if db == nil {
+		return nil
+	}
+	return retrieval.NewSemanticSource(db, embedder, projectID)
+}
+
+// mergeSemantic injects semantic context snippets into the pack alongside
+// memories. A nil source (unconfigured embedder) is a no-op.
+func (r *Runner) mergeSemantic(ctx context.Context, goal string, projectID int64, maxTokenOverride int) {
+	src := r.semanticSource(projectID)
+	if src == nil {
+		return
+	}
+	snips := retrieveSemanticContext(ctx, goal, src)
+	if len(snips) == 0 {
+		return
+	}
+	current := r.State.ContextPack()
+	maxTokens := maxTokenOverride
+	if maxTokens <= 0 {
+		maxTokens = current.TokenUsage.MaxTokens
+	}
+	if maxTokens <= 0 {
+		maxTokens = contextpack.DefaultMaxTokens
+	}
+	r.State.SetContextPack(contextpack.MergeSemanticContext(current, snips, maxTokens, r.Now))
 }
 
 func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pack) []schema.ChatMessage {

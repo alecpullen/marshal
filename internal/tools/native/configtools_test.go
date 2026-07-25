@@ -279,6 +279,87 @@ func TestCommandRiskTools(t *testing.T) {
 	})
 }
 
+func newAutoApproveSessionState() *session.State {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := state.PendingApproval(); p != nil {
+				p.Respond(session.UserApprovalDecision{Approved: true})
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	return state
+}
+
+func testSectionWriteWithState(t *testing.T, name string, build func(*toolSet) registry.Tool, args string, check func(config.Config) bool, st *session.State) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	var reloaded *config.Config
+	ts := toolSet{
+		config:         cfg,
+		configPath:     cfgPath,
+		configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil },
+		sessionState:   st,
+	}
+	_, _ = newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(build(&ts))
+	tool, _ := reg.Lookup(name)
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: name, Args: json.RawMessage(args)})
+	if err != nil {
+		t.Fatalf("%s handler: %v", name, err)
+	}
+	if !check(*reloaded) {
+		t.Fatalf("%s: check failed on reloaded config %+v", name, reloaded)
+	}
+}
+
+func TestPermissionsSetFiltersSelfGoverningRules(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := config.ProjectConfigPath(dir)
+	st := newAutoApproveSessionState()
+	cfg := config.Default()
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { return nil }, sessionState: st}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configPermissionsSetTool())
+	tool, _ := reg.Lookup("config.permissions.set")
+	// Include a self-governing rule (config.read) and a normal rule.
+	args := `{"rules":[{"permission":"config.read","action":"allow"},{"permission":"shell.run","pattern":"ls","action":"allow"}]}`
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.permissions.set", Args: json.RawMessage(args)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	loaded, _ := config.Load(config.LoadOptions{WorkingDir: dir})
+	for _, r := range loaded.Permissions.Rules {
+		if strings.HasPrefix(r.Permission, "config.") {
+			t.Fatalf("self-governing config.* rule must be filtered out, found: %+v", r)
+		}
+	}
+	found := false
+	for _, r := range loaded.Permissions.Rules {
+		if r.Permission == "shell.run" && r.Pattern == "ls" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("normal rule must survive filtering")
+	}
+}
+
+func TestMCPSetPersists(t *testing.T) {
+	st := newAutoApproveSessionState()
+	testSectionWriteWithState(t, "config.mcp.set", (*toolSet).configMCPSetTool, `{"servers":{"github":{"command":"npx","args":["-y","@modelcontextprotocol/server-github"]}}}`, func(c config.Config) bool {
+		s, ok := c.MCP.Servers["github"]
+		return ok && s.Command == "npx"
+	}, st)
+}
+
 func TestShellAutoApproveEscalates(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")

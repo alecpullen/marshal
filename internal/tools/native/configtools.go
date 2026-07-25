@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"marshal/internal/app/config"
@@ -44,6 +45,8 @@ func (t *toolSet) configTools() []registry.Tool {
 		t.configToolsShellSandboxSetTool(),
 		t.configDiagnosticsSetTool(),
 		t.configHooksSetTool(),
+		t.configPermissionsSetTool(),
+		t.configMCPSetTool(),
 	}
 }
 
@@ -951,6 +954,96 @@ func (t *toolSet) configHooksSetTool() registry.Tool {
 					}
 					cfg.Hooks.Entries = append(cfg.Hooks.Entries, entry)
 				}
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configPermissionsSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.permissions.set",
+		Description: "Set the [permissions] section rules. Rules whose Permission starts with 'config.' are silently filtered out (the agent cannot widen its own approval surface). Omitted fields are preserved. This is a destructive change requiring explicit approval.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"rules":{"type":"array","items":{"type":"object","properties":{"permission":{"type":"string"},"pattern":{"type":"string"},"action":{"type":"string"}},"additionalProperties":false}}},"additionalProperties":false}`),
+		Risk:        registry.RiskDestructive,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Rules []config.PermissionRule `json:"rules"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.permissions.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.permissions.set (%s scope): update permissions section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
+			if args.Rules != nil {
+				filtered := make([]config.PermissionRule, 0, len(args.Rules))
+				for _, r := range args.Rules {
+					if strings.HasPrefix(r.Permission, "config.") {
+						continue
+					}
+					filtered = append(filtered, r)
+				}
+				cfg.Permissions.Rules = filtered
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configMCPSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.mcp.set",
+		Description: "Set fields in the [mcp] section (servers, policies, disclosure_threshold_tools). Servers are merged by key (whole-entry overwrite). This is a destructive change requiring explicit approval.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"servers":{"type":"object","additionalProperties":{"type":"object","properties":{"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"env":{"type":"object","additionalProperties":{"type":"string"}},"trust":{"type":"string"}},"additionalProperties":false}},"policies":{"type":"object","additionalProperties":{"type":"string"}},"disclosure_threshold_tools":{"type":"integer"}},"additionalProperties":false}`),
+		Risk:        registry.RiskDestructive,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Servers map[string]struct {
+				Command *string           `json:"command"`
+				Args    []string          `json:"args"`
+				Env     map[string]string `json:"env"`
+				Trust   *string           `json:"trust"`
+			} `json:"servers"`
+			Policies                 map[string]string `json:"policies"`
+			DisclosureThresholdTools *int              `json:"disclosure_threshold_tools"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.mcp.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.mcp.set (%s scope): update mcp section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
+			if args.Servers != nil {
+				if cfg.MCP.Servers == nil {
+					cfg.MCP.Servers = map[string]config.MCPServerConfig{}
+				}
+				for name, srv := range args.Servers {
+					cfgSrv := config.MCPServerConfig{Env: srv.Env}
+					if srv.Command != nil {
+						cfgSrv.Command = *srv.Command
+					}
+					if srv.Trust != nil {
+						cfgSrv.Trust = *srv.Trust
+					}
+					cfgSrv.Args = srv.Args
+					cfg.MCP.Servers[name] = cfgSrv
+				}
+			}
+			if args.Policies != nil {
+				if cfg.MCP.Policies == nil {
+					cfg.MCP.Policies = map[string]string{}
+				}
+				for k, v := range args.Policies {
+					cfg.MCP.Policies[k] = v
+				}
+			}
+			if args.DisclosureThresholdTools != nil {
+				cfg.MCP.DisclosureThresholdTools = *args.DisclosureThresholdTools
 			}
 		})
 	}

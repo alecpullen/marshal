@@ -74,15 +74,22 @@ func (w *Workspace) Reset() error {
 			return fmt.Errorf("sdd workspace: archive repo.json: %w", err)
 		}
 	}
-	// Clear the per-run subdirectories.
-	for _, sub := range []string{"contracts", "reports", "diffs", "checkpoints"} {
+	// Archive the per-run subdirectory contents, then clear the subdirectories.
+	for _, sub := range []string{"state", "contracts", "reports", "diffs", "checkpoints"} {
 		d := filepath.Join(w.dir, sub)
 		entries, err := os.ReadDir(d)
 		if err != nil {
 			continue
 		}
 		for _, e := range entries {
-			_ = os.RemoveAll(filepath.Join(d, e.Name()))
+			src := filepath.Join(d, e.Name())
+			dst := filepath.Join(archiveDir, sub, e.Name())
+			if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+				return fmt.Errorf("sdd workspace: mkdir archive subdir: %w", err)
+			}
+			if err := os.Rename(src, dst); err != nil {
+				return fmt.Errorf("sdd workspace: archive %s/%s: %w", sub, e.Name(), err)
+			}
 		}
 	}
 	return nil

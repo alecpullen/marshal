@@ -50,13 +50,22 @@ func TestWorkspaceResetArchivesAndClears(t *testing.T) {
 	if _, err := ws.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	// Seed a fake dag + report.
+	// Seed fake dag, report, and state/repo.json.
 	dagPath := filepath.Join(ws.Dir(), "dag.json")
 	if err := os.WriteFile(dagPath, []byte("{}"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	reportPath := filepath.Join(ws.Dir(), "reports", "T1.md")
 	if err := os.WriteFile(reportPath, []byte("status: DONE"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	repoPath := filepath.Join(ws.Dir(), "state", "repo.json")
+	if err := os.WriteFile(repoPath, []byte(`{"branch":"main"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Also seed a stray file in state/ that should be cleared.
+	strayPath := filepath.Join(ws.Dir(), "state", "stray.txt")
+	if err := os.WriteFile(strayPath, []byte("leftover"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,6 +85,27 @@ func TestWorkspaceResetArchivesAndClears(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("archive entries = %d, want 1", len(entries))
+	}
+	archiveDir := filepath.Join(ws.Dir(), "archive", entries[0].Name())
+	// Verify archived dag.json exists.
+	if _, err := os.Stat(filepath.Join(archiveDir, "dag.json")); err != nil {
+		t.Fatalf("archived dag.json missing: %v", err)
+	}
+	// Verify archived reports/T1.md exists with correct content.
+	archivedReport, err := os.ReadFile(filepath.Join(archiveDir, "reports", "T1.md"))
+	if err != nil {
+		t.Fatalf("archived reports/T1.md missing: %v", err)
+	}
+	if string(archivedReport) != "status: DONE" {
+		t.Fatalf("archived reports/T1.md = %q, want %q", archivedReport, "status: DONE")
+	}
+	// Verify archived repo.json exists.
+	if _, err := os.Stat(filepath.Join(archiveDir, "repo.json")); err != nil {
+		t.Fatalf("archived repo.json missing: %v", err)
+	}
+	// Verify stray file in state/ is gone.
+	if _, err := os.Stat(strayPath); !os.IsNotExist(err) {
+		t.Fatalf("state/stray.txt should be removed, got %v", err)
 	}
 }
 

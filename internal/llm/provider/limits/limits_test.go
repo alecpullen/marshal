@@ -2,6 +2,7 @@ package limits
 
 import (
 	"testing"
+	"time"
 )
 
 func TestNormalizeOpenRouter(t *testing.T) {
@@ -98,5 +99,26 @@ func TestTableLookupMissing(t *testing.T) {
 	_, ok := tbl.Lookup("unknown", "unknown")
 	if ok {
 		t.Error("expected no match")
+	}
+}
+
+func TestCacheRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	tbl := map[string]Limit{
+		"deepseek/deepseek-v4-flash": {ContextWindow: 1048576, MaxOutputTokens: 0},
+	}
+	if err := Save(tmp, Cache{Table: tbl, FetchedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	cache, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, ok := cache.Table["deepseek/deepseek-v4-flash"]
+	if !ok {
+		t.Fatal("missing cached entry")
+	}
+	if got.ContextWindow != 1048576 {
+		t.Errorf("ContextWindow = %d, want 1048576", got.ContextWindow)
 	}
 }

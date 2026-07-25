@@ -69,6 +69,7 @@ var migrationColumns = []columnAdd{
 	{"turn_metrics", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	{"turn_metrics", "cache_write_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	{"turn_metrics", "estimated_cost_cents", "INTEGER NOT NULL DEFAULT 0"},
+	{"symbols", "source", "TEXT"},
 }
 
 func (db *DB) Migrate() error {
@@ -135,6 +136,7 @@ var allowedTableInfo = map[string]bool{
 	"messages":       true,
 	"agent_sessions": true,
 	"turn_metrics":   true,
+	"symbols":        true,
 }
 
 // tableColumns returns the set of column names for the given table.

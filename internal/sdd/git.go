@@ -96,6 +96,7 @@ type FakeGitOps struct {
 	worktrees map[string]bool       // path -> exists
 	mergeErrs map[string]error      // branch -> error to return from MergeFF
 	branches  map[string]bool       // branch -> exists
+	diffStats map[string]string     // "from..to" -> canned DiffStat output
 }
 
 // NewFakeGitOps builds an empty fake.
@@ -106,6 +107,7 @@ func NewFakeGitOps() *FakeGitOps {
 		worktrees: map[string]bool{},
 		mergeErrs: map[string]error{},
 		branches:  map[string]bool{},
+		diffStats: map[string]string{},
 	}
 }
 
@@ -213,7 +215,22 @@ func (f *FakeGitOps) Commit(message string) error {
 	return nil
 }
 
+// SetDiffStat makes DiffStat(from, to) return output.
+func (f *FakeGitOps) SetDiffStat(from, to, output string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.diffStats == nil {
+		f.diffStats = map[string]string{}
+	}
+	f.diffStats[from+".."+to] = output
+}
+
 func (f *FakeGitOps) DiffStat(from, to string) (string, error) {
 	f.record("diff", []string{"--stat", from + ".." + to})
-	return "", nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.diffStats == nil {
+		f.diffStats = map[string]string{}
+	}
+	return f.diffStats[from+".."+to], nil
 }

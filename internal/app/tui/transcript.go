@@ -15,6 +15,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/diffview"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
@@ -478,7 +479,7 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 		gutterColor = theme.Current().FGMuted
 	}
 	gutter := gutterPrefix(glyph, gutterColor)
-	head := event.ToolName
+	head := DisplayToolName(event.ToolName)
 	if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
 		head += dimSeparator + hookHint
 	}
@@ -492,7 +493,39 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 	b.WriteString(gutter)
 	b.WriteString(style.Render(strutil.Truncate(head, max(width-3, 1), false)))
 	b.WriteString("\n")
+	if isDiffTool(event.ToolName) && event.ResultContent != "" {
+		rendered := diffview.Render(event.ResultContent, diffview.Options{
+			Width:     max(width-2, 1),
+			Mode:      diffview.ModeAuto,
+			Highlight: true,
+		})
+		lines := strings.Split(rendered, "\n")
+		const maxDiffLines = 20
+		if len(lines) > maxDiffLines {
+			lines = lines[:maxDiffLines]
+		}
+		b.WriteString(strings.Repeat(" ", 3))
+		b.WriteString(dimStyle().Render("Diff:"))
+		b.WriteString("\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		if len(strings.Split(rendered, "\n")) > maxDiffLines {
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(dimStyle().Render(fmt.Sprintf("... (%d more lines)", len(strings.Split(rendered, "\n"))-maxDiffLines)))
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
+}
+
+func isDiffTool(name string) bool {
+	return name == "file.write_patch" || name == "patch.apply"
 }
 
 // hookIndicatorText picks the single highest-signal hook event from the

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -240,7 +241,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 			},
 		}
 		result := renderTranscriptItem(item, false, width)
-		if !strings.Contains(result, "file.read") {
+		if !strings.Contains(result, "Read file") {
 			t.Errorf("expected completed tool call, got: %s", result)
 		}
 		if strings.Contains(result, "done") {
@@ -470,7 +471,7 @@ func TestRenderCompletedToolCallBrowserGlyphRemoved(t *testing.T) {
 	if strings.Contains(stripped, "🌐") {
 		t.Fatalf("browser completed tool call should not render 🌐:\n%s", out)
 	}
-	if !strings.Contains(stripped, "browser.navigate") {
+	if !strings.Contains(stripped, "Browser Navigate") {
 		t.Fatalf("missing tool name:\n%s", out)
 	}
 	if strings.Contains(stripped, "done") {
@@ -563,6 +564,42 @@ func TestActiveToolCallRendersOutputAllWhenUnderSixLines(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q: %q", want, out)
 		}
+	}
+}
+
+func TestCompletedFileWritePatchRendersDiff(t *testing.T) {
+	event := registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultSummary: "Applied patches to: a.go",
+		ResultContent: "--- a.go\n+++ a.go\n@@ -1 +1 @@\n-old\n+new\n",
+	}
+	out := stripANSI(renderCompletedToolCall(event, 80))
+	if !strings.Contains(out, "Edit file") {
+		t.Fatalf("missing pretty tool name: %q", out)
+	}
+	if !strings.Contains(out, "+ new") || !strings.Contains(out, "- old") {
+		t.Fatalf("missing diff content: %q", out)
+	}
+}
+
+func TestCompletedFileWritePatchTruncatesLongDiff(t *testing.T) {
+	var long strings.Builder
+	long.WriteString("--- a.go\n+++ a.go\n@@ -1,20 +1,20 @@\n")
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&long, "-%d\n", i)
+		fmt.Fprintf(&long, "+%d\n", i)
+	}
+	event := registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultSummary: "Applied patches to: a.go",
+		ResultContent: long.String(),
+	}
+	out := stripANSI(renderCompletedToolCall(event, 80))
+	if !strings.Contains(out, "Diff:") {
+		t.Fatalf("missing diff header: %q", out)
+	}
+	if !strings.Contains(out, "more lines") {
+		t.Fatalf("long diff should be truncated with indicator: %q", out)
 	}
 }
 

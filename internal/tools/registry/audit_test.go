@@ -111,6 +111,19 @@ func TestNewAuditEventCopiesCommandExitCode(t *testing.T) {
 	}
 }
 
+func TestNewAuditEventCopiesResultContent(t *testing.T) {
+	now := time.Now()
+	result := ToolResult{
+		Summary: " Applied patches to: a.go",
+		Content: "--- a.go\n+++ a.go\n@@ -1 +1 @@\n-old\n+new\n",
+	}
+	call := ToolCall{ID: "c1", Name: "file.write_patch", Args: json.RawMessage(`{"patch":"..."}`)}
+	event := NewAuditEvent(now, Tool{Name: "file.write_patch"}, call, result, ApprovalApproved, nil)
+	if event.ResultContent != result.Content {
+		t.Fatalf("ResultContent = %q, want %q", event.ResultContent, result.Content)
+	}
+}
+
 func TestNewAuditEventCopiesFilesChangedSlice(t *testing.T) {
 	now := time.Unix(123, 0)
 	result := ToolResult{

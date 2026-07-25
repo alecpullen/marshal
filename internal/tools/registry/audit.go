@@ -23,6 +23,7 @@ type AuditEvent struct {
 	Risk            RiskLevel
 	Approval        ApprovalState
 	ResultSummary   string
+	ResultContent   string
 	FilesChanged    []string
 	CommandExitCode *int
 	Error           string
@@ -56,6 +57,7 @@ func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, a
 		Risk:          tool.Risk,
 		Approval:      approval,
 		ResultSummary: result.Summary,
+		ResultContent: result.Content,
 		FilesChanged:  append([]string(nil), result.FilesChanged...),
 		Sandbox:       result.Sandbox,
 	}

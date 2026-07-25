@@ -4205,6 +4205,15 @@ func TestApplyNewConfigInvalidatesSetRegistry(t *testing.T) {
 	}
 }
 
+func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetSDDProgress(session.SDDProgress{Active: true, PlanName: "p", ControllerState: "DRAIN", TotalTasks: 1, Tasks: []session.SDDTaskStatus{{Name: "T1", Phase: session.SDDPhaseActive}}})
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "SDD · p") {
+		t.Errorf("view missing SDD panel: %q", view)
+	}
+}
+
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})

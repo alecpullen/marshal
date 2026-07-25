@@ -51,6 +51,9 @@ func (m *Model) viewString() string {
 	if todo := m.renderTodoPanel(); todo != "" {
 		rows = append(rows, todo)
 	}
+	if sd := m.state.SDDProgress(); sd.Active {
+		rows = append(rows, sddPanel(sd, m.width))
+	}
 	if strip := m.renderLiveStrip(); strip != "" {
 		rows = append(rows, strip)
 	}

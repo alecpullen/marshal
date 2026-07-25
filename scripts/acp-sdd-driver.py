@@ -383,7 +383,7 @@ class SDDDriver:
             package_path=str(package),
         )
         print(f"[driver] reviewing task {n}...")
-        reply, result = self._dispatch_agent("sdd-reviewer", prompt, timeout=900.0)
+        reply, result = self._dispatch_agent("sdd-reviewer", prompt, timeout=1800.0)
         print(f"[driver] reviewer stop_reason={result.stop_reason}")
         print(reply[-1500:])
         return reply, package.read_text()

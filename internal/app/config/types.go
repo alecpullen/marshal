@@ -292,7 +292,7 @@ type IndexingConfig struct {
 // ProviderConfig is one [providers.<name>] entry. Only the fields needed
 // for the generic OpenAI-compatible provider are present.
 type ProviderConfig struct {
-	Type        string `toml:"type"` // "openai_compatible" is the only supported value in this milestone
+	Type        string `toml:"type"` // "openai_compatible" (default when empty) or "ollama"; "ollama" selects the native embedding backend and is not a chat provider type
 	BaseURL     string `toml:"base_url"`
 	APIKey      string `toml:"api_key"`      // literal key; wins over APIKeyEnv if both set
 	APIKeyEnv   string `toml:"api_key_env"`  // env var name to resolve at provider-construction time (NOT resolved here)

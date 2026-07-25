@@ -350,7 +350,7 @@ class SDDDriver:
         )
 
         print(f"\n[driver] === Task {n}: {title} ===")
-        reply, result = self._dispatch_agent("sdd-implementer", prompt, timeout=600.0)
+        reply, result = self._dispatch_agent("sdd-implementer", prompt, timeout=1800.0)
         print(f"[driver] implementer stop_reason={result.stop_reason}")
         print(reply[-2000:])  # tail of reply for visibility
 
@@ -383,7 +383,7 @@ class SDDDriver:
             package_path=str(package),
         )
         print(f"[driver] reviewing task {n}...")
-        reply, result = self._dispatch_agent("sdd-reviewer", prompt, timeout=400.0)
+        reply, result = self._dispatch_agent("sdd-reviewer", prompt, timeout=900.0)
         print(f"[driver] reviewer stop_reason={result.stop_reason}")
         print(reply[-1500:])
         return reply, package.read_text()
@@ -399,7 +399,7 @@ class SDDDriver:
             findings=findings,
         )
         print(f"[driver] dispatching fixer for task {n}...")
-        reply, result = self._dispatch_agent("sdd-implementer", prompt, timeout=600.0)
+        reply, result = self._dispatch_agent("sdd-implementer", prompt, timeout=1800.0)
         print(f"[driver] fixer stop_reason={result.stop_reason}")
         print(reply[-1500:])
         status, _ = parse_status(report.read_text())
@@ -488,7 +488,7 @@ class SDDDriver:
         self.start()
         try:
             print("\n[driver] === Final whole-branch review ===")
-            reply, result = self._dispatch_agent("sdd-branch-reviewer", prompt, timeout=600.0)
+            reply, result = self._dispatch_agent("sdd-branch-reviewer", prompt, timeout=1800.0)
             print(f"[driver] branch reviewer stop_reason={result.stop_reason}")
             print(reply[-2000:])
             return reply

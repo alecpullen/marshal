@@ -14,6 +14,8 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/diagnostics"
+	"marshal/internal/llm/embedding"
+	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 )
@@ -113,6 +115,10 @@ type toolSet struct {
 	// repo.search will read from disk. Files larger than this threshold
 	// are silently skipped. Defaults to 1 MiB (from IndexingConfig).
 	maxSearchableFileBytes int64
+
+	// resolveEmbedder returns the configured Embedder or an error. Injected so
+	// tests can supply a fake; production wiring resolves via the router.
+	resolveEmbedder func() (embedding.Embedder, error)
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -239,5 +245,14 @@ func newToolSet(opts Options) (*toolSet, error) {
 		ssrfCheck:              isPrivateURL,
 		config:                 opts.Config,
 		maxSearchableFileBytes: opts.Config.Indexing.MaxSearchableFileBytes,
+		resolveEmbedder: func() (embedding.Embedder, error) {
+			router := routing.NewStaticRouter(opts.Config.RoutingConfig())
+			route, err := router.ResolveEmbedding()
+			if err != nil {
+				return nil, err // includes routing.ErrEmbeddingNotConfigured
+			}
+			pc := opts.Config.Providers[route.Preset.Provider]
+			return embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
+		},
 	}, nil
 }

@@ -9,8 +9,24 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/db"
+	"marshal/internal/llm/embedding"
 	"marshal/internal/tools/registry"
 )
+
+// fakeEmbedder is a 2-dim embedder used by TestRepoIndexEmbeds.
+type fakeEmbedder struct {
+	model string
+}
+
+func (f *fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = []float32{float32(len(texts[i])), 1}
+	}
+	return out, nil
+}
+func (f *fakeEmbedder) Model() string { return f.model }
+func (f *fakeEmbedder) Dims() int     { return 2 }
 
 func TestRepoIndexTool(t *testing.T) {
 	tmp := t.TempDir()
@@ -176,5 +192,83 @@ func TestRepoIndexToolSkipsSymbolsForNonGoFiles(t *testing.T) {
 	}
 	if len(symbols) != 0 {
 		t.Fatalf("expected no symbols for non-Go files, got %+v", symbols)
+	}
+}
+
+func TestRepoIndexEmbeds(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject(tmp, "test")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	ts, err := newToolSet(Options{
+		WorkspaceRoot: tmp,
+		DB:            dbConn,
+		ProjectID:     projectID,
+	})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	ts.resolveEmbedder = func() (embedding.Embedder, error) {
+		return &fakeEmbedder{model: "m"}, nil
+	}
+
+	res, err := ts.repoIndexTool().Handler(context.Background(), registry.ToolCall{})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !strings.Contains(res.Content, "Embedded") {
+		t.Fatalf("expected embedded line, got: %s", res.Content)
+	}
+}
+
+func TestRepoIndexEmbedsNotConfigured(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject(tmp, "test")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	ts, err := newToolSet(Options{
+		WorkspaceRoot: tmp,
+		DB:            dbConn,
+		ProjectID:     projectID,
+	})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	// resolveEmbedder left nil — should produce "not configured" message.
+
+	res, err := ts.repoIndexTool().Handler(context.Background(), registry.ToolCall{})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !strings.Contains(res.Content, "not configured") {
+		t.Fatalf("expected 'not configured' line, got: %s", res.Content)
 	}
 }

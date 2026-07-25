@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"marshal/internal/db"
+	"marshal/internal/index"
+	"marshal/internal/llm/embedding"
 	"marshal/internal/repo"
 	"marshal/internal/tools/registry"
 )
@@ -95,6 +97,30 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			b.WriteString(fmt.Sprintf("  %s: %d\n", lang, langCounts[lang]))
 		}
 		fmt.Fprintf(&b, "\nSymbols: %d\n", len(symbols))
+
+		// Build the symbols-by-file map from the symbols just extracted.
+		symbolsByFile := map[string][]db.Symbol{}
+		for _, s := range symbols {
+			symbolsByFile[s.FilePath] = append(symbolsByFile[s.FilePath], s)
+		}
+
+		var embedder embedding.Embedder
+		if t.resolveEmbedder != nil {
+			if e, err := t.resolveEmbedder(); err == nil {
+				embedder = e
+			}
+		}
+		indexer := index.NewIndexer(t.db, embedder)
+		st, err := indexer.Reindex(ctx, t.projectID, scanned, symbolsByFile)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("embedding: %v", err))
+		}
+		if embedder == nil {
+			fmt.Fprintf(&b, "\nSemantic index: not configured\n")
+		} else {
+			fmt.Fprintf(&b, "\nEmbedded %d files (%d chunks)\n", st.FilesEmbedded, st.ChunksWritten)
+		}
+
 		if len(warnings) > 0 {
 			sort.Strings(warnings)
 			b.WriteString("\nWarnings:\n")

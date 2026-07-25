@@ -89,6 +89,68 @@ func TestIntegrationFullPipeline(t *testing.T) {
 	}
 }
 
+func TestIntegrationEscalation(t *testing.T) {
+	ws, err := sdd.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.Ensure()
+	git := sdd.NewFakeGitOps()
+	// Seed the pipeline branch + T1 task branch.
+	git.SetRef("sdd/feature", "base123")
+	git.SetRef("sdd/T1", "base123")
+	git.SetBranch("sdd/T1")
+	dag := &sdd.DAG{Tasks: []sdd.DAGTask{
+		{ID: "T1", Title: "Foundation", Status: sdd.TaskPending},
+	}}
+	rs := &sdd.RepoState{Branch: "sdd/feature", TargetBranch: "main", Head: "base123", Merged: []string{}}
+	progress := &sdd.Progress{}
+	ss := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+
+	var callCount int
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		callCount++
+		switch role {
+		case routing.RoleSDDOrchestrator:
+			// Return BLOCKED with DIRTY_MAIN_REPO (no deterministic fix).
+			return &agent.Runner{RunTaskFunc: func(ctx context.Context, goal string) (*agent.Task, error) {
+				return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: BLOCKED\nbatch_id: 1\ndispatched: [T1]\nmerged: []\nblocked_tasks:\n  - task: T1\n    reason: DIRTY_MAIN_REPO\nhealth_alerts: []\nedit_guard: clean\nnext_action: retry\n"}, nil
+			}}, nil
+		case routing.RoleSDDRescue:
+			// Rescue returns NEEDS_HUMAN.
+			return &agent.Runner{RunTaskFunc: func(ctx context.Context, goal string) (*agent.Task, error) {
+				os.MkdirAll(filepath.Join(ws.Dir(), "reports"), 0755)
+				os.WriteFile(filepath.Join(ws.Dir(), "reports", "orchestrator-rescue.md"), []byte("status: NEEDS_HUMAN\n\nMODEL_ESCALATION recommended\n"), 0644)
+				return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "rescue done"}, nil
+			}}, nil
+		}
+		return &agent.Runner{RunTaskFunc: func(ctx context.Context, goal string) (*agent.Task, error) {
+			return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: DONE"}, nil
+		}}, nil
+	}
+
+	// Seed an approved spec so the controller skips the spec gate.
+	os.WriteFile(filepath.Join(ws.Dir(), "spec.md"), []byte("---\nstatus: approved\n---\n```yaml\ntasks:\n  - id: T1\n    title: Foundation\n    deps: []\n```\n"), 0644)
+
+	c := sdd.NewController(ws, git, dag, rs, progress, factory, routing.Config{}, ss, "sdd/feature", "main")
+	c.State = sdd.StateDecompose
+
+	err = c.Run(context.Background())
+	if !errors.Is(err, sdd.ErrHumanGateRequired) {
+		t.Fatalf("Run returned %v, want ErrHumanGateRequired", err)
+	}
+	if c.State != sdd.StateBlocked {
+		t.Errorf("c.State = %v, want StateBlocked", c.State)
+	}
+	gate := ss.SDDGate()
+	if gate.Kind != "escalation" {
+		t.Errorf("SDDGate.Kind = %q, want \"escalation\"", gate.Kind)
+	}
+	if len(c.BlockedTasks) != 1 || c.BlockedTasks[0].Reason != "DIRTY_MAIN_REPO" {
+		t.Errorf("BlockedTasks = %v, want [{Task:T1 Reason:DIRTY_MAIN_REPO}]", c.BlockedTasks)
+	}
+}
+
 func TestIntegrationRetryFlow(t *testing.T) {
 	ws, err := sdd.NewWorkspace(t.TempDir())
 	if err != nil {

@@ -341,7 +341,7 @@ func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
 	cfg := nativeToolAgentConfig("native-provider")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	runner, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestBuildAgentRunnerFallsBackWhenProviderLacksToolCalling(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	runner, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestBuildAgentRunnerBackgroundShellUsesConfiguredSandbox(t *testing.T) {
 	t.Setenv("MARSHAL_TEST_SECRET", "super-secret-value-avoid-leak")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, _, _, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	runner, reg, _, _, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestBuildAgentRunnerUsesConfiguredOutputLimit(t *testing.T) {
 	cfg.Tools.Shell.MaxOutputBytes = 8
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, _, _, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	runner, reg, _, _, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestReloadAgentRuntimeReplacesReachableManagerWhenIdle(t *testing.T) {
 	reloadedCfg := nativeToolAgentConfig("test-provider")
 
 	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil)
+	runner, reg, swarmRunner, _, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("initial buildAgentRunner: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 	reloaded.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, mcpMgr, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil)
+	runner, reg, swarmRunner, _, mcpMgr, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 	}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, mcpMgr, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil)
+	runner, reg, swarmRunner, _, mcpMgr, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -744,7 +744,7 @@ func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
 	ctx := context.Background()
 	initialCfg := reloadableAgentConfig("test-provider")
 	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil)
+	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("initial buildAgentRunner: %v", err)
 	}
@@ -826,7 +826,7 @@ func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 	reloaded.SDD.MaxFixRounds = 5
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil)
+	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -2098,7 +2098,7 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, toolReg, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	_, toolReg, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err == nil {
 		t.Fatalf("buildAgentRunner should fail when api_key_env points at an unset var")
 	}
@@ -2475,6 +2475,33 @@ func TestRunResolvesOptionsOnce(t *testing.T) {
 	}
 }
 
+func TestBuildAgentRunnerRegistersConfigToolsWhenReloaderProvided(t *testing.T) {
+	// Verify that buildAgentRunner wires config.* tools into the registry
+	// when configReloader is non-nil, and omits them when nil.
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("test-provider")
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+
+	// With configReloader: config.read should be registered.
+	_, regWith, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, func(config.Config) error { return nil }, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner (with reloader): %v", err)
+	}
+	if _, ok := regWith.Lookup("config.read"); !ok {
+		t.Fatal("config.read not registered when configReloader is non-nil")
+	}
+
+	// Without configReloader: config.read should NOT be registered.
+	_, regWithout, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner (without reloader): %v", err)
+	}
+	if _, ok := regWithout.Lookup("config.read"); ok {
+		t.Fatal("config.read registered when configReloader is nil, want absent")
+	}
+}
+
 func TestBuildAgentRunnerRegistersDesktopToolsWhenEnabled(t *testing.T) {
 	// Verify that buildAgentRunner wires desktop tools into the registry
 	// when cfg.Desktop.Enabled is true. This tests the wiring, not just the
@@ -2486,7 +2513,7 @@ func TestBuildAgentRunnerRegistersDesktopToolsWhenEnabled(t *testing.T) {
 	cfg.Desktop.Headless = true
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, reg, _, _, _, _, closer, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	_, reg, _, _, _, _, closer, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}

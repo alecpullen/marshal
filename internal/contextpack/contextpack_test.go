@@ -383,6 +383,30 @@ func TestRebudgetPutsPinnedSectionsFirst(t *testing.T) {
 	}
 }
 
+func TestMergeSemanticContext(t *testing.T) {
+	pack := Pack{}
+	snips := []FileSnippet{{Path: "a.go", StartLine: 1, EndLine: 2, Content: "func A(){}"}}
+	got := MergeSemanticContext(pack, snips, DefaultMaxTokens, nil)
+
+	var found *Section
+	for i := range got.Sections {
+		if got.Sections[i].Kind == SectionSemantic {
+			found = &got.Sections[i]
+		}
+	}
+	if found == nil || found.Priority != 35 || !strings.Contains(found.Content, "a.go") {
+		t.Fatalf("semantic section = %#v", found)
+	}
+
+	// Empty snippets removes the section.
+	got2 := MergeSemanticContext(got, nil, DefaultMaxTokens, nil)
+	for _, s := range got2.Sections {
+		if s.Kind == SectionSemantic {
+			t.Fatal("empty snippets should remove the semantic section")
+		}
+	}
+}
+
 func TestTrimSectionContentHelper(t *testing.T) {
 	cases := []struct {
 		name string

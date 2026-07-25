@@ -12,6 +12,7 @@ const (
 	SectionPlan        SectionKind = "plan"
 	SectionFileSnippet SectionKind = "file_snippet"
 	SectionToolOutput  SectionKind = "tool_output"
+	SectionSemantic    SectionKind = "semantic"
 )
 
 type Pack struct {

@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,46 @@ func TestConfigAgentSetGlobalScopeForcesApproval(t *testing.T) {
 	if loaded.Agent.Model != "claude-3.5-sonnet" {
 		t.Fatalf("global disk model = %q, want claude-3.5-sonnet", loaded.Agent.Model)
 	}
+}
+
+func testSectionWrite(t *testing.T, name string, build func(*toolSet) registry.Tool, args string, check func(config.Config) bool) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	var reloaded *config.Config
+	ts := toolSet{
+		config:         cfg,
+		configPath:     cfgPath,
+		configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil },
+	}
+	_, _ = newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(build(&ts))
+	tool, _ := reg.Lookup(name)
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: name, Args: json.RawMessage(args)})
+	if err != nil {
+		t.Fatalf("%s handler: %v", name, err)
+	}
+	if !check(*reloaded) {
+		t.Fatalf("%s: check failed on reloaded config %+v", name, reloaded)
+	}
+}
+
+func TestScalarWorkspaceWriteTools(t *testing.T) {
+	testSectionWrite(t, "config.privacy.set", (*toolSet).configPrivacySetTool, `{"redact_secrets":true}`, func(c config.Config) bool { return c.Privacy.RedactSecrets })
+	testSectionWrite(t, "config.indexing.set", (*toolSet).configIndexingSetTool, `{"use_treesitter":true}`, func(c config.Config) bool { return c.Indexing.UseTreesitter })
+	testSectionWrite(t, "config.web.set", (*toolSet).configWebSetTool, `{"enabled":true}`, func(c config.Config) bool { return c.Web.Enabled })
+	testSectionWrite(t, "config.desktop.set", (*toolSet).configDesktopSetTool, `{"enabled":true}`, func(c config.Config) bool { return c.Desktop.Enabled })
+	testSectionWrite(t, "config.swarm.set", (*toolSet).configSwarmSetTool, `{"budget":{"max_fix_rounds":9}}`, func(c config.Config) bool { return c.Swarm.Budget.MaxFixRounds == 9 })
+	testSectionWrite(t, "config.sdd.set", (*toolSet).configSDDSetTool, `{"auto_worktree":true}`, func(c config.Config) bool { return c.SDD.AutoWorktree })
+	testSectionWrite(t, "config.snapshots.set", (*toolSet).configSnapshotsSetTool, `{"enabled":true}`, func(c config.Config) bool { return c.Snapshots.Enabled })
+	testSectionWrite(t, "config.tui.set", (*toolSet).configTUISetTool, `{"theme":"dark"}`, func(c config.Config) bool { return c.TUI.Theme == "dark" })
+	testSectionWrite(t, "config.session.rollover.set", (*toolSet).configSessionRolloverSetTool, `{"enabled":true}`, func(c config.Config) bool { return c.Session.Rollover.Enabled })
+	testSectionWrite(t, "config.lsp.set", (*toolSet).configLSPSetTool, `{"enabled":true}`, func(c config.Config) bool { return c.LSP.Enabled != nil && *c.LSP.Enabled })
+	testSectionWrite(t, "config.project.set", (*toolSet).configProjectSetTool, `{"name":"myproj"}`, func(c config.Config) bool { return c.Project.Name == "myproj" })
+	testSectionWrite(t, "config.commands.set", (*toolSet).configCommandsSetTool, `{"test":"go test ./..."}`, func(c config.Config) bool { return c.Commands.Test == "go test ./..." })
+	testSectionWrite(t, "config.profile.set", (*toolSet).configProfileSetTool, `{"default":"fast"}`, func(c config.Config) bool { return c.Profile.Default == "fast" })
 }
 
 func TestConfigAgentSetGlobalScopeDeniedAborts(t *testing.T) {

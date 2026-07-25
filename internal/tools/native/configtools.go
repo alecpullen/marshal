@@ -27,6 +27,19 @@ func (t *toolSet) configTools() []registry.Tool {
 	return []registry.Tool{
 		t.configReadTool(),
 		t.configAgentSetTool(),
+		t.configPrivacySetTool(),
+		t.configIndexingSetTool(),
+		t.configWebSetTool(),
+		t.configDesktopSetTool(),
+		t.configSwarmSetTool(),
+		t.configSDDSetTool(),
+		t.configSnapshotsSetTool(),
+		t.configTUISetTool(),
+		t.configSessionRolloverSetTool(),
+		t.configLSPSetTool(),
+		t.configProjectSetTool(),
+		t.configCommandsSetTool(),
+		t.configProfileSetTool(),
 	}
 }
 
@@ -180,6 +193,540 @@ func (t *toolSet) configAgentSetTool() registry.Tool {
 			}
 			if args.ApprovalMode != nil {
 				cfg.Agent.ApprovalMode = *args.ApprovalMode
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configPrivacySetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.privacy.set",
+		Description: "Set fields in the [privacy] section (remote_providers_allowed, redact_secrets, include_gitignored_files). remote_providers_allowed=true escalates to a destructive (forced-approval) change. Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"remote_providers_allowed":{"type":"boolean"},"redact_secrets":{"type":"boolean"},"include_gitignored_files":{"type":"boolean"}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			RemoteProvidersAllowed *bool `json:"remote_providers_allowed"`
+			RedactSecrets          *bool `json:"redact_secrets"`
+			IncludeGitignoredFiles *bool `json:"include_gitignored_files"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.privacy.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		destructive := args.RemoteProvidersAllowed != nil && *args.RemoteProvidersAllowed
+		reason := fmt.Sprintf("config.privacy.set (%s scope): update privacy section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, destructive, func(cfg *config.Config) {
+			if args.RemoteProvidersAllowed != nil {
+				cfg.Privacy.RemoteProvidersAllowed = *args.RemoteProvidersAllowed
+			}
+			if args.RedactSecrets != nil {
+				cfg.Privacy.RedactSecrets = *args.RedactSecrets
+			}
+			if args.IncludeGitignoredFiles != nil {
+				cfg.Privacy.IncludeGitignoredFiles = *args.IncludeGitignoredFiles
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configIndexingSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.indexing.set",
+		Description: "Set fields in the [indexing] section (use_treesitter, use_embeddings, summarise_files, ignore, max_indexable_file_bytes, max_searchable_file_bytes, watch, watch_debounce_ms). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"use_treesitter":{"type":"boolean"},"use_embeddings":{"type":"boolean"},"summarise_files":{"type":"boolean"},"ignore":{"type":"array","items":{"type":"string"}},"max_indexable_file_bytes":{"type":"integer"},"max_searchable_file_bytes":{"type":"integer"},"watch":{"type":"boolean"},"watch_debounce_ms":{"type":"integer"}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			UseTreesitter          *bool    `json:"use_treesitter"`
+			UseEmbeddings          *bool    `json:"use_embeddings"`
+			SummariseFiles         *bool    `json:"summarise_files"`
+			Ignore                 []string `json:"ignore"`
+			MaxIndexableFileBytes  *int64   `json:"max_indexable_file_bytes"`
+			MaxSearchableFileBytes *int64   `json:"max_searchable_file_bytes"`
+			Watch                  *bool    `json:"watch"`
+			WatchDebounceMs        *int     `json:"watch_debounce_ms"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.indexing.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.indexing.set (%s scope): update indexing section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.UseTreesitter != nil {
+				cfg.Indexing.UseTreesitter = *args.UseTreesitter
+			}
+			if args.UseEmbeddings != nil {
+				cfg.Indexing.UseEmbeddings = *args.UseEmbeddings
+			}
+			if args.SummariseFiles != nil {
+				cfg.Indexing.SummariseFiles = *args.SummariseFiles
+			}
+			if args.Ignore != nil {
+				cfg.Indexing.Ignore = args.Ignore
+			}
+			if args.MaxIndexableFileBytes != nil {
+				cfg.Indexing.MaxIndexableFileBytes = *args.MaxIndexableFileBytes
+			}
+			if args.MaxSearchableFileBytes != nil {
+				cfg.Indexing.MaxSearchableFileBytes = *args.MaxSearchableFileBytes
+			}
+			if args.Watch != nil {
+				cfg.Indexing.Watch = args.Watch
+			}
+			if args.WatchDebounceMs != nil {
+				cfg.Indexing.WatchDebounceMs = *args.WatchDebounceMs
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configWebSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.web.set",
+		Description: "Set fields in the [web] section (enabled, fetch_timeout, search_provider, search_url, search_key). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"enabled":{"type":"boolean"},"fetch_timeout":{"type":"string"},"search_provider":{"type":"string"},"search_url":{"type":"string"},"search_key":{"type":"string"}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Enabled        *bool   `json:"enabled"`
+			FetchTimeout   *string `json:"fetch_timeout"`
+			SearchProvider *string `json:"search_provider"`
+			SearchURL      *string `json:"search_url"`
+			SearchKey      *string `json:"search_key"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.web.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.web.set (%s scope): update web section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Enabled != nil {
+				cfg.Web.Enabled = *args.Enabled
+			}
+			if args.FetchTimeout != nil {
+				d, err := time.ParseDuration(*args.FetchTimeout)
+				if err == nil {
+					cfg.Web.FetchTimeout = d
+				}
+			}
+			if args.SearchProvider != nil {
+				cfg.Web.SearchProvider = *args.SearchProvider
+			}
+			if args.SearchURL != nil {
+				cfg.Web.SearchURL = *args.SearchURL
+			}
+			if args.SearchKey != nil {
+				cfg.Web.SearchKey = *args.SearchKey
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configDesktopSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.desktop.set",
+		Description: "Set fields in the [desktop] section (enabled, mode, headless, cdp_url, url_allowlist, url_denylist, default_timeout, screenshot_format). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"enabled":{"type":"boolean"},"mode":{"type":"string"},"headless":{"type":"boolean"},"cdp_url":{"type":"string"},"url_allowlist":{"type":"array","items":{"type":"string"}},"url_denylist":{"type":"array","items":{"type":"string"}},"default_timeout":{"type":"string"},"screenshot_format":{"type":"string"}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Enabled          *bool    `json:"enabled"`
+			Mode             *string  `json:"mode"`
+			Headless         *bool    `json:"headless"`
+			CDPURL           *string  `json:"cdp_url"`
+			URLAllowlist     []string `json:"url_allowlist"`
+			URLDenylist      []string `json:"url_denylist"`
+			DefaultTimeout   *string  `json:"default_timeout"`
+			ScreenshotFormat *string  `json:"screenshot_format"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.desktop.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.desktop.set (%s scope): update desktop section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Enabled != nil {
+				cfg.Desktop.Enabled = *args.Enabled
+			}
+			if args.Mode != nil {
+				cfg.Desktop.Mode = *args.Mode
+			}
+			if args.Headless != nil {
+				cfg.Desktop.Headless = *args.Headless
+			}
+			if args.CDPURL != nil {
+				cfg.Desktop.CDPURL = *args.CDPURL
+			}
+			if args.URLAllowlist != nil {
+				cfg.Desktop.URLAllowlist = args.URLAllowlist
+			}
+			if args.URLDenylist != nil {
+				cfg.Desktop.URLDenylist = args.URLDenylist
+			}
+			if args.DefaultTimeout != nil {
+				d, err := time.ParseDuration(*args.DefaultTimeout)
+				if err == nil {
+					cfg.Desktop.DefaultTimeout = d
+				}
+			}
+			if args.ScreenshotFormat != nil {
+				cfg.Desktop.ScreenshotFormat = *args.ScreenshotFormat
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configSwarmSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.swarm.set",
+		Description: "Set fields in the [swarm] section (budget.max_fix_rounds, budget.max_total_tokens, budget.tool_iters). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"budget":{"type":"object","properties":{"max_fix_rounds":{"type":"integer"},"max_total_tokens":{"type":"integer"},"tool_iters":{"type":"object","additionalProperties":{"type":"integer"}}},"additionalProperties":false}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Budget *struct {
+				MaxFixRounds   *int           `json:"max_fix_rounds"`
+				MaxTotalTokens *int           `json:"max_total_tokens"`
+				ToolIters      map[string]int `json:"tool_iters"`
+			} `json:"budget"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.swarm.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.swarm.set (%s scope): update swarm section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Budget != nil {
+				if args.Budget.MaxFixRounds != nil {
+					cfg.Swarm.Budget.MaxFixRounds = *args.Budget.MaxFixRounds
+				}
+				if args.Budget.MaxTotalTokens != nil {
+					cfg.Swarm.Budget.MaxTotalTokens = *args.Budget.MaxTotalTokens
+				}
+				if args.Budget.ToolIters != nil {
+					if cfg.Swarm.Budget.ToolIters == nil {
+						cfg.Swarm.Budget.ToolIters = make(map[string]int)
+					}
+					for k, v := range args.Budget.ToolIters {
+						cfg.Swarm.Budget.ToolIters[k] = v
+					}
+				}
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configSDDSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.sdd.set",
+		Description: "Set fields in the [sdd] section (auto_worktree, max_fix_rounds, plans_dir). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"auto_worktree":{"type":"boolean"},"max_fix_rounds":{"type":"integer"},"plans_dir":{"type":"string"}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			AutoWorktree *bool   `json:"auto_worktree"`
+			MaxFixRounds *int    `json:"max_fix_rounds"`
+			PlansDir     *string `json:"plans_dir"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.sdd.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.sdd.set (%s scope): update sdd section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.AutoWorktree != nil {
+				cfg.SDD.AutoWorktree = *args.AutoWorktree
+			}
+			if args.MaxFixRounds != nil {
+				cfg.SDD.MaxFixRounds = *args.MaxFixRounds
+			}
+			if args.PlansDir != nil {
+				cfg.SDD.PlansDir = *args.PlansDir
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configSnapshotsSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.snapshots.set",
+		Description: "Set fields in the [snapshots] section (enabled, retention_days, max_file_bytes). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"enabled":{"type":"boolean"},"retention_days":{"type":"integer"},"max_file_bytes":{"type":"integer"}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Enabled       *bool `json:"enabled"`
+			RetentionDays *int  `json:"retention_days"`
+			MaxFileBytes  *int  `json:"max_file_bytes"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.snapshots.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.snapshots.set (%s scope): update snapshots section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Enabled != nil {
+				cfg.Snapshots.Enabled = *args.Enabled
+			}
+			if args.RetentionDays != nil {
+				cfg.Snapshots.RetentionDays = *args.RetentionDays
+			}
+			if args.MaxFileBytes != nil {
+				cfg.Snapshots.MaxFileBytes = *args.MaxFileBytes
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configTUISetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.tui.set",
+		Description: "Set fields in the [tui] section (theme, palette, mode). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"theme":{"type":"string"},"palette":{"type":"object","additionalProperties":{"type":"string"}},"mode":{"type":"string"}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Theme   *string           `json:"theme"`
+			Palette map[string]string `json:"palette"`
+			Mode    *string           `json:"mode"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.tui.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.tui.set (%s scope): update tui section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Theme != nil {
+				cfg.TUI.Theme = *args.Theme
+			}
+			if args.Palette != nil {
+				if cfg.TUI.Palette == nil {
+					cfg.TUI.Palette = make(map[string]string)
+				}
+				for k, v := range args.Palette {
+					cfg.TUI.Palette[k] = v
+				}
+			}
+			if args.Mode != nil {
+				cfg.TUI.Mode = *args.Mode
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configSessionRolloverSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.session.rollover.set",
+		Description: "Set fields in the [session.rollover] section (enabled, policy, context_percent_threshold, turn_count_threshold, token_counter, digest_model, digest_provider, recall_tool_enabled, retention, blob_threshold_bytes, calibration.enabled). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"enabled":{"type":"boolean"},"policy":{"type":"string"},"context_percent_threshold":{"type":"integer"},"turn_count_threshold":{"type":"integer"},"token_counter":{"type":"string"},"digest_model":{"type":"string"},"digest_provider":{"type":"string"},"recall_tool_enabled":{"type":"string"},"retention":{"type":"string"},"blob_threshold_bytes":{"type":"integer"},"calibration":{"type":"object","properties":{"enabled":{"type":"boolean"}},"additionalProperties":false}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Enabled                 *bool   `json:"enabled"`
+			Policy                  *string `json:"policy"`
+			ContextPercentThreshold *int    `json:"context_percent_threshold"`
+			TurnCountThreshold      *int    `json:"turn_count_threshold"`
+			TokenCounter            *string `json:"token_counter"`
+			DigestModel             *string `json:"digest_model"`
+			DigestProvider          *string `json:"digest_provider"`
+			RecallToolEnabled       *string `json:"recall_tool_enabled"`
+			Retention               *string `json:"retention"`
+			BlobThresholdBytes      *int    `json:"blob_threshold_bytes"`
+			Calibration             *struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"calibration"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.session.rollover.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.session.rollover.set (%s scope): update session.rollover section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Enabled != nil {
+				cfg.Session.Rollover.Enabled = *args.Enabled
+			}
+			if args.Policy != nil {
+				cfg.Session.Rollover.Policy = *args.Policy
+			}
+			if args.ContextPercentThreshold != nil {
+				cfg.Session.Rollover.ContextPercentThreshold = *args.ContextPercentThreshold
+			}
+			if args.TurnCountThreshold != nil {
+				cfg.Session.Rollover.TurnCountThreshold = *args.TurnCountThreshold
+			}
+			if args.TokenCounter != nil {
+				cfg.Session.Rollover.TokenCounter = *args.TokenCounter
+			}
+			if args.DigestModel != nil {
+				cfg.Session.Rollover.DigestModel = *args.DigestModel
+			}
+			if args.DigestProvider != nil {
+				cfg.Session.Rollover.DigestProvider = *args.DigestProvider
+			}
+			if args.RecallToolEnabled != nil {
+				cfg.Session.Rollover.RecallToolEnabled = *args.RecallToolEnabled
+			}
+			if args.Retention != nil {
+				cfg.Session.Rollover.Retention = *args.Retention
+			}
+			if args.BlobThresholdBytes != nil {
+				cfg.Session.Rollover.BlobThresholdBytes = *args.BlobThresholdBytes
+			}
+			if args.Calibration != nil && args.Calibration.Enabled != nil {
+				cfg.Session.Rollover.Calibration.Enabled = *args.Calibration.Enabled
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configLSPSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.lsp.set",
+		Description: "Set fields in the [lsp] section (enabled, servers). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"enabled":{"type":"boolean"},"servers":{"type":"object","additionalProperties":{"type":"object","properties":{"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"disabled":{"type":"boolean"}},"additionalProperties":false}}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Enabled *bool                             `json:"enabled"`
+			Servers map[string]config.LSPServerConfig `json:"servers"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.lsp.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.lsp.set (%s scope): update lsp section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Enabled != nil {
+				cfg.LSP.Enabled = args.Enabled
+			}
+			if args.Servers != nil {
+				if cfg.LSP.Servers == nil {
+					cfg.LSP.Servers = make(map[string]config.LSPServerConfig)
+				}
+				for k, v := range args.Servers {
+					cfg.LSP.Servers[k] = v
+				}
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configProjectSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.project.set",
+		Description: "Set fields in the [project] section (name, languages). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string"},"languages":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name      *string  `json:"name"`
+			Languages []string `json:"languages"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.project.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.project.set (%s scope): update project section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Name != nil {
+				cfg.Project.Name = *args.Name
+			}
+			if args.Languages != nil {
+				cfg.Project.Languages = args.Languages
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configCommandsSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.commands.set",
+		Description: "Set fields in the [commands] section (test, format, vet). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"test":{"type":"string"},"format":{"type":"string"},"vet":{"type":"string"}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Test   *string `json:"test"`
+			Format *string `json:"format"`
+			Vet    *string `json:"vet"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.commands.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.commands.set (%s scope): update commands section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Test != nil {
+				cfg.Commands.Test = *args.Test
+			}
+			if args.Format != nil {
+				cfg.Commands.Format = *args.Format
+			}
+			if args.Vet != nil {
+				cfg.Commands.Vet = *args.Vet
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configProfileSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.profile.set",
+		Description: "Set fields in the [profile] section (default). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"default":{"type":"string"}},"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Default *string `json:"default"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.profile.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.profile.set (%s scope): update profile section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Default != nil {
+				cfg.Profile.Default = *args.Default
 			}
 		})
 	}

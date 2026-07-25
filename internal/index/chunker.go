@@ -15,19 +15,6 @@ const (
 	windowOverlap = 10
 )
 
-// Chunk is an embeddable segment of a scanned file, produced by the
-// symbol-aware enriched chunker.
-type Chunk struct {
-	FilePath   string
-	FileHash   string
-	Kind       string // "code" or "doc"
-	SymbolName string
-	Content    string
-	StartLine  int
-	EndLine    int
-	TokenCount int
-}
-
 // estimateTokens is a local rune/4 estimate (kept out of contextpack so the
 // write path does not depend on the passive layer).
 func estimateTokens(s string) int {
@@ -38,9 +25,9 @@ func estimateTokens(s string) int {
 	return (n + 3) / 4
 }
 
-// ChunkFile splits a scanned file into embeddable chunks. symbols are the file's
+// Chunk splits a scanned file into embeddable chunks. symbols are the file's
 // extracted symbols (may be empty).
-func ChunkFile(file repo.ScannedFile, symbols []db.Symbol) []Chunk {
+func Chunk(file repo.ScannedFile, symbols []db.Symbol) []db.Chunk {
 	lines := strings.Split(string(file.Content), "\n")
 	switch {
 	case isProse(file.Language, file.Path):
@@ -92,8 +79,8 @@ func sliceLines(lines []string, start, end int) string {
 	return strings.Join(lines[start-1:end], "\n")
 }
 
-func chunkBySymbols(file repo.ScannedFile, lines []string, symbols []db.Symbol) []Chunk {
-	var out []Chunk
+func chunkBySymbols(file repo.ScannedFile, lines []string, symbols []db.Symbol) []db.Chunk {
+	var out []db.Chunk
 	for _, s := range symbols {
 		h := header(file, s)
 		if s.LineEnd-s.LineStart+1 <= maxChunkLines {
@@ -113,8 +100,8 @@ func chunkBySymbols(file repo.ScannedFile, lines []string, symbols []db.Symbol) 
 	return out
 }
 
-func chunkWindows(file repo.ScannedFile, lines []string) []Chunk {
-	var out []Chunk
+func chunkWindows(file repo.ScannedFile, lines []string) []db.Chunk {
+	var out []db.Chunk
 	h := fmt.Sprintf("// %s\n", file.Path)
 	step := windowLines - windowOverlap
 	if step < 1 {
@@ -137,8 +124,8 @@ func chunkWindows(file repo.ScannedFile, lines []string) []Chunk {
 	return out
 }
 
-func chunkProse(file repo.ScannedFile, lines []string) []Chunk {
-	var out []Chunk
+func chunkProse(file repo.ScannedFile, lines []string) []db.Chunk {
+	var out []db.Chunk
 	sectionStart := 1
 	heading := ""
 	flush := func(end int) {
@@ -161,8 +148,8 @@ func chunkProse(file repo.ScannedFile, lines []string) []Chunk {
 	return out
 }
 
-func newChunk(file repo.ScannedFile, kind, symbol string, start, end int, content string) Chunk {
-	return Chunk{
+func newChunk(file repo.ScannedFile, kind, symbol string, start, end int, content string) db.Chunk {
+	return db.Chunk{
 		FilePath:   file.Path,
 		FileHash:   file.Hash,
 		Kind:       kind,

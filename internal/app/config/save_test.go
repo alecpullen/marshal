@@ -697,3 +697,66 @@ func TestPresetPricingRoundTrip(t *testing.T) {
 		t.Errorf("Pricing = %+v, want Input=250 Output=1000", priced)
 	}
 }
+
+func TestSaveUserConfigSectionRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	cfg := Default()
+	cfg.Agent.Provider = "openai"
+	cfg.Agent.Model = "gpt-4o"
+	cfg.Agent.MaxToolIterations = 25
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]ProviderConfig{
+		"openai": {BaseURL: "https://api.openai.com", APIKeyEnv: "OPENAI_API_KEY"},
+	}
+
+	if err := SaveUserConfigSection(path, cfg); err != nil {
+		t.Fatalf("SaveUserConfigSection: %v", err)
+	}
+
+	loaded, err := loadFile(path)
+	if err != nil {
+		t.Fatalf("loadFile: %v", err)
+	}
+	if loaded.Agent == nil || loaded.Agent.Provider == nil || *loaded.Agent.Provider != "openai" {
+		t.Fatalf("agent.provider not persisted: %+v", loaded.Agent)
+	}
+	if loaded.Agent.Model == nil || *loaded.Agent.Model != "gpt-4o" {
+		t.Fatalf("agent.model not persisted: %+v", loaded.Agent)
+	}
+	if loaded.Privacy == nil || loaded.Privacy.RemoteProvidersAllowed == nil || !*loaded.Privacy.RemoteProvidersAllowed {
+		t.Fatalf("privacy.remote_providers_allowed not persisted: %+v", loaded.Privacy)
+	}
+	if loaded.Providers["openai"].BaseURL != "https://api.openai.com" {
+		t.Fatalf("provider base_url not persisted: %+v", loaded.Providers)
+	}
+}
+
+func TestSaveUserConfigSectionPreservesUnrelated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Seed the file with a [swarm] section.
+	seed := Default()
+	seed.Swarm.Budget.MaxFixRounds = 7
+	if err := SaveUserConfigSection(path, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Now write only agent changes — swarm must survive.
+	next := Default()
+	next.Agent.Provider = "anthropic"
+	next.Agent.Model = "claude-3.5-sonnet"
+	if err := SaveUserConfigSection(path, next); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+
+	loaded, err := loadFile(path)
+	if err != nil {
+		t.Fatalf("loadFile: %v", err)
+	}
+	if loaded.Swarm == nil || loaded.Swarm.Budget == nil || loaded.Swarm.Budget.MaxFixRounds == nil || *loaded.Swarm.Budget.MaxFixRounds != 7 {
+		t.Fatalf("swarm.budget.max_fix_rounds not preserved: %+v", loaded.Swarm)
+	}
+}

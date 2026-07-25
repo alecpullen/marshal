@@ -94,3 +94,22 @@ func TestUpdateSDDTokens(t *testing.T) {
 		t.Fatalf("tokens = %d/%d, want 1500/10000", got.TokensUsed, got.TokensMax)
 	}
 }
+
+func TestSDDProgressControllerState(t *testing.T) {
+	ss := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
+	ss.SetSDDProgress(SDDProgress{Active: true, ControllerState: "DRAIN_ITERATION"})
+	p := ss.SDDProgress()
+	if p.ControllerState != "DRAIN_ITERATION" {
+		t.Errorf("ControllerState = %q", p.ControllerState)
+	}
+}
+
+func TestSDDTaskStatusAuditReviewPhases(t *testing.T) {
+	ss := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
+	ss.SetSDDProgress(SDDProgress{Tasks: []SDDTaskStatus{{Name: "T1", Audit: SDDPhaseDone, Review: SDDPhaseActive}}})
+	ss.UpdateSDDTask(0, func(ts *SDDTaskStatus) {
+		if ts.Audit != SDDPhaseDone {
+			t.Error("Audit phase not retained")
+		}
+	})
+}

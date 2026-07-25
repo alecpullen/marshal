@@ -4,9 +4,19 @@ import (
 	"context"
 	"encoding/json"
 
+	"marshal/internal/diagnostics"
 	"marshal/internal/repo"
 	"marshal/internal/tools/registry"
 )
+
+// newDiagnosticsChecker creates a Checker and wires the optional LSP source.
+func newDiagnosticsChecker(opts Options) *diagnostics.Checker {
+	c := diagnostics.NewChecker(opts.Config.Diagnostics.Commands)
+	if opts.LSPSource != nil {
+		c.SetLSPSource(opts.LSPSource)
+	}
+	return c
+}
 
 type diagnosticsArgs struct {
 	Path string `json:"path"`

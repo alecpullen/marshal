@@ -337,7 +337,7 @@ func TestBuildAgentRunnerWiresRollover(t *testing.T) {
 	// Override the session ID to match the DB session.
 	// We need to set it via Persistence since session.New copies it.
 	state = session.New(cfg, tmp, time.Unix(100, 0), session.Persistence{DB: database, SessionID: "sess_test"})
-	runner, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil, "", nil, nil)
+	runner, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestBuildAgentRunnerSkipsRolloverWhenDisabled(t *testing.T) {
 	cfg.Session.Rollover.Enabled = false
 
 	state := newTestSessionState(t, cfg)
-	runner, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
+	runner, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestBuildAgentRunnerWiresFilesDigestProvider(t *testing.T) {
 	}
 	state := session.New(cfg, tmp, time.Unix(100, 0), session.Persistence{DB: database, SessionID: "sess_test"})
 
-	runner, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil, "", nil, nil)
+	runner, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestBuildAgentRunnerDefaultsToLLMSummaryProvider(t *testing.T) {
 	}
 	state := session.New(cfg, tmp, time.Unix(100, 0), session.Persistence{DB: database, SessionID: "sess_test"})
 
-	runner, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil, "", nil, nil)
+	runner, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, database, projectID, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}

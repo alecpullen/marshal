@@ -979,6 +979,53 @@ sdd_branch_reviewer = "big"
 	}
 }
 
+func TestSDDConfigProductionFieldsMerge(t *testing.T) {
+	cfg := Default()
+	if cfg.SDD.VerifyTimeoutMS != 300000 {
+		t.Fatalf("default VerifyTimeoutMS = %d, want 300000", cfg.SDD.VerifyTimeoutMS)
+	}
+	if cfg.SDD.DefaultModelTier != "fast" {
+		t.Fatalf("default DefaultModelTier = %q, want fast", cfg.SDD.DefaultModelTier)
+	}
+	if !cfg.SDD.CleanupAtStart {
+		t.Fatal("default CleanupAtStart should be true")
+	}
+	if cfg.SDD.MaxWorkerConcurrency != 2 {
+		t.Fatalf("default MaxWorkerConcurrency = %d, want 2", cfg.SDD.MaxWorkerConcurrency)
+	}
+
+	// Project-local TOML overrides via the established Load path.
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[sdd]
+verify_timeout_ms = 60000
+default_model_tier = "pro"
+cleanup_at_start = false
+max_worker_concurrency = 4
+max_total_tokens = 1000000
+`)
+	merged, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if merged.SDD.VerifyTimeoutMS != 60000 {
+		t.Fatalf("VerifyTimeoutMS = %d", merged.SDD.VerifyTimeoutMS)
+	}
+	if merged.SDD.DefaultModelTier != "pro" {
+		t.Fatalf("DefaultModelTier = %q", merged.SDD.DefaultModelTier)
+	}
+	if merged.SDD.CleanupAtStart {
+		t.Fatal("CleanupAtStart should be false after override")
+	}
+	if merged.SDD.MaxWorkerConcurrency != 4 {
+		t.Fatalf("MaxWorkerConcurrency = %d", merged.SDD.MaxWorkerConcurrency)
+	}
+	if merged.SDD.MaxTotalTokens != 1000000 {
+		t.Fatalf("MaxTotalTokens = %d", merged.SDD.MaxTotalTokens)
+	}
+}
+
 func TestRemoteLimitDiscoveryDefaultsToRemoteProvidersAllowed(t *testing.T) {
 	cfg := Default()
 	if cfg.Privacy.RemoteLimitDiscovery != cfg.Privacy.RemoteProvidersAllowed {

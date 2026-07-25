@@ -630,6 +630,70 @@ func TestRoleEmbeddingExcludedFromAllRoles(t *testing.T) {
 	}
 }
 
+func TestAllRolesIncludesSDDProductionRoles(t *testing.T) {
+	want := []AgentRole{
+		RoleSDDOrchestrator,
+		RoleSDDAuditor,
+		RoleSDDInvestigator,
+		RoleSDDRescue,
+	}
+	for _, r := range want {
+		found := false
+		for _, existing := range AllRoles {
+			if existing == r {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("AllRoles missing production SDD role %q", r)
+		}
+	}
+}
+
+func TestSDDRoleConstants(t *testing.T) {
+	cases := []struct {
+		role AgentRole
+		want string
+	}{
+		{RoleSDDOrchestrator, "sdd_orchestrator"},
+		{RoleSDDAuditor, "sdd_auditor"},
+		{RoleSDDInvestigator, "sdd_investigator"},
+		{RoleSDDRescue, "sdd_rescue"},
+	}
+	for _, c := range cases {
+		if string(c.role) != c.want {
+			t.Fatalf("%+v = %q, want %q", c.role, c.role, c.want)
+		}
+	}
+}
+
+func TestSDDCastRolesIsFullProductionCast(t *testing.T) {
+	want := map[AgentRole]bool{
+		RoleSDDImplementer:    true,
+		RoleSDDReviewer:       true,
+		RoleSDDBranchReviewer: true,
+		RoleSDDAuditor:        true,
+		RoleSDDInvestigator:   true,
+		RoleSDDRescue:         true,
+	}
+	if len(SDDCastRoles) != len(want) {
+		t.Fatalf("SDDCastRoles len = %d, want %d", len(SDDCastRoles), len(want))
+	}
+	for _, r := range SDDCastRoles {
+		if !want[r] {
+			t.Fatalf("unexpected role in SDDCastRoles: %q", r)
+		}
+	}
+	// Orchestrator is intentionally NOT a cast role — it is dispatched by the
+	// controller, not shown in the worker pre-flight list.
+	for _, r := range SDDCastRoles {
+		if r == RoleSDDOrchestrator {
+			t.Fatal("orchestrator must not be in SDDCastRoles (it is the controller's dispatch, not a worker)")
+		}
+	}
+}
+
 func TestResolveRolePresetBindingUnchanged(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",

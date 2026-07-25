@@ -502,6 +502,20 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
 	}
+	// Build LSP manager and wire adapters BEFORE RegisterAll so the
+	// toolSet and diagnostics checker receive non-nil LSP fields.
+	var lspMgr *lsp.Manager
+	if lspEnabled(cfg.LSP) {
+		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
+		if len(servers) > 0 {
+			lspMgr = lsp.NewManager(state.WorkingDir, servers, state.Logger())
+		}
+	}
+	if lspMgr != nil {
+		nativeOpts.LSP = lsp.NewQueryAdapter(lspMgr)
+		nativeOpts.LSPSource = lsp.NewDiagnosticsAdapter(lspMgr)
+		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspMgr)
+	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
@@ -701,19 +715,6 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 
 	sddRunner := buildSDDRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
 	subagentFactory := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID)
-	// Build LSP manager and wire adapters.
-	var lspMgr *lsp.Manager
-	if lspEnabled(cfg.LSP) {
-		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
-		if len(servers) > 0 {
-			lspMgr = lsp.NewManager(state.WorkingDir, servers, state.Logger())
-		}
-	}
-	if lspMgr != nil {
-		nativeOpts.LSP = lsp.NewQueryAdapter(lspMgr)
-		nativeOpts.LSPSource = lsp.NewDiagnosticsAdapter(lspMgr)
-		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspMgr)
-	}
 	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspMgr, nil
 }
 

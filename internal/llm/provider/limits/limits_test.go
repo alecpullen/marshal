@@ -65,3 +65,38 @@ func TestFetchReturnsData(t *testing.T) {
 		t.Fatal("litellm table is empty")
 	}
 }
+
+func TestTableLookupExactProviderModel(t *testing.T) {
+	tbl := NewTable(map[string]Limit{
+		"azure_ai/deepseek-v4-flash": {ContextWindow: 1000000, MaxOutputTokens: 384000},
+		"deepseek-v4-flash":          {ContextWindow: 8192, MaxOutputTokens: 8192},
+	})
+	lim, ok := tbl.Lookup("azure_ai", "deepseek-v4-flash")
+	if !ok {
+		t.Fatal("expected exact match")
+	}
+	if lim.ContextWindow != 1000000 {
+		t.Errorf("ContextWindow = %d, want 1000000", lim.ContextWindow)
+	}
+}
+
+func TestTableLookupModelNameFallback(t *testing.T) {
+	tbl := NewTable(map[string]Limit{
+		"deepseek-v4-flash": {ContextWindow: 8192, MaxOutputTokens: 8192},
+	})
+	lim, ok := tbl.Lookup("ollama-cloud", "deepseek-v4-flash")
+	if !ok {
+		t.Fatal("expected model-name fallback match")
+	}
+	if lim.ContextWindow != 8192 {
+		t.Errorf("ContextWindow = %d, want 8192", lim.ContextWindow)
+	}
+}
+
+func TestTableLookupMissing(t *testing.T) {
+	tbl := NewTable(map[string]Limit{})
+	_, ok := tbl.Lookup("unknown", "unknown")
+	if ok {
+		t.Error("expected no match")
+	}
+}

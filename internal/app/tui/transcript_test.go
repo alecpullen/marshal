@@ -189,7 +189,7 @@ func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 	if !strings.HasPrefix(plain, " · ") {
 		t.Fatalf("active tool call missing · gutter:\n%s", out)
 	}
-	if !strings.Contains(plain, "shell.run") || !strings.Contains(plain, "4s") {
+	if !strings.Contains(plain, "Run command") || !strings.Contains(plain, "4s") {
 		t.Fatalf("active tool call missing name/elapsed:\n%s", out)
 	}
 	if !strings.Contains(plain, "$ go test ./...") {
@@ -410,8 +410,8 @@ func TestRenderActiveToolCallBrowserGlyphRemoved(t *testing.T) {
 	if strings.Contains(stripped, "🌐") {
 		t.Fatalf("browser active tool call should not render 🌐:\n%s", out)
 	}
-	if !strings.Contains(stripped, "browser.navigate") {
-		t.Fatalf("missing tool name:\n%s", out)
+	if !strings.Contains(stripped, "Browser navigate") {
+		t.Fatalf("missing pretty tool name:\n%s", out)
 	}
 }
 
@@ -426,8 +426,8 @@ func TestRenderActiveToolCallNonBrowserGlyph(t *testing.T) {
 	if strings.Contains(stripped, "🌐") {
 		t.Fatalf("non-browser tool should not have 🌐:\n%s", out)
 	}
-	if !strings.Contains(stripped, "file.read") {
-		t.Fatalf("missing tool name:\n%s", out)
+	if !strings.Contains(stripped, "Read file") {
+		t.Fatalf("missing pretty tool name:\n%s", out)
 	}
 }
 
@@ -471,7 +471,7 @@ func TestRenderCompletedToolCallBrowserGlyphRemoved(t *testing.T) {
 	if strings.Contains(stripped, "🌐") {
 		t.Fatalf("browser completed tool call should not render 🌐:\n%s", out)
 	}
-	if !strings.Contains(stripped, "Browser Navigate") {
+	if !strings.Contains(stripped, "Browser navigate") {
 		t.Fatalf("missing tool name:\n%s", out)
 	}
 	if strings.Contains(stripped, "done") {
@@ -522,8 +522,8 @@ func TestActiveToolCallRenderedInTranscript(t *testing.T) {
 		StartedAt: time.Now().Add(-time.Second),
 	}
 	out := stripANSI(renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Now(), 80))
-	if !strings.Contains(out, "shell.run") {
-		t.Fatalf("active tool call missing name in transcript: %q", out)
+	if !strings.Contains(out, "Run command") {
+		t.Fatalf("active tool call missing pretty name in transcript: %q", out)
 	}
 	if !strings.Contains(out, "go test") {
 		t.Fatalf("active tool call missing command in transcript: %q", out)
@@ -600,6 +600,21 @@ func TestCompletedFileWritePatchTruncatesLongDiff(t *testing.T) {
 	}
 	if !strings.Contains(out, "more lines") {
 		t.Fatalf("long diff should be truncated with indicator: %q", out)
+	}
+}
+
+func TestDisplayToolNameKnown(t *testing.T) {
+	if got := DisplayToolName("file.write_patch"); got != "Edit file" {
+		t.Fatalf("DisplayToolName(file.write_patch) = %q, want %q", got, "Edit file")
+	}
+	if got := DisplayToolName("shell.run"); got != "Run command" {
+		t.Fatalf("DisplayToolName(shell.run) = %q, want %q", got, "Run command")
+	}
+}
+
+func TestDisplayToolNameUnknownFallback(t *testing.T) {
+	if got := DisplayToolName("custom.thing"); got != "Custom thing" {
+		t.Fatalf("DisplayToolName(custom.thing) = %q, want %q", got, "Custom thing")
 	}
 }
 

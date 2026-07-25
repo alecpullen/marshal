@@ -23,16 +23,15 @@ var toolDisplayNames = map[string]string{
 }
 
 // DisplayToolName returns a human-readable label for a tool. Unknown tools
-// get a title-cased, dot-to-space transformation.
+// get a title-cased, dot-to-space transformation (only the first segment
+// is capitalized).
 func DisplayToolName(name string) string {
 	if label, ok := toolDisplayNames[name]; ok {
 		return label
 	}
 	parts := strings.Split(name, ".")
-	for i, p := range parts {
-		if len(p) > 0 {
-			parts[i] = strings.ToUpper(p[:1]) + p[1:]
-		}
+	if len(parts) > 0 && len(parts[0]) > 0 {
+		parts[0] = strings.ToUpper(parts[0][:1]) + parts[0][1:]
 	}
 	return strings.Join(parts, " ")
 }

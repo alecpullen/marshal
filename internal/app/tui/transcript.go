@@ -428,7 +428,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", atc.Name, formatElapsed(elapsed)))
+	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
 	gutter := gutterPrefix("·", dimColor)
 	headerLine := gutter + toolBulletStyle().Render(strutil.Truncate(head, max(width-3, 1), false))
 	var b strings.Builder

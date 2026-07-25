@@ -2143,7 +2143,7 @@ func TestActiveToolCallRendersInline(t *testing.T) {
 	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 
-	if !strings.Contains(view, "shell.run") {
+	if !strings.Contains(view, "Run command") {
 		t.Fatalf("View() does not show active tool name:\n%s", view)
 	}
 	if !strings.Contains(view, "go test ./...") {

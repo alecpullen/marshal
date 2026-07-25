@@ -1,5 +1,10 @@
 package sdd
 
+import (
+	"fmt"
+	"strings"
+)
+
 // TaskStatus is the lifecycle state of a DAGTask, persisted in dag.json.
 type TaskStatus string
 
@@ -78,4 +83,52 @@ type SpecFrontmatter struct {
 	Status       string `yaml:"status"`
 	SourcePlan   string `yaml:"source_plan"`
 	TargetBranch string `yaml:"target_branch"`
+}
+
+// SpecStatus is the lifecycle of the spec.md frontmatter `status` field.
+type SpecStatus string
+
+const (
+	SpecStatusDraft    SpecStatus = "draft"
+	SpecStatusApproved SpecStatus = "approved"
+)
+
+// ParseSpecFrontmatter extracts the YAML frontmatter block (delimited by
+// `---` lines) from a spec.md body. It returns the three fields the SDD
+// pipeline needs; the full task-block parsing lives in P4. Returns an error
+// if no frontmatter is present.
+func ParseSpecFrontmatter(specText string) (SpecFrontmatter, error) {
+	lines := strings.Split(specText, "\n")
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "---" {
+		return SpecFrontmatter{}, fmt.Errorf("sdd: spec has no YAML frontmatter")
+	}
+	var fm SpecFrontmatter
+	for i := 1; i < len(lines); i++ {
+		line := lines[i]
+		if strings.TrimSpace(line) == "---" {
+			break
+		}
+		if v, ok := parseYAMLScalar(line, "status"); ok {
+			fm.Status = v
+		}
+		if v, ok := parseYAMLScalar(line, "source_plan"); ok {
+			fm.SourcePlan = v
+		}
+		if v, ok := parseYAMLScalar(line, "target_branch"); ok {
+			fm.TargetBranch = v
+		}
+	}
+	return fm, nil
+}
+
+// parseYAMLScalar reads a "key: value" line, returning the trimmed value.
+// ok is false if the line is not a scalar for that key.
+func parseYAMLScalar(line, key string) (string, bool) {
+	prefix := key + ":"
+	if !strings.HasPrefix(line, prefix) {
+		return "", false
+	}
+	v := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	v = strings.Trim(v, "\"'")
+	return v, true
 }

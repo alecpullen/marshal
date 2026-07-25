@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
@@ -101,5 +103,129 @@ func TestConfigAgentSetProjectScope(t *testing.T) {
 	}
 	if loaded.Agent.Model != "claude-3.5-sonnet" {
 		t.Fatalf("disk model = %q, want claude-3.5-sonnet", loaded.Agent.Model)
+	}
+}
+
+func TestConfigAgentSetGlobalScopeForcesApproval(t *testing.T) {
+	dir := t.TempDir()
+	userPath := config.UserConfigPath(dir)
+
+	cfg := config.Default()
+	cfg.Agent.Provider = "openai"
+	cfg.Agent.Model = "gpt-4o"
+
+	state := session.New(config.Config{}, dir, time.Now(), session.Persistence{})
+
+	// Auto-approve in a goroutine: when a pending approval arrives, approve it.
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := state.PendingApproval(); p != nil {
+				p.Respond(session.UserApprovalDecision{Approved: true})
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	var reloaded *config.Config
+	ts := toolSet{
+		config:         cfg,
+		userConfigPath: userPath,
+		configReloader: func(c config.Config) error {
+			cc := c
+			reloaded = &cc
+			return nil
+		},
+		sessionState: state,
+	}
+	reg := registry.New()
+	tools, err := newConfigToolSet(ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(tools.configAgentSetTool()); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := reg.Lookup("config.agent.set")
+
+	res, err := tool.Handler(context.Background(), registry.ToolCall{
+		ID:   "1",
+		Name: "config.agent.set",
+		Args: json.RawMessage(`{"scope":"global","model":"claude-3.5-sonnet"}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "global") {
+		t.Fatalf("expected global in receipt, got: %s", res.Summary)
+	}
+	if reloaded == nil || reloaded.Agent.Model != "claude-3.5-sonnet" {
+		t.Fatalf("global write did not apply: %+v", reloaded)
+	}
+	// Global file on disk reflects the change.
+	loaded, err := config.Load(config.LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Agent.Model != "claude-3.5-sonnet" {
+		t.Fatalf("global disk model = %q, want claude-3.5-sonnet", loaded.Agent.Model)
+	}
+}
+
+func TestConfigAgentSetGlobalScopeDeniedAborts(t *testing.T) {
+	dir := t.TempDir()
+	userPath := config.UserConfigPath(dir)
+
+	cfg := config.Default()
+	cfg.Agent.Model = "gpt-4o"
+
+	state := session.New(config.Config{}, dir, time.Now(), session.Persistence{})
+
+	// Deny in a goroutine.
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := state.PendingApproval(); p != nil {
+				p.Respond(session.UserApprovalDecision{Approved: false})
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	called := false
+	ts := toolSet{
+		config:         cfg,
+		userConfigPath: userPath,
+		configReloader: func(c config.Config) error {
+			called = true
+			return nil
+		},
+		sessionState: state,
+	}
+	reg := registry.New()
+	tools, err := newConfigToolSet(ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(tools.configAgentSetTool()); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := reg.Lookup("config.agent.set")
+
+	res, err := tool.Handler(context.Background(), registry.ToolCall{
+		ID:   "1",
+		Name: "config.agent.set",
+		Args: json.RawMessage(`{"scope":"global","model":"claude-3.5-sonnet"}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if called {
+		t.Fatal("reloader must not be called on denial")
+	}
+	if !strings.Contains(res.Summary, "denied") {
+		t.Fatalf("expected denied receipt, got: %s", res.Summary)
 	}
 }

@@ -2340,6 +2340,59 @@ func TestSubagentFactoryAdHocHasObserversToo(t *testing.T) {
 	}
 }
 
+func TestInjectedWorkerStartsAndStops(t *testing.T) {
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	fake := workerFunc{name: "fake", run: func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		close(stopped)
+		return nil
+	}}
+
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	err = Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+			return nil
+		}),
+		WithWorker(fake),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker not started")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("worker not stopped on shutdown")
+	}
+}
+
+type workerFunc struct {
+	name string
+	run  func(context.Context) error
+}
+
+func (w workerFunc) Name() string                  { return w.name }
+func (w workerFunc) Run(ctx context.Context) error { return w.run(ctx) }
+
 func TestDesktopRegisterAllRegistersTools(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {

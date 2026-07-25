@@ -29,7 +29,9 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
+	"marshal/internal/index"
 	"marshal/internal/knowledge"
+	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
@@ -46,6 +48,7 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/worker"
 )
 
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
@@ -78,6 +81,7 @@ type options struct {
 	existingSessionID       string
 	additionalDirs          []string
 	knowledgeHook           func(ctx context.Context, state *session.State, database *db.DB)
+	workers                 []worker.Worker
 }
 
 type Option func(*options)
@@ -161,6 +165,23 @@ func WithKnowledgeHook(hook func(ctx context.Context, state *session.State, data
 	return func(opts *options) {
 		opts.knowledgeHook = hook
 	}
+}
+
+// WithWorker registers a background worker started shutdown-aware by Run.
+// Primarily a test seam; production wiring constructs the index watcher.
+func WithWorker(w worker.Worker) Option {
+	return func(o *options) { o.workers = append(o.workers, w) }
+}
+
+// startWorker launches a worker goroutine bound to ctx, tracked by wg.
+func startWorker(ctx context.Context, wg *sync.WaitGroup, w worker.Worker, log *slog.Logger) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := w.Run(ctx); err != nil {
+			log.Warn("worker exited", "worker", w.Name(), "err", err)
+		}
+	}()
 }
 
 // WithSessionID pins the session identifier used when the runtime creates a
@@ -1048,6 +1069,35 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 	logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
+	// ── Worker lifecycle ──────────────────────────────────────────────
+	// Start injected workers (test seam) or construct the index watcher
+	// when embeddings are configured and the watcher is enabled.
+	workers := runOpts.workers
+	if len(workers) == 0 {
+		embeddingConfigured := false
+		embedRouter := routing.NewStaticRouter(cfg.RoutingConfig())
+		if _, err := embedRouter.ResolveEmbedding(); err == nil {
+			embeddingConfigured = true
+		}
+		if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
+			debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
+			runPass := func(c context.Context) error {
+				embedder := resolveEmbedderFromConfig(cfg)
+				_, err := index.Run(c, index.Deps{
+					DB: database, Root: workingDir, Ignore: cfg.Indexing.Ignore,
+					MaxBytes: cfg.Indexing.MaxIndexableFileBytes, Embedder: embedder,
+				}, projectID)
+				return err
+			}
+			workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
+		}
+	}
+	var workerWG sync.WaitGroup
+	for _, w := range workers {
+		startWorker(rt.workCtx, &workerWG, w, logger)
+	}
+	// ── End worker lifecycle ──────────────────────────────────────────
+
 	select {
 	case <-ctx.Done():
 		return nil
@@ -1061,6 +1111,18 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	quiesceCtx, cancelQuiesce := context.WithTimeout(context.Background(), jobShutdownTimeout)
 	quiesceErr := rt.Quiesce(quiesceCtx)
 	cancelQuiesce()
+
+	// Wait for workers to finish (bounded).
+	workerDone := make(chan struct{})
+	go func() {
+		workerWG.Wait()
+		close(workerDone)
+	}()
+	select {
+	case <-workerDone:
+	case <-time.After(5 * time.Second):
+		logger.Warn("worker shutdown timed out")
+	}
 
 	// Phase 2: knowledge — finalize the session while DB and logger
 	// are still open.
@@ -1170,6 +1232,26 @@ func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {
 // loadFileIndexPaths fetches the repo's known file paths for the
 // completion popup. Returns nil on any error (no DB, no rows, query
 // failure) so callers can treat absence as "skip the eager seed".
+// resolveEmbedderFromConfig constructs an embedding.Embedder from the
+// routing config, or returns nil when no embedding role is configured.
+// This mirrors the native tool set's resolveEmbedder closure.
+func resolveEmbedderFromConfig(cfg config.Config) embedding.Embedder {
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	route, err := router.ResolveEmbedding()
+	if err != nil {
+		return nil
+	}
+	pc, ok := cfg.Providers[route.Preset.Provider]
+	if !ok {
+		return nil
+	}
+	e, err := embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
+	if err != nil {
+		return nil
+	}
+	return e
+}
+
 func loadFileIndexPaths(database *db.DB, projectID int64) ([]string, error) {
 	if database == nil || projectID == 0 {
 		return nil, fmt.Errorf("no database or project id")

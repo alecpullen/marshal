@@ -175,14 +175,13 @@ func TestService_DoesNotTouchProjectGit(t *testing.T) {
 		t.Fatalf("project git status changed after snapshot: before=%q after=%q", statusBefore, statusAfter)
 	}
 }
-
 func TestService_DoesNotFailOnGitignoredLargeFiles(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".marshal\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".marshal\n/marshal\n*.log\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("hello"), 0644); err != nil {
@@ -192,6 +191,12 @@ func TestService_DoesNotFailOnGitignoredLargeFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".marshal", "marshal.db"), make([]byte, 100), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "marshal"), make([]byte, 100), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.log"), make([]byte, 100), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,8 +210,10 @@ func TestService_DoesNotFailOnGitignoredLargeFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ls-tree: %v", err)
 	}
-	if contains(files, ".marshal/marshal.db") {
-		t.Fatalf(".marshal/marshal.db should not be in snapshot, got: %s", files)
+	for _, ignored := range []string{".marshal/marshal.db", "marshal", "app.log"} {
+		if contains(files, ignored) {
+			t.Fatalf("%s should not be in snapshot, got: %s", ignored, files)
+		}
 	}
 	if !contains(files, "tracked.txt") {
 		t.Fatalf("tracked.txt should be in snapshot, got: %s", files)

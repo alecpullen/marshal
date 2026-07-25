@@ -164,18 +164,49 @@ func isIgnored(rel string, ignore []string) bool {
 }
 
 func matchIgnorePattern(pattern, rel string) bool {
+	// Gitignore anchoring: a leading slash matches only paths relative to the
+	// directory containing the ignore file (the project root here).
+	anchored := false
+	if strings.HasPrefix(pattern, "/") {
+		anchored = true
+		pattern = strings.TrimPrefix(pattern, "/")
+	}
+
 	if strings.HasSuffix(pattern, "/") {
 		pattern = strings.TrimSuffix(pattern, "/")
 		prefix := pattern + string(filepath.Separator)
+		if anchored {
+			return rel == pattern || strings.HasPrefix(rel, prefix)
+		}
 		return rel == pattern || strings.HasPrefix(rel, prefix)
 	}
 	if strings.HasSuffix(pattern, "/**") {
 		prefix := strings.TrimSuffix(pattern, "/**")
+		if anchored {
+			return rel == prefix || strings.HasPrefix(rel, prefix+string(filepath.Separator))
+		}
 		return rel == prefix || strings.HasPrefix(rel, prefix+string(filepath.Separator))
 	}
 	if strings.Contains(pattern, "*") {
+		if anchored {
+			ok, _ := filepath.Match(pattern, rel)
+			return ok
+		}
+		// Unanchored glob: try matching the basename and any path suffix.
 		ok, _ := filepath.Match(pattern, rel)
-		return ok
+		if ok {
+			return true
+		}
+		// Also match against each path component suffix (e.g. "*.log").
+		for i := strings.Index(rel, string(filepath.Separator)); i != -1; i = strings.Index(rel[i+1:], string(filepath.Separator)) {
+			if ok, _ := filepath.Match(pattern, rel[i+1:]); ok {
+				return true
+			}
+		}
+		return false
+	}
+	if anchored {
+		return rel == pattern || strings.HasPrefix(rel, pattern+string(filepath.Separator))
 	}
 	return rel == pattern || strings.HasPrefix(rel, pattern+string(filepath.Separator))
 }

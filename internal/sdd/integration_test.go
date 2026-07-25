@@ -88,3 +88,66 @@ func TestIntegrationFullPipeline(t *testing.T) {
 		t.Errorf("final state = %v, want StateFinalMergeGate or StateFinalize", c.State)
 	}
 }
+
+func TestIntegrationRetryFlow(t *testing.T) {
+	ws, err := sdd.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.Ensure()
+	git := sdd.NewFakeGitOps()
+	// Seed the pipeline branch + T1 task branch.
+	git.SetRef("sdd/feature", "base123")
+	git.SetRef("sdd/T1", "base123")
+	git.SetBranch("sdd/T1")
+	dag := &sdd.DAG{Tasks: []sdd.DAGTask{
+		{ID: "T1", Title: "Foundation", Status: sdd.TaskPending},
+	}}
+	rs := &sdd.RepoState{Branch: "sdd/feature", TargetBranch: "main", Head: "base123", Merged: []string{}}
+	progress := &sdd.Progress{}
+	ss := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+
+	var callCount int
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		return &agent.Runner{RunTaskFunc: func(ctx context.Context, goal string) (*agent.Task, error) {
+			callCount++
+			switch role {
+			case routing.RoleSDDOrchestrator:
+				if callCount == 1 {
+					// First call: return BLOCKED with STALE_HEAD on T1.
+					return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: BLOCKED\nbatch_id: 1\ndispatched: [T1]\nmerged: []\nblocked_tasks:\n  - task: T1\n    reason: STALE_HEAD\nhealth_alerts: []\nedit_guard: clean\nnext_action: retry\n"}, nil
+				}
+				// Second call: return DONE with T1 merged.
+				dag.Tasks[0].Status = sdd.TaskMerged
+				rs.MarkMerged("T1")
+				return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: DONE\nbatch_id: 2\ndispatched: [T1]\nmerged: [T1]\nblocked_tasks: []\nhealth_alerts: []\nedit_guard: clean\nnext_action: branch_review\n"}, nil
+			case routing.RoleSDDBranchReviewer:
+				os.MkdirAll(filepath.Join(ws.Dir(), "reports"), 0755)
+				os.WriteFile(filepath.Join(ws.Dir(), "reports", "branch.md"), []byte("status: PASS\nverdict: approve\n"), 0644)
+				return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: PASS"}, nil
+			}
+			return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: DONE"}, nil
+		}}, nil
+	}
+
+	// Seed an approved spec so the controller skips the spec gate.
+	os.WriteFile(filepath.Join(ws.Dir(), "spec.md"), []byte("---\nstatus: approved\n---\n```yaml\ntasks:\n  - id: T1\n    title: Foundation\n    deps: []\n```\n"), 0644)
+
+	c := sdd.NewController(ws, git, dag, rs, progress, factory, routing.Config{}, ss, "sdd/feature", "main")
+	c.State = sdd.StateDecompose
+
+	err = c.Run(context.Background())
+	if err != nil && !errors.Is(err, sdd.ErrHumanGateRequired) {
+		t.Fatalf("Run: %v", err)
+	}
+	// After retry flow: T1 should be merged, blocked tasks cleared, state past StateBlocked.
+	if len(rs.Merged) != 1 {
+		t.Errorf("merged = %v, want 1 task", rs.Merged)
+	}
+	if len(c.BlockedTasks) != 0 {
+		t.Errorf("blocked tasks = %v, want empty", c.BlockedTasks)
+	}
+	if c.State != sdd.StateFinalMergeGate && c.State != sdd.StateFinalize {
+		t.Errorf("final state = %v, want StateFinalMergeGate or StateFinalize", c.State)
+	}
+}

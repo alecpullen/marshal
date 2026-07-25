@@ -158,6 +158,29 @@ func TestFindSymbolsEscapesWildcards(t *testing.T) {
 	}
 }
 
+func TestSymbolSourceRoundTrip(t *testing.T) {
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, "/tmp/p")
+	in := []Symbol{
+		{FilePath: "a.go", Kind: "function", Name: "F", Signature: "func F()", LineStart: 1, LineEnd: 2, Source: "lsp"},
+		{FilePath: "a.go", Kind: "type", Name: "T", Signature: "type T struct", LineStart: 4, LineEnd: 6, Source: "treesitter"},
+	}
+	if err := database.SaveSymbols(pid, in); err != nil {
+		t.Fatalf("SaveSymbols: %v", err)
+	}
+	got, err := database.GetSymbols(pid, 0)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("GetSymbols = %d err=%v", len(got), err)
+	}
+	bySource := map[string]string{}
+	for _, s := range got {
+		bySource[s.Name] = s.Source
+	}
+	if bySource["F"] != "lsp" || bySource["T"] != "treesitter" {
+		t.Fatalf("sources = %#v", bySource)
+	}
+}
+
 func TestFindSymbolsLimitDefaultsAndClamps(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

@@ -17,6 +17,7 @@ type Symbol struct {
 	Signature string
 	LineStart int
 	LineEnd   int
+	Source    string // "lsp", "treesitter", or empty for legacy rows
 }
 
 // SaveSymbols replaces the symbol index for a project. It deletes all
@@ -42,12 +43,12 @@ func (db *DB) SaveSymbols(projectID int64, symbols []Symbol) error {
 			end = len(symbols)
 		}
 		chunk := symbols[start:end]
-		placeholders := buildValues(len(chunk), 8)
-		args := make([]any, 0, len(chunk)*8)
+		placeholders := buildValues(len(chunk), 9)
+		args := make([]any, 0, len(chunk)*9)
 		for _, s := range chunk {
-			args = append(args, projectID, s.FilePath, s.Kind, s.Name, s.Receiver, s.Signature, s.LineStart, s.LineEnd)
+			args = append(args, projectID, s.FilePath, s.Kind, s.Name, s.Receiver, s.Signature, s.LineStart, s.LineEnd, s.Source)
 		}
-		if _, err := tx.Exec(`INSERT INTO symbols (project_id, file_path, kind, name, receiver, signature, line_start, line_end) VALUES `+placeholders, args...); err != nil {
+		if _, err := tx.Exec(`INSERT INTO symbols (project_id, file_path, kind, name, receiver, signature, line_start, line_end, source) VALUES `+placeholders, args...); err != nil {
 			return fmt.Errorf("insert symbols batch [%d:%d]: %w", start, end, err)
 		}
 	}
@@ -60,19 +61,21 @@ func (db *DB) SaveSymbols(projectID int64, symbols []Symbol) error {
 
 // scanSymbol reads the next row from rows in the column order used by both
 // GetSymbols and FindSymbols (id, file_path, kind, name, receiver,
-// signature, line_start, line_end).
+// signature, line_start, line_end, source).
 func scanSymbol(rows *sql.Rows) (Symbol, error) {
 	var s Symbol
-	if err := rows.Scan(&s.ID, &s.FilePath, &s.Kind, &s.Name, &s.Receiver, &s.Signature, &s.LineStart, &s.LineEnd); err != nil {
+	var source sql.NullString
+	if err := rows.Scan(&s.ID, &s.FilePath, &s.Kind, &s.Name, &s.Receiver, &s.Signature, &s.LineStart, &s.LineEnd, &source); err != nil {
 		return Symbol{}, err
 	}
+	s.Source = source.String
 	return s, nil
 }
 
 // GetSymbols returns up to limit symbol rows for a project, ordered by file
 // path then line start. limit <= 0 means "all rows" (unbounded).
 func (db *DB) GetSymbols(projectID int64, limit int) ([]Symbol, error) {
-	query := `SELECT id, file_path, kind, name, receiver, signature, line_start, line_end
+	query := `SELECT id, file_path, kind, name, receiver, signature, line_start, line_end, source
 		 FROM symbols
 		 WHERE project_id = ?
 		 ORDER BY file_path, line_start`
@@ -112,7 +115,7 @@ func (db *DB) FindSymbols(projectID int64, name, kind string, limit int) ([]Symb
 		limit = 200
 	}
 
-	query := `SELECT id, file_path, kind, name, receiver, signature, line_start, line_end
+	query := `SELECT id, file_path, kind, name, receiver, signature, line_start, line_end, source
 			   FROM symbols
 			   WHERE project_id = ?`
 	args := []any{projectID}

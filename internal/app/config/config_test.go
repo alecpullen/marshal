@@ -983,7 +983,7 @@ func TestLoadEmbeddingRoleSurvives(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()
 	writeFile(t, work+"/.marshal/config.toml", `
-[agent_profiles.local.roles]
+[agent_profiles.local]
 embedding = "nomic"
 `)
 	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})

@@ -33,6 +33,15 @@ type GitOps interface {
 	Commit(message string) error
 	// DiffStat returns the `git diff --stat` output between two refs.
 	DiffStat(from, to string) (string, error)
+	// IsAncestor reports whether ancestor is an ancestor of descendant
+	// (git merge-base --is-ancestor). Used by branch-base-guard.
+	IsAncestor(ancestor, descendant string) (bool, error)
+	// DeleteBranch removes a local branch (git branch -d). Best-effort; the
+	// caller tolerates errors. Used by CleanupStale.
+	DeleteBranch(branch string) error
+	// ListSDDBranches lists all sdd/* branches (git for-each-ref
+	// refs/heads/sdd/). Used by CleanupStale.
+	ListSDDBranches() ([]string, error)
 }
 
 // CLIGitOps shells out to the git CLI. Dir is the repo working directory.
@@ -83,6 +92,38 @@ func (g CLIGitOps) Commit(message string) error {
 	return err
 }
 
+func (g CLIGitOps) IsAncestor(ancestor, descendant string) (bool, error) {
+	_, err := g.run("merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return true, nil
+	}
+	// git merge-base --is-ancestor exits 1 when not an ancestor (not a real error).
+	if strings.Contains(err.Error(), "exit status 1") {
+		return false, nil
+	}
+	return false, err
+}
+
+func (g CLIGitOps) DeleteBranch(branch string) error {
+	_, err := g.run("branch", "-d", branch)
+	return err
+}
+
+func (g CLIGitOps) ListSDDBranches() ([]string, error) {
+	out, err := g.run("for-each-ref", "--format=%(refname:short)", "refs/heads/sdd/")
+	if err != nil {
+		return nil, err
+	}
+	var branches []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches, nil
+}
+
 func (g CLIGitOps) DiffStat(from, to string) (string, error) {
 	return g.run("diff", "--stat", from+".."+to)
 }
@@ -91,11 +132,13 @@ func (g CLIGitOps) DiffStat(from, to string) (string, error) {
 // returns canned results. It is safe for concurrent use within a single test.
 type FakeGitOps struct {
 	mu        sync.Mutex
-	refs      map[string]string     // ref -> sha
-	calls     map[string][][]string // subcommand -> args history
-	worktrees map[string]bool       // path -> exists
-	mergeErrs map[string]error      // branch -> error to return from MergeFF
-	branches  map[string]bool       // branch -> exists
+	refs      map[string]string          // ref -> sha
+	calls     map[string][][]string      // subcommand -> args history
+	worktrees map[string]bool            // path -> exists
+	mergeErrs map[string]error           // branch -> error to return from MergeFF
+	branches  map[string]bool            // branch -> exists
+	diffStats map[string]string          // "from..to" -> canned DiffStat output
+	ancestors map[string]map[string]bool // ancestor -> set of descendants
 }
 
 // NewFakeGitOps builds an empty fake.
@@ -106,6 +149,8 @@ func NewFakeGitOps() *FakeGitOps {
 		worktrees: map[string]bool{},
 		mergeErrs: map[string]error{},
 		branches:  map[string]bool{},
+		diffStats: map[string]string{},
+		ancestors: map[string]map[string]bool{},
 	}
 }
 
@@ -213,7 +258,63 @@ func (f *FakeGitOps) Commit(message string) error {
 	return nil
 }
 
+// SetAncestor records that ancestor is an ancestor of descendant.
+func (f *FakeGitOps) SetAncestor(ancestor, descendant string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ancestors[ancestor] == nil {
+		f.ancestors[ancestor] = map[string]bool{}
+	}
+	f.ancestors[ancestor][descendant] = true
+}
+
+func (f *FakeGitOps) IsAncestor(ancestor, descendant string) (bool, error) {
+	f.record("merge-base", []string{"--is-ancestor", ancestor, descendant})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ancestors[ancestor][descendant], nil
+}
+
+// SetDiffStat makes DiffStat(from, to) return output.
+func (f *FakeGitOps) SetDiffStat(from, to, output string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.diffStats == nil {
+		f.diffStats = map[string]string{}
+	}
+	f.diffStats[from+".."+to] = output
+}
+
 func (f *FakeGitOps) DiffStat(from, to string) (string, error) {
 	f.record("diff", []string{"--stat", from + ".." + to})
-	return "", nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.diffStats == nil {
+		f.diffStats = map[string]string{}
+	}
+	return f.diffStats[from+".."+to], nil
+}
+
+func (f *FakeGitOps) DeleteBranch(branch string) error {
+	f.record("branch", []string{"-d", branch})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.branches[branch] {
+		return fmt.Errorf("sdd git fake: branch %s does not exist", branch)
+	}
+	delete(f.branches, branch)
+	return nil
+}
+
+func (f *FakeGitOps) ListSDDBranches() ([]string, error) {
+	f.record("for-each-ref", []string{"refs/heads/sdd/"})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for b := range f.branches {
+		if strings.HasPrefix(b, "sdd/") {
+			out = append(out, b)
+		}
+	}
+	return out, nil
 }

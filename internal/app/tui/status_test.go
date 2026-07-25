@@ -426,6 +426,15 @@ func TestStatusFooterOmitsToolActivity(t *testing.T) {
 	}
 }
 
+func TestStatusLineShowsSDDControllerState(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetSDDProgress(session.SDDProgress{Active: true, ControllerState: "BRANCH_REVIEW"})
+	line := stripANSI(m.renderStatusLine(100))
+	if !strings.Contains(line, "sdd") || !strings.Contains(line, "branch_review") {
+		t.Errorf("status line missing sdd + controller state: %q", line)
+	}
+}
+
 func TestStatusLineUntrustedIsWarningColored(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetTrusted(false)

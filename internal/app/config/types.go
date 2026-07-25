@@ -31,6 +31,7 @@ type Config struct {
 	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
 	Hooks         HooksConfig                           `toml:"hooks"`
 	Session       SessionConfig                         `toml:"session"`
+	LSP           LSPConfig                             `toml:"lsp"`
 }
 
 type ModelsConfig struct {
@@ -144,6 +145,21 @@ type RolloverConfig struct {
 	Retention               string            `toml:"retention"`
 	BlobThresholdBytes      int               `toml:"blob_threshold_bytes"`
 	Calibration             CalibrationConfig `toml:"calibration"`
+}
+
+// LSPConfig holds the LSP server configuration. Enabled defaults to true
+// when nil (the zero value). Servers is a map of language identifier to
+// per-language LSP server config.
+type LSPConfig struct {
+	Enabled *bool                      `toml:"enabled"` // nil => true
+	Servers map[string]LSPServerConfig `toml:"servers"`
+}
+
+// LSPServerConfig configures one LSP server for a language.
+type LSPServerConfig struct {
+	Command  string   `toml:"command"`
+	Args     []string `toml:"args"`
+	Disabled bool     `toml:"disabled"`
 }
 
 // CalibrationConfig controls EstimatorCounter calibration recording.

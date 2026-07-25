@@ -2,6 +2,8 @@ package sdd
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,6 +36,43 @@ func TestControllerStateConstants(t *testing.T) {
 		if string(c.want) != c.name {
 			t.Fatalf("%s = %q, want %q", c.name, c.want, c.name)
 		}
+	}
+}
+
+func TestControllerDecomposeFromPlan(t *testing.T) {
+	dir := t.TempDir()
+	ws, _ := NewWorkspace(dir)
+	ws.Ensure()
+	// Write a plan file.
+	planPath := filepath.Join(dir, "plan.md")
+	writeFile(planPath, "# Plan\n\n### Task 1: Foundation\n\ncontent\n\n### Task 2: Git ops\n\ncontent\n")
+	git := NewFakeGitOps()
+	git.SetRef("main", "main123")
+	git.SetBranch("sdd/feature")
+	git.SetRef("sdd/feature", "main123")
+	dag := &DAG{}
+	rs := &RepoState{Branch: "sdd/feature", TargetBranch: "main", Head: "main123"}
+	var p Progress
+	ss := session.New(config.Default(), dir, time.Now(), session.Persistence{})
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		return &agent.Runner{}, nil
+	}
+	c := NewController(ws, git, dag, rs, &p, factory, routing.Config{}, ss, "sdd/feature", "main")
+	c.PlanPath = planPath
+	// Skip workspace reset (already done) and go straight to decompose.
+	c.State = StateDecompose
+	err := c.Run(context.Background())
+	// Should reach the spec gate (draft spec emitted, needs approval).
+	if err != ErrHumanGateRequired {
+		t.Fatalf("expected ErrHumanGateRequired, got %v", err)
+	}
+	if c.State != StateSpecGate {
+		t.Errorf("State = %q, want spec_gate", c.State)
+	}
+	// A draft spec.md should exist.
+	specPath := filepath.Join(ws.Dir(), "spec.md")
+	if _, err := os.Stat(specPath); err != nil {
+		t.Fatalf("draft spec.md not created: %v", err)
 	}
 }
 

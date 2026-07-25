@@ -58,6 +58,14 @@ type Options struct {
 	// nil, no guardrail check is performed (the policy engine already
 	// ran Evaluate upstream in the agent loop).
 	Guardrail func(command string) error
+
+	// LSP is an optional LSPQuerier for symbol-name-addressed definition,
+	// references, and hover tools. nil when LSP is unavailable.
+	LSP LSPQuerier
+
+	// LSPSource is an optional diagnostics source consulted before the
+	// configured command checkers. nil when LSP is unavailable.
+	LSPSource diagnostics.LSPSource
 }
 
 type CommandRunner interface {
@@ -243,7 +251,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		projectID:       opts.ProjectID,
 		fileTracker:     opts.FileTracker,
 		jobManager:      jobManager,
-		diagnostics:     diagnostics.NewChecker(opts.Config.Diagnostics.Commands),
+		diagnostics:     newDiagnosticsChecker(opts),
 
 		guardrail:              opts.Guardrail,
 		webEnabled:             opts.Config.Web.Enabled,
@@ -262,5 +270,11 @@ func newToolSet(opts Options) (*toolSet, error) {
 			pc := opts.Config.Providers[route.Preset.Provider]
 			return embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
 		},
+		lsp: opts.LSP,
 	}, nil
+}
+
+func init() {
+	// Ensure diagnostics import is used (it's used in newToolSet).
+	_ = diagnostics.Checker{}
 }

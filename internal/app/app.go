@@ -36,6 +36,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
 	"marshal/internal/rollover"
 	"marshal/internal/sandbox"
@@ -413,11 +414,11 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Manager, error) {
 	resolver := newRoutedProviderResolver(cfg)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -432,7 +433,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -503,7 +504,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -513,12 +514,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
 		if err := mcpMgr.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -528,7 +529,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		state,
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.SkillIndex = skillIndex
@@ -633,7 +634,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {
 		runner.Rollover = &agent.Rollover{
 			Controller: rolloverCtrl,
@@ -642,7 +643,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		// Start generation 0.
 		if err := rolloverCtrl.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
 		}
 		// Record generation 0 in session state.
 		genID, genSeq, genSeed := rolloverCtrl.Current()
@@ -693,14 +694,26 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
 		}
 		desktopCloser = closer
 	}
 
 	sddRunner := buildSDDRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
 	subagentFactory := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID)
-	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, nil
+	// Build LSP manager and wire adapters.
+	var lspMgr *lsp.Manager
+	if lspEnabled(cfg.LSP) {
+		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
+		if len(servers) > 0 {
+			lspMgr = lsp.NewManager(state.WorkingDir, servers, state.Logger())
+		}
+	}
+	if lspMgr != nil {
+		nativeOpts.LSP = lsp.NewQueryAdapter(lspMgr)
+		nativeOpts.LSPSource = lsp.NewDiagnosticsAdapter(lspMgr)
+	}
+	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspMgr, nil
 }
 
 // roleRunnerSpec holds the dependencies shared by the swarm and SDD
@@ -1079,6 +1092,13 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if _, err := embedRouter.ResolveEmbedding(); err == nil {
 			embeddingConfigured = true
 		}
+
+		// Build the LSP symbol adapter for the index pass.
+		var lspAdapter index.LSPSymbols
+		if rt.LSPManager != nil {
+			lspAdapter = lsp.NewSymbolAdapter(rt.LSPManager)
+		}
+
 		if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
 			debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
 			runPass := func(c context.Context) error {
@@ -1086,11 +1106,16 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				_, err := index.Run(c, index.Deps{
 					DB: database, Root: workingDir, Ignore: cfg.Indexing.Ignore,
 					MaxBytes: cfg.Indexing.MaxIndexableFileBytes, Embedder: embedder,
+					LSP: lspAdapter,
 				}, projectID)
 				return err
 			}
 			workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
 		}
+	}
+	// Start the LSP manager as a worker when it was built.
+	if rt.LSPManager != nil {
+		workers = append(workers, rt.LSPManager)
 	}
 	var workerWG sync.WaitGroup
 	for _, w := range workers {
@@ -1154,7 +1179,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
+	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, _, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
@@ -1280,4 +1305,33 @@ func newDesktopBackend(cfg config.DesktopConfig) (browser.BrowserBackend, error)
 	default:
 		return nil, fmt.Errorf("unknown desktop mode %q", cfg.Mode)
 	}
+}
+
+// ── LSP helpers ────────────────────────────────────────────────────────
+
+// lspEnabled returns true when the LSP config is not explicitly disabled.
+func lspEnabled(cfg config.LSPConfig) bool {
+	return cfg.Enabled == nil || *cfg.Enabled
+}
+
+// toServerSpecs converts the config's LSPServerConfig map to the lsp.ServerSpec
+// map used by DetectServers.
+func toServerSpecs(cfgServers map[string]config.LSPServerConfig) map[string]lsp.ServerSpec {
+	out := make(map[string]lsp.ServerSpec, len(cfgServers))
+	for lang, s := range cfgServers {
+		out[lang] = lsp.ServerSpec{Command: s.Command, Args: s.Args}
+	}
+	return out
+}
+
+// disabledLangs returns the set of languages that are explicitly disabled in
+// the LSP server config.
+func disabledLangs(cfgServers map[string]config.LSPServerConfig) map[string]bool {
+	out := make(map[string]bool, len(cfgServers))
+	for lang, s := range cfgServers {
+		if s.Disabled {
+			out[lang] = true
+		}
+	}
+	return out
 }

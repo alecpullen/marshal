@@ -712,6 +712,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if lspMgr != nil {
 		nativeOpts.LSP = lsp.NewQueryAdapter(lspMgr)
 		nativeOpts.LSPSource = lsp.NewDiagnosticsAdapter(lspMgr)
+		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspMgr)
 	}
 	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspMgr, nil
 }

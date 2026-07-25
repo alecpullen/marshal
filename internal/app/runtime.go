@@ -487,10 +487,10 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		DataDir:            dataDir,
 		SkillIndex:         skillIndex,
 		LSPManager:         lspMgr,
-		ConfigReloader:      runOpts.configReloader,
-		additionalDirs:      runOpts.additionalDirs,
-		workCtx:             workCtx,
-		workCancel:          workCancel,
+		ConfigReloader:     runOpts.configReloader,
+		additionalDirs:     runOpts.additionalDirs,
+		workCtx:            workCtx,
+		workCancel:         workCancel,
 	}
 	// Assign MCP and snapshot only on success AND only when the underlying
 	// concrete pointer is non-nil. A nil *mcp.Manager assigned to an MCPCloser

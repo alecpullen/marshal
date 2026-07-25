@@ -197,74 +197,6 @@ func testSectionWrite(t *testing.T, name string, build func(*toolSet) registry.T
 		t.Fatalf("%s: check failed on reloaded config %+v", name, reloaded)
 	}
 }
-
-func TestCommandRiskTools(t *testing.T) {
-	testSectionWrite(t, "config.diagnostics.set", (*toolSet).configDiagnosticsSetTool, `{"commands":{"go vet":"go vet ./..."}}`, func(c config.Config) bool { return c.Diagnostics.Commands["go vet"] == "go vet ./..." })
-	testSectionWrite(t, "config.tools.shell.sandbox.set", (*toolSet).configToolsShellSandboxSetTool, `{"memory_limit_mb":512}`, func(c config.Config) bool { return c.Tools.Shell.Sandbox.MemoryLimitMB == 512 })
-}
-
-func TestShellAutoApproveEscalates(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	cfg := config.Default()
-	state := session.New(cfg, dir, time.Now(), session.Persistence{})
-	// Auto-approve in a goroutine.
-	go func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if p := state.PendingApproval(); p != nil {
-				p.Respond(session.UserApprovalDecision{Approved: true})
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}()
-	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { return nil }, sessionState: state}
-	tools, _ := newConfigToolSet(ts)
-	reg := registry.New()
-	reg.Register(tools.configToolsShellSetTool())
-	tool, _ := reg.Lookup("config.tools.shell.set")
-	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.tools.shell.set", Args: json.RawMessage(`{"auto_approve":true}`)})
-	if err != nil {
-		t.Fatalf("handler: %v", err)
-	}
-	// The handler should have set a pending approval (which was auto-approved).
-	// We verify the approval was requested by checking the handler completed
-	// without error (the goroutine responded). If no approval was requested,
-	// the goroutine would never fire and the handler would hang or error.
-}
-
-func TestSandboxUnsafePassthroughEscalates(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	cfg := config.Default()
-	state := session.New(cfg, dir, time.Now(), session.Persistence{})
-	// Auto-approve in a goroutine.
-	go func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if p := state.PendingApproval(); p != nil {
-				p.Respond(session.UserApprovalDecision{Approved: true})
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}()
-	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { return nil }, sessionState: state}
-	tools, _ := newConfigToolSet(ts)
-	reg := registry.New()
-	reg.Register(tools.configToolsShellSandboxSetTool())
-	tool, _ := reg.Lookup("config.tools.shell.sandbox.set")
-	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.tools.shell.sandbox.set", Args: json.RawMessage(`{"unsafe_passthrough":true}`)})
-	if err != nil {
-		t.Fatalf("handler: %v", err)
-	}
-	// The handler should have set a pending approval (which was auto-approved).
-	// We verify the approval was requested by checking the handler completed
-	// without error (the goroutine responded). If no approval was requested,
-	// the goroutine would never fire and the handler would hang or error.
-}
-
 func TestScalarWorkspaceWriteTools(t *testing.T) {
 	testSectionWrite(t, "config.privacy.set", (*toolSet).configPrivacySetTool, `{"redact_secrets":true}`, func(c config.Config) bool { return c.Privacy.RedactSecrets })
 	testSectionWrite(t, "config.indexing.set", (*toolSet).configIndexingSetTool, `{"use_treesitter":true}`, func(c config.Config) bool { return c.Indexing.UseTreesitter })
@@ -335,5 +267,78 @@ func TestConfigAgentSetGlobalScopeDeniedAborts(t *testing.T) {
 	}
 	if !strings.Contains(res.Summary, "denied") {
 		t.Fatalf("expected denied receipt, got: %s", res.Summary)
+	}
+}
+
+func TestCommandRiskTools(t *testing.T) {
+	testSectionWrite(t, "config.diagnostics.set", (*toolSet).configDiagnosticsSetTool, `{"commands":{"go vet":"go vet ./..."}}`, func(c config.Config) bool { return c.Diagnostics.Commands["go vet"] == "go vet ./..." })
+	testSectionWrite(t, "config.tools.shell.sandbox.set", (*toolSet).configToolsShellSandboxSetTool, `{"memory_limit_mb":512}`, func(c config.Config) bool { return c.Tools.Shell.Sandbox.MemoryLimitMB == 512 })
+	testSectionWrite(t, "config.tools.shell.set", (*toolSet).configToolsShellSetTool, `{"default_timeout_seconds":30}`, func(c config.Config) bool { return c.Tools.Shell.DefaultTimeoutSeconds == 30 })
+	testSectionWrite(t, "config.hooks.set", (*toolSet).configHooksSetTool, `{"fail_closed":true,"entries":[{"event":"pre_tool","command":"echo hi"}]}`, func(c config.Config) bool {
+		return c.Hooks.FailClosed && len(c.Hooks.Entries) == 1 && c.Hooks.Entries[0].Command == "echo hi"
+	})
+}
+
+func TestShellAutoApproveEscalates(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	state := session.New(cfg, dir, time.Now(), session.Persistence{})
+	approvalRequested := false
+	// Auto-approve in a goroutine and record that approval was requested.
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := state.PendingApproval(); p != nil {
+				approvalRequested = true
+				p.Respond(session.UserApprovalDecision{Approved: true})
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { return nil }, sessionState: state}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configToolsShellSetTool())
+	tool, _ := reg.Lookup("config.tools.shell.set")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.tools.shell.set", Args: json.RawMessage(`{"auto_approve":true}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !approvalRequested {
+		t.Fatal("auto_approve=true must force an approval request")
+	}
+}
+
+func TestSandboxUnsafePassthroughEscalates(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	state := session.New(cfg, dir, time.Now(), session.Persistence{})
+	approvalRequested := false
+	// Auto-approve in a goroutine and record that approval was requested.
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := state.PendingApproval(); p != nil {
+				approvalRequested = true
+				p.Respond(session.UserApprovalDecision{Approved: true})
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { return nil }, sessionState: state}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configToolsShellSandboxSetTool())
+	tool, _ := reg.Lookup("config.tools.shell.sandbox.set")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.tools.shell.sandbox.set", Args: json.RawMessage(`{"unsafe_passthrough":true}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !approvalRequested {
+		t.Fatal("unsafe_passthrough=true must force an approval request")
 	}
 }

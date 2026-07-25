@@ -761,6 +761,13 @@ func (t *toolSet) configToolsShellSetTool() registry.Tool {
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.tools.shell.set args: %w", err)
 		}
+		// Pre-validate background_retention so we can return a parse error
+		// before entering the mutate closure (which cannot return errors).
+		if args.BackgroundRetention != nil && *args.BackgroundRetention != "" {
+			if _, err := time.ParseDuration(*args.BackgroundRetention); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("parse background_retention: %w", err)
+			}
+		}
 		scope := args.resolvedScope()
 		destructive := args.AutoApprove != nil && *args.AutoApprove
 		reason := fmt.Sprintf("config.tools.shell.set (%s scope): update tools.shell section", scope)
@@ -775,10 +782,8 @@ func (t *toolSet) configToolsShellSetTool() registry.Tool {
 				cfg.Tools.Shell.MaxBackgroundJobs = *args.MaxBackgroundJobs
 			}
 			if args.BackgroundRetention != nil && *args.BackgroundRetention != "" {
-				d, err := time.ParseDuration(*args.BackgroundRetention)
-				if err == nil {
-					cfg.Tools.Shell.BackgroundRetention = d
-				}
+				d, _ := time.ParseDuration(*args.BackgroundRetention) // already validated above
+				cfg.Tools.Shell.BackgroundRetention = d
 			}
 			if args.AllowNetwork != nil {
 				cfg.Tools.Shell.AllowNetwork = *args.AllowNetwork

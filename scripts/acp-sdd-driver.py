@@ -101,7 +101,12 @@ def run_task_brief(plan: Path, n: int, worktree: Path) -> Path:
 
 
 def review_package(worktree: Path, base: str, head: str) -> Path:
-    """Generate a diff package file from base..head."""
+    """Generate a focused diff package for the commits in base..head.
+
+    Includes full diffs only for files changed in those commits, plus a stat
+    summary of the whole branch so the reviewer still has context without
+    re-reading every prior task's diff.
+    """
     out = worktree / ".superpowers" / "sdd" / f"review-{base[:12]}-{head[:12]}.md"
     log = subprocess.run(
         ["git", "log", "--oneline", f"{base}..{head}"],
@@ -117,18 +122,31 @@ def review_package(worktree: Path, base: str, head: str) -> Path:
         text=True,
         check=True,
     )
-    diff = subprocess.run(
-        ["git", "diff", "-U10", f"{base}..{head}"],
+    # Focus the expensive diff on files touched in this task range only.
+    files = subprocess.run(
+        ["git", "diff", "--name-only", f"{base}..{head}"],
         cwd=worktree,
         capture_output=True,
         text=True,
         check=True,
     )
+    focused_paths = [p for p in files.stdout.strip().splitlines() if p.strip()]
+    if focused_paths:
+        diff = subprocess.run(
+            ["git", "diff", "-U10", f"{base}..{head}", "--", *focused_paths],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        diff_text = diff.stdout
+    else:
+        diff_text = ""
     out.write_text(
         f"# Review package\n\n"
         f"## Commits ({base[:12]}..{head[:12]})\n\n```\n{log.stdout}\n```\n\n"
         f"## Stat\n\n```\n{stat.stdout}\n```\n\n"
-        f"## Diff\n\n```diff\n{diff.stdout}\n```\n"
+        f"## Diff (files changed in this range only)\n\n```diff\n{diff_text}\n```\n"
     )
     return out
 

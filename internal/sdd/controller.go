@@ -153,6 +153,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			}
 			c.State = StateDrainIteration
 		case StateDrainIteration:
+			c.BlockedTasks = nil
 			if c.LastBatchID >= c.MaxIterations {
 				c.State = StateBranchReview
 				continue
@@ -172,6 +173,7 @@ func (c *Controller) Run(ctx context.Context) error {
 					c.State = StateDrainIteration
 				}
 			case ReportBlocked:
+				c.BlockedTasks = report.BlockedTasks
 				c.State = StateBlocked
 			case ReportNeedsHuman:
 				c.SessionState.SetSDDGate(session.SDDGate{Kind: "escalation", Reason: "orchestrator returned NEEDS_HUMAN"})

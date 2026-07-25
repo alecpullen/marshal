@@ -142,6 +142,64 @@ func TestControllerBranchReviewPass(t *testing.T) {
 	}
 }
 
+func TestControllerDrainIterationWiresBlockedTasks(t *testing.T) {
+	dir := t.TempDir()
+	ws, _ := NewWorkspace(dir)
+	ws.Ensure()
+	git := NewFakeGitOps()
+	git.SetRef("main", "main123")
+	git.SetBranch("sdd/feature")
+	git.SetRef("sdd/feature", "main123")
+	git.SetBranch("sdd/T1")
+	dag := &DAG{Tasks: []DAGTask{{ID: "T1", Title: "x", Status: TaskInProgress, Branch: "sdd/T1"}}}
+	rs := &RepoState{Branch: "sdd/feature", TargetBranch: "main", Head: "main123", Merged: []string{}}
+	var p Progress
+	ss := session.New(config.Default(), dir, time.Now(), session.Persistence{})
+
+	callCount := 0
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		r := &agent.Runner{}
+		r.RunTaskFunc = func(ctx context.Context, goal string) (*agent.Task, error) {
+			callCount++
+			if callCount == 1 {
+				// First call: orchestrator returns BLOCKED with blocked_tasks.
+				return &agent.Task{
+					Status:  agent.TaskStatusCompleted,
+					Summary: "status: BLOCKED\nbatch_id: 1\ndispatched: []\nmerged: []\nblocked_tasks:\n  - task: T1\n    reason: STALE_HEAD\n    detail: sdd/T1 is behind pipeline\n    files_in_conflict: []\nhealth_alerts: []\nedit_guard: clean\nnext_action: surface_blockers\n",
+				}, nil
+			}
+			if callCount == 2 {
+				// Second call: orchestrator returns DONE (after deterministic fix).
+				return &agent.Task{
+					Status:  agent.TaskStatusCompleted,
+					Summary: "status: DONE\nbatch_id: 2\ndispatched: []\nmerged: []\nblocked_tasks: []\nhealth_alerts: []\nedit_guard: clean\nnext_action: branch_review\n",
+				}, nil
+			}
+			// Third call: branch reviewer — write a PASS report.
+			writeFile(filepath.Join(ws.Dir(), "reports", "branch.md"), "status: PASS\n\nbranch looks good\n")
+			return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "branch review done"}, nil
+		}
+		return r, nil
+	}
+
+	c := NewController(ws, git, dag, rs, &p, factory, routing.Config{}, ss, "sdd/feature", "main")
+	c.State = StateDrainIteration
+	err := c.Run(context.Background())
+	// The controller should have:
+	//   1. Received BLOCKED from orchestrator → wired BlockedTasks → entered StateBlocked
+	//   2. Applied deterministic fix (STALE_HEAD → Repair) → re-entered drain
+	//   3. Received DONE → entered branch review → PASS → reached final merge gate
+	// If BlockedTasks was NOT wired, the controller would have taken the
+	// "no blocked tasks" branch and returned ErrHumanGateRequired with
+	// "blocked with no tasks" — not reached final merge gate.
+	if err != ErrHumanGateRequired {
+		t.Fatalf("expected ErrHumanGateRequired at final merge gate, got %v", err)
+	}
+	if c.State != StateFinalMergeGate {
+		t.Errorf("State = %q, want final_merge_gate", c.State)
+	}
+}
+
 func TestControllerBlockedDeterministicFix(t *testing.T) {
 	dir := t.TempDir()
 	ws, _ := NewWorkspace(dir)

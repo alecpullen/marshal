@@ -88,7 +88,7 @@ func TestFakeGitOpsMergeFFConflict(t *testing.T) {
 	fake.SetRef("sdd/T1", "abc123")
 	// Simulate a non-fast-forward.
 	fake.SetMergeFFError("sdd/T1", fmt.Errorf("not a fast forward"))
-	if err := fake.MergeFF("sdd/T1", "main"); err == nil {
+	if err := fake.MergeFF("sdd/T1"); err == nil {
 		t.Fatal("expected merge conflict error, got nil")
 	}
 }

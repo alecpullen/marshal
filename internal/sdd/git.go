@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // GitOps is the typed seam over git operations. Every SDD subsystem that
@@ -84,4 +85,135 @@ func (g CLIGitOps) Commit(message string) error {
 
 func (g CLIGitOps) DiffStat(from, to string) (string, error) {
 	return g.run("diff", "--stat", from+".."+to)
+}
+
+// FakeGitOps is an in-memory GitOps for tests. It records every call and
+// returns canned results. It is safe for concurrent use within a single test.
+type FakeGitOps struct {
+	mu        sync.Mutex
+	refs      map[string]string     // ref -> sha
+	calls     map[string][][]string // subcommand -> args history
+	worktrees map[string]bool       // path -> exists
+	mergeErrs map[string]error      // branch -> error to return from MergeFF
+	branches  map[string]bool       // branch -> exists
+}
+
+// NewFakeGitOps builds an empty fake.
+func NewFakeGitOps() *FakeGitOps {
+	return &FakeGitOps{
+		refs:      map[string]string{},
+		calls:     map[string][][]string{},
+		worktrees: map[string]bool{},
+		mergeErrs: map[string]error{},
+		branches:  map[string]bool{},
+	}
+}
+
+func (f *FakeGitOps) record(sub string, args []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[sub] = append(f.calls[sub], args)
+}
+
+// Calls returns the recorded args for a git subcommand (e.g. "worktree").
+func (f *FakeGitOps) Calls(sub string) [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]string(nil), f.calls[sub]...)
+}
+
+// SetRef makes RevParse(ref) return sha.
+func (f *FakeGitOps) SetRef(ref, sha string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refs[ref] = sha
+	if strings.HasPrefix(ref, "refs/heads/") {
+		f.branches[strings.TrimPrefix(ref, "refs/heads/")] = true
+	} else if !strings.HasPrefix(ref, "refs/") && ref != "HEAD" {
+		f.branches[ref] = true
+	}
+}
+
+// SetBranch marks a branch as existing without a ref.
+func (f *FakeGitOps) SetBranch(branch string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.branches[branch] = true
+}
+
+// SetMergeFFError makes MergeFF(branch, _) return err.
+func (f *FakeGitOps) SetMergeFFError(branch string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mergeErrs[branch] = err
+}
+
+func (f *FakeGitOps) RevParse(ref string) (string, error) {
+	f.record("rev-parse", []string{ref})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if sha, ok := f.refs[ref]; ok {
+		return sha, nil
+	}
+	if sha, ok := f.refs["refs/heads/"+ref]; ok {
+		return sha, nil
+	}
+	return "", fmt.Errorf("sdd git fake: unknown ref %q", ref)
+}
+
+func (f *FakeGitOps) CurrentBranch() (string, error) {
+	f.record("rev-parse", []string{"--abbrev-ref", "HEAD"})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if b, ok := f.refs["HEAD_BRANCH"]; ok {
+		return b, nil
+	}
+	return "main", nil
+}
+
+func (f *FakeGitOps) BranchExists(branch string) bool {
+	f.record("rev-parse", []string{"--verify", "--quiet", "refs/heads/" + branch})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.branches[branch]
+}
+
+func (f *FakeGitOps) WorktreeAdd(path, branch, startPoint string) error {
+	f.record("worktree", []string{"add", "-b", branch, path, startPoint})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.branches[branch] {
+		return fmt.Errorf("sdd git fake: branch %s already exists", branch)
+	}
+	f.branches[branch] = true
+	f.worktrees[path] = true
+	return nil
+}
+
+func (f *FakeGitOps) WorktreeRemove(path string) error {
+	f.record("worktree", []string{"remove", "--force", path})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.worktrees, path)
+	return nil
+}
+
+func (f *FakeGitOps) MergeFF(branch, target string) error {
+	f.record("merge", []string{"--ff-only", branch})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err, ok := f.mergeErrs[branch]; ok {
+		return err
+	}
+	return nil
+}
+
+func (f *FakeGitOps) Commit(message string) error {
+	f.record("commit", []string{"-m", message})
+	return nil
+}
+
+func (f *FakeGitOps) DiffStat(from, to string) (string, error) {
+	f.record("diff", []string{"--stat", from + ".." + to})
+	return "", nil
 }

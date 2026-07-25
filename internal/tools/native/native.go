@@ -119,6 +119,10 @@ type toolSet struct {
 	// resolveEmbedder returns the configured Embedder or an error. Injected so
 	// tests can supply a fake; production wiring resolves via the router.
 	resolveEmbedder func() (embedding.Embedder, error)
+
+	// lsp is an optional LSPQuerier for symbol-name-addressed definition,
+	// references, and hover tools. nil when LSP is unavailable.
+	lsp LSPQuerier
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -150,6 +154,9 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
 		tools.codebaseSearchTool(),
+		tools.referencesTool(),
+		tools.definitionTool(),
+		tools.hoverTool(),
 	}
 	if recallToolEnabled(tools.config.Session.Rollover) {
 		all = append(all, tools.recallHistoryTool())

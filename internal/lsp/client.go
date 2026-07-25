@@ -19,6 +19,8 @@ type Client struct {
 	nextID  int
 	pending map[int]chan json.RawMessage
 
+	writeMu sync.Mutex // serializes writes to c.w (server stdin)
+
 	diagMu sync.Mutex
 	diags  map[string][]Diagnostic
 
@@ -38,6 +40,13 @@ func newClient(w io.Writer, r io.Reader) *Client {
 }
 
 func (c *Client) Close() { close(c.closed) }
+
+// writeMessage serializes a framed message to the server's stdin.
+func (c *Client) writeMessage(body []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return writeMessage(c.w, body)
+}
 
 func writeMessage(w io.Writer, body []byte) error {
 	if _, err := fmt.Fprintf(w, "Content-Length: %d\r\n\r\n", len(body)); err != nil {
@@ -139,7 +148,7 @@ func (c *Client) Request(ctx context.Context, method string, params any) (json.R
 	if err != nil {
 		return nil, err
 	}
-	if err := writeMessage(c.w, body); err != nil {
+	if err := c.writeMessage(body); err != nil {
 		return nil, err
 	}
 	select {
@@ -158,7 +167,7 @@ func (c *Client) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	return writeMessage(c.w, body)
+	return c.writeMessage(body)
 }
 
 // Initialize performs the handshake.

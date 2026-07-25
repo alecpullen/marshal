@@ -154,6 +154,22 @@ func (r *Report) Validate() error {
 	return nil
 }
 
+// parseReportFromString parses a normalized report string into a Report.
+// It does NOT read from disk; it extracts the status from the first status
+// line and treats the rest as Body.
+func parseReportFromString(taskID, content string) *Report {
+	var status ReportStatus
+	if m := statusLineRe.FindStringSubmatch(content); m != nil {
+		status = ReportStatus(strings.ToUpper(m[1]))
+	}
+	body := content
+	if idx := statusLineRe.FindStringIndex(content); idx != nil && idx[0] == 0 {
+		body = content[idx[1]:]
+		body = strings.TrimLeft(body, "\r\n")
+	}
+	return &Report{TaskID: taskID, Status: status, Body: body}
+}
+
 func knownReportStatus(s ReportStatus) bool {
 	switch s {
 	case ReportDone, ReportBlocked, ReportNeedsContext,

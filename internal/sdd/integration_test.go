@@ -213,3 +213,98 @@ func TestIntegrationRetryFlow(t *testing.T) {
 		t.Errorf("final state = %v, want StateFinalMergeGate or StateFinalize", c.State)
 	}
 }
+
+func TestIntegrationResume(t *testing.T) {
+	ws, err := sdd.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.Ensure()
+	git := sdd.NewFakeGitOps()
+	// Seed the pipeline branch + 3 task branches.
+	git.SetRef("sdd/feature", "base123")
+	for _, id := range []string{"T1", "T2", "T3"} {
+		git.SetRef("sdd/"+id, "base123")
+		git.SetBranch("sdd/" + id)
+	}
+	dag := &sdd.DAG{Tasks: []sdd.DAGTask{
+		{ID: "T1", Title: "Foundation", Status: sdd.TaskPending},
+		{ID: "T2", Title: "Build", Status: sdd.TaskPending, Deps: []string{"T1"}},
+		{ID: "T3", Title: "Verify", Status: sdd.TaskPending, Deps: []string{"T2"}},
+	}}
+	rs := &sdd.RepoState{Branch: "sdd/feature", TargetBranch: "main", Head: "base123", Merged: []string{}}
+	progress := &sdd.Progress{}
+	ss := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+
+	// Seed an approved spec so the controller skips the spec gate.
+	os.WriteFile(filepath.Join(ws.Dir(), "spec.md"), []byte("---\nstatus: approved\n---\n```yaml\ntasks:\n  - id: T1\n    title: Foundation\n    deps: []\n  - id: T2\n    title: Build\n    deps: [T1]\n  - id: T3\n    title: Verify\n    deps: [T2]\n```\n"), 0644)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var callCount int
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		return &agent.Runner{RunTaskFunc: func(ctx context.Context, goal string) (*agent.Task, error) {
+			callCount++
+			switch role {
+			case routing.RoleSDDOrchestrator:
+				if callCount == 1 {
+					// First call: merge T1, return DONE with next_action: drain
+					// so the controller loops back to drain.
+					dag.Tasks[0].Status = sdd.TaskMerged
+					rs.MarkMerged("T1")
+					return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: DONE\nbatch_id: 1\ndispatched: [T1]\nmerged: [T1]\nblocked_tasks: []\nhealth_alerts: []\nedit_guard: clean\nnext_action: drain\n"}, nil
+				}
+				if callCount == 2 {
+					// Second call: cancel context to interrupt mid-drain.
+					cancel()
+					return nil, ctx.Err()
+				}
+				// Subsequent calls (from second controller): merge remaining tasks.
+				var dispatched []string
+				for i := range dag.Tasks {
+					if dag.Tasks[i].Status != sdd.TaskMerged {
+						dag.Tasks[i].Status = sdd.TaskMerged
+						rs.MarkMerged(dag.Tasks[i].ID)
+						dispatched = append(dispatched, dag.Tasks[i].ID)
+					}
+				}
+				merged := rs.Merged
+				return &agent.Task{Status: agent.TaskStatusCompleted, Summary: fmt.Sprintf("status: DONE\nbatch_id: %d\ndispatched: [%s]\nmerged: [%s]\nblocked_tasks: []\nhealth_alerts: []\nedit_guard: clean\nnext_action: branch_review\n", callCount, strings.Join(dispatched, ","), strings.Join(merged, ","))}, nil
+			case routing.RoleSDDBranchReviewer:
+				os.MkdirAll(filepath.Join(ws.Dir(), "reports"), 0755)
+				os.WriteFile(filepath.Join(ws.Dir(), "reports", "branch.md"), []byte("status: PASS\nverdict: approve\n"), 0644)
+				return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: PASS"}, nil
+			}
+			return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: DONE"}, nil
+		}}, nil
+	}
+
+	// First controller: run, gets interrupted mid-drain after merging T1.
+	c1 := sdd.NewController(ws, git, dag, rs, progress, factory, routing.Config{}, ss, "sdd/feature", "main")
+	c1.State = sdd.StateDecompose
+
+	err = c1.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Run returned %v, want context.Canceled", err)
+	}
+	if len(rs.Merged) != 1 || rs.Merged[0] != "T1" {
+		t.Errorf("after first run: merged = %v, want [T1]", rs.Merged)
+	}
+
+	// Second controller: same ws/dag/rs, resumes from Decompose.
+	c2 := sdd.NewController(ws, git, dag, rs, progress, factory, routing.Config{}, ss, "sdd/feature", "main")
+	c2.State = sdd.StateDecompose
+
+	// Use a fresh context (the old one is cancelled).
+	err = c2.Run(context.Background())
+	if err != nil && !errors.Is(err, sdd.ErrHumanGateRequired) {
+		t.Fatalf("second Run: %v", err)
+	}
+	if len(rs.Merged) != 3 {
+		t.Errorf("after second run: merged = %v, want 3 tasks", rs.Merged)
+	}
+	if c2.State != sdd.StateFinalMergeGate && c2.State != sdd.StateFinalize {
+		t.Errorf("final state = %v, want StateFinalMergeGate or StateFinalize", c2.State)
+	}
+}

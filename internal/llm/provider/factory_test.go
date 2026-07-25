@@ -188,7 +188,7 @@ func TestNewFromConfigErrorsOnUnsupportedProviderType(t *testing.T) {
 
 func TestNewFromConfigRejectsOllamaType(t *testing.T) {
 	// "ollama" is an embedding-only Type; the chat factory must reject it.
-	_, err := NewFromConfig("ollama", config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434"})
+	_, err := NewFromConfig("ollama", config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434"}, "", false)
 	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("want unsupported type error, got %v", err)
 	}

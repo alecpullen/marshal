@@ -54,8 +54,8 @@ func TestFooterApprovalWording(t *testing.T) {
 	if strings.Contains(out, "Enter×2") {
 		t.Fatalf("stale 'Enter×2' label still present: %q", out)
 	}
-	if !strings.Contains(out, "Enter select") || !strings.Contains(out, "Enter again confirm") {
-		t.Fatalf("expected 'Enter select' and 'Enter again confirm', got %q", out)
+	if !strings.Contains(out, "Enter arm") || !strings.Contains(out, "Enter submit") {
+		t.Fatalf("expected 'Enter arm' and 'Enter submit', got %q", out)
 	}
 }
 

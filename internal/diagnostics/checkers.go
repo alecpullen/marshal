@@ -18,16 +18,33 @@ func execRunner(ctx context.Context, name string, args ...string) ([]byte, error
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
+// LSPSource is an optional diagnostics source that is consulted before the
+// configured command checkers. When it returns ok=true, its output is used
+// directly; otherwise the Checker falls back to running configured commands.
+type LSPSource interface {
+	Diagnostics(lang, filePath string) (string, bool)
+}
+
 type Checker struct {
 	commands map[string]string
 	runner   Runner
+	lsp      LSPSource
 }
+
+// SetLSPSource installs an LSP diagnostics source consulted before the
+// configured command checkers.
+func (c *Checker) SetLSPSource(src LSPSource) { c.lsp = src }
 
 func NewChecker(commands map[string]string) *Checker {
 	return &Checker{commands: commands, runner: execRunner}
 }
 
 func (c *Checker) Check(files []string, language string) (string, error) {
+	if c.lsp != nil && len(files) > 0 {
+		if out, ok := c.lsp.Diagnostics(language, files[0]); ok {
+			return out, nil
+		}
+	}
 	tmpl, ok := c.commands[language]
 	if !ok {
 		if language == "go" {

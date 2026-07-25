@@ -170,8 +170,13 @@ def save_ledger(ledger: Path, lines: List[str]) -> None:
 
 IMPLEMENTER_PROMPT = """You are the sdd-implementer subagent for Task {task_num}: {task_title}.
 
+## Source of truth
+
 Read your task brief first: {brief_path}
-It contains the full task text from the plan.
+The brief contains the exact requirements, exact file paths, and often exact
+code blocks. Treat it as authoritative. When the brief provides code, use it
+verbatim unless there is a clear reason not to. Avoid open-ended exploration;
+only read/write the files named in the brief.
 
 ## Context
 
@@ -195,9 +200,12 @@ unclear in the brief, ask them now in your response. Otherwise proceed.
 
 ## Working notes
 
-- Run focused tests during iteration; run the full suite once before committing.
+- Follow the numbered steps in the brief in order.
+- Run focused tests during iteration; run the relevant package tests before committing.
 - Use `gofmt -w .` before committing.
 - Do not modify files outside the task scope.
+- Do not get stuck reading the same files repeatedly; if the brief already gives
+  you the code, use it.
 
 ## Report Format
 

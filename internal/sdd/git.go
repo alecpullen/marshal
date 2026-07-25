@@ -33,6 +33,9 @@ type GitOps interface {
 	Commit(message string) error
 	// DiffStat returns the `git diff --stat` output between two refs.
 	DiffStat(from, to string) (string, error)
+	// IsAncestor reports whether ancestor is an ancestor of descendant
+	// (git merge-base --is-ancestor). Used by branch-base-guard.
+	IsAncestor(ancestor, descendant string) (bool, error)
 }
 
 // CLIGitOps shells out to the git CLI. Dir is the repo working directory.
@@ -83,6 +86,18 @@ func (g CLIGitOps) Commit(message string) error {
 	return err
 }
 
+func (g CLIGitOps) IsAncestor(ancestor, descendant string) (bool, error) {
+	_, err := g.run("merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return true, nil
+	}
+	// git merge-base --is-ancestor exits 1 when not an ancestor (not a real error).
+	if strings.Contains(err.Error(), "exit status 1") {
+		return false, nil
+	}
+	return false, err
+}
+
 func (g CLIGitOps) DiffStat(from, to string) (string, error) {
 	return g.run("diff", "--stat", from+".."+to)
 }
@@ -91,12 +106,13 @@ func (g CLIGitOps) DiffStat(from, to string) (string, error) {
 // returns canned results. It is safe for concurrent use within a single test.
 type FakeGitOps struct {
 	mu        sync.Mutex
-	refs      map[string]string     // ref -> sha
-	calls     map[string][][]string // subcommand -> args history
-	worktrees map[string]bool       // path -> exists
-	mergeErrs map[string]error      // branch -> error to return from MergeFF
-	branches  map[string]bool       // branch -> exists
-	diffStats map[string]string     // "from..to" -> canned DiffStat output
+	refs      map[string]string          // ref -> sha
+	calls     map[string][][]string      // subcommand -> args history
+	worktrees map[string]bool            // path -> exists
+	mergeErrs map[string]error           // branch -> error to return from MergeFF
+	branches  map[string]bool            // branch -> exists
+	diffStats map[string]string          // "from..to" -> canned DiffStat output
+	ancestors map[string]map[string]bool // ancestor -> set of descendants
 }
 
 // NewFakeGitOps builds an empty fake.
@@ -108,6 +124,7 @@ func NewFakeGitOps() *FakeGitOps {
 		mergeErrs: map[string]error{},
 		branches:  map[string]bool{},
 		diffStats: map[string]string{},
+		ancestors: map[string]map[string]bool{},
 	}
 }
 
@@ -213,6 +230,23 @@ func (f *FakeGitOps) MergeFF(branch string) error {
 func (f *FakeGitOps) Commit(message string) error {
 	f.record("commit", []string{"-m", message})
 	return nil
+}
+
+// SetAncestor records that ancestor is an ancestor of descendant.
+func (f *FakeGitOps) SetAncestor(ancestor, descendant string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ancestors[ancestor] == nil {
+		f.ancestors[ancestor] = map[string]bool{}
+	}
+	f.ancestors[ancestor][descendant] = true
+}
+
+func (f *FakeGitOps) IsAncestor(ancestor, descendant string) (bool, error) {
+	f.record("merge-base", []string{"--is-ancestor", ancestor, descendant})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ancestors[ancestor][descendant], nil
 }
 
 // SetDiffStat makes DiffStat(from, to) return output.

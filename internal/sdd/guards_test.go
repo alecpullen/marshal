@@ -81,6 +81,36 @@ func TestEditGuardEmptyDiffPasses(t *testing.T) {
 	}
 }
 
+func TestBranchBaseGuardOK(t *testing.T) {
+	git := NewFakeGitOps()
+	git.SetRef("sdd/feature", "pipe123")
+	git.SetRef("main", "main123")
+	git.SetAncestor("main123", "pipe123") // main is ancestor of pipeline
+	rs := &RepoState{Branch: "sdd/feature", TargetBranch: "main"}
+	r := BranchBaseGuard(git, rs)
+	if !r.Pass {
+		t.Fatalf("expected BASE_OK, got %+v", r)
+	}
+	if r.Event != "BASE_OK" {
+		t.Errorf("Event = %q", r.Event)
+	}
+}
+
+func TestBranchBaseGuardWrongBase(t *testing.T) {
+	git := NewFakeGitOps()
+	git.SetRef("sdd/feature", "pipe123")
+	git.SetRef("main", "main123")
+	// main is NOT an ancestor of pipeline (faked).
+	rs := &RepoState{Branch: "sdd/feature", TargetBranch: "main"}
+	r := BranchBaseGuard(git, rs)
+	if r.Pass {
+		t.Fatal("expected WRONG_BASE")
+	}
+	if r.Event != "WRONG_BASE" {
+		t.Errorf("Event = %q", r.Event)
+	}
+}
+
 func TestAllowedFilesCheckBulletStripping(t *testing.T) {
 	git := NewFakeGitOps()
 	git.SetDiffStat("base123", "sdd/T1", " internal/foo.go | 2 +-\n")

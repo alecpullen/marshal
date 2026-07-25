@@ -81,6 +81,35 @@ func EditGuard(git GitOps, pipelineBranch, pipelineBase string, dag *DAG) GuardR
 	return GuardResult{Pass: false, Event: "ORCHESTRATOR_EDIT", Files: violations, Reason: "orchestrator edited source files on the pipeline branch"}
 }
 
+// BranchBaseGuard verifies the pipeline branch is not behind the target
+// branch (spec §9). Returns BASE_OK when the target HEAD is an ancestor of
+// the pipeline HEAD; WRONG_BASE otherwise. Called before task-merge and
+// task-finalize.
+func BranchBaseGuard(git GitOps, rs *RepoState) GuardResult {
+	if rs.Branch == "" || rs.TargetBranch == "" {
+		return GuardResult{Pass: false, Event: "WRONG_BASE", Reason: "branch or target_branch not set"}
+	}
+	pipelineHead, err := git.RevParse(rs.Branch)
+	if err != nil {
+		return GuardResult{Pass: false, Event: "WRONG_BASE", Reason: "rev-parse pipeline branch: " + err.Error()}
+	}
+	targetHead, err := git.RevParse(rs.TargetBranch)
+	if err != nil {
+		return GuardResult{Pass: false, Event: "WRONG_BASE", Reason: "rev-parse target branch: " + err.Error()}
+	}
+	if pipelineHead == targetHead {
+		return GuardResult{Pass: true, Event: "BASE_OK"}
+	}
+	ok, err := git.IsAncestor(targetHead, pipelineHead)
+	if err != nil {
+		return GuardResult{Pass: false, Event: "WRONG_BASE", Reason: "merge-base check failed: " + err.Error()}
+	}
+	if ok {
+		return GuardResult{Pass: true, Event: "BASE_OK"}
+	}
+	return GuardResult{Pass: false, Event: "WRONG_BASE", Reason: "pipeline branch does not contain target HEAD"}
+}
+
 // parseAllowedFiles extracts file paths from the Allowed Files section body,
 // stripping bullet prefixes ("- ", "* ") and whitespace.
 func parseAllowedFiles(body string) []string {

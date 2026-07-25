@@ -37,7 +37,7 @@ func AuditGate(ws *Workspace, taskID string) GateResult {
 	case ReportPass:
 		return GateResult{Decision: DecisionAccept, Event: "AUDIT_PASS", KV: []string{"task", taskID}}
 	case ReportFail:
-		return GateResult{Decision: DecisionBlock, Event: "AUDIT_FAIL", KV: []string{"task", taskID}}
+		return GateResult{Decision: DecisionBlock, Event: "AUDIT_FAIL", Reason: "audit failed", KV: []string{"task", taskID}}
 	default:
 		return GateResult{Decision: DecisionBlock, Event: "AUDIT_FAIL", Reason: fmt.Sprintf("unexpected audit status %q", rep.Status), KV: []string{"task", taskID}}
 	}

@@ -16,8 +16,8 @@ func DetectLoops(progress *Progress, ws *Workspace, windowSize int) (*HealthAler
 	}
 	signatures := map[string]int{}
 	for _, line := range lines {
-		// Only count dispatch events.
-		if !strings.Contains(line, " DISPATCH_") {
+		// Only count dispatch events (spec §13: DISPATCH_IMPL, DISPATCH_AUDIT, DISPATCH_REVIEW).
+		if !(strings.Contains(line, " DISPATCH_IMPL ") || strings.Contains(line, " DISPATCH_AUDIT ") || strings.Contains(line, " DISPATCH_REVIEW ")) {
 			if strings.Contains(line, " MERGED ") {
 				// A merge resets the loop counter for any in-flight dispatches.
 				signatures = map[string]int{}

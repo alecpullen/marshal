@@ -35,9 +35,11 @@ func Merge(git GitOps, ws *Workspace, progress *Progress, dag *DAG, rs *RepoStat
 	}
 	// Update state.
 	if err := rs.MarkMerged(taskID); err != nil {
+		_ = progress.Append(ws, taskID, "BLOCKED", "reason", "mark_merged", "detail", err.Error())
 		return MergeResult{Merged: false, TaskID: taskID, Event: "BLOCKED", Reason: "mark merged: " + err.Error()}
 	}
 	if err := dag.SetTaskStatus(taskID, TaskMerged); err != nil {
+		_ = progress.Append(ws, taskID, "BLOCKED", "reason", "set_status", "detail", err.Error())
 		return MergeResult{Merged: false, TaskID: taskID, Event: "BLOCKED", Reason: "set status: " + err.Error()}
 	}
 	// Update ReviewedHead to the new pipeline HEAD.

@@ -203,4 +203,28 @@ CREATE TABLE IF NOT EXISTS token_calibration (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_token_cal_project ON token_calibration(project_id, session_id);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    file_path   TEXT NOT NULL,
+    file_hash   TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    symbol_name TEXT,
+    start_line  INTEGER NOT NULL,
+    end_line    INTEGER NOT NULL,
+    content     TEXT NOT NULL,
+    token_count INTEGER NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_project_file ON chunks(project_id, file_path);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+    model    TEXT NOT NULL,
+    dim      INTEGER NOT NULL,
+    vector   BLOB NOT NULL,
+    PRIMARY KEY (chunk_id)
+);
 `

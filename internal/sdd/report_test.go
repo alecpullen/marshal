@@ -109,3 +109,75 @@ func TestReportValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOrchestratorReportDone(t *testing.T) {
+	text := `status: DONE
+batch_id: 3
+dispatched: [T2, T3]
+merged: [T1, T4]
+blocked_tasks: []
+health_alerts: []
+edit_guard: clean
+next_action: drain
+`
+	r, err := ParseOrchestratorReport(text)
+	if err != nil {
+		t.Fatalf("ParseOrchestratorReport: %v", err)
+	}
+	if r.Status != ReportDone {
+		t.Errorf("Status = %q, want DONE", r.Status)
+	}
+	if r.BatchID != 3 {
+		t.Errorf("BatchID = %d", r.BatchID)
+	}
+	if len(r.Dispatched) != 2 || r.Dispatched[0] != "T2" {
+		t.Errorf("Dispatched = %v", r.Dispatched)
+	}
+	if len(r.Merged) != 2 || r.Merged[1] != "T4" {
+		t.Errorf("Merged = %v", r.Merged)
+	}
+	if r.NextAction != "drain" {
+		t.Errorf("NextAction = %q", r.NextAction)
+	}
+}
+
+func TestParseOrchestratorReportBlocked(t *testing.T) {
+	text := `status: BLOCKED
+batch_id: 2
+dispatched: [T5]
+merged: []
+blocked_tasks:
+  - task: T5
+    reason: REBASE_CONFLICT
+    detail: sdd/T5 cannot rebase onto sdd/feature
+    files_in_conflict: [internal/foo.go]
+health_alerts: []
+edit_guard: clean
+next_action: surface_blockers
+`
+	r, err := ParseOrchestratorReport(text)
+	if err != nil {
+		t.Fatalf("ParseOrchestratorReport: %v", err)
+	}
+	if r.Status != ReportBlocked {
+		t.Errorf("Status = %q, want BLOCKED", r.Status)
+	}
+	if len(r.BlockedTasks) != 1 {
+		t.Fatalf("BlockedTasks len = %d", len(r.BlockedTasks))
+	}
+	bt := r.BlockedTasks[0]
+	if bt.Task != "T5" || bt.Reason != "REBASE_CONFLICT" {
+		t.Errorf("BlockedTask = %+v", bt)
+	}
+	if len(bt.FilesInConflict) != 1 || bt.FilesInConflict[0] != "internal/foo.go" {
+		t.Errorf("FilesInConflict = %v", bt.FilesInConflict)
+	}
+}
+
+func TestParseOrchestratorReportMissingStatus(t *testing.T) {
+	text := "batch_id: 1\n"
+	_, err := ParseOrchestratorReport(text)
+	if err == nil {
+		t.Fatal("expected error for missing status")
+	}
+}

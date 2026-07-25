@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -168,6 +169,142 @@ func parseReportFromString(taskID, content string) *Report {
 		body = strings.TrimLeft(body, "\r\n")
 	}
 	return &Report{TaskID: taskID, Status: status, Body: body}
+}
+
+// OrchestratorReport is the structured report the orchestrator returns in
+// task.Summary after one drain iteration. The controller parses this to
+// decide the next state-machine transition.
+type OrchestratorReport struct {
+	Status       ReportStatus
+	BatchID      int
+	Dispatched   []string
+	Merged       []string
+	BlockedTasks []BlockedTask
+	HealthAlerts []string
+	EditGuard    string
+	NextAction   string
+}
+
+// BlockedTask is one entry in the orchestrator's blocked_tasks list.
+type BlockedTask struct {
+	Task            string
+	Reason          string
+	Detail          string
+	FilesInConflict []string
+}
+
+// ParseOrchestratorReport parses the line-oriented structured report the
+// orchestrator returns. The format is YAML-ish (not strict YAML): top-level
+// `key: value` lines, with `blocked_tasks:` introducing a YAML-style list of
+// `- task: T5` / `    reason: ...` blocks.
+func ParseOrchestratorReport(text string) (*OrchestratorReport, error) {
+	r := &OrchestratorReport{}
+	lines := strings.Split(text, "\n")
+	var statusFound bool
+	var inBlockedTasks bool
+	var currentBlocked *BlockedTask
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Top-level key: value.
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			inBlockedTasks = false
+			key, val, ok := splitKV(trimmed)
+			if !ok {
+				continue
+			}
+			switch key {
+			case "status":
+				r.Status = ReportStatus(strings.TrimSpace(val))
+				statusFound = true
+			case "batch_id":
+				if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+					r.BatchID = n
+				}
+			case "dispatched":
+				r.Dispatched = parseBracketList(val)
+			case "merged":
+				r.Merged = parseBracketList(val)
+			case "blocked_tasks":
+				if strings.TrimSpace(val) == "[]" {
+					r.BlockedTasks = []BlockedTask{}
+				} else {
+					inBlockedTasks = true
+					r.BlockedTasks = []BlockedTask{}
+				}
+			case "health_alerts":
+				r.HealthAlerts = parseBracketList(val)
+			case "edit_guard":
+				r.EditGuard = strings.TrimSpace(val)
+			case "next_action":
+				r.NextAction = strings.TrimSpace(val)
+			}
+			continue
+		}
+		// Indented line under blocked_tasks.
+		if inBlockedTasks {
+			if strings.HasPrefix(strings.TrimSpace(line), "- task:") {
+				if currentBlocked != nil {
+					r.BlockedTasks = append(r.BlockedTasks, *currentBlocked)
+				}
+				currentBlocked = &BlockedTask{}
+				_, v, _ := splitKV(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- ")))
+				currentBlocked.Task = strings.TrimSpace(v)
+			} else if currentBlocked != nil {
+				key, val, ok := splitKV(strings.TrimSpace(line))
+				if !ok {
+					continue
+				}
+				switch key {
+				case "reason":
+					currentBlocked.Reason = strings.TrimSpace(val)
+				case "detail":
+					currentBlocked.Detail = strings.TrimSpace(val)
+				case "files_in_conflict":
+					currentBlocked.FilesInConflict = parseBracketList(val)
+				}
+			}
+		}
+	}
+	if currentBlocked != nil {
+		r.BlockedTasks = append(r.BlockedTasks, *currentBlocked)
+	}
+	if !statusFound {
+		return nil, fmt.Errorf("sdd report: missing status line")
+	}
+	return r, nil
+}
+
+// splitKV splits "key: value" into (key, value, true). Returns ("", "", false)
+// if the line has no colon.
+func splitKV(line string) (string, string, bool) {
+	idx := strings.Index(line, ":")
+	if idx < 0 {
+		return "", "", false
+	}
+	return strings.TrimSpace(line[:idx]), line[idx+1:], true
+}
+
+// parseBracketList parses "[T1, T2]" into ["T1", "T2"]. Returns nil for "[]".
+func parseBracketList(s string) []string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "[")
+	s = strings.TrimSuffix(s, "]")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func knownReportStatus(s ReportStatus) bool {

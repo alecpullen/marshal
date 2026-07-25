@@ -213,6 +213,40 @@ func MergeMemories(pack Pack, memories []MemoryNote, maxTokens int, now func() t
 	return buildPackFromSections(sections, maxTokens, generatedAt)
 }
 
+func newSemanticSection(snippets []FileSnippet) (Section, bool) {
+	var parts []string
+	for _, s := range snippets {
+		content, ok := trimSectionContent(s.Content)
+		if !ok {
+			continue
+		}
+		src := s.Path
+		if s.StartLine > 0 && s.EndLine > 0 {
+			src = fmt.Sprintf("%s:%d-%d", s.Path, s.StartLine, s.EndLine)
+		}
+		parts = append(parts, fmt.Sprintf("%s\n%s", src, content))
+	}
+	if len(parts) == 0 {
+		return Section{}, false
+	}
+	return Section{
+		Kind:     SectionSemantic,
+		Title:    "Relevant Code",
+		Priority: 35,
+		Content:  strings.Join(parts, "\n\n"),
+	}, true
+}
+
+// MergeSemanticContext replaces any existing semantic section with one built
+// from snippets, inserted before file-snippet/tool-output sections, then
+// rebudgets within maxTokens. Empty snippets removes the section.
+func MergeSemanticContext(pack Pack, snippets []FileSnippet, maxTokens int, now func() time.Time) Pack {
+	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
+	sec, ok := newSemanticSection(snippets)
+	sections := replaceSection(pack.Sections, SectionSemantic, sec, ok, SectionFileSnippet, SectionToolOutput)
+	return buildPackFromSections(sections, maxTokens, generatedAt)
+}
+
 func truncateToTokens(content string, maxTokens int) (string, bool) {
 	if maxTokens <= 0 {
 		return "", false

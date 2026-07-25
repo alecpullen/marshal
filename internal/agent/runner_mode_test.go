@@ -7,9 +7,18 @@ import (
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
+	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
+
+// fakeCommandRunner is a minimal CommandRunner for tests that need
+// native.RegisterAll but never actually execute commands.
+type fakeCommandRunner struct{}
+
+func (f *fakeCommandRunner) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+	return native.CommandResult{}, nil
+}
 
 // TestAutoModeBlocksAskUser verifies that in auto mode, an ask_user
 // action gets a correction message instead of blocking on the user.
@@ -102,6 +111,49 @@ func TestEditModeAllowsAskUser(t *testing.T) {
 	}
 	if task.Summary != "Archived as requested." {
 		t.Fatalf("Summary = %q", task.Summary)
+	}
+}
+
+// TestDefaultModeBlocksFileWritePatch verifies that in default mode,
+// a file.write_patch tool call is denied with a clear message.
+func TestDefaultModeBlocksFileWritePatch(t *testing.T) {
+	reg := registry.New()
+	if err := native.RegisterAll(reg, native.Options{
+		WorkspaceRoot:  t.TempDir(),
+		CommandRunner:  &fakeCommandRunner{},
+		Guardrail:      func(string) error { return nil },
+		MaxOutputBytes: 1000,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	pol.WithRegistry(reg)
+	pol.SetApprovalMode(policy.ModeDefault)
+
+	state := newTestState(t)
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			`{"rationale":"edit","action":{"type":"tool_call","tool":"file.write_patch","args":{"patch":"*** Begin Patch\nFile: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n*** End Patch"}}}`,
+			`{"rationale":"done","action":{"type":"final","content":"I was blocked."}}`,
+		},
+	}
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	err := runner.Run(context.Background(), "change a.go")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The denial message is fed back to the model in the next provider request.
+	second := p.Requests[len(p.Requests)-1]
+	var denied bool
+	for _, m := range second.Messages {
+		if strings.Contains(m.Content, "denied: in default mode") {
+			denied = true
+			break
+		}
+	}
+	if !denied {
+		t.Fatalf("default mode should deny file.write_patch; no denial found in provider requests")
 	}
 }
 

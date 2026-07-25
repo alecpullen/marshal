@@ -203,7 +203,7 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}) (
 //     early in Evaluate, so any Confirm reaching here is auto-approvable.
 func applyModeTransform(mode ApprovalMode, toolName string, args map[string]interface{}, decision Decision, reason string, reg *registry.Registry) (Decision, string) {
 	switch mode {
-	case ModePlan, ModeDefault:
+	case ModePlan, ModeDefault, "":
 		if decision == DecisionAllow {
 			// Read-only tools and explicitly-allowed read commands pass.
 			return decision, reason
@@ -222,7 +222,14 @@ func applyModeTransform(mode ApprovalMode, toolName string, args map[string]inte
 		}
 		return decision, reason
 	default:
-		return decision, reason
+		// Unknown mode: safest default is deny writes.
+		if decision == DecisionAllow {
+			return decision, reason
+		}
+		if decision == DecisionDeny && isGuardrailDeny(reason) {
+			return decision, reason
+		}
+		return DecisionDeny, fmt.Sprintf("denied: unknown mode %q, cannot modify files; switch to edit/copilot/auto", mode)
 	}
 }
 

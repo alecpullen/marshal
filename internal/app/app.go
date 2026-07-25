@@ -484,7 +484,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		pol.SetLogger(state.Logger())
 	}
 	pol.WithRegistry(reg)
-	pol.SetApprovalMode(policy.ApprovalMode(cfg.Agent.ApprovalMode))
+	pol.SetApprovalMode(parseApprovalMode(cfg.Agent.ApprovalMode))
 
 	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,
@@ -553,6 +553,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.ProjectID = projectID
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
 	runner.Pricing = pricing.Lookup(route.Preset)
+
+	// Defensive: align runner mode with policy engine in case the runner
+	// ever copies the engine instead of sharing it.
+	if runner.Policy != nil && runner.Policy.ApprovalMode() != parseApprovalMode(cfg.Agent.ApprovalMode) {
+		runner.SetApprovalMode(parseApprovalMode(cfg.Agent.ApprovalMode))
+	}
 
 	// T17: wire UsageCounter so the rollover controller can use
 	// provider-reported prompt_tokens as the numerator for context_percent

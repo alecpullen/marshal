@@ -67,7 +67,7 @@ type Controller struct {
 	// session. P5 wires this.
 	UsageSink func(tokens int)
 
-	usageTokens int
+	UsageTokens int
 	usageMax    int
 
 	State         ControllerState
@@ -311,7 +311,7 @@ func (c *Controller) swapOrchestratorModel(preset string) {
 // this method writes the accumulated count to SessionState.
 func (c *Controller) recordUsage() {
 	if c.SessionState != nil {
-		c.SessionState.UpdateSDDTokens(c.usageTokens, c.usageMax)
+		c.SessionState.UpdateSDDTokens(c.UsageTokens, c.usageMax)
 	}
 }
 

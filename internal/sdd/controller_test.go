@@ -226,7 +226,7 @@ func TestControllerRecordUsageUpdatesSession(t *testing.T) {
 	}
 	c := NewController(ws, NewFakeGitOps(), &DAG{}, &RepoState{}, &Progress{}, factory, routing.Config{}, ss, "sdd/feature", "main")
 	// Wire UsageSink to accumulate into the controller's usageTokens.
-	usageSink = func(t int) { c.usageTokens += t }
+	usageSink = func(t int) { c.UsageTokens += t }
 	c.UsageSink = usageSink
 	// Seed an approved spec so Run reaches StateDrainIteration.
 	os.WriteFile(filepath.Join(ws.Dir(), "spec.md"), []byte("---\nstatus: approved\n---\n```yaml\ntasks:\n  - id: T1\n    title: X\n    deps: []\n    files: []\n    acceptance: []\n```\n"), 0644)

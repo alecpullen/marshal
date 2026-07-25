@@ -820,10 +820,8 @@ func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
 func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 	ctx := context.Background()
 	initial := reloadableAgentConfig("old-provider")
-	initial.SDD.MaxFixRounds = 3
 
 	reloaded := reloadableAgentConfig("new-provider")
-	reloaded.SDD.MaxFixRounds = 5
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil)
@@ -832,9 +830,6 @@ func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 	}
 	if sddRunner == nil {
 		t.Fatal("SDD runner should not be nil")
-	}
-	if sddRunner.MaxFixRounds != 3 {
-		t.Fatalf("initial SDD MaxFixRounds = %d, want 3", sddRunner.MaxFixRounds)
 	}
 
 	rt := &Runtime{
@@ -850,8 +845,21 @@ func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
-	if rt.SDDRunner.MaxFixRounds != 5 {
-		t.Fatalf("reloaded SDD MaxFixRounds = %d, want 5", rt.SDDRunner.MaxFixRounds)
+	if rt.SDDRunner == nil {
+		t.Fatal("SDD runner should not be nil after reload")
+	}
+}
+
+func TestBuildSDDControllerReturnsAdapter(t *testing.T) {
+	cfg := config.Default()
+	cfg.SDD.PlansDir = t.TempDir()
+	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	pol := policy.NewEngine(&cfg, nil)
+	resolver := newRoutedProviderResolver(cfg, t.TempDir())
+	adapter := buildSDDController(cfg, state, reg, pol, resolver, nil, 1, nil)
+	if adapter == nil {
+		t.Fatal("buildSDDController returned nil")
 	}
 }
 

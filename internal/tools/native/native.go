@@ -71,6 +71,17 @@ type Options struct {
 	// LSPIndex is an optional LSP-backed symbol provider consulted during
 	// repo.index. nil when LSP is unavailable.
 	LSPIndex index.LSPSymbols
+
+	// ConfigPath is the project-local config file path (.marshal/config.toml).
+	// Required for config.* tools.
+	ConfigPath string
+	// UserConfigPath is the global config file path (~/.config/marshal/config.toml).
+	// Required for config.* global-scope writes.
+	UserConfigPath string
+	// ConfigReloader hot-swaps the agent runtime from a new config. When nil,
+	// config.* write tools are not registered. Mirrors the configReloader seam
+	// wired in app.go.
+	ConfigReloader func(config.Config) error
 }
 
 type CommandRunner interface {
@@ -140,6 +151,10 @@ type toolSet struct {
 	// lspIndex is an optional LSP-backed symbol provider consulted during
 	// repo.index. nil when LSP is unavailable.
 	lspIndex index.LSPSymbols
+
+	configPath     string
+	userConfigPath string
+	configReloader func(config.Config) error
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -181,6 +196,9 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	// agent.run is registered separately by app.Run after the policy engine
 	// is constructed; the native toolset does not have access to the engine
 	// until then. See internal/app/app.go.
+	if tools.configReloader != nil {
+		all = append(all, tools.configTools()...)
+	}
 	if tools.webEnabled {
 		all = append(all, tools.webFetchTool())
 		if tools.webSearchURL != "" {
@@ -279,7 +297,10 @@ func newToolSet(opts Options) (*toolSet, error) {
 			pc := opts.Config.Providers[route.Preset.Provider]
 			return embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
 		},
-		lsp:      opts.LSP,
-		lspIndex: opts.LSPIndex,
+		lsp:            opts.LSP,
+		lspIndex:       opts.LSPIndex,
+		configPath:     opts.ConfigPath,
+		userConfigPath: opts.UserConfigPath,
+		configReloader: opts.ConfigReloader,
 	}, nil
 }

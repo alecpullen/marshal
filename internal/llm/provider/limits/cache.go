@@ -11,7 +11,8 @@ import (
 const (
 	defaultCacheDir = "limits"
 	mergedCacheFile = "merged.json"
-	defaultTTL      = 24 * time.Hour
+	// DefaultTTL is the default time-to-live for the on-disk limit cache.
+	DefaultTTL = 24 * time.Hour
 )
 
 // Cache holds a merged limit table loaded from disk with a timestamp.

@@ -2231,7 +2231,7 @@ func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
 	cfg.CustomAgents = map[string]routing.CustomAgent{
 		"strict": {Name: "strict", Preset: "fast", SystemPrompt: "be strict", ToolDenylist: []string{"file.write_patch"}, ApprovalMode: "plan", MaxIterations: 5},
 	}
-	resolver := newRoutedProviderResolver(cfg)
+	resolver := newRoutedProviderResolver(cfg, "")
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	_ = reg.Register(registry.Tool{Name: "file.write_patch", Risk: registry.RiskWorkspaceWrite})

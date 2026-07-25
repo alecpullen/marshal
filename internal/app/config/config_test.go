@@ -978,3 +978,10 @@ sdd_branch_reviewer = "big"
 		t.Errorf("sdd_branch_reviewer role = %+v", p.Roles[routing.RoleSDDBranchReviewer])
 	}
 }
+
+func TestRemoteLimitDiscoveryDefaultsToRemoteProvidersAllowed(t *testing.T) {
+	cfg := Default()
+	if cfg.Privacy.RemoteLimitDiscovery != cfg.Privacy.RemoteProvidersAllowed {
+		t.Errorf("RemoteLimitDiscovery = %v, want %v", cfg.Privacy.RemoteLimitDiscovery, cfg.Privacy.RemoteProvidersAllowed)
+	}
+}

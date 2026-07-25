@@ -24,7 +24,7 @@ func IsLocalhost(baseURL string) bool {
 
 func Provider(fieldID, name string, pc config.ProviderConfig) tea.Cmd {
 	return func() tea.Msg {
-		p, err := provider.NewFromConfig(name, pc)
+		p, err := provider.NewFromConfig(name, pc, "")
 		if err != nil {
 			return ResultMsg{FieldID: fieldID, Provider: name, Err: err}
 		}

@@ -202,6 +202,7 @@ type routedProviderResolver struct {
 	cfg       config.Config
 	mu        sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
 	providers map[string]provider.Provider
+	dataDir   string
 }
 
 // dbMemoryProvider adapts stored project memories for context-pack
@@ -210,11 +211,12 @@ type dbMemoryProvider struct {
 	db *db.DB
 }
 
-func newRoutedProviderResolver(cfg config.Config) *routedProviderResolver {
+func newRoutedProviderResolver(cfg config.Config, dataDir string) *routedProviderResolver {
 	return &routedProviderResolver{
 		router:    routing.NewStaticRouter(cfg.RoutingConfig()),
 		cfg:       cfg,
 		providers: make(map[string]provider.Provider),
+		dataDir:   dataDir,
 	}
 }
 
@@ -280,7 +282,7 @@ func (r *routedProviderResolver) providerFor(route routing.Route) (provider.Prov
 	if !ok {
 		return nil, fmt.Errorf("routing provider %q is not configured", route.Preset.Provider)
 	}
-	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig)
+	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig, r.dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +395,7 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 }
 
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, error) {
-	resolver := newRoutedProviderResolver(cfg)
+	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
@@ -1070,7 +1072,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		ProjectID:     projectID,
 		SessionID:     sessionID,
 		State:         state,
-		RouteResolver: newRoutedProviderResolver(state.Config),
+		RouteResolver: newRoutedProviderResolver(state.Config, rt.DataDir),
 		WorkingDir:    workingDir,
 		Now:           runOpts.now,
 		Logger:        logger,

@@ -144,3 +144,21 @@ func TestWorkspaceWorktreesDir(t *testing.T) {
 		t.Fatalf("WorktreesDir = %q, want %q", got, want)
 	}
 }
+
+func TestWorkspaceRepoPath(t *testing.T) {
+	dir := t.TempDir()
+	ws, _ := NewWorkspace(dir)
+	want := filepath.Join(dir, ".marshal", "sdd", "state", "repo.json")
+	if got := ws.RepoPath(); got != want {
+		t.Fatalf("RepoPath = %q, want %q", got, want)
+	}
+}
+
+func TestWorkspaceProgressPath(t *testing.T) {
+	dir := t.TempDir()
+	ws, _ := NewWorkspace(dir)
+	want := filepath.Join(dir, ".marshal", "sdd", "progress.md")
+	if got := ws.ProgressPath(); got != want {
+		t.Fatalf("ProgressPath = %q, want %q", got, want)
+	}
+}

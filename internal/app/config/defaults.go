@@ -7,7 +7,7 @@ import (
 )
 
 func Default() Config {
-	return Config{
+	cfg := Config{
 		Project: ProjectConfig{
 			Name:      "marshal",
 			Languages: []string{"go", "markdown"},
@@ -25,6 +25,7 @@ func Default() Config {
 		},
 		Privacy: PrivacyConfig{
 			RemoteProvidersAllowed: false,
+			RemoteLimitDiscovery:   false,
 			RedactSecrets:          true,
 			IncludeGitignoredFiles: false,
 		},
@@ -138,4 +139,6 @@ func Default() Config {
 		// built-in provider assumptions, and provider URLs/keys are
 		// user-specific (see docs/09-configuration-examples.md).
 	}
+	cfg.Privacy.RemoteLimitDiscovery = cfg.Privacy.RemoteProvidersAllowed
+	return cfg
 }

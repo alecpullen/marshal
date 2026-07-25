@@ -979,72 +979,9 @@ sdd_branch_reviewer = "big"
 	}
 }
 
-func TestWatchEnabled(t *testing.T) {
-	tt := true
-	ff := false
-	cases := []struct {
-		watch     *bool
-		embedding bool
-		want      bool
-	}{
-		{nil, true, true},   // auto: on when embedding configured
-		{nil, false, false}, // auto: off otherwise
-		{&tt, false, true},  // explicit on wins
-		{&ff, true, false},  // explicit off wins
-	}
-	for _, c := range cases {
-		if got := WatchEnabled(c.watch, c.embedding); got != c.want {
-			t.Fatalf("WatchEnabled(%v,%v)=%v want %v", c.watch, c.embedding, got, c.want)
-		}
-	}
-}
-
-func TestLoadWatchConfig(t *testing.T) {
-	home, work := t.TempDir(), t.TempDir()
-	writeFile(t, work+"/.marshal/config.toml", "[indexing]\nwatch = true\nwatch_debounce_ms = 500\n")
-	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Indexing.Watch == nil || !*cfg.Indexing.Watch || cfg.Indexing.WatchDebounceMs != 500 {
-		t.Fatalf("indexing = %#v", cfg.Indexing)
-	}
-}
-
-func TestLoadLSPConfig(t *testing.T) {
-	home, work := t.TempDir(), t.TempDir()
-	writeFile(t, work+"/.marshal/config.toml", `
-[lsp]
-enabled = true
-[lsp.servers.go]
-command = "gopls"
-[lsp.servers.python]
-disabled = true
-`)
-	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.LSP.Servers["go"].Command != "gopls" {
-		t.Fatalf("go server = %#v", cfg.LSP.Servers["go"])
-	}
-	if !cfg.LSP.Servers["python"].Disabled {
-		t.Fatal("python should be disabled")
-	}
-}
-
-func TestLoadEmbeddingRoleSurvives(t *testing.T) {
-	home := t.TempDir()
-	work := t.TempDir()
-	writeFile(t, work+"/.marshal/config.toml", `
-[agent_profiles.local]
-embedding = "nomic"
-`)
-	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got := cfg.AgentProfiles["local"].Roles[routing.RoleEmbedding].Preset; got != "nomic" {
-		t.Fatalf("embedding role preset = %q, want nomic", got)
+func TestRemoteLimitDiscoveryDefaultsToRemoteProvidersAllowed(t *testing.T) {
+	cfg := Default()
+	if cfg.Privacy.RemoteLimitDiscovery != cfg.Privacy.RemoteProvidersAllowed {
+		t.Errorf("RemoteLimitDiscovery = %v, want %v", cfg.Privacy.RemoteLimitDiscovery, cfg.Privacy.RemoteProvidersAllowed)
 	}
 }

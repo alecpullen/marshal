@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
 )
 
@@ -926,5 +927,34 @@ func TestChatTokenUsageNoCacheFieldsZero(t *testing.T) {
 	}
 	if done.Usage.ReasoningTokens != 0 || done.Usage.CacheReadTokens != 0 || done.Usage.CacheWriteTokens != 0 {
 		t.Errorf("provider without cache/reasoning fields should be zero: %+v", done.Usage)
+	}
+}
+
+func TestModelsEnrichesLimitsFromTable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"deepseek-v4-flash","owned_by":"ollama"}]}`))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	// Inject a fake limit table.
+	tbl := limits.NewTable(map[string]limits.Limit{
+		"deepseek-v4-flash": {ContextWindow: 1048576, MaxOutputTokens: 384000},
+	})
+	p.limitsTable = &tbl
+
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	if models[0].ContextWindow != 1048576 {
+		t.Errorf("ContextWindow = %d, want 1048576", models[0].ContextWindow)
+	}
+	if models[0].MaxOutputTokens != 384000 {
+		t.Errorf("MaxOutputTokens = %d, want 384000", models[0].MaxOutputTokens)
 	}
 }

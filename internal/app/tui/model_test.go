@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -5209,3 +5210,57 @@ func (r *testAgentRunner) Run(ctx context.Context, goal string) error   { return
 func (r *testAgentRunner) SetForceClass(class string)                   {}
 func (r *testAgentRunner) SetPolicyRules(rules []config.PermissionRule) {}
 func (r *testAgentRunner) SetApprovalMode(mode policy.ApprovalMode)     {}
+
+// newStatusTestModelFromTemp builds a Model rooted in a temp git repo so
+// gitInfo resolves. Used by the git-info wiring tests.
+func newStatusTestModelFromTemp(t *testing.T) Model {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	dir := t.TempDir()
+	initRepoTest(t, dir)
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	m := New(state)
+	m.resize(100, 30)
+	return m
+}
+
+func initRepoTest(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init"}, {"config", "user.email", "t@t"}, {"config", "user.name", "t"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "add", "README").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "init").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+}
+
+func TestGitInfoPopulatedOnResize(t *testing.T) {
+	m := newStatusTestModelFromTemp(t)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if !m.gitInfo.InRepo {
+		t.Fatalf("gitInfo not populated after resize; InRepo=%v", m.gitInfo)
+	}
+}
+
+func TestGitInfoRefreshThrottled(t *testing.T) {
+	m := newStatusTestModelFromTemp(t)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	first := m.gitInfo
+	// Immediate tick: throttled, must NOT re-read (same value).
+	m.handleAgentTick(agentTickMsg{})
+	if m.gitInfo != first {
+		t.Fatalf("gitInfo changed on throttled tick; freshness window broken")
+	}
+}

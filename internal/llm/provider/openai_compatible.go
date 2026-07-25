@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
 	"marshal/internal/llm/streaming"
 )
@@ -23,6 +24,9 @@ type Options struct {
 	// Capabilities overrides the default capability set. Leave nil to use
 	// defaultCapabilities().
 	Capabilities *schema.ProviderCapabilities
+	// LimitsTable is an optional merged limit table used to enrich model
+	// listings. When nil, model limits are left unknown.
+	LimitsTable *limits.Table
 }
 
 type OpenAICompatible struct {
@@ -31,6 +35,7 @@ type OpenAICompatible struct {
 	apiKey       string
 	httpClient   *http.Client
 	capabilities schema.ProviderCapabilities
+	limitsTable  *limits.Table
 }
 
 func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
@@ -54,6 +59,7 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 		apiKey:       opts.APIKey,
 		httpClient:   client,
 		capabilities: caps,
+		limitsTable:  opts.LimitsTable,
 	}, nil
 }
 
@@ -108,7 +114,14 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 	}
 	models := make([]schema.ModelInfo, 0, len(parsed.Data))
 	for _, m := range parsed.Data {
-		models = append(models, schema.ModelInfo{ID: m.ID, OwnedBy: m.OwnedBy})
+		info := schema.ModelInfo{ID: m.ID, OwnedBy: m.OwnedBy}
+		if p.limitsTable != nil {
+			if lim, ok := p.limitsTable.Lookup(p.name, m.ID); ok {
+				info.ContextWindow = lim.ContextWindow
+				info.MaxOutputTokens = lim.MaxOutputTokens
+			}
+		}
+		models = append(models, info)
 	}
 	return models, nil
 }

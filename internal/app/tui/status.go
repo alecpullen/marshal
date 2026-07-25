@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/help"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 )
 
@@ -27,6 +29,32 @@ const (
 type statusSeg struct {
 	text     string
 	priority int
+}
+
+// branchStyle colors the git branch segment (accent.secondary / violet).
+func branchStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary)
+}
+
+// worktreeStyle colors the worktree segment (accent.tertiary / gold).
+func worktreeStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)
+}
+
+// modeStyle colors the leftmost mode cue (accent.primary / coral, bold).
+func modeStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary).Bold(true)
+}
+
+// untrustedStyle colors the untrusted warning segment.
+func untrustedStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning).Bold(true)
+}
+
+// dimStyle renders secondary metadata dim (fg.muted) so the colored
+// segments above stand out.
+func dimStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
 }
 
 // renderStatusLine is the single row of persistent chrome below the input:
@@ -98,35 +126,35 @@ func (m Model) modeSegment() string {
 //	swarm tokens=6, jobs=7, queued=8
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
-		{text: m.modeSegment(), priority: 0},
+		{text: modeStyle().Render(m.modeSegment()), priority: 0},
 	}
 
 	if !m.state.Trusted() {
-		segs = append(segs, statusSeg{text: "untrusted", priority: 0})
+		segs = append(segs, statusSeg{text: untrustedStyle().Render("untrusted"), priority: 0})
 	}
 
 	route := m.state.ActiveRoute()
 	if route.Active {
-		segs = append(segs, statusSeg{text: fmt.Sprintf("%s @ %s", route.Model, route.Provider), priority: 1})
+		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("%s @ %s", route.Model, route.Provider)), priority: 1})
 		if route.LocalOnly {
-			segs = append(segs, statusSeg{text: "local", priority: 2})
+			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 2})
 		}
 	} else {
-		segs = append(segs, statusSeg{text: "no model", priority: 1})
+		segs = append(segs, statusSeg{text: dimStyle().Render("no model"), priority: 1})
 		if !m.state.Config.Privacy.RemoteProvidersAllowed {
-			segs = append(segs, statusSeg{text: "local", priority: 2})
+			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 2})
 		}
 	}
 
 	if pack := m.state.ContextPack(); !pack.IsEmpty() {
-		segs = append(segs, statusSeg{text: fmt.Sprintf("ctx %s/%s",
+		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("ctx %s/%s",
 			strutil.CompactTokens(pack.TokenUsage.EstimatedTokens),
-			strutil.CompactTokens(pack.TokenUsage.MaxTokens)), priority: 3})
+			strutil.CompactTokens(pack.TokenUsage.MaxTokens))), priority: 3})
 	}
 
 	if used, window := m.state.TurnUsage(); window > 0 {
-		segs = append(segs, statusSeg{text: fmt.Sprintf("turn %s/%s",
-			strutil.CompactTokens(used), strutil.CompactTokens(window)), priority: 4})
+		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("turn %s/%s",
+			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 4})
 	}
 
 	if leaves := m.state.Branches(); len(leaves) > 1 {
@@ -142,7 +170,17 @@ func (m Model) statusLeftSegments() []statusSeg {
 	}
 
 	if wd := m.state.WorkingDir; wd != "" {
-		segs = append(segs, statusSeg{text: filepath.Base(wd), priority: 5})
+		segs = append(segs, statusSeg{text: dimStyle().Render(filepath.Base(wd)), priority: 5})
+	}
+
+	// Git context: branch + worktree, inserted right after dir so cwd and
+	// branch read as one cluster. Branch shares priority 5 with dir (drops
+	// together on narrow widths); worktree is 6 (drops first).
+	if m.gitInfo.InRepo && m.gitInfo.Branch != "" {
+		segs = append(segs, statusSeg{text: branchStyle().Render("⎇ " + m.gitInfo.Branch), priority: 5})
+	}
+	if m.gitInfo.Worktree != "" {
+		segs = append(segs, statusSeg{text: worktreeStyle().Render("wt:" + m.gitInfo.Worktree), priority: 6})
 	}
 
 	if sp := m.state.SwarmProgress(); sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {

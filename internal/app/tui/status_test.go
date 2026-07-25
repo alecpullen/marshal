@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/contextpack"
 )
 
@@ -349,5 +350,83 @@ func TestStatusLineShowsQueueHint(t *testing.T) {
 	line := stripANSI(m.renderStatusLine(100))
 	if !strings.Contains(line, "Ctrl+X") || !strings.Contains(line, "clear queue") {
 		t.Fatalf("status line missing queue hint:\n%s", line)
+	}
+}
+
+func TestStatusLineShowsGitBranch(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.gitInfo = gitinfo.Info{Branch: "main", Worktree: "", InRepo: true}
+	line := stripANSI(m.renderStatusLine(120))
+	if !strings.Contains(line, "⎇ main") {
+		t.Fatalf("status line missing git branch:\n%s", line)
+	}
+}
+
+func TestStatusLineShowsWorktree(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.gitInfo = gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
+	line := stripANSI(m.renderStatusLine(120))
+	if !strings.Contains(line, "wt:linked") {
+		t.Fatalf("status line missing worktree:\n%s", line)
+	}
+}
+
+func TestStatusLineOmitsGitSegmentsWhenNotInRepo(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.gitInfo = gitinfo.Info{}
+	line := stripANSI(m.renderStatusLine(100))
+	if strings.Contains(line, "⎇") {
+		t.Fatalf("status line shows branch glyph when not in repo:\n%s", line)
+	}
+	if strings.Contains(line, "wt:") {
+		t.Fatalf("status line shows worktree when not in repo:\n%s", line)
+	}
+}
+
+func TestStatusLineCollapseDropsWorktreeBeforeBranch(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetTrusted(true)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
+	m.gitInfo = gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
+	line := stripANSI(m.renderStatusLine(82))
+	// branch shares priority 5 with dir; worktree is 6. On a tight width the
+	// worktree should be dropped while the branch survives (branch + dir both 5).
+	if !strings.Contains(line, "⎇ feature") {
+		t.Fatalf("branch dropped before worktree on narrow width:\n%s", line)
+	}
+	if strings.Contains(line, "wt:linked") {
+		t.Fatalf("worktree should have been dropped first on narrow width:\n%s", line)
+	}
+}
+
+func TestStatusLineModeIsCoralColored(t *testing.T) {
+	m := newStatusTestModel(t)
+	out := m.renderStatusLine(100)
+	// The mode segment should carry a foreground color SGR (any tier).
+	// In 256-color mode it's 38;5;209; in 16-color it's 35 (magenta).
+	// Check for either tier.
+	has256 := strings.Contains(out, "38;5;209")
+	has16 := strings.Contains(out, "[1;35m") || strings.Contains(out, "[35m")
+	if !has256 && !has16 {
+		t.Fatalf("mode segment not coral-colored (expected 38;5;209 or 35m):\n%s", out)
+	}
+	if !strings.Contains(stripANSI(out), "default") {
+		t.Fatalf("mode label text missing:\n%s", out)
+	}
+}
+
+func TestStatusLineUntrustedIsWarningColored(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetTrusted(false)
+	out := m.renderStatusLine(100)
+	// The untrusted segment should carry a foreground color SGR (any tier).
+	// In 256-color mode it's 38;5;172; in 16-color it's 33 (yellow).
+	has256 := strings.Contains(out, "38;5;172")
+	has16 := strings.Contains(out, "[1;33m") || strings.Contains(out, "[33m")
+	if !has256 && !has16 {
+		t.Fatalf("untrusted segment not warning-colored (expected 38;5;172 or 33m):\n%s", out)
+	}
+	if !strings.Contains(stripANSI(out), "untrusted") {
+		t.Fatalf("untrusted text missing:\n%s", out)
 	}
 }

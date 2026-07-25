@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/provider/limits"
 )
 
 // NewFromConfig builds a Provider from a single [providers.<name>] entry.
@@ -12,7 +14,13 @@ import (
 // once, at construction time — OpenAICompatible itself only ever sees an
 // already-resolved bearer token string, never an env var name. If both
 // api_key and api_key_env are set, the literal api_key wins.
-func NewFromConfig(name string, pc config.ProviderConfig) (Provider, error) {
+//
+// dataDir is the application data directory used for the on-disk limit
+// cache. Pass "" to skip limit table loading.
+//
+// remoteLimitDiscovery controls whether the limit table is fetched from
+// remote sources (OpenRouter, LiteLLM) when no local cache exists.
+func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool) (Provider, error) {
 	switch pc.Type {
 	case "", "openai_compatible":
 		apiKey, err := resolveAPIKey(pc)
@@ -21,11 +29,20 @@ func NewFromConfig(name string, pc config.ProviderConfig) (Provider, error) {
 		}
 		caps := DefaultCapabilities()
 		caps.ToolCalling = pc.ToolCalling
+
+		var table *limits.Table
+		if dataDir != "" && remoteLimitDiscovery {
+			if t, err := limits.LoadTable(context.Background(), dataDir, limits.DefaultTTL); err == nil {
+				table = &t
+			}
+		}
+
 		return NewOpenAICompatible(Options{
 			Name:         name,
 			BaseURL:      pc.BaseURL,
 			APIKey:       apiKey,
 			Capabilities: &caps,
+			LimitsTable:  table,
 		})
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported type %q", name, pc.Type)

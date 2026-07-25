@@ -428,9 +428,9 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", atc.Name, formatElapsed(elapsed)))
 	gutter := gutterPrefix("·", dimColor)
+	headerLine := gutter + toolBulletStyle().Render(strutil.Truncate(head, max(width-3, 1), false))
 	var b strings.Builder
-	b.WriteString(gutter)
-	b.WriteString(toolBulletStyle().Render(strutil.Truncate(head, max(width-3, 1), false)))
+	b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(headerLine))
 	b.WriteString("\n")
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
 		cmdLine := "$ " + atc.Args

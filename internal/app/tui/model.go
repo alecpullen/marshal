@@ -29,6 +29,7 @@ import (
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
+	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
@@ -131,6 +132,12 @@ type Model struct {
 	steeringEvents <-chan pubsub.Event[session.SteeringEvent]
 	queuedCount    int
 	cancelling     bool
+
+	// gitInfo holds the cached branch + worktree for state.WorkingDir,
+	// refreshed on a throttled tick and on every WindowSizeMsg. lastGitRead
+	// bounds the throttle (see handleAgentTick).
+	gitInfo     gitinfo.Info
+	lastGitRead time.Time
 
 	// New Layout State
 	rawWidth  int // unclamped terminal dimensions (gate check)
@@ -633,6 +640,9 @@ func New(state *session.State, opts ...Option) Model {
 		m.questionModel = newQuestionModel(q, max(m.width-4, 30))
 	}
 
+	m.gitInfo = gitinfo.Read(state.WorkingDir)
+	m.lastGitRead = m.now()
+
 	return m
 }
 
@@ -693,6 +703,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.questionModel != nil {
 			m.questionModel.SetSize(max(m.width-4, 30))
 		}
+		// Refresh git state on focus/resize: a fresh view should reflect
+		// current branch even if it changed in another tool.
+		m.gitInfo = gitinfo.Read(m.state.WorkingDir)
+		m.lastGitRead = m.now()
 		m.refreshViewport()
 		return m, nil
 	}
@@ -1887,6 +1901,10 @@ func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
+	if now := m.now(); m.state.WorkingDir != "" && now.Sub(m.lastGitRead) >= 5*time.Second {
+		m.gitInfo = gitinfo.Read(m.state.WorkingDir)
+		m.lastGitRead = now
+	}
 	if !m.busy && m.successPulse {
 		if m.lastActivityKind == session.ActivityIdle && !m.lastActivityDone.IsZero() &&
 			m.now().Sub(m.lastActivityDone) >= doneDisplayDuration {

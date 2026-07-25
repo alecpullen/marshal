@@ -19,7 +19,6 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
-	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
 	"marshal/internal/skills"
 	"marshal/internal/tools/native"
@@ -79,11 +78,6 @@ type Runtime struct {
 	SkillIndex     *skills.Index
 	JobManager     *native.JobManager
 	DesktopCloser  func()
-
-	// LSPManager is the optional LSP server manager. When non-nil, it is
-	// started as a worker in Run() and its adapters are wired into the
-	// index, tools, and diagnostics subsystems.
-	LSPManager *lsp.Manager
 
 	// CustomAgentFactory builds a one-shot *agent.Runner for a named custom
 	// agent. Used by the TUI's Run-now dispatch. Set by startRuntime.
@@ -454,7 +448,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 
-	runner, toolReg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspMgr, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
+	runner, toolReg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -483,7 +477,6 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		HomeDir:            homeDir,
 		DataDir:            dataDir,
 		SkillIndex:         skillIndex,
-		LSPManager:         lspMgr,
 		additionalDirs:     runOpts.additionalDirs,
 		workCtx:            workCtx,
 		workCancel:         workCancel,

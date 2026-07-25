@@ -29,14 +29,11 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
-	"marshal/internal/index"
 	"marshal/internal/knowledge"
-	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
 	"marshal/internal/rollover"
 	"marshal/internal/sandbox"
@@ -49,7 +46,6 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
-	"marshal/internal/worker"
 )
 
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
@@ -82,7 +78,6 @@ type options struct {
 	existingSessionID       string
 	additionalDirs          []string
 	knowledgeHook           func(ctx context.Context, state *session.State, database *db.DB)
-	workers                 []worker.Worker
 }
 
 type Option func(*options)
@@ -168,23 +163,6 @@ func WithKnowledgeHook(hook func(ctx context.Context, state *session.State, data
 	}
 }
 
-// WithWorker registers a background worker started shutdown-aware by Run.
-// Primarily a test seam; production wiring constructs the index watcher.
-func WithWorker(w worker.Worker) Option {
-	return func(o *options) { o.workers = append(o.workers, w) }
-}
-
-// startWorker launches a worker goroutine bound to ctx, tracked by wg.
-func startWorker(ctx context.Context, wg *sync.WaitGroup, w worker.Worker, log *slog.Logger) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := w.Run(ctx); err != nil {
-			log.Warn("worker exited", "worker", w.Name(), "err", err)
-		}
-	}()
-}
-
 // WithSessionID pins the session identifier used when the runtime creates a
 // new database session. When empty, StartRuntime generates a sess_<unixnano>
 // id. Useful for headless transports that want a stable id derived from
@@ -224,6 +202,7 @@ type routedProviderResolver struct {
 	cfg       config.Config
 	mu        sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
 	providers map[string]provider.Provider
+	dataDir   string
 }
 
 // dbMemoryProvider adapts stored project memories for context-pack
@@ -232,11 +211,12 @@ type dbMemoryProvider struct {
 	db *db.DB
 }
 
-func newRoutedProviderResolver(cfg config.Config) *routedProviderResolver {
+func newRoutedProviderResolver(cfg config.Config, dataDir string) *routedProviderResolver {
 	return &routedProviderResolver{
 		router:    routing.NewStaticRouter(cfg.RoutingConfig()),
 		cfg:       cfg,
 		providers: make(map[string]provider.Provider),
+		dataDir:   dataDir,
 	}
 }
 
@@ -302,7 +282,7 @@ func (r *routedProviderResolver) providerFor(route routing.Route) (provider.Prov
 	if !ok {
 		return nil, fmt.Errorf("routing provider %q is not configured", route.Preset.Provider)
 	}
-	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig)
+	p, err := provider.NewFromConfig(route.Preset.Provider, providerConfig, r.dataDir, r.cfg.Privacy.RemoteLimitDiscovery)
 	if err != nil {
 		return nil, err
 	}
@@ -414,11 +394,11 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Manager, error) {
-	resolver := newRoutedProviderResolver(cfg)
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, error) {
+	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	reg := registry.New()
@@ -433,7 +413,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -502,23 +482,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
 	}
-	// Build LSP manager and wire adapters BEFORE RegisterAll so the
-	// toolSet and diagnostics checker receive non-nil LSP fields.
-	var lspMgr *lsp.Manager
-	if lspEnabled(cfg.LSP) {
-		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
-		if len(servers) > 0 {
-			lspMgr = lsp.NewManager(state.WorkingDir, servers, state.Logger())
-		}
-	}
-	if lspMgr != nil {
-		nativeOpts.LSP = lsp.NewQueryAdapter(lspMgr)
-		nativeOpts.LSPSource = lsp.NewDiagnosticsAdapter(lspMgr)
-		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspMgr)
-	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	skills.RegisterTool(reg, skillIndex, state)
@@ -528,12 +494,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
 		if err := mcpMgr.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -543,7 +509,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		state,
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.SkillIndex = skillIndex
@@ -648,7 +614,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {
 		runner.Rollover = &agent.Rollover{
 			Controller: rolloverCtrl,
@@ -657,7 +623,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		// Start generation 0.
 		if err := rolloverCtrl.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
 		}
 		// Record generation 0 in session state.
 		genID, genSeq, genSeed := rolloverCtrl.Current()
@@ -708,14 +674,14 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
 		}
 		desktopCloser = closer
 	}
 
 	sddRunner := buildSDDRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
 	subagentFactory := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID)
-	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspMgr, nil
+	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, nil
 }
 
 // roleRunnerSpec holds the dependencies shared by the swarm and SDD
@@ -1084,47 +1050,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 	logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
-	// ── Worker lifecycle ──────────────────────────────────────────────
-	// Start injected workers (test seam) or construct the index watcher
-	// when embeddings are configured and the watcher is enabled.
-	workers := runOpts.workers
-	if len(workers) == 0 {
-		embeddingConfigured := false
-		embedRouter := routing.NewStaticRouter(cfg.RoutingConfig())
-		if _, err := embedRouter.ResolveEmbedding(); err == nil {
-			embeddingConfigured = true
-		}
-
-		// Build the LSP symbol adapter for the index pass.
-		var lspAdapter index.LSPSymbols
-		if rt.LSPManager != nil {
-			lspAdapter = lsp.NewSymbolAdapter(rt.LSPManager)
-		}
-
-		if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
-			debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
-			runPass := func(c context.Context) error {
-				embedder := resolveEmbedderFromConfig(cfg)
-				_, err := index.Run(c, index.Deps{
-					DB: database, Root: workingDir, Ignore: cfg.Indexing.Ignore,
-					MaxBytes: cfg.Indexing.MaxIndexableFileBytes, Embedder: embedder,
-					LSP: lspAdapter,
-				}, projectID)
-				return err
-			}
-			workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
-		}
-	}
-	// Start the LSP manager as a worker when it was built.
-	if rt.LSPManager != nil {
-		workers = append(workers, rt.LSPManager)
-	}
-	var workerWG sync.WaitGroup
-	for _, w := range workers {
-		startWorker(rt.workCtx, &workerWG, w, logger)
-	}
-	// ── End worker lifecycle ──────────────────────────────────────────
-
 	select {
 	case <-ctx.Done():
 		return nil
@@ -1139,18 +1064,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	quiesceErr := rt.Quiesce(quiesceCtx)
 	cancelQuiesce()
 
-	// Wait for workers to finish (bounded).
-	workerDone := make(chan struct{})
-	go func() {
-		workerWG.Wait()
-		close(workerDone)
-	}()
-	select {
-	case <-workerDone:
-	case <-time.After(5 * time.Second):
-		logger.Warn("worker shutdown timed out")
-	}
-
 	// Phase 2: knowledge — finalize the session while DB and logger
 	// are still open.
 	knowledgeCtx, cancelKnowledge := context.WithTimeout(context.Background(), shutdownKnowledgeTimeout)
@@ -1159,7 +1072,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		ProjectID:     projectID,
 		SessionID:     sessionID,
 		State:         state,
-		RouteResolver: newRoutedProviderResolver(state.Config),
+		RouteResolver: newRoutedProviderResolver(state.Config, rt.DataDir),
 		WorkingDir:    workingDir,
 		Now:           runOpts.now,
 		Logger:        logger,
@@ -1181,7 +1094,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, _, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
+	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
@@ -1259,26 +1172,6 @@ func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {
 // loadFileIndexPaths fetches the repo's known file paths for the
 // completion popup. Returns nil on any error (no DB, no rows, query
 // failure) so callers can treat absence as "skip the eager seed".
-// resolveEmbedderFromConfig constructs an embedding.Embedder from the
-// routing config, or returns nil when no embedding role is configured.
-// This mirrors the native tool set's resolveEmbedder closure.
-func resolveEmbedderFromConfig(cfg config.Config) embedding.Embedder {
-	router := routing.NewStaticRouter(cfg.RoutingConfig())
-	route, err := router.ResolveEmbedding()
-	if err != nil {
-		return nil
-	}
-	pc, ok := cfg.Providers[route.Preset.Provider]
-	if !ok {
-		return nil
-	}
-	e, err := embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
-	if err != nil {
-		return nil
-	}
-	return e
-}
-
 func loadFileIndexPaths(database *db.DB, projectID int64) ([]string, error) {
 	if database == nil || projectID == 0 {
 		return nil, fmt.Errorf("no database or project id")
@@ -1307,33 +1200,4 @@ func newDesktopBackend(cfg config.DesktopConfig) (browser.BrowserBackend, error)
 	default:
 		return nil, fmt.Errorf("unknown desktop mode %q", cfg.Mode)
 	}
-}
-
-// ── LSP helpers ────────────────────────────────────────────────────────
-
-// lspEnabled returns true when the LSP config is not explicitly disabled.
-func lspEnabled(cfg config.LSPConfig) bool {
-	return cfg.Enabled == nil || *cfg.Enabled
-}
-
-// toServerSpecs converts the config's LSPServerConfig map to the lsp.ServerSpec
-// map used by DetectServers.
-func toServerSpecs(cfgServers map[string]config.LSPServerConfig) map[string]lsp.ServerSpec {
-	out := make(map[string]lsp.ServerSpec, len(cfgServers))
-	for lang, s := range cfgServers {
-		out[lang] = lsp.ServerSpec{Command: s.Command, Args: s.Args}
-	}
-	return out
-}
-
-// disabledLangs returns the set of languages that are explicitly disabled in
-// the LSP server config.
-func disabledLangs(cfgServers map[string]config.LSPServerConfig) map[string]bool {
-	out := make(map[string]bool, len(cfgServers))
-	for lang, s := range cfgServers {
-		if s.Disabled {
-			out[lang] = true
-		}
-	}
-	return out
 }

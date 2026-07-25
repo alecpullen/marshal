@@ -23,6 +23,22 @@ type InitializeParams struct {
 	ProtocolVersion int `json:"protocolVersion"`
 }
 
+// acpLogLevel returns the slog level for the ACP server, controlled by the
+// MARSHAL_ACP_LOG_LEVEL environment variable (debug, info, warn, error).
+// Defaults to info.
+func acpLogLevel() slog.Level {
+	lvl := slog.LevelInfo
+	switch os.Getenv("MARSHAL_ACP_LOG_LEVEL") {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	}
+	return lvl
+}
+
 // runConfig contains the dependency injection points for runWithConfig.
 type runConfig struct {
 	startRuntime RuntimeStarter
@@ -137,7 +153,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 // production dependencies, serves until the connection closes, then
 // performs bounded cleanup.
 func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
-	log := logging.New(stderr, slog.LevelInfo)
+	log := logging.New(stderr, acpLogLevel())
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("acp: find home directory: %w", err)

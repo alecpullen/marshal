@@ -60,6 +60,7 @@ type Controller struct {
 	State         ControllerState
 	LastBatchID   int
 	MaxIterations int
+	BlockedTasks  []BlockedTask
 }
 
 // NewController constructs a Controller with the given dependencies. The
@@ -180,10 +181,47 @@ func (c *Controller) Run(ctx context.Context) error {
 				c.State = StateBlocked
 			}
 		case StateBlocked:
-			// Attempt deterministic fixes for blocked tasks, then re-dispatch.
-			// For the skeleton, surface a human gate.
-			c.SessionState.SetSDDGate(session.SDDGate{Kind: "escalation", Reason: "controller blocked; deterministic fixes exhausted"})
-			return ErrHumanGateRequired
+			if len(c.BlockedTasks) == 0 {
+				// No blocked tasks — check health.
+				if alert, _ := DetectLoops(c.Progress, c.WS, 50); alert != nil {
+					rep, err := DispatchRescue(ctx, c.Factory, c.WS, c.Progress)
+					if err != nil {
+						return fmt.Errorf("controller: rescue dispatch: %w", err)
+					}
+					if rep.Status == ReportNeedsHuman {
+						c.SessionState.SetSDDGate(session.SDDGate{Kind: "escalation", Reason: "rescue recommends human intervention"})
+						return ErrHumanGateRequired
+					}
+					c.State = StateDrainIteration
+					continue
+				}
+				c.SessionState.SetSDDGate(session.SDDGate{Kind: "escalation", Reason: "blocked with no tasks"})
+				return ErrHumanGateRequired
+			}
+			// Attempt deterministic fixes for each blocked task.
+			allFixed := true
+			for _, bt := range c.BlockedTasks {
+				err := DeterministicFix(bt.Reason, c.WS, c.DAG, c.RepoState, c.Git, c.Progress, "")
+				if err != nil {
+					allFixed = false
+					break
+				}
+			}
+			if allFixed {
+				c.BlockedTasks = nil
+				c.State = StateDrainIteration
+				continue
+			}
+			// Deterministic fixes failed — dispatch rescue.
+			rep, err := DispatchRescue(ctx, c.Factory, c.WS, c.Progress)
+			if err != nil {
+				return fmt.Errorf("controller: rescue dispatch: %w", err)
+			}
+			if rep.Status == ReportNeedsHuman {
+				c.SessionState.SetSDDGate(session.SDDGate{Kind: "escalation", Reason: "rescue recommends human intervention"})
+				return ErrHumanGateRequired
+			}
+			c.State = StateDrainIteration
 		case StateBranchReview:
 			// Dispatch the branch reviewer (P5 wires the tool; here we stub).
 			c.State = StateFinalMergeGate

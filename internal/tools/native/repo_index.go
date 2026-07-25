@@ -7,12 +7,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
-	"marshal/internal/db"
 	"marshal/internal/index"
 	"marshal/internal/llm/embedding"
-	"marshal/internal/repo"
 	"marshal/internal/tools/registry"
 )
 
@@ -31,62 +28,26 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 			return registry.ToolResult{}, errors.New("database not configured for repo.index")
 		}
 
-		scanner := repo.NewScanner(repo.Config{
-			Root:                  t.root,
-			Ignore:                t.config.Indexing.Ignore,
-			MaxIndexableFileBytes: t.config.Indexing.MaxIndexableFileBytes,
-		})
-		scanned, err := scanner.ScanDetailed()
+		var embedder embedding.Embedder
+		if t.resolveEmbedder != nil {
+			if e, err := t.resolveEmbedder(); err == nil {
+				embedder = e
+			}
+		}
+
+		rep, err := index.Run(ctx, index.Deps{
+			DB:       t.db,
+			Root:     t.root,
+			Ignore:   t.config.Indexing.Ignore,
+			MaxBytes: t.config.Indexing.MaxIndexableFileBytes,
+			Embedder: embedder,
+		}, t.projectID)
 		if err != nil {
-			return registry.ToolResult{}, fmt.Errorf("scan repo: %w", err)
+			return registry.ToolResult{}, fmt.Errorf("index run: %w", err)
 		}
 
-		files := make([]db.FileIndex, len(scanned))
-		for i, sf := range scanned {
-			files[i] = sf.FileIndex
-		}
-
-		// The tool layer owns LastIndexedAt: set it just before persisting so
-		// callers know when this index snapshot was captured.
-		now := time.Now().UTC()
-		for i := range files {
-			files[i].LastIndexedAt = now
-		}
-		if err := t.db.SaveFileIndex(t.projectID, files); err != nil {
-			return registry.ToolResult{}, fmt.Errorf("save file index: %w", err)
-		}
-
-		var symbols []db.Symbol
-		var warnings []string
-		for _, sf := range scanned {
-			if sf.ReadErr != nil {
-				warnings = append(warnings, fmt.Sprintf("%s: read error", sf.FileIndex.Path))
-				continue
-			}
-			if sf.FileIndex.Language != "go" {
-				continue
-			}
-			fileSymbols, extractErr := repo.ExtractSymbols(ctx, sf.FileIndex.Path, sf.Content)
-			if extractErr != nil {
-				// Unparseable file: keep its file-index entry, skip symbols.
-				warnings = append(warnings, fmt.Sprintf("%s: parse error", sf.FileIndex.Path))
-				continue
-			}
-			symbols = append(symbols, fileSymbols...)
-		}
-		if err := t.db.SaveSymbols(t.projectID, symbols); err != nil {
-			return registry.ToolResult{}, fmt.Errorf("save symbols: %w", err)
-		}
-
-		langCounts := map[string]int{}
-		for _, f := range files {
-			if f.Language != "" {
-				langCounts[f.Language]++
-			}
-		}
-
-		langs := make([]string, 0, len(langCounts))
-		for lang := range langCounts {
+		langs := make([]string, 0, len(rep.LangCounts))
+		for lang := range rep.LangCounts {
 			langs = append(langs, lang)
 		}
 		sort.Strings(langs)
@@ -94,43 +55,26 @@ func (t *toolSet) repoIndexTool() registry.Tool {
 		var b strings.Builder
 		b.WriteString("Languages:\n")
 		for _, lang := range langs {
-			b.WriteString(fmt.Sprintf("  %s: %d\n", lang, langCounts[lang]))
+			b.WriteString(fmt.Sprintf("  %s: %d\n", lang, rep.LangCounts[lang]))
 		}
-		fmt.Fprintf(&b, "\nSymbols: %d\n", len(symbols))
+		fmt.Fprintf(&b, "\nSymbols: %d\n", rep.Symbols)
 
-		// Build the symbols-by-file map from the symbols just extracted.
-		symbolsByFile := map[string][]db.Symbol{}
-		for _, s := range symbols {
-			symbolsByFile[s.FilePath] = append(symbolsByFile[s.FilePath], s)
-		}
-
-		var embedder embedding.Embedder
-		if t.resolveEmbedder != nil {
-			if e, err := t.resolveEmbedder(); err == nil {
-				embedder = e
-			}
-		}
-		indexer := index.NewIndexer(t.db, embedder)
-		st, err := indexer.Reindex(ctx, t.projectID, scanned, symbolsByFile)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("embedding: %v", err))
-		}
 		if embedder == nil {
 			fmt.Fprintf(&b, "\nSemantic index: not configured\n")
 		} else {
-			fmt.Fprintf(&b, "\nEmbedded %d files (%d chunks)\n", st.FilesEmbedded, st.ChunksWritten)
+			fmt.Fprintf(&b, "\nEmbedded %d files (%d chunks)\n", rep.FilesEmbedded, rep.ChunksWritten)
 		}
 
-		if len(warnings) > 0 {
-			sort.Strings(warnings)
+		if len(rep.Warnings) > 0 {
+			sort.Strings(rep.Warnings)
 			b.WriteString("\nWarnings:\n")
-			for _, w := range warnings {
+			for _, w := range rep.Warnings {
 				b.WriteString(fmt.Sprintf("  %s\n", w))
 			}
 		}
 
 		return registry.ToolResult{
-			Summary: fmt.Sprintf("Indexed %d files, %d symbols", len(files), len(symbols)),
+			Summary: fmt.Sprintf("Indexed %d files, %d symbols", rep.Files, rep.Symbols),
 			Content: b.String(),
 		}, nil
 	}

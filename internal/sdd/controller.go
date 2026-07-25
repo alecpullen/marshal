@@ -161,6 +161,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("controller: orchestrator dispatch: %w", err)
 			}
+			c.recordUsage()
 			c.LastBatchID = report.BatchID
 			_ = c.Progress.Append(c.WS, "ORCHESTRATOR", "BATCH_RETURNED", "batch_id", fmt.Sprintf("%d", report.BatchID), "status", string(report.Status))
 			switch report.Status {
@@ -223,8 +224,26 @@ func (c *Controller) Run(ctx context.Context) error {
 			}
 			c.State = StateDrainIteration
 		case StateBranchReview:
-			// Dispatch the branch reviewer (P5 wires the tool; here we stub).
-			c.State = StateFinalMergeGate
+			// Dispatch the branch reviewer.
+			runner, err := c.Factory(routing.RoleSDDBranchReviewer, swarm.ScopeReadOnly)
+			if err != nil {
+				return fmt.Errorf("controller: build branch reviewer: %w", err)
+			}
+			prompt := fmt.Sprintf("Review the whole SDD branch. Spec: %s. DAG: %s. Write your report to reports/branch.md with status: PASS | FAIL on the first line.", filepath.Join(c.WS.Dir(), "spec.md"), filepath.Join(c.WS.Dir(), "dag.json"))
+			if _, err := runner.RunTask(ctx, prompt); err != nil {
+				return fmt.Errorf("controller: branch review RunTask: %w", err)
+			}
+			rep, err := ReadReport(c.WS, "branch", "")
+			if err != nil {
+				return fmt.Errorf("controller: read branch report: %w", err)
+			}
+			if rep.Status == ReportPass {
+				_ = c.Progress.Append(c.WS, "ORCHESTRATOR", "BRANCH_REVIEW", "status", "PASS")
+				c.State = StateFinalMergeGate
+			} else {
+				_ = c.Progress.Append(c.WS, "ORCHESTRATOR", "BRANCH_REVIEW", "status", "FAIL")
+				c.State = StateBlocked
+			}
 		case StateFinalMergeGate:
 			// Surface the final merge gate.
 			c.SessionState.SetSDDGate(session.SDDGate{Kind: "final_merge", Reason: "branch review passed; confirm final merge"})
@@ -271,6 +290,11 @@ func (c *Controller) swapOrchestratorModel(preset string) {
 	// uses; the actual factory rebuild is P5's wiring.
 	_ = overridden
 }
+
+// recordUsage is a hook for token metering. P5 wires the real UsageObserver;
+// P4 leaves it as a no-op so the controller compiles without the metering
+// dependency.
+func (c *Controller) recordUsage() {}
 
 // emitDraftSpec writes a draft spec.md with frontmatter status: draft and
 // a yaml tasks: block listing the DAG's tasks (id, title, deps, files,

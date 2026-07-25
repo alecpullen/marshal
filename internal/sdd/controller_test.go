@@ -110,6 +110,38 @@ func TestControllerRunReachesSpecGate(t *testing.T) {
 	}
 }
 
+func TestControllerBranchReviewPass(t *testing.T) {
+	dir := t.TempDir()
+	ws, _ := NewWorkspace(dir)
+	ws.Ensure()
+	git := NewFakeGitOps()
+	git.SetRef("sdd/feature", "pipe123")
+	git.SetRef("main", "main123")
+	git.SetAncestor("main123", "pipe123")
+	dag := &DAG{Tasks: []DAGTask{{ID: "T1", Status: TaskMerged}}}
+	rs := &RepoState{Branch: "sdd/feature", TargetBranch: "main", Head: "pipe123", Merged: []string{"T1"}}
+	var p Progress
+	ss := session.New(config.Default(), dir, time.Now(), session.Persistence{})
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		r := &agent.Runner{}
+		r.RunTaskFunc = func(ctx context.Context, goal string) (*agent.Task, error) {
+			// Write a passing branch review report.
+			writeFile(filepath.Join(ws.Dir(), "reports", "branch.md"), "status: PASS\n\nbranch looks good\n")
+			return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "branch review done"}, nil
+		}
+		return r, nil
+	}
+	c := NewController(ws, git, dag, rs, &p, factory, routing.Config{}, ss, "sdd/feature", "main")
+	c.State = StateBranchReview
+	err := c.Run(context.Background())
+	if err != ErrHumanGateRequired {
+		t.Fatalf("expected ErrHumanGateRequired at final merge gate, got %v", err)
+	}
+	if c.State != StateFinalMergeGate {
+		t.Errorf("State = %q, want final_merge_gate", c.State)
+	}
+}
+
 func TestControllerBlockedDeterministicFix(t *testing.T) {
 	dir := t.TempDir()
 	ws, _ := NewWorkspace(dir)
@@ -126,6 +158,8 @@ func TestControllerBlockedDeterministicFix(t *testing.T) {
 	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
 		r := &agent.Runner{}
 		r.RunTaskFunc = func(ctx context.Context, goal string) (*agent.Task, error) {
+			// Write a passing branch review report so the controller can read it.
+			writeFile(filepath.Join(ws.Dir(), "reports", "branch.md"), "status: PASS\n\nbranch looks good\n")
 			return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: DONE\nbatch_id: 1\ndispatched: []\nmerged: [T1]\nblocked_tasks: []\nhealth_alerts: []\nedit_guard: clean\nnext_action: drain\n"}, nil
 		}
 		return r, nil

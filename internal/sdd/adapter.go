@@ -29,6 +29,10 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 	return a.c.Run(ctx)
 }
 
-func (a *ControllerAdapter) SetForceClass(string)        {}
+// Controller returns the underlying *Controller, allowing callers to
+// access fields such as UsageTokens and Factory for test verification.
+func (a *ControllerAdapter) Controller() *Controller { return a.c }
+
+func (a *ControllerAdapter) SetForceClass(string)                   {}
 func (a *ControllerAdapter) SetPolicyRules([]config.PermissionRule) {}
 func (a *ControllerAdapter) SetApprovalMode(policy.ApprovalMode)    {}

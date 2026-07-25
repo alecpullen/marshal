@@ -853,6 +853,19 @@ func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 func TestBuildSDDControllerReturnsAdapter(t *testing.T) {
 	cfg := config.Default()
 	cfg.SDD.PlansDir = t.TempDir()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "local_balanced"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {Name: "local_balanced", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleSDDOrchestrator: {Preset: "fast"},
+		}},
+	}
 	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
 	reg := registry.New()
 	pol := policy.NewEngine(&cfg, nil)
@@ -860,6 +873,30 @@ func TestBuildSDDControllerReturnsAdapter(t *testing.T) {
 	adapter := buildSDDController(cfg, state, reg, pol, resolver, nil, 1, nil)
 	if adapter == nil {
 		t.Fatal("buildSDDController returned nil")
+	}
+
+	// Exercise the factory closure to confirm UsageObserver wiring feeds
+	// UsageTokens (cross-task wiring from Task 6).
+	ctrl := adapter.Controller()
+	if ctrl == nil {
+		t.Fatal("Controller() returned nil")
+	}
+
+	runner, err := ctrl.Factory(routing.RoleSDDOrchestrator, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("Factory(RoleSDDOrchestrator, ScopeFull) error = %v", err)
+	}
+	if runner == nil {
+		t.Fatal("Factory returned nil runner")
+	}
+	if runner.UsageObserver == nil {
+		t.Fatal("UsageObserver is nil — cross-task wiring from Task 6 is broken")
+	}
+
+	// Fire the observer and verify UsageTokens accumulates.
+	runner.UsageObserver(schema.TokenUsage{TotalTokens: 42})
+	if ctrl.UsageTokens != 42 {
+		t.Fatalf("UsageTokens = %d, want 42", ctrl.UsageTokens)
 	}
 }
 

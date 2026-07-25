@@ -857,8 +857,16 @@ func buildSDDController(cfg config.Config, state *session.State, reg *registry.R
 		return nil
 	}
 	git := sdd.CLIGitOps{Dir: state.WorkingDir}
-	dag, _ := sdd.LoadDAG(ws)
-	rs, _ := sdd.LoadRepoState(ws)
+	dag, err := sdd.LoadDAG(ws)
+	if err != nil {
+		state.Logger().Warn("sdd: load DAG failed", "error", err)
+		return nil
+	}
+	rs, err := sdd.LoadRepoState(ws)
+	if err != nil {
+		state.Logger().Warn("sdd: load repo state failed", "error", err)
+		return nil
+	}
 	var progress sdd.Progress
 
 	// Create orchestrator-scoped registry and register sdd.* tools.
@@ -889,9 +897,10 @@ func buildSDDController(cfg config.Config, state *session.State, reg *registry.R
 				return nil, err
 			}
 			// Attach UsageObserver that feeds the controller's UsageSink.
+			// TotalTokens == PromptTokens + CompletionTokens per the schema contract.
 			runner.UsageObserver = func(usage schema.TokenUsage) {
 				if c != nil && c.UsageSink != nil {
-					c.UsageSink(usage.PromptTokens + usage.CompletionTokens)
+					c.UsageSink(usage.TotalTokens)
 				}
 			}
 			return runner, nil

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/registry"
 )
 
@@ -474,5 +475,41 @@ func TestRenderCompletedToolCallBrowserGlyphRemoved(t *testing.T) {
 	}
 	if strings.Contains(stripped, "done") {
 		t.Fatalf("completed tool call should not say 'done':\n%s", out)
+	}
+}
+
+func TestActiveToolCallHasSurfaceBackground(t *testing.T) {
+	prev := theme.Current()
+	th := theme.LoadFor(false, "xterm-256color")
+	theme.Reload(th)
+	t.Cleanup(func() { theme.Reload(prev) })
+
+	atc := session.ActiveToolCall{
+		Name:      "file.read",
+		Args:      "/path/to/file",
+		StartedAt: time.Now().Add(-5 * time.Second),
+	}
+	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Now(), 80)
+	// The header line should contain a 256-color background SGR (48;5;).
+	if !strings.Contains(out, "48;5;") {
+		t.Fatalf("expected background SGR (48;5;) in header line, got:\n%s", out)
+	}
+}
+
+func TestActiveToolCallNoSurfaceBackgroundInMono(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	th := theme.Load()
+	theme.Reload(th)
+	t.Cleanup(func() { theme.Reload(theme.LoadFor(false, "xterm-256color")) })
+
+	atc := session.ActiveToolCall{
+		Name:      "file.read",
+		Args:      "/path/to/file",
+		StartedAt: time.Now().Add(-5 * time.Second),
+	}
+	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Now(), 80)
+	// In NO_COLOR mode, BGSurface is NoColor{} so lipgloss emits no SGR.
+	if strings.Contains(out, "48;5;") {
+		t.Fatalf("unexpected background SGR in NO_COLOR mode:\n%s", out)
 	}
 }

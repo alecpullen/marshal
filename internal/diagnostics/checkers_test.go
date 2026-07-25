@@ -50,3 +50,28 @@ func TestConfiguredCheckerRunsCleanReportsNone(t *testing.T) {
 		t.Fatalf("got %q, want 'diagnostics: none' when configured checker finds nothing", out)
 	}
 }
+
+type fakeLSPSource struct {
+	out string
+	ok  bool
+}
+
+func (f fakeLSPSource) Diagnostics(string, string) (string, bool) { return f.out, f.ok }
+
+func TestCheckerPrefersLSP(t *testing.T) {
+	c := NewChecker(nil) // no command checkers configured
+	c.SetLSPSource(fakeLSPSource{out: "a.go:1: oops", ok: true})
+	out, err := c.Check([]string{"a.go"}, "go")
+	if err != nil || out != "a.go:1: oops" {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
+func TestCheckerFallsBackWhenNoLSP(t *testing.T) {
+	c := NewChecker(nil)
+	c.SetLSPSource(fakeLSPSource{ok: false})
+	out, _ := c.Check([]string{"a.rs"}, "rust")
+	if out != "" { // no commands configured, no lsp → empty (caller renders "none")
+		t.Fatalf("expected empty fallback, got %q", out)
+	}
+}

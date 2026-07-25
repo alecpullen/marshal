@@ -55,6 +55,10 @@ func merge(cfg *Config, file configFile) error {
 		}
 		set(&cfg.Indexing.MaxIndexableFileBytes, file.Indexing.MaxIndexableFileBytes)
 		set(&cfg.Indexing.MaxSearchableFileBytes, file.Indexing.MaxSearchableFileBytes)
+		if file.Indexing.Watch != nil {
+			cfg.Indexing.Watch = file.Indexing.Watch
+		}
+		set(&cfg.Indexing.WatchDebounceMs, file.Indexing.WatchDebounceMs)
 	}
 	if file.Providers != nil {
 		if cfg.Providers == nil {

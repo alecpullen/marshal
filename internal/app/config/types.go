@@ -287,6 +287,8 @@ type IndexingConfig struct {
 	Ignore                 []string `toml:"ignore"`
 	MaxIndexableFileBytes  int64    `toml:"max_indexable_file_bytes"`
 	MaxSearchableFileBytes int64    `toml:"max_searchable_file_bytes"`
+	Watch                  *bool    `toml:"watch"`             // nil = auto (on iff embedding configured)
+	WatchDebounceMs        int      `toml:"watch_debounce_ms"` // default 1000
 }
 
 // ProviderConfig is one [providers.<name>] entry. Only the fields needed

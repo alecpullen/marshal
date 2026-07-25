@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
 
@@ -421,5 +422,184 @@ func TestSandboxUnsafePassthroughEscalates(t *testing.T) {
 	}
 	if !approvalRequested {
 		t.Fatal("unsafe_passthrough=true must force an approval request")
+	}
+}
+
+func TestProvidersSetRejectsLiteralAPIKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { return nil }}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configProvidersSetTool())
+	tool, _ := reg.Lookup("config.providers.set")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.providers.set", Args: json.RawMessage(`{"name":"openai","base_url":"https://api.openai.com","api_key":"sk-secret"}`)})
+	if err == nil {
+		t.Fatal("expected error for literal api_key")
+	}
+	if !strings.Contains(err.Error(), "api_key") {
+		t.Fatalf("error should mention api_key, got: %v", err)
+	}
+}
+
+func TestProvidersSetAllowsAPIKeyEnv(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	var reloaded *config.Config
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configProvidersSetTool())
+	tool, _ := reg.Lookup("config.providers.set")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.providers.set", Args: json.RawMessage(`{"name":"openai","base_url":"https://api.openai.com","api_key_env":"OPENAI_API_KEY"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if reloaded.Providers["openai"].APIKeyEnv != "OPENAI_API_KEY" {
+		t.Fatalf("api_key_env not set: %+v", reloaded.Providers["openai"])
+	}
+}
+
+func TestProvidersDeleteRemovesKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{"openai": {BaseURL: "https://api.openai.com"}}
+	var reloaded *config.Config
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configProvidersDeleteTool())
+	tool, _ := reg.Lookup("config.providers.delete")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.providers.delete", Args: json.RawMessage(`{"name":"openai"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if _, ok := reloaded.Providers["openai"]; ok {
+		t.Fatal("provider not deleted")
+	}
+}
+
+func TestModelsPresetSetRoundTrip(t *testing.T) {
+	testSectionWrite(t, "config.models.preset.set", (*toolSet).configModelsPresetSetTool, `{"name":"fast","provider":"ollama","model":"qwen2.5-coder"}`, func(c config.Config) bool {
+		p, ok := c.Models.Presets["fast"]
+		return ok && p.Provider == "ollama"
+	})
+}
+
+func TestModelsPresetDeleteRemovesKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{"fast": {Name: "fast", Provider: "ollama", Model: "qwen2.5-coder"}}
+	var reloaded *config.Config
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configModelsPresetDeleteTool())
+	tool, _ := reg.Lookup("config.models.preset.delete")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.models.preset.delete", Args: json.RawMessage(`{"name":"fast"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if _, ok := reloaded.Models.Presets["fast"]; ok {
+		t.Fatal("preset not deleted")
+	}
+}
+
+func TestAgentProfilesSetRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	var reloaded *config.Config
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configAgentProfilesSetTool())
+	tool, _ := reg.Lookup("config.agent_profiles.set")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.agent_profiles.set", Args: json.RawMessage(`{"name":"dev","roles":{"implementer":"fast","reviewer":{"custom_agent":"senior_reviewer"}}}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	ap, ok := reloaded.AgentProfiles["dev"]
+	if !ok {
+		t.Fatal("agent profile not created")
+	}
+	if ap.Roles[routing.RoleImplementer].Preset != "fast" {
+		t.Fatalf("implementer role not set: %+v", ap.Roles)
+	}
+	if ap.Roles[routing.RoleReviewer].CustomAgent != "senior_reviewer" {
+		t.Fatalf("reviewer custom_agent not set: %+v", ap.Roles)
+	}
+}
+
+func TestAgentProfilesDeleteRemovesKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.AgentProfiles = map[string]routing.AgentProfile{"dev": {Name: "dev"}}
+	var reloaded *config.Config
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configAgentProfilesDeleteTool())
+	tool, _ := reg.Lookup("config.agent_profiles.delete")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.agent_profiles.delete", Args: json.RawMessage(`{"name":"dev"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if _, ok := reloaded.AgentProfiles["dev"]; ok {
+		t.Fatal("agent profile not deleted")
+	}
+}
+
+func TestCustomAgentsSetRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	var reloaded *config.Config
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configCustomAgentsSetTool())
+	tool, _ := reg.Lookup("config.custom_agents.set")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.custom_agents.set", Args: json.RawMessage(`{"name":"senior_reviewer","preset":"fast","system_prompt":"You are a senior reviewer","approval_mode":"always"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	ca, ok := reloaded.CustomAgents["senior_reviewer"]
+	if !ok {
+		t.Fatal("custom agent not created")
+	}
+	if ca.Preset != "fast" {
+		t.Fatalf("preset not set: %+v", ca)
+	}
+	if ca.SystemPrompt != "You are a senior reviewer" {
+		t.Fatalf("system_prompt not set: %+v", ca)
+	}
+	if ca.ApprovalMode != "always" {
+		t.Fatalf("approval_mode not set: %+v", ca)
+	}
+}
+
+func TestCustomAgentsDeleteRemovesKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.CustomAgents = map[string]routing.CustomAgent{"senior_reviewer": {Name: "senior_reviewer", Preset: "fast"}}
+	var reloaded *config.Config
+	ts := toolSet{config: cfg, configPath: cfgPath, configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil }}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configCustomAgentsDeleteTool())
+	tool, _ := reg.Lookup("config.custom_agents.delete")
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.custom_agents.delete", Args: json.RawMessage(`{"name":"senior_reviewer"}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if _, ok := reloaded.CustomAgents["senior_reviewer"]; ok {
+		t.Fatal("custom agent not deleted")
 	}
 }

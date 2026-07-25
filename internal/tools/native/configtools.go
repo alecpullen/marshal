@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
 
@@ -47,6 +48,14 @@ func (t *toolSet) configTools() []registry.Tool {
 		t.configHooksSetTool(),
 		t.configPermissionsSetTool(),
 		t.configMCPSetTool(),
+		t.configProvidersSetTool(),
+		t.configProvidersDeleteTool(),
+		t.configModelsPresetSetTool(),
+		t.configModelsPresetDeleteTool(),
+		t.configAgentProfilesSetTool(),
+		t.configAgentProfilesDeleteTool(),
+		t.configCustomAgentsSetTool(),
+		t.configCustomAgentsDeleteTool(),
 	}
 }
 
@@ -1045,6 +1054,323 @@ func (t *toolSet) configMCPSetTool() registry.Tool {
 			if args.DisclosureThresholdTools != nil {
 				cfg.MCP.DisclosureThresholdTools = *args.DisclosureThresholdTools
 			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configProvidersSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.providers.set",
+		Description: "Set or add a provider entry in the [providers] section. Use api_key_env to reference an environment variable; literal api_key is blocked for security. Omitted fields are preserved. Existing api_key on disk is carried forward if not overwritten.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Provider name key"},"base_url":{"type":"string"},"type":{"type":"string","description":"Provider type: \"openai_compatible\" (default) or \"ollama\""},"tool_calling":{"type":"boolean"},"api_key":{"type":"string","description":"BLOCKED — literal secrets cannot be set via this tool"},"api_key_env":{"type":"string","description":"Environment variable name to resolve at runtime"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name        string  `json:"name"`
+			BaseURL     *string `json:"base_url"`
+			Type        *string `json:"type"`
+			ToolCalling *bool   `json:"tool_calling"`
+			APIKey      string  `json:"api_key"`
+			APIKeyEnv   *string `json:"api_key_env"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.providers.set args: %w", err)
+		}
+		if args.APIKey != "" {
+			return registry.ToolResult{}, fmt.Errorf("api_key cannot be set via this tool — literal secrets are blocked. Use api_key_env to reference an environment variable, or use /connect to enter a key interactively.")
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.providers.set (%s scope): set provider %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			existing := cfg.Providers[args.Name]
+			pc := config.ProviderConfig{
+				APIKey: existing.APIKey, // carry forward literal key from disk
+			}
+			if args.BaseURL != nil {
+				pc.BaseURL = *args.BaseURL
+			}
+			if args.Type != nil {
+				pc.Type = *args.Type
+			}
+			if args.ToolCalling != nil {
+				pc.ToolCalling = *args.ToolCalling
+			}
+			if args.APIKeyEnv != nil {
+				pc.APIKeyEnv = *args.APIKeyEnv
+			}
+			if cfg.Providers == nil {
+				cfg.Providers = make(map[string]config.ProviderConfig)
+			}
+			cfg.Providers[args.Name] = pc
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configProvidersDeleteTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.providers.delete",
+		Description: "Delete a provider entry from the [providers] section by name.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Provider name key to delete"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.providers.delete args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.providers.delete (%s scope): delete provider %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			delete(cfg.Providers, args.Name)
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configModelsPresetSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.models.preset.set",
+		Description: "Set or add a model preset in the [models.presets] section. Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Preset name key"},"provider":{"type":"string"},"model":{"type":"string"},"context_window":{"type":"integer"},"max_output_tokens":{"type":"integer"},"tool_calling":{"type":"string"},"local_only":{"type":"boolean"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name            string  `json:"name"`
+			Provider        *string `json:"provider"`
+			Model           *string `json:"model"`
+			ContextWindow   *int    `json:"context_window"`
+			MaxOutputTokens *int    `json:"max_output_tokens"`
+			ToolCalling     *string `json:"tool_calling"`
+			LocalOnly       *bool   `json:"local_only"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.models.preset.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.models.preset.set (%s scope): set preset %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			existing := cfg.Models.Presets[args.Name]
+			preset := routing.ModelPreset{
+				Name:            args.Name,
+				Provider:        existing.Provider,
+				Model:           existing.Model,
+				ContextWindow:   existing.ContextWindow,
+				MaxOutputTokens: existing.MaxOutputTokens,
+				ToolCalling:     existing.ToolCalling,
+				LocalOnly:       existing.LocalOnly,
+			}
+			if args.Provider != nil {
+				preset.Provider = *args.Provider
+			}
+			if args.Model != nil {
+				preset.Model = *args.Model
+			}
+			if args.ContextWindow != nil {
+				preset.ContextWindow = *args.ContextWindow
+			}
+			if args.MaxOutputTokens != nil {
+				preset.MaxOutputTokens = *args.MaxOutputTokens
+			}
+			if args.ToolCalling != nil {
+				preset.ToolCalling = *args.ToolCalling
+			}
+			if args.LocalOnly != nil {
+				preset.LocalOnly = *args.LocalOnly
+			}
+			if cfg.Models.Presets == nil {
+				cfg.Models.Presets = map[string]routing.ModelPreset{}
+			}
+			cfg.Models.Presets[args.Name] = preset
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configModelsPresetDeleteTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.models.preset.delete",
+		Description: "Delete a model preset from the [models.presets] section by name.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Preset name key to delete"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.models.preset.delete args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.models.preset.delete (%s scope): delete preset %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			delete(cfg.Models.Presets, args.Name)
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configAgentProfilesSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.agent_profiles.set",
+		Description: "Set or add an agent profile in the [agent_profiles] section. Roles is a map of role name to preset string or {custom_agent: \"...\"} object. Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Profile name key"},"roles":{"type":"object","additionalProperties":{"oneOf":[{"type":"string"},{"type":"object","properties":{"custom_agent":{"type":"string"},"preset":{"type":"string"}},"additionalProperties":false}]},"description":"Map of role name to preset string or {custom_agent: \"x\"} object"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name  string         `json:"name"`
+			Roles map[string]any `json:"roles"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.agent_profiles.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.agent_profiles.set (%s scope): set agent profile %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			roles := map[routing.AgentRole]routing.RoleBinding{}
+			for roleKey, roleVal := range args.Roles {
+				role := routing.AgentRole(roleKey)
+				var rb routing.RoleBinding
+				if s, ok := roleVal.(string); ok {
+					rb.Preset = s
+				} else if m, ok := roleVal.(map[string]any); ok {
+					if ca, ok := m["custom_agent"].(string); ok {
+						rb.CustomAgent = ca
+					}
+					if p, ok := m["preset"].(string); ok {
+						rb.Preset = p
+					}
+				}
+				roles[role] = rb
+			}
+			if cfg.AgentProfiles == nil {
+				cfg.AgentProfiles = map[string]routing.AgentProfile{}
+			}
+			cfg.AgentProfiles[args.Name] = routing.AgentProfile{Name: args.Name, Roles: roles}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configAgentProfilesDeleteTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.agent_profiles.delete",
+		Description: "Delete an agent profile from the [agent_profiles] section by name.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Profile name key to delete"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.agent_profiles.delete args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.agent_profiles.delete (%s scope): delete agent profile %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			delete(cfg.AgentProfiles, args.Name)
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configCustomAgentsSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.custom_agents.set",
+		Description: "Set or add a custom agent in the [custom_agents] section. Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Custom agent name key"},"preset":{"type":"string"},"system_prompt":{"type":"string"},"tool_denylist":{"type":"array","items":{"type":"string"}},"approval_mode":{"type":"string"},"max_iterations":{"type":"integer"},"context":{"type":"object","properties":{"max_repo_context_tokens":{"type":"integer"}},"additionalProperties":false}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name          string   `json:"name"`
+			Preset        *string  `json:"preset"`
+			SystemPrompt  *string  `json:"system_prompt"`
+			ToolDenylist  []string `json:"tool_denylist"`
+			ApprovalMode  *string  `json:"approval_mode"`
+			MaxIterations *int     `json:"max_iterations"`
+			Context       *struct {
+				MaxRepoContextTokens *int `json:"max_repo_context_tokens"`
+			} `json:"context"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.custom_agents.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.custom_agents.set (%s scope): set custom agent %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			existing := cfg.CustomAgents[args.Name]
+			ca := routing.CustomAgent{
+				Name:          args.Name,
+				Preset:        existing.Preset,
+				SystemPrompt:  existing.SystemPrompt,
+				ToolDenylist:  existing.ToolDenylist,
+				ApprovalMode:  existing.ApprovalMode,
+				MaxIterations: existing.MaxIterations,
+				Context:       existing.Context,
+			}
+			if args.Preset != nil {
+				ca.Preset = *args.Preset
+			}
+			if args.SystemPrompt != nil {
+				ca.SystemPrompt = *args.SystemPrompt
+			}
+			if args.ToolDenylist != nil {
+				ca.ToolDenylist = args.ToolDenylist
+			}
+			if args.ApprovalMode != nil {
+				ca.ApprovalMode = *args.ApprovalMode
+			}
+			if args.MaxIterations != nil {
+				ca.MaxIterations = *args.MaxIterations
+			}
+			if args.Context != nil {
+				if args.Context.MaxRepoContextTokens != nil {
+					ca.Context.MaxRepoContextTokens = *args.Context.MaxRepoContextTokens
+				}
+			}
+			if cfg.CustomAgents == nil {
+				cfg.CustomAgents = map[string]routing.CustomAgent{}
+			}
+			cfg.CustomAgents[args.Name] = ca
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configCustomAgentsDeleteTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.custom_agents.delete",
+		Description: "Delete a custom agent from the [custom_agents] section by name.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"name":{"type":"string","description":"Custom agent name key to delete"}},"required":["name"],"additionalProperties":false}`),
+		Risk:        registry.RiskWorkspaceWrite,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.custom_agents.delete args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.custom_agents.delete (%s scope): delete custom agent %q", scope, args.Name)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			delete(cfg.CustomAgents, args.Name)
 		})
 	}
 	return tool

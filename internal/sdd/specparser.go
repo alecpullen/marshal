@@ -22,6 +22,11 @@ func ParseSpec(specPath string) (*DAG, error) {
 	content := string(data)
 	dag := &DAG{SpecPath: specPath}
 
+	// Validate the YAML frontmatter via P1's ParseSpecFrontmatter.
+	if _, err := ParseSpecFrontmatter(content); err != nil {
+		return nil, fmt.Errorf("sdd spec: parse frontmatter: %w", err)
+	}
+
 	// Extract the fenced ```yaml block.
 	m := yamlFenceRe.FindStringSubmatch(content)
 	if m == nil {

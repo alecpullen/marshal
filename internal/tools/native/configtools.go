@@ -40,6 +40,10 @@ func (t *toolSet) configTools() []registry.Tool {
 		t.configProjectSetTool(),
 		t.configCommandsSetTool(),
 		t.configProfileSetTool(),
+		t.configToolsShellSetTool(),
+		t.configToolsShellSandboxSetTool(),
+		t.configDiagnosticsSetTool(),
+		t.configHooksSetTool(),
 	}
 }
 
@@ -727,6 +731,221 @@ func (t *toolSet) configProfileSetTool() registry.Tool {
 		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
 			if args.Default != nil {
 				cfg.Profile.Default = *args.Default
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configToolsShellSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.tools.shell.set",
+		Description: "Set fields in the [tools.shell] section (default_timeout_seconds, max_output_bytes, max_background_jobs, background_retention, allow_network, auto_approve, allow, confirm, deny, guardrail_dynamic_argv0). auto_approve=true escalates to a destructive (forced-approval) change. Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"default_timeout_seconds":{"type":"integer"},"max_output_bytes":{"type":"integer"},"max_background_jobs":{"type":"integer"},"background_retention":{"type":"string"},"allow_network":{"type":"boolean"},"auto_approve":{"type":"boolean"},"allow":{"type":"object","properties":{"commands":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"confirm":{"type":"object","properties":{"commands":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"deny":{"type":"object","properties":{"patterns":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"guardrail_dynamic_argv0":{"type":"string"}},"additionalProperties":false}`),
+		Risk:        registry.RiskCommand,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			DefaultTimeoutSeconds *int                 `json:"default_timeout_seconds"`
+			MaxOutputBytes        *int                 `json:"max_output_bytes"`
+			MaxBackgroundJobs     *int                 `json:"max_background_jobs"`
+			BackgroundRetention   *string              `json:"background_retention"`
+			AllowNetwork          *bool                `json:"allow_network"`
+			AutoApprove           *bool                `json:"auto_approve"`
+			Allow                 *config.CommandRules `json:"allow"`
+			Confirm               *config.CommandRules `json:"confirm"`
+			Deny                  *config.PatternRules `json:"deny"`
+			GuardrailDynamicArgv0 *string              `json:"guardrail_dynamic_argv0"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.tools.shell.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		destructive := args.AutoApprove != nil && *args.AutoApprove
+		reason := fmt.Sprintf("config.tools.shell.set (%s scope): update tools.shell section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, destructive, func(cfg *config.Config) {
+			if args.DefaultTimeoutSeconds != nil {
+				cfg.Tools.Shell.DefaultTimeoutSeconds = *args.DefaultTimeoutSeconds
+			}
+			if args.MaxOutputBytes != nil {
+				cfg.Tools.Shell.MaxOutputBytes = *args.MaxOutputBytes
+			}
+			if args.MaxBackgroundJobs != nil {
+				cfg.Tools.Shell.MaxBackgroundJobs = *args.MaxBackgroundJobs
+			}
+			if args.BackgroundRetention != nil && *args.BackgroundRetention != "" {
+				d, err := time.ParseDuration(*args.BackgroundRetention)
+				if err == nil {
+					cfg.Tools.Shell.BackgroundRetention = d
+				}
+			}
+			if args.AllowNetwork != nil {
+				cfg.Tools.Shell.AllowNetwork = *args.AllowNetwork
+			}
+			if args.AutoApprove != nil {
+				cfg.Tools.Shell.AutoApprove = *args.AutoApprove
+			}
+			if args.Allow != nil {
+				cfg.Tools.Shell.Allow = *args.Allow
+			}
+			if args.Confirm != nil {
+				cfg.Tools.Shell.Confirm = *args.Confirm
+			}
+			if args.Deny != nil {
+				cfg.Tools.Shell.Deny = *args.Deny
+			}
+			if args.GuardrailDynamicArgv0 != nil {
+				cfg.Tools.Shell.GuardrailDynamicArgv0 = *args.GuardrailDynamicArgv0
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configToolsShellSandboxSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.tools.shell.sandbox.set",
+		Description: "Set fields in the [tools.shell.sandbox] section (backend, memory_limit_mb, cpu_seconds, max_processes, file_size_limit_mb, container_runtime, container_image, allow_fallback, unsafe_passthrough, env_allowlist, env_denylist). unsafe_passthrough=true escalates to a destructive (forced-approval) change. Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"backend":{"type":"string"},"memory_limit_mb":{"type":"integer"},"cpu_seconds":{"type":"integer"},"max_processes":{"type":"integer"},"file_size_limit_mb":{"type":"integer"},"container_runtime":{"type":"string"},"container_image":{"type":"string"},"allow_fallback":{"type":"boolean"},"unsafe_passthrough":{"type":"boolean"},"env_allowlist":{"type":"array","items":{"type":"string"}},"env_denylist":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}`),
+		Risk:        registry.RiskCommand,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Backend           *string  `json:"backend"`
+			MemoryLimitMB     *int     `json:"memory_limit_mb"`
+			CPUSeconds        *int     `json:"cpu_seconds"`
+			MaxProcesses      *int     `json:"max_processes"`
+			FileSizeLimitMB   *int     `json:"file_size_limit_mb"`
+			ContainerRuntime  *string  `json:"container_runtime"`
+			ContainerImage    *string  `json:"container_image"`
+			AllowFallback     *bool    `json:"allow_fallback"`
+			UnsafePassthrough *bool    `json:"unsafe_passthrough"`
+			EnvAllowlist      []string `json:"env_allowlist"`
+			EnvDenylist       []string `json:"env_denylist"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.tools.shell.sandbox.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		destructive := args.UnsafePassthrough != nil && *args.UnsafePassthrough
+		reason := fmt.Sprintf("config.tools.shell.sandbox.set (%s scope): update tools.shell.sandbox section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, destructive, func(cfg *config.Config) {
+			if args.Backend != nil {
+				cfg.Tools.Shell.Sandbox.Backend = *args.Backend
+			}
+			if args.MemoryLimitMB != nil {
+				cfg.Tools.Shell.Sandbox.MemoryLimitMB = *args.MemoryLimitMB
+			}
+			if args.CPUSeconds != nil {
+				cfg.Tools.Shell.Sandbox.CPUSeconds = *args.CPUSeconds
+			}
+			if args.MaxProcesses != nil {
+				cfg.Tools.Shell.Sandbox.MaxProcesses = *args.MaxProcesses
+			}
+			if args.FileSizeLimitMB != nil {
+				cfg.Tools.Shell.Sandbox.FileSizeLimitMB = *args.FileSizeLimitMB
+			}
+			if args.ContainerRuntime != nil {
+				cfg.Tools.Shell.Sandbox.ContainerRuntime = *args.ContainerRuntime
+			}
+			if args.ContainerImage != nil {
+				cfg.Tools.Shell.Sandbox.ContainerImage = *args.ContainerImage
+			}
+			if args.AllowFallback != nil {
+				cfg.Tools.Shell.Sandbox.AllowFallback = *args.AllowFallback
+			}
+			if args.UnsafePassthrough != nil {
+				cfg.Tools.Shell.Sandbox.UnsafePassthrough = *args.UnsafePassthrough
+			}
+			if args.EnvAllowlist != nil {
+				cfg.Tools.Shell.Sandbox.EnvAllowlist = args.EnvAllowlist
+			}
+			if args.EnvDenylist != nil {
+				cfg.Tools.Shell.Sandbox.EnvDenylist = args.EnvDenylist
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configDiagnosticsSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.diagnostics.set",
+		Description: "Set fields in the [diagnostics] section (commands). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"commands":{"type":"object","additionalProperties":{"type":"string"}}},"additionalProperties":false}`),
+		Risk:        registry.RiskCommand,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			Commands map[string]string `json:"commands"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.diagnostics.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.diagnostics.set (%s scope): update diagnostics section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.Commands != nil {
+				if cfg.Diagnostics.Commands == nil {
+					cfg.Diagnostics.Commands = make(map[string]string)
+				}
+				for k, v := range args.Commands {
+					cfg.Diagnostics.Commands[k] = v
+				}
+			}
+		})
+	}
+	return tool
+}
+
+func (t *toolSet) configHooksSetTool() registry.Tool {
+	tool := registry.Tool{
+		Name:        "config.hooks.set",
+		Description: "Set fields in the [hooks] section (fail_closed, entries). Omitted fields are preserved.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"fail_closed":{"type":"boolean"},"entries":{"type":"array","items":{"type":"object","properties":{"event":{"type":"string"},"matcher":{"type":"string"},"command":{"type":"string"},"timeout_ms":{"type":"integer"}},"additionalProperties":false}}},"additionalProperties":false}`),
+		Risk:        registry.RiskCommand,
+	}
+	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		var args struct {
+			configWriteEnvelope
+			FailClosed *bool `json:"fail_closed"`
+			Entries    []struct {
+				Event     *string `json:"event"`
+				Matcher   *string `json:"matcher"`
+				Command   *string `json:"command"`
+				TimeoutMS *int    `json:"timeout_ms"`
+			} `json:"entries"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("decode config.hooks.set args: %w", err)
+		}
+		scope := args.resolvedScope()
+		reason := fmt.Sprintf("config.hooks.set (%s scope): update hooks section", scope)
+		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+			if args.FailClosed != nil {
+				cfg.Hooks.FailClosed = *args.FailClosed
+			}
+			if args.Entries != nil {
+				cfg.Hooks.Entries = nil
+				for _, e := range args.Entries {
+					entry := config.HookConfig{}
+					if e.Event != nil {
+						entry.Event = *e.Event
+					}
+					if e.Matcher != nil {
+						entry.Matcher = *e.Matcher
+					}
+					if e.Command != nil {
+						entry.Command = *e.Command
+					}
+					if e.TimeoutMS != nil {
+						entry.TimeoutMS = *e.TimeoutMS
+					}
+					cfg.Hooks.Entries = append(cfg.Hooks.Entries, entry)
+				}
 			}
 		})
 	}

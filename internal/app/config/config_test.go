@@ -979,6 +979,38 @@ sdd_branch_reviewer = "big"
 	}
 }
 
+func TestWatchEnabled(t *testing.T) {
+	tt := true
+	ff := false
+	cases := []struct {
+		watch     *bool
+		embedding bool
+		want      bool
+	}{
+		{nil, true, true},   // auto: on when embedding configured
+		{nil, false, false}, // auto: off otherwise
+		{&tt, false, true},  // explicit on wins
+		{&ff, true, false},  // explicit off wins
+	}
+	for _, c := range cases {
+		if got := WatchEnabled(c.watch, c.embedding); got != c.want {
+			t.Fatalf("WatchEnabled(%v,%v)=%v want %v", c.watch, c.embedding, got, c.want)
+		}
+	}
+}
+
+func TestLoadWatchConfig(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", "[indexing]\nwatch = true\nwatch_debounce_ms = 500\n")
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Indexing.Watch == nil || !*cfg.Indexing.Watch || cfg.Indexing.WatchDebounceMs != 500 {
+		t.Fatalf("indexing = %#v", cfg.Indexing)
+	}
+}
+
 func TestLoadEmbeddingRoleSurvives(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

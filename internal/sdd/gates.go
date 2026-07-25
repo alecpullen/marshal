@@ -92,6 +92,52 @@ func reviewStateWithOpts(git GitOps, dag *DAG, taskID string, opts ReviewStateOp
 	return GateResult{Decision: DecisionAccept, Event: "REVIEW_REQUIRED", KV: []string{"task", taskID, "lines", strconv.Itoa(lines), "files", strconv.Itoa(files)}}
 }
 
+// ReviewGuard validates the reviewer's report and detects orchestrator
+// override (a PASS that follows a prior REVIEW_FAIL without an intervening
+// RETRY) per spec §9. Returns:
+//   - REVIEW_MALFORMED (block): report fails validation
+//   - ORCHESTRATOR_OVERRIDE (reject): PASS follows REVIEW_FAIL without RETRY
+//   - REVIEW_PASS (accept): valid PASS
+//   - REVIEW_FAIL (block): valid FAIL
+func ReviewGuard(ws *Workspace, progress *Progress, taskID string) GateResult {
+	data, err := os.ReadFile(filepath.Join(ws.Dir(), "reports", taskID+"-review.md"))
+	if os.IsNotExist(err) {
+		return GateResult{Decision: DecisionBlock, Event: "REVIEW_MALFORMED", Reason: "no review report"}
+	}
+	if err != nil {
+		return GateResult{Decision: DecisionBlock, Event: "REVIEW_MALFORMED", Reason: err.Error()}
+	}
+	normalized := NormalizeReport(string(data))
+	rep := parseReportFromString(taskID, normalized)
+	if err := rep.Validate(); err != nil {
+		return GateResult{Decision: DecisionBlock, Event: "REVIEW_MALFORMED", Reason: err.Error(), KV: []string{"task", taskID}}
+	}
+	if rep.Status == ReportPass {
+		// Override check: did REVIEW_FAIL happen for this task without RETRY?
+		lines, _ := progress.Tail(ws, 50)
+		sawFail := false
+		for _, line := range lines {
+			if !strings.Contains(line, " "+taskID+" ") {
+				continue
+			}
+			if strings.Contains(line, " REVIEW_FAIL ") {
+				sawFail = true
+			}
+			if strings.Contains(line, " RETRY ") {
+				sawFail = false
+			}
+		}
+		if sawFail {
+			return GateResult{Decision: DecisionReject, Event: "ORCHESTRATOR_OVERRIDE", Reason: "PASS follows REVIEW_FAIL without intervening RETRY", KV: []string{"task", taskID}}
+		}
+		return GateResult{Decision: DecisionAccept, Event: "REVIEW_PASS", KV: []string{"task", taskID}}
+	}
+	if rep.Status == ReportFail {
+		return GateResult{Decision: DecisionBlock, Event: "REVIEW_FAIL", KV: []string{"task", taskID}}
+	}
+	return GateResult{Decision: DecisionBlock, Event: "REVIEW_MALFORMED", Reason: fmt.Sprintf("unexpected review status %q", rep.Status), KV: []string{"task", taskID}}
+}
+
 // countDiffStat parses `git diff --stat` output and returns the total line
 // count and file count. Lines look like " path | N +++---"; N is the number
 // after the pipe.

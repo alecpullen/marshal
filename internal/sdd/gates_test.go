@@ -90,6 +90,54 @@ func TestReviewStateRequiredFirstPass(t *testing.T) {
 	}
 }
 
+func TestReviewGuardPass(t *testing.T) {
+	ws, _ := NewWorkspace(t.TempDir())
+	ws.Ensure()
+	var p Progress
+	writeReportFile(t, ws, "T1-review.md", "status: PASS\n\nlooks good\n")
+	r := ReviewGuard(ws, &p, "T1")
+	if r.Decision != DecisionAccept || r.Event != "REVIEW_PASS" {
+		t.Fatalf("expected REVIEW_PASS, got %+v", r)
+	}
+}
+
+func TestReviewGuardFail(t *testing.T) {
+	ws, _ := NewWorkspace(t.TempDir())
+	ws.Ensure()
+	var p Progress
+	writeReportFile(t, ws, "T1-review.md", "status: FAIL\n\nbug in foo.go:42\n")
+	r := ReviewGuard(ws, &p, "T1")
+	if r.Decision != DecisionBlock || r.Event != "REVIEW_FAIL" {
+		t.Fatalf("expected REVIEW_FAIL block, got %+v", r)
+	}
+}
+
+func TestReviewGuardOverrideDetected(t *testing.T) {
+	ws, _ := NewWorkspace(t.TempDir())
+	ws.Ensure()
+	var p Progress
+	// Seed progress: REVIEW_FAIL for T1, then no RETRY, then this PASS.
+	p.Append(ws, "T1", "REVIEW_FAIL", "finding", "bug")
+	writeReportFile(t, ws, "T1-review.md", "status: PASS\n\nlooks good\n")
+	r := ReviewGuard(ws, &p, "T1")
+	if r.Decision != DecisionReject || r.Event != "ORCHESTRATOR_OVERRIDE" {
+		t.Fatalf("expected ORCHESTRATOR_OVERRIDE reject, got %+v", r)
+	}
+}
+
+func TestReviewGuardOverrideClearedByRetry(t *testing.T) {
+	ws, _ := NewWorkspace(t.TempDir())
+	ws.Ensure()
+	var p Progress
+	p.Append(ws, "T1", "REVIEW_FAIL", "finding", "bug")
+	p.Append(ws, "T1", "RETRY", "attempt", "2")
+	writeReportFile(t, ws, "T1-review.md", "status: PASS\n\nfixed\n")
+	r := ReviewGuard(ws, &p, "T1")
+	if r.Decision != DecisionAccept || r.Event != "REVIEW_PASS" {
+		t.Fatalf("expected REVIEW_PASS (retry cleared the prior fail), got %+v", r)
+	}
+}
+
 // writeReportFile is a test helper that writes a report file into ws/reports/.
 func writeReportFile(t *testing.T, ws *Workspace, name, content string) {
 	t.Helper()

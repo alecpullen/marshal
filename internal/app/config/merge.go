@@ -292,6 +292,25 @@ func merge(cfg *Config, file configFile) error {
 			set(&cfg.Session.Rollover.Calibration.Enabled, r.Calibration.Enabled)
 		}
 	}
+	if file.LSP != nil {
+		if file.LSP.Enabled != nil {
+			cfg.LSP.Enabled = file.LSP.Enabled
+		}
+		for name, srv := range file.LSP.Servers {
+			if cfg.LSP.Servers == nil {
+				cfg.LSP.Servers = map[string]LSPServerConfig{}
+			}
+			cfgSrv := LSPServerConfig{}
+			if srv.Command != nil {
+				cfgSrv.Command = *srv.Command
+			}
+			cfgSrv.Args = srv.Args
+			if srv.Disabled != nil {
+				cfgSrv.Disabled = *srv.Disabled
+			}
+			cfg.LSP.Servers[name] = cfgSrv
+		}
+	}
 	if file.Hooks != nil {
 		set(&cfg.Hooks.FailClosed, file.Hooks.FailClosed)
 		if file.Hooks.Entries != nil {

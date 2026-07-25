@@ -193,6 +193,17 @@ type fileSession struct {
 	Rollover *fileRollover `toml:"rollover"`
 }
 
+type fileLSPServer struct {
+	Command  *string  `toml:"command"`
+	Args     []string `toml:"args"`
+	Disabled *bool    `toml:"disabled"`
+}
+
+type fileLSP struct {
+	Enabled *bool                    `toml:"enabled"`
+	Servers map[string]fileLSPServer `toml:"servers"`
+}
+
 type configFile struct {
 	Project     *fileProject     `toml:"project"`
 	Commands    *fileCommands    `toml:"commands"`
@@ -223,4 +234,5 @@ type configFile struct {
 	// CustomAgents mirrors config.CustomAgents for the file layer.
 	CustomAgents map[string]routing.CustomAgent       `toml:"custom_agents"`
 	Agents       map[routing.AgentRole]fileAgentEntry `toml:"agents"`
+	LSP          *fileLSP                             `toml:"lsp"`
 }

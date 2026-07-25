@@ -1011,6 +1011,28 @@ func TestLoadWatchConfig(t *testing.T) {
 	}
 }
 
+func TestLoadLSPConfig(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[lsp]
+enabled = true
+[lsp.servers.go]
+command = "gopls"
+[lsp.servers.python]
+disabled = true
+`)
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LSP.Servers["go"].Command != "gopls" {
+		t.Fatalf("go server = %#v", cfg.LSP.Servers["go"])
+	}
+	if !cfg.LSP.Servers["python"].Disabled {
+		t.Fatal("python should be disabled")
+	}
+}
+
 func TestLoadEmbeddingRoleSurvives(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()

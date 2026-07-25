@@ -149,6 +149,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.modeRequestTool(),
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
+		tools.codebaseSearchTool(),
 	}
 	if recallToolEnabled(tools.config.Session.Rollover) {
 		all = append(all, tools.recallHistoryTool())

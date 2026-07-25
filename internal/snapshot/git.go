@@ -108,6 +108,8 @@ func (s *Service) largeFileExcludes() ([]string, error) {
 		return nil, nil
 	}
 
+	ignoreRules := s.allIgnoreRules()
+
 	var excludes []string
 	err := filepath.Walk(s.workTree, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -118,14 +120,16 @@ func (s *Service) largeFileExcludes() ([]string, error) {
 			if rel == "." {
 				return nil
 			}
-			if rel == ".git" || isIgnored(rel, s.ignore) {
+			if rel == ".git" || isIgnored(rel, ignoreRules) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		if info.Size() > s.maxFile {
 			rel, _ := filepath.Rel(s.workTree, path)
-			excludes = append(excludes, rel)
+			if !isIgnored(rel, ignoreRules) {
+				excludes = append(excludes, rel)
+			}
 		}
 		return nil
 	})
@@ -133,6 +137,21 @@ func (s *Service) largeFileExcludes() ([]string, error) {
 		return nil, err
 	}
 	return excludes, nil
+}
+
+func (s *Service) allIgnoreRules() []string {
+	projectGitignore := filepath.Join(s.workTree, ".gitignore")
+	if data, err := os.ReadFile(projectGitignore); err == nil {
+		var rules []string
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				rules = append(rules, line)
+			}
+		}
+		return append(rules, s.ignore...)
+	}
+	return s.ignore
 }
 
 func isIgnored(rel string, ignore []string) bool {

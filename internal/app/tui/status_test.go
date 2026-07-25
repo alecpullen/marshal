@@ -44,8 +44,8 @@ func TestStatusLineShowsToolActivityWithElapsed(t *testing.T) {
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Unix(100, 0)})
 
 	line := m.renderStatusLine(100)
-	if !strings.Contains(line, "⠋") || !strings.Contains(line, "shell.run: go test") || !strings.Contains(line, "4s") {
-		t.Fatalf("status line missing tool activity:\n%s", line)
+	if strings.Contains(line, "shell.run: go test") {
+		t.Fatalf("status line must not show tool activity; got:\n%s", line)
 	}
 }
 
@@ -86,8 +86,8 @@ func TestStatusLineShowsToolBudgetCounter(t *testing.T) {
 	m.state.SetToolBudget(session.ToolBudget{Used: 13, Max: 16})
 
 	line := m.renderStatusLine(100)
-	if !strings.Contains(line, "tools 13/16") {
-		t.Fatalf("status line missing tool budget counter:\n%s", line)
+	if strings.Contains(line, "tools") {
+		t.Fatalf("status line must not show tool budget when tool activity is removed from footer:\n%s", line)
 	}
 }
 
@@ -313,11 +313,8 @@ func TestStatusLineHintsYieldToActivity(t *testing.T) {
 	m.now = func() time.Time { return time.Unix(104, 0) }
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Unix(100, 0)})
 	line := stripANSI(m.renderStatusLine(100))
-	if strings.Contains(line, "Tab mode") {
-		t.Fatalf("hints must yield to activity in the right cluster:\n%s", line)
-	}
-	if !strings.Contains(line, "shell.run: go test") {
-		t.Fatalf("activity missing from status line:\n%s", line)
+	if strings.Contains(line, "shell.run: go test") {
+		t.Fatalf("status line must not show tool activity:\n%s", line)
 	}
 }
 
@@ -412,6 +409,20 @@ func TestStatusLineModeIsCoralColored(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(out), "default") {
 		t.Fatalf("mode label text missing:\n%s", out)
+	}
+}
+
+func TestStatusFooterOmitsToolActivity(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActivity(session.Activity{
+		Kind:      session.ActivityTool,
+		Label:     "shell.run: go test ./...",
+		StartedAt: time.Now().Add(-time.Second),
+	})
+	m.spinnerFrame = "⠋"
+	out := stripANSI(m.renderStatusLine(80))
+	if strings.Contains(out, "shell.run") || strings.Contains(out, "go test") {
+		t.Fatalf("status line must not render active tool details; got %q", out)
 	}
 }
 

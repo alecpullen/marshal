@@ -513,3 +513,18 @@ func TestActiveToolCallNoSurfaceBackgroundInMono(t *testing.T) {
 		t.Fatalf("unexpected background SGR in NO_COLOR mode:\n%s", out)
 	}
 }
+
+func TestActiveToolCallRenderedInTranscript(t *testing.T) {
+	atc := session.ActiveToolCall{
+		Name:      "shell.run",
+		Args:      "go test ./...",
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	out := stripANSI(renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Now(), 80))
+	if !strings.Contains(out, "shell.run") {
+		t.Fatalf("active tool call missing name in transcript: %q", out)
+	}
+	if !strings.Contains(out, "go test") {
+		t.Fatalf("active tool call missing command in transcript: %q", out)
+	}
+}

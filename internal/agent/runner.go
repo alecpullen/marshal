@@ -289,6 +289,10 @@ func (r *Runner) SetApprovalMode(m policy.ApprovalMode) {
 	}
 }
 
+// ResolveGate satisfies tui.AgentRunner. The regular agent runner does not
+// use human gates; this is a no-op.
+func (r *Runner) ResolveGate() {}
+
 func (r *Runner) SetPolicyRules(rules []config.PermissionRule) {
 	prules := make([]permissions.Rule, 0, len(rules))
 	for _, rl := range rules {

@@ -74,6 +74,39 @@ func TestTesterViewAllowsReadAndCommandButNotWrites(t *testing.T) {
 	}
 }
 
+func TestOrchestratorViewDropsWriteAndShellTools(t *testing.T) {
+	src := New()
+	mustRegister := func(tool Tool) {
+		t.Helper()
+		if err := src.Register(tool); err != nil {
+			t.Fatalf("Register(%s): %v", tool.Name, err)
+		}
+	}
+	mustRegister(Tool{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler})
+	mustRegister(Tool{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler})
+	mustRegister(Tool{Name: "shell.run", Description: "shell", Risk: RiskCommand, Handler: nopHandler})
+	mustRegister(Tool{Name: "sdd.verify", Description: "verify", Risk: RiskWorkspaceWrite, Handler: nopHandler})
+	mustRegister(Tool{Name: "agent.run", Description: "agent", Risk: RiskReadOnly, Handler: nopHandler})
+
+	view := OrchestratorView(src)
+
+	if _, ok := view.Lookup("file.read"); !ok {
+		t.Error("file.read should be present (read-only tool)")
+	}
+	if _, ok := view.Lookup("sdd.verify"); !ok {
+		t.Error("sdd.verify should be present (sdd.* workspace-write tool)")
+	}
+	if _, ok := view.Lookup("agent.run"); !ok {
+		t.Error("agent.run should be present (read-only tool)")
+	}
+	if _, ok := view.Lookup("file.write_patch"); ok {
+		t.Error("file.write_patch should be dropped (non-sdd workspace-write tool)")
+	}
+	if _, ok := view.Lookup("shell.run"); ok {
+		t.Error("shell.run should be dropped (command tool)")
+	}
+}
+
 func TestTesterViewTestRunIgnoresCommandOverride(t *testing.T) {
 	src := New()
 	var gotArgs string

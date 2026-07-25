@@ -92,3 +92,32 @@ func TestFakeGitOpsMergeFFConflict(t *testing.T) {
 		t.Fatal("expected merge conflict error, got nil")
 	}
 }
+
+func TestFakeGitOpsDeleteBranch(t *testing.T) {
+	fake := NewFakeGitOps()
+	fake.SetBranch("sdd/T1")
+	fake.SetBranch("sdd/T2")
+	if err := fake.DeleteBranch("sdd/T1"); err != nil {
+		t.Fatal(err)
+	}
+	if fake.BranchExists("sdd/T1") {
+		t.Fatal("sdd/T1 should be deleted")
+	}
+	if !fake.BranchExists("sdd/T2") {
+		t.Fatal("sdd/T2 should still exist")
+	}
+}
+
+func TestFakeGitOpsListSDDBranches(t *testing.T) {
+	fake := NewFakeGitOps()
+	fake.SetBranch("sdd/T1")
+	fake.SetBranch("sdd/T2")
+	fake.SetBranch("main") // not sdd/*
+	branches, err := fake.ListSDDBranches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branches) != 2 {
+		t.Fatalf("expected 2 sdd branches, got %v", branches)
+	}
+}

@@ -36,6 +36,12 @@ type GitOps interface {
 	// IsAncestor reports whether ancestor is an ancestor of descendant
 	// (git merge-base --is-ancestor). Used by branch-base-guard.
 	IsAncestor(ancestor, descendant string) (bool, error)
+	// DeleteBranch removes a local branch (git branch -d). Best-effort; the
+	// caller tolerates errors. Used by CleanupStale.
+	DeleteBranch(branch string) error
+	// ListSDDBranches lists all sdd/* branches (git for-each-ref
+	// refs/heads/sdd/). Used by CleanupStale.
+	ListSDDBranches() ([]string, error)
 }
 
 // CLIGitOps shells out to the git CLI. Dir is the repo working directory.
@@ -96,6 +102,26 @@ func (g CLIGitOps) IsAncestor(ancestor, descendant string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+func (g CLIGitOps) DeleteBranch(branch string) error {
+	_, err := g.run("branch", "-d", branch)
+	return err
+}
+
+func (g CLIGitOps) ListSDDBranches() ([]string, error) {
+	out, err := g.run("for-each-ref", "--format=%(refname:short)", "refs/heads/sdd/")
+	if err != nil {
+		return nil, err
+	}
+	var branches []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches, nil
 }
 
 func (g CLIGitOps) DiffStat(from, to string) (string, error) {
@@ -267,4 +293,28 @@ func (f *FakeGitOps) DiffStat(from, to string) (string, error) {
 		f.diffStats = map[string]string{}
 	}
 	return f.diffStats[from+".."+to], nil
+}
+
+func (f *FakeGitOps) DeleteBranch(branch string) error {
+	f.record("branch", []string{"-d", branch})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.branches[branch] {
+		return fmt.Errorf("sdd git fake: branch %s does not exist", branch)
+	}
+	delete(f.branches, branch)
+	return nil
+}
+
+func (f *FakeGitOps) ListSDDBranches() ([]string, error) {
+	f.record("for-each-ref", []string{"refs/heads/sdd/"})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for b := range f.branches {
+		if strings.HasPrefix(b, "sdd/") {
+			out = append(out, b)
+		}
+	}
+	return out, nil
 }

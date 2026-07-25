@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/session"
@@ -54,6 +55,7 @@ type Controller struct {
 	SessionState   *session.State
 	PipelineBranch string
 	TargetBranch   string
+	PlanPath       string
 
 	State         ControllerState
 	LastBatchID   int
@@ -84,7 +86,9 @@ func NewController(ws *Workspace, git GitOps, dag *DAG, rs *RepoState, progress 
 // or ErrHumanGateRequired when a human gate is reached (the TUI re-dispatches
 // after resolution), or another error on failure.
 func (c *Controller) Run(ctx context.Context) error {
-	c.State = StateWorkspaceReset
+	if c.State == StateIdle || c.State == "" {
+		c.State = StateWorkspaceReset
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -116,8 +120,23 @@ func (c *Controller) Run(ctx context.Context) error {
 			c.State = StateSpecGate
 			return ErrHumanGateRequired
 		case StateDecompose:
-			// Parse the spec into the DAG.
 			specPath := filepath.Join(c.WS.Dir(), "spec.md")
+			// If no spec.md exists, parse the plan and emit a draft spec.
+			if _, err := os.Stat(specPath); err != nil {
+				if c.PlanPath == "" {
+					return fmt.Errorf("controller: no spec.md and no plan path for decomposition")
+				}
+				draftDAG, err := ParsePlan(c.PlanPath)
+				if err != nil {
+					return fmt.Errorf("controller: parse plan: %w", err)
+				}
+				if err := c.emitDraftSpec(draftDAG); err != nil {
+					return fmt.Errorf("controller: emit draft spec: %w", err)
+				}
+				c.State = StateSpecGate
+				continue
+			}
+			// spec.md exists — parse it into the DAG.
 			dag, err := ParseSpec(specPath)
 			if err != nil {
 				return fmt.Errorf("controller: parse spec: %w", err)
@@ -213,4 +232,21 @@ func (c *Controller) swapOrchestratorModel(preset string) {
 	// rebuilding requires a new closure. For P4, this is a hook the caller
 	// uses; the actual factory rebuild is P5's wiring.
 	_ = overridden
+}
+
+// emitDraftSpec writes a draft spec.md with frontmatter status: draft and
+// a yaml tasks: block listing the DAG's tasks (id, title, deps, files,
+// acceptance). The human approves it at the spec gate.
+func (c *Controller) emitDraftSpec(dag *DAG) error {
+	var b strings.Builder
+	b.WriteString("---\nstatus: draft\nsource_plan: " + c.PlanPath + "\ntarget_branch: " + c.TargetBranch + "\n---\n\n# SDD Spec\n\n```yaml\ntasks:\n")
+	for _, t := range dag.Tasks {
+		b.WriteString("  - id: " + t.ID + "\n")
+		b.WriteString("    title: " + t.Title + "\n")
+		b.WriteString("    deps: [" + strings.Join(t.Deps, ", ") + "]\n")
+		b.WriteString("    files: [" + strings.Join(t.Files, ", ") + "]\n")
+		b.WriteString("    acceptance: [" + strings.Join(t.Acceptance, ", ") + "]\n")
+	}
+	b.WriteString("```\n")
+	return os.WriteFile(filepath.Join(c.WS.Dir(), "spec.md"), []byte(b.String()), 0644)
 }

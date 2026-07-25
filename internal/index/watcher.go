@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -16,6 +17,7 @@ type Watcher struct {
 	debounce time.Duration
 	run      func(ctx context.Context) error
 	log      *slog.Logger
+	wg       sync.WaitGroup
 }
 
 func NewWatcher(root string, debounce time.Duration, run func(ctx context.Context) error, log *slog.Logger) *Watcher {
@@ -48,7 +50,9 @@ func (w *Watcher) Run(ctx context.Context) error {
 	fire := func() {
 		running = true
 		dirty = false
+		w.wg.Add(1)
 		go func() {
+			defer w.wg.Done()
 			if err := w.run(ctx); err != nil {
 				w.log.Warn("index watcher pass failed", "err", err)
 			}
@@ -59,6 +63,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			w.wg.Wait()
 			return nil
 		case ev, ok := <-fsw.Events:
 			if !ok {

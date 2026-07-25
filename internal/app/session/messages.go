@@ -41,6 +41,11 @@ type Message struct {
 	Final         bool
 	Salvaged      bool
 	SalvageReason string
+	// ToolCallCount is how many real tool calls the runner executed during
+	// the turn that produced this message. In-memory only (not persisted
+	// to SQLite) — it survives across session/prompt calls within a live
+	// process but resets to 0 after a session/load replay from disk.
+	ToolCallCount int
 }
 
 // loadFromDB reconstructs the in-memory message tree for the current
@@ -148,7 +153,7 @@ func (s *State) persistenceEnabled() bool {
 // s.mu is held across the DB write: appends are per-session serialized
 // anyway, and holding it closes the race where a concurrent Rewind /
 // SwitchBranch could orphan a stashed pointer mid-promotion.
-func (s *State) appendMessage(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string) {
+func (s *State) appendMessage(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int) {
 	s.mu.Lock()
 	reasoning := s.inProgress.Reasoning
 	var thinkDuration time.Duration
@@ -195,6 +200,7 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 		Final:         final,
 		Salvaged:      salvaged,
 		SalvageReason: salvageReason,
+		ToolCallCount: toolCallCount,
 	}
 	s.messages = append(s.messages, msg)
 	s.parentOf[id] = parent
@@ -210,15 +216,22 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 }
 
 func (s *State) AddMessage(role Role, content string, contentType ContentType) {
-	s.appendMessage(role, content, contentType, false, false, "")
+	s.appendMessage(role, content, contentType, false, false, "", 0)
 }
 
 func (s *State) AddMessageFinal(role Role, content string, contentType ContentType) {
-	s.appendMessage(role, content, contentType, true, false, "")
+	s.appendMessage(role, content, contentType, true, false, "", 0)
+}
+
+// AddMessageFinalWithToolCount is AddMessageFinal plus a record of how many
+// real tool calls the runner executed during the turn, so a later turn's
+// history replay can distinguish a verified completion from a prose-only one.
+func (s *State) AddMessageFinalWithToolCount(role Role, content string, contentType ContentType, toolCallCount int) {
+	s.appendMessage(role, content, contentType, true, false, "", toolCallCount)
 }
 
 func (s *State) AddMessageSalvaged(role Role, content string, contentType ContentType, reason string) {
-	s.appendMessage(role, content, contentType, true, true, reason)
+	s.appendMessage(role, content, contentType, true, true, reason, 0)
 }
 
 func (s *State) Messages() []Message {

@@ -41,6 +41,32 @@ func TestStateAppendsMessagesInOrder(t *testing.T) {
 	}
 }
 
+func TestAddMessageFinalWithToolCountStoresCount(t *testing.T) {
+	state := newTestState()
+	state.AddMessageFinalWithToolCount(RoleAssistant, "answer", ContentTypeMarkdown, 5)
+
+	messages := state.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("len(Messages()) = %d, want 1", len(messages))
+	}
+	if messages[0].ToolCallCount != 5 {
+		t.Fatalf("ToolCallCount = %d, want 5", messages[0].ToolCallCount)
+	}
+}
+
+func TestAddMessageFinalStoresZeroToolCallCount(t *testing.T) {
+	state := newTestState()
+	state.AddMessageFinal(RoleAssistant, "answer", ContentTypeMarkdown)
+
+	messages := state.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("len(Messages()) = %d, want 1", len(messages))
+	}
+	if messages[0].ToolCallCount != 0 {
+		t.Fatalf("ToolCallCount = %d, want 0", messages[0].ToolCallCount)
+	}
+}
+
 func TestMessagesReturnsCopy(t *testing.T) {
 	state := newTestState()
 	state.AddMessage(RoleUser, "hello", ContentTypePlain)

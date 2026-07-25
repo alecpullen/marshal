@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"fmt"
+
 	"marshal/internal/app/session"
 	"marshal/internal/llm/schema"
 )
@@ -56,6 +58,12 @@ func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo sessio
 			candidates = append(candidates, schema.ChatMessage{Role: schema.RoleUser, Content: m.Content})
 		case session.RoleAssistant:
 			if m.Final && !m.Salvaged {
+				if m.ToolCallCount > 0 {
+					candidates = append(candidates, schema.ChatMessage{
+						Role:    schema.RoleSystem,
+						Content: fmt.Sprintf("(%d tool call(s) were executed by the assistant before the following answer.)", m.ToolCallCount),
+					})
+				}
 				candidates = append(candidates, schema.ChatMessage{Role: schema.RoleAssistant, Content: m.Content})
 			}
 		}

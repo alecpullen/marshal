@@ -27,6 +27,26 @@ func TestBuildHistoryMessagesKeepsUserAndFinalAssistantTurns(t *testing.T) {
 	}
 }
 
+func TestBuildHistoryMessagesAnnotatesToolBackedAnswers(t *testing.T) {
+	prior := []session.Message{
+		{Role: session.RoleUser, Content: "fix the bug", ContentType: session.ContentTypePlain},
+		{Role: session.RoleAssistant, Content: "Done, fixed it.", ContentType: session.ContentTypeMarkdown, Final: true, ToolCallCount: 3},
+	}
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{})
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3 (user turn + tool-activity note + final answer): %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != schema.RoleUser {
+		t.Fatalf("msgs[0] = %+v, want the user turn", msgs[0])
+	}
+	if msgs[1].Role != schema.RoleSystem || !strings.Contains(msgs[1].Content, "3 tool call") {
+		t.Fatalf("msgs[1] = %+v, want a system note mentioning 3 tool calls", msgs[1])
+	}
+	if msgs[2].Role != schema.RoleAssistant || msgs[2].Content != "Done, fixed it." {
+		t.Fatalf("msgs[2] = %+v, want the unmodified final answer", msgs[2])
+	}
+}
+
 func TestBuildHistoryMessagesDropsOldestBeyondBudget(t *testing.T) {
 	long := strings.Repeat("w ", 4000) // ~2000 tokens at 4 chars/token
 	prior := []session.Message{

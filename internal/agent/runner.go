@@ -614,7 +614,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					messages = next
 					continue
 				}
-				r.State.AddMessageFinal(session.RoleAssistant, res.Text, session.ContentTypeMarkdown)
+				r.State.AddMessageFinalWithToolCount(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, toolCallCountThisTurn)
 				return task, nil
 			}
 
@@ -711,6 +711,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if execErr != nil {
 				return task, r.fail(task, execErr)
 			}
+			toolCallCountThisTurn += len(action.Actions)
 			messages = append(messages, resultMsgs...)
 			var finalized *Task
 			messages, finalized, err = r.checkStall(ctx, turnProvider, turnModel, messages, task, effectiveRF, steeringArrived)
@@ -730,9 +731,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = next
 				continue
 			}
-			r.State.AddMessageFinal(session.RoleAssistant, action.Content, session.ContentTypeMarkdown)
+			r.State.AddMessageFinalWithToolCount(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, toolCallCountThisTurn)
 			return task, nil
 		case ActionToolCall, ActionPatch:
+			toolCallCountThisTurn++
 			resultMsgs, err := r.executeToolCall(ctx, action)
 			if err != nil {
 				return task, r.fail(task, err)

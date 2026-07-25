@@ -301,6 +301,7 @@ func (c *Controller) swapOrchestratorModel(preset string) {
 		return
 	}
 	newCfg := c.RoutingConfig.WithRoleOverride(routing.RoleSDDOrchestrator, preset)
+	c.RoutingConfig = newCfg
 	c.Factory = c.RebuildFactory(newCfg)
 	c.Orchestrator = NewOrchestrator(c.Factory, c.WS, c.Progress)
 }

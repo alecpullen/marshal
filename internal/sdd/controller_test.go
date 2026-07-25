@@ -206,10 +206,15 @@ func TestControllerRecordUsageUpdatesSession(t *testing.T) {
 	ws, _ := NewWorkspace(dir)
 	ws.Ensure()
 	ss := session.New(config.Default(), dir, time.Now(), session.Persistence{})
-	var observed int
+	// usageSink is set after c is created so the factory closure can reference it.
+	var usageSink func(int)
 	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
 		r := &agent.Runner{}
-		r.UsageObserver = func(usage schema.TokenUsage) { observed += usage.TotalTokens }
+		r.UsageObserver = func(usage schema.TokenUsage) {
+			if usageSink != nil {
+				usageSink(usage.TotalTokens)
+			}
+		}
 		r.RunTaskFunc = func(ctx context.Context, goal string) (*agent.Task, error) {
 			// Simulate real runner behavior: fire UsageObserver.
 			if r.UsageObserver != nil {
@@ -220,13 +225,17 @@ func TestControllerRecordUsageUpdatesSession(t *testing.T) {
 		return r, nil
 	}
 	c := NewController(ws, NewFakeGitOps(), &DAG{}, &RepoState{}, &Progress{}, factory, routing.Config{}, ss, "sdd/feature", "main")
+	// Wire UsageSink to accumulate into the controller's usageTokens.
+	usageSink = func(t int) { c.usageTokens += t }
+	c.UsageSink = usageSink
 	// Seed an approved spec so Run reaches StateDrainIteration.
 	os.WriteFile(filepath.Join(ws.Dir(), "spec.md"), []byte("---\nstatus: approved\n---\n```yaml\ntasks:\n  - id: T1\n    title: X\n    deps: []\n    files: []\n    acceptance: []\n```\n"), 0644)
 	// Start at Decompose to skip workspace reset (which would archive spec.md).
 	c.State = StateDecompose
 	_ = c.Run(context.Background())
-	if observed == 0 {
-		t.Error("UsageObserver never fired; recordUsage did not wire the observer")
+	// After Run, recordUsage should have flushed usageTokens to SessionState.
+	if got := ss.SDDProgress().TokensUsed; got == 0 {
+		t.Error("SDDProgress.TokensUsed == 0; recordUsage did not flush tokens to session")
 	}
 }
 

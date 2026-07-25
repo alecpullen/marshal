@@ -100,6 +100,48 @@ func TestCheckpointJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSpecStatusConstants(t *testing.T) {
+	if string(SpecStatusDraft) != "draft" {
+		t.Fatalf("draft = %q", SpecStatusDraft)
+	}
+	if string(SpecStatusApproved) != "approved" {
+		t.Fatalf("approved = %q", SpecStatusApproved)
+	}
+}
+
+func TestParseSpecFrontmatter(t *testing.T) {
+	spec := `---
+status: draft
+source_plan: docs/plans/feature.md
+target_branch: main
+---
+
+# Feature Spec
+
+Body.
+`
+	got, err := ParseSpecFrontmatter(spec)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Status != string(SpecStatusDraft) {
+		t.Errorf("Status = %q, want draft", got.Status)
+	}
+	if got.SourcePlan != "docs/plans/feature.md" {
+		t.Errorf("SourcePlan = %q", got.SourcePlan)
+	}
+	if got.TargetBranch != "main" {
+		t.Errorf("TargetBranch = %q", got.TargetBranch)
+	}
+}
+
+func TestParseSpecFrontmatterMissingFrontmatter(t *testing.T) {
+	_, err := ParseSpecFrontmatter("no frontmatter here")
+	if err == nil {
+		t.Fatal("expected error for missing frontmatter, got nil")
+	}
+}
+
 func TestReportStatusConstants(t *testing.T) {
 	cases := []struct {
 		name string

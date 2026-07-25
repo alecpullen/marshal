@@ -1717,6 +1717,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		meta = []string{
 			"plan: " + strutil.Truncate(goal, 56, true),
 			fmt.Sprintf("fix rounds: %d · worktree: %s", m.state.Config.SDD.MaxFixRounds, worktree),
+			fmt.Sprintf("model tier: %s · verify timeout: %dms", m.state.Config.SDD.DefaultModelTier, m.state.Config.SDD.VerifyTimeoutMS),
 		}
 	}
 	rows := make([]castlist.Row, 0, len(roles))

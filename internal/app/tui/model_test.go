@@ -1191,6 +1191,17 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	}
 }
 
+func TestSDDPreflightMetaShowsModelTier(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.SDD.DefaultModelTier = "strong"
+	m.state.Config.SDD.VerifyTimeoutMS = 600000
+	m.openRunPreflight("sdd", m.sddRunner, "/path/plan.md")
+	view := m.dock.View(m.width, m.height)
+	if !strings.Contains(view, "strong") || !strings.Contains(view, "600000") {
+		t.Errorf("preflight meta missing model tier/timeout: %q", view)
+	}
+}
+
 func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	fake := &fakeSDDRunner{}

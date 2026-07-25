@@ -276,6 +276,27 @@ func (r *StaticRouter) Cast(roles []AgentRole) []CastEntry {
 	return entries
 }
 
+// WithRoleOverride returns a copy of the config with one role's binding in
+// the default profile overridden to the given preset. Used by the SDD
+// controller's model-escalation swap (rebuild RunnerFactory with a stronger
+// model for RoleSDDOrchestrator). The original config is not mutated.
+func (c Config) WithRoleOverride(role AgentRole, preset string) Config {
+	out := c
+	out.Profiles = make(map[string]AgentProfile, len(c.Profiles))
+	for name, profile := range c.Profiles {
+		p := profile
+		if name == c.DefaultProfile {
+			p.Roles = make(map[AgentRole]RoleBinding, len(profile.Roles))
+			for r, rb := range profile.Roles {
+				p.Roles[r] = rb
+			}
+			p.Roles[role] = RoleBinding{Preset: preset}
+		}
+		out.Profiles[name] = p
+	}
+	return out
+}
+
 var (
 	// SwarmCastRoles lists the agent roles used by the swarm orchestrator.
 	// Used by Cast for pre-flight display.

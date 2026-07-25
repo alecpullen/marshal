@@ -694,6 +694,33 @@ func TestSDDCastRolesIsFullProductionCast(t *testing.T) {
 	}
 }
 
+func TestConfigWithRoleOverride(t *testing.T) {
+	cfg := Config{
+		Presets: map[string]ModelPreset{
+			"fast": {Model: "fast-model"},
+			"pro":  {Model: "pro-model"},
+		},
+		Profiles: map[string]AgentProfile{
+			"default": {
+				Name: "default",
+				Roles: map[AgentRole]RoleBinding{
+					RoleSDDOrchestrator: {Preset: "fast"},
+				},
+			},
+		},
+		DefaultProfile: "default",
+	}
+	overridden := cfg.WithRoleOverride(RoleSDDOrchestrator, "pro")
+	// The original config must be unchanged.
+	if cfg.Profiles["default"].Roles[RoleSDDOrchestrator].Preset != "fast" {
+		t.Fatal("original config was mutated")
+	}
+	// The overridden config must have the new binding.
+	if overridden.Profiles["default"].Roles[RoleSDDOrchestrator].Preset != "pro" {
+		t.Fatalf("overridden binding = %q, want pro", overridden.Profiles["default"].Roles[RoleSDDOrchestrator].Preset)
+	}
+}
+
 func TestResolveRolePresetBindingUnchanged(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",

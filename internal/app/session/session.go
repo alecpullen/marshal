@@ -222,6 +222,21 @@ type State struct {
 	// replay can scope correctly. A zero StartMsgID means replay
 	// everything.
 	generation GenerationInfo
+
+	// sddGate is the current SDD human-gate state surfaced to the TUI.
+	// The controller sets it; the TUI reads and clears it.
+	sddGate SDDGate
+}
+
+// SDDGate is the gate state the SDD controller surfaces to the TUI for
+// human-gate rendering (spec approval, final merge, escalation). The
+// controller sets it via SetSDDGate; the TUI (P5) reads it to render the
+// prompt; the TUI clears it via ClearSDDGate when the human resolves.
+type SDDGate struct {
+	Kind     string // "spec_approval" | "final_merge" | "escalation" | "branch_correction"
+	TaskID   string
+	Reason   string
+	Resolved bool
 }
 
 // GenerationInfo records where the live rollover generation begins.
@@ -256,6 +271,28 @@ func (s *State) Generation() GenerationInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.generation
+}
+
+// SetSDDGate sets the current SDD human-gate state. The TUI reads this to
+// render the gate prompt.
+func (s *State) SetSDDGate(gate SDDGate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sddGate = gate
+}
+
+// ClearSDDGate clears the current SDD human-gate state (the human resolved).
+func (s *State) ClearSDDGate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sddGate = SDDGate{}
+}
+
+// SDDGate returns the current SDD human-gate state (zero value if none).
+func (s *State) SDDGate() SDDGate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sddGate
 }
 
 type turnUsage struct {

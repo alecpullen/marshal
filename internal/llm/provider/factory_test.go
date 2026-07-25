@@ -185,3 +185,11 @@ func TestNewFromConfigErrorsOnUnsupportedProviderType(t *testing.T) {
 		t.Fatalf("error = %q, want it to mention the unsupported type", err.Error())
 	}
 }
+
+func TestNewFromConfigRejectsOllamaType(t *testing.T) {
+	// "ollama" is an embedding-only Type; the chat factory must reject it.
+	_, err := NewFromConfig("ollama", config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
+		t.Fatalf("want unsupported type error, got %v", err)
+	}
+}

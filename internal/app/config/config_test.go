@@ -978,3 +978,19 @@ sdd_branch_reviewer = "big"
 		t.Errorf("sdd_branch_reviewer role = %+v", p.Roles[routing.RoleSDDBranchReviewer])
 	}
 }
+
+func TestLoadEmbeddingRoleSurvives(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[agent_profiles.local.roles]
+embedding = "nomic"
+`)
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.AgentProfiles["local"].Roles[routing.RoleEmbedding].Preset; got != "nomic" {
+		t.Fatalf("embedding role preset = %q, want nomic", got)
+	}
+}

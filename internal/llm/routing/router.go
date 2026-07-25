@@ -14,6 +14,11 @@ var (
 
 	errRoleNotConfigured   = errors.New("routing: role not configured")
 	errCustomAgentNotFound = errors.New("routing: custom agent not found")
+
+	// ErrEmbeddingNotConfigured is returned by ResolveEmbedding when the active
+	// profile has no embedding role. Callers use it to gracefully disable
+	// embedding-dependent features rather than fail.
+	ErrEmbeddingNotConfigured = errors.New("routing: embedding role not configured")
 )
 
 type StaticRouter struct {
@@ -58,6 +63,22 @@ func (r *StaticRouter) ResolveRole(role AgentRole) (Route, error) {
 		return Route{}, fallbackErr
 	}
 	return Route{}, err
+}
+
+// ResolveEmbedding resolves the embedding provider+model from the active
+// profile's embedding role. Unlike ResolveRole it has NO implementer fallback
+// — a chat model cannot produce vectors. Returns ErrEmbeddingNotConfigured
+// when the role is unset (or no profile exists), and ErrRemoteProviderBlocked
+// when the resolved preset is remote under remote_providers_allowed = false.
+func (r *StaticRouter) ResolveEmbedding() (Route, error) {
+	route, err := r.resolveProfileRole(RoleEmbedding)
+	if err != nil {
+		if isNoConfiguredRoute(err) {
+			return Route{}, ErrEmbeddingNotConfigured
+		}
+		return Route{}, err
+	}
+	return route, nil
 }
 
 func roleForTaskClass(class string) AgentRole {

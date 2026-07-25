@@ -576,6 +576,60 @@ func TestResolveRoleCustomAgentBinding(t *testing.T) {
 	}
 }
 
+func TestResolveEmbedding(t *testing.T) {
+	cfg := Config{
+		DefaultProfile: "local",
+		RemoteAllowed:  false,
+		Presets: map[string]ModelPreset{
+			"nomic": {Provider: "ollama", Model: "nomic-embed-text", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{
+			"local": {Name: "local", Roles: map[AgentRole]RoleBinding{RoleEmbedding: {Preset: "nomic"}}},
+		},
+	}
+	route, err := NewStaticRouter(cfg).ResolveEmbedding()
+	if err != nil {
+		t.Fatalf("ResolveEmbedding: %v", err)
+	}
+	if route.Preset.Provider != "ollama" || route.Preset.Model != "nomic-embed-text" {
+		t.Fatalf("preset = %+v", route.Preset)
+	}
+}
+
+func TestResolveEmbeddingNotConfigured(t *testing.T) {
+	cfg := Config{
+		DefaultProfile: "local",
+		Profiles:       map[string]AgentProfile{"local": {Name: "local", Roles: map[AgentRole]RoleBinding{}}},
+	}
+	if _, err := NewStaticRouter(cfg).ResolveEmbedding(); !errors.Is(err, ErrEmbeddingNotConfigured) {
+		t.Fatalf("want ErrEmbeddingNotConfigured, got %v", err)
+	}
+}
+
+func TestResolveEmbeddingRemoteBlocked(t *testing.T) {
+	cfg := Config{
+		DefaultProfile: "local",
+		RemoteAllowed:  false,
+		Presets: map[string]ModelPreset{
+			"remote": {Provider: "openai", Model: "text-embedding-3-small", LocalOnly: false},
+		},
+		Profiles: map[string]AgentProfile{
+			"local": {Name: "local", Roles: map[AgentRole]RoleBinding{RoleEmbedding: {Preset: "remote"}}},
+		},
+	}
+	if _, err := NewStaticRouter(cfg).ResolveEmbedding(); !errors.Is(err, ErrRemoteProviderBlocked) {
+		t.Fatalf("want ErrRemoteProviderBlocked, got %v", err)
+	}
+}
+
+func TestRoleEmbeddingExcludedFromAllRoles(t *testing.T) {
+	for _, role := range AllRoles {
+		if role == RoleEmbedding {
+			t.Fatal("RoleEmbedding must not appear in AllRoles")
+		}
+	}
+}
+
 func TestResolveRolePresetBindingUnchanged(t *testing.T) {
 	r := NewStaticRouter(Config{
 		DefaultProfile: "p",

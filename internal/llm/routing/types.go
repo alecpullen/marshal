@@ -19,6 +19,12 @@ const (
 	RoleSDDImplementer    AgentRole = "sdd_implementer"
 	RoleSDDReviewer       AgentRole = "sdd_reviewer"
 	RoleSDDBranchReviewer AgentRole = "sdd_branch_reviewer"
+
+	// RoleEmbedding selects the text-embedding provider+model. It is
+	// deliberately excluded from AllRoles: embedding is not a chat role, so
+	// onboarding/settings that enumerate AllRoles must not list it. Resolved
+	// via StaticRouter.ResolveEmbedding, not ResolveRole.
+	RoleEmbedding AgentRole = "embedding"
 )
 
 // AllRoles lists every AgentRole in declaration order. Callers that need

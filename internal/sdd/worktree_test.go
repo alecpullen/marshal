@@ -155,23 +155,41 @@ func TestWorktreeCleanupStale(t *testing.T) {
 	w := NewWorktree(ws, &DAG{Tasks: []DAGTask{
 		{ID: "T1", Title: "Foundation"},
 	}}, git)
-	// Pre-seed orphan branches in the fake (not in the real git repo).
+	// Pre-seed orphan branches in the fake.
 	git.SetBranch("sdd/T2")
 	git.SetBranch("sdd/T3")
 
 	if err := w.CleanupStale(); err != nil {
 		t.Fatalf("CleanupStale: %v", err)
 	}
-	// No real sdd/* branches exist in the test repo (the worktree is on
-	// sdd-p2-state-and-content, which does not match the sdd/ prefix).
-	// So git for-each-ref returns nothing, the loop body never executes,
-	// and no worktree calls are recorded.
-	//
-	// Full coverage of stale-branch detection requires real sdd/* branches
-	// in the test repo, which would require a setup phase that pre-creates
-	// and cleans up real branches. Out of scope for P2.
-	calls := git.Calls("worktree")
-	if len(calls) != 0 {
-		t.Errorf("worktree calls = %d, want 0 (no real sdd/* branches exist)", len(calls))
+	// The fake's ListSDDBranches returns sdd/T2 and sdd/T3. Both are stale
+	// (not in the DAG). WorktreeRemove is called for each (best-effort).
+	// The branches are deleted from the fake.
+	if git.BranchExists("sdd/T2") {
+		t.Error("sdd/T2 should be deleted")
+	}
+	if git.BranchExists("sdd/T3") {
+		t.Error("sdd/T3 should be deleted")
+	}
+}
+
+func TestWorktreeCleanupStaleUsesInterface(t *testing.T) {
+	dir := t.TempDir()
+	ws, _ := NewWorkspace(dir)
+	ws.Ensure()
+	git := NewFakeGitOps()
+	git.SetBranch("sdd/T1")
+	git.SetBranch("sdd/T3") // orphan
+	dag := &DAG{Tasks: []DAGTask{{ID: "T1"}}}
+	w := NewWorktree(ws, dag, git)
+	if err := w.CleanupStale(); err != nil {
+		t.Fatal(err)
+	}
+	// sdd/T3 should be deleted; sdd/T1 should remain.
+	if !git.BranchExists("sdd/T1") {
+		t.Error("sdd/T1 should remain")
+	}
+	if git.BranchExists("sdd/T3") {
+		t.Error("sdd/T3 should be deleted")
 	}
 }

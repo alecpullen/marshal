@@ -2,7 +2,6 @@ package sdd
 
 import (
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -102,30 +101,19 @@ func (w *Worktree) CreateForce(taskID string, pipelineBranch string) (string, er
 }
 
 // CleanupStale removes sdd/* branches and worktrees that do not correspond
-// to any task in the current DAG. NOTE: P1's GitOps does not have a
-// DeleteBranch method; this implementation shells out to `git branch -d`
-// directly for the deletion only (the worktree removal still goes through
-// the typed interface). P3 or a later plan will add GitOps.DeleteBranch and
-// this can be cleaned up.
+// to any task in the current DAG (spec §11). Uses GitOps.ListSDDBranches +
+// GitOps.DeleteBranch (no shell-out). Best-effort: tolerates errors.
 func (w *Worktree) CleanupStale() error {
 	taskIDs := make(map[string]bool, len(w.DAG.Tasks))
 	for _, t := range w.DAG.Tasks {
 		taskIDs[t.ID] = true
 	}
-	// Find all sdd/* branches by listing them via `git for-each-ref`. We use
-	// a direct exec call here (not GitOps) because the P1 interface does
-	// not expose branch listing; documented in the plan.
-	cmd := exec.Command("git", "for-each-ref", "--format=%(refname:short)", "refs/heads/sdd/")
-	out, err := cmd.Output()
+	branches, err := w.Git.ListSDDBranches()
 	if err != nil {
-		// No sdd/* branches, or git not in PATH. Tolerate: nothing to clean.
+		// No sdd/* branches, or git not in PATH. Tolerate.
 		return nil
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
-		// line looks like "sdd/<taskID>". Strip the prefix.
+	for _, line := range branches {
 		id := strings.TrimPrefix(line, "sdd/")
 		if id == line || id == "" {
 			continue
@@ -136,8 +124,7 @@ func (w *Worktree) CleanupStale() error {
 		// Stale: remove worktree (tolerate "not a worktree") and delete branch.
 		wtPath := filepath.Join(w.WS.WorktreesDir(), id)
 		_ = w.Git.WorktreeRemove(wtPath)
-		// git branch -d sdd/<id> (best-effort).
-		_ = exec.Command("git", "branch", "-d", line).Run()
+		_ = w.Git.DeleteBranch(line)
 	}
 	return nil
 }

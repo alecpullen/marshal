@@ -33,6 +33,7 @@ const (
 	finalizePressureThreshold   = 2
 	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
 	maxConsecutiveParseFailures = 3
+	groundingNudgeMessage       = "You have not made any tool calls this turn, but this task requires code changes or commands. If the work is already done from an earlier turn, verify it now with a tool call (for example, re-read the changed file or re-run the test command) before declaring completion. Otherwise, use the appropriate tool to make the change now."
 )
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
@@ -486,6 +487,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	producedValidAction := false
 	consecutiveParseFailures := 0
 	consecutiveEmpty := 0
+	toolCallCountThisTurn := 0
+	groundingNudgeSent := false
 	iteration := 0
 	r.iterationBudget = &iteration
 	defer func() { r.iterationBudget = nil }()
@@ -595,6 +598,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					}
 					continue
 				}
+				if toolCallCountThisTurn == 0 && task.Class != ClassQuestion && !groundingNudgeSent {
+					groundingNudgeSent = true
+					iteration++
+					r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+					r.State.AddMessage(session.RoleSystem, groundingNudgeMessage, session.ContentTypePlain)
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: groundingNudgeMessage})
+					continue
+				}
 				task.Summary = res.Text
 				task.Status = TaskStatusCompleted
 				if next, continued, err := runTurnEnd(messages, task); err != nil {
@@ -626,6 +637,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 			producedValidAction = true
+			toolCallCountThisTurn += len(res.ToolCalls)
 			if inProgress := r.State.InProgress(); inProgress.Reasoning != "" {
 				r.State.LogThinking(session.ThinkingEntry{
 					Text:      inProgress.Reasoning,

@@ -28,7 +28,11 @@ func NewWorktree(ws *Workspace, dag *DAG, git GitOps) *Worktree {
 //     path; do not call WorktreeAdd)
 //   - otherwise resolve the pipeline HEAD via GitOps.RevParse and create
 //     `sdd/<taskID>` rooted at that HEAD; update DAGTask.{Base,Branch,WorktreePath}
-func (w *Worktree) Create(taskID string) (string, error) {
+//
+// pipelineBranch is the name of the pipeline branch (e.g. "sdd/feature")
+// that the worktree branches are created from. The caller (P4 controller)
+// reads it from RepoState.Branch.
+func (w *Worktree) Create(taskID string, pipelineBranch string) (string, error) {
 	t, ok := w.DAG.TaskByID(taskID)
 	if !ok {
 		return "", fmt.Errorf("sdd worktree: unknown task %q", taskID)
@@ -37,16 +41,9 @@ func (w *Worktree) Create(taskID string) (string, error) {
 	if t.Branch != "" && t.WorktreePath != "" && w.Git.BranchExists(t.Branch) {
 		return t.WorktreePath, nil
 	}
-	// Need a pipeline branch on RepoState to resolve HEAD. P2's Worktree
-	// does not have a RepoState; the controller (P4) is expected to have set
-	// the pipeline branch on RepoState before calling. For P2 testing, the
-	// caller pre-sets the ref via FakeGitOps.SetRef, so we look up the
-	// pipeline branch via a convention: env-var SDD_PIPELINE_BRANCH or
-	// fall back to "sdd/feature". P4 will replace this with a RepoState read.
-	branch := "sdd/feature"
-	head, err := w.Git.RevParse(branch)
+	head, err := w.Git.RevParse(pipelineBranch)
 	if err != nil {
-		return "", fmt.Errorf("sdd worktree: rev-parse pipeline branch %s: %w", branch, err)
+		return "", fmt.Errorf("sdd worktree: rev-parse pipeline branch %s: %w", pipelineBranch, err)
 	}
 	newBranch := "sdd/" + taskID
 	path := filepath.Join(w.WS.WorktreesDir(), taskID)
@@ -72,7 +69,11 @@ func (w *Worktree) Create(taskID string) (string, error) {
 // in P2: the real "no commits beyond Base" guard is P3's branch-base-guard
 // (it has the merge-context). For P2 we trust the caller (the controller in
 // P3/P4) to have already validated the precondition.
-func (w *Worktree) CreateForce(taskID string) (string, error) {
+//
+// pipelineBranch is the name of the pipeline branch (e.g. "sdd/feature")
+// that the worktree branches are created from. The caller (P4 controller)
+// reads it from RepoState.Branch.
+func (w *Worktree) CreateForce(taskID string, pipelineBranch string) (string, error) {
 	t, ok := w.DAG.TaskByID(taskID)
 	if !ok {
 		return "", fmt.Errorf("sdd worktree: unknown task %q", taskID)
@@ -81,9 +82,9 @@ func (w *Worktree) CreateForce(taskID string) (string, error) {
 		_ = w.Git.WorktreeRemove(t.WorktreePath)
 	}
 	branch := "sdd/" + taskID
-	head, err := w.Git.RevParse("sdd/feature")
+	head, err := w.Git.RevParse(pipelineBranch)
 	if err != nil {
-		return "", fmt.Errorf("sdd worktree: rev-parse pipeline branch: %w", err)
+		return "", fmt.Errorf("sdd worktree: rev-parse pipeline branch %s: %w", pipelineBranch, err)
 	}
 	path := filepath.Join(w.WS.WorktreesDir(), taskID)
 	if err := w.Git.WorktreeAdd(path, branch, head); err != nil {

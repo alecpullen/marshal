@@ -87,8 +87,28 @@ func firstNonEmptyLine(s string) string {
 	return ""
 }
 
+// stripLeadingStatusLine removes a leading `status: <VALUE>` line and the
+// blank line that follows it from body, if present. Returns the stripped body.
+func stripLeadingStatusLine(body string) string {
+	if !strings.HasPrefix(body, "status:") {
+		return body
+	}
+	// Find the end of the first line.
+	idx := strings.IndexByte(body, '\n')
+	if idx == -1 {
+		return ""
+	}
+	rest := body[idx+1:]
+	// Strip blank lines that follow.
+	rest = strings.TrimLeft(rest, "\r\n")
+	return rest
+}
+
 // Write serializes the report to <ws.Dir()>/reports/<TaskID><kind>.md with
 // `status: <STATUS>` on the first line, a blank line, then Body.
+// The on-disk format is always `status: <STATUS>\n\n<body>` (or just
+// `status: <STATUS>\n` when Body is empty). Any leading status line in
+// Body is stripped before writing, making Write → Read → Write a fixed point.
 func (r *Report) Write(ws *Workspace, kind string) error {
 	if _, err := ws.Ensure(); err != nil {
 		return err
@@ -98,14 +118,11 @@ func (r *Report) Write(ws *Workspace, kind string) error {
 		return fmt.Errorf("sdd report: mkdir: %w", err)
 	}
 	path := filepath.Join(dir, r.TaskID+kind+".md")
-	var body string
-	if r.Body == "" {
-		body = ""
-	} else if strings.HasPrefix(r.Body, "status:") {
-		// Body already has a status line; write as-is.
-		body = r.Body
+	body := stripLeadingStatusLine(r.Body)
+	if body == "" {
+		body = "status: " + string(r.Status) + "\n"
 	} else {
-		body = "status: " + string(r.Status) + "\n\n" + r.Body
+		body = "status: " + string(r.Status) + "\n\n" + body
 	}
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		return fmt.Errorf("sdd report: write: %w", err)

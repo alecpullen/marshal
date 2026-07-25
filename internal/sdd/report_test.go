@@ -6,11 +6,19 @@ import (
 	"testing"
 )
 
-func TestNormalizeReportPrependsStatus(t *testing.T) {
+func TestNormalizeReportFindsLaterStatusInBody(t *testing.T) {
 	in := "Here is what I did.\n\nstatus: DONE\nThe implementation is complete.\n"
 	got := NormalizeReport(in)
 	if !strings.HasPrefix(got, "status: DONE\n") {
 		t.Fatalf("normalized = %q, want DONE status line first", got)
+	}
+}
+
+func TestNormalizeReportUnchangedWhenNoStatus(t *testing.T) {
+	in := "Just some content with no status line anywhere.\n\nAnother paragraph.\n"
+	got := NormalizeReport(in)
+	if got != in {
+		t.Fatalf("normalized = %q, want unchanged input %q", got, in)
 	}
 }
 

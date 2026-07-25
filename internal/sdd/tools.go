@@ -15,12 +15,14 @@ import (
 // It mirrors native.Options: one struct passed to RegisterTools so every
 // tool handler closes over the same workspace/DAG/state/progress/git.
 type SDDToolOpts struct {
-	WS       *Workspace
-	RepoRoot string
-	DAG      *DAG
-	RS       *RepoState
-	Progress *Progress
-	Git      GitOps
+	WS              *Workspace
+	RepoRoot        string
+	DAG             *DAG
+	RS              *RepoState
+	Progress        *Progress
+	Git             GitOps
+	Runner          CommandRunner
+	VerifyTimeoutMS int
 }
 
 // RegisterTools registers the 18 sdd.* tools on reg, wrapping the P2/P3
@@ -132,11 +134,22 @@ func sddHealthTool(opts SDDToolOpts) registry.Tool {
 func sddWorktreeTool(opts SDDToolOpts) registry.Tool {
 	return registry.Tool{
 		Name:        "sdd.worktree",
-		Description: "Manage SDD worktrees (create, list, clean).",
-		Schema:      []byte(`{"type":"object","properties":{}}`),
+		Description: "Create a git worktree for a task branch.",
+		Schema:      []byte(`{"type":"object","properties":{"task_id":{"type":"string"}}}`),
 		Risk:        registry.RiskWorkspaceWrite,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return registry.ToolResult{Summary: "not yet implemented"}, nil
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
+			if err := json.Unmarshal(call.Args, &args); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("sdd.worktree: parse args: %w", err)
+			}
+			wt := NewWorktree(opts.WS, opts.DAG, opts.Git)
+			path, err := wt.Create(args.TaskID, opts.RS.Branch)
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf("sdd.worktree: %w", err)
+			}
+			return registry.ToolResult{Summary: "worktree at " + path, Content: path}, nil
 		},
 	}
 }
@@ -262,10 +275,37 @@ func sddVerifyTool(opts SDDToolOpts) registry.Tool {
 	return registry.Tool{
 		Name:        "sdd.verify",
 		Description: "Run verification (build, vet, test) on a task branch.",
-		Schema:      []byte(`{"type":"object","properties":{}}`),
+		Schema:      []byte(`{"type":"object","properties":{"task_id":{"type":"string"},"timeout_ms":{"type":"integer"}}}`),
 		Risk:        registry.RiskWorkspaceWrite,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return registry.ToolResult{Summary: "not yet implemented"}, nil
+			var args struct {
+				TaskID    string `json:"task_id"`
+				TimeoutMS int    `json:"timeout_ms"`
+			}
+			if err := json.Unmarshal(call.Args, &args); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("sdd.verify: parse args: %w", err)
+			}
+			task, ok := opts.DAG.TaskByID(args.TaskID)
+			if !ok {
+				return registry.ToolResult{}, fmt.Errorf("sdd.verify: unknown task %q", args.TaskID)
+			}
+			worktreeDir := task.WorktreePath
+			if worktreeDir == "" {
+				return registry.ToolResult{}, fmt.Errorf("sdd.verify: task %q has no worktree path", args.TaskID)
+			}
+			timeoutMS := args.TimeoutMS
+			if timeoutMS <= 0 {
+				timeoutMS = opts.VerifyTimeoutMS
+			}
+			runner := opts.Runner
+			if runner == nil {
+				runner = CLICommandRunner{}
+			}
+			res := VerifyTask(ctx, runner, worktreeDir, timeoutMS)
+			if res.Pass {
+				return registry.ToolResult{Summary: "VERIFY_PASS", Content: res.Output}, nil
+			}
+			return registry.ToolResult{Summary: "VERIFY_FAIL", Content: res.Output}, nil
 		},
 	}
 }
@@ -331,10 +371,20 @@ func sddMergeTool(opts SDDToolOpts) registry.Tool {
 	return registry.Tool{
 		Name:        "sdd.merge",
 		Description: "Merge a task branch into the pipeline branch.",
-		Schema:      []byte(`{"type":"object","properties":{}}`),
+		Schema:      []byte(`{"type":"object","properties":{"task_id":{"type":"string"}}}`),
 		Risk:        registry.RiskWorkspaceWrite,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return registry.ToolResult{Summary: "not yet implemented"}, nil
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
+			if err := json.Unmarshal(call.Args, &args); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("sdd.merge: parse args: %w", err)
+			}
+			res := Merge(opts.Git, opts.WS, opts.Progress, opts.DAG, opts.RS, args.TaskID)
+			if res.Merged {
+				return registry.ToolResult{Summary: "MERGED: " + args.TaskID, Content: "merged " + args.TaskID}, nil
+			}
+			return registry.ToolResult{Summary: "BLOCKED: " + res.Reason, Content: res.Reason}, nil
 		},
 	}
 }
@@ -343,10 +393,27 @@ func sddCommitTool(opts SDDToolOpts) registry.Tool {
 	return registry.Tool{
 		Name:        "sdd.commit",
 		Description: "Commit changes to the pipeline branch.",
-		Schema:      []byte(`{"type":"object","properties":{}}`),
+		Schema:      []byte(`{"type":"object","properties":{"task_id":{"type":"string"},"message":{"type":"string"}}}`),
 		Risk:        registry.RiskWorkspaceWrite,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return registry.ToolResult{Summary: "not yet implemented"}, nil
+			var args struct {
+				TaskID  string `json:"task_id"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(call.Args, &args); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("sdd.commit: parse args: %w", err)
+			}
+			if args.Message == "" {
+				return registry.ToolResult{}, fmt.Errorf("sdd.commit: message is required")
+			}
+			if err := opts.Git.Commit(args.Message); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("sdd.commit: %w", err)
+			}
+			sha, err := opts.Git.RevParse("HEAD")
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf("sdd.commit: rev-parse HEAD: %w", err)
+			}
+			return registry.ToolResult{Summary: "committed " + sha, Content: sha}, nil
 		},
 	}
 }
@@ -355,12 +422,43 @@ func sddPrepareRetryTool(opts SDDToolOpts) registry.Tool {
 	return registry.Tool{
 		Name:        "sdd.prepare_retry",
 		Description: "Prepare a retry for a failed task.",
-		Schema:      []byte(`{"type":"object","properties":{}}`),
+		Schema:      []byte(`{"type":"object","properties":{"task_id":{"type":"string"}}}`),
 		Risk:        registry.RiskWorkspaceWrite,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return registry.ToolResult{Summary: "not yet implemented"}, nil
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
+			if err := json.Unmarshal(call.Args, &args); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("sdd.prepare_retry: parse args: %w", err)
+			}
+			path, err := PrepareRetry(opts.WS, opts.Progress, args.TaskID)
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf("sdd.prepare_retry: %w", err)
+			}
+			return registry.ToolResult{Summary: "retry prepared at " + path, Content: path}, nil
 		},
 	}
+}
+
+// PrepareRetry logs a RETRY event to progress and re-extracts the contract
+// for the given task, returning the contract path. This clears the
+// orchestrator-override state in ReviewGuard (which checks for RETRY events
+// between REVIEW_FAIL and a subsequent PASS).
+func PrepareRetry(ws *Workspace, progress *Progress, taskID string) (string, error) {
+	if _, err := ws.Ensure(); err != nil {
+		return "", fmt.Errorf("sdd prepare_retry: workspace: %w", err)
+	}
+	if err := progress.Append(ws, taskID, "RETRY", "task", taskID); err != nil {
+		return "", fmt.Errorf("sdd prepare_retry: progress: %w", err)
+	}
+	// Re-extract the contract so the worker gets a fresh copy.
+	contractPath := filepath.Join(ws.Dir(), "contracts", taskID+".md")
+	// If the contract already exists, just return its path.
+	if _, err := os.Stat(contractPath); err == nil {
+		return contractPath, nil
+	}
+	// Otherwise, the caller should have extracted the contract first.
+	return "", fmt.Errorf("sdd prepare_retry: no contract for task %q; extract contract first", taskID)
 }
 
 func sddBranchPackageTool(opts SDDToolOpts) registry.Tool {

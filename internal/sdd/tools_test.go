@@ -390,6 +390,157 @@ func TestSDDRescueBundleTool(t *testing.T) {
 	}
 }
 
+func TestSDDWorktreeToolCreatesWorktree(t *testing.T) {
+	reg := registry.New()
+	ws, err := sdd.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspace: %v", err)
+	}
+	if _, err := ws.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	git := sdd.NewFakeGitOps()
+	git.SetRef("sdd/feature", "pipe123")
+	dag := &sdd.DAG{Tasks: []sdd.DAGTask{{ID: "T1", Title: "X", Status: sdd.TaskPending}}}
+	opts := sdd.SDDToolOpts{WS: ws, DAG: dag, RS: &sdd.RepoState{Branch: "sdd/feature"}, Progress: &sdd.Progress{}, Git: git}
+	if err := sdd.RegisterTools(reg, opts); err != nil {
+		t.Fatalf("RegisterTools: %v", err)
+	}
+	tool, ok := reg.Lookup("sdd.worktree")
+	if !ok {
+		t.Fatal("sdd.worktree not registered")
+	}
+	res, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "sdd.worktree", Args: []byte(`{"task_id":"T1"}`)})
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "worktree") {
+		t.Errorf("worktree summary: %q", res.Summary)
+	}
+}
+
+func TestSDDVerifyToolRunsVerify(t *testing.T) {
+	reg := registry.New()
+	ws, err := sdd.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspace: %v", err)
+	}
+	if _, err := ws.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	runner := sdd.NewFakeCommandRunner()
+	runner.SetResult("go build ./...", "build ok")
+	runner.SetResult("go vet ./...", "vet ok")
+	runner.SetResult("go test ./...", "tests ok")
+	dag := &sdd.DAG{Tasks: []sdd.DAGTask{{ID: "T1", Title: "X", Status: sdd.TaskPending, WorktreePath: ws.Dir()}}}
+	opts := sdd.SDDToolOpts{WS: ws, DAG: dag, RS: &sdd.RepoState{}, Progress: &sdd.Progress{}, Git: sdd.NewFakeGitOps(), Runner: runner, VerifyTimeoutMS: 30000, RepoRoot: t.TempDir()}
+	if err := sdd.RegisterTools(reg, opts); err != nil {
+		t.Fatalf("RegisterTools: %v", err)
+	}
+	tool, ok := reg.Lookup("sdd.verify")
+	if !ok {
+		t.Fatal("sdd.verify not registered")
+	}
+	res, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "sdd.verify", Args: []byte(`{"task_id":"T1"}`)})
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "VERIFY_PASS") {
+		t.Errorf("verify summary should show VERIFY_PASS: %q", res.Summary)
+	}
+}
+
+func TestSDDMergeToolFastForwards(t *testing.T) {
+	reg := registry.New()
+	ws, err := sdd.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspace: %v", err)
+	}
+	if _, err := ws.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	git := sdd.NewFakeGitOps()
+	git.SetRef("sdd/feature", "pipe123")
+	git.SetRef("sdd/T1", "task123")
+	git.SetRef("main", "main123")
+	git.SetBranch("sdd/T1")
+	git.SetAncestor("main123", "pipe123")
+	dag := &sdd.DAG{Tasks: []sdd.DAGTask{{ID: "T1", Status: sdd.TaskInProgress, Branch: "sdd/T1"}}}
+	rs := &sdd.RepoState{Branch: "sdd/feature", TargetBranch: "main", Merged: []string{}}
+	opts := sdd.SDDToolOpts{WS: ws, DAG: dag, RS: rs, Progress: &sdd.Progress{}, Git: git}
+	if err := sdd.RegisterTools(reg, opts); err != nil {
+		t.Fatalf("RegisterTools: %v", err)
+	}
+	tool, ok := reg.Lookup("sdd.merge")
+	if !ok {
+		t.Fatal("sdd.merge not registered")
+	}
+	res, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "sdd.merge", Args: []byte(`{"task_id":"T1"}`)})
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "MERGED") {
+		t.Errorf("merge summary should show MERGED: %q", res.Summary)
+	}
+}
+
+func TestSDDCommitToolCommits(t *testing.T) {
+	reg := registry.New()
+	git := sdd.NewFakeGitOps()
+	git.SetRef("HEAD", "abc123")
+	dag := &sdd.DAG{Tasks: []sdd.DAGTask{{ID: "T1", Title: "X", Status: sdd.TaskInProgress}}}
+	opts := sdd.SDDToolOpts{WS: &sdd.Workspace{}, DAG: dag, RS: &sdd.RepoState{}, Progress: &sdd.Progress{}, Git: git}
+	if err := sdd.RegisterTools(reg, opts); err != nil {
+		t.Fatalf("RegisterTools: %v", err)
+	}
+	tool, ok := reg.Lookup("sdd.commit")
+	if !ok {
+		t.Fatal("sdd.commit not registered")
+	}
+	res, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "sdd.commit", Args: []byte(`{"task_id":"T1","message":"implement feature"}`)})
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "abc123") {
+		t.Errorf("commit summary should contain SHA: %q", res.Summary)
+	}
+}
+
+func TestSDDPrepareRetryTool(t *testing.T) {
+	reg := registry.New()
+	ws, err := sdd.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspace: %v", err)
+	}
+	if _, err := ws.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	// Write a contract file so PrepareRetry can find it.
+	contractDir := filepath.Join(ws.Dir(), "contracts")
+	if err := os.MkdirAll(contractDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(contractDir, "T1.md"), []byte("## Task\n\nretry\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	dag := &sdd.DAG{Tasks: []sdd.DAGTask{{ID: "T1", Title: "X", Status: sdd.TaskPending}}}
+	opts := sdd.SDDToolOpts{WS: ws, DAG: dag, RS: &sdd.RepoState{}, Progress: &sdd.Progress{}, Git: sdd.NewFakeGitOps()}
+	if err := sdd.RegisterTools(reg, opts); err != nil {
+		t.Fatalf("RegisterTools: %v", err)
+	}
+	tool, ok := reg.Lookup("sdd.prepare_retry")
+	if !ok {
+		t.Fatal("sdd.prepare_retry not registered")
+	}
+	res, err := tool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "sdd.prepare_retry", Args: []byte(`{"task_id":"T1"}`)})
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	if !strings.Contains(res.Summary, "retry") {
+		t.Errorf("prepare_retry summary: %q", res.Summary)
+	}
+}
+
 func TestSDDTodoTool(t *testing.T) {
 	reg := registry.New()
 	ws, err := sdd.NewWorkspace(t.TempDir())

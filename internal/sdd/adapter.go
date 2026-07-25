@@ -36,3 +36,7 @@ func (a *ControllerAdapter) Controller() *Controller { return a.c }
 func (a *ControllerAdapter) SetForceClass(string)                   {}
 func (a *ControllerAdapter) SetPolicyRules([]config.PermissionRule) {}
 func (a *ControllerAdapter) SetApprovalMode(policy.ApprovalMode)    {}
+
+// ResolveGate delegates to the underlying controller. Called by the TUI
+// when the human resolves a gate (presses y).
+func (a *ControllerAdapter) ResolveGate() { a.c.ResolveGate() }

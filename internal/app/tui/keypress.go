@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
+	"marshal/internal/sdd"
 	"marshal/internal/tools/registry"
 )
 
@@ -18,6 +19,36 @@ import (
 // keys with no completion popup, Tab while an approval/question is
 // pending).
 func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	// SDD human gate: only y/n/esc are accepted while a gate is pending.
+	if m.pendingSDDGate {
+		switch msg.String() {
+		case "y":
+			m.pendingSDDGate = false
+			m.state.ClearSDDGate()
+			// ResolveGate advances the controller state machine.
+			if m.sddRunner != nil {
+				m.sddRunner.ResolveGate()
+			}
+			// Re-dispatch Run with the same plan path. The controller
+			// resumes from its saved State field. Read the plan path
+			// from the controller adapter's stored PlanPath.
+			goal := ""
+			if a, ok := m.sddRunner.(*sdd.ControllerAdapter); ok {
+				goal = a.Controller().PlanPath
+			}
+			_, cmd := m.startAgentRun(m.sddRunner, goal)
+			return *m, cmd, true
+		case "n", "esc":
+			m.pendingSDDGate = false
+			m.state.ClearSDDGate()
+			m.state.AddMessage(session.RoleSystem, "SDD gate aborted by user.", session.ContentTypePlain)
+			m.refreshViewport()
+			return *m, nil, true
+		}
+		// Any other key is swallowed while the gate is pending.
+		return *m, nil, true
+	}
+
 	switch msg.String() {
 	case "?":
 		// ? on an empty textarea prints the help cheatsheet to the

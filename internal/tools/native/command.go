@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
@@ -96,7 +98,19 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 		}
 	}
 
-	result, err := t.runner.Run(ctx, CommandRequest{Command: command, Dir: t.root, Timeout: timeout})
+	var stdoutObs, stderrObs io.Writer
+	if t.sessionState != nil {
+		stdoutObs = &activeToolOutputWriter{state: t.sessionState}
+		stderrObs = stdoutObs
+	}
+	result, err := t.runner.Run(ctx, CommandRequest{
+		Command:        command,
+		Dir:            t.root,
+		Timeout:        timeout,
+		MaxOutputBytes: t.maxOutputBytes,
+		Stdout:         stdoutObs,
+		Stderr:         stderrObs,
+	})
 	exitCode := result.ExitCode
 	content := formatCommandOutput(result.Stdout, result.Stderr)
 	summary := fmt.Sprintf("command %q exited with code %d", command, result.ExitCode)
@@ -109,6 +123,20 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 		CommandExitCode: &exitCode,
 		Sandbox:         result.Meta,
 	}, err
+}
+
+// activeToolOutputWriter forwards streamed bytes into the active tool-call
+// transcript row. It is safe for concurrent stdout/stderr writes.
+type activeToolOutputWriter struct {
+	state *session.State
+}
+
+func (w *activeToolOutputWriter) Write(p []byte) (int, error) {
+	if w.state == nil || len(p) == 0 {
+		return len(p), nil
+	}
+	w.state.AppendActiveToolCallOutput(string(p))
+	return len(p), nil
 }
 
 func clampTimeout(seconds int, defaultTimeout time.Duration, maxTimeout time.Duration) time.Duration {

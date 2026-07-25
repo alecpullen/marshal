@@ -1307,3 +1307,14 @@ func TestUnansweredAnswers(t *testing.T) {
 		t.Fatalf("UnansweredAnswers = %+v", got)
 	}
 }
+
+func TestAppendActiveToolCallOutput(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
+	s.SetActiveToolCall(ActiveToolCall{Name: "shell.run", Args: "echo hi", StartedAt: time.Now()})
+	s.AppendActiveToolCallOutput("hello")
+	s.AppendActiveToolCallOutput(" world")
+	atc, _ := s.ActiveToolCall()
+	if atc.Output != "hello world" {
+		t.Fatalf("Output = %q, want %q", atc.Output, "hello world")
+	}
+}

@@ -528,3 +528,55 @@ func TestActiveToolCallRenderedInTranscript(t *testing.T) {
 		t.Fatalf("active tool call missing command in transcript: %q", out)
 	}
 }
+
+func TestActiveToolCallRendersOutputTail(t *testing.T) {
+	atc := session.ActiveToolCall{
+		Name:      "shell.run",
+		Args:      "echo hi",
+		Output:    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8",
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	out := stripANSI(renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Now(), 80))
+	// Should show last 6 lines (line3 through line8), not line1 or line2.
+	if strings.Contains(out, "line1") {
+		t.Fatalf("output should not contain line1 (only last 6 lines): %q", out)
+	}
+	if strings.Contains(out, "line2") {
+		t.Fatalf("output should not contain line2 (only last 6 lines): %q", out)
+	}
+	for _, want := range []string{"line3", "line4", "line5", "line6", "line7", "line8"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestActiveToolCallRendersOutputAllWhenUnderSixLines(t *testing.T) {
+	atc := session.ActiveToolCall{
+		Name:      "shell.run",
+		Args:      "echo hi",
+		Output:    "a\nb\nc",
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	out := stripANSI(renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Now(), 80))
+	for _, want := range []string{"a", "b", "c"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestActiveToolCallNoOutputShowsNothing(t *testing.T) {
+	atc := session.ActiveToolCall{
+		Name:      "shell.run",
+		Args:      "echo hi",
+		Output:    "",
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	out := stripANSI(renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Now(), 80))
+	// Should not contain any output lines beyond the command line.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) > 3 {
+		t.Fatalf("expected at most 3 lines (header, command, blank), got %d: %q", len(lines), out)
+	}
+}

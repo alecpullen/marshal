@@ -1,11 +1,15 @@
 package native
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
@@ -147,6 +151,36 @@ func TestShellRunRejectsGuardrailDeniedCommand(t *testing.T) {
 	_, err := invokeTool(t, reg, "shell.run", `{"command":"rm -rf /"}`)
 	if err == nil {
 		t.Fatal("expected guardrail error, got nil")
+	}
+}
+
+func TestShellRunStreamsOutputToSession(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "echo hi", StartedAt: time.Now()})
+
+	runner := &fakeRunner{
+		result: CommandResult{ExitCode: 0, Stdout: "ok\n"},
+	}
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string) error { return nil }, MaxOutputBytes: 100, SessionState: state}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	tool, ok := reg.Lookup("shell.run")
+	if !ok {
+		t.Fatal("shell.run not registered")
+	}
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"command":"echo ok"}`)})
+	if err != nil {
+		t.Fatalf("handler err: %v", err)
+	}
+	if res.CommandExitCode == nil || *res.CommandExitCode != 0 {
+		t.Fatalf("exit code = %v, want 0", res.CommandExitCode)
+	}
+	atc, _ := state.ActiveToolCall()
+	if !strings.Contains(atc.Output, "ok") {
+		t.Fatalf("active tool call output missing stream: %q", atc.Output)
 	}
 }
 

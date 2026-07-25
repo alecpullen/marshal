@@ -114,6 +114,7 @@ func (p *PendingToolCall) Respond(d UserApprovalDecision) {
 type ActiveToolCall struct {
 	Name      string
 	Args      string
+	Output    string
 	StartedAt time.Time
 }
 
@@ -186,4 +187,14 @@ func (s *State) ClearActiveToolCall() {
 	s.activeToolCall = nil
 	s.mu.Unlock()
 	s.publishEvent(EventActiveToolChanged, Event{ActiveTool: nil})
+}
+
+func (s *State) AppendActiveToolCallOutput(delta string) {
+	s.mu.Lock()
+	if s.activeToolCall == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.activeToolCall.Output += delta
+	s.mu.Unlock()
 }

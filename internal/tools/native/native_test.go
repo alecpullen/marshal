@@ -146,6 +146,13 @@ func (f *fakeRunner) Run(ctx context.Context, req CommandRequest) (CommandResult
 	if req.Timeout <= 0 {
 		return CommandResult{}, context.DeadlineExceeded
 	}
+	// Write to observers if set, simulating live streaming.
+	if req.Stdout != nil && f.result.Stdout != "" {
+		req.Stdout.Write([]byte(f.result.Stdout))
+	}
+	if req.Stderr != nil && f.result.Stderr != "" {
+		req.Stderr.Write([]byte(f.result.Stderr))
+	}
 	return f.result, f.err
 }
 

@@ -420,7 +420,8 @@ func renderProviderError(err error, width int) string {
 // renderActiveToolCall shows the in-flight tool as a spinner line with a
 // hairline gutter — no border. Command tools get a $ line and, when a
 // sandbox backend is active, an isolation-status line, both dim-indented
-// under the gutter.
+// under the gutter. When the tool has streamed output, the last 6 lines
+// are rendered dim-indented beneath the command line.
 func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, width int) string {
 	elapsed := now.Sub(atc.StartedAt)
 	if elapsed < 0 {
@@ -446,6 +447,18 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		b.WriteString(strings.Repeat(" ", 3))
 		b.WriteString(mutedStyle().Render(strutil.Truncate(atc.Args, max(width-3, 1), false)))
 		b.WriteString("\n")
+	}
+	if atc.Output != "" {
+		lines := strings.Split(strings.TrimRight(atc.Output, "\n"), "\n")
+		const tail = 6
+		if len(lines) > tail {
+			lines = lines[len(lines)-tail:]
+		}
+		for _, line := range lines {
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(mutedStyle().Render(strutil.Truncate(line, max(width-3, 1), false)))
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("\n")
 	return b.String()

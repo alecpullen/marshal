@@ -163,8 +163,8 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	if names["agent.run"] {
 		t.Fatal("subtask view must NOT contain agent.run (no nested subagents)")
 	}
-	if names["shell.run"] {
-		t.Fatal("subtask view must NOT contain shell.run (write/command tools excluded)")
+	if !names["shell.run"] {
+		t.Fatal("subtask view missing shell.run (implementation tools must be visible to child)")
 	}
 	if names["diagnostics.check"] {
 		t.Fatal("subtask view must NOT contain deferred tools (no MCP autoloading)")

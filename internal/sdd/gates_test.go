@@ -45,6 +45,51 @@ func TestAuditGateMalformed(t *testing.T) {
 	}
 }
 
+func TestReviewStateSkipAlreadyReviewed(t *testing.T) {
+	git := NewFakeGitOps()
+	git.SetRef("sdd/T1", "head123")
+	dag := &DAG{Tasks: []DAGTask{{ID: "T1", Branch: "sdd/T1", ReviewedHead: "head123"}}}
+	r := ReviewState(git, dag, "T1")
+	if r.Decision != DecisionSkip || r.Event != "REVIEW_SKIP" {
+		t.Fatalf("expected REVIEW_SKIP (already reviewed), got %+v", r)
+	}
+}
+
+func TestReviewStateRequired(t *testing.T) {
+	git := NewFakeGitOps()
+	git.SetRef("sdd/T1", "newhead")
+	git.SetDiffStat("oldhead", "sdd/T1", " internal/foo.go | 50 ++++++++++++++++++++++++++++++++++++++++++++++++\n")
+	dag := &DAG{Tasks: []DAGTask{{ID: "T1", Branch: "sdd/T1", ReviewedHead: "oldhead"}}}
+	r := ReviewState(git, dag, "T1")
+	if r.Decision != DecisionSkip && r.Event != "REVIEW_REQUIRED" {
+		// Either REQUIRED (big diff) — check the decision.
+	}
+	if r.Event != "REVIEW_REQUIRED" {
+		t.Fatalf("expected REVIEW_REQUIRED (50-line diff), got %+v", r)
+	}
+}
+
+func TestReviewStateSkipTrivialDiff(t *testing.T) {
+	git := NewFakeGitOps()
+	git.SetRef("sdd/T1", "newhead")
+	git.SetDiffStat("oldhead", "sdd/T1", " internal/foo.go | 5 +++++\n")
+	dag := &DAG{Tasks: []DAGTask{{ID: "T1", Branch: "sdd/T1", ReviewedHead: "oldhead"}}}
+	r := ReviewState(git, dag, "T1")
+	if r.Decision != DecisionSkip || r.Event != "REVIEW_SKIP" {
+		t.Fatalf("expected REVIEW_SKIP (trivial 5-line diff), got %+v", r)
+	}
+}
+
+func TestReviewStateRequiredFirstPass(t *testing.T) {
+	git := NewFakeGitOps()
+	git.SetRef("sdd/T1", "head123")
+	dag := &DAG{Tasks: []DAGTask{{ID: "T1", Branch: "sdd/T1", ReviewedHead: ""}}}
+	r := ReviewState(git, dag, "T1")
+	if r.Event != "REVIEW_REQUIRED" {
+		t.Fatalf("expected REVIEW_REQUIRED (first pass), got %+v", r)
+	}
+}
+
 // writeReportFile is a test helper that writes a report file into ws/reports/.
 func writeReportFile(t *testing.T, ws *Workspace, name, content string) {
 	t.Helper()

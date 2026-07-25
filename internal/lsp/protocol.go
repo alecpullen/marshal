@@ -30,3 +30,15 @@ type Diagnostic struct {
 type Hover struct {
 	Contents json.RawMessage `json:"contents"`
 }
+
+// MarkupContent is the LSP MarkupContent type.
+type MarkupContent struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// MarkedString is the LSP MarkedString type (object form).
+type MarkedString struct {
+	Language string `json:"language"`
+	Value    string `json:"value"`
+}

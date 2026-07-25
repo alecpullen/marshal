@@ -24,8 +24,11 @@ type GitOps interface {
 	WorktreeAdd(path, branch, startPoint string) error
 	// WorktreeRemove force-removes a worktree path.
 	WorktreeRemove(path string) error
-	// MergeFF fast-forwards branch onto target (target must be an ancestor).
-	MergeFF(branch, target string) error
+	// MergeFF fast-forwards branch into the working tree's currently
+	// checked-out branch. The caller is responsible for ensuring the
+	// checkout is on the target branch (the controller in P3 will
+	// pre-checkout before calling).
+	MergeFF(branch string) error
 	// Commit commits all staged changes in Dir with the given message.
 	Commit(message string) error
 	// DiffStat returns the `git diff --stat` output between two refs.
@@ -70,12 +73,9 @@ func (g CLIGitOps) WorktreeRemove(path string) error {
 	return err
 }
 
-func (g CLIGitOps) MergeFF(branch, target string) error {
+func (g CLIGitOps) MergeFF(branch string) error {
 	_, err := g.run("merge", "--ff-only", branch)
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 func (g CLIGitOps) Commit(message string) error {
@@ -141,7 +141,7 @@ func (f *FakeGitOps) SetBranch(branch string) {
 	f.branches[branch] = true
 }
 
-// SetMergeFFError makes MergeFF(branch, _) return err.
+// SetMergeFFError makes MergeFF(branch) return err.
 func (f *FakeGitOps) SetMergeFFError(branch string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -198,7 +198,7 @@ func (f *FakeGitOps) WorktreeRemove(path string) error {
 	return nil
 }
 
-func (f *FakeGitOps) MergeFF(branch, target string) error {
+func (f *FakeGitOps) MergeFF(branch string) error {
 	f.record("merge", []string{"--ff-only", branch})
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -6,7 +6,7 @@ exposes every ACP method Marshal currently supports:
 
 - initialize
 - session/new, session/load, session/resume, session/list, session/delete, session/close
-- session/prompt, session/cancel, session/set_mode
+- session/prompt, session/cancel, session/set_mode, session/steer
 - session/update notifications
 - session/request_permission outbound requests (with a pluggable policy)
 - session/request_question outbound requests (with a pluggable policy)
@@ -411,6 +411,16 @@ class ACPClient:
         """
         return self._result(
             self.request("session/set_mode", {"sessionId": session_id, "mode": mode}, timeout=timeout)
+        )
+
+    def steer(self, session_id: str, text: str, timeout: float = 30.0) -> None:
+        """Send `session/steer` — enqueue a mid-turn steering message.
+
+        Errors with code -32000 when the session has no active turn; send
+        `prompt` instead in that case.
+        """
+        self._result(
+            self.request("session/steer", {"sessionId": session_id, "text": text}, timeout=timeout)
         )
 
     def prompt(

@@ -1347,3 +1347,68 @@ func TestPromptTurnQuestionTimeoutAnswersUnanswered(t *testing.T) {
 		t.Fatalf("answers = %#v, want Unanswered sentinel after timeout", gotAnswers)
 	}
 }
+
+func TestSteerDeliversToActiveTurn(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	steered := make(chan string, 1)
+	turnStarted := make(chan struct{})
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					close(turnStarted)
+					<-ctx.Done()
+					return ctx.Err()
+				}),
+				Events: broker,
+				Steer:  func(text string) { steered <- text },
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	go func() {
+		_, _ = manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_s","prompt":[{"type":"text","text":"hi"}]}`))
+	}()
+	<-turnStarted
+
+	if _, err := manager.Steer(context.Background(), json.RawMessage(`{"sessionId":"sess_s","text":"focus on tests"}`)); err != nil {
+		t.Fatalf("Steer() error = %v", err)
+	}
+	select {
+	case got := <-steered:
+		if got != "focus on tests" {
+			t.Fatalf("steered text = %q, want %q", got, "focus on tests")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Steer did not reach the runtime")
+	}
+	_, _ = manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_s"}`))
+}
+
+func TestSteerRequiresActiveTurn(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.Steer(context.Background(), json.RawMessage(`{"sessionId":"sess_idle","text":"hello"}`))
+	if err == nil || !strings.Contains(err.Error(), "no active turn") {
+		t.Fatalf("err = %v, want no active turn error", err)
+	}
+}
+
+func TestSteerRejectsEmptyText(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.Steer(context.Background(), json.RawMessage(`{"sessionId":"sess_idle","text":"  "}`))
+	if err == nil || !strings.Contains(err.Error(), "non-empty text") {
+		t.Fatalf("err = %v, want non-empty text error", err)
+	}
+}

@@ -137,6 +137,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					rt.Runner.SetApprovalMode(policy.ApprovalMode(mode))
 					return nil
 				},
+				Steer: rt.State.PushSteering,
 			}, true
 		},
 		Notify:    srv.Notify,
@@ -146,6 +147,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	manager.SetTurnCanceller(turns.CancelAndWait)
 	srv.Handle("session/prompt", turns.PromptTurn)
 	srv.Handle("session/set_mode", turns.SetMode)
+	srv.Handle("session/steer", turns.Steer)
 	srv.HandleNotification("session/cancel", turns.Cancel)
 
 	serveErr := srv.Serve(ctx)

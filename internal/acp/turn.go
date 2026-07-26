@@ -40,6 +40,9 @@ type TurnRuntime struct {
 	// SetMode applies a session-level approval mode (plan, default, edit,
 	// copilot, auto). Nil means the runtime does not support mode switching.
 	SetMode func(mode string) error
+	// Steer enqueues a mid-turn steering message, consumed by the runner
+	// at its next loop-top. Nil means the runtime does not support steering.
+	Steer func(text string)
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -421,6 +424,47 @@ func (m *TurnManager) SetMode(ctx context.Context, params json.RawMessage) (any,
 		return nil, err
 	}
 	return map[string]any{"mode": p.Mode}, nil
+}
+
+// SteerParams is the JSON-RPC body for session/steer.
+type SteerParams struct {
+	SessionID string `json:"sessionId"`
+	Text      string `json:"text"`
+}
+
+// Steer handles session/steer: it enqueues a steering message into the
+// session's steering queue. Steering requires an active turn — when the
+// turn has ended, the client should send session/prompt instead, so a
+// steer against an idle session is an explicit error rather than silently
+// queued.
+func (m *TurnManager) Steer(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SteerParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/steer params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/steer requires sessionId")
+	}
+	if strings.TrimSpace(p.Text) == "" {
+		return nil, invalidParamsError("session/steer requires non-empty text")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, serverErrorf("unknown session: %s", p.SessionID)
+	}
+	m.activeTurnsMu.Lock()
+	_, active := m.activeTurns[p.SessionID]
+	m.activeTurnsMu.Unlock()
+	if !active {
+		return nil, serverErrorf("session %s has no active turn; send session/prompt instead", p.SessionID)
+	}
+	if rt.Steer == nil {
+		return nil, serverErrorf("session %s does not support steering", p.SessionID)
+	}
+	rt.Steer(p.Text)
+	return map[string]any{}, nil
 }
 
 // Cancel is the notification handler for session/cancel. It marks the

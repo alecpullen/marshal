@@ -146,3 +146,88 @@ func TestLoadSkillsBodyPreserved(t *testing.T) {
 		t.Fatalf("Body = %q", skill.Body)
 	}
 }
+
+func writeBundleSkill(t *testing.T, dir, bundleName, content string) {
+	t.Helper()
+	bundleDir := filepath.Join(dir, bundleName)
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatalf("create bundle dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write bundle SKILL.md: %v", err)
+	}
+}
+
+func TestLoadSkillsBundleDir(t *testing.T) {
+	projectDir := t.TempDir()
+	writeBundleSkill(t, projectDir, "bundled", skillContent("bundled-skill", "A bundled skill"))
+
+	idx, err := LoadSkills("/nonexistent/global", projectDir)
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+
+	skill, ok := idx.Load("bundled-skill")
+	if !ok {
+		t.Fatal("Load(bundled-skill) returned false")
+	}
+	if skill.Description != "A bundled skill" {
+		t.Fatalf("Description = %q, want A bundled skill", skill.Description)
+	}
+}
+
+func TestLoadSkillsBundleAndFlatCoexist(t *testing.T) {
+	projectDir := t.TempDir()
+	writeSkillFile(t, projectDir, "flat.md", skillContent("flat-skill", "A flat skill"))
+	writeBundleSkill(t, projectDir, "bundle", skillContent("bundle-skill", "A bundle skill"))
+
+	idx, err := LoadSkills("/nonexistent/global", projectDir)
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	if len(idx.List()) != 2 {
+		t.Fatalf("List length = %d, want 2", len(idx.List()))
+	}
+}
+
+func TestLoadSkillsIgnoresDirsWithoutSkillMD(t *testing.T) {
+	projectDir := t.TempDir()
+	writeSkillFile(t, projectDir, "skill.md", skillContent("skill", "A skill"))
+	if err := os.MkdirAll(filepath.Join(projectDir, "random-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillFile(t, filepath.Join(projectDir, "random-dir"), "notes.md", "# not a bundle\n")
+
+	idx, err := LoadSkills("/nonexistent/global", projectDir)
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	if len(idx.List()) != 1 {
+		t.Fatalf("List length = %d, want 1", len(idx.List()))
+	}
+}
+
+func TestLoadSkillsMalformedBundleSkipped(t *testing.T) {
+	projectDir := t.TempDir()
+	writeSkillFile(t, projectDir, "good.md", skillContent("good", "A valid skill"))
+	writeBundleSkill(t, projectDir, "bad", "# No frontmatter\n")
+
+	idx, err := LoadSkills("/nonexistent/global", projectDir)
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	list := idx.List()
+	if len(list) != 1 || list[0].Name != "good" {
+		t.Fatalf("List = %v, want only [good]", list)
+	}
+}
+
+func TestParseExported(t *testing.T) {
+	skill, err := Parse(skillContent("parsed", "Parsed via export"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if skill.Name != "parsed" {
+		t.Fatalf("Name = %q, want parsed", skill.Name)
+	}
+}

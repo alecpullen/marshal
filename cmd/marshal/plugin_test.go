@@ -176,16 +176,44 @@ func TestPluginInstallDeclined(t *testing.T) {
 	}
 }
 
-func TestPluginInstallGitHubShorthandNormalization(t *testing.T) {
-	chdirProject(t)
-	// github: shorthand expands to an https URL; the clone itself fails
-	// offline, which proves normalization happened by the error text.
-	_, err := runPluginCmd(t, "y\n", "install", "--project", "github:acme/widgets")
-	if err == nil {
-		t.Fatal("expected clone failure for unreachable github source")
+func TestPluginInstallGitHubShorthandExpanded(t *testing.T) {
+	// github: shorthand should be split into source + ref and normalized to
+	// the HTTPS clone URL without touching the network.
+	source, ref, err := plugins.SplitSourceRef("github:acme/widgets@v1")
+	if err != nil {
+		t.Fatalf("split source ref: %v", err)
 	}
-	if !strings.Contains(err.Error(), "https://github.com/acme/widgets.git") {
-		t.Fatalf("error should reference the normalized URL, got: %v", err)
+	if ref != "v1" {
+		t.Fatalf("ref = %q, want v1", ref)
+	}
+	cloneURL, name, err := plugins.NormalizeSource(source)
+	if err != nil {
+		t.Fatalf("normalize source: %v", err)
+	}
+	if cloneURL != "https://github.com/acme/widgets.git" {
+		t.Fatalf("cloneURL = %q, want https://github.com/acme/widgets.git", cloneURL)
+	}
+	if name != "widgets" {
+		t.Fatalf("name = %q, want widgets", name)
+	}
+
+	// Without an inline ref.
+	source, ref, err = plugins.SplitSourceRef("github:acme/widgets")
+	if err != nil {
+		t.Fatalf("split source ref without ref: %v", err)
+	}
+	if ref != "" {
+		t.Fatalf("ref = %q, want empty", ref)
+	}
+	cloneURL, name, err = plugins.NormalizeSource(source)
+	if err != nil {
+		t.Fatalf("normalize source without ref: %v", err)
+	}
+	if cloneURL != "https://github.com/acme/widgets.git" {
+		t.Fatalf("cloneURL = %q, want https://github.com/acme/widgets.git", cloneURL)
+	}
+	if name != "widgets" {
+		t.Fatalf("name = %q, want widgets", name)
 	}
 }
 

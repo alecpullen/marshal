@@ -73,6 +73,37 @@ func shortCommit(commit string) string {
 	return commit
 }
 
+// atomicReplace installs src into dest by copying to a temporary sibling
+// directory inside dest's parent, removing any existing dest, and renaming
+// the temporary directory into place. This avoids leaving the plugin store
+// in a partially-missing state if the process is interrupted or the copy
+// fails.
+func atomicReplace(src, dest string) (retErr error) {
+	store := filepath.Dir(dest)
+	tmp, err := os.MkdirTemp(store, filepath.Base(dest)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp plugin directory: %w", err)
+	}
+	// Only clean up the temp directory if the swap did not complete.
+	swapped := false
+	defer func() {
+		if !swapped {
+			os.RemoveAll(tmp)
+		}
+	}()
+	if err := plugins.CopyDir(src, tmp); err != nil {
+		return fmt.Errorf("copy plugin files to temp directory: %w", err)
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return fmt.Errorf("remove existing plugin directory: %w", err)
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		return fmt.Errorf("rename temp directory to plugin destination: %w", err)
+	}
+	swapped = true
+	return nil
+}
+
 func runPluginList(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("plugin list", flag.ContinueOnError)
 	fs.SetOutput(stdout)
@@ -208,11 +239,8 @@ func runPluginInstall(ctx context.Context, args []string, stdin io.Reader, stdou
 		return err
 	}
 	dest := filepath.Join(scope.store, *name)
-	if err := os.RemoveAll(dest); err != nil {
-		return fmt.Errorf("replace existing plugin: %w", err)
-	}
-	if err := plugins.CopyDir(cloneDest, dest); err != nil {
-		return fmt.Errorf("install plugin files: %w", err)
+	if err := atomicReplace(cloneDest, dest); err != nil {
+		return fmt.Errorf("install plugin %q: %w", *name, err)
 	}
 	lf, err := plugins.ReadLockfile(scope.lock)
 	if err != nil {
@@ -327,11 +355,8 @@ func updateOne(ctx context.Context, inst *plugins.Installer, scope scopePaths, l
 		return err
 	}
 	dest := filepath.Join(scope.store, entry.Name)
-	if err := os.RemoveAll(dest); err != nil {
-		return err
-	}
-	if err := plugins.CopyDir(cloneDest, dest); err != nil {
-		return err
+	if err := atomicReplace(cloneDest, dest); err != nil {
+		return fmt.Errorf("update %s: %w", entry.Name, err)
 	}
 	entry.Commit = commit
 	entry.ContentHash = hash

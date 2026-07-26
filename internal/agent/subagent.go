@@ -43,18 +43,21 @@ func runSubagentChild(ctx context.Context, child *Runner, prompt string) (string
 }
 
 // SubtaskScopeView returns a registry view for a subtask child. It excludes
-// agent.run (nested subagents are forbidden) and deferred MCP tools (the child
-// should not auto-load arbitrary MCP surfaces during an ad-hoc task). All other
-// tools are visible so the child can perform implementation work; their own
-// Risk levels and the shared policy engine still gate approval for writes,
-// commands, and destructive tools.
+// agent.run (nested subagents are forbidden), deferred MCP tools (the child
+// should not auto-load arbitrary MCP surfaces during an ad-hoc task), and
+// question.ask (a subtask runs in its own orphaned child session.State that
+// no ACP client or TUI ever sees — there is no live user who could answer a
+// question, so the call would block forever). All other tools are visible
+// so the child can perform implementation work; their own Risk levels and
+// the shared policy engine still gate approval for writes, commands, and
+// destructive tools.
 func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 	view := registry.New()
 	for _, tool := range src.List() {
 		if tool.Deferred {
 			continue
 		}
-		if tool.Name == "agent.run" {
+		if tool.Name == "agent.run" || tool.Name == "question.ask" {
 			continue
 		}
 		_ = view.Register(tool)
@@ -98,7 +101,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 	}
 	tool := registry.Tool{
 		Name:        "agent.run",
-		Description: "Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc read-only subtask. The child has no access to nested agent.run.",
+		Description: "Delegate a scoped subtask to a fresh child agent context and return its summary. Maximum depth: 1. Maximum concurrency: 2. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer).",
 		Schema: json.RawMessage(
 			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),

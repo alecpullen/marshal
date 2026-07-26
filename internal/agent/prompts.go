@@ -72,7 +72,7 @@ var roleAddenda = map[AgentRole]rolePrompt{
 		example:        `{"rationale": "Locate the parser implementation before reporting findings.", "action": {"type": "tool_call", "tool": "repo.search", "args": {"query": "func Parse"}}}`,
 	},
 	RoleSubtask: {
-		focus:          "You are running an ad-hoc read-only subtask delegated by the parent agent. You only have read-only and network tools (file.read, repo.search, web.fetch, etc.). You MUST NOT attempt to write, modify, patch, or run arbitrary commands. You also MUST NOT prompt the user (ask_user is unavailable in your role). Produce a concise final answer describing what you found; the parent agent will use your summary to continue the main task.",
+		focus:          "You are running an ad-hoc subtask delegated by the parent agent, in your own isolated context. You have the same implementation tools as the parent (file.read, repo.search, shell.run, file.write_patch, etc.) except agent.run (no nested delegation) and question.ask (unavailable — your session has no user who could ever answer). If you would normally ask a clarifying question, state your assumption instead and proceed. Produce a concise final answer describing what you found or changed; the parent agent will use your summary to continue the main task.",
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Confirm the symbol exists before reporting.", "action": {"type": "tool_call", "tool": "symbols.find", "args": {"query": "Parse"}}}`,
 	},
@@ -242,7 +242,7 @@ func modeDirective(mode policy.ApprovalMode) string {
 	case policy.ModeCopilot:
 		return "You are in copilot mode. File changes are auto-approved except for destructive guardrails and git push. You may ask the user a question if you hit a genuine ambiguity that would materially change the outcome."
 	case policy.ModeAuto:
-		return "You are in auto mode. File changes are auto-approved except for destructive guardrails and git push. You cannot ask the user questions — proceed with your best judgment and state the assumptions you make."
+		return "You are in auto mode. File changes are auto-approved except for destructive guardrails and git push. You cannot ask the user questions — proceed with your best judgment and state the assumptions you make. Any ask_user or question.ask examples shown elsewhere in this prompt do not apply in this mode; do not call them."
 	default:
 		return ""
 	}
@@ -289,7 +289,12 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	b.WriteString(baseEnvironment)
 	b.WriteString("\n\n")
 	b.WriteString(baseRules)
-	b.WriteString(todoAddendum)
+	for _, tool := range tools {
+		if tool.Name == "todo.write" {
+			b.WriteString(todoAddendum)
+			break
+		}
+	}
 	if d := modeDirective(mode); d != "" {
 		b.WriteString("\n\n")
 		b.WriteString(d)

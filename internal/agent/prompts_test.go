@@ -652,3 +652,74 @@ func TestBuildSystemPromptNativeModeIncludesAskUserExample(t *testing.T) {
 		t.Errorf("native-mode system prompt missing broad-scope ask_user guidance\n%s", content)
 	}
 }
+
+// RoleSubtask's prompt used to claim "You MUST NOT attempt to write, modify,
+// patch, or run arbitrary commands" — but SubtaskScopeView deliberately keeps
+// shell.run and file.write_patch available (see
+// TestSubtaskScopeViewFiltersTools's "implementation tools must be visible
+// to child"), so that claim was false. The only restriction that is
+// actually enforced (and actually needs to be, since a subtask's child
+// session has no user who could ever answer a question) is question.ask.
+// The prompt must describe reality, not an aspirational restriction nobody
+// enforces.
+func TestBuildSystemPromptSubtaskDescribesActualCapabilities(t *testing.T) {
+	msg := BuildSystemPrompt(RoleSubtask, dummyTools(), nil, nil, false)
+	content := msg.Content
+
+	for _, unwanted := range []string{
+		"MUST NOT attempt to write, modify, patch, or run arbitrary commands",
+		"read-only subtask",
+	} {
+		if strings.Contains(content, unwanted) {
+			t.Errorf("subtask prompt still claims a restriction that isn't enforced: %q\n%s", unwanted, content)
+		}
+	}
+	if !strings.Contains(content, "question.ask") && !strings.Contains(content, "prompt the user") {
+		t.Errorf("subtask prompt lost the one restriction that IS real (cannot ask the user)\n%s", content)
+	}
+}
+
+// todoAddendum ("Use todo.write for any user request with 3 or more
+// steps...") used to be appended unconditionally regardless of role. But
+// swarm's read-only-scoped roles (planner, scouts, reviewer — ScopeReadOnly)
+// and the tester (ScopeTester) are built from registry.ReadOnlyView /
+// TesterView, neither of which includes todo.write (RiskWorkspaceWrite).
+// Telling those roles to use a tool that isn't in their actual tool list
+// wastes an iteration on an "unknown tool" error at best. The addendum must
+// only appear when todo.write is actually available.
+func TestTodoAddendumOmittedWhenToolNotAvailable(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil, false)
+	if strings.Contains(msg.Content, "todo.write") {
+		t.Errorf("prompt references todo.write but it is not in the tool list\n%s", msg.Content)
+	}
+}
+
+func TestTodoAddendumIncludedWhenToolAvailable(t *testing.T) {
+	tools := append(dummyTools(), registry.Tool{
+		Name: "todo.write", Risk: registry.RiskWorkspaceWrite, Description: "Track task progress.",
+	})
+	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false)
+	if !strings.Contains(msg.Content, "Use todo.write for any user request") {
+		t.Errorf("prompt missing todoAddendum even though todo.write is available\n%s", msg.Content)
+	}
+}
+
+// ModeAuto's directive ("You cannot ask the user questions") is composed
+// into the SAME prompt as the ask_user few-shot examples in
+// baseOutputFormat/nativeOutputFormat, which appear later in the text. A
+// model reading top-to-bottom sees "you cannot ask" immediately followed,
+// further down, by worked examples of calling ask_user — a visible
+// contradiction. The auto-mode directive must explicitly override those
+// examples rather than silently coexist with them.
+func TestBuildSystemPromptAutoModeOverridesAskUserExamples(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, native, policy.ModeAuto)
+		content := msg.Content
+		if !strings.Contains(content, "cannot ask the user") {
+			t.Fatalf("native=%v: auto mode prompt missing the cannot-ask directive\n%s", native, content)
+		}
+		if !strings.Contains(content, "ask_user") || !strings.Contains(content, "do not apply") {
+			t.Errorf("native=%v: auto mode prompt does not explicitly override the ask_user examples shown later in the prompt\n%s", native, content)
+		}
+	}
+}

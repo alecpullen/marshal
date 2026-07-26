@@ -148,6 +148,7 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	mustReg(&registry.Tool{Name: "web.fetch", Description: "fetch", Schema: []byte(`{}`), Risk: registry.RiskNetwork, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "shell.run", Description: "shell", Schema: []byte(`{}`), Risk: registry.RiskCommand, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "diagnostics.check", Description: "diag", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Deferred: true, Handler: stubAgentRunHandler})
+	mustReg(&registry.Tool{Name: "question.ask", Description: "ask", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 
 	view := SubtaskScopeView(reg)
 	names := make(map[string]bool, len(view.List()))
@@ -174,6 +175,18 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	if _, ok := view.Lookup("agent.run"); ok {
 		t.Fatal("Lookup(agent.run) must fail in subtask view")
+	}
+	// A subtask runs in its own orphaned child session.State that no ACP
+	// client (or the TUI) ever sees — there is no live user who could
+	// possibly answer a question.ask call. The prompt already tells the
+	// model "you cannot prompt the user"; the registry must actually
+	// enforce it, or the call would block forever waiting for an answer
+	// that structurally cannot arrive.
+	if names["question.ask"] {
+		t.Fatal("subtask view must NOT contain question.ask (no user to answer it)")
+	}
+	if _, ok := view.Lookup("question.ask"); ok {
+		t.Fatal("Lookup(question.ask) must fail in subtask view")
 	}
 }
 

@@ -24,8 +24,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		switch msg.String() {
 		case "y":
 			m.pendingSDDGate = false
-			m.state.ClearSDDGate()
-			// ResolveGate advances the controller state machine.
+			// ResolveGate reads the gate, advances the controller state
+			// machine, and clears it. Do NOT clear the gate here first.
 			if m.sddRunner != nil {
 				m.sddRunner.ResolveGate()
 			}

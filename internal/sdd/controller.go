@@ -68,7 +68,7 @@ type Controller struct {
 	UsageSink func(tokens int)
 
 	UsageTokens int
-	usageMax    int
+	UsageMax    int
 
 	State         ControllerState
 	LastBatchID   int
@@ -307,11 +307,11 @@ func (c *Controller) swapOrchestratorModel(preset string) {
 }
 
 // recordUsage flushes accumulated token usage to the session state.
-// The factory's UsageObserver (wired in Task 7) increments c.usageTokens;
+// The factory's UsageObserver (wired in Task 7) increments c.UsageTokens;
 // this method writes the accumulated count to SessionState.
 func (c *Controller) recordUsage() {
 	if c.SessionState != nil {
-		c.SessionState.UpdateSDDTokens(c.UsageTokens, c.usageMax)
+		c.SessionState.UpdateSDDTokens(c.UsageTokens, c.UsageMax)
 	}
 }
 

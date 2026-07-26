@@ -887,32 +887,36 @@ func buildSDDController(cfg config.Config, state *session.State, reg *registry.R
 	// use the orchestrator-scoped registry and attach a UsageObserver that
 	// feeds the controller's UsageSink.
 	var c *sdd.Controller
-	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
-		if role == routing.RoleSDDOrchestrator && scope == swarm.ScopeFull {
-			origReg := spec.reg
-			spec.reg = orchReg
-			runner, err := spec.newRunner(role, scope)
-			spec.reg = origReg
-			if err != nil {
-				return nil, err
-			}
-			// Attach UsageObserver that feeds the controller's UsageSink.
-			// TotalTokens == PromptTokens + CompletionTokens per the schema contract.
-			runner.UsageObserver = func(usage schema.TokenUsage) {
-				if c != nil && c.UsageSink != nil {
-					c.UsageSink(usage.TotalTokens)
+	makeFactory := func(spec roleRunnerSpec, orchReg *registry.Registry) swarm.RunnerFactory {
+		return func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+			if role == routing.RoleSDDOrchestrator && scope == swarm.ScopeFull {
+				origReg := spec.reg
+				spec.reg = orchReg
+				runner, err := spec.newRunner(role, scope)
+				spec.reg = origReg
+				if err != nil {
+					return nil, err
 				}
+				// Attach UsageObserver that feeds the controller's UsageSink.
+				// TotalTokens == PromptTokens + CompletionTokens per the schema contract.
+				runner.UsageObserver = func(usage schema.TokenUsage) {
+					if c != nil && c.UsageSink != nil {
+						c.UsageSink(usage.TotalTokens)
+					}
+				}
+				return runner, nil
 			}
-			return runner, nil
+			return spec.newRunner(role, scope)
 		}
-		return spec.newRunner(role, scope)
 	}
+	factory := makeFactory(spec, orchReg)
 
 	// Build the controller.
 	c = sdd.NewController(ws, &git, dag, rs, &progress, factory, cfg.RoutingConfig(), state, "sdd/pipeline", "main")
 
 	// Wire RebuildFactory: creates a new RunnerFactory with an overridden
-	// routing config (model escalation).
+	// routing config (model escalation), preserving the orchestrator registry
+	// view and the UsageObserver.
 	c.RebuildFactory = func(rc routing.Config) swarm.RunnerFactory {
 		newRouter := routing.NewStaticRouter(rc)
 		newResolver := &routedProviderResolver{
@@ -923,13 +927,15 @@ func buildSDDController(cfg config.Config, state *session.State, reg *registry.R
 		}
 		newSpec := spec
 		newSpec.resolver = newResolver
-		return newSpec.newRunner
+		return makeFactory(newSpec, orchReg)
 	}
 
 	// Wire UsageSink: accumulates token counts for recordUsage.
 	c.UsageSink = func(tokens int) {
 		c.UsageTokens += tokens
 	}
+	// Wire the token budget cap from settings.
+	c.UsageMax = cfg.SDD.MaxTotalTokens
 
 	return sdd.NewControllerAdapter(c)
 }

@@ -7,7 +7,7 @@ exposes every ACP method Marshal currently supports:
 - initialize
 - session/new, session/load, session/resume, session/list, session/delete, session/close
 - session/prompt, session/cancel, session/set_mode, session/steer
-- session/update notifications
+- session/update notifications (message/thought chunks, tool_call, tool_call_update, mode_changed)
 - session/request_permission outbound requests (with a pluggable policy)
 - session/request_question outbound requests (with a pluggable policy)
 
@@ -456,8 +456,10 @@ class ACPClient:
             timeout: Maximum seconds to wait for the prompt response.
             collect_updates: If True, accumulate `agent_message_chunk` and
                 `agent_thought_chunk` text into the returned reply string.
-            update_callback: Optional callback invoked for every update. Receives
-                the accumulated text so far and the raw update envelope.
+            update_callback: Optional callback invoked for every session/update
+                (message chunks, thoughts, tool_call, tool_call_update,
+                mode_changed). Receives the accumulated text so far and the raw
+                update envelope.
 
         Returns:
             (assistant_reply, PromptResult)
@@ -480,9 +482,10 @@ class ACPClient:
                     text = upd.get("content", {}).get("text", "")
                     with lock:
                         chunks.append(text)
+                if update_callback:
+                    with lock:
                         current = "".join(chunks)
-                    if update_callback:
-                        update_callback(current, upd)
+                    update_callback(current, upd)
 
         self.on_notification(on_frame)
         try:

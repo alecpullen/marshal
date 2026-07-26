@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/registry"
 )
 
 // identityBeginWork is a TurnRuntime.BeginWork gate that passes through
@@ -773,16 +775,11 @@ func TestPromptTurnSuppressesInternalCustomEvents(t *testing.T) {
 				SessionID: sessionID,
 				BeginWork: identityBeginWork,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
-					// Activity, audit, active-tool, and pending-clear
-					// events should not produce any wire update.
+					// Activity and pending-clear events should not produce
+					// any wire update.
 					broker.Publish(session.EventActivityChanged, session.Event{Activity: &session.Activity{
 						Kind: session.ActivityThinking,
 					}})
-					broker.Publish(session.EventAuditAdded, session.Event{Audit: auditEvent("test")})
-					broker.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{
-						Name: "test_tool",
-					}})
-					// Pending approval cleared (nil) and pending question cleared (nil)
 					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: nil})
 					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: nil})
 					return nil
@@ -1495,5 +1492,133 @@ func TestPromptTurnAppliesModeElevation(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no mode_changed update emitted: %#v", updates)
+	}
+}
+
+func TestPromptTurnProjectsToolCallEvents(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	var mu sync.Mutex
+	var updates []map[string]any
+	started := time.Unix(1000, 0)
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventActiveToolChanged, session.Event{ActiveTool: &session.ActiveToolCall{
+						Name:      "shell.run",
+						Args:      `{"cmd":"go test"}`,
+						StartedAt: started,
+					}})
+					broker.Publish(session.EventAuditAdded, session.Event{Audit: &registry.AuditEvent{
+						ToolName:      "shell.run",
+						ResultContent: "all tests passed",
+					}})
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if p, ok := params.(SessionUpdateParams); ok {
+				updates = append(updates, p.Update)
+			}
+			return nil
+		},
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_tc","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) != 2 {
+		t.Fatalf("expected 2 updates, got %d: %#v", len(updates), updates)
+	}
+	wantID := fmt.Sprintf("shell.run-%d", started.UnixNano())
+	call := updates[0]
+	if call["kind"] != "tool_call" || call["toolName"] != "shell.run" || call["status"] != "running" {
+		t.Fatalf("tool_call = %#v", call)
+	}
+	if call["toolCallId"] != wantID {
+		t.Fatalf("toolCallId = %v, want %q", call["toolCallId"], wantID)
+	}
+	if call["args"] != `{"cmd":"go test"}` {
+		t.Fatalf("args = %v", call["args"])
+	}
+	upd := updates[1]
+	if upd["kind"] != "tool_call_update" || upd["status"] != "done" || upd["output"] != "all tests passed" {
+		t.Fatalf("tool_call_update = %#v", upd)
+	}
+	if upd["toolCallId"] != wantID {
+		t.Fatalf("update toolCallId = %v, want correlated %q", upd["toolCallId"], wantID)
+	}
+}
+
+func TestPromptTurnToolCallUpdateErrorStatus(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	var mu sync.Mutex
+	var updates []map[string]any
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventAuditAdded, session.Event{Audit: &registry.AuditEvent{
+						ToolName:  "file.write",
+						Error:     "permission denied",
+						Timestamp: time.Unix(2000, 0),
+					}})
+					return nil
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify: func(method string, params any) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if p, ok := params.(SessionUpdateParams); ok {
+				updates = append(updates, p.Update)
+			}
+			return nil
+		},
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_te","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) != 1 {
+		t.Fatalf("expected 1 update, got %d: %#v", len(updates), updates)
+	}
+	upd := updates[0]
+	if upd["kind"] != "tool_call_update" || upd["status"] != "error" {
+		t.Fatalf("update = %#v", upd)
+	}
+	if upd["output"] != "permission denied" {
+		t.Fatalf("output = %v, want error text", upd["output"])
+	}
+	if upd["toolCallId"] != fmt.Sprintf("file.write-%d", time.Unix(2000, 0).UnixNano()) {
+		t.Fatalf("toolCallId = %v, want synthesized id", upd["toolCallId"])
+	}
+}
+
+func TestCapToolText(t *testing.T) {
+	short := "ok"
+	if got := capToolText(short); got != short {
+		t.Fatalf("capToolText(%q) = %q", short, got)
+	}
+	long := strings.Repeat("x", toolTextCap+100)
+	got := capToolText(long)
+	if len(got) <= toolTextCap {
+		t.Fatalf("capped length = %d, want cap + suffix", len(got))
+	}
+	if !strings.HasSuffix(got, "… (truncated)") {
+		t.Fatalf("capped text missing truncation suffix")
 	}
 }

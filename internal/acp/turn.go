@@ -137,11 +137,32 @@ func messageUpdate(msg session.Message) map[string]any {
 	}
 }
 
+// turnProjection carries per-turn state used to project session events into
+// wire updates: the accumulated thinking text (for deltas) and the most
+// recent active tool call (for correlating tool_call_update with tool_call).
+type turnProjection struct {
+	lastThinking string
+	lastToolID   string
+	lastToolName string
+}
+
+// toolTextCap bounds args/output text in tool_call wire events.
+const toolTextCap = 4096
+
+// capToolText truncates s to toolTextCap bytes with a visible suffix.
+func capToolText(s string) string {
+	if len(s) <= toolTextCap {
+		return s
+	}
+	return s[:toolTextCap] + "… (truncated)"
+}
+
 // eventToSessionUpdate projects a session event into a session/update
 // envelope body. Returns (nil, false) for internal events that should not
 // be forwarded. Thinking updates compute the delta from the previous value;
-// the caller's *lastThinking is updated in place.
-func eventToSessionUpdate(ev pubsub.Event[session.Event], lastThinking *string) (map[string]any, bool) {
+// tool_call/tool_call_update come from active-tool and audit events. The
+// caller's projection is updated in place.
+func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) (map[string]any, bool) {
 	switch ev.Type {
 	case session.EventMessageAdded:
 		if ev.Payload.Message != nil {
@@ -151,10 +172,10 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], lastThinking *string) 
 		if ev.Payload.Thinking != nil {
 			reasoning := ev.Payload.Thinking.Reasoning
 			delta := reasoning
-			if *lastThinking != "" && strings.HasPrefix(reasoning, *lastThinking) {
-				delta = reasoning[len(*lastThinking):]
+			if proj.lastThinking != "" && strings.HasPrefix(reasoning, proj.lastThinking) {
+				delta = reasoning[len(proj.lastThinking):]
 			}
-			*lastThinking = reasoning
+			proj.lastThinking = reasoning
 			if delta != "" {
 				return map[string]any{
 					"kind": "agent_thought_chunk",
@@ -165,6 +186,45 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], lastThinking *string) 
 				}, true
 			}
 			return nil, false
+		}
+	case session.EventActiveToolChanged:
+		if ev.Payload.ActiveTool != nil {
+			atc := ev.Payload.ActiveTool
+			id := fmt.Sprintf("%s-%d", atc.Name, atc.StartedAt.UnixNano())
+			proj.lastToolID = id
+			proj.lastToolName = atc.Name
+			return map[string]any{
+				"kind":       "tool_call",
+				"toolCallId": id,
+				"toolName":   atc.Name,
+				"args":       capToolText(atc.Args),
+				"status":     "running",
+			}, true
+		}
+	case session.EventAuditAdded:
+		if ev.Payload.Audit != nil {
+			ae := ev.Payload.Audit
+			status := "done"
+			if ae.Error != "" {
+				status = "error"
+			}
+			id := proj.lastToolID
+			if id == "" || ae.ToolName != proj.lastToolName {
+				id = fmt.Sprintf("%s-%d", ae.ToolName, ae.Timestamp.UnixNano())
+			}
+			output := ae.ResultContent
+			if output == "" {
+				output = ae.ResultSummary
+			}
+			if status == "error" && output == "" {
+				output = ae.Error
+			}
+			return map[string]any{
+				"kind":       "tool_call_update",
+				"toolCallId": id,
+				"status":     status,
+				"output":     capToolText(output),
+			}, true
 		}
 	}
 	return nil, false
@@ -247,9 +307,10 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		runErr <- rt.Run(turnCtx, prompt)
 	}()
 
-	// lastThinking tracks the full accumulated reasoning text for
-	// computing thinking deltas. Reset per turn.
-	var lastThinking string
+	// proj carries per-turn projection state: the accumulated thinking
+	// text (for computing deltas) and the most recent active tool call
+	// (for correlating tool_call_update with tool_call).
+	proj := &turnProjection{}
 
 	// turnAnswered guards the pending-question send so the unanswered
 	// answer is delivered at most once per question identity (F-BUG-51).
@@ -258,7 +319,7 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 	// forward dispatches one session event to the ACP client. Defined
 	// once and used in both the main loop and the post-run drain.
 	forward := func(ev pubsub.Event[session.Event]) {
-		update, hasUpdate := eventToSessionUpdate(ev, &lastThinking)
+		update, hasUpdate := eventToSessionUpdate(ev, proj)
 		if hasUpdate {
 			if notifyErr := m.notify("session/update", SessionUpdateParams{
 				SessionID: p.SessionID,

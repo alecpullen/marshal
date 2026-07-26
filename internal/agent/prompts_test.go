@@ -615,3 +615,40 @@ func TestSDDAuditorReadOnly(t *testing.T) {
 		}
 	}
 }
+
+// The existing ask_user example ("archive or delete") is a narrow binary
+// fork. Live testing (Kimi's kimi-for-coding, "improve the retry behavior
+// in the provider layer") showed a model treating a broad, open-ended
+// request as having one "obvious" interpretation and just implementing it,
+// without surfacing that several materially different directions existed.
+// A second example matching that exact shape of ambiguity — broad scope,
+// multiple valid directions, not a binary fork — should make the existing
+// "ask if a decision would materially change the outcome" rule easier for
+// a model to generalize to open-ended requests, not just yes/no forks.
+func TestBuildSystemPromptContainsBroadScopeAskUserExample(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil, false)
+	content := msg.Content
+	for _, want := range []string{
+		"broad", "materially different",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("system prompt missing broad-scope ask_user guidance (expected to mention %q)\n%s", want, content)
+		}
+	}
+}
+
+// Native mode gets zero ask_user examples today (nativeOutputFormat has no
+// examples block at all, unlike the JSON path's baseOutputFormat) even
+// though ask_user is registered as a real tool for RoleGeneral in native
+// mode too. Add at least one example so native-mode models have the same
+// concrete guidance the JSON path already has.
+func TestBuildSystemPromptNativeModeIncludesAskUserExample(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil, true)
+	content := msg.Content
+	if !strings.Contains(content, "ask_user") {
+		t.Errorf("native-mode system prompt has no ask_user guidance at all\n%s", content)
+	}
+	if !strings.Contains(content, "materially different") {
+		t.Errorf("native-mode system prompt missing broad-scope ask_user guidance\n%s", content)
+	}
+}

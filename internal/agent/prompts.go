@@ -161,6 +161,8 @@ Examples:
 
 {"rationale": "Two valid interpretations with different implementations.", "action": {"type": "ask_user", "content": "Should deletion archive the record or remove it permanently?"}}
 
+{"rationale": "The request is broad and there are several materially different valid directions (backoff/jitter policy, distinguishing retryable vs non-retryable errors, a retry budget, or something else); guessing wrong risks reworking substantial code.", "action": {"type": "ask_user", "content": "There are several ways to improve retry behavior here — smarter backoff, better error classification, a retry budget, something else? Which direction did you have in mind?"}}
+
 For parallel read-only work, you may return multiple tool calls in one response using the "actions" array. Every entry must be a read-only "tool_call". Example:
 
 {"rationale": "Read both files at once.", "actions": [{"type": "tool_call", "tool": "file.read", "args": {"path": "a.go"}}, {"type": "tool_call", "tool": "file.read", "args": {"path": "b.go"}}]}
@@ -170,7 +172,8 @@ For patch actions use search/replace blocks, one block per file. Do not use unif
 const nativeOutputFormat = `Use the available native tools when you need repository facts or need to make changes. When the task is complete, respond with a concise final answer in normal prose.
 
 Rules for native tool calls:
-- Each tool call's arguments must be a single valid JSON object matching the tool's schema. Do not concatenate multiple JSON objects together. Do not include extra keys not declared in the schema.`
+- Each tool call's arguments must be a single valid JSON object matching the tool's schema. Do not concatenate multiple JSON objects together. Do not include extra keys not declared in the schema.
+- If the request is broad and there are several materially different valid directions — not just a single obvious interpretation — call ask_user before picking one and implementing it. A narrow binary fork ("archive or delete the record?") and an open-ended request with multiple valid directions ("improve the retry behavior" could mean backoff policy, error classification, a retry budget, or something else) both qualify; guessing wrong on either risks reworking substantial code.`
 
 const nativePatchFormat = `## file.write_patch format
 

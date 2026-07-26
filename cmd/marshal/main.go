@@ -14,6 +14,7 @@ var appRunner = app.Run
 var acpRunner = acp.Run
 var historyRunner = runHistory
 var calibrateRunner = runCalibrateTokens
+var pluginRunner = runPlugin
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
@@ -31,6 +32,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) > 0 && args[0] == "acp" {
 		return acpRunner(ctx, stdin, stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "plugin" {
+		return pluginRunner(ctx, args[1:], stdin, stdout, stderr)
 	}
 	return appRunner(ctx, stdout)
 }

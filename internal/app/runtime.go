@@ -431,19 +431,6 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		logFile = nil
 	}
 	logger := logging.New(logWriter, slog.LevelInfo)
-	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
-	state.SetTrusted(projectTrusted)
-
-	// Abort startup if an existing session's transcript cannot be loaded.
-	if runOpts.existingSessionID != "" {
-		if loadErr := state.LoadError(); loadErr != nil {
-			if logFile != nil {
-				_ = logFile.Close()
-			}
-			_ = database.Close()
-			return nil, fmt.Errorf("load existing session state: %w", loadErr)
-		}
-	}
 
 	globalSkillsDir := filepath.Join(config.UserDir(homeDir), "skills")
 	projectSkillsDir := filepath.Join(workingDir, ".marshal", "skills")
@@ -457,6 +444,20 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	}
 
 	pluginCommands := loadPluginContents(&cfg, skillIndex, homeDir, workingDir, projectTrusted, logger)
+
+	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
+	state.SetTrusted(projectTrusted)
+
+	// Abort startup if an existing session's transcript cannot be loaded.
+	if runOpts.existingSessionID != "" {
+		if loadErr := state.LoadError(); loadErr != nil {
+			if logFile != nil {
+				_ = logFile.Close()
+			}
+			_ = database.Close()
+			return nil, fmt.Errorf("load existing session state: %w", loadErr)
+		}
+	}
 
 	workCtx, workCancel := context.WithCancel(ctx)
 	jobBroker := pubsub.NewBroker[native.JobEvent]()

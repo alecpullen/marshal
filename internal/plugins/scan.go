@@ -23,7 +23,7 @@ type Contents struct {
 
 // Empty reports whether the plugin contributes anything at all.
 func (c Contents) Empty() bool {
-	return len(c.Skills) == 0 && len(c.Commands) == 0 && len(c.Hooks) == 0 && len(c.MCPServers) == 0
+	return len(c.Skills) == 0 && len(c.Commands) == 0 && len(c.Hooks) == 0 && len(c.MCPServers) == 0 && len(c.MCPPolicies) == 0
 }
 
 // ScanPlugin discovers all loadable content in the plugin directory at

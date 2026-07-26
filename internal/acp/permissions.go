@@ -75,15 +75,17 @@ func NewPermissionBridge(client PermissionClient) *PermissionBridge {
 
 // Request sends a permission request for the given pending tool call and
 // blocks until either a decision arrives, the context is cancelled, or
-// the client returns an error. On context cancel the ResponseChan is left
+// the client returns an error. On success it returns the decision that was
+// delivered to ResponseChan, so callers can act on it (e.g. applying a
+// mode.request elevation). On context cancel the ResponseChan is left
 // untouched (the runner's own select on ResponseChan vs ctx.Done decides
 // what to do with the abandoned pending call).
-func (b *PermissionBridge) Request(ctx context.Context, pending *session.PendingToolCall) error {
+func (b *PermissionBridge) Request(ctx context.Context, pending *session.PendingToolCall) (session.UserApprovalDecision, error) {
 	if pending == nil {
-		return ErrNilPending
+		return session.UserApprovalDecision{}, ErrNilPending
 	}
 	if pending.ResponseChan == nil {
-		return ErrPendingMissingResponseChan
+		return session.UserApprovalDecision{}, ErrPendingMissingResponseChan
 	}
 	req := PermissionRequest{
 		ToolCallID: pending.ID,
@@ -95,17 +97,18 @@ func (b *PermissionBridge) Request(ctx context.Context, pending *session.Pending
 	}
 	decision, err := b.client.RequestPermission(ctx, req)
 	if err != nil {
-		return err
+		return session.UserApprovalDecision{}, err
 	}
-	select {
-	case pending.ResponseChan <- session.UserApprovalDecision{
+	out := session.UserApprovalDecision{
 		Approved: decision.Approved,
 		Edited:   decision.Edited,
-	}:
+	}
+	select {
+	case pending.ResponseChan <- out:
 	case <-ctx.Done():
 		// Turn cancelled before we could deliver the decision; the runner
 		// will see ctx.Err() and abandon the pending call.
-		return ctx.Err()
+		return session.UserApprovalDecision{}, ctx.Err()
 	}
-	return nil
+	return out, nil
 }

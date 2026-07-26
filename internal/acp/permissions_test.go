@@ -31,7 +31,7 @@ func TestPermissionApprovalResolvesPendingToolCall(t *testing.T) {
 	pending := &session.PendingToolCall{Name: "shell.run", Command: "date", ResponseChan: response}
 	client := &fakePermissionClient{decision: PermissionDecision{Approved: true}}
 	bridge := NewPermissionBridge(client)
-	if err := bridge.Request(context.Background(), pending); err != nil {
+	if _, err := bridge.Request(context.Background(), pending); err != nil {
 		t.Fatalf("Request() error = %v", err)
 	}
 	select {
@@ -58,7 +58,7 @@ func TestPermissionDenialResolvesPendingToolCall(t *testing.T) {
 	pending := &session.PendingToolCall{Name: "shell.run", Command: "rm -rf /", ResponseChan: response}
 	client := &fakePermissionClient{decision: PermissionDecision{Approved: false}}
 	bridge := NewPermissionBridge(client)
-	if err := bridge.Request(context.Background(), pending); err != nil {
+	if _, err := bridge.Request(context.Background(), pending); err != nil {
 		t.Fatalf("Request() error = %v", err)
 	}
 	select {
@@ -76,7 +76,7 @@ func TestPermissionEditedCommandPropagatesToDecision(t *testing.T) {
 	pending := &session.PendingToolCall{Name: "shell.run", Command: "rm foo", ResponseChan: response}
 	client := &fakePermissionClient{decision: PermissionDecision{Approved: true, Edited: "rm foo.bak"}}
 	bridge := NewPermissionBridge(client)
-	if err := bridge.Request(context.Background(), pending); err != nil {
+	if _, err := bridge.Request(context.Background(), pending); err != nil {
 		t.Fatalf("Request() error = %v", err)
 	}
 	select {
@@ -102,7 +102,10 @@ func TestPermissionRequestContextCancelGuardsResponseChan(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- bridge.Request(ctx, pending)
+		done <- func() error {
+			_, err := bridge.Request(ctx, pending)
+			return err
+		}()
 	}()
 
 	// Give the bridge a moment to enter Request.

@@ -285,9 +285,34 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 					"session", p.SessionID, "approval", pa.ID)
 			} else {
 				go func() {
-					if err := m.bridge.Request(turnCtx, pa); err != nil {
+					decision, err := m.bridge.Request(turnCtx, pa)
+					if err != nil {
 						slotCancel()
 						subCancel()
+						return
+					}
+					// mode.request elevation: the tool contract makes the
+					// responding transport responsible for applying the mode
+					// (internal/tools/native/mode_request.go). Apply it and
+					// broadcast mode_changed so every attached client stays
+					// in sync. An empty Edited defaults to "edit", matching
+					// the tool handler.
+					if pa.Name == "mode.request" && decision.Approved {
+						chosen := decision.Edited
+						if chosen == "" {
+							chosen = "edit"
+						}
+						if rt.SetMode != nil {
+							if err := rt.SetMode(chosen); err != nil {
+								slog.Default().Warn("acp: apply mode elevation",
+									"session", p.SessionID, "mode", chosen, "err", err)
+							} else {
+								_ = m.notify("session/update", SessionUpdateParams{
+									SessionID: p.SessionID,
+									Update:    map[string]any{"kind": "mode_changed", "mode": chosen},
+								})
+							}
+						}
 					}
 				}()
 			}

@@ -143,6 +143,21 @@ class DenyAllPolicy(PermissionPolicy):
         return {"approved": False}
 
 
+class ModeElevationPolicy(PermissionPolicy):
+    """Approve everything; answer mode.request elevations with an explicit mode.
+
+    Without `edited`, an approved elevation defaults to "edit" server-side.
+    """
+
+    def __init__(self, mode: str = "edit") -> None:
+        self.mode = mode
+
+    def decide(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        if request.get("toolName") == "mode.request":
+            return {"approved": True, "edited": self.mode}
+        return {"approved": True}
+
+
 class QuestionPolicy:
     """Decides how to answer outbound `session/request_question` frames.
 

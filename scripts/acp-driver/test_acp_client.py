@@ -10,7 +10,14 @@ Requires `go build -o /tmp/kilo/marshal ./cmd/marshal` first.
 import pytest
 from pathlib import Path
 
-from acp_client import ACPClient, ACPError, AutoApprovePolicy, DenyAllPolicy, TextBlock
+from acp_client import (
+    ACPClient,
+    ACPError,
+    AutoApprovePolicy,
+    DenyAllPolicy,
+    ModeElevationPolicy,
+    TextBlock,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -111,3 +118,9 @@ def test_question_policy_can_decline():
 def test_static_answers_policy_returns_answers():
     answers = [{"question": "pick", "answer": "a"}]
     assert StaticAnswersPolicy(answers).decide({"questions": []}) == {"answers": answers}
+
+
+def test_mode_elevation_policy_sets_mode():
+    policy = ModeElevationPolicy("copilot")
+    assert policy.decide({"toolName": "mode.request"}) == {"approved": True, "edited": "copilot"}
+    assert policy.decide({"toolName": "shell.run"}) == {"approved": True}

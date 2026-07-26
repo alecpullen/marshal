@@ -1412,3 +1412,88 @@ func TestSteerRejectsEmptyText(t *testing.T) {
 		t.Fatalf("err = %v, want non-empty text error", err)
 	}
 }
+
+func TestPromptTurnAppliesModeElevation(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	pendingCh := make(chan session.UserApprovalDecision, 1)
+	var applied string
+	var mu sync.Mutex
+	var updates []map[string]any
+	setModeDone := make(chan struct{})
+	modeChangedDone := make(chan struct{})
+	var setModeOnce sync.Once
+	var modeChangedOnce sync.Once
+
+	permClient := &fakePermissionClient{decision: PermissionDecision{Approved: true, Edited: "copilot"}}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					pending := &session.PendingToolCall{
+						ID:           "mode_req_1",
+						Name:         "mode.request",
+						Reason:       "mode-elevation: agent requests an editing mode",
+						ResponseChan: pendingCh,
+					}
+					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: pending})
+					select {
+					case <-pendingCh:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(5 * time.Second):
+						return errors.New("timed out waiting for decision")
+					}
+				}),
+				Events: broker,
+				SetMode: func(mode string) error {
+					applied = mode
+					setModeOnce.Do(func() { close(setModeDone) })
+					return nil
+				},
+			}, true
+		},
+		Notify: func(method string, params any) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if p, ok := params.(SessionUpdateParams); ok {
+				updates = append(updates, p.Update)
+				if p.Update["kind"] == "mode_changed" && p.Update["mode"] == "copilot" {
+					modeChangedOnce.Do(func() { close(modeChangedDone) })
+				}
+			}
+			return nil
+		},
+		Perms: permClient,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_elev","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+
+	waitFor := func(ch <-chan struct{}, label string) {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %s", label)
+		}
+	}
+	waitFor(setModeDone, "SetMode")
+	waitFor(modeChangedDone, "mode_changed update")
+
+	if applied != "copilot" {
+		t.Fatalf("applied mode = %q, want copilot — mode.request elevation was not applied", applied)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, u := range updates {
+		if u["kind"] == "mode_changed" && u["mode"] == "copilot" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no mode_changed update emitted: %#v", updates)
+	}
+}

@@ -37,6 +37,9 @@ type TurnRuntime struct {
 	BeginWork func(context.Context) (context.Context, func(), error)
 	Run       RunnerFunc
 	Events    *pubsub.Broker[session.Event]
+	// SetMode applies a session-level approval mode (plan, default, edit,
+	// copilot, auto). Nil means the runtime does not support mode switching.
+	SetMode func(mode string) error
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -368,6 +371,56 @@ func resultOrError(runErr error, slot *activeTurn) (any, error) {
 		return nil, runErr
 	}
 	return PromptTurnResult{StopReason: "end_turn"}, nil
+}
+
+// SetModeParams is the JSON-RPC body for session/set_mode.
+type SetModeParams struct {
+	SessionID string `json:"sessionId"`
+	Mode      string `json:"mode"`
+}
+
+// validApprovalModes are the session-level modes an ACP client may request.
+var validApprovalModes = map[string]bool{
+	"plan":    true,
+	"default": true,
+	"edit":    true,
+	"copilot": true,
+	"auto":    true,
+}
+
+// SetMode handles session/set_mode: it applies the requested approval mode
+// to the session's runtime and broadcasts a mode_changed session/update so
+// every attached client stays in sync.
+func (m *TurnManager) SetMode(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SetModeParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/set_mode params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/set_mode requires sessionId")
+	}
+	if !validApprovalModes[p.Mode] {
+		return nil, invalidParamsError("invalid mode %q: want one of plan, default, edit, copilot, auto", p.Mode)
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, serverErrorf("unknown session: %s", p.SessionID)
+	}
+	if rt.SetMode == nil {
+		return nil, serverErrorf("session %s does not support mode switching", p.SessionID)
+	}
+	if err := rt.SetMode(p.Mode); err != nil {
+		return nil, serverErrorf("set mode: %v", err)
+	}
+	if err := m.notify("session/update", SessionUpdateParams{
+		SessionID: p.SessionID,
+		Update:    map[string]any{"kind": "mode_changed", "mode": p.Mode},
+	}); err != nil {
+		return nil, err
+	}
+	return map[string]any{"mode": p.Mode}, nil
 }
 
 // Cancel is the notification handler for session/cancel. It marks the

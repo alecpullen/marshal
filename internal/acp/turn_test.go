@@ -882,6 +882,74 @@ func TestPromptTurnPermissionFailureCancelsRunner(t *testing.T) {
 	}
 }
 
+func TestSetModeAppliesAndNotifies(t *testing.T) {
+	var applied string
+	var mu sync.Mutex
+	var updates []map[string]any
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run:       RunnerFunc(func(ctx context.Context, prompt string) error { return nil }),
+				Events:    pubsub.NewBroker[session.Event](),
+				SetMode: func(mode string) error {
+					applied = mode
+					return nil
+				},
+			}, true
+		},
+		Notify: func(method string, params any) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if p, ok := params.(SessionUpdateParams); ok {
+				updates = append(updates, p.Update)
+			}
+			return nil
+		},
+	})
+	got, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_m","mode":"copilot"}`))
+	if err != nil {
+		t.Fatalf("SetMode() error = %v", err)
+	}
+	result, ok := got.(map[string]any)
+	if !ok || result["mode"] != "copilot" {
+		t.Fatalf("result = %#v, want {mode: copilot}", got)
+	}
+	if applied != "copilot" {
+		t.Fatalf("applied mode = %q, want copilot", applied)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) != 1 || updates[0]["kind"] != "mode_changed" || updates[0]["mode"] != "copilot" {
+		t.Fatalf("updates = %#v, want one mode_changed", updates)
+	}
+}
+
+func TestSetModeRejectsInvalidMode(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"sess_m","mode":"yolo"}`))
+	if err == nil || !strings.Contains(err.Error(), "invalid mode") {
+		t.Fatalf("err = %v, want invalid mode error", err)
+	}
+}
+
+func TestSetModeUnknownSession(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"nope","mode":"edit"}`))
+	if err == nil || !strings.Contains(err.Error(), "unknown session") {
+		t.Fatalf("err = %v, want unknown session error", err)
+	}
+}
+
 func TestPromptTurnAnswersUnsupportedQuestionsAsUnanswered(t *testing.T) {
 	broker := pubsub.NewBroker[session.Event]()
 	questions := []session.Question{

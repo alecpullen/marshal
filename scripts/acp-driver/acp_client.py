@@ -6,7 +6,7 @@ exposes every ACP method Marshal currently supports:
 
 - initialize
 - session/new, session/load, session/resume, session/list, session/delete, session/close
-- session/prompt, session/cancel
+- session/prompt, session/cancel, session/set_mode
 - session/update notifications
 - session/request_permission outbound requests (with a pluggable policy)
 - session/request_question outbound requests (with a pluggable policy)
@@ -402,6 +402,16 @@ class ACPClient:
     def session_close(self, session_id: str, timeout: float = 30.0) -> None:
         """Send `session/close`."""
         self._result(self.request("session/close", {"sessionId": session_id}, timeout=timeout))
+
+    def set_mode(self, session_id: str, mode: str, timeout: float = 30.0) -> Dict[str, Any]:
+        """Send `session/set_mode` and return {"mode": <applied>}.
+
+        A `mode_changed` session/update notification is broadcast on success.
+        Valid modes: plan, default, edit, copilot, auto.
+        """
+        return self._result(
+            self.request("session/set_mode", {"sessionId": session_id, "mode": mode}, timeout=timeout)
+        )
 
     def prompt(
         self,

@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/policy"
 	"marshal/internal/trust"
 )
 
@@ -132,6 +133,10 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 				BeginWork: rt.BeginWork,
 				Run:       run,
 				Events:    evBroker,
+				SetMode: func(mode string) error {
+					rt.Runner.SetApprovalMode(policy.ApprovalMode(mode))
+					return nil
+				},
 			}, true
 		},
 		Notify:    srv.Notify,
@@ -140,6 +145,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	})
 	manager.SetTurnCanceller(turns.CancelAndWait)
 	srv.Handle("session/prompt", turns.PromptTurn)
+	srv.Handle("session/set_mode", turns.SetMode)
 	srv.HandleNotification("session/cancel", turns.Cancel)
 
 	serveErr := srv.Serve(ctx)

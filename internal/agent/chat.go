@@ -116,6 +116,12 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 
 func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 	tools := r.Registry.List()
+	// Aliased to satisfy the common OpenAI-compatible function-name
+	// constraint (letters/digits/underscore/dash only, no dots) enforced by
+	// some providers even though Marshal's own canonical tool names use
+	// dots (e.g. "file.read"). See toolalias.go; normalizeToolName in
+	// execute.go reverses this when a tool call comes back using the alias.
+	nameToAlias := toolNameToAlias(tools)
 	deferred := make(map[string]bool)
 	for _, t := range r.Registry.ListDeferred() {
 		deferred[t.Name] = true
@@ -139,7 +145,7 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 			parameters = json.RawMessage(`{"type":"object"}`)
 		}
 		defs = append(defs, schema.ToolDefinition{
-			Name:        tool.Name,
+			Name:        nameToAlias[tool.Name],
 			Description: tool.Description,
 			Parameters:  parameters,
 		})

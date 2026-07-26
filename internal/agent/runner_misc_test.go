@@ -470,8 +470,8 @@ func TestBuildToolDefinitionsOmitsAskUserForSwarmRoles(t *testing.T) {
 			t.Fatalf("ask_user should be omitted for swarm role: %+v", defs)
 		}
 	}
-	if len(defs) != 1 || defs[0].Name != "demo.read" {
-		t.Fatalf("defs = %+v, want only demo.read", defs)
+	if len(defs) != 1 || defs[0].Name != "demo_read" {
+		t.Fatalf("defs = %+v, want only demo_read (the dotless alias for demo.read)", defs)
 	}
 }
 

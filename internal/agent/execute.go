@@ -402,6 +402,13 @@ func normalizeToolName(reg *registry.Registry, name string) string {
 	if _, ok := reg.Lookup(name); ok {
 		return name
 	}
+	// The tool schema advertised to the model uses toolNameToAlias's dotless
+	// alias (see chat.go buildToolDefinitions), so a well-behaved provider
+	// echoes the alias back verbatim — reverse it before falling back to the
+	// truncated-name heuristic below.
+	if canonical, ok := toolAliasMap(reg.List())[name]; ok {
+		return canonical
+	}
 	suffix := "." + name
 	var match string
 	count := 0

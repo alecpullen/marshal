@@ -10,8 +10,8 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/routing"
-	"marshal/internal/tools/policy"
 	"marshal/internal/sdd"
+	"marshal/internal/tools/policy"
 )
 
 func TestControllerAdapterRunSetsPlanPath(t *testing.T) {

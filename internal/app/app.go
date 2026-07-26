@@ -1221,10 +1221,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
 		}
 	}
-	// Start the LSP manager as a worker when it was built.
-	if rt.LSPManager != nil {
-		workers = append(workers, rt.LSPManager)
-	}
+	// LSPManager is started inside startRuntime (shared by Run and
+	// StartRuntime) — see runtime.go. Do not start it again here.
 	var workerWG sync.WaitGroup
 	for _, w := range workers {
 		startWorker(rt.workCtx, &workerWG, w, logger)

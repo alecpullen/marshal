@@ -2587,3 +2587,78 @@ func TestNoLegacyAgentSDDPackage(t *testing.T) {
 		t.Fatal("internal/agent/sdd/orchestrator.go still exists — prototype not removed")
 	}
 }
+
+// StartRuntime is the entry point ACP headless sessions use (internal/acp
+// calls app.StartRuntime, never app.Run). Live testing over ACP found that
+// hover/references/definition always returned "no lsp" regardless of config
+// or whether the language server binary was installed -- traced to
+// LSPManager being *constructed* in startRuntime but only ever *started*
+// (its Run() worker loop, which spawns the actual subprocess) inside Run()'s
+// TUI-only "Worker lifecycle" block. StartRuntime must start it too.
+func TestStartRuntimeStartsLSPManagerWorker(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+
+	marker := filepath.Join(tmp, "lsp-stub-invoked")
+	stub := filepath.Join(tmp, "lsp-stub.sh")
+	stubScript := "#!/bin/sh\ntouch " + marker + "\nexit 0\n"
+	if err := os.WriteFile(stub, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	configToml := `[project]
+name = "lsp-worker-test"
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+
+[models.presets.mock_preset]
+provider = "mock"
+model = "mock-model"
+local_only = true
+
+[agent_profiles.mock_profile]
+implementer = "mock_preset"
+planner = "mock_preset"
+repo_scout = "mock_preset"
+tester = "mock_preset"
+reviewer = "mock_preset"
+
+[lsp]
+enabled = true
+
+[lsp.servers.stub]
+command = "` + stub + `"
+`
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configToml), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	if err != nil {
+		t.Fatalf("StartRuntime() error = %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	if rt.LSPManager == nil {
+		t.Fatal("LSPManager was not constructed even though [lsp.servers.stub] was configured")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return // stub was invoked -- Run() was started
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("LSP stub was never invoked -- LSPManager.Run() was not started by StartRuntime")
+}

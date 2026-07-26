@@ -80,9 +80,10 @@ type Runtime struct {
 	JobManager     *native.JobManager
 	DesktopCloser  func()
 
-	// LSPManager is the optional LSP server manager. When non-nil, it is
-	// started as a worker in Run() and its adapters are wired into the
-	// index, tools, and diagnostics subsystems.
+	// LSPManager is the optional LSP server manager. When non-nil, its
+	// worker loop is started in startRuntime (shared by Run and
+	// StartRuntime, so both TUI and ACP/headless sessions get it) and its
+	// adapters are wired into the index, tools, and diagnostics subsystems.
 	LSPManager *lsp.Manager
 
 	// CustomAgentFactory builds a one-shot *agent.Runner for a named custom
@@ -491,6 +492,21 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		additionalDirs:     runOpts.additionalDirs,
 		workCtx:            workCtx,
 		workCancel:         workCancel,
+	}
+	// Start the LSP manager's worker loop here so both Run (TUI) and
+	// StartRuntime (ACP/headless) get it — constructing lspMgr above only
+	// builds the manager; Run() spawns the actual language server
+	// subprocess and does the initialize handshake. Without this, every
+	// ACP session's hover/references/definition silently return "no lsp"
+	// regardless of config, because the manager is never started.
+	// workCancel (called from Quiesce) cancels workCtx, which the
+	// manager's Run() already handles by shutting servers down cleanly.
+	if lspMgr != nil {
+		go func() {
+			if err := lspMgr.Run(workCtx); err != nil {
+				logger.Warn("worker exited", "worker", lspMgr.Name(), "err", err)
+			}
+		}()
 	}
 	// Assign MCP and snapshot only on success AND only when the underlying
 	// concrete pointer is non-nil. A nil *mcp.Manager assigned to an MCPCloser

@@ -363,3 +363,60 @@ func TestWritePatch_AtomicOnConcurrentModification(t *testing.T) {
 		t.Fatalf("error should mention 'changed on disk', got: %v", err)
 	}
 }
+
+// The "changed on disk" error used to only tell the model to re-read the
+// file, forcing a separate file.read round-trip before it could retry the
+// patch. Live testing showed this pattern recurring during multi-step
+// edits (a file changes from the agent's own earlier patch, then a later
+// patch attempt against stale content fails) -- embedding the current
+// content directly in the error lets the model retry immediately instead
+// of spending an extra iteration on a follow-up read.
+func TestWritePatch_ChangedOnDiskErrorIncludesCurrentContent(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "test.txt")
+	if err := os.WriteFile(filePath, []byte("v1\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"test.txt"}`); err != nil {
+		t.Fatalf("file.read failed: %v", err)
+	}
+
+	// Modify the file AFTER the read, with a deterministic later mtime.
+	time.Sleep(20 * time.Millisecond)
+	if err := os.WriteFile(filePath, []byte("v1-modified-on-disk\n"), 0644); err != nil {
+		t.Fatalf("WriteFile (modify): %v", err)
+	}
+
+	args := `{"patch": "File: test.txt\n<<<<<<< SEARCH\nv1\n=======\nv2\n>>>>>>> REPLACE"}`
+	_, err = invokeTool(t, reg, "file.write_patch", args)
+	if err == nil {
+		t.Fatal("expected error for stale read, got nil")
+	}
+	if !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("error should mention 'changed on disk', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "v1-modified-on-disk") {
+		t.Fatalf("error should include the current file content so the model can retry without a separate read, got: %v", err)
+	}
+}

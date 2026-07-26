@@ -91,6 +91,28 @@ func (t *toolSet) fileReadTool() registry.Tool {
 	return tool
 }
 
+// changedOnDiskError builds the "file changed on disk" error, embedding the
+// current on-disk content's nearest-matching region for the patch's first
+// chunk (mirroring patch.ValidatePatch's "search block not found" hint) so
+// the model can retry the patch immediately instead of spending a separate
+// tool-call round-trip re-reading the file first. Live testing showed this
+// exact pattern recurring during multi-step edits.
+func changedOnDiskError(path string, fp patch.FilePatch) error {
+	base := fmt.Errorf("file %s changed on disk since last read; re-read it before editing", fp.Path)
+	if len(fp.Chunks) == 0 {
+		return base
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return base
+	}
+	region := patch.NearestRegion(string(data), fp.Chunks[0].Search, patch.NearestRegionWindowSize(fp.Chunks[0].Search))
+	if region == "" {
+		return base
+	}
+	return fmt.Errorf("%s\n\ncurrent content near the target:\n%s", base, region)
+}
+
 func (t *toolSet) enrichMissingFileError(requestedPath string, origErr error) error {
 	baseErr := fmt.Errorf("stat %s: %w", requestedPath, origErr)
 	if t.db == nil || t.projectID == 0 {
@@ -182,8 +204,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 					return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
 				}
 				if hasRead && info.ModTime().After(lastRead) {
-					return registry.ToolResult{}, fmt.Errorf(
-						"file %s changed on disk since last read; re-read it before editing", fp.Path)
+					return registry.ToolResult{}, changedOnDiskError(path, fp)
 				}
 				if !hasRead {
 					return registry.ToolResult{}, fmt.Errorf(
@@ -264,8 +285,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 				if lrErr == nil && hasRead {
 					writeStat, statErr := os.Stat(path)
 					if statErr == nil && writeStat.ModTime().After(lastRead) {
-						return registry.ToolResult{}, fmt.Errorf(
-							"file %s changed on disk since last read; re-read it before editing", fp.Path)
+						return registry.ToolResult{}, changedOnDiskError(path, fp)
 					}
 				}
 			}

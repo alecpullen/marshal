@@ -1147,3 +1147,135 @@ func TestMessageUpdateLeavesNonSalvagedContentUnchanged(t *testing.T) {
 		t.Fatalf("text = %q, want unchanged %q", content["text"], msg.Content)
 	}
 }
+
+func TestPromptTurnForwardsQuestionToClient(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	answersCh := make(chan []session.Answer, 1)
+	qc := &fakeQuestionClient{resp: QuestionResponse{
+		Answers: []session.Answer{{Question: "pick", Answer: "a"}},
+	}}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					pending := &session.PendingQuestion{
+						Questions:    []session.Question{{Question: "pick", Options: []string{"a", "b"}}},
+						ResponseChan: answersCh,
+					}
+					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: pending})
+					select {
+					case <-answersCh:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(5 * time.Second):
+						return errors.New("timed out waiting for answers")
+					}
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify:    func(method string, params any) error { return nil },
+		Questions: qc,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_q","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+	if qc.calls != 1 {
+		t.Fatalf("RequestQuestion called %d times, want 1", qc.calls)
+	}
+	if qc.lastReq.SessionID != "sess_q" {
+		t.Fatalf("SessionID = %q", qc.lastReq.SessionID)
+	}
+}
+
+func TestPromptTurnQuestionClientErrorAnswersUnanswered(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	answersCh := make(chan []session.Answer, 1)
+	var gotAnswers []session.Answer
+	qc := &fakeQuestionClient{err: errors.New("transport dead")}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					pending := &session.PendingQuestion{
+						Questions:    []session.Question{{Question: "pick"}},
+						ResponseChan: answersCh,
+					}
+					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: pending})
+					select {
+					case gotAnswers = <-answersCh:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(5 * time.Second):
+						return errors.New("timed out waiting for answers")
+					}
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify:    func(method string, params any) error { return nil },
+		Questions: qc,
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_qe","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+	if len(gotAnswers) != 1 || gotAnswers[0].Answer != session.AnswerUnanswered {
+		t.Fatalf("answers = %#v, want Unanswered sentinel", gotAnswers)
+	}
+}
+
+// blockingQuestionClient never answers; it blocks until the context is
+// cancelled, exercising the questionWait timeout path.
+type blockingQuestionClient struct{}
+
+func (blockingQuestionClient) RequestQuestion(ctx context.Context, req QuestionRequest) (QuestionResponse, error) {
+	<-ctx.Done()
+	return QuestionResponse{}, ctx.Err()
+}
+
+func TestPromptTurnQuestionTimeoutAnswersUnanswered(t *testing.T) {
+	defer func(orig time.Duration) { questionWait = orig }(questionWait)
+	questionWait = 50 * time.Millisecond
+
+	broker := pubsub.NewBroker[session.Event]()
+	answersCh := make(chan []session.Answer, 1)
+	var gotAnswers []session.Answer
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					pending := &session.PendingQuestion{
+						Questions:    []session.Question{{Question: "pick"}},
+						ResponseChan: answersCh,
+					}
+					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: pending})
+					select {
+					case gotAnswers = <-answersCh:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(5 * time.Second):
+						return errors.New("timed out waiting for answers")
+					}
+				}),
+				Events: broker,
+			}, true
+		},
+		Notify:    func(method string, params any) error { return nil },
+		Questions: blockingQuestionClient{},
+	})
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_qt","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn() error = %v", err)
+	}
+	if len(gotAnswers) != 1 || gotAnswers[0].Answer != session.AnswerUnanswered {
+		t.Fatalf("answers = %#v, want Unanswered sentinel after timeout", gotAnswers)
+	}
+}

@@ -47,9 +47,10 @@ type NotifyFunc func(method string, params any) error
 
 // TurnManagerConfig wires a TurnManager to external dependencies.
 type TurnManagerConfig struct {
-	Lookup Lookup
-	Notify NotifyFunc
-	Perms  PermissionClient
+	Lookup    Lookup
+	Notify    NotifyFunc
+	Perms     PermissionClient
+	Questions QuestionClient
 }
 
 // activeTurn tracks a single in-flight turn for one session. At most one
@@ -64,10 +65,11 @@ type activeTurn struct {
 // TurnManager dispatches session/prompt and session/cancel. At most one
 // prompt may run per session; different sessions may run concurrently.
 type TurnManager struct {
-	lookup Lookup
-	notify NotifyFunc
-	perms  PermissionClient
-	bridge *PermissionBridge
+	lookup  Lookup
+	notify  NotifyFunc
+	perms   PermissionClient
+	bridge  *PermissionBridge
+	qbridge *QuestionBridge
 
 	activeTurnsMu sync.Mutex
 	activeTurns   map[string]*activeTurn
@@ -88,6 +90,9 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)
+	}
+	if cfg.Questions != nil {
+		tm.qbridge = NewQuestionBridge(cfg.Questions)
 	}
 	return tm
 }
@@ -282,19 +287,30 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 			}
 		}
 
-		// Answer pending questions with unanswered immediately —
-		// the ACP v1 transport does not support interactive questions.
-		// The turn-scoped sync.Map guards against duplicate delivery
-		// when the event re-fires (F-BUG-51).
+		// Drive pending questions through the question bridge in a
+		// goroutine so the forwarder never blocks on the client (mirrors
+		// the permission bridge, F-CON-54). Without a bridge, preserve the
+		// pre-extension behavior: auto-answer Unanswered. The turn-scoped
+		// sync.Map guards against duplicate delivery when the event
+		// re-fires (F-BUG-51).
 		if ev.Type == session.EventPendingQuestionChanged &&
 			ev.Payload.PendingQuestion != nil {
 			pending := ev.Payload.PendingQuestion
-			answers := session.UnansweredAnswers(pending.Questions)
-			// F-BUG-51: use pending.Respond (sync.Once + close) so a stale
-			// select that already fired <-turnCtx.Done() cannot lose the
-			// answers. The turnAnswered sync.Map is belt-and-suspenders.
-			if _, loaded := turnAnswered.LoadOrStore(pending.ResponseChan, true); !loaded {
-				pending.Respond(answers)
+			if _, loaded := turnAnswered.LoadOrStore(pending.ResponseChan, true); loaded {
+				return
+			}
+			if m.qbridge == nil {
+				pending.Respond(session.UnansweredAnswers(pending.Questions))
+			} else {
+				go func() {
+					qctx, cancel := context.WithTimeout(turnCtx, questionWait)
+					defer cancel()
+					if err := m.qbridge.Ask(qctx, p.SessionID, pending); err != nil {
+						slog.Default().Warn("acp: question bridge failed; answering Unanswered",
+							"session", p.SessionID, "err", err)
+						pending.Respond(session.UnansweredAnswers(pending.Questions))
+					}
+				}()
 			}
 		}
 	}
@@ -386,6 +402,12 @@ func (m *TurnManager) Cancel(ctx context.Context, params json.RawMessage) (any, 
 // cancelWait is the fallback timeout for CancelAndWait. Exported as a
 // package-level var so tests can override it without slowing the suite.
 var cancelWait = 30 * time.Second
+
+// questionWait bounds how long a turn blocks waiting for a client to answer
+// a question. On expiry the question resolves to the Unanswered sentinel so
+// a dead client can never wedge a turn. Package-level var so tests can
+// override it without slowing the suite.
+var questionWait = 30 * time.Second
 
 // CancelAndWait cancels the active turn for the named session and blocks
 // until the runner has fully completed. Returns nil if no turn is active

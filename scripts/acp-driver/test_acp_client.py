@@ -99,3 +99,15 @@ def test_duplicate_prompt_rejected(client):
 def test_permission_policy_can_deny():
     policy = DenyAllPolicy()
     assert policy.decide({"toolName": "shell.run", "command": "ls"})["approved"] is False
+
+
+from acp_client import DeclineQuestionsPolicy, StaticAnswersPolicy
+
+
+def test_question_policy_can_decline():
+    assert DeclineQuestionsPolicy().decide({"questions": []}) == {"declined": True}
+
+
+def test_static_answers_policy_returns_answers():
+    answers = [{"question": "pick", "answer": "a"}]
+    assert StaticAnswersPolicy(answers).decide({"questions": []}) == {"answers": answers}

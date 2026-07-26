@@ -9,6 +9,7 @@ exposes every ACP method Marshal currently supports:
 - session/prompt, session/cancel
 - session/update notifications
 - session/request_permission outbound requests (with a pluggable policy)
+- session/request_question outbound requests (with a pluggable policy)
 
 It is designed for two use cases:
 
@@ -142,6 +143,39 @@ class DenyAllPolicy(PermissionPolicy):
         return {"approved": False}
 
 
+class QuestionPolicy:
+    """Decides how to answer outbound `session/request_question` frames.
+
+    Subclass this to implement custom answering logic. The default
+    `DeclineQuestionsPolicy` declines every question, which the server maps
+    to the Unanswered sentinel (identical to the pre-extension behavior).
+    """
+
+    def decide(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
+class DeclineQuestionsPolicy(QuestionPolicy):
+    """Decline every question."""
+
+    def decide(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        return {"declined": True}
+
+
+class StaticAnswersPolicy(QuestionPolicy):
+    """Answer every question form with a fixed answer list.
+
+    `answers` must contain exactly one {"question", "answer"} dict per
+    question, in order — otherwise the server treats it as declined.
+    """
+
+    def __init__(self, answers: List[Dict[str, str]]) -> None:
+        self.answers = answers
+
+    def decide(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        return {"answers": self.answers}
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -188,12 +222,14 @@ class ACPClient:
         cwd: Path | str | None = None,
         env: Optional[Dict[str, str]] = None,
         permission_policy: PermissionPolicy | None = None,
+        question_policy: QuestionPolicy | None = None,
         log_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.marshal_bin = Path(marshal_bin)
         self.cwd = Path(cwd) if cwd else Path.cwd()
         self.extra_env = env or {}
         self.permission_policy = permission_policy or AutoApprovePolicy()
+        self.question_policy = question_policy or DeclineQuestionsPolicy()
         self.log_callback = log_callback
 
         self._proc: Optional[subprocess.Popen] = None
@@ -519,6 +555,8 @@ class ACPClient:
             # Inbound notification or outbound request.
             if method == "session/request_permission":
                 self._handle_permission(frame)
+            if method == "session/request_question":
+                self._handle_question(frame)
             for handler in list(self._notif_handlers):
                 try:
                     handler(frame)
@@ -535,6 +573,11 @@ class ACPClient:
                 handler(frame, response)
             except Exception as exc:
                 self._log(f"[driver] permission handler error: {exc}")
+
+    def _handle_question(self, frame: Dict[str, Any]) -> None:
+        response_payload = self.question_policy.decide(frame.get("params", {}))
+        response = {"jsonrpc": "2.0", "id": frame["id"], "result": response_payload}
+        self._write(response)
 
     def _drain_stderr(self) -> None:
         if self._proc is None or self._proc.stderr is None:

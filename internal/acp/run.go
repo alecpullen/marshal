@@ -134,8 +134,9 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 				Events:    evBroker,
 			}, true
 		},
-		Notify: srv.Notify,
-		Perms:  &serverPermissionClient{server: srv},
+		Notify:    srv.Notify,
+		Perms:     &serverPermissionClient{server: srv},
+		Questions: &serverQuestionClient{server: srv},
 	})
 	manager.SetTurnCanceller(turns.CancelAndWait)
 	srv.Handle("session/prompt", turns.PromptTurn)

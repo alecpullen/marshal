@@ -156,3 +156,57 @@ func hello() {
 		t.Fatalf("error should contain content near the target, got: %s", errMsg)
 	}
 }
+
+// Live evidence (Kimi's kimi-for-coding-highspeed against a table-driven Go
+// test file): a search block spanning MORE lines than NearestRegion's
+// hardcoded 5-line window failed to patch 4 times in a row, each retry
+// shown the identical truncated hint -- because the window can only ever
+// show 5 lines, it can never contain the full multi-line block the model
+// is trying to match exactly, so every retry has the same incomplete
+// information as the last. The window must scale with the search block's
+// own size so the model can see the ENTIRE region it needs to reconstruct.
+func TestValidatePatchNearestRegionCoversWholeMultiLineSearchBlock(t *testing.T) {
+	content := `package tablecheck
+
+func run(tests []Case) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Compute(tt.input)
+			assertLen(t, got, tt.maxLen)
+			if maxLen := tt.maxLen; maxLen > 0 {
+				checkBounds(t, got, maxLen)
+			}
+		})
+	}
+}
+`
+	// This search block differs from the real content only in the
+	// "checkBounds" line (a plausible near-miss), but spans 8 lines --
+	// more than the old hardcoded windowLines=5.
+	fp := FilePatch{
+		Path: "tablecheck_test.go",
+		Chunks: []PatchChunk{
+			{
+				Search: `		t.Run(tt.name, func(t *testing.T) {
+			got := Compute(tt.input)
+			assertLen(t, got, tt.maxLen)
+			if maxLen := tt.maxLen; maxLen > 0 {
+				verifyBounds(t, got, maxLen)
+			}
+		})`,
+				Replace: "// replaced",
+			},
+		},
+	}
+
+	ok, err := ValidatePatch(content, fp)
+	if ok {
+		t.Fatal("expected ValidatePatch to fail (search block intentionally mismatched)")
+	}
+	errMsg := err.Error()
+	for _, want := range []string{"t.Run(tt.name", "assertLen", "checkBounds", "})"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("nearest region hint missing %q -- window too small to show the full block\n%s", want, errMsg)
+		}
+	}
+}

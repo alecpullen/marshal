@@ -11,7 +11,7 @@ func ValidatePatch(content string, fp FilePatch) (bool, error) {
 		normSearch := strings.ReplaceAll(chunk.Search, "\r\n", "\n")
 		count := strings.Count(normContent, normSearch)
 		if count == 0 {
-			region := NearestRegion(normContent, normSearch, 5)
+			region := NearestRegion(normContent, normSearch, NearestRegionWindowSize(normSearch))
 			msg := fmt.Sprintf("search block not found in %s", fp.Path)
 			if region != "" {
 				msg += fmt.Sprintf("\n\nnearest region:\n%s", region)
@@ -24,6 +24,24 @@ func ValidatePatch(content string, fp FilePatch) (bool, error) {
 		normContent = strings.Replace(normContent, normSearch, strings.ReplaceAll(chunk.Replace, "\r\n", "\n"), 1)
 	}
 	return true, nil
+}
+
+// NearestRegionWindowSize sizes NearestRegion's fuzzy-match window to the
+// search block itself (plus a little context on top), so the hint can show
+// the model the ENTIRE region it needs to reconstruct rather than a
+// truncated slice. A fixed small window can never contain a multi-line
+// search block that's longer than it, so every retry against the same
+// content sees the identical incomplete hint — live testing showed exactly
+// this: 4 consecutive failed patch attempts against the same file, each
+// shown the same truncated 5-line window that never covered the full block.
+func NearestRegionWindowSize(search string) int {
+	const margin = 2
+	const minWindow = 5
+	size := strings.Count(search, "\n") + 1 + margin
+	if size < minWindow {
+		return minWindow
+	}
+	return size
 }
 
 func GenerateDiff(path string, content string, fp FilePatch) (string, error) {
@@ -98,6 +116,15 @@ func ApplyPatch(content string, fp FilePatch) string {
 	return normContent
 }
 
+// locateWindowCap bounds the sliding window used to LOCATE the best-matching
+// position, independent of how many lines are ultimately displayed. A larger
+// scoring window dilutes precision: brace-only lines like "}" or "})" tokenize
+// to nothing, so widening the scan window to fit a long search block can tie
+// the true match against an earlier, wrong position that happens to cover the
+// same number of scoreable (non-empty-token) lines. Locating with a small,
+// fixed window and only widening the DISPLAYED slice afterward avoids this.
+const locateWindowCap = 5
+
 func NearestRegion(content, search string, windowLines int) string {
 	if content == "" || search == "" {
 		return ""
@@ -120,11 +147,19 @@ func NearestRegion(content, search string, windowLines int) string {
 		searchTokens[i] = tokenize(trimmed)
 	}
 
+	locateWindow := windowLines
+	if locateWindow > locateWindowCap {
+		locateWindow = locateWindowCap
+	}
+	if locateWindow > len(contentLines) {
+		locateWindow = len(contentLines)
+	}
+
 	bestScore := -1
 	bestStart := 0
 
-	for start := 0; start <= len(contentLines)-windowLines; start++ {
-		window := contentLines[start : start+windowLines]
+	for start := 0; start <= len(contentLines)-locateWindow; start++ {
+		window := contentLines[start : start+locateWindow]
 		windowTokenSets := make([][]string, len(window))
 		for i, wl := range window {
 			trimmed := strings.TrimSpace(wl)

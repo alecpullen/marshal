@@ -614,6 +614,17 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					messages = next
 					continue
 				}
+				if toolCallCountThisTurn == 0 && task.Class != ClassQuestion {
+					// Already nudged once to verify with a tool call, and
+					// still didn't make one: accept the answer (retrying
+					// further only produced a MORE confident, not a more
+					// honest, response in testing) but flag it as unverified
+					// rather than a trusted completion, and exclude it from
+					// future history replay (see buildHistoryMessages).
+					task.SalvagedReason = string(reasonUnverified)
+					r.State.AddMessageSalvaged(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, string(reasonUnverified))
+					return task, nil
+				}
 				r.State.AddMessageFinalWithToolCount(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, toolCallCountThisTurn)
 				return task, nil
 			}

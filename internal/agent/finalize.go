@@ -15,10 +15,11 @@ import (
 type finalizeReason string
 
 const (
-	reasonExhausted finalizeReason = "exhausted"
-	reasonStalled   finalizeReason = "stalled"
-	reasonMalformed finalizeReason = "malformed"
-	reasonEmpty     finalizeReason = "empty"
+	reasonExhausted  finalizeReason = "exhausted"
+	reasonStalled    finalizeReason = "stalled"
+	reasonMalformed  finalizeReason = "malformed"
+	reasonEmpty      finalizeReason = "empty"
+	reasonUnverified finalizeReason = "unverified"
 
 	// maxFinalizeAttempts bounds how many times finalize will ask the model
 	// to comply with FinalizationDirective (or NativeFinalizationDirective in

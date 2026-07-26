@@ -20,7 +20,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/agent"
-	"marshal/internal/agent/sdd"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -40,6 +39,7 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/rollover"
 	"marshal/internal/sandbox"
+	"marshal/internal/sdd"
 	"marshal/internal/skills"
 	"marshal/internal/snapshot"
 	"marshal/internal/tools/desktop"
@@ -416,7 +416,7 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Manager, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.ControllerAdapter, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Manager, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
@@ -724,7 +724,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		desktopCloser = closer
 	}
 
-	sddRunner := buildSDDRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
+	sddRunner := buildSDDController(cfg, state, reg, pol, resolver, database, projectID, skillIndex)
 	subagentFactory := buildSubagentFactory(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, database, projectID)
 	return runner, reg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspMgr, nil
 }
@@ -838,9 +838,10 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 	return o
 }
 
-// buildSDDRunner wires the SDD orchestrator: same factory pattern as the
-// swarm, resolving each SDD role's route via the routing profile.
-func buildSDDRunner(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *sdd.Orchestrator {
+// buildSDDController wires the production SDD controller with the real
+// RunnerFactory, registers sdd.* tools on an orchestrator-scoped registry,
+// and wires RebuildFactory + UsageSink.
+func buildSDDController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index) *sdd.ControllerAdapter {
 	spec := roleRunnerSpec{
 		cfg:         cfg,
 		state:       state,
@@ -852,7 +853,95 @@ func buildSDDRunner(cfg config.Config, state *session.State, reg *registry.Regis
 		memory:      &dbMemoryProvider{db: database},
 		projectID:   projectID,
 	}
-	return sdd.New(state, spec.newRunner, cfg.SDD)
+
+	// Construct workspace, GitOps, DAG, RepoState, Progress.
+	ws, err := sdd.NewWorkspace(state.WorkingDir)
+	if err != nil {
+		state.Logger().Warn("sdd: workspace construction failed", "error", err)
+		return nil
+	}
+	git := sdd.CLIGitOps{Dir: state.WorkingDir}
+	dag, err := sdd.LoadDAG(ws)
+	if err != nil {
+		state.Logger().Warn("sdd: load DAG failed", "error", err)
+		return nil
+	}
+	rs, err := sdd.LoadRepoState(ws)
+	if err != nil {
+		state.Logger().Warn("sdd: load repo state failed", "error", err)
+		return nil
+	}
+	var progress sdd.Progress
+
+	// Create orchestrator-scoped registry and register sdd.* tools.
+	orchReg := registry.OrchestratorView(reg)
+	sddToolOpts := sdd.SDDToolOpts{
+		WS:       ws,
+		RepoRoot: state.WorkingDir,
+		DAG:      dag,
+		RS:       rs,
+		Progress: &progress,
+		Git:      &git,
+	}
+	if err := sdd.RegisterTools(orchReg, sddToolOpts); err != nil {
+		state.Logger().Warn("sdd: register tools failed", "error", err)
+	}
+
+	// Build the RunnerFactory closure. For RoleSDDOrchestrator + ScopeFull,
+	// use the orchestrator-scoped registry and attach a UsageObserver that
+	// feeds the controller's UsageSink.
+	var c *sdd.Controller
+	makeFactory := func(spec roleRunnerSpec, orchReg *registry.Registry) swarm.RunnerFactory {
+		return func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+			if role == routing.RoleSDDOrchestrator && scope == swarm.ScopeFull {
+				origReg := spec.reg
+				spec.reg = orchReg
+				runner, err := spec.newRunner(role, scope)
+				spec.reg = origReg
+				if err != nil {
+					return nil, err
+				}
+				// Attach UsageObserver that feeds the controller's UsageSink.
+				// TotalTokens == PromptTokens + CompletionTokens per the schema contract.
+				runner.UsageObserver = func(usage schema.TokenUsage) {
+					if c != nil && c.UsageSink != nil {
+						c.UsageSink(usage.TotalTokens)
+					}
+				}
+				return runner, nil
+			}
+			return spec.newRunner(role, scope)
+		}
+	}
+	factory := makeFactory(spec, orchReg)
+
+	// Build the controller.
+	c = sdd.NewController(ws, &git, dag, rs, &progress, factory, cfg.RoutingConfig(), state, "sdd/pipeline", "main")
+
+	// Wire RebuildFactory: creates a new RunnerFactory with an overridden
+	// routing config (model escalation), preserving the orchestrator registry
+	// view and the UsageObserver.
+	c.RebuildFactory = func(rc routing.Config) swarm.RunnerFactory {
+		newRouter := routing.NewStaticRouter(rc)
+		newResolver := &routedProviderResolver{
+			router:    newRouter,
+			cfg:       resolver.cfg,
+			dataDir:   resolver.dataDir,
+			providers: resolver.providers,
+		}
+		newSpec := spec
+		newSpec.resolver = newResolver
+		return makeFactory(newSpec, orchReg)
+	}
+
+	// Wire UsageSink: accumulates token counts for recordUsage.
+	c.UsageSink = func(tokens int) {
+		c.UsageTokens += tokens
+	}
+	// Wire the token budget cap from settings.
+	c.UsageMax = cfg.SDD.MaxTotalTokens
+
+	return sdd.NewControllerAdapter(c)
 }
 
 // roleToolIterations returns the per-role tool-iteration cap, falling back

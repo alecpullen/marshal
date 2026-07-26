@@ -820,10 +820,8 @@ func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
 func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 	ctx := context.Background()
 	initial := reloadableAgentConfig("old-provider")
-	initial.SDD.MaxFixRounds = 3
 
 	reloaded := reloadableAgentConfig("new-provider")
-	reloaded.SDD.MaxFixRounds = 5
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
@@ -832,9 +830,6 @@ func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 	}
 	if sddRunner == nil {
 		t.Fatal("SDD runner should not be nil")
-	}
-	if sddRunner.MaxFixRounds != 3 {
-		t.Fatalf("initial SDD MaxFixRounds = %d, want 3", sddRunner.MaxFixRounds)
 	}
 
 	rt := &Runtime{
@@ -850,8 +845,58 @@ func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
 	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
-	if rt.SDDRunner.MaxFixRounds != 5 {
-		t.Fatalf("reloaded SDD MaxFixRounds = %d, want 5", rt.SDDRunner.MaxFixRounds)
+	if rt.SDDRunner == nil {
+		t.Fatal("SDD runner should not be nil after reload")
+	}
+}
+
+func TestBuildSDDControllerReturnsAdapter(t *testing.T) {
+	cfg := config.Default()
+	cfg.SDD.PlansDir = t.TempDir()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "local_balanced"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"local_balanced": {Name: "local_balanced", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleSDDOrchestrator: {Preset: "fast"},
+		}},
+	}
+	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	reg := registry.New()
+	pol := policy.NewEngine(&cfg, nil)
+	resolver := newRoutedProviderResolver(cfg, t.TempDir())
+	adapter := buildSDDController(cfg, state, reg, pol, resolver, nil, 1, nil)
+	if adapter == nil {
+		t.Fatal("buildSDDController returned nil")
+	}
+
+	// Exercise the factory closure to confirm UsageObserver wiring feeds
+	// UsageTokens (cross-task wiring from Task 6).
+	ctrl := adapter.Controller()
+	if ctrl == nil {
+		t.Fatal("Controller() returned nil")
+	}
+
+	runner, err := ctrl.Factory(routing.RoleSDDOrchestrator, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("Factory(RoleSDDOrchestrator, ScopeFull) error = %v", err)
+	}
+	if runner == nil {
+		t.Fatal("Factory returned nil runner")
+	}
+	if runner.UsageObserver == nil {
+		t.Fatal("UsageObserver is nil — cross-task wiring from Task 6 is broken")
+	}
+
+	// Fire the observer and verify UsageTokens accumulates.
+	runner.UsageObserver(schema.TokenUsage{TotalTokens: 42})
+	if ctrl.UsageTokens != 42 {
+		t.Fatalf("UsageTokens = %d, want 42", ctrl.UsageTokens)
 	}
 }
 
@@ -2531,5 +2576,14 @@ func TestBuildAgentRunnerRegistersDesktopToolsWhenEnabled(t *testing.T) {
 		if !names[expected] {
 			t.Errorf("tool %q not registered", expected)
 		}
+	}
+}
+
+// TestNoLegacyAgentSDDPackage asserts the old internal/agent/sdd/ prototype
+// package has been removed. It is replaced by internal/sdd/.
+func TestNoLegacyAgentSDDPackage(t *testing.T) {
+	_, err := os.Stat(filepath.Join("..", "..", "internal", "agent", "sdd", "orchestrator.go"))
+	if err == nil {
+		t.Fatal("internal/agent/sdd/orchestrator.go still exists — prototype not removed")
 	}
 }

@@ -938,6 +938,7 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 func (f *fakeAgentRunner) SetForceClass(string)                   {}
 func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
 func (f *fakeAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (f *fakeAgentRunner) ResolveGate()                           {}
 
 // blockingAgentRunner blocks on a channel in Run until the channel is
 // closed. Used by TestAgentCommandRegistersAndReleasesSessionWork to
@@ -955,6 +956,7 @@ func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
 func (b *blockingAgentRunner) SetForceClass(string)                   {}
 func (b *blockingAgentRunner) SetPolicyRules([]config.PermissionRule) {}
 func (b *blockingAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (b *blockingAgentRunner) ResolveGate()                           {}
 
 type fakeSwarmRunner struct {
 	mu    sync.Mutex
@@ -971,6 +973,7 @@ func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
 func (f *fakeSwarmRunner) SetForceClass(string)                   {}
 func (f *fakeSwarmRunner) SetPolicyRules([]config.PermissionRule) {}
 func (f *fakeSwarmRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (f *fakeSwarmRunner) ResolveGate()                           {}
 
 func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -1116,6 +1119,7 @@ func (f *fakeSDDRunner) Run(ctx context.Context, planPath string) error {
 func (f *fakeSDDRunner) SetForceClass(string)                   {}
 func (f *fakeSDDRunner) SetPolicyRules([]config.PermissionRule) {}
 func (f *fakeSDDRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (f *fakeSDDRunner) ResolveGate()                           {}
 
 func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -1184,6 +1188,17 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.plans) != 1 || fake.plans[0] != "/repo/docs/plans/feature-plan.md" {
 		t.Fatalf("SDD runner plans = %v, want [\"/repo/docs/plans/feature-plan.md\"]", fake.plans)
+	}
+}
+
+func TestSDDPreflightMetaShowsModelTier(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.SDD.DefaultModelTier = "strong"
+	m.state.Config.SDD.VerifyTimeoutMS = 600000
+	m.openRunPreflight("sdd", m.sddRunner, "/path/plan.md")
+	view := m.dock.View(m.width, m.height)
+	if !strings.Contains(view, "strong") || !strings.Contains(view, "600000") {
+		t.Errorf("preflight meta missing model tier/timeout: %q", view)
 	}
 }
 
@@ -4205,6 +4220,15 @@ func TestApplyNewConfigInvalidatesSetRegistry(t *testing.T) {
 	}
 }
 
+func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetSDDProgress(session.SDDProgress{Active: true, PlanName: "p", ControllerState: "DRAIN", TotalTasks: 1, Tasks: []session.SDDTaskStatus{{Name: "T1", Phase: session.SDDPhaseActive}}})
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "SDD · p") {
+		t.Errorf("view missing SDD panel: %q", view)
+	}
+}
+
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
@@ -5250,6 +5274,7 @@ func (r *testAgentRunner) Run(ctx context.Context, goal string) error   { return
 func (r *testAgentRunner) SetForceClass(class string)                   {}
 func (r *testAgentRunner) SetPolicyRules(rules []config.PermissionRule) {}
 func (r *testAgentRunner) SetApprovalMode(mode policy.ApprovalMode)     {}
+func (r *testAgentRunner) ResolveGate()                                 {}
 
 // newStatusTestModelFromTemp builds a Model rooted in a temp git repo so
 // gitInfo resolves. Used by the git-info wiring tests.

@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 func TestControllerStateConstants(t *testing.T) {
@@ -197,6 +198,70 @@ func TestControllerDrainIterationWiresBlockedTasks(t *testing.T) {
 	}
 	if c.State != StateFinalMergeGate {
 		t.Errorf("State = %q, want final_merge_gate", c.State)
+	}
+}
+
+func TestControllerRecordUsageUpdatesSession(t *testing.T) {
+	dir := t.TempDir()
+	ws, _ := NewWorkspace(dir)
+	ws.Ensure()
+	ss := session.New(config.Default(), dir, time.Now(), session.Persistence{})
+	// usageSink is set after c is created so the factory closure can reference it.
+	var usageSink func(int)
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		r := &agent.Runner{}
+		r.UsageObserver = func(usage schema.TokenUsage) {
+			if usageSink != nil {
+				usageSink(usage.TotalTokens)
+			}
+		}
+		r.RunTaskFunc = func(ctx context.Context, goal string) (*agent.Task, error) {
+			// Simulate real runner behavior: fire UsageObserver.
+			if r.UsageObserver != nil {
+				r.UsageObserver(schema.TokenUsage{TotalTokens: 42})
+			}
+			return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: DONE\nbatch_id: 0\ndispatched: []\nmerged: []\nblocked_tasks: []\nhealth_alerts: []\nedit_guard: clean\nnext_action: branch_review\n"}, nil
+		}
+		return r, nil
+	}
+	c := NewController(ws, NewFakeGitOps(), &DAG{}, &RepoState{}, &Progress{}, factory, routing.Config{}, ss, "sdd/feature", "main")
+	// Wire UsageSink to accumulate into the controller's usageTokens.
+	usageSink = func(t int) { c.UsageTokens += t }
+	c.UsageSink = usageSink
+	// Seed an approved spec so Run reaches StateDrainIteration.
+	os.WriteFile(filepath.Join(ws.Dir(), "spec.md"), []byte("---\nstatus: approved\n---\n```yaml\ntasks:\n  - id: T1\n    title: X\n    deps: []\n    files: []\n    acceptance: []\n```\n"), 0644)
+	// Start at Decompose to skip workspace reset (which would archive spec.md).
+	c.State = StateDecompose
+	_ = c.Run(context.Background())
+	// After Run, recordUsage should have flushed usageTokens to SessionState.
+	if got := ss.SDDProgress().TokensUsed; got == 0 {
+		t.Error("SDDProgress.TokensUsed == 0; recordUsage did not flush tokens to session")
+	}
+}
+
+func TestControllerSwapOrchestratorModelRebuildsFactory(t *testing.T) {
+	var lastPreset string
+	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+		return &agent.Runner{RunTaskFunc: func(ctx context.Context, goal string) (*agent.Task, error) {
+			return &agent.Task{Status: agent.TaskStatusCompleted, Summary: "status: DONE\nbatch_id: 0\ndispatched: []\nmerged: []\nblocked_tasks: []\nhealth_alerts: []\nedit_guard: clean\nnext_action: branch_review\n"}, nil
+		}}, nil
+	}
+	cfg := routing.Config{DefaultProfile: "default", Profiles: map[string]routing.AgentProfile{"default": {Roles: map[routing.AgentRole]routing.RoleBinding{routing.RoleSDDOrchestrator: {Preset: "fast"}}}}}
+	rebuildCalled := false
+	ws2, _ := NewWorkspace(t.TempDir())
+	ws2.Ensure()
+	c := NewController(ws2, NewFakeGitOps(), &DAG{}, &RepoState{}, &Progress{}, factory, cfg, nil, "sdd/feature", "main")
+	c.RebuildFactory = func(newCfg routing.Config) swarm.RunnerFactory {
+		rebuildCalled = true
+		lastPreset = newCfg.Profiles[newCfg.DefaultProfile].Roles[routing.RoleSDDOrchestrator].Preset
+		return factory
+	}
+	c.swapOrchestratorModel("strong")
+	if !rebuildCalled {
+		t.Error("RebuildFactory not called")
+	}
+	if lastPreset != "strong" {
+		t.Errorf("rebuilt preset = %q, want strong", lastPreset)
 	}
 }
 

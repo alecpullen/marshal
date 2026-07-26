@@ -57,6 +57,18 @@ type Controller struct {
 	TargetBranch   string
 	PlanPath       string
 
+	// RebuildFactory, when non-nil, is called by swapOrchestratorModel
+	// to construct a new RunnerFactory from an overridden routing.Config
+	// (model escalation). P5 wires this; P4 left it nil.
+	RebuildFactory func(routing.Config) swarm.RunnerFactory
+
+	// UsageSink, when non-nil, receives token counts from the factory's
+	// UsageObserver. recordUsage flushes the accumulated count to the
+	// session. P5 wires this.
+	UsageSink func(tokens int)
+
+	UsageTokens   int
+	UsageMax      int
 	State         ControllerState
 	LastBatchID   int
 	MaxIterations int
@@ -284,19 +296,23 @@ func (c *Controller) ResolveGate() {
 // whose routing config has RoleSDDOrchestrator overridden to the given
 // preset. Used for model escalation (spec unknown 6).
 func (c *Controller) swapOrchestratorModel(preset string) {
-	overridden := c.RoutingConfig.WithRoleOverride(routing.RoleSDDOrchestrator, preset)
-	// The factory is rebuilt by the caller (P5 wires the factory construction
-	// from the routing config); here we just note the override. In a full
-	// implementation, the factory closure captures the routing config, so
-	// rebuilding requires a new closure. For P4, this is a hook the caller
-	// uses; the actual factory rebuild is P5's wiring.
-	_ = overridden
+	if c.RebuildFactory == nil {
+		return
+	}
+	newCfg := c.RoutingConfig.WithRoleOverride(routing.RoleSDDOrchestrator, preset)
+	c.RoutingConfig = newCfg
+	c.Factory = c.RebuildFactory(newCfg)
+	c.Orchestrator = NewOrchestrator(c.Factory, c.WS, c.Progress)
 }
 
-// recordUsage is a hook for token metering. P5 wires the real UsageObserver;
-// P4 leaves it as a no-op so the controller compiles without the metering
-// dependency.
-func (c *Controller) recordUsage() {}
+// recordUsage flushes accumulated token usage to the session state.
+// The factory's UsageObserver (wired in Task 7) increments c.UsageTokens;
+// this method writes the accumulated count to SessionState.
+func (c *Controller) recordUsage() {
+	if c.SessionState != nil {
+		c.SessionState.UpdateSDDTokens(c.UsageTokens, c.UsageMax)
+	}
+}
 
 // emitDraftSpec writes a draft spec.md with frontmatter status: draft and
 // a yaml tasks: block listing the DAG's tasks (id, title, deps, files,

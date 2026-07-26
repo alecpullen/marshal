@@ -13,12 +13,14 @@ const (
 )
 
 // SDDTaskStatus is one row in the SDD progress panel. Each task tracks
-// two sub-phases (implementer + reviewer) plus an overall phase.
+// sub-phases (implementer, reviewer, audit, review) plus an overall phase.
 type SDDTaskStatus struct {
 	Name        string
 	Phase       SDDPhase
 	Implementer SDDPhase
 	Reviewer    SDDPhase
+	Audit       SDDPhase
+	Review      SDDPhase
 	FixRound    int
 	MaxFixes    int
 	Detail      string
@@ -27,15 +29,16 @@ type SDDTaskStatus struct {
 // SDDProgress is the live state of an SDD run, mirroring SwarmProgress
 // but task-scoped rather than role-scoped.
 type SDDProgress struct {
-	Active       bool
-	PlanName     string
-	PlanPath     string
-	Tasks        []SDDTaskStatus
-	BranchReview SDDPhase
-	TotalTasks   int
-	DoneTasks    int
-	TokensUsed   int
-	TokensMax    int
+	Active          bool
+	PlanName        string
+	PlanPath        string
+	Tasks           []SDDTaskStatus
+	BranchReview    SDDPhase
+	TotalTasks      int
+	DoneTasks       int
+	TokensUsed      int
+	TokensMax       int
+	ControllerState string
 }
 
 func (p SDDProgress) clone() SDDProgress {

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"marshal/internal/agent"
-	"marshal/internal/agent/sdd"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
@@ -21,6 +20,7 @@ import (
 	"marshal/internal/hooks"
 	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
+	"marshal/internal/sdd"
 	"marshal/internal/skills"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
@@ -63,7 +63,7 @@ type Runtime struct {
 	Runner         *agent.Runner
 	ToolRegistry   *registry.Registry
 	SwarmRunner    *swarm.Orchestrator
-	SDDRunner      *sdd.Orchestrator
+	SDDRunner      *sdd.ControllerAdapter
 	DB             DBCloser
 	ProjectID      int64
 	SessionID      string

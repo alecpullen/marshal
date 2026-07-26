@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"strings"
 )
 
 // ReadOnlyView returns a new Registry containing only src's read-only
@@ -34,6 +35,25 @@ func TesterView(src *Registry) *Registry {
 			_ = view.Register(tool)
 		case tool.Name == "test.run":
 			_ = view.Register(testerTestRunTool(tool))
+		}
+	}
+	return view
+}
+
+// OrchestratorView returns a new Registry containing src's read-only
+// tools plus sdd.* tools plus agent.run, but dropping file.write_patch,
+// shell.run, and test.run. The SDD orchestrator must never edit source
+// or run arbitrary shell — it writes only via sdd.* tools to .marshal/sdd/
+// and dispatches workers via agent.run. This is the preventive edit
+// guard (spec §8, UNKNOWN 4): structural enforcement, not prompt-only.
+func OrchestratorView(src *Registry) *Registry {
+	view := New()
+	for _, tool := range src.List() {
+		switch {
+		case tool.Risk == RiskReadOnly:
+			_ = view.Register(tool)
+		case tool.Risk == RiskWorkspaceWrite && strings.HasPrefix(tool.Name, "sdd."):
+			_ = view.Register(tool)
 		}
 	}
 	return view

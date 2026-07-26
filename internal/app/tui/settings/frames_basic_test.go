@@ -213,6 +213,39 @@ func TestEveryLeafFieldHasADescription(t *testing.T) {
 	}
 }
 
+func fieldIDs(f *frame) []string {
+	var ids []string
+	for _, row := range f.list.Rows() {
+		ids = append(ids, row.id)
+	}
+	return ids
+}
+
+func contains(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
+func newTestSettingsState(t *testing.T) *state {
+	t.Helper()
+	return newState(config.Default())
+}
+
+func TestSDDFrameIncludesNewFields(t *testing.T) {
+	s := newTestSettingsState(t)
+	frame := sddFrame(s)
+	ids := fieldIDs(frame)
+	for _, want := range []string{"sdd.verify_timeout_ms", "sdd.default_model_tier", "sdd.cleanup_at_start", "sdd.max_total_tokens"} {
+		if !contains(ids, want) {
+			t.Errorf("sddFrame missing field %q; got %v", want, ids)
+		}
+	}
+}
+
 func TestDiagnosticsFrameIsMapAtRoot(t *testing.T) {
 	s := newState(config.Default())
 	s.cfg.Diagnostics.Commands = map[string]string{"lint": "go vet ./..."}

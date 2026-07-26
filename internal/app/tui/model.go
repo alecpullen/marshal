@@ -40,6 +40,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/permissions"
 	"marshal/internal/pubsub"
+	"marshal/internal/sdd"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -56,6 +57,11 @@ type AgentRunner interface {
 	SetForceClass(class string)
 	SetPolicyRules(rules []config.PermissionRule)
 	SetApprovalMode(mode policy.ApprovalMode)
+	// ResolveGate resolves the current SDD human gate and advances the
+	// controller state machine. Called by the TUI when the user presses y.
+	// Only the SDD runner (ControllerAdapter) implements this; the regular
+	// and swarm runners are no-ops.
+	ResolveGate()
 }
 
 // CustomAgentRunnerFactory builds a one-shot AgentRunner for a named custom
@@ -195,6 +201,11 @@ type Model struct {
 	// open. It is set by openRunPreflight and consumed by the castlist
 	// StartMsg/CancelMsg handlers.
 	pendingRun *pendingAgentRun
+
+	// pendingSDDGate is set when the controller returns ErrHumanGateRequired.
+	// While true, the TUI renders the gate prompt and routes y/n keypresses
+	// to resolve or abort the gate.
+	pendingSDDGate bool
 }
 
 // pendingAgentRun captures the runner and goal for a run that is waiting
@@ -1706,6 +1717,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		meta = []string{
 			"plan: " + strutil.Truncate(goal, 56, true),
 			fmt.Sprintf("fix rounds: %d · worktree: %s", m.state.Config.SDD.MaxFixRounds, worktree),
+			fmt.Sprintf("model tier: %s · verify timeout: %dms", m.state.Config.SDD.DefaultModelTier, m.state.Config.SDD.VerifyTimeoutMS),
 		}
 	}
 	rows := make([]castlist.Row, 0, len(roles))
@@ -1858,6 +1870,18 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.busy = false
 	m.agentCancel = nil
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+		// SDD human gate: render the prompt and wait for user resolution.
+		if errors.Is(msg.err, sdd.ErrHumanGateRequired) {
+			gate := m.state.SDDGate()
+			if gate.Kind != "" {
+				m.state.AddMessage(session.RoleSystem, sddGatePrompt(gate), session.ContentTypePlain)
+				m.pendingSDDGate = true
+				m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
+				m.updateViewportHeight()
+				m.refreshViewport()
+				return m, nil
+			}
+		}
 		m.state.SetProviderError(msg.err)
 		m.successPulse = false
 	} else if msg.err == nil {

@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -40,4 +41,49 @@ func ScanBundle(dir string) ([]skills.Skill, error) {
 		found = append(found, skill)
 	}
 	return found, nil
+}
+
+
+// LoadStore verifies every plugin recorded in the lockfile at lockPath
+// against its on-disk contents in storeDir and merges valid plugins'
+// skills into idx. It is deliberately forgiving: a missing store is a
+// no-op, and per-plugin problems (tampered contents, missing files,
+// malformed lockfile) are logged as warnings and skipped so startup never
+// aborts because of plugin state. Callers load the global store first,
+// then the project store, so project plugins win name collisions.
+func LoadStore(idx *skills.Index, storeDir, lockPath string, logger *slog.Logger) error {
+	if _, err := os.Stat(storeDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat plugin store %s: %w", storeDir, err)
+	}
+
+	lf, err := ReadLockfile(lockPath)
+	if err != nil {
+		logger.Warn("skipping plugin store: lockfile unreadable", "path", lockPath, "error", err)
+		return nil
+	}
+
+	for _, entry := range lf.Plugins {
+		dir := filepath.Join(storeDir, entry.Name)
+		hash, err := HashDir(dir)
+		if err != nil {
+			logger.Warn("skipping plugin: cannot read installed files", "plugin", entry.Name, "error", err)
+			continue
+		}
+		if hash != entry.ContentHash {
+			logger.Warn("skipping plugin: contents changed since install; run `marshal plugin update` to review and re-pin", "plugin", entry.Name)
+			continue
+		}
+		pluginSkills, err := ScanBundle(dir)
+		if err != nil {
+			logger.Warn("skipping plugin", "plugin", entry.Name, "error", err)
+			continue
+		}
+		for _, skill := range pluginSkills {
+			idx.Set(skill.Name, skill)
+		}
+	}
+	return nil
 }

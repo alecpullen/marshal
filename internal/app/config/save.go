@@ -28,6 +28,56 @@ func SaveProjectConfig(path string, cfg Config) error {
 		}
 	}
 
+	writeSections(&file, cfg, Default())
+
+	data, err := toml.Marshal(&file)
+	if err != nil {
+		return fmt.Errorf("marshal project config: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("write project config: %w", err)
+	}
+	return nil
+}
+
+// SaveUserConfigSection writes the editable sections of cfg to the user-global
+// config file at path, preserving unrelated sections already present. It
+// mirrors SaveProjectConfig's section-preservation logic against the global
+// file. Used by the agent config.* tools for global-scope writes.
+func SaveUserConfigSection(path string, cfg Config) error {
+	file, err := loadFile(path)
+	if err != nil {
+		return fmt.Errorf("load existing user config: %w", err)
+	}
+	for name, p := range cfg.Providers {
+		if err := validateProviderBaseURL(p.BaseURL); err != nil {
+			return fmt.Errorf("provider %q: %w", name, err)
+		}
+	}
+	writeSections(&file, cfg, Default())
+	data, err := toml.Marshal(&file)
+	if err != nil {
+		return fmt.Errorf("marshal user config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		header := "# Marshal global configuration\n"
+		data = append([]byte(header), data...)
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// writeSections applies every editable section of cfg onto file in place,
+// preserving sections that are absent from cfg (nil in file) and equal to
+// Default. Shared by SaveProjectConfig and SaveUserConfigSection so both
+// files get identical section-preservation semantics.
+func writeSections(file *configFile, cfg Config, def Config) {
 	file.Profile = &fileProfile{Default: strutil.Ptr(cfg.Profile.Default)}
 
 	activePresetName := activePresetName(cfg)
@@ -100,15 +150,14 @@ func SaveProjectConfig(path string, cfg Config) error {
 	// value differs from Default(). Callers pass merged user+project
 	// config, so unconditional sections bake user-global values into the
 	// project file — that is deliberate for the primary sections.
-	def := Default()
 
-	if file.Project != nil || !reflect.DeepEqual(cfg.Project, def.Project) {
+	if !reflect.DeepEqual(cfg.Project, def.Project) {
 		file.Project = &fileProject{Name: strutil.Ptr(cfg.Project.Name), Languages: cfg.Project.Languages}
 	}
-	if file.Commands != nil || cfg.Commands != def.Commands {
+	if cfg.Commands != def.Commands {
 		file.Commands = &fileCommands{Test: strutil.Ptr(cfg.Commands.Test), Format: strutil.Ptr(cfg.Commands.Format), Vet: strutil.Ptr(cfg.Commands.Vet)}
 	}
-	if file.Indexing != nil || !reflect.DeepEqual(cfg.Indexing, def.Indexing) {
+	if !reflect.DeepEqual(cfg.Indexing, def.Indexing) {
 		file.Indexing = &fileIndexing{
 			UseTreesitter:          strutil.Ptr(cfg.Indexing.UseTreesitter),
 			UseEmbeddings:          strutil.Ptr(cfg.Indexing.UseEmbeddings),
@@ -118,7 +167,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 			MaxSearchableFileBytes: strutil.Ptr(cfg.Indexing.MaxSearchableFileBytes),
 		}
 	}
-	if file.Web != nil || cfg.Web != def.Web {
+	if cfg.Web != def.Web {
 		file.Web = &fileWeb{
 			Enabled:        strutil.Ptr(cfg.Web.Enabled),
 			FetchTimeout:   strutil.Ptr(cfg.Web.FetchTimeout.String()),
@@ -127,7 +176,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 			SearchKey:      strutil.Ptr(cfg.Web.SearchKey),
 		}
 	}
-	if file.Desktop != nil || !reflect.DeepEqual(cfg.Desktop, def.Desktop) {
+	if !reflect.DeepEqual(cfg.Desktop, def.Desktop) {
 		file.Desktop = &fileDesktop{
 			Enabled:          strutil.Ptr(cfg.Desktop.Enabled),
 			Mode:             strutil.Ptr(cfg.Desktop.Mode),
@@ -139,21 +188,21 @@ func SaveProjectConfig(path string, cfg Config) error {
 			ScreenshotFormat: strutil.Ptr(cfg.Desktop.ScreenshotFormat),
 		}
 	}
-	if file.TUI != nil || !reflect.DeepEqual(cfg.TUI, def.TUI) {
+	if !reflect.DeepEqual(cfg.TUI, def.TUI) {
 		file.TUI = &fileTUI{
 			Theme:   strutil.Ptr(cfg.TUI.Theme),
 			Palette: cfg.TUI.Palette,
 			Mode:    strutil.Ptr(cfg.TUI.Mode),
 		}
 	}
-	if file.Swarm != nil || !reflect.DeepEqual(cfg.Swarm, def.Swarm) {
+	if !reflect.DeepEqual(cfg.Swarm, def.Swarm) {
 		file.Swarm = &fileSwarm{Budget: &fileSwarmBudget{
 			MaxFixRounds:   strutil.Ptr(cfg.Swarm.Budget.MaxFixRounds),
 			MaxTotalTokens: strutil.Ptr(cfg.Swarm.Budget.MaxTotalTokens),
 			ToolIters:      cfg.Swarm.Budget.ToolIters,
 		}}
 	}
-	if file.SDD != nil || !reflect.DeepEqual(cfg.SDD, def.SDD) {
+	if !reflect.DeepEqual(cfg.SDD, def.SDD) {
 		file.SDD = &fileSDD{
 			AutoWorktree:         strutil.Ptr(cfg.SDD.AutoWorktree),
 			MaxFixRounds:         strutil.Ptr(cfg.SDD.MaxFixRounds),
@@ -165,7 +214,7 @@ func SaveProjectConfig(path string, cfg Config) error {
 			MaxWorkerConcurrency: strutil.Ptr(cfg.SDD.MaxWorkerConcurrency),
 		}
 	}
-	if file.MCP != nil || !reflect.DeepEqual(cfg.MCP, def.MCP) {
+	if !reflect.DeepEqual(cfg.MCP, def.MCP) {
 		servers := map[string]fileMCPServer{}
 		for name, srv := range cfg.MCP.Servers {
 			servers[name] = fileMCPServer{Command: strutil.Ptr(srv.Command), Args: srv.Args, Env: srv.Env, Trust: strutil.Ptr(srv.Trust)}
@@ -176,30 +225,30 @@ func SaveProjectConfig(path string, cfg Config) error {
 			DisclosureThresholdTools: strutil.Ptr(cfg.MCP.DisclosureThresholdTools),
 		}
 	}
-	if file.Snapshots != nil || cfg.Snapshots != def.Snapshots {
+	if cfg.Snapshots != def.Snapshots {
 		file.Snapshots = &fileSnapshots{
 			Enabled:       strutil.Ptr(cfg.Snapshots.Enabled),
 			RetentionDays: strutil.Ptr(cfg.Snapshots.RetentionDays),
 			MaxFileBytes:  strutil.Ptr(cfg.Snapshots.MaxFileBytes),
 		}
 	}
-	if file.Permissions != nil || len(cfg.Permissions.Rules) > 0 {
+	if len(cfg.Permissions.Rules) > 0 {
 		file.Permissions = &filePermissions{Rules: cfg.Permissions.Rules}
 	}
-	if file.Diagnostics != nil || !reflect.DeepEqual(cfg.Diagnostics, def.Diagnostics) {
+	if !reflect.DeepEqual(cfg.Diagnostics, def.Diagnostics) {
 		file.Diagnostics = &fileDiagnostics{Commands: cfg.Diagnostics.Commands}
 	}
-	if file.Hooks != nil || !reflect.DeepEqual(cfg.Hooks, def.Hooks) {
+	if !reflect.DeepEqual(cfg.Hooks, def.Hooks) {
 		entries := make([]fileHookEntry, 0, len(cfg.Hooks.Entries))
 		for _, h := range cfg.Hooks.Entries {
 			entries = append(entries, fileHookEntry{Event: strutil.Ptr(h.Event), Matcher: strutil.Ptr(h.Matcher), Command: strutil.Ptr(h.Command), TimeoutMS: strutil.Ptr(h.TimeoutMS)})
 		}
 		file.Hooks = &fileHooks{FailClosed: strutil.Ptr(cfg.Hooks.FailClosed), Entries: entries}
 	}
-	if file.Providers != nil || len(cfg.Providers) > 0 {
+	if len(cfg.Providers) > 0 {
 		file.Providers = cfg.Providers
 	}
-	if file.Models != nil || len(cfg.Models.Presets) > 0 {
+	if len(cfg.Models.Presets) > 0 {
 		if file.Models == nil {
 			file.Models = &fileModels{}
 		}
@@ -241,19 +290,6 @@ func SaveProjectConfig(path string, cfg Config) error {
 			file.CustomAgents[name] = ca
 		}
 	}
-
-	data, err := toml.Marshal(&file)
-	if err != nil {
-		return fmt.Errorf("marshal project config: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("write project config: %w", err)
-	}
-	return nil
 }
 
 func activePresetName(cfg Config) string {

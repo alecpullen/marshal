@@ -88,7 +88,10 @@ type Runtime struct {
 	// CustomAgentFactory builds a one-shot *agent.Runner for a named custom
 	// agent. Used by the TUI's Run-now dispatch. Set by startRuntime.
 	CustomAgentFactory func(agentName string) (*agent.Runner, error)
-	additionalDirs     []string
+	// ConfigReloader hot-swaps the agent runtime from a new config. Set by
+	// Run() after the TUI is live; nil when the runtime is headless.
+	ConfigReloader func(config.Config) error
+	additionalDirs []string
 
 	workCtx    context.Context
 	workCancel context.CancelFunc
@@ -454,7 +457,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 
-	runner, toolReg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspMgr, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker)
+	runner, toolReg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspMgr, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -484,6 +487,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		DataDir:            dataDir,
 		SkillIndex:         skillIndex,
 		LSPManager:         lspMgr,
+		ConfigReloader:     runOpts.configReloader,
 		additionalDirs:     runOpts.additionalDirs,
 		workCtx:            workCtx,
 		workCancel:         workCancel,

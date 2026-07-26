@@ -83,6 +83,7 @@ type options struct {
 	additionalDirs          []string
 	knowledgeHook           func(ctx context.Context, state *session.State, database *db.DB)
 	workers                 []worker.Worker
+	configReloader          func(config.Config) error
 }
 
 type Option func(*options)
@@ -415,7 +416,7 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent]) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Manager, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *sdd.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Manager, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
@@ -499,6 +500,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		JobManager:     jobManager,
 		JobBroker:      jobBroker,
 		Guardrail:      func(cmd string) error { return pol.GuardrailCheck(cmd) },
+		ConfigPath:     config.ProjectConfigPath(state.WorkingDir),
+		UserConfigPath: config.UserConfigPath(homeDir),
+		ConfigReloader: configReloader,
 	}
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
@@ -1035,7 +1039,16 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		slog.Default().Info("onboarding cancelled; using default config")
 	}
 
-	rt, err := startRuntime(ctx, runOpts)
+	// Define configReloader before startRuntime so it can be wired into
+	// native.Options. The closure captures rt by reference; rt is set
+	// immediately after startRuntime returns.
+	var rt *Runtime
+	configReloader := func(newCfg config.Config) error {
+		return reloadAgentRuntime(ctx, newCfg, rt)
+	}
+	runOpts.configReloader = configReloader
+
+	rt, err = startRuntime(ctx, runOpts)
 	if err != nil {
 		return err
 	}
@@ -1083,9 +1096,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				return rt.CustomAgentFactory(agentName)
 			},
 		))
-		configReloader := func(newCfg config.Config) error {
-			return reloadAgentRuntime(ctx, newCfg, rt)
-		}
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 	}
 
@@ -1188,7 +1198,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, _, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb)
+	newRunner, newReg, newSwarmRunner, newSDDRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, _, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)

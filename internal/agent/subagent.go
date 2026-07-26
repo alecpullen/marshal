@@ -42,13 +42,12 @@ func runSubagentChild(ctx context.Context, child *Runner, prompt string) (string
 	return task.Summary, nil
 }
 
-// SubtaskScopeView returns a registry filtered to the tool set a subtask
-// child is allowed to see. It is broader than the swarm's ReadOnlyView
-// (RiskReadOnly-only): it also exposes read+network tools (e.g. web.fetch,
-// web.search) so the child can gather external context if needed. It
-// deliberately excludes agent.run — nested subagents are forbidden — and
-// deferred MCP tools — the child should not auto-load arbitrary MCP
-// surfaces during an ad-hoc task.
+// SubtaskScopeView returns a registry view for a subtask child. It excludes
+// agent.run (nested subagents are forbidden) and deferred MCP tools (the child
+// should not auto-load arbitrary MCP surfaces during an ad-hoc task). All other
+// tools are visible so the child can perform implementation work; their own
+// Risk levels and the shared policy engine still gate approval for writes,
+// commands, and destructive tools.
 func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 	view := registry.New()
 	for _, tool := range src.List() {
@@ -56,11 +55,6 @@ func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 			continue
 		}
 		if tool.Name == "agent.run" {
-			continue
-		}
-		switch tool.Risk {
-		case registry.RiskReadOnly, registry.RiskNetwork:
-		default:
 			continue
 		}
 		_ = view.Register(tool)

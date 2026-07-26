@@ -175,6 +175,50 @@ func TestService_DoesNotTouchProjectGit(t *testing.T) {
 		t.Fatalf("project git status changed after snapshot: before=%q after=%q", statusBefore, statusAfter)
 	}
 }
+func TestService_DoesNotFailOnGitignoredLargeFiles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".marshal\n/marshal\n*.log\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "marshal.db"), make([]byte, 100), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "marshal"), make([]byte, 100), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.log"), make([]byte, 100), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := New(t.TempDir(), dir, 50, []string{}, testLogger())
+	hash, err := svc.Track(context.Background())
+	if err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+
+	files, err := svc.runGitOut(context.Background(), "ls-tree", "-r", "--name-only", hash)
+	if err != nil {
+		t.Fatalf("ls-tree: %v", err)
+	}
+	for _, ignored := range []string{".marshal/marshal.db", "marshal", "app.log"} {
+		if contains(files, ignored) {
+			t.Fatalf("%s should not be in snapshot, got: %s", ignored, files)
+		}
+	}
+	if !contains(files, "tracked.txt") {
+		t.Fatalf("tracked.txt should be in snapshot, got: %s", files)
+	}
+}
 
 func TestService_Prune(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {

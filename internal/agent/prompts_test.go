@@ -723,3 +723,19 @@ func TestBuildSystemPromptAutoModeOverridesAskUserExamples(t *testing.T) {
 		}
 	}
 }
+
+// Live evidence (Kimi's kimi-for-coding-highspeed against the real
+// marshal source tree): 7 of 17 tool failures in one turn were file.read
+// calls against plausible-sounding but nonexistent paths guessed from Go
+// naming conventions (e.g. "internal/llm/routing/preset.go" when no such
+// file exists anywhere in the repo) -- pure wasted iterations, since no
+// amount of fuzzy-matching in file.read's error can suggest a file that
+// isn't there. The rule set must explicitly discourage guessing a path
+// before verifying it exists.
+func TestBuildSystemPromptDiscouragesGuessingFilePaths(t *testing.T) {
+	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil, false)
+	content := msg.Content
+	if !strings.Contains(content, "guessed path") && !strings.Contains(content, "guessing a path") {
+		t.Errorf("prompt missing guidance against guessing file paths before verifying they exist\n%s", content)
+	}
+}

@@ -32,27 +32,34 @@ func loadFromDir(idx *Index, dir string, logger *slog.Logger) error {
 
 	for _, entry := range entries {
 		if entry.IsDir() {
+			bundlePath := filepath.Join(dir, entry.Name(), BundleFileName)
+			if _, err := os.Stat(bundlePath); err != nil {
+				continue
+			}
+			loadSkillFile(idx, bundlePath, logger)
 			continue
 		}
 		if !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-
-		path := filepath.Join(dir, entry.Name())
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			logger.Warn("failed to read skill file", "path", path, "error", err)
-			continue
-		}
-
-		skill, err := parseFrontmatter(string(raw))
-		if err != nil {
-			logger.Warn("skipping invalid skill file", "path", path, "error", err)
-			continue
-		}
-
-		idx.skills[skill.Name] = skill
+		loadSkillFile(idx, filepath.Join(dir, entry.Name()), logger)
 	}
 
 	return nil
+}
+
+func loadSkillFile(idx *Index, path string, logger *slog.Logger) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		logger.Warn("failed to read skill file", "path", path, "error", err)
+		return
+	}
+
+	skill, err := parseFrontmatter(string(raw))
+	if err != nil {
+		logger.Warn("skipping invalid skill file", "path", path, "error", err)
+		return
+	}
+
+	idx.skills[skill.Name] = skill
 }

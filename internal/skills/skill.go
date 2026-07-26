@@ -16,6 +16,14 @@ import (
 // safe-to-invoke reference material by the policy engine.
 const DefaultSkillRisk = string(registry.RiskReadOnly)
 
+// BundleFileName is the file that marks a directory as a skill bundle.
+const BundleFileName = "SKILL.md"
+
+// Parse parses a skill file's TOML frontmatter and body.
+func Parse(raw string) (Skill, error) {
+	return parseFrontmatter(raw)
+}
+
 type Skill struct {
 	Name        string
 	Description string

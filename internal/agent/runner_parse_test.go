@@ -387,3 +387,42 @@ func TestHardStallAutoFinalizesForNonGeneralRole(t *testing.T) {
 		t.Fatalf("SalvagedReason = %q, want stalled auto-finalize for swarm role", task.SalvagedReason)
 	}
 }
+
+// Some providers (Kimi's kimi-for-coding, confirmed live) reject the entire
+// next request with HTTP 400 "message ... with role 'assistant' must not be
+// empty" if the conversation ever contains an assistant message with empty
+// content. An extended-thinking model in JSON tool-calling mode can return
+// an empty res.Text on its first attempt (all output goes to the reasoning
+// channel), which fails ParseAction (jsonextract finds nothing) and used to
+// get appended verbatim as an empty assistant message — poisoning the very
+// next request in the same turn. The native path already guards against
+// this (see the empty-response branch above); the JSON path must too.
+func TestEmptyResponseNeverAppendsEmptyAssistantMessage(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			"",
+			`{"rationale":"done","action":{"type":"final","content":"Answer."}}`,
+		},
+	}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 5
+	r.MaxRetries = 0
+
+	task, err := r.RunTask(context.Background(), "test goal")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.Status != TaskStatusCompleted {
+		t.Fatalf("task.Status = %q, want completed", task.Status)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("provider Requests = %d, want 2", len(p.Requests))
+	}
+	for _, msg := range p.Requests[1].Messages {
+		if msg.Role == schema.RoleAssistant && strings.TrimSpace(msg.Content) == "" {
+			t.Fatalf("second request contains an empty assistant message: %+v", p.Requests[1].Messages)
+		}
+	}
+}

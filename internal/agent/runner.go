@@ -34,6 +34,12 @@ const (
 	finalizePressureMessage     = "You are near the tool budget. Unless one specific missing fact is required, produce a final answer now using the results you already have."
 	maxConsecutiveParseFailures = 3
 	groundingNudgeMessage       = "You have not made any tool calls this turn, but this task requires code changes or commands. If the work is already done from an earlier turn, verify it now with a tool call (for example, re-read the changed file or re-run the test command) before declaring completion. Otherwise, use the appropriate tool to make the change now."
+	// emptyModelResponsePlaceholder stands in for a truly empty model
+	// response when recording the assistant's turn in the conversation.
+	// Some providers reject the next request outright if any assistant
+	// message has empty content, so the literal empty string must never be
+	// sent back verbatim.
+	emptyModelResponsePlaceholder = "(empty response)"
 )
 
 var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations without a final answer")
@@ -673,7 +679,17 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		action, parseErr := ParseAction(raw)
 		if parseErr != nil {
 			consecutiveParseFailures++
-			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
+			// Some providers (Kimi's kimi-for-coding, confirmed live) reject
+			// the very next request with HTTP 400 "message ... with role
+			// 'assistant' must not be empty" if any assistant message has
+			// empty content. An extended-thinking model can return an empty
+			// res.Text (all output goes to the reasoning channel), which
+			// fails ParseAction — never append that empty string verbatim.
+			assistantContent := raw
+			if strings.TrimSpace(assistantContent) == "" {
+				assistantContent = emptyModelResponsePlaceholder
+			}
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: assistantContent})
 			messages = append(messages, BuildCorrectionMessage(parseErr))
 			r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
 			if consecutiveParseFailures == 2 {

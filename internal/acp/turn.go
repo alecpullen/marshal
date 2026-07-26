@@ -95,16 +95,33 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 // messageUpdate projects a session.Message into a session/update body.
 // User messages become user_message_chunk; assistant and system messages
 // become agent_message_chunk. The content is always {type:"text", text:…}.
+//
+// A salvaged message (e.g. one flagged "unverified" because the model never
+// made a tool call despite being asked to — see the grounding check in
+// agent.Runner.RunTask) is marked with a leading bracketed note, the same
+// signal the TUI renders as a "salvaged" badge (transcript.go:
+// renderFinalAnswer). ACP has no separate metadata channel for this in v1,
+// so folding it into the plain text is the only way an ACP client sees it
+// at all — without this, a fabricated-but-flagged answer and a genuine one
+// are wire-identical to any ACP client.
 func messageUpdate(msg session.Message) map[string]any {
 	kind := "user_message_chunk"
 	if msg.Role == session.RoleAssistant || msg.Role == session.RoleSystem {
 		kind = "agent_message_chunk"
 	}
+	text := msg.Content
+	if msg.Salvaged {
+		note := "salvaged"
+		if msg.SalvageReason != "" {
+			note += " · " + msg.SalvageReason
+		}
+		text = "[" + note + "] " + text
+	}
 	return map[string]any{
 		"kind": kind,
 		"content": map[string]any{
 			"type": "text",
-			"text": msg.Content,
+			"text": text,
 		},
 	}
 }

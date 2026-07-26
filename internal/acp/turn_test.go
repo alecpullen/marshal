@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1099,5 +1100,50 @@ func TestForwarderUsesRespondForQuestion(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("PromptTurn did not return after cancel")
+	}
+}
+
+// messageUpdate is the sole projection point for both live session/update
+// notifications and session/load replay (see SessionManager.replay), so a
+// fix here closes the visibility gap for both. A salvaged message (e.g. an
+// agent turn flagged "unverified" because the model never made a tool call
+// despite being asked to) must not render identically to a trusted,
+// grounded completion — an ACP client has no other signal to tell them
+// apart, unlike the TUI which already renders a visible "salvaged" badge
+// (internal/app/tui/transcript.go:renderFinalAnswer).
+func TestMessageUpdateFlagsSalvagedContent(t *testing.T) {
+	msg := session.Message{
+		Role:          session.RoleAssistant,
+		Content:       "All done, confirmed.",
+		Final:         true,
+		Salvaged:      true,
+		SalvageReason: "unverified",
+	}
+	update := messageUpdate(msg)
+	content, ok := update["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("update[content] = %T, want map[string]any", update["content"])
+	}
+	text, _ := content["text"].(string)
+	if !strings.Contains(text, "unverified") {
+		t.Fatalf("text = %q, want it to mention the salvage reason %q", text, msg.SalvageReason)
+	}
+	if !strings.Contains(text, msg.Content) {
+		t.Fatalf("text = %q, want it to still contain the original content %q", text, msg.Content)
+	}
+}
+
+// A non-salvaged message must render unchanged — no regression for the
+// common case.
+func TestMessageUpdateLeavesNonSalvagedContentUnchanged(t *testing.T) {
+	msg := session.Message{
+		Role:    session.RoleAssistant,
+		Content: "All done, confirmed.",
+		Final:   true,
+	}
+	update := messageUpdate(msg)
+	content := update["content"].(map[string]any)
+	if content["text"] != msg.Content {
+		t.Fatalf("text = %q, want unchanged %q", content["text"], msg.Content)
 	}
 }

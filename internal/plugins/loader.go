@@ -15,12 +15,27 @@ import (
 // SKILL.md and malformed skill files are skipped silently (the caller
 // surfaces counts); a missing skills/ directory is an error because it
 // means the repo is not a marshal plugin.
+//
+// Deprecated: superseded by ScanPlugin, which discovers all content types.
+// Retained until the CLI moves over.
 func ScanBundle(dir string) ([]skills.Skill, error) {
+	if _, err := os.Stat(filepath.Join(dir, "skills")); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s contains no skills/ directory: not a marshal plugin", dir)
+		}
+		return nil, fmt.Errorf("stat skills directory: %w", err)
+	}
+	return scanSkills(dir)
+}
+
+// scanSkills reads skills/<name>/SKILL.md bundles under dir. A missing
+// skills/ directory yields nil, nil; malformed skills are skipped.
+func scanSkills(dir string) ([]skills.Skill, error) {
 	skillsDir := filepath.Join(dir, "skills")
 	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%s contains no skills/ directory: not a marshal plugin", dir)
+			return nil, nil
 		}
 		return nil, fmt.Errorf("read skills directory: %w", err)
 	}

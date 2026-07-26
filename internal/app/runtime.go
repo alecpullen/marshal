@@ -19,6 +19,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/hooks"
 	"marshal/internal/lsp"
+	"marshal/internal/plugins"
 	"marshal/internal/pubsub"
 	"marshal/internal/sdd"
 	"marshal/internal/skills"
@@ -449,6 +450,15 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 		_ = database.Close()
 		return nil, fmt.Errorf("load skills: %w", err)
+	}
+
+	if err := plugins.LoadStore(skillIndex, plugins.GlobalStoreDir(homeDir), plugins.GlobalLockPath(homeDir), logger); err != nil {
+		logger.Warn("failed to load global plugins", "error", err)
+	}
+	if projectTrusted {
+		if err := plugins.LoadStore(skillIndex, plugins.ProjectStoreDir(workingDir), plugins.ProjectLockPath(workingDir), logger); err != nil {
+			logger.Warn("failed to load project plugins", "error", err)
+		}
 	}
 
 	workCtx, workCancel := context.WithCancel(ctx)

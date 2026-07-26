@@ -133,12 +133,16 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 		}
 	}
 	defs := make([]schema.ToolDefinition, 0, len(tools)+1)
+	hasAskUser := false
 	for _, tool := range tools {
 		// Deferred MCP tools are hidden from the agent's prompt by default
 		// and only revealed once the agent explicitly opts in via
 		// tools.select. Native tools are never deferred.
 		if deferred[tool.Name] && !loaded[tool.Name] {
 			continue
+		}
+		if tool.Name == "ask_user" {
+			hasAskUser = true
 		}
 		parameters := tool.Schema
 		if len(parameters) == 0 {
@@ -150,7 +154,12 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 			Parameters:  parameters,
 		})
 	}
-	if r.role() == RoleGeneral {
+	// Fallback for a registry that doesn't already register the real
+	// ask_user tool (internal/tools/native/question.go's askUserTool, wired
+	// in native.go). Registering it twice produces two identically-named
+	// tool definitions — some providers (Kimi, confirmed live) reject the
+	// whole request outright with "function name ask_user is duplicated".
+	if r.role() == RoleGeneral && !hasAskUser {
 		defs = append(defs, schema.ToolDefinition{
 			Name:        "ask_user",
 			Description: "Ask the user one specific clarifying question.",

@@ -129,3 +129,54 @@ func TestNativeToolCallResolvesAliasedNameEndToEnd(t *testing.T) {
 		}
 	}
 }
+
+// Real, live bug found testing against Kimi's kimi-for-coding-highspeed:
+// "ask_user" is registered as a genuine native tool (internal/tools/native/
+// question.go's askUserTool, wired in native.go) AND buildToolDefinitions
+// separately hardcodes a second "ask_user" ToolDefinition for RoleGeneral.
+// When a runner's registry actually contains the real ask_user tool, this
+// produces two schema entries with the identical name — Kimi's API rejects
+// the whole request with HTTP 400 "function name ask_user is duplicated".
+// The hardcoded fallback must only fire when the registry does NOT already
+// provide ask_user, not unconditionally.
+func TestBuildToolDefinitionsDoesNotDuplicateRegisteredAskUser(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "ask_user", Risk: registry.RiskReadOnly, Handler: nopHandler,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	r := NewRunner(&agenttest.ScriptedProvider{}, reg, policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	r.Role = RoleGeneral
+
+	defs := r.buildToolDefinitions()
+	count := 0
+	for _, d := range defs {
+		if d.Name == "ask_user" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("got %d ask_user tool definitions, want exactly 1: %+v", count, defs)
+	}
+}
+
+// The fallback must still fire when the registry genuinely has no ask_user
+// tool at all (matches existing tests like
+// TestNativeAskUserCountsAgainstIterationBudget, which script ask_user tool
+// calls against an empty registry.New()).
+func TestBuildToolDefinitionsFallsBackToAskUserWhenNotRegistered(t *testing.T) {
+	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	r.Role = RoleGeneral
+
+	defs := r.buildToolDefinitions()
+	count := 0
+	for _, d := range defs {
+		if d.Name == "ask_user" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("got %d ask_user tool definitions, want exactly 1 (fallback): %+v", count, defs)
+	}
+}

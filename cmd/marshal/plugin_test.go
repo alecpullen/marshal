@@ -196,3 +196,122 @@ func TestPluginInstallInvalidName(t *testing.T) {
 		t.Fatal("expected error for invalid --name")
 	}
 }
+
+// commitToRepo adds a file to the repo and commits it.
+func commitToRepo(t *testing.T, repo, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("add", "-A")
+	run("commit", "-m", "update "+name)
+}
+
+func TestPluginUpdateAlreadyUpToDate(t *testing.T) {
+	chdirProject(t)
+	repo := initPluginRepo(t)
+	if _, err := runPluginCmd(t, "y\n", "install", "--project", "--name", "widgets", repo); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	out, err := runPluginCmd(t, "", "update", "--project", "widgets")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(out, "already up to date") {
+		t.Fatalf("out = %q", out)
+	}
+}
+
+func TestPluginUpdateAppliesNewCommit(t *testing.T) {
+	work := chdirProject(t)
+	repo := initPluginRepo(t)
+	if _, err := runPluginCmd(t, "y\n", "install", "--project", "--name", "widgets", repo); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	lf, err := plugins.ReadLockfile(plugins.ProjectLockPath(work))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := lf.Find("widgets")
+
+	commitToRepo(t, repo, "NEW.md", "new content")
+
+	out, err := runPluginCmd(t, "y\n", "update", "--project", "widgets")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(out, `Updated plugin "widgets"`) {
+		t.Fatalf("out = %q", out)
+	}
+
+	lf, err = plugins.ReadLockfile(plugins.ProjectLockPath(work))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := lf.Find("widgets")
+	if after.Commit == before.Commit {
+		t.Fatal("commit should change after update")
+	}
+	if _, err := os.Stat(filepath.Join(plugins.ProjectStoreDir(work), "widgets", "NEW.md")); err != nil {
+		t.Fatalf("updated files missing: %v", err)
+	}
+}
+
+func TestPluginUpdateDeclined(t *testing.T) {
+	work := chdirProject(t)
+	repo := initPluginRepo(t)
+	if _, err := runPluginCmd(t, "y\n", "install", "--project", "--name", "widgets", repo); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	lf, _ := plugins.ReadLockfile(plugins.ProjectLockPath(work))
+	before, _ := lf.Find("widgets")
+
+	commitToRepo(t, repo, "NEW.md", "new content")
+
+	out, err := runPluginCmd(t, "n\n", "update", "--project", "widgets")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(out, "Skipped.") {
+		t.Fatalf("out = %q", out)
+	}
+	lf, _ = plugins.ReadLockfile(plugins.ProjectLockPath(work))
+	after, _ := lf.Find("widgets")
+	if after.Commit != before.Commit {
+		t.Fatal("declined update must not change the pinned commit")
+	}
+}
+
+func TestPluginUpdateAll(t *testing.T) {
+	chdirProject(t)
+	repo := initPluginRepo(t)
+	if _, err := runPluginCmd(t, "y\n", "install", "--project", "--name", "one", repo); err != nil {
+		t.Fatalf("install one: %v", err)
+	}
+	if _, err := runPluginCmd(t, "y\n", "install", "--project", "--name", "two", repo); err != nil {
+		t.Fatalf("install two: %v", err)
+	}
+
+	out, err := runPluginCmd(t, "", "update", "--project")
+	if err != nil {
+		t.Fatalf("update all: %v", err)
+	}
+	if !strings.Contains(out, "one is already up to date") || !strings.Contains(out, "two is already up to date") {
+		t.Fatalf("out = %q", out)
+	}
+}
+
+func TestPluginUpdateNotInstalled(t *testing.T) {
+	chdirProject(t)
+	if _, err := runPluginCmd(t, "", "update", "--project", "ghost"); err == nil {
+		t.Fatal("expected error updating a plugin that is not installed")
+	}
+}

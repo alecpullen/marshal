@@ -243,5 +243,103 @@ func confirm(stdin io.Reader) bool {
 }
 
 func runPluginUpdate(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
-	return errors.New("not implemented")
+	fs := flag.NewFlagSet("plugin update", flag.ContinueOnError)
+	fs.SetOutput(stdout)
+	project := fs.Bool("project", false, "update project-scope plugins instead of global")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) > 1 {
+		return errors.New("marshal plugin update: at most one plugin name is accepted (omit to update all)")
+	}
+	scope, err := resolveScope(*project)
+	if err != nil {
+		return err
+	}
+	lf, err := plugins.ReadLockfile(scope.lock)
+	if err != nil {
+		return err
+	}
+	entries := lf.Plugins
+	if len(rest) == 1 {
+		entry, ok := lf.Find(rest[0])
+		if !ok {
+			return fmt.Errorf("plugin %q is not installed in the %s scope", rest[0], scope.label)
+		}
+		entries = []plugins.LockEntry{entry}
+	}
+	if len(entries) == 0 {
+		fmt.Fprintf(stdout, "No %s plugins installed.\n", scope.label)
+		return nil
+	}
+	inst, err := plugins.NewInstaller()
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := updateOne(ctx, inst, scope, lf, entry, stdin, stdout); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// updateOne re-clones one plugin's source, and when the commit moved,
+// shows the new contents and asks before swapping files and re-pinning.
+func updateOne(ctx context.Context, inst *plugins.Installer, scope scopePaths, lf *plugins.Lockfile, entry plugins.LockEntry, stdin io.Reader, stdout io.Writer) error {
+	tmp, err := os.MkdirTemp("", "marshal-plugin-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+
+	cloneDest := filepath.Join(tmp, "clone")
+	commit, err := inst.Clone(ctx, entry.Source, entry.Ref, cloneDest)
+	if err != nil {
+		return fmt.Errorf("update %s: %w", entry.Name, err)
+	}
+	if commit == entry.Commit {
+		fmt.Fprintf(stdout, "%s is already up to date (%s).\n", entry.Name, shortCommit(commit))
+		return nil
+	}
+	if err := os.RemoveAll(filepath.Join(cloneDest, ".git")); err != nil {
+		return fmt.Errorf("strip .git from clone: %w", err)
+	}
+	pluginSkills, err := plugins.ScanBundle(cloneDest)
+	if err != nil {
+		return fmt.Errorf("update %s: %w", entry.Name, err)
+	}
+
+	fmt.Fprintf(stdout, "Plugin %s: %s -> %s\n", entry.Name, shortCommit(entry.Commit), shortCommit(commit))
+	fmt.Fprintln(stdout, "Passive content (loaded as reference material):")
+	for _, s := range pluginSkills {
+		fmt.Fprintf(stdout, "  skill %s — %s\n", s.Name, s.Description)
+	}
+	fmt.Fprint(stdout, "\nUpdate this plugin? [y/N] ")
+	if !confirm(stdin) {
+		fmt.Fprintln(stdout, "Skipped.")
+		return nil
+	}
+
+	hash, err := plugins.HashDir(cloneDest)
+	if err != nil {
+		return err
+	}
+	dest := filepath.Join(scope.store, entry.Name)
+	if err := os.RemoveAll(dest); err != nil {
+		return err
+	}
+	if err := plugins.CopyDir(cloneDest, dest); err != nil {
+		return err
+	}
+	entry.Commit = commit
+	entry.ContentHash = hash
+	entry.InstalledAt = time.Now().UTC()
+	lf.Upsert(entry)
+	if err := lf.Write(scope.lock); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Updated plugin %q to %s.\n", entry.Name, shortCommit(commit))
+	return nil
 }

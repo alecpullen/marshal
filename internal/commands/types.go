@@ -27,6 +27,11 @@ type Command struct {
 	// commands carry no Handler; headless callers should treat them as
 	// unavailable.
 	TUIOnly bool
+	// PromptBody, when non-empty, makes this a prompt command: the TUI
+	// submits PromptBody as a user turn (steering when the agent is busy)
+	// instead of invoking a Go handler. Used for plugin-defined commands;
+	// such commands carry no Handler and are inert headless.
+	PromptBody string
 	Handler Handler
 }
 
@@ -43,7 +48,7 @@ func (r *Registry) Register(cmd Command) error {
 	if name == "" {
 		return fmt.Errorf("%w: name is required", ErrInvalidCommand)
 	}
-	if cmd.Handler == nil && !cmd.TUIOnly {
+	if cmd.Handler == nil && !cmd.TUIOnly && cmd.PromptBody == "" {
 		return fmt.Errorf("%w: handler is required for %q", ErrInvalidCommand, name)
 	}
 	if _, exists := r.commands[name]; exists {

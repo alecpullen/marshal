@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"marshal/internal/skills"
 )
 
 const testSkillMD = "+++\nname = \"alpha\"\ndescription = \"Alpha skill\"\n+++\n\n# Alpha\n\nDo alpha things.\n"
@@ -16,64 +14,6 @@ func writePluginSkill(t *testing.T, dir, bundle, content string) {
 	t.Helper()
 	writeFile(t, filepath.Join(dir, "skills", bundle, "SKILL.md"), content)
 }
-
-func TestScanBundleFindsSkills(t *testing.T) {
-	dir := t.TempDir()
-	writePluginSkill(t, dir, "alpha", testSkillMD)
-	writePluginSkill(t, dir, "beta", "+++\nname = \"beta\"\ndescription = \"Beta skill\"\nrisk = \"write\"\n+++\n\nBeta body.\n")
-
-	skills, err := ScanBundle(dir)
-	if err != nil {
-		t.Fatalf("ScanBundle: %v", err)
-	}
-	if len(skills) != 2 {
-		t.Fatalf("skills length = %d, want 2", len(skills))
-	}
-	byName := map[string]string{}
-	for _, s := range skills {
-		byName[s.Name] = s.Description
-	}
-	if byName["alpha"] != "Alpha skill" || byName["beta"] != "Beta skill" {
-		t.Fatalf("skills = %v", byName)
-	}
-}
-
-func TestScanBundleSkipsNonSkillDirsAndFiles(t *testing.T) {
-	dir := t.TempDir()
-	writePluginSkill(t, dir, "alpha", testSkillMD)
-	// A directory without SKILL.md, and a stray file under skills/.
-	writeFile(t, filepath.Join(dir, "skills", "docs", "notes.md"), "not a skill")
-	writeFile(t, filepath.Join(dir, "skills", "stray.md"), "not in a bundle dir")
-
-	skills, err := ScanBundle(dir)
-	if err != nil {
-		t.Fatalf("ScanBundle: %v", err)
-	}
-	if len(skills) != 1 || skills[0].Name != "alpha" {
-		t.Fatalf("skills = %v, want only [alpha]", skills)
-	}
-}
-
-func TestScanBundleSkipsMalformedSkill(t *testing.T) {
-	dir := t.TempDir()
-	writePluginSkill(t, dir, "alpha", testSkillMD)
-	writePluginSkill(t, dir, "bad", "# no frontmatter\n")
-
-	skills, err := ScanBundle(dir)
-	if err != nil {
-		t.Fatalf("ScanBundle: %v", err)
-	}
-	if len(skills) != 1 || skills[0].Name != "alpha" {
-		t.Fatalf("skills = %v, want only [alpha]", skills)
-	}
-}
-
-func TestScanBundleNoSkillsDir(t *testing.T) {
-	if _, err := ScanBundle(t.TempDir()); err == nil {
-		t.Fatal("ScanBundle should error when skills/ is missing")
-	}
-}
-
 
 // installFakePlugin creates store/<name> with one skill and records it in
 // the lockfile at lockPath with the correct content hash.
@@ -95,21 +35,23 @@ func installFakePlugin(t *testing.T, store, lockPath, name string) {
 	}
 }
 
-func TestLoadStoreMergesSkills(t *testing.T) {
+func TestLoadStoreReturnsVerifiedPlugins(t *testing.T) {
 	store := t.TempDir()
 	lockPath := filepath.Join(t.TempDir(), "plugins-lock.json")
 	installFakePlugin(t, store, lockPath, "plug")
 
-	idx := skills.NewIndex()
-	if err := LoadStore(idx, store, lockPath, slog.Default()); err != nil {
+	loaded, err := LoadStore(store, lockPath, slog.Default())
+	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	skill, ok := idx.Load("alpha")
-	if !ok {
-		t.Fatal("Load(alpha) returned false")
+	if len(loaded) != 1 {
+		t.Fatalf("loaded length = %d, want 1", len(loaded))
 	}
-	if skill.Description != "Alpha skill" {
-		t.Fatalf("Description = %q", skill.Description)
+	if loaded[0].Name != "plug" {
+		t.Fatalf("Name = %q, want plug", loaded[0].Name)
+	}
+	if len(loaded[0].Contents.Skills) != 1 || loaded[0].Contents.Skills[0].Name != "alpha" {
+		t.Fatalf("Skills = %v", loaded[0].Contents.Skills)
 	}
 }
 
@@ -121,12 +63,12 @@ func TestLoadStoreSkipsHashMismatch(t *testing.T) {
 	// Tamper with the installed contents.
 	writeFile(t, filepath.Join(store, "plug", "skills", "plug", "SKILL.md"), "tampered")
 
-	idx := skills.NewIndex()
-	if err := LoadStore(idx, store, lockPath, slog.Default()); err != nil {
+	loaded, err := LoadStore(store, lockPath, slog.Default())
+	if err != nil {
 		t.Fatalf("LoadStore should not fail on tampering: %v", err)
 	}
-	if len(idx.List()) != 0 {
-		t.Fatalf("tampered plugin should not load, got %v", idx.List())
+	if len(loaded) != 0 {
+		t.Fatalf("tampered plugin should not load, got %v", loaded)
 	}
 }
 
@@ -138,20 +80,22 @@ func TestLoadStoreSkipsPluginMissingOnDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx := skills.NewIndex()
-	if err := LoadStore(idx, store, lockPath, slog.Default()); err != nil {
+	loaded, err := LoadStore(store, lockPath, slog.Default())
+	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	if len(idx.List()) != 0 {
-		t.Fatalf("missing plugin should not load, got %v", idx.List())
+	if len(loaded) != 0 {
+		t.Fatalf("missing plugin should not load, got %v", loaded)
 	}
 }
 
 func TestLoadStoreNoStoreDir(t *testing.T) {
-	idx := skills.NewIndex()
-	err := LoadStore(idx, filepath.Join(t.TempDir(), "nope"), filepath.Join(t.TempDir(), "lock.json"), slog.Default())
+	loaded, err := LoadStore(filepath.Join(t.TempDir(), "nope"), filepath.Join(t.TempDir(), "lock.json"), slog.Default())
 	if err != nil {
 		t.Fatalf("LoadStore should no-op for a missing store: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("loaded = %v, want empty", loaded)
 	}
 }
 
@@ -159,11 +103,11 @@ func TestLoadStoreNoLockfile(t *testing.T) {
 	store := t.TempDir()
 	writePluginSkill(t, filepath.Join(store, "orphan"), "orphan", testSkillMD)
 
-	idx := skills.NewIndex()
-	if err := LoadStore(idx, store, filepath.Join(t.TempDir(), "lock.json"), slog.Default()); err != nil {
+	loaded, err := LoadStore(store, filepath.Join(t.TempDir(), "lock.json"), slog.Default())
+	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	if len(idx.List()) != 0 {
+	if len(loaded) != 0 {
 		t.Fatal("plugins without lockfile entries should not load")
 	}
 }
@@ -173,11 +117,11 @@ func TestLoadStoreMalformedLockfile(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "plugins-lock.json")
 	writeFile(t, lockPath, "{not json")
 
-	idx := skills.NewIndex()
-	if err := LoadStore(idx, store, lockPath, slog.Default()); err != nil {
+	loaded, err := LoadStore(store, lockPath, slog.Default())
+	if err != nil {
 		t.Fatalf("LoadStore should warn, not fail, on a malformed lockfile: %v", err)
 	}
-	if len(idx.List()) != 0 {
+	if len(loaded) != 0 {
 		t.Fatal("no plugins should load with a malformed lockfile")
 	}
 }

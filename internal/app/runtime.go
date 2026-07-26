@@ -16,10 +16,10 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
+	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
 	"marshal/internal/lsp"
-	"marshal/internal/plugins"
 	"marshal/internal/pubsub"
 	"marshal/internal/sdd"
 	"marshal/internal/skills"
@@ -78,6 +78,10 @@ type Runtime struct {
 	HomeDir        string
 	DataDir        string
 	SkillIndex     *skills.Index
+	// PluginCommands are slash commands contributed by verified plugins.
+	// Run() registers them into the TUI command registry; headless
+	// sessions ignore them.
+	PluginCommands []commands.Command
 	JobManager     *native.JobManager
 	DesktopCloser  func()
 
@@ -452,14 +456,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		return nil, fmt.Errorf("load skills: %w", err)
 	}
 
-	if err := plugins.LoadStore(skillIndex, plugins.GlobalStoreDir(homeDir), plugins.GlobalLockPath(homeDir), logger); err != nil {
-		logger.Warn("failed to load global plugins", "error", err)
-	}
-	if projectTrusted {
-		if err := plugins.LoadStore(skillIndex, plugins.ProjectStoreDir(workingDir), plugins.ProjectLockPath(workingDir), logger); err != nil {
-			logger.Warn("failed to load project plugins", "error", err)
-		}
-	}
+	pluginCommands := loadPluginContents(&cfg, skillIndex, homeDir, workingDir, projectTrusted, logger)
 
 	workCtx, workCancel := context.WithCancel(ctx)
 	jobBroker := pubsub.NewBroker[native.JobEvent]()
@@ -497,6 +494,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		HomeDir:            homeDir,
 		DataDir:            dataDir,
 		SkillIndex:         skillIndex,
+		PluginCommands:     pluginCommands,
 		LSPManager:         lspMgr,
 		ConfigReloader:     runOpts.configReloader,
 		additionalDirs:     runOpts.additionalDirs,

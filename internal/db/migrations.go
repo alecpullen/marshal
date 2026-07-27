@@ -227,4 +227,11 @@ CREATE TABLE IF NOT EXISTS embeddings (
     vector   BLOB NOT NULL,
     PRIMARY KEY (chunk_id)
 );
+
+CREATE TABLE IF NOT EXISTS prompt_history (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    content    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 `

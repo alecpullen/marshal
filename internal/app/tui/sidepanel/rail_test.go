@@ -1,6 +1,7 @@
 package sidepanel
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -107,6 +108,82 @@ func TestRailViewDegenerateSizes(t *testing.T) {
 		if out := r.View(Data{}, tc.w, tc.h); out != "" {
 			t.Errorf("View(w=%d,h=%d) = %q, want empty", tc.w, tc.h, out)
 		}
+	}
+}
+
+func TestDistributeGapsCapsAtMax(t *testing.T) {
+	got := distributeGaps(4, 100)
+	if len(got) != 3 {
+		t.Fatalf("got %d gaps, want 3", len(got))
+	}
+	for i, g := range got {
+		if g != maxGapRows {
+			t.Errorf("gap %d = %d, want %d", i, g, maxGapRows)
+		}
+	}
+}
+
+func TestDistributeGapsFillsFrontToBack(t *testing.T) {
+	// 3 sections, 2 gaps, 3 leftover rows, cap 2 → [2, 1].
+	got := distributeGaps(3, 3)
+	want := []int{2, 1}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestDistributeGapsZeroLeftover(t *testing.T) {
+	got := distributeGaps(3, 0)
+	want := []int{0, 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestDistributeGapsSingleSection(t *testing.T) {
+	if got := distributeGaps(1, 10); len(got) != 0 {
+		t.Errorf("got %v, want no gaps for a single section", got)
+	}
+}
+
+func TestRailSpreadsShortSectionsWithinCap(t *testing.T) {
+	// Two 2-row sections in a 30-row rail: lots of leftover.
+	r := New(mk("alpha", 0, 2), mk("beta", 1, 2))
+	out := r.View(Data{}, 30, 30)
+	lines := strings.Split(out, "\n")
+
+	if len(lines) != 30 {
+		t.Fatalf("got %d rows, want 30", len(lines))
+	}
+
+	// Find the two title rows and confirm the gap between the sections
+	// never exceeds the cap plus the one baseline separator row.
+	firstEnd, secondStart := -1, -1
+	for i, l := range lines {
+		v := strings.TrimSpace(StripANSI(l))
+		if strings.Contains(v, "ALPHA") {
+			firstEnd = i + 2 // title + 2 body rows
+		}
+		if strings.Contains(v, "BETA") {
+			secondStart = i
+		}
+	}
+	if firstEnd < 0 || secondStart < 0 {
+		t.Fatalf("could not locate both sections in:\n%s", StripANSI(out))
+	}
+	gap := secondStart - firstEnd - 1
+	if gap > maxGapRows+1 {
+		t.Errorf("gap between sections = %d rows, want <= %d", gap, maxGapRows+1)
+	}
+}
+
+func TestRailDistributionDoesNotChangeStates(t *testing.T) {
+	// A rail too small for both expanded must still collapse identically
+	// whether or not distribution runs.
+	r := New(mk("alpha", 0, 5), mk("beta", 1, 5))
+	out := StripANSI(r.View(Data{}, 30, 8))
+	if !strings.Contains(out, "beta summary") {
+		t.Errorf("expected beta collapsed to its one-line summary, got:\n%s", out)
 	}
 }
 

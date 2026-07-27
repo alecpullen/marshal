@@ -10,6 +10,11 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
+// maxGapRows caps how many blank rows may sit between two sections.
+// Uncapped distribution lets sections drift far enough apart on a tall
+// terminal that the stack stops reading as a group.
+const maxGapRows = 2
+
 // dividerGlyph is the hairline rule down the rail's left edge. It occupies
 // one column; a following space brings the reserved gutter to two.
 const dividerGlyph = "│"
@@ -110,24 +115,44 @@ func (r *Rail) View(d Data, width, height int) string {
 
 	states := fit(costs, height)
 
-	rows := make([]string, 0, height)
-	for i, s := range live {
-		switch states[i] {
-		case StateDropped:
+	// Measure the fitted stack, then deal the leftover out as extra gaps.
+	used := 0
+	surviving := 0
+	for i := range live {
+		if states[i] == StateDropped {
 			continue
-		case StateOneLine:
+		}
+		used += costs[i].height(states[i])
+		surviving++
+	}
+	if surviving > 1 {
+		used += surviving - 1 // baseline blank row between sections
+	}
+	gaps := distributeGaps(surviving, height-used)
+
+	rows := make([]string, 0, height)
+	emitted := 0
+	for i, s := range live {
+		if states[i] == StateDropped {
+			continue
+		}
+		if emitted > 0 {
 			rows = appendSep(rows)
+			for g := 0; g < gaps[emitted-1]; g++ {
+				rows = append(rows, "")
+			}
+		}
+		switch states[i] {
+		case StateOneLine:
 			rows = append(rows, ansi.Truncate(s.OneLine(d, inner), inner, "…"))
 		case StateClipped:
-			rows = appendSep(rows)
 			rows = append(rows, Header(s.Title(), "", inner))
-			body := s.Render(d, inner, costs[i].Clipped-1)
-			rows = append(rows, body...)
+			rows = append(rows, s.Render(d, inner, costs[i].Clipped-1)...)
 		default:
-			rows = appendSep(rows)
 			rows = append(rows, Header(s.Title(), "", inner))
 			rows = append(rows, bodies[i]...)
 		}
+		emitted++
 	}
 	if len(rows) > height {
 		rows = rows[:height]
@@ -164,4 +189,26 @@ func frame(rows []string, inner, height int) string {
 		out[i] = rule + body + strings.Repeat(" ", pad)
 	}
 	return strings.Join(out, "\n")
+}
+
+// distributeGaps deals leftover rows out as extra blank rows before each
+// section after the first, front to back, capped at maxGapRows each.
+// Returns sectionCount-1 entries; any remainder stays at the bottom.
+func distributeGaps(sectionCount, leftover int) []int {
+	if sectionCount < 2 {
+		return nil
+	}
+	gaps := make([]int, sectionCount-1)
+	if leftover <= 0 {
+		return gaps
+	}
+	for i := range gaps {
+		take := min(leftover, maxGapRows)
+		gaps[i] = take
+		leftover -= take
+		if leftover == 0 {
+			break
+		}
+	}
+	return gaps
 }

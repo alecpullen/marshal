@@ -5,9 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"testing"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
@@ -315,5 +316,20 @@ func TestRosterRolePickerOpensOverlay(t *testing.T) {
 	}
 	if binding.Preset != "slow" {
 		t.Fatalf("planner preset = %q, want %q", binding.Preset, "slow")
+	}
+}
+
+func TestRosterTwoColumnShowsDetailPane(t *testing.T) {
+	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	out := p.View(140, 20)
+	// Above the breakpoint the panel fills the dock width.
+	// Check a content line (not the title line) to verify width.
+	lines := strings.Split(out, "\n")
+	if len(lines) < 4 {
+		t.Fatalf("expected at least 4 lines, got %d:\n%s", len(lines), out)
+	}
+	// Line index 3 is the first field row (Profile).
+	if got := ansi.StringWidth(lines[3]); got < 100 {
+		t.Fatalf("roster should fill the dock width, content line is %d cols: %q", got, out)
 	}
 }

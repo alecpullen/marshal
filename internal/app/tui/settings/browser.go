@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/textfield"
@@ -507,7 +508,8 @@ func rowHints(list *fieldList, atRoot bool) string {
 }
 
 // View renders the active flat browser, collection drill, or picker within
-// the dock's dimensions.
+// the dock's dimensions. Past layout.WideBreakpoint the list splits into a
+// list pane and a right-hand detail pane holding the cursor row's desc.
 func (b *BrowserPanel) View(width, maxHeight int) string {
 	// The panel needs a header row plus one content row.
 	if maxHeight < 2 {
@@ -517,8 +519,18 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 		return b.pickerModel.View(width, maxHeight)
 	}
 
-	panelWidth := min(72, max(width-2, 30))
+	panelWidth := layout.PanelWidth(width)
 	innerWidth := panelWidth - 3
+
+	twoCol := layout.TwoColumn(innerWidth)
+	listWidth := innerWidth
+	if twoCol {
+		listWidth, _ = layout.SplitPanes(innerWidth)
+	}
+
+	// Suppress the inline desc line before rendering; in two-column mode the
+	// desc renders in the detail pane instead.
+	b.activeList().setDescSuppressed(twoCol)
 
 	title := "Settings"
 	var body string
@@ -526,12 +538,34 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 	if b.stack != nil {
 		rootTitle := b.stack.stack[0].title
 		title += " › " + b.stack.breadcrumb(rootTitle)
-		b.stack.SetSize(innerWidth, max(maxHeight-3, 1))
-		body = b.stack.top().list.View()
+		b.stack.SetSize(listWidth, max(maxHeight-3, 1))
+		listView := b.stack.top().list.View()
+		if twoCol {
+			_, detailWidth := layout.SplitPanes(innerWidth)
+			desc := ""
+			if row := b.activeList().CursorRow(); row != nil {
+				desc = row.desc
+			}
+			detail := lipgloss.NewStyle().Width(detailWidth).Foreground(settingsTheme().FGMuted).Render(desc)
+			body = lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)
+		} else {
+			body = listView
+		}
 		footer = fmt.Sprintf("%d settings", len(b.stack.top().list.Rows()))
 	} else {
-		b.list.SetSize(innerWidth, max(maxHeight-4, 1))
-		body = "/ " + b.filter.View() + "\n" + b.list.View()
+		b.list.SetSize(listWidth, max(maxHeight-4, 1))
+		listView := b.list.View()
+		if twoCol {
+			_, detailWidth := layout.SplitPanes(innerWidth)
+			desc := ""
+			if row := b.activeList().CursorRow(); row != nil {
+				desc = row.desc
+			}
+			detail := lipgloss.NewStyle().Width(detailWidth).Foreground(settingsTheme().FGMuted).Render(desc)
+			body = "/ " + b.filter.View() + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)
+		} else {
+			body = "/ " + b.filter.View() + "\n" + listView
+		}
 		footer = fmt.Sprintf("%d settings", len(b.list.Rows()))
 	}
 	hints := rowHints(b.activeList(), b.stack == nil)

@@ -173,6 +173,15 @@ func TestAllowCustomDisabledNoSentinel(t *testing.T) {
 	}
 }
 
+func TestPickerFillsDockWidth(t *testing.T) {
+	m := New("Pick", "", testItems())
+	out := m.View(120, 20)
+	firstLine, _, _ := strings.Cut(out, "\n")
+	if got := ansi.StringWidth(firstLine); got < 100 {
+		t.Fatalf("picker should fill the dock width, first line is %d cols wide: %q", got, out)
+	}
+}
+
 func TestPasteIntoFilter(t *testing.T) {
 	m := New("Switch model", "", testItems())
 	m.Update(tea.PasteMsg{Content: "llama-local"})

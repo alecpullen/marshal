@@ -281,3 +281,15 @@ func FieldListTakePushPicker(fl *FieldList) *PickerRequest {
 
 // FieldListView returns the view of a field list.
 func FieldListView(fl *FieldList) string { return fl.View() }
+
+// FieldListSetDescSuppressed hides the inline desc line under the cursor row
+// (used by two-column panels that render desc in a detail pane).
+func FieldListSetDescSuppressed(fl *FieldList, suppress bool) { fl.setDescSuppressed(suppress) }
+
+// FieldListCursorDesc returns the description of the cursor row, or "".
+func FieldListCursorDesc(fl *FieldList) string {
+	if row := fl.CursorRow(); row != nil {
+		return row.desc
+	}
+	return ""
+}

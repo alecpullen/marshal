@@ -12,6 +12,7 @@ import (
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 )
 
@@ -76,11 +77,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 func (p *Panel) View(width, maxHeight int) string {
 	th := theme.Current()
 
-	pw := min(64, width-8)
-	if pw < 40 {
-		pw = max(width-2, 40)
-	}
-	pw = min(pw, width-2)
+	pw := layout.PanelWidth(width)
 	inner := pw - 3
 
 	if maxHeight < 3 {

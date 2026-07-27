@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/textfield"
@@ -518,17 +519,31 @@ func (p *Panel) View(width, maxHeight int) string {
 		return p.pickerModel.View(width, maxHeight)
 	}
 
-	panelWidth := min(72, max(width-2, 30))
+	panelWidth := layout.PanelWidth(width)
 	innerWidth := panelWidth - 3
 
+	twoCol := layout.TwoColumn(innerWidth)
+	listWidth := innerWidth
+	if twoCol {
+		listWidth, _ = layout.SplitPanes(innerWidth)
+	}
+
 	title := "Agents"
-	settings.FieldListSetSize(p.list, innerWidth, max(maxHeight-4, 1))
+	settings.FieldListSetSize(p.list, listWidth, max(maxHeight-4, 1))
+	settings.FieldListSetDescSuppressed(p.list, twoCol)
 	body := "/ " + p.filter.View() + "\n"
 	if p.showLegend {
 		legend := "● preset bound  ◆ custom agent bound  ↩ impl fallback  legacy  ⚠ unresolved  ←/→ drill"
 		body += lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(legend) + "\n"
 	}
-	body += settings.FieldListView(p.list)
+	listView := settings.FieldListView(p.list)
+	if twoCol {
+		_, detailWidth := layout.SplitPanes(innerWidth)
+		detail := lipgloss.NewStyle().Width(detailWidth).Foreground(theme.Current().FGMuted).
+			Render(settings.FieldListCursorDesc(p.list))
+		listView = lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)
+	}
+	body += listView
 	footer := fmt.Sprintf("%d entries", len(settings.FieldListRows(p.list)))
 
 	content := body + "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(footer)

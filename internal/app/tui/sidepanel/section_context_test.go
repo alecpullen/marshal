@@ -87,6 +87,48 @@ func TestContextSectionNoTelemetryWithoutTurns(t *testing.T) {
 	}
 }
 
+func packWithUsage(t *testing.T, used, max int) contextpack.Pack {
+	t.Helper()
+	return contextpack.Pack{
+		TokenUsage: contextpack.TokenUsage{
+			EstimatedTokens: used,
+			MaxTokens:       max,
+		},
+	}
+}
+
+func anyStyled(rows []string) bool {
+	for _, r := range rows {
+		if strings.Contains(r, "\x1b[") {
+			return true
+		}
+	}
+	return false
+}
+
+func stripAll(rows []string) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = StripANSI(r)
+	}
+	return out
+}
+
+func TestContextSectionWarnsWhenNearLimit(t *testing.T) {
+	over := Data{Pack: packWithUsage(t, 90_000, 100_000)}
+	under := Data{Pack: packWithUsage(t, 10_000, 100_000)}
+
+	overRows := ContextSection{}.Render(over, 30, 0)
+	underRows := ContextSection{}.Render(under, 30, 0)
+
+	if !anyStyled(overRows) {
+		t.Errorf("usage at 90%% should be warning-styled, got %v", stripAll(overRows))
+	}
+	if anyStyled(underRows) {
+		t.Errorf("usage at 10%% should be unstyled, got %v", stripAll(underRows))
+	}
+}
+
 func TestBar(t *testing.T) {
 	tests := []struct {
 		frac  float64

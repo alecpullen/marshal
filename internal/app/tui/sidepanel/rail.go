@@ -10,6 +10,11 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
+// maxGapRows caps how many blank rows may sit between two sections.
+// Uncapped distribution lets sections drift far enough apart on a tall
+// terminal that the stack stops reading as a group.
+const maxGapRows = 2
+
 // dividerGlyph is the hairline rule down the rail's left edge. It occupies
 // one column; a following space brings the reserved gutter to two.
 const dividerGlyph = "│"
@@ -30,23 +35,59 @@ type Rail struct{ sections []Section }
 // order is independent and comes from each section's Priority.
 func New(sections ...Section) *Rail { return &Rail{sections: sections} }
 
-// Header renders a section title with right flush to the rail edge. When
-// there is no room for both, right is dropped and the title is truncated.
+// ruleGlyph is the hairline rule that follows a section title.
+const ruleGlyph = "─"
+
+// Header renders a section title followed by a rule running to the rail
+// edge. When right is non-empty the rule stops short and right is flushed
+// to the edge. When there is no room for both, right is dropped and the
+// title is truncated.
 func Header(title, right string, width int) string {
 	th := theme.Current()
-	style := lipgloss.NewStyle().Foreground(th.FGMuted).Bold(true)
+	titleStyle := lipgloss.NewStyle().Foreground(th.FGEmphasis)
+	if _, isNoColor := th.FGEmphasis.(lipgloss.NoColor); !isNoColor {
+		titleStyle = titleStyle.Bold(true)
+	}
+	ruleStyle := lipgloss.NewStyle().Foreground(th.BorderMuted)
 	dim := lipgloss.NewStyle().Foreground(th.FGMuted)
 
 	if width < 1 {
 		return ""
 	}
-	label := ansi.Truncate(title, width, "…")
-	gap := width - ansi.StringWidth(label) - ansi.StringWidth(right)
-	if right == "" || gap < 1 {
-		return style.Render(label) + strings.Repeat(" ", max(width-ansi.StringWidth(label), 0))
+	// Empty title: render a full-width rule with no leading space.
+	if title == "" {
+		return ruleStyle.Render(strings.Repeat(ruleGlyph, width))
 	}
-	return style.Render(label) + strings.Repeat(" ", gap) + dim.Render(right)
+	label := ansi.Truncate(title, width, "…")
+	labelW := ansi.StringWidth(label)
+
+	// Reserve a space after the title, then whatever right needs.
+	rightW := 0
+	if right != "" {
+		rightW = ansi.StringWidth(right) + 1 // leading space
+	}
+	ruleW := width - labelW - 1 - rightW
+
+	// Not enough room for a rule alongside right: drop right and retry.
+	if ruleW < 1 && right != "" {
+		return Header(title, "", width)
+	}
+	if ruleW < 1 {
+		// No room for a rule at all; pad with spaces so width holds.
+		return titleStyle.Render(label) +
+			strings.Repeat(" ", max(width-labelW, 0))
+	}
+
+	out := titleStyle.Render(label) + " " +
+		ruleStyle.Render(strings.Repeat(ruleGlyph, ruleW))
+	if right != "" {
+		out += " " + dim.Render(right)
+	}
+	return out
 }
+
+// footerID marks the section the rail pins to its bottom edge.
+const footerID = "session"
 
 // View renders the rail at exactly width columns and height rows. Returns
 // "" when the rail cannot be drawn or has no relevant sections.
@@ -84,29 +125,95 @@ func (r *Rail) View(d Data, width, height int) string {
 
 	states := fit(costs, height)
 
-	rows := make([]string, 0, height)
+	// Partition surviving sections: everything but the footer lays out
+	// from the top, the footer is pinned to the bottom edge.
+	footerIdx := -1
 	for i, s := range live {
-		switch states[i] {
-		case StateDropped:
-			continue
-		case StateOneLine:
-			rows = appendSep(rows)
-			rows = append(rows, ansi.Truncate(s.OneLine(d, inner), inner, "…"))
-		case StateClipped:
-			rows = appendSep(rows)
-			rows = append(rows, Header(s.Title(), "", inner))
-			body := s.Render(d, inner, costs[i].Clipped-1)
-			rows = append(rows, body...)
-		default:
-			rows = appendSep(rows)
-			rows = append(rows, Header(s.Title(), "", inner))
-			rows = append(rows, bodies[i]...)
+		if s.ID() == footerID && states[i] != StateDropped {
+			footerIdx = i
 		}
 	}
-	if len(rows) > height {
-		rows = rows[:height]
+
+	footerRows := []string{}
+	if footerIdx >= 0 {
+		footerRows = sectionRows(live[footerIdx], d, states[footerIdx], costs[footerIdx], bodies[footerIdx], inner)
+		// The footer is introduced by a bare rule, then a blank row above.
+		footerRows = append([]string{"", Header("", "", inner)}, footerRows...)
 	}
+
+	// If the footer cannot fit at the requested height, drop it entirely.
+	// fit() doesn't know about the 2 intro rows (blank + rule) that View
+	// prepends, so it may assign a state that fits the section body but
+	// not the intro rows. When the footer is the sole survivor this would
+	// make bodyBudget negative and panic.
+	if len(footerRows) > height {
+		states[footerIdx] = StateDropped
+		footerIdx = -1
+		footerRows = nil
+	}
+
+	bodyBudget := height - len(footerRows)
+	bodyRows := buildBody(live, states, costs, bodies, d, inner, footerIdx, bodyBudget)
+	if len(bodyRows) > bodyBudget {
+		bodyRows = bodyRows[:bodyBudget]
+	}
+
+	rows := bodyRows
+	for len(rows) < bodyBudget {
+		rows = append(rows, "")
+	}
+	rows = append(rows, footerRows...)
 	return frame(rows, inner, height)
+}
+
+// sectionRows renders one section in its assigned state, excluding any
+// gap rows around it.
+func sectionRows(s Section, d Data, state RenderState, cost SectionCost, body []string, inner int) []string {
+	switch state {
+	case StateOneLine:
+		return []string{ansi.Truncate(s.OneLine(d, inner), inner, "…")}
+	case StateClipped:
+		return append([]string{Header(s.Title(), "", inner)},
+			s.Render(d, inner, cost.Clipped-1)...)
+	default:
+		return append([]string{Header(s.Title(), "", inner)}, body...)
+	}
+}
+
+// buildBody lays out every surviving section except the one at skipIdx,
+// distributing leftover rows as capped inter-section gaps.
+func buildBody(live []Section, states []RenderState, costs []SectionCost,
+	bodies [][]string, d Data, inner, skipIdx, budget int) []string {
+
+	used, surviving := 0, 0
+	for i := range live {
+		if states[i] == StateDropped || i == skipIdx {
+			continue
+		}
+		used += costs[i].height(states[i])
+		surviving++
+	}
+	if surviving > 1 {
+		used += surviving - 1
+	}
+	gaps := distributeGaps(surviving, budget-used)
+
+	rows := make([]string, 0, budget)
+	emitted := 0
+	for i, s := range live {
+		if states[i] == StateDropped || i == skipIdx {
+			continue
+		}
+		if emitted > 0 {
+			rows = appendSep(rows)
+			for g := 0; g < gaps[emitted-1]; g++ {
+				rows = append(rows, "")
+			}
+		}
+		rows = append(rows, sectionRows(s, d, states[i], costs[i], bodies[i], inner)...)
+		emitted++
+	}
+	return rows
 }
 
 // appendSep adds a blank separator row before every section but the first.
@@ -138,4 +245,26 @@ func frame(rows []string, inner, height int) string {
 		out[i] = rule + body + strings.Repeat(" ", pad)
 	}
 	return strings.Join(out, "\n")
+}
+
+// distributeGaps deals leftover rows out as extra blank rows before each
+// section after the first, front to back, capped at maxGapRows each.
+// Returns sectionCount-1 entries; any remainder stays at the bottom.
+func distributeGaps(sectionCount, leftover int) []int {
+	if sectionCount < 2 {
+		return nil
+	}
+	gaps := make([]int, sectionCount-1)
+	if leftover <= 0 {
+		return gaps
+	}
+	for i := range gaps {
+		take := min(leftover, maxGapRows)
+		gaps[i] = take
+		leftover -= take
+		if leftover == 0 {
+			break
+		}
+	}
+	return gaps
 }

@@ -775,6 +775,7 @@ func (m *Model) rebuildRail() {
 		sidepanel.ToolsSection{},
 		sidepanel.RulesSection{},
 		sidepanel.RepoSection{},
+		sidepanel.SessionSection{},
 	}
 	hidden := map[string]bool{}
 	for _, id := range m.state.Config.TUI.SidePanel.Hidden {

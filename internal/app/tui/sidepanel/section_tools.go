@@ -87,7 +87,7 @@ func (ToolsSection) Render(d Data, width, maxRows int) []string {
 		}
 		line := fmt.Sprintf(" %-14s ×%d", shortToolName(s.Name), s.Calls)
 		if s.Errors > 0 {
-			line += fmt.Sprintf(" (%d✘)", s.Errors)
+			line += styleError(fmt.Sprintf(" (%d✘)", s.Errors))
 		}
 		rows = append(rows, line)
 	}

@@ -1,10 +1,17 @@
 package sidepanel
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/app/tui/theme"
+	"marshal/internal/contextpack"
+	"marshal/internal/db"
+	"marshal/internal/tools/registry"
 )
 
 // fakeSection is a Section with fully controllable geometry.
@@ -110,6 +117,82 @@ func TestRailViewDegenerateSizes(t *testing.T) {
 	}
 }
 
+func TestDistributeGapsCapsAtMax(t *testing.T) {
+	got := distributeGaps(4, 100)
+	if len(got) != 3 {
+		t.Fatalf("got %d gaps, want 3", len(got))
+	}
+	for i, g := range got {
+		if g != maxGapRows {
+			t.Errorf("gap %d = %d, want %d", i, g, maxGapRows)
+		}
+	}
+}
+
+func TestDistributeGapsFillsFrontToBack(t *testing.T) {
+	// 3 sections, 2 gaps, 3 leftover rows, cap 2 → [2, 1].
+	got := distributeGaps(3, 3)
+	want := []int{2, 1}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestDistributeGapsZeroLeftover(t *testing.T) {
+	got := distributeGaps(3, 0)
+	want := []int{0, 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestDistributeGapsSingleSection(t *testing.T) {
+	if got := distributeGaps(1, 10); len(got) != 0 {
+		t.Errorf("got %v, want no gaps for a single section", got)
+	}
+}
+
+func TestRailSpreadsShortSectionsWithinCap(t *testing.T) {
+	// Two 2-row sections in a 30-row rail: lots of leftover.
+	r := New(mk("alpha", 0, 2), mk("beta", 1, 2))
+	out := r.View(Data{}, 30, 30)
+	lines := strings.Split(out, "\n")
+
+	if len(lines) != 30 {
+		t.Fatalf("got %d rows, want 30", len(lines))
+	}
+
+	// Find the two title rows and confirm the gap between the sections
+	// never exceeds the cap plus the one baseline separator row.
+	firstEnd, secondStart := -1, -1
+	for i, l := range lines {
+		v := strings.TrimSpace(StripANSI(l))
+		if strings.Contains(v, "ALPHA") {
+			firstEnd = i + 2 // title + 2 body rows
+		}
+		if strings.Contains(v, "BETA") {
+			secondStart = i
+		}
+	}
+	if firstEnd < 0 || secondStart < 0 {
+		t.Fatalf("could not locate both sections in:\n%s", StripANSI(out))
+	}
+	gap := secondStart - firstEnd - 1
+	if gap > maxGapRows+1 {
+		t.Errorf("gap between sections = %d rows, want <= %d", gap, maxGapRows+1)
+	}
+}
+
+func TestRailDistributionDoesNotChangeStates(t *testing.T) {
+	// A rail too small for both expanded must still collapse identically
+	// whether or not distribution runs.
+	r := New(mk("alpha", 0, 5), mk("beta", 1, 5))
+	out := StripANSI(r.View(Data{}, 30, 8))
+	if !strings.Contains(out, "beta summary") {
+		t.Errorf("expected beta collapsed to its one-line summary, got:\n%s", out)
+	}
+}
+
 func TestHeaderRightAligns(t *testing.T) {
 	got := StripANSI(Header("CHANGED", "3", 20))
 	if ansi.StringWidth(got) != 20 {
@@ -118,14 +201,220 @@ func TestHeaderRightAligns(t *testing.T) {
 	if !strings.HasPrefix(got, "CHANGED") {
 		t.Errorf("got %q, want a CHANGED prefix", got)
 	}
-	if !strings.HasSuffix(got, "3") {
-		t.Errorf("got %q, want a 3 suffix", got)
+	if !strings.HasSuffix(got, " 3") {
+		t.Errorf("got %q, want a ' 3' suffix", got)
 	}
 }
 
 func TestHeaderDropsRightWhenNoRoom(t *testing.T) {
-	got := StripANSI(Header("VERYLONGSECTIONTITLE", "12345", 10))
-	if ansi.StringWidth(got) != 10 {
-		t.Errorf("width = %d, want 10: %q", ansi.StringWidth(got), got)
+	out := StripANSI(Header("CONTEXT", "78%", 9))
+	if ansi.StringWidth(out) != 9 {
+		t.Fatalf("width = %d, want 9: %q", ansi.StringWidth(out), out)
+	}
+	if strings.Contains(out, "78%") {
+		t.Errorf("want right dropped at narrow width, got %q", out)
+	}
+}
+
+func TestHeaderRendersRule(t *testing.T) {
+	out := StripANSI(Header("CONTEXT", "", 20))
+	if ansi.StringWidth(out) != 20 {
+		t.Fatalf("width = %d, want 20: %q", ansi.StringWidth(out), out)
+	}
+	if !strings.HasPrefix(out, "CONTEXT ") {
+		t.Errorf("want title then space, got %q", out)
+	}
+	if !strings.Contains(out, "─") {
+		t.Errorf("want a rule, got %q", out)
+	}
+	if strings.TrimRight(out, "─") != "CONTEXT " {
+		t.Errorf("want rule to run to the edge, got %q", out)
+	}
+}
+
+func TestHeaderRuleSeparatesTitleFromRight(t *testing.T) {
+	out := StripANSI(Header("CONTEXT", "78%", 20))
+	if ansi.StringWidth(out) != 20 {
+		t.Fatalf("width = %d, want 20: %q", ansi.StringWidth(out), out)
+	}
+	if !strings.HasPrefix(out, "CONTEXT ") {
+		t.Errorf("want title first, got %q", out)
+	}
+	if !strings.HasSuffix(out, " 78%") {
+		t.Errorf("want right value last, got %q", out)
+	}
+	if !strings.Contains(out, "─") {
+		t.Errorf("want a rule between title and value, got %q", out)
+	}
+}
+
+func TestHeaderTruncatesLongTitle(t *testing.T) {
+	out := StripANSI(Header("VERYLONGSECTIONTITLE", "", 8))
+	if ansi.StringWidth(out) != 8 {
+		t.Fatalf("width = %d, want 8: %q", ansi.StringWidth(out), out)
+	}
+}
+
+func TestHeaderZeroWidth(t *testing.T) {
+	if got := Header("CONTEXT", "", 0); got != "" {
+		t.Errorf("want empty string at width 0, got %q", got)
+	}
+}
+
+// footerSection is a fake with the pinned footer's identity.
+func footerSection(rows int) fakeSection {
+	f := mk("session", 9, rows)
+	f.title = ""
+	f.oneLine = "session summary"
+	return f
+}
+
+func TestFooterRendersFlushToBottom(t *testing.T) {
+	r := New(mk("alpha", 0, 2), footerSection(2))
+	lines := strings.Split(r.View(Data{}, 30, 20), "\n")
+	if len(lines) != 20 {
+		t.Fatalf("got %d rows, want 20", len(lines))
+	}
+	last := strings.TrimSpace(StripANSI(lines[19]))
+	if !strings.Contains(last, "session-row") {
+		t.Errorf("bottom row = %q, want the footer's last body row", last)
+	}
+}
+
+func TestFooterFlushAtVariousHeights(t *testing.T) {
+	for _, h := range []int{12, 20, 40} {
+		r := New(mk("alpha", 0, 2), footerSection(2))
+		lines := strings.Split(r.View(Data{}, 30, h), "\n")
+		last := strings.TrimSpace(StripANSI(lines[h-1]))
+		if !strings.Contains(last, "session-row") {
+			t.Errorf("height %d: bottom row = %q, want footer body", h, last)
+		}
+	}
+}
+
+func TestFooterCollapsesToOneLineWhenTight(t *testing.T) {
+	// alpha needs 6 rows expanded; footer needs 3. At height 8 something
+	// must give, and the footer has the worst priority.
+	r := New(mk("alpha", 0, 5), footerSection(2))
+	out := StripANSI(r.View(Data{}, 30, 8))
+	if !strings.Contains(out, "session summary") {
+		t.Errorf("want footer collapsed to one-line, got:\n%s", out)
+	}
+}
+
+func TestFooterDropsWhenNoRoom(t *testing.T) {
+	// Two 2-row footers survive at height 4; one fit-collapsed footer
+	// at height 2 only has room for one of them, so alpha's OneLine.
+	// A footer at height 2 must give — and the footer is the worst
+	// priority. Plan originally said height 6, but with the rail's
+	// inter-section baseline + section natural heights that doesn't
+	// force drop.
+	r := New(mk("alpha", 0, 5), footerSection(2))
+	out := StripANSI(r.View(Data{}, 30, 2))
+	if strings.Contains(out, "session") {
+		t.Errorf("want footer dropped at height 2, got:\n%s", out)
+	}
+	if !strings.Contains(out, "alpha summary") {
+		t.Errorf("want alpha to survive, got:\n%s", out)
+	}
+}
+
+func TestRailStructureSurvivesColorStripping(t *testing.T) {
+	r := New(mk("alpha", 0, 2), mk("beta", 1, 2), footerSection(2))
+	plain := StripANSI(r.View(Data{}, 30, 20))
+	for _, want := range []string{"ALPHA", "BETA", "─", "│"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("structure marker %q must survive color stripping:\n%s", want, plain)
+		}
+	}
+}
+
+// TestRailNoANSIEscapesUnderNoColor asserts that the rail emits no ANSI
+// escape sequences when NO_COLOR is set, even when sections apply styled
+// output (success/error/warning) and the header/divider use lipgloss.
+func TestRailNoANSIEscapesUnderNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "xterm-256color")
+	prev := theme.Current()
+	theme.Reload(theme.Load())
+	t.Cleanup(func() { theme.Reload(prev) })
+
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	d := Data{
+		Now: now,
+		// ChangedSection: additions and deletions to exercise styleSuccess/styleError.
+		Changed: []ChangedFile{
+			{Path: "main.go", Status: 'M', Added: 10, Removed: 3},
+			{Path: "foo.go", Status: 'A', Added: 5, Removed: 0},
+			{Path: "bar.go", Status: 'D', Added: 0, Removed: 7},
+		},
+		// ToolsSection: calls with errors to exercise styleError.
+		Audit: []registry.AuditEvent{
+			{ToolName: "file.read", Duration: 100 * time.Millisecond},
+			{ToolName: "shell.exec", Duration: 2 * time.Second, Error: "exit 1"},
+			{ToolName: "file.read", Duration: 50 * time.Millisecond},
+		},
+		// ContextSection: above warn threshold to exercise styleWarning.
+		Pack: contextpack.Pack{
+			TokenUsage: contextpack.TokenUsage{
+				MaxTokens:       10000,
+				EstimatedTokens: 9500,
+			},
+			Sections: []contextpack.Section{
+				{Title: "repo_card", EstimatedTokens: 5000},
+				{Title: "memory", EstimatedTokens: 4500},
+			},
+		},
+		// SessionSection (footer): needs Turns to be relevant.
+		Turns: []db.TurnMetricsRow{
+			{StartedAt: now.Add(-10 * time.Minute), PromptTokens: 500, CompletionTokens: 200},
+			{StartedAt: now.Add(-5 * time.Minute), PromptTokens: 300, CompletionTokens: 100},
+		},
+	}
+
+	r := New(
+		ContextSection{},
+		ChangedSection{},
+		ToolsSection{},
+		SessionSection{},
+	)
+	out := r.View(d, 30, 20)
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("Rail.View emitted ANSI escapes under NO_COLOR:\n%q", out)
+	}
+}
+
+func TestFooterDoesNotPanicAtSmallHeights(t *testing.T) {
+	// Regression test for C1: a footer-only rail must not panic at any
+	// height from 1 to 8. The footer's natural height is 3 (2 body rows
+	// + 1 title), but View prepends 2 intro rows (blank + rule), so the
+	// footer needs 5 rows total. At heights < 5 it must be dropped.
+	r := New(footerSection(2))
+	for h := 1; h <= 8; h++ {
+		out := r.View(Data{}, 30, h)
+		lines := strings.Split(out, "\n")
+		if len(lines) != h {
+			t.Fatalf("height %d: got %d rows, want %d", h, len(lines), h)
+		}
+		// At heights where the footer fits, it should be present.
+		if h >= 5 {
+			if !strings.Contains(StripANSI(out), "session-row") {
+				t.Errorf("height %d: footer should be present", h)
+			}
+		}
+	}
+}
+
+func TestRailWithoutFooterUnchanged(t *testing.T) {
+	r := New(mk("alpha", 0, 2), mk("beta", 1, 2))
+	lines := strings.Split(r.View(Data{}, 30, 20), "\n")
+	if len(lines) != 20 {
+		t.Fatalf("got %d rows, want 20", len(lines))
+	}
+	// With no footer, the bottom is padding (just the gutter divider).
+	plain := StripANSI(lines[19])
+	if strings.TrimSpace(plain) != "│" {
+		t.Errorf("bottom row = %q, want just the divider when no footer is present", plain)
 	}
 }

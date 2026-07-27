@@ -30,6 +30,7 @@ import (
 	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
+	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
@@ -904,6 +905,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case memory.ClosedMsg:
 		m.dock.CloseNow()
+		m.refreshViewport()
+		return m, nil
+	case docpanel.ClosedMsg:
+		m.dock.CloseNow()
+		m.refreshViewport()
+		return m, nil
+	case docpanel.ActionMsg:
+		m.dock.CloseNow()
+		if msg.Result.Doc != nil {
+			m.openDocPanel(msg.Result.Doc)
+			return m, nil
+		}
+		if msg.Result.Text != "" {
+			m.state.AddMessage(session.RoleSystem, msg.Result.Text, session.ContentTypePlain)
+		}
 		m.refreshViewport()
 		return m, nil
 	}
@@ -2219,8 +2235,11 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	}
 
 	if cmd.Handler != nil {
-		if msg := cmd.Handler(m.state, args).Text; msg != "" {
-			m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+		res := cmd.Handler(m.state, args)
+		if res.Doc != nil {
+			m.openDocPanel(res.Doc)
+		} else if res.Text != "" {
+			m.state.AddMessage(session.RoleSystem, res.Text, session.ContentTypePlain)
 		}
 	}
 
@@ -2288,6 +2307,12 @@ func (m *Model) sortedProviderNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// openDocPanel opens a structured command result as a docked doc panel.
+func (m *Model) openDocPanel(doc *commands.Doc) {
+	m.dock.Open(docpanel.New(*doc, m.state))
+	m.refreshViewport()
 }
 
 // openPicker opens a command modal. The picked value is delivered as

@@ -356,10 +356,10 @@ func TestTypingIsAlwaysCaptured(t *testing.T) {
 func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := commands.New()
-	if err := reg.Register(commands.Command{Name: "settings", Description: "Open settings", Handler: func(*session.State, []string) string { return "" }}); err != nil {
+	if err := reg.Register(commands.Command{Name: "settings", Description: "Open settings", Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}); err != nil {
 		t.Fatalf("Register settings failed: %v", err)
 	}
-	if err := reg.Register(commands.Command{Name: "swarm", Description: "Run swarm", Args: "<goal>", Handler: func(*session.State, []string) string { return "" }}); err != nil {
+	if err := reg.Register(commands.Command{Name: "swarm", Description: "Run swarm", Args: "<goal>", Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}); err != nil {
 		t.Fatalf("Register swarm failed: %v", err)
 	}
 	m := New(state, WithCommandRegistry(reg))
@@ -388,7 +388,7 @@ func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 func TestSlashCommandSuggestionsIncludeHiddenCommands(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := commands.New()
-	hidden := commands.Command{Name: "settings", Description: "Open settings", Hidden: true, Handler: func(*session.State, []string) string { return "" }}
+	hidden := commands.Command{Name: "settings", Description: "Open settings", Hidden: true, Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}
 	if err := reg.Register(hidden); err != nil {
 		t.Fatalf("Register settings failed: %v", err)
 	}
@@ -2594,7 +2594,7 @@ func TestArrowKeysSurviveKeyReleaseEvent(t *testing.T) {
 	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"} {
 		mustRegister(t, reg, commands.Command{
 			Name:    name,
-			Handler: func(s *session.State, args []string) string { return "" },
+			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
 	m := New(state, WithCommandRegistry(reg))
@@ -2628,7 +2628,7 @@ func TestCompletionPopupSurvivesNonKeyEvents(t *testing.T) {
 	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"} {
 		mustRegister(t, reg, commands.Command{
 			Name:    name,
-			Handler: func(s *session.State, args []string) string { return "" },
+			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
 	m := New(state, WithCommandRegistry(reg))
@@ -3291,7 +3291,7 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 	mustRegister(t, reg, commands.Command{
 		Name:        "test",
 		Description: "test command",
-		Handler:     func(s *session.State, args []string) string { return "" },
+		Handler:     func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state, WithCommandRegistry(reg))
@@ -3459,7 +3459,7 @@ func TestShiftTabDuringPopupIsNoOp(t *testing.T) {
 	mustRegister(t, reg, commands.Command{
 		Name:        "test",
 		Description: "test command",
-		Handler:     func(s *session.State, args []string) string { return "" },
+		Handler:     func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state, WithCommandRegistry(reg))
@@ -4779,9 +4779,9 @@ func TestDispatchCommand_QuotedArgs(t *testing.T) {
 	cmdReg := commands.New()
 	if err := cmdReg.Register(commands.Command{
 		Name: "teststub",
-		Handler: func(state *session.State, args []string) string {
+		Handler: func(state *session.State, args []string) commands.Result {
 			captured = args
-			return ""
+			return commands.Text("")
 		},
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -5444,5 +5444,26 @@ func TestPasteRoutesToOpenDockPanel(t *testing.T) {
 	}
 	if strings.Contains(m.input.Value(), "abc") {
 		t.Fatalf("paste leaked into the hidden chat input: %q", m.input.Value())
+	}
+}
+
+func TestDispatchStructuredResultOpensDocPanel(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	reg := commands.New()
+	mustRegister(t, reg, commands.Command{
+		Name: "things", Description: "structured", Args: "",
+		Handler: func(s *session.State, args []string) commands.Result {
+			return commands.Panel("Things", false, []commands.Row{{Text: "one", Detail: "first"}})
+		},
+	})
+	m.cmdRegistry = reg
+	mm, _ := m.dispatchCommand("/things")
+	m = asModel(t, mm)
+	if !m.dock.IsOpen() {
+		t.Fatal("structured result should open a dock panel")
+	}
+	out := m.dock.View(m.leftWidth, m.height)
+	if !strings.Contains(out, "one") || !strings.Contains(out, "first") {
+		t.Fatalf("dock should render the doc rows, got:\n%s", out)
 	}
 }

@@ -135,6 +135,15 @@ func Default() Config {
 				Calibration:             CalibrationConfig{Enabled: false},
 			},
 		},
+		TUI: TUIConfig{
+			SidePanel: SidePanelConfig{
+				Enabled:  true,
+				MinWidth: 120,
+				WidthPct: 25,
+				MinCols:  30,
+				MaxCols:  60,
+			},
+		},
 		Hooks: HooksConfig{
 			FailClosed: false,
 			Entries:    nil,

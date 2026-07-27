@@ -21,6 +21,25 @@ func interfaceFrame(s *state) *frame {
 				f.desc = "color scheme variant"
 				return f
 			}(),
+			{id: "tui.side_panel.enabled", title: "Side panel", kind: kindToggle,
+				tomlPath: "tui.side_panel.enabled",
+				desc:     "show the widescreen side rail on wide terminals",
+				getBool:  func() bool { return s.cfg.TUI.SidePanel.Enabled },
+				setBool:  func(v bool) { s.cfg.TUI.SidePanel.Enabled = v }},
+			func() *field {
+				f := intField("tui.side_panel.min_width", "Side panel min width",
+					func() int { return s.cfg.TUI.SidePanel.MinWidth },
+					80, func(v int) { s.cfg.TUI.SidePanel.MinWidth = v })
+				f.desc = "frame width at which the side rail appears"
+				return f
+			}(),
+			func() *field {
+				f := intField("tui.side_panel.width_pct", "Side panel width %",
+					func() int { return s.cfg.TUI.SidePanel.WidthPct },
+					10, func(v int) { s.cfg.TUI.SidePanel.WidthPct = v })
+				f.desc = "percentage of frame width the rail occupies"
+				return f
+			}(),
 		}
 	})
 }

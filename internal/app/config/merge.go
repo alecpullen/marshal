@@ -228,6 +228,16 @@ func merge(cfg *Config, file configFile) error {
 			}
 		}
 		set(&cfg.TUI.Mode, file.TUI.Mode)
+		if sp := file.TUI.SidePanel; sp != nil {
+			set(&cfg.TUI.SidePanel.Enabled, sp.Enabled)
+			set(&cfg.TUI.SidePanel.MinWidth, sp.MinWidth)
+			set(&cfg.TUI.SidePanel.WidthPct, sp.WidthPct)
+			set(&cfg.TUI.SidePanel.MinCols, sp.MinCols)
+			set(&cfg.TUI.SidePanel.MaxCols, sp.MaxCols)
+			if sp.Hidden != nil {
+				cfg.TUI.SidePanel.Hidden = append([]string(nil), sp.Hidden...)
+			}
+		}
 	}
 	if file.Permissions != nil && file.Permissions.Rules != nil {
 		cfg.Permissions.Rules = file.Permissions.Rules

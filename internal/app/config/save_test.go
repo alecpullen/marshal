@@ -660,6 +660,28 @@ func TestSaveProjectConfigRoundTripsMCPServerTrust(t *testing.T) {
 	}
 }
 
+func TestSaveSidePanelRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+	cfg := Default()
+	cfg.TUI.SidePanel.WidthPct = 33
+	cfg.TUI.SidePanel.Hidden = []string{"repo", "rules"}
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.TUI.SidePanel.WidthPct != 33 {
+		t.Errorf("WidthPct = %d, want 33", loaded.TUI.SidePanel.WidthPct)
+	}
+	if len(loaded.TUI.SidePanel.Hidden) != 2 {
+		t.Errorf("Hidden = %v, want 2 entries", loaded.TUI.SidePanel.Hidden)
+	}
+}
+
 func TestPresetPricingRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	path := tmp + "/.marshal/config.toml"

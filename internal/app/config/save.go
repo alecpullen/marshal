@@ -194,6 +194,16 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			Palette: cfg.TUI.Palette,
 			Mode:    strutil.Ptr(cfg.TUI.Mode),
 		}
+		if !reflect.DeepEqual(cfg.TUI.SidePanel, def.TUI.SidePanel) {
+			file.TUI.SidePanel = &fileSidePanel{
+				Enabled:  strutil.Ptr(cfg.TUI.SidePanel.Enabled),
+				MinWidth: strutil.Ptr(cfg.TUI.SidePanel.MinWidth),
+				WidthPct: strutil.Ptr(cfg.TUI.SidePanel.WidthPct),
+				MinCols:  strutil.Ptr(cfg.TUI.SidePanel.MinCols),
+				MaxCols:  strutil.Ptr(cfg.TUI.SidePanel.MaxCols),
+				Hidden:   cfg.TUI.SidePanel.Hidden,
+			}
+		}
 	}
 	if !reflect.DeepEqual(cfg.Swarm, def.Swarm) {
 		file.Swarm = &fileSwarm{Budget: &fileSwarmBudget{

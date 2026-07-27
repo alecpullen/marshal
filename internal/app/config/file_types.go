@@ -143,9 +143,19 @@ type fileSnapshots struct {
 }
 
 type fileTUI struct {
-	Theme   *string           `toml:"theme"`
-	Palette map[string]string `toml:"palette"`
-	Mode    *string           `toml:"mode"`
+	Theme     *string           `toml:"theme"`
+	Palette   map[string]string `toml:"palette"`
+	Mode      *string           `toml:"mode"`
+	SidePanel *fileSidePanel    `toml:"side_panel"`
+}
+
+type fileSidePanel struct {
+	Enabled  *bool    `toml:"enabled"`
+	MinWidth *int     `toml:"min_width"`
+	WidthPct *int     `toml:"width_pct"`
+	MinCols  *int     `toml:"min_cols"`
+	MaxCols  *int     `toml:"max_cols"`
+	Hidden   []string `toml:"hidden"`
 }
 
 type filePermissions struct {

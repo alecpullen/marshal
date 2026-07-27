@@ -1026,6 +1026,51 @@ max_total_tokens = 1000000
 	}
 }
 
+func TestDefaultSidePanel(t *testing.T) {
+	sp := Default().TUI.SidePanel
+	if !sp.Enabled {
+		t.Errorf("Enabled = false, want true")
+	}
+	if sp.MinWidth != 120 {
+		t.Errorf("MinWidth = %d, want 120", sp.MinWidth)
+	}
+	if sp.WidthPct != 25 {
+		t.Errorf("WidthPct = %d, want 25", sp.WidthPct)
+	}
+	if sp.MinCols != 30 {
+		t.Errorf("MinCols = %d, want 30", sp.MinCols)
+	}
+	if sp.MaxCols != 60 {
+		t.Errorf("MaxCols = %d, want 60", sp.MaxCols)
+	}
+	if len(sp.Hidden) != 0 {
+		t.Errorf("Hidden = %v, want empty", sp.Hidden)
+	}
+}
+
+func TestMergeSidePanel(t *testing.T) {
+	cfg := Default()
+	pct := 30
+	enabled := false
+	if err := merge(&cfg, configFile{TUI: &fileTUI{
+		SidePanel: &fileSidePanel{Enabled: &enabled, WidthPct: &pct, Hidden: []string{"repo"}},
+	}}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if cfg.TUI.SidePanel.Enabled {
+		t.Errorf("Enabled = true, want false")
+	}
+	if cfg.TUI.SidePanel.WidthPct != 30 {
+		t.Errorf("WidthPct = %d, want 30", cfg.TUI.SidePanel.WidthPct)
+	}
+	if cfg.TUI.SidePanel.MinWidth != 120 {
+		t.Errorf("MinWidth = %d, want 120 (unset fields keep defaults)", cfg.TUI.SidePanel.MinWidth)
+	}
+	if len(cfg.TUI.SidePanel.Hidden) != 1 || cfg.TUI.SidePanel.Hidden[0] != "repo" {
+		t.Errorf("Hidden = %v, want [repo]", cfg.TUI.SidePanel.Hidden)
+	}
+}
+
 func TestRemoteLimitDiscoveryDefaultsToRemoteProvidersAllowed(t *testing.T) {
 	cfg := Default()
 	if cfg.Privacy.RemoteLimitDiscovery != cfg.Privacy.RemoteProvidersAllowed {

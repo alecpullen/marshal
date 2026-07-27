@@ -89,9 +89,22 @@ type SnapshotsConfig struct {
 }
 
 type TUIConfig struct {
-	Theme   string            `toml:"theme"`
-	Palette map[string]string `toml:"palette"`
-	Mode    string            `toml:"mode"`
+	Theme     string            `toml:"theme"`
+	Palette   map[string]string `toml:"palette"`
+	Mode      string            `toml:"mode"`
+	SidePanel SidePanelConfig   `toml:"side_panel"`
+}
+
+// SidePanelConfig controls the widescreen side rail. MinWidth is the frame
+// width at which the rail appears; WidthPct/MinCols/MaxCols size it. Hidden
+// lists section IDs to suppress.
+type SidePanelConfig struct {
+	Enabled  bool     `toml:"enabled"`
+	MinWidth int      `toml:"min_width"`
+	WidthPct int      `toml:"width_pct"`
+	MinCols  int      `toml:"min_cols"`
+	MaxCols  int      `toml:"max_cols"`
+	Hidden   []string `toml:"hidden"`
 }
 
 type PermissionsConfig struct {

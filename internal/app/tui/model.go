@@ -34,6 +34,7 @@ import (
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/db"
@@ -150,7 +151,19 @@ type Model struct {
 	rawHeight int
 	width     int // clamped to ≥ minTerminalWidth/Height (internal geometry)
 	height    int
-	viewport  viewport.Model
+	// leftWidth is the width of the left column — everything except the
+	// side rail. When the rail is absent it equals width. The status line
+	// is the one component that keeps the full frame width.
+	leftWidth int
+	// railWidth is the side rail's width, 0 when the rail is not shown.
+	railWidth int
+	// rail is the side panel's section stack.
+	rail *sidepanel.Rail
+	// railHidden is the session-only Ctrl+B override. Not persisted.
+	railHidden bool
+	// railRepoStats is refreshed on turn boundaries, never during render.
+	railRepoStats sidepanel.RepoStats
+	viewport      viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
@@ -645,14 +658,26 @@ func New(state *session.State, opts ...Option) Model {
 	// has a pending request, so the first render shows the huh surface
 	// instead of the legacy fallback panels.
 	if tc := m.state.PendingApproval(); tc != nil {
-		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.width-4, 30))
+		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30))
 	}
 	if q := m.state.PendingQuestion(); q != nil {
-		m.questionModel = newQuestionModel(q, max(m.width-4, 30))
+		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
 	}
 
 	m.gitInfo = gitinfo.Read(state.WorkingDir)
 	m.lastGitRead = m.now()
+
+	m.rail = sidepanel.New(sidepanel.RepoSection{})
+
+	if database := state.DB(); database != nil {
+		if projectID := m.memoryProject; projectID != 0 {
+			files, ferr := database.CountFiles(projectID)
+			syms, serr := database.CountSymbols(projectID)
+			if ferr == nil && serr == nil {
+				m.railRepoStats = sidepanel.RepoStats{Files: files, Symbols: syms}
+			}
+		}
+	}
 
 	return m
 }
@@ -685,15 +710,36 @@ func (m *Model) resize(width, height int) {
 	m.width = width
 	m.height = height
 
+	cfg := m.state.Config.TUI.SidePanel
+	if m.railHidden {
+		cfg.Enabled = false
+	}
+	m.leftWidth, m.railWidth = sidepanel.Geometry(width, minTerminalWidth, cfg)
+
 	// Input interior: the ▍ bar (1 cell) + 1 right margin = 2 reserved
 	// cells. The textarea's SetWidth sets the text wrap width and
 	// internally subtracts promptWidth (2). Reserve 2 so rendered lines
-	// stay inside the terminal width.
-	m.input.SetWidth(max(width-2, 1))
+	// stay inside the left column.
+	m.input.SetWidth(max(m.leftWidth-2, 1))
 
-	// Transcript viewport spans the full terminal width (borderless).
-	m.viewport.SetWidth(max(width, 1))
+	// Transcript viewport spans the left column (borderless).
+	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.viewport.SetHeight(max(height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
+}
+
+// railEnabled reports whether the side rail is being rendered.
+func (m Model) railEnabled() bool { return m.railWidth > 0 }
+
+// railData assembles the side panel's render snapshot. Everything here is
+// either already in memory or cached on turn boundaries — this runs once
+// per frame and must never query the DB or shell out.
+func (m Model) railData() sidepanel.Data {
+	return sidepanel.Data{
+		State: m.state,
+		Git:   m.gitInfo,
+		Repo:  m.railRepoStats,
+		Now:   m.now(),
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -709,10 +755,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.resize(ws.Width, ws.Height)
 		if m.approvalModel != nil {
-			m.approvalModel.SetSize(max(m.width-4, 30))
+			m.approvalModel.SetSize(max(m.leftWidth-4, 30))
 		}
 		if m.questionModel != nil {
-			m.questionModel.SetSize(max(m.width-4, 30))
+			m.questionModel.SetSize(max(m.leftWidth-4, 30))
 		}
 		// Refresh git state on focus/resize: a fresh view should reflect
 		// current branch even if it changed in another tool.
@@ -1082,7 +1128,7 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 	// Lazily build the inline approval chooser the first time a message
 	// arrives for a pending tool call.
 	if m.approvalModel == nil {
-		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.width-4, 30))
+		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30))
 	}
 	am, cmd := m.approvalModel.Update(msg)
 	m.approvalModel = am
@@ -1185,7 +1231,7 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 // channel.
 func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
 	if m.questionModel == nil {
-		m.questionModel = newQuestionModel(q, max(m.width-4, 30))
+		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
 		return m, m.questionModel.Init()
 	}
 	qm, cmd := m.questionModel.Update(msg)
@@ -1216,7 +1262,7 @@ func (m Model) inputAreaRows() int {
 		if m.questionModel != nil {
 			content = m.questionModel.View()
 		} else {
-			content = renderQuestionPanel(q, max(m.width-4, 1))
+			content = renderQuestionPanel(q, max(m.leftWidth-4, 1))
 		}
 		rows += lipgloss.Height(content)
 	} else if tc := m.state.PendingApproval(); tc != nil {
@@ -1228,7 +1274,7 @@ func (m Model) inputAreaRows() int {
 		} else if m.approvalModel != nil {
 			content = m.approvalModel.View()
 		} else {
-			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.width-4, 1))
+			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1))
 		}
 		rows += lipgloss.Height(content)
 	} else {
@@ -1260,7 +1306,7 @@ func (m Model) renderTodoPanel() string {
 	if m.todosDismissed && todosAllDone(todos) {
 		return ""
 	}
-	return renderTodoPanelBody(todos, m.todoPanelMode, m.height, m.width)
+	return renderTodoPanelBody(todos, m.todoPanelMode, m.height, m.leftWidth)
 }
 
 // todoPanelRows reports the rows the pinned todo panel occupies.
@@ -2094,7 +2140,7 @@ func (m *Model) openConnect(_ string) {
 		Discovered: m.discovered,
 		CfgPath:    projectConfigPath(m.state.WorkingDir),
 	})
-	m.connectModel.SetSize(m.width, m.height)
+	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
 }
 
@@ -2113,7 +2159,7 @@ func (m *Model) openModels() tea.Cmd {
 		SkipToIntroModel: true,
 		ScopedProvider:   names[0],
 	})
-	m.connectModel.SetSize(m.width, m.height)
+	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
 	var cmds []tea.Cmd
 	for _, n := range names {

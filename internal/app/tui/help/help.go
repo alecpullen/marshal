@@ -28,6 +28,9 @@ type FooterHints struct {
 	// TodosActive is true when the session has a non-empty todo list, so
 	// the Ctrl+T panel toggle is actionable.
 	TodosActive bool
+	// RailEnabled is true when the side rail is configured and the terminal
+	// is wide enough, so the Ctrl+B toggle is actionable.
+	RailEnabled bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -73,6 +76,9 @@ func Footer(h FooterHints) string {
 		}
 		if h.TodosActive {
 			segs = append(segs, pair("Ctrl+T", "tasks"))
+		}
+		if h.RailEnabled {
+			segs = append(segs, pair("Ctrl+B", "rail"))
 		}
 	}
 	if h.QueueNonEmpty {

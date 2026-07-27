@@ -21,13 +21,13 @@ import (
 func (m Model) renderLiveStrip() string {
 	spinner := m.activeSpinnerFrame(session.ActivityTool)
 	if p := m.state.SwarmProgress(); p.Active {
-		return liveStripLine(spinner, spinnerLabel(spinner, swarmStripText(p)), m.width)
+		return liveStripLine(spinner, spinnerLabel(spinner, swarmStripText(p)), m.leftWidth)
 	}
 	if p := m.state.SDDProgress(); p.Active {
-		return liveStripLine(spinner, spinnerLabel(spinner, sddStripText(p)), m.width)
+		return liveStripLine(spinner, spinnerLabel(spinner, sddStripText(p)), m.leftWidth)
 	}
 	if bi := m.state.BrowserInfo(); bi.SessionOpen {
-		return liveStripLine("·", browserStripText(bi, spinner), m.width)
+		return liveStripLine("·", browserStripText(bi, spinner), m.leftWidth)
 	}
 	return ""
 }

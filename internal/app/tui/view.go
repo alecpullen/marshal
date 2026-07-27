@@ -44,7 +44,7 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
-	dockView := m.dock.View(m.width, m.height)
+	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()
 
 	rows := []string{m.renderTranscriptFrame()}
@@ -52,7 +52,7 @@ func (m *Model) viewString() string {
 		rows = append(rows, todo)
 	}
 	if sd := m.state.SDDProgress(); sd.Active {
-		rows = append(rows, sddPanel(sd, m.width))
+		rows = append(rows, sddPanel(sd, m.leftWidth))
 	}
 	if strip := m.renderLiveStrip(); strip != "" {
 		rows = append(rows, strip)
@@ -60,12 +60,20 @@ func (m *Model) viewString() string {
 	if dockView != "" {
 		rows = append(rows, dockView)
 	}
-	rows = append(rows, m.renderInputArea(), m.renderStatusLine(m.width))
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	rows = append(rows, m.renderInputArea())
+
+	left := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	if m.railEnabled() {
+		railHeight := m.height - statusLineRows
+		if rv := m.rail.View(m.railData(), m.railWidth, railHeight); rv != "" {
+			left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
+		}
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
 }
 
 func (m Model) renderTranscriptFrame() string {
-	vpWidth := max(m.width, 1)
+	vpWidth := max(m.leftWidth, 1)
 	vpHeight := max(m.viewport.Height(), 1)
 	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.viewport.View())
 	if !m.viewportFollow && m.viewport.TotalLineCount() > m.viewport.Height() {
@@ -76,7 +84,7 @@ func (m Model) renderTranscriptFrame() string {
 }
 
 func (m Model) renderInputArea() string {
-	inputInnerWidth := max(m.width-4, 1)
+	inputInnerWidth := max(m.leftWidth-4, 1)
 	rows := make([]string, 0, 4)
 
 	if q := m.state.PendingQuestion(); q != nil {
@@ -172,7 +180,7 @@ func (m Model) renderCompletionPopup() string {
 	if len(matches) == 0 {
 		return ""
 	}
-	available := max(m.width-4, 1)
+	available := max(m.leftWidth-4, 1)
 	rows := make([]string, 0, completionPopupMax)
 	max := completionPopupMax
 	if len(matches) < max {

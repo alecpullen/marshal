@@ -95,6 +95,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.todoPanelMode = (m.todoPanelMode + 1) % todoPanelModeCount
 		m.updateViewportHeight()
 		return *m, nil, true
+	case "ctrl+b":
+		// Toggle the widescreen side rail for the session. Not persisted;
+		// [tui.side_panel].enabled is the durable setting.
+		m.railHidden = !m.railHidden
+		m.resize(m.rawWidth, m.rawHeight)
+		return *m, nil, true
 	case "ctrl+r":
 		if m.state.HasBackup() {
 			_ = m.state.RollbackBackup()

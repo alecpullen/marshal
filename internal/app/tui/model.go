@@ -680,6 +680,8 @@ func New(state *session.State, opts ...Option) Model {
 	m.rail = sidepanel.New(
 		sidepanel.ContextSection{},
 		sidepanel.ChangedSection{},
+		sidepanel.ToolsSection{},
+		sidepanel.RulesSection{},
 		sidepanel.RepoSection{},
 	)
 
@@ -778,6 +780,8 @@ func (m Model) railData() sidepanel.Data {
 		Turns:   m.railTurns,
 		Changed: m.railChanged,
 		Pack:    m.state.ContextPack(),
+		Audit:   m.state.AuditLog(),
+		Rules:   m.state.SessionRules(),
 		Now:     m.now(),
 	}
 }

@@ -29,6 +29,9 @@ type AuditEvent struct {
 	Error           string
 	Sandbox         SandboxMeta
 	Hooks           []HookMetadata
+	// Duration is how long the tool call took. Zero for synthesised
+	// events (rollback, cancellation) that did not run a tool.
+	Duration time.Duration
 	// OriginalArgs holds the user-approved args before any pre_tool_use hook
 	// rewrite. Nil when no rewrite occurred.
 	OriginalArgs json.RawMessage

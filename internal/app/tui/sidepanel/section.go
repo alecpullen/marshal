@@ -7,6 +7,7 @@ import (
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/tools/registry"
 )
 
 // RepoStats is the indexed-repository summary the repo section renders.
@@ -46,6 +47,14 @@ type Data struct {
 	// Pack is the context pack snapshot. Held directly rather than read
 	// from State so tests can build one without a session.
 	Pack contextpack.Pack
+
+	// Audit is the session's tool-call log, held directly so sections are
+	// testable without a live session.
+	Audit []registry.AuditEvent
+
+	// Rules is the session's approval rules, held directly so sections are
+	// testable without a live session.
+	Rules []string
 }
 
 // Section is one read-only block in the rail. Sections are pure functions

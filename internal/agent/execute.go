@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/hooks"
@@ -332,9 +333,11 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		callID = fmt.Sprintf("call_%d", r.Now().UnixNano())
 	}
 	call := registry.ToolCall{ID: callID, Name: toolName, Args: args}
+	start := time.Now()
 	result, execErr := tool.Handler(ctx, call)
 	if execErr != nil {
 		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
+		event.Duration = time.Since(start)
 		event.Hooks = hookAuditMetadata(lastHookOut)
 		event.OriginalArgs = originalApprovedArgs
 		event.Rewritten = toolWasRewritten
@@ -354,6 +357,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)
 	}
 	event := registry.NewAuditEvent(r.Now(), tool, call, summarized, approval, nil)
+	event.Duration = time.Since(start)
 	event.Hooks = hookAuditMetadata(lastHookOut)
 	event.OriginalArgs = originalApprovedArgs
 	event.Rewritten = toolWasRewritten

@@ -28,6 +28,33 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
+func TestTruncateMiddle(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		max  int
+		want string
+	}{
+		{"short", "hello", 10, "hello"},
+		{"exact", "hello", 5, "hello"},
+		{"truncate", "hello world", 7, "hel…rld"},
+		{"truncate even", "abcdefgh", 5, "ab…gh"},
+		{"rune safe", "日本語のテキスト", 5, "日本…スト"},
+		{"path keeps basename", "internal/llm/routing/resolve.go", 18, "interna…resolve.go"},
+		{"path basename too long", "internal/llm/routing/resolve.go", 8, "int…e.go"},
+		{"too small", "abc", 2, ""},
+		{"zero max", "abc", 0, ""},
+		{"negative max", "abc", -1, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := TruncateMiddle(tt.s, tt.max); got != tt.want {
+				t.Errorf("TruncateMiddle(%q, %d) = %q, want %q", tt.s, tt.max, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCompactTokens(t *testing.T) {
 	if got := CompactTokens(842); got != "842" {
 		t.Errorf("CompactTokens(842) = %q", got)

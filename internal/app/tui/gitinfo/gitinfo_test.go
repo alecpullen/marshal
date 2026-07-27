@@ -184,5 +184,33 @@ func min(a, b int) int {
 	return b
 }
 
+func TestHeadSHA(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	initRepo(t, dir)
+	sha := HeadSHA(dir)
+	if sha == "" {
+		t.Fatal("HeadSHA = empty, want a SHA")
+	}
+	if len(sha) != 40 {
+		t.Fatalf("HeadSHA = %q (len %d), want 40 chars", sha, len(sha))
+	}
+	if !isHex(sha) {
+		t.Fatalf("HeadSHA = %q, not hex", sha)
+	}
+}
+
+func TestHeadSANonRepo(t *testing.T) {
+	if got := HeadSHA(t.TempDir()); got != "" {
+		t.Errorf("HeadSHA(non-repo) = %q, want empty", got)
+	}
+}
+
+func TestHeadSHAEmptyDir(t *testing.T) {
+	if got := HeadSHA(""); got != "" {
+		t.Errorf("HeadSHA('') = %q, want empty", got)
+	}
+}
+
 // Suppress unused import on non-darwin where exec is still used.
 var _ = runtime.GOOS

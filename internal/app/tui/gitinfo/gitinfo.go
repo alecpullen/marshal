@@ -2,13 +2,18 @@
 // from git internals — pure file I/O, no subprocess, so it is safe to call
 // on the TUI render path. A linked worktree is detected by the `.git` file
 // (not directory) that git creates, pointing at <repo>/.git/worktrees/<name>.
+//
+// HeadSHA shells out to git and should only be called on turn boundaries.
 package gitinfo
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"marshal/internal/strutil"
 )
@@ -145,6 +150,24 @@ func parseGitdir(raw string) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimPrefix(s, prefix))
+}
+
+// headSHATimeout bounds the git subprocess for HeadSHA.
+const headSHATimeout = 2 * time.Second
+
+// HeadSHA returns the full SHA of HEAD in dir, or "" on any error.
+// Shells out to git — call on turn boundaries, never from View.
+func HeadSHA(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), headSHATimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func truncateBranch(b string) string { return strutil.Truncate(b, maxBranchRunes, true) }

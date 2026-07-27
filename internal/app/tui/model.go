@@ -27,6 +27,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
+	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/gitinfo"
@@ -166,7 +167,12 @@ type Model struct {
 	// railTurns is the recent turn-metrics cache, refreshed when a turn
 	// completes. Never queried during render.
 	railTurns []db.TurnMetricsRow
-	viewport  viewport.Model
+	// railBaseRef is the commit the changed-files section diffs against,
+	// captured once at session start.
+	railBaseRef string
+	// railChanged is the changed-files cache, refreshed on turn boundaries.
+	railChanged []sidepanel.ChangedFile
+	viewport    viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
@@ -669,9 +675,11 @@ func New(state *session.State, opts ...Option) Model {
 
 	m.gitInfo = gitinfo.Read(state.WorkingDir)
 	m.lastGitRead = m.now()
+	m.railBaseRef = gitinfo.HeadSHA(state.WorkingDir)
 
 	m.rail = sidepanel.New(
 		sidepanel.ContextSection{},
+		sidepanel.ChangedSection{},
 		sidepanel.RepoSection{},
 	)
 
@@ -750,17 +758,27 @@ func (m *Model) refreshRailTurns() {
 	m.railTurns = rows
 }
 
+// refreshRailChanged reloads the changed-files cache. Shells out to git,
+// so it runs on turn boundaries only — never from View.
+func (m *Model) refreshRailChanged() {
+	if !m.railEnabled() {
+		return
+	}
+	m.railChanged = changedfiles.Read(m.state.WorkingDir, m.railBaseRef)
+}
+
 // railData assembles the side panel's render snapshot. Everything here is
 // either already in memory or cached on turn boundaries — this runs once
 // per frame and must never query the DB or shell out.
 func (m Model) railData() sidepanel.Data {
 	return sidepanel.Data{
-		State: m.state,
-		Git:   m.gitInfo,
-		Repo:  m.railRepoStats,
-		Turns: m.railTurns,
-		Pack:  m.state.ContextPack(),
-		Now:   m.now(),
+		State:   m.state,
+		Git:     m.gitInfo,
+		Repo:    m.railRepoStats,
+		Turns:   m.railTurns,
+		Changed: m.railChanged,
+		Pack:    m.state.ContextPack(),
+		Now:     m.now(),
 	}
 }
 
@@ -1938,6 +1956,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.busy = false
 	m.agentCancel = nil
 	m.refreshRailTurns()
+	m.refreshRailChanged()
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: render the prompt and wait for user resolution.
 		if errors.Is(msg.err, sdd.ErrHumanGateRequired) {

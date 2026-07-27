@@ -37,11 +37,20 @@ func TestInputGrowsBeyondEightRows(t *testing.T) {
 }
 
 func TestMaxHeightFloorIsOneRow(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
-	m.height = 5 // below every budget; no chrome visible
-	if got := m.maxInputHeight(); got != 1 {
-		t.Fatalf("maxInputHeight() = %d, want 1 (the input always keeps a row)", got)
-	}
+	t.Run("height_5_budget_returns_1", func(t *testing.T) {
+		m := newViewTestModel(t, 80, 24)
+		m.height = 5 // budget = 5 - 0 - 1 - 0 - 0 - 0 - 0 - 3 = 1
+		if got := m.maxInputHeight(); got != 1 {
+			t.Fatalf("maxInputHeight() = %d, want 1", got)
+		}
+	})
+	t.Run("height_2_floor_kicks_in", func(t *testing.T) {
+		m := newViewTestModel(t, 80, 24)
+		m.height = 2 // budget = 2 - 0 - 1 - 0 - 0 - 0 - 0 - 3 = -2, floor to 1
+		if got := m.maxInputHeight(); got != 1 {
+			t.Fatalf("maxInputHeight() = %d, want 1 (floor should clamp negative budget)", got)
+		}
+	})
 }
 
 // Bubbles v2 scrolls the textarea with the cursor line kept visible; this

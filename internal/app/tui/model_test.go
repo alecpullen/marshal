@@ -5329,3 +5329,106 @@ func TestGitInfoRefreshThrottled(t *testing.T) {
 		t.Fatalf("gitInfo changed on throttled tick; freshness window broken")
 	}
 }
+
+func TestDispatchPromptCommandStartsAgentRun(t *testing.T) {
+	reg := commands.New()
+	if err := reg.Register(commands.Command{Name: "review", Description: "Review code", Group: "plugins", PromptBody: "Review the current diff."}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m := New(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
+	m.resize(80, 24)
+
+	updated, cmd := m.dispatchCommand("/review main.go")
+	m = asModel(t, updated)
+
+	if !m.busy {
+		t.Fatal("prompt command should start an agent run")
+	}
+	if cmd == nil {
+		t.Fatal("dispatchCommand should return a cmd")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
+	}
+	for _, sub := range batch {
+		switch msg := sub().(type) {
+		case agentFinishedMsg:
+			if msg.err != nil {
+				t.Fatalf("agentFinishedMsg.err = %v", msg.err)
+			}
+		}
+	}
+
+	select {
+	case goal := <-runner.called:
+		if goal != "Review the current diff.\n\nmain.go" {
+			t.Fatalf("goal = %q, want body with args appended", goal)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner was not invoked")
+	}
+}
+
+func TestDispatchPromptCommandBusySteers(t *testing.T) {
+	reg := commands.New()
+	if err := reg.Register(commands.Command{Name: "review", Description: "Review code", Group: "plugins", PromptBody: "Review the current diff."}); err != nil {
+		t.Fatal(err)
+	}
+	m := New(modelTestState(t), WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.busy = true
+
+	updated, _ := m.dispatchCommand("/review")
+	m = asModel(t, updated)
+
+	followUp, ok := m.popOldestSteering()
+	if !ok {
+		t.Fatal("prompt command while busy should enqueue steering")
+	}
+	if followUp != "Review the current diff." {
+		t.Fatalf("steering = %q", followUp)
+	}
+}
+
+func TestDispatchPromptCommandPreservesQuotedArgs(t *testing.T) {
+	reg := commands.New()
+	if err := reg.Register(commands.Command{Name: "greet", Description: "Greet", Group: "plugins", PromptBody: "Base prompt."}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m := New(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
+	m.resize(80, 24)
+
+	updated, cmd := m.dispatchCommand(`/greet "hello world" 'single'`)
+	m = asModel(t, updated)
+
+	if !m.busy {
+		t.Fatalf("busy = %v, want true; runner = %v", m.busy, m.runner)
+	}
+	if cmd == nil {
+		t.Fatal("dispatchCommand should return a cmd")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
+	}
+	for _, sub := range batch {
+		switch msg := sub().(type) {
+		case agentFinishedMsg:
+			if msg.err != nil {
+				t.Fatalf("agentFinishedMsg.err = %v", msg.err)
+			}
+		}
+	}
+
+	select {
+	case goal := <-runner.called:
+		if goal != "Base prompt.\n\n\"hello world\" 'single'" {
+			t.Fatalf("goal = %q, want quoted args preserved", goal)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner was not invoked")
+	}
+}

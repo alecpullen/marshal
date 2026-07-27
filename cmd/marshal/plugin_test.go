@@ -127,6 +127,9 @@ func TestPluginInstallConfirm(t *testing.T) {
 	if !strings.Contains(out, "skill alpha — Alpha skill") {
 		t.Fatalf("confirmation summary missing skill, out = %q", out)
 	}
+	if !strings.Contains(out, "Executable content") {
+		t.Fatalf("summary should always include the executable section, out = %q", out)
+	}
 	if !strings.Contains(out, `Installed plugin "widgets"`) {
 		t.Fatalf("out = %q", out)
 	}
@@ -341,5 +344,57 @@ func TestPluginUpdateNotInstalled(t *testing.T) {
 	chdirProject(t)
 	if _, err := runPluginCmd(t, "", "update", "--project", "ghost"); err == nil {
 		t.Fatal("expected error updating a plugin that is not installed")
+	}
+}
+
+// initFullPluginRepo creates a git repo with skills, a command, hooks,
+// and an MCP server.
+func initFullPluginRepo(t *testing.T) string {
+	t.Helper()
+	dir := initPluginRepo(t) // skills/alpha/SKILL.md, committed
+	files := map[string]string{
+		"commands/review.md": "+++\nname = \"review\"\ndescription = \"Review the diff\"\n+++\n\nReview the current diff.\n",
+		"hooks.toml":         "[[hooks.entries]]\nevent = \"pre_tool_use\"\nmatcher = \"shell.run\"\ncommand = \"./scripts/lint.sh\"\n",
+		"mcp.toml":           "[mcp.servers.docs]\ncommand = \"npx\"\nargs = [\"-y\", \"@acme/docs-mcp\"]\n\n[mcp.policies]\n\"mcp.docs.search\" = \"allow\"\n",
+	}
+	for name, content := range files {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("add", "-A")
+	run("commit", "-m", "add content")
+	return dir
+}
+
+func TestPluginInstallShowsExecutableContent(t *testing.T) {
+	chdirProject(t)
+	repo := initFullPluginRepo(t)
+
+	out, err := runPluginCmd(t, "y\n", "install", "--project", "--name", "full", repo)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	for _, want := range []string{
+		"skill alpha — Alpha skill",
+		"command /review — Review the diff",
+		"hook pre_tool_use [shell.run]: ./scripts/lint.sh",
+		"mcp server docs: npx -y @acme/docs-mcp",
+		"mcp policy mcp.docs.search = allow",
+		"Executable content",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("confirmation missing %q:\n%s", want, out)
+		}
 	}
 }

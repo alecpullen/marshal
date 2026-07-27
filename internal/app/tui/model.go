@@ -2042,6 +2042,31 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Plugin-defined prompt commands replay the enter-key path: their body
+	// becomes a user turn (steering when the agent is busy), with any
+	// arguments appended verbatim to preserve quoting/whitespace.
+	if cmd.PromptBody != "" {
+		goal := cmd.PromptBody
+		if len(parts) > 1 {
+			rest := raw[len(parts[0]):]
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				goal += "\n\n" + rest
+			}
+		}
+		if m.busy {
+			m.state.PushSteering(goal)
+			m.refreshViewport()
+			return m, nil
+		}
+		if m.runner == nil {
+			m.state.AddMessage(session.RoleSystem, "Agent runner is not available.", session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
+		return m.startAgentRun(m.runner, goal)
+	}
+
 	if cmd.Handler != nil {
 		if msg := cmd.Handler(m.state, args); msg != "" {
 			m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)

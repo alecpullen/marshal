@@ -1163,6 +1163,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
 		return fmt.Errorf("register commands: %w", err)
 	}
+	for _, cmd := range rt.PluginCommands {
+		if err := cmdReg.Register(cmd); err != nil {
+			logger.Warn("skipping plugin command", "command", cmd.Name, "error", err)
+		}
+	}
 
 	var tuiOpts []tui.Option
 	tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))

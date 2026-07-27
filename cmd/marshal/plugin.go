@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"marshal/internal/plugins"
@@ -215,16 +217,13 @@ func runPluginInstall(ctx context.Context, args []string, stdin io.Reader, stdou
 	if err := os.RemoveAll(filepath.Join(cloneDest, ".git")); err != nil {
 		return fmt.Errorf("strip .git from clone: %w", err)
 	}
-	pluginSkills, err := plugins.ScanBundle(cloneDest)
+	contents, err := plugins.ScanPlugin(cloneDest)
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintf(stdout, "Plugin:  %s\nSource:  %s\nCommit:  %s\nScope:   %s\n\n", *name, cloneURL, commit, scope.label)
-	fmt.Fprintln(stdout, "Passive content (loaded as reference material):")
-	for _, s := range pluginSkills {
-		fmt.Fprintf(stdout, "  skill %s — %s\n", s.Name, s.Description)
-	}
+	printPluginSummary(stdout, contents)
 	fmt.Fprint(stdout, "\nInstall this plugin? [y/N] ")
 	if !confirm(stdin) {
 		fmt.Fprintln(stdout, "Aborted.")
@@ -334,16 +333,13 @@ func updateOne(ctx context.Context, inst *plugins.Installer, scope scopePaths, l
 	if err := os.RemoveAll(filepath.Join(cloneDest, ".git")); err != nil {
 		return fmt.Errorf("strip .git from clone: %w", err)
 	}
-	pluginSkills, err := plugins.ScanBundle(cloneDest)
+	contents, err := plugins.ScanPlugin(cloneDest)
 	if err != nil {
 		return fmt.Errorf("update %s: %w", entry.Name, err)
 	}
 
 	fmt.Fprintf(stdout, "Plugin %s: %s -> %s\n", entry.Name, shortCommit(entry.Commit), shortCommit(commit))
-	fmt.Fprintln(stdout, "Passive content (loaded as reference material):")
-	for _, s := range pluginSkills {
-		fmt.Fprintf(stdout, "  skill %s — %s\n", s.Name, s.Description)
-	}
+	printPluginSummary(stdout, contents)
 	fmt.Fprint(stdout, "\nUpdate this plugin? [y/N] ")
 	if !confirm(stdin) {
 		fmt.Fprintln(stdout, "Skipped.")
@@ -367,4 +363,47 @@ func updateOne(ctx context.Context, inst *plugins.Installer, scope scopePaths, l
 	}
 	fmt.Fprintf(stdout, "Updated plugin %q to %s.\n", entry.Name, shortCommit(commit))
 	return nil
+}
+
+// printPluginSummary renders the confirm-on-install review: passive
+// content first, then every executable item spelled out (hook command
+// lines, MCP server commands, MCP tool policies) so the user sees
+// exactly what could run or be auto-approved. Executable entries still
+// pass through the permission engine at runtime; this summary is the
+// human trust decision point.
+func printPluginSummary(stdout io.Writer, c plugins.Contents) {
+	fmt.Fprintln(stdout, "Passive content (loaded as reference material):")
+	if len(c.Skills) == 0 && len(c.Commands) == 0 {
+		fmt.Fprintln(stdout, "  (none)")
+	}
+	for _, s := range c.Skills {
+		fmt.Fprintf(stdout, "  skill %s — %s\n", s.Name, s.Description)
+	}
+	for _, cmd := range c.Commands {
+		fmt.Fprintf(stdout, "  command /%s — %s\n", cmd.Name, cmd.Description)
+	}
+	fmt.Fprintln(stdout, "Executable content (runs through the permission engine):")
+	if len(c.Hooks) == 0 && len(c.MCPServers) == 0 && len(c.MCPPolicies) == 0 {
+		fmt.Fprintln(stdout, "  (none)")
+	}
+	for _, h := range c.Hooks {
+		fmt.Fprintf(stdout, "  hook %s [%s]: %s\n", h.Event, h.Matcher, h.Command)
+	}
+	names := make([]string, 0, len(c.MCPServers))
+	for name := range c.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		srv := c.MCPServers[name]
+		fmt.Fprintf(stdout, "  mcp server %s: %s %s\n", name, srv.Command, strings.Join(srv.Args, " "))
+	}
+	tools := make([]string, 0, len(c.MCPPolicies))
+	for tool := range c.MCPPolicies {
+		tools = append(tools, tool)
+	}
+	sort.Strings(tools)
+	for _, tool := range tools {
+		fmt.Fprintf(stdout, "  mcp policy %s = %s\n", tool, c.MCPPolicies[tool])
+	}
 }

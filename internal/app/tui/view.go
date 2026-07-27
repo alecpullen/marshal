@@ -22,6 +22,11 @@ const (
 	transcriptFrameRows = 0
 	statusLineRows      = 1
 	completionPopupMax  = 8
+	// minTranscriptRows is the transcript floor reserved when budgeting the
+	// textarea's MaxHeight. When a 3-row transcript and a 1-row input do not
+	// both fit, the transcript floor yields first — a zero-row input cannot
+	// be typed into, a one-row transcript is still usable.
+	minTranscriptRows = 3
 )
 
 // View assembles the full-screen frame. Alt screen and mouse mode are

@@ -565,7 +565,6 @@ func New(state *session.State, opts ...Option) Model {
 	input.ShowLineNumbers = false
 	input.Placeholder = "Ask Marshal..."
 	input.CharLimit = 4000
-	input.MaxHeight = 8
 	input.MinHeight = 1
 	input.DynamicHeight = true
 	input.SetHeight(1)
@@ -734,6 +733,7 @@ func (m *Model) resize(width, height int) {
 
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
+	m.input.MaxHeight = m.maxInputHeight()
 	m.viewport.SetHeight(max(height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
@@ -1320,7 +1320,12 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 	return m, nil
 }
 
-func (m Model) inputAreaRows() int {
+// inputChromeRows counts the rows the input area reserves for everything
+// except the textarea itself: the SDD hint, question/approval panels, and
+// the completion popup. Splitting this out of inputAreaRows breaks the
+// circularity in the MaxHeight budget (available rows must not depend on
+// the textarea's own height).
+func (m Model) inputChromeRows() int {
 	rows := 0
 	if sd := m.state.SDDProgress(); sd.Active {
 		rows++ // SDD hint row
@@ -1345,16 +1350,31 @@ func (m Model) inputAreaRows() int {
 			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1))
 		}
 		rows += lipgloss.Height(content)
-	} else {
+	}
+	if p := m.activeCompletionPopup(); p != nil {
+		// Cap the popup at completionPopupMax visible rows (matches the
+		// renderer in view.go).
+		rows += min(len(p.matches()), completionPopupMax)
+	}
+	return rows
+}
+
+func (m Model) inputAreaRows() int {
+	rows := m.inputChromeRows()
+	if m.state.PendingQuestion() == nil && m.state.PendingApproval() == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)
 	}
-	if p := m.activeCompletionPopup(); p != nil {
-		// Cap the popup at 8 visible rows (matches the renderer in view.go).
-		rows += min(len(p.matches()), 8)
-	}
 	return rows
+}
+
+// maxInputHeight is the row budget for the chat textarea: whatever the
+// terminal leaves after the transcript frame, status line, auxiliary
+// panels, input chrome, and the transcript floor. Always at least 1 so the
+// input never becomes untypable on short terminals.
+func (m Model) maxInputHeight() int {
+	return max(m.height-transcriptFrameRows-statusLineRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // liveStripRows reports the rows the live strip occupies: 1 while a
@@ -1406,6 +1426,7 @@ func (m Model) ShouldShowStatusURL() bool {
 func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
+	m.input.MaxHeight = m.maxInputHeight()
 	newViewportHeight := max(m.height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false

@@ -30,22 +30,48 @@ type Rail struct{ sections []Section }
 // order is independent and comes from each section's Priority.
 func New(sections ...Section) *Rail { return &Rail{sections: sections} }
 
-// Header renders a section title with right flush to the rail edge. When
-// there is no room for both, right is dropped and the title is truncated.
+// ruleGlyph is the hairline rule that follows a section title.
+const ruleGlyph = "─"
+
+// Header renders a section title followed by a rule running to the rail
+// edge. When right is non-empty the rule stops short and right is flushed
+// to the edge. When there is no room for both, right is dropped and the
+// title is truncated.
 func Header(title, right string, width int) string {
 	th := theme.Current()
-	style := lipgloss.NewStyle().Foreground(th.FGMuted).Bold(true)
+	titleStyle := lipgloss.NewStyle().Foreground(th.FGEmphasis).Bold(true)
+	ruleStyle := lipgloss.NewStyle().Foreground(th.BorderMuted)
 	dim := lipgloss.NewStyle().Foreground(th.FGMuted)
 
 	if width < 1 {
 		return ""
 	}
 	label := ansi.Truncate(title, width, "…")
-	gap := width - ansi.StringWidth(label) - ansi.StringWidth(right)
-	if right == "" || gap < 1 {
-		return style.Render(label) + strings.Repeat(" ", max(width-ansi.StringWidth(label), 0))
+	labelW := ansi.StringWidth(label)
+
+	// Reserve a space after the title, then whatever right needs.
+	rightW := 0
+	if right != "" {
+		rightW = ansi.StringWidth(right) + 1 // leading space
 	}
-	return style.Render(label) + strings.Repeat(" ", gap) + dim.Render(right)
+	ruleW := width - labelW - 1 - rightW
+
+	// Not enough room for a rule alongside right: drop right and retry.
+	if ruleW < 1 && right != "" {
+		return Header(title, "", width)
+	}
+	if ruleW < 1 {
+		// No room for a rule at all; pad with spaces so width holds.
+		return titleStyle.Render(label) +
+			strings.Repeat(" ", max(width-labelW, 0))
+	}
+
+	out := titleStyle.Render(label) + " " +
+		ruleStyle.Render(strings.Repeat(ruleGlyph, ruleW))
+	if right != "" {
+		out += " " + dim.Render(right)
+	}
+	return out
 }
 
 // View renders the rail at exactly width columns and height rows. Returns

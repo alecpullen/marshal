@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/textfield"
 )
 
 func isMono() bool {
@@ -51,7 +52,7 @@ type fieldList struct {
 
 	// inline scalar edit
 	editing bool
-	input   textinput.Model
+	input   textfield.Model
 	errMsg  string
 
 	// committed reports whether the most recent Update call actually
@@ -71,7 +72,7 @@ type fieldList struct {
 	adding    bool
 	keyPrompt string
 	onAdd     func(string) error
-	keyInput  textinput.Model
+	keyInput  textfield.Model
 
 	// onAddMsg is an alternative to onAdd: when set, pressing a emits a
 	// tea.Cmd that returns the message from this function instead of
@@ -92,9 +93,9 @@ type fieldList struct {
 type FieldList = fieldList
 
 func newFieldList(fields func() []*field) *fieldList {
-	ti := textinput.New()
+	ti := textfield.New()
 	ti.SetVirtualCursor(true)
-	ki := textinput.New()
+	ki := textfield.New()
 	ki.SetVirtualCursor(true)
 	fl := &fieldList{fields: fields, input: ti, keyInput: ki}
 	fl.Refresh()
@@ -174,6 +175,9 @@ func (fl *fieldList) DisarmCurrent() {
 	fl.Refresh()
 	fl.disarmRow(fl.cursor)
 }
+
+// InputValue returns the scalar edit input's current text.
+func (fl *fieldList) InputValue() string { return fl.input.Value() }
 
 func (fl *fieldList) Editing() bool { return fl.editing || fl.picking || fl.adding }
 

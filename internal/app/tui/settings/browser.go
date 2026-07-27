@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/tui/fuzzy"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
+	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 )
@@ -25,7 +26,7 @@ import (
 type BrowserPanel struct {
 	reg      *Registry
 	cfgPath  string
-	filter   textinput.Model
+	filter   textfield.Model
 	list     *fieldList
 	stack    *paneStack
 	baseline config.Config
@@ -51,7 +52,7 @@ func settingsTheme() theme.Theme { return theme.Current() }
 
 // NewBrowser creates a docked browser pre-filtered by query.
 func NewBrowser(cfg config.Config, cfgPath, query string) *BrowserPanel {
-	filter := textinput.New()
+	filter := textfield.New()
 	filter.SetVirtualCursor(true)
 	filter.Focus()
 	filter.SetValue(query)

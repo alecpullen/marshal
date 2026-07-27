@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -19,6 +18,7 @@ import (
 	"marshal/internal/app/tui/fuzzy"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
@@ -33,7 +33,7 @@ type DispatchFn func(agentName, goal string) tea.Cmd
 type Panel struct {
 	state       *settings.State
 	cfgPath     string
-	filter      textinput.Model
+	filter      textfield.Model
 	list        *settings.FieldList
 	dispatch    DispatchFn
 	reg         *registry.Registry // live tool registry for denylist validation
@@ -57,7 +57,7 @@ func NewRosterPanel(cfg config.Config, cfgPath, arg string, dispatch DispatchFn)
 // for denylist validation. When reg is nil, validation is skipped.
 func NewRosterPanelWithRegistry(cfg config.Config, cfgPath, arg string, dispatch DispatchFn, reg *registry.Registry) *Panel {
 	st := settings.NewState(cfg)
-	f := textinput.New()
+	f := textfield.New()
 	f.SetVirtualCursor(true)
 	f.Focus()
 	f.SetValue(arg)
@@ -462,6 +462,11 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			settings.FieldListRefresh(p.list)
 			return cmd
 		}
+	case tea.PasteMsg:
+		var cmd tea.Cmd
+		p.filter, cmd = p.filter.Update(msg)
+		settings.FieldListRefresh(p.list)
+		return cmd
 	default:
 		cmd := settings.FieldListUpdate(p.list, msg)
 		return p.maybePersist(cmd)

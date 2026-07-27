@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
+	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/provider"
 	"marshal/internal/strutil"
@@ -51,8 +52,8 @@ type Opts struct {
 type Model struct {
 	step           step
 	picker         *picker.Model
-	input          textinput.Model
-	renameInput    textinput.Model
+	input          textfield.Model
+	renameInput    textfield.Model
 	title          string
 	subtitle       string
 	footer         string
@@ -74,10 +75,10 @@ type Model struct {
 }
 
 func New(opts Opts) *Model {
-	ti := textinput.New()
+	ti := textfield.New()
 	ti.SetVirtualCursor(true)
 	ti.Focus()
-	ri := textinput.New()
+	ri := textfield.New()
 	ri.SetVirtualCursor(true)
 	ri.Focus()
 	m := &Model{
@@ -99,6 +100,9 @@ func New(opts Opts) *Model {
 func (m *Model) Init() tea.Cmd { return nil }
 
 func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
+
+// InputValue returns the active text input's current text.
+func (m *Model) InputValue() string { return m.input.Value() }
 
 func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -277,7 +281,7 @@ func (m *Model) enterAPIKey() {
 	m.subtitle = m.template.KeyHint
 	m.footer = "[↵] save  [Esc] back"
 	m.err = ""
-	ti := textinput.New()
+	ti := textfield.New()
 	ti.EchoMode = textinput.EchoPassword
 	ti.SetVirtualCursor(true)
 	ti.Focus()
@@ -320,7 +324,7 @@ func (m *Model) enterRename() {
 	m.subtitle = "enter a new name for this provider"
 	m.footer = "[↵] save  [Esc] back"
 	m.err = ""
-	ri := textinput.New()
+	ri := textfield.New()
 	ri.SetVirtualCursor(true)
 	ri.Focus()
 	ri.SetValue(m.providerName)
@@ -356,7 +360,7 @@ func enterBaseURLStep(m *Model) {
 	m.subtitle = "OpenAI-compatible endpoint, e.g. https://host/v1"
 	m.footer = "[↵] next  [Esc] back"
 	m.err = ""
-	ti := textinput.New()
+	ti := textfield.New()
 	ti.SetVirtualCursor(true)
 	ti.Focus()
 	ti.Placeholder = "https://…/v1"

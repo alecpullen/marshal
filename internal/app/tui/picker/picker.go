@@ -7,12 +7,12 @@ package picker
 import (
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 )
 
@@ -47,7 +47,7 @@ type Model struct {
 	title       string
 	footer      string
 	items       []Item
-	filter      textinput.Model
+	filter      textfield.Model
 	matches     []int // indices into items, rank order
 	cursor      int   // index into matches
 	allowCustom bool
@@ -56,7 +56,7 @@ type Model struct {
 // New creates a picker model. The cursor starts on the first item whose
 // Badge begins with "●", or the first item if none have that badge.
 func New(title, footer string, items []Item) *Model {
-	ti := textinput.New()
+	ti := textfield.New()
 	ti.SetVirtualCursor(true)
 	ti.Focus()
 	m := &Model{title: title, footer: footer, items: items, filter: ti}
@@ -77,6 +77,9 @@ func (m *Model) SetFilter(q string) {
 	m.filter.CursorEnd()
 	m.refilter()
 }
+
+// FilterValue returns the current filter text.
+func (m *Model) FilterValue() string { return m.filter.Value() }
 
 // SetAllowCustom enables custom values: pressing Enter with a typed filter
 // text and no selection emits PickedMsg with the filter text.

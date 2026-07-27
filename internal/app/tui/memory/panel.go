@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/db"
 )
@@ -22,7 +23,7 @@ type BrowserPanel struct {
 	db          *db.DB
 	projectID   int64
 	all         []db.Memory
-	filter      textinput.Model
+	filter      textfield.Model
 	matches     []int
 	cursor      int
 	deleteArmed bool
@@ -33,7 +34,7 @@ var _ dock.Panel = (*BrowserPanel)(nil)
 
 // NewPanel creates a docked memory browser for the given project.
 func NewPanel(database *db.DB, projectID int64) *BrowserPanel {
-	filter := textinput.New()
+	filter := textfield.New()
 	filter.SetVirtualCursor(true)
 	filter.Focus()
 
@@ -52,6 +53,9 @@ func NewPanel(database *db.DB, projectID int64) *BrowserPanel {
 	p.refilter()
 	return p
 }
+
+// FilterValue returns the current filter text.
+func (p *BrowserPanel) FilterValue() string { return p.filter.Value() }
 
 // Update handles filtering, cursor movement, selection, and delete gestures.
 func (p *BrowserPanel) Update(msg tea.Msg) tea.Cmd {

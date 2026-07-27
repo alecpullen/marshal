@@ -13,6 +13,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/connect"
+	"marshal/internal/app/tui/textfield"
 	"marshal/internal/llm/routing"
 
 	"charm.land/bubbles/v2/textinput"
@@ -55,7 +56,7 @@ type OnboardingModel struct {
 	providerIndex int
 
 	// Step 2/3: Input fields
-	textInput textinput.Model
+	textInput textfield.Model
 	loading   bool
 	err       string
 
@@ -102,7 +103,7 @@ type ollamaTagsResponse struct {
 }
 
 func NewOnboardingModel(workingDir string) *OnboardingModel {
-	ti := textinput.New()
+	ti := textfield.New()
 	ti.Focus()
 	ti.CharLimit = 156
 	ti.SetWidth(40)
@@ -119,6 +120,9 @@ func NewOnboardingModel(workingDir string) *OnboardingModel {
 // Cancelled returns true when the user pressed Esc or Ctrl+C to exit the
 // onboarding wizard before completing all steps.
 func (m *OnboardingModel) Cancelled() bool { return m.cancelled }
+
+// InputValue returns the onboarding text input's current text.
+func (m *OnboardingModel) InputValue() string { return m.textInput.Value() }
 
 func (m *OnboardingModel) Init() tea.Cmd {
 	return textinput.Blink

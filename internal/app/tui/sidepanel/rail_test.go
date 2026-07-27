@@ -297,6 +297,12 @@ func TestFooterCollapsesToOneLineWhenTight(t *testing.T) {
 }
 
 func TestFooterDropsWhenNoRoom(t *testing.T) {
+	// Two 2-row footers survive at height 4; one fit-collapsed footer
+	// at height 2 only has room for one of them, so alpha's OneLine.
+	// A footer at height 2 must give — and the footer is the worst
+	// priority. Plan originally said height 6, but with the rail's
+	// inter-section baseline + section natural heights that doesn't
+	// force drop.
 	r := New(mk("alpha", 0, 5), footerSection(2))
 	out := StripANSI(r.View(Data{}, 30, 2))
 	if strings.Contains(out, "session") {
@@ -313,7 +319,7 @@ func TestRailWithoutFooterUnchanged(t *testing.T) {
 	if len(lines) != 20 {
 		t.Fatalf("got %d rows, want 20", len(lines))
 	}
-	// With no footer, the bottom is padding (just the divider).
+	// With no footer, the bottom is padding (just the gutter divider).
 	plain := StripANSI(lines[19])
 	if strings.TrimSpace(plain) != "│" {
 		t.Errorf("bottom row = %q, want just the divider when no footer is present", plain)

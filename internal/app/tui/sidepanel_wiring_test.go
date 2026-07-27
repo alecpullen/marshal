@@ -88,6 +88,16 @@ func TestStatusLineKeepsFullFrameWidth(t *testing.T) {
 	}
 }
 
+func TestHiddenSectionsAreNotBuilt(t *testing.T) {
+	m := newTestModelForRail(t, 160, 40, true)
+	m.state.Config.TUI.SidePanel.Hidden = []string{"repo"}
+	m.rebuildRail()
+
+	if strings.Contains(stripANSI(m.viewString()), "REPO") {
+		t.Error("hidden section still rendered")
+	}
+}
+
 func TestCtrlBTogglesRail(t *testing.T) {
 	m := newTestModelForRail(t, 160, 40, true)
 	if !m.railEnabled() {

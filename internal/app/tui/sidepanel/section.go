@@ -59,6 +59,10 @@ type Data struct {
 	// Swarm is the swarm run progress, held directly so tests don't need a
 	// live session.
 	Swarm session.SwarmProgress
+
+	// SDD is the SDD run progress, held directly so tests don't need a
+	// live session.
+	SDD session.SDDProgress
 }
 
 // Section is one read-only block in the rail. Sections are pure functions

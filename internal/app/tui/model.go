@@ -677,14 +677,7 @@ func New(state *session.State, opts ...Option) Model {
 	m.lastGitRead = m.now()
 	m.railBaseRef = gitinfo.HeadSHA(state.WorkingDir)
 
-	m.rail = sidepanel.New(
-		sidepanel.SwarmSection{},
-		sidepanel.ContextSection{},
-		sidepanel.ChangedSection{},
-		sidepanel.ToolsSection{},
-		sidepanel.RulesSection{},
-		sidepanel.RepoSection{},
-	)
+	m.rebuildRail()
 
 	if database := state.DB(); database != nil {
 		if projectID := m.memoryProject; projectID != 0 {
@@ -770,6 +763,32 @@ func (m *Model) refreshRailChanged() {
 	m.railChanged = changedfiles.Read(m.state.WorkingDir, m.railBaseRef)
 }
 
+// rebuildRail constructs the side rail from the full section list, filtering
+// out any section whose ID appears in the config's hidden list. Both the
+// constructor and tests call this so there is a single code path.
+func (m *Model) rebuildRail() {
+	all := []sidepanel.Section{
+		sidepanel.SwarmSection{},
+		sidepanel.SDDSection{},
+		sidepanel.ContextSection{},
+		sidepanel.ChangedSection{},
+		sidepanel.ToolsSection{},
+		sidepanel.RulesSection{},
+		sidepanel.RepoSection{},
+	}
+	hidden := map[string]bool{}
+	for _, id := range m.state.Config.TUI.SidePanel.Hidden {
+		hidden[id] = true
+	}
+	visible := make([]sidepanel.Section, 0, len(all))
+	for _, s := range all {
+		if !hidden[s.ID()] {
+			visible = append(visible, s)
+		}
+	}
+	m.rail = sidepanel.New(visible...)
+}
+
 // railData assembles the side panel's render snapshot. Everything here is
 // either already in memory or cached on turn boundaries — this runs once
 // per frame and must never query the DB or shell out.
@@ -784,6 +803,7 @@ func (m Model) railData() sidepanel.Data {
 		Audit:   m.state.AuditLog(),
 		Rules:   m.state.SessionRules(),
 		Swarm:   m.state.SwarmProgress(),
+		SDD:     m.state.SDDProgress(),
 		Now:     m.now(),
 	}
 }

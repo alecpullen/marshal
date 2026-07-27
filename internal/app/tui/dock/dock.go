@@ -4,6 +4,8 @@ package dock
 import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"marshal/internal/app/tui/layout"
 )
 
 // Sizing is a panel's height-budget hint to the dock host.
@@ -18,9 +20,11 @@ const (
 	FullFrame
 )
 
-// statusLineRows mirrors the tui package's statusLineRows constant (view.go);
-// dock cannot import tui (tui imports dock), so the value is duplicated here.
-const statusLineRows = 1
+// statusLineRows aliases layout.StatusLineRows. The source of truth
+// lives in internal/app/tui/layout; dock cannot import tui (tui imports
+// dock) but the duplication is intentional and pinned by
+// TestDockStatusLineRowsMatchesLayout in dock_test.go.
+const statusLineRows = layout.StatusLineRows
 
 // Panel is anything the dock can host.
 type Panel interface {

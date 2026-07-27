@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 )
 
@@ -23,8 +24,14 @@ func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 const (
 	transcriptFrameRows = 0
-	statusLineRows      = 1
-	completionPopupMax  = 8
+	// statusLineRows aliases layout.StatusLineRows. The source of truth
+	// lives in internal/app/tui/layout; the alias keeps in-package call
+	// sites (model.go, view_test.go, input_area_test.go) referencing the
+	// unqualified name. The dock package duplicates the value because tui
+	// imports dock but not vice versa; see dock/dock_test.go for the
+	// guard test that pins the duplicate.
+	statusLineRows     = layout.StatusLineRows
+	completionPopupMax = 8
 	// completionPanelChromeRows is the number of rows the chrome.Panel title
 	// adds above the completion popup's match rows.
 	completionPanelChromeRows = 1

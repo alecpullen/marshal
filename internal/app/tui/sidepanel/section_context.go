@@ -52,7 +52,7 @@ func (ContextSection) Render(d Data, width, maxRows int) []string {
 		}
 		pct := 0
 		if u.EstimatedTokens > 0 {
-			pct = s.EstimatedTokens * 100 / u.EstimatedTokens
+			pct = int(float64(s.EstimatedTokens)/float64(u.EstimatedTokens)*100 + 0.5)
 		}
 		label := ansi.Truncate(s.Title, max(width-14, 4), "…")
 		rows = append(rows, fmt.Sprintf(" %-*s %6s %3d%%",
@@ -72,7 +72,7 @@ func (ContextSection) OneLine(d Data, width int) string {
 	u := d.Pack.TokenUsage
 	pct := 0
 	if u.MaxTokens > 0 {
-		pct = u.EstimatedTokens * 100 / u.MaxTokens
+		pct = int(float64(u.EstimatedTokens)/float64(u.MaxTokens)*100 + 0.5)
 	}
 	return ansi.Truncate(fmt.Sprintf("ctx %s/%s · %d%%",
 		strutil.CompactTokens(u.EstimatedTokens),

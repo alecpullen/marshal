@@ -313,6 +313,16 @@ func TestFooterDropsWhenNoRoom(t *testing.T) {
 	}
 }
 
+func TestRailStructureSurvivesColorStripping(t *testing.T) {
+	r := New(mk("alpha", 0, 2), mk("beta", 1, 2), footerSection(2))
+	plain := StripANSI(r.View(Data{}, 30, 20))
+	for _, want := range []string{"ALPHA", "BETA", "─", "│"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("structure marker %q must survive color stripping:\n%s", want, plain)
+		}
+	}
+}
+
 func TestRailWithoutFooterUnchanged(t *testing.T) {
 	r := New(mk("alpha", 0, 2), mk("beta", 1, 2))
 	lines := strings.Split(r.View(Data{}, 30, 20), "\n")

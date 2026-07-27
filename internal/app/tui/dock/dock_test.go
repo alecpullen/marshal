@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"marshal/internal/app/tui/layout"
 )
 
 type stubPanel struct {
@@ -18,6 +20,39 @@ func (s *stubPanel) View(width, maxHeight int) string {
 	return "stub"
 }
 func (s *stubPanel) Sizing() Sizing { return s.sizing }
+
+// TestMaxRows documents the 40%-of-frame height cap with a floor of 6
+// rows. The table covers the linear regime, the floor, and a zero frame.
+func TestMaxRows(t *testing.T) {
+	tests := []struct {
+		frameHeight int
+		want        int
+	}{
+		{0, 6},   // floor applies immediately at zero
+		{10, 6},  // below floor → floor
+		{15, 6},  // floor boundary
+		{20, 8},  // 20*2/5 = 8, well above the floor
+		{24, 9},  // 24*2/5 = 9.6 → 9
+		{40, 16}, // standard terminal height
+		{100, 40},
+	}
+	for _, tc := range tests {
+		if got := MaxRows(tc.frameHeight); got != tc.want {
+			t.Errorf("MaxRows(%d) = %d, want %d", tc.frameHeight, got, tc.want)
+		}
+	}
+}
+
+// TestDockStatusLineRowsMatchesLayout pins dock.statusLineRows to
+// layout.StatusLineRows. The two values are aliases today; if anyone
+// reintroduces a literal in dock.go (regression), this catches the drift
+// against the layout-side source of truth.
+func TestDockStatusLineRowsMatchesLayout(t *testing.T) {
+	if int(statusLineRows) != layout.StatusLineRows {
+		t.Fatalf("dock.statusLineRows = %d, layout.StatusLineRows = %d — keep them in sync",
+			statusLineRows, layout.StatusLineRows)
+	}
+}
 
 func TestHostViewBudgetsBySizingHint(t *testing.T) {
 	docked := &stubPanel{sizing: Docked}

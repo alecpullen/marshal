@@ -2219,7 +2219,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	}
 
 	if cmd.Handler != nil {
-		if msg := cmd.Handler(m.state, args); msg != "" {
+		if msg := cmd.Handler(m.state, args).Text; msg != "" {
 			m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 		}
 	}

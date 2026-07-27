@@ -31,7 +31,7 @@ func TestNew(t *testing.T) {
 
 func TestRegister(t *testing.T) {
 	reg := New()
-	err := reg.Register(Command{Name: "test", Handler: func(s *session.State, a []string) string { return "" }})
+	err := reg.Register(Command{Name: "test", Handler: func(s *session.State, a []string) Result { return Text("") }})
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
@@ -39,7 +39,7 @@ func TestRegister(t *testing.T) {
 
 func TestRegisterDuplicate(t *testing.T) {
 	reg := New()
-	h := func(s *session.State, a []string) string { return "" }
+	h := func(s *session.State, a []string) Result { return Text("") }
 	reg.Register(Command{Name: "test", Handler: h})
 	err := reg.Register(Command{Name: "test", Handler: h})
 	if !errors.Is(err, ErrDuplicateCommand) {
@@ -49,7 +49,7 @@ func TestRegisterDuplicate(t *testing.T) {
 
 func TestRegisterEmptyName(t *testing.T) {
 	reg := New()
-	err := reg.Register(Command{Name: "", Handler: func(s *session.State, a []string) string { return "" }})
+	err := reg.Register(Command{Name: "", Handler: func(s *session.State, a []string) Result { return Text("") }})
 	if !errors.Is(err, ErrInvalidCommand) {
 		t.Errorf("expected ErrInvalidCommand, got %v", err)
 	}
@@ -65,7 +65,7 @@ func TestRegisterNilHandler(t *testing.T) {
 
 func TestLookup(t *testing.T) {
 	reg := New()
-	reg.Register(Command{Name: "test", Description: "desc", Handler: func(s *session.State, a []string) string { return "ok" }})
+	reg.Register(Command{Name: "test", Description: "desc", Handler: func(s *session.State, a []string) Result { return Text("ok") }})
 
 	cmd, ok := reg.Lookup("test")
 	if !ok {
@@ -74,7 +74,7 @@ func TestLookup(t *testing.T) {
 	if cmd.Description != "desc" {
 		t.Errorf("expected desc, got %s", cmd.Description)
 	}
-	result := cmd.Handler(newTestState(), nil)
+	result := cmd.Handler(newTestState(), nil).Text
 	if result != "ok" {
 		t.Errorf("expected ok, got %s", result)
 	}
@@ -90,8 +90,8 @@ func TestLookupNotFound(t *testing.T) {
 
 func TestList(t *testing.T) {
 	reg := New()
-	reg.Register(Command{Name: "b", Handler: func(s *session.State, a []string) string { return "" }})
-	reg.Register(Command{Name: "a", Handler: func(s *session.State, a []string) string { return "" }})
+	reg.Register(Command{Name: "b", Handler: func(s *session.State, a []string) Result { return Text("") }})
+	reg.Register(Command{Name: "a", Handler: func(s *session.State, a []string) Result { return Text("") }})
 
 	cmds := reg.List()
 	if len(cmds) != 2 {
@@ -121,7 +121,7 @@ func TestHelpCommand(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("help")
-	result := cmd.Handler(newTestState(), nil)
+	result := cmd.Handler(newTestState(), nil).Text
 	for _, want := range []string{"Keys", "Chat", "Models & providers", "Workflows", "Changes", "Settings & info"} {
 		if !strings.Contains(result, want) {
 			t.Errorf("help output missing group %q: %s", want, result)
@@ -135,7 +135,7 @@ func TestHelpPrintsCheatsheet(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("help")
-	out := cmd.Handler(nil, nil)
+	out := cmd.Handler(nil, nil).Text
 	for _, want := range []string{"Keys", "Chat", "Models & providers", "/set", "/model", "⏎ send", "esc"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cheatsheet missing %q", want)
@@ -149,7 +149,7 @@ func TestHelpForSingleCommand(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("help")
-	out := cmd.Handler(nil, []string{"set"})
+	out := cmd.Handler(nil, []string{"set"}).Text
 	if !strings.Contains(out, "/set") || !strings.Contains(out, "<key> [value]") {
 		t.Errorf("per-command help incomplete: %q", out)
 	}
@@ -161,7 +161,7 @@ func TestToolsCommand(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("tools")
-	result := cmd.Handler(newTestState(), nil)
+	result := cmd.Handler(newTestState(), nil).Text
 	if !strings.Contains(result, "Available tools") {
 		t.Errorf("tools output missing header: %s", result)
 	}
@@ -183,7 +183,7 @@ func TestRouteCommand(t *testing.T) {
 	})
 
 	cmd, _ := cmdReg.Lookup("route")
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	if !strings.Contains(result, "gpt-4") {
 		t.Errorf("route output missing model info: %s", result)
 	}
@@ -199,7 +199,7 @@ func TestContextCommand(t *testing.T) {
 	state.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
 
 	cmd, _ := cmdReg.Lookup("context")
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	if !strings.Contains(result, "Messages: 2") {
 		t.Errorf("context output missing message count: %s", result)
 	}
@@ -215,7 +215,7 @@ func TestNewCommand(t *testing.T) {
 	state.AddMessage(session.RoleAssistant, "hi", session.ContentTypePlain)
 
 	cmd, _ := cmdReg.Lookup("new")
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	if !strings.Contains(result, "Cleared 2 messages") {
 		t.Errorf("new command output wrong: %s", result)
 	}
@@ -231,7 +231,7 @@ func TestConfigCommand(t *testing.T) {
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("config")
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	if !strings.Contains(result, "Configuration") {
 		t.Errorf("config output missing header: %s", result)
 	}
@@ -244,7 +244,7 @@ func TestRollbackNoBackup(t *testing.T) {
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("rollback")
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	if !strings.Contains(result, "No backup available") {
 		t.Errorf("rollback output wrong: %s", result)
 	}
@@ -351,7 +351,7 @@ func TestLogCommandShowsRecentAuditEvents(t *testing.T) {
 	if !ok {
 		t.Fatal("log command not registered")
 	}
-	out := cmd.Handler(state, nil)
+	out := cmd.Handler(state, nil).Text
 
 	if !strings.Contains(out, "tool.19") || !strings.Contains(out, "result 19") {
 		t.Fatalf("log output missing newest event:\n%s", out)
@@ -368,7 +368,7 @@ func TestLogCommandEmpty(t *testing.T) {
 	}
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	cmd, _ := cmdReg.Lookup("log")
-	if out := cmd.Handler(state, nil); out != "No tool calls yet." {
+	if out := cmd.Handler(state, nil).Text; out != "No tool calls yet." {
 		t.Fatalf("empty log output = %q", out)
 	}
 }
@@ -388,7 +388,7 @@ func TestContextCommandListsPackSections(t *testing.T) {
 	})
 
 	cmd, _ := cmdReg.Lookup("context")
-	out := cmd.Handler(state, nil)
+	out := cmd.Handler(state, nil).Text
 
 	for _, want := range []string{"10k/32k", "internal/app/tui/model.go", "8k", "repo-map"} {
 		if !strings.Contains(out, want) {
@@ -422,7 +422,7 @@ func TestToolsCommandWithNilToolRegistry(t *testing.T) {
 	if !ok {
 		t.Fatal("tools command not registered")
 	}
-	result := cmd.Handler(newTestState(), nil)
+	result := cmd.Handler(newTestState(), nil).Text
 	if !strings.Contains(result, "Tools unavailable") {
 		t.Fatalf("tools output with nil toolReg = %q, want 'Tools unavailable'", result)
 	}
@@ -439,7 +439,7 @@ func TestDiffCommandNoSnapshot(t *testing.T) {
 	if !ok {
 		t.Fatal("diff command not registered")
 	}
-	out := cmd.Handler(state, nil)
+	out := cmd.Handler(state, nil).Text
 	if out == "" {
 		t.Fatal("expected a message for /diff with no snapshot")
 	}
@@ -492,7 +492,7 @@ func TestHelpListsFlagshipCommands(t *testing.T) {
 	if !ok {
 		t.Fatal("help command not registered")
 	}
-	result := cmd.Handler(newTestState(), nil)
+	result := cmd.Handler(newTestState(), nil).Text
 
 	// Flagship commands that were previously hidden must now appear in /help.
 	for _, name := range []string{"connect", "models", "model", "mode", "swarm", "sdd", "settings", "memory"} {
@@ -518,7 +518,7 @@ func TestHelpGroupsCommands(t *testing.T) {
 	if !ok {
 		t.Fatal("help command not registered")
 	}
-	result := cmd.Handler(newTestState(), nil)
+	result := cmd.Handler(newTestState(), nil).Text
 
 	// All five groups must appear in the fixed order.
 	groups := []string{"Keys", "Chat", "Models & providers", "Workflows", "Changes", "Settings & info"}
@@ -552,7 +552,7 @@ func TestDiffDoesNotInjectIntoState(t *testing.T) {
 		t.Fatal("diff command not registered")
 	}
 	before := len(state.Messages())
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	after := len(state.Messages())
 
 	if after != before {
@@ -583,7 +583,7 @@ func TestExportComputesPathBeforeWrite(t *testing.T) {
 		t.Fatal("export command not registered")
 	}
 
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 
 	if !strings.Contains(result, "Exported to ") {
 		t.Fatalf("export output missing 'Exported to': %q", result)
@@ -608,7 +608,7 @@ func TestExportRejectsAbsolutePath(t *testing.T) {
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("export")
-	out := cmd.Handler(state, []string{"/etc/passwd"})
+	out := cmd.Handler(state, []string{"/etc/passwd"}).Text
 	if !strings.Contains(out, "must be relative") {
 		t.Fatalf("expected absolute path to be rejected with 'must be relative', got %q", out)
 	}
@@ -621,7 +621,7 @@ func TestExportRejectsParentTraversal(t *testing.T) {
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("export")
-	out := cmd.Handler(state, []string{"../../etc/passwd"})
+	out := cmd.Handler(state, []string{"../../etc/passwd"}).Text
 	if !strings.Contains(out, "escapes") {
 		t.Fatalf("expected parent traversal to be rejected with 'escapes', got %q", out)
 	}
@@ -673,19 +673,36 @@ func TestTrustReportsCurrentStatus(t *testing.T) {
 
 	// Default state: not trusted.
 	state := newTestState()
-	out := cmd.Handler(state, nil)
+	out := cmd.Handler(state, nil).Text
 	if !strings.Contains(out, "not trusted") {
 		t.Fatalf("expected 'not trusted' in output, got: %q", out)
 	}
 
 	// After marking trusted.
 	state.SetTrusted(true)
-	out = cmd.Handler(state, nil)
+	out = cmd.Handler(state, nil).Text
 	if !strings.Contains(out, "trusted") {
 		t.Fatalf("expected 'trusted' in output, got: %q", out)
 	}
 	if strings.Contains(out, "not trusted") {
 		t.Fatalf("trusted state should not say 'not trusted', got: %q", out)
+	}
+}
+
+func TestResultPlainTextRendersDoc(t *testing.T) {
+	res := Panel("Things", false, []Row{
+		{Header: "Group A"},
+		{Text: "one", Detail: "first"},
+		{Text: "two", Detail: "second", Desc: "more about two"},
+	})
+	out := res.PlainText()
+	for _, want := range []string{"Group A", "one", "first", "two", "second"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("PlainText() missing %q:\n%s", want, out)
+		}
+	}
+	if res.Text != "" {
+		t.Errorf("Panel result should have empty Text, got %q", res.Text)
 	}
 }
 

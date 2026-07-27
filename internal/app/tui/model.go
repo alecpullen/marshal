@@ -163,7 +163,10 @@ type Model struct {
 	railHidden bool
 	// railRepoStats is refreshed on turn boundaries, never during render.
 	railRepoStats sidepanel.RepoStats
-	viewport      viewport.Model
+	// railTurns is the recent turn-metrics cache, refreshed when a turn
+	// completes. Never queried during render.
+	railTurns []db.TurnMetricsRow
+	viewport  viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
@@ -733,6 +736,20 @@ func (m *Model) resize(width, height int) {
 // railEnabled reports whether the side rail is being rendered.
 func (m Model) railEnabled() bool { return m.railWidth > 0 }
 
+// refreshRailTurns reloads the turn-metrics cache the side panel reads.
+// Called on turn completion, never from View.
+func (m *Model) refreshRailTurns() {
+	database := m.state.DB()
+	if database == nil || !m.railEnabled() {
+		return
+	}
+	rows, err := database.RecentTurnMetrics(m.memoryProject, 24)
+	if err != nil {
+		return
+	}
+	m.railTurns = rows
+}
+
 // railData assembles the side panel's render snapshot. Everything here is
 // either already in memory or cached on turn boundaries — this runs once
 // per frame and must never query the DB or shell out.
@@ -741,6 +758,7 @@ func (m Model) railData() sidepanel.Data {
 		State: m.state,
 		Git:   m.gitInfo,
 		Repo:  m.railRepoStats,
+		Turns: m.railTurns,
 		Pack:  m.state.ContextPack(),
 		Now:   m.now(),
 	}
@@ -1919,6 +1937,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	}
 	m.busy = false
 	m.agentCancel = nil
+	m.refreshRailTurns()
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: render the prompt and wait for user resolution.
 		if errors.Is(msg.err, sdd.ErrHumanGateRequired) {

@@ -3,8 +3,10 @@ package sidepanel
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/contextpack"
+	"marshal/internal/db"
 )
 
 func ctxData() Data {
@@ -58,6 +60,30 @@ func TestContextSectionOneLine(t *testing.T) {
 	// division (no decimal), so we assert "2k"/"6k" instead.
 	if !strings.Contains(got, "11%") {
 		t.Errorf("OneLine = %q, want the percentage", got)
+	}
+}
+
+func TestContextSectionRendersTelemetry(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	d := ctxData()
+	d.Now = now
+	d.Turns = []db.TurnMetricsRow{
+		{StartedAt: now.Add(-2 * time.Minute), PromptTokens: 1800, CompletionTokens: 200},
+		{StartedAt: now.Add(-6 * time.Minute), PromptTokens: 1700, CompletionTokens: 300},
+	}
+	got := StripANSI(strings.Join((ContextSection{}).Render(d, 34, 20), "\n"))
+	if !strings.Contains(got, "/min") {
+		t.Errorf("no burn rate row:\n%s", got)
+	}
+	if !strings.Contains(got, "turns") {
+		t.Errorf("no headroom row:\n%s", got)
+	}
+}
+
+func TestContextSectionNoTelemetryWithoutTurns(t *testing.T) {
+	got := StripANSI(strings.Join((ContextSection{}).Render(ctxData(), 34, 20), "\n"))
+	if strings.Contains(got, "/min") {
+		t.Errorf("burn rate rendered with no turn data:\n%s", got)
 	}
 }
 

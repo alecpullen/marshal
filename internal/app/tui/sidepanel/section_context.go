@@ -59,6 +59,21 @@ func (ContextSection) Render(d Data, width, maxRows int) []string {
 			max(width-14, 4), label, strutil.CompactTokens(s.EstimatedTokens), pct))
 	}
 
+	if stats := Telemetry(d.Turns, d.Now); len(stats.Series) > 0 {
+		rows = append(rows, fmt.Sprintf(" %s  avg %s/turn",
+			Sparkline(stats.Series, max(width-18, 4)),
+			strutil.CompactTokens(stats.AvgTokens)))
+
+		detail := fmt.Sprintf(" %s/min", strutil.CompactTokens(stats.BurnPerMin))
+		if stats.AvgTokens > 0 && u.MaxTokens > u.EstimatedTokens {
+			detail += fmt.Sprintf(" · ~%d turns", (u.MaxTokens-u.EstimatedTokens)/stats.AvgTokens)
+		}
+		if stats.CacheHitPct > 0 {
+			detail += fmt.Sprintf(" · %d%% cache", stats.CacheHitPct)
+		}
+		rows = append(rows, detail)
+	}
+
 	for i := range rows {
 		rows[i] = ansi.Truncate(rows[i], width, "…")
 	}

@@ -254,3 +254,68 @@ func TestHeaderZeroWidth(t *testing.T) {
 		t.Errorf("want empty string at width 0, got %q", got)
 	}
 }
+
+// footerSection is a fake with the pinned footer's identity.
+func footerSection(rows int) fakeSection {
+	f := mk("session", 9, rows)
+	f.title = ""
+	f.oneLine = "session summary"
+	return f
+}
+
+func TestFooterRendersFlushToBottom(t *testing.T) {
+	r := New(mk("alpha", 0, 2), footerSection(2))
+	lines := strings.Split(r.View(Data{}, 30, 20), "\n")
+	if len(lines) != 20 {
+		t.Fatalf("got %d rows, want 20", len(lines))
+	}
+	last := strings.TrimSpace(StripANSI(lines[19]))
+	if !strings.Contains(last, "session-row") {
+		t.Errorf("bottom row = %q, want the footer's last body row", last)
+	}
+}
+
+func TestFooterFlushAtVariousHeights(t *testing.T) {
+	for _, h := range []int{12, 20, 40} {
+		r := New(mk("alpha", 0, 2), footerSection(2))
+		lines := strings.Split(r.View(Data{}, 30, h), "\n")
+		last := strings.TrimSpace(StripANSI(lines[h-1]))
+		if !strings.Contains(last, "session-row") {
+			t.Errorf("height %d: bottom row = %q, want footer body", h, last)
+		}
+	}
+}
+
+func TestFooterCollapsesToOneLineWhenTight(t *testing.T) {
+	// alpha needs 6 rows expanded; footer needs 3. At height 8 something
+	// must give, and the footer has the worst priority.
+	r := New(mk("alpha", 0, 5), footerSection(2))
+	out := StripANSI(r.View(Data{}, 30, 8))
+	if !strings.Contains(out, "session summary") {
+		t.Errorf("want footer collapsed to one-line, got:\n%s", out)
+	}
+}
+
+func TestFooterDropsWhenNoRoom(t *testing.T) {
+	r := New(mk("alpha", 0, 5), footerSection(2))
+	out := StripANSI(r.View(Data{}, 30, 2))
+	if strings.Contains(out, "session") {
+		t.Errorf("want footer dropped at height 2, got:\n%s", out)
+	}
+	if !strings.Contains(out, "alpha summary") {
+		t.Errorf("want alpha to survive, got:\n%s", out)
+	}
+}
+
+func TestRailWithoutFooterUnchanged(t *testing.T) {
+	r := New(mk("alpha", 0, 2), mk("beta", 1, 2))
+	lines := strings.Split(r.View(Data{}, 30, 20), "\n")
+	if len(lines) != 20 {
+		t.Fatalf("got %d rows, want 20", len(lines))
+	}
+	// With no footer, the bottom is padding (just the divider).
+	plain := StripANSI(lines[19])
+	if strings.TrimSpace(plain) != "│" {
+		t.Errorf("bottom row = %q, want just the divider when no footer is present", plain)
+	}
+}

@@ -1,0 +1,80 @@
+package sidepanel
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/strutil"
+)
+
+// ContextSection shows what is actually in the model's context window:
+// the fill bar and the per-kind token breakdown. The status line shows
+// only the aggregate; this is the composition behind it.
+type ContextSection struct{}
+
+func (ContextSection) ID() string      { return "context" }
+func (ContextSection) Title() string   { return "CONTEXT" }
+func (ContextSection) Priority() int   { return 1 }
+func (ContextSection) Clippable() bool { return false }
+
+func (ContextSection) Relevant(d Data) bool { return !d.Pack.IsEmpty() }
+
+// Bar renders a fill bar of the given width. fraction is clamped to [0,1].
+func Bar(fraction float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if fraction < 0 {
+		fraction = 0
+	}
+	if fraction > 1 {
+		fraction = 1
+	}
+	filled := int(fraction*float64(width) + 0.5)
+	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+}
+
+func (ContextSection) Render(d Data, width, maxRows int) []string {
+	u := d.Pack.TokenUsage
+	rows := make([]string, 0, 8)
+
+	frac := 0.0
+	if u.MaxTokens > 0 {
+		frac = float64(u.EstimatedTokens) / float64(u.MaxTokens)
+	}
+	rows = append(rows, " "+Bar(frac, max(width-8, 4))+fmt.Sprintf(" %3d%%", int(frac*100+0.5)))
+
+	for _, s := range d.Pack.Sections {
+		if s.EstimatedTokens == 0 {
+			continue
+		}
+		pct := 0
+		if u.EstimatedTokens > 0 {
+			pct = s.EstimatedTokens * 100 / u.EstimatedTokens
+		}
+		label := ansi.Truncate(s.Title, max(width-14, 4), "…")
+		rows = append(rows, fmt.Sprintf(" %-*s %6s %3d%%",
+			max(width-14, 4), label, strutil.CompactTokens(s.EstimatedTokens), pct))
+	}
+
+	for i := range rows {
+		rows[i] = ansi.Truncate(rows[i], width, "…")
+	}
+	if maxRows > 0 && len(rows) > maxRows {
+		rows = rows[:maxRows]
+	}
+	return rows
+}
+
+func (ContextSection) OneLine(d Data, width int) string {
+	u := d.Pack.TokenUsage
+	pct := 0
+	if u.MaxTokens > 0 {
+		pct = u.EstimatedTokens * 100 / u.MaxTokens
+	}
+	return ansi.Truncate(fmt.Sprintf("ctx %s/%s · %d%%",
+		strutil.CompactTokens(u.EstimatedTokens),
+		strutil.CompactTokens(u.MaxTokens), pct), width, "…")
+}

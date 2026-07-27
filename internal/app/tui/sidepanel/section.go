@@ -5,6 +5,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/contextpack"
 	"marshal/internal/db"
 )
 
@@ -41,6 +42,10 @@ type Data struct {
 	Turns   []db.TurnMetricsRow // most recent first
 	Changed []ChangedFile
 	Now     time.Time // injected so elapsed-time rendering is deterministic
+
+	// Pack is the context pack snapshot. Held directly rather than read
+	// from State so tests can build one without a session.
+	Pack contextpack.Pack
 }
 
 // Section is one read-only block in the rail. Sections are pure functions

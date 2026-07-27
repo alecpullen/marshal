@@ -667,7 +667,10 @@ func New(state *session.State, opts ...Option) Model {
 	m.gitInfo = gitinfo.Read(state.WorkingDir)
 	m.lastGitRead = m.now()
 
-	m.rail = sidepanel.New(sidepanel.RepoSection{})
+	m.rail = sidepanel.New(
+		sidepanel.ContextSection{},
+		sidepanel.RepoSection{},
+	)
 
 	if database := state.DB(); database != nil {
 		if projectID := m.memoryProject; projectID != 0 {
@@ -738,6 +741,7 @@ func (m Model) railData() sidepanel.Data {
 		State: m.state,
 		Git:   m.gitInfo,
 		Repo:  m.railRepoStats,
+		Pack:  m.state.ContextPack(),
 		Now:   m.now(),
 	}
 }

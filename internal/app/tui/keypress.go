@@ -68,6 +68,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.activeCompletionPopup().dismiss()
 			return *m, nil, true
 		}
+		m.resetHistoryNav()
 		m.cancelTurn()
 		return *m, nil, true
 	case "ctrl+o":
@@ -137,14 +138,21 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.viewportFollow = true
 		return *m, nil, true
 	case "up":
-		if m.activeCompletionPopup() != nil {
-			m.activeCompletionPopup().moveUp()
+		// Completion popups keep precedence over prompt history.
+		if p := m.activeCompletionPopup(); p != nil {
+			p.moveUp()
+			return *m, nil, true
+		}
+		if m.recallOlder() {
 			return *m, nil, true
 		}
 		return *m, nil, false
 	case "down":
-		if m.activeCompletionPopup() != nil {
-			m.activeCompletionPopup().moveDown()
+		if p := m.activeCompletionPopup(); p != nil {
+			p.moveDown()
+			return *m, nil, true
+		}
+		if m.recallNewer() {
 			return *m, nil, true
 		}
 		return *m, nil, false
@@ -190,6 +198,10 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return *m, nil, true
 		}
 		value := strings.TrimSpace(m.input.Value())
+		if value != "" {
+			m.recordPrompt(value)
+		}
+		m.resetHistoryNav()
 		// F16 R2 follow-up turn: when the agent has finished and the
 		// user presses Enter with no new input, pop the oldest queued
 		// steering message and submit it as the next turn. This must

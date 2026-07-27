@@ -115,7 +115,13 @@ type Model struct {
 	fileIndex          []completionItem
 	fileIndexLoaded    bool
 	lastInputForPopups string
-	setReg             *settings.Registry
+	// Prompt history (project-scoped), newest first. histIdx == -1 means
+	// "not browsing history, editing own draft"; draft stashes in-progress
+	// text while browsing.
+	history []string
+	histIdx int
+	draft   string
+	setReg  *settings.Registry
 	// configSavePending means state.Config contains a change that could not
 	// be persisted. An otherwise unchanged /set retries the full config.
 	configSavePending bool
@@ -676,6 +682,14 @@ func New(state *session.State, opts ...Option) Model {
 	m.lastGitRead = m.now()
 	m.railBaseRef = gitinfo.HeadSHA(state.WorkingDir)
 
+	m.histIdx = -1
+	if state.Config.History.Enabled {
+		if database := state.DB(); database != nil && m.memoryProject != 0 {
+			if prompts, err := database.RecentPrompts(m.memoryProject, promptHistoryLimit); err == nil {
+				m.history = prompts
+			}
+		}
+	}
 	m.rebuildRail()
 
 	if database := state.DB(); database != nil {

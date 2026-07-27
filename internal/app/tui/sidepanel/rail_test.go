@@ -4,8 +4,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/app/tui/theme"
+	"marshal/internal/contextpack"
+	"marshal/internal/db"
+	"marshal/internal/tools/registry"
 )
 
 // fakeSection is a Section with fully controllable geometry.
@@ -320,6 +326,62 @@ func TestRailStructureSurvivesColorStripping(t *testing.T) {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("structure marker %q must survive color stripping:\n%s", want, plain)
 		}
+	}
+}
+
+// TestRailNoANSIEscapesUnderNoColor asserts that the rail emits no ANSI
+// escape sequences when NO_COLOR is set, even when sections apply styled
+// output (success/error/warning) and the header/divider use lipgloss.
+func TestRailNoANSIEscapesUnderNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "xterm-256color")
+	prev := theme.Current()
+	theme.Reload(theme.Load())
+	t.Cleanup(func() { theme.Reload(prev) })
+
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	d := Data{
+		Now: now,
+		// ChangedSection: additions and deletions to exercise styleSuccess/styleError.
+		Changed: []ChangedFile{
+			{Path: "main.go", Status: 'M', Added: 10, Removed: 3},
+			{Path: "foo.go", Status: 'A', Added: 5, Removed: 0},
+			{Path: "bar.go", Status: 'D', Added: 0, Removed: 7},
+		},
+		// ToolsSection: calls with errors to exercise styleError.
+		Audit: []registry.AuditEvent{
+			{ToolName: "file.read", Duration: 100 * time.Millisecond},
+			{ToolName: "shell.exec", Duration: 2 * time.Second, Error: "exit 1"},
+			{ToolName: "file.read", Duration: 50 * time.Millisecond},
+		},
+		// ContextSection: above warn threshold to exercise styleWarning.
+		Pack: contextpack.Pack{
+			TokenUsage: contextpack.TokenUsage{
+				MaxTokens:       10000,
+				EstimatedTokens: 9500,
+			},
+			Sections: []contextpack.Section{
+				{Title: "repo_card", EstimatedTokens: 5000},
+				{Title: "memory", EstimatedTokens: 4500},
+			},
+		},
+		// SessionSection (footer): needs Turns to be relevant.
+		Turns: []db.TurnMetricsRow{
+			{StartedAt: now.Add(-10 * time.Minute), PromptTokens: 500, CompletionTokens: 200},
+			{StartedAt: now.Add(-5 * time.Minute), PromptTokens: 300, CompletionTokens: 100},
+		},
+	}
+
+	r := New(
+		ContextSection{},
+		ChangedSection{},
+		ToolsSection{},
+		SessionSection{},
+	)
+	out := r.View(d, 30, 20)
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("Rail.View emitted ANSI escapes under NO_COLOR:\n%q", out)
 	}
 }
 

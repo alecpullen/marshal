@@ -44,7 +44,10 @@ const ruleGlyph = "─"
 // title is truncated.
 func Header(title, right string, width int) string {
 	th := theme.Current()
-	titleStyle := lipgloss.NewStyle().Foreground(th.FGEmphasis).Bold(true)
+	titleStyle := lipgloss.NewStyle().Foreground(th.FGEmphasis)
+	if _, isNoColor := th.FGEmphasis.(lipgloss.NoColor); !isNoColor {
+		titleStyle = titleStyle.Bold(true)
+	}
 	ruleStyle := lipgloss.NewStyle().Foreground(th.BorderMuted)
 	dim := lipgloss.NewStyle().Foreground(th.FGMuted)
 

@@ -9,6 +9,10 @@ import (
 	"marshal/internal/strutil"
 )
 
+// contextWarnThreshold is the fraction of the context window past which
+// usage renders in StatusWarning.
+const contextWarnThreshold = 0.80
+
 // ContextSection shows what is actually in the model's context window:
 // the fill bar and the per-kind token breakdown. The status line shows
 // only the aggregate; this is the composition behind it.
@@ -44,7 +48,11 @@ func (ContextSection) Render(d Data, width, maxRows int) []string {
 	if u.MaxTokens > 0 {
 		frac = float64(u.EstimatedTokens) / float64(u.MaxTokens)
 	}
-	rows = append(rows, " "+Bar(frac, max(width-8, 4))+fmt.Sprintf(" %3d%%", int(frac*100+0.5)))
+	barRow := " " + Bar(frac, max(width-8, 4)) + fmt.Sprintf(" %3d%%", int(frac*100+0.5))
+	if u.MaxTokens > 0 && frac >= contextWarnThreshold {
+		barRow = styleWarning(barRow)
+	}
+	rows = append(rows, barRow)
 
 	for _, s := range d.Pack.Sections {
 		if s.EstimatedTokens == 0 {

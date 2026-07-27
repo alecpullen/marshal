@@ -91,6 +91,36 @@ func TestToolsSectionOneLine(t *testing.T) {
 	}
 }
 
+func TestToolsSectionColorsErrorCount(t *testing.T) {
+	d := Data{Audit: []registry.AuditEvent{
+		{ToolName: "file.read"},
+		{ToolName: "shell.run", Error: "exit 1"},
+	}}
+	rows := ToolsSection{}.Render(d, 30, 0)
+
+	var errRow string
+	for _, r := range rows {
+		if strings.Contains(StripANSI(r), "✘") {
+			errRow = r
+		}
+	}
+	if errRow == "" {
+		t.Fatal("no row reported an error")
+	}
+	if errRow == StripANSI(errRow) {
+		t.Errorf("error count is unstyled: %q", StripANSI(errRow))
+	}
+}
+
+func TestToolsSectionCleanRunHasNoStatusColor(t *testing.T) {
+	d := Data{Audit: []registry.AuditEvent{{ToolName: "file.read"}}}
+	for _, r := range (ToolsSection{}).Render(d, 30, 0) {
+		if strings.Contains(r, "\x1b[") {
+			t.Errorf("clean run should be unstyled, got %q", r)
+		}
+	}
+}
+
 func TestToolsSectionRelevance(t *testing.T) {
 	if (ToolsSection{}).Relevant(Data{}) {
 		t.Error("Relevant(no events) = true, want false")

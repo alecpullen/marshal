@@ -200,21 +200,21 @@ func (p *completionPopup) moveUp() {
 // within completionPopupMax rows. This is the single source of truth for
 // popup scroll math — the renderer only reads p.viewOffset.
 func (p *completionPopup) reconcileOffset() {
-	max := completionPopupMax
-	if len(p.filtered) < max {
-		max = len(p.filtered)
+	limit := completionPopupMax
+	if len(p.filtered) < limit {
+		limit = len(p.filtered)
 	}
 	if p.viewOffset < 0 {
 		p.viewOffset = 0
 	}
-	if max > 0 && p.viewOffset > len(p.filtered)-max {
-		p.viewOffset = len(p.filtered) - max
+	if limit > 0 && p.viewOffset > len(p.filtered)-limit {
+		p.viewOffset = len(p.filtered) - limit
 	}
 	if p.index < p.viewOffset {
 		p.viewOffset = p.index
 	}
-	if max > 0 && p.index >= p.viewOffset+max {
-		p.viewOffset = p.index - max + 1
+	if limit > 0 && p.index >= p.viewOffset+limit {
+		p.viewOffset = p.index - limit + 1
 	}
 }
 

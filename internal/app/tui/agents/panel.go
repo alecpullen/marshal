@@ -509,9 +509,8 @@ func (p *Panel) maybePersist(inner tea.Cmd) tea.Cmd {
 }
 
 // Sizing declares the full-frame budget: the transcript hides while this
-// panel is open. Returns Docked until the consumer wiring in viewString
-// (which consults FullFrameOpen) lands in Task 2 of the dock-sizing plan.
-func (p *Panel) Sizing() dock.Sizing { return dock.Docked }
+// panel is open.
+func (p *Panel) Sizing() dock.Sizing { return dock.FullFrame }
 
 // View renders the roster panel.
 func (p *Panel) View(width, maxHeight int) string {

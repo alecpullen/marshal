@@ -87,6 +87,10 @@ type fieldList struct {
 	pushPicker *pickerRequest
 
 	yankedData any
+
+	// descSuppressed hides the inline desc line under the cursor row; the
+	// two-column browser renders desc in its detail pane instead.
+	descSuppressed bool
 }
 
 // FieldList is an exported alias for fieldList.
@@ -163,6 +167,8 @@ func (fl *fieldList) CursorRow() *field {
 }
 
 func (fl *fieldList) SetSize(w, h int) { fl.width, fl.height = w, h }
+
+func (fl *fieldList) setDescSuppressed(suppress bool) { fl.descSuppressed = suppress }
 
 func (fl *fieldList) disarmRow(i int) {
 	fl.Refresh()
@@ -611,7 +617,7 @@ func (fl *fieldList) View() string {
 		if isCursor && fl.errMsg != "" {
 			lines = append(lines, "    "+flErrStyle().Render("⚠ "+fl.errMsg))
 		}
-		if isCursor && row.desc != "" && !fl.Editing() {
+		if isCursor && row.desc != "" && !fl.Editing() && !fl.descSuppressed {
 			lines = append(lines, "    "+flDescStyle().Render(row.desc))
 		}
 		if isCursor && fl.picking {

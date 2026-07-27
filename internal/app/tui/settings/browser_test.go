@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -12,6 +13,12 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
 )
+
+// stripANSI removes ANSI escape sequences from text so test assertions
+// can match visible content without lipgloss styling.
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 func TestBrowserFiltersAndRendersRows(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "shell")
@@ -486,4 +493,47 @@ func TestBrowserPasteIntoFilter(t *testing.T) {
 	if !strings.Contains(view, "Shell · Allow network") {
 		t.Fatalf("pasted filter should refresh the list, got:\n%s", view)
 	}
+}
+
+func TestBrowserTwoColumnShowsDescInDetailPane(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	var got string
+	f := scalarField("t.token", "Token",
+		func() string { return got },
+		func(v string) error { got = v; return nil })
+	f.desc = "the token used for things"
+	b.list = newFieldList(func() []*field { return []*field{f} })
+
+	// 140 cols of dock width → interior 135 ≥ WideBreakpoint → two columns.
+	out := b.View(140, 20)
+	titleLine, _, _ := strings.Cut(out, "\n")
+	_ = titleLine
+	for _, line := range strings.Split(stripANSI(out), "\n") {
+		if strings.Contains(line, "Token") && strings.Contains(line, "the token used for things") {
+			return // desc is beside the row (detail pane), not under it
+		}
+	}
+	t.Fatalf("expected desc in a detail pane beside the cursor row, got:\n%s", stripANSI(out))
+}
+
+func TestBrowserSingleColumnKeepsInlineDesc(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	var got string
+	f := scalarField("t.token", "Token",
+		func() string { return got },
+		func(v string) error { got = v; return nil })
+	f.desc = "the token used for things"
+	b.list = newFieldList(func() []*field { return []*field{f} })
+
+	// 80 cols → interior 75 < WideBreakpoint → single column, desc under row.
+	out := stripANSI(b.View(80, 20))
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "Token") && !strings.Contains(line, "the token") {
+			if i+1 < len(lines) && strings.Contains(lines[i+1], "the token used for things") {
+				return // desc on its own line under the row
+			}
+		}
+	}
+	t.Fatalf("expected inline desc under the cursor row, got:\n%s", out)
 }

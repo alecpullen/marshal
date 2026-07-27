@@ -507,6 +507,10 @@ func rowHints(list *fieldList, atRoot bool) string {
 	return h + " · " + back
 }
 
+// Sizing declares the full-frame budget: the transcript hides while this
+// panel is open.
+func (b *BrowserPanel) Sizing() dock.Sizing { return dock.FullFrame }
+
 // View renders the active flat browser, collection drill, or picker within
 // the dock's dimensions. Past layout.WideBreakpoint the list splits into a
 // list pane and a right-hand detail pane holding the cursor row's desc.

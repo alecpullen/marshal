@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/textfield"
@@ -154,6 +155,9 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	}
 	return nil
 }
+
+// Sizing keeps the picker docked under the default height cap.
+func (m *Model) Sizing() dock.Sizing { return dock.Docked }
 
 // View renders the picker as a centered panel with filter input, item list,
 // and footer.

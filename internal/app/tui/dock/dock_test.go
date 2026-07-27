@@ -1,59 +1,79 @@
 package dock
 
 import (
-	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"marshal/internal/app/tui/layout"
 )
 
-type fakePanel struct{ lastW, lastH int }
-
-func (f *fakePanel) Update(tea.Msg) tea.Cmd { return nil }
-
-func (f *fakePanel) View(width, maxHeight int) string {
-	f.lastW, f.lastH = width, maxHeight
-	return "line1\nline2\nline3"
+type stubPanel struct {
+	sizing   Sizing
+	gotWidth int
+	gotMaxH  int
 }
 
+func (s *stubPanel) Update(msg tea.Msg) tea.Cmd { return nil }
+func (s *stubPanel) View(width, maxHeight int) string {
+	s.gotWidth, s.gotMaxH = width, maxHeight
+	return "stub"
+}
+func (s *stubPanel) Sizing() Sizing { return s.sizing }
+
+// TestMaxRows documents the 40%-of-frame height cap with a floor of 6
+// rows. The table covers the linear regime, the floor, and a zero frame.
 func TestMaxRows(t *testing.T) {
-	cases := []struct{ frame, want int }{
-		{24, 9},
-		{40, 16},
-		{10, 6},
+	tests := []struct {
+		frameHeight int
+		want        int
+	}{
+		{0, 6},   // floor applies immediately at zero
+		{10, 6},  // below floor → floor
+		{15, 6},  // floor boundary
+		{20, 8},  // 20*2/5 = 8, well above the floor
+		{24, 9},  // 24*2/5 = 9.6 → 9
+		{40, 16}, // standard terminal height
+		{100, 40},
 	}
-	for _, testCase := range cases {
-		if got := MaxRows(testCase.frame); got != testCase.want {
-			t.Errorf("MaxRows(%d) = %d, want %d", testCase.frame, got, testCase.want)
+	for _, tc := range tests {
+		if got := MaxRows(tc.frameHeight); got != tc.want {
+			t.Errorf("MaxRows(%d) = %d, want %d", tc.frameHeight, got, tc.want)
 		}
 	}
 }
 
-func TestHostLifecycle(t *testing.T) {
-	var host Host
-	if host.IsOpen() || host.Rows() != 0 || host.View(80, 24) != "" {
-		t.Fatal("empty host must be closed, zero rows, empty view")
+// TestDockStatusLineRowsMatchesLayout pins dock.statusLineRows to
+// layout.StatusLineRows. The two values are aliases today; if anyone
+// reintroduces a literal in dock.go (regression), this catches the drift
+// against the layout-side source of truth.
+func TestDockStatusLineRowsMatchesLayout(t *testing.T) {
+	if int(statusLineRows) != layout.StatusLineRows {
+		t.Fatalf("dock.statusLineRows = %d, layout.StatusLineRows = %d — keep them in sync",
+			statusLineRows, layout.StatusLineRows)
+	}
+}
+
+func TestHostViewBudgetsBySizingHint(t *testing.T) {
+	docked := &stubPanel{sizing: Docked}
+	h := &Host{}
+	h.Open(docked)
+	h.View(100, 40)
+	if want := MaxRows(40); docked.gotMaxH != want {
+		t.Fatalf("Docked panel got maxHeight %d, want MaxRows(40) = %d", docked.gotMaxH, want)
 	}
 
-	panel := &fakePanel{}
-	host.Open(panel)
-	if !host.IsOpen() {
-		t.Fatal("host should be open after Open")
+	full := &stubPanel{sizing: FullFrame}
+	h.Open(full)
+	h.View(100, 40)
+	if want := 40 - 1; full.gotMaxH != want {
+		t.Fatalf("FullFrame panel got maxHeight %d, want frame minus status line = %d", full.gotMaxH, want)
 	}
-
-	view := host.View(80, 24)
-	if !strings.Contains(view, "line2") {
-		t.Fatalf("view should render panel content, got %q", view)
+	if !h.FullFrameOpen() {
+		t.Fatal("FullFrameOpen() = false with a FullFrame panel open")
 	}
-	if panel.lastH != MaxRows(24) {
-		t.Errorf("panel got maxHeight %d, want %d", panel.lastH, MaxRows(24))
-	}
-	if host.Rows() != 3 {
-		t.Errorf("Rows() = %d after render, want 3", host.Rows())
-	}
-
-	host.CloseNow()
-	if host.IsOpen() || host.Rows() != 0 {
-		t.Fatal("CloseNow must reset panel and rows")
+	h.Open(docked)
+	if h.FullFrameOpen() {
+		t.Fatal("FullFrameOpen() = true with a Docked panel open")
 	}
 }

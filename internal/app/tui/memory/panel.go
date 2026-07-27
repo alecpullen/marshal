@@ -155,6 +155,9 @@ func (p *BrowserPanel) refilter() {
 	}
 }
 
+// Sizing keeps the memory browser docked under the default height cap.
+func (p *BrowserPanel) Sizing() dock.Sizing { return dock.Docked }
+
 // View renders the browser inside the dock height budget.
 func (p *BrowserPanel) View(width, maxHeight int) string {
 	pw := layout.PanelWidth(width)

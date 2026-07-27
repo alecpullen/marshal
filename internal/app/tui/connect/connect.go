@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
@@ -155,6 +156,9 @@ func (p Panel) Update(msg tea.Msg) tea.Cmd {
 	_, cmd := p.Model.Update(msg)
 	return cmd
 }
+
+// Sizing keeps the connect wizard docked under the default height cap.
+func (p Panel) Sizing() dock.Sizing { return dock.Docked }
 
 func (m *Model) View(maxW, maxH int) string {
 	// The picker already renders its own gutter-framed panel with a

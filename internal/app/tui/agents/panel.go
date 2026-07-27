@@ -508,6 +508,10 @@ func (p *Panel) maybePersist(inner tea.Cmd) tea.Cmd {
 	return tea.Batch(inner, changed)
 }
 
+// Sizing declares the full-frame budget: the transcript hides while this
+// panel is open.
+func (p *Panel) Sizing() dock.Sizing { return dock.FullFrame }
+
 // View renders the roster panel.
 func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 2 {

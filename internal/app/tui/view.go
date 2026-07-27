@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 )
 
@@ -23,8 +24,14 @@ func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 const (
 	transcriptFrameRows = 0
-	statusLineRows      = 1
-	completionPopupMax  = 8
+	// statusLineRows aliases layout.StatusLineRows. The source of truth
+	// lives in internal/app/tui/layout; the alias keeps in-package call
+	// sites (model.go, view_test.go, input_area_test.go) referencing the
+	// unqualified name. The dock package duplicates the value because tui
+	// imports dock but not vice versa; see dock/dock_test.go for the
+	// guard test that pins the duplicate.
+	statusLineRows     = layout.StatusLineRows
+	completionPopupMax = 8
 	// completionPanelChromeRows is the number of rows the chrome.Panel title
 	// adds above the completion popup's match rows.
 	completionPanelChromeRows = 1
@@ -58,22 +65,28 @@ func (m *Model) viewString() string {
 	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()
 
-	rows := []string{m.renderTranscriptFrame()}
-	if todo := m.renderTodoPanel(); todo != "" {
-		rows = append(rows, todo)
+	var left string
+	if m.dock.FullFrameOpen() {
+		// A FullFrame panel owns everything above the status line: the
+		// transcript, todo panel, live strip, and input area are hidden.
+		left = dockView
+	} else {
+		rows := []string{m.renderTranscriptFrame()}
+		if todo := m.renderTodoPanel(); todo != "" {
+			rows = append(rows, todo)
+		}
+		if sd := m.state.SDDProgress(); sd.Active {
+			rows = append(rows, sddPanel(sd, m.leftWidth))
+		}
+		if strip := m.renderLiveStrip(); strip != "" {
+			rows = append(rows, strip)
+		}
+		if dockView != "" {
+			rows = append(rows, dockView)
+		}
+		rows = append(rows, m.renderInputArea())
+		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
-	if sd := m.state.SDDProgress(); sd.Active {
-		rows = append(rows, sddPanel(sd, m.leftWidth))
-	}
-	if strip := m.renderLiveStrip(); strip != "" {
-		rows = append(rows, strip)
-	}
-	if dockView != "" {
-		rows = append(rows, dockView)
-	}
-	rows = append(rows, m.renderInputArea())
-
-	left := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	if m.railEnabled() {
 		railHeight := m.height - statusLineRows
 		if rv := m.rail.View(m.railData(), m.railWidth, railHeight); rv != "" {

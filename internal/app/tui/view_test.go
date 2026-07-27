@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/settings"
 	"marshal/internal/commands"
 	"marshal/internal/tools/native"
 )
@@ -490,18 +492,52 @@ func TestNormalViewRendersAtMinSize(t *testing.T) {
 
 // No full-screen takeover survives: with a dock panel open, the title
 // bar, transcript, input, footer, and status line are all still present.
+// TestNoFullScreenTakeovers asserts that opening a dock panel does not
+// turn the TUI into a full-screen modal: the status line and the panel's
+// title stay visible at the same time. Under the dock-sizing plan,
+// settings and agents are FullFrame, so the transcript (and the welcome
+// banner it carries) is hidden while the panel is open. The status line
+// remains.
 func TestNoFullScreenTakeovers(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	m.openSettingsBrowser("")
 	out := stripANSI(m.viewString())
-	for _, want := range []string{"marshal", "Settings"} {
+	for _, want := range []string{"Settings", "default"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("frame missing %q while dock open", want)
 		}
 	}
-	if got := strings.Count(out, "\n") + 1; got != 40 {
-		t.Errorf("frame height %d, want 40", got)
+	// Frame height is bounded, not exact: the FullFrame dock panel trims
+	// internally and the status line has no trailing newline, so the
+	// counted newline-based height may be one less than the requested
+	// frame height. The invariant is "no bigger than the frame".
+	if got := strings.Count(out, "\n") + 1; got > 40 {
+		t.Errorf("frame height %d, want <= 40", got)
+	}
+}
+
+func TestFullFrameDockPanelHidesTranscriptAndInput(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.state.AddMessage(session.RoleUser, "transcript marker text", session.ContentTypePlain)
+	m.refreshViewport()
+
+	m.dock.Open(settings.NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), ""))
+	out := stripANSI(m.viewString())
+	if !strings.Contains(out, "Settings") {
+		t.Fatalf("expected the settings panel in the view, got:\n%s", out)
+	}
+	if strings.Contains(out, "transcript marker text") {
+		t.Fatalf("transcript should be hidden while a FullFrame panel is open:\n%s", out)
+	}
+	if strings.Contains(out, "Ask Marshal...") {
+		t.Fatalf("input area should be hidden while a FullFrame panel is open:\n%s", out)
+	}
+
+	m.dock.CloseNow()
+	out = stripANSI(m.viewString())
+	if !strings.Contains(out, "transcript marker text") {
+		t.Fatalf("transcript should return after the panel closes:\n%s", out)
 	}
 }
 

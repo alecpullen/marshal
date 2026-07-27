@@ -2,6 +2,14 @@
 // so panels share one definition instead of hand-rolling divergent caps.
 package layout
 
+// StatusLineRows is the single row of persistent chrome at the bottom of
+// the TUI. The dock package duplicates this value because tui imports
+// dock but dock cannot import tui; the duplication is intentional and the
+// shared value here is the source of truth. If StatusLineRows ever
+// changes, run `go test ./internal/app/tui/layout -v` to confirm the
+// dock/dock_test guard still passes.
+const StatusLineRows = 1
+
 // WideBreakpoint is the panel-interior width in columns at which
 // list-shaped panels split into a list pane and a right-hand detail pane.
 const WideBreakpoint = 100

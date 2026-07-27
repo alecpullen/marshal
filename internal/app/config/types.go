@@ -108,9 +108,10 @@ type SidePanelConfig struct {
 	Hidden   []string `toml:"hidden"`
 }
 
-// HistoryConfig controls the session history subsystem. When Enabled is
-// true (the default), the agent loop persists each generation to the
-// history database and the /history command is available.
+// HistoryConfig controls project-scoped prompt history (↑/↓ recall in the
+// chat input). When Enabled is true (the default), submitted prompts are
+// persisted to the project's prompt_history table and recalled on the
+// first input line.
 type HistoryConfig struct {
 	Enabled bool `toml:"enabled"`
 }

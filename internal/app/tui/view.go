@@ -9,6 +9,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/theme"
 )
 
 // ansiRe matches SGR (and empty) escape sequences that lipgloss emits.
@@ -22,6 +25,9 @@ const (
 	transcriptFrameRows = 0
 	statusLineRows      = 1
 	completionPopupMax  = 8
+	// completionPanelChromeRows is the number of rows the chrome.Panel title
+	// adds above the completion popup's match rows.
+	completionPanelChromeRows = 1
 	// minTranscriptRows is the transcript floor reserved when budgeting the
 	// textarea's MaxHeight. When a 3-row transcript and a 1-row input do not
 	// both fit, the transcript floor yields first — a zero-row input cannot
@@ -173,8 +179,9 @@ func highlightMatches(text string, idxs []int) string {
 }
 
 // renderCompletionPopup renders the active F18 completion popup as a
-// multi-line block above the input area. Returns "" when no popup is
-// visible. Capped at completionPopupMax rows. The popup scrolls so the
+// guttered panel above the input area, using the same chrome.Panel dressing
+// as settings, pickers, and docked panels. Returns "" when no popup is
+// visible. Capped at completionPopupMax match rows. The popup scrolls so the
 // selected item (p.index) is always visible.
 func (m Model) renderCompletionPopup() string {
 	p := m.activeCompletionPopup()
@@ -185,16 +192,17 @@ func (m Model) renderCompletionPopup() string {
 	if len(matches) == 0 {
 		return ""
 	}
-	available := max(m.leftWidth-4, 1)
+	width := max(m.leftWidth-4, 1)
+	inner := max(width-2, 1) // chrome.Panel reserves 2 cells for the ▍ gutter
 	rows := make([]string, 0, completionPopupMax)
-	max := completionPopupMax
-	if len(matches) < max {
-		max = len(matches)
+	limit := completionPopupMax
+	if len(matches) < limit {
+		limit = len(matches)
 	}
 	// The popup's reconcileOffset() is the single source of truth for
 	// scroll position. The renderer only reads p.viewOffset.
 	offset := p.viewOffset
-	for i := 0; i < max; i++ {
+	for i := 0; i < limit; i++ {
 		mi := offset + i
 		marker := "  "
 		style := mutedStyle()
@@ -210,10 +218,17 @@ func (m Model) renderCompletionPopup() string {
 		if matches[mi].Description != "" {
 			row += "  " + matches[mi].Description
 		}
-		row = ansi.Cut(row, 0, available)
+		row = ansi.Cut(row, 0, inner)
 		rows = append(rows, style.Render(row))
 	}
-	return strings.Join(rows, "\n")
+	title := "Commands"
+	if p == m.filePopup {
+		title = "Files"
+	} else if p == m.setPopup {
+		title = "Settings"
+	}
+	return chrome.PanelWithHints(title, "↑↓ select · ↵ accept · esc dismiss",
+		strings.Join(rows, "\n"), width, limit+1, true, theme.Current())
 }
 
 func (m Model) tooSmallView() string {

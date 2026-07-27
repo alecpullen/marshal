@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -451,8 +452,12 @@ func TestCompletionPopupANSITruncationStaysRenderable(t *testing.T) {
 	m.input.SetValue("/pl")
 	m.updateCompletionPopups()
 	out := m.renderCompletionPopup()
+	// Check that every \x1b[ escape is properly terminated with m (no
+	// truncated sequences). The old heuristic of counting raw "m" chars
+	// broke once the chrome panel added text content containing "m".
 	if strings.Contains(out, "\x1b[") {
-		if strings.Count(out, "\x1b[") != strings.Count(out, "m") {
+		// Find any \x1b[ not followed by a valid SGR terminator.
+		if regexp.MustCompile(`\x1b\[[0-9;]*[^0-9;m]`).MatchString(out) {
 			t.Fatalf("completion popup appears to contain truncated ANSI sequence: %q", out)
 		}
 	}

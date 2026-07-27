@@ -218,6 +218,45 @@ func TestCompletionPopupShowsSlashPrefix(t *testing.T) {
 	if !strings.Contains(out, "/plan") {
 		t.Fatalf("expected /plan in popup, got %q", out)
 	}
+	if !strings.Contains(out, "Commands") {
+		t.Fatalf("expected Commands title in popup, got %q", out)
+	}
+	if !strings.Contains(out, "▍") {
+		t.Fatalf("expected ▍ gutter in popup, got %q", out)
+	}
+	if !strings.Contains(out, "↑↓ select · ↵ accept · esc dismiss") {
+		t.Fatalf("expected key hints in popup, got %q", out)
+	}
+}
+
+func TestCompletionPopupTitleFollowsPopupKind(t *testing.T) {
+	filePop := newCompletionPopup([]completionItem{{Text: "main.go", Kind: completionFile}})
+	filePop.update("ma")
+	m := Model{filePopup: filePop, width: 80, leftWidth: 80}
+	if out := stripANSI(m.renderCompletionPopup()); !strings.Contains(out, "Files") {
+		t.Fatalf("expected Files title for @ popup, got %q", out)
+	}
+
+	setPop := newCompletionPopup([]completionItem{{Text: "theme", Kind: completionSetting}})
+	setPop.update("th")
+	m = Model{setPopup: setPop, width: 80, leftWidth: 80}
+	if out := stripANSI(m.renderCompletionPopup()); !strings.Contains(out, "Settings") {
+		t.Fatalf("expected Settings title for /set popup, got %q", out)
+	}
+}
+
+func TestInputChromeRowsCountsPopupTitleRow(t *testing.T) {
+	m := newViewTestModelWithRegistry(t, 80, 24)
+	m.input.SetValue("/pl")
+	m.updateCompletionPopups()
+	p := m.activeCompletionPopup()
+	if p == nil {
+		t.Fatal("expected a visible completion popup for /pl")
+	}
+	want := min(len(p.matches()), completionPopupMax) + completionPanelChromeRows
+	if got := m.inputChromeRows(); got != want {
+		t.Fatalf("inputChromeRows() = %d, want %d (popup rows + title row)", got, want)
+	}
 }
 
 func TestInputAreaRowsHandlesWrappedContent(t *testing.T) {

@@ -1352,9 +1352,9 @@ func (m Model) inputChromeRows() int {
 		rows += lipgloss.Height(content)
 	}
 	if p := m.activeCompletionPopup(); p != nil {
-		// Cap the popup at completionPopupMax visible rows (matches the
-		// renderer in view.go).
-		rows += min(len(p.matches()), completionPopupMax)
+		// Cap the popup at completionPopupMax visible match rows plus the
+		// panel title row (matches the renderer in view.go).
+		rows += min(len(p.matches()), completionPopupMax) + completionPanelChromeRows
 	}
 	return rows
 }

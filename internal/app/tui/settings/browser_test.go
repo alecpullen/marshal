@@ -506,8 +506,6 @@ func TestBrowserTwoColumnShowsDescInDetailPane(t *testing.T) {
 
 	// 140 cols of dock width → interior 135 ≥ WideBreakpoint → two columns.
 	out := b.View(140, 20)
-	titleLine, _, _ := strings.Cut(out, "\n")
-	_ = titleLine
 	for _, line := range strings.Split(stripANSI(out), "\n") {
 		if strings.Contains(line, "Token") && strings.Contains(line, "the token used for things") {
 			return // desc is beside the row (detail pane), not under it
@@ -536,4 +534,37 @@ func TestBrowserSingleColumnKeepsInlineDesc(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected inline desc under the cursor row, got:\n%s", out)
+}
+
+// TestBrowserTwoColumnShowsDescInDetailPaneWhileDrilled extends
+// TestBrowserTwoColumnShowsDescInDetailPane to the b.stack != nil branch
+// (drilled into a collection). The drilled stack reuses the same list+detail
+// join — this test pins that the join still happens when the body is a
+// drilled collection rather than the flat top-level list.
+func TestBrowserTwoColumnShowsDescInDetailPaneWhileDrilled(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
+	for index, row := range b.list.Rows() {
+		if row.id == "section.providers" {
+			b.list.SetCursor(index)
+			break
+		}
+	}
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if b.stack == nil {
+		t.Fatal("expected to be drilled into the providers collection")
+	}
+
+	// The cursor row is the first entry of the drilled providers frame, the
+	// "Reset Providers to defaults" action whose desc is "restore this
+	// section to built-in defaults (applies immediately)". Asserting the row
+	// label and the desc appear on the same rendered line proves the two-
+	// column join happens on the drilled branch, not just the flat one.
+	out := stripANSI(b.View(140, 20))
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Reset Providers to defaults") &&
+			strings.Contains(line, "restore this section to built-in defaults") {
+			return // desc is beside the row in the detail pane
+		}
+	}
+	t.Fatalf("expected desc beside the cursor row in two-column drill, got:\n%s", out)
 }

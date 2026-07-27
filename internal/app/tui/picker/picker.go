@@ -12,6 +12,7 @@ import (
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 )
@@ -160,10 +161,7 @@ func (m *Model) View(maxW, maxH int) string {
 	if maxH < 2 {
 		return ""
 	}
-	pw := min(64, maxW-8)
-	if pw < 30 {
-		pw = max(maxW-2, 30)
-	}
+	pw := layout.PanelWidth(maxW)
 	inner := pw - 3
 
 	filtering := strings.TrimSpace(m.filter.Value()) != ""

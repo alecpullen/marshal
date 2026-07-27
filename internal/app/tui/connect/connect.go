@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/textfield"
@@ -162,10 +163,7 @@ func (m *Model) View(maxW, maxH int) string {
 	if m.picker != nil {
 		return m.picker.View(maxW, maxH)
 	}
-	pw := min(64, maxW-8)
-	if pw < 40 {
-		pw = max(maxW-2, 40)
-	}
+	pw := layout.PanelWidth(maxW)
 	var b strings.Builder
 	b.WriteString(titleStyle().Render(m.title))
 	b.WriteString("\n")

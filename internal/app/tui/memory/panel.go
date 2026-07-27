@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/db"
@@ -156,11 +157,7 @@ func (p *BrowserPanel) refilter() {
 
 // View renders the browser inside the dock height budget.
 func (p *BrowserPanel) View(width, maxHeight int) string {
-	pw := min(64, width-8)
-	if pw < 40 {
-		pw = max(width-2, 40)
-	}
-	pw = min(pw, width-2)
+	pw := layout.PanelWidth(width)
 	inner := pw - 3
 
 	if maxHeight < 3 {

@@ -36,20 +36,20 @@ func BuildRegistry(cfg config.Config) *Registry {
 		defaults: map[string]string{},
 	}
 	for _, section := range sectionList() {
-		for _, field := range section.root(st).list.Rows() {
-			if field.id == "" {
+		for _, field := range section.Root(st).List.Rows() {
+			if field.ID == "" {
 				continue
 			}
-			if _, duplicate := registry.byID[field.id]; duplicate {
+			if _, duplicate := registry.byID[field.ID]; duplicate {
 				continue
 			}
-			registry.order = append(registry.order, field.id)
-			registry.byID[field.id] = field
-			registry.section[field.id] = section.title
-			if field.getStr != nil {
-				registry.defaults[field.id] = field.getStr()
+			registry.order = append(registry.order, field.ID)
+			registry.byID[field.ID] = field
+			registry.section[field.ID] = section.Title
+			if field.GetStr != nil {
+				registry.defaults[field.ID] = field.GetStr()
 			} else {
-				registry.defaults[field.id] = fieldString(field)
+				registry.defaults[field.ID] = fieldString(field)
 			}
 		}
 	}
@@ -66,7 +66,7 @@ func (r *Registry) Lookup(key string) (*field, bool) {
 		return field, true
 	}
 	for _, f := range r.byID {
-		if f.tomlPath == key {
+		if f.TomlPath == key {
 			return f, true
 		}
 	}
@@ -76,15 +76,15 @@ func (r *Registry) Lookup(key string) (*field, bool) {
 // fieldString returns the string representation of a field's current value,
 // suitable for comparison against a baseline default.
 func fieldString(f *field) string {
-	switch f.kind {
+	switch f.Kind {
 	case kindToggle:
-		if f.getBool() {
+		if f.GetBool() {
 			return "on"
 		}
 		return "off"
 	case kindScalar, kindEnum:
-		if f.getStr != nil {
-			return f.getStr()
+		if f.GetStr != nil {
+			return f.GetStr()
 		}
 	}
 	return ""
@@ -124,7 +124,7 @@ func (r *Registry) MatchKeys(query string) []string {
 	haystacks := make([]string, len(r.order))
 	for index, key := range r.order {
 		field := r.byID[key]
-		haystacks[index] = r.section[key] + " " + key + " " + field.title + " " + strings.Join(field.keywords, " ")
+		haystacks[index] = r.section[key] + " " + key + " " + field.Title + " " + strings.Join(field.Keywords, " ")
 	}
 
 	matches := fuzzy.Rank(query, haystacks)
@@ -146,14 +146,14 @@ func (r *Registry) Describe(key string) (kind, current string, options []string,
 		return "", "", nil, fmt.Errorf("unknown setting %q", key)
 	}
 
-	switch field.kind {
+	switch field.Kind {
 	case kindToggle:
-		return "toggle", onOff(field.getBool()), []string{"on", "off"}, nil
+		return "toggle", onOff(field.GetBool()), []string{"on", "off"}, nil
 	case kindEnum:
-		return "enum", field.getStr(), field.options(), nil
+		return "enum", field.GetStr(), field.Options(), nil
 	case kindScalar:
-		value := field.getStr()
-		if field.masked {
+		value := field.GetStr()
+		if field.Masked {
 			value = maskKey(value)
 		}
 		return "scalar", value, nil, nil
@@ -169,15 +169,15 @@ func (r *Registry) Apply(key, value string) (Change, error) {
 		return Change{}, fmt.Errorf("unknown setting %q", key)
 	}
 
-	switch field.kind {
+	switch field.Kind {
 	case kindToggle:
 		parsed, parseErr := parseOnOff(value)
 		if parseErr != nil {
 			return Change{}, parseErr
 		}
-		oldValue := onOff(field.getBool())
-		field.setBool(parsed)
-		newValue := onOff(field.getBool())
+		oldValue := onOff(field.GetBool())
+		field.SetBool(parsed)
+		newValue := onOff(field.GetBool())
 		change := Change{
 			OldValue: oldValue,
 			NewValue: newValue,
@@ -188,32 +188,32 @@ func (r *Registry) Apply(key, value string) (Change, error) {
 		}
 		return change, nil
 	case kindScalar, kindEnum:
-		if field.setStr == nil {
+		if field.SetStr == nil {
 			return Change{}, fmt.Errorf("%s is read-only", key)
 		}
-		if field.kind == kindEnum {
+		if field.Kind == kindEnum {
 			found := false
-			for _, option := range field.options() {
+			for _, option := range field.Options() {
 				if option == value {
 					found = true
 					break
 				}
 			}
 			if !found {
-				return Change{}, fmt.Errorf("%s must be one of: %s", key, strings.Join(field.options(), ", "))
+				return Change{}, fmt.Errorf("%s must be one of: %s", key, strings.Join(field.Options(), ", "))
 			}
 		}
-		oldValue := field.getStr()
-		if err := field.setStr(value); err != nil {
+		oldValue := field.GetStr()
+		if err := field.SetStr(value); err != nil {
 			return Change{}, err
 		}
-		newValue := field.getStr()
+		newValue := field.GetStr()
 		change := Change{
 			OldValue: oldValue,
 			NewValue: newValue,
 			Changed:  oldValue != newValue,
 		}
-		if field.masked {
+		if field.Masked {
 			change.OldValue, change.NewValue = maskKey(oldValue), maskKey(newValue)
 		}
 		return change, nil

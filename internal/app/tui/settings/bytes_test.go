@@ -79,16 +79,16 @@ func TestBytesFieldRoundTrip(t *testing.T) {
 		func() int64 { return val },
 		func(v int64) { val = v },
 	)
-	if f.getStr() != "1.0 MB" {
-		t.Fatalf("expected 1.0 MB, got %q", f.getStr())
+	if f.GetStr() != "1.0 MB" {
+		t.Fatalf("expected 1.0 MB, got %q", f.GetStr())
 	}
-	if err := f.setStr("2 MB"); err != nil {
+	if err := f.SetStr("2 MB"); err != nil {
 		t.Fatalf("setStr error: %v", err)
 	}
 	if val != 2097152 {
 		t.Fatalf("expected 2097152, got %d", val)
 	}
-	if f.getStr() != "2.0 MB" {
-		t.Fatalf("expected 2.0 MB, got %q", f.getStr())
+	if f.GetStr() != "2.0 MB" {
+		t.Fatalf("expected 2.0 MB, got %q", f.GetStr())
 	}
 }

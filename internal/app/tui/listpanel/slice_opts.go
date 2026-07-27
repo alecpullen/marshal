@@ -1,4 +1,4 @@
-package settings
+package listpanel
 
 import (
 	"fmt"
@@ -6,32 +6,32 @@ import (
 	"strconv"
 )
 
-// sliceOpts returns the move/yank/paste entriesOpts for a *[]T field.
+// SliceOpts returns the move/yank/paste EntriesOpts for a *[]T field.
 // It replaces the per-type copies (hooks, permissions, string lists).
-func sliceOpts[T any](items *[]T) entriesOpts {
-	return entriesOpts{
-		moveUp: func(k string) {
+func SliceOpts[T any](items *[]T) EntriesOpts {
+	return EntriesOpts{
+		MoveUp: func(k string) {
 			i, _ := strconv.Atoi(k)
 			if i <= 0 || i >= len(*items) {
 				return
 			}
 			(*items)[i-1], (*items)[i] = (*items)[i], (*items)[i-1]
 		},
-		moveDown: func(k string) {
+		MoveDown: func(k string) {
 			i, _ := strconv.Atoi(k)
 			if i < 0 || i >= len(*items)-1 {
 				return
 			}
 			(*items)[i+1], (*items)[i] = (*items)[i], (*items)[i+1]
 		},
-		yank: func(k string) any {
+		Yank: func(k string) any {
 			i, _ := strconv.Atoi(k)
 			if i < 0 || i >= len(*items) {
 				return nil
 			}
 			return (*items)[i]
 		},
-		paste: func(k string, data any) error {
+		Paste: func(k string, data any) error {
 			v, ok := data.(T)
 			if !ok {
 				return fmt.Errorf("nothing yanked")

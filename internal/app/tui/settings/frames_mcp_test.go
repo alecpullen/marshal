@@ -17,20 +17,20 @@ func TestMCPServerNestedDrill(t *testing.T) {
 	ps.SetSize(80, 24)
 
 	// root rows: Disclosure threshold, Servers, Policies
-	rows := ps.top().list.Rows()
+	rows := ps.Top().List.Rows()
 	if len(rows) != 3 {
 		t.Fatalf("expected 3 root rows, got %d", len(rows))
 	}
 
 	// drill: Servers → github → Args
-	ps.top().list.SetCursor(1)
+	ps.Top().List.SetCursor(1)
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // Servers
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // github
-	for ps.top().list.CursorRow().title != "Args" {
+	for ps.Top().List.CursorRow().Title != "Args" {
 		ps.Update(kp("j"))
 	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // Args
-	if got := ps.breadcrumb("MCP"); got != "MCP › Servers › github › Args" {
+	if got := ps.Breadcrumb("MCP"); got != "MCP › Servers › github › Args" {
 		t.Fatalf("breadcrumb wrong: %q", got)
 	}
 	// add an arg and confirm it lands in the working copy

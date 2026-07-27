@@ -1,4 +1,4 @@
-package settings
+package listpanel
 
 import "testing"
 
@@ -10,8 +10,8 @@ func TestMaskKey(t *testing.T) {
 		"x-key-abcd-WXYZ": "••••WXYZ",
 	}
 	for in, want := range cases {
-		if got := maskKey(in); got != want {
-			t.Errorf("maskKey(%q) = %q, want %q", in, got, want)
+		if got := MaskKey(in); got != want {
+			t.Errorf("MaskKey(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

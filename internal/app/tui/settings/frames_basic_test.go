@@ -10,12 +10,18 @@ import (
 	"marshal/internal/llm/routing"
 )
 
+// kp is a single-rune key helper.
+func kp(s string) tea.KeyPressMsg {
+	r := []rune(s)
+	return tea.KeyPressMsg{Code: r[0], Text: s}
+}
+
 func TestPrivacyFrameTogglesRemoteProviders(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(privacyFrame(s))
 	ps.SetSize(60, 20)
-	if ps.top().list.CursorRow().title != "Remote providers allowed" {
-		t.Fatalf("first row should be Remote providers allowed, got %q", ps.top().list.CursorRow().title)
+	if ps.Top().List.CursorRow().Title != "Remote providers allowed" {
+		t.Fatalf("first row should be Remote providers allowed, got %q", ps.Top().List.CursorRow().Title)
 	}
 	before := s.cfg.Privacy.RemoteProvidersAllowed
 	ps.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
@@ -29,11 +35,11 @@ func TestWebFrameDurationValidation(t *testing.T) {
 	ps := newPaneStack(webFrame(s))
 	ps.SetSize(60, 20)
 	// move to "Fetch timeout" row
-	for ps.top().list.CursorRow().title != "Fetch timeout" {
+	for ps.Top().List.CursorRow().Title != "Fetch timeout" {
 		ps.Update(kp("j"))
 	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	ps.top().list.input.SetValue("45s")
+	ps.Top().List.SetInputValue("45s")
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if s.cfg.Web.FetchTimeout.String() != "45s" {
 		t.Fatalf("expected 45s, got %v", s.cfg.Web.FetchTimeout)
@@ -44,28 +50,28 @@ func TestSliceOpts(t *testing.T) {
 	items := []string{"a", "b", "c"}
 	opts := sliceOpts(&items)
 
-	opts.moveUp("1")
+	opts.MoveUp("1")
 	if items[0] != "b" || items[1] != "a" {
 		t.Fatalf("moveUp: %v", items)
 	}
-	opts.moveDown("0")
+	opts.MoveDown("0")
 	if items[0] != "a" || items[1] != "b" {
 		t.Fatalf("moveDown: %v", items)
 	}
-	if got := opts.yank("2"); got != "c" {
+	if got := opts.Yank("2"); got != "c" {
 		t.Fatalf("yank: %v", got)
 	}
-	if got := opts.yank("9"); got != nil {
+	if got := opts.Yank("9"); got != nil {
 		t.Fatalf("yank out of range: %v", got)
 	}
-	if err := opts.paste("1", "x"); err != nil {
+	if err := opts.Paste("1", "x"); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"a", "b", "x", "c"}
 	if len(items) != 4 || items[2] != "x" {
 		t.Fatalf("paste: %v, want %v", items, want)
 	}
-	if err := opts.paste("0", 42); err == nil {
+	if err := opts.Paste("0", 42); err == nil {
 		t.Fatal("paste of wrong type should fail")
 	}
 }
@@ -85,21 +91,21 @@ func TestUnsafePassthroughExposedAndRiskyFieldsFlagged(t *testing.T) {
 	ps.SetSize(60, 20)
 
 	// Navigate to the "Allow passthrough backend" row (last row)
-	for ps.top().list.CursorRow().title != "Allow passthrough backend" {
+	for ps.Top().List.CursorRow().Title != "Allow passthrough backend" {
 		ps.Update(kp("j"))
 	}
-	row := ps.top().list.CursorRow()
+	row := ps.Top().List.CursorRow()
 	if row == nil {
 		t.Fatal("expected a row for unsafe_passthrough")
 	}
-	if row.id != "sandbox.unsafe_passthrough" {
-		t.Fatalf("expected id sandbox.unsafe_passthrough, got %q", row.id)
+	if row.ID != "sandbox.unsafe_passthrough" {
+		t.Fatalf("expected id sandbox.unsafe_passthrough, got %q", row.ID)
 	}
-	if !row.warn {
+	if !row.Warn {
 		t.Fatal("expected warn=true for unsafe_passthrough")
 	}
-	if row.kind != kindToggle {
-		t.Fatalf("expected kindToggle, got %v", row.kind)
+	if row.Kind != kindToggle {
+		t.Fatalf("expected kindToggle, got %v", row.Kind)
 	}
 
 	// Verify it toggles the working copy
@@ -110,7 +116,7 @@ func TestUnsafePassthroughExposedAndRiskyFieldsFlagged(t *testing.T) {
 	}
 
 	// Verify the warning indicator appears in the view
-	view := ps.top().list.View()
+	view := ps.Top().List.View()
 	if !strings.Contains(view, "⚠") {
 		t.Fatalf("expected warning indicator in view for risky field, got:\n%s", view)
 	}
@@ -122,40 +128,40 @@ func TestProjectSectionOwnsNameLanguagesAndCommands(t *testing.T) {
 	ps.SetSize(60, 20)
 
 	// First row should be Project name
-	if ps.top().list.CursorRow().title != "Project name" {
-		t.Fatalf("first row should be Project name, got %q", ps.top().list.CursorRow().title)
+	if ps.Top().List.CursorRow().Title != "Project name" {
+		t.Fatalf("first row should be Project name, got %q", ps.Top().List.CursorRow().Title)
 	}
 
 	// Navigate to Languages
-	for ps.top().list.CursorRow().title != "Languages" {
+	for ps.Top().List.CursorRow().Title != "Languages" {
 		ps.Update(kp("j"))
 	}
-	if ps.top().list.CursorRow().id != "project.languages" {
-		t.Fatalf("expected id project.languages, got %q", ps.top().list.CursorRow().id)
+	if ps.Top().List.CursorRow().ID != "project.languages" {
+		t.Fatalf("expected id project.languages, got %q", ps.Top().List.CursorRow().ID)
 	}
 
 	// Navigate to Test command
-	for ps.top().list.CursorRow().title != "Test command" {
+	for ps.Top().List.CursorRow().Title != "Test command" {
 		ps.Update(kp("j"))
 	}
-	if ps.top().list.CursorRow().id != "commands.test" {
-		t.Fatalf("expected id commands.test, got %q", ps.top().list.CursorRow().id)
+	if ps.Top().List.CursorRow().ID != "commands.test" {
+		t.Fatalf("expected id commands.test, got %q", ps.Top().List.CursorRow().ID)
 	}
 
 	// Navigate to Format command
-	for ps.top().list.CursorRow().title != "Format command" {
+	for ps.Top().List.CursorRow().Title != "Format command" {
 		ps.Update(kp("j"))
 	}
-	if ps.top().list.CursorRow().id != "commands.format" {
-		t.Fatalf("expected id commands.format, got %q", ps.top().list.CursorRow().id)
+	if ps.Top().List.CursorRow().ID != "commands.format" {
+		t.Fatalf("expected id commands.format, got %q", ps.Top().List.CursorRow().ID)
 	}
 
 	// Navigate to Vet command
-	for ps.top().list.CursorRow().title != "Vet command" {
+	for ps.Top().List.CursorRow().Title != "Vet command" {
 		ps.Update(kp("j"))
 	}
-	if ps.top().list.CursorRow().id != "commands.vet" {
-		t.Fatalf("expected id commands.vet, got %q", ps.top().list.CursorRow().id)
+	if ps.Top().List.CursorRow().ID != "commands.vet" {
+		t.Fatalf("expected id commands.vet, got %q", ps.Top().List.CursorRow().ID)
 	}
 
 	// Verify setting ids never changed — /set commands.test etc. keeps working
@@ -188,35 +194,35 @@ func TestEveryLeafFieldHasADescription(t *testing.T) {
 	var checkFields func(fields []*field, path string)
 	checkFields = func(fields []*field, path string) {
 		for _, f := range fields {
-			if f.kind == kindDrill {
-				if f.build != nil && !seen[f.id] {
-					seen[f.id] = true
-					sub := f.build()
-					if sub != nil && sub.list != nil {
-						checkFields(sub.list.Rows(), path+" > "+sub.title)
+			if f.Kind == kindDrill {
+				if f.Build != nil && !seen[f.ID] {
+					seen[f.ID] = true
+					sub := f.Build()
+					if sub != nil && sub.List != nil {
+						checkFields(sub.List.Rows(), path+" > "+sub.Title)
 					}
 				}
 				continue
 			}
-			if f.desc == "" {
-				t.Errorf("field %q (id=%s) at %s has empty desc", f.title, f.id, path)
+			if f.Desc == "" {
+				t.Errorf("field %q (id=%s) at %s has empty desc", f.Title, f.ID, path)
 			}
 		}
 	}
 
 	for _, sec := range sectionList() {
-		f := sec.root(s)
-		if f == nil || f.list == nil {
+		f := sec.Root(s)
+		if f == nil || f.List == nil {
 			continue
 		}
-		checkFields(f.list.Rows(), sec.title)
+		checkFields(f.List.Rows(), sec.Title)
 	}
 }
 
 func fieldIDs(f *frame) []string {
 	var ids []string
-	for _, row := range f.list.Rows() {
-		ids = append(ids, row.id)
+	for _, row := range f.List.Rows() {
+		ids = append(ids, row.ID)
 	}
 	return ids
 }
@@ -251,7 +257,7 @@ func TestDiagnosticsFrameIsMapAtRoot(t *testing.T) {
 	s.cfg.Diagnostics.Commands = map[string]string{"lint": "go vet ./..."}
 	ps := newPaneStack(diagnosticsFrame(s))
 	ps.SetSize(60, 20)
-	view := ps.top().list.View()
+	view := ps.Top().List.View()
 	if !strings.Contains(view, "lint") {
 		t.Fatalf("diagnostics root should list command keys directly, got:\n%s", view)
 	}

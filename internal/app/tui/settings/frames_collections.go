@@ -18,8 +18,8 @@ import (
 // rootDrillFrame unwraps a single drill field into a section root frame, so
 // sections that are nothing but one collection open directly on the list.
 func rootDrillFrame(title string, drill *field) *frame {
-	f := drill.build()
-	f.title = title
+	f := drill.Build()
+	f.Title = title
 	return f
 }
 
@@ -85,54 +85,54 @@ func providersFrame(s *state) *frame {
 						k = v
 						return nil
 					})
-				nameField.desc = "unique provider name used in presets and profiles"
+				nameField.Desc = "unique provider name used in presets and profiles"
 				typeField := scalarField("providers."+k+".type", "Type",
 					func() string { return s.cfg.Providers[k].Type },
 					func(v string) error { mut(func(p *config.ProviderConfig) { p.Type = v }); return nil })
-				typeField.desc = "provider protocol (openai_compatible, anthropic, etc.)"
+				typeField.Desc = "provider protocol (openai_compatible, anthropic, etc.)"
 				urlField := scalarField("providers."+k+".base_url", "Base URL",
 					func() string { return s.cfg.Providers[k].BaseURL },
 					func(v string) error { mut(func(p *config.ProviderConfig) { p.BaseURL = v }); invalidate(); return nil })
-				urlField.desc = "API endpoint URL for this provider"
+				urlField.Desc = "API endpoint URL for this provider"
 				return []*field{
 					nameField,
 					typeField,
 					urlField,
-					{id: "providers." + k + ".api_key_env", title: "API key env", kind: kindScalar,
-						desc:   "env var name resolved at provider construction — preferred over storing the key",
-						getStr: func() string { return s.cfg.Providers[k].APIKeyEnv },
-						setStr: func(v string) error {
+					{ID: "providers." + k + ".api_key_env", Title: "API key env", Kind: kindScalar,
+						Desc:   "env var name resolved at provider construction — preferred over storing the key",
+						GetStr: func() string { return s.cfg.Providers[k].APIKeyEnv },
+						SetStr: func(v string) error {
 							mut(func(p *config.ProviderConfig) { p.APIKeyEnv = v })
 							invalidate()
 							return nil
 						}},
-					{id: "providers." + k + ".api_key", title: "API key", kind: kindScalar, masked: true,
-						desc:     "enter replaces · empty keeps · d clears · prefer the env-var field",
-						keywords: []string{"secret", "api key", "token"},
-						getStr:   func() string { return s.cfg.Providers[k].APIKey },
-						setStr: func(v string) error {
+					{ID: "providers." + k + ".api_key", Title: "API key", Kind: kindScalar, Masked: true,
+						Desc:     "enter replaces · empty keeps · d clears · prefer the env-var field",
+						Keywords: []string{"secret", "api key", "token"},
+						GetStr:   func() string { return s.cfg.Providers[k].APIKey },
+						SetStr: func(v string) error {
 							mut(func(p *config.ProviderConfig) { p.APIKey = v })
 							invalidate()
 							return nil
 						},
-						del: func() {
+						Del: func() {
 							mut(func(p *config.ProviderConfig) { p.APIKey = "" })
 							invalidate()
 						}},
-					{id: "providers." + k + ".tool_calling", title: "Tool calling", kind: kindToggle,
-						desc:    "provider advertises native tool-calling support",
-						getBool: func() bool { return s.cfg.Providers[k].ToolCalling },
-						setBool: func(v bool) { mut(func(p *config.ProviderConfig) { p.ToolCalling = v }) }},
+					{ID: "providers." + k + ".tool_calling", Title: "Tool calling", Kind: kindToggle,
+						Desc:    "provider advertises native tool-calling support",
+						GetBool: func() bool { return s.cfg.Providers[k].ToolCalling },
+						SetBool: func(v bool) { mut(func(p *config.ProviderConfig) { p.ToolCalling = v }) }},
 					testConnectionField(s, k),
 				}
 			})
 		},
 		func(k string) { delete(s.cfg.Providers, k) },
 		entriesOpts{
-			yank: func(k string) any {
-				return yankedMapEntry{key: k, val: s.cfg.Providers[k]}
+			Yank: func(k string) any {
+				return yankedMapEntry{Key: k, Val: s.cfg.Providers[k]}
 			},
-			paste: func(_ string, data any) error {
+			Paste: func(_ string, data any) error {
 				ye, ok := data.(yankedMapEntry)
 				if !ok {
 					return fmt.Errorf("nothing yanked")
@@ -141,27 +141,27 @@ func providersFrame(s *state) *frame {
 				for kk := range s.cfg.Providers {
 					existing[kk] = true
 				}
-				name := uniqueCopyName(ye.key, existing)
+				name := uniqueCopyName(ye.Key, existing)
 				if s.cfg.Providers == nil {
 					s.cfg.Providers = map[string]config.ProviderConfig{}
 				}
-				s.cfg.Providers[name] = ye.val.(config.ProviderConfig)
+				s.cfg.Providers[name] = ye.Val.(config.ProviderConfig)
 				return nil
 			},
 		})
 	f := rootDrillFrame("Providers", drill)
-	f.list.onAddMsg = func() tea.Msg { return OpenConnectMsg{} }
+	f.List.OnAddMsg = func() tea.Msg { return OpenConnectMsg{} }
 	return f
 }
 
 func providerPickerField(s *state, id string, getProvider func() string, setProvider func(string) error) *field {
 	return &field{
-		id:     id,
-		title:  "Provider",
-		kind:   kindPicker,
-		desc:   "configured provider for this role",
-		getStr: func() string { return getProvider() },
-		pickOptions: func() []picker.Item {
+		ID:     id,
+		Title:  "Provider",
+		Kind:   kindPicker,
+		Desc:   "configured provider for this role",
+		GetStr: func() string { return getProvider() },
+		PickOptions: func() []picker.Item {
 			names := sortedKeys(s.cfg.Providers)
 			if len(names) == 0 {
 				return []picker.Item{{Label: "Add a provider\u2026", Value: "__add_provider__", Badge: "required"}}
@@ -183,7 +183,7 @@ func providerPickerField(s *state, id string, getProvider func() string, setProv
 			}
 			return items
 		},
-		pickOnPick: func(v string) error {
+		PickOnPick: func(v string) error {
 			if v == "__add_provider__" {
 				s.connectRequested = true
 				return nil
@@ -195,13 +195,13 @@ func providerPickerField(s *state, id string, getProvider func() string, setProv
 
 func modelPickerField(s *state, id string, providerName func() string, getModel func() string, setModel func(string) error) *field {
 	return &field{
-		id:              id,
-		title:           "Model",
-		kind:            kindPicker,
-		desc:            "model id for this role",
-		pickAllowCustom: true,
-		getStr:          func() string { return getModel() },
-		pickOptions: func() []picker.Item {
+		ID:              id,
+		Title:           "Model",
+		Kind:            kindPicker,
+		Desc:            "model id for this role",
+		PickAllowCustom: true,
+		GetStr:          func() string { return getModel() },
+		PickOptions: func() []picker.Item {
 			pn := providerName()
 			current := getModel()
 			var items []picker.Item
@@ -226,7 +226,7 @@ func modelPickerField(s *state, id string, providerName func() string, getModel 
 			}
 			return items
 		},
-		pickOnPick: func(v string) error {
+		PickOnPick: func(v string) error {
 			if v == "__discover__" {
 				pn := providerName()
 				pc, ok := s.cfg.Providers[pn]
@@ -290,16 +290,16 @@ func presetsFrame(s *state) *frame {
 				ctxField := intField("presets."+k+".context_window", "Context window",
 					func() int { return s.cfg.Models.Presets[k].ContextWindow }, 0,
 					func(v int) { mut(func(p *routing.ModelPreset) { p.ContextWindow = v }) })
-				ctxField.desc = "max context tokens for this preset"
+				ctxField.Desc = "max context tokens for this preset"
 				maxOutField := intField("presets."+k+".max_output", "Max output tokens",
 					func() int { return s.cfg.Models.Presets[k].MaxOutputTokens }, 0,
 					func(v int) { mut(func(p *routing.ModelPreset) { p.MaxOutputTokens = v }) })
-				maxOutField.desc = "max output tokens per request"
+				maxOutField.Desc = "max output tokens per request"
 				tcField := enumField("presets."+k+".tool_calling", "Tool calling",
 					[]string{"native", "simulated", "none"},
 					func() string { return s.cfg.Models.Presets[k].ToolCalling },
 					func(v string) { mut(func(p *routing.ModelPreset) { p.ToolCalling = v }) })
-				tcField.desc = "how this preset handles tool calls"
+				tcField.Desc = "how this preset handles tool calls"
 				return []*field{
 					providerPickerField(s, "presets."+k+".provider",
 						func() string { return s.cfg.Models.Presets[k].Provider },
@@ -311,19 +311,19 @@ func presetsFrame(s *state) *frame {
 					ctxField,
 					maxOutField,
 					tcField,
-					{id: "presets." + k + ".local_only", title: "Local only", kind: kindToggle,
-						desc:    "block remote providers for this preset",
-						getBool: func() bool { return s.cfg.Models.Presets[k].LocalOnly },
-						setBool: func(v bool) { mut(func(p *routing.ModelPreset) { p.LocalOnly = v }) }},
+					{ID: "presets." + k + ".local_only", Title: "Local only", Kind: kindToggle,
+						Desc:    "block remote providers for this preset",
+						GetBool: func() bool { return s.cfg.Models.Presets[k].LocalOnly },
+						SetBool: func(v bool) { mut(func(p *routing.ModelPreset) { p.LocalOnly = v }) }},
 				}
 			})
 		},
 		func(k string) { delete(s.cfg.Models.Presets, k) },
 		entriesOpts{
-			yank: func(k string) any {
-				return yankedMapEntry{key: k, val: s.cfg.Models.Presets[k]}
+			Yank: func(k string) any {
+				return yankedMapEntry{Key: k, Val: s.cfg.Models.Presets[k]}
 			},
-			paste: func(_ string, data any) error {
+			Paste: func(_ string, data any) error {
 				ye, ok := data.(yankedMapEntry)
 				if !ok {
 					return fmt.Errorf("nothing yanked")
@@ -332,11 +332,11 @@ func presetsFrame(s *state) *frame {
 				for kk := range s.cfg.Models.Presets {
 					existing[kk] = true
 				}
-				name := uniqueCopyName(ye.key, existing)
+				name := uniqueCopyName(ye.Key, existing)
 				if s.cfg.Models.Presets == nil {
 					s.cfg.Models.Presets = map[string]routing.ModelPreset{}
 				}
-				s.cfg.Models.Presets[name] = ye.val.(routing.ModelPreset)
+				s.cfg.Models.Presets[name] = ye.Val.(routing.ModelPreset)
 				return nil
 			},
 		})
@@ -374,18 +374,18 @@ func hooksFrame(s *state) *frame {
 				eventField := scalarField("hooks."+k+".event", "Event",
 					func() string { return h.Event },
 					func(v string) error { h.Event = v; return nil })
-				eventField.desc = "hook event trigger (e.g. pre_tool, post_tool)"
+				eventField.Desc = "hook event trigger (e.g. pre_tool, post_tool)"
 				matcherField := scalarField("hooks."+k+".matcher", "Matcher",
 					func() string { return h.Matcher },
 					func(v string) error { h.Matcher = v; return nil })
-				matcherField.desc = "pattern to match against the event payload"
+				matcherField.Desc = "pattern to match against the event payload"
 				cmdField := scalarField("hooks."+k+".command", "Command",
 					func() string { return h.Command },
 					func(v string) error { h.Command = v; return nil })
-				cmdField.desc = "shell command to run when the hook fires"
+				cmdField.Desc = "shell command to run when the hook fires"
 				timeoutField := intField("hooks."+k+".timeout_ms", "Timeout (ms)",
 					func() int { return h.TimeoutMS }, 0, func(v int) { h.TimeoutMS = v })
-				timeoutField.desc = "max milliseconds for hook execution"
+				timeoutField.Desc = "max milliseconds for hook execution"
 				return []*field{
 					eventField,
 					matcherField,
@@ -407,11 +407,11 @@ func hooksFrame(s *state) *frame {
 func testConnectionField(s *state, k string) *field {
 	fieldID := "providers." + k + ".test_connection"
 	return &field{
-		id:    fieldID,
-		title: "Test connection",
-		kind:  kindAction,
-		desc:  "ping the provider and list available models",
-		actLabel: func() string {
+		ID:    fieldID,
+		Title: "Test connection",
+		Kind:  kindAction,
+		Desc:  "ping the provider and list available models",
+		ActLabel: func() string {
 			if as, ok := s.actionState[fieldID]; ok && as.label != "" {
 				return as.label
 			}
@@ -421,7 +421,7 @@ func testConnectionField(s *state, k string) *field {
 			}
 			return "\u21b5 test"
 		},
-		act: func() tea.Cmd {
+		Act: func() tea.Cmd {
 			pc := s.cfg.Providers[k]
 			if !probe.IsLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
 				return nil
@@ -456,16 +456,16 @@ func permissionsFrame(s *state) *frame {
 				permField := scalarField("permissions."+k+".permission", "Permission",
 					func() string { return r.Permission },
 					func(v string) error { r.Permission = v; return nil })
-				permField.desc = "permission name this rule applies to (e.g. shell)"
+				permField.Desc = "permission name this rule applies to (e.g. shell)"
 				patField := scalarField("permissions."+k+".pattern", "Pattern",
 					func() string { return r.Pattern },
 					func(v string) error { r.Pattern = v; return nil })
-				patField.desc = "glob pattern the rule matches"
+				patField.Desc = "glob pattern the rule matches"
 				actField := enumField("permissions."+k+".action", "Action",
 					[]string{"allow", "confirm", "deny"},
 					func() string { return r.Action },
 					func(v string) { r.Action = v })
-				actField.desc = "action to take when the rule matches"
+				actField.Desc = "action to take when the rule matches"
 				return []*field{
 					permField,
 					patField,

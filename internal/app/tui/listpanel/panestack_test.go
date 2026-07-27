@@ -1,4 +1,4 @@
-package settings
+package listpanel
 
 import (
 	"strings"
@@ -9,22 +9,22 @@ import (
 
 func TestListDrillEditsSlice(t *testing.T) {
 	items := []string{"rm -rf", "git push --force"}
-	root := newFrame("Shell", func() []*field {
-		return []*field{listDrill("shell.deny", "Deny patterns", &items)}
+	root := NewFrame("Shell", func() []*Field {
+		return []*Field{ListDrill("shell.deny", "Deny patterns", &items)}
 	})
-	ps := newPaneStack(root)
-	ps.top().list.SetSize(60, 20)
+	ps := NewPaneStack(root)
+	ps.Top().List.SetSize(60, 20)
 
 	// summary row shows the count
-	if !strings.Contains(ps.top().list.View(), "2 items") {
-		t.Fatalf("expected item count summary, got:\n%s", ps.top().list.View())
+	if !strings.Contains(ps.Top().List.View(), "2 items") {
+		t.Fatalf("expected item count summary, got:\n%s", ps.Top().List.View())
 	}
 
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill in
-	if len(ps.stack) != 2 {
-		t.Fatalf("enter should push the list frame, depth=%d", len(ps.stack))
+	if len(ps.Stack) != 2 {
+		t.Fatalf("enter should push the list frame, depth=%d", len(ps.Stack))
 	}
-	if got := ps.breadcrumb("Shell"); got != "Shell › Deny patterns" {
+	if got := ps.Breadcrumb("Shell"); got != "Shell › Deny patterns" {
 		t.Fatalf("breadcrumb wrong: %q", got)
 	}
 
@@ -39,28 +39,28 @@ func TestListDrillEditsSlice(t *testing.T) {
 	}
 
 	// delete the first item
-	ps.top().list.SetCursor(0)
+	ps.Top().List.SetCursor(0)
 	ps.Update(kp("d"))
 	if len(items) != 2 || items[0] != "git push --force" {
 		t.Fatalf("d should delete row 0, got %v", items)
 	}
 
 	// pop back to root
-	if !ps.pop() {
+	if !ps.Pop() {
 		t.Fatal("pop should succeed above root")
 	}
-	if ps.pop() {
+	if ps.Pop() {
 		t.Fatal("pop at root must return false")
 	}
 }
 
 func TestMapIntDrillEditsValues(t *testing.T) {
 	m := map[string]int{"reviewer": 4}
-	root := newFrame("Swarm", func() []*field {
-		return []*field{mapIntDrill("swarm.tool_iters", "Tool iters", &m)}
+	root := NewFrame("Swarm", func() []*Field {
+		return []*Field{MapIntDrill("swarm.tool_iters", "Tool iters", &m)}
 	})
-	ps := newPaneStack(root)
-	ps.top().list.SetSize(60, 20)
+	ps := NewPaneStack(root)
+	ps.Top().List.SetSize(60, 20)
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill
 
 	// add key then edit its value
@@ -85,29 +85,29 @@ func TestMapIntDrillEditsValues(t *testing.T) {
 
 func TestEntriesDrillBuildsSubFrame(t *testing.T) {
 	vals := map[string]string{"local": "ollama"}
-	root := newFrame("Providers", func() []*field {
-		return []*field{entriesDrill("providers", "Providers", "New provider name",
-			func() []string { return sortedKeys(vals) },
+	root := NewFrame("Providers", func() []*Field {
+		return []*Field{EntriesDrill("providers", "Providers", "New provider name",
+			func() []string { return SortedKeys(vals) },
 			func(k string) string { return k },
 			func(k string) error { vals[k] = ""; return nil },
-			func(k string) *frame {
-				return newFrame(k, func() []*field {
+			func(k string) *Frame {
+				return NewFrame(k, func() []*Field {
 					v := k
-					return []*field{scalarField("providers."+k+".type", "Type",
+					return []*Field{ScalarField("providers."+k+".type", "Type",
 						func() string { return vals[v] },
 						func(s string) error { vals[v] = s; return nil })}
 				})
 			},
 			func(k string) { delete(vals, k) })}
 	})
-	ps := newPaneStack(root)
-	ps.top().list.SetSize(60, 20)
+	ps := NewPaneStack(root)
+	ps.Top().List.SetSize(60, 20)
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill into collection
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill into "local"
-	if len(ps.stack) != 3 {
-		t.Fatalf("expected depth 3, got %d", len(ps.stack))
+	if len(ps.Stack) != 3 {
+		t.Fatalf("expected depth 3, got %d", len(ps.Stack))
 	}
-	if got := ps.breadcrumb("Providers"); got != "Providers › Providers › local" {
+	if got := ps.Breadcrumb("Providers"); got != "Providers › Providers › local" {
 		t.Fatalf("breadcrumb wrong: %q", got)
 	}
 }

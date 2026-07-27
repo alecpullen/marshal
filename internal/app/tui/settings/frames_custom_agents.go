@@ -51,11 +51,11 @@ func customAgentsFrame(s *state) *frame {
 		},
 		func(k string) { delete(s.cfg.CustomAgents, k) },
 		entriesOpts{
-			yank: func(k string) any {
+			Yank: func(k string) any {
 				ca := s.cfg.CustomAgents[k]
-				return yankedMapEntry{key: k, val: ca}
+				return yankedMapEntry{Key: k, Val: ca}
 			},
-			paste: func(_ string, data any) error {
+			Paste: func(_ string, data any) error {
 				ye, ok := data.(yankedMapEntry)
 				if !ok {
 					return fmt.Errorf("nothing yanked")
@@ -64,11 +64,11 @@ func customAgentsFrame(s *state) *frame {
 				for kk := range s.cfg.CustomAgents {
 					existing[kk] = true
 				}
-				name := uniqueCopyName(ye.key, existing)
+				name := uniqueCopyName(ye.Key, existing)
 				if s.cfg.CustomAgents == nil {
 					s.cfg.CustomAgents = map[string]routing.CustomAgent{}
 				}
-				ca := ye.val.(routing.CustomAgent)
+				ca := ye.Val.(routing.CustomAgent)
 				ca.Name = name
 				s.cfg.CustomAgents[name] = ca
 				return nil

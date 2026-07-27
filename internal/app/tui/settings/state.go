@@ -56,6 +56,9 @@ func (s *state) applyActionResult(fieldID, label string) {
 // State is an exported alias for state.
 type State = state
 
+// StateCfg returns the config from a state.
+func StateCfg(s *State) config.Config { return s.cfg }
+
 // cloneConfig deep-copies every map and slice reachable from cfg that the
 // settings panes can mutate, so edits to the working copy never leak into
 // the caller's config.

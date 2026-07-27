@@ -1,4 +1,4 @@
-package settings
+package listpanel
 
 import (
 	"testing"
@@ -7,7 +7,7 @@ import (
 
 func TestIntSetterClampsToMin(t *testing.T) {
 	got := 0
-	set := intSetter(1, func(v int) { got = v })
+	set := IntSetter(1, func(v int) { got = v })
 	if err := set("0"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestIntSetterClampsToMin(t *testing.T) {
 
 func TestDurationSetter(t *testing.T) {
 	var got time.Duration
-	set := durationSetter(func(d time.Duration) { got = d })
+	set := DurationSetter(func(d time.Duration) { got = d })
 	if err := set("8h"); err != nil || got != 8*time.Hour {
 		t.Fatalf("expected 8h, got %v err %v", got, err)
 	}

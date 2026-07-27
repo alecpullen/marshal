@@ -33,12 +33,12 @@ func TestRegistryParityWithSectionFrames(t *testing.T) {
 	state := newState(config.Default())
 	registry := BuildRegistry(config.Default())
 	for _, section := range sectionList() {
-		for _, field := range section.root(state).list.Rows() {
-			if field.id == "" {
+		for _, field := range section.Root(state).List.Rows() {
+			if field.ID == "" {
 				continue
 			}
-			if _, ok := registry.Lookup(field.id); !ok {
-				t.Errorf("section %s field %q missing from registry", section.id, field.id)
+			if _, ok := registry.Lookup(field.ID); !ok {
+				t.Errorf("section %s field %q missing from registry", section.ID, field.ID)
 			}
 		}
 	}
@@ -111,7 +111,7 @@ func TestRegistryApplyErrors(t *testing.T) {
 	}
 	for _, key := range registry.Keys() {
 		field, _ := registry.Lookup(key)
-		if field.kind != kindEnum || field.setStr == nil {
+		if field.Kind != kindEnum || field.SetStr == nil {
 			continue
 		}
 		if _, err := registry.Apply(key, "definitely-not-an-option"); err == nil ||
@@ -174,8 +174,8 @@ func TestTomlPathAliasesResolve(t *testing.T) {
 			t.Errorf("Keys() entry %q not found via Lookup", key)
 			continue
 		}
-		if f.id != key {
-			t.Errorf("Lookup(%q) returned field with id %q", key, f.id)
+		if f.ID != key {
+			t.Errorf("Lookup(%q) returned field with id %q", key, f.ID)
 		}
 	}
 
@@ -185,24 +185,24 @@ func TestTomlPathAliasesResolve(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if f.tomlPath == "" {
+		if f.TomlPath == "" {
 			continue
 		}
 		// Lookup by tomlPath must find the same field.
-		byPath, ok := registry.Lookup(f.tomlPath)
+		byPath, ok := registry.Lookup(f.TomlPath)
 		if !ok {
-			t.Errorf("tomlPath %q (field %q) not found via Lookup", f.tomlPath, f.id)
+			t.Errorf("tomlPath %q (field %q) not found via Lookup", f.TomlPath, f.ID)
 			continue
 		}
 		if byPath != f {
-			t.Errorf("Lookup(%q) = %p, want same pointer as Lookup(%q) = %p", f.tomlPath, byPath, f.id, f)
+			t.Errorf("Lookup(%q) = %p, want same pointer as Lookup(%q) = %p", f.TomlPath, byPath, f.ID, f)
 		}
 	}
 
 	// Verify specific known aliases.
 	cases := []struct {
-		id       string
-		tomlPath string
+		ID       string
+		TomlPath string
 	}{
 		{"shell.allow_network", "tools.shell.allow_network"},
 		{"shell.timeout", "tools.shell.default_timeout_seconds"},
@@ -215,17 +215,17 @@ func TestTomlPathAliasesResolve(t *testing.T) {
 		{"commands.test", "commands.test"},
 	}
 	for _, c := range cases {
-		f, ok := registry.Lookup(c.id)
+		f, ok := registry.Lookup(c.ID)
 		if !ok {
-			t.Errorf("known id %q not found in registry", c.id)
+			t.Errorf("known id %q not found in registry", c.ID)
 			continue
 		}
-		if f.tomlPath != c.tomlPath {
-			t.Errorf("field %q: tomlPath = %q, want %q", c.id, f.tomlPath, c.tomlPath)
+		if f.TomlPath != c.TomlPath {
+			t.Errorf("field %q: tomlPath = %q, want %q", c.ID, f.TomlPath, c.TomlPath)
 		}
 		// Lookup by tomlPath must work.
-		if _, ok := registry.Lookup(c.tomlPath); !ok {
-			t.Errorf("tomlPath %q not resolvable via Lookup", c.tomlPath)
+		if _, ok := registry.Lookup(c.TomlPath); !ok {
+			t.Errorf("tomlPath %q not resolvable via Lookup", c.TomlPath)
 		}
 	}
 }

@@ -52,18 +52,18 @@ func resetSection(cfg *config.Config, sectionID string) {
 func resetField(s *state, sectionID, title string) *field {
 	id := sectionID + ".reset"
 	return &field{
-		id:    id,
-		title: "Reset " + title + " to defaults",
-		kind:  kindAction,
-		desc:  "restore this section to built-in defaults (applies immediately)",
-		actLabel: func() string {
+		ID:    id,
+		Title: "Reset " + title + " to defaults",
+		Kind:  kindAction,
+		Desc:  "restore this section to built-in defaults (applies immediately)",
+		ActLabel: func() string {
 			if as, ok := s.actionState[id]; ok && as.label != "" {
 				return as.label
 			}
 			return "reset to defaults"
 		},
-		disarm: func() { delete(s.actionState, id) },
-		act: func() tea.Cmd {
+		Disarm: func() { delete(s.actionState, id) },
+		Act: func() tea.Cmd {
 			if as, ok := s.actionState[id]; ok && as.label == "again to confirm" {
 				resetSection(&s.cfg, sectionID)
 				s.applyActionResult(id, "\u2713 reset")
@@ -76,8 +76,8 @@ func resetField(s *state, sectionID, title string) *field {
 }
 
 func withResetRow(s *state, sectionID, title string, f *frame) *frame {
-	base := f.list.fields
-	f.list.fields = func() []*field {
+	base := f.List.Fields
+	f.List.Fields = func() []*field {
 		return append(base(), resetField(s, sectionID, title))
 	}
 	return f

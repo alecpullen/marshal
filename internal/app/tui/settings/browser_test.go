@@ -100,7 +100,7 @@ func TestBrowserRetriesFailedSaveOnRepeatedCommit(t *testing.T) {
 	cfgPath := filepath.Join(blockingPath, "config.toml")
 
 	b := NewBrowser(config.Default(), cfgPath, "agent.max_retries")
-	if got := b.list.CursorRow().id; got != "agent.max_retries" {
+	if got := b.list.CursorRow().ID; got != "agent.max_retries" {
 		t.Fatalf("filtered cursor = %q, want agent.max_retries", got)
 	}
 
@@ -109,10 +109,16 @@ func TestBrowserRetriesFailedSaveOnRepeatedCommit(t *testing.T) {
 		if cmd := b.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
 			t.Fatal("opening an inline edit must not itself persist")
 		}
-		if !b.list.editing {
+		if !b.list.Editing() {
 			t.Fatal("expected inline edit mode after enter")
 		}
-		b.list.input.SetValue("9")
+		// Clear the pre-filled value and type "9"
+		for range b.list.InputValue() {
+			b.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+		}
+		for _, r := range "9" {
+			b.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		}
 		cmd := b.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		if cmd == nil {
 			t.Fatal("confirming an inline edit must emit a command")
@@ -265,7 +271,7 @@ func TestBrowserViewHonorsMaxHeight(t *testing.T) {
 func TestBrowserViewHonorsMaxHeightWhileDrilled(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
 	for index, row := range b.list.Rows() {
-		if row.id == "section.providers" {
+		if row.ID == "section.providers" {
 			b.list.SetCursor(index)
 			break
 		}
@@ -290,12 +296,12 @@ func TestBrowserViewHonorsMaxHeightWhileDrilled(t *testing.T) {
 func TestBrowserDrillsIntoCollectionAndBack(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
 	for index, row := range b.list.Rows() {
-		if row.id == "section.providers" {
+		if row.ID == "section.providers" {
 			b.list.SetCursor(index)
 			break
 		}
 	}
-	if got := b.list.CursorRow().id; got != "section.providers" {
+	if got := b.list.CursorRow().ID; got != "section.providers" {
 		t.Fatalf("provider collection cursor = %q, want section.providers", got)
 	}
 
@@ -341,7 +347,7 @@ func TestUnfilteredBrowserGroupsBySection(t *testing.T) {
 	rows := b.list.Rows()
 	headerCount := 0
 	for _, row := range rows {
-		if row.kind == kindHeader {
+		if row.Kind == kindHeader {
 			headerCount++
 		}
 	}
@@ -354,8 +360,8 @@ func TestFilteredBrowserHasNoHeaders(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "shell")
 	// When filtered, the matchedFields path should not produce kindHeader rows.
 	for _, row := range b.list.Rows() {
-		if row.kind == kindHeader {
-			t.Fatalf("filtered browser should not have header rows, got id=%q", row.id)
+		if row.Kind == kindHeader {
+			t.Fatalf("filtered browser should not have header rows, got id=%q", row.ID)
 		}
 	}
 }
@@ -368,21 +374,21 @@ func TestCursorSkipsHeaders(t *testing.T) {
 		t.Fatal("unfiltered browser should have rows")
 	}
 	// Cursor should not be on a header row.
-	if rows[b.list.Cursor()].kind == kindHeader {
+	if rows[b.list.Cursor()].Kind == kindHeader {
 		t.Fatal("cursor must not land on a header row")
 	}
 	// Navigate down through all rows and verify cursor never lands on a header.
 	for i := 0; i < len(rows)*2; i++ {
 		b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		if rows[b.list.Cursor()].kind == kindHeader {
-			t.Fatalf("cursor landed on header row %q at index %d", rows[b.list.Cursor()].title, b.list.Cursor())
+		if rows[b.list.Cursor()].Kind == kindHeader {
+			t.Fatalf("cursor landed on header row %q at index %d", rows[b.list.Cursor()].Title, b.list.Cursor())
 		}
 	}
 	// Navigate up through all rows and verify cursor never lands on a header.
 	for i := 0; i < len(rows)*2; i++ {
 		b.Update(tea.KeyPressMsg{Code: tea.KeyUp})
-		if rows[b.list.Cursor()].kind == kindHeader {
-			t.Fatalf("cursor landed on header row %q at index %d", rows[b.list.Cursor()].title, b.list.Cursor())
+		if rows[b.list.Cursor()].Kind == kindHeader {
+			t.Fatalf("cursor landed on header row %q at index %d", rows[b.list.Cursor()].Title, b.list.Cursor())
 		}
 	}
 }
@@ -397,7 +403,7 @@ func TestHintsFollowCursorRowKind(t *testing.T) {
 	// Find the first non-header row and set cursor there.
 	cursorIdx := -1
 	for i, row := range rows {
-		if row.kind != kindHeader {
+		if row.Kind != kindHeader {
 			cursorIdx = i
 			break
 		}
@@ -410,47 +416,47 @@ func TestHintsFollowCursorRowKind(t *testing.T) {
 	// Walk through all non-header rows and verify the hint matches the kind.
 	for i := 0; i < len(rows); i++ {
 		row := rows[b.list.Cursor()]
-		if row.kind == kindHeader {
+		if row.Kind == kindHeader {
 			b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 			continue
 		}
 		hint := rowHints(b.list, true)
 		view := b.View(80, 24)
-		switch row.kind {
+		switch row.Kind {
 		case kindToggle:
 			if !strings.Contains(view, "Space toggle") {
-				t.Errorf("cursor on kindToggle row %q: expected hint containing 'Space toggle', view:\n%s", row.id, view)
+				t.Errorf("cursor on kindToggle row %q: expected hint containing 'Space toggle', view:\n%s", row.ID, view)
 			}
 		case kindScalar:
-			if row.setStr == nil {
+			if row.SetStr == nil {
 				if !strings.Contains(view, "read-only") {
-					t.Errorf("cursor on read-only kindScalar row %q: expected hint containing 'read-only', view:\n%s", row.id, view)
+					t.Errorf("cursor on read-only kindScalar row %q: expected hint containing 'read-only', view:\n%s", row.ID, view)
 				}
 			} else {
 				if !strings.Contains(view, "↵ edit") {
-					t.Errorf("cursor on editable kindScalar row %q: expected hint containing '↵ edit', view:\n%s", row.id, view)
+					t.Errorf("cursor on editable kindScalar row %q: expected hint containing '↵ edit', view:\n%s", row.ID, view)
 				}
 			}
 		case kindEnum:
 			if !strings.Contains(view, "←→ cycle · ↵ pick") {
-				t.Errorf("cursor on kindEnum row %q: expected hint containing '←→ cycle · ↵ pick', view:\n%s", row.id, view)
+				t.Errorf("cursor on kindEnum row %q: expected hint containing '←→ cycle · ↵ pick', view:\n%s", row.ID, view)
 			}
 		case kindDrill:
 			if !strings.Contains(view, "↵ open") {
-				t.Errorf("cursor on kindDrill row %q: expected hint containing '↵ open', view:\n%s", row.id, view)
+				t.Errorf("cursor on kindDrill row %q: expected hint containing '↵ open', view:\n%s", row.ID, view)
 			}
 		case kindAction:
 			if !strings.Contains(view, "↵ run") {
-				t.Errorf("cursor on kindAction row %q: expected hint containing '↵ run', view:\n%s", row.id, view)
+				t.Errorf("cursor on kindAction row %q: expected hint containing '↵ run', view:\n%s", row.ID, view)
 			}
 		case kindPicker:
 			if !strings.Contains(view, "↵ pick") {
-				t.Errorf("cursor on kindPicker row %q: expected hint containing '↵ pick', view:\n%s", row.id, view)
+				t.Errorf("cursor on kindPicker row %q: expected hint containing '↵ pick', view:\n%s", row.ID, view)
 			}
 		}
 		// Verify the hint text matches what rowHints returns.
 		if hint != "" && !strings.Contains(view, hint) {
-			t.Errorf("cursor on row %q (kind=%v): rowHints returned %q but view does not contain it:\n%s", row.id, row.kind, hint, view)
+			t.Errorf("cursor on row %q (kind=%v): rowHints returned %q but view does not contain it:\n%s", row.ID, row.Kind, hint, view)
 		}
 		// Move cursor down for next iteration.
 		b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
@@ -461,7 +467,7 @@ func TestBrowserRoutesPasteIntoActiveFieldEdit(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
 	var got string
 	b.list = newFieldList(func() []*field {
-		return []*field{scalarField("t.paste", "Token",
+		return []*field{scalarField("t.Paste", "Token",
 			func() string { return got },
 			func(v string) error { got = v; return nil })}
 	})
@@ -501,7 +507,7 @@ func TestBrowserTwoColumnShowsDescInDetailPane(t *testing.T) {
 	f := scalarField("t.token", "Token",
 		func() string { return got },
 		func(v string) error { got = v; return nil })
-	f.desc = "the token used for things"
+	f.Desc = "the token used for things"
 	b.list = newFieldList(func() []*field { return []*field{f} })
 
 	// 140 cols of dock width → interior 135 ≥ WideBreakpoint → two columns.
@@ -520,7 +526,7 @@ func TestBrowserSingleColumnKeepsInlineDesc(t *testing.T) {
 	f := scalarField("t.token", "Token",
 		func() string { return got },
 		func(v string) error { got = v; return nil })
-	f.desc = "the token used for things"
+	f.Desc = "the token used for things"
 	b.list = newFieldList(func() []*field { return []*field{f} })
 
 	// 80 cols → interior 75 < WideBreakpoint → single column, desc under row.
@@ -544,7 +550,7 @@ func TestBrowserSingleColumnKeepsInlineDesc(t *testing.T) {
 func TestBrowserTwoColumnShowsDescInDetailPaneWhileDrilled(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
 	for index, row := range b.list.Rows() {
-		if row.id == "section.providers" {
+		if row.ID == "section.providers" {
 			b.list.SetCursor(index)
 			break
 		}

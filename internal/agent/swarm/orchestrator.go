@@ -241,6 +241,7 @@ func (o *Orchestrator) runRole(ctx context.Context, meter TokenMeter, role agent
 		hasRealUsage = true
 		meter.Observe(role, usage)
 		o.State.UpdateSwarmTokens(meter.Total(), o.MaxTotalTokens)
+		o.State.UpdateSwarmRoleTokens(string(role), usage.PromptTokens+usage.CompletionTokens)
 	}
 	task, err := runner.RunTask(ctx, prompt)
 	if err != nil {
@@ -258,6 +259,7 @@ func (o *Orchestrator) observe(meter TokenMeter, role agent.AgentRole, prompt, a
 		CompletionTokens: EstimateText(answer),
 	})
 	o.State.UpdateSwarmTokens(meter.Total(), o.MaxTotalTokens)
+	o.State.UpdateSwarmRoleTokens(string(role), EstimateText(prompt)+EstimateText(answer))
 }
 
 func (o *Orchestrator) focuses() []ScoutFocus {

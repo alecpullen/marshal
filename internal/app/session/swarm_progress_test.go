@@ -75,3 +75,46 @@ func TestUpdateSwarmTokens(t *testing.T) {
 		t.Fatalf("TokensUsed=%d, TokensMax=%d, want 1500/10000", got.TokensUsed, got.TokensMax)
 	}
 }
+
+func TestUpdateSwarmRoleTokens(t *testing.T) {
+	s := newTestState()
+	s.SetSwarmProgress(SwarmProgress{
+		Active: true,
+		Roles:  []SwarmRole{{Name: "planner"}, {Name: "implementer"}},
+	})
+
+	s.UpdateSwarmRoleTokens("implementer", 8400)
+
+	for _, r := range s.SwarmProgress().Roles {
+		if r.Name == "implementer" && r.Tokens != 8400 {
+			t.Errorf("implementer tokens = %d, want 8400", r.Tokens)
+		}
+		if r.Name == "planner" && r.Tokens != 0 {
+			t.Errorf("planner tokens = %d, want 0", r.Tokens)
+		}
+	}
+}
+
+func TestUpdateSwarmRoleSetsStartedAt(t *testing.T) {
+	s := newTestState()
+	s.SetSwarmProgress(SwarmProgress{Active: true, Roles: []SwarmRole{{Name: "planner"}}})
+
+	s.UpdateSwarmRole("planner", SwarmRoleActive, "reading spec")
+
+	if s.SwarmProgress().Roles[0].StartedAt.IsZero() {
+		t.Error("StartedAt is zero after transition to active")
+	}
+}
+
+func TestUpdateSwarmRoleKeepsStartedAtOnLaterUpdates(t *testing.T) {
+	s := newTestState()
+	s.SetSwarmProgress(SwarmProgress{Active: true, Roles: []SwarmRole{{Name: "planner"}}})
+
+	s.UpdateSwarmRole("planner", SwarmRoleActive, "first")
+	first := s.SwarmProgress().Roles[0].StartedAt
+	s.UpdateSwarmRole("planner", SwarmRoleActive, "second")
+
+	if got := s.SwarmProgress().Roles[0].StartedAt; !got.Equal(first) {
+		t.Errorf("StartedAt = %v, want it unchanged at %v", got, first)
+	}
+}

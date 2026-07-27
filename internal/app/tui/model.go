@@ -678,6 +678,7 @@ func New(state *session.State, opts ...Option) Model {
 	m.railBaseRef = gitinfo.HeadSHA(state.WorkingDir)
 
 	m.rail = sidepanel.New(
+		sidepanel.SwarmSection{},
 		sidepanel.ContextSection{},
 		sidepanel.ChangedSection{},
 		sidepanel.ToolsSection{},
@@ -782,6 +783,7 @@ func (m Model) railData() sidepanel.Data {
 		Pack:    m.state.ContextPack(),
 		Audit:   m.state.AuditLog(),
 		Rules:   m.state.SessionRules(),
+		Swarm:   m.state.SwarmProgress(),
 		Now:     m.now(),
 	}
 }

@@ -55,6 +55,10 @@ type Data struct {
 	// Rules is the session's approval rules, held directly so sections are
 	// testable without a live session.
 	Rules []string
+
+	// Swarm is the swarm run progress, held directly so tests don't need a
+	// live session.
+	Swarm session.SwarmProgress
 }
 
 // Section is one read-only block in the rail. Sections are pure functions

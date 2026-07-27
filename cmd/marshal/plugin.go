@@ -367,9 +367,10 @@ func updateOne(ctx context.Context, inst *plugins.Installer, scope scopePaths, l
 
 // printPluginSummary renders the confirm-on-install review: passive
 // content first, then every executable item spelled out (hook command
-// lines, MCP server commands) so the user sees exactly what could run.
-// Executable entries still pass through the permission engine at runtime;
-// this summary is the human trust decision point.
+// lines, MCP server commands, MCP tool policies) so the user sees
+// exactly what could run or be auto-approved. Executable entries still
+// pass through the permission engine at runtime; this summary is the
+// human trust decision point.
 func printPluginSummary(stdout io.Writer, c plugins.Contents) {
 	fmt.Fprintln(stdout, "Passive content (loaded as reference material):")
 	if len(c.Skills) == 0 && len(c.Commands) == 0 {
@@ -382,7 +383,7 @@ func printPluginSummary(stdout io.Writer, c plugins.Contents) {
 		fmt.Fprintf(stdout, "  command /%s — %s\n", cmd.Name, cmd.Description)
 	}
 	fmt.Fprintln(stdout, "Executable content (runs through the permission engine):")
-	if len(c.Hooks) == 0 && len(c.MCPServers) == 0 {
+	if len(c.Hooks) == 0 && len(c.MCPServers) == 0 && len(c.MCPPolicies) == 0 {
 		fmt.Fprintln(stdout, "  (none)")
 	}
 	for _, h := range c.Hooks {
@@ -396,5 +397,13 @@ func printPluginSummary(stdout io.Writer, c plugins.Contents) {
 	for _, name := range names {
 		srv := c.MCPServers[name]
 		fmt.Fprintf(stdout, "  mcp server %s: %s %s\n", name, srv.Command, strings.Join(srv.Args, " "))
+	}
+	tools := make([]string, 0, len(c.MCPPolicies))
+	for tool := range c.MCPPolicies {
+		tools = append(tools, tool)
+	}
+	sort.Strings(tools)
+	for _, tool := range tools {
+		fmt.Fprintf(stdout, "  mcp policy %s = %s\n", tool, c.MCPPolicies[tool])
 	}
 }

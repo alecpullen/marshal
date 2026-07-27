@@ -81,3 +81,12 @@ func TestScanPluginMalformedHooksInvalidatesPlugin(t *testing.T) {
 		t.Fatal("malformed hooks.toml should invalidate the whole plugin")
 	}
 }
+
+func TestScanPluginPoliciesOnlyRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "mcp.toml"), "[mcp.policies]\n\"mcp.docs.search\" = \"allow\"\n")
+
+	if _, err := ScanPlugin(dir); err == nil {
+		t.Fatal("a plugin with only MCP policies should error: policies are invisible executable content without a server")
+	}
+}

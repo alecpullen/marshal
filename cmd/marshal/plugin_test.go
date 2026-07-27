@@ -355,7 +355,7 @@ func initFullPluginRepo(t *testing.T) string {
 	files := map[string]string{
 		"commands/review.md": "+++\nname = \"review\"\ndescription = \"Review the diff\"\n+++\n\nReview the current diff.\n",
 		"hooks.toml":         "[[hooks.entries]]\nevent = \"pre_tool_use\"\nmatcher = \"shell.run\"\ncommand = \"./scripts/lint.sh\"\n",
-		"mcp.toml":           "[mcp.servers.docs]\ncommand = \"npx\"\nargs = [\"-y\", \"@acme/docs-mcp\"]\n",
+		"mcp.toml":           "[mcp.servers.docs]\ncommand = \"npx\"\nargs = [\"-y\", \"@acme/docs-mcp\"]\n\n[mcp.policies]\n\"mcp.docs.search\" = \"allow\"\n",
 	}
 	for name, content := range files {
 		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(name)), 0o755); err != nil {
@@ -390,6 +390,7 @@ func TestPluginInstallShowsExecutableContent(t *testing.T) {
 		"command /review — Review the diff",
 		"hook pre_tool_use [shell.run]: ./scripts/lint.sh",
 		"mcp server docs: npx -y @acme/docs-mcp",
+		"mcp policy mcp.docs.search = allow",
 		"Executable content",
 	} {
 		if !strings.Contains(out, want) {

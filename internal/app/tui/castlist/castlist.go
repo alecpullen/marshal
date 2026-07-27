@@ -73,6 +73,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
+// Sizing keeps the cast list docked under the default height cap.
+func (p *Panel) Sizing() dock.Sizing { return dock.Docked }
+
 // View renders the cast list inside the dock height budget.
 func (p *Panel) View(width, maxHeight int) string {
 	th := theme.Current()

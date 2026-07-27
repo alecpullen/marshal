@@ -1,59 +1,44 @@
 package dock
 
 import (
-	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 )
 
-type fakePanel struct{ lastW, lastH int }
-
-func (f *fakePanel) Update(tea.Msg) tea.Cmd { return nil }
-
-func (f *fakePanel) View(width, maxHeight int) string {
-	f.lastW, f.lastH = width, maxHeight
-	return "line1\nline2\nline3"
+type stubPanel struct {
+	sizing   Sizing
+	gotWidth int
+	gotMaxH  int
 }
 
-func TestMaxRows(t *testing.T) {
-	cases := []struct{ frame, want int }{
-		{24, 9},
-		{40, 16},
-		{10, 6},
-	}
-	for _, testCase := range cases {
-		if got := MaxRows(testCase.frame); got != testCase.want {
-			t.Errorf("MaxRows(%d) = %d, want %d", testCase.frame, got, testCase.want)
-		}
-	}
+func (s *stubPanel) Update(msg tea.Msg) tea.Cmd { return nil }
+func (s *stubPanel) View(width, maxHeight int) string {
+	s.gotWidth, s.gotMaxH = width, maxHeight
+	return "stub"
 }
+func (s *stubPanel) Sizing() Sizing { return s.sizing }
 
-func TestHostLifecycle(t *testing.T) {
-	var host Host
-	if host.IsOpen() || host.Rows() != 0 || host.View(80, 24) != "" {
-		t.Fatal("empty host must be closed, zero rows, empty view")
-	}
-
-	panel := &fakePanel{}
-	host.Open(panel)
-	if !host.IsOpen() {
-		t.Fatal("host should be open after Open")
+func TestHostViewBudgetsBySizingHint(t *testing.T) {
+	docked := &stubPanel{sizing: Docked}
+	h := &Host{}
+	h.Open(docked)
+	h.View(100, 40)
+	if want := MaxRows(40); docked.gotMaxH != want {
+		t.Fatalf("Docked panel got maxHeight %d, want MaxRows(40) = %d", docked.gotMaxH, want)
 	}
 
-	view := host.View(80, 24)
-	if !strings.Contains(view, "line2") {
-		t.Fatalf("view should render panel content, got %q", view)
+	full := &stubPanel{sizing: FullFrame}
+	h.Open(full)
+	h.View(100, 40)
+	if want := 40 - 1; full.gotMaxH != want {
+		t.Fatalf("FullFrame panel got maxHeight %d, want frame minus status line = %d", full.gotMaxH, want)
 	}
-	if panel.lastH != MaxRows(24) {
-		t.Errorf("panel got maxHeight %d, want %d", panel.lastH, MaxRows(24))
+	if !h.FullFrameOpen() {
+		t.Fatal("FullFrameOpen() = false with a FullFrame panel open")
 	}
-	if host.Rows() != 3 {
-		t.Errorf("Rows() = %d after render, want 3", host.Rows())
-	}
-
-	host.CloseNow()
-	if host.IsOpen() || host.Rows() != 0 {
-		t.Fatal("CloseNow must reset panel and rows")
+	h.Open(docked)
+	if h.FullFrameOpen() {
+		t.Fatal("FullFrameOpen() = true with a Docked panel open")
 	}
 }

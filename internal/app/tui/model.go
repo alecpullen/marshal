@@ -1058,10 +1058,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.dock.IsOpen() {
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.PasteMsg:
 			return m, m.dock.Update(msg)
 		}
-		// non-key messages (ticks, agent events) keep flowing to the
+		// Other non-key messages (ticks, agent events) keep flowing to the
 		// normal handlers below so background work continues.
 	}
 

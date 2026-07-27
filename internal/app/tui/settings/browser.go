@@ -283,14 +283,18 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 
-	// Forward paste to the active picker or the flat filter input.
+	// Forward paste to the active picker, the drilled pane stack, the field
+	// being edited, or the flat filter input.
 	if paste, ok := msg.(tea.PasteMsg); ok {
 		if b.pickerModel != nil {
 			return b.pickerModel.Update(paste)
 		}
 		list := b.activeList()
-		if b.stack != nil || list.Editing() {
-			return nil
+		if b.stack != nil {
+			return b.flushChanges(b.stack.Update(paste), false)
+		}
+		if list.Editing() {
+			return b.flushChanges(list.Update(paste), false)
 		}
 		var cmd tea.Cmd
 		b.filter, cmd = b.filter.Update(paste)

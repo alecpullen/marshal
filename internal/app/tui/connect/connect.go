@@ -130,6 +130,10 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
 			return m, cmd
+		case stepRename:
+			var cmd tea.Cmd
+			m.renameInput, cmd = m.renameInput.Update(msg)
+			return m, cmd
 		case stepPickTemplate, stepPickModel:
 			if m.picker == nil {
 				return m, nil

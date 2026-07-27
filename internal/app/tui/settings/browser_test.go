@@ -450,6 +450,27 @@ func TestHintsFollowCursorRowKind(t *testing.T) {
 	}
 }
 
+func TestBrowserRoutesPasteIntoActiveFieldEdit(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	var got string
+	b.list = newFieldList(func() []*field {
+		return []*field{scalarField("t.paste", "Token",
+			func() string { return got },
+			func(v string) error { got = v; return nil })}
+	})
+	b.list.SetSize(60, 20)
+
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open inline edit
+	if !b.list.Editing() {
+		t.Fatal("enter should open inline edit")
+	}
+	b.Update(tea.PasteMsg{Content: "pasted-secret"})
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // apply
+	if got != "pasted-secret" {
+		t.Fatalf("pasted value should apply to the field, got %q", got)
+	}
+}
+
 func TestBrowserPasteIntoFilter(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
 	if got := b.FilterValue(); got != "" {

@@ -203,6 +203,9 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancelled = true
 				return m, tea.Quit
 			}
+		case tea.PasteMsg:
+			// Forwarded to the connect model by the call below; listed
+			// explicitly so paste support is intentional, not incidental.
 		case connect.DoneMsg:
 			// Persist the provider/model from the connect wizard.
 			m.selectedProvider = typed.Provider
@@ -238,6 +241,9 @@ func (m *OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.PasteMsg:
+		// Forwarded to the text input by the tail block below in input
+		// states; listed explicitly so paste support is intentional.
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":

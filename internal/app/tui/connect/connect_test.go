@@ -553,6 +553,25 @@ func TestRenameEscReturnsToSummary(t *testing.T) {
 	}
 }
 
+func TestPasteMsgIntoRenameInput(t *testing.T) {
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m, _ = m.Update(pickerPicked("ollama"))
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	if m.step != stepSummary {
+		t.Fatalf("expected stepSummary, got %v", m.step)
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
+	if m.step != stepRename {
+		t.Fatalf("expected stepRename, got %v", m.step)
+	}
+	m.renameInput.SetValue("")
+	m, _ = m.Update(tea.PasteMsg{Content: "renamed-provider"})
+	if got := m.renameInput.Value(); got != "renamed-provider" {
+		t.Fatalf("renameInput.Value() = %q, want %q", got, "renamed-provider")
+	}
+}
+
 func pickerPicked(value string) tea.Msg { return picker.PickedMsg{Value: value} }
 
 func TestAPIKeyInputIsMasked(t *testing.T) {

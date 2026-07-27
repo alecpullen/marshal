@@ -5432,3 +5432,17 @@ func TestDispatchPromptCommandPreservesQuotedArgs(t *testing.T) {
 		t.Fatal("runner was not invoked")
 	}
 }
+
+func TestPasteRoutesToOpenDockPanel(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	p := picker.New("Pick", "", []picker.Item{{Label: "one"}})
+	m.dock.Open(p)
+	mm, _ := m.Update(tea.PasteMsg{Content: "abc"})
+	m = mm.(Model)
+	if got := p.FilterValue(); got != "abc" {
+		t.Fatalf("dock panel filter = %q, want %q", got, "abc")
+	}
+	if strings.Contains(m.input.Value(), "abc") {
+		t.Fatalf("paste leaked into the hidden chat input: %q", m.input.Value())
+	}
+}

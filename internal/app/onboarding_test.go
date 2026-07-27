@@ -421,3 +421,17 @@ func TestSaveConfigAssignsPresetToEveryRoutingRole(t *testing.T) {
 		t.Errorf("onboarded_preset assignments = %d, want %d (one per routing role)", got, len(routing.AllRoles))
 	}
 }
+
+func TestOnboardingPasteIntoProjectName(t *testing.T) {
+	m := NewOnboardingModel(t.TempDir())
+	m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = m2.(*OnboardingModel)
+	if m.state != stateProjectName {
+		t.Fatalf("state = %d, want stateProjectName", m.state)
+	}
+	m2, _ = m.Update(tea.PasteMsg{Content: "my-project"})
+	m = m2.(*OnboardingModel)
+	if got := m.textInput.Value(); got != "my-project" {
+		t.Fatalf("textInput.Value() = %q, want %q", got, "my-project")
+	}
+}

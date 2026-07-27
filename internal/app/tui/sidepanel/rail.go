@@ -138,6 +138,17 @@ func (r *Rail) View(d Data, width, height int) string {
 		footerRows = append([]string{"", Header("", "", inner)}, footerRows...)
 	}
 
+	// If the footer cannot fit at the requested height, drop it entirely.
+	// fit() doesn't know about the 2 intro rows (blank + rule) that View
+	// prepends, so it may assign a state that fits the section body but
+	// not the intro rows. When the footer is the sole survivor this would
+	// make bodyBudget negative and panic.
+	if len(footerRows) > height {
+		states[footerIdx] = StateDropped
+		footerIdx = -1
+		footerRows = nil
+	}
+
 	bodyBudget := height - len(footerRows)
 	bodyRows := buildBody(live, states, costs, bodies, d, inner, footerIdx, bodyBudget)
 	if len(bodyRows) > bodyBudget {

@@ -323,6 +323,27 @@ func TestRailStructureSurvivesColorStripping(t *testing.T) {
 	}
 }
 
+func TestFooterDoesNotPanicAtSmallHeights(t *testing.T) {
+	// Regression test for C1: a footer-only rail must not panic at any
+	// height from 1 to 8. The footer's natural height is 3 (2 body rows
+	// + 1 title), but View prepends 2 intro rows (blank + rule), so the
+	// footer needs 5 rows total. At heights < 5 it must be dropped.
+	r := New(footerSection(2))
+	for h := 1; h <= 8; h++ {
+		out := r.View(Data{}, 30, h)
+		lines := strings.Split(out, "\n")
+		if len(lines) != h {
+			t.Fatalf("height %d: got %d rows, want %d", h, len(lines), h)
+		}
+		// At heights where the footer fits, it should be present.
+		if h >= 5 {
+			if !strings.Contains(StripANSI(out), "session-row") {
+				t.Errorf("height %d: footer should be present", h)
+			}
+		}
+	}
+}
+
 func TestRailWithoutFooterUnchanged(t *testing.T) {
 	r := New(mk("alpha", 0, 2), mk("beta", 1, 2))
 	lines := strings.Split(r.View(Data{}, 30, 20), "\n")

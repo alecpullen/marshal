@@ -135,6 +135,9 @@ func Default() Config {
 				Calibration:             CalibrationConfig{Enabled: false},
 			},
 		},
+		History: HistoryConfig{
+			Enabled: true,
+		},
 		TUI: TUIConfig{
 			SidePanel: SidePanelConfig{
 				Enabled:  true,

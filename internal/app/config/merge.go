@@ -239,6 +239,9 @@ func merge(cfg *Config, file configFile) error {
 			}
 		}
 	}
+	if file.History != nil {
+		set(&cfg.History.Enabled, file.History.Enabled)
+	}
 	if file.Permissions != nil && file.Permissions.Rules != nil {
 		cfg.Permissions.Rules = file.Permissions.Rules
 	}

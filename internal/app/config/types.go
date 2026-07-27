@@ -26,6 +26,7 @@ type Config struct {
 	SDD           SDDConfig                             `toml:"sdd"`
 	MCP           MCPConfig                             `toml:"mcp"`
 	Snapshots     SnapshotsConfig                       `toml:"snapshots"`
+	History       HistoryConfig                         `toml:"history"`
 	TUI           TUIConfig                             `toml:"tui"`
 	Permissions   PermissionsConfig                     `toml:"permissions"`
 	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
@@ -105,6 +106,13 @@ type SidePanelConfig struct {
 	MinCols  int      `toml:"min_cols"`
 	MaxCols  int      `toml:"max_cols"`
 	Hidden   []string `toml:"hidden"`
+}
+
+// HistoryConfig controls the session history subsystem. When Enabled is
+// true (the default), the agent loop persists each generation to the
+// history database and the /history command is available.
+type HistoryConfig struct {
+	Enabled bool `toml:"enabled"`
 }
 
 type PermissionsConfig struct {

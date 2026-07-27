@@ -1077,3 +1077,26 @@ func TestRemoteLimitDiscoveryDefaultsToRemoteProvidersAllowed(t *testing.T) {
 		t.Errorf("RemoteLimitDiscovery = %v, want %v", cfg.Privacy.RemoteLimitDiscovery, cfg.Privacy.RemoteProvidersAllowed)
 	}
 }
+
+func TestHistoryDefaults(t *testing.T) {
+	cfg := Default()
+	if !cfg.History.Enabled {
+		t.Errorf("History.Enabled default = false, want true")
+	}
+}
+
+func TestHistoryMergesFromFile(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[history]
+enabled = false
+`)
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.History.Enabled {
+		t.Errorf("History.Enabled = true after file override, want false")
+	}
+}

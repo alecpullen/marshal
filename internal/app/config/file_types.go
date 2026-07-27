@@ -142,6 +142,10 @@ type fileSnapshots struct {
 	MaxFileBytes  *int  `toml:"max_file_bytes"`
 }
 
+type fileHistory struct {
+	Enabled *bool `toml:"enabled"`
+}
+
 type fileTUI struct {
 	Theme     *string           `toml:"theme"`
 	Palette   map[string]string `toml:"palette"`
@@ -233,6 +237,7 @@ type configFile struct {
 	SDD         *fileSDD         `toml:"sdd"`
 	MCP         *fileMCP         `toml:"mcp"`
 	Snapshots   *fileSnapshots   `toml:"snapshots"`
+	History     *fileHistory     `toml:"history"`
 	TUI         *fileTUI         `toml:"tui"`
 	Permissions *filePermissions `toml:"permissions"`
 	Diagnostics *fileDiagnostics `toml:"diagnostics"`

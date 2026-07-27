@@ -69,6 +69,7 @@ internal/app/tui/memory/              — /memory panel
 internal/app/tui/castlist/            — pre-flight cast list shown before /sdd and /swarm
 internal/app/tui/picker/              — centered modal selection list
 internal/app/tui/chrome/              — shared panel dressing: gutter-framed panels with titles
+internal/app/tui/layout/              — shared responsive breakpoints and dock-panel width policy
 internal/app/tui/theme/               — semantic color slots with NO_COLOR/16/256 detection
 internal/app/tui/huhtheme/            — huh.Theme retuned to the marshal palette
 internal/app/tui/help/                — persistent keybinding footer and ? help overlay

@@ -3,6 +3,8 @@ package sidepanel
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func changedData() Data {
@@ -55,6 +57,48 @@ func TestChangedSectionKeepsBasenameWhenNarrow(t *testing.T) {
 func TestChangedSectionRespectsMaxRows(t *testing.T) {
 	if got := (ChangedSection{}).Render(changedData(), 34, 2); len(got) > 2 {
 		t.Errorf("got %d rows, want at most 2", len(got))
+	}
+}
+
+func TestChangedSectionColorsLineCounts(t *testing.T) {
+	d := Data{Changed: []ChangedFile{
+		{Path: "model.go", Status: 'M', Added: 42, Removed: 8},
+	}}
+	rows := ChangedSection{}.Render(d, 30, 0)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+
+	// Visible text is unchanged.
+	visible := StripANSI(rows[0])
+	if !strings.Contains(visible, "+42") || !strings.Contains(visible, "-8") {
+		t.Fatalf("visible text lost counts: %q", visible)
+	}
+
+	// The counts carry distinct styling from each other.
+	if !strings.Contains(rows[0], StripANSI(styleSuccess("+42"))) {
+		t.Errorf("row missing +42: %q", visible)
+	}
+	if rows[0] == visible {
+		t.Errorf("row is unstyled, want status color on counts: %q", visible)
+	}
+	if styleSuccess("+42") == styleError("+42") {
+		// Guard: success and error must be distinguishable styles.
+		if strings.Count(rows[0], "\x1b[") < 2 {
+			t.Errorf("want separate styling for additions and deletions: %q", rows[0])
+		}
+	}
+}
+
+func TestChangedSectionRowWidthUnaffectedByStyling(t *testing.T) {
+	d := Data{Changed: []ChangedFile{
+		{Path: "internal/app/tui/sidepanel/section_changed.go", Status: 'M', Added: 42, Removed: 8},
+	}}
+	rows := ChangedSection{}.Render(d, 24, 0)
+	for i, r := range rows {
+		if w := ansi.StringWidth(r); w > 24 {
+			t.Errorf("row %d width = %d, want <= 24: %q", i, w, StripANSI(r))
+		}
 	}
 }
 

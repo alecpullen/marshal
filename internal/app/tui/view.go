@@ -58,22 +58,28 @@ func (m *Model) viewString() string {
 	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()
 
-	rows := []string{m.renderTranscriptFrame()}
-	if todo := m.renderTodoPanel(); todo != "" {
-		rows = append(rows, todo)
+	var left string
+	if m.dock.FullFrameOpen() {
+		// A FullFrame panel owns everything above the status line: the
+		// transcript, todo panel, live strip, and input area are hidden.
+		left = dockView
+	} else {
+		rows := []string{m.renderTranscriptFrame()}
+		if todo := m.renderTodoPanel(); todo != "" {
+			rows = append(rows, todo)
+		}
+		if sd := m.state.SDDProgress(); sd.Active {
+			rows = append(rows, sddPanel(sd, m.leftWidth))
+		}
+		if strip := m.renderLiveStrip(); strip != "" {
+			rows = append(rows, strip)
+		}
+		if dockView != "" {
+			rows = append(rows, dockView)
+		}
+		rows = append(rows, m.renderInputArea())
+		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
-	if sd := m.state.SDDProgress(); sd.Active {
-		rows = append(rows, sddPanel(sd, m.leftWidth))
-	}
-	if strip := m.renderLiveStrip(); strip != "" {
-		rows = append(rows, strip)
-	}
-	if dockView != "" {
-		rows = append(rows, dockView)
-	}
-	rows = append(rows, m.renderInputArea())
-
-	left := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	if m.railEnabled() {
 		railHeight := m.height - statusLineRows
 		if rv := m.rail.View(m.railData(), m.railWidth, railHeight); rv != "" {

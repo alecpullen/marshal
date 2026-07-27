@@ -39,7 +39,10 @@ func TestWebFrameDurationValidation(t *testing.T) {
 		ps.Update(kp("j"))
 	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	ps.Top().List.SetInputValue("45s")
+	ps.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear pre-populated value
+	for _, r := range "45s" {
+		ps.Update(kp(string(r)))
+	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if s.cfg.Web.FetchTimeout.String() != "45s" {
 		t.Fatalf("expected 45s, got %v", s.cfg.Web.FetchTimeout)

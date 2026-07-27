@@ -189,7 +189,7 @@ func (p *Panel) matchedFields() []*settings.Field {
 	if query != "" {
 		var filtered []*settings.Field
 		for _, f := range fields {
-			if settings.FieldKind(f) == settings.KindHeader {
+			if f.Kind == settings.KindHeader {
 				filtered = append(filtered, f)
 				continue
 			}

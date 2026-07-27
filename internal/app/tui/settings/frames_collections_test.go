@@ -102,9 +102,12 @@ func TestProvidersAddAndEditType(t *testing.T) {
 	if len(ps.Stack) != 2 {
 		t.Fatalf("enter should drill into the provider, depth=%d", len(ps.Stack))
 	}
-	ps.Update(kp("j"))                             // skip Name row (row 0) to reach Type
-	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // edit Type row
-	ps.Top().List.SetInputValue("anthropic")
+	ps.Update(kp("j"))                                      // skip Name row (row 0) to reach Type
+	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})          // edit Type row
+	ps.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear pre-populated value
+	for _, r := range "anthropic" {
+		ps.Update(kp(string(r)))
+	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if s.cfg.Providers["ollama"].Type != "anthropic" {
 		t.Fatalf("type edit should apply immediately, got %q", s.cfg.Providers["ollama"].Type)

@@ -112,10 +112,6 @@ var (
 	NewFrame                   = listpanel.NewFrame
 )
 
-// FieldKind returns the kind of a field. It shadows the type alias so that
-// callers like agents/panel.go can write settings.FieldKind(f).
-func FieldKind(f *Field) listpanel.FieldKind { return f.Kind }
-
 // Generic functions cannot be var-assigned without instantiation; wrap them.
 func mapDrill[T any](id, title string, values *map[string]T, parse func(string) (T, error), format func(T) string) *field {
 	return listpanel.MapDrill(id, title, values, parse, format)

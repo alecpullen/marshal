@@ -123,7 +123,9 @@ func TestProfilesAddCreatesEmptyProfile(t *testing.T) {
 	// Press 'a' to trigger the add prompt
 	ps.Update(kp("a"))
 	// Submit the name
-	ps.Top().List.SetKeyInputValue("fast")
+	for _, r := range "fast" {
+		ps.Update(kp(string(r)))
+	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	p, ok := s.cfg.AgentProfiles["fast"]
 	if !ok {
@@ -134,7 +136,9 @@ func TestProfilesAddCreatesEmptyProfile(t *testing.T) {
 	}
 	// Try adding a duplicate name
 	ps.Update(kp("a"))
-	ps.Top().List.SetKeyInputValue("fast")
+	for _, r := range "fast" {
+		ps.Update(kp(string(r)))
+	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if ps.Top().List.ErrMsg == "" {
 		t.Fatal("duplicate add should set errMsg")

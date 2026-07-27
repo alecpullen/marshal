@@ -99,7 +99,10 @@ func TestAgentFrameProviderWritesToActivePreset(t *testing.T) {
 		ps.Update(kp("j"))
 	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	ps.Top().List.SetInputValue("vllm")
+	ps.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear pre-populated value
+	for _, r := range "vllm" {
+		ps.Update(kp(string(r)))
+	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if s.cfg.Models.Presets[preset].Provider != "vllm" {
 		t.Fatalf("provider should write to preset %q, got %q", preset, s.cfg.Models.Presets[preset].Provider)

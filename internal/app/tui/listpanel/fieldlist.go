@@ -175,12 +175,6 @@ func (fl *FieldList) DisarmCurrent() {
 // InputValue returns the scalar edit input's current text.
 func (fl *FieldList) InputValue() string { return fl.input.Value() }
 
-// SetInputValue sets the scalar edit input's text directly (used by tests).
-func (fl *FieldList) SetInputValue(v string) { fl.input.SetValue(v) }
-
-// SetKeyInputValue sets the key prompt input's text directly (used by tests).
-func (fl *FieldList) SetKeyInputValue(v string) { fl.keyInput.SetValue(v) }
-
 func (fl *FieldList) Editing() bool { return fl.editing || fl.picking || fl.adding }
 
 // Committed reports whether the most recent Update call invoked a field

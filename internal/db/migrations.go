@@ -234,4 +234,6 @@ CREATE TABLE IF NOT EXISTS prompt_history (
     content    TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_prompt_history_project_id ON prompt_history(project_id, id);
 `

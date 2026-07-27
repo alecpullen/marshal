@@ -84,11 +84,6 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					}
 					return Text(out + "\n  " + c.Description)
 				}
-				var b strings.Builder
-				b.WriteString("Keys\n")
-				b.WriteString("  ⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /model\n")
-				b.WriteString("  ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n")
-				b.WriteString("  pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom\n")
 				groupOrder := []string{groupChat, groupModels, groupWorkflow, groupChanges, groupSettings, "Other"}
 				byGroup := map[string][]Command{}
 				for _, c := range cmdReg.List() { // List already sorts and hides Hidden
@@ -98,21 +93,26 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					}
 					byGroup[g] = append(byGroup[g], c)
 				}
+				var rows []Row
 				for _, g := range groupOrder {
 					cmds := byGroup[g]
 					if len(cmds) == 0 {
 						continue
 					}
-					b.WriteString(g + "\n")
+					rows = append(rows, Row{Header: g})
 					for _, c := range cmds {
-						line := "  /" + c.Name
+						line := "/" + c.Name
 						if c.Args != "" {
 							line += " " + c.Args
 						}
-						b.WriteString(fmt.Sprintf("%-28s %s\n", line, c.Description))
+						rows = append(rows, Row{Text: line, Detail: c.Description})
 					}
 				}
-				return Text(strings.TrimRight(b.String(), "\n"))
+				res := Panel("Help", false, rows)
+				res.Doc.Footer = "⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /model\n" +
+					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n" +
+					"pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom"
+				return res
 			},
 		},
 		{
@@ -123,12 +123,14 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				if toolReg == nil {
 					return Text("Tools unavailable (agent failed to initialise). Fix the provider config and restart, or use /settings.")
 				}
-				var b strings.Builder
-				b.WriteString("Available tools:\n\n")
+				var rows []Row
 				for _, tool := range toolReg.List() {
-					b.WriteString(fmt.Sprintf("  %s (%s) — %s\n", tool.Name, tool.Risk, tool.Description))
+					rows = append(rows, Row{
+						Text:   tool.Name,
+						Detail: fmt.Sprintf("(%s) — %s", tool.Risk, tool.Description),
+					})
 				}
-				return Text(b.String())
+				return Panel("Tools", false, rows)
 			},
 		},
 		{
@@ -195,13 +197,14 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				if len(events) > 15 {
 					start = len(events) - 15
 				}
-				var b strings.Builder
-				b.WriteString("Recent tool calls:\n\n")
+				var rows []Row
 				for _, e := range events[start:] {
-					b.WriteString(fmt.Sprintf("  %s  %-14s  %s\n",
-						e.Timestamp.Format("15:04:05"), e.ToolName, e.ResultSummary))
+					rows = append(rows, Row{
+						Text:   fmt.Sprintf("%s  %s", e.Timestamp.Format("15:04:05"), e.ToolName),
+						Detail: e.ResultSummary,
+					})
 				}
-				return Text(strings.TrimRight(b.String(), "\n"))
+				return Panel("Recent tool calls", false, rows)
 			},
 		},
 		{

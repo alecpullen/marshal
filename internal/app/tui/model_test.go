@@ -1952,12 +1952,8 @@ func TestSlashCommandHelp(t *testing.T) {
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
-	msgs := m.state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("expected system message from /help")
-	}
-	if !strings.Contains(msgs[0].Content, "Keys") || !strings.Contains(msgs[0].Content, "Chat") {
-		t.Errorf("help output missing header: %s", msgs[0].Content)
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock panel from /help")
 	}
 }
 
@@ -2060,9 +2056,8 @@ func TestSlashCommandBusyStillDispatched(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = asModel(updated)
 
-	msgs := m.state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("commands should work even when busy")
+	if !m.dock.IsOpen() {
+		t.Fatal("commands should work even when busy — expected dock panel from /help")
 	}
 }
 
@@ -2833,23 +2828,17 @@ func TestCommandTriggerDismissesFilePopup(t *testing.T) {
 }
 
 // TestQuestionMarkPrintsHelpToTranscript verifies ? on an empty textarea
-// behaves like typing /help: it prints the cheatsheet to the transcript
-// instead of opening a full-screen overlay.
+// behaves like typing /help: it opens the help doc panel instead of typing
+// a literal ?.
 func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
 	m.resize(80, 24)
 
-	before := len(m.state.Messages())
 	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
 	m = asModel(t, updated)
 
-	msgs := m.state.Messages()
-	if len(msgs) != before+1 {
-		t.Fatalf("expected ? to print one transcript message, got %d -> %d", before, len(msgs))
-	}
-	last := msgs[len(msgs)-1]
-	if !strings.Contains(last.Content, "Keys") || !strings.Contains(last.Content, "Chat") {
-		t.Fatalf("? did not print the help cheatsheet, got: %q", last.Content)
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock panel from ? (same as /help)")
 	}
 }
 

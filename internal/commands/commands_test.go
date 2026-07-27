@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -115,17 +117,35 @@ func TestRegisterAll(t *testing.T) {
 	}
 }
 
-func TestHelpCommand(t *testing.T) {
+func TestHelpCommandReturnsGroupedDoc(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("help")
-	result := cmd.Handler(newTestState(), nil).Text
-	for _, want := range []string{"Keys", "Chat", "Models & providers", "Workflows", "Changes", "Settings & info"} {
-		if !strings.Contains(result, want) {
-			t.Errorf("help output missing group %q: %s", want, result)
+	res := cmd.Handler(newTestState(), nil)
+	if res.Doc == nil {
+		t.Fatalf("/help should return a Doc, got %+v", res)
+	}
+	var headers []string
+	var names []string
+	for _, r := range res.Doc.Rows {
+		if r.Header != "" {
+			headers = append(headers, r.Header)
+		} else {
+			names = append(names, r.Text)
 		}
+	}
+	for _, want := range []string{"Chat", "Settings & info"} {
+		if !slices.Contains(headers, want) {
+			t.Errorf("missing group header %q in %v", want, headers)
+		}
+	}
+	if !slices.Contains(names, "/new") {
+		t.Errorf("missing /new row in %v", names)
+	}
+	if res.Doc.Footer == "" {
+		t.Error("expected keybinding cheatsheet in Doc.Footer")
 	}
 }
 
@@ -135,11 +155,15 @@ func TestHelpPrintsCheatsheet(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("help")
-	out := cmd.Handler(nil, nil).Text
-	for _, want := range []string{"Keys", "Chat", "Models & providers", "/set", "/model", "⏎ send", "esc"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("cheatsheet missing %q", want)
-		}
+	res := cmd.Handler(nil, nil)
+	if res.Doc == nil {
+		t.Fatalf("/help should return a Doc, got %+v", res)
+	}
+	if !strings.Contains(res.Doc.Footer, "⏎ send") {
+		t.Errorf("cheatsheet footer missing ⏎ send: %q", res.Doc.Footer)
+	}
+	if !strings.Contains(res.Doc.Footer, "esc") {
+		t.Errorf("cheatsheet footer missing esc: %q", res.Doc.Footer)
 	}
 }
 
@@ -155,15 +179,26 @@ func TestHelpForSingleCommand(t *testing.T) {
 	}
 }
 
-func TestToolsCommand(t *testing.T) {
+func TestToolsCommandReturnsDoc(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
+	toolReg.Register(registry.Tool{
+		Name:        "read",
+		Risk:        registry.RiskReadOnly,
+		Description: "Read files from the workspace",
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	})
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("tools")
-	result := cmd.Handler(newTestState(), nil).Text
-	if !strings.Contains(result, "Available tools") {
-		t.Errorf("tools output missing header: %s", result)
+	res := cmd.Handler(newTestState(), nil)
+	if res.Doc == nil {
+		t.Fatalf("/tools should return a Doc, got %+v", res)
+	}
+	if len(res.Doc.Rows) == 0 || res.Doc.Rows[0].Detail == "" {
+		t.Fatalf("expected tool rows with risk/description detail, got %+v", res.Doc.Rows)
 	}
 }
 
@@ -351,13 +386,21 @@ func TestLogCommandShowsRecentAuditEvents(t *testing.T) {
 	if !ok {
 		t.Fatal("log command not registered")
 	}
-	out := cmd.Handler(state, nil).Text
-
-	if !strings.Contains(out, "tool.19") || !strings.Contains(out, "result 19") {
-		t.Fatalf("log output missing newest event:\n%s", out)
+	res := cmd.Handler(state, nil)
+	if res.Doc == nil {
+		t.Fatalf("/log should return a Doc, got %+v", res)
 	}
-	if strings.Contains(out, "tool.4 ") {
-		t.Fatalf("log output should only contain the last 15 events:\n%s", out)
+	if len(res.Doc.Rows) == 0 {
+		t.Fatal("expected log rows")
+	}
+	// Should contain the newest event.
+	last := res.Doc.Rows[len(res.Doc.Rows)-1]
+	if !strings.Contains(last.Text, "tool.19") || !strings.Contains(last.Detail, "result 19") {
+		t.Fatalf("log rows missing newest event, last row: %+v", last)
+	}
+	// Should only contain the last 15 events (indices 5..19).
+	if len(res.Doc.Rows) != 15 {
+		t.Fatalf("expected 15 log rows, got %d", len(res.Doc.Rows))
 	}
 }
 
@@ -492,19 +535,38 @@ func TestHelpListsFlagshipCommands(t *testing.T) {
 	if !ok {
 		t.Fatal("help command not registered")
 	}
-	result := cmd.Handler(newTestState(), nil).Text
+	res := cmd.Handler(newTestState(), nil)
+	if res.Doc == nil {
+		t.Fatalf("/help should return a Doc, got %+v", res)
+	}
+
+	var names []string
+	for _, r := range res.Doc.Rows {
+		if r.Header == "" {
+			names = append(names, r.Text)
+		}
+	}
 
 	// Flagship commands that were previously hidden must now appear in /help.
 	for _, name := range []string{"connect", "models", "model", "mode", "swarm", "sdd", "settings", "memory"} {
-		if !strings.Contains(result, "/"+name) {
-			t.Errorf("help output should contain /%s, got:\n%s", name, result)
+		found := false
+		for _, n := range names {
+			if strings.HasPrefix(n, "/"+name) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("help output should contain /%s, got names: %v", name, names)
 		}
 	}
 
 	// Truly hidden commands (plan, default, edit, copilot, auto, stop) must NOT appear.
 	for _, name := range []string{"plan", "default", "edit", "copilot", "auto", "stop"} {
-		if strings.Contains(result, "/"+name) {
-			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
+		for _, n := range names {
+			if strings.HasPrefix(n, "/"+name) {
+				t.Errorf("help output should not contain /%s, got names: %v", name, names)
+			}
 		}
 	}
 }
@@ -518,26 +580,33 @@ func TestHelpGroupsCommands(t *testing.T) {
 	if !ok {
 		t.Fatal("help command not registered")
 	}
-	result := cmd.Handler(newTestState(), nil).Text
+	res := cmd.Handler(newTestState(), nil)
+	if res.Doc == nil {
+		t.Fatalf("/help should return a Doc, got %+v", res)
+	}
 
 	// All five groups must appear in the fixed order.
-	groups := []string{"Keys", "Chat", "Models & providers", "Workflows", "Changes", "Settings & info"}
-	lastIdx := -1
-	for _, g := range groups {
-		idx := strings.Index(result, g+"\n")
-		if idx < 0 {
-			t.Errorf("help output missing group %q", g)
-			continue
+	groups := []string{"Chat", "Models & providers", "Workflows", "Changes", "Settings & info"}
+	var seen []string
+	for _, r := range res.Doc.Rows {
+		if r.Header != "" {
+			seen = append(seen, r.Header)
 		}
-		if idx <= lastIdx {
-			t.Errorf("group %q appears out of order (idx=%d, last=%d)", g, idx, lastIdx)
+	}
+	if len(seen) < len(groups) {
+		t.Fatalf("expected at least %d group headers, got %v", len(groups), seen)
+	}
+	for i, g := range groups {
+		if i >= len(seen) || seen[i] != g {
+			t.Errorf("group %d: expected %q, got %v", i, g, seen)
 		}
-		lastIdx = idx
 	}
 
 	// No "Other" group should appear because every visible command is grouped.
-	if strings.Contains(result, "Other\n") {
-		t.Errorf("help output should not contain an 'Other' group, got:\n%s", result)
+	for _, r := range res.Doc.Rows {
+		if r.Header == "Other" {
+			t.Errorf("help output should not contain an 'Other' group header")
+		}
 	}
 }
 

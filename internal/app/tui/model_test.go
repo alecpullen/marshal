@@ -4524,10 +4524,15 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	}
 
 	// Simulate selecting a discovered model from the scoped provider picker.
-	updated, cmd := m.Update(picker.PickedMsg{Value: "qwen2.5-coder:7b"})
+	// The picker pick now lands on stepConfirmLimits, not stepDone.
+	updated, _ = m.Update(picker.PickedMsg{Value: "qwen2.5-coder:7b"})
+	m = asModel(t, updated)
+
+	// Press Enter on confirm limits to emit DoneMsg (scoped flow skips summary).
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	m = asModel(t, updated)
 	if cmd == nil {
-		t.Fatal("picker pick should produce a connect.DoneMsg command")
+		t.Fatal("Enter on confirm limits should produce a connect.DoneMsg command")
 	}
 	// Run the command to deliver the DoneMsg, just as Bubble Tea would.
 	updated, _ = m.Update(cmd())

@@ -60,6 +60,7 @@ type DBCloser interface {
 // must be torn down with Close exactly once when the consumer is finished.
 type Runtime struct {
 	Config         config.Config
+	Layers         config.Layers
 	State          *session.State
 	Runner         *agent.Runner
 	ToolRegistry   *registry.Registry
@@ -334,6 +335,9 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 // startRuntime is the internal implementation shared by Run and StartRuntime.
 // It expects a fully-resolved options struct — no option iteration.
 func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
+	if runOpts.layersLoader == nil {
+		runOpts.layersLoader = config.LoadLayers
+	}
 	workingDir, err := resolveWorkingDir(runOpts.workingDir)
 	if err != nil {
 		return nil, err
@@ -350,6 +354,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	dataDir := filepath.Join(homeDir, ".local", "share", "marshal")
 
 	var cfg config.Config
+	var layers config.Layers
 	var projectTrusted, trustPromptPending bool
 	if runOpts.trustResolver == nil && runOpts.deferTrustPrompt {
 		// Interactive TUI: decide without prompting; the TUI asks inline.
@@ -363,10 +368,14 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 		trustPromptPending = needsPrompt
 		projectTrusted = decision == trust.DecisionTrustPermanent || decision == trust.DecisionTrustSession
-		cfg, err = runOpts.configLoader(config.LoadOptions{
+		loadOpts := config.LoadOptions{
 			WorkingDir:        workingDir,
 			SkipProjectConfig: needsPrompt,
-		})
+		}
+		cfg, err = runOpts.configLoader(loadOpts)
+		if err == nil {
+			layers, err = runOpts.layersLoader(loadOpts)
+		}
 	} else {
 		resolver := runOpts.trustResolver
 		if resolver == nil {
@@ -376,7 +385,15 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 			lo.TrustResolver = resolver
 			return runOpts.configLoader(lo)
 		}
-		cfg, err = loader(config.LoadOptions{WorkingDir: workingDir, Trusted: &projectTrusted})
+		loadOpts := config.LoadOptions{WorkingDir: workingDir, Trusted: &projectTrusted}
+		cfg, err = loader(loadOpts)
+		if err == nil {
+			layers, err = runOpts.layersLoader(config.LoadOptions{
+				WorkingDir:    workingDir,
+				Trusted:       &projectTrusted,
+				TrustResolver: resolver,
+			})
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -499,6 +516,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 
 	rt := &Runtime{
 		Config:             cfg,
+		Layers:             layers,
 		State:              state,
 		Runner:             runner,
 		ToolRegistry:       toolReg,

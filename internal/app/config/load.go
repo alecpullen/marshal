@@ -5,72 +5,13 @@ import (
 	"os"
 
 	"marshal/internal/llm/pricing"
-	"marshal/internal/trust"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
 func Load(opts LoadOptions) (Config, error) {
-	cfg := Default()
-
-	home := opts.HomeDir
-	if home == "" {
-		var err error
-		home, err = os.UserHomeDir()
-		if err != nil {
-			return Config{}, fmt.Errorf("find home directory: %w", err)
-		}
-	}
-
-	work := opts.WorkingDir
-	if work == "" {
-		var err error
-		work, err = os.Getwd()
-		if err != nil {
-			return Config{}, fmt.Errorf("find working directory: %w", err)
-		}
-	}
-
-	userPath := UserConfigPath(home)
-	userFile, err := loadFile(userPath)
-	if err != nil {
-		return Config{}, err
-	}
-	if err := merge(&cfg, userFile); err != nil {
-		return Config{}, fmt.Errorf("merge config %s: %w", userPath, err)
-	}
-
-	projectPath := ProjectConfigPath(work)
-	hasProject := trust.HasProjectConfig(work)
-	applyProject := !opts.SkipProjectConfig
-	if hasProject && opts.SkipProjectConfig && opts.Trusted != nil {
-		*opts.Trusted = false
-	}
-	if hasProject && applyProject && opts.TrustResolver != nil {
-		decision, derr := opts.TrustResolver.Resolve(work, true)
-		if derr != nil {
-			return Config{}, fmt.Errorf("resolve project trust: %w", derr)
-		}
-		if decision == trust.DecisionDontTrust {
-			applyProject = false
-		} else if decision == trust.DecisionTrustPermanent {
-			_ = opts.TrustResolver.Record(work, decision)
-		}
-		if opts.Trusted != nil {
-			*opts.Trusted = decision == trust.DecisionTrustPermanent || decision == trust.DecisionTrustSession
-		}
-	}
-	if applyProject {
-		projectFile, err := loadFile(projectPath)
-		if err != nil {
-			return Config{}, err
-		}
-		if err := merge(&cfg, projectFile); err != nil {
-			return Config{}, fmt.Errorf("merge config %s: %w", projectPath, err)
-		}
-	}
-	coercePresetPricing(&cfg)
-	return cfg, nil
+	l, err := LoadLayers(opts)
+	return l.Merged, err
 }
 
 func loadFile(path string) (configFile, error) {

@@ -112,6 +112,9 @@ var (
 	FieldListCursorDesc        = listpanel.FieldListCursorDesc
 	NewFieldList               = listpanel.NewFieldList
 	NewFrame                   = listpanel.NewFrame
+	SetFieldWriteGlobal        = listpanel.SetFieldWriteGlobal
+	FieldWriteGlobal           = listpanel.FieldWriteGlobal
+	FieldTomlPath              = listpanel.FieldTomlPath
 )
 
 // Generic functions cannot be var-assigned without instantiation; wrap them.

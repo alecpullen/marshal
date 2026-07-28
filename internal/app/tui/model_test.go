@@ -26,13 +26,13 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/db"
-	"marshal/internal/trust"
 	"marshal/internal/llm/routing"
 	"marshal/internal/permissions"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
+	"marshal/internal/trust"
 )
 
 // drainCmds executes the returned command tree (up to a small bound) and
@@ -3755,6 +3755,32 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 // m.state.Config pointing at the stale pre-/set value while m.setReg was
 // invalidated, so the next /set would rebuild its registry from the stale
 // config and silently revert the change that was just persisted.
+func TestLayerReloaderFailureDoesNotOverwriteConfigLayers(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+
+	// Inject a layerReloader that always fails.
+	m.layerReloader = func() (config.Layers, bool) {
+		return config.Layers{}, false
+	}
+
+	// Seed configLayers with a non-zero Layers value that the model can
+	// check remains in place after a failed reload.
+	original := &config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()}
+	m.configLayers = &original
+
+	// Trigger persistAndReload via /set. The save should succeed and
+	// persistAndReload should return nil errors, but the layerReloader
+	// should fail and the model must NOT overwrite *m.configLayers.
+	m.dispatchCommand("/set shell.allow_network on")
+
+	// Verify layers were NOT overwritten — they should still point to the
+	// same pointer (original).
+	if *m.configLayers != original {
+		t.Fatal("configLayers was overwritten despite layerReloader reporting failure")
+	}
+}
+
 func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
 	m := newTestModel(t)
 	m.state.WorkingDir = t.TempDir()
@@ -5477,5 +5503,51 @@ func TestTrustPromptOpensAtStartupAndDeclineCloses(t *testing.T) {
 	m2 = mm.(Model)
 	if m2.dock.IsOpen() {
 		t.Fatal("dock should close after declining")
+	}
+}
+
+func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.configReloader = func(config.Config) error { return nil }
+	cfg := m.state.Config
+	cfg.TUI.Theme = "solarized"
+	mm, _ := m.Update(settings.ChangedMsg{Cfg: cfg, Saved: true})
+	m = mm.(Model)
+	if _, err := os.Stat(projectConfigPath(m.state.WorkingDir)); !os.IsNotExist(err) {
+		t.Fatal("model must not save the project config for a Saved ChangedMsg")
+	}
+	if m.state.Config.TUI.Theme != "solarized" {
+		t.Fatal("config was not applied in memory")
+	}
+}
+
+func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.configReloader = func(config.Config) error { return nil }
+	cfg := m.state.Config
+	cfg.TUI.Theme = "solarized"
+	mm, _ := m.Update(settings.ChangedMsg{
+		Cfg:          cfg,
+		Saved:        true,
+		GlobalTarget: true,
+		Receipts:     []string{"theme persisted"},
+	})
+	m = mm.(Model)
+	msgs := m.state.Messages()
+	var found bool
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "theme persisted") {
+			found = true
+			// Should show a path relative to home, not the project dir.
+			if strings.Contains(msg.Content, ".marshal/config.toml") {
+				t.Fatalf("receipt should not reference project config path, got: %s", msg.Content)
+			}
+			if !strings.Contains(msg.Content, ".config/marshal/config.toml") {
+				t.Fatalf("receipt should reference user config path, got: %s", msg.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no receipt message found in transcript")
 	}
 }

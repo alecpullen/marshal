@@ -420,7 +420,7 @@ func TestHintsFollowCursorRowKind(t *testing.T) {
 			b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 			continue
 		}
-		hint := rowHints(b.list, true)
+		hint := rowHints(b, true)
 		view := b.View(80, 24)
 		switch row.Kind {
 		case kindToggle:
@@ -547,6 +547,112 @@ func TestBrowserSingleColumnKeepsInlineDesc(t *testing.T) {
 // (drilled into a collection). The drilled stack reuses the same list+detail
 // join — this test pins that the join still happens when the body is a
 // drilled collection rather than the flat top-level list.
+// drillBrowserToRow sends KeyDown messages until the cursor lands on a row
+// whose Title contains want, or the loop budget is exhausted.
+func drillBrowserToRow(t *testing.T, b *BrowserPanel, want string) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		row := b.activeList().CursorRow()
+		if row != nil && strings.Contains(row.Title, want) {
+			return
+		}
+		b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	rows := b.activeList().Rows()
+	ids := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID + ":" + r.Title
+	}
+	t.Fatalf("drillBrowserToRow(%q) exhausted budget; rows: %v", want, ids)
+}
+
+func TestGlobalTargetRowWritesUserConfigOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userPath := config.UserConfigPath(home)
+	projectPath := filepath.Join(t.TempDir(), "config.toml")
+	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+
+	drillBrowserToRow(t, b, "Theme")
+	// Cycle the enum to a new value (interface rows are enum fields).
+	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if cmd == nil {
+		t.Fatal("cycling an enum must produce a command")
+	}
+	msg := cmd()
+	changed, ok := msg.(ChangedMsg)
+	if !ok {
+		t.Fatalf("want ChangedMsg, got %T", msg)
+	}
+	if changed.SaveErr != nil {
+		t.Fatalf("save failed: %v", changed.SaveErr)
+	}
+	if !changed.Saved {
+		t.Fatal("global-target commit must set Saved=true")
+	}
+
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("project config must not be written for a global-target row")
+	}
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TUI.Theme == config.Default().TUI.Theme {
+		t.Fatalf("user config was not written: theme still %q", cfg.TUI.Theme)
+	}
+}
+
+func TestGlobalTargetSaveFailureDoesNotWriteProjectConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userPath := config.UserConfigPath(home)
+	projectPath := filepath.Join(t.TempDir(), "config.toml")
+	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+
+	// Make user-config path unwritable: parent is a regular file so
+	// MkdirAll in SaveUserConfigValue fails.
+	badParent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(badParent, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	b.userConfigPath = filepath.Join(badParent, "config.toml")
+
+	drillBrowserToRow(t, b, "Theme")
+	b.Update(tea.KeyPressMsg{Code: tea.KeyRight}) // enum cycle
+
+	// Project config must not exist — the global-target failure must not
+	// fall through to writing the project config.
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("project config must not be written on global-target failure: %v", err)
+	}
+}
+
+func TestHintsShowWriteTarget(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	drillBrowserToRow(t, b, "Theme")
+	hints := rowHints(b, b.stack == nil)
+	if !strings.Contains(hints, "user config") {
+		t.Fatalf("hints should name the write target, got %q", hints)
+	}
+}
+
+func TestDetailPaneShowsProvenance(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "",
+		WithProvenance(func(tomlPath string) string {
+			if tomlPath == "tui.theme" {
+				return "set by: user config · overrides: default"
+			}
+			return ""
+		}))
+	// Put the cursor on the theme row and render wide (two-column).
+	drillBrowserToRow(t, b, "Theme")
+	out := stripANSI(b.View(140, 20))
+	if !strings.Contains(out, "set by: user config") {
+		t.Fatalf("detail pane should show provenance:\n%s", out)
+	}
+}
+
 func TestBrowserTwoColumnShowsDescInDetailPaneWhileDrilled(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
 	for index, row := range b.list.Rows() {

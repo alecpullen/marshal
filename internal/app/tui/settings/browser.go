@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -20,6 +21,22 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 )
+
+// BrowserOption customizes a BrowserPanel.
+type BrowserOption func(*BrowserPanel)
+
+// WithProvenance attaches a provenance lookup for row TOML paths. It is
+// rendered under the cursor row's description in the detail pane (wide) or
+// appended to the inline desc (narrow).
+func WithProvenance(fn func(tomlPath string) string) BrowserOption {
+	return func(b *BrowserPanel) { b.provenance = fn }
+}
+
+// WithUserConfigPath overrides the user config path used for global-target
+// writes. When not set, the browser derives it from os.UserHomeDir.
+func WithUserConfigPath(path string) BrowserOption {
+	return func(b *BrowserPanel) { b.userConfigPath = path }
+}
 
 // BrowserPanel is the docked settings browser. It presents a filterable flat
 // registry while reusing the existing field list and collection drill frames.
@@ -45,6 +62,18 @@ type BrowserPanel struct {
 	// (already in-memory, still-unsaved) value — which diffs empty against
 	// baseline — still retries persistence instead of silently no-op'ing.
 	savePending bool
+
+	// provenance looks up a one-line provenance summary for a TOML path.
+	provenance func(tomlPath string) string
+
+	// userConfigPath is the path to the user-global config file. Global-target
+	// rows write here instead of the project config. When empty, global-target
+	// writes fall back to the project config path.
+	userConfigPath string
+
+	// flipTarget inverts the write target for the next commit gesture. Set by
+	// shift+enter and cleared after each flushChanges call.
+	flipTarget bool
 }
 
 var _ dock.Panel = (*BrowserPanel)(nil)
@@ -52,7 +81,7 @@ var _ dock.Panel = (*BrowserPanel)(nil)
 func settingsTheme() theme.Theme { return theme.Current() }
 
 // NewBrowser creates a docked browser pre-filtered by query.
-func NewBrowser(cfg config.Config, cfgPath, query string) *BrowserPanel {
+func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption) *BrowserPanel {
 	filter := textfield.New()
 	filter.SetVirtualCursor(true)
 	filter.Focus()
@@ -79,7 +108,15 @@ func NewBrowser(cfg config.Config, cfgPath, query string) *BrowserPanel {
 		filter:   filter,
 		baseline: cloneConfig(cfg),
 	}
+	// Resolve the user config path from the home directory, tolerating
+	// errors by leaving it empty (global-target writes fall back to project).
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		browser.userConfigPath = config.UserConfigPath(home)
+	}
 	browser.list = newFieldList(browser.matchedFields)
+	for _, opt := range opts {
+		opt(browser)
+	}
 	return browser
 }
 
@@ -312,6 +349,12 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 		return b.pickerModel.Update(key)
 	}
 
+	// shift+enter flips the write target for the next commit gesture.
+	if key.String() == "shift+enter" {
+		b.flipTarget = true
+		key = tea.KeyPressMsg{Code: tea.KeyEnter}
+	}
+
 	list := b.activeList()
 	b.pendingKey = ""
 	if row := list.CursorRow(); row != nil {
@@ -343,7 +386,8 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 	case key.Code == tea.KeyEscape:
 		return func() tea.Msg { return BrowserClosedMsg{} }
 	case key.Code == tea.KeyUp || key.Code == tea.KeyDown ||
-		key.Code == tea.KeyEnter || key.Code == tea.KeySpace:
+		key.Code == tea.KeyEnter || key.Code == tea.KeySpace ||
+		key.Code == tea.KeyRight || key.Code == tea.KeyLeft:
 		cmd = list.Update(key)
 		committed = list.Committed()
 		if frame := list.TakePushRequest(); frame != nil {
@@ -434,6 +478,43 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 		return tea.Batch(inner, changed)
 	}
 
+	// Global-target branch: when the cursor row is a global-target field
+	// (or flipTarget inverts it), write the single value to the user config
+	// instead of the full project config.
+	row := b.activeList().CursorRow()
+	global := row != nil && FieldWriteGlobal(row) != b.flipTarget
+	b.flipTarget = false // one-shot per commit gesture
+	if global && row.TomlPath != "" && b.userConfigPath != "" {
+		value, ok := config.LookupPath(b.reg.Config(), row.TomlPath)
+		if !ok {
+			b.savePending = true
+			b.baseline = cloneConfig(b.reg.Config())
+			b.pendingKey = ""
+			changed := func() tea.Msg {
+				return ChangedMsg{Receipts: nil, Cfg: b.baseline, SaveErr: fmt.Errorf("no config value at %s", row.TomlPath), GlobalTarget: true}
+			}
+			if inner == nil {
+				return changed
+			}
+			return tea.Batch(inner, changed)
+		}
+		saveErr := config.SaveUserConfigValue(b.userConfigPath, row.TomlPath, value)
+		var receipts []string
+		if saveErr == nil {
+			receipts = b.receipts(lines)
+		}
+		b.savePending = saveErr != nil
+		b.baseline = cloneConfig(b.reg.Config())
+		b.pendingKey = ""
+		changed := func() tea.Msg {
+			return ChangedMsg{Receipts: receipts, Cfg: b.baseline, SaveErr: saveErr, Saved: saveErr == nil, GlobalTarget: true}
+		}
+		if inner == nil {
+			return changed
+		}
+		return tea.Batch(inner, changed)
+	}
+
 	saveErr := config.SaveProjectConfig(b.cfgPath, b.reg.Config())
 	var receipts []string
 	switch {
@@ -471,7 +552,10 @@ func (b *BrowserPanel) receipts(lines []diffLine) []string {
 
 // rowHints returns a contextual hint line for the given field list based on
 // the cursor row's kind and whether the panel is at root or inside a section.
-func rowHints(list *fieldList, atRoot bool) string {
+// The panel is passed so the hint can account for flipTarget (shift+enter)
+// which inverts the write target for the next commit gesture.
+func rowHints(b *BrowserPanel, atRoot bool) string {
+	list := b.activeList()
 	back := "Esc back"
 	if atRoot {
 		back = "Esc close"
@@ -503,6 +587,14 @@ func rowHints(list *fieldList, atRoot bool) string {
 		h = "↵ pick"
 	case kindHeader:
 		h = "↓ select"
+	}
+	if row.TomlPath != "" {
+		effectiveGlobal := FieldWriteGlobal(row) != b.flipTarget
+		target := "project config"
+		if effectiveGlobal {
+			target = "user config"
+		}
+		h += " · → " + target
 	}
 	return h + " · " + back
 }
@@ -549,6 +641,14 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 			desc := ""
 			if row := b.activeList().CursorRow(); row != nil {
 				desc = row.Desc
+				if b.provenance != nil && row.TomlPath != "" {
+					if prov := b.provenance(row.TomlPath); prov != "" {
+						if desc != "" {
+							desc += "\n"
+						}
+						desc += prov
+					}
+				}
 			}
 			detail := lipgloss.NewStyle().Width(detailWidth).Foreground(settingsTheme().FGMuted).Render(desc)
 			body = lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)
@@ -564,6 +664,14 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 			desc := ""
 			if row := b.activeList().CursorRow(); row != nil {
 				desc = row.Desc
+				if b.provenance != nil && row.TomlPath != "" {
+					if prov := b.provenance(row.TomlPath); prov != "" {
+						if desc != "" {
+							desc += "\n"
+						}
+						desc += prov
+					}
+				}
 			}
 			detail := lipgloss.NewStyle().Width(detailWidth).Foreground(settingsTheme().FGMuted).Render(desc)
 			body = "/ " + b.filter.View() + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)
@@ -572,7 +680,7 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 		}
 		footer = fmt.Sprintf("%d settings", len(b.list.Rows()))
 	}
-	hints := rowHints(b.activeList(), b.stack == nil)
+	hints := rowHints(b, b.stack == nil)
 	content := body + "\n" + flDescStyle().Render(footer)
 	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
 	return chrome.PanelWithHints(title, hints, content, panelWidth, panelHeight, true, settingsTheme())

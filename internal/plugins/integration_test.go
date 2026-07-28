@@ -86,11 +86,11 @@ func TestPluginSkillReachesSystemPrompt(t *testing.T) {
 func TestFullBundleLoadsThroughStore(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "full")
 	files := map[string]string{
-		"plugin.toml":                "name = \"full\"\ndescription = \"Full bundle\"\n",
-		"skills/alpha/SKILL.md":      "+++\nname = \"alpha\"\ndescription = \"Alpha\"\n+++\n\n# Alpha\n",
-		"commands/review.md":         "+++\nname = \"review\"\ndescription = \"Review\"\n+++\n\nReview the diff.\n",
-		"hooks.toml":                 "[[hooks.entries]]\nevent = \"turn_end\"\ncommand = \"./notify.sh\"\n",
-		"mcp.toml":                   "[mcp.servers.docs]\ncommand = \"npx\"\n",
+		"plugin.toml":                  "name = \"full\"\ndescription = \"Full bundle\"\n",
+		"skills/alpha/SKILL.md":        "+++\nname = \"alpha\"\ndescription = \"Alpha\"\n+++\n\n# Alpha\n",
+		"commands/review.md":           "+++\nname = \"review\"\ndescription = \"Review\"\n+++\n\nReview the diff.\n",
+		"hooks.toml":                   "[[hooks.entries]]\nevent = \"turn_end\"\ncommand = \"./notify.sh\"\n",
+		"mcp.toml":                     "[mcp.servers.docs]\ncommand = \"npx\"\n",
 		"skills/alpha/references/x.md": "companion file\n",
 	}
 	for name, content := range files {

@@ -46,10 +46,10 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/sdd"
 	"marshal/internal/strutil"
-	"marshal/internal/trust"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
+	"marshal/internal/trust"
 )
 
 // AgentRunner is the one thing the TUI knows about the agent loop: how to
@@ -239,6 +239,14 @@ type Model struct {
 	// While true, the TUI renders the gate prompt and routes y/n keypresses
 	// to resolve or abort the gate.
 	pendingSDDGate bool
+
+	// configLayers is a pointer to the runtime's Layers snapshot, shared so
+	// the model can read provenance after each successful persist.
+	configLayers **config.Layers
+	// layerReloader re-runs LoadLayers to refresh the provenance snapshots.
+	// The bool reports whether the reload succeeded; when false the caller
+	// must not write through *m.configLayers.
+	layerReloader func() (config.Layers, bool)
 }
 
 // pendingAgentRun captures the runner and goal for a run that is waiting
@@ -383,6 +391,21 @@ func WithToolRegistry(reg *registry.Registry) Option {
 	}
 }
 
+// WithConfigLayers supplies the layered config snapshots used for settings
+// provenance. The pointer is shared; the model replaces what it points to
+// after each successful persist so provenance tracks saves.
+func WithConfigLayers(layers **config.Layers) Option {
+	return func(m *Model) { m.configLayers = layers }
+}
+
+// WithLayerReloader supplies a function that re-runs LoadLayers to refresh
+// the provenance snapshots after a successful persist. The bool reports
+// whether the reload succeeded; when false the model does not overwrite
+// the shared Layers pointer.
+func WithLayerReloader(fn func() (config.Layers, bool)) Option {
+	return func(m *Model) { m.layerReloader = fn }
+}
+
 func projectConfigPath(workingDir string) string {
 	return config.ProjectConfigPath(workingDir)
 }
@@ -485,20 +508,93 @@ func (m *Model) handleSetCommand(args []string) {
 				return
 			}
 		}
-		saveErr, reloadErr := m.persistAndReload(reg.Config())
-		m.refreshOpenSettingsBrowser()
-		switch {
-		case saveErr != nil:
-			sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
-		case reloadErr != nil:
-			sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, reloadErr))
-		case !change.Changed:
-			sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
-		default:
-			sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
+		// Global-target branch: if the field is marked writeGlobal, write
+		// the single value to the user config instead of the project config.
+		if f, ok := reg.Lookup(key); ok && settings.FieldWriteGlobal(f) && settings.FieldTomlPath(f) != "" {
+			tomlPath := settings.FieldTomlPath(f)
+			value, ok := config.LookupPath(reg.Config(), tomlPath)
+			if !ok {
+				sys(fmt.Sprintf("✗ %s: cannot look up value at %s", key, tomlPath))
+				return
+			}
+			home, err := os.UserHomeDir()
+			if err != nil || home == "" {
+				// Fall back to persistAndReload if home is unavailable.
+				saveErr, reloadErr := m.persistAndReload(reg.Config())
+				m.reportSetResult(key, change, saveErr, reloadErr)
+				return
+			}
+			userPath := config.UserConfigPath(home)
+			if err := config.SaveUserConfigValue(userPath, tomlPath, value); err != nil {
+				m.applyNewConfig(reg.Config())
+				m.configSavePending = true
+				sys(fmt.Sprintf("✗ %s applied in session, but user config save failed: %v", key, err))
+				return
+			}
+			m.configSavePending = false
+			if m.configReloader != nil {
+				m.setReg = nil
+				if err := m.configReloader(reg.Config()); err != nil {
+					m.applyNewConfig(reg.Config())
+					sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
+					return
+				}
+			}
+			m.applyNewConfig(reg.Config())
+			if m.configLayers != nil && m.layerReloader != nil {
+				if layers, ok := m.layerReloader(); ok {
+					*m.configLayers = &layers
+				}
+			}
+			m.refreshOpenSettingsBrowser()
+			if !change.Changed {
+				sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(home, config.UserConfigPath(home))))
+			} else {
+				sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(home, config.UserConfigPath(home))))
+			}
+			return
 		}
+
+		saveErr, reloadErr := m.persistAndReload(reg.Config())
+		m.reportSetResult(key, change, saveErr, reloadErr)
 		return
 	}
+}
+
+// reportSetResult emits the system message for a /set command outcome.
+// Shared by the project-save and global-target branches.
+func (m *Model) reportSetResult(key string, change settings.Change, saveErr, reloadErr error) {
+	sys := func(text string) {
+		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+	}
+	m.refreshOpenSettingsBrowser()
+	switch {
+	case saveErr != nil:
+		sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
+	case reloadErr != nil:
+		sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, reloadErr))
+	case !change.Changed:
+		sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
+	default:
+		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
+	}
+}
+
+// provenanceForPath renders the one-line provenance summary for a TOML
+// path, or "" when layers are unavailable.
+func (m *Model) provenanceForPath(tomlPath string) string {
+	if m.configLayers == nil || *m.configLayers == nil {
+		return ""
+	}
+	p := (*m.configLayers).ProvenanceOf(tomlPath)
+	if p.SetBy == config.LayerDefault && p.Overrides == config.LayerDefault {
+		return "set by: built-in default"
+	}
+	s := "set by: " + p.SetBy.String()
+	if p.Overrides != config.LayerDefault {
+		s += " · overrides: " + p.Overrides.String()
+	}
+	return s
 }
 
 func (m *Model) openSettingsBrowser(query string) {
@@ -506,6 +602,7 @@ func (m *Model) openSettingsBrowser(query string) {
 		m.state.Config,
 		projectConfigPath(m.state.WorkingDir),
 		query,
+		settings.WithProvenance(m.provenanceForPath),
 	)
 	// m.state.Config may already hold an unsaved change left behind by a
 	// previous failed save (browser or /set) — applyNewConfig keeps it
@@ -881,6 +978,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
+		if msg.Saved {
+			// The panel already wrote the target file; reload only.
+			if m.configReloader != nil {
+				m.setReg = nil
+				if err := m.configReloader(msg.Cfg); err != nil {
+					m.state.AddMessage(session.RoleSystem,
+						fmt.Sprintf("✗ settings saved, but live reload failed: %v", err),
+						session.ContentTypePlain)
+					m.refreshViewport()
+					return m, nil
+				}
+			}
+			m.applyNewConfig(msg.Cfg)
+			m.configSavePending = false
+			if m.configLayers != nil && m.layerReloader != nil {
+				if layers, ok := m.layerReloader(); ok {
+					*m.configLayers = &layers
+				}
+			}
+			cfgPath := projectConfigPath(m.state.WorkingDir)
+			base := m.state.WorkingDir
+			if msg.GlobalTarget {
+				if home, err := os.UserHomeDir(); err == nil && home != "" {
+					cfgPath = config.UserConfigPath(home)
+					base = home
+				}
+			}
+			for _, receipt := range msg.Receipts {
+				m.state.AddMessage(session.RoleSystem,
+					"✓ "+receipt+" · "+relPath(base, cfgPath),
+					session.ContentTypePlain)
+			}
+			m.refreshViewport()
+			return m, nil
+		}
+		// Global-target save failure: apply in memory, mark pending, emit
+		// error, but NEVER fall through to persistAndReload (which writes
+		// into the project config, violating the provenance constraint).
+		if msg.GlobalTarget && !msg.Saved {
+			m.applyNewConfig(msg.Cfg)
+			m.configSavePending = true
+			userPath := ""
+			if home, err := os.UserHomeDir(); err == nil && home != "" {
+				userPath = config.UserConfigPath(home)
+			}
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("✗ save failed: %v · %s", msg.SaveErr, relPath(m.state.WorkingDir, userPath)),
+				session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
 		saveErr, reloadErr := m.persistAndReload(msg.Cfg)
 		if saveErr != nil {
 			m.state.AddMessage(session.RoleSystem,
@@ -895,6 +1043,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
+		}
+		if m.configLayers != nil && m.layerReloader != nil {
+			if layers, ok := m.layerReloader(); ok {
+				*m.configLayers = &layers
+			}
 		}
 		for _, receipt := range msg.Receipts {
 			m.state.AddMessage(session.RoleSystem,

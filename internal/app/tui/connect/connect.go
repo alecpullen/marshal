@@ -1,7 +1,9 @@
 package connect
 
 import (
+	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +48,15 @@ func hintStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(theme.
 func errStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
 func footerStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
 
+// editingLimit tracks which limit field is being edited at the confirm step.
+type editingLimit int
+
+const (
+	editingNone editingLimit = iota
+	editingContext
+	editingOutput
+)
+
 type step int
 
 const (
@@ -59,6 +70,7 @@ const (
 	stepDone
 	stepCancelled
 	stepRemoteGate
+	stepConfirmLimits
 )
 
 type Opts struct {
@@ -94,6 +106,8 @@ type Model struct {
 	modelChosen    string
 	remoteEnabled  bool
 	allProviders   bool
+	limits         ModelLimits
+	editingLimit   editingLimit
 }
 
 func New(opts Opts) *Model {
@@ -205,6 +219,8 @@ func (m *Model) View(maxW, maxH int) string {
 		b.WriteString(m.renderSummary(pw))
 	case stepRename:
 		b.WriteString(m.renderRenameInput(pw))
+	case stepConfirmLimits:
+		b.WriteString(m.renderConfirmLimits(pw))
 	}
 	if m.err != "" {
 		b.WriteString("\n")
@@ -246,10 +262,12 @@ func (m *Model) renderProbing(pw int) string {
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type DoneMsg struct {
-	Provider      string
-	Model         string
-	ProviderCfg   config.ProviderConfig
-	EnabledRemote bool
+	Provider        string
+	Model           string
+	ProviderCfg     config.ProviderConfig
+	EnabledRemote   bool
+	ContextWindow   int
+	MaxOutputTokens int
 }
 
 // RefreshMsg is emitted when the user presses ctrl+r in the model
@@ -343,6 +361,76 @@ func (m *Model) enterRemoteGate() {
 	m.picker = nil
 }
 
+func (m *Model) enterConfirmLimits() {
+	m.step = stepConfirmLimits
+	m.title = "Confirm model limits"
+	m.subtitle = m.providerName + " · " + m.modelChosen
+	m.footer = "[↵] confirm  [c] edit context  [o] edit max output  [Esc] back"
+	m.err = ""
+	m.picker = nil
+	m.limits = resolveLimits(m.discovered[m.providerName], m.modelChosen)
+}
+
+func (m *Model) startEditingContext() {
+	m.editingLimit = editingContext
+	m.err = ""
+	ti := textfield.New()
+	ti.SetVirtualCursor(true)
+	ti.Focus()
+	if m.limits.ContextWindow > 0 {
+		ti.SetValue(fmt.Sprintf("%d", m.limits.ContextWindow))
+	}
+	m.input = ti
+}
+
+func (m *Model) startEditingOutput() {
+	m.editingLimit = editingOutput
+	m.err = ""
+	ti := textfield.New()
+	ti.SetVirtualCursor(true)
+	ti.Focus()
+	if m.limits.MaxOutputTokens > 0 {
+		ti.SetValue(fmt.Sprintf("%d", m.limits.MaxOutputTokens))
+	}
+	m.input = ti
+}
+
+func (m *Model) confirmLimitEdit() (*Model, tea.Cmd) {
+	v := strings.TrimSpace(m.input.Value())
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		m.err = "must be a number"
+		return m, nil
+	}
+	if n < 0 {
+		m.err = "must not be negative"
+		return m, nil
+	}
+	if n == 0 {
+		// Zero means "unknown" — clear the field back to SourceUnknown.
+		switch m.editingLimit {
+		case editingContext:
+			m.limits.ContextWindow = 0
+			m.limits.ContextSource = SourceUnknown
+		case editingOutput:
+			m.limits.MaxOutputTokens = 0
+			m.limits.OutputSource = SourceUnknown
+		}
+	} else {
+		switch m.editingLimit {
+		case editingContext:
+			m.limits.ContextWindow = n
+			m.limits.ContextSource = SourceEdited
+		case editingOutput:
+			m.limits.MaxOutputTokens = n
+			m.limits.OutputSource = SourceEdited
+		}
+	}
+	m.editingLimit = editingNone
+	m.err = ""
+	return m, nil
+}
+
 func (m *Model) enterSummary() {
 	m.step = stepSummary
 	m.title = "Review provider"
@@ -384,6 +472,33 @@ func (m *Model) renderSummary(pw int) string {
 	b.WriteString(mutedStyle().Render("model:    ") + titleStyle().Render(m.modelChosen) + "\n")
 	if m.cfgPath != "" {
 		b.WriteString(mutedStyle().Render("save to:  ") + titleStyle().Render(strutil.Truncate(m.cfgPath, pw-12, true)) + "\n")
+	}
+	return b.String()
+}
+
+func (m *Model) renderConfirmLimits(pw int) string {
+	var b strings.Builder
+	ctxVal, ctxSrc := m.limits.ContextWindow, m.limits.ContextSource
+	outVal, outSrc := m.limits.MaxOutputTokens, m.limits.OutputSource
+
+	ctxStr := fmt.Sprintf("%d", ctxVal)
+	if ctxVal == 0 {
+		ctxStr = hintStyle().Render("unknown — set a budget")
+	}
+	outStr := fmt.Sprintf("%d", outVal)
+	if outVal == 0 {
+		outStr = hintStyle().Render("unknown — set a budget")
+	}
+
+	if m.editingLimit == editingContext {
+		b.WriteString(mutedStyle().Render("context window    ") + m.renderInput(pw) + "\n")
+		b.WriteString(mutedStyle().Render("max output        ") + titleStyle().Render(outStr) + mutedStyle().Render("   "+string(outSrc)) + "\n")
+	} else if m.editingLimit == editingOutput {
+		b.WriteString(mutedStyle().Render("context window    ") + titleStyle().Render(ctxStr) + mutedStyle().Render("   "+string(ctxSrc)) + "\n")
+		b.WriteString(mutedStyle().Render("max output        ") + m.renderInput(pw) + "\n")
+	} else {
+		b.WriteString(mutedStyle().Render("context window    ") + titleStyle().Render(ctxStr) + mutedStyle().Render("   "+string(ctxSrc)) + "\n")
+		b.WriteString(mutedStyle().Render("max output        ") + titleStyle().Render(outStr) + mutedStyle().Render("   "+string(outSrc)) + "\n")
 	}
 	return b.String()
 }
@@ -509,12 +624,9 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		} else {
 			m.modelChosen = value
 		}
-		// Scoped /models flow skips summary; new-provider flow shows summary.
-		if m.scopedProvider != "" {
-			m.step = stepDone
-			return m, m.done()
-		}
-		m.enterSummary()
+		// Both flows confirm limits before completing: /models skipped the
+		// summary, but it must not skip this.
+		m.enterConfirmLimits()
 		return m, nil
 	}
 	tpl, ok := provider.Lookup(value)
@@ -640,6 +752,42 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+	case stepConfirmLimits:
+		switch {
+		case m.editingLimit != editingNone:
+			switch ks {
+			case "enter":
+				return m.confirmLimitEdit()
+			case "esc":
+				m.editingLimit = editingNone
+				m.err = ""
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.input, cmd = m.input.Update(k)
+				return m, cmd
+			}
+		default:
+			switch ks {
+			case "c":
+				m.startEditingContext()
+				return m, nil
+			case "o":
+				m.startEditingOutput()
+				return m, nil
+			case "enter":
+				if m.scopedProvider != "" {
+					m.step = stepDone
+					return m, m.done()
+				}
+				m.enterSummary()
+				return m, nil
+			case "esc":
+				enterPickModelStep(m, m.providerName)
+				return m, nil
+			}
+			return m, nil
+		}
 	case stepRename:
 		switch ks {
 		case "enter":
@@ -767,10 +915,12 @@ func (m *Model) refreshCmd() tea.Cmd {
 func (m *Model) done() tea.Cmd {
 	return func() tea.Msg {
 		return DoneMsg{
-			Provider:      m.providerName,
-			Model:         m.modelChosen,
-			ProviderCfg:   m.providerCfg,
-			EnabledRemote: m.remoteEnabled,
+			Provider:        m.providerName,
+			Model:           m.modelChosen,
+			ProviderCfg:     m.providerCfg,
+			EnabledRemote:   m.remoteEnabled,
+			ContextWindow:   m.limits.ContextWindow,
+			MaxOutputTokens: m.limits.MaxOutputTokens,
 		}
 	}
 }

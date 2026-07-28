@@ -2752,9 +2752,11 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		newCfg.Models.Presets = presets
 	}
 	newCfg.Models.Presets[presetName] = routing.ModelPreset{
-		Name:     presetName,
-		Provider: msg.Provider,
-		Model:    msg.Model,
+		Name:            presetName,
+		Provider:        msg.Provider,
+		Model:           msg.Model,
+		ContextWindow:   msg.ContextWindow,
+		MaxOutputTokens: msg.MaxOutputTokens,
 	}
 
 	if newCfg.AgentProfiles == nil {

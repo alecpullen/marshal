@@ -15,9 +15,10 @@ import (
 // Layers is the config at each merge level: built-in defaults, defaults+user
 // config, and the fully merged result (defaults+user+project).
 type Layers struct {
-	Default Config
-	User    Config
-	Merged  Config
+	Default  Config
+	User     Config
+	Merged   Config
+	Migrated bool // true when MigrateLegacyAgentModel ran during LoadLayers
 }
 
 // LoadLayers loads config and exposes the cumulative snapshots used for
@@ -83,9 +84,9 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 			return Layers{}, fmt.Errorf("merge config %s: %w", projectPath, err)
 		}
 	}
-	MigrateLegacyAgentModel(&cfg)
+	migrated := MigrateLegacyAgentModel(&cfg)
 	coercePresetPricing(&cfg)
-	return Layers{Default: def, User: user, Merged: cfg}, nil
+	return Layers{Default: def, User: user, Merged: cfg, Migrated: migrated}, nil
 }
 
 // LayerID identifies which merge layer supplied a value.

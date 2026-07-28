@@ -75,6 +75,35 @@ func TestMigratePartialLegacyIsIgnored(t *testing.T) {
 	}
 }
 
+// TestMigrateProfileNameContract asserts that the migration produces a profile
+// named "single", which must match the constant singleModelProfileName in
+// internal/app/tui/model.go. The two packages do not import each other, so
+// this test serves as an explicit contract assertion: if either side renames
+// the profile name, this test will fail and the developer must update both.
+func TestMigrateProfileNameContract(t *testing.T) {
+	cfg := Default()
+	cfg.Profile.Default = "" // clear the built-in default so migration fires
+	cfg.Agent.Provider = "openai"
+	cfg.Agent.Model = "gpt-4o"
+	cfg.Providers = map[string]ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
+
+	if !MigrateLegacyAgentModel(&cfg) {
+		t.Fatal("migration reported no change")
+	}
+
+	// The migration always creates a profile named "single". This literal
+	// must match internal/app/tui/model.go's singleModelProfileName = "single".
+	const wantProfileName = "single"
+	if cfg.Profile.Default != wantProfileName {
+		t.Errorf("Profile.Default = %q, want %q", cfg.Profile.Default, wantProfileName)
+	}
+	if _, ok := cfg.AgentProfiles[wantProfileName]; !ok {
+		t.Errorf("AgentProfiles[%q] does not exist", wantProfileName)
+	}
+}
+
 func TestMigratePreservesExistingPresets(t *testing.T) {
 	cfg := Default()
 	cfg.Profile.Default = "" // clear the built-in default so migration fires

@@ -127,7 +127,7 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 	}
 
 	// 7: legacy agent.provider + agent.model (deprecated)
-	if cfg.Agent.Provider != "" && cfg.Agent.Model != "" {
+	if layers.Migrated {
 		path := "agent.provider"
 		p := layers.ProvenanceOf(path)
 		source := p.SetBy.String()

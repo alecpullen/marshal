@@ -399,7 +399,12 @@ func TestRosterCreatesCustomAgent(t *testing.T) {
 	// Duplicate names are rejected.
 	p2 := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
 	drillToRow(t, p2, "＋ New custom agent")
-	p2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	enterCmd = p2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if enterCmd != nil {
+		if msg := enterCmd(); msg != nil {
+			p2.Update(msg)
+		}
+	}
 	p2.Update(picker.PickedMsg{Value: "reviewer-x"})
 	if got := len(settings.StateCfg(p2.state).CustomAgents); got != 1 {
 		t.Fatalf("duplicate name created a second entry, count = %d", got)

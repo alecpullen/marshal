@@ -89,22 +89,30 @@ func TestConfigAgentSetProjectScope(t *testing.T) {
 	if !strings.Contains(res.Summary, "reloaded") {
 		t.Fatalf("expected reloaded receipt, got: %s", res.Summary)
 	}
-	if reloaded == nil || reloaded.Agent.Model != "claude-3.5-sonnet" {
-		t.Fatalf("reloader did not see new model: %+v", reloaded)
+	// provider/model are the deprecated legacy pair: setting them folds the
+	// selection into a preset and a single-model profile, so assert on that
+	// rather than on the cleared fields.
+	const presetName = "openai/claude-3.5-sonnet"
+	if reloaded == nil {
+		t.Fatal("reloader never ran")
+	}
+	if got := reloaded.Models.Presets[presetName]; got.Model != "claude-3.5-sonnet" || got.Provider != "openai" {
+		t.Fatalf("reloader did not see the new preset: %+v", reloaded.Models.Presets)
 	}
 	if reloaded.Agent.MaxToolIterations != 30 {
 		t.Fatalf("max_tool_iterations not applied: %d", reloaded.Agent.MaxToolIterations)
-	}
-	if reloaded.Agent.Provider != "openai" {
-		t.Fatalf("provider should be preserved, got: %s", reloaded.Agent.Provider)
 	}
 	// File on disk reflects the change.
 	loaded, err := config.Load(config.LoadOptions{WorkingDir: dir})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.Agent.Model != "claude-3.5-sonnet" {
-		t.Fatalf("disk model = %q, want claude-3.5-sonnet", loaded.Agent.Model)
+	profile, ok := loaded.AgentProfiles[loaded.Profile.Default]
+	if !ok {
+		t.Fatalf("default profile %q missing on disk", loaded.Profile.Default)
+	}
+	if got := profile.Roles[routing.RoleImplementer].Preset; got != presetName {
+		t.Fatalf("disk implementer preset = %q, want %q", got, presetName)
 	}
 }
 
@@ -162,16 +170,20 @@ func TestConfigAgentSetGlobalScopeForcesApproval(t *testing.T) {
 	if !strings.Contains(res.Summary, "global") {
 		t.Fatalf("expected global in receipt, got: %s", res.Summary)
 	}
-	if reloaded == nil || reloaded.Agent.Model != "claude-3.5-sonnet" {
-		t.Fatalf("global write did not apply: %+v", reloaded)
+	// The legacy pair is migrated into a preset on write.
+	if reloaded == nil {
+		t.Fatal("reloader never ran")
+	}
+	if got := reloaded.Models.Presets["openai/claude-3.5-sonnet"]; got.Model != "claude-3.5-sonnet" {
+		t.Fatalf("global write did not apply: %+v", reloaded.Models.Presets)
 	}
 	// Global file on disk reflects the change.
 	loaded, err := config.Load(config.LoadOptions{HomeDir: dir, WorkingDir: dir})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.Agent.Model != "claude-3.5-sonnet" {
-		t.Fatalf("global disk model = %q, want claude-3.5-sonnet", loaded.Agent.Model)
+	if got := loaded.Models.Presets["openai/claude-3.5-sonnet"]; got.Model != "claude-3.5-sonnet" {
+		t.Fatalf("global disk preset missing: %+v", loaded.Models.Presets)
 	}
 }
 

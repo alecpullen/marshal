@@ -210,6 +210,15 @@ func (t *toolSet) configAgentSetTool() registry.Tool {
 			if args.ApprovalMode != nil {
 				cfg.Agent.ApprovalMode = *args.ApprovalMode
 			}
+			// provider/model are the deprecated legacy pair. Routing resolves
+			// through profiles only, so fold them into a preset and a
+			// single-model profile before the config is written — otherwise
+			// this tool persists a shape that is migrated away on the very
+			// next load, and the file on disk contradicts what /doctor and
+			// the docs tell the user to write.
+			if args.Provider != nil || args.Model != nil {
+				config.MigrateLegacyAgentModel(cfg)
+			}
 		})
 	}
 	return tool

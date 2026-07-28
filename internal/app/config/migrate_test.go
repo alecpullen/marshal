@@ -60,6 +60,115 @@ func TestMigrateNoOpWhenProfileAlreadySet(t *testing.T) {
 	}
 }
 
+// A legacy config that omits [profile] entirely still needs migrating.
+// Default() supplies Profile.Default = "local_balanced", so an emptiness
+// check never fires — but no profile by that name exists, so without the
+// migration the router resolves nothing at all. This is the shape shown in
+// docs/09-configuration-examples.md, and it worked before the legacy
+// resolution path was deleted.
+func TestMigrateWhenDefaultProfileNameDoesNotExist(t *testing.T) {
+	cfg := Default()
+	cfg.Agent.Provider = "ollama"
+	cfg.Agent.Model = "qwen3-coder"
+	cfg.AgentProfiles = nil // nothing defines cfg.Profile.Default
+
+	if cfg.Profile.Default == "" {
+		t.Fatal("precondition: Default() is expected to name a default profile")
+	}
+
+	if !MigrateLegacyAgentModel(&cfg) {
+		t.Fatalf("did not migrate a config whose default profile %q does not exist",
+			cfg.Profile.Default)
+	}
+	if cfg.Profile.Default != "single" {
+		t.Errorf("Profile.Default = %q, want %q", cfg.Profile.Default, "single")
+	}
+	profile, ok := cfg.AgentProfiles["single"]
+	if !ok {
+		t.Fatal("no single-model profile after migration")
+	}
+	if len(profile.Roles) != len(routing.AllRoles) {
+		t.Errorf("bound %d roles, want %d", len(profile.Roles), len(routing.AllRoles))
+	}
+}
+
+// The inverse: a config that genuinely defines the profile Default() names
+// is already valid and must be left alone.
+func TestMigrateNoOpWhenDefaultProfileExists(t *testing.T) {
+	cfg := Default()
+	cfg.Agent.Provider = "ollama"
+	cfg.Agent.Model = "qwen3-coder"
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		cfg.Profile.Default: {Name: cfg.Profile.Default, Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "p"},
+		}},
+	}
+	want := cfg.Profile.Default
+
+	if MigrateLegacyAgentModel(&cfg) {
+		t.Error("migrated a config whose default profile is defined")
+	}
+	if cfg.Profile.Default != want {
+		t.Errorf("Profile.Default = %q, want %q", cfg.Profile.Default, want)
+	}
+}
+
+// The deleted legacyRoute admitted a local provider under
+// remote_providers_allowed = false (its gate was
+// !RemoteAllowed && !isLocalProvider(LegacyProvider)). Presets are gated on
+// preset.LocalOnly instead, so the migration must carry that fact across or
+// every local-only user is blocked after migrating.
+func TestMigrateMarksLocalProviderPresetLocalOnly(t *testing.T) {
+	cfg := Default()
+	cfg.Privacy.RemoteProvidersAllowed = false
+	cfg.Agent.Provider = "ollama"
+	cfg.Agent.Model = "qwen3-coder"
+	cfg.AgentProfiles = nil
+	cfg.Providers = map[string]ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+
+	if !MigrateLegacyAgentModel(&cfg) {
+		t.Fatal("did not migrate")
+	}
+	preset := cfg.Models.Presets["ollama/qwen3-coder"]
+	if !preset.LocalOnly {
+		t.Error("preset for a localhost provider must be LocalOnly, or the remote gate blocks it")
+	}
+}
+
+func TestMigrateDoesNotMarkRemoteProviderLocalOnly(t *testing.T) {
+	cfg := Default()
+	cfg.Agent.Provider = "openai"
+	cfg.Agent.Model = "gpt-4o"
+	cfg.AgentProfiles = nil
+	cfg.Providers = map[string]ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	}
+
+	if !MigrateLegacyAgentModel(&cfg) {
+		t.Fatal("did not migrate")
+	}
+	if cfg.Models.Presets["openai/gpt-4o"].LocalOnly {
+		t.Error("a remote provider must not be marked LocalOnly — that would bypass the privacy gate")
+	}
+}
+
+func TestMigrateUnknownProviderIsNotLocalOnly(t *testing.T) {
+	cfg := Default()
+	cfg.Agent.Provider = "ghost"
+	cfg.Agent.Model = "m"
+	cfg.AgentProfiles = nil
+	cfg.Providers = nil // no matching [providers.ghost] block
+
+	if !MigrateLegacyAgentModel(&cfg) {
+		t.Fatal("did not migrate")
+	}
+	if cfg.Models.Presets["ghost/m"].LocalOnly {
+		t.Error("a provider with no known base URL must not be assumed local")
+	}
+}
+
 func TestMigrateNoOpWhenNoLegacyFields(t *testing.T) {
 	cfg := Default()
 	if MigrateLegacyAgentModel(&cfg) {

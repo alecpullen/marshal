@@ -55,8 +55,10 @@ func TestConfigIntegrationProjectThenGlobal(t *testing.T) {
 	if _, err := agentTool.Handler(context.Background(), registry.ToolCall{ID: "1", Name: "config.agent.set", Args: json.RawMessage(`{"model":"claude-3.5-sonnet"}`)}); err != nil {
 		t.Fatalf("agent set: %v", err)
 	}
-	if reloaded.Agent.Model != "claude-3.5-sonnet" {
-		t.Fatalf("model not reloaded: %s", reloaded.Agent.Model)
+	// The legacy pair is migrated into a preset on write, so the selection
+	// shows up there rather than in cfg.Agent.
+	if got := reloaded.Models.Presets["openai/claude-3.5-sonnet"]; got.Model != "claude-3.5-sonnet" {
+		t.Fatalf("model not reloaded as a preset: %+v", reloaded.Models.Presets)
 	}
 
 	// 2. Global: enable web search (forces approval).
@@ -76,8 +78,8 @@ func TestConfigIntegrationProjectThenGlobal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.Agent.Model != "claude-3.5-sonnet" {
-		t.Fatalf("project disk model = %q", loaded.Agent.Model)
+	if got := loaded.Models.Presets["openai/claude-3.5-sonnet"]; got.Model != "claude-3.5-sonnet" {
+		t.Fatalf("project disk preset missing: %+v", loaded.Models.Presets)
 	}
 	if !loaded.Web.Enabled {
 		t.Fatalf("global disk web.enabled = %v", loaded.Web.Enabled)
@@ -86,7 +88,8 @@ func TestConfigIntegrationProjectThenGlobal(t *testing.T) {
 	// 4. config.read reflects merged state with secrets masked.
 	// Use capitalized section names to match Go struct field names (no json tags).
 	readTool, _ := reg.Lookup("config.read")
-	res, err := readTool.Handler(context.Background(), registry.ToolCall{ID: "3", Name: "config.read", Args: json.RawMessage(`{"sections":["Agent","Web"]}`)})
+	// Models rather than Agent: the selected model now lives in a preset.
+	res, err := readTool.Handler(context.Background(), registry.ToolCall{ID: "3", Name: "config.read", Args: json.RawMessage(`{"sections":["Models","Web"]}`)})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}

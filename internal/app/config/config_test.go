@@ -300,11 +300,27 @@ func TestLoadParsesAgentSection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
-	if cfg.Agent.Provider != "ollama" {
-		t.Fatalf("Agent.Provider = %q, want %q", cfg.Agent.Provider, "ollama")
+	// The [agent] provider/model pair is deprecated: Load migrates it into a
+	// preset plus a single-model profile, then clears the legacy fields. What
+	// this test guards is that the section is still understood, not that the
+	// old shape survives.
+	if cfg.Agent.Provider != "" || cfg.Agent.Model != "" {
+		t.Fatalf("legacy pair survived migration: %q/%q", cfg.Agent.Provider, cfg.Agent.Model)
 	}
-	if cfg.Agent.Model != "qwen2.5-coder:14b" {
-		t.Fatalf("Agent.Model = %q, want %q", cfg.Agent.Model, "qwen2.5-coder:14b")
+	const presetName = "ollama/qwen2.5-coder:14b"
+	preset, ok := cfg.Models.Presets[presetName]
+	if !ok {
+		t.Fatalf("no preset %q after migration; presets = %v", presetName, cfg.Models.Presets)
+	}
+	if preset.Provider != "ollama" || preset.Model != "qwen2.5-coder:14b" {
+		t.Fatalf("preset = %s/%s, want ollama/qwen2.5-coder:14b", preset.Provider, preset.Model)
+	}
+	profile, ok := cfg.AgentProfiles[cfg.Profile.Default]
+	if !ok {
+		t.Fatalf("default profile %q does not exist", cfg.Profile.Default)
+	}
+	if got := profile.Roles[routing.RoleImplementer].Preset; got != presetName {
+		t.Fatalf("implementer bound to %q, want %q", got, presetName)
 	}
 }
 

@@ -552,7 +552,10 @@ func (b *BrowserPanel) receipts(lines []diffLine) []string {
 
 // rowHints returns a contextual hint line for the given field list based on
 // the cursor row's kind and whether the panel is at root or inside a section.
-func rowHints(list *fieldList, atRoot bool) string {
+// The panel is passed so the hint can account for flipTarget (shift+enter)
+// which inverts the write target for the next commit gesture.
+func rowHints(b *BrowserPanel, atRoot bool) string {
+	list := b.activeList()
 	back := "Esc back"
 	if atRoot {
 		back = "Esc close"
@@ -586,8 +589,9 @@ func rowHints(list *fieldList, atRoot bool) string {
 		h = "↓ select"
 	}
 	if row.TomlPath != "" {
+		effectiveGlobal := FieldWriteGlobal(row) != b.flipTarget
 		target := "project config"
-		if FieldWriteGlobal(row) {
+		if effectiveGlobal {
 			target = "user config"
 		}
 		h += " · → " + target
@@ -676,7 +680,7 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 		}
 		footer = fmt.Sprintf("%d settings", len(b.list.Rows()))
 	}
-	hints := rowHints(b.activeList(), b.stack == nil)
+	hints := rowHints(b, b.stack == nil)
 	content := body + "\n" + flDescStyle().Render(footer)
 	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
 	return chrome.PanelWithHints(title, hints, content, panelWidth, panelHeight, true, settingsTheme())

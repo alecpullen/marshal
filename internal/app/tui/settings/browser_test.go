@@ -420,7 +420,7 @@ func TestHintsFollowCursorRowKind(t *testing.T) {
 			b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 			continue
 		}
-		hint := rowHints(b.list, true)
+		hint := rowHints(b, true)
 		view := b.View(80, 24)
 		switch row.Kind {
 		case kindToggle:
@@ -606,7 +606,7 @@ func TestGlobalTargetRowWritesUserConfigOnly(t *testing.T) {
 func TestHintsShowWriteTarget(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
 	drillBrowserToRow(t, b, "Theme")
-	hints := rowHints(b.activeList(), b.stack == nil)
+	hints := rowHints(b, b.stack == nil)
 	if !strings.Contains(hints, "user config") {
 		t.Fatalf("hints should name the write target, got %q", hints)
 	}

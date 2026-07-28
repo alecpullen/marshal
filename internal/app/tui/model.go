@@ -548,9 +548,9 @@ func (m *Model) handleSetCommand(args []string) {
 			}
 			m.refreshOpenSettingsBrowser()
 			if !change.Changed {
-				sys(fmt.Sprintf("✓ %s persisted · %s", key, config.UserConfigPath(home)))
+				sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(home, config.UserConfigPath(home))))
 			} else {
-				sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, config.UserConfigPath(home)))
+				sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(home, config.UserConfigPath(home))))
 			}
 			return
 		}

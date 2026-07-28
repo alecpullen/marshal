@@ -336,13 +336,7 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 // It expects a fully-resolved options struct — no option iteration.
 func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if runOpts.layersLoader == nil {
-		runOpts.layersLoader = func(lo config.LoadOptions) (config.Layers, error) {
-			cfg, err := runOpts.configLoader(lo)
-			if err != nil {
-				return config.Layers{}, err
-			}
-			return config.Layers{Default: config.Default(), User: cfg, Merged: cfg}, nil
-		}
+		runOpts.layersLoader = config.LoadLayers
 	}
 	workingDir, err := resolveWorkingDir(runOpts.workingDir)
 	if err != nil {

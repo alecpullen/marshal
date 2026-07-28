@@ -244,7 +244,9 @@ type Model struct {
 	// the model can read provenance after each successful persist.
 	configLayers **config.Layers
 	// layerReloader re-runs LoadLayers to refresh the provenance snapshots.
-	layerReloader func() config.Layers
+	// The bool reports whether the reload succeeded; when false the caller
+	// must not write through *m.configLayers.
+	layerReloader func() (config.Layers, bool)
 }
 
 // pendingAgentRun captures the runner and goal for a run that is waiting
@@ -397,8 +399,10 @@ func WithConfigLayers(layers **config.Layers) Option {
 }
 
 // WithLayerReloader supplies a function that re-runs LoadLayers to refresh
-// the provenance snapshots after a successful persist.
-func WithLayerReloader(fn func() config.Layers) Option {
+// the provenance snapshots after a successful persist. The bool reports
+// whether the reload succeeded; when false the model does not overwrite
+// the shared Layers pointer.
+func WithLayerReloader(fn func() (config.Layers, bool)) Option {
 	return func(m *Model) { m.layerReloader = fn }
 }
 
@@ -507,8 +511,9 @@ func (m *Model) handleSetCommand(args []string) {
 		saveErr, reloadErr := m.persistAndReload(reg.Config())
 		if saveErr == nil && reloadErr == nil {
 			if m.configLayers != nil && m.layerReloader != nil {
-				layers := m.layerReloader()
-				*m.configLayers = &layers
+				if layers, ok := m.layerReloader(); ok {
+					*m.configLayers = &layers
+				}
 			}
 		}
 		m.refreshOpenSettingsBrowser()
@@ -940,8 +945,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.configLayers != nil && m.layerReloader != nil {
-			layers := m.layerReloader()
-			*m.configLayers = &layers
+			if layers, ok := m.layerReloader(); ok {
+				*m.configLayers = &layers
+			}
 		}
 		for _, receipt := range msg.Receipts {
 			m.state.AddMessage(session.RoleSystem,

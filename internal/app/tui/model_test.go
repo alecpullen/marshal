@@ -3755,6 +3755,32 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 // m.state.Config pointing at the stale pre-/set value while m.setReg was
 // invalidated, so the next /set would rebuild its registry from the stale
 // config and silently revert the change that was just persisted.
+func TestLayerReloaderFailureDoesNotOverwriteConfigLayers(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+
+	// Inject a layerReloader that always fails.
+	m.layerReloader = func() (config.Layers, bool) {
+		return config.Layers{}, false
+	}
+
+	// Seed configLayers with a non-zero Layers value that the model can
+	// check remains in place after a failed reload.
+	original := &config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()}
+	m.configLayers = &original
+
+	// Trigger persistAndReload via /set. The save should succeed and
+	// persistAndReload should return nil errors, but the layerReloader
+	// should fail and the model must NOT overwrite *m.configLayers.
+	m.dispatchCommand("/set shell.allow_network on")
+
+	// Verify layers were NOT overwritten — they should still point to the
+	// same pointer (original).
+	if *m.configLayers != original {
+		t.Fatal("configLayers was overwritten despite layerReloader reporting failure")
+	}
+}
+
 func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
 	m := newTestModel(t)
 	m.state.WorkingDir = t.TempDir()

@@ -1209,14 +1209,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
 		configLayers := &rt.Layers
 		tuiOpts = append(tuiOpts, tui.WithConfigLayers(&configLayers))
-		tuiOpts = append(tuiOpts, tui.WithLayerReloader(func() config.Layers {
+		tuiOpts = append(tuiOpts, tui.WithLayerReloader(func() (config.Layers, bool) {
 			layers, err := config.LoadLayers(config.LoadOptions{
 				WorkingDir: workingDir,
 			})
 			if err != nil {
-				return config.Layers{}
+				return config.Layers{}, false
 			}
-			return layers
+			return layers, true
 		}))
 		// F18: eager-seed the @file completion popup with the repo file
 		// index. Failures (no DB, empty index) are non-fatal — the TUI

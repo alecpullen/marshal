@@ -1001,6 +1001,107 @@ func TestModelStepSubtitleNamesNoProviderInAllProvidersMode(t *testing.T) {
 	}
 }
 
+func TestEditingContextWindowMarksItEdited(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+
+	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m.input.SetValue("200000")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.limits.ContextWindow != 200000 {
+		t.Errorf("ContextWindow = %d, want 200000", m.limits.ContextWindow)
+	}
+	if m.limits.ContextSource != SourceEdited {
+		t.Errorf("ContextSource = %q, want %q", m.limits.ContextSource, SourceEdited)
+	}
+	if m.limits.OutputSource == SourceEdited {
+		t.Error("editing the context window must not relabel the output cap")
+	}
+}
+
+func TestEditingMaxOutputMarksItEdited(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+
+	m.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})
+	m.input.SetValue("32768")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.limits.MaxOutputTokens != 32768 {
+		t.Errorf("MaxOutputTokens = %d, want 32768", m.limits.MaxOutputTokens)
+	}
+	if m.limits.OutputSource != SourceEdited {
+		t.Errorf("OutputSource = %q, want %q", m.limits.OutputSource, SourceEdited)
+	}
+}
+
+func TestRejectsNonNumericEdit(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	before := m.limits.ContextWindow
+
+	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m.input.SetValue("not a number")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.limits.ContextWindow != before {
+		t.Errorf("ContextWindow = %d, want it unchanged at %d", m.limits.ContextWindow, before)
+	}
+	if m.err == "" {
+		t.Error("want an error message for a non-numeric edit")
+	}
+}
+
+func TestRejectsNegativeEdit(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	before := m.limits.ContextWindow
+
+	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m.input.SetValue("-1")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.limits.ContextWindow != before {
+		t.Errorf("ContextWindow = %d, want it unchanged", m.limits.ContextWindow)
+	}
+}
+
+func TestEditingAnUnknownFigureResolvesIt(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
+	if m.limits.ContextSource != SourceUnknown {
+		t.Fatalf("precondition: want unknown, got %q", m.limits.ContextSource)
+	}
+
+	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m.input.SetValue("8192")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.limits.ContextWindow != 8192 || m.limits.ContextSource != SourceEdited {
+		t.Errorf("got %d/%q, want 8192/%q", m.limits.ContextWindow, m.limits.ContextSource, SourceEdited)
+	}
+}
+
+func TestEditingZeroClearsToUnknown(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	if m.limits.ContextSource != SourceFetched {
+		t.Fatalf("precondition: want fetched, got %q", m.limits.ContextSource)
+	}
+
+	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m.input.SetValue("0")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.limits.ContextWindow != 0 {
+		t.Errorf("ContextWindow = %d, want 0 (cleared)", m.limits.ContextWindow)
+	}
+	if m.limits.ContextSource != SourceUnknown {
+		t.Errorf("ContextSource = %q, want %q", m.limits.ContextSource, SourceUnknown)
+	}
+}
+
 func TestModelStepSubtitleNamesTheProviderWhenScoped(t *testing.T) {
 	m := New(Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{

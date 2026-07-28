@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestLoadLayersAndProvenance(t *testing.T) {
 	home := t.TempDir()
@@ -55,6 +58,36 @@ func TestLookupPathHandlesMaps(t *testing.T) {
 	v, ok := LookupPath(cfg, "providers.ollama.base_url")
 	if !ok || v != "http://localhost:11434/v1" {
 		t.Fatalf("LookupPath = %v, %v", v, ok)
+	}
+}
+
+func TestLookupPathFallsBackToFieldName(t *testing.T) {
+	// A struct with a field that has no toml tag should be found by lowercased name.
+	type noTag struct {
+		MyField string
+	}
+	v := reflect.ValueOf(noTag{MyField: "hello"})
+	f, ok := fieldByTOMLTag(v, "myfield")
+	if !ok {
+		t.Fatal("fieldByTOMLTag should find MyField by lowercased name")
+	}
+	if f.Interface() != "hello" {
+		t.Fatalf("got %v, want hello", f.Interface())
+	}
+}
+
+func TestSaveUserConfigValueOnProviderMap(t *testing.T) {
+	home := t.TempDir()
+	path := UserConfigPath(home)
+	if err := SaveUserConfigValue(path, "providers.ollama.api_key", "sk-test"); err != nil {
+		t.Fatalf("SaveUserConfigValue: %v", err)
+	}
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Providers["ollama"].APIKey != "sk-test" {
+		t.Fatalf("providers.ollama.api_key = %q, want sk-test", cfg.Providers["ollama"].APIKey)
 	}
 }
 

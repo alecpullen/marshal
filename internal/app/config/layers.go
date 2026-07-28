@@ -174,6 +174,9 @@ func fieldByTOMLTag(v reflect.Value, name string) (reflect.Value, bool) {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
 		tag := t.Field(i).Tag.Get("toml")
+		if tag == "" {
+			tag = strings.ToLower(t.Field(i).Name)
+		}
 		if tag == name || strings.Split(tag, ",")[0] == name {
 			return v.Field(i), true
 		}
@@ -256,15 +259,16 @@ func setPath(file *configFile, dottedPath string, value any) error {
 				cur.SetMapIndex(reflect.ValueOf(seg), nv)
 				return nil
 			}
-			// descend: maps are not addressable, so copy out and write back
+			// descend: maps are not addressable, so copy out, write back after struct descent
 			tmp := reflect.New(elemType).Elem()
 			tmp.Set(mv)
+			cur.SetMapIndex(reflect.ValueOf(seg), tmp)
+			parentMap := cur
+			mapKey := reflect.ValueOf(seg)
 			cur = tmp
-			if last {
-				cur.SetMapIndex(reflect.ValueOf(seg), tmp)
-				return nil
-			}
-			defer func() { cur.SetMapIndex(reflect.ValueOf(seg), tmp) }()
+			defer func(p reflect.Value, k reflect.Value, v reflect.Value) {
+				p.SetMapIndex(k, v)
+			}(parentMap, mapKey, tmp)
 		default:
 			return fmt.Errorf("cannot descend into %q", seg)
 		}

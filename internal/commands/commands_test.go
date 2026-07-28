@@ -790,13 +790,50 @@ func TestResultPlainTextRendersDoc(t *testing.T) {
 		{Text: "two", Detail: "second", Desc: "more about two"},
 	})
 	out := res.PlainText()
-	for _, want := range []string{"Group A", "one", "first", "two", "second"} {
+	for _, want := range []string{"Group A", "one", "first", "two", "second", "more about two"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("PlainText() missing %q:\n%s", want, out)
 		}
 	}
 	if res.Text != "" {
 		t.Errorf("Panel result should have empty Text, got %q", res.Text)
+	}
+}
+
+// TestResultPlainTextRendersDescIndented pins the indentation pattern:
+// Desc lives on its own line below Text/Detail, indented one extra level
+// past the row's indent. The TUI panel skips Desc; headless callers see it.
+func TestResultPlainTextRendersDescIndented(t *testing.T) {
+	res := Panel("Things", false, []Row{
+		{Text: "parent", Desc: "parent description", Children: []Row{
+			{Text: "child", Desc: "child description"},
+		}},
+	})
+	out := res.PlainText()
+	wantLines := []string{
+		"Things",
+		"  parent",
+		"    parent description",
+		"    child",
+		"      child description",
+	}
+	for _, line := range wantLines {
+		if !strings.Contains(out, line) {
+			t.Errorf("PlainText() missing line %q in:\n%s", line, out)
+		}
+	}
+}
+
+// TestResultPlainTextSkipsDescWhenEmpty locks the contract that an
+// empty Desc does NOT emit an extra blank line under Text/Detail.
+func TestResultPlainTextSkipsDescWhenEmpty(t *testing.T) {
+	res := Panel("Things", false, []Row{
+		{Text: "noDesc"},
+	})
+	out := res.PlainText()
+	// "  noDesc" must appear followed by exactly one newline before EOF.
+	if got := strings.TrimSpace(out); got != "Things\n  noDesc" && !strings.Contains(got, "noDesc") {
+		t.Errorf("expected no trailing desc line for empty Desc, got:\n%s", out)
 	}
 }
 

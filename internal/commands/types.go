@@ -79,6 +79,9 @@ func (r Result) PlainText() string {
 					line += "  " + row.Detail
 				}
 				b.WriteString(line + "\n")
+				if row.Desc != "" {
+					b.WriteString(indent + "  " + row.Desc + "\n")
+				}
 			}
 			if len(row.Children) > 0 {
 				walk(row.Children, indent+"  ")

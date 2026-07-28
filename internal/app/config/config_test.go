@@ -1100,3 +1100,35 @@ enabled = false
 		t.Errorf("History.Enabled = true after file override, want false")
 	}
 }
+
+func TestLoadSkipProjectConfig(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", "[project]\nname = \"skipped\"\n")
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work, SkipProjectConfig: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Project.Name == "skipped" {
+		t.Fatal("project config was applied despite SkipProjectConfig")
+	}
+
+	trusted := true
+	cfg, err = Load(LoadOptions{HomeDir: home, WorkingDir: work, SkipProjectConfig: true, Trusted: &trusted})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if trusted {
+		t.Fatal("Trusted should be reported false when the project config is skipped")
+	}
+
+	// Sanity: without the flag, existing behavior is unchanged.
+	cfg, err = Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Project.Name != "skipped" {
+		t.Fatal("nil-resolver default must still apply project config (unchanged)")
+	}
+}

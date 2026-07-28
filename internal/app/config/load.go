@@ -42,8 +42,11 @@ func Load(opts LoadOptions) (Config, error) {
 
 	projectPath := ProjectConfigPath(work)
 	hasProject := trust.HasProjectConfig(work)
-	applyProject := true
-	if hasProject && opts.TrustResolver != nil {
+	applyProject := !opts.SkipProjectConfig
+	if hasProject && opts.SkipProjectConfig && opts.Trusted != nil {
+		*opts.Trusted = false
+	}
+	if hasProject && applyProject && opts.TrustResolver != nil {
 		decision, derr := opts.TrustResolver.Resolve(work, true)
 		if derr != nil {
 			return Config{}, fmt.Errorf("resolve project trust: %w", derr)

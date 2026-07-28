@@ -705,6 +705,48 @@ func TestUniqueNameFirstCustomProviderKeepsBaseName(t *testing.T) {
 	}
 }
 
+func TestAPIKeyStepDefaultsToEnvVarWhenTemplateHasOne(t *testing.T) {
+	m := &Model{template: provider.ProviderTemplate{
+		ID: "openai", KeyEnv: "OPENAI_API_KEY",
+	}}
+	m.enterAPIKey()
+
+	if !strings.Contains(m.input.Placeholder, "OPENAI_API_KEY") {
+		t.Errorf("placeholder %q should lead with the env var", m.input.Placeholder)
+	}
+	if strings.HasPrefix(strings.ToLower(m.input.Placeholder), "paste key") {
+		t.Errorf("placeholder %q still leads with pasting a literal", m.input.Placeholder)
+	}
+}
+
+func TestAPIKeyStepStillAcceptsPastedLiteral(t *testing.T) {
+	m := &Model{template: provider.ProviderTemplate{ID: "openai", KeyEnv: "OPENAI_API_KEY"}}
+	m.enterAPIKey()
+	m.input.SetValue("sk-literal-key")
+	m.confirmInput()
+
+	if m.providerCfg.APIKey != "sk-literal-key" {
+		t.Errorf("APIKey = %q, want the pasted literal", m.providerCfg.APIKey)
+	}
+	if m.providerCfg.APIKeyEnv != "" {
+		t.Errorf("APIKeyEnv = %q, want empty when a literal was pasted", m.providerCfg.APIKeyEnv)
+	}
+}
+
+func TestAPIKeyStepBlankUsesTemplateEnvVar(t *testing.T) {
+	m := &Model{template: provider.ProviderTemplate{ID: "openai", KeyEnv: "OPENAI_API_KEY"}}
+	m.enterAPIKey()
+	m.input.SetValue("")
+	m.confirmInput()
+
+	if m.providerCfg.APIKeyEnv != "OPENAI_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want the template default", m.providerCfg.APIKeyEnv)
+	}
+	if m.providerCfg.APIKey != "" {
+		t.Errorf("APIKey = %q, want empty", m.providerCfg.APIKey)
+	}
+}
+
 func TestUniqueNameEmptyTemplateIDBehavesAsCustom(t *testing.T) {
 	m := &Model{
 		template: provider.ProviderTemplate{ID: "", Type: "openai_compatible"},

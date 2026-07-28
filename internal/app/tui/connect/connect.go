@@ -292,9 +292,9 @@ func (m *Model) enterAPIKey() {
 	ti.SetVirtualCursor(true)
 	ti.Focus()
 	if m.template.KeyEnv != "" {
-		ti.Placeholder = "paste key · $ENV_NAME · blank uses $" + m.template.KeyEnv
+		ti.Placeholder = "$" + m.template.KeyEnv + " · blank uses it · or paste a key"
 	} else {
-		ti.Placeholder = "paste key, or $ENV_NAME to read from an env var"
+		ti.Placeholder = "$ENV_NAME to read from an env var, or paste a key"
 	}
 	m.input = ti
 	m.picker = nil
@@ -596,6 +596,9 @@ func (m *Model) confirmInput() (*Model, tea.Cmd) {
 			m.providerCfg.APIKey = ""
 		} else if v != "" {
 			m.providerCfg.APIKey = v
+		} else if m.template.KeyEnv != "" {
+			m.providerCfg.APIKeyEnv = m.template.KeyEnv
+			m.providerCfg.APIKey = ""
 		}
 		return m.enterProbing()
 	}

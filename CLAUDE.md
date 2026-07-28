@@ -77,6 +77,8 @@ internal/app/tui/probe/               — provider model-list probing as tea.Cmd
 internal/app/tui/changedfiles/        — working-tree diff against a base ref
 internal/app/tui/gitinfo/             — current branch and linked-worktree name
 internal/app/tui/fuzzy/               — shared filter-as-you-type matcher
+internal/app/tui/listpanel/           — shared list engine: row model, cursor/scroll, frames, drill-in; consumed by settings, docpanel
+internal/app/tui/docpanel/            — renders commands.Doc as a docked scrollable panel (help/tools/log/context/branches/history)
 
 Commands and knowledge
 internal/commands/                    — slash commands (/plan, /test, /profile, …)

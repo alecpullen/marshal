@@ -83,6 +83,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 			return Layers{}, fmt.Errorf("merge config %s: %w", projectPath, err)
 		}
 	}
+	MigrateLegacyAgentModel(&cfg)
 	coercePresetPricing(&cfg)
 	return Layers{Default: def, User: user, Merged: cfg}, nil
 }

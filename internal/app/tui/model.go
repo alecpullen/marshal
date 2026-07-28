@@ -421,7 +421,6 @@ func WithConfigLayers(layers **config.Layers) Option {
 // the provenance snapshots after a successful persist. The bool reports
 // whether the reload succeeded; when false the model does not overwrite
 // the shared Layers pointer.
-// WithLayerReloader(fn func() (config.Layers, bool)) Option {
 func WithLayerReloader(fn func() (config.Layers, bool)) Option {
 	return func(m *Model) { m.layerReloader = fn }
 }

@@ -219,7 +219,7 @@ func modelPickerField(s *state, id string, providerName func() string, getModel 
 				for _, mi := range cached {
 					badge := "◉ discovered"
 					if mi.ID == current {
-						badge = "◉ now ◉ discovered"
+						badge = "● now ◉ discovered"
 					}
 					items = append(items, picker.Item{Label: mi.ID, Value: mi.ID, Badge: badge})
 				}

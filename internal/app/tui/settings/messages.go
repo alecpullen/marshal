@@ -13,6 +13,10 @@ type ChangedMsg struct {
 	Cfg           config.Config
 	SaveErr       error
 	BlockedReason string
+	// Saved reports that the panel already persisted this change to its
+	// target file; the model must reload but not save again. Global-target
+	// commits set this so the project file is never touched.
+	Saved bool
 }
 
 // BrowserClosedMsg is emitted when the browser closes at its root.

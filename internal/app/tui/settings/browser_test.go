@@ -566,6 +566,52 @@ func drillBrowserToRow(t *testing.T, b *BrowserPanel, want string) {
 	t.Fatalf("drillBrowserToRow(%q) exhausted budget; rows: %v", want, ids)
 }
 
+func TestGlobalTargetRowWritesUserConfigOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userPath := config.UserConfigPath(home)
+	projectPath := filepath.Join(t.TempDir(), "config.toml")
+	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+
+	drillBrowserToRow(t, b, "Theme")
+	// Cycle the enum to a new value (interface rows are enum fields).
+	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if cmd == nil {
+		t.Fatal("cycling an enum must produce a command")
+	}
+	msg := cmd()
+	changed, ok := msg.(ChangedMsg)
+	if !ok {
+		t.Fatalf("want ChangedMsg, got %T", msg)
+	}
+	if changed.SaveErr != nil {
+		t.Fatalf("save failed: %v", changed.SaveErr)
+	}
+	if !changed.Saved {
+		t.Fatal("global-target commit must set Saved=true")
+	}
+
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("project config must not be written for a global-target row")
+	}
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TUI.Theme == config.Default().TUI.Theme {
+		t.Fatalf("user config was not written: theme still %q", cfg.TUI.Theme)
+	}
+}
+
+func TestHintsShowWriteTarget(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	drillBrowserToRow(t, b, "Theme")
+	hints := rowHints(b.activeList(), b.stack == nil)
+	if !strings.Contains(hints, "user config") {
+		t.Fatalf("hints should name the write target, got %q", hints)
+	}
+}
+
 func TestDetailPaneShowsProvenance(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "",
 		WithProvenance(func(tomlPath string) string {

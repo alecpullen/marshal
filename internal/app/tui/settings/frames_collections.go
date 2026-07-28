@@ -98,27 +98,37 @@ func providersFrame(s *state) *frame {
 					nameField,
 					typeField,
 					urlField,
-					{ID: "providers." + k + ".api_key_env", Title: "API key env", Kind: kindScalar,
-						Desc:   "env var name resolved at provider construction — preferred over storing the key",
-						GetStr: func() string { return s.cfg.Providers[k].APIKeyEnv },
-						SetStr: func(v string) error {
-							mut(func(p *config.ProviderConfig) { p.APIKeyEnv = v })
-							invalidate()
-							return nil
-						}},
-					{ID: "providers." + k + ".api_key", Title: "API key", Kind: kindScalar, Masked: true,
-						Desc:     "enter replaces · empty keeps · d clears · prefer the env-var field",
-						Keywords: []string{"secret", "api key", "token"},
-						GetStr:   func() string { return s.cfg.Providers[k].APIKey },
-						SetStr: func(v string) error {
-							mut(func(p *config.ProviderConfig) { p.APIKey = v })
-							invalidate()
-							return nil
-						},
-						Del: func() {
-							mut(func(p *config.ProviderConfig) { p.APIKey = "" })
-							invalidate()
-						}},
+					func() *field {
+						f := &field{ID: "providers." + k + ".api_key_env", Title: "API key env", Kind: kindScalar,
+							TomlPath: "providers." + k + ".api_key_env",
+							Desc:     "env var name resolved at provider construction — preferred over storing the key",
+							GetStr:   func() string { return s.cfg.Providers[k].APIKeyEnv },
+							SetStr: func(v string) error {
+								mut(func(p *config.ProviderConfig) { p.APIKeyEnv = v })
+								invalidate()
+								return nil
+							}}
+						SetFieldWriteGlobal(f, true)
+						return f
+					}(),
+					func() *field {
+						f := &field{ID: "providers." + k + ".api_key", Title: "API key", Kind: kindScalar, Masked: true,
+							TomlPath: "providers." + k + ".api_key",
+							Desc:     "enter replaces · empty keeps · d clears · prefer the env-var field",
+							Keywords: []string{"secret", "api key", "token"},
+							GetStr:   func() string { return s.cfg.Providers[k].APIKey },
+							SetStr: func(v string) error {
+								mut(func(p *config.ProviderConfig) { p.APIKey = v })
+								invalidate()
+								return nil
+							},
+							Del: func() {
+								mut(func(p *config.ProviderConfig) { p.APIKey = "" })
+								invalidate()
+							}}
+						SetFieldWriteGlobal(f, true)
+						return f
+					}(),
 					{ID: "providers." + k + ".tool_calling", Title: "Tool calling", Kind: kindToggle,
 						Desc:    "provider advertises native tool-calling support",
 						GetBool: func() bool { return s.cfg.Providers[k].ToolCalling },

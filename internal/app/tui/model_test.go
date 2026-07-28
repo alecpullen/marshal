@@ -5505,3 +5505,18 @@ func TestTrustPromptOpensAtStartupAndDeclineCloses(t *testing.T) {
 		t.Fatal("dock should close after declining")
 	}
 }
+
+func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.configReloader = func(config.Config) error { return nil }
+	cfg := m.state.Config
+	cfg.TUI.Theme = "solarized"
+	mm, _ := m.Update(settings.ChangedMsg{Cfg: cfg, Saved: true})
+	m = mm.(Model)
+	if _, err := os.Stat(projectConfigPath(m.state.WorkingDir)); !os.IsNotExist(err) {
+		t.Fatal("model must not save the project config for a Saved ChangedMsg")
+	}
+	if m.state.Config.TUI.Theme != "solarized" {
+		t.Fatal("config was not applied in memory")
+	}
+}

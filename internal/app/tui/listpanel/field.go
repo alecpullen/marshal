@@ -64,6 +64,10 @@ type Field struct {
 	PickPending     func() bool
 	PickAllowCustom bool
 
+	// writeGlobal marks a person-preference/credential row: commits write
+	// the user-global config instead of the project config.
+	writeGlobal bool
+
 	// collection ops (Phase 2)
 	Yank     func() any
 	Paste    func(any) error
@@ -178,6 +182,15 @@ func SetFieldMoveDown(f *Field, down func()) { f.MoveDown = down }
 
 // SetFieldDisarm sets the Disarm closure.
 func SetFieldDisarm(f *Field, disarm func()) { f.Disarm = disarm }
+
+// SetFieldWriteGlobal marks a field as global-target.
+func SetFieldWriteGlobal(f *Field, global bool) { f.writeGlobal = global }
+
+// FieldWriteGlobal reports whether a field writes to the user-global config.
+func FieldWriteGlobal(f *Field) bool { return f.writeGlobal }
+
+// FieldTomlPath returns the TOML path of a field.
+func FieldTomlPath(f *Field) string { return f.TomlPath }
 
 // FieldGetStr returns the GetStr closure result.
 func FieldGetStr(f *Field) string {

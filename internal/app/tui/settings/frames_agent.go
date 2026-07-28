@@ -139,6 +139,16 @@ func agentFrame(s *state) *frame {
 				Desc:     "require a plan step before implementation",
 				GetBool:  func() bool { return s.cfg.Agent.PlanFirst },
 				SetBool:  func(v bool) { s.cfg.Agent.PlanFirst = v }},
+			func() *field {
+				f := enumField("agent.approval_mode", "Approval mode",
+					[]string{"plan", "default", "edit", "copilot", "auto"},
+					func() string { return s.cfg.Agent.ApprovalMode },
+					func(v string) { s.cfg.Agent.ApprovalMode = v })
+				f.TomlPath = "agent.approval_mode"
+				f.Desc = "interaction/approval mode for the agent loop"
+				SetFieldWriteGlobal(f, true)
+				return f
+			}(),
 		}
 	})
 }

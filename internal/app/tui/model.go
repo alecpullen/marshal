@@ -508,26 +508,75 @@ func (m *Model) handleSetCommand(args []string) {
 				return
 			}
 		}
-		saveErr, reloadErr := m.persistAndReload(reg.Config())
-		if saveErr == nil && reloadErr == nil {
+		// Global-target branch: if the field is marked writeGlobal, write
+		// the single value to the user config instead of the project config.
+		if f, ok := reg.Lookup(key); ok && settings.FieldWriteGlobal(f) && settings.FieldTomlPath(f) != "" {
+			tomlPath := settings.FieldTomlPath(f)
+			value, ok := config.LookupPath(reg.Config(), tomlPath)
+			if !ok {
+				sys(fmt.Sprintf("✗ %s: cannot look up value at %s", key, tomlPath))
+				return
+			}
+			home, err := os.UserHomeDir()
+			if err != nil || home == "" {
+				// Fall back to persistAndReload if home is unavailable.
+				saveErr, reloadErr := m.persistAndReload(reg.Config())
+				m.reportSetResult(key, change, saveErr, reloadErr)
+				return
+			}
+			userPath := config.UserConfigPath(home)
+			if err := config.SaveUserConfigValue(userPath, tomlPath, value); err != nil {
+				m.applyNewConfig(reg.Config())
+				m.configSavePending = true
+				sys(fmt.Sprintf("✗ %s applied in session, but user config save failed: %v", key, err))
+				return
+			}
+			m.configSavePending = false
+			if m.configReloader != nil {
+				m.setReg = nil
+				if err := m.configReloader(reg.Config()); err != nil {
+					m.applyNewConfig(reg.Config())
+					sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
+					return
+				}
+			}
+			m.applyNewConfig(reg.Config())
 			if m.configLayers != nil && m.layerReloader != nil {
 				if layers, ok := m.layerReloader(); ok {
 					*m.configLayers = &layers
 				}
 			}
+			m.refreshOpenSettingsBrowser()
+			if !change.Changed {
+				sys(fmt.Sprintf("✓ %s persisted · %s", key, config.UserConfigPath(home)))
+			} else {
+				sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, config.UserConfigPath(home)))
+			}
+			return
 		}
-		m.refreshOpenSettingsBrowser()
-		switch {
-		case saveErr != nil:
-			sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
-		case reloadErr != nil:
-			sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, reloadErr))
-		case !change.Changed:
-			sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
-		default:
-			sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
-		}
+
+		saveErr, reloadErr := m.persistAndReload(reg.Config())
+		m.reportSetResult(key, change, saveErr, reloadErr)
 		return
+	}
+}
+
+// reportSetResult emits the system message for a /set command outcome.
+// Shared by the project-save and global-target branches.
+func (m *Model) reportSetResult(key string, change settings.Change, saveErr, reloadErr error) {
+	sys := func(text string) {
+		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+	}
+	m.refreshOpenSettingsBrowser()
+	switch {
+	case saveErr != nil:
+		sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
+	case reloadErr != nil:
+		sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, reloadErr))
+	case !change.Changed:
+		sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
+	default:
+		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
 	}
 }
 
@@ -924,6 +973,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, receipt := range msg.Receipts {
 				m.state.AddMessage(session.RoleSystem,
 					"✗ "+receipt+" · save blocked: "+msg.BlockedReason,
+					session.ContentTypePlain)
+			}
+			m.refreshViewport()
+			return m, nil
+		}
+		if msg.Saved {
+			// The panel already wrote the target file; reload only.
+			if m.configReloader != nil {
+				m.setReg = nil
+				if err := m.configReloader(msg.Cfg); err != nil {
+					m.state.AddMessage(session.RoleSystem,
+						fmt.Sprintf("✗ settings saved, but live reload failed: %v", err),
+						session.ContentTypePlain)
+					m.refreshViewport()
+					return m, nil
+				}
+			}
+			m.applyNewConfig(msg.Cfg)
+			m.configSavePending = false
+			if m.configLayers != nil && m.layerReloader != nil {
+				if layers, ok := m.layerReloader(); ok {
+					*m.configLayers = &layers
+				}
+			}
+			for _, receipt := range msg.Receipts {
+				m.state.AddMessage(session.RoleSystem,
+					"✓ "+receipt+" · "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),
 					session.ContentTypePlain)
 			}
 			m.refreshViewport()

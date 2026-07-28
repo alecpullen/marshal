@@ -324,6 +324,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "doctor",
+			Description: "Report configuration problems",
+			Group:       groupSettings,
+			Handler:     doctorHandler,
+		},
+		{
 			Name:        "memory",
 			Description: "Open memory browser",
 			Group:       groupSettings,

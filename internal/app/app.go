@@ -77,7 +77,12 @@ type options struct {
 	skipOnboarding          bool
 	skipOnboardingSet       bool // true when WithSkipOnboarding was explicitly called
 	trustResolver           trust.Resolver
-	workingDir              string
+	// deferTrustPrompt moves the folder-trust question into the TUI (the
+	// interactive path). sessionTrusted carries an inline session-trust
+	// answer across the reload loop.
+	deferTrustPrompt bool
+	sessionTrusted   bool
+	workingDir       string
 	sessionID               string
 	existingSessionID       string
 	additionalDirs          []string
@@ -147,6 +152,12 @@ func WithTrustResolver(r trust.Resolver) Option {
 	return func(opts *options) {
 		opts.trustResolver = r
 	}
+}
+
+// withDeferTrustPrompt enables the inline trust flow in tests; Run sets it
+// unconditionally in production.
+func withDeferTrustPrompt() Option {
+	return func(opts *options) { opts.deferTrustPrompt = true }
 }
 
 // WithWorkingDir overrides the working directory used for .marshal, the
@@ -1087,6 +1098,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	for _, opt := range opts {
 		opt(&runOpts)
 	}
+	runOpts.deferTrustPrompt = true
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

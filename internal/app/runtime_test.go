@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/tools/native"
+	"marshal/internal/trust"
 )
 
 // fakeRunner blocks until the context is cancelled, then returns.
@@ -424,6 +426,87 @@ func TestAdditionalDirectoriesDefaultsToNil(t *testing.T) {
 
 	if got := rt.AdditionalDirectories(); got != nil {
 		t.Fatalf("AdditionalDirectories = %v, want nil when option not supplied", got)
+	}
+}
+
+func TestStartRuntimeDefersTrustPromptForTUI(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"),
+		[]byte("[project]\nname = \"deferred\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWd)
+
+	// No resolver: the interactive TUI path must defer, not prompt on stdin
+	// and not apply the project config.
+	rt, err := StartRuntime(context.Background(),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		withDeferTrustPrompt(),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+	if !rt.TrustPromptPending {
+		t.Fatal("TrustPromptPending = false, want true for an untrusted project config")
+	}
+	if rt.State.Config.Project.Name == "deferred" {
+		t.Fatal("project config was applied before the trust answer")
+	}
+	if rt.State.Trusted() {
+		t.Fatal("session must start untrusted while the prompt is pending")
+	}
+}
+
+func TestStartRuntimeAppliesStoredTrustWithoutPrompt(t *testing.T) {
+	// Same project config, but trust recorded with a matching hash:
+	// phase 1 applies it with no prompt pending.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"),
+		[]byte("[project]\nname = \"pre-trusted\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWd)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// trust.Evaluate calls filepath.Abs(workingDir) which resolves /var → /private/var on macOS.
+	// Use the resolved path for SetTrust so the store key matches.
+	resolvedDir, _ := os.Getwd()
+	hash, _ := trust.ConfigHashFor(dir)
+	store := trust.NewStore(filepath.Join(home, ".local", "share", "marshal"))
+	if err := store.SetTrust(resolvedDir, true, hash); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
+
+	rt, err := StartRuntime(context.Background(),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		withDeferTrustPrompt(),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+	if rt.TrustPromptPending {
+		t.Fatal("TrustPromptPending = true with valid stored trust")
+	}
+	if rt.State.Config.Project.Name != "pre-trusted" {
+		t.Fatal("stored trust should apply the project config in phase 1")
 	}
 }
 

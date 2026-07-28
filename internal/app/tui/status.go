@@ -221,6 +221,14 @@ func (m Model) statusLeftSegments() []statusSeg {
 			})
 		}
 	}
+
+	if m.diagnosticCount > 0 {
+		segs = append(segs, statusSeg{
+			text:     warningStyle().Render(fmt.Sprintf("⚠ %d config issues · /doctor", m.diagnosticCount)),
+			priority: 10,
+		})
+	}
+
 	return segs
 }
 

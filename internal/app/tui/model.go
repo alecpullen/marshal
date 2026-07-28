@@ -132,6 +132,11 @@ type Model struct {
 	// be persisted. An otherwise unchanged /set retries the full config.
 	configSavePending bool
 
+	// diagnosticCount caches the number of semantic config diagnostics
+	// found by Diagnose. Refreshed at construction and after every
+	// successful persist. Zero means no known issues.
+	diagnosticCount int
+
 	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
 	// cmd returned from Init (and re-armed from Update on each
 	// jobCountMsg) bridges it into jobCountMsg values. jobCount is the
@@ -436,6 +441,14 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 	loadTheme(cfg.TUI)
 }
 
+// refreshDiagnostics runs config.Diagnose against the current session config
+// and caches the number of diagnostics found. When layers are nil (e.g. in
+// tests), an empty Layers value is used so provenance fields are "default".
+func (m *Model) refreshDiagnostics() {
+	ds := config.Diagnose(m.state.Config, config.Layers{})
+	m.diagnosticCount = len(ds)
+}
+
 // persistAndReload saves cfg to the project config file, asks the runtime
 // to reload it, and applies the outcome to TUI state. It returns the save
 // error or, when saving succeeded, the reload error (nil on full success).
@@ -462,6 +475,7 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 		}
 	}
 	m.applyNewConfig(cfg)
+	m.refreshDiagnostics()
 	return nil, nil
 }
 
@@ -832,6 +846,8 @@ func New(state *session.State, opts ...Option) Model {
 		// here again with trust settled, so nothing is lost.
 		m.openConnect("/")
 	}
+
+	m.refreshDiagnostics()
 
 	return m
 }

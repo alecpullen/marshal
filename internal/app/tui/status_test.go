@@ -450,3 +450,35 @@ func TestStatusLineUntrustedIsWarningColored(t *testing.T) {
 		t.Fatalf("untrusted text missing:\n%s", out)
 	}
 }
+
+func TestStatusShowsDiagnosticsIndicator(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"broken": {Type: "openai_compatible"}, // no base URL -> diagnostic
+	}
+	m.refreshDiagnostics()
+
+	if m.diagnosticCount == 0 {
+		t.Fatal("diagnostics not counted")
+	}
+	// Render at a wide enough width that the priority-10 segment is not dropped.
+	line := m.renderStatusLine(120)
+	if !strings.Contains(stripANSI(line), "/doctor") {
+		t.Error("status line should point at /doctor when diagnostics exist")
+	}
+	if !strings.Contains(stripANSI(line), "config issues") {
+		t.Error("status line should mention config issues when diagnostics exist")
+	}
+}
+
+func TestStatusCleanWhenNoDiagnostics(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ok": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	m.refreshDiagnostics()
+
+	if m.diagnosticCount != 0 {
+		t.Errorf("diagnosticCount = %d, want 0", m.diagnosticCount)
+	}
+}

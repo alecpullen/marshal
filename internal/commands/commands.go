@@ -490,24 +490,34 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				if len(leaves) == 0 {
 					return Text("No branches.")
 				}
-				if len(args) == 0 {
-					var b strings.Builder
-					cur := state.LeafID()
-					for i, id := range leaves {
-						marker := "  "
-						if id == cur {
-							marker = "* "
-						}
-						fmt.Fprintf(&b, "%s%d. leaf %d\n", marker, i+1, id)
+				if len(args) > 0 {
+					k, err := strconv.Atoi(args[0])
+					if err != nil || k < 1 || k > len(leaves) {
+						return Text(fmt.Sprintf("Invalid branch. Pick 1..%d.", len(leaves)))
 					}
-					return Text(strings.TrimRight(b.String(), "\n"))
+					state.SwitchBranch(leaves[k-1])
+					return Text(fmt.Sprintf("Switched to branch %d (leaf %d).", k, leaves[k-1]))
 				}
-				k, err := strconv.Atoi(args[0])
-				if err != nil || k < 1 || k > len(leaves) {
-					return Text(fmt.Sprintf("Invalid branch. Pick 1..%d.", len(leaves)))
+				cur := state.LeafID()
+				var rows []Row
+				for i, id := range leaves {
+					i, id := i, id
+					marker := "  "
+					if id == cur {
+						marker = "* "
+					}
+					rows = append(rows, Row{
+						Text:        fmt.Sprintf("%sbranch %d", marker, i+1),
+						Detail:      fmt.Sprintf("leaf %d", id),
+						Desc:        "switch the conversation to this branch",
+						ActionLabel: "↵ switch",
+						Action: func(s *session.State) Result {
+							s.SwitchBranch(id)
+							return Text(fmt.Sprintf("Switched to branch %d (leaf %d).", i+1, id))
+						},
+					})
 				}
-				state.SwitchBranch(leaves[k-1])
-				return Text(fmt.Sprintf("Switched to branch %d (leaf %d).", k, leaves[k-1]))
+				return Panel("Branches", false, rows)
 			},
 		},
 		{

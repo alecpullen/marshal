@@ -2200,12 +2200,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 				m.refreshViewport()
 				return m, nil
 			}
-		case "branches":
-			if items := m.branchesPickerItems(); len(items) > 1 {
-				m.openPicker("branches", "Switch branch", "", items, "")
-				m.refreshViewport()
-				return m, nil
-			}
+
 		}
 	}
 
@@ -2568,28 +2563,6 @@ func (m *Model) rewindPickerItems() []picker.Item {
 		items = append(items, picker.Item{
 			Label:  fmt.Sprintf("turn %d", i+1),
 			Detail: strutil.Truncate(strings.ReplaceAll(turns[i].Content, "\n", " "), 50, false),
-			Badge:  badge,
-			Value:  strconv.Itoa(i + 1),
-		})
-	}
-	return items
-}
-
-// branchesPickerItems builds picker items from session branches.
-// The current branch carries a "● now" badge; the picker only opens when
-// there are at least two branches (a meaningful switching target).
-func (m *Model) branchesPickerItems() []picker.Item {
-	leaves := m.state.Branches()
-	cur := m.state.LeafID()
-	items := make([]picker.Item, 0, len(leaves))
-	for i, id := range leaves {
-		badge := ""
-		if id == cur {
-			badge = "● now"
-		}
-		items = append(items, picker.Item{
-			Label:  fmt.Sprintf("branch %d", i+1),
-			Detail: fmt.Sprintf("leaf %d", id),
 			Badge:  badge,
 			Value:  strconv.Itoa(i + 1),
 		})

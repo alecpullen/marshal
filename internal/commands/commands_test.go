@@ -798,6 +798,52 @@ func TestResultPlainTextRendersDoc(t *testing.T) {
 	}
 }
 
+func branchesTestState(t *testing.T) *session.State {
+	t.Helper()
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "turn1", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a1", session.ContentTypeMarkdown)
+	state.AddMessage(session.RoleUser, "turn2", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a2", session.ContentTypeMarkdown)
+	// Rewind to before turn2, then add a new turn → 2 branches.
+	msgs := state.Messages()
+	state.Rewind(msgs[2].ID)
+	state.AddMessage(session.RoleUser, "turn3", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a3", session.ContentTypeMarkdown)
+	return state
+}
+
+func TestBranchesCommandReturnsActionRows(t *testing.T) {
+	state := branchesTestState(t)
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+	cmd, _ := cmdReg.Lookup("branches")
+	res := cmd.Handler(state, nil)
+	if res.Doc == nil {
+		t.Fatalf("/branches should return a Doc, got %+v", res)
+	}
+	if len(res.Doc.Rows) != len(state.Branches()) {
+		t.Fatalf("rows = %d, want one per branch", len(res.Doc.Rows))
+	}
+	// The row for a non-current branch switches to it.
+	leaves := state.Branches()
+	cur := state.LeafID()
+	for i, r := range res.Doc.Rows {
+		if leaves[i] != cur && r.Action != nil {
+			out := r.Action(state)
+			if state.LeafID() != leaves[i] {
+				t.Fatalf("action did not switch branch: leaf = %d, want %d", state.LeafID(), leaves[i])
+			}
+			if out.Text == "" {
+				t.Fatal("action should return a transcript confirmation")
+			}
+			return
+		}
+	}
+	t.Fatal("no actionable non-current branch row found")
+}
+
 func TestListAllIncludesHiddenCommands(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()

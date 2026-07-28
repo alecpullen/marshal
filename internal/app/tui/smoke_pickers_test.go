@@ -47,18 +47,19 @@ func makeSmokeModel(t *testing.T) Model {
 // receiver and mutates state.
 func TestSmokePickersProgrammatic(t *testing.T) {
 	type tcase struct {
-		name string
-		cmd  string
-		// expectPicker: do we expect a picker to be open after dispatch?
+		name         string
+		cmd          string
 		expectPicker bool
+		// expectDock: when true, the dock opens but NOT with a picker.
+		expectDock bool
 	}
 	cases := []tcase{
-		{"/model bare opens picker", "/model", true},
-		{"/model with prefilter opens picker", "/model qw", true},
-		{"/model exact arg switches directly", "/model sonnet", false},
-		{"/rewind opens picker", "/rewind", true},
-		{"/branches with 1 leaf falls through", "/branches", false},
-		{"/mode opens picker", "/mode", true},
+		{"/model bare opens picker", "/model", true, false},
+		{"/model with prefilter opens picker", "/model qw", true, false},
+		{"/model exact arg switches directly", "/model sonnet", false, false},
+		{"/rewind opens picker", "/rewind", true, false},
+		{"/branches with 1 leaf opens doc panel", "/branches", false, true},
+		{"/mode opens picker", "/mode", true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,6 +84,13 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 				mm3 := upd.(Model)
 				if mm3.dock.IsOpen() {
 					t.Fatalf("%s: CancelledMsg should close the picker", tc.name)
+				}
+			} else if tc.expectDock {
+				if !mm.dock.IsOpen() {
+					t.Fatalf("%s: expected dock panel to open", tc.name)
+				}
+				if _, ok := mm.dock.Panel().(*picker.Model); ok {
+					t.Fatalf("%s: expected a doc panel, not a picker", tc.name)
 				}
 			} else {
 				if mm.dock.IsOpen() {
@@ -114,16 +122,19 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 		}
 	})
 
-	// /branches with 2+ leaves should open a picker.
-	t.Run("/branches with 2+ leaves opens picker", func(t *testing.T) {
+	// /branches with 2+ leaves should open a dock panel (not a picker).
+	t.Run("/branches with 2+ leaves opens dock panel", func(t *testing.T) {
 		m := makeSmokeModel(t)
 		// Create a second branch by rewinding to before the last user turn.
 		m.state.Rewind(1)
 		m.state.AddMessage(session.RoleUser, "alternate third turn", session.ContentTypePlain)
 		updated, _ := m.dispatchCommand("/branches")
 		mm := *(updated.(*Model))
-		if _, ok := mm.dock.Panel().(*picker.Model); !ok {
-			t.Fatal("2 branches: picker should open")
+		if !mm.dock.IsOpen() {
+			t.Fatal("2 branches: dock panel should open")
+		}
+		if _, ok := mm.dock.Panel().(*picker.Model); ok {
+			t.Fatal("2 branches: should NOT open a picker, should open a doc panel")
 		}
 	})
 }

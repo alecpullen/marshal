@@ -3042,7 +3042,7 @@ func TestRewindWithArgSkipsPicker(t *testing.T) {
 	}
 }
 
-func TestBranchesBareOpensPickerWithCurrentBadge(t *testing.T) {
+func TestBranchesBareOpensDocPanel(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	state.AddMessage(session.RoleUser, "first turn", session.ContentTypePlain)
 	state.Rewind(1) // create a fork at the root
@@ -3051,11 +3051,11 @@ func TestBranchesBareOpensPickerWithCurrentBadge(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/branches")
 	m = asModel(t, updated)
-	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "branches" {
-		t.Fatal("bare /branches should open the picker")
+	if !m.dock.IsOpen() {
+		t.Fatal("bare /branches should open a dock panel")
 	}
-	if !strings.Contains(stripANSI(m.View().Content), "● now") {
-		t.Fatal("current branch should be badged")
+	if _, ok := m.dock.Panel().(*picker.Model); ok {
+		t.Fatal("bare /branches should NOT open a picker")
 	}
 }
 

@@ -2952,7 +2952,7 @@ func TestModelExactArgBypassesPicker(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("exact preset arg must switch directly, no picker")
 	}
-	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer].Preset != "test-b" {
+	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-b" {
 		t.Fatalf("direct switch should reload with test-b, got %+v", reloaded)
 	}
 }
@@ -2978,7 +2978,7 @@ func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("pick should close the modal")
 	}
-	if reloaded == nil || reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer].Preset != "test-a" {
+	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-a" {
 		t.Fatalf("pick should reload with test-a, got %+v", reloaded)
 	}
 }
@@ -3364,9 +3364,9 @@ func TestAltMCyclesModelForward(t *testing.T) {
 	if reloaded == nil {
 		t.Fatal("configReloader was not called")
 	}
-	if reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer].Preset != "test-b" {
+	if reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-b" {
 		t.Fatalf("configReloader preset = %q, want \"test-b\"",
-			reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer].Preset)
+			reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset)
 	}
 	// A confirmation system message should appear
 	msgs := state.Messages()
@@ -3397,9 +3397,9 @@ func TestAltShiftMCyclesModelBackward(t *testing.T) {
 	if reloaded == nil {
 		t.Fatal("configReloader was not called")
 	}
-	if reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer].Preset != "test-a" {
+	if reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-a" {
 		t.Fatalf("configReloader preset = %q, want \"test-a\"",
-			reloaded.AgentProfiles["switched"].Roles[routing.RoleImplementer].Preset)
+			reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset)
 	}
 }
 
@@ -4690,10 +4690,10 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	if m.setReg != nil {
 		t.Fatal("failed model reload must invalidate the cached /set registry")
 	}
-	if m.state.Config.Profile.Default != "switched" {
+	if m.state.Config.Profile.Default != singleModelProfileName {
 		t.Fatalf("failed model reload must align m.state.Config profile, got %q", m.state.Config.Profile.Default)
 	}
-	if switched, ok := m.state.Config.AgentProfiles["switched"]; !ok || switched.Roles[routing.RoleImplementer].Preset != "fast" {
+	if switched, ok := m.state.Config.AgentProfiles[singleModelProfileName]; !ok || switched.Roles[routing.RoleImplementer].Preset != "fast" {
 		t.Fatal("failed model reload must align m.state.Config.AgentProfiles")
 	}
 }
@@ -4717,10 +4717,10 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 	if reloaded {
 		t.Fatal("save failure must not call configReloader")
 	}
-	if m.state.Config.Profile.Default != "switched" {
+	if m.state.Config.Profile.Default != singleModelProfileName {
 		t.Fatalf("save failure must keep the switched profile in session, got %q", m.state.Config.Profile.Default)
 	}
-	if switched, ok := m.state.Config.AgentProfiles["switched"]; !ok || switched.Roles[routing.RoleImplementer].Preset != "fast" {
+	if switched, ok := m.state.Config.AgentProfiles[singleModelProfileName]; !ok || switched.Roles[routing.RoleImplementer].Preset != "fast" {
 		t.Fatal("save failure must keep the switched profile roles in session config")
 	}
 	if !m.configSavePending {
@@ -4764,6 +4764,41 @@ func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 	got := m.state.Messages()[len(m.state.Messages())-1].Content
 	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
 		t.Fatalf("preset reload failure receipt = %q", got)
+	}
+}
+
+func TestSwitchModelPresetBindsEveryRole(t *testing.T) {
+	m, _, _ := newModelForConfigTest(t)
+	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Name: "fast", Provider: "openai", Model: "gpt-4o"},
+	}
+
+	m.switchModelPreset("fast")
+
+	profile, ok := m.state.Config.AgentProfiles[m.state.Config.Profile.Default]
+	if !ok {
+		t.Fatal("no active profile after switching")
+	}
+	if len(profile.Roles) != len(routing.AllRoles) {
+		t.Errorf("bound %d roles, want %d", len(profile.Roles), len(routing.AllRoles))
+	}
+}
+
+func TestSwitchModelPresetPreservesOtherProfiles(t *testing.T) {
+	m, _, _ := newModelForConfigTest(t)
+	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Name: "fast", Provider: "openai", Model: "gpt-4o"},
+	}
+	m.state.Config.AgentProfiles = map[string]routing.AgentProfile{
+		"handcrafted": {Name: "handcrafted", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+
+	m.switchModelPreset("fast")
+
+	if _, ok := m.state.Config.AgentProfiles["handcrafted"]; !ok {
+		t.Error("switching models destroyed a user's existing profile")
 	}
 }
 

@@ -2807,8 +2807,8 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	}
 }
 
-// switchModelPreset applies a model switch by routing every role of a
-// synthetic "switched" profile at the preset. The change is persisted before
+// switchModelPreset applies a model switch by binding every role to the given
+// preset through a single-model profile. The change is persisted before
 // the runtime is asked to reload, matching the /set and settings.ChangedMsg
 // contracts.
 func (m *Model) switchModelPreset(presetName string) {
@@ -2818,17 +2818,17 @@ func (m *Model) switchModelPreset(presetName string) {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Unknown preset: %s", presetName), session.ContentTypePlain)
 		return
 	}
-	newCfg.Profile.Default = "switched"
-	newCfg.AgentProfiles = map[string]routing.AgentProfile{
-		"switched": {
-			Name: "switched",
-			Roles: map[routing.AgentRole]routing.RoleBinding{
-				routing.RoleImplementer: {Preset: presetName},
-				routing.RoleRepoScout:   {Preset: presetName},
-				routing.RoleKnowledge:   {Preset: presetName},
-			},
-		},
+	if newCfg.AgentProfiles == nil {
+		newCfg.AgentProfiles = map[string]routing.AgentProfile{}
+	} else {
+		profiles := make(map[string]routing.AgentProfile, len(newCfg.AgentProfiles)+1)
+		for k, v := range newCfg.AgentProfiles {
+			profiles[k] = v
+		}
+		newCfg.AgentProfiles = profiles
 	}
+	newCfg.AgentProfiles[singleModelProfileName] = routing.SingleModelProfile(singleModelProfileName, presetName)
+	newCfg.Profile.Default = singleModelProfileName
 
 	saveErr, reloadErr := m.persistAndReload(newCfg)
 	switch {

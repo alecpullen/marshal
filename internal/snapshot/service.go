@@ -6,11 +6,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"log/slog"
 )
+
+// defaultWalkTimeout bounds the tree walk in largeFileExcludes. The walk is
+// the one phase of Track with no external timeout of its own — every other
+// step is a git subprocess started with exec.CommandContext. A tree large
+// enough (or a bug pathological enough) to blow this budget turns into a
+// logged error instead of a turn that never starts.
+const defaultWalkTimeout = 30 * time.Second
 
 // Service maintains a bare git repo per project under the user data dir and
 // snapshots the full working tree on demand. It never touches the project's
@@ -22,18 +28,41 @@ type Service struct {
 	enabled   bool
 	maxFile   int64
 	ignore    []string
-	mu        sync.Mutex
+
+	// walkTimeout bounds the largeFileExcludes tree walk; tests shrink it.
+	walkTimeout time.Duration
+
+	// sem serialises Track. It is a channel rather than a sync.Mutex so
+	// callers can give up when their context ends instead of queueing
+	// behind an in-flight snapshot indefinitely.
+	sem chan struct{}
 }
+
+// lock acquires the Track semaphore, returning the context error if ctx ends
+// first. On a non-nil error the semaphore was NOT acquired and unlock must not
+// be called.
+func (s *Service) lock(ctx context.Context) error {
+	select {
+	case s.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) unlock() { <-s.sem }
 
 func New(dataDir, projectRoot string, maxFileBytes int64, ignore []string, logger *slog.Logger) *Service {
 	hash := projectHash(projectRoot)
 	s := &Service{
-		shadowDir: filepath.Join(dataDir, "snapshots", hash),
-		workTree:  projectRoot,
-		logger:    logger,
-		enabled:   true,
-		maxFile:   maxFileBytes,
-		ignore:    ignore,
+		shadowDir:   filepath.Join(dataDir, "snapshots", hash),
+		workTree:    projectRoot,
+		logger:      logger,
+		enabled:     true,
+		maxFile:     maxFileBytes,
+		ignore:      ignore,
+		walkTimeout: defaultWalkTimeout,
+		sem:         make(chan struct{}, 1),
 	}
 	if !gitAvailable() {
 		s.enabled = false
@@ -50,8 +79,13 @@ func (s *Service) Track(ctx context.Context) (string, error) {
 	if !s.enabled {
 		return "", nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := s.lock(ctx); err != nil {
+		return "", err
+	}
+	defer s.unlock()
 	if err := s.ensureRepo(ctx); err != nil {
 		return "", err
 	}
@@ -59,8 +93,14 @@ func (s *Service) Track(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	largeExcludes, err := s.largeFileExcludes()
+	largeExcludes, err := s.largeFileExcludes(ctx)
 	if err != nil {
+		// A cancelled or over-budget walk means the snapshot cannot be
+		// trusted to exclude what it should, and the caller is waiting.
+		// Surface it rather than committing a partial exclude list.
+		if ctxErr := walkContextErr(err); ctxErr != nil {
+			return "", ctxErr
+		}
 		s.logger.Warn("failed to list large files for snapshot", "error", err)
 	}
 

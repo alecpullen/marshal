@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -103,15 +104,40 @@ func (s *Service) refreshExclude(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) largeFileExcludes() ([]string, error) {
+// walkContextErr reports the context error underlying err, or nil when err is
+// not a cancellation or deadline.
+func walkContextErr(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return nil
+}
+
+// largeFileExcludes walks the work tree for files over the size cap. The walk
+// is bounded twice: by ctx, so a cancelled turn abandons it, and by
+// s.walkTimeout, so a tree that is merely enormous still fails loudly instead
+// of holding the caller open forever.
+func (s *Service) largeFileExcludes(ctx context.Context) ([]string, error) {
 	if s.maxFile <= 0 {
 		return nil, nil
 	}
+
+	timeout := s.walkTimeout
+	if timeout <= 0 {
+		timeout = defaultWalkTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	ignoreRules := s.allIgnoreRules()
 
 	var excludes []string
 	err := filepath.Walk(s.workTree, func(path string, info os.FileInfo, err error) error {
+		// Checked per entry so cancellation takes effect part-way through a
+		// large tree rather than only at the end.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return nil
 		}
@@ -198,12 +224,16 @@ func matchIgnorePattern(pattern, rel string) bool {
 			return true
 		}
 		// Also match against each path component suffix (e.g. "*.log").
-		for i := strings.Index(rel, string(filepath.Separator)); i != -1; i = strings.Index(rel[i+1:], string(filepath.Separator)) {
-			if ok, _ := filepath.Match(pattern, rel[i+1:]); ok {
+		for rest := rel; ; {
+			i := strings.Index(rest, string(filepath.Separator))
+			if i == -1 {
+				return false
+			}
+			rest = rest[i+1:]
+			if ok, _ := filepath.Match(pattern, rest); ok {
 				return true
 			}
 		}
-		return false
 	}
 	if anchored {
 		return rel == pattern || strings.HasPrefix(rel, pattern+string(filepath.Separator))

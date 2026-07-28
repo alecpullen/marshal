@@ -85,6 +85,10 @@ type Runtime struct {
 	JobManager     *native.JobManager
 	DesktopCloser  func()
 
+	// TrustPromptPending reports that a project config exists but was not
+	// applied because the trust question was deferred to the TUI.
+	TrustPromptPending bool
+
 	// LSPManager is the optional LSP server manager. When non-nil, its
 	// worker loop is started in startRuntime (shared by Run and
 	// StartRuntime, so both TUI and ACP/headless sessions get it) and its
@@ -345,16 +349,35 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	}
 	dataDir := filepath.Join(homeDir, ".local", "share", "marshal")
 
-	resolver := runOpts.trustResolver
-	if resolver == nil {
-		resolver = trust.NewTerminalResolver(trust.NewStore(dataDir))
+	var cfg config.Config
+	var projectTrusted, trustPromptPending bool
+	if runOpts.trustResolver == nil && runOpts.deferTrustPrompt {
+		// Interactive TUI: decide without prompting; the TUI asks inline.
+		store := trust.NewStore(dataDir)
+		decision, needsPrompt, derr := trust.Evaluate(store, workingDir)
+		if derr != nil {
+			return nil, fmt.Errorf("evaluate project trust: %w", derr)
+		}
+		if runOpts.sessionTrusted {
+			decision, needsPrompt = trust.DecisionTrustSession, false
+		}
+		trustPromptPending = needsPrompt
+		projectTrusted = decision == trust.DecisionTrustPermanent || decision == trust.DecisionTrustSession
+		cfg, err = runOpts.configLoader(config.LoadOptions{
+			WorkingDir:        workingDir,
+			SkipProjectConfig: needsPrompt,
+		})
+	} else {
+		resolver := runOpts.trustResolver
+		if resolver == nil {
+			resolver = trust.NewTerminalResolver(trust.NewStore(dataDir))
+		}
+		loader := func(lo config.LoadOptions) (config.Config, error) {
+			lo.TrustResolver = resolver
+			return runOpts.configLoader(lo)
+		}
+		cfg, err = loader(config.LoadOptions{WorkingDir: workingDir, Trusted: &projectTrusted})
 	}
-	loader := func(lo config.LoadOptions) (config.Config, error) {
-		lo.TrustResolver = resolver
-		return runOpts.configLoader(lo)
-	}
-	var projectTrusted bool
-	cfg, err := loader(config.LoadOptions{WorkingDir: workingDir, Trusted: &projectTrusted})
 	if err != nil {
 		return nil, err
 	}
@@ -496,6 +519,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		DataDir:            dataDir,
 		SkillIndex:         skillIndex,
 		PluginCommands:     pluginCommands,
+		TrustPromptPending: trustPromptPending,
 		LSPManager:         lspMgr,
 		ConfigReloader:     runOpts.configReloader,
 		additionalDirs:     runOpts.additionalDirs,

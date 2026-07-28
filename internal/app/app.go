@@ -77,7 +77,12 @@ type options struct {
 	skipOnboarding          bool
 	skipOnboardingSet       bool // true when WithSkipOnboarding was explicitly called
 	trustResolver           trust.Resolver
-	workingDir              string
+	// deferTrustPrompt moves the folder-trust question into the TUI (the
+	// interactive path). sessionTrusted carries an inline session-trust
+	// answer across the reload loop.
+	deferTrustPrompt bool
+	sessionTrusted   bool
+	workingDir       string
 	sessionID               string
 	existingSessionID       string
 	additionalDirs          []string
@@ -147,6 +152,12 @@ func WithTrustResolver(r trust.Resolver) Option {
 	return func(opts *options) {
 		opts.trustResolver = r
 	}
+}
+
+// withDeferTrustPrompt enables the inline trust flow in tests; Run sets it
+// unconditionally in production.
+func withDeferTrustPrompt() Option {
+	return func(opts *options) { opts.deferTrustPrompt = true }
 }
 
 // WithWorkingDir overrides the working directory used for .marshal, the
@@ -1087,6 +1098,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	for _, opt := range opts {
 		opt(&runOpts)
 	}
+	runOpts.deferTrustPrompt = true
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -1137,151 +1149,188 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	}
 	runOpts.configReloader = configReloader
 
-	rt, err = startRuntime(ctx, runOpts)
+	var reloadForTrust bool
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
+	trustDecide := func(d trust.Decision) {
+		switch d {
+		case trust.DecisionTrustPermanent:
+			abs, _ := filepath.Abs(workingDir)
+			hash, _ := trust.ConfigHashFor(workingDir)
+			_ = trust.NewStore(filepath.Join(homeDir, ".local", "share", "marshal")).SetTrust(abs, true, hash)
+			reloadForTrust = true
+		case trust.DecisionTrustSession:
+			runOpts.sessionTrusted = true
+			reloadForTrust = true
+		}
+	}
+
 	defer func() {
-		_ = rt.Close(context.Background())
+		if rt != nil {
+			_ = rt.Close(context.Background())
+		}
 	}()
 
-	cfg := rt.Config
-	workingDir = rt.WorkingDir
-	database := must[*db.DB](rt.DB)
-	projectID := rt.ProjectID
-	sessionID := rt.SessionID
-	runner := rt.Runner
-	swarmRunner := rt.SwarmRunner
-	sddRunner := rt.SDDRunner
-	toolReg := rt.ToolRegistry
-	jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-	steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
-	state := rt.State
-	logger := rt.Logger
-
-	cmdReg := commands.New()
-	if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
-		return fmt.Errorf("register commands: %w", err)
-	}
-	for _, cmd := range rt.PluginCommands {
-		if err := cmdReg.Register(cmd); err != nil {
-			logger.Warn("skipping plugin command", "command", cmd.Name, "error", err)
-		}
-	}
-
-	var tuiOpts []tui.Option
-	tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
-	tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
-	// F18: eager-seed the @file completion popup with the repo file
-	// index. Failures (no DB, empty index) are non-fatal — the TUI
-	// falls back to a lazy load on the first @-keystroke.
-	if filePaths, ferr := loadFileIndexPaths(database, projectID); ferr == nil && len(filePaths) > 0 {
-		tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
-	}
-	if state.ProviderError() == nil {
-		tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
-		tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
-		tuiOpts = append(tuiOpts, tui.WithSDDRunner(ctx, sddRunner))
-		tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
-		tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
-		tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
-		tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
-			func(agentName string) (tui.AgentRunner, error) {
-				return rt.CustomAgentFactory(agentName)
-			},
-		))
-		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
-	}
-
-	logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
-
-	// ── Worker lifecycle ──────────────────────────────────────────────
-	// Start injected workers (test seam) or construct the index watcher
-	// when embeddings are configured and the watcher is enabled.
-	workers := runOpts.workers
-	if len(workers) == 0 {
-		embeddingConfigured := false
-		embedRouter := routing.NewStaticRouter(cfg.RoutingConfig())
-		if _, err := embedRouter.ResolveEmbedding(); err == nil {
-			embeddingConfigured = true
+	for {
+		rt, err = startRuntime(ctx, runOpts)
+		if err != nil {
+			return err
 		}
 
-		// Build the LSP symbol adapter for the index pass.
-		var lspAdapter index.LSPSymbols
-		if rt.LSPManager != nil {
-			lspAdapter = lsp.NewSymbolAdapter(rt.LSPManager)
-		}
+		cfg := rt.Config
+		workingDir = rt.WorkingDir
+		database := must[*db.DB](rt.DB)
+		projectID := rt.ProjectID
+		sessionID := rt.SessionID
+		runner := rt.Runner
+		swarmRunner := rt.SwarmRunner
+		sddRunner := rt.SDDRunner
+		toolReg := rt.ToolRegistry
+		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
+		steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
+		state := rt.State
+		logger := rt.Logger
 
-		if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
-			debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
-			runPass := func(c context.Context) error {
-				embedder := resolveEmbedderFromConfig(cfg)
-				_, err := index.Run(c, index.Deps{
-					DB: database, Root: workingDir, Ignore: cfg.Indexing.Ignore,
-					MaxBytes: cfg.Indexing.MaxIndexableFileBytes, Embedder: embedder,
-					LSP: lspAdapter,
-				}, projectID)
-				return err
+		cmdReg := commands.New()
+		if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
+			return fmt.Errorf("register commands: %w", err)
+		}
+		for _, cmd := range rt.PluginCommands {
+			if err := cmdReg.Register(cmd); err != nil {
+				logger.Warn("skipping plugin command", "command", cmd.Name, "error", err)
 			}
-			workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
 		}
+
+		var tuiOpts []tui.Option
+		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
+		tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
+		// F18: eager-seed the @file completion popup with the repo file
+		// index. Failures (no DB, empty index) are non-fatal — the TUI
+		// falls back to a lazy load on the first @-keystroke.
+		if filePaths, ferr := loadFileIndexPaths(database, projectID); ferr == nil && len(filePaths) > 0 {
+			tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
+		}
+		if state.ProviderError() == nil {
+			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
+			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
+			tuiOpts = append(tuiOpts, tui.WithSDDRunner(ctx, sddRunner))
+			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
+			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
+			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
+			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
+				func(agentName string) (tui.AgentRunner, error) {
+					return rt.CustomAgentFactory(agentName)
+				},
+			))
+			tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
+		}
+		if rt.TrustPromptPending {
+			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))
+		}
+
+		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
+
+		// ── Worker lifecycle ──────────────────────────────────────────────
+		// Start injected workers (test seam) or construct the index watcher
+		// when embeddings are configured and the watcher is enabled.
+		workers := runOpts.workers
+		if len(workers) == 0 {
+			embeddingConfigured := false
+			embedRouter := routing.NewStaticRouter(cfg.RoutingConfig())
+			if _, err := embedRouter.ResolveEmbedding(); err == nil {
+				embeddingConfigured = true
+			}
+
+			// Build the LSP symbol adapter for the index pass.
+			var lspAdapter index.LSPSymbols
+			if rt.LSPManager != nil {
+				lspAdapter = lsp.NewSymbolAdapter(rt.LSPManager)
+			}
+
+			if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
+				debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
+				runPass := func(c context.Context) error {
+					embedder := resolveEmbedderFromConfig(cfg)
+					_, err := index.Run(c, index.Deps{
+						DB: database, Root: workingDir, Ignore: cfg.Indexing.Ignore,
+						MaxBytes: cfg.Indexing.MaxIndexableFileBytes, Embedder: embedder,
+						LSP: lspAdapter,
+					}, projectID)
+					return err
+				}
+				workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
+			}
+		}
+		// LSPManager is started inside startRuntime (shared by Run and
+		// StartRuntime) — see runtime.go. Do not start it again here.
+		var workerWG sync.WaitGroup
+		for _, w := range workers {
+			startWorker(rt.workCtx, &workerWG, w, logger)
+		}
+		// ── End worker lifecycle ──────────────────────────────────────────
+
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		progErr := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
+
+		if !reloadForTrust {
+			// Phase 1: quiesce — cancel and join active work/jobs without
+			// closing persistence so knowledge finalization can use the DB.
+			quiesceCtx, cancelQuiesce := context.WithTimeout(context.Background(), jobShutdownTimeout)
+			quiesceErr := rt.Quiesce(quiesceCtx)
+			cancelQuiesce()
+
+			// Wait for workers to finish (bounded).
+			workerDone := make(chan struct{})
+			go func() {
+				workerWG.Wait()
+				close(workerDone)
+			}()
+			select {
+			case <-workerDone:
+			case <-time.After(5 * time.Second):
+				logger.Warn("worker shutdown timed out")
+			}
+
+			// Phase 2: knowledge — finalize the session while DB and logger
+			// are still open.
+			knowledgeCtx, cancelKnowledge := context.WithTimeout(context.Background(), shutdownKnowledgeTimeout)
+			knowledge.EndSession(knowledgeCtx, knowledge.EndSessionInput{
+				DB:            database,
+				ProjectID:     projectID,
+				SessionID:     sessionID,
+				State:         state,
+				RouteResolver: newRoutedProviderResolver(state.Config, rt.DataDir),
+				WorkingDir:    workingDir,
+				Now:           runOpts.now,
+				Logger:        logger,
+			})
+			cancelKnowledge()
+
+			if runOpts.knowledgeHook != nil {
+				runOpts.knowledgeHook(knowledgeCtx, state, database)
+			}
+
+			// Phase 3: close — tear down MCP, brokers, snapshots, DB, logger.
+			closeErr := rt.Close(context.Background())
+			return errors.Join(progErr, quiesceErr, closeErr)
+		}
+
+		// Trust granted inline: tear down quietly and reinitialise via the
+		// same startRuntime path as startup — now with the project config in
+		// force. No Quiesce/knowledge: no agent work ever ran.
+		reloadForTrust = false
+		// Use Background: the user may have cancelled ctx during the trust
+		// prompt; the deferred Close covers the final rt, this covers reload
+		// iterations.
+		_ = rt.Close(context.Background())
 	}
-	// LSPManager is started inside startRuntime (shared by Run and
-	// StartRuntime) — see runtime.go. Do not start it again here.
-	var workerWG sync.WaitGroup
-	for _, w := range workers {
-		startWorker(rt.workCtx, &workerWG, w, logger)
-	}
-	// ── End worker lifecycle ──────────────────────────────────────────
-
-	select {
-	case <-ctx.Done():
-		return nil
-	default:
-	}
-
-	progErr := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
-
-	// Phase 1: quiesce — cancel and join active work/jobs without
-	// closing persistence so knowledge finalization can use the DB.
-	quiesceCtx, cancelQuiesce := context.WithTimeout(context.Background(), jobShutdownTimeout)
-	quiesceErr := rt.Quiesce(quiesceCtx)
-	cancelQuiesce()
-
-	// Wait for workers to finish (bounded).
-	workerDone := make(chan struct{})
-	go func() {
-		workerWG.Wait()
-		close(workerDone)
-	}()
-	select {
-	case <-workerDone:
-	case <-time.After(5 * time.Second):
-		logger.Warn("worker shutdown timed out")
-	}
-
-	// Phase 2: knowledge — finalize the session while DB and logger
-	// are still open.
-	knowledgeCtx, cancelKnowledge := context.WithTimeout(context.Background(), shutdownKnowledgeTimeout)
-	knowledge.EndSession(knowledgeCtx, knowledge.EndSessionInput{
-		DB:            database,
-		ProjectID:     projectID,
-		SessionID:     sessionID,
-		State:         state,
-		RouteResolver: newRoutedProviderResolver(state.Config, rt.DataDir),
-		WorkingDir:    workingDir,
-		Now:           runOpts.now,
-		Logger:        logger,
-	})
-	cancelKnowledge()
-
-	if runOpts.knowledgeHook != nil {
-		runOpts.knowledgeHook(knowledgeCtx, state, database)
-	}
-
-	// Phase 3: close — tear down MCP, brokers, snapshots, DB, logger.
-	closeErr := rt.Close(context.Background())
-	return errors.Join(progErr, quiesceErr, closeErr)
 }
 
 func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {

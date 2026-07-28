@@ -26,6 +26,7 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/db"
+	"marshal/internal/trust"
 	"marshal/internal/llm/routing"
 	"marshal/internal/permissions"
 	"marshal/internal/pubsub"
@@ -5454,5 +5455,27 @@ func TestDispatchStructuredResultOpensDocPanel(t *testing.T) {
 	out := m.dock.View(m.leftWidth, m.height)
 	if !strings.Contains(out, "one") || !strings.Contains(out, "first") {
 		t.Fatalf("dock should render the doc rows, got:\n%s", out)
+	}
+}
+
+func TestTrustPromptOpensAtStartupAndDeclineCloses(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	var decided trust.Decision
+	m2 := New(m.state, WithTrustPrompt("/repo", func(d trust.Decision) { decided = d }))
+	if !m2.dock.IsOpen() {
+		t.Fatal("dock should host the trust panel at startup")
+	}
+	mm, cmd := m2.Update(tea.KeyPressMsg{Code: '3', Text: "3"})
+	m2 = mm.(Model)
+	if decided != trust.DecisionDontTrust {
+		t.Fatalf("decision = %v, want dont_trust", decided)
+	}
+	if cmd == nil {
+		t.Fatal("decline should yield a ClosedMsg command")
+	}
+	mm, _ = m2.Update(cmd())
+	m2 = mm.(Model)
+	if m2.dock.IsOpen() {
+		t.Fatal("dock should close after declining")
 	}
 }

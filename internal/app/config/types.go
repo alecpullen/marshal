@@ -350,4 +350,8 @@ type LoadOptions struct {
 	WorkingDir    string
 	TrustResolver trust.Resolver
 	Trusted       *bool
+	// SkipProjectConfig loads defaults + user config only. Used by the
+	// interactive TUI's two-phase load: the trust question moves inline, so
+	// the project config must not be merged before the answer.
+	SkipProjectConfig bool
 }

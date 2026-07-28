@@ -52,6 +52,10 @@ type Panel struct {
 	// stack holds drilled frames (custom agent editor, swarm/SDD budgets)
 	// above the roster root list.
 	stack []*settings.Frame
+
+	// deleteArmed tracks the two-press delete confirm inside a custom
+	// agent's edit frame.
+	deleteArmed bool
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -430,7 +434,7 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 			return p.dispatch(name, "")
 		})
 
-		return []*settings.Field{
+		fields := []*settings.Field{
 			presetField,
 			promptField,
 			denylistField,
@@ -439,6 +443,31 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 			ctxField,
 			runField,
 		}
+
+		delField := settings.NewField("roster.ca."+name+".delete", "Delete this agent", settings.KindAction)
+		settings.SetFieldDesc(delField, "remove the custom agent — first press arms, second confirms")
+		settings.SetFieldActLabel(delField, func() string {
+			if p.deleteArmed {
+				return "↵ confirm delete"
+			}
+			return "↵ delete"
+		})
+		settings.SetFieldDisarm(delField, func() { p.deleteArmed = false })
+		settings.SetFieldAct(delField, func() tea.Cmd {
+			if !p.deleteArmed {
+				p.deleteArmed = true
+				return nil
+			}
+			p.deleteArmed = false
+			cfg := settings.StateCfg(p.state)
+			delete(cfg.CustomAgents, name)
+			p.stack = p.stack[:0] // the frame being viewed no longer exists
+			settings.FieldListRefresh(p.list)
+			return p.persistNow()
+		})
+		fields = append(fields, delField)
+
+		return fields
 	})
 }
 
@@ -497,6 +526,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		switch msg.String() {
 		case "esc":
 			if len(p.stack) > 0 {
+				p.deleteArmed = false
 				p.stack = p.stack[:len(p.stack)-1]
 				settings.FieldListRefresh(p.activeList())
 				return nil

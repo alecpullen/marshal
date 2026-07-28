@@ -406,6 +406,31 @@ func TestRosterCreatesCustomAgent(t *testing.T) {
 	}
 }
 
+func TestRosterDeletesCustomAgentWithConfirm(t *testing.T) {
+	cfg := config.Default()
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"doomed": {Name: "doomed", Preset: ""},
+	}
+	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	drillToRow(t, p, "doomed")
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open the agent frame
+
+	drillToRow(t, p, "Delete this agent")
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // arm
+	if _, ok := settings.StateCfg(p.state).CustomAgents["doomed"]; !ok {
+		t.Fatal("first press should arm, not delete")
+	}
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm
+	if _, ok := settings.StateCfg(p.state).CustomAgents["doomed"]; ok {
+		t.Fatal("second press should delete the agent")
+	}
+	// After deletion the panel is back at the roster root.
+	out := p.View(120, 30)
+	if !strings.Contains(out, "Custom Agents") || strings.Contains(out, "System prompt") {
+		t.Fatalf("expected the roster root after deletion:\n%s", out)
+	}
+}
+
 func TestRosterTwoColumnShowsDetailPane(t *testing.T) {
 	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
 	out := p.View(140, 20)

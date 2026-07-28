@@ -5,13 +5,17 @@ import (
 	"marshal/test/usability/actor/scripted"
 )
 
-// HelpOpenClose opens the help overlay and dismisses it.
+// HelpOpenClose opens the help dock panel and dismisses it.
+//
+// After TUI Panel Framework §3 Tasks 4 + 3, "?" opens /help as a docked
+// doc panel (the /help listing, with the keybinding cheatsheet as the
+// Doc.Footer). Esc closes the docpanel and the dock clears.
 func HelpOpenClose() *scripted.Scripted {
 	return &scripted.Scripted{
 		Name: "help_open_close",
 		Steps: []scripted.Step{
-			{Send: "?", WaitFor: scripted.WaitFor{ScreenContains: "Type a question"}},
-			{SendKey: "esc", WaitFor: scripted.WaitFor{ScreenContains: "Keys", State: scripted.UIStatePredicate{HelpOpen: boolPtr(true)}}},
+			{Send: "?", WaitFor: scripted.WaitFor{ScreenContains: "/help"}},
+			{SendKey: "esc", WaitFor: scripted.WaitFor{ScreenContains: "Type a question"}},
 		},
 	}
 }

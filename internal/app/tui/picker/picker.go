@@ -28,6 +28,7 @@ func cursorStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Bold(true).Background(theme.Current().BGSelection)
 }
 func mutedStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func errStyle() lipgloss.Style   { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
 
 // Item is one pickable row.
 type Item struct {
@@ -53,6 +54,7 @@ type Model struct {
 	matches     []int // indices into items, rank order
 	cursor      int   // index into matches
 	allowCustom bool
+	errMsg      string // transient error displayed below the footer
 }
 
 // New creates a picker model. The cursor starts on the first item whose
@@ -89,6 +91,18 @@ func (m *Model) SetAllowCustom(v bool) {
 	m.allowCustom = v
 }
 
+// SetError displays a transient error message below the footer (e.g. when
+// a picker's commit handler rejects the value). Empty string clears it.
+// Any user keypress also clears the error — the user is fixing their input.
+func (m *Model) SetError(msg string) {
+	m.errMsg = msg
+}
+
+// ErrMsg returns the current error message, or "" if none.
+func (m *Model) ErrMsg() string {
+	return m.errMsg
+}
+
 func (m *Model) refilter() {
 	hay := make([]string, len(m.items))
 	for i, it := range m.items {
@@ -116,6 +130,7 @@ func (m *Model) refilter() {
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.PasteMsg:
+		m.errMsg = ""
 		var cmd tea.Cmd
 		m.filter, cmd = m.filter.Update(msg)
 		m.refilter()
@@ -147,6 +162,9 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 			}
 			return nil
 		}
+		// Any other key edits the filter — clear the error as the user
+		// corrects their input.
+		m.errMsg = ""
 		var cmd tea.Cmd
 		m.filter, cmd = m.filter.Update(k)
 		m.refilter()
@@ -218,6 +236,9 @@ func (m *Model) View(maxW, maxH int) string {
 	content := "/ " + m.filter.View() + "\n" + body
 	if m.footer != "" {
 		content += "\n" + mutedStyle().Render(m.footer)
+	}
+	if m.errMsg != "" {
+		content += "\n" + errStyle().Render(m.errMsg)
 	}
 	ph := min(lipgloss.Height(content)+1, maxH)
 	return chrome.PanelWithHints(m.title, "↵ pick · Esc cancel", content, pw, ph, true, theme.Current())

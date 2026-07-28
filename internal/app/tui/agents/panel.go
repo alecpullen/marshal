@@ -473,7 +473,8 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 
 // createCustomAgent validates the name, writes the agent (layering on no
 // preset yet — the freshly opened edit frame's Preset picker is the next
-// gesture), persists, and drills into the new agent's edit frame.
+// gesture), and drills into the new agent's edit frame. Persistence is
+// handled by the caller's picker-commit path (PickedMsg → persistNow).
 func (p *Panel) createCustomAgent(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -505,13 +506,20 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	case picker.PickedMsg:
 		if p.pendingPick != nil {
 			if err := p.pendingPick(msg.Value); err != nil {
-				// Error rendering is handled by the field list; just clear.
+				// Validation rejected the value — keep the picker open so the
+				// user can fix their input. The error text is rendered by the
+				// picker overlay (clears on the next keypress) and no persist
+				// has happened, so nothing to roll back.
+				if p.pickerModel != nil {
+					p.pickerModel.SetError(err.Error())
+				}
+				return nil
 			}
 			p.pendingPick = nil
 		}
 		p.pickerActive = false
 		p.pickerModel = nil
-		// A picker commit is always a commit gesture — persist immediately.
+		// A successful picker commit is a commit gesture — persist immediately.
 		return p.persistNow()
 	case picker.CancelledMsg:
 		p.pendingPick = nil

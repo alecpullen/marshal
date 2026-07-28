@@ -195,3 +195,39 @@ func TestPasteIntoFilter(t *testing.T) {
 		t.Fatalf("paste should match llama-local, got %v", m.items[m.matches[0]])
 	}
 }
+
+// TestSetErrorRendersAndClears verifies that SetError surfaces the message
+// in the picker view, and that any subsequent keypress clears it (so the
+// error disappears as the user corrects their input). Paste events also
+// clear the error.
+func TestSetErrorRendersAndClears(t *testing.T) {
+	m := New("Pick", "", testItems())
+	m.SetError("name cannot be empty")
+	if got := m.ErrMsg(); got != "name cannot be empty" {
+		t.Fatalf("ErrMsg = %q, want %q", got, "name cannot be empty")
+	}
+	view := ansi.Strip(m.View(80, 24))
+	if !strings.Contains(view, "name cannot be empty") {
+		t.Fatalf("view should surface the error:\n%s", view)
+	}
+
+	// Any keypress clears the error.
+	m.Update(key('a'))
+	if got := m.ErrMsg(); got != "" {
+		t.Fatalf("typing should clear the error, got %q", got)
+	}
+
+	// Paste also clears the error.
+	m.SetError("another error")
+	m.Update(tea.PasteMsg{Content: "x"})
+	if got := m.ErrMsg(); got != "" {
+		t.Fatalf("paste should clear the error, got %q", got)
+	}
+
+	// SetError("") explicitly clears.
+	m.SetError("yet another")
+	m.SetError("")
+	if got := m.ErrMsg(); got != "" {
+		t.Fatalf("SetError(\"\") should clear, got %q", got)
+	}
+}

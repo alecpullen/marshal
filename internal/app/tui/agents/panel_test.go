@@ -450,3 +450,84 @@ func TestRosterTwoColumnShowsDetailPane(t *testing.T) {
 		t.Fatalf("roster should fill the dock width, content line is %d cols: %q", got, out)
 	}
 }
+
+// TestRosterCreateErrorKeepsPickerOpen verifies that a rejected name
+// (empty or duplicate) keeps the picker open and surfaces the error in the
+// picker's view, so the user can fix the input and retry. Covers both the
+// "empty name" path and the "duplicate name" path.
+func TestRosterCreateErrorKeepsPickerOpen(t *testing.T) {
+	cfg := config.Default()
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"existing": {Name: "existing"},
+	}
+	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+
+	openCreatePicker := func(t *testing.T) {
+		t.Helper()
+		drillToRow(t, p, "＋ New custom agent")
+		cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if cmd != nil {
+			if msg := cmd(); msg != nil {
+				p.Update(msg)
+			}
+		}
+		if !p.pickerActive {
+			t.Fatal("create action should open the name picker overlay")
+		}
+	}
+
+	// Case 1: empty name.
+	openCreatePicker(t)
+	persistCmd := p.Update(picker.PickedMsg{Value: ""})
+	if persistCmd != nil {
+		t.Fatal("empty name should not emit a persist command")
+	}
+	if !p.pickerActive {
+		t.Fatal("picker should stay open after empty-name rejection")
+	}
+	if p.pickerModel == nil || p.pickerModel.ErrMsg() == "" {
+		t.Fatal("picker should show an error message")
+	}
+	out := p.View(120, 30)
+	if !strings.Contains(ansi.Strip(out), "empty") {
+		t.Fatalf("view should surface the empty-name error:\n%s", out)
+	}
+
+	// Typing into the filter clears the error so the user gets a clean slate.
+	p.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if got := p.pickerModel.ErrMsg(); got != "" {
+		t.Fatalf("typing should clear the picker error, got %q", got)
+	}
+
+	// Case 2: duplicate name. Re-open the same create picker flow with the
+	// typed-but-rejected value still in flight. Drive Enter on "existing".
+	p.Update(picker.PickedMsg{Value: "existing"})
+	if !p.pickerActive {
+		t.Fatal("picker should stay open after duplicate-name rejection")
+	}
+	if p.pickerModel.ErrMsg() == "" {
+		t.Fatal("picker should show a duplicate-name error")
+	}
+	if !strings.Contains(p.pickerModel.ErrMsg(), "existing") {
+		t.Fatalf("error should name the duplicate, got %q", p.pickerModel.ErrMsg())
+	}
+	out = p.View(120, 30)
+	if !strings.Contains(ansi.Strip(out), "existing") {
+		t.Fatalf("view should surface the duplicate-name error:\n%s", out)
+	}
+	if got := len(settings.StateCfg(p.state).CustomAgents); got != 1 {
+		t.Fatalf("duplicate must not be inserted, count = %d", got)
+	}
+
+	// Case 3: fix the input and submit — creation succeeds and picker closes.
+	p.Update(picker.PickedMsg{Value: "fresh"})
+	if p.pickerActive {
+		t.Fatal("successful retry should close the picker")
+	}
+	if _, ok := settings.StateCfg(p.state).CustomAgents["fresh"]; !ok {
+		t.Fatal("successful retry should create the agent")
+	}
+	if got := len(settings.StateCfg(p.state).CustomAgents); got != 2 {
+		t.Fatalf("expected 2 agents, got %d", got)
+	}
+}

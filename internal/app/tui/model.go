@@ -2466,6 +2466,7 @@ func (m *Model) openModels() tea.Cmd {
 		Cfg:              m.state.Config,
 		Discovered:       m.discovered,
 		SkipToIntroModel: true,
+		AllProviders:     true,
 		ScopedProvider:   names[0],
 	})
 	m.connectModel.SetSize(m.leftWidth, m.height)

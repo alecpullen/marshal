@@ -747,6 +747,69 @@ func TestAPIKeyStepBlankUsesTemplateEnvVar(t *testing.T) {
 	}
 }
 
+func TestModelValueRoundTrip(t *testing.T) {
+	for _, tc := range []struct{ provider, model string }{
+		{"openai", "gpt-4o"},
+		{"openrouter", "anthropic/claude-sonnet-4"},
+		{"custom-2", "some/nested/model:tag"},
+	} {
+		p, mdl := decodeModelValue(encodeModelValue(tc.provider, tc.model))
+		if p != tc.provider || mdl != tc.model {
+			t.Errorf("round trip (%q,%q) → (%q,%q)", tc.provider, tc.model, p, mdl)
+		}
+	}
+}
+
+func TestModelPickerListsEveryProvider(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"openai": {BaseURL: "https://api.openai.com/v1"},
+			"groq":   {BaseURL: "https://api.groq.com/openai/v1"},
+		}},
+		Discovered: map[string][]string{
+			"openai": {"gpt-4o"},
+			"groq":   {"llama-3.3-70b"},
+		},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+	})
+	view := m.View(80, 24)
+	for _, want := range []string{"openai", "groq"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("picker view missing group %q", want)
+		}
+	}
+}
+
+func TestModelPickerPickAttributesTheRightProvider(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"openai": {BaseURL: "https://api.openai.com/v1"},
+			"groq":   {BaseURL: "https://api.groq.com/openai/v1"},
+		}},
+		Discovered: map[string][]string{
+			"openai": {"gpt-4o"},
+			"groq":   {"llama-3.3-70b"},
+		},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+	})
+	// Send a PickedMsg through the public Update path.
+	_, cmd := m.Update(picker.PickedMsg{Value: encodeModelValue("groq", "llama-3.3-70b")})
+	if m.providerName != "groq" {
+		t.Errorf("providerName = %q, want groq", m.providerName)
+	}
+	if m.modelChosen != "llama-3.3-70b" {
+		t.Errorf("modelChosen = %q, want llama-3.3-70b", m.modelChosen)
+	}
+	// The scoped flow (scopedProvider is empty since AllProviders doesn't set it)
+	// should land on stepSummary, not stepDone.
+	if m.step != stepSummary {
+		t.Errorf("step = %v, want stepSummary", m.step)
+	}
+	_ = cmd
+}
+
 func TestUniqueNameEmptyTemplateIDBehavesAsCustom(t *testing.T) {
 	m := &Model{
 		template: provider.ProviderTemplate{ID: "", Type: "openai_compatible"},

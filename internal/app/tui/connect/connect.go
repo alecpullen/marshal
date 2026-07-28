@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +20,22 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/strutil"
 )
+
+// modelValueSep separates provider from model in a picker Value. NUL cannot
+// appear in either half, unlike "/" which is common in model IDs
+// ("anthropic/claude-sonnet-4").
+const modelValueSep = "\x00"
+
+func encodeModelValue(provider, model string) string {
+	return provider + modelValueSep + model
+}
+
+func decodeModelValue(v string) (provider, model string) {
+	if p, m, ok := strings.Cut(v, modelValueSep); ok {
+		return p, m
+	}
+	return "", v
+}
 
 func titleStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Bold(true).Foreground(theme.Current().FGDefault)
@@ -49,6 +66,7 @@ type Opts struct {
 	SkipToIntroModel bool
 	ScopedProvider   string
 	CfgPath          string
+	AllProviders     bool
 }
 
 type Model struct {
@@ -74,6 +92,7 @@ type Model struct {
 	spinner        int
 	modelChosen    string
 	remoteEnabled  bool
+	allProviders   bool
 }
 
 func New(opts Opts) *Model {
@@ -90,6 +109,7 @@ func New(opts Opts) *Model {
 		renameInput:    ri,
 		scopedProvider: opts.ScopedProvider,
 		cfgPath:        opts.CfgPath,
+		allProviders:   opts.AllProviders,
 	}
 	if opts.SkipToIntroModel {
 		enterPickModelStep(m, opts.ScopedProvider)
@@ -389,21 +409,48 @@ func enterPickModelStep(m *Model, providerName string) {
 
 func buildModelPicker(m *Model, providerName string) *picker.Model {
 	var items []picker.Item
-	candidates := m.models
-	if len(candidates) == 0 {
-		if cached, ok := m.discovered[providerName]; ok {
-			candidates = cached
+	if m.allProviders {
+		// Collect models from every configured provider, sorted for stable order.
+		pnames := make([]string, 0, len(m.cfg.Providers))
+		for k := range m.cfg.Providers {
+			pnames = append(pnames, k)
 		}
-	}
-	if len(candidates) == 0 {
-		candidates = m.template.Models
-	}
-	for _, mid := range candidates {
-		badge := "◉ discovered"
-		if len(m.models) == 0 {
-			badge = "◯ catalog"
+		sort.Strings(pnames)
+		for _, pn := range pnames {
+			candidates := m.discovered[pn]
+			if len(candidates) == 0 {
+				if tpl, ok := provider.Lookup(pn); ok {
+					candidates = tpl.Models
+				}
+			}
+			for _, mid := range candidates {
+				badge := "◉ discovered"
+				if _, ok := m.discovered[pn]; !ok || len(m.discovered[pn]) == 0 {
+					badge = "◯ catalog"
+				}
+				items = append(items, picker.Item{
+					Label: mid, Detail: pn, Badge: badge, Group: pn,
+					Value: encodeModelValue(pn, mid),
+				})
+			}
 		}
-		items = append(items, picker.Item{Label: mid, Detail: providerName, Badge: badge, Group: providerName, Value: mid})
+	} else {
+		candidates := m.models
+		if len(candidates) == 0 {
+			if cached, ok := m.discovered[providerName]; ok {
+				candidates = cached
+			}
+		}
+		if len(candidates) == 0 {
+			candidates = m.template.Models
+		}
+		for _, mid := range candidates {
+			badge := "◉ discovered"
+			if len(m.models) == 0 {
+				badge = "◯ catalog"
+			}
+			items = append(items, picker.Item{Label: mid, Detail: providerName, Badge: badge, Group: providerName, Value: mid})
+		}
 	}
 	if len(items) == 0 {
 		items = append(items, picker.Item{Label: "Enter model id manually", Value: "__manual__", Badge: "custom"})
@@ -425,7 +472,16 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		if value == "__manual__" {
 			return m, nil
 		}
-		m.modelChosen = value
+		// When AllProviders is set, the value is encoded with provider prefix.
+		if p, mdl := decodeModelValue(value); p != "" {
+			m.providerName = p
+			if pc, ok := m.cfg.Providers[p]; ok {
+				m.providerCfg = pc
+			}
+			m.modelChosen = mdl
+		} else {
+			m.modelChosen = value
+		}
 		// Scoped /models flow skips summary; new-provider flow shows summary.
 		if m.scopedProvider != "" {
 			m.step = stepDone

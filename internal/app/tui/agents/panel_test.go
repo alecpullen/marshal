@@ -319,6 +319,123 @@ func TestRosterRolePickerOpensOverlay(t *testing.T) {
 	}
 }
 
+func TestRosterDrillOpensCustomAgentFrame(t *testing.T) {
+	cfg := config.Default()
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"reviewer-x": {Name: "reviewer-x", Preset: ""},
+	}
+	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+
+	// Move the cursor onto the custom agent drill row and press enter.
+	drillToRow(t, p, "reviewer-x")
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	out := p.View(120, 30)
+	if !strings.Contains(out, "System prompt") {
+		t.Fatalf("drill should open the agent's edit frame:\n%s", out)
+	}
+
+	// Esc pops back to the roster instead of closing the panel.
+	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil {
+		t.Fatal("esc while drilled should pop the frame, not close the panel")
+	}
+	out = p.View(120, 30)
+	if !strings.Contains(out, "Custom Agents") {
+		t.Fatalf("expected the roster root after popping:\n%s", out)
+	}
+}
+
+// drillToRow walks the active list with down-keys until the cursor row's
+// title matches (roster order is deterministic: profile, role groups,
+// custom agents, budgets). Uses activeList() so it works inside drilled frames.
+func drillToRow(t *testing.T, p *Panel, title string) {
+	t.Helper()
+	for i := 0; i < 40; i++ {
+		if row := settings.FieldListCursorRow(p.activeList()); row != nil && settings.FieldTitle(row) == title {
+			return
+		}
+		p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	t.Fatalf("row %q not found", title)
+}
+
+func TestRosterCreatesCustomAgent(t *testing.T) {
+	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	drillToRow(t, p, "＋ New custom agent")
+	enterCmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// Execute the returned Cmd to deliver createAgentPromptMsg to the panel.
+	if enterCmd != nil {
+		if msg := enterCmd(); msg != nil {
+			p.Update(msg)
+		}
+	}
+
+	// The action opens the picker overlay in free-text mode for the name.
+	if !p.pickerActive {
+		t.Fatal("create action should open the name picker overlay")
+	}
+	cmd := p.Update(picker.PickedMsg{Value: "reviewer-x"})
+	if cmd == nil {
+		t.Fatal("creation should emit a persist command")
+	}
+
+	cfg := settings.StateCfg(p.state)
+	ca, ok := cfg.CustomAgents["reviewer-x"]
+	if !ok {
+		t.Fatalf("agent not created: %#v", cfg.CustomAgents)
+	}
+	if ca.Name != "reviewer-x" {
+		t.Fatalf("Name = %q, want reviewer-x (stored TOML field must be written)", ca.Name)
+	}
+
+	// The new agent's edit frame opens immediately — the preset picker is
+	// the first field, so "pick a preset it layers on" is the next gesture.
+	out := p.View(120, 30)
+	if !strings.Contains(out, "Preset") || !strings.Contains(out, "System prompt") {
+		t.Fatalf("expected the new agent's edit frame after creation:\n%s", out)
+	}
+
+	// Duplicate names are rejected.
+	p2 := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	drillToRow(t, p2, "＋ New custom agent")
+	enterCmd = p2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if enterCmd != nil {
+		if msg := enterCmd(); msg != nil {
+			p2.Update(msg)
+		}
+	}
+	p2.Update(picker.PickedMsg{Value: "reviewer-x"})
+	if got := len(settings.StateCfg(p2.state).CustomAgents); got != 1 {
+		t.Fatalf("duplicate name created a second entry, count = %d", got)
+	}
+}
+
+func TestRosterDeletesCustomAgentWithConfirm(t *testing.T) {
+	cfg := config.Default()
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"doomed": {Name: "doomed", Preset: ""},
+	}
+	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	drillToRow(t, p, "doomed")
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open the agent frame
+
+	drillToRow(t, p, "Delete this agent")
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // arm
+	if _, ok := settings.StateCfg(p.state).CustomAgents["doomed"]; !ok {
+		t.Fatal("first press should arm, not delete")
+	}
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm
+	if _, ok := settings.StateCfg(p.state).CustomAgents["doomed"]; ok {
+		t.Fatal("second press should delete the agent")
+	}
+	// After deletion the panel is back at the roster root.
+	out := p.View(120, 30)
+	if !strings.Contains(out, "Custom Agents") || strings.Contains(out, "System prompt") {
+		t.Fatalf("expected the roster root after deletion:\n%s", out)
+	}
+}
+
 func TestRosterTwoColumnShowsDetailPane(t *testing.T) {
 	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
 	out := p.View(140, 20)
@@ -331,5 +448,86 @@ func TestRosterTwoColumnShowsDetailPane(t *testing.T) {
 	// Line index 3 is the first field row (Profile).
 	if got := ansi.StringWidth(lines[3]); got < 100 {
 		t.Fatalf("roster should fill the dock width, content line is %d cols: %q", got, out)
+	}
+}
+
+// TestRosterCreateErrorKeepsPickerOpen verifies that a rejected name
+// (empty or duplicate) keeps the picker open and surfaces the error in the
+// picker's view, so the user can fix the input and retry. Covers both the
+// "empty name" path and the "duplicate name" path.
+func TestRosterCreateErrorKeepsPickerOpen(t *testing.T) {
+	cfg := config.Default()
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"existing": {Name: "existing"},
+	}
+	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+
+	openCreatePicker := func(t *testing.T) {
+		t.Helper()
+		drillToRow(t, p, "＋ New custom agent")
+		cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if cmd != nil {
+			if msg := cmd(); msg != nil {
+				p.Update(msg)
+			}
+		}
+		if !p.pickerActive {
+			t.Fatal("create action should open the name picker overlay")
+		}
+	}
+
+	// Case 1: empty name.
+	openCreatePicker(t)
+	persistCmd := p.Update(picker.PickedMsg{Value: ""})
+	if persistCmd != nil {
+		t.Fatal("empty name should not emit a persist command")
+	}
+	if !p.pickerActive {
+		t.Fatal("picker should stay open after empty-name rejection")
+	}
+	if p.pickerModel == nil || p.pickerModel.ErrMsg() == "" {
+		t.Fatal("picker should show an error message")
+	}
+	out := p.View(120, 30)
+	if !strings.Contains(ansi.Strip(out), "empty") {
+		t.Fatalf("view should surface the empty-name error:\n%s", out)
+	}
+
+	// Typing into the filter clears the error so the user gets a clean slate.
+	p.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if got := p.pickerModel.ErrMsg(); got != "" {
+		t.Fatalf("typing should clear the picker error, got %q", got)
+	}
+
+	// Case 2: duplicate name. Re-open the same create picker flow with the
+	// typed-but-rejected value still in flight. Drive Enter on "existing".
+	p.Update(picker.PickedMsg{Value: "existing"})
+	if !p.pickerActive {
+		t.Fatal("picker should stay open after duplicate-name rejection")
+	}
+	if p.pickerModel.ErrMsg() == "" {
+		t.Fatal("picker should show a duplicate-name error")
+	}
+	if !strings.Contains(p.pickerModel.ErrMsg(), "existing") {
+		t.Fatalf("error should name the duplicate, got %q", p.pickerModel.ErrMsg())
+	}
+	out = p.View(120, 30)
+	if !strings.Contains(ansi.Strip(out), "existing") {
+		t.Fatalf("view should surface the duplicate-name error:\n%s", out)
+	}
+	if got := len(settings.StateCfg(p.state).CustomAgents); got != 1 {
+		t.Fatalf("duplicate must not be inserted, count = %d", got)
+	}
+
+	// Case 3: fix the input and submit — creation succeeds and picker closes.
+	p.Update(picker.PickedMsg{Value: "fresh"})
+	if p.pickerActive {
+		t.Fatal("successful retry should close the picker")
+	}
+	if _, ok := settings.StateCfg(p.state).CustomAgents["fresh"]; !ok {
+		t.Fatal("successful retry should create the agent")
+	}
+	if got := len(settings.StateCfg(p.state).CustomAgents); got != 2 {
+		t.Fatalf("expected 2 agents, got %d", got)
 	}
 }

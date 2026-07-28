@@ -252,6 +252,13 @@ func FieldListTakePushPicker(fl *FieldList) *PickerRequest {
 	}
 }
 
+// FieldListTakePushRequest returns and clears the drill frame a drill row
+// asked to open. Returns nil if no drill was requested.
+func FieldListTakePushRequest(fl *FieldList) *Frame { return fl.TakePushRequest() }
+
+// FieldListCursorRow returns the row under the cursor, or nil.
+func FieldListCursorRow(fl *FieldList) *Field { return fl.CursorRow() }
+
 // FieldListView returns the view of a field list.
 func FieldListView(fl *FieldList) string { return fl.View() }
 

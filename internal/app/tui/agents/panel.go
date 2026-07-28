@@ -25,6 +25,10 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// createAgentPromptMsg asks the panel to open the name-entry overlay for
+// custom-agent creation.
+type createAgentPromptMsg struct{}
+
 // DispatchFn starts an agent run for `agentName` with `goal`. nil disables Run-now.
 type DispatchFn func(agentName, goal string) tea.Cmd
 
@@ -44,6 +48,14 @@ type Panel struct {
 	// pickerActive tracks whether a picker overlay is open.
 	pickerActive bool
 	pickerModel  *picker.Model
+
+	// stack holds drilled frames (custom agent editor, swarm/SDD budgets)
+	// above the roster root list.
+	stack []*settings.Frame
+
+	// deleteArmed tracks the two-press delete confirm inside a custom
+	// agent's edit frame.
+	deleteArmed bool
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -70,6 +82,20 @@ func NewRosterPanelWithRegistry(cfg config.Config, cfgPath, arg string, dispatch
 
 // FilterValue returns the current filter text.
 func (p *Panel) FilterValue() string { return p.filter.Value() }
+
+// activeList returns the list keys should go to: the top drilled frame's
+// list, or the roster root.
+func (p *Panel) activeList() *settings.FieldList {
+	if len(p.stack) > 0 {
+		return settings.FrameList(p.stack[len(p.stack)-1])
+	}
+	return p.list
+}
+
+// pushFrame drills into f.
+func (p *Panel) pushFrame(f *settings.Frame) {
+	p.stack = append(p.stack, f)
+}
 
 // matchedFields builds the flat field list for the roster.
 func (p *Panel) matchedFields() []*settings.Field {
@@ -168,6 +194,15 @@ func (p *Panel) matchedFields() []*settings.Field {
 		})
 		fields = append(fields, caField)
 	}
+
+	// "＋ New custom agent" action row.
+	newField := settings.NewField("roster.custom_agents.new", "＋ New custom agent", settings.KindAction)
+	settings.SetFieldDesc(newField, "create a custom agent: name it, then pick the preset it layers on")
+	settings.SetFieldActLabel(newField, func() string { return "↵ create" })
+	settings.SetFieldAct(newField, func() tea.Cmd {
+		return func() tea.Msg { return createAgentPromptMsg{} }
+	})
+	fields = append(fields, newField)
 
 	// Run budgets section header.
 	budgetHeader := settings.NewField("header.run_budgets", "Run Budgets", settings.KindHeader)
@@ -399,7 +434,7 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 			return p.dispatch(name, "")
 		})
 
-		return []*settings.Field{
+		fields := []*settings.Field{
 			presetField,
 			promptField,
 			denylistField,
@@ -408,22 +443,83 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 			ctxField,
 			runField,
 		}
+
+		delField := settings.NewField("roster.ca."+name+".delete", "Delete this agent", settings.KindAction)
+		settings.SetFieldDesc(delField, "remove the custom agent — first press arms, second confirms")
+		settings.SetFieldActLabel(delField, func() string {
+			if p.deleteArmed {
+				return "↵ confirm delete"
+			}
+			return "↵ delete"
+		})
+		settings.SetFieldDisarm(delField, func() { p.deleteArmed = false })
+		settings.SetFieldAct(delField, func() tea.Cmd {
+			if !p.deleteArmed {
+				p.deleteArmed = true
+				return nil
+			}
+			p.deleteArmed = false
+			cfg := settings.StateCfg(p.state)
+			delete(cfg.CustomAgents, name)
+			p.stack = p.stack[:0] // the frame being viewed no longer exists
+			settings.FieldListRefresh(p.list)
+			return p.persistNow()
+		})
+		fields = append(fields, delField)
+
+		return fields
 	})
+}
+
+// createCustomAgent validates the name, writes the agent (layering on no
+// preset yet — the freshly opened edit frame's Preset picker is the next
+// gesture), and drills into the new agent's edit frame. Persistence is
+// handled by the caller's picker-commit path (PickedMsg → persistNow).
+func (p *Panel) createCustomAgent(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("name cannot be empty")
+	}
+	cfg := settings.StateCfg(p.state)
+	if _, exists := cfg.CustomAgents[name]; exists {
+		return fmt.Errorf("a custom agent named %q already exists", name)
+	}
+	if cfg.CustomAgents == nil {
+		cfg.CustomAgents = map[string]routing.CustomAgent{}
+	}
+	cfg.CustomAgents[name] = routing.CustomAgent{Name: name}
+	p.pushFrame(p.customAgentFrame(name))
+	return nil
 }
 
 // Update handles messages for the roster panel.
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case createAgentPromptMsg:
+		p.pendingPick = func(name string) error {
+			return p.createCustomAgent(name)
+		}
+		p.pickerModel = picker.New("New custom agent", "type a name · ↵ confirm · esc cancel", nil)
+		p.pickerModel.SetAllowCustom(true)
+		p.pickerActive = true
+		return nil
 	case picker.PickedMsg:
 		if p.pendingPick != nil {
 			if err := p.pendingPick(msg.Value); err != nil {
-				// Error rendering is handled by the field list; just clear.
+				// Validation rejected the value — keep the picker open so the
+				// user can fix their input. The error text is rendered by the
+				// picker overlay (clears on the next keypress) and no persist
+				// has happened, so nothing to roll back.
+				if p.pickerModel != nil {
+					p.pickerModel.SetError(err.Error())
+				}
+				return nil
 			}
 			p.pendingPick = nil
 		}
 		p.pickerActive = false
 		p.pickerModel = nil
-		// A picker commit is always a commit gesture — persist immediately.
+		// A successful picker commit is a commit gesture — persist immediately.
 		return p.persistNow()
 	case picker.CancelledMsg:
 		p.pendingPick = nil
@@ -437,19 +533,27 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		}
 		switch msg.String() {
 		case "esc":
+			if len(p.stack) > 0 {
+				p.deleteArmed = false
+				p.stack = p.stack[:len(p.stack)-1]
+				settings.FieldListRefresh(p.activeList())
+				return nil
+			}
 			return func() tea.Msg { return settings.BrowserClosedMsg{} }
 		case "?":
 			p.showLegend = !p.showLegend
 			return nil
 		case "up", "down":
-			cmd := settings.FieldListUpdate(p.list, msg)
+			cmd := settings.FieldListUpdate(p.activeList(), msg)
 			return p.maybePersist(cmd)
 		case "enter":
-			cmd := settings.FieldListUpdate(p.list, msg)
-			// Check if the field list pushed a picker request.
-			if pr := settings.FieldListTakePushPicker(p.list); pr != nil {
+			l := p.activeList()
+			cmd := settings.FieldListUpdate(l, msg)
+			if f := settings.FieldListTakePushRequest(l); f != nil {
+				p.pushFrame(f)
+			}
+			if pr := settings.FieldListTakePushPicker(l); pr != nil {
 				p.pendingPick = pr.OnPick
-				// Open a picker overlay locally.
 				p.pickerModel = picker.New(pr.Title, pr.Footer, pr.Items)
 				if pr.AllowCustom {
 					p.pickerModel.SetAllowCustom(true)
@@ -458,6 +562,14 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			}
 			return p.maybePersist(cmd)
 		default:
+			l := p.activeList()
+			// While drilled (or mid-edit), non-nav keys belong to the frame
+			// list — scalar edits, enum cycles, action keys. At the roster
+			// root they type into the filter as before.
+			if len(p.stack) > 0 || l.Editing() {
+				cmd := settings.FieldListUpdate(l, msg)
+				return p.maybePersist(cmd)
+			}
 			var cmd tea.Cmd
 			p.filter, cmd = p.filter.Update(msg)
 			settings.FieldListRefresh(p.list)
@@ -533,22 +645,34 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 
 	title := "Agents"
-	settings.FieldListSetSize(p.list, listWidth, max(maxHeight-4, 1))
-	settings.FieldListSetDescSuppressed(p.list, twoCol)
-	body := "/ " + p.filter.View() + "\n"
-	if p.showLegend {
-		legend := "● preset bound  ◆ custom agent bound  ↩ impl fallback  legacy  ⚠ unresolved  ←/→ drill"
-		body += lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(legend) + "\n"
+	l := p.list
+	if len(p.stack) > 0 {
+		l = p.activeList()
+		parts := []string{"Agents"}
+		for _, f := range p.stack {
+			parts = append(parts, settings.FrameTitle(f))
+		}
+		title = strings.Join(parts, " › ")
 	}
-	listView := settings.FieldListView(p.list)
+	settings.FieldListSetSize(l, listWidth, max(maxHeight-4, 1))
+	settings.FieldListSetDescSuppressed(l, twoCol)
+	body := ""
+	if len(p.stack) == 0 {
+		body = "/ " + p.filter.View() + "\n"
+		if p.showLegend {
+			legend := "● preset bound  ◆ custom agent bound  ↩ impl fallback  legacy  ⚠ unresolved  ←/→ drill"
+			body += lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(legend) + "\n"
+		}
+	}
+	listView := settings.FieldListView(l)
 	if twoCol {
 		_, detailWidth := layout.SplitPanes(innerWidth)
 		detail := lipgloss.NewStyle().Width(detailWidth).Foreground(theme.Current().FGMuted).
-			Render(settings.FieldListCursorDesc(p.list))
+			Render(settings.FieldListCursorDesc(l))
 		listView = lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)
 	}
 	body += listView
-	footer := fmt.Sprintf("%d entries", len(settings.FieldListRows(p.list)))
+	footer := fmt.Sprintf("%d entries", len(settings.FieldListRows(l)))
 
 	content := body + "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(footer)
 	panelHeight := min(lipgloss.Height(content)+1, maxHeight)

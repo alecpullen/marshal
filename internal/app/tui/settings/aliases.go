@@ -105,6 +105,8 @@ var (
 	FieldListUpdate            = listpanel.FieldListUpdate
 	FieldListCommitted         = listpanel.FieldListCommitted
 	FieldListTakePushPicker    = listpanel.FieldListTakePushPicker
+	FieldListTakePushRequest   = listpanel.FieldListTakePushRequest
+	FieldListCursorRow         = listpanel.FieldListCursorRow
 	FieldListView              = listpanel.FieldListView
 	FieldListSetDescSuppressed = listpanel.FieldListSetDescSuppressed
 	FieldListCursorDesc        = listpanel.FieldListCursorDesc

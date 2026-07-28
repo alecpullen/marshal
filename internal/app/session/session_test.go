@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1114,6 +1115,30 @@ func TestStateLoadErrorReportsColdLoadFailure(t *testing.T) {
 }
 
 // ── end Task 3 tests ────────────────────────────────────────────────────
+
+func TestStateSetLayersRoundTrip(t *testing.T) {
+	s := New(config.Default(), "/tmp/repo", time.Unix(0, 0), Persistence{})
+	want := config.Layers{
+		Default: config.Default(),
+		User:    config.Default(),
+		Merged:  config.Default(),
+	}
+	s.SetLayers(want)
+	got := s.Layers()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Layers() = %+v, want %+v", got, want)
+	}
+}
+
+func TestStateLayersZeroValueByDefault(t *testing.T) {
+	s := New(config.Default(), "/tmp/repo", time.Unix(0, 0), Persistence{})
+	got := s.Layers()
+	// Default Layers{}.Merged is the zero Config — just check provenance is
+	// fully "default" for any path, since Merged == User == Default.
+	if p := got.ProvenanceOf("anything.here"); p.SetBy != config.LayerDefault {
+		t.Errorf("fresh state Layers Provenance = %v, want default", p)
+	}
+}
 
 func TestBrowserInfoDefault(t *testing.T) {
 	state := newTestState()

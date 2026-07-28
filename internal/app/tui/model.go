@@ -442,10 +442,12 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 }
 
 // refreshDiagnostics runs config.Diagnose against the current session config
-// and caches the number of diagnostics found. When layers are nil (e.g. in
-// tests), an empty Layers value is used so provenance fields are "default".
+// and caches the number of diagnostics found. Real per-layer provenance
+// comes from state.Layers(); when unset (e.g. tests that don't
+// construct via app.Run), the zero value means every Diagnostic.Source
+// reads as "default".
 func (m *Model) refreshDiagnostics() {
-	ds := config.Diagnose(m.state.Config, config.Layers{})
+	ds := config.Diagnose(m.state.Config, m.state.Layers())
 	m.diagnosticCount = len(ds)
 }
 

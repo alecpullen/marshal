@@ -58,3 +58,38 @@ func TestDoctorNeverEchoesKeyMaterial(t *testing.T) {
 		t.Error("/doctor echoed key material")
 	}
 }
+
+func TestDoctorRendersProjectSourceForLiteralKeyWarning(t *testing.T) {
+	state := newTestState()
+	home := t.TempDir()
+	work := t.TempDir()
+	t.Setenv("HOME", home)
+	state.WorkingDir = work
+
+	// Simulate the real call: startRuntime would build Layers where the
+	// provider entry exists in both defaults and user config, and a
+	// literal api_key shows up in the project layer.
+	layers := config.Layers{
+		Default: config.Default(),
+		User:    config.Default(),
+		Merged:  config.Default(),
+	}
+	layers.Merged.Providers = map[string]config.ProviderConfig{
+		"p": {Type: "openai_compatible", BaseURL: "https://x.example/v1", APIKey: "sk-secret-value"},
+	}
+	state.Config = config.Default()
+	state.Config.Providers = layers.Merged.Providers
+	state.SetLayers(layers)
+
+	res := doctorHandler(state, nil)
+	if res.Doc == nil {
+		t.Fatal("want a Doc result")
+	}
+	joined := rowsText(res.Doc.Rows)
+	if !strings.Contains(joined, "project config") {
+		t.Errorf("diagnostic did not name the project layer:\n%s", joined)
+	}
+	if strings.Contains(joined, "sk-secret-value") {
+		t.Error("/doctor echoed key material")
+	}
+}

@@ -492,6 +492,13 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 
 	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
 	state.SetTrusted(projectTrusted)
+	// Surface the merged-config layering snapshot to commands and the TUI.
+	// startRuntime already produced `layers` via LoadLayers; copying it
+	// onto the state lets /doctor and the diagnostic indicator see real
+	// provenance instead of always reporting "default".
+	if err == nil {
+		state.SetLayers(layers)
+	}
 
 	// Abort startup if an existing session's transcript cannot be loaded.
 	if runOpts.existingSessionID != "" {

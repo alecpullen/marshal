@@ -193,6 +193,12 @@ type State struct {
 	// startup when the persisted transcript cannot be reconstructed.
 	loadErr error
 
+	// layers is the merged-config layering snapshot used by /doctor and
+	// the status-line indicator. Populated by startRuntime after
+	// LoadLayers. The zero value (LayerDefault for every path) lets
+	// tests and zero-config sessions still call Layers().
+	layers config.Layers
+
 	// F16: steering queue (mid-turn user messages). Published to the broker
 	// so the TUI transcript and status line update without polling.
 	steeringQueue  []string
@@ -724,6 +730,22 @@ func (s *State) ProviderError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.providerErr
+}
+
+// SetLayers stores the merged-config layering snapshot. Called once by
+// startRuntime after LoadLayers; safe to call again from test code.
+func (s *State) SetLayers(l config.Layers) {
+	s.mu.Lock()
+	s.layers = l
+	s.mu.Unlock()
+}
+
+// Layers returns the layering snapshot, or the zero value if none was
+// stored (e.g. in unit tests that build a State directly).
+func (s *State) Layers() config.Layers {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.layers
 }
 
 func (s *State) SetContextPack(pack contextpack.Pack) {

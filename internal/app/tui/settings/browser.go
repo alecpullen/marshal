@@ -170,6 +170,9 @@ func (b *BrowserPanel) matchedFields() []*field {
 			sectionFields[sec] = append(sectionFields[sec], browserField(f, sec, modified[key]))
 		}
 		for _, spec := range sectionList() {
+			if spec.advanced && query == "" {
+				continue // advanced sections are searchable but not listed
+			}
 			ff := sectionFields[spec.Title]
 			if len(ff) == 0 {
 				continue

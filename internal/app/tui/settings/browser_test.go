@@ -653,6 +653,22 @@ func TestDetailPaneShowsProvenance(t *testing.T) {
 	}
 }
 
+func TestUnfilteredBrowserHidesAdvancedSections(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	out := stripANSI(b.View(100, 40))
+	if strings.Contains(out, "Profiles") {
+		t.Fatalf("advanced Profiles section should not be listed:\n%s", out)
+	}
+}
+
+func TestSearchReachesAdvancedSections(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "profile")
+	out := stripANSI(b.View(100, 40))
+	if !strings.Contains(out, "Profiles") {
+		t.Fatalf("search should still reach the advanced Profiles section:\n%s", out)
+	}
+}
+
 func TestBrowserTwoColumnShowsDescInDetailPaneWhileDrilled(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
 	for index, row := range b.list.Rows() {

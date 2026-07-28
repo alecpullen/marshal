@@ -1698,6 +1698,58 @@ func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
 	}
 }
 
+func TestRunReloadsAfterInlineTrust(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"),
+		[]byte("[project]\nname = \"trusted-inline\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWd)
+	t.Setenv("HOME", t.TempDir()) // keep the real trust store out of the test
+
+	var runs int
+	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) error {
+		runs++
+		st := modelState(t, model)
+		switch runs {
+		case 1:
+			if st.Config.Project.Name == "trusted-inline" {
+				t.Error("phase 1 applied the project config before trust")
+			}
+			// Answer "1" (trust permanently) through the model's Update.
+			if _, cmd := model.(interface {
+				Update(tea.Msg) (tea.Model, tea.Cmd)
+			}).Update(tea.KeyPressMsg{Code: '1', Text: "1"}); cmd != nil {
+				_ = cmd() // would be tea.Quit under a real program
+			}
+		case 2:
+			if st.Config.Project.Name != "trusted-inline" {
+				t.Errorf("phase 2 config name = %q, want trusted-inline", st.Config.Project.Name)
+			}
+		}
+		return nil
+	}
+
+	var nowUnix int64 = 100
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { nowUnix++; return time.Unix(nowUnix, 0) }),
+		WithProgramRunner(programRunner),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runs != 2 {
+		t.Fatalf("program ran %d times, want 2 (initial + trust reload)", runs)
+	}
+}
+
 // ── Task 3: existing-session mode ──────────────────────────────────────
 
 func TestStartRuntimeLoadsExistingSessionWithoutDuplicateInsert(t *testing.T) {

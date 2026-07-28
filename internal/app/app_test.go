@@ -2649,7 +2649,10 @@ command = "` + stub + `"
 		t.Fatal("LSPManager was not constructed even though [lsp.servers.stub] was configured")
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
+	// Generous because the whole suite competes for CPU: the loop below
+	// returns the moment the marker appears, so a longer deadline costs
+	// nothing on a healthy run and only buys headroom on a loaded one.
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(marker); err == nil {
 			return // stub was invoked -- Run() was started

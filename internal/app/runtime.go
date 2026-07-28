@@ -402,6 +402,11 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if err := os.MkdirAll(filepath.Join(workingDir, ".marshal"), 0755); err != nil {
 		return nil, fmt.Errorf("create .marshal directory: %w", err)
 	}
+	// Best-effort: a failure here must not stop startup, but it does mean
+	// the user's config could be committed, so it is worth logging.
+	if err := config.EnsureMarshalIgnored(workingDir); err != nil {
+		slog.Warn("could not update .gitignore", "error", err)
+	}
 
 	database, err := db.Open(db.Path(workingDir))
 	if err != nil {

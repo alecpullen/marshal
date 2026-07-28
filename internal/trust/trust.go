@@ -164,6 +164,36 @@ type Resolver interface {
 	Record(workingDir string, decision Decision) error
 }
 
+// Evaluate reports the stored trust state for workingDir without prompting.
+// It performs the same checks TerminalResolver.Resolve does up to the point
+// of prompting, including config-hash revalidation: needsPrompt is true when
+// a project config exists but trust is absent or the config changed since it
+// was trusted. The interactive TUI uses this to defer the question to an
+// inline panel.
+func Evaluate(store *Store, workingDir string) (decision Decision, needsPrompt bool, err error) {
+	if !HasProjectConfig(workingDir) {
+		return DecisionDontTrust, false, nil
+	}
+	abs, _ := filepath.Abs(workingDir)
+	trusted, err := store.IsTrusted(abs)
+	if err != nil {
+		return DecisionDontTrust, false, err
+	}
+	if !trusted {
+		return DecisionDontTrust, true, nil
+	}
+	currentHash, err := ConfigHashFor(workingDir)
+	if err != nil {
+		return DecisionDontTrust, false, err
+	}
+	storedHash, _ := store.StoredConfigHash(abs)
+	if storedHash == currentHash {
+		return DecisionTrustPermanent, false, nil
+	}
+	// Config changed since trust was recorded: re-prompt.
+	return DecisionDontTrust, true, nil
+}
+
 func HasProjectConfig(workingDir string) bool {
 	_, err := os.Stat(filepath.Join(workingDir, ".marshal", "config.toml"))
 	return err == nil

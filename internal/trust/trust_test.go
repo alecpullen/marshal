@@ -244,6 +244,80 @@ func TestStoreIsTrustedToleratesZonelessTimestamp(t *testing.T) {
 	}
 }
 
+func writeProjectConfig(t *testing.T, dir, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte(contents), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}
+
+func TestEvaluateNoProjectConfig(t *testing.T) {
+	dir := t.TempDir()
+	decision, needsPrompt, err := Evaluate(NewStore(t.TempDir()), dir)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if decision != DecisionDontTrust || needsPrompt {
+		t.Fatalf("got (%v, %v), want (dont_trust, false)", decision, needsPrompt)
+	}
+}
+
+func TestEvaluateUntrustedProjectNeedsPrompt(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, "[project]\nname = \"x\"\n")
+	decision, needsPrompt, err := Evaluate(NewStore(t.TempDir()), dir)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if decision != DecisionDontTrust || !needsPrompt {
+		t.Fatalf("got (%v, %v), want (dont_trust, true)", decision, needsPrompt)
+	}
+}
+
+func TestEvaluateTrustedHashMatchSkipsPrompt(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, "[project]\nname = \"x\"\n")
+	store := NewStore(t.TempDir())
+	abs, _ := filepath.Abs(dir)
+	hash, err := ConfigHashFor(dir)
+	if err != nil {
+		t.Fatalf("ConfigHashFor: %v", err)
+	}
+	if err := store.SetTrust(abs, true, hash); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
+	decision, needsPrompt, err := Evaluate(store, dir)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if decision != DecisionTrustPermanent || needsPrompt {
+		t.Fatalf("got (%v, %v), want (trust_permanent, false)", decision, needsPrompt)
+	}
+}
+
+func TestEvaluateStaleHashRePrompts(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, "[project]\nname = \"x\"\n")
+	store := NewStore(t.TempDir())
+	abs, _ := filepath.Abs(dir)
+	hash, _ := ConfigHashFor(dir)
+	if err := store.SetTrust(abs, true, hash); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
+	// Config changes after trust was recorded → must re-prompt.
+	writeProjectConfig(t, dir, "[project]\nname = \"changed\"\n")
+	decision, needsPrompt, err := Evaluate(store, dir)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if decision != DecisionDontTrust || !needsPrompt {
+		t.Fatalf("got (%v, %v), want (dont_trust, true)", decision, needsPrompt)
+	}
+}
+
 func TestTerminalResolverRePromptsOnConfigChange(t *testing.T) {
 	dir := t.TempDir()
 	marshalDir := filepath.Join(dir, ".marshal")

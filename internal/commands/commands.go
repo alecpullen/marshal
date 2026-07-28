@@ -162,26 +162,33 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				for _, m := range msgs {
 					totalChars += len(m.Content)
 				}
-				pack := state.ContextPack()
-				var b strings.Builder
-				fmt.Fprintf(&b, "Context:\n  Messages: %d (%d chars)\n", len(msgs), totalChars)
-				if pack.IsEmpty() {
-					b.WriteString("  No context pack built yet.")
-					return Text(b.String())
+				rows := []Row{
+					{Text: "Messages", Detail: fmt.Sprintf("%d (%d chars)", len(msgs), totalChars)},
 				}
-				fmt.Fprintf(&b, "  Pack: %s/%s tokens, %d sections\n",
-					strutil.CompactTokens(pack.TokenUsage.EstimatedTokens),
-					strutil.CompactTokens(pack.TokenUsage.MaxTokens),
-					len(pack.Sections),
-				)
+				pack := state.ContextPack()
+				if pack.IsEmpty() {
+					rows = append(rows, Row{Text: "Pack", Detail: "not built yet"})
+					return Panel("Context", true, rows)
+				}
+				rows = append(rows, Row{
+					Text: "Pack",
+					Detail: fmt.Sprintf("%s/%s tokens, %d sections",
+						strutil.CompactTokens(pack.TokenUsage.EstimatedTokens),
+						strutil.CompactTokens(pack.TokenUsage.MaxTokens),
+						len(pack.Sections)),
+				})
+				rows = append(rows, Row{Header: "Sections"})
 				for i, section := range pack.Sections {
 					title := section.Title
 					if title == "" {
 						title = section.Source
 					}
-					fmt.Fprintf(&b, "    %d  %s  %s\n", i+1, title, strutil.CompactTokens(section.EstimatedTokens))
+					rows = append(rows, Row{
+						Text:   fmt.Sprintf("%d  %s", i+1, title),
+						Detail: strutil.CompactTokens(section.EstimatedTokens),
+					})
 				}
-				return Text(strings.TrimRight(b.String(), "\n"))
+				return Panel("Context", true, rows)
 			},
 		},
 		{

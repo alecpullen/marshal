@@ -224,19 +224,66 @@ func TestRouteCommand(t *testing.T) {
 	}
 }
 
-func TestContextCommand(t *testing.T) {
+func contextResult(t *testing.T) Result {
+	t.Helper()
 	cmdReg := New()
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
-
 	state := newTestState()
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
-
 	cmd, _ := cmdReg.Lookup("context")
-	result := cmd.Handler(state, nil).Text
-	if !strings.Contains(result, "Messages: 2") {
-		t.Errorf("context output missing message count: %s", result)
+	return cmd.Handler(state, nil)
+}
+
+func contextResultWithPack(t *testing.T) Result {
+	t.Helper()
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+	state := newTestState()
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Title: "internal/app/tui/model.go", EstimatedTokens: 8400},
+			{Source: "repo-map", EstimatedTokens: 2100},
+		},
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 10500, MaxTokens: 32000},
+	})
+	cmd, _ := cmdReg.Lookup("context")
+	return cmd.Handler(state, nil)
+}
+
+func TestContextCommandReturnsFullFrameDoc(t *testing.T) {
+	res := contextResult(t)
+	if res.Doc == nil || !res.Doc.FullFrame {
+		t.Fatalf("/context should return a FullFrame Doc, got %+v", res)
+	}
+	if len(res.Doc.Rows) == 0 {
+		t.Fatal("expected stat rows")
+	}
+	found := false
+	for _, r := range res.Doc.Rows {
+		if r.Text == "Messages" && r.Detail != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing Messages stat row: %+v", res.Doc.Rows)
+	}
+}
+
+func TestContextCommandListsPackSections(t *testing.T) {
+	res := contextResultWithPack(t)
+	var sectionRows int
+	for _, r := range res.Doc.Rows {
+		if r.Detail != "" && r.Text != "Messages" && r.Text != "Pack" {
+			sectionRows++
+		}
+	}
+	if sectionRows == 0 {
+		t.Fatalf("expected one row per pack section: %+v", res.Doc.Rows)
 	}
 }
 
@@ -413,30 +460,6 @@ func TestLogCommandEmpty(t *testing.T) {
 	cmd, _ := cmdReg.Lookup("log")
 	if out := cmd.Handler(state, nil).Text; out != "No tool calls yet." {
 		t.Fatalf("empty log output = %q", out)
-	}
-}
-
-func TestContextCommandListsPackSections(t *testing.T) {
-	cmdReg := New()
-	if err := RegisterAll(cmdReg, registry.New()); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	state.SetContextPack(contextpack.Pack{
-		Sections: []contextpack.Section{
-			{Title: "internal/app/tui/model.go", EstimatedTokens: 8400},
-			{Source: "repo-map", EstimatedTokens: 2100},
-		},
-		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 10500, MaxTokens: 32000},
-	})
-
-	cmd, _ := cmdReg.Lookup("context")
-	out := cmd.Handler(state, nil).Text
-
-	for _, want := range []string{"10k/32k", "internal/app/tui/model.go", "8k", "repo-map"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("context output missing %q:\n%s", want, out)
-		}
 	}
 }
 

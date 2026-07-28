@@ -547,6 +547,41 @@ func TestBrowserSingleColumnKeepsInlineDesc(t *testing.T) {
 // (drilled into a collection). The drilled stack reuses the same list+detail
 // join — this test pins that the join still happens when the body is a
 // drilled collection rather than the flat top-level list.
+// drillBrowserToRow sends KeyDown messages until the cursor lands on a row
+// whose Title contains want, or the loop budget is exhausted.
+func drillBrowserToRow(t *testing.T, b *BrowserPanel, want string) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		row := b.activeList().CursorRow()
+		if row != nil && strings.Contains(row.Title, want) {
+			return
+		}
+		b.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	rows := b.activeList().Rows()
+	ids := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID + ":" + r.Title
+	}
+	t.Fatalf("drillBrowserToRow(%q) exhausted budget; rows: %v", want, ids)
+}
+
+func TestDetailPaneShowsProvenance(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "",
+		WithProvenance(func(tomlPath string) string {
+			if tomlPath == "tui.theme" {
+				return "set by: user config · overrides: default"
+			}
+			return ""
+		}))
+	// Put the cursor on the theme row and render wide (two-column).
+	drillBrowserToRow(t, b, "Theme")
+	out := stripANSI(b.View(140, 20))
+	if !strings.Contains(out, "set by: user config") {
+		t.Fatalf("detail pane should show provenance:\n%s", out)
+	}
+}
+
 func TestBrowserTwoColumnShowsDescInDetailPaneWhileDrilled(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
 	for index, row := range b.list.Rows() {

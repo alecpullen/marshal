@@ -21,6 +21,16 @@ import (
 	"marshal/internal/strutil"
 )
 
+// BrowserOption customizes a BrowserPanel.
+type BrowserOption func(*BrowserPanel)
+
+// WithProvenance attaches a provenance lookup for row TOML paths. It is
+// rendered under the cursor row's description in the detail pane (wide) or
+// appended to the inline desc (narrow).
+func WithProvenance(fn func(tomlPath string) string) BrowserOption {
+	return func(b *BrowserPanel) { b.provenance = fn }
+}
+
 // BrowserPanel is the docked settings browser. It presents a filterable flat
 // registry while reusing the existing field list and collection drill frames.
 // Every config mutation is persisted immediately.
@@ -45,6 +55,9 @@ type BrowserPanel struct {
 	// (already in-memory, still-unsaved) value — which diffs empty against
 	// baseline — still retries persistence instead of silently no-op'ing.
 	savePending bool
+
+	// provenance looks up a one-line provenance summary for a TOML path.
+	provenance func(tomlPath string) string
 }
 
 var _ dock.Panel = (*BrowserPanel)(nil)
@@ -52,7 +65,7 @@ var _ dock.Panel = (*BrowserPanel)(nil)
 func settingsTheme() theme.Theme { return theme.Current() }
 
 // NewBrowser creates a docked browser pre-filtered by query.
-func NewBrowser(cfg config.Config, cfgPath, query string) *BrowserPanel {
+func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption) *BrowserPanel {
 	filter := textfield.New()
 	filter.SetVirtualCursor(true)
 	filter.Focus()
@@ -80,6 +93,9 @@ func NewBrowser(cfg config.Config, cfgPath, query string) *BrowserPanel {
 		baseline: cloneConfig(cfg),
 	}
 	browser.list = newFieldList(browser.matchedFields)
+	for _, opt := range opts {
+		opt(browser)
+	}
 	return browser
 }
 
@@ -549,6 +565,14 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 			desc := ""
 			if row := b.activeList().CursorRow(); row != nil {
 				desc = row.Desc
+				if b.provenance != nil && row.TomlPath != "" {
+					if prov := b.provenance(row.TomlPath); prov != "" {
+						if desc != "" {
+							desc += "\n"
+						}
+						desc += prov
+					}
+				}
 			}
 			detail := lipgloss.NewStyle().Width(detailWidth).Foreground(settingsTheme().FGMuted).Render(desc)
 			body = lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)
@@ -564,6 +588,14 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 			desc := ""
 			if row := b.activeList().CursorRow(); row != nil {
 				desc = row.Desc
+				if b.provenance != nil && row.TomlPath != "" {
+					if prov := b.provenance(row.TomlPath); prov != "" {
+						if desc != "" {
+							desc += "\n"
+						}
+						desc += prov
+					}
+				}
 			}
 			detail := lipgloss.NewStyle().Width(detailWidth).Foreground(settingsTheme().FGMuted).Render(desc)
 			body = "/ " + b.filter.View() + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)

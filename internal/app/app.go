@@ -72,6 +72,7 @@ func must[T any](raw any) T {
 type options struct {
 	now                     func() time.Time
 	configLoader            configLoader
+	layersLoader            func(config.LoadOptions) (config.Layers, error)
 	programRunner           ProgramRunner
 	onboardingProgramRunner ProgramRunner // injected for tests; nil means use tea.NewProgram directly
 	skipOnboarding          bool
@@ -80,15 +81,15 @@ type options struct {
 	// deferTrustPrompt moves the folder-trust question into the TUI (the
 	// interactive path). sessionTrusted carries an inline session-trust
 	// answer across the reload loop.
-	deferTrustPrompt bool
-	sessionTrusted   bool
-	workingDir       string
-	sessionID               string
-	existingSessionID       string
-	additionalDirs          []string
-	knowledgeHook           func(ctx context.Context, state *session.State, database *db.DB)
-	workers                 []worker.Worker
-	configReloader          func(config.Config) error
+	deferTrustPrompt  bool
+	sessionTrusted    bool
+	workingDir        string
+	sessionID         string
+	existingSessionID string
+	additionalDirs    []string
+	knowledgeHook     func(ctx context.Context, state *session.State, database *db.DB)
+	workers           []worker.Worker
+	configReloader    func(config.Config) error
 }
 
 type Option func(*options)
@@ -1206,6 +1207,17 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		var tuiOpts []tui.Option
 		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
 		tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
+		configLayers := &rt.Layers
+		tuiOpts = append(tuiOpts, tui.WithConfigLayers(&configLayers))
+		tuiOpts = append(tuiOpts, tui.WithLayerReloader(func() config.Layers {
+			layers, err := config.LoadLayers(config.LoadOptions{
+				WorkingDir: workingDir,
+			})
+			if err != nil {
+				return config.Layers{}
+			}
+			return layers
+		}))
 		// F18: eager-seed the @file completion popup with the repo file
 		// index. Failures (no DB, empty index) are non-fatal — the TUI
 		// falls back to a lazy load on the first @-keystroke.

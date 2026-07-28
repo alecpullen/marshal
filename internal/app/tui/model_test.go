@@ -26,13 +26,13 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/db"
-	"marshal/internal/trust"
 	"marshal/internal/llm/routing"
 	"marshal/internal/permissions"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
+	"marshal/internal/trust"
 )
 
 // drainCmds executes the returned command tree (up to a small bound) and

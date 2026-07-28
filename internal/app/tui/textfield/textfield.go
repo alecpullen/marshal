@@ -4,8 +4,8 @@
 package textfield
 
 import (
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 )
 
 // Model embeds textinput.Model. Styling, masking, cursor, and blink behavior

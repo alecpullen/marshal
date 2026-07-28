@@ -46,10 +46,10 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/sdd"
 	"marshal/internal/strutil"
-	"marshal/internal/trust"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
+	"marshal/internal/trust"
 )
 
 // AgentRunner is the one thing the TUI knows about the agent loop: how to
@@ -239,6 +239,12 @@ type Model struct {
 	// While true, the TUI renders the gate prompt and routes y/n keypresses
 	// to resolve or abort the gate.
 	pendingSDDGate bool
+
+	// configLayers is a pointer to the runtime's Layers snapshot, shared so
+	// the model can read provenance after each successful persist.
+	configLayers **config.Layers
+	// layerReloader re-runs LoadLayers to refresh the provenance snapshots.
+	layerReloader func() config.Layers
 }
 
 // pendingAgentRun captures the runner and goal for a run that is waiting
@@ -383,6 +389,19 @@ func WithToolRegistry(reg *registry.Registry) Option {
 	}
 }
 
+// WithConfigLayers supplies the layered config snapshots used for settings
+// provenance. The pointer is shared; the model replaces what it points to
+// after each successful persist so provenance tracks saves.
+func WithConfigLayers(layers **config.Layers) Option {
+	return func(m *Model) { m.configLayers = layers }
+}
+
+// WithLayerReloader supplies a function that re-runs LoadLayers to refresh
+// the provenance snapshots after a successful persist.
+func WithLayerReloader(fn func() config.Layers) Option {
+	return func(m *Model) { m.layerReloader = fn }
+}
+
 func projectConfigPath(workingDir string) string {
 	return config.ProjectConfigPath(workingDir)
 }
@@ -486,6 +505,12 @@ func (m *Model) handleSetCommand(args []string) {
 			}
 		}
 		saveErr, reloadErr := m.persistAndReload(reg.Config())
+		if saveErr == nil && reloadErr == nil {
+			if m.configLayers != nil && m.layerReloader != nil {
+				layers := m.layerReloader()
+				*m.configLayers = &layers
+			}
+		}
 		m.refreshOpenSettingsBrowser()
 		switch {
 		case saveErr != nil:
@@ -501,11 +526,29 @@ func (m *Model) handleSetCommand(args []string) {
 	}
 }
 
+// provenanceForPath renders the one-line provenance summary for a TOML
+// path, or "" when layers are unavailable.
+func (m *Model) provenanceForPath(tomlPath string) string {
+	if m.configLayers == nil || *m.configLayers == nil {
+		return ""
+	}
+	p := (*m.configLayers).ProvenanceOf(tomlPath)
+	if p.SetBy == config.LayerDefault && p.Overrides == config.LayerDefault {
+		return "set by: built-in default"
+	}
+	s := "set by: " + p.SetBy.String()
+	if p.Overrides != config.LayerDefault {
+		s += " · overrides: " + p.Overrides.String()
+	}
+	return s
+}
+
 func (m *Model) openSettingsBrowser(query string) {
 	browser := settings.NewBrowser(
 		m.state.Config,
 		projectConfigPath(m.state.WorkingDir),
 		query,
+		settings.WithProvenance(m.provenanceForPath),
 	)
 	// m.state.Config may already hold an unsaved change left behind by a
 	// previous failed save (browser or /set) — applyNewConfig keeps it
@@ -895,6 +938,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
+		}
+		if m.configLayers != nil && m.layerReloader != nil {
+			layers := m.layerReloader()
+			*m.configLayers = &layers
 		}
 		for _, receipt := range msg.Receipts {
 			m.state.AddMessage(session.RoleSystem,

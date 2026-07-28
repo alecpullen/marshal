@@ -11,6 +11,7 @@ func interfaceFrame(s *state) *frame {
 				f := enumField("tui.theme", "Theme", theme.Names(),
 					func() string { return s.cfg.TUI.Theme },
 					func(v string) { s.cfg.TUI.Theme = v })
+				f.TomlPath = "tui.theme"
 				f.Desc = "color theme for the terminal UI"
 				return f
 			}(),

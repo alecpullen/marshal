@@ -14,7 +14,7 @@ func HelpOpenClose() *scripted.Scripted {
 	return &scripted.Scripted{
 		Name: "help_open_close",
 		Steps: []scripted.Step{
-			{Send: "?", WaitFor: scripted.WaitFor{ScreenContains: "/help"}},
+			{Send: "?", WaitFor: scripted.WaitFor{ScreenContains: "Help"}},
 			{SendKey: "esc", WaitFor: scripted.WaitFor{ScreenContains: "Type a question"}},
 		},
 	}

@@ -4382,6 +4382,58 @@ func TestApplyConnectDoneWithoutKeyTouchesOnlyProjectConfig(t *testing.T) {
 	}
 }
 
+func TestApplyConnectDoneWritesLimitsToThePreset(t *testing.T) {
+	m, workDir, _ := newModelForConfigTest(t)
+
+	m.applyConnectDone(connect.DoneMsg{
+		Provider:        "openai",
+		Model:           "gpt-4o",
+		ProviderCfg:     config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+		ContextWindow:   128000,
+		MaxOutputTokens: 16384,
+	})
+
+	cfg := m.state.Config
+	profile := cfg.AgentProfiles[cfg.Profile.Default]
+	presetName := profile.Roles[routing.RoleImplementer].Preset
+	preset := cfg.Models.Presets[presetName]
+
+	if preset.ContextWindow != 128000 {
+		t.Errorf("ContextWindow = %d, want 128000", preset.ContextWindow)
+	}
+	if preset.MaxOutputTokens != 16384 {
+		t.Errorf("MaxOutputTokens = %d, want 16384", preset.MaxOutputTokens)
+	}
+
+	data, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if !strings.Contains(string(data), "128000") {
+		t.Errorf("context window not persisted:\n%s", data)
+	}
+}
+
+func TestApplyConnectDoneUnknownLimitsWriteZero(t *testing.T) {
+	m, _, _ := newModelForConfigTest(t)
+
+	m.applyConnectDone(connect.DoneMsg{
+		Provider:    "local",
+		Model:       "mystery-model",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:8080/v1"},
+		// limits left at zero — nothing knew them
+	})
+
+	cfg := m.state.Config
+	profile := cfg.AgentProfiles[cfg.Profile.Default]
+	preset := cfg.Models.Presets[profile.Roles[routing.RoleImplementer].Preset]
+
+	if preset.ContextWindow != 0 || preset.MaxOutputTokens != 0 {
+		t.Errorf("got %d/%d, want zeroes — zero means unknown and the runner falls back",
+			preset.ContextWindow, preset.MaxOutputTokens)
+	}
+}
+
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})

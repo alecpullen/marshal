@@ -262,10 +262,12 @@ func (m *Model) renderProbing(pw int) string {
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type DoneMsg struct {
-	Provider      string
-	Model         string
-	ProviderCfg   config.ProviderConfig
-	EnabledRemote bool
+	Provider        string
+	Model           string
+	ProviderCfg     config.ProviderConfig
+	EnabledRemote   bool
+	ContextWindow   int
+	MaxOutputTokens int
 }
 
 // RefreshMsg is emitted when the user presses ctrl+r in the model
@@ -913,10 +915,12 @@ func (m *Model) refreshCmd() tea.Cmd {
 func (m *Model) done() tea.Cmd {
 	return func() tea.Msg {
 		return DoneMsg{
-			Provider:      m.providerName,
-			Model:         m.modelChosen,
-			ProviderCfg:   m.providerCfg,
-			EnabledRemote: m.remoteEnabled,
+			Provider:        m.providerName,
+			Model:           m.modelChosen,
+			ProviderCfg:     m.providerCfg,
+			EnabledRemote:   m.remoteEnabled,
+			ContextWindow:   m.limits.ContextWindow,
+			MaxOutputTokens: m.limits.MaxOutputTokens,
 		}
 	}
 }

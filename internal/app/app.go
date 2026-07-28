@@ -1326,7 +1326,10 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// same startRuntime path as startup — now with the project config in
 		// force. No Quiesce/knowledge: no agent work ever ran.
 		reloadForTrust = false
-		_ = rt.Close(ctx)
+		// Use Background: the user may have cancelled ctx during the trust
+		// prompt; the deferred Close covers the final rt, this covers reload
+		// iterations.
+		_ = rt.Close(context.Background())
 	}
 }
 

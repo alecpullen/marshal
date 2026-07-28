@@ -92,7 +92,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	pw := min(max(width-2, 30), width)
 	var b strings.Builder
-	fmt.Fprintf(&b, "This project has a .marshal/config.toml.\n")
+	fmt.Fprintf(&b, "This project (%s) has a .marshal/config.toml.\n", p.workingDir)
 	b.WriteString("It can change providers, policy rules, and commands.\n\n")
 	for i, label := range labels {
 		marker := "  "

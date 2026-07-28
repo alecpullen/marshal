@@ -82,7 +82,7 @@ reviewer = "mock_preset"
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
@@ -490,7 +490,7 @@ reviewer = "mock_preset"
 	}
 
 	ctx := context.Background()
-	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("StartRuntime: %v", err)
@@ -1784,7 +1784,7 @@ reviewer = "mock_preset"
 	now := time.Unix(100, 0)
 
 	// First runtime: create a session and persist messages.
-	rt1, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+	rt1, err := StartRuntime(ctx, WithWorkingDir(tmp),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithNow(func() time.Time { return now }),
 	)
@@ -1812,7 +1812,7 @@ reviewer = "mock_preset"
 	countDB.Close()
 
 	// Second runtime with WithExistingSession.
-	rt2, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+	rt2, err := StartRuntime(ctx, WithWorkingDir(tmp),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithNow(func() time.Time { return time.Unix(200, 0) }),
 		WithExistingSession(sessionID),
@@ -1912,7 +1912,7 @@ reviewer = "mock_preset"
 	countDB.Close()
 
 	ctx := context.Background()
-	_, err = StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+	_, err = StartRuntime(ctx, WithWorkingDir(tmp),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithExistingSession("nonexistent-session-id"),
 	)
@@ -1990,7 +1990,7 @@ reviewer = "mock_preset"
 	database.Close()
 
 	ctx := context.Background()
-	_, err = StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+	_, err = StartRuntime(ctx, WithWorkingDir(tmp),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithExistingSession("mismatch-session"),
 	)
@@ -2028,7 +2028,7 @@ reviewer = "mock_preset"
 	}
 
 	ctx := context.Background()
-	_, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true),
+	_, err := StartRuntime(ctx, WithWorkingDir(tmp),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithSessionID("new-session"),
 		WithExistingSession("old-session"),
@@ -2215,58 +2215,10 @@ func TestCommandsRegisteredEvenWhenBuildAgentRunnerFails(t *testing.T) {
 	}
 }
 
-// -- Task 4: onboarding cancelled sentinel ------------------------------
+// (onboarding tests removed — onboarding is deleted)
 
-func TestOnboardingModelCancelled(t *testing.T) {
-	m := NewOnboardingModel(t.TempDir())
-	if m.Cancelled() {
-		t.Fatal("expected Cancelled() to be false before cancellation")
-	}
-
-	// Simulate a non-cancel keypress ('a' is unambiguously unhandled by
-	// the onboarding model's cancel logic; avoid 'q' in case it is later
-	// bound as a quit key).
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'a'})
-	m = updated.(*OnboardingModel)
-	if m.Cancelled() {
-		t.Fatal("expected Cancelled() to be false after non-cancel key")
-	}
-
-	// Simulate Ctrl+C.
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-	m = updated.(*OnboardingModel)
-	if !m.Cancelled() {
-		t.Fatal("expected Cancelled() to be true after Ctrl+C")
-	}
-
-	// Reset and test Esc.
-	m2 := NewOnboardingModel(t.TempDir())
-	// Code 27 is ASCII ESC. Bubble Tea v2's KeyPressMsg.String() maps
-	// this to "esc", which the onboarding model's Update matches.
-	updated, _ = m2.Update(tea.KeyPressMsg{Code: 27})
-	m2 = updated.(*OnboardingModel)
-	if !m2.Cancelled() {
-		t.Fatal("expected Cancelled() to be true after Esc")
-	}
-}
-
-func TestErrOnboardingCancelledSentinel(t *testing.T) {
-	// Verify the sentinel matches itself (trivial case).
-	if !errors.Is(errOnboardingCancelled, errOnboardingCancelled) {
-		t.Fatal("errOnboardingCancelled must be identifiable via errors.Is")
-	}
-	// Verify errors.Is works through wrapping (non-trivial case).
-	wrapped := fmt.Errorf("wrap: %w", errOnboardingCancelled)
-	if !errors.Is(wrapped, errOnboardingCancelled) {
-		t.Fatal("wrapped errOnboardingCancelled must be identifiable via errors.Is")
-	}
-	if errOnboardingCancelled.Error() != "onboarding cancelled" {
-		t.Fatalf("errOnboardingCancelled.Error() = %q, want %q", errOnboardingCancelled.Error(), "onboarding cancelled")
-	}
-}
-
-func TestRunDistinguishesOnboardingCancelled(t *testing.T) {
-	dir := t.TempDir()
+func TestRunOpensConnectOnFirstRun(t *testing.T) {
+	dir := t.TempDir() // no config anywhere → first run
 	origWd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -2275,37 +2227,29 @@ func TestRunDistinguishesOnboardingCancelled(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 	defer os.Chdir(origWd)
+	t.Setenv("HOME", t.TempDir())
 
-	// Track whether the main TUI program runner was called.
-	mainRunnerCalled := false
-
-	// Inject a fake onboarding program runner that simulates Ctrl+C
-	// by sending a Ctrl+C keypress to the model directly, then returns
-	// nil (mimicking a clean program exit).
-	onboardingRunner := func(ctx context.Context, model tea.Model, output io.Writer) error {
-		m := model.(*OnboardingModel)
-		// Simulate Ctrl+C keypress.
-		m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	var sawConnect bool
+	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) error {
+		updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		if strings.Contains(updated.View().Content, "Connect a provider") {
+			sawConnect = true
+		}
 		return nil
 	}
 
-	err = Run(context.Background(), bytes.NewBuffer(nil),
+	if err := Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
-		WithSkipOnboarding(false),
-		WithOnboardingProgramRunner(onboardingRunner),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
-			mainRunnerCalled = true
-			return nil
-		}),
-	)
-	if err != nil {
-		t.Fatalf("Run returned error after onboarding cancellation: %v", err)
+		WithProgramRunner(programRunner),
+	); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if !mainRunnerCalled {
-		t.Fatal("main program runner should have been called after cancelled onboarding (Run must fall through to StartRuntime)")
+	if !sawConnect {
+		t.Fatal("first run should open the TUI with the connect panel")
 	}
 }
 
@@ -2695,7 +2639,7 @@ command = "` + stub + `"
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithSkipOnboarding(true), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	rt, err := StartRuntime(ctx, WithWorkingDir(tmp), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}

@@ -200,7 +200,6 @@ func TestSessionPlumbsAdditionalDirectories(t *testing.T) {
 		CloseRuntime: func(ctx context.Context, rt *app.Runtime) error { return rt.Close(ctx) },
 		Notify:       func(method string, params any) error { return nil },
 		Options: []app.Option{
-			app.WithSkipOnboarding(true),
 			app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		},
 	})

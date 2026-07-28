@@ -56,7 +56,7 @@ type SessionManagerConfig struct {
 	// Notify sends JSON-RPC notifications. Required for Load (replay).
 	Notify NotifyFunc
 	// Options are appended to every StartRuntime call. Useful for
-	// headless defaults like WithSkipOnboarding.
+	// headless defaults like WithTrustResolver.
 	Options []app.Option
 	// Lister provides session discovery for session/list. When nil,
 	// List returns a server error.

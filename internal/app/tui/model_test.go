@@ -5551,3 +5551,31 @@ func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
 		t.Fatal("no receipt message found in transcript")
 	}
 }
+
+func TestOpenConnectOnStartOpensConnectPanel(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m2 := New(m.state, WithOpenConnectOnStart())
+	if !m2.dock.IsOpen() {
+		t.Fatal("dock should host the connect panel on first run")
+	}
+	if _, ok := m2.dock.Panel().(connect.Panel); !ok {
+		t.Fatalf("dock panel = %T, want connect.Panel", m2.dock.Panel())
+	}
+}
+
+func TestOpenConnectOnStartYieldsToTrustPrompt(t *testing.T) {
+	// When a trust prompt is pending (group C §4), it is modal and must own
+	// the dock; connect opens only after the prompt resolves. This test
+	// pins the ordering: trust panel first.
+	m := newViewTestModel(t, 80, 24)
+	decided := false
+	m2 := New(m.state,
+		WithTrustPrompt("/repo", func(trust.Decision) { decided = true }),
+		WithOpenConnectOnStart(),
+	)
+	panel := m2.dock.Panel()
+	if _, ok := panel.(connect.Panel); ok {
+		t.Fatal("connect must not pre-empt a pending trust prompt")
+	}
+	_ = decided
+}

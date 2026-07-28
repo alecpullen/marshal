@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -70,14 +69,11 @@ func must[T any](raw any) T {
 }
 
 type options struct {
-	now                     func() time.Time
-	configLoader            configLoader
-	layersLoader            func(config.LoadOptions) (config.Layers, error)
-	programRunner           ProgramRunner
-	onboardingProgramRunner ProgramRunner // injected for tests; nil means use tea.NewProgram directly
-	skipOnboarding          bool
-	skipOnboardingSet       bool // true when WithSkipOnboarding was explicitly called
-	trustResolver           trust.Resolver
+	now           func() time.Time
+	configLoader  configLoader
+	layersLoader  func(config.LoadOptions) (config.Layers, error)
+	programRunner ProgramRunner
+	trustResolver trust.Resolver
 	// deferTrustPrompt moves the folder-trust question into the TUI (the
 	// interactive path). sessionTrusted carries an inline session-trust
 	// answer across the reload loop.
@@ -101,11 +97,6 @@ var (
 	// interactive, swarm, and SDD runners. (agent.Runner's own 5-minute
 	// default covers ad-hoc subagent runners.)
 	agentRequestTimeout = 60 * time.Second
-
-	// errOnboardingCancelled is set when the user cancels onboarding;
-	// Run logs it and continues with default config. Callers can use
-	// errors.Is to distinguish cancellation from other errors.
-	errOnboardingCancelled = errors.New("onboarding cancelled")
 )
 
 func WithNow(now func() time.Time) Option {
@@ -120,23 +111,6 @@ func WithProgramRunner(runner ProgramRunner) Option {
 			return
 		}
 		opts.programRunner = runner
-	}
-}
-
-func WithSkipOnboarding(skip bool) Option {
-	return func(opts *options) {
-		opts.skipOnboarding = skip
-		opts.skipOnboardingSet = true
-	}
-}
-
-// WithOnboardingProgramRunner injects a fake ProgramRunner for the
-// onboarding wizard. When set, Run uses this instead of creating a
-// tea.NewProgram directly, allowing tests to simulate user input
-// (e.g. Ctrl+C) without a real terminal.
-func WithOnboardingProgramRunner(runner ProgramRunner) Option {
-	return func(opts *options) {
-		opts.onboardingProgramRunner = runner
 	}
 }
 
@@ -1109,38 +1083,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		return err
 	}
 
-	var onboardingErr error
-	// Determine whether to run onboarding. If WithSkipOnboarding was
-	// explicitly provided, honour it; otherwise skip during tests and
-	// when a config already exists.
-	skipOnboarding := runOpts.skipOnboarding
-	if !runOpts.skipOnboardingSet {
-		skipOnboarding = flag.Lookup("test.v") != nil || config.HasConfig(config.LoadOptions{WorkingDir: workingDir})
-	}
-	if !skipOnboarding {
-		onboarding := NewOnboardingModel(workingDir)
-		if runOpts.onboardingProgramRunner != nil {
-			// Injected runner (used by tests): call it directly instead
-			// of creating a tea.NewProgram.
-			if err := runOpts.onboardingProgramRunner(ctx, onboarding, stdout); err != nil {
-				return fmt.Errorf("onboarding failed: %w", err)
-			}
-		} else {
-			p := tea.NewProgram(onboarding, tea.WithOutput(stdout), tea.WithContext(ctx))
-			if _, err := p.Run(); err != nil {
-				return fmt.Errorf("onboarding failed: %w", err)
-			}
-		}
-		if onboarding.state != stateDone {
-			if onboarding.Cancelled() {
-				onboardingErr = errOnboardingCancelled
-			}
-		}
-	}
-	if errors.Is(onboardingErr, errOnboardingCancelled) {
-		slog.Default().Info("onboarding cancelled; using default config")
-	}
-
 	// Define configReloader before startRuntime so it can be wired into
 	// native.Options. The closure captures rt by reference; rt is set
 	// immediately after startRuntime returns.
@@ -1155,6 +1097,10 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	if err != nil {
 		return err
 	}
+
+	// First-run detection: when no config exists yet, open the connect
+	// panel in the TUI instead of running a separate onboarding wizard.
+	firstRun := !config.HasConfig(config.LoadOptions{HomeDir: homeDir, WorkingDir: workingDir})
 	trustDecide := func(d trust.Decision) {
 		switch d {
 		case trust.DecisionTrustPermanent:
@@ -1223,6 +1169,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// falls back to a lazy load on the first @-keystroke.
 		if filePaths, ferr := loadFileIndexPaths(database, projectID); ferr == nil && len(filePaths) > 0 {
 			tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
+		}
+		if firstRun {
+			tuiOpts = append(tuiOpts, tui.WithOpenConnectOnStart())
 		}
 		if state.ProviderError() == nil {
 			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))

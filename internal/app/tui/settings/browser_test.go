@@ -603,6 +603,31 @@ func TestGlobalTargetRowWritesUserConfigOnly(t *testing.T) {
 	}
 }
 
+func TestGlobalTargetSaveFailureDoesNotWriteProjectConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userPath := config.UserConfigPath(home)
+	projectPath := filepath.Join(t.TempDir(), "config.toml")
+	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+
+	// Make user-config path unwritable: parent is a regular file so
+	// MkdirAll in SaveUserConfigValue fails.
+	badParent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(badParent, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	b.userConfigPath = filepath.Join(badParent, "config.toml")
+
+	drillBrowserToRow(t, b, "Theme")
+	b.Update(tea.KeyPressMsg{Code: tea.KeyRight}) // enum cycle
+
+	// Project config must not exist — the global-target failure must not
+	// fall through to writing the project config.
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("project config must not be written on global-target failure: %v", err)
+	}
+}
+
 func TestHintsShowWriteTarget(t *testing.T) {
 	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
 	drillBrowserToRow(t, b, "Theme")

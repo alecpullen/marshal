@@ -17,6 +17,13 @@ type ChangedMsg struct {
 	// target file; the model must reload but not save again. Global-target
 	// commits set this so the project file is never touched.
 	Saved bool
+
+	// GlobalTarget indicates this change was written (or attempted) against
+	// the user-global config file. When true and Saved is false, the model
+	// must NOT fall through to persistAndReload (which writes the project
+	// config), because writing a global value into the project config
+	// violates the config-model provenance constraint.
+	GlobalTarget bool
 }
 
 // BrowserClosedMsg is emitted when the browser closes at its root.

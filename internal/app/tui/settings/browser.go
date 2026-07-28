@@ -491,7 +491,7 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 			b.baseline = cloneConfig(b.reg.Config())
 			b.pendingKey = ""
 			changed := func() tea.Msg {
-				return ChangedMsg{Receipts: nil, Cfg: b.baseline, SaveErr: fmt.Errorf("no config value at %s", row.TomlPath)}
+				return ChangedMsg{Receipts: nil, Cfg: b.baseline, SaveErr: fmt.Errorf("no config value at %s", row.TomlPath), GlobalTarget: true}
 			}
 			if inner == nil {
 				return changed
@@ -507,7 +507,7 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 		b.baseline = cloneConfig(b.reg.Config())
 		b.pendingKey = ""
 		changed := func() tea.Msg {
-			return ChangedMsg{Receipts: receipts, Cfg: b.baseline, SaveErr: saveErr, Saved: saveErr == nil}
+			return ChangedMsg{Receipts: receipts, Cfg: b.baseline, SaveErr: saveErr, Saved: saveErr == nil, GlobalTarget: true}
 		}
 		if inner == nil {
 			return changed

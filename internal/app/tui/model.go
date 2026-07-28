@@ -997,11 +997,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					*m.configLayers = &layers
 				}
 			}
+			cfgPath := projectConfigPath(m.state.WorkingDir)
+			if msg.GlobalTarget {
+				if home, err := os.UserHomeDir(); err == nil && home != "" {
+					cfgPath = config.UserConfigPath(home)
+				}
+			}
 			for _, receipt := range msg.Receipts {
 				m.state.AddMessage(session.RoleSystem,
-					"✓ "+receipt+" · "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),
+					"✓ "+receipt+" · "+relPath(m.state.WorkingDir, cfgPath),
 					session.ContentTypePlain)
 			}
+			m.refreshViewport()
+			return m, nil
+		}
+		// Global-target save failure: apply in memory, mark pending, emit
+		// error, but NEVER fall through to persistAndReload (which writes
+		// into the project config, violating the provenance constraint).
+		if msg.GlobalTarget && !msg.Saved {
+			m.applyNewConfig(msg.Cfg)
+			m.configSavePending = true
+			userPath := ""
+			if home, err := os.UserHomeDir(); err == nil && home != "" {
+				userPath = config.UserConfigPath(home)
+			}
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("✗ save failed: %v · %s", msg.SaveErr, relPath(m.state.WorkingDir, userPath)),
+				session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		}

@@ -360,6 +360,52 @@ func drillToRow(t *testing.T, p *Panel, title string) {
 	t.Fatalf("row %q not found", title)
 }
 
+func TestRosterCreatesCustomAgent(t *testing.T) {
+	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	drillToRow(t, p, "＋ New custom agent")
+	enterCmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// Execute the returned Cmd to deliver createAgentPromptMsg to the panel.
+	if enterCmd != nil {
+		if msg := enterCmd(); msg != nil {
+			p.Update(msg)
+		}
+	}
+
+	// The action opens the picker overlay in free-text mode for the name.
+	if !p.pickerActive {
+		t.Fatal("create action should open the name picker overlay")
+	}
+	cmd := p.Update(picker.PickedMsg{Value: "reviewer-x"})
+	if cmd == nil {
+		t.Fatal("creation should emit a persist command")
+	}
+
+	cfg := settings.StateCfg(p.state)
+	ca, ok := cfg.CustomAgents["reviewer-x"]
+	if !ok {
+		t.Fatalf("agent not created: %#v", cfg.CustomAgents)
+	}
+	if ca.Name != "reviewer-x" {
+		t.Fatalf("Name = %q, want reviewer-x (stored TOML field must be written)", ca.Name)
+	}
+
+	// The new agent's edit frame opens immediately — the preset picker is
+	// the first field, so "pick a preset it layers on" is the next gesture.
+	out := p.View(120, 30)
+	if !strings.Contains(out, "Preset") || !strings.Contains(out, "System prompt") {
+		t.Fatalf("expected the new agent's edit frame after creation:\n%s", out)
+	}
+
+	// Duplicate names are rejected.
+	p2 := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	drillToRow(t, p2, "＋ New custom agent")
+	p2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	p2.Update(picker.PickedMsg{Value: "reviewer-x"})
+	if got := len(settings.StateCfg(p2.state).CustomAgents); got != 1 {
+		t.Fatalf("duplicate name created a second entry, count = %d", got)
+	}
+}
+
 func TestRosterTwoColumnShowsDetailPane(t *testing.T) {
 	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
 	out := p.View(140, 20)

@@ -25,6 +25,10 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// createAgentPromptMsg asks the panel to open the name-entry overlay for
+// custom-agent creation.
+type createAgentPromptMsg struct{}
+
 // DispatchFn starts an agent run for `agentName` with `goal`. nil disables Run-now.
 type DispatchFn func(agentName, goal string) tea.Cmd
 
@@ -186,6 +190,15 @@ func (p *Panel) matchedFields() []*settings.Field {
 		})
 		fields = append(fields, caField)
 	}
+
+	// "＋ New custom agent" action row.
+	newField := settings.NewField("roster.custom_agents.new", "＋ New custom agent", settings.KindAction)
+	settings.SetFieldDesc(newField, "create a custom agent: name it, then pick the preset it layers on")
+	settings.SetFieldActLabel(newField, func() string { return "↵ create" })
+	settings.SetFieldAct(newField, func() tea.Cmd {
+		return func() tea.Msg { return createAgentPromptMsg{} }
+	})
+	fields = append(fields, newField)
 
 	// Run budgets section header.
 	budgetHeader := settings.NewField("header.run_budgets", "Run Budgets", settings.KindHeader)
@@ -429,9 +442,37 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 	})
 }
 
+// createCustomAgent validates the name, writes the agent (layering on no
+// preset yet — the freshly opened edit frame's Preset picker is the next
+// gesture), persists, and drills into the new agent's edit frame.
+func (p *Panel) createCustomAgent(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("name cannot be empty")
+	}
+	cfg := settings.StateCfg(p.state)
+	if _, exists := cfg.CustomAgents[name]; exists {
+		return fmt.Errorf("a custom agent named %q already exists", name)
+	}
+	if cfg.CustomAgents == nil {
+		cfg.CustomAgents = map[string]routing.CustomAgent{}
+	}
+	cfg.CustomAgents[name] = routing.CustomAgent{Name: name}
+	p.pushFrame(p.customAgentFrame(name))
+	return nil
+}
+
 // Update handles messages for the roster panel.
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case createAgentPromptMsg:
+		p.pendingPick = func(name string) error {
+			return p.createCustomAgent(name)
+		}
+		p.pickerModel = picker.New("New custom agent", "type a name · ↵ confirm · esc cancel", nil)
+		p.pickerModel.SetAllowCustom(true)
+		p.pickerActive = true
+		return nil
 	case picker.PickedMsg:
 		if p.pendingPick != nil {
 			if err := p.pendingPick(msg.Value); err != nil {

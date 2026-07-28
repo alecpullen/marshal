@@ -38,6 +38,7 @@ import (
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/sidepanel"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
@@ -45,6 +46,7 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/sdd"
 	"marshal/internal/strutil"
+	"marshal/internal/trust"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -94,6 +96,8 @@ type Model struct {
 	ctx            context.Context
 	busy           bool
 	configReloader ConfigReloader
+	trustPromptDir string
+	trustDecide    func(trust.Decision)
 	memoryDB       *db.DB
 	memoryProject  int64
 	cmdRegistry    *commands.Registry
@@ -251,6 +255,16 @@ type ConfigReloader func(cfg config.Config) error
 func WithConfigReloader(fn ConfigReloader) Option {
 	return func(m *Model) {
 		m.configReloader = fn
+	}
+}
+
+// WithTrustPrompt opens the modal folder-trust panel at startup. decide is
+// called with the user's answer; trusting quits the program so the app can
+// reload with the project config in force.
+func WithTrustPrompt(workingDir string, decide func(trust.Decision)) Option {
+	return func(m *Model) {
+		m.trustPromptDir = workingDir
+		m.trustDecide = decide
 	}
 }
 
@@ -703,6 +717,10 @@ func New(state *session.State, opts ...Option) Model {
 		}
 	}
 
+	if m.trustDecide != nil && m.trustPromptDir != "" {
+		m.dock.Open(trustpanel.New(m.trustPromptDir, m.trustDecide))
+	}
+
 	return m
 }
 
@@ -904,6 +922,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	case memory.ClosedMsg:
+		m.dock.CloseNow()
+		m.refreshViewport()
+		return m, nil
+	case trustpanel.ClosedMsg:
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil

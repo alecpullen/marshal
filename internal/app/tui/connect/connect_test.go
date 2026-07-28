@@ -822,3 +822,50 @@ func TestUniqueNameEmptyTemplateIDBehavesAsCustom(t *testing.T) {
 		t.Errorf("uniqueName() = %q, want %q", got, "custom-3")
 	}
 }
+
+func TestModelStepEmitsRefreshOnCtrlR(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
+		}},
+		Discovered:       map[string][]schema.ModelInfo{"openai": {{ID: "gpt-4o"}}},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+	})
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("ctrl+r produced no command")
+	}
+	if _, ok := cmd().(RefreshMsg); !ok {
+		t.Errorf("got %T, want RefreshMsg", cmd())
+	}
+}
+
+func TestPlainRStillFiltersTheModelList(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
+		}},
+		Discovered:       map[string][]schema.ModelInfo{"openai": {{ID: "gpt-4o"}}},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+	})
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if cmd != nil {
+		if _, ok := cmd().(RefreshMsg); ok {
+			t.Error("plain r must reach the picker filter, not refresh")
+		}
+	}
+}
+
+func TestRefreshKeyInactiveOutsideModelStep(t *testing.T) {
+	m := New(Opts{Cfg: config.Config{}}) // starts at stepPickTemplate
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	if cmd != nil {
+		if _, ok := cmd().(RefreshMsg); ok {
+			t.Error("refresh should only be bound in the model step")
+		}
+	}
+}

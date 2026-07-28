@@ -1194,6 +1194,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Picker messages: the picker itself lives in m.dock and is updated
 	// through the dock. We only handle the terminal messages here.
 	switch pm := msg.(type) {
+	case connect.RefreshMsg:
+		for _, name := range pm.Providers {
+			delete(m.discovered, name)
+			m.evictDiscovered(name)
+		}
+		return m, m.probeProviders(pm.Providers)
 	case connect.DoneMsg:
 		m.applyConnectDone(pm)
 		m.dock.CloseNow()
@@ -2555,6 +2561,21 @@ func (m *Model) persistDiscovered(name string, models []schema.ModelInfo) {
 		Models:     models,
 		FetchedAt:  time.Now(),
 	}
+	_ = modelcache.Save(m.modelCacheDir, c)
+}
+
+// evictDiscovered removes one provider's entry from the on-disk cache.
+// Used by the manual refresh key — the in-session map is already cleared
+// by the caller. Failures are silent for the same reason as persist.
+func (m *Model) evictDiscovered(name string) {
+	if m.modelCacheDir == "" {
+		return
+	}
+	c := modelcache.Load(m.modelCacheDir)
+	if _, ok := c.Providers[name]; !ok {
+		return
+	}
+	delete(c.Providers, name)
 	_ = modelcache.Save(m.modelCacheDir, c)
 }
 

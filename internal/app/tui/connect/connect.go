@@ -252,6 +252,13 @@ type DoneMsg struct {
 	EnabledRemote bool
 }
 
+// RefreshMsg is emitted when the user presses ctrl+r in the model
+// selection step. It asks the parent to evict the listed providers'
+// cached discovery entries and re-probe them.
+type RefreshMsg struct {
+	Providers []string
+}
+
 type CancelledMsg struct{}
 
 type TickMsg struct{}
@@ -399,7 +406,7 @@ func enterPickModelStep(m *Model, providerName string) {
 	m.step = stepPickModel
 	m.title = "Select model"
 	m.subtitle = providerName
-	m.footer = "[↑↓] move [↵] pick [Esc] done"
+	m.footer = "[↑↓] move [↵] pick [^r] refresh [Esc] done"
 	m.err = ""
 	m.providerName = providerName
 	if pc, ok := m.cfg.Providers[providerName]; ok {
@@ -579,6 +586,12 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 		if ks == "esc" {
 			return m, m.cancel()
 		}
+		// ctrl+r is intercepted here (not by the picker) so a bare "r"
+		// still falls through to the filter input — every printable key
+		// the picker doesn't recognise edits the filter box.
+		if m.step == stepPickModel && ks == "ctrl+r" {
+			return m, m.refreshCmd()
+		}
 		if m.picker == nil {
 			return m, nil
 		}
@@ -714,6 +727,33 @@ func (m *Model) advanceToPickModel() (*Model, tea.Cmd) {
 
 func (m *Model) runProbe() tea.Cmd {
 	return probe.Provider("connect", m.providerName, m.providerCfg)
+}
+
+// refreshCmd emits a RefreshMsg naming the providers whose entries the
+// picker is currently showing, so the parent TUI can evict and re-probe
+// them. In single-provider mode only the scoped provider is listed; in
+// all-providers mode every provider with a populated discovered map (or
+// the active providerName) is included.
+func (m *Model) refreshCmd() tea.Cmd {
+	names := map[string]struct{}{m.providerName: {}}
+	if m.allProviders {
+		for pn := range m.discovered {
+			if len(m.discovered[pn]) > 0 {
+				names[pn] = struct{}{}
+			}
+		}
+		for pn := range m.cfg.Providers {
+			if tpl, ok := provider.Lookup(pn); ok && len(tpl.Models) > 0 {
+				names[pn] = struct{}{}
+			}
+		}
+	}
+	providers := make([]string, 0, len(names))
+	for n := range names {
+		providers = append(providers, n)
+	}
+	sort.Strings(providers)
+	return func() tea.Msg { return RefreshMsg{Providers: providers} }
 }
 
 func (m *Model) done() tea.Cmd {

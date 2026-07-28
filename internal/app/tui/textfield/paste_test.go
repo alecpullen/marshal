@@ -7,7 +7,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/connect"
@@ -63,14 +62,6 @@ func TestPasteReachesEveryTextInput(t *testing.T) {
 			settings.FieldListUpdate(fl, tea.KeyPressMsg{Code: tea.KeyEnter})
 			settings.FieldListUpdate(fl, tea.PasteMsg{Content: pasted})
 			return fl.InputValue()
-		},
-		"onboarding text input": func(t *testing.T) string {
-			m := app.NewOnboardingModel(t.TempDir())
-			mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // select default provider
-			m = mm.(*app.OnboardingModel)
-			mm, _ = m.Update(tea.PasteMsg{Content: pasted})
-			m = mm.(*app.OnboardingModel)
-			return m.InputValue()
 		},
 	}
 

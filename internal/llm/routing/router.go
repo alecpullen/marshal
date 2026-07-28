@@ -35,7 +35,7 @@ func (r *StaticRouter) Resolve(class string) (Route, error) {
 
 // ResolveRole resolves a route for an explicit agent role, with the same
 // fallback chain Resolve uses: configured role preset → implementer
-// preset → legacy provider. The swarm orchestrator uses this to give each
+// preset. The swarm orchestrator uses this to give each
 // role its own model preset (asymmetric local swarm, docs/07).
 func (r *StaticRouter) ResolveRole(role AgentRole) (Route, error) {
 	route, err := r.resolveProfileRole(role)
@@ -55,9 +55,6 @@ func (r *StaticRouter) ResolveRole(role AgentRole) (Route, error) {
 		if !isNoConfiguredRoute(fallbackErr) {
 			return Route{}, fallbackErr
 		}
-	}
-	if legacy, ok := r.legacyRoute(role); ok {
-		return legacy, nil
 	}
 	if fallbackErr != nil {
 		return Route{}, fallbackErr
@@ -205,34 +202,6 @@ func isNoConfiguredRoute(err error) bool {
 	return errors.Is(err, ErrProfileNotFound) || errors.Is(err, errRoleNotConfigured)
 }
 
-func (r *StaticRouter) legacyRoute(role AgentRole) (Route, bool) {
-	if r.config.LegacyProvider == "" || r.config.LegacyModel == "" {
-		return Route{}, false
-	}
-	if !r.config.RemoteAllowed && !isLocalProvider(r.config.LegacyProvider) {
-		// F-SEC-09: the legacy provider is remote but the user has
-		// opted out of remote providers. Returning (Route{}, false)
-		// makes the caller's `_, ok` form fall through to the
-		// existing errRoleNotConfigured error, which the surface
-		// layer turns into a user-visible "no route for role X"
-		// message.
-		return Route{}, false
-	}
-	return Route{
-		Role:    role,
-		Profile: "legacy",
-		Preset: ModelPreset{
-			Name:     "legacy",
-			Provider: r.config.LegacyProvider,
-			Model:    r.config.LegacyModel,
-		},
-		ContextBudget: ContextBudget{
-			MaxRepoContextTokens: 8000,
-		},
-		Legacy: true,
-	}, true
-}
-
 // IsLocalProvider reports whether the provider URL targets the local
 // machine. Used to bypass the remote_providers_allowed gate for
 // localhost-only deployments (F-SEC-09) and by the TUI for local badges.
@@ -247,13 +216,6 @@ func IsLocalProvider(provider string) bool {
 		return true
 	}
 	return strings.HasPrefix(host, "::1%")
-}
-
-// isLocalProvider returns true if the provider URL targets the local
-// machine. Used to bypass the remote_providers_allowed gate for
-// localhost-only deployments. See F-SEC-09.
-func isLocalProvider(provider string) bool {
-	return IsLocalProvider(provider)
 }
 
 // CastEntry holds the result of resolving a single role via Cast.

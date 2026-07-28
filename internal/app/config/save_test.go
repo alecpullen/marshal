@@ -89,8 +89,20 @@ func TestSaveProjectConfigRoundTripLegacyAgent(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	if loaded.Agent.Provider != "anthropic" || loaded.Agent.Model != "claude-sonnet-4" {
-		t.Fatalf("agent = %+v", loaded.Agent)
+	// Migration clears legacy fields and creates a single-model profile.
+	if loaded.Agent.Provider != "" || loaded.Agent.Model != "" {
+		t.Fatalf("legacy fields not cleared after migration: %+v", loaded.Agent)
+	}
+	if loaded.Profile.Default != "single" {
+		t.Fatalf("expected default profile 'single', got %q", loaded.Profile.Default)
+	}
+	profile, ok := loaded.AgentProfiles["single"]
+	if !ok {
+		t.Fatal("expected 'single' profile after migration")
+	}
+	presetName := profile.Roles[routing.RoleImplementer].Preset
+	if presetName != "anthropic/claude-sonnet-4" {
+		t.Fatalf("expected preset 'anthropic/claude-sonnet-4', got %q", presetName)
 	}
 }
 

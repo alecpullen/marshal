@@ -17,7 +17,5 @@ func (c Config) RoutingConfig() routing.Config {
 		Profiles:       c.AgentProfiles,
 		CustomAgents:   c.CustomAgents,
 		ContextBudgets: contextBudgets,
-		LegacyProvider: c.Agent.Provider,
-		LegacyModel:    c.Agent.Model,
 	}
 }

@@ -133,7 +133,6 @@ type Route struct {
 	Profile       string
 	Preset        ModelPreset
 	ContextBudget ContextBudget
-	Legacy        bool
 	CustomAgent   *CustomAgent // nil unless resolved from a RoleBinding.CustomAgent
 }
 
@@ -144,6 +143,4 @@ type Config struct {
 	Profiles       map[string]AgentProfile
 	CustomAgents   map[string]CustomAgent
 	ContextBudgets map[AgentRole]ContextBudget
-	LegacyProvider string
-	LegacyModel    string
 }

@@ -103,7 +103,6 @@ type RouteInfo struct {
 	Provider  string
 	Model     string
 	LocalOnly bool
-	Legacy    bool
 	Active    bool
 }
 

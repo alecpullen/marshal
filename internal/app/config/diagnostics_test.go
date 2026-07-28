@@ -145,6 +145,54 @@ func TestDiagnoseLiteralKeyInProjectConfigWarns(t *testing.T) {
 	}
 }
 
+func TestDiagnoseLegacyAgentModelMigrationWarns(t *testing.T) {
+	// Construct a legacy config on disk, load it through LoadLayers (which
+	// runs MigrateLegacyAgentModel), then verify Diagnose reports the
+	// deprecation warning at path "agent.provider".
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, home+"/.config/marshal/config.toml", `[agent]
+provider = "openai"
+model = "gpt-4o"
+
+[profile]
+default = ""
+
+[providers.openai]
+type = "openai_compatible"
+base_url = "https://api.openai.com/v1"
+`)
+	writeFile(t, work+"/.marshal/config.toml", `[project]
+name = "test"
+`)
+
+	l, err := LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if !l.Migrated {
+		t.Fatal("expected Migrated=true for a legacy config")
+	}
+
+	ds := Diagnose(l.Merged, l)
+	found := false
+	for _, d := range ds {
+		if d.Path == "agent.provider" {
+			found = true
+			if d.Severity != SeverityWarning {
+				t.Errorf("severity = %v, want SeverityWarning", d.Severity)
+			}
+			if d.Message == "" {
+				t.Error("empty diagnostic message")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no diagnostic at path agent.provider; got %v", diagPaths(ds))
+	}
+}
+
 func TestDiagnoseOrdersErrorsBeforeWarnings(t *testing.T) {
 	cfg := Default()
 	cfg.Providers = map[string]ProviderConfig{"broken": {Type: "openai_compatible"}}

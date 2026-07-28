@@ -126,6 +126,19 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		}
 	}
 
+	// 7: legacy agent.provider + agent.model (deprecated)
+	if layers.Migrated {
+		path := "agent.provider"
+		p := layers.ProvenanceOf(path)
+		source := p.SetBy.String()
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     path,
+			Message:  "agent.provider and agent.model are deprecated; migrated to a single-model profile for this session. The next config save will rewrite these settings.",
+			Source:   source,
+		})
+	}
+
 	// Sort: errors before warnings, then by Path within each group.
 	sort.SliceStable(ds, func(i, j int) bool {
 		if ds[i].Severity != ds[j].Severity {

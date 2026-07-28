@@ -676,7 +676,6 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		Provider:  route.Preset.Provider,
 		Model:     route.Preset.Model,
 		LocalOnly: route.Preset.LocalOnly,
-		Legacy:    route.Legacy,
 		Active:    true,
 	})
 

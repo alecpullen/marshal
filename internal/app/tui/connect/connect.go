@@ -405,7 +405,11 @@ func enterBaseURLStep(m *Model) {
 func enterPickModelStep(m *Model, providerName string) {
 	m.step = stepPickModel
 	m.title = "Select model"
-	m.subtitle = providerName
+	if m.allProviders {
+		m.subtitle = "all configured providers"
+	} else {
+		m.subtitle = providerName
+	}
 	m.footer = "[↑↓] move [↵] pick [^r] refresh [Esc] done"
 	m.err = ""
 	m.providerName = providerName
@@ -463,7 +467,11 @@ func buildModelPicker(m *Model, providerName string) *picker.Model {
 	if len(items) == 0 {
 		items = append(items, picker.Item{Label: "Enter model id manually", Value: "__manual__", Badge: "custom"})
 	}
-	p := picker.New(m.title, "pick a model for "+providerName, items)
+	sub := "pick a model for " + providerName
+	if m.allProviders {
+		sub = "pick a model"
+	}
+	p := picker.New(m.title, sub, items)
 	p.SetAllowCustom(true)
 	return p
 }

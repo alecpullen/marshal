@@ -860,6 +860,44 @@ func TestPlainRStillFiltersTheModelList(t *testing.T) {
 	}
 }
 
+func TestModelStepSubtitleNamesNoProviderInAllProvidersMode(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
+			"groq":   {Type: "openai_compatible", BaseURL: "https://b/v1"},
+		}},
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "gpt-4o"}},
+			"groq":   {{ID: "llama-3.3-70b"}},
+		},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+		ScopedProvider:   "groq",
+	})
+
+	if strings.Contains(m.subtitle, "groq") || strings.Contains(m.subtitle, "openai") {
+		t.Errorf("subtitle %q names one provider while listing all of them", m.subtitle)
+	}
+	if m.subtitle == "" {
+		t.Error("subtitle should say something in all-providers mode")
+	}
+}
+
+func TestModelStepSubtitleNamesTheProviderWhenScoped(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
+		}},
+		Discovered:       map[string][]schema.ModelInfo{"openai": {{ID: "gpt-4o"}}},
+		SkipToIntroModel: true,
+		ScopedProvider:   "openai",
+	})
+
+	if m.subtitle != "openai" {
+		t.Errorf("subtitle = %q, want the scoped provider name", m.subtitle)
+	}
+}
+
 func TestRefreshKeyInactiveOutsideModelStep(t *testing.T) {
 	m := New(Opts{Cfg: config.Config{}}) // starts at stepPickTemplate
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})

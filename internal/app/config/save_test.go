@@ -782,3 +782,50 @@ func TestSaveUserConfigSectionPreservesUnrelated(t *testing.T) {
 		t.Fatalf("swarm.budget.max_fix_rounds not preserved: %+v", loaded.Swarm)
 	}
 }
+
+func TestSaveUserConfigProviderAPIKeyWritesKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := SaveUserConfigProviderAPIKey(path, "openai", "sk-test-123"); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), "sk-test-123") {
+		t.Errorf("key not written:\n%s", data)
+	}
+}
+
+func TestSaveUserConfigProviderAPIKeyClearsStaleEnvRef(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := SaveUserConfigProviderAPIKey(path, "openai", ""); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Seed an env reference, then switch to an inline key.
+	if err := SaveUserConfigProviderAPIKey(path, "openai", "sk-inline"); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	// TOML serializes empty strings as '' not "", so accept either.
+	if strings.Contains(string(data), "api_key_env") &&
+		!strings.Contains(string(data), `api_key_env = ''`) {
+		t.Errorf("stale api_key_env survived:\n%s", data)
+	}
+}
+
+func TestSaveUserConfigProviderAPIKeyPreservesOtherProviders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := SaveUserConfigProviderAPIKey(path, "openai", "sk-a"); err != nil {
+		t.Fatalf("save a: %v", err)
+	}
+	if err := SaveUserConfigProviderAPIKey(path, "groq", "sk-b"); err != nil {
+		t.Fatalf("save b: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	for _, want := range []string{"sk-a", "sk-b"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("lost %q:\n%s", want, data)
+		}
+	}
+}

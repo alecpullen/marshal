@@ -2644,6 +2644,30 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	newCfg.Agent.Model = msg.Model
 	newCfg.Profile.Default = ""
 
+	// Credentials never go to project config. Write the key to the user
+	// config first; if that fails, configure nothing rather than leaving a
+	// provider entry pointing at a key that was never saved.
+	if msg.ProviderCfg.APIKey != "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
+			return
+		}
+		if err := config.SaveUserConfigProviderAPIKey(
+			config.UserConfigPath(home), msg.Provider, msg.ProviderCfg.APIKey); err != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("✗ Failed to save API key: %v", err), session.ContentTypePlain)
+			return
+		}
+		// Strip the key from the project-bound copy. persistAndReload
+		// serializes the whole Config, so leaving it set would write the
+		// secret to .marshal/config.toml as well.
+		stripped := newCfg.Providers[msg.Provider]
+		stripped.APIKey = ""
+		newCfg.Providers[msg.Provider] = stripped
+	}
+
 	saveErr, reloadErr := m.persistAndReload(newCfg)
 	switch {
 	case saveErr != nil:

@@ -4245,6 +4245,77 @@ func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
 	}
 }
 
+// newModelForConfigTest creates a Model with distinct work/home directories
+// for testing config persistence. Caller must not mutate after applyConnectDone
+// since the tests check file contents.
+func newModelForConfigTest(t *testing.T) (m Model, workDir string, homeDir string) {
+	t.Helper()
+	workDir = t.TempDir()
+	homeDir = t.TempDir()
+	t.Setenv("HOME", homeDir)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.WorkingDir = workDir
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m = New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+	return
+}
+
+func TestApplyConnectDoneKeepsAPIKeyOutOfProjectConfig(t *testing.T) {
+	m, workDir, homeDir := newModelForConfigTest(t)
+
+	m.applyConnectDone(connect.DoneMsg{
+		Provider: "openai",
+		Model:    "gpt-4o",
+		ProviderCfg: config.ProviderConfig{
+			Type:    "openai_compatible",
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-secret-should-not-be-committed",
+		},
+	})
+
+	projectData, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if strings.Contains(string(projectData), "sk-secret-should-not-be-committed") {
+		t.Errorf("API key written to project config:\n%s", projectData)
+	}
+	if !strings.Contains(string(projectData), "api.openai.com") {
+		t.Errorf("base URL missing from project config:\n%s", projectData)
+	}
+
+	userData, err := os.ReadFile(config.UserConfigPath(homeDir))
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if !strings.Contains(string(userData), "sk-secret-should-not-be-committed") {
+		t.Errorf("API key missing from user config:\n%s", userData)
+	}
+}
+
+func TestApplyConnectDoneWithoutKeyTouchesOnlyProjectConfig(t *testing.T) {
+	m, workDir, _ := newModelForConfigTest(t)
+
+	m.applyConnectDone(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	})
+
+	data, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if !strings.Contains(string(data), "localhost:11434") {
+		t.Errorf("provider not persisted:\n%s", data)
+	}
+}
+
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})

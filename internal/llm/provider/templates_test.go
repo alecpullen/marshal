@@ -42,8 +42,8 @@ func TestOpenrouterIsRemoteWithKeyEnv(t *testing.T) {
 
 func TestAllReturnsAll(t *testing.T) {
 	all := All()
-	if len(all) < 6 {
-		t.Fatalf("All() returned %d templates, want >= 6", len(all))
+	if len(all) < 16 {
+		t.Fatalf("All() returned %d templates, want >= 16", len(all))
 	}
 	ids := map[string]bool{}
 	for _, tpl := range all {
@@ -52,6 +52,52 @@ func TestAllReturnsAll(t *testing.T) {
 	for _, id := range []string{"ollama", "lmstudio", "openrouter", "groq", "openai", "openai_compatible"} {
 		if !ids[id] {
 			t.Fatalf("All() missing template %q", id)
+		}
+	}
+}
+
+func TestTemplatesCoverPopularProviders(t *testing.T) {
+	want := []string{
+		"anthropic", "gemini", "deepseek", "mistral", "together",
+		"fireworks", "xai", "cerebras", "vllm", "llamacpp",
+	}
+	for _, id := range want {
+		if _, ok := Lookup(id); !ok {
+			t.Errorf("missing template %q", id)
+		}
+	}
+}
+
+func TestTemplatesAreWellFormed(t *testing.T) {
+	for _, tpl := range All() {
+		if tpl.ID == "" {
+			t.Errorf("template with empty ID: %+v", tpl)
+		}
+		if tpl.Label == "" {
+			t.Errorf("template %q has no label", tpl.ID)
+		}
+		if tpl.Type != "openai_compatible" {
+			t.Errorf("template %q type = %q, want openai_compatible — it is the only chat provider type",
+				tpl.ID, tpl.Type)
+		}
+		// The generic custom template intentionally has no base URL.
+		if tpl.BaseURL == "" && tpl.ID != "openai_compatible" {
+			t.Errorf("template %q has no base URL", tpl.ID)
+		}
+		if !tpl.Local && tpl.KeyEnv == "" && tpl.ID != "openai_compatible" {
+			t.Errorf("remote template %q has no KeyEnv", tpl.ID)
+		}
+	}
+}
+
+func TestLocalTemplatesNeedNoKey(t *testing.T) {
+	for _, id := range []string{"ollama", "lmstudio", "vllm", "llamacpp"} {
+		tpl, ok := Lookup(id)
+		if !ok {
+			t.Fatalf("missing %q", id)
+		}
+		if !tpl.Local {
+			t.Errorf("template %q should be marked Local", id)
 		}
 	}
 }

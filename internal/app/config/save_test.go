@@ -782,7 +782,6 @@ func TestSaveUserConfigSectionPreservesUnrelated(t *testing.T) {
 		t.Fatalf("swarm.budget.max_fix_rounds not preserved: %+v", loaded.Swarm)
 	}
 }
-
 func TestSaveUserConfigProviderAPIKeyWritesKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := SaveUserConfigProviderAPIKey(path, "openai", "sk-test-123"); err != nil {

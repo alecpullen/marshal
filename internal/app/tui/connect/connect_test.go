@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
+	"marshal/internal/llm/provider"
 	"marshal/internal/strutil"
 )
 
@@ -679,5 +680,39 @@ func TestTruncateErrRuneSafe(t *testing.T) {
 	// 48 runes + ellipsis
 	if n := utf8.RuneCountInString(out); n != 49 {
 		t.Fatalf("strutil.Truncate length = %d runes, want 49", n)
+	}
+}
+
+func TestUniqueNameDisambiguatesCustomProviders(t *testing.T) {
+	m := &Model{
+		template: provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
+		cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"custom": {BaseURL: "https://first.example/v1"},
+		}},
+	}
+	if got := m.uniqueName(); got != "custom-2" {
+		t.Errorf("uniqueName() = %q, want %q — the first custom provider must survive", got, "custom-2")
+	}
+}
+
+func TestUniqueNameFirstCustomProviderKeepsBaseName(t *testing.T) {
+	m := &Model{
+		template: provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
+		cfg:      config.Config{Providers: map[string]config.ProviderConfig{}},
+	}
+	if got := m.uniqueName(); got != "custom" {
+		t.Errorf("uniqueName() = %q, want %q", got, "custom")
+	}
+}
+
+func TestUniqueNameEmptyTemplateIDBehavesAsCustom(t *testing.T) {
+	m := &Model{
+		template: provider.ProviderTemplate{ID: "", Type: "openai_compatible"},
+		cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"custom": {}, "custom-2": {},
+		}},
+	}
+	if got := m.uniqueName(); got != "custom-3" {
+		t.Errorf("uniqueName() = %q, want %q", got, "custom-3")
 	}
 }

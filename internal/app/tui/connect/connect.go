@@ -657,14 +657,15 @@ func (m *Model) done() tea.Cmd {
 }
 
 func (m *Model) uniqueName() string {
-	if m.template.ID == "custom" || m.template.ID == "" {
-		return "custom"
+	base := m.template.ID
+	if base == "" || base == "custom" {
+		base = "custom"
 	}
 	existing := map[string]bool{}
 	for k := range m.cfg.Providers {
 		existing[k] = true
 	}
-	return provider.UniqueName(m.template.ID, existing)
+	return provider.UniqueName(base, existing)
 }
 
 func orDefault(v, def string) string {

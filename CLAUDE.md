@@ -52,7 +52,6 @@ internal/acp/                         — ACP v1 headless transport (initialize,
 
 App shell
 internal/app/app.go                   — Run(), dependency wiring, signal handling
-internal/app/onboarding.go            — first-run provider setup (separate pre-TUI tea.Program)
 internal/app/config/                  — TOML config loading, defaults, merge rules
 internal/app/logging/                 — slog logger construction
 internal/app/session/                 — in-memory app state, message list, shutdown context
@@ -147,7 +146,7 @@ Config is merged in order (later wins):
 
 ### Dependency injection seams
 
-`app.Run()` accepts 12 functional options (`app.go:105-210`) so tests can inject fakes without spinning up a real TUI. The most-used are `WithConfigLoader`, `WithProgramRunner`, and `WithNow`; also available are `WithTrustResolver`, `WithWorkingDir`, `WithSkipOnboarding`, `WithOnboardingProgramRunner`, `WithKnowledgeHook`, `WithWorker`, `WithSessionID`, `WithExistingSession`, and `WithAdditionalDirectories`. Tests in `app_test.go` use this pattern exclusively.
+`app.Run()` accepts 10 functional options (`app.go:105-210`) so tests can inject fakes without spinning up a real TUI. The most-used are `WithConfigLoader`, `WithProgramRunner`, and `WithNow`; also available are `WithTrustResolver`, `WithWorkingDir`, `WithKnowledgeHook`, `WithWorker`, `WithSessionID`, `WithExistingSession`, and `WithAdditionalDirectories`. Tests in `app_test.go` use this pattern exclusively.
 
 ### Specs and plans
 

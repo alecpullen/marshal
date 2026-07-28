@@ -998,14 +998,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			cfgPath := projectConfigPath(m.state.WorkingDir)
+			base := m.state.WorkingDir
 			if msg.GlobalTarget {
 				if home, err := os.UserHomeDir(); err == nil && home != "" {
 					cfgPath = config.UserConfigPath(home)
+					base = home
 				}
 			}
 			for _, receipt := range msg.Receipts {
 				m.state.AddMessage(session.RoleSystem,
-					"✓ "+receipt+" · "+relPath(m.state.WorkingDir, cfgPath),
+					"✓ "+receipt+" · "+relPath(base, cfgPath),
 					session.ContentTypePlain)
 			}
 			m.refreshViewport()

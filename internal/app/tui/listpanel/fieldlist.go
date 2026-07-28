@@ -399,7 +399,7 @@ func (fl *FieldList) updateEdit(msg tea.Msg) tea.Cmd {
 	}
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		switch k.String() {
-		case "enter":
+		case "enter", "shift+enter":
 			val := strings.TrimSpace(fl.input.Value())
 			if row.Masked && val == "" {
 				fl.CancelEdit() // empty keeps the stored secret

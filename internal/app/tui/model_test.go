@@ -5520,3 +5520,34 @@ func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
 		t.Fatal("config was not applied in memory")
 	}
 }
+
+func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.configReloader = func(config.Config) error { return nil }
+	cfg := m.state.Config
+	cfg.TUI.Theme = "solarized"
+	mm, _ := m.Update(settings.ChangedMsg{
+		Cfg:          cfg,
+		Saved:        true,
+		GlobalTarget: true,
+		Receipts:     []string{"theme persisted"},
+	})
+	m = mm.(Model)
+	msgs := m.state.Messages()
+	var found bool
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "theme persisted") {
+			found = true
+			// Should show a path relative to home, not the project dir.
+			if strings.Contains(msg.Content, ".marshal/config.toml") {
+				t.Fatalf("receipt should not reference project config path, got: %s", msg.Content)
+			}
+			if !strings.Contains(msg.Content, ".config/marshal/config.toml") {
+				t.Fatalf("receipt should reference user config path, got: %s", msg.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no receipt message found in transcript")
+	}
+}

@@ -1101,8 +1101,20 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cfg := config.Default()
-	cfg.Agent.Provider = "ollama"
-	cfg.Agent.Model = "qwen2.5-coder:14b"
+	cfg.Profile.Default = "single"
+	cfg.Agent.Provider = ""
+	cfg.Agent.Model = ""
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:14b": {
+			Name:      "ollama/qwen2.5-coder:14b",
+			Provider:  "ollama",
+			Model:     "qwen2.5-coder:14b",
+			LocalOnly: true,
+		},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"single": routing.SingleModelProfile("single", "ollama/qwen2.5-coder:14b"),
+	}
 	cfg.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "local"},
 	}

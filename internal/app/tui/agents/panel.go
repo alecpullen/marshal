@@ -687,9 +687,6 @@ func resolveGlyph(ce routing.CastEntry) (glyph, source string) {
 	if ce.Route.CustomAgent != nil {
 		return "◆", "custom agent"
 	}
-	if ce.Route.Legacy {
-		return "↩", "legacy"
-	}
 	return "●", "preset"
 }
 

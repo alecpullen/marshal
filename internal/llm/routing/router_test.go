@@ -42,8 +42,6 @@ func testRouter() *StaticRouter {
 		ContextBudgets: map[AgentRole]ContextBudget{
 			RoleImplementer: {MaxRepoContextTokens: 48000},
 		},
-		LegacyProvider: "legacy-provider",
-		LegacyModel:    "legacy-model",
 	})
 }
 
@@ -92,9 +90,6 @@ func TestResolveQuestionUsesRepoScout(t *testing.T) {
 	}
 	if route.Preset.Name != "fast" || route.Preset.Model != "qwen2.5-coder:7b" {
 		t.Fatalf("Preset = %#v, want fast qwen2.5-coder:7b", route.Preset)
-	}
-	if route.Legacy {
-		t.Fatal("Legacy = true, want false")
 	}
 }
 
@@ -181,24 +176,23 @@ func TestResolveQuestionRemoteBlockedDoesNotFallBackToImplementer(t *testing.T) 
 	}
 }
 
-func TestResolveUsesLegacyWhenNoProfileRouteExists(t *testing.T) {
+func TestResolveUsesSingleModelProfileWhenNoProfileRouteExists(t *testing.T) {
+	// A router with a DefaultProfile that doesn't exist should still
+	// resolve through a SingleModelProfile when one is configured.
 	router := NewStaticRouter(Config{
-		DefaultProfile: "missing",
-		LegacyProvider: "ollama",
-		LegacyModel:    "qwen2.5-coder:14b",
+		DefaultProfile: "single",
+		RemoteAllowed:  false,
+		Presets: map[string]ModelPreset{
+			"fast": {Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "fast")},
 	})
 	route, err := router.Resolve("question")
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
-	if !route.Legacy {
-		t.Fatal("Legacy = false, want true")
-	}
 	if route.Preset.Provider != "ollama" || route.Preset.Model != "qwen2.5-coder:14b" {
-		t.Fatalf("legacy route preset = %#v", route.Preset)
-	}
-	if route.Preset.LocalOnly {
-		t.Fatal("legacy preset LocalOnly = true, want false")
+		t.Fatalf("route preset = %#v", route.Preset)
 	}
 }
 
@@ -358,23 +352,58 @@ func TestResolveRoleFallsBackToImplementerForUnconfiguredRole(t *testing.T) {
 	}
 }
 
-func TestLegacyRouteHasSaneDefaults(t *testing.T) {
-	// A router with only LegacyProvider/LegacyModel set should return a
-	// legacy route with non-zero ContextBudget values.
+func TestSingleModelProfileHasSaneDefaults(t *testing.T) {
+	// A router with a SingleModelProfile should return a route with
+	// non-zero ContextBudget values when configured.
 	router := NewStaticRouter(Config{
-		DefaultProfile: "missing",
-		LegacyProvider: "ollama",
-		LegacyModel:    "qwen2.5-coder:7b",
+		DefaultProfile: "single",
+		RemoteAllowed:  false,
+		Presets: map[string]ModelPreset{
+			"fast": {Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "fast")},
+		ContextBudgets: map[AgentRole]ContextBudget{
+			RoleImplementer: {MaxRepoContextTokens: 8000},
+		},
 	})
 	route, err := router.Resolve("edit")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if !route.Legacy {
-		t.Fatal("expected legacy route")
-	}
 	if route.ContextBudget.MaxRepoContextTokens == 0 {
-		t.Fatal("legacy route ContextBudget.MaxRepoContextTokens is 0, want > 0")
+		t.Fatal("route ContextBudget.MaxRepoContextTokens is 0, want > 0")
+	}
+}
+
+func TestResolveRoleHasNoLegacyFallback(t *testing.T) {
+	// A router with presets and profiles but no binding for the role, and
+	// no implementer fallback either, must fail rather than inventing one.
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		RemoteAllowed:  true,
+		Presets:        map[string]ModelPreset{},
+		Profiles:       map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{}}},
+	})
+	if _, err := r.ResolveRole(RoleImplementer); err == nil {
+		t.Error("want an error for an unconfigured role, got a route")
+	}
+}
+
+func TestResolveRoleStillFallsBackToImplementer(t *testing.T) {
+	r := NewStaticRouter(Config{
+		DefaultProfile: "p",
+		RemoteAllowed:  true,
+		Presets:        map[string]ModelPreset{"fast": {Name: "fast", Provider: "openai", Model: "gpt-4o"}},
+		Profiles: map[string]AgentProfile{"p": {Name: "p", Roles: map[AgentRole]RoleBinding{
+			RoleImplementer: {Preset: "fast"},
+		}}},
+	})
+	route, err := r.ResolveRole(RoleReviewer)
+	if err != nil {
+		t.Fatalf("ResolveRole(reviewer) error = %v", err)
+	}
+	if route.Preset.Model != "gpt-4o" {
+		t.Errorf("got %q, want the implementer fallback", route.Preset.Model)
 	}
 }
 
@@ -440,27 +469,33 @@ func TestCastResolvesEveryRequestedRole(t *testing.T) {
 	})
 }
 
-func TestLegacyRouteBlockedWhenRemoteNotAllowed(t *testing.T) {
+func TestRemoteProviderBlockedWhenNotAllowed(t *testing.T) {
 	r := NewStaticRouter(Config{
+		DefaultProfile: "single",
 		RemoteAllowed:  false,
-		LegacyProvider: "https://api.openai.com/v1",
-		LegacyModel:    "gpt-4o",
+		Presets: map[string]ModelPreset{
+			"remote": {Name: "remote", Provider: "https://api.openai.com/v1", Model: "gpt-4o"},
+		},
+		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "remote")},
 	})
-	route, ok := r.legacyRoute(RoleImplementer)
-	if ok {
-		t.Fatalf("expected legacyRoute to be blocked; got %+v", route)
+	_, err := r.ResolveRole(RoleImplementer)
+	if !errors.Is(err, ErrRemoteProviderBlocked) {
+		t.Fatalf("expected ErrRemoteProviderBlocked, got %v", err)
 	}
 }
 
-func TestLegacyRouteAllowedWhenLocal(t *testing.T) {
+func TestLocalProviderAllowedWhenRemoteNotAllowed(t *testing.T) {
 	r := NewStaticRouter(Config{
+		DefaultProfile: "single",
 		RemoteAllowed:  false,
-		LegacyProvider: "http://localhost:11434/v1",
-		LegacyModel:    "qwen2.5-coder:7b",
+		Presets: map[string]ModelPreset{
+			"local": {Name: "local", Provider: "http://localhost:11434/v1", Model: "qwen2.5-coder:7b", LocalOnly: true},
+		},
+		Profiles: map[string]AgentProfile{"single": SingleModelProfile("single", "local")},
 	})
-	route, ok := r.legacyRoute(RoleImplementer)
-	if !ok {
-		t.Fatalf("expected legacyRoute to allow localhost; got ok=false")
+	route, err := r.ResolveRole(RoleImplementer)
+	if err != nil {
+		t.Fatalf("ResolveRole error = %v", err)
 	}
 	if route.Preset.Provider != "http://localhost:11434/v1" {
 		t.Fatalf("wrong provider: %q", route.Preset.Provider)

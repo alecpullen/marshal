@@ -40,7 +40,6 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 		Provider:  route.Preset.Provider,
 		Model:     route.Preset.Model,
 		LocalOnly: route.Preset.LocalOnly,
-		Legacy:    route.Legacy,
 		Active:    true,
 	})
 	if route.ContextBudget.MaxRepoContextTokens > 0 {

@@ -14,6 +14,8 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/db"
+	"marshal/internal/history"
 	"marshal/internal/tools/registry"
 )
 
@@ -842,6 +844,85 @@ func TestBranchesCommandReturnsActionRows(t *testing.T) {
 		}
 	}
 	t.Fatal("no actionable non-current branch row found")
+}
+
+// historyTestState creates an in-memory DB with one session and two
+// generations (one live with a turn, one ended with no turns), then returns
+// a session.State wired to it.
+func historyTestState(t *testing.T) (*session.State, []history.GenerationSummary) {
+	t.Helper()
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+
+	projectID, err := database.GetOrCreateProject("/test/repo", "test-repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	sessionID := "test-session-" + t.Name()
+	if err := database.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	now := time.Now().UTC()
+	g1 := db.Generation{
+		ID: "gen-1", SessionID: sessionID, Seq: 1,
+		StartedAt: now, SeedDigest: "digest-one",
+	}
+	if err := database.BeginGeneration(g1); err != nil {
+		t.Fatalf("BeginGeneration: %v", err)
+	}
+	if err := database.ArchiveTurns("gen-1", []db.ArchivedTurn{
+		{TurnSeq: 1, Role: "user", Content: "hello", CreatedAt: now},
+		{TurnSeq: 2, Role: "assistant", Content: "world", CreatedAt: now},
+	}, 1024, now); err != nil {
+		t.Fatalf("ArchiveTurns: %v", err)
+	}
+
+	g2 := db.Generation{
+		ID: "gen-2", SessionID: sessionID, Seq: 2,
+		StartedAt: now.Add(time.Minute), SeedDigest: "digest-two",
+	}
+	if err := database.BeginGeneration(g2); err != nil {
+		t.Fatalf("BeginGeneration: %v", err)
+	}
+	if err := database.EndGeneration("gen-2", now.Add(2*time.Minute), "completed"); err != nil {
+		t.Fatalf("EndGeneration: %v", err)
+	}
+
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{
+		DB: database, SessionID: sessionID,
+	})
+
+	summaries, err := history.ListGenerations(context.Background(), database, sessionID)
+	if err != nil {
+		t.Fatalf("ListGenerations: %v", err)
+	}
+	return state, summaries
+}
+
+func TestHistoryCommandReturnsGenerationRows(t *testing.T) {
+	state, gens := historyTestState(t)
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+	cmd, _ := cmdReg.Lookup("history")
+	res := cmd.Handler(state, nil)
+	if res.Doc == nil || !res.Doc.FullFrame {
+		t.Fatalf("/history should return a FullFrame Doc, got %+v", res)
+	}
+	if len(res.Doc.Rows) != len(gens) {
+		t.Fatalf("rows = %d, want one per generation", len(res.Doc.Rows))
+	}
+	children := res.Doc.Rows[0].Children
+	if len(children) == 0 {
+		t.Fatal("generation rows should carry their turns as Children")
+	}
 }
 
 func TestListAllIncludesHiddenCommands(t *testing.T) {

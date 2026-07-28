@@ -10,6 +10,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/export"
+	"marshal/internal/history"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
@@ -530,15 +531,37 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				if database == nil {
 					return Text("No database available.")
 				}
-				cmd := &historyCommand{
-					database:  database,
-					sessionID: state.SessionID(),
+				// dump/search keep their text behavior via historyCommand.
+				if len(args) > 0 {
+					cmd := &historyCommand{database: database, sessionID: state.SessionID()}
+					out, err := cmd.Run(context.Background(), args)
+					if err != nil {
+						return Text(err.Error())
+					}
+					return Text(out)
 				}
-				out, err := cmd.Run(context.Background(), args)
+				summaries, err := history.ListGenerations(context.Background(), database, state.SessionID())
 				if err != nil {
-					return Text(err.Error())
+					return Text(fmt.Sprintf("list generations: %v", err))
 				}
-				return Text(out)
+				if len(summaries) == 0 {
+					return Text("No generations yet.")
+				}
+				var rows []Row
+				for _, s := range summaries {
+					s := s
+					status := "ended"
+					if s.Live {
+						status = "live"
+					}
+					rows = append(rows, Row{
+						Text:     fmt.Sprintf("%d  %s", s.Seq, s.StartedAt.UTC().Format("2006-01-02 15:04:05")),
+						Detail:   fmt.Sprintf("%d turns · %s", s.TurnCount, status),
+						Desc:     "digest=" + s.SeedDigest,
+						Children: generationTurnRows(database, s),
+					})
+				}
+				return Panel("Generations", true, rows)
 			},
 		},
 		{
@@ -575,4 +598,30 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		}
 	}
 	return nil
+}
+
+// generationTurnRows loads a generation's archived turns as drill-in rows,
+// capped so a huge generation cannot stall the panel.
+func generationTurnRows(database *db.DB, s history.GenerationSummary) []Row {
+	turns, err := database.TurnsForGeneration(s.ID)
+	if err != nil {
+		return []Row{{Text: "failed to load turns", Detail: err.Error()}}
+	}
+	const cap = 200
+	var rows []Row
+	for _, turn := range turns {
+		snippet := turn.Content
+		if len(snippet) > 80 {
+			snippet = snippet[:80] + "…"
+		}
+		rows = append(rows, Row{
+			Text:   fmt.Sprintf("turn %d (%s)", turn.TurnSeq, turn.Role),
+			Detail: snippet,
+		})
+		if len(rows) >= cap {
+			rows = append(rows, Row{Text: fmt.Sprintf("… %d more turns", len(turns)-cap)})
+			break
+		}
+	}
+	return rows
 }

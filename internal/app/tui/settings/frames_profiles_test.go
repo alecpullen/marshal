@@ -27,13 +27,13 @@ func profilesTestState() *state {
 func TestProfilesFrameListsProfiles(t *testing.T) {
 	s := profilesTestState()
 	f := profilesFrame(s)
-	rows := f.list.Rows()
+	rows := f.List.Rows()
 	if len(rows) == 0 {
 		t.Fatal("profilesFrame should have at least one row")
 	}
 	var localRow *field
 	for _, r := range rows {
-		if r.id == "profiles.local" {
+		if r.ID == "profiles.local" {
 			localRow = r
 			break
 		}
@@ -41,18 +41,18 @@ func TestProfilesFrameListsProfiles(t *testing.T) {
 	if localRow == nil {
 		t.Fatal("profilesFrame should have a row with id profiles.local")
 	}
-	if !strings.Contains(localRow.title, "1 role") {
-		t.Fatalf("local row title = %q, want to contain '1 role'", localRow.title)
+	if !strings.Contains(localRow.Title, "1 role") {
+		t.Fatalf("local row title = %q, want to contain '1 role'", localRow.Title)
 	}
 }
 
 func TestProfileEntryHasOneRowPerRole(t *testing.T) {
 	s := profilesTestState()
 	f := profilesFrame(s)
-	rows := f.list.Rows()
+	rows := f.List.Rows()
 	var localRow *field
 	for _, r := range rows {
-		if r.id == "profiles.local" {
+		if r.ID == "profiles.local" {
 			localRow = r
 			break
 		}
@@ -60,20 +60,20 @@ func TestProfileEntryHasOneRowPerRole(t *testing.T) {
 	if localRow == nil {
 		t.Fatal("no profiles.local row")
 	}
-	detail := localRow.build()
-	detailRows := detail.list.Rows()
+	detail := localRow.Build()
+	detailRows := detail.List.Rows()
 	if len(detailRows) != len(routing.AllRoles) {
 		t.Fatalf("profile detail should have %d rows (one per role), got %d", len(routing.AllRoles), len(detailRows))
 	}
 	firstRole := routing.AllRoles[0]
 	expectedID := "profiles.local." + string(firstRole)
-	if detailRows[0].id != expectedID {
-		t.Fatalf("first row id = %q, want %q", detailRows[0].id, expectedID)
+	if detailRows[0].ID != expectedID {
+		t.Fatalf("first row id = %q, want %q", detailRows[0].ID, expectedID)
 	}
 	// Find the implementer row — it should show the assigned preset
 	var implRow *field
 	for _, r := range detailRows {
-		if strings.HasSuffix(r.id, "."+string(routing.RoleImplementer)) {
+		if strings.HasSuffix(r.ID, "."+string(routing.RoleImplementer)) {
 			implRow = r
 			break
 		}
@@ -81,11 +81,11 @@ func TestProfileEntryHasOneRowPerRole(t *testing.T) {
 	if implRow == nil {
 		t.Fatal("no implementer row in profile detail")
 	}
-	if implRow.getStr() != "large" {
-		t.Fatalf("implementer preset = %q, want 'large'", implRow.getStr())
+	if implRow.GetStr() != "large" {
+		t.Fatalf("implementer preset = %q, want 'large'", implRow.GetStr())
 	}
-	if !strings.Contains(implRow.desc, "ollama/qwen3:32b") {
-		t.Fatalf("implementer desc = %q, want to contain 'ollama/qwen3:32b'", implRow.desc)
+	if !strings.Contains(implRow.Desc, "ollama/qwen3:32b") {
+		t.Fatalf("implementer desc = %q, want to contain 'ollama/qwen3:32b'", implRow.Desc)
 	}
 }
 
@@ -93,25 +93,25 @@ func TestProfileRolePickAssignsAndClears(t *testing.T) {
 	s := profilesTestState()
 	// Get the implementer role field for the "local" profile
 	field := rolePresetField(s, "local", routing.RoleImplementer)
-	if field.getStr() != "large" {
-		t.Fatalf("initial preset = %q, want 'large'", field.getStr())
+	if field.GetStr() != "large" {
+		t.Fatalf("initial preset = %q, want 'large'", field.GetStr())
 	}
 	// Pick a different preset
-	if err := field.pickOnPick("small"); err != nil {
+	if err := field.PickOnPick("small"); err != nil {
 		t.Fatalf("pickOnPick(small) = %v", err)
 	}
-	if field.getStr() != "small" {
-		t.Fatalf("after pick, preset = %q, want 'small'", field.getStr())
+	if field.GetStr() != "small" {
+		t.Fatalf("after pick, preset = %q, want 'small'", field.GetStr())
 	}
 	// Clear via unset sentinel
-	if err := field.pickOnPick(unsetRoleValue); err != nil {
+	if err := field.PickOnPick(unsetRoleValue); err != nil {
 		t.Fatalf("pickOnPick(unset) = %v", err)
 	}
-	if field.getStr() != "" {
-		t.Fatalf("after unset, preset = %q, want empty", field.getStr())
+	if field.GetStr() != "" {
+		t.Fatalf("after unset, preset = %q, want empty", field.GetStr())
 	}
 	// Pick an unknown preset should error
-	if err := field.pickOnPick("nonexistent"); err == nil {
+	if err := field.PickOnPick("nonexistent"); err == nil {
 		t.Fatal("pickOnPick(nonexistent) should error")
 	}
 }
@@ -123,7 +123,9 @@ func TestProfilesAddCreatesEmptyProfile(t *testing.T) {
 	// Press 'a' to trigger the add prompt
 	ps.Update(kp("a"))
 	// Submit the name
-	ps.top().list.keyInput.SetValue("fast")
+	for _, r := range "fast" {
+		ps.Update(kp(string(r)))
+	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	p, ok := s.cfg.AgentProfiles["fast"]
 	if !ok {
@@ -134,9 +136,11 @@ func TestProfilesAddCreatesEmptyProfile(t *testing.T) {
 	}
 	// Try adding a duplicate name
 	ps.Update(kp("a"))
-	ps.top().list.keyInput.SetValue("fast")
+	for _, r := range "fast" {
+		ps.Update(kp(string(r)))
+	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if ps.top().list.errMsg == "" {
+	if ps.Top().List.ErrMsg == "" {
 		t.Fatal("duplicate add should set errMsg")
 	}
 }

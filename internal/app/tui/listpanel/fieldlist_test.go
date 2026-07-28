@@ -1,4 +1,4 @@
-package settings
+package listpanel
 
 import (
 	"strings"
@@ -6,9 +6,14 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
 )
+
+// actionResultMsg mirrors settings.actionResultMsg for in-package tests.
+type actionResultMsg struct {
+	FieldID string
+	Label   string
+}
 
 // kp is a single-rune key helper. Special keys (Space, etc.) are constructed
 // inline to avoid conflict with the "charm.land/bubbles/v2/key" import.
@@ -17,27 +22,27 @@ func kp(s string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r[0], Text: s}
 }
 
-func testToggleField(title string, val *bool) *field {
-	return &field{
-		id: "test." + title, title: title, kind: kindToggle,
-		getBool: func() bool { return *val },
-		setBool: func(b bool) { *val = b },
+func testToggleField(title string, val *bool) *Field {
+	return &Field{
+		ID: "test." + title, Title: title, Kind: KindToggle,
+		GetBool: func() bool { return *val },
+		SetBool: func(b bool) { *val = b },
 	}
 }
 
 func TestFieldListNavigationAndToggle(t *testing.T) {
 	a, b := false, false
-	fl := newFieldList(func() []*field {
-		return []*field{testToggleField("Alpha", &a), testToggleField("Beta", &b)}
+	fl := NewFieldList(func() []*Field {
+		return []*Field{testToggleField("Alpha", &a), testToggleField("Beta", &b)}
 	})
 	fl.SetSize(60, 20)
 
-	if fl.CursorRow().title != "Alpha" {
-		t.Fatalf("cursor should start on first row, got %q", fl.CursorRow().title)
+	if fl.CursorRow().Title != "Alpha" {
+		t.Fatalf("cursor should start on first row, got %q", fl.CursorRow().Title)
 	}
 	fl.Update(kp("j"))
-	if fl.CursorRow().title != "Beta" {
-		t.Fatalf("j should move to Beta, got %q", fl.CursorRow().title)
+	if fl.CursorRow().Title != "Beta" {
+		t.Fatalf("j should move to Beta, got %q", fl.CursorRow().Title)
 	}
 	fl.Update(kp("k"))
 	fl.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
@@ -58,28 +63,28 @@ func TestFieldListNavigationAndToggle(t *testing.T) {
 
 func TestFieldListGandG(t *testing.T) {
 	a, b, c := false, false, false
-	fl := newFieldList(func() []*field {
-		return []*field{testToggleField("A", &a), testToggleField("B", &b), testToggleField("C", &c)}
+	fl := NewFieldList(func() []*Field {
+		return []*Field{testToggleField("A", &a), testToggleField("B", &b), testToggleField("C", &c)}
 	})
 	fl.SetSize(60, 20)
 	fl.Update(kp("G"))
-	if fl.CursorRow().title != "C" {
-		t.Fatalf("G should jump to last row, got %q", fl.CursorRow().title)
+	if fl.CursorRow().Title != "C" {
+		t.Fatalf("G should jump to last row, got %q", fl.CursorRow().Title)
 	}
 	fl.Update(kp("g"))
-	if fl.CursorRow().title != "A" {
-		t.Fatalf("g should jump to first row, got %q", fl.CursorRow().title)
+	if fl.CursorRow().Title != "A" {
+		t.Fatalf("g should jump to first row, got %q", fl.CursorRow().Title)
 	}
 }
 
 func TestFieldListDescriptionShownForCursorRow(t *testing.T) {
 	a := false
 	f := testToggleField("Alpha", &a)
-	f.desc = "controls the alpha behavior"
+	f.Desc = "controls the alpha behavior"
 	b := false
 	g := testToggleField("Beta", &b)
-	g.desc = "controls the beta behavior"
-	fl := newFieldList(func() []*field { return []*field{f, g} })
+	g.Desc = "controls the beta behavior"
+	fl := NewFieldList(func() []*Field { return []*Field{f, g} })
 	fl.SetSize(60, 20)
 	view := fl.View()
 	if !strings.Contains(view, "controls the alpha behavior") {
@@ -92,8 +97,8 @@ func TestFieldListDescriptionShownForCursorRow(t *testing.T) {
 
 func TestScalarInlineEditAppliesAndValidates(t *testing.T) {
 	n := 5
-	fl := newFieldList(func() []*field {
-		return []*field{intField("t.n", "Count", func() int { return n }, 1, func(v int) { n = v })}
+	fl := NewFieldList(func() []*Field {
+		return []*Field{IntField("t.n", "Count", func() int { return n }, 1, func(v int) { n = v })}
 	})
 	fl.SetSize(60, 20)
 
@@ -132,8 +137,8 @@ func TestScalarInlineEditAppliesAndValidates(t *testing.T) {
 
 func TestScalarInlineEditAcceptsPaste(t *testing.T) {
 	var got string
-	fl := newFieldList(func() []*field {
-		return []*field{scalarField("t.paste", "Token",
+	fl := NewFieldList(func() []*Field {
+		return []*Field{ScalarField("t.Paste", "Token",
 			func() string { return got },
 			func(v string) error { got = v; return nil })}
 	})
@@ -154,8 +159,8 @@ func TestScalarInlineEditAcceptsPaste(t *testing.T) {
 }
 
 func TestScalarReadOnlyRowIgnoresEnter(t *testing.T) {
-	fl := newFieldList(func() []*field {
-		return []*field{{id: "t.ro", title: "Preset", kind: kindScalar, getStr: func() string { return "qwen" }}}
+	fl := NewFieldList(func() []*Field {
+		return []*Field{{ID: "t.ro", Title: "Preset", Kind: KindScalar, GetStr: func() string { return "qwen" }}}
 	})
 	fl.SetSize(60, 20)
 	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -166,8 +171,8 @@ func TestScalarReadOnlyRowIgnoresEnter(t *testing.T) {
 
 func TestMaskedRowKeepsOnEmptyAndClearsOnD(t *testing.T) {
 	secret := "sk-abcd1234"
-	fl := newFieldList(func() []*field {
-		return []*field{secretRow("t.key", "API key", func() string { return secret }, func(v string) { secret = v })}
+	fl := NewFieldList(func() []*Field {
+		return []*Field{SecretRow("t.key", "API key", func() string { return secret }, func(v string) { secret = v })}
 	})
 	fl.SetSize(60, 20)
 	if !strings.Contains(fl.View(), "••••1234") {
@@ -186,8 +191,8 @@ func TestMaskedRowKeepsOnEmptyAndClearsOnD(t *testing.T) {
 
 func TestFieldListScrollsToKeepCursorVisible(t *testing.T) {
 	vals := make([]bool, 30)
-	fl := newFieldList(func() []*field {
-		out := make([]*field, 30)
+	fl := NewFieldList(func() []*Field {
+		out := make([]*Field, 30)
 		for i := range out {
 			out[i] = testToggleField(strings.Repeat("x", 3)+string(rune('a'+i%26)), &vals[i])
 		}
@@ -209,8 +214,8 @@ func TestFieldListScrollsToKeepCursorVisible(t *testing.T) {
 
 func TestEnumCycleWithArrows(t *testing.T) {
 	v := "deny"
-	fl := newFieldList(func() []*field {
-		return []*field{enumField("t.e", "Guardrail", []string{"deny", "confirm", "allow"},
+	fl := NewFieldList(func() []*Field {
+		return []*Field{EnumField("t.e", "Guardrail", []string{"deny", "confirm", "allow"},
 			func() string { return v }, func(s string) { v = s })}
 	})
 	fl.SetSize(60, 20)
@@ -226,8 +231,8 @@ func TestEnumCycleWithArrows(t *testing.T) {
 
 func TestEnumPickerSelectsOption(t *testing.T) {
 	v := "deny"
-	fl := newFieldList(func() []*field {
-		return []*field{enumField("t.e", "Guardrail", []string{"deny", "confirm", "allow"},
+	fl := NewFieldList(func() []*Field {
+		return []*Field{EnumField("t.e", "Guardrail", []string{"deny", "confirm", "allow"},
 			func() string { return v }, func(s string) { v = s })}
 	})
 	fl.SetSize(60, 20)
@@ -252,15 +257,15 @@ func TestEnumPickerSelectsOption(t *testing.T) {
 
 func TestFieldListCursorAfterListDrillAdd(t *testing.T) {
 	items := []string{"alpha", "beta"}
-	root := newFrame("Test", func() []*field {
-		return []*field{listDrill("t.list", "Items", &items)}
+	root := NewFrame("Test", func() []*Field {
+		return []*Field{ListDrill("t.List", "Items", &items)}
 	})
-	ps := newPaneStack(root)
-	ps.top().list.SetSize(60, 20)
+	ps := NewPaneStack(root)
+	ps.Top().List.SetSize(60, 20)
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill
 
 	// cursor starts on row 0 ("alpha")
-	if got := ps.top().list.CursorRow().title; got != "alpha" {
+	if got := ps.Top().List.CursorRow().Title; got != "alpha" {
 		t.Fatalf("expected cursor on 'alpha', got %q", got)
 	}
 
@@ -272,31 +277,31 @@ func TestFieldListCursorAfterListDrillAdd(t *testing.T) {
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	// cursor should be on the new last row
-	rows := ps.top().list.Rows()
+	rows := ps.Top().List.Rows()
 	want := len(rows) - 1
-	if got := ps.top().list.Cursor(); got != want {
+	if got := ps.Top().List.Cursor(); got != want {
 		t.Fatalf("cursor after list add: want %d (last), got %d", want, got)
 	}
-	if got := ps.top().list.CursorRow().title; got != "gamma" {
+	if got := ps.Top().List.CursorRow().Title; got != "gamma" {
 		t.Fatalf("cursor row after list add: want 'gamma', got %q", got)
 	}
 }
 
 func TestKindPickerRowPassesAllowCustomAndTitleToPickerRequest(t *testing.T) {
 	t.Run("default allowCustom is false", func(t *testing.T) {
-		f := &field{
-			id:          "test.picker",
-			title:       "My Picker",
-			kind:        kindPicker,
-			pickOptions: func() []picker.Item { return nil },
-			pickOnPick:  func(string) error { return nil },
+		f := &Field{
+			ID:          "test.picker",
+			Title:       "My Picker",
+			Kind:        KindPicker,
+			PickOptions: func() []picker.Item { return nil },
+			PickOnPick:  func(string) error { return nil },
 		}
-		fl := newFieldList(func() []*field { return []*field{f} })
+		fl := NewFieldList(func() []*Field { return []*Field{f} })
 		fl.SetSize(60, 20)
 		fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open row
 		req := fl.TakePushPicker()
 		if req == nil {
-			t.Fatal("kindPicker Enter should produce a pickerRequest")
+			t.Fatal("KindPicker Enter should produce a pickerRequest")
 		}
 		if req.allowCustom {
 			t.Error("default pickAllowCustom=false should produce allowCustom=false")
@@ -306,20 +311,20 @@ func TestKindPickerRowPassesAllowCustomAndTitleToPickerRequest(t *testing.T) {
 		}
 	})
 	t.Run("allowCustom=true is passed through", func(t *testing.T) {
-		f := &field{
-			id:              "test.picker",
-			title:           "My Picker",
-			kind:            kindPicker,
-			pickAllowCustom: true,
-			pickOptions:     func() []picker.Item { return nil },
-			pickOnPick:      func(string) error { return nil },
+		f := &Field{
+			ID:              "test.picker",
+			Title:           "My Picker",
+			Kind:            KindPicker,
+			PickAllowCustom: true,
+			PickOptions:     func() []picker.Item { return nil },
+			PickOnPick:      func(string) error { return nil },
 		}
-		fl := newFieldList(func() []*field { return []*field{f} })
+		fl := NewFieldList(func() []*Field { return []*Field{f} })
 		fl.SetSize(60, 20)
 		fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open row
 		req := fl.TakePushPicker()
 		if req == nil {
-			t.Fatal("kindPicker Enter should produce a pickerRequest")
+			t.Fatal("KindPicker Enter should produce a pickerRequest")
 		}
 		if !req.allowCustom {
 			t.Error("pickAllowCustom=true should produce allowCustom=true")
@@ -329,15 +334,15 @@ func TestKindPickerRowPassesAllowCustomAndTitleToPickerRequest(t *testing.T) {
 
 func TestFieldListCursorAfterMapIntDrillAdd(t *testing.T) {
 	m := map[string]int{"reviewer": 4}
-	root := newFrame("Swarm", func() []*field {
-		return []*field{mapIntDrill("swarm.tool_iters", "Tool iters", &m)}
+	root := NewFrame("Swarm", func() []*Field {
+		return []*Field{MapIntDrill("swarm.tool_iters", "Tool iters", &m)}
 	})
-	ps := newPaneStack(root)
-	ps.top().list.SetSize(60, 20)
+	ps := NewPaneStack(root)
+	ps.Top().List.SetSize(60, 20)
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill
 
 	// cursor starts on row 0 ("reviewer")
-	if got := ps.top().list.CursorRow().title; got != "reviewer" {
+	if got := ps.Top().List.CursorRow().Title; got != "reviewer" {
 		t.Fatalf("expected cursor on 'reviewer', got %q", got)
 	}
 
@@ -353,23 +358,23 @@ func TestFieldListCursorAfterMapIntDrillAdd(t *testing.T) {
 	}
 
 	// cursor should be on "zebra" (row 1, after "reviewer")
-	if got := ps.top().list.CursorRow().title; got != "zebra" {
+	if got := ps.Top().List.CursorRow().Title; got != "zebra" {
 		t.Fatalf("cursor row after map add: want 'zebra', got %q", got)
 	}
-	if got := ps.top().list.Cursor(); got != 1 {
+	if got := ps.Top().List.Cursor(); got != 1 {
 		t.Fatalf("cursor index after map add: want 1, got %d", got)
 	}
 }
 
 func TestKindActionEnterTriggersActAndReturnsCmd(t *testing.T) {
-	fl := newFieldList(func() []*field {
-		return []*field{
+	fl := NewFieldList(func() []*Field {
+		return []*Field{
 			{
-				id:       "test.action",
-				title:    "Run",
-				kind:     kindAction,
-				actLabel: func() string { return "idle" },
-				act: func() tea.Cmd {
+				ID:       "test.action",
+				Title:    "Run",
+				Kind:     KindAction,
+				ActLabel: func() string { return "idle" },
+				Act: func() tea.Cmd {
 					return func() tea.Msg {
 						return actionResultMsg{FieldID: "test.action", Label: "done"}
 					}
@@ -382,7 +387,7 @@ func TestKindActionEnterTriggersActAndReturnsCmd(t *testing.T) {
 
 	cmd := fl.Update(tea.KeyPressMsg{Text: "enter"})
 	if cmd == nil {
-		t.Fatal("kindAction Enter should return a non-nil Cmd")
+		t.Fatal("KindAction Enter should return a non-nil Cmd")
 	}
 	msg := cmd()
 	arm, ok := msg.(actionResultMsg)
@@ -394,52 +399,15 @@ func TestKindActionEnterTriggersActAndReturnsCmd(t *testing.T) {
 	}
 }
 
-func TestKindActionResultUpdatesState(t *testing.T) {
-	st := newState(config.Default())
-	fl := newFieldList(func() []*field {
-		return []*field{
-			{
-				id:    "test.action",
-				title: "Run",
-				kind:  kindAction,
-				actLabel: func() string {
-					if as, ok := st.actionState["test.action"]; ok && as.label != "" {
-						return as.label
-					}
-					return "idle"
-				},
-				act: func() tea.Cmd {
-					st.actionState["test.action"] = actionState{label: "\u2026"}
-					return func() tea.Msg {
-						return actionResultMsg{FieldID: "test.action", Label: "\u2713 ok"}
-					}
-				},
-			},
-		}
-	})
-	fl.SetSize(40, 10)
-	fl.Refresh()
-
-	fl.Update(tea.KeyPressMsg{Text: "enter"})
-	if as := st.actionState["test.action"]; as.label == "" {
-		t.Fatal("action should have a label after Enter")
-	}
-
-	st.applyActionResult("test.action", "\u2713 ok")
-	if as := st.actionState["test.action"]; as.label != "\u2713 ok" {
-		t.Fatalf("after result, actionState = %+v, want label=ok", as)
-	}
-}
-
 func TestYankPasteDuplicates(t *testing.T) {
 	got := ""
-	fl := newFieldList(func() []*field {
-		return []*field{
-			{id: "x.a", title: "A", kind: kindScalar,
-				getStr: func() string { return "a" },
-				setStr: func(v string) error { got = v; return nil },
-				yank:   func() any { return "a-data" },
-				paste:  func(data any) error { got = data.(string) + "-pasted"; return nil },
+	fl := NewFieldList(func() []*Field {
+		return []*Field{
+			{ID: "x.a", Title: "A", Kind: KindScalar,
+				GetStr: func() string { return "a" },
+				SetStr: func(v string) error { got = v; return nil },
+				Yank:   func() any { return "a-data" },
+				Paste:  func(data any) error { got = data.(string) + "-pasted"; return nil },
 			},
 		}
 	})
@@ -448,11 +416,11 @@ func TestYankPasteDuplicates(t *testing.T) {
 
 	fl.Update(tea.KeyPressMsg{Text: "y"})
 	if fl.yankedData != "a-data" {
-		t.Fatalf("yank: yankedData = %v, want a-data", fl.yankedData)
+		t.Fatalf("Yank: yankedData = %v, want a-data", fl.yankedData)
 	}
 	fl.Update(tea.KeyPressMsg{Text: "p"})
 	if got != "a-data-pasted" {
-		t.Fatalf("paste: got = %q, want a-data-pasted", got)
+		t.Fatalf("Paste: got = %q, want a-data-pasted", got)
 	}
 	if fl.yankedData != nil {
 		t.Fatal("paste should clear the yank buffer")
@@ -461,12 +429,12 @@ func TestYankPasteDuplicates(t *testing.T) {
 
 func TestMoveUpDownCallsClosures(t *testing.T) {
 	calls := []string{}
-	fl := newFieldList(func() []*field {
-		return []*field{
-			{id: "x.a", title: "A", kind: kindScalar,
-				getStr: func() string { return "a" }, setStr: func(string) error { return nil },
-				moveUp:   func() { calls = append(calls, "up") },
-				moveDown: func() { calls = append(calls, "down") },
+	fl := NewFieldList(func() []*Field {
+		return []*Field{
+			{ID: "x.a", Title: "A", Kind: KindScalar,
+				GetStr: func() string { return "a" }, SetStr: func(string) error { return nil },
+				MoveUp:   func() { calls = append(calls, "up") },
+				MoveDown: func() { calls = append(calls, "down") },
 			},
 		}
 	})
@@ -483,14 +451,14 @@ func TestMoveUpDownCallsClosures(t *testing.T) {
 
 func TestDisarmCalledOnCursorMove(t *testing.T) {
 	disarmed := false
-	fl := newFieldList(func() []*field {
-		return []*field{
-			{id: "x.a", title: "A", kind: kindScalar,
-				getStr: func() string { return "a" }, setStr: func(string) error { return nil },
-				disarm: func() { disarmed = true },
+	fl := NewFieldList(func() []*Field {
+		return []*Field{
+			{ID: "x.a", Title: "A", Kind: KindScalar,
+				GetStr: func() string { return "a" }, SetStr: func(string) error { return nil },
+				Disarm: func() { disarmed = true },
 			},
-			{id: "x.b", title: "B", kind: kindScalar,
-				getStr: func() string { return "b" }, setStr: func(string) error { return nil },
+			{ID: "x.b", Title: "B", Kind: KindScalar,
+				GetStr: func() string { return "b" }, SetStr: func(string) error { return nil },
 			},
 		}
 	})
@@ -506,19 +474,19 @@ func TestDisarmCalledOnCursorMove(t *testing.T) {
 
 func TestHeaderRowRendersAndCursorSkips(t *testing.T) {
 	a, b := false, false
-	fl := newFieldList(func() []*field {
-		return []*field{
-			{id: "header.x", title: "Section X", kind: kindHeader},
+	fl := NewFieldList(func() []*Field {
+		return []*Field{
+			{ID: "header.x", Title: "Section X", Kind: KindHeader},
 			testToggleField("Alpha", &a),
-			{id: "header.y", title: "Section Y", kind: kindHeader},
+			{ID: "header.y", Title: "Section Y", Kind: KindHeader},
 			testToggleField("Beta", &b),
 		}
 	})
 	fl.SetSize(60, 20)
 
 	// Cursor should start on the first non-header row (Alpha).
-	if fl.CursorRow().title != "Alpha" {
-		t.Fatalf("cursor should start on Alpha, got %q", fl.CursorRow().title)
+	if fl.CursorRow().Title != "Alpha" {
+		t.Fatalf("cursor should start on Alpha, got %q", fl.CursorRow().Title)
 	}
 
 	// View should contain both section headers.
@@ -532,36 +500,36 @@ func TestHeaderRowRendersAndCursorSkips(t *testing.T) {
 
 	// Navigate down: should skip Section Y header and land on Beta.
 	fl.Update(kp("j"))
-	if fl.CursorRow().title != "Beta" {
-		t.Fatalf("j should skip Section Y header and land on Beta, got %q", fl.CursorRow().title)
+	if fl.CursorRow().Title != "Beta" {
+		t.Fatalf("j should skip Section Y header and land on Beta, got %q", fl.CursorRow().Title)
 	}
 
 	// Navigate up: should skip Section X header and land on Alpha.
 	fl.Update(kp("k"))
-	if fl.CursorRow().title != "Alpha" {
-		t.Fatalf("k should skip Section X header and land on Alpha, got %q", fl.CursorRow().title)
+	if fl.CursorRow().Title != "Alpha" {
+		t.Fatalf("k should skip Section X header and land on Alpha, got %q", fl.CursorRow().Title)
 	}
 
 	// g should land on Alpha (skipping Section X header).
 	fl.Update(kp("g"))
-	if fl.CursorRow().title != "Alpha" {
-		t.Fatalf("g should land on Alpha, got %q", fl.CursorRow().title)
+	if fl.CursorRow().Title != "Alpha" {
+		t.Fatalf("g should land on Alpha, got %q", fl.CursorRow().Title)
 	}
 
 	// G should land on Beta (skipping Section Y header).
 	fl.Update(kp("G"))
-	if fl.CursorRow().title != "Beta" {
-		t.Fatalf("G should land on Beta, got %q", fl.CursorRow().title)
+	if fl.CursorRow().Title != "Beta" {
+		t.Fatalf("G should land on Beta, got %q", fl.CursorRow().Title)
 	}
 }
 
 func TestDisarmCurrent(t *testing.T) {
 	disarmed := false
-	fl := newFieldList(func() []*field {
-		return []*field{
-			{id: "x.a", title: "A", kind: kindScalar,
-				getStr: func() string { return "a" }, setStr: func(string) error { return nil },
-				disarm: func() { disarmed = true },
+	fl := NewFieldList(func() []*Field {
+		return []*Field{
+			{ID: "x.a", Title: "A", Kind: KindScalar,
+				GetStr: func() string { return "a" }, SetStr: func(string) error { return nil },
+				Disarm: func() { disarmed = true },
 			},
 		}
 	})

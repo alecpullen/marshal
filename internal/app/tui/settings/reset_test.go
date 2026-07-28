@@ -36,17 +36,17 @@ func TestResetFieldConfirmThenApply(t *testing.T) {
 	}
 	f := resetField(st, "providers", "Providers")
 
-	if label := f.actLabel(); label != "reset to defaults" {
+	if label := f.ActLabel(); label != "reset to defaults" {
 		t.Fatalf("idle label = %q, want 'reset to defaults'", label)
 	}
 
-	_ = f.act()
-	if label := f.actLabel(); label != "again to confirm" {
+	_ = f.Act()
+	if label := f.ActLabel(); label != "again to confirm" {
 		t.Fatalf("armed label = %q, want 'again to confirm'", label)
 	}
 
-	_ = f.act()
-	if label := f.actLabel(); label != "✓ reset" {
+	_ = f.Act()
+	if label := f.ActLabel(); label != "✓ reset" {
 		t.Fatalf("applied label = %q, want '✓ reset'", label)
 	}
 	if st.cfg.Providers != nil {
@@ -57,31 +57,31 @@ func TestResetFieldConfirmThenApply(t *testing.T) {
 func TestResetFieldDisarmClearsConfirm(t *testing.T) {
 	st := newState(config.Default())
 	f := resetField(st, "shell", "Shell")
-	_ = f.act()
-	if f.actLabel() != "again to confirm" {
+	_ = f.Act()
+	if f.ActLabel() != "again to confirm" {
 		t.Fatal("should be armed")
 	}
-	if f.disarm != nil {
-		f.disarm()
+	if f.Disarm != nil {
+		f.Disarm()
 	}
-	if f.actLabel() != "reset to defaults" {
-		t.Fatalf("after disarm label = %q, want 'reset to defaults'", f.actLabel())
+	if f.ActLabel() != "reset to defaults" {
+		t.Fatalf("after disarm label = %q, want 'reset to defaults'", f.ActLabel())
 	}
 }
 
 func TestEverySectionRootHasResetRow(t *testing.T) {
 	state := newState(config.Default())
 	for _, sp := range sectionList() {
-		rows := withResetRow(state, sp.id, sp.title, sp.root(state)).list.Rows()
+		rows := withResetRow(state, sp.ID, sp.Title, sp.Root(state)).List.Rows()
 		found := false
 		for _, r := range rows {
-			if r.kind == kindAction && strings.HasPrefix(r.id, sp.id+".reset") {
+			if r.Kind == kindAction && strings.HasPrefix(r.ID, sp.ID+".reset") {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Fatalf("section %q has no reset row", sp.id)
+			t.Fatalf("section %q has no reset row", sp.ID)
 		}
 	}
 }

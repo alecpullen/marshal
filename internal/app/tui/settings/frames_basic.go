@@ -8,21 +8,21 @@ import (
 func privacyFrame(s *state) *frame {
 	return newFrame("Privacy", func() []*field {
 		return []*field{
-			{id: "privacy.remote_providers", title: "Remote providers allowed", kind: kindToggle,
-				tomlPath: "privacy.remote_providers_allowed",
-				desc:     "allow remote providers globally",
-				getBool:  func() bool { return s.cfg.Privacy.RemoteProvidersAllowed },
-				setBool:  func(v bool) { s.cfg.Privacy.RemoteProvidersAllowed = v }},
-			{id: "privacy.redact_secrets", title: "Redact secrets", kind: kindToggle,
-				tomlPath: "privacy.redact_secrets",
-				desc:     "scrub likely secrets from context sent to models",
-				getBool:  func() bool { return s.cfg.Privacy.RedactSecrets },
-				setBool:  func(v bool) { s.cfg.Privacy.RedactSecrets = v }},
-			{id: "privacy.include_gitignored", title: "Include gitignored files", kind: kindToggle,
-				tomlPath: "privacy.include_gitignored_files",
-				desc:     "let indexing and context include gitignored paths",
-				getBool:  func() bool { return s.cfg.Privacy.IncludeGitignoredFiles },
-				setBool:  func(v bool) { s.cfg.Privacy.IncludeGitignoredFiles = v }},
+			{ID: "privacy.remote_providers", Title: "Remote providers allowed", Kind: kindToggle,
+				TomlPath: "privacy.remote_providers_allowed",
+				Desc:     "allow remote providers globally",
+				GetBool:  func() bool { return s.cfg.Privacy.RemoteProvidersAllowed },
+				SetBool:  func(v bool) { s.cfg.Privacy.RemoteProvidersAllowed = v }},
+			{ID: "privacy.redact_secrets", Title: "Redact secrets", Kind: kindToggle,
+				TomlPath: "privacy.redact_secrets",
+				Desc:     "scrub likely secrets from context sent to models",
+				GetBool:  func() bool { return s.cfg.Privacy.RedactSecrets },
+				SetBool:  func(v bool) { s.cfg.Privacy.RedactSecrets = v }},
+			{ID: "privacy.include_gitignored", Title: "Include gitignored files", Kind: kindToggle,
+				TomlPath: "privacy.include_gitignored_files",
+				Desc:     "let indexing and context include gitignored paths",
+				GetBool:  func() bool { return s.cfg.Privacy.IncludeGitignoredFiles },
+				SetBool:  func(v bool) { s.cfg.Privacy.IncludeGitignoredFiles = v }},
 		}
 	})
 }
@@ -30,25 +30,25 @@ func privacyFrame(s *state) *frame {
 func snapshotsFrame(s *state) *frame {
 	return newFrame("Snapshots", func() []*field {
 		return []*field{
-			{id: "snapshots.enabled", title: "Enabled", kind: kindToggle,
-				tomlPath: "snapshots.enabled",
-				desc:     "capture before-write snapshots of changed files",
-				getBool:  func() bool { return s.cfg.Snapshots.Enabled },
-				setBool:  func(v bool) { s.cfg.Snapshots.Enabled = v }},
+			{ID: "snapshots.enabled", Title: "Enabled", Kind: kindToggle,
+				TomlPath: "snapshots.enabled",
+				Desc:     "capture before-write snapshots of changed files",
+				GetBool:  func() bool { return s.cfg.Snapshots.Enabled },
+				SetBool:  func(v bool) { s.cfg.Snapshots.Enabled = v }},
 			func() *field {
 				f := intField("snapshots.retention_days", "Retention days",
 					func() int { return s.cfg.Snapshots.RetentionDays }, 0,
 					func(v int) { s.cfg.Snapshots.RetentionDays = v })
-				f.tomlPath = "snapshots.retention_days"
-				f.desc = "days before snapshot files are eligible for cleanup"
+				f.TomlPath = "snapshots.retention_days"
+				f.Desc = "days before snapshot files are eligible for cleanup"
 				return f
 			}(),
 			func() *field {
 				f := bytesField("snapshots.max_file_bytes", "Max file size",
 					func() int64 { return int64(s.cfg.Snapshots.MaxFileBytes) },
 					func(v int64) { s.cfg.Snapshots.MaxFileBytes = int(v) })
-				f.tomlPath = "snapshots.max_file_bytes"
-				f.desc = "skip snapshots for files larger than this"
+				f.TomlPath = "snapshots.max_file_bytes"
+				f.Desc = "skip snapshots for files larger than this"
 				return f
 			}(),
 		}
@@ -62,38 +62,38 @@ func projectFrame(s *state) *frame {
 				f := scalarField("project.name", "Project name",
 					func() string { return s.cfg.Project.Name },
 					func(v string) error { s.cfg.Project.Name = v; return nil })
-				f.tomlPath = "project.name"
-				f.desc = "display name shown in the status bar and session list"
+				f.TomlPath = "project.name"
+				f.Desc = "display name shown in the status bar and session list"
 				return f
 			}(),
 			func() *field {
 				f := listDrillExt("project.languages", "Languages", &s.cfg.Project.Languages, sliceOpts(&s.cfg.Project.Languages))
-				f.tomlPath = "project.languages"
-				f.desc = "programming languages used in this project"
+				f.TomlPath = "project.languages"
+				f.Desc = "programming languages used in this project"
 				return f
 			}(),
 			func() *field {
 				f := scalarField("commands.test", "Test command",
 					func() string { return s.cfg.Commands.Test },
 					func(v string) error { s.cfg.Commands.Test = v; return nil })
-				f.tomlPath = "commands.test"
-				f.desc = "shell command to run project tests"
+				f.TomlPath = "commands.test"
+				f.Desc = "shell command to run project tests"
 				return f
 			}(),
 			func() *field {
 				f := scalarField("commands.format", "Format command",
 					func() string { return s.cfg.Commands.Format },
 					func(v string) error { s.cfg.Commands.Format = v; return nil })
-				f.tomlPath = "commands.format"
-				f.desc = "shell command to format source files"
+				f.TomlPath = "commands.format"
+				f.Desc = "shell command to format source files"
 				return f
 			}(),
 			func() *field {
 				f := scalarField("commands.vet", "Vet command",
 					func() string { return s.cfg.Commands.Vet },
 					func(v string) error { s.cfg.Commands.Vet = v; return nil })
-				f.tomlPath = "commands.vet"
-				f.desc = "shell command to lint or vet the codebase"
+				f.TomlPath = "commands.vet"
+				f.Desc = "shell command to lint or vet the codebase"
 				return f
 			}(),
 		}
@@ -103,25 +103,25 @@ func projectFrame(s *state) *frame {
 func indexingFrame(s *state) *frame {
 	return newFrame("Indexing", func() []*field {
 		return []*field{
-			{id: "indexing.treesitter", title: "Use treesitter", kind: kindToggle,
-				tomlPath: "indexing.use_treesitter",
-				desc:     "enable tree-sitter for symbol extraction",
-				getBool:  func() bool { return s.cfg.Indexing.UseTreesitter },
-				setBool:  func(v bool) { s.cfg.Indexing.UseTreesitter = v }},
-			{id: "indexing.embeddings", title: "Use embeddings", kind: kindToggle,
-				tomlPath: "indexing.use_embeddings",
-				desc:     "enable embedding-based semantic search",
-				getBool:  func() bool { return s.cfg.Indexing.UseEmbeddings },
-				setBool:  func(v bool) { s.cfg.Indexing.UseEmbeddings = v }},
-			{id: "indexing.summarise", title: "Summarise files", kind: kindToggle,
-				tomlPath: "indexing.summarise_files",
-				desc:     "generate file summaries during indexing",
-				getBool:  func() bool { return s.cfg.Indexing.SummariseFiles },
-				setBool:  func(v bool) { s.cfg.Indexing.SummariseFiles = v }},
+			{ID: "indexing.treesitter", Title: "Use treesitter", Kind: kindToggle,
+				TomlPath: "indexing.use_treesitter",
+				Desc:     "enable tree-sitter for symbol extraction",
+				GetBool:  func() bool { return s.cfg.Indexing.UseTreesitter },
+				SetBool:  func(v bool) { s.cfg.Indexing.UseTreesitter = v }},
+			{ID: "indexing.embeddings", Title: "Use embeddings", Kind: kindToggle,
+				TomlPath: "indexing.use_embeddings",
+				Desc:     "enable embedding-based semantic search",
+				GetBool:  func() bool { return s.cfg.Indexing.UseEmbeddings },
+				SetBool:  func(v bool) { s.cfg.Indexing.UseEmbeddings = v }},
+			{ID: "indexing.summarise", Title: "Summarise files", Kind: kindToggle,
+				TomlPath: "indexing.summarise_files",
+				Desc:     "generate file summaries during indexing",
+				GetBool:  func() bool { return s.cfg.Indexing.SummariseFiles },
+				SetBool:  func(v bool) { s.cfg.Indexing.SummariseFiles = v }},
 			func() *field {
 				f := listDrillExt("indexing.ignore", "Ignore patterns", &s.cfg.Indexing.Ignore, sliceOpts(&s.cfg.Indexing.Ignore))
-				f.tomlPath = "indexing.ignore"
-				f.desc = "glob patterns to skip during indexing"
+				f.TomlPath = "indexing.ignore"
+				f.Desc = "glob patterns to skip during indexing"
 				return f
 			}(),
 		}
@@ -131,40 +131,40 @@ func indexingFrame(s *state) *frame {
 func webFrame(s *state) *frame {
 	return newFrame("Web", func() []*field {
 		return []*field{
-			{id: "web.enabled", title: "Enabled", kind: kindToggle,
-				tomlPath: "web.enabled",
-				desc:     "allow web.fetch / web.search tools",
-				getBool:  func() bool { return s.cfg.Web.Enabled },
-				setBool:  func(v bool) { s.cfg.Web.Enabled = v }},
+			{ID: "web.enabled", Title: "Enabled", Kind: kindToggle,
+				TomlPath: "web.enabled",
+				Desc:     "allow web.fetch / web.search tools",
+				GetBool:  func() bool { return s.cfg.Web.Enabled },
+				SetBool:  func(v bool) { s.cfg.Web.Enabled = v }},
 			func() *field {
 				f := scalarField("web.fetch_timeout", "Fetch timeout",
 					func() string { return s.cfg.Web.FetchTimeout.String() },
 					durationSetter(func(d time.Duration) { s.cfg.Web.FetchTimeout = d }))
-				f.tomlPath = "web.fetch_timeout"
-				f.desc = "max duration for a single web fetch request"
+				f.TomlPath = "web.fetch_timeout"
+				f.Desc = "max duration for a single web fetch request"
 				return f
 			}(),
 			func() *field {
 				f := scalarField("web.search_provider", "Search provider",
 					func() string { return s.cfg.Web.SearchProvider },
 					func(v string) error { s.cfg.Web.SearchProvider = v; return nil })
-				f.tomlPath = "web.search_provider"
-				f.desc = "search backend name (e.g. google, bing, serpapi)"
+				f.TomlPath = "web.search_provider"
+				f.Desc = "search backend name (e.g. google, bing, serpapi)"
 				return f
 			}(),
 			func() *field {
 				f := scalarField("web.search_url", "Search URL",
 					func() string { return s.cfg.Web.SearchURL },
 					func(v string) error { s.cfg.Web.SearchURL = v; return nil })
-				f.tomlPath = "web.search_url"
-				f.desc = "custom search API endpoint URL"
+				f.TomlPath = "web.search_url"
+				f.Desc = "custom search API endpoint URL"
 				return f
 			}(),
 			func() *field {
 				f := secretRow("web.search_key", "Search key",
 					func() string { return s.cfg.Web.SearchKey },
 					func(v string) { s.cfg.Web.SearchKey = v })
-				f.tomlPath = "web.search_key"
+				f.TomlPath = "web.search_key"
 				return f
 			}(),
 		}
@@ -178,22 +178,22 @@ func swarmFrame(s *state) *frame {
 				f := intField("swarm.max_fix_rounds", "Max fix rounds",
 					func() int { return s.cfg.Swarm.Budget.MaxFixRounds }, 0,
 					func(v int) { s.cfg.Swarm.Budget.MaxFixRounds = v })
-				f.tomlPath = "swarm.budget.max_fix_rounds"
-				f.desc = "max LLM retry rounds per swarm task"
+				f.TomlPath = "swarm.budget.max_fix_rounds"
+				f.Desc = "max LLM retry rounds per swarm task"
 				return f
 			}(),
 			func() *field {
 				f := intField("swarm.max_total_tokens", "Max total tokens",
 					func() int { return s.cfg.Swarm.Budget.MaxTotalTokens }, 0,
 					func(v int) { s.cfg.Swarm.Budget.MaxTotalTokens = v })
-				f.tomlPath = "swarm.budget.max_total_tokens"
-				f.desc = "total token budget across all swarm rounds"
+				f.TomlPath = "swarm.budget.max_total_tokens"
+				f.Desc = "total token budget across all swarm rounds"
 				return f
 			}(),
 			func() *field {
 				f := mapIntDrill("swarm.tool_iters", "Tool iters", &s.cfg.Swarm.Budget.ToolIters)
-				f.tomlPath = "swarm.budget.tool_iters"
-				f.desc = "per-tool iteration limits"
+				f.TomlPath = "swarm.budget.tool_iters"
+				f.Desc = "per-tool iteration limits"
 				return f
 			}(),
 		}
@@ -203,41 +203,41 @@ func swarmFrame(s *state) *frame {
 func sddFrame(s *state) *frame {
 	return newFrame("SDD", func() []*field {
 		return []*field{
-			{id: "sdd.auto_worktree", title: "Auto worktree", kind: kindToggle,
-				tomlPath: "sdd.auto_worktree",
-				desc:     "create an isolated git worktree for each SDD task",
-				getBool:  func() bool { return s.cfg.SDD.AutoWorktree },
-				setBool:  func(v bool) { s.cfg.SDD.AutoWorktree = v }},
-			{id: "sdd.max_fix_rounds", title: "Max fix rounds", kind: kindScalar,
-				tomlPath: "sdd.max_fix_rounds",
-				desc:     "max LLM retry rounds per SDD task before escalation",
-				getStr:   func() string { return strconv.Itoa(s.cfg.SDD.MaxFixRounds) },
-				setStr:   intSetter(0, func(v int) { s.cfg.SDD.MaxFixRounds = v })},
-			{id: "sdd.plans_dir", title: "Plans dir", kind: kindScalar,
-				tomlPath: "sdd.plans_dir",
-				desc:     "directory for SDD plan files (relative to project root)",
-				getStr:   func() string { return s.cfg.SDD.PlansDir },
-				setStr:   func(v string) error { s.cfg.SDD.PlansDir = v; return nil }},
-			{id: "sdd.verify_timeout_ms", title: "Verify timeout (ms)", kind: kindScalar,
-				tomlPath: "sdd.verify_timeout_ms",
-				desc:     "per-task build/lint/test timeout in milliseconds",
-				getStr:   func() string { return strconv.Itoa(s.cfg.SDD.VerifyTimeoutMS) },
-				setStr:   intSetter(0, func(v int) { s.cfg.SDD.VerifyTimeoutMS = v })},
-			{id: "sdd.default_model_tier", title: "Default model tier", kind: kindScalar,
-				tomlPath: "sdd.default_model_tier",
-				desc:     "default orchestrator model tier (fast/strong)",
-				getStr:   func() string { return s.cfg.SDD.DefaultModelTier },
-				setStr:   func(v string) error { s.cfg.SDD.DefaultModelTier = v; return nil }},
-			{id: "sdd.cleanup_at_start", title: "Cleanup at start", kind: kindToggle,
-				tomlPath: "sdd.cleanup_at_start",
-				desc:     "run task-cleanup --stale at SDD startup",
-				getBool:  func() bool { return s.cfg.SDD.CleanupAtStart },
-				setBool:  func(v bool) { s.cfg.SDD.CleanupAtStart = v }},
-			{id: "sdd.max_total_tokens", title: "Max total tokens", kind: kindScalar,
-				tomlPath: "sdd.max_total_tokens",
-				desc:     "token budget cap for the SDD run (0 = no cap)",
-				getStr:   func() string { return strconv.Itoa(s.cfg.SDD.MaxTotalTokens) },
-				setStr:   intSetter(0, func(v int) { s.cfg.SDD.MaxTotalTokens = v })},
+			{ID: "sdd.auto_worktree", Title: "Auto worktree", Kind: kindToggle,
+				TomlPath: "sdd.auto_worktree",
+				Desc:     "create an isolated git worktree for each SDD task",
+				GetBool:  func() bool { return s.cfg.SDD.AutoWorktree },
+				SetBool:  func(v bool) { s.cfg.SDD.AutoWorktree = v }},
+			{ID: "sdd.max_fix_rounds", Title: "Max fix rounds", Kind: kindScalar,
+				TomlPath: "sdd.max_fix_rounds",
+				Desc:     "max LLM retry rounds per SDD task before escalation",
+				GetStr:   func() string { return strconv.Itoa(s.cfg.SDD.MaxFixRounds) },
+				SetStr:   intSetter(0, func(v int) { s.cfg.SDD.MaxFixRounds = v })},
+			{ID: "sdd.plans_dir", Title: "Plans dir", Kind: kindScalar,
+				TomlPath: "sdd.plans_dir",
+				Desc:     "directory for SDD plan files (relative to project root)",
+				GetStr:   func() string { return s.cfg.SDD.PlansDir },
+				SetStr:   func(v string) error { s.cfg.SDD.PlansDir = v; return nil }},
+			{ID: "sdd.verify_timeout_ms", Title: "Verify timeout (ms)", Kind: kindScalar,
+				TomlPath: "sdd.verify_timeout_ms",
+				Desc:     "per-task build/lint/test timeout in milliseconds",
+				GetStr:   func() string { return strconv.Itoa(s.cfg.SDD.VerifyTimeoutMS) },
+				SetStr:   intSetter(0, func(v int) { s.cfg.SDD.VerifyTimeoutMS = v })},
+			{ID: "sdd.default_model_tier", Title: "Default model tier", Kind: kindScalar,
+				TomlPath: "sdd.default_model_tier",
+				Desc:     "default orchestrator model tier (fast/strong)",
+				GetStr:   func() string { return s.cfg.SDD.DefaultModelTier },
+				SetStr:   func(v string) error { s.cfg.SDD.DefaultModelTier = v; return nil }},
+			{ID: "sdd.cleanup_at_start", Title: "Cleanup at start", Kind: kindToggle,
+				TomlPath: "sdd.cleanup_at_start",
+				Desc:     "run task-cleanup --stale at SDD startup",
+				GetBool:  func() bool { return s.cfg.SDD.CleanupAtStart },
+				SetBool:  func(v bool) { s.cfg.SDD.CleanupAtStart = v }},
+			{ID: "sdd.max_total_tokens", Title: "Max total tokens", Kind: kindScalar,
+				TomlPath: "sdd.max_total_tokens",
+				Desc:     "token budget cap for the SDD run (0 = no cap)",
+				GetStr:   func() string { return strconv.Itoa(s.cfg.SDD.MaxTotalTokens) },
+				SetStr:   intSetter(0, func(v int) { s.cfg.SDD.MaxTotalTokens = v })},
 		}
 	})
 }
@@ -252,6 +252,6 @@ func SDDFrame(s *State) *Frame { return sddFrame(s) }
 // map frame (no pointless single-row drill).
 func diagnosticsFrame(s *state) *frame {
 	drill := mapStringDrill("diagnostics.commands", "Commands", &s.cfg.Diagnostics.Commands)
-	drill.tomlPath = "diagnostics.commands"
+	drill.TomlPath = "diagnostics.commands"
 	return rootDrillFrame("Diagnostics", drill)
 }

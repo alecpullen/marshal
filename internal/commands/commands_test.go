@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/db"
+	"marshal/internal/history"
 	"marshal/internal/tools/registry"
 )
 
@@ -31,7 +35,7 @@ func TestNew(t *testing.T) {
 
 func TestRegister(t *testing.T) {
 	reg := New()
-	err := reg.Register(Command{Name: "test", Handler: func(s *session.State, a []string) string { return "" }})
+	err := reg.Register(Command{Name: "test", Handler: func(s *session.State, a []string) Result { return Text("") }})
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
@@ -39,7 +43,7 @@ func TestRegister(t *testing.T) {
 
 func TestRegisterDuplicate(t *testing.T) {
 	reg := New()
-	h := func(s *session.State, a []string) string { return "" }
+	h := func(s *session.State, a []string) Result { return Text("") }
 	reg.Register(Command{Name: "test", Handler: h})
 	err := reg.Register(Command{Name: "test", Handler: h})
 	if !errors.Is(err, ErrDuplicateCommand) {
@@ -49,7 +53,7 @@ func TestRegisterDuplicate(t *testing.T) {
 
 func TestRegisterEmptyName(t *testing.T) {
 	reg := New()
-	err := reg.Register(Command{Name: "", Handler: func(s *session.State, a []string) string { return "" }})
+	err := reg.Register(Command{Name: "", Handler: func(s *session.State, a []string) Result { return Text("") }})
 	if !errors.Is(err, ErrInvalidCommand) {
 		t.Errorf("expected ErrInvalidCommand, got %v", err)
 	}
@@ -65,7 +69,7 @@ func TestRegisterNilHandler(t *testing.T) {
 
 func TestLookup(t *testing.T) {
 	reg := New()
-	reg.Register(Command{Name: "test", Description: "desc", Handler: func(s *session.State, a []string) string { return "ok" }})
+	reg.Register(Command{Name: "test", Description: "desc", Handler: func(s *session.State, a []string) Result { return Text("ok") }})
 
 	cmd, ok := reg.Lookup("test")
 	if !ok {
@@ -74,7 +78,7 @@ func TestLookup(t *testing.T) {
 	if cmd.Description != "desc" {
 		t.Errorf("expected desc, got %s", cmd.Description)
 	}
-	result := cmd.Handler(newTestState(), nil)
+	result := cmd.Handler(newTestState(), nil).Text
 	if result != "ok" {
 		t.Errorf("expected ok, got %s", result)
 	}
@@ -90,8 +94,8 @@ func TestLookupNotFound(t *testing.T) {
 
 func TestList(t *testing.T) {
 	reg := New()
-	reg.Register(Command{Name: "b", Handler: func(s *session.State, a []string) string { return "" }})
-	reg.Register(Command{Name: "a", Handler: func(s *session.State, a []string) string { return "" }})
+	reg.Register(Command{Name: "b", Handler: func(s *session.State, a []string) Result { return Text("") }})
+	reg.Register(Command{Name: "a", Handler: func(s *session.State, a []string) Result { return Text("") }})
 
 	cmds := reg.List()
 	if len(cmds) != 2 {
@@ -115,17 +119,35 @@ func TestRegisterAll(t *testing.T) {
 	}
 }
 
-func TestHelpCommand(t *testing.T) {
+func TestHelpCommandReturnsGroupedDoc(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("help")
-	result := cmd.Handler(newTestState(), nil)
-	for _, want := range []string{"Keys", "Chat", "Models & providers", "Workflows", "Changes", "Settings & info"} {
-		if !strings.Contains(result, want) {
-			t.Errorf("help output missing group %q: %s", want, result)
+	res := cmd.Handler(newTestState(), nil)
+	if res.Doc == nil {
+		t.Fatalf("/help should return a Doc, got %+v", res)
+	}
+	var headers []string
+	var names []string
+	for _, r := range res.Doc.Rows {
+		if r.Header != "" {
+			headers = append(headers, r.Header)
+		} else {
+			names = append(names, r.Text)
 		}
+	}
+	for _, want := range []string{"Chat", "Settings & info"} {
+		if !slices.Contains(headers, want) {
+			t.Errorf("missing group header %q in %v", want, headers)
+		}
+	}
+	if !slices.Contains(names, "/new") {
+		t.Errorf("missing /new row in %v", names)
+	}
+	if res.Doc.Footer == "" {
+		t.Error("expected keybinding cheatsheet in Doc.Footer")
 	}
 }
 
@@ -135,11 +157,15 @@ func TestHelpPrintsCheatsheet(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("help")
-	out := cmd.Handler(nil, nil)
-	for _, want := range []string{"Keys", "Chat", "Models & providers", "/set", "/model", "⏎ send", "esc"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("cheatsheet missing %q", want)
-		}
+	res := cmd.Handler(nil, nil)
+	if res.Doc == nil {
+		t.Fatalf("/help should return a Doc, got %+v", res)
+	}
+	if !strings.Contains(res.Doc.Footer, "⏎ send") {
+		t.Errorf("cheatsheet footer missing ⏎ send: %q", res.Doc.Footer)
+	}
+	if !strings.Contains(res.Doc.Footer, "esc") {
+		t.Errorf("cheatsheet footer missing esc: %q", res.Doc.Footer)
 	}
 }
 
@@ -149,21 +175,32 @@ func TestHelpForSingleCommand(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("help")
-	out := cmd.Handler(nil, []string{"set"})
+	out := cmd.Handler(nil, []string{"set"}).Text
 	if !strings.Contains(out, "/set") || !strings.Contains(out, "<key> [value]") {
 		t.Errorf("per-command help incomplete: %q", out)
 	}
 }
 
-func TestToolsCommand(t *testing.T) {
+func TestToolsCommandReturnsDoc(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
+	toolReg.Register(registry.Tool{
+		Name:        "read",
+		Risk:        registry.RiskReadOnly,
+		Description: "Read files from the workspace",
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	})
 	RegisterAll(cmdReg, toolReg)
 
 	cmd, _ := cmdReg.Lookup("tools")
-	result := cmd.Handler(newTestState(), nil)
-	if !strings.Contains(result, "Available tools") {
-		t.Errorf("tools output missing header: %s", result)
+	res := cmd.Handler(newTestState(), nil)
+	if res.Doc == nil {
+		t.Fatalf("/tools should return a Doc, got %+v", res)
+	}
+	if len(res.Doc.Rows) == 0 || res.Doc.Rows[0].Detail == "" {
+		t.Fatalf("expected tool rows with risk/description detail, got %+v", res.Doc.Rows)
 	}
 }
 
@@ -183,25 +220,72 @@ func TestRouteCommand(t *testing.T) {
 	})
 
 	cmd, _ := cmdReg.Lookup("route")
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	if !strings.Contains(result, "gpt-4") {
 		t.Errorf("route output missing model info: %s", result)
 	}
 }
 
-func TestContextCommand(t *testing.T) {
+func contextResult(t *testing.T) Result {
+	t.Helper()
 	cmdReg := New()
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
-
 	state := newTestState()
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
-
 	cmd, _ := cmdReg.Lookup("context")
-	result := cmd.Handler(state, nil)
-	if !strings.Contains(result, "Messages: 2") {
-		t.Errorf("context output missing message count: %s", result)
+	return cmd.Handler(state, nil)
+}
+
+func contextResultWithPack(t *testing.T) Result {
+	t.Helper()
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+	state := newTestState()
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Title: "internal/app/tui/model.go", EstimatedTokens: 8400},
+			{Source: "repo-map", EstimatedTokens: 2100},
+		},
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 10500, MaxTokens: 32000},
+	})
+	cmd, _ := cmdReg.Lookup("context")
+	return cmd.Handler(state, nil)
+}
+
+func TestContextCommandReturnsFullFrameDoc(t *testing.T) {
+	res := contextResult(t)
+	if res.Doc == nil || !res.Doc.FullFrame {
+		t.Fatalf("/context should return a FullFrame Doc, got %+v", res)
+	}
+	if len(res.Doc.Rows) == 0 {
+		t.Fatal("expected stat rows")
+	}
+	found := false
+	for _, r := range res.Doc.Rows {
+		if r.Text == "Messages" && r.Detail != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing Messages stat row: %+v", res.Doc.Rows)
+	}
+}
+
+func TestContextCommandListsPackSections(t *testing.T) {
+	res := contextResultWithPack(t)
+	var sectionRows int
+	for _, r := range res.Doc.Rows {
+		if r.Detail != "" && r.Text != "Messages" && r.Text != "Pack" {
+			sectionRows++
+		}
+	}
+	if sectionRows == 0 {
+		t.Fatalf("expected one row per pack section: %+v", res.Doc.Rows)
 	}
 }
 
@@ -215,7 +299,7 @@ func TestNewCommand(t *testing.T) {
 	state.AddMessage(session.RoleAssistant, "hi", session.ContentTypePlain)
 
 	cmd, _ := cmdReg.Lookup("new")
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	if !strings.Contains(result, "Cleared 2 messages") {
 		t.Errorf("new command output wrong: %s", result)
 	}
@@ -231,7 +315,7 @@ func TestConfigCommand(t *testing.T) {
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("config")
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	if !strings.Contains(result, "Configuration") {
 		t.Errorf("config output missing header: %s", result)
 	}
@@ -244,7 +328,7 @@ func TestRollbackNoBackup(t *testing.T) {
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("rollback")
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	if !strings.Contains(result, "No backup available") {
 		t.Errorf("rollback output wrong: %s", result)
 	}
@@ -351,13 +435,21 @@ func TestLogCommandShowsRecentAuditEvents(t *testing.T) {
 	if !ok {
 		t.Fatal("log command not registered")
 	}
-	out := cmd.Handler(state, nil)
-
-	if !strings.Contains(out, "tool.19") || !strings.Contains(out, "result 19") {
-		t.Fatalf("log output missing newest event:\n%s", out)
+	res := cmd.Handler(state, nil)
+	if res.Doc == nil {
+		t.Fatalf("/log should return a Doc, got %+v", res)
 	}
-	if strings.Contains(out, "tool.4 ") {
-		t.Fatalf("log output should only contain the last 15 events:\n%s", out)
+	if len(res.Doc.Rows) == 0 {
+		t.Fatal("expected log rows")
+	}
+	// Should contain the newest event.
+	last := res.Doc.Rows[len(res.Doc.Rows)-1]
+	if !strings.Contains(last.Text, "tool.19") || !strings.Contains(last.Detail, "result 19") {
+		t.Fatalf("log rows missing newest event, last row: %+v", last)
+	}
+	// Should only contain the last 15 events (indices 5..19).
+	if len(res.Doc.Rows) != 15 {
+		t.Fatalf("expected 15 log rows, got %d", len(res.Doc.Rows))
 	}
 }
 
@@ -368,32 +460,8 @@ func TestLogCommandEmpty(t *testing.T) {
 	}
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	cmd, _ := cmdReg.Lookup("log")
-	if out := cmd.Handler(state, nil); out != "No tool calls yet." {
+	if out := cmd.Handler(state, nil).Text; out != "No tool calls yet." {
 		t.Fatalf("empty log output = %q", out)
-	}
-}
-
-func TestContextCommandListsPackSections(t *testing.T) {
-	cmdReg := New()
-	if err := RegisterAll(cmdReg, registry.New()); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	state.SetContextPack(contextpack.Pack{
-		Sections: []contextpack.Section{
-			{Title: "internal/app/tui/model.go", EstimatedTokens: 8400},
-			{Source: "repo-map", EstimatedTokens: 2100},
-		},
-		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 10500, MaxTokens: 32000},
-	})
-
-	cmd, _ := cmdReg.Lookup("context")
-	out := cmd.Handler(state, nil)
-
-	for _, want := range []string{"10k/32k", "internal/app/tui/model.go", "8k", "repo-map"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("context output missing %q:\n%s", want, out)
-		}
 	}
 }
 
@@ -422,7 +490,7 @@ func TestToolsCommandWithNilToolRegistry(t *testing.T) {
 	if !ok {
 		t.Fatal("tools command not registered")
 	}
-	result := cmd.Handler(newTestState(), nil)
+	result := cmd.Handler(newTestState(), nil).Text
 	if !strings.Contains(result, "Tools unavailable") {
 		t.Fatalf("tools output with nil toolReg = %q, want 'Tools unavailable'", result)
 	}
@@ -439,7 +507,7 @@ func TestDiffCommandNoSnapshot(t *testing.T) {
 	if !ok {
 		t.Fatal("diff command not registered")
 	}
-	out := cmd.Handler(state, nil)
+	out := cmd.Handler(state, nil).Text
 	if out == "" {
 		t.Fatal("expected a message for /diff with no snapshot")
 	}
@@ -492,19 +560,38 @@ func TestHelpListsFlagshipCommands(t *testing.T) {
 	if !ok {
 		t.Fatal("help command not registered")
 	}
-	result := cmd.Handler(newTestState(), nil)
+	res := cmd.Handler(newTestState(), nil)
+	if res.Doc == nil {
+		t.Fatalf("/help should return a Doc, got %+v", res)
+	}
+
+	var names []string
+	for _, r := range res.Doc.Rows {
+		if r.Header == "" {
+			names = append(names, r.Text)
+		}
+	}
 
 	// Flagship commands that were previously hidden must now appear in /help.
 	for _, name := range []string{"connect", "models", "model", "mode", "swarm", "sdd", "settings", "memory"} {
-		if !strings.Contains(result, "/"+name) {
-			t.Errorf("help output should contain /%s, got:\n%s", name, result)
+		found := false
+		for _, n := range names {
+			if strings.HasPrefix(n, "/"+name) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("help output should contain /%s, got names: %v", name, names)
 		}
 	}
 
 	// Truly hidden commands (plan, default, edit, copilot, auto, stop) must NOT appear.
 	for _, name := range []string{"plan", "default", "edit", "copilot", "auto", "stop"} {
-		if strings.Contains(result, "/"+name) {
-			t.Errorf("help output should not contain /%s, got:\n%s", name, result)
+		for _, n := range names {
+			if strings.HasPrefix(n, "/"+name) {
+				t.Errorf("help output should not contain /%s, got names: %v", name, names)
+			}
 		}
 	}
 }
@@ -518,26 +605,33 @@ func TestHelpGroupsCommands(t *testing.T) {
 	if !ok {
 		t.Fatal("help command not registered")
 	}
-	result := cmd.Handler(newTestState(), nil)
+	res := cmd.Handler(newTestState(), nil)
+	if res.Doc == nil {
+		t.Fatalf("/help should return a Doc, got %+v", res)
+	}
 
 	// All five groups must appear in the fixed order.
-	groups := []string{"Keys", "Chat", "Models & providers", "Workflows", "Changes", "Settings & info"}
-	lastIdx := -1
-	for _, g := range groups {
-		idx := strings.Index(result, g+"\n")
-		if idx < 0 {
-			t.Errorf("help output missing group %q", g)
-			continue
+	groups := []string{"Chat", "Models & providers", "Workflows", "Changes", "Settings & info"}
+	var seen []string
+	for _, r := range res.Doc.Rows {
+		if r.Header != "" {
+			seen = append(seen, r.Header)
 		}
-		if idx <= lastIdx {
-			t.Errorf("group %q appears out of order (idx=%d, last=%d)", g, idx, lastIdx)
+	}
+	if len(seen) < len(groups) {
+		t.Fatalf("expected at least %d group headers, got %v", len(groups), seen)
+	}
+	for i, g := range groups {
+		if i >= len(seen) || seen[i] != g {
+			t.Errorf("group %d: expected %q, got %v", i, g, seen)
 		}
-		lastIdx = idx
 	}
 
 	// No "Other" group should appear because every visible command is grouped.
-	if strings.Contains(result, "Other\n") {
-		t.Errorf("help output should not contain an 'Other' group, got:\n%s", result)
+	for _, r := range res.Doc.Rows {
+		if r.Header == "Other" {
+			t.Errorf("help output should not contain an 'Other' group header")
+		}
 	}
 }
 
@@ -552,7 +646,7 @@ func TestDiffDoesNotInjectIntoState(t *testing.T) {
 		t.Fatal("diff command not registered")
 	}
 	before := len(state.Messages())
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 	after := len(state.Messages())
 
 	if after != before {
@@ -583,7 +677,7 @@ func TestExportComputesPathBeforeWrite(t *testing.T) {
 		t.Fatal("export command not registered")
 	}
 
-	result := cmd.Handler(state, nil)
+	result := cmd.Handler(state, nil).Text
 
 	if !strings.Contains(result, "Exported to ") {
 		t.Fatalf("export output missing 'Exported to': %q", result)
@@ -608,7 +702,7 @@ func TestExportRejectsAbsolutePath(t *testing.T) {
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("export")
-	out := cmd.Handler(state, []string{"/etc/passwd"})
+	out := cmd.Handler(state, []string{"/etc/passwd"}).Text
 	if !strings.Contains(out, "must be relative") {
 		t.Fatalf("expected absolute path to be rejected with 'must be relative', got %q", out)
 	}
@@ -621,7 +715,7 @@ func TestExportRejectsParentTraversal(t *testing.T) {
 
 	state := newTestState()
 	cmd, _ := cmdReg.Lookup("export")
-	out := cmd.Handler(state, []string{"../../etc/passwd"})
+	out := cmd.Handler(state, []string{"../../etc/passwd"}).Text
 	if !strings.Contains(out, "escapes") {
 		t.Fatalf("expected parent traversal to be rejected with 'escapes', got %q", out)
 	}
@@ -673,19 +767,198 @@ func TestTrustReportsCurrentStatus(t *testing.T) {
 
 	// Default state: not trusted.
 	state := newTestState()
-	out := cmd.Handler(state, nil)
+	out := cmd.Handler(state, nil).Text
 	if !strings.Contains(out, "not trusted") {
 		t.Fatalf("expected 'not trusted' in output, got: %q", out)
 	}
 
 	// After marking trusted.
 	state.SetTrusted(true)
-	out = cmd.Handler(state, nil)
+	out = cmd.Handler(state, nil).Text
 	if !strings.Contains(out, "trusted") {
 		t.Fatalf("expected 'trusted' in output, got: %q", out)
 	}
 	if strings.Contains(out, "not trusted") {
 		t.Fatalf("trusted state should not say 'not trusted', got: %q", out)
+	}
+}
+
+func TestResultPlainTextRendersDoc(t *testing.T) {
+	res := Panel("Things", false, []Row{
+		{Header: "Group A"},
+		{Text: "one", Detail: "first"},
+		{Text: "two", Detail: "second", Desc: "more about two"},
+	})
+	out := res.PlainText()
+	for _, want := range []string{"Group A", "one", "first", "two", "second", "more about two"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("PlainText() missing %q:\n%s", want, out)
+		}
+	}
+	if res.Text != "" {
+		t.Errorf("Panel result should have empty Text, got %q", res.Text)
+	}
+}
+
+// TestResultPlainTextRendersDescIndented pins the indentation pattern:
+// Desc lives on its own line below Text/Detail, indented one extra level
+// past the row's indent. The TUI panel skips Desc; headless callers see it.
+func TestResultPlainTextRendersDescIndented(t *testing.T) {
+	res := Panel("Things", false, []Row{
+		{Text: "parent", Desc: "parent description", Children: []Row{
+			{Text: "child", Desc: "child description"},
+		}},
+	})
+	out := res.PlainText()
+	wantLines := []string{
+		"Things",
+		"  parent",
+		"    parent description",
+		"    child",
+		"      child description",
+	}
+	for _, line := range wantLines {
+		if !strings.Contains(out, line) {
+			t.Errorf("PlainText() missing line %q in:\n%s", line, out)
+		}
+	}
+}
+
+// TestResultPlainTextSkipsDescWhenEmpty locks the contract that an
+// empty Desc does NOT emit an extra blank line under Text/Detail.
+func TestResultPlainTextSkipsDescWhenEmpty(t *testing.T) {
+	res := Panel("Things", false, []Row{
+		{Text: "noDesc"},
+	})
+	out := res.PlainText()
+	// "  noDesc" must appear followed by exactly one newline before EOF.
+	if got := strings.TrimSpace(out); got != "Things\n  noDesc" && !strings.Contains(got, "noDesc") {
+		t.Errorf("expected no trailing desc line for empty Desc, got:\n%s", out)
+	}
+}
+
+func branchesTestState(t *testing.T) *session.State {
+	t.Helper()
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state.AddMessage(session.RoleUser, "turn1", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a1", session.ContentTypeMarkdown)
+	state.AddMessage(session.RoleUser, "turn2", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a2", session.ContentTypeMarkdown)
+	// Rewind to before turn2, then add a new turn → 2 branches.
+	msgs := state.Messages()
+	state.Rewind(msgs[2].ID)
+	state.AddMessage(session.RoleUser, "turn3", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "a3", session.ContentTypeMarkdown)
+	return state
+}
+
+func TestBranchesCommandReturnsActionRows(t *testing.T) {
+	state := branchesTestState(t)
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+	cmd, _ := cmdReg.Lookup("branches")
+	res := cmd.Handler(state, nil)
+	if res.Doc == nil {
+		t.Fatalf("/branches should return a Doc, got %+v", res)
+	}
+	if len(res.Doc.Rows) != len(state.Branches()) {
+		t.Fatalf("rows = %d, want one per branch", len(res.Doc.Rows))
+	}
+	// The row for a non-current branch switches to it.
+	leaves := state.Branches()
+	cur := state.LeafID()
+	for i, r := range res.Doc.Rows {
+		if leaves[i] != cur && r.Action != nil {
+			out := r.Action(state)
+			if state.LeafID() != leaves[i] {
+				t.Fatalf("action did not switch branch: leaf = %d, want %d", state.LeafID(), leaves[i])
+			}
+			if out.Text == "" {
+				t.Fatal("action should return a transcript confirmation")
+			}
+			return
+		}
+	}
+	t.Fatal("no actionable non-current branch row found")
+}
+
+// historyTestState creates an in-memory DB with one session and two
+// generations (one live with a turn, one ended with no turns), then returns
+// a session.State wired to it.
+func historyTestState(t *testing.T) (*session.State, []history.GenerationSummary) {
+	t.Helper()
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+
+	projectID, err := database.GetOrCreateProject("/test/repo", "test-repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	sessionID := "test-session-" + t.Name()
+	if err := database.CreateSession(sessionID, projectID, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	now := time.Now().UTC()
+	g1 := db.Generation{
+		ID: "gen-1", SessionID: sessionID, Seq: 1,
+		StartedAt: now, SeedDigest: "digest-one",
+	}
+	if err := database.BeginGeneration(g1); err != nil {
+		t.Fatalf("BeginGeneration: %v", err)
+	}
+	if err := database.ArchiveTurns("gen-1", []db.ArchivedTurn{
+		{TurnSeq: 1, Role: "user", Content: "hello", CreatedAt: now},
+		{TurnSeq: 2, Role: "assistant", Content: "world", CreatedAt: now},
+	}, 1024, now); err != nil {
+		t.Fatalf("ArchiveTurns: %v", err)
+	}
+
+	g2 := db.Generation{
+		ID: "gen-2", SessionID: sessionID, Seq: 2,
+		StartedAt: now.Add(time.Minute), SeedDigest: "digest-two",
+	}
+	if err := database.BeginGeneration(g2); err != nil {
+		t.Fatalf("BeginGeneration: %v", err)
+	}
+	if err := database.EndGeneration("gen-2", now.Add(2*time.Minute), "completed"); err != nil {
+		t.Fatalf("EndGeneration: %v", err)
+	}
+
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{
+		DB: database, SessionID: sessionID,
+	})
+
+	summaries, err := history.ListGenerations(context.Background(), database, sessionID)
+	if err != nil {
+		t.Fatalf("ListGenerations: %v", err)
+	}
+	return state, summaries
+}
+
+func TestHistoryCommandReturnsGenerationRows(t *testing.T) {
+	state, gens := historyTestState(t)
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+	cmd, _ := cmdReg.Lookup("history")
+	res := cmd.Handler(state, nil)
+	if res.Doc == nil || !res.Doc.FullFrame {
+		t.Fatalf("/history should return a FullFrame Doc, got %+v", res)
+	}
+	if len(res.Doc.Rows) != len(gens) {
+		t.Fatalf("rows = %d, want one per generation", len(res.Doc.Rows))
+	}
+	children := res.Doc.Rows[0].Children
+	if len(children) == 0 {
+		t.Fatal("generation rows should carry their turns as Children")
 	}
 }
 

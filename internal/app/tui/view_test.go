@@ -550,15 +550,15 @@ func newViewTestModelWithRegistry(t *testing.T, width, height int) Model {
 	reg := commands.New()
 	mustRegister(t, reg, commands.Command{
 		Name: "plan", Description: "Plan a task", Args: "<goal>",
-		Handler: func(s *session.State, args []string) string { return "" },
+		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	mustRegister(t, reg, commands.Command{
 		Name: "help", Description: "Show help", Args: "",
-		Handler: func(s *session.State, args []string) string { return "" },
+		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	mustRegister(t, reg, commands.Command{
 		Name: "tools", Description: "List tools", Args: "",
-		Handler: func(s *session.State, args []string) string { return "" },
+		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	m := New(state, WithCommandRegistry(reg))
 	m.resize(width, height)
@@ -594,11 +594,11 @@ func newViewTestModelWithRegistryAndFileIndex(t *testing.T, width, height int, p
 	reg := commands.New()
 	mustRegister(t, reg, commands.Command{
 		Name: "plan", Description: "Plan a task", Args: "<goal>",
-		Handler: func(s *session.State, args []string) string { return "" },
+		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	mustRegister(t, reg, commands.Command{
 		Name: "help", Description: "Show help", Args: "",
-		Handler: func(s *session.State, args []string) string { return "" },
+		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	m := New(state, WithCommandRegistry(reg), WithFileIndex(paths))
 	m.resize(width, height)

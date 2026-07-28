@@ -14,7 +14,86 @@ var (
 	ErrDuplicateCommand = errors.New("duplicate command")
 )
 
-type Handler func(state *session.State, args []string) string
+type Handler func(state *session.State, args []string) Result
+
+// Result is a command's output: plain Text for the transcript, or a
+// structured Doc the TUI renders as a scrollable panel.
+type Result struct {
+	Text string
+	Doc  *Doc
+}
+
+// Text builds a plain-text Result.
+func Text(s string) Result { return Result{Text: s} }
+
+// Panel builds a structured Result. fullFrame requests the full-frame dock
+// budget (transcript hidden); see dock.Sizing.
+func Panel(title string, fullFrame bool, rows []Row) Result {
+	return Result{Doc: &Doc{Title: title, FullFrame: fullFrame, Rows: rows}}
+}
+
+// Doc is structured panel content. Content generation lives here, in
+// commands; rendering lives in the TUI — this package must not import
+// lipgloss.
+type Doc struct {
+	Title     string
+	FullFrame bool
+	Rows      []Row
+	// Footer is muted explanatory text rendered under the rows.
+	Footer string
+}
+
+// Row is one entry in a Doc. Exactly one shape applies:
+//   - Header set: a section header row.
+//   - Action set: Enter runs the action (ActionLabel is the right cell).
+//   - Children set: Enter drills one level into the child rows.
+//   - otherwise: a read-only title/detail row; Desc describes it.
+type Row struct {
+	Header      string
+	Text        string
+	Detail      string
+	Desc        string
+	ActionLabel string
+	Action      func(state *session.State) Result
+	Children    []Row
+}
+
+// PlainText renders the result as flat text for headless callers.
+func (r Result) PlainText() string {
+	if r.Doc == nil {
+		return r.Text
+	}
+	var b strings.Builder
+	if r.Doc.Title != "" {
+		b.WriteString(r.Doc.Title + "\n")
+	}
+	var walk func(rows []Row, indent string)
+	walk = func(rows []Row, indent string) {
+		for _, row := range rows {
+			switch {
+			case row.Header != "":
+				b.WriteString(indent + row.Header + "\n")
+			default:
+				line := indent + row.Text
+				if row.Detail != "" {
+					line += "  " + row.Detail
+				}
+				b.WriteString(line + "\n")
+				if row.Desc != "" {
+					b.WriteString(indent + "  " + row.Desc + "\n")
+				}
+			}
+			if len(row.Children) > 0 {
+				walk(row.Children, indent+"  ")
+			}
+		}
+	}
+	walk(r.Doc.Rows, "  ")
+	if r.Doc.Footer != "" {
+		b.WriteString(r.Doc.Footer + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
 
 type Command struct {
 	Name        string
@@ -32,7 +111,7 @@ type Command struct {
 	// instead of invoking a Go handler. Used for plugin-defined commands;
 	// such commands carry no Handler and are inert headless.
 	PromptBody string
-	Handler Handler
+	Handler    Handler
 }
 
 type Registry struct {

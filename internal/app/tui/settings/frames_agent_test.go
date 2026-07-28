@@ -19,8 +19,8 @@ func TestAgentProviderFieldIsKindPicker(t *testing.T) {
 	f := agentFrame(st)
 
 	var providerRow *field
-	for _, r := range f.list.Rows() {
-		if r.title == "Provider" {
+	for _, r := range f.List.Rows() {
+		if r.Title == "Provider" {
 			providerRow = r
 			break
 		}
@@ -28,11 +28,11 @@ func TestAgentProviderFieldIsKindPicker(t *testing.T) {
 	if providerRow == nil {
 		t.Fatal("Agent frame must have a Provider row")
 	}
-	if providerRow.kind != kindPicker {
-		t.Fatalf("Provider row kind = %v, want kindPicker", providerRow.kind)
+	if providerRow.Kind != kindPicker {
+		t.Fatalf("Provider row kind = %v, want kindPicker", providerRow.Kind)
 	}
 	values := map[string]bool{}
-	for _, item := range providerRow.pickOptions() {
+	for _, item := range providerRow.PickOptions() {
 		values[item.Value] = true
 	}
 	if !values["ollama"] || !values["openrouter"] {
@@ -45,13 +45,13 @@ func TestAgentProviderPickerEmptyState(t *testing.T) {
 	f := agentFrame(st)
 
 	var providerRow *field
-	for _, r := range f.list.Rows() {
-		if r.title == "Provider" {
+	for _, r := range f.List.Rows() {
+		if r.Title == "Provider" {
 			providerRow = r
 			break
 		}
 	}
-	items := providerRow.pickOptions()
+	items := providerRow.PickOptions()
 	if len(items) == 0 || items[0].Value != "__add_provider__" {
 		t.Fatalf("empty provider picker should have an 'Add a provider' item, got %v", items)
 	}
@@ -68,17 +68,17 @@ func TestAgentModelPickerUsesDiscoveredCache(t *testing.T) {
 
 	f := agentFrame(st)
 	var modelRow *field
-	for _, r := range f.list.Rows() {
-		if r.title == "Model" {
+	for _, r := range f.List.Rows() {
+		if r.Title == "Model" {
 			modelRow = r
 			break
 		}
 	}
-	if modelRow.kind != kindPicker {
-		t.Fatalf("Model row kind = %v, want kindPicker", modelRow.kind)
+	if modelRow.Kind != kindPicker {
+		t.Fatalf("Model row kind = %v, want kindPicker", modelRow.Kind)
 	}
 	values := map[string]bool{}
-	for _, item := range modelRow.pickOptions() {
+	for _, item := range modelRow.PickOptions() {
 		values[item.Value] = true
 	}
 	if !values["qwen2.5-coder:7b"] {
@@ -95,11 +95,14 @@ func TestAgentFrameProviderWritesToActivePreset(t *testing.T) {
 	}
 	ps := newPaneStack(agentFrame(s))
 	ps.SetSize(80, 24)
-	for ps.top().list.CursorRow().title != "Provider" {
+	for ps.Top().List.CursorRow().Title != "Provider" {
 		ps.Update(kp("j"))
 	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	ps.top().list.input.SetValue("vllm")
+	ps.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear pre-populated value
+	for _, r := range "vllm" {
+		ps.Update(kp(string(r)))
+	}
 	ps.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if s.cfg.Models.Presets[preset].Provider != "vllm" {
 		t.Fatalf("provider should write to preset %q, got %q", preset, s.cfg.Models.Presets[preset].Provider)
@@ -121,11 +124,11 @@ func TestAgentFrameTitlesShowActivePreset(t *testing.T) {
 	f := agentFrame(st)
 
 	var providerRow, modelRow *field
-	for _, r := range f.list.Rows() {
-		if r.title == "Provider (preset: my-preset)" {
+	for _, r := range f.List.Rows() {
+		if r.Title == "Provider (preset: my-preset)" {
 			providerRow = r
 		}
-		if r.title == "Model (preset: my-preset)" {
+		if r.Title == "Model (preset: my-preset)" {
 			modelRow = r
 		}
 	}
@@ -136,11 +139,11 @@ func TestAgentFrameTitlesShowActivePreset(t *testing.T) {
 		t.Fatal("Agent frame must have a Model (preset: my-preset) row when preset is active")
 	}
 	wantDesc := "writes into preset my-preset — shared by every role that uses it"
-	if providerRow.desc != wantDesc {
-		t.Fatalf("Provider row desc = %q, want %q", providerRow.desc, wantDesc)
+	if providerRow.Desc != wantDesc {
+		t.Fatalf("Provider row desc = %q, want %q", providerRow.Desc, wantDesc)
 	}
-	if modelRow.desc != wantDesc {
-		t.Fatalf("Model row desc = %q, want %q", modelRow.desc, wantDesc)
+	if modelRow.Desc != wantDesc {
+		t.Fatalf("Model row desc = %q, want %q", modelRow.Desc, wantDesc)
 	}
 }
 
@@ -150,11 +153,11 @@ func TestAgentFrameTitlesPlainWithoutPreset(t *testing.T) {
 	f := agentFrame(st)
 
 	var providerRow, modelRow *field
-	for _, r := range f.list.Rows() {
-		if r.title == "Provider" {
+	for _, r := range f.List.Rows() {
+		if r.Title == "Provider" {
 			providerRow = r
 		}
-		if r.title == "Model" {
+		if r.Title == "Model" {
 			modelRow = r
 		}
 	}
@@ -164,11 +167,11 @@ func TestAgentFrameTitlesPlainWithoutPreset(t *testing.T) {
 	if modelRow == nil {
 		t.Fatal("Agent frame must have a plain Model row when no preset is active")
 	}
-	if providerRow.desc != "configured provider for this role" {
-		t.Fatalf("Provider row desc = %q, want default desc", providerRow.desc)
+	if providerRow.Desc != "configured provider for this role" {
+		t.Fatalf("Provider row desc = %q, want default desc", providerRow.Desc)
 	}
-	if modelRow.desc != "model id for this role" {
-		t.Fatalf("Model row desc = %q, want default desc", modelRow.desc)
+	if modelRow.Desc != "model id for this role" {
+		t.Fatalf("Model row desc = %q, want default desc", modelRow.Desc)
 	}
 }
 
@@ -177,8 +180,8 @@ func TestShellFrameHasEnumAndLists(t *testing.T) {
 	ps := newPaneStack(shellFrame(s))
 	ps.SetSize(80, 24)
 	var titles []string
-	for _, f := range ps.top().list.Rows() {
-		titles = append(titles, f.title)
+	for _, f := range ps.Top().List.Rows() {
+		titles = append(titles, f.Title)
 	}
 	for _, want := range []string{"Allow network", "Dynamic argv0 guardrail", "Allow commands", "Confirm commands", "Deny patterns"} {
 		found := false

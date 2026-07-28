@@ -356,10 +356,10 @@ func TestTypingIsAlwaysCaptured(t *testing.T) {
 func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := commands.New()
-	if err := reg.Register(commands.Command{Name: "settings", Description: "Open settings", Handler: func(*session.State, []string) string { return "" }}); err != nil {
+	if err := reg.Register(commands.Command{Name: "settings", Description: "Open settings", Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}); err != nil {
 		t.Fatalf("Register settings failed: %v", err)
 	}
-	if err := reg.Register(commands.Command{Name: "swarm", Description: "Run swarm", Args: "<goal>", Handler: func(*session.State, []string) string { return "" }}); err != nil {
+	if err := reg.Register(commands.Command{Name: "swarm", Description: "Run swarm", Args: "<goal>", Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}); err != nil {
 		t.Fatalf("Register swarm failed: %v", err)
 	}
 	m := New(state, WithCommandRegistry(reg))
@@ -388,7 +388,7 @@ func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 func TestSlashCommandSuggestionsIncludeHiddenCommands(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := commands.New()
-	hidden := commands.Command{Name: "settings", Description: "Open settings", Hidden: true, Handler: func(*session.State, []string) string { return "" }}
+	hidden := commands.Command{Name: "settings", Description: "Open settings", Hidden: true, Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}
 	if err := reg.Register(hidden); err != nil {
 		t.Fatalf("Register settings failed: %v", err)
 	}
@@ -1952,12 +1952,8 @@ func TestSlashCommandHelp(t *testing.T) {
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
-	msgs := m.state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("expected system message from /help")
-	}
-	if !strings.Contains(msgs[0].Content, "Keys") || !strings.Contains(msgs[0].Content, "Chat") {
-		t.Errorf("help output missing header: %s", msgs[0].Content)
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock panel from /help")
 	}
 }
 
@@ -2060,9 +2056,8 @@ func TestSlashCommandBusyStillDispatched(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = asModel(updated)
 
-	msgs := m.state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("commands should work even when busy")
+	if !m.dock.IsOpen() {
+		t.Fatal("commands should work even when busy — expected dock panel from /help")
 	}
 }
 
@@ -2594,7 +2589,7 @@ func TestArrowKeysSurviveKeyReleaseEvent(t *testing.T) {
 	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"} {
 		mustRegister(t, reg, commands.Command{
 			Name:    name,
-			Handler: func(s *session.State, args []string) string { return "" },
+			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
 	m := New(state, WithCommandRegistry(reg))
@@ -2628,7 +2623,7 @@ func TestCompletionPopupSurvivesNonKeyEvents(t *testing.T) {
 	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"} {
 		mustRegister(t, reg, commands.Command{
 			Name:    name,
-			Handler: func(s *session.State, args []string) string { return "" },
+			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
 	m := New(state, WithCommandRegistry(reg))
@@ -2833,23 +2828,17 @@ func TestCommandTriggerDismissesFilePopup(t *testing.T) {
 }
 
 // TestQuestionMarkPrintsHelpToTranscript verifies ? on an empty textarea
-// behaves like typing /help: it prints the cheatsheet to the transcript
-// instead of opening a full-screen overlay.
+// behaves like typing /help: it opens the help doc panel instead of typing
+// a literal ?.
 func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
 	m.resize(80, 24)
 
-	before := len(m.state.Messages())
 	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
 	m = asModel(t, updated)
 
-	msgs := m.state.Messages()
-	if len(msgs) != before+1 {
-		t.Fatalf("expected ? to print one transcript message, got %d -> %d", before, len(msgs))
-	}
-	last := msgs[len(msgs)-1]
-	if !strings.Contains(last.Content, "Keys") || !strings.Contains(last.Content, "Chat") {
-		t.Fatalf("? did not print the help cheatsheet, got: %q", last.Content)
+	if !m.dock.IsOpen() {
+		t.Fatal("expected dock panel from ? (same as /help)")
 	}
 }
 
@@ -3053,7 +3042,7 @@ func TestRewindWithArgSkipsPicker(t *testing.T) {
 	}
 }
 
-func TestBranchesBareOpensPickerWithCurrentBadge(t *testing.T) {
+func TestBranchesBareOpensDocPanel(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	state.AddMessage(session.RoleUser, "first turn", session.ContentTypePlain)
 	state.Rewind(1) // create a fork at the root
@@ -3062,11 +3051,11 @@ func TestBranchesBareOpensPickerWithCurrentBadge(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/branches")
 	m = asModel(t, updated)
-	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "branches" {
-		t.Fatal("bare /branches should open the picker")
+	if !m.dock.IsOpen() {
+		t.Fatal("bare /branches should open a dock panel")
 	}
-	if !strings.Contains(stripANSI(m.View().Content), "● now") {
-		t.Fatal("current branch should be badged")
+	if _, ok := m.dock.Panel().(*picker.Model); ok {
+		t.Fatal("bare /branches should NOT open a picker")
 	}
 }
 
@@ -3291,7 +3280,7 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 	mustRegister(t, reg, commands.Command{
 		Name:        "test",
 		Description: "test command",
-		Handler:     func(s *session.State, args []string) string { return "" },
+		Handler:     func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state, WithCommandRegistry(reg))
@@ -3459,7 +3448,7 @@ func TestShiftTabDuringPopupIsNoOp(t *testing.T) {
 	mustRegister(t, reg, commands.Command{
 		Name:        "test",
 		Description: "test command",
-		Handler:     func(s *session.State, args []string) string { return "" },
+		Handler:     func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state, WithCommandRegistry(reg))
@@ -4779,9 +4768,9 @@ func TestDispatchCommand_QuotedArgs(t *testing.T) {
 	cmdReg := commands.New()
 	if err := cmdReg.Register(commands.Command{
 		Name: "teststub",
-		Handler: func(state *session.State, args []string) string {
+		Handler: func(state *session.State, args []string) commands.Result {
 			captured = args
-			return ""
+			return commands.Text("")
 		},
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -5444,5 +5433,26 @@ func TestPasteRoutesToOpenDockPanel(t *testing.T) {
 	}
 	if strings.Contains(m.input.Value(), "abc") {
 		t.Fatalf("paste leaked into the hidden chat input: %q", m.input.Value())
+	}
+}
+
+func TestDispatchStructuredResultOpensDocPanel(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	reg := commands.New()
+	mustRegister(t, reg, commands.Command{
+		Name: "things", Description: "structured", Args: "",
+		Handler: func(s *session.State, args []string) commands.Result {
+			return commands.Panel("Things", false, []commands.Row{{Text: "one", Detail: "first"}})
+		},
+	})
+	m.cmdRegistry = reg
+	mm, _ := m.dispatchCommand("/things")
+	m = asModel(t, mm)
+	if !m.dock.IsOpen() {
+		t.Fatal("structured result should open a dock panel")
+	}
+	out := m.dock.View(m.leftWidth, m.height)
+	if !strings.Contains(out, "one") || !strings.Contains(out, "first") {
+		t.Fatalf("dock should render the doc rows, got:\n%s", out)
 	}
 }

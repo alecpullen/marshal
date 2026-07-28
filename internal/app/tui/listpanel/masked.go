@@ -1,11 +1,11 @@
-package settings
+package listpanel
 
-// maskKey renders a secret for display: bullets plus the last four runes.
+// MaskKey renders a secret for display: bullets plus the last four runes.
 // The real value is never rendered; save paths always use the raw value.
 // The last-four suffix is a deliberate design choice (per spec): it
 // helps the user confirm they are looking at the expected key without
 // exposing the full value.
-func maskKey(key string) string {
+func MaskKey(key string) string {
 	if key == "" {
 		return "(not set)"
 	}

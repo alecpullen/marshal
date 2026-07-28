@@ -72,12 +72,12 @@ func profilesFrame(s *state) *frame {
 		},
 		func(k string) { delete(s.cfg.AgentProfiles, k) },
 		entriesOpts{
-			yank: func(k string) any {
+			Yank: func(k string) any {
 				p := s.cfg.AgentProfiles[k]
 				p.Roles = maps.Clone(p.Roles)
-				return yankedMapEntry{key: k, val: p}
+				return yankedMapEntry{Key: k, Val: p}
 			},
-			paste: func(_ string, data any) error {
+			Paste: func(_ string, data any) error {
 				ye, ok := data.(yankedMapEntry)
 				if !ok {
 					return fmt.Errorf("nothing yanked")
@@ -86,11 +86,11 @@ func profilesFrame(s *state) *frame {
 				for kk := range s.cfg.AgentProfiles {
 					existing[kk] = true
 				}
-				name := uniqueCopyName(ye.key, existing)
+				name := uniqueCopyName(ye.Key, existing)
 				if s.cfg.AgentProfiles == nil {
 					s.cfg.AgentProfiles = map[string]routing.AgentProfile{}
 				}
-				p := ye.val.(routing.AgentProfile)
+				p := ye.Val.(routing.AgentProfile)
 				p.Name = name
 				p.Roles = maps.Clone(p.Roles)
 				s.cfg.AgentProfiles[name] = p
@@ -120,14 +120,14 @@ func rolePresetField(s *state, profile string, role routing.AgentRole) *field {
 		desc = "→ " + preset.Provider + "/" + preset.Model + " · d clears"
 	}
 	return &field{
-		id:       "profiles." + profile + "." + string(role),
-		title:    roleTitle(role),
-		kind:     kindPicker,
-		desc:     desc,
-		keywords: []string{"role", "preset", "workflow", string(role)},
-		getStr:   get,
-		del:      func() { set("") },
-		pickOptions: func() []picker.Item {
+		ID:       "profiles." + profile + "." + string(role),
+		Title:    roleTitle(role),
+		Kind:     kindPicker,
+		Desc:     desc,
+		Keywords: []string{"role", "preset", "workflow", string(role)},
+		GetStr:   get,
+		Del:      func() { set("") },
+		PickOptions: func() []picker.Item {
 			names := sortedKeys(s.cfg.Models.Presets)
 			if len(names) == 0 {
 				return []picker.Item{{Label: "Add a preset first in Model Presets", Value: "__none__", Badge: "required"}}
@@ -145,7 +145,7 @@ func rolePresetField(s *state, profile string, role routing.AgentRole) *field {
 			items = append(items, picker.Item{Label: "(unset — use default)", Value: unsetRoleValue, Badge: "clear"})
 			return items
 		},
-		pickOnPick: func(v string) error {
+		PickOnPick: func(v string) error {
 			switch v {
 			case "__none__":
 				return fmt.Errorf("add a preset first in the Model Presets section")

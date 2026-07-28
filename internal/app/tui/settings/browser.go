@@ -133,14 +133,14 @@ func (b *BrowserPanel) matchedFields() []*field {
 			sectionFields[sec] = append(sectionFields[sec], browserField(f, sec, modified[key]))
 		}
 		for _, spec := range sectionList() {
-			ff := sectionFields[spec.title]
+			ff := sectionFields[spec.Title]
 			if len(ff) == 0 {
 				continue
 			}
 			fields = append(fields, &field{
-				id:    "header." + spec.id,
-				title: spec.title,
-				kind:  kindHeader,
+				ID:    "header." + spec.ID,
+				Title: spec.Title,
+				Kind:  kindHeader,
 			})
 			fields = append(fields, ff...)
 		}
@@ -162,7 +162,7 @@ func (b *BrowserPanel) matchedFields() []*field {
 			if leftDirect != rightDirect {
 				return leftDirect
 			}
-			return fields[i].id < fields[j].id
+			return fields[i].ID < fields[j].ID
 		})
 	}
 	return fields
@@ -176,22 +176,22 @@ func (b *BrowserPanel) matchedFields() []*field {
 // shown as an alias in the description.
 func browserField(field *field, section string, modified bool) *field {
 	copy := *field
-	if copy.title == "" {
-		copy.title = field.id
+	if copy.Title == "" {
+		copy.Title = field.ID
 	}
 	if section != "" {
-		copy.title = section + " · " + copy.title
+		copy.Title = section + " · " + copy.Title
 	}
 	if modified {
-		copy.title = "● " + copy.title
+		copy.Title = "● " + copy.Title
 	}
-	if copy.desc == "" {
-		copy.desc = field.id
+	if copy.Desc == "" {
+		copy.Desc = field.ID
 	} else {
-		copy.desc = field.id + " · " + copy.desc
+		copy.Desc = field.ID + " · " + copy.Desc
 	}
-	if field.tomlPath != "" && field.tomlPath != field.id {
-		copy.desc += " [toml: " + field.tomlPath + "]"
+	if field.TomlPath != "" && field.TomlPath != field.ID {
+		copy.Desc += " [toml: " + field.TomlPath + "]"
 	}
 	return &copy
 }
@@ -201,25 +201,25 @@ func browserField(field *field, section string, modified bool) *field {
 func (b *BrowserPanel) collectionFields(query string) []*field {
 	var fields []*field
 	for _, spec := range sectionList() {
-		root := spec.root(b.reg.st)
-		if root.list.onAdd == nil && root.list.onAddMsg == nil {
+		root := spec.Root(b.reg.st)
+		if root.List.OnAdd == nil && root.List.OnAddMsg == nil {
 			continue
 		}
-		haystack := spec.id + " " + spec.title + " collection"
+		haystack := spec.ID + " " + spec.Title + " collection"
 		if !browserMatches(query, haystack) {
 			continue
 		}
 		spec := spec
 		fields = append(fields, &field{
-			id:    "section." + spec.id,
-			title: spec.title,
-			desc:  "section." + spec.id + " · collection — ↵ to browse entries",
-			kind:  kindDrill,
-			summary: func() string {
-				return fmt.Sprintf("%d entries", len(spec.root(b.reg.st).list.Rows()))
+			ID:    "section." + spec.ID,
+			Title: spec.Title,
+			Desc:  "section." + spec.ID + " · collection — ↵ to browse entries",
+			Kind:  kindDrill,
+			Summary: func() string {
+				return fmt.Sprintf("%d entries", len(spec.Root(b.reg.st).List.Rows()))
 			},
-			build: func() *frame {
-				return withResetRow(b.reg.st, spec.id, spec.title, spec.root(b.reg.st))
+			Build: func() *Frame {
+				return withResetRow(b.reg.st, spec.ID, spec.Title, spec.Root(b.reg.st))
 			},
 		})
 	}
@@ -231,10 +231,10 @@ func (b *BrowserPanel) collectionFields(query string) []*field {
 func (b *BrowserPanel) resetFields(query string) []*field {
 	var fields []*field
 	for _, spec := range sectionList() {
-		if !browserMatches(query, spec.id+" "+spec.title+" reset defaults") {
+		if !browserMatches(query, spec.ID+" "+spec.Title+" reset defaults") {
 			continue
 		}
-		fields = append(fields, browserField(resetField(b.reg.st, spec.id, spec.title), "", false))
+		fields = append(fields, browserField(resetField(b.reg.st, spec.ID, spec.Title), "", false))
 	}
 	return fields
 }
@@ -248,14 +248,14 @@ func browserMatches(query, haystack string) bool {
 
 func browserDirectMatch(field *field, query string) bool {
 	return query == "" || strings.Contains(
-		strings.ToLower(field.id+" "+field.title+" "+field.desc),
+		strings.ToLower(field.ID+" "+field.Title+" "+field.Desc),
 		strings.ToLower(query),
 	)
 }
 
 func (b *BrowserPanel) activeList() *fieldList {
 	if b.stack != nil {
-		return b.stack.top().list
+		return b.stack.Top().List
 	}
 	return b.list
 }
@@ -315,7 +315,7 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 	list := b.activeList()
 	b.pendingKey = ""
 	if row := list.CursorRow(); row != nil {
-		b.pendingKey = row.id
+		b.pendingKey = row.ID
 	}
 
 	var cmd tea.Cmd
@@ -327,7 +327,7 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 			committed = list.Committed()
 		} else if key.Code == tea.KeyEscape {
 			list.DisarmCurrent()
-			if b.stack.pop() {
+			if b.stack.Pop() {
 				break
 			}
 			b.stack = nil
@@ -359,21 +359,21 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (b *BrowserPanel) takePicker(list *fieldList) {
-	request := list.TakePushPicker()
+	request := FieldListTakePushPicker(list)
 	if request == nil {
 		return
 	}
-	b.pickerModel = picker.New(request.title, request.footer, request.items)
-	b.pickerModel.SetAllowCustom(request.allowCustom)
-	b.pickerOnPick = request.onPick
-	b.pickerField = request.fieldID
+	b.pickerModel = picker.New(request.Title, request.Footer, request.Items)
+	b.pickerModel.SetAllowCustom(request.AllowCustom)
+	b.pickerOnPick = request.OnPick
+	b.pickerField = request.FieldID
 }
 
 func (b *BrowserPanel) handlePickerPicked(value string) tea.Cmd {
 	b.pendingKey = b.pickerField
 	if b.pickerOnPick != nil {
 		if err := b.pickerOnPick(value); err != nil {
-			b.activeList().errMsg = err.Error()
+			b.activeList().ErrMsg = err.Error()
 			b.closePicker()
 			return nil
 		}
@@ -423,7 +423,7 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 		// blocked. The in-memory edit itself is preserved.
 		b.stack = nil
 		b.list.CancelEdit()
-		b.list.errMsg = b.saveBlocked
+		b.list.ErrMsg = b.saveBlocked
 		b.pendingKey = ""
 		changed := func() tea.Msg {
 			return ChangedMsg{Receipts: receipts, Cfg: b.reg.Config(), BlockedReason: b.saveBlocked}
@@ -484,11 +484,11 @@ func rowHints(list *fieldList, atRoot bool) string {
 		return back
 	}
 	var h string
-	switch row.kind {
+	switch row.Kind {
 	case kindToggle:
 		h = "Space toggle"
 	case kindScalar:
-		if row.setStr == nil {
+		if row.SetStr == nil {
 			h = "read-only"
 		} else {
 			h = "↵ edit"
@@ -534,28 +534,28 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 
 	// Suppress the inline desc line before rendering; in two-column mode the
 	// desc renders in the detail pane instead.
-	b.activeList().setDescSuppressed(twoCol)
+	FieldListSetDescSuppressed(b.activeList(), twoCol)
 
 	title := "Settings"
 	var body string
 	var footer string
 	if b.stack != nil {
-		rootTitle := b.stack.stack[0].title
-		title += " › " + b.stack.breadcrumb(rootTitle)
+		rootTitle := b.stack.Stack[0].Title
+		title += " › " + b.stack.Breadcrumb(rootTitle)
 		b.stack.SetSize(listWidth, max(maxHeight-3, 1))
-		listView := b.stack.top().list.View()
+		listView := b.stack.Top().List.View()
 		if twoCol {
 			_, detailWidth := layout.SplitPanes(innerWidth)
 			desc := ""
 			if row := b.activeList().CursorRow(); row != nil {
-				desc = row.desc
+				desc = row.Desc
 			}
 			detail := lipgloss.NewStyle().Width(detailWidth).Foreground(settingsTheme().FGMuted).Render(desc)
 			body = lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)
 		} else {
 			body = listView
 		}
-		footer = fmt.Sprintf("%d settings", len(b.stack.top().list.Rows()))
+		footer = fmt.Sprintf("%d settings", len(b.stack.Top().List.Rows()))
 	} else {
 		b.list.SetSize(listWidth, max(maxHeight-4, 1))
 		listView := b.list.View()
@@ -563,7 +563,7 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 			_, detailWidth := layout.SplitPanes(innerWidth)
 			desc := ""
 			if row := b.activeList().CursorRow(); row != nil {
-				desc = row.desc
+				desc = row.Desc
 			}
 			detail := lipgloss.NewStyle().Width(detailWidth).Foreground(settingsTheme().FGMuted).Render(desc)
 			body = "/ " + b.filter.View() + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", detail)

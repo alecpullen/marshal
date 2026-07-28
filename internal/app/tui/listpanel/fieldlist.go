@@ -1,4 +1,7 @@
-package settings
+// Package listpanel is the TUI's shared list engine: a row model, cursor and
+// scroll handling, section headers, action rows, drill-in rows, nested
+// frames, and filtering hooks. settings/ is its config-specific consumer.
+package listpanel
 
 import (
 	"strings"
@@ -10,10 +13,11 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/textfield"
+	"marshal/internal/app/tui/theme"
 )
 
 func isMono() bool {
-	_, ok := settingsTheme().FGDefault.(lipgloss.NoColor)
+	_, ok := theme.Current().FGDefault.(lipgloss.NoColor)
 	return ok
 }
 
@@ -21,31 +25,31 @@ func flCursorStyle() lipgloss.Style {
 	if isMono() {
 		return lipgloss.NewStyle()
 	}
-	return lipgloss.NewStyle().Bold(true).Background(settingsTheme().BGSelection)
+	return lipgloss.NewStyle().Bold(true).Background(theme.Current().BGSelection)
 }
-func flTitleStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGDefault) }
+func flTitleStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 func flValueStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(settingsTheme().AccentSecondary)
+	return lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary)
 }
-func flDescStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
-func flErrStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().StatusError) }
+func DescStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
+func flErrStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
 func flWarnStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(settingsTheme().StatusWarning)
+	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning)
 }
-func flOnStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(settingsTheme().StatusSuccess) }
-func flOffStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(settingsTheme().FGMuted) }
+func flOnStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess) }
+func flOffStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGMuted) }
 func flHeaderStyle() lipgloss.Style {
 	if isMono() {
 		return lipgloss.NewStyle()
 	}
-	return lipgloss.NewStyle().Bold(true).Foreground(settingsTheme().AccentSecondary)
+	return lipgloss.NewStyle().Bold(true).Foreground(theme.Current().AccentSecondary)
 }
 
-// fieldList renders and edits a vertical list of typed rows. It is the one
+// FieldList renders and edits a vertical list of typed rows. It is the one
 // widget behind every settings pane and drill-down frame.
-type fieldList struct {
-	fields func() []*field
-	rows   []*field
+type FieldList struct {
+	Fields func() []*Field
+	rows   []*Field
 	cursor int
 	width  int
 	height int
@@ -53,7 +57,7 @@ type fieldList struct {
 	// inline scalar edit
 	editing bool
 	input   textfield.Model
-	errMsg  string
+	ErrMsg  string
 
 	// committed reports whether the most recent Update call actually
 	// invoked a field setter successfully (toggle, enum cycle/pick, scalar
@@ -70,18 +74,18 @@ type fieldList struct {
 
 	// collection add prompt (wired by pane frames in Task 4)
 	adding    bool
-	keyPrompt string
-	onAdd     func(string) error
+	KeyPrompt string
+	OnAdd     func(string) error
 	keyInput  textfield.Model
 
-	// onAddMsg is an alternative to onAdd: when set, pressing a emits a
+	// OnAddMsg is an alternative to OnAdd: when set, pressing a emits a
 	// tea.Cmd that returns the message from this function instead of
 	// opening an inline key prompt. Used by the Providers collection to
 	// emit OpenConnectMsg.
-	onAddMsg func() tea.Msg
+	OnAddMsg func() tea.Msg
 
 	// drill request picked up by the owning pane after Update
-	pushRequest *frame
+	pushRequest *Frame
 
 	// picker overlay request picked up by the owning pane after Update
 	pushPicker *pickerRequest
@@ -93,33 +97,19 @@ type fieldList struct {
 	descSuppressed bool
 }
 
-// FieldList is an exported alias for fieldList.
-type FieldList = fieldList
-
-func newFieldList(fields func() []*field) *fieldList {
+// NewFieldList creates a FieldList with the given field provider.
+func NewFieldList(fields func() []*Field) *FieldList {
 	ti := textfield.New()
 	ti.SetVirtualCursor(true)
 	ki := textfield.New()
 	ki.SetVirtualCursor(true)
-	fl := &fieldList{fields: fields, input: ti, keyInput: ki}
+	fl := &FieldList{Fields: func() []*Field { return fields() }, input: ti, keyInput: ki}
 	fl.Refresh()
 	return fl
 }
 
-// NewFieldList is the exported constructor for *FieldList.
-func NewFieldList(fields func() []*Field) *FieldList {
-	return newFieldList(func() []*field {
-		result := fields()
-		out := make([]*field, len(result))
-		for i, f := range result {
-			out[i] = f
-		}
-		return out
-	})
-}
-
-func (fl *fieldList) Refresh() {
-	fl.rows = fl.fields()
+func (fl *FieldList) Refresh() {
+	fl.rows = fl.Fields()
 	if fl.cursor >= len(fl.rows) {
 		fl.cursor = len(fl.rows) - 1
 	}
@@ -127,7 +117,7 @@ func (fl *fieldList) Refresh() {
 		fl.cursor = 0
 	}
 	// Clamp cursor away from header rows.
-	for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].kind == kindHeader {
+	for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].Kind == KindHeader {
 		fl.cursor++
 	}
 	if fl.cursor >= len(fl.rows) {
@@ -138,16 +128,16 @@ func (fl *fieldList) Refresh() {
 	}
 }
 
-func (fl *fieldList) Rows() []*field { fl.Refresh(); return fl.rows }
-func (fl *fieldList) Cursor() int    { return fl.cursor }
+func (fl *FieldList) Rows() []*Field { fl.Refresh(); return fl.rows }
+func (fl *FieldList) Cursor() int    { return fl.cursor }
 
-func (fl *fieldList) SetCursor(i int) {
+func (fl *FieldList) SetCursor(i int) {
 	fl.Refresh()
 	if i >= 0 && i < len(fl.rows) {
 		fl.cursor = i
 	}
 	// Skip past header rows.
-	for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].kind == kindHeader {
+	for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].Kind == KindHeader {
 		fl.cursor++
 	}
 	if fl.cursor >= len(fl.rows) {
@@ -158,7 +148,7 @@ func (fl *fieldList) SetCursor(i int) {
 	}
 }
 
-func (fl *fieldList) CursorRow() *field {
+func (fl *FieldList) CursorRow() *Field {
 	fl.Refresh()
 	if len(fl.rows) == 0 {
 		return nil
@@ -166,48 +156,48 @@ func (fl *fieldList) CursorRow() *field {
 	return fl.rows[fl.cursor]
 }
 
-func (fl *fieldList) SetSize(w, h int) { fl.width, fl.height = w, h }
+func (fl *FieldList) SetSize(w, h int) { fl.width, fl.height = w, h }
 
-func (fl *fieldList) setDescSuppressed(suppress bool) { fl.descSuppressed = suppress }
+func (fl *FieldList) setDescSuppressed(suppress bool) { fl.descSuppressed = suppress }
 
-func (fl *fieldList) disarmRow(i int) {
+func (fl *FieldList) disarmRow(i int) {
 	fl.Refresh()
-	if i >= 0 && i < len(fl.rows) && fl.rows[i].disarm != nil {
-		fl.rows[i].disarm()
+	if i >= 0 && i < len(fl.rows) && fl.rows[i].Disarm != nil {
+		fl.rows[i].Disarm()
 	}
 }
 
-func (fl *fieldList) DisarmCurrent() {
+func (fl *FieldList) DisarmCurrent() {
 	fl.Refresh()
 	fl.disarmRow(fl.cursor)
 }
 
 // InputValue returns the scalar edit input's current text.
-func (fl *fieldList) InputValue() string { return fl.input.Value() }
+func (fl *FieldList) InputValue() string { return fl.input.Value() }
 
-func (fl *fieldList) Editing() bool { return fl.editing || fl.picking || fl.adding }
+func (fl *FieldList) Editing() bool { return fl.editing || fl.picking || fl.adding }
 
 // Committed reports whether the most recent Update call invoked a field
 // setter successfully. See the committed field doc for why this matters.
-func (fl *fieldList) Committed() bool { return fl.committed }
+func (fl *FieldList) Committed() bool { return fl.committed }
 
-func (fl *fieldList) CancelEdit() {
+func (fl *FieldList) CancelEdit() {
 	fl.editing = false
 	fl.picking = false
 	fl.adding = false
-	fl.errMsg = ""
+	fl.ErrMsg = ""
 	fl.input.Blur()
 	fl.keyInput.Blur()
 }
 
 // TakePushRequest returns and clears the frame a drill row asked to open.
-func (fl *fieldList) TakePushRequest() *frame {
+func (fl *FieldList) TakePushRequest() *Frame {
 	f := fl.pushRequest
 	fl.pushRequest = nil
 	return f
 }
 
-func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
+func (fl *FieldList) Update(msg tea.Msg) tea.Cmd {
 	fl.Refresh()
 	fl.committed = false
 	if fl.adding {
@@ -232,7 +222,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 			fl.disarmRow(fl.cursor)
 			orig := fl.cursor
 			fl.cursor--
-			for fl.cursor >= 0 && fl.rows[fl.cursor].kind == kindHeader {
+			for fl.cursor >= 0 && fl.rows[fl.cursor].Kind == KindHeader {
 				fl.cursor--
 			}
 			if fl.cursor < 0 {
@@ -244,7 +234,7 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 			fl.disarmRow(fl.cursor)
 			orig := fl.cursor
 			fl.cursor++
-			for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].kind == kindHeader {
+			for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].Kind == KindHeader {
 				fl.cursor++
 			}
 			if fl.cursor >= len(fl.rows) {
@@ -254,37 +244,37 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 	case "g":
 		fl.disarmRow(fl.cursor)
 		fl.cursor = 0
-		for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].kind == kindHeader {
+		for fl.cursor < len(fl.rows) && fl.rows[fl.cursor].Kind == KindHeader {
 			fl.cursor++
 		}
 	case "G":
 		fl.disarmRow(fl.cursor)
 		fl.cursor = len(fl.rows) - 1
-		for fl.cursor >= 0 && fl.rows[fl.cursor].kind == kindHeader {
+		for fl.cursor >= 0 && fl.rows[fl.cursor].Kind == KindHeader {
 			fl.cursor--
 		}
 		if fl.cursor < 0 {
 			fl.cursor = 0
 		}
 	case "space":
-		if row != nil && row.kind == kindToggle {
-			row.setBool(!row.getBool())
+		if row != nil && row.Kind == KindToggle {
+			row.SetBool(!row.GetBool())
 			fl.committed = true
 		}
 	case "left", "right":
-		if row != nil && row.kind == kindEnum {
+		if row != nil && row.Kind == KindEnum {
 			fl.cycleEnum(row, k.String() == "right")
 		}
 	case "enter", "e":
 		return fl.openRow(row)
 	case "a":
-		if fl.onAddMsg != nil {
-			return func() tea.Msg { return fl.onAddMsg() }
+		if fl.OnAddMsg != nil {
+			return func() tea.Msg { return fl.OnAddMsg() }
 		}
-		if fl.onAdd != nil {
-			if fl.keyPrompt == "" {
-				if err := fl.onAdd(""); err != nil {
-					fl.errMsg = err.Error()
+		if fl.OnAdd != nil {
+			if fl.KeyPrompt == "" {
+				if err := fl.OnAdd(""); err != nil {
+					fl.ErrMsg = err.Error()
 					return nil
 				}
 				fl.committed = true
@@ -293,19 +283,19 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 				return nil
 			}
 			fl.adding = true
-			fl.errMsg = ""
+			fl.ErrMsg = ""
 			fl.keyInput.SetValue("")
 			fl.keyInput.Focus()
 		}
 	case "y":
-		if row != nil && row.yank != nil {
-			fl.yankedData = row.yank()
+		if row != nil && row.Yank != nil {
+			fl.yankedData = row.Yank()
 		}
 		return nil
 	case "p":
-		if fl.yankedData != nil && row != nil && row.paste != nil {
-			if err := row.paste(fl.yankedData); err != nil {
-				fl.errMsg = err.Error()
+		if fl.yankedData != nil && row != nil && row.Paste != nil {
+			if err := row.Paste(fl.yankedData); err != nil {
+				fl.ErrMsg = err.Error()
 			} else {
 				fl.committed = true
 				fl.yankedData = nil
@@ -314,78 +304,78 @@ func (fl *fieldList) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case "shift+up":
-		if row != nil && row.moveUp != nil {
-			row.moveUp()
+		if row != nil && row.MoveUp != nil {
+			row.MoveUp()
 			fl.Refresh()
 		}
 		return nil
 	case "shift+down":
-		if row != nil && row.moveDown != nil {
-			row.moveDown()
+		if row != nil && row.MoveDown != nil {
+			row.MoveDown()
 			fl.Refresh()
 		}
 		return nil
 	case "d":
-		if row != nil && row.del != nil {
-			row.del()
+		if row != nil && row.Del != nil {
+			row.Del()
 			fl.Refresh()
 		}
 	}
 	return nil
 }
 
-func (fl *fieldList) openRow(row *field) tea.Cmd {
+func (fl *FieldList) openRow(row *Field) tea.Cmd {
 	if row == nil {
 		return nil
 	}
-	switch row.kind {
-	case kindToggle:
-		row.setBool(!row.getBool())
+	switch row.Kind {
+	case KindToggle:
+		row.SetBool(!row.GetBool())
 		fl.committed = true
-	case kindScalar:
-		if row.setStr == nil {
+	case KindScalar:
+		if row.SetStr == nil {
 			return nil // read-only
 		}
 		fl.editing = true
-		fl.errMsg = ""
-		if row.masked {
+		fl.ErrMsg = ""
+		if row.Masked {
 			fl.input.EchoMode = textinput.EchoPassword
 			fl.input.SetValue("")
 		} else {
 			fl.input.EchoMode = textinput.EchoNormal
-			fl.input.SetValue(row.getStr())
+			fl.input.SetValue(row.GetStr())
 			fl.input.CursorEnd()
 		}
 		fl.input.Focus()
-	case kindEnum:
+	case KindEnum:
 		fl.picking = true
-		i := indexOf(row.options(), row.getStr())
+		i := indexOf(row.Options(), row.GetStr())
 		if i < 0 {
 			i = 0
 		}
 		fl.pickIdx = i
-	case kindDrill:
-		fl.pushRequest = row.build()
-	case kindAction:
-		return row.act()
-	case kindPicker:
+	case KindDrill:
+		fl.pushRequest = row.Build()
+	case KindAction:
+		return row.Act()
+	case KindPicker:
 		fl.pushPicker = &pickerRequest{
-			fieldID:     row.id,
-			items:       row.pickOptions(),
-			onPick:      row.pickOnPick,
-			title:       row.title,
-			allowCustom: row.pickAllowCustom,
+			fieldID:     row.ID,
+			items:       row.PickOptions(),
+			onPick:      row.PickOnPick,
+			title:       row.Title,
+			allowCustom: row.PickAllowCustom,
 		}
 	}
 	return nil
 }
 
-func (fl *fieldList) cycleEnum(row *field, forward bool) {
-	opts := row.options()
+func (fl *FieldList) cycleEnum(row *Field, forward bool) {
+	opts := row.Options()
 	if len(opts) == 0 {
 		return
 	}
-	i := indexOf(opts, row.getStr())
+	i := indexOf(opts, row.GetStr())
 	if i < 0 {
 		i = 0
 	}
@@ -394,14 +384,14 @@ func (fl *fieldList) cycleEnum(row *field, forward bool) {
 	} else {
 		i = (i - 1 + len(opts)) % len(opts)
 	}
-	if err := row.setStr(opts[i]); err != nil {
-		fl.errMsg = err.Error()
+	if err := row.SetStr(opts[i]); err != nil {
+		fl.ErrMsg = err.Error()
 		return
 	}
 	fl.committed = true
 }
 
-func (fl *fieldList) updateEdit(msg tea.Msg) tea.Cmd {
+func (fl *FieldList) updateEdit(msg tea.Msg) tea.Cmd {
 	row := fl.CursorRow()
 	if row == nil {
 		fl.CancelEdit()
@@ -411,12 +401,12 @@ func (fl *fieldList) updateEdit(msg tea.Msg) tea.Cmd {
 		switch k.String() {
 		case "enter":
 			val := strings.TrimSpace(fl.input.Value())
-			if row.masked && val == "" {
+			if row.Masked && val == "" {
 				fl.CancelEdit() // empty keeps the stored secret
 				return nil
 			}
-			if err := row.setStr(val); err != nil {
-				fl.errMsg = err.Error()
+			if err := row.SetStr(val); err != nil {
+				fl.ErrMsg = err.Error()
 				return nil
 			}
 			fl.committed = true
@@ -432,13 +422,13 @@ func (fl *fieldList) updateEdit(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-func (fl *fieldList) updatePick(k tea.KeyPressMsg) {
+func (fl *FieldList) updatePick(k tea.KeyPressMsg) {
 	row := fl.CursorRow()
 	if row == nil {
 		fl.CancelEdit()
 		return
 	}
-	opts := row.options()
+	opts := row.Options()
 	switch k.String() {
 	case "up", "k":
 		if fl.pickIdx > 0 {
@@ -450,8 +440,8 @@ func (fl *fieldList) updatePick(k tea.KeyPressMsg) {
 		}
 	case "enter":
 		if fl.pickIdx >= 0 && fl.pickIdx < len(opts) {
-			if err := row.setStr(opts[fl.pickIdx]); err != nil {
-				fl.errMsg = err.Error()
+			if err := row.SetStr(opts[fl.pickIdx]); err != nil {
+				fl.ErrMsg = err.Error()
 				return
 			}
 			fl.committed = true
@@ -462,13 +452,13 @@ func (fl *fieldList) updatePick(k tea.KeyPressMsg) {
 	}
 }
 
-func (fl *fieldList) updateAdd(msg tea.Msg) tea.Cmd {
+func (fl *FieldList) updateAdd(msg tea.Msg) tea.Cmd {
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		switch k.String() {
 		case "enter":
 			newKey := strings.TrimSpace(fl.keyInput.Value())
-			if err := fl.onAdd(newKey); err != nil {
-				fl.errMsg = err.Error()
+			if err := fl.OnAdd(newKey); err != nil {
+				fl.ErrMsg = err.Error()
 				return nil
 			}
 			fl.committed = true
@@ -486,20 +476,20 @@ func (fl *fieldList) updateAdd(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// findAddedRow returns the index of the row whose id ends with "."+newKey,
-// or whose title equals newKey (listDrill case). If newKey is empty or no
+// findAddedRow returns the index of the row whose ID ends with "."+newKey,
+// or whose Title equals newKey (listDrill case). If newKey is empty or no
 // match is found, it falls back to the last row index.
-func (fl *fieldList) findAddedRow(newKey string) int {
+func (fl *FieldList) findAddedRow(newKey string) int {
 	if newKey != "" {
 		suffix := "." + newKey
 		for i, row := range fl.rows {
-			if strings.HasSuffix(row.id, suffix) {
+			if strings.HasSuffix(row.ID, suffix) {
 				return i
 			}
 		}
 		// No id match: try title match (listDrill uses numeric ids).
 		for i, row := range fl.rows {
-			if row.title == newKey {
+			if row.Title == newKey {
 				return i
 			}
 		}
@@ -520,33 +510,33 @@ func indexOf(ss []string, s string) int {
 }
 
 // valueCell renders the right-hand value for a row.
-func (fl *fieldList) valueCell(row *field, isCursor bool) string {
-	switch row.kind {
-	case kindToggle:
-		if row.getBool() {
+func (fl *FieldList) valueCell(row *Field, isCursor bool) string {
+	switch row.Kind {
+	case KindToggle:
+		if row.GetBool() {
 			return flOnStyle().Render("on ●")
 		}
 		return flOffStyle().Render("off ○")
-	case kindScalar:
+	case KindScalar:
 		if fl.editing && isCursor {
 			return fl.input.View()
 		}
-		v := row.getStr()
-		if row.masked {
-			v = maskKey(v)
+		v := row.GetStr()
+		if row.Masked {
+			v = MaskKey(v)
 		}
 		if v == "" {
 			v = "—"
 		}
 		return flValueStyle().Render(v)
-	case kindEnum:
-		return flValueStyle().Render(row.getStr() + " ▾")
-	case kindDrill:
-		return flValueStyle().Render(row.summary() + " ›")
-	case kindAction:
+	case KindEnum:
+		return flValueStyle().Render(row.GetStr() + " ▾")
+	case KindDrill:
+		return flValueStyle().Render(row.Summary() + " ›")
+	case KindAction:
 		label := "\u21b5 run"
-		if row.actLabel != nil {
-			label = row.actLabel()
+		if row.ActLabel != nil {
+			label = row.ActLabel()
 		}
 		if strings.HasPrefix(label, "\u2713") {
 			return flOnStyle().Render(label)
@@ -555,17 +545,17 @@ func (fl *fieldList) valueCell(row *field, isCursor bool) string {
 			return flErrStyle().Render(label)
 		}
 		return flValueStyle().Render(label)
-	case kindPicker:
-		v := row.getStr()
+	case KindPicker:
+		v := row.GetStr()
 		if v == "" {
 			v = "\u2014"
 		}
 		suffix := " \u25be"
-		if row.pickPending != nil && row.pickPending() {
+		if row.PickPending != nil && row.PickPending() {
 			suffix = " \u2026"
 		}
 		return flValueStyle().Render(v + suffix)
-	case kindHeader:
+	case KindHeader:
 		return ""
 	}
 	return ""
@@ -573,21 +563,21 @@ func (fl *fieldList) valueCell(row *field, isCursor bool) string {
 
 // View renders the list clipped to height, keeping the cursor row visible
 // and adding ↑/↓ more indicators when clipped.
-func (fl *fieldList) View() string {
+func (fl *FieldList) View() string {
 	fl.Refresh()
 	var lines []string
 	cursorLine := 0
 	if len(fl.rows) == 0 && !fl.adding {
 		empty := "  (empty"
-		if fl.onAdd != nil {
+		if fl.OnAdd != nil {
 			empty += " — press a to add"
 		}
-		lines = append(lines, flDescStyle().Render(empty+")"))
+		lines = append(lines, DescStyle().Render(empty+")"))
 	}
 	for i, row := range fl.rows {
 		isCursor := i == fl.cursor
-		if row.kind == kindHeader {
-			header := flHeaderStyle().Render(row.title)
+		if row.Kind == KindHeader {
+			header := flHeaderStyle().Render(row.Title)
 			gap := fl.width - lipgloss.Width(header)
 			if gap < 0 {
 				gap = 0
@@ -600,8 +590,8 @@ func (fl *fieldList) View() string {
 			marker = "▸ "
 		}
 		val := fl.valueCell(row, isCursor)
-		title := row.title
-		if row.warn {
+		title := row.Title
+		if row.Warn {
 			title = flWarnStyle().Render("⚠ ") + title
 		}
 		gap := fl.width - lipgloss.Width(marker) - lipgloss.Width(title) - lipgloss.Width(val)
@@ -614,14 +604,14 @@ func (fl *fieldList) View() string {
 			line = flCursorStyle().Render(marker+title) + strings.Repeat(" ", gap) + val
 		}
 		lines = append(lines, line)
-		if isCursor && fl.errMsg != "" {
-			lines = append(lines, "    "+flErrStyle().Render("⚠ "+fl.errMsg))
+		if isCursor && fl.ErrMsg != "" {
+			lines = append(lines, "    "+flErrStyle().Render("⚠ "+fl.ErrMsg))
 		}
-		if isCursor && row.desc != "" && !fl.Editing() && !fl.descSuppressed {
-			lines = append(lines, "    "+flDescStyle().Render(row.desc))
+		if isCursor && row.Desc != "" && !fl.Editing() && !fl.descSuppressed {
+			lines = append(lines, "    "+DescStyle().Render(row.Desc))
 		}
 		if isCursor && fl.picking {
-			for j, opt := range row.options() {
+			for j, opt := range row.Options() {
 				pm := "    "
 				if j == fl.pickIdx {
 					pm = "  ▸ "
@@ -631,18 +621,18 @@ func (fl *fieldList) View() string {
 		}
 	}
 	if fl.adding {
-		lines = append(lines, "▸ "+fl.keyPrompt+": "+fl.keyInput.View())
-		if fl.errMsg != "" {
-			lines = append(lines, "    "+flErrStyle().Render("⚠ "+fl.errMsg))
+		lines = append(lines, "▸ "+fl.KeyPrompt+": "+fl.keyInput.View())
+		if fl.ErrMsg != "" {
+			lines = append(lines, "    "+flErrStyle().Render("⚠ "+fl.ErrMsg))
 		}
 	}
 	return clipLines(lines, cursorLine, fl.height)
 }
 
 // clipLines windows lines to at most height rows, keeping focusLine visible,
-// with ↑/↓ more indicators occupying the first/last row when clipped.
+// with ↑/↓ more indicators when clipped.
 func clipLines(lines []string, focusLine, height int) string {
-	return chrome.ClipLines(lines, focusLine, height, settingsTheme())
+	return chrome.ClipLines(lines, focusLine, height, theme.Current())
 }
 
 type pickerRequest struct {
@@ -654,7 +644,7 @@ type pickerRequest struct {
 	allowCustom bool
 }
 
-func (fl *fieldList) TakePushPicker() *pickerRequest {
+func (fl *FieldList) TakePushPicker() *pickerRequest {
 	r := fl.pushPicker
 	fl.pushPicker = nil
 	return r

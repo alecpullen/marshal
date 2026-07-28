@@ -38,7 +38,7 @@ func mcpFrame(s *state) *frame {
 						writeback()
 						return nil
 					})
-				cmdField.desc = "MCP server command to execute"
+				cmdField.Desc = "MCP server command to execute"
 				return []*field{
 					cmdField,
 					// Args/Env drills operate on fresh copies bound through
@@ -54,7 +54,7 @@ func mcpFrame(s *state) *frame {
 		dtField := intField("mcp.disclosure_threshold", "Disclosure threshold tools",
 			func() int { return s.cfg.MCP.DisclosureThresholdTools }, 0,
 			func(v int) { s.cfg.MCP.DisclosureThresholdTools = v })
-		dtField.desc = "max tools before MCP capabilities are disclosed"
+		dtField.Desc = "max tools before MCP capabilities are disclosed"
 		return []*field{
 			dtField,
 			serversDrill,
@@ -79,10 +79,10 @@ func mcpArgsDrill(s *state, server string) *field {
 		for i := range args {
 			i := i
 			out[i] = &field{
-				id: fmt.Sprintf("mcp.servers.%s.args.%d", server, i), title: args[i], kind: kindScalar,
-				desc:   "MCP server command-line argument",
-				getStr: func() string { return get()[i] },
-				setStr: func(v string) error {
+				ID: fmt.Sprintf("mcp.servers.%s.args.%d", server, i), Title: args[i], Kind: kindScalar,
+				Desc:   "MCP server command-line argument",
+				GetStr: func() string { return get()[i] },
+				SetStr: func(v string) error {
 					if v == "" {
 						return fmt.Errorf("cannot be empty")
 					}
@@ -91,7 +91,7 @@ func mcpArgsDrill(s *state, server string) *field {
 					set(a)
 					return nil
 				},
-				del: func() {
+				Del: func() {
 					a := get()
 					set(append(a[:i], a[i+1:]...))
 				},
@@ -100,9 +100,9 @@ func mcpArgsDrill(s *state, server string) *field {
 		return out
 	}
 	return &field{
-		id: "mcp.servers." + server + ".args", title: "Args", kind: kindDrill,
-		summary: func() string { return fmt.Sprintf("%d items", len(get())) },
-		build: func() *frame {
+		ID: "mcp.servers." + server + ".args", Title: "Args", Kind: kindDrill,
+		Summary: func() string { return fmt.Sprintf("%d items", len(get())) },
+		Build: func() *frame {
 			return newCollectionFrame("Args", "New entry", buildFields, func(v string) error {
 				if v == "" {
 					return fmt.Errorf("cannot be empty")
@@ -133,19 +133,19 @@ func mcpEnvDrill(s *state, server string) *field {
 		for i, k := range keys {
 			k := k
 			out[i] = &field{
-				id: "mcp.servers." + server + ".env." + k, title: k, kind: kindScalar,
-				desc:   "MCP server environment variable",
-				getStr: func() string { return ensure()[k] },
-				setStr: func(v string) error { ensure()[k] = v; return nil },
-				del:    func() { delete(ensure(), k) },
+				ID: "mcp.servers." + server + ".env." + k, Title: k, Kind: kindScalar,
+				Desc:   "MCP server environment variable",
+				GetStr: func() string { return ensure()[k] },
+				SetStr: func(v string) error { ensure()[k] = v; return nil },
+				Del:    func() { delete(ensure(), k) },
 			}
 		}
 		return out
 	}
 	return &field{
-		id: "mcp.servers." + server + ".env", title: "Env", kind: kindDrill,
-		summary: func() string { return fmt.Sprintf("%d entries", len(ensure())) },
-		build: func() *frame {
+		ID: "mcp.servers." + server + ".env", Title: "Env", Kind: kindDrill,
+		Summary: func() string { return fmt.Sprintf("%d entries", len(ensure())) },
+		Build: func() *frame {
 			return newCollectionFrame("Env", "New key", buildFields, func(k string) error {
 				if k == "" {
 					return fmt.Errorf("key cannot be empty")

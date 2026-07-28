@@ -14,13 +14,13 @@ func TestInterfaceFrameHasThemeEnum(t *testing.T) {
 	ps.SetSize(60, 20)
 
 	found := false
-	for _, row := range ps.top().list.Rows() {
-		if row.title == "Theme" {
+	for _, row := range ps.Top().List.Rows() {
+		if row.Title == "Theme" {
 			found = true
-			if row.kind != kindEnum {
-				t.Fatalf("Theme row kind = %d, want kindEnum (%d)", row.kind, kindEnum)
+			if row.Kind != kindEnum {
+				t.Fatalf("Theme row kind = %d, want kindEnum (%d)", row.Kind, kindEnum)
 			}
-			opts := row.options()
+			opts := row.Options()
 			if len(opts) < 4 {
 				t.Fatalf("Theme enum has %d options, want at least 4 (the 4 named themes)", len(opts))
 			}
@@ -37,8 +37,8 @@ func TestInterfaceFrameHasThemeEnum(t *testing.T) {
 					t.Errorf("Theme enum missing option %q", exp)
 				}
 			}
-			if row.getStr() != "" {
-				t.Errorf("Theme getStr = %q, want empty string from default config", row.getStr())
+			if row.GetStr() != "" {
+				t.Errorf("Theme getStr = %q, want empty string from default config", row.GetStr())
 			}
 			break
 		}
@@ -54,8 +54,8 @@ func TestInterfaceFrameThemeSetterWritesToConfig(t *testing.T) {
 	ps.SetSize(60, 20)
 
 	var themeField *field
-	for _, row := range ps.top().list.Rows() {
-		if row.title == "Theme" {
+	for _, row := range ps.Top().List.Rows() {
+		if row.Title == "Theme" {
 			themeField = row
 			break
 		}
@@ -64,7 +64,7 @@ func TestInterfaceFrameThemeSetterWritesToConfig(t *testing.T) {
 		t.Fatal("interfaceFrame should have a 'Theme' row")
 	}
 
-	if err := themeField.setStr("dracula"); err != nil {
+	if err := themeField.SetStr("dracula"); err != nil {
 		t.Fatalf("Theme setStr returned error: %v", err)
 	}
 	if s.cfg.TUI.Theme != "dracula" {
@@ -79,8 +79,8 @@ func TestInterfaceFrameThemeOptionsMatchNames(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(interfaceFrame(s))
 	ps.SetSize(60, 20)
-	for _, row := range ps.top().list.Rows() {
-		if row.title == "Theme" {
+	for _, row := range ps.Top().List.Rows() {
+		if row.Title == "Theme" {
 			themeField = row
 			break
 		}
@@ -89,7 +89,7 @@ func TestInterfaceFrameThemeOptionsMatchNames(t *testing.T) {
 		t.Fatal("interfaceFrame should have a 'Theme' row")
 	}
 
-	opts := themeField.options()
+	opts := themeField.Options()
 	if len(opts) != len(names) {
 		t.Fatalf("Theme options count = %d, want %d (matching theme.Names())", len(opts), len(names))
 	}
@@ -106,13 +106,13 @@ func TestInterfaceFrameHasModeEnum(t *testing.T) {
 	ps.SetSize(60, 20)
 
 	found := false
-	for _, row := range ps.top().list.Rows() {
-		if row.title == "Mode" {
+	for _, row := range ps.Top().List.Rows() {
+		if row.Title == "Mode" {
 			found = true
-			if row.kind != kindEnum {
-				t.Fatalf("Mode row kind = %d, want kindEnum (%d)", row.kind, kindEnum)
+			if row.Kind != kindEnum {
+				t.Fatalf("Mode row kind = %d, want kindEnum (%d)", row.Kind, kindEnum)
 			}
-			opts := row.options()
+			opts := row.Options()
 			expected := []string{"dark", "light"}
 			if len(opts) != len(expected) {
 				t.Fatalf("Mode enum has %d options, want %d", len(opts), len(expected))
@@ -122,8 +122,8 @@ func TestInterfaceFrameHasModeEnum(t *testing.T) {
 					t.Errorf("Mode option[%d] = %q, want %q", i, opts[i], exp)
 				}
 			}
-			if row.getStr() != "" {
-				t.Errorf("Mode getStr = %q, want empty string from default config", row.getStr())
+			if row.GetStr() != "" {
+				t.Errorf("Mode getStr = %q, want empty string from default config", row.GetStr())
 			}
 			break
 		}
@@ -139,8 +139,8 @@ func TestInterfaceFrameModeSetterWritesToConfig(t *testing.T) {
 	ps.SetSize(60, 20)
 
 	var modeField *field
-	for _, row := range ps.top().list.Rows() {
-		if row.title == "Mode" {
+	for _, row := range ps.Top().List.Rows() {
+		if row.Title == "Mode" {
 			modeField = row
 			break
 		}
@@ -149,7 +149,7 @@ func TestInterfaceFrameModeSetterWritesToConfig(t *testing.T) {
 		t.Fatal("interfaceFrame should have a 'Mode' row")
 	}
 
-	if err := modeField.setStr("light"); err != nil {
+	if err := modeField.SetStr("light"); err != nil {
 		t.Fatalf("Mode setStr returned error: %v", err)
 	}
 	if s.cfg.TUI.Mode != "light" {
@@ -163,8 +163,8 @@ func TestInterfaceFrameCycleViaArrows(t *testing.T) {
 	ps.SetSize(60, 20)
 
 	var themeField *field
-	for _, row := range ps.top().list.Rows() {
-		if row.title == "Theme" {
+	for _, row := range ps.Top().List.Rows() {
+		if row.Title == "Theme" {
 			themeField = row
 			break
 		}
@@ -173,7 +173,7 @@ func TestInterfaceFrameCycleViaArrows(t *testing.T) {
 		t.Fatal("interfaceFrame should have a 'Theme' row")
 	}
 
-	opts := themeField.options()
+	opts := themeField.Options()
 	if len(opts) == 0 {
 		t.Fatal("options should not be empty")
 	}

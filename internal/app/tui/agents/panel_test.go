@@ -319,6 +319,47 @@ func TestRosterRolePickerOpensOverlay(t *testing.T) {
 	}
 }
 
+func TestRosterDrillOpensCustomAgentFrame(t *testing.T) {
+	cfg := config.Default()
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"reviewer-x": {Name: "reviewer-x", Preset: ""},
+	}
+	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+
+	// Move the cursor onto the custom agent drill row and press enter.
+	drillToRow(t, p, "reviewer-x")
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	out := p.View(120, 30)
+	if !strings.Contains(out, "System prompt") {
+		t.Fatalf("drill should open the agent's edit frame:\n%s", out)
+	}
+
+	// Esc pops back to the roster instead of closing the panel.
+	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil {
+		t.Fatal("esc while drilled should pop the frame, not close the panel")
+	}
+	out = p.View(120, 30)
+	if !strings.Contains(out, "Custom Agents") {
+		t.Fatalf("expected the roster root after popping:\n%s", out)
+	}
+}
+
+// drillToRow walks the roster list with down-keys until the cursor row's
+// title matches (roster order is deterministic: profile, role groups,
+// custom agents, budgets).
+func drillToRow(t *testing.T, p *Panel, title string) {
+	t.Helper()
+	for i := 0; i < 40; i++ {
+		if row := settings.FieldListCursorRow(p.list); row != nil && settings.FieldTitle(row) == title {
+			return
+		}
+		p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	t.Fatalf("row %q not found", title)
+}
+
 func TestRosterTwoColumnShowsDetailPane(t *testing.T) {
 	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
 	out := p.View(140, 20)

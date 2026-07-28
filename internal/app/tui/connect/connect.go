@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -59,6 +60,7 @@ const (
 	stepDone
 	stepCancelled
 	stepRemoteGate
+	stepConfirmLimits
 )
 
 type Opts struct {
@@ -94,6 +96,7 @@ type Model struct {
 	modelChosen    string
 	remoteEnabled  bool
 	allProviders   bool
+	limits         ModelLimits
 }
 
 func New(opts Opts) *Model {
@@ -205,6 +208,8 @@ func (m *Model) View(maxW, maxH int) string {
 		b.WriteString(m.renderSummary(pw))
 	case stepRename:
 		b.WriteString(m.renderRenameInput(pw))
+	case stepConfirmLimits:
+		b.WriteString(m.renderConfirmLimits(pw))
 	}
 	if m.err != "" {
 		b.WriteString("\n")
@@ -343,6 +348,16 @@ func (m *Model) enterRemoteGate() {
 	m.picker = nil
 }
 
+func (m *Model) enterConfirmLimits() {
+	m.step = stepConfirmLimits
+	m.title = "Confirm model limits"
+	m.subtitle = m.providerName + " · " + m.modelChosen
+	m.footer = "[↵] confirm  [c] edit context  [o] edit max output  [Esc] back"
+	m.err = ""
+	m.picker = nil
+	m.limits = resolveLimits(m.discovered[m.providerName], m.modelChosen)
+}
+
 func (m *Model) enterSummary() {
 	m.step = stepSummary
 	m.title = "Review provider"
@@ -385,6 +400,25 @@ func (m *Model) renderSummary(pw int) string {
 	if m.cfgPath != "" {
 		b.WriteString(mutedStyle().Render("save to:  ") + titleStyle().Render(strutil.Truncate(m.cfgPath, pw-12, true)) + "\n")
 	}
+	return b.String()
+}
+
+func (m *Model) renderConfirmLimits(pw int) string {
+	var b strings.Builder
+	ctxVal, ctxSrc := m.limits.ContextWindow, m.limits.ContextSource
+	outVal, outSrc := m.limits.MaxOutputTokens, m.limits.OutputSource
+
+	ctxStr := fmt.Sprintf("%d", ctxVal)
+	if ctxVal == 0 {
+		ctxStr = hintStyle().Render("unknown — set a budget")
+	}
+	outStr := fmt.Sprintf("%d", outVal)
+	if outVal == 0 {
+		outStr = hintStyle().Render("unknown — set a budget")
+	}
+
+	b.WriteString(mutedStyle().Render("context window    ") + titleStyle().Render(ctxStr) + mutedStyle().Render("   "+string(ctxSrc)) + "\n")
+	b.WriteString(mutedStyle().Render("max output        ") + titleStyle().Render(outStr) + mutedStyle().Render("   "+string(outSrc)) + "\n")
 	return b.String()
 }
 
@@ -509,12 +543,9 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		} else {
 			m.modelChosen = value
 		}
-		// Scoped /models flow skips summary; new-provider flow shows summary.
-		if m.scopedProvider != "" {
-			m.step = stepDone
-			return m, m.done()
-		}
-		m.enterSummary()
+		// Both flows confirm limits before completing: /models skipped the
+		// summary, but it must not skip this.
+		m.enterConfirmLimits()
 		return m, nil
 	}
 	tpl, ok := provider.Lookup(value)
@@ -634,6 +665,20 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			return m, m.done()
 		case "n":
 			m.enterRename()
+			return m, nil
+		case "esc":
+			enterPickModelStep(m, m.providerName)
+			return m, nil
+		}
+		return m, nil
+	case stepConfirmLimits:
+		switch ks {
+		case "enter":
+			if m.scopedProvider != "" {
+				m.step = stepDone
+				return m, m.done()
+			}
+			m.enterSummary()
 			return m, nil
 		case "esc":
 			enterPickModelStep(m, m.providerName)

@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"charm.land/bubbles/v2/textinput"
 
@@ -181,10 +182,16 @@ func TestPickModelEmitsDone(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Non-scoped flow lands on summary; press Enter to emit DoneMsg.
-	if m.step != stepSummary {
-		t.Fatalf("after pickModel should be stepSummary, got %v", m.step)
+	// Non-scoped flow lands on confirm limits; press Enter to advance to summary.
+	if m.step != stepConfirmLimits {
+		t.Fatalf("after pickModel should be stepConfirmLimits, got %v", m.step)
 	}
+	// Press Enter on confirm limits to advance to summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	if m.step != stepSummary {
+		t.Fatalf("after confirm limits Enter should be stepSummary, got %v", m.step)
+	}
+	// Press Enter on summary to emit DoneMsg.
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	if cmd == nil {
 		t.Fatal("Enter on summary should emit a DoneMsg cmd")
@@ -322,7 +329,7 @@ func TestRemoteGateYEnablesAndEntersAPIKey(t *testing.T) {
 }
 
 func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
-	// Simulate: pick remote template -> gate -> y -> apiKey -> enter -> probe -> pick model -> summary enter
+	// Simulate: pick remote template -> gate -> y -> apiKey -> enter -> probe -> pick model -> confirm limits -> summary enter
 	cfg := config.Default()
 	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("openrouter"))
@@ -331,10 +338,15 @@ func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13}) // enter -> probing
 	// Skip probe
 	m, _ = m.Update(tea.KeyPressMsg{Code: 115}) // s -> skip
-	// Pick a model -> lands on summary
+	// Pick a model -> lands on confirm limits
 	m, _ = m.Update(pickerPicked("gpt-4o"))
+	if m.step != stepConfirmLimits {
+		t.Fatalf("after pickModel should be stepConfirmLimits, got %v", m.step)
+	}
+	// Press Enter on confirm limits to advance to summary
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
-		t.Fatalf("after pickModel should be stepSummary, got %v", m.step)
+		t.Fatalf("after confirm limits should be stepSummary, got %v", m.step)
 	}
 	// Press Enter on summary to emit DoneMsg
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
@@ -376,6 +388,8 @@ func TestSummaryShowsNameModelAndDestination(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Confirm limits then land on summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -396,6 +410,8 @@ func TestSummaryEnterEmitsDone(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Confirm limits then land on summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -414,6 +430,8 @@ func TestSummaryRenameChangesProviderName(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Confirm limits then land on summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -447,14 +465,20 @@ func TestSummaryRenameChangesProviderName(t *testing.T) {
 	}
 }
 
-func TestScopedModelSwitchSkipsSummary(t *testing.T) {
+func TestScopedModelSwitchGoesThroughConfirmLimits(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama", Discovered: map[string][]schema.ModelInfo{}})
 	if m.step != stepPickModel {
 		t.Fatalf("expected stepPickModel, got %v", m.step)
 	}
-	_, cmd := m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Picking a model now lands on confirm limits, not stepDone.
+	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	if m.step != stepConfirmLimits {
+		t.Fatalf("expected stepConfirmLimits, got %v", m.step)
+	}
+	// Press Enter on confirm limits to emit DoneMsg.
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	if cmd == nil {
-		t.Fatal("scoped pickModel should emit a DoneMsg cmd directly")
+		t.Fatal("Enter on confirm limits should emit a DoneMsg cmd")
 	}
 	msg := cmd()
 	dm, ok := msg.(DoneMsg)
@@ -471,6 +495,8 @@ func TestSummaryEscGoesBackToModelPick(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Confirm limits then land on summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -488,6 +514,8 @@ func TestRenameEmptyNameShowsError(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Confirm limits then land on summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	m.renameInput.SetValue("")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -505,6 +533,8 @@ func TestRenameDuplicateNameShowsError(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Confirm limits then land on summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	m.renameInput.SetValue("ollama")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -525,6 +555,8 @@ func TestRenameToOwnNameIsAllowed(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Confirm limits then land on summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	// The uniqueName() will produce "ollama-2" or similar, but we set it to "ollama" to test
 	// that renaming to the same name is allowed.
@@ -545,6 +577,8 @@ func TestRenameEscReturnsToSummary(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Confirm limits then land on summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	if m.step != stepRename {
 		t.Fatalf("expected stepRename, got %v", m.step)
@@ -560,6 +594,8 @@ func TestPasteMsgIntoRenameInput(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+	// Confirm limits then land on summary.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -571,6 +607,88 @@ func TestPasteMsgIntoRenameInput(t *testing.T) {
 	m, _ = m.Update(tea.PasteMsg{Content: "renamed-provider"})
 	if got := m.renameInput.Value(); got != "renamed-provider" {
 		t.Fatalf("renameInput.Value() = %q, want %q", got, "renamed-provider")
+	}
+}
+
+// newConnectForModelPick builds a Model at stepPickModel with a discovered
+// model that has known limits, ready to test the confirm-limits step.
+func newConnectForModelPick(t *testing.T) *Model {
+	t.Helper()
+	m := New(Opts{
+		Cfg: config.Default(),
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {
+				{ID: "gpt-4o", ContextWindow: 128000, MaxOutputTokens: 16384},
+			},
+		},
+		SkipToIntroModel: true,
+		ScopedProvider:   "openai",
+	})
+	if m.step != stepPickModel {
+		t.Fatalf("newConnectForModelPick: step = %v, want stepPickModel", m.step)
+	}
+	return m
+}
+
+func TestPickingAModelEntersConfirmLimits(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+
+	if m.step != stepConfirmLimits {
+		t.Fatalf("step = %v, want stepConfirmLimits", m.step)
+	}
+	if m.limits.ContextWindow != 128000 {
+		t.Errorf("ContextWindow = %d, want the discovered figure", m.limits.ContextWindow)
+	}
+}
+
+func TestConfirmLimitsReachedFromScopedModelsFlow(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.scopedProvider = "openai" // the /models flow
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+
+	if m.step != stepConfirmLimits {
+		t.Fatalf("step = %v, want stepConfirmLimits — /models must not skip it", m.step)
+	}
+}
+
+func TestConfirmLimitsViewShowsFiguresAndSources(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+
+	view := ansi.Strip(m.View(80, 24))
+	for _, want := range []string{"128000", "context", "max output", string(SourceFetched)} {
+		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
+			t.Errorf("view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestConfirmLimitsRendersUnknownNotZero(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
+
+	view := ansi.Strip(m.View(80, 24))
+	if !strings.Contains(strings.ToLower(view), "unknown") {
+		t.Errorf("unknown limits must say so:\n%s", view)
+	}
+	// A bare "0" would read as a configured value.
+	for _, line := range strings.Split(view, "\n") {
+		l := strings.ToLower(line)
+		if (strings.Contains(l, "context") || strings.Contains(l, "max output")) &&
+			strings.Contains(line, " 0") {
+			t.Errorf("rendered a confident zero: %q", line)
+		}
+	}
+}
+
+func TestConfirmLimitsEscGoesBackToModelPick(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	if m.step != stepPickModel {
+		t.Errorf("step = %v, want stepPickModel after Esc", m.step)
 	}
 }
 
@@ -804,9 +922,9 @@ func TestModelPickerPickAttributesTheRightProvider(t *testing.T) {
 		t.Errorf("modelChosen = %q, want llama-3.3-70b", m.modelChosen)
 	}
 	// The scoped flow (scopedProvider is empty since AllProviders doesn't set it)
-	// should land on stepSummary, not stepDone.
-	if m.step != stepSummary {
-		t.Errorf("step = %v, want stepSummary", m.step)
+	// should land on stepConfirmLimits, not stepDone.
+	if m.step != stepConfirmLimits {
+		t.Errorf("step = %v, want stepConfirmLimits", m.step)
 	}
 	_ = cmd
 }

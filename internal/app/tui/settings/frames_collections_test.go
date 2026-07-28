@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 func TestProviderRowShowsEndpointAndKeySource(t *testing.T) {
@@ -120,7 +121,7 @@ func TestProviderBaseURLEditInvalidatesDiscovery(t *testing.T) {
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
 	st := newState(cfg)
-	st.discovered["ollama"] = []string{"qwen2.5:7b", "llama3.1:8b"}
+	st.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen2.5:7b"}, {ID: "llama3.1:8b"}}
 
 	f := providersFrame(st)
 	drill := f.List.Rows()[0]

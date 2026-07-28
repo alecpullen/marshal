@@ -42,6 +42,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
 	"marshal/internal/pubsub"
 	"marshal/internal/sdd"
@@ -198,7 +199,7 @@ type Model struct {
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
-	discovered   map[string][]string
+	discovered   map[string][]schema.ModelInfo
 
 	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
 	// The picker itself is hosted in m.dock; pickerCommand records which
@@ -780,7 +781,7 @@ func New(state *session.State, opts ...Option) Model {
 		spinner:        NewSpinner(),
 		now:            time.Now,
 		viewportFollow: true,
-		discovered:     map[string][]string{},
+		discovered:     map[string][]schema.ModelInfo{},
 	}
 	for _, opt := range opts {
 		opt(&m)

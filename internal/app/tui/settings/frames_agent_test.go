@@ -7,6 +7,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 func TestAgentProviderFieldIsKindPicker(t *testing.T) {
@@ -64,7 +65,7 @@ func TestAgentModelPickerUsesDiscoveredCache(t *testing.T) {
 	}
 	cfg.Agent.Provider = "ollama"
 	st := newState(cfg)
-	st.discovered["ollama"] = []string{"qwen2.5-coder:7b", "llama3.1:8b"}
+	st.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}, {ID: "llama3.1:8b"}}
 
 	f := agentFrame(st)
 	var modelRow *field

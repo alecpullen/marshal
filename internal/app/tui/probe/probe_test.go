@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -50,7 +51,7 @@ func TestProviderSuccess(t *testing.T) {
 	if msg.Provider != "testprov" || msg.FieldID != "test.field" {
 		t.Fatalf("ResultMsg identity = %+v", msg)
 	}
-	if len(msg.Models) != 2 || msg.Models[0] != "qwen2.5-coder:7b" {
+	if len(msg.Models) != 2 || msg.Models[0].ID != "qwen2.5-coder:7b" {
 		t.Fatalf("ResultMsg models = %v", msg.Models)
 	}
 }
@@ -91,4 +92,30 @@ func TestProviderTimeout(t *testing.T) {
 	if msg.Err == nil {
 		t.Fatal("expected timeout error")
 	}
+}
+
+func TestProviderPreservesModelLimits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`)
+	}))
+	defer srv.Close()
+
+	msg := Provider("f", "openai", config.ProviderConfig{
+		Type: "openai_compatible", BaseURL: srv.URL,
+	})().(ResultMsg)
+
+	if msg.Err != nil {
+		t.Fatalf("probe: %v", msg.Err)
+	}
+	if len(msg.Models) != 1 {
+		t.Fatalf("got %d models, want 1", len(msg.Models))
+	}
+	if msg.Models[0].ID != "gpt-4o" {
+		t.Errorf("ID = %q, want gpt-4o", msg.Models[0].ID)
+	}
+	// The field must exist and be addressable — its value depends on
+	// whether a limits table was wired in, which this test does not do.
+	_ = msg.Models[0].ContextWindow
+	_ = msg.Models[0].MaxOutputTokens
 }

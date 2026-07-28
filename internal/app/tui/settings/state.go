@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 // state holds the single mutable working copy of the config that every
@@ -15,7 +16,7 @@ import (
 // *state) so pointer bindings survive Model value copies.
 type state struct {
 	cfg              config.Config
-	discovered       map[string][]string
+	discovered       map[string][]schema.ModelInfo
 	actionState      map[string]actionState
 	connectRequested bool
 	pendingCmd       tea.Cmd
@@ -29,7 +30,7 @@ func newState(cfg config.Config) *state {
 	working := cloneConfig(cfg)
 	return &state{
 		cfg:         working,
-		discovered:  map[string][]string{},
+		discovered:  map[string][]schema.ModelInfo{},
 		actionState: map[string]actionState{},
 	}
 }

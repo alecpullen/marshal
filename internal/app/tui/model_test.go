@@ -27,6 +27,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
@@ -4388,7 +4389,7 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m.discovered["ollama"] = []string{"qwen2.5-coder:7b"}
+	m.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}
 	m.state.WorkingDir = t.TempDir()
 	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
 

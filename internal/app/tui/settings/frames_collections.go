@@ -216,12 +216,12 @@ func modelPickerField(s *state, id string, providerName func() string, getModel 
 			current := getModel()
 			var items []picker.Item
 			if cached, ok := s.discovered[pn]; ok && len(cached) > 0 {
-				for _, m := range cached {
-					badge := "\u25c9 discovered"
-					if m == current {
-						badge = "\u25cf now \u25c9 discovered"
+				for _, mi := range cached {
+					badge := "◉ discovered"
+					if mi.ID == current {
+						badge = "◉ now ◉ discovered"
 					}
-					items = append(items, picker.Item{Label: m, Value: m, Badge: badge})
+					items = append(items, picker.Item{Label: mi.ID, Value: mi.ID, Badge: badge})
 				}
 			} else if tpl, ok := provider.Lookup(pn); ok && len(tpl.Models) > 0 {
 				for _, m := range tpl.Models {

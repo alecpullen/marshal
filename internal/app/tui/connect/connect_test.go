@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 )
 
@@ -124,9 +125,9 @@ func TestCustomBaseURLThenKey(t *testing.T) {
 }
 
 func TestProbeSuccessAdvancesToPickModel(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b", "llama3.1:8b"}})
+	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}, {ID: "llama3.1:8b"}}})
 	if updated.step != stepPickModel {
 		t.Fatalf("success should advance to pickModel, got %v", updated.step)
 	}
@@ -139,7 +140,7 @@ func TestProbeSuccessAdvancesToPickModel(t *testing.T) {
 }
 
 func TestProbeFailureStaysWithRetrySkip(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")})
 	if updated.step != stepProbing {
@@ -151,7 +152,7 @@ func TestProbeFailureStaysWithRetrySkip(t *testing.T) {
 }
 
 func TestRetryReRunsProbe(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("boom")})
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 114})
@@ -164,7 +165,7 @@ func TestRetryReRunsProbe(t *testing.T) {
 }
 
 func TestSkipProbeUsesCatalogAndAdvances(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 115})
 	if updated.step != stepPickModel {
@@ -176,9 +177,9 @@ func TestSkipProbeUsesCatalogAndAdvances(t *testing.T) {
 }
 
 func TestPickModelEmitsDone(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	// Non-scoped flow lands on summary; press Enter to emit DoneMsg.
 	if m.step != stepSummary {
@@ -323,7 +324,7 @@ func TestRemoteGateYEnablesAndEntersAPIKey(t *testing.T) {
 func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
 	// Simulate: pick remote template -> gate -> y -> apiKey -> enter -> probe -> pick model -> summary enter
 	cfg := config.Default()
-	m := New(Opts{Cfg: cfg, Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 121}) // y
 	m.input.SetValue("sk-test")
@@ -371,9 +372,9 @@ func TestCustomLocalhostBaseURLSkipsGate(t *testing.T) {
 }
 
 func TestSummaryShowsNameModelAndDestination(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}, CfgPath: "/tmp/.marshal/config.toml"})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}, CfgPath: "/tmp/.marshal/config.toml"})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -391,9 +392,9 @@ func TestSummaryShowsNameModelAndDestination(t *testing.T) {
 }
 
 func TestSummaryEnterEmitsDone(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -409,9 +410,9 @@ func TestSummaryEnterEmitsDone(t *testing.T) {
 }
 
 func TestSummaryRenameChangesProviderName(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -447,7 +448,7 @@ func TestSummaryRenameChangesProviderName(t *testing.T) {
 }
 
 func TestScopedModelSwitchSkipsSummary(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama", Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama", Discovered: map[string][]schema.ModelInfo{}})
 	if m.step != stepPickModel {
 		t.Fatalf("expected stepPickModel, got %v", m.step)
 	}
@@ -466,9 +467,9 @@ func TestScopedModelSwitchSkipsSummary(t *testing.T) {
 }
 
 func TestSummaryEscGoesBackToModelPick(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -483,9 +484,9 @@ func TestSummaryEscGoesBackToModelPick(t *testing.T) {
 }
 
 func TestRenameEmptyNameShowsError(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	m.renameInput.SetValue("")
@@ -500,9 +501,9 @@ func TestRenameDuplicateNameShowsError(t *testing.T) {
 	cfg.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m := New(Opts{Cfg: cfg, Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	m.renameInput.SetValue("ollama")
@@ -520,9 +521,9 @@ func TestRenameToOwnNameIsAllowed(t *testing.T) {
 	cfg.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m := New(Opts{Cfg: cfg, Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	// The uniqueName() will produce "ollama-2" or similar, but we set it to "ollama" to test
@@ -540,9 +541,9 @@ func TestRenameToOwnNameIsAllowed(t *testing.T) {
 }
 
 func TestRenameEscReturnsToSummary(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	if m.step != stepRename {
@@ -555,9 +556,9 @@ func TestRenameEscReturnsToSummary(t *testing.T) {
 }
 
 func TestPasteMsgIntoRenameInput(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []string{"qwen2.5-coder:7b"}})
+	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
@@ -625,7 +626,7 @@ func TestDollarPrefixEmptyNameShowsError(t *testing.T) {
 }
 
 func TestProbeFailureShowsHint(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")})
 	if updated.step != stepProbing {
@@ -637,7 +638,7 @@ func TestProbeFailureShowsHint(t *testing.T) {
 }
 
 func TestProbeFailureHintForNoSuchHost(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("no such host")})
 	if !strings.Contains(updated.err, "hostname not found") {
@@ -646,7 +647,7 @@ func TestProbeFailureHintForNoSuchHost(t *testing.T) {
 }
 
 func TestProbeFailureHintForUnauthorized(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("401 unauthorized")})
 	if !strings.Contains(updated.err, "key rejected") {
@@ -655,7 +656,7 @@ func TestProbeFailureHintForUnauthorized(t *testing.T) {
 }
 
 func TestProbeFailureHintForTimeout(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("deadline exceeded")})
 	if !strings.Contains(updated.err, "timed out") {
@@ -664,7 +665,7 @@ func TestProbeFailureHintForTimeout(t *testing.T) {
 }
 
 func TestProbeFailureHintForCertificate(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]string{}})
+	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("certificate signed by unknown authority")})
 	if !strings.Contains(updated.err, "TLS problem") {
@@ -766,9 +767,9 @@ func TestModelPickerListsEveryProvider(t *testing.T) {
 			"openai": {BaseURL: "https://api.openai.com/v1"},
 			"groq":   {BaseURL: "https://api.groq.com/openai/v1"},
 		}},
-		Discovered: map[string][]string{
-			"openai": {"gpt-4o"},
-			"groq":   {"llama-3.3-70b"},
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "gpt-4o"}},
+			"groq":   {{ID: "llama-3.3-70b"}},
 		},
 		SkipToIntroModel: true,
 		AllProviders:     true,
@@ -787,9 +788,9 @@ func TestModelPickerPickAttributesTheRightProvider(t *testing.T) {
 			"openai": {BaseURL: "https://api.openai.com/v1"},
 			"groq":   {BaseURL: "https://api.groq.com/openai/v1"},
 		}},
-		Discovered: map[string][]string{
-			"openai": {"gpt-4o"},
-			"groq":   {"llama-3.3-70b"},
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "gpt-4o"}},
+			"groq":   {{ID: "llama-3.3-70b"}},
 		},
 		SkipToIntroModel: true,
 		AllProviders:     true,

@@ -9,6 +9,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 var Timeout = 5 * time.Second
@@ -34,17 +35,13 @@ func Provider(fieldID, name string, pc config.ProviderConfig) tea.Cmd {
 		if err != nil {
 			return ResultMsg{FieldID: fieldID, Provider: name, Err: err}
 		}
-		ids := make([]string, len(models))
-		for i, m := range models {
-			ids[i] = m.ID
-		}
-		return ResultMsg{FieldID: fieldID, Provider: name, Models: ids}
+		return ResultMsg{FieldID: fieldID, Provider: name, Models: models}
 	}
 }
 
 type ResultMsg struct {
 	FieldID  string
 	Provider string
-	Models   []string
+	Models   []schema.ModelInfo
 	Err      error
 }

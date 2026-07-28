@@ -18,6 +18,7 @@ import (
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 )
 
@@ -62,7 +63,7 @@ const (
 
 type Opts struct {
 	Cfg              config.Config
-	Discovered       map[string][]string
+	Discovered       map[string][]schema.ModelInfo
 	SkipToIntroModel bool
 	ScopedProvider   string
 	CfgPath          string
@@ -81,9 +82,9 @@ type Model struct {
 	template       provider.ProviderTemplate
 	providerName   string
 	providerCfg    config.ProviderConfig
-	models         []string
+	models         []schema.ModelInfo
 	cfg            config.Config
-	discovered     map[string][]string
+	discovered     map[string][]schema.ModelInfo
 	scopedProvider string
 	cfgPath        string
 	width          int
@@ -420,17 +421,17 @@ func buildModelPicker(m *Model, providerName string) *picker.Model {
 			candidates := m.discovered[pn]
 			if len(candidates) == 0 {
 				if tpl, ok := provider.Lookup(pn); ok {
-					candidates = tpl.Models
+					candidates = templateModelsToInfo(tpl.Models)
 				}
 			}
-			for _, mid := range candidates {
+			for _, mi := range candidates {
 				badge := "◉ discovered"
 				if _, ok := m.discovered[pn]; !ok || len(m.discovered[pn]) == 0 {
 					badge = "◯ catalog"
 				}
 				items = append(items, picker.Item{
-					Label: mid, Detail: pn, Badge: badge, Group: pn,
-					Value: encodeModelValue(pn, mid),
+					Label: mi.ID, Detail: pn, Badge: badge, Group: pn,
+					Value: encodeModelValue(pn, mi.ID),
 				})
 			}
 		}
@@ -442,14 +443,14 @@ func buildModelPicker(m *Model, providerName string) *picker.Model {
 			}
 		}
 		if len(candidates) == 0 {
-			candidates = m.template.Models
+			candidates = templateModelsToInfo(m.template.Models)
 		}
-		for _, mid := range candidates {
+		for _, mi := range candidates {
 			badge := "◉ discovered"
 			if len(m.models) == 0 {
 				badge = "◯ catalog"
 			}
-			items = append(items, picker.Item{Label: mid, Detail: providerName, Badge: badge, Group: providerName, Value: mid})
+			items = append(items, picker.Item{Label: mi.ID, Detail: providerName, Badge: badge, Group: providerName, Value: mi.ID})
 		}
 	}
 	if len(items) == 0 {
@@ -458,6 +459,17 @@ func buildModelPicker(m *Model, providerName string) *picker.Model {
 	p := picker.New(m.title, "pick a model for "+providerName, items)
 	p.SetAllowCustom(true)
 	return p
+}
+
+// templateModelsToInfo wraps a template's catalog model IDs in ModelInfo
+// records so the picker can treat catalog and discovered models uniformly.
+// Templates have no per-model limits, so all fields except ID are zero.
+func templateModelsToInfo(ids []string) []schema.ModelInfo {
+	out := make([]schema.ModelInfo, len(ids))
+	for i, id := range ids {
+		out[i] = schema.ModelInfo{ID: id}
+	}
+	return out
 }
 
 func badgeForTemplate(tpl provider.ProviderTemplate) string {
@@ -691,7 +703,7 @@ func (m *Model) enterProbing() (*Model, tea.Cmd) {
 }
 
 func (m *Model) skipProbe() (*Model, tea.Cmd) {
-	m.models = m.template.Models
+	m.models = templateModelsToInfo(m.template.Models)
 	return m.advanceToPickModel()
 }
 

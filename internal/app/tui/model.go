@@ -87,24 +87,25 @@ const (
 )
 
 type Model struct {
-	state          *session.State
-	input          textarea.Model
-	editingCommand bool
-	runner         AgentRunner
-	swarmRunner    AgentRunner
-	sddRunner      AgentRunner
-	ctx            context.Context
-	busy           bool
-	configReloader ConfigReloader
-	trustPromptDir string
-	trustDecide    func(trust.Decision)
-	memoryDB       *db.DB
-	memoryProject  int64
-	cmdRegistry    *commands.Registry
-	agentCancel    context.CancelFunc
-	approvalMode   policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
-	approvalModel  *approvalModel
-	questionModel  *questionModel
+	state              *session.State
+	input              textarea.Model
+	editingCommand     bool
+	runner             AgentRunner
+	swarmRunner        AgentRunner
+	sddRunner          AgentRunner
+	ctx                context.Context
+	busy               bool
+	configReloader     ConfigReloader
+	openConnectOnStart bool
+	trustPromptDir     string
+	trustDecide        func(trust.Decision)
+	memoryDB           *db.DB
+	memoryProject      int64
+	cmdRegistry        *commands.Registry
+	agentCancel        context.CancelFunc
+	approvalMode       policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
+	approvalModel      *approvalModel
+	questionModel      *questionModel
 
 	// F18: editor completions. cmdPopup is fed by the commands registry
 	// (triggered by `/` at position 0) and filePopup is fed by the repo
@@ -264,6 +265,13 @@ func WithConfigReloader(fn ConfigReloader) Option {
 	return func(m *Model) {
 		m.configReloader = fn
 	}
+}
+
+// WithOpenConnectOnStart opens the connect panel as the TUI starts. Used
+// for first run: provider setup is the same flow on the first run and on
+// the hundredth.
+func WithOpenConnectOnStart() Option {
+	return func(m *Model) { m.openConnectOnStart = true }
 }
 
 // WithTrustPrompt opens the modal folder-trust panel at startup. decide is
@@ -816,6 +824,13 @@ func New(state *session.State, opts ...Option) Model {
 
 	if m.trustDecide != nil && m.trustPromptDir != "" {
 		m.dock.Open(trustpanel.New(m.trustPromptDir, m.trustDecide))
+	}
+
+	if m.openConnectOnStart && !m.dock.IsOpen() {
+		// A pending modal (trust prompt) owns the dock; connect opens after
+		// it resolves. On the trust-grant path the app reloads and lands
+		// here again with trust settled, so nothing is lost.
+		m.openConnect("/")
 	}
 
 	return m

@@ -86,6 +86,10 @@ const (
 	// settingsBusyMessage is shown when runtime work makes a settings change
 	// unsafe to persist.
 	settingsBusyMessage = "Stop the active turn and background jobs before applying settings."
+
+	// singleModelProfileName is the profile /connect and /model write into when
+	// the user picks one model for everything.
+	singleModelProfileName = "single"
 )
 
 type Model struct {
@@ -2734,9 +2738,38 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	if msg.EnabledRemote {
 		newCfg.Privacy.RemoteProvidersAllowed = true
 	}
-	newCfg.Agent.Provider = msg.Provider
-	newCfg.Agent.Model = msg.Model
-	newCfg.Profile.Default = ""
+	// Selecting a model synthesizes a preset plus a profile binding every
+	// role to it. The router resolves through profiles only; there is no
+	// legacy pair and no implicit "empty default means fall through".
+	presetName := msg.Provider + "/" + msg.Model
+	if newCfg.Models.Presets == nil {
+		newCfg.Models.Presets = map[string]routing.ModelPreset{}
+	} else {
+		presets := make(map[string]routing.ModelPreset, len(newCfg.Models.Presets)+1)
+		for k, v := range newCfg.Models.Presets {
+			presets[k] = v
+		}
+		newCfg.Models.Presets = presets
+	}
+	newCfg.Models.Presets[presetName] = routing.ModelPreset{
+		Name:     presetName,
+		Provider: msg.Provider,
+		Model:    msg.Model,
+	}
+
+	if newCfg.AgentProfiles == nil {
+		newCfg.AgentProfiles = map[string]routing.AgentProfile{}
+	} else {
+		profiles := make(map[string]routing.AgentProfile, len(newCfg.AgentProfiles)+1)
+		for k, v := range newCfg.AgentProfiles {
+			profiles[k] = v
+		}
+		newCfg.AgentProfiles = profiles
+	}
+	newCfg.AgentProfiles[singleModelProfileName] = routing.SingleModelProfile(singleModelProfileName, presetName)
+	newCfg.Profile.Default = singleModelProfileName
+	newCfg.Agent.Provider = ""
+	newCfg.Agent.Model = ""
 
 	// Credentials never go to project config. Write the key to the user
 	// config first; if that fails, configure nothing rather than leaving a

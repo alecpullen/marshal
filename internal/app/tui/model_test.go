@@ -4268,6 +4268,69 @@ func newModelForConfigTest(t *testing.T) (m Model, workDir string, homeDir strin
 	return
 }
 
+func TestApplyConnectDoneWritesAPresetAndProfile(t *testing.T) {
+	m, workDir, _ := newModelForConfigTest(t)
+
+	m.applyConnectDone(connect.DoneMsg{
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	})
+
+	cfg := m.state.Config
+	if cfg.Profile.Default == "" {
+		t.Fatal("Profile.Default is empty — the legacy fallback signal must be gone")
+	}
+	if cfg.Agent.Provider != "" || cfg.Agent.Model != "" {
+		t.Errorf("legacy pair still written: %q/%q", cfg.Agent.Provider, cfg.Agent.Model)
+	}
+
+	profile, ok := cfg.AgentProfiles[cfg.Profile.Default]
+	if !ok {
+		t.Fatalf("no profile named %q", cfg.Profile.Default)
+	}
+	if len(profile.Roles) != len(routing.AllRoles) {
+		t.Errorf("profile binds %d roles, want %d", len(profile.Roles), len(routing.AllRoles))
+	}
+
+	presetName := profile.Roles[routing.RoleImplementer].Preset
+	preset, ok := cfg.Models.Presets[presetName]
+	if !ok {
+		t.Fatalf("profile references preset %q which does not exist", presetName)
+	}
+	if preset.Provider != "openai" || preset.Model != "gpt-4o" {
+		t.Errorf("preset = %s/%s, want openai/gpt-4o", preset.Provider, preset.Model)
+	}
+
+	// And it must survive a round trip through the config file.
+	data, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if !strings.Contains(string(data), "gpt-4o") {
+		t.Errorf("preset not persisted:\n%s", data)
+	}
+}
+
+func TestApplyConnectDonePreservesExistingProfiles(t *testing.T) {
+	m, _, _ := newModelForConfigTest(t)
+	m.state.Config.AgentProfiles = map[string]routing.AgentProfile{
+		"handcrafted": {Name: "handcrafted", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "mine"},
+		}},
+	}
+
+	m.applyConnectDone(connect.DoneMsg{
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	})
+
+	if _, ok := m.state.Config.AgentProfiles["handcrafted"]; !ok {
+		t.Error("connecting a model destroyed a user's existing profile")
+	}
+}
+
 func TestApplyConnectDoneKeepsAPIKeyOutOfProjectConfig(t *testing.T) {
 	m, workDir, homeDir := newModelForConfigTest(t)
 
@@ -4421,11 +4484,17 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("selecting a model should close the overlay")
 	}
-	if m.state.Config.Agent.Provider != "ollama" || m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
-		t.Fatalf("model not switched: got provider=%q model=%q", m.state.Config.Agent.Provider, m.state.Config.Agent.Model)
+	if m.state.Config.Agent.Provider != "" || m.state.Config.Agent.Model != "" {
+		t.Fatalf("legacy pair still set: got provider=%q model=%q", m.state.Config.Agent.Provider, m.state.Config.Agent.Model)
 	}
-	if m.state.Config.Profile.Default != "" {
-		t.Fatalf("profile default should be cleared, got %q", m.state.Config.Profile.Default)
+	if m.state.Config.Profile.Default != "single" {
+		t.Fatalf("profile default should be %q, got %q", "single", m.state.Config.Profile.Default)
+	}
+	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+		t.Fatal("preset ollama/qwen2.5-coder:7b should exist")
+	}
+	if _, ok := m.state.Config.AgentProfiles["single"]; !ok {
+		t.Fatal("profile single should exist")
 	}
 	got := m.state.Messages()[len(m.state.Messages())-1].Content
 	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
@@ -4442,11 +4511,17 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	if !reloaded {
 		t.Fatal("DoneMsg should call configReloader")
 	}
-	if updated.(Model).state.Config.Agent.Provider != "ollama" || updated.(Model).state.Config.Agent.Model != "qwen2.5-coder:7b" {
-		t.Fatalf("agent cfg not set: %+v", updated.(Model).state.Config.Agent)
+	if updated.(Model).state.Config.Agent.Provider != "" || updated.(Model).state.Config.Agent.Model != "" {
+		t.Fatalf("legacy pair still set: %+v", updated.(Model).state.Config.Agent)
 	}
-	if updated.(Model).state.Config.Profile.Default != "" {
-		t.Fatalf("profile default should be cleared, got %q", updated.(Model).state.Config.Profile.Default)
+	if updated.(Model).state.Config.Profile.Default != "single" {
+		t.Fatalf("profile default should be %q, got %q", "single", updated.(Model).state.Config.Profile.Default)
+	}
+	if _, ok := updated.(Model).state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+		t.Fatal("preset ollama/qwen2.5-coder:7b should exist")
+	}
+	if _, ok := updated.(Model).state.Config.AgentProfiles["single"]; !ok {
+		t.Fatal("profile single should exist")
 	}
 	prov, ok := updated.(Model).state.Config.Providers["ollama"]
 	if !ok {
@@ -4487,8 +4562,14 @@ func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	if m.setReg != nil {
 		t.Fatal("failed connect reload must invalidate the cached /set registry")
 	}
-	if m.state.Config.Agent.Provider != "ollama" || m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
+	if m.state.Config.Agent.Provider != "" || m.state.Config.Agent.Model != "" {
 		t.Fatalf("failed connect reload must align m.state.Config, got %+v", m.state.Config.Agent)
+	}
+	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+		t.Fatal("failed connect reload must create preset")
+	}
+	if _, ok := m.state.Config.AgentProfiles["single"]; !ok {
+		t.Fatal("failed connect reload must create profile")
 	}
 	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
 		t.Fatal("failed connect reload must align m.state.Config.Providers")
@@ -4516,8 +4597,14 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	if reloaded {
 		t.Fatal("save failure must not call configReloader")
 	}
-	if m.state.Config.Agent.Provider != "ollama" || m.state.Config.Agent.Model != "qwen2.5-coder:7b" {
+	if m.state.Config.Agent.Provider != "" || m.state.Config.Agent.Model != "" {
 		t.Fatalf("save failure must keep the new config in session, got %+v", m.state.Config.Agent)
+	}
+	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+		t.Fatal("save failure must keep the preset in session config")
+	}
+	if _, ok := m.state.Config.AgentProfiles["single"]; !ok {
+		t.Fatal("save failure must keep the profile in session config")
 	}
 	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
 		t.Fatal("save failure must keep the new provider in session config")

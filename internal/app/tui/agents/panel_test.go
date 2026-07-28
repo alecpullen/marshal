@@ -346,13 +346,13 @@ func TestRosterDrillOpensCustomAgentFrame(t *testing.T) {
 	}
 }
 
-// drillToRow walks the roster list with down-keys until the cursor row's
+// drillToRow walks the active list with down-keys until the cursor row's
 // title matches (roster order is deterministic: profile, role groups,
-// custom agents, budgets).
+// custom agents, budgets). Uses activeList() so it works inside drilled frames.
 func drillToRow(t *testing.T, p *Panel, title string) {
 	t.Helper()
 	for i := 0; i < 40; i++ {
-		if row := settings.FieldListCursorRow(p.list); row != nil && settings.FieldTitle(row) == title {
+		if row := settings.FieldListCursorRow(p.activeList()); row != nil && settings.FieldTitle(row) == title {
 			return
 		}
 		p.Update(tea.KeyPressMsg{Code: tea.KeyDown})

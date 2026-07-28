@@ -504,7 +504,7 @@ func TestLocalProviderAllowedWhenRemoteNotAllowed(t *testing.T) {
 
 func TestResolveRoleReturnsFallbackErrorOnExhaustion(t *testing.T) {
 	// Both repo_scout and implementer are unconfigured in the profile,
-	// and no legacy provider exists. The returned error should reference
+	// and no preset is configured for either role. The returned error should reference
 	// the implementer role (the fallback error) rather than the primary
 	// role (repo_scout), because the fallback error is more informative
 	// (it tells the caller which fallback role also wasn't found).

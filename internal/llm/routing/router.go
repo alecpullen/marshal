@@ -218,13 +218,6 @@ func IsLocalProvider(provider string) bool {
 	return strings.HasPrefix(host, "::1%")
 }
 
-// isLocalProvider returns true if the provider URL targets the local
-// machine. Used to bypass the remote_providers_allowed gate for
-// localhost-only deployments. See F-SEC-09.
-func isLocalProvider(provider string) bool {
-	return IsLocalProvider(provider)
-}
-
 // CastEntry holds the result of resolving a single role via Cast.
 type CastEntry struct {
 	Role  AgentRole

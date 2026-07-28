@@ -41,6 +41,7 @@ import (
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
 	"marshal/internal/db"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
@@ -200,6 +201,10 @@ type Model struct {
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
 	discovered   map[string][]schema.ModelInfo
+	// modelCacheDir, when set, enables on-disk caching of the discovered
+	// list via internal/llm/provider/modelcache. Without it discovery is
+	// in-memory only.
+	modelCacheDir string
 
 	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
 	// The picker itself is hosted in m.dock; pickerCommand records which
@@ -416,8 +421,15 @@ func WithConfigLayers(layers **config.Layers) Option {
 // the provenance snapshots after a successful persist. The bool reports
 // whether the reload succeeded; when false the model does not overwrite
 // the shared Layers pointer.
+// WithLayerReloader(fn func() (config.Layers, bool)) Option {
 func WithLayerReloader(fn func() (config.Layers, bool)) Option {
 	return func(m *Model) { m.layerReloader = fn }
+}
+
+// WithModelCache enables persistent model discovery caching under dataDir.
+// Without it the session behaves as before: discovery is in-memory only.
+func WithModelCache(dataDir string) Option {
+	return func(m *Model) { m.modelCacheDir = dataDir }
 }
 
 func projectConfigPath(workingDir string) string {
@@ -785,6 +797,19 @@ func New(state *session.State, opts ...Option) Model {
 	}
 	for _, opt := range opts {
 		opt(&m)
+	}
+
+	// Seed the in-session discovered map from the on-disk cache so the
+	// model picker opens instantly with the last-seen lists when the
+	// config hash still matches.
+	if m.modelCacheDir != "" {
+		c := modelcache.Load(m.modelCacheDir)
+		now := time.Now()
+		for name, pc := range state.Config.Providers {
+			if models, ok := c.Lookup(name, pc, modelcache.DefaultTTL, now); ok {
+				m.discovered[name] = models
+			}
+		}
 	}
 
 	// F18: build the completion popups eagerly from whatever source data
@@ -1196,12 +1221,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case probe.ResultMsg:
+		if pm.Err == nil && pm.Provider != "" {
+			m.discovered[pm.Provider] = pm.Models
+			m.persistDiscovered(pm.Provider, pm.Models)
+		}
 		if _, ok := m.dock.Panel().(connect.Panel); ok {
-			cmd := m.dock.Update(pm)
-			if pm.Err == nil && pm.Provider != "" {
-				m.discovered[pm.Provider] = pm.Models
-			}
-			return m, cmd
+			return m, m.dock.Update(pm)
 		}
 		return m, nil
 	case picker.PickedMsg:
@@ -2490,6 +2515,13 @@ func (m *Model) openModels() tea.Cmd {
 	})
 	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
+	return m.probeProviders(names)
+}
+
+// probeProviders dispatches a probe for each named provider that has no
+// cached entry and whose endpoint is permitted by the remote-provider
+// gate. Used by openModels and by the manual refresh key.
+func (m *Model) probeProviders(names []string) tea.Cmd {
 	var cmds []tea.Cmd
 	for _, n := range names {
 		if cached, ok := m.discovered[n]; ok && len(cached) > 0 {
@@ -2502,6 +2534,28 @@ func (m *Model) openModels() tea.Cmd {
 		cmds = append(cmds, probe.Provider("models", n, pc))
 	}
 	return tea.Batch(cmds...)
+}
+
+// persistDiscovered writes one provider's models through to the on-disk
+// cache. Failures are silent: the cache is an optimization, and a session
+// that cannot write it behaves exactly as it did before caching existed.
+// A failed probe must not evict a good cached entry, so this is only
+// called on the success path of probe.ResultMsg.
+func (m *Model) persistDiscovered(name string, models []schema.ModelInfo) {
+	if m.modelCacheDir == "" || len(models) == 0 {
+		return
+	}
+	pc, ok := m.state.Config.Providers[name]
+	if !ok {
+		return
+	}
+	c := modelcache.Load(m.modelCacheDir)
+	c.Providers[name] = modelcache.Entry{
+		ConfigHash: modelcache.HashProvider(pc),
+		Models:     models,
+		FetchedAt:  time.Now(),
+	}
+	_ = modelcache.Save(m.modelCacheDir, c)
 }
 
 // sortedProviderNames returns provider names sorted alphabetically.

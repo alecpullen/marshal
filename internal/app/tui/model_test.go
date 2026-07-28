@@ -22,10 +22,12 @@ import (
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/db"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
@@ -4330,6 +4332,13 @@ func newTestModel(t *testing.T) Model {
 	return m
 }
 
+// newTestState is a session.State with default config, used by tests that
+// need to mutate the config before constructing the TUI.
+func newTestState(t *testing.T) *session.State {
+	t.Helper()
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+}
+
 func TestAgentsCommandOpensRoster(t *testing.T) {
 	m := newTestModel(t)
 	m.dispatchCommand("/agents")
@@ -5650,4 +5659,106 @@ func TestOpenConnectOnStartYieldsToTrustPrompt(t *testing.T) {
 		t.Fatal("connect must not pre-empt a pending trust prompt")
 	}
 	_ = decided
+}
+
+func TestModelCacheSeedsDiscoveredAtStartup(t *testing.T) {
+	dir := t.TempDir()
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
+	if err := modelcache.Save(dir, modelcache.Cache{Providers: map[string]modelcache.Entry{
+		"openai": {
+			ConfigHash: modelcache.HashProvider(pc),
+			Models:     []schema.ModelInfo{{ID: "gpt-4o", ContextWindow: 128000}},
+			FetchedAt:  time.Now(),
+		},
+	}}); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	state := newTestState(t)
+	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
+	m := New(state, WithModelCache(dir))
+
+	got, ok := m.discovered["openai"]
+	if !ok {
+		t.Fatal("cache did not seed m.discovered")
+	}
+	if len(got) != 1 || got[0].ID != "gpt-4o" || got[0].ContextWindow != 128000 {
+		t.Errorf("seeded %+v, want gpt-4o with its context window", got)
+	}
+}
+
+func TestModelCacheDoesNotSeedWhenConfigChanged(t *testing.T) {
+	dir := t.TempDir()
+	old := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://old/v1"}
+	if err := modelcache.Save(dir, modelcache.Cache{Providers: map[string]modelcache.Entry{
+		"openai": {ConfigHash: modelcache.HashProvider(old),
+			Models: []schema.ModelInfo{{ID: "gpt-4o"}}, FetchedAt: time.Now()},
+	}}); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	state := newTestState(t)
+	state.Config.Providers = map[string]config.ProviderConfig{
+		"openai": {Type: "openai_compatible", BaseURL: "https://new/v1"},
+	}
+	m := New(state, WithModelCache(dir))
+
+	if _, ok := m.discovered["openai"]; ok {
+		t.Error("a changed base URL must not be served from cache")
+	}
+}
+
+func TestProbeResultWritesThroughToCache(t *testing.T) {
+	dir := t.TempDir()
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
+	state := newTestState(t)
+	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
+	m := New(state, WithModelCache(dir))
+
+	m.Update(probe.ResultMsg{
+		FieldID:  "models",
+		Provider: "openai",
+		Models:   []schema.ModelInfo{{ID: "gpt-4o", ContextWindow: 128000}},
+	})
+
+	models, ok := modelcache.Load(dir).Lookup("openai", pc, modelcache.DefaultTTL, time.Now())
+	if !ok {
+		t.Fatal("probe result was not persisted")
+	}
+	if len(models) != 1 || models[0].ContextWindow != 128000 {
+		t.Errorf("persisted %+v, want the limits preserved", models)
+	}
+}
+
+func TestFailedProbeKeepsCachedEntry(t *testing.T) {
+	dir := t.TempDir()
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
+	if err := modelcache.Save(dir, modelcache.Cache{Providers: map[string]modelcache.Entry{
+		"openai": {ConfigHash: modelcache.HashProvider(pc),
+			Models: []schema.ModelInfo{{ID: "gpt-4o"}}, FetchedAt: time.Now()},
+	}}); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	state := newTestState(t)
+	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
+	m := New(state, WithModelCache(dir))
+
+	m.Update(probe.ResultMsg{FieldID: "models", Provider: "openai", Err: errors.New("network down")})
+
+	if _, ok := modelcache.Load(dir).Lookup("openai", pc, modelcache.DefaultTTL, time.Now()); !ok {
+		t.Error("a failed probe evicted a good cached entry")
+	}
+}
+
+func TestNoCacheDirIsHarmless(t *testing.T) {
+	state := newTestState(t)
+	m := New(state) // no WithModelCache
+	m.Update(probe.ResultMsg{
+		FieldID: "models", Provider: "openai",
+		Models: []schema.ModelInfo{{ID: "gpt-4o"}},
+	})
+	if len(m.discovered["openai"]) != 1 {
+		t.Error("in-session discovery must still work without a cache dir")
+	}
 }

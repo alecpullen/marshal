@@ -1190,6 +1190,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.TrustPromptPending {
 			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))
 		}
+		if rt.DataDir != "" {
+			tuiOpts = append(tuiOpts, tui.WithModelCache(rt.DataDir))
+		}
 
 		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 

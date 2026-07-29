@@ -85,12 +85,13 @@ func TestNativeAskUserCountsAgainstIterationBudget(t *testing.T) {
 		t.Fatalf("Summary = %q, want Ask2.", task.Summary)
 	}
 	if got == nil || got.Iterations < 4 {
-		// Each ask_user batch consumes 1 iteration from line 564 +
-		// 1 iteration from executeNativeAskUser = 2 per call × 2 calls = 4
+		// Each ask_user batch consumes 1 tool iteration for the model turn
+		// that issued it + 1 overhead iteration from executeNativeAskUser;
+		// Iterations reports the total, so 2 per call × 2 calls = 4.
 		t.Fatalf("Iterations = %d, want at least 4", got.Iterations)
 	}
-	if r.iterationBudget != nil {
-		t.Fatalf("iterationBudget should be nil after RunTask")
+	if r.turnBudget != nil {
+		t.Fatalf("turnBudget should be nil after RunTask")
 	}
 }
 

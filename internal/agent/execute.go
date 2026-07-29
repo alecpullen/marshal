@@ -481,9 +481,9 @@ func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall)
 		return schema.ChatMessage{}, waitErr
 	}
 	r.countToolCall(false, false)
-	if r.iterationBudget != nil {
-		*r.iterationBudget++
-		r.withStats(func(s *turnStats) { s.m.Iterations = *r.iterationBudget })
+	if r.turnBudget != nil {
+		r.turnBudget.overhead++
+		r.withStats(func(s *turnStats) { s.m.Iterations = r.turnBudget.total() })
 	}
 	if strings.TrimSpace(answer) == "" {
 		r.trackerMu.Lock()
@@ -516,9 +516,9 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 		return schema.ChatMessage{}, waitErr
 	}
 	r.countToolCall(false, false)
-	if r.iterationBudget != nil {
-		*r.iterationBudget++
-		r.withStats(func(s *turnStats) { s.m.Iterations = *r.iterationBudget })
+	if r.turnBudget != nil {
+		r.turnBudget.overhead++
+		r.withStats(func(s *turnStats) { s.m.Iterations = r.turnBudget.total() })
 	}
 	parts := []string{"User answers:"}
 	allUnanswered := true

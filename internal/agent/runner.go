@@ -239,12 +239,14 @@ type Runner struct {
 	stats        *turnStats
 	statsMu      sync.Mutex
 
-	// iterationBudget is set by RunTask to point to its local iteration
-	// counter so that executeNativeAskUser / executeNativeQuestionAsk can
-	// increment the budget when they perform a native ask round-trip
-	// (mirroring the envelope path's iteration++ in ActionAskUser /
-	// ActionQuestionAsk). Nil outside of RunTask.
-	iterationBudget *int
+	// turnBudget is set by RunTask to point to its local budget so that
+	// executeNativeAskUser / executeNativeQuestionAsk can charge a native
+	// ask round-trip against it (mirroring the envelope path's
+	// budget.overhead++ in ActionAskUser / ActionQuestionAsk). An ask
+	// round-trip is overhead, not work: it must not eat the tool budget,
+	// but it still needs a ceiling so ask→decline→ask cannot loop forever.
+	// Nil outside of RunTask.
+	turnBudget *turnBudget
 
 	// DigestModel is the model name to use for LLM-based digest generation
 	// during rollover. When empty, the runner's primary Model is used.
@@ -495,9 +497,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	consecutiveEmpty := 0
 	toolCallCountThisTurn := 0
 	groundingNudgeSent := false
-	iteration := 0
-	r.iterationBudget = &iteration
-	defer func() { r.iterationBudget = nil }()
+	budget := newTurnBudget(r.MaxToolIterations, task.Class, len(task.Plan))
+	r.turnBudget = budget
+	defer func() { r.turnBudget = nil }()
+	countIterations := func() { r.withStats(func(s *turnStats) { s.m.Iterations = budget.total() }) }
 	turnEndContinued := false
 	runTurnEnd := func(messages []schema.ChatMessage, task *Task) ([]schema.ChatMessage, bool, error) {
 		if r.HookRunner == nil || turnEndContinued {
@@ -523,10 +526,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		return messages, false, nil
 	}
 	for {
-		if iteration >= r.MaxToolIterations {
+		// The task's real size is usually only known once the model has
+		// written a todo list, which happens a few iterations in — plan_first
+		// is off by default, so len(task.Plan) is normally 0 at loop entry.
+		budget.grantSteps(len(r.State.Todos()))
+		if budget.exhausted() {
 			break
 		}
-		r.State.SetToolBudget(session.ToolBudget{Used: iteration, Max: r.MaxToolIterations})
+		r.State.SetToolBudget(session.ToolBudget{Used: budget.tools, Max: budget.maxTools})
 
 		// F16: drain steering messages typed mid-turn and inject them as
 		// user messages before the next model call. Runs before the
@@ -547,7 +554,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			messages = appendContextPackMessage(messages, pack)
 		}
 
-		if !pressureMessageSent && r.MaxToolIterations-iteration <= finalizePressureThreshold {
+		if !pressureMessageSent && budget.remainingTools() <= finalizePressureThreshold {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: finalizePressureMessage})
 			r.State.AddMessage(session.RoleSystem, finalizePressureMessage, session.ContentTypePlain)
 			pressureMessageSent = true
@@ -580,15 +587,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		if r.NativeTools {
 			if len(res.ToolCalls) == 0 {
 				if strings.TrimSpace(res.Text) == "" {
-					// Empty response: the model went silent. Count this turn
-					// against the budget (MaxToolIterations is a turn budget,
-					// not just a tool-call budget) so a silent model cannot
-					// loop forever. Record an idle entry so the stall detector
-					// can see sustained silence, and short-circuit to finalize
-					// after a couple of consecutive empties rather than
-					// re-prompting indefinitely.
-					iteration++
-					r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+					// Empty response: the model went silent. Charge it to the
+					// overhead budget so a silent model cannot loop forever,
+					// but without spending a slot of the work budget on a turn
+					// that did nothing. Record an idle entry so the stall
+					// detector can see sustained silence, and short-circuit to
+					// finalize after a couple of consecutive empties rather
+					// than re-prompting indefinitely.
+					budget.overhead++
+					countIterations()
 					consecutiveEmpty++
 					r.trackerMu.Lock()
 					r.tracker.recordIdle(res.FinishReason)
@@ -606,8 +613,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				}
 				if toolCallCountThisTurn == 0 && task.Class != ClassQuestion && !groundingNudgeSent {
 					groundingNudgeSent = true
-					iteration++
-					r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+					budget.overhead++
+					countIterations()
 					r.State.AddMessage(session.RoleSystem, groundingNudgeMessage, session.ContentTypePlain)
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: groundingNudgeMessage})
 					continue
@@ -636,8 +643,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 
 			if isLengthFinish(res.FinishReason) {
-				iteration++
-				r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+				// The response was truncated before its tool calls were
+				// usable, so nothing ran: overhead, not work.
+				budget.overhead++
+				countIterations()
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 				for _, call := range res.ToolCalls {
 					messages = append(messages, schema.ChatMessage{
@@ -649,9 +658,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				continue
 			}
 
-			iteration++
+			budget.tools++
 			consecutiveEmpty = 0
-			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+			countIterations()
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 			producedValidAction = true
 			toolCallCountThisTurn += len(res.ToolCalls)
@@ -707,8 +716,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 		consecutiveParseFailures = 0
 		consecutiveEmpty = 0
-		iteration++
-		r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+		budget.tools++
+		countIterations()
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
 		producedValidAction = true
 
@@ -724,11 +733,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if err := r.allReadOnly(action.Actions); err != nil {
 				// F-SEC-11: the violation is a parse failure for budget
 				// purposes. Without this, a model that keeps emitting
-				// non-read-only actions loops forever. `iteration` and
-				// `consecutiveParseFailures` are local variables in
-				// RunTask; increment them directly, the same way the
-				// parse-failure branch above does.
-				iteration++
+				// non-read-only actions loops forever. Nothing executed, so
+				// it is charged to overhead. `budget` and
+				// `consecutiveParseFailures` are local to RunTask; update
+				// them directly, the same way the parse-failure branch above
+				// does.
+				budget.overhead++
 				consecutiveParseFailures++
 				r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
 				messages = append(messages, BuildCorrectionMessage(err))
@@ -785,13 +795,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if waitErr != nil {
 				return task, r.fail(task, waitErr)
 			}
-			// An ask_user round-trip consumes a turn of the budget: a model
-			// that re-asks the same (or a declined) question would otherwise
-			// loop ask→decline→ask without the budget ever decreasing. A
+			// An ask_user round-trip consumes an overhead turn: a model that
+			// re-asks the same (or a declined) question would otherwise loop
+			// ask→decline→ask without any budget ever decreasing. It is
+			// charged to overhead rather than work so a genuinely useful
+			// clarification does not cost the task a slot of real work. A
 			// declined answer is non-progress and is recorded as idle so the
 			// stall detector sees a repeated ask as churn too.
-			iteration++
-			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+			budget.overhead++
+			countIterations()
 			if strings.TrimSpace(answer) == "" {
 				consecutiveEmpty++
 				r.trackerMu.Lock()
@@ -825,8 +837,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if waitErr != nil {
 				return task, r.fail(task, waitErr)
 			}
-			iteration++
-			r.withStats(func(s *turnStats) { s.m.Iterations = iteration })
+			budget.overhead++
+			countIterations()
 			allUnanswered := true
 			for _, a := range answers {
 				if a.Answer != session.AnswerUnanswered {

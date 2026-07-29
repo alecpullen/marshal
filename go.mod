@@ -17,9 +17,11 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/pelletier/go-toml/v2 v2.4.2
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/sergi/go-diff v1.4.0
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/yuin/goldmark v1.7.8
+	golang.org/x/text v0.24.0
 	modernc.org/sqlite v1.53.0
 	mvdan.cc/sh/v3 v3.13.1
 )
@@ -57,7 +59,6 @@ require (
 	golang.org/x/net v0.39.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.24.0 // indirect
 	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

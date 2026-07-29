@@ -1909,7 +1909,7 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 	}
 }
 
-func TestStatusBarShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
+func TestActivityRowShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: time.Now().Add(-time.Second)})
 	m := New(state)
@@ -1920,14 +1920,14 @@ func TestStatusBarShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
 
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "⠋") {
-		t.Fatalf("View() missing spinner frame in status bar:\n%s", view)
+		t.Fatalf("View() missing spinner frame in activity row:\n%s", view)
 	}
 	if !strings.Contains(view, "thinking") {
-		t.Fatalf("View() missing thinking label in status bar:\n%s", view)
+		t.Fatalf("View() missing thinking label in activity row:\n%s", view)
 	}
 }
 
-func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
+func TestStatusLineOmitsCompletedToolBadge(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
@@ -1936,24 +1936,23 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 	m.busy = true
 	m.spinnerFrame = "⠏"
 	state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Now()})
-	m.lastActivityKind = session.ActivityTool
-	m.lastActivityLabel = "shell.run: go test"
 
 	updated, _ = m.Update(agentFinishedMsg{})
 	m = updated.(Model)
 
-	if !strings.Contains(stripANSI(m.View().Content), "✔") {
-		t.Fatal("expected done badge immediately after finish")
+	if strings.Contains(stripANSI(m.View().Content), "✔") {
+		t.Fatalf("done badge should be gone; completed tools are owned by the transcript:\n%s", m.View().Content)
 	}
+}
 
-	m.lastActivityDone = m.lastActivityDone.Add(-doneDisplayDuration).Add(-time.Millisecond)
-
-	view := stripANSI(m.View().Content)
-	if strings.Contains(view, "✔") {
-		t.Fatalf("done badge should have expired after %v:\n%s", doneDisplayDuration, view)
-	}
-	if !strings.Contains(view, "default") {
-		t.Fatalf("View() missing idle status after done badge expiry:\n%s", view)
+func TestSuccessPulseExpiresAfterDuration(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.successPulse = true
+	m.successPulseAt = m.now().Add(-successPulseDuration - time.Millisecond)
+	updated, _ := m.Update(agentTickMsg{})
+	m = updated.(Model)
+	if m.successPulse {
+		t.Fatal("successPulse should expire after successPulseDuration")
 	}
 }
 
@@ -5052,7 +5051,6 @@ func TestDockedSettingsBrowserDoesNotSwallowRuntimeMessages(t *testing.T) {
 	m := New(state)
 	m.resize(100, 40)
 	m.busy = true
-	m.lastActivityKind = session.ActivityThinking
 
 	m.openSettingsBrowser("")
 	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {

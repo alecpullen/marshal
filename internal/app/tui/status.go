@@ -242,22 +242,11 @@ func browserStatusText(bi session.BrowserInfo) string {
 }
 
 func (m Model) statusRightSegment() string {
-	// Pending approvals are surfaced by the early return above the activity
-	// switch, so the ActivityKind case below only needs to handle active work.
 	if m.state.PendingApproval() != nil {
 		return warningStyle().Render("⚠ approval")
 	}
-	activity := m.state.Activity()
-	spinner := m.activeSpinnerFrame(activity.Kind)
-	switch activity.Kind {
-	case session.ActivityThinking:
-		return statusBusyStyle().Render(spinnerLabel(spinner, "thinking"))
-	}
 	if m.state.ProviderError() != nil {
 		return errorStyle().Render("✘ error")
-	}
-	if m.lastActivityLabel != "" && m.now().Sub(m.lastActivityDone) < doneDisplayDuration {
-		return statusOkStyle().Render("✔ " + m.lastActivityLabel)
 	}
 	return help.Footer(m.footerHints())
 }

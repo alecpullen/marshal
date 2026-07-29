@@ -67,14 +67,14 @@ func TestStatusLineShowsProviderError(t *testing.T) {
 	}
 }
 
-func TestStatusLineShowsThinkingActivity(t *testing.T) {
+func TestStatusLineOmitsThinkingActivity(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.spinnerFrame = "⠋"
 	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking})
 
-	line := m.renderStatusLine(100)
-	if !strings.Contains(line, "⠋") || !strings.Contains(line, "thinking") {
-		t.Fatalf("status line missing thinking activity:\n%s", line)
+	line := stripANSI(m.renderStatusLine(100))
+	if strings.Contains(line, "thinking") {
+		t.Fatalf("status line must not show thinking activity (pinned row owns it):\n%s", line)
 	}
 }
 

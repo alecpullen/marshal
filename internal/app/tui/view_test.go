@@ -209,7 +209,7 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	if m.viewport.Width() != 100 {
 		t.Fatalf("viewport.Width = %d, want 100 (full terminal width, borderless transcript)", m.viewport.Width())
 	}
-	wantHeight := 30 - m.inputAreaRows() - statusLineRows
+	wantHeight := 30 - m.inputAreaRows() - m.activityRowRows() - statusLineRows
 	if m.viewport.Height() != wantHeight {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
 	}
@@ -652,5 +652,47 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 	// The transcript no longer carries todos.
 	if strings.Contains(stripANSI(m.viewport.View()), "implement parser") {
 		t.Fatal("todos must not be rendered into the transcript any more")
+	}
+}
+
+func TestActivityRowReservedWhenIdle(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	if got := m.renderActivityRow(); got != "" {
+		t.Fatalf("idle activity row should render blank, got %q", got)
+	}
+	if m.activityRowRows() != 1 {
+		t.Fatalf("activityRowRows() = %d, want 1 (row always reserved)", m.activityRowRows())
+	}
+}
+
+func TestActivityRowShowsThinkingDirectlyAboveInput(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.busy = true
+	m.spinnerFrame = "⠋"
+	m.now = func() time.Time { return time.Unix(112, 0) }
+	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: time.Unix(100, 0)})
+
+	row := stripANSI(m.renderActivityRow())
+	if !strings.Contains(row, "⠋") || !strings.Contains(row, "thinking") || !strings.Contains(row, "12s") {
+		t.Fatalf("activity row missing spinner/label/elapsed: %q", row)
+	}
+
+	lines := strings.Split(strings.TrimRight(stripANSI(m.View().Content), "\n"), "\n")
+	inputTop := 30 - m.inputAreaRows() - statusLineRows
+	if !strings.Contains(lines[inputTop], "▍") {
+		t.Fatalf("input bar not where expected; line %d = %q", inputTop, lines[inputTop])
+	}
+	if !strings.Contains(lines[inputTop-1], "thinking") {
+		t.Fatalf("activity row must sit directly above the input; line %d = %q", inputTop-1, lines[inputTop-1])
+	}
+}
+
+func TestRenderActiveToolCallUsesRunningGutter(t *testing.T) {
+	out := renderActiveToolCall(
+		session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)},
+		session.SandboxInfo{}, false, "⠻", time.Unix(104, 0), 80)
+	plain := stripANSI(out)
+	if !strings.HasPrefix(plain, " ▸ ") {
+		t.Fatalf("running tool should use the ▸ gutter:\n%q", plain)
 	}
 }

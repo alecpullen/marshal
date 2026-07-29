@@ -20,9 +20,9 @@ func TestInputChromeRowsExcludesTextarea(t *testing.T) {
 
 func TestDynamicMaxHeightBudget(t *testing.T) {
 	m := newViewTestModel(t, 80, 40)
-	// 40 - transcriptFrameRows(0) - statusLineRows(1) - minTranscriptRows(3);
-	// no todo panel, live strip, dock, or popup.
-	if got, want := m.input.MaxHeight, 36; got != want {
+	// 40 - transcriptFrameRows(0) - statusLineRows(1) - activityRowRows(1)
+	// - minTranscriptRows(3); no todo panel, live strip, dock, or popup.
+	if got, want := m.input.MaxHeight, 35; got != want {
 		t.Fatalf("input.MaxHeight = %d, want %d", got, want)
 	}
 }
@@ -39,14 +39,14 @@ func TestInputGrowsBeyondEightRows(t *testing.T) {
 func TestMaxHeightFloorIsOneRow(t *testing.T) {
 	t.Run("height_5_budget_returns_1", func(t *testing.T) {
 		m := newViewTestModel(t, 80, 24)
-		m.height = 5 // budget = 5 - 0 - 1 - 0 - 0 - 0 - 0 - 3 = 1
+		m.height = 5 // budget = 5 - 0 - 1 - 1 - 0 - 0 - 0 - 3 = 0, floor to 1
 		if got := m.maxInputHeight(); got != 1 {
 			t.Fatalf("maxInputHeight() = %d, want 1", got)
 		}
 	})
 	t.Run("height_2_floor_kicks_in", func(t *testing.T) {
 		m := newViewTestModel(t, 80, 24)
-		m.height = 2 // budget = 2 - 0 - 1 - 0 - 0 - 0 - 0 - 3 = -2, floor to 1
+		m.height = 2 // budget = 2 - 0 - 1 - 1 - 0 - 0 - 0 - 3 = -3, floor to 1
 		if got := m.maxInputHeight(); got != 1 {
 			t.Fatalf("maxInputHeight() = %d, want 1 (floor should clamp negative budget)", got)
 		}

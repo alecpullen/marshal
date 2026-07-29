@@ -429,7 +429,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		elapsed = 0
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
-	gutter := gutterPrefix("·", dimColor)
+	gutter := gutterPrefix("▸", accentColor)
 	headerLine := gutter + toolBulletStyle().Render(strutil.Truncate(head, max(width-3, 1), false))
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(headerLine))

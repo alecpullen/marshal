@@ -105,7 +105,7 @@ func (t *toolSet) runShellCommand(ctx context.Context, command string, timeout t
 	}
 	result, err := t.runner.Run(ctx, CommandRequest{
 		Command:        command,
-		Dir:            t.root,
+		Dir:            t.activeRoot(),
 		Timeout:        timeout,
 		MaxOutputBytes: t.maxOutputBytes,
 		Stdout:         stdoutObs,

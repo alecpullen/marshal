@@ -56,6 +56,10 @@ type JobInfo struct {
 type JobManager struct {
 	runner         CommandRunner
 	dir            string
+	// dirFn, when set via SetDirFunc, resolves the working directory for
+	// each job at start time (the session's active root). Until set, jobs
+	// use dir.
+	dirFn          func() string
 	maxJobs        int
 	retention      time.Duration
 	maxOutputBytes int
@@ -147,6 +151,14 @@ func (m *JobManager) SetBroker(b *pubsub.Broker[JobEvent]) {
 	m.mu.Unlock()
 }
 
+// SetDirFunc makes jobs resolve their working directory from fn at start
+// time. Until set, the manager uses the dir passed to NewJobManager.
+func (m *JobManager) SetDirFunc(fn func() string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dirFn = fn
+}
+
 // Start launches command as a background job and returns its job ID.
 // It rejects blank commands and a closed manager. The command is run
 // through the configured CommandRunner with the manager's output limit.
@@ -230,10 +242,17 @@ func (m *JobManager) runJob(j *job, ctx context.Context, command string) {
 	stdoutObs := NewBoundedOutput(OutputLimit(limit), j.stdout)
 	stderrObs := NewBoundedOutput(OutputLimit(limit), j.stderr)
 
+	m.mu.Lock()
+	dir, dirFn := m.dir, m.dirFn
+	m.mu.Unlock()
+	if dirFn != nil {
+		dir = dirFn()
+	}
+
 	var capturedPID int
 	req := CommandRequest{
 		Command:        command,
-		Dir:            m.dir,
+		Dir:            dir,
 		MaxOutputBytes: limit,
 		Stdout:         stdoutObs,
 		Stderr:         stderrObs,

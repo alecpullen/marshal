@@ -49,11 +49,11 @@ func (t *toolSet) gitDiffTool() registry.Tool {
 		}
 		command := "git diff --"
 		if args.Path != "" {
-			path, err := resolveWorkspacePath(t.root, args.Path)
+			path, err := resolveWorkspacePath(t.activeRoot(), args.Path)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
-			rel, err := workspaceRel(t.root, path)
+			rel, err := workspaceRel(t.activeRoot(), path)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
@@ -70,7 +70,7 @@ func (t *toolSet) gitDiffTool() registry.Tool {
 }
 
 func (t *toolSet) runReadOnlyCommand(ctx context.Context, command string, timeout time.Duration, summary func(stdout string) string) (registry.ToolResult, error) {
-	result, err := t.runner.Run(ctx, CommandRequest{Command: command, Dir: t.root, Timeout: timeout})
+	result, err := t.runner.Run(ctx, CommandRequest{Command: command, Dir: t.activeRoot(), Timeout: timeout})
 	exitCode := result.ExitCode
 	content := formatCommandOutput(result.Stdout, result.Stderr)
 	return registry.ToolResult{

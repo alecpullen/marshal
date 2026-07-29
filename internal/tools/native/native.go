@@ -214,6 +214,19 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	return nil
 }
 
+// activeRoot returns the directory tools currently operate in: the
+// session's active root when a session is wired, else the root captured at
+// construction (tests, and sessions that never enter a worktree). Reading
+// through the session on each call avoids a second, racy source of truth.
+func (t *toolSet) activeRoot() string {
+	if t.sessionState != nil {
+		if ws := t.sessionState.Workspace(); ws.ActiveRoot != "" {
+			return ws.ActiveRoot
+		}
+	}
+	return t.root
+}
+
 func newToolSet(opts Options) (*toolSet, error) {
 	if opts.WorkspaceRoot == "" {
 		return nil, errors.New("workspace root is required")

@@ -440,6 +440,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		cfg.Tools.Shell.BackgroundRetention,
 		cfg.Tools.Shell.MaxOutputBytes,
 	)
+	// Background jobs start in the session's active root, so they land in
+	// the worktree while the session is isolated.
+	jobManager.SetDirFunc(func() string { return state.Workspace().ActiveRoot })
 	// Roll back partially-built resources on any later failure. Each
 	// resource appends its cleanup as it comes up; the deferred func runs
 	// them in reverse order, but only when a failure return set buildErr.

@@ -413,6 +413,192 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 	}
 }
 
+// Run executes the plan from the first task the ledger does not mark
+// complete. It returns nil when the branch is ready for the human,
+// ErrHumanGateRequired when a subagent needs an answer, or an error when a
+// task cannot be completed.
+func (c *Controller) Run(ctx context.Context) error {
+	if c.Worktree.Path == "" {
+		wt, err := EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)
+		if err != nil {
+			return err
+		}
+		c.Worktree = wt
+		_ = c.Ledger.Note("Run started on branch %s at %s", wt.Branch, wt.Path)
+	}
+	done, err := c.Ledger.CompletedTasks()
+	if err != nil {
+		return err
+	}
+	for _, t := range c.Plan.Tasks {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if done[t.N] {
+			continue
+		}
+		res, err := c.runTask(ctx, t)
+		if err != nil {
+			if errors.Is(err, ErrHumanGateRequired) && c.AutoEscalate && !c.escalated {
+				// One automatic retry on the stronger model with the
+				// blocker recorded in the brief, before troubling the human.
+				c.escalated = true
+				c.Answer("(escalated automatically) " + c.pendingQuestion)
+				res, err = c.runTask(ctx, t)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		c.escalated = false
+		res, err = c.reviewTask(ctx, t, res)
+		if err != nil {
+			return err
+		}
+		if err := c.Ledger.MarkComplete(t.N, res.Base, res.Head); err != nil {
+			return err
+		}
+		c.emit(t.N, 0, PhaseDone, "")
+	}
+	return c.branchReview(ctx)
+}
+
+// branchReview is the merge gate: one review over the whole branch, with
+// at most one fix dispatch carrying every blocking finding.
+func (c *Controller) branchReview(ctx context.Context) error {
+	dir := c.workDir()
+	head, err := c.Git.RevParse(dir, "HEAD")
+	if err != nil {
+		return fmt.Errorf("pipeline: branch review head: %w", err)
+	}
+	base, err := c.Git.MergeBase(dir, c.TargetBranch, head)
+	if err != nil {
+		return fmt.Errorf("pipeline: branch review merge-base: %w", err)
+	}
+	rng := base + ".." + head
+	if err := WriteReviewPackage(c.Git, dir, rng, c.Paths.BranchPackage()); err != nil {
+		return err
+	}
+	minors, err := c.Ledger.Minors()
+	if err != nil {
+		return err
+	}
+	prompt, err := RenderBranchReview(BranchReviewPrompt{
+		PlanPath:    c.Plan.Path,
+		PackagePath: c.Paths.BranchPackage(),
+		ReviewPath:  strings.TrimSuffix(c.Paths.BranchPackage(), ".md") + "-verdict.md",
+		Range:       rng,
+		Minors:      minors,
+	})
+	if err != nil {
+		return err
+	}
+	c.emit(0, 0, PhaseBranchReview, "")
+	review, err := c.Dispatch.Review(ctx, routing.RoleSDDBranchReviewer, prompt)
+	if err != nil {
+		return fmt.Errorf("pipeline: branch review: %w", err)
+	}
+	if review.Clean() {
+		_ = c.Ledger.Note("Branch review clean (%s)", rng)
+		return nil
+	}
+
+	findings := review.Blocking()
+	if len(findings) == 0 {
+		findings = []Finding{{Severity: SeverityImportant, Text: review.Raw}}
+	}
+	c.emit(0, 1, PhaseFixing, "branch review findings")
+	fixPrompt, err := RenderFix(FixPrompt{
+		TaskN:      0,
+		BriefPath:  c.Plan.Path,
+		ReportPath: c.Paths.BranchPackage(),
+		WorkDir:    dir,
+		Reason:     "the final branch review requested changes before merge",
+		Findings:   findings,
+	})
+	if err != nil {
+		return err
+	}
+	report, err := c.Dispatch.Implement(ctx, routing.RoleSDDImplementer, fixPrompt)
+	if err != nil {
+		return fmt.Errorf("pipeline: branch review fixer: %w", err)
+	}
+	gate, err := c.Verifier.Run(ctx, dir)
+	if err != nil {
+		return fmt.Errorf("pipeline: branch review re-gate: %w", err)
+	}
+	if !gate.OK && !gate.Skipped {
+		return fmt.Errorf("pipeline: branch review fix broke `%s`:\n%s", gate.FailedCommand, gate.Output)
+	}
+	dirty, err := c.Git.IsDirty(dir)
+	if err != nil {
+		return fmt.Errorf("pipeline: branch review status: %w", err)
+	}
+	if dirty {
+		msg := fmt.Sprintf("%s: branch review fix", c.Plan.Slug)
+		if report.Tests != "" {
+			msg += "\n\n" + report.Tests
+		}
+		if _, err := c.Git.CommitAll(dir, msg); err != nil {
+			return fmt.Errorf("pipeline: branch review fix commit: %w", err)
+		}
+	}
+	// One re-review, then stop either way: a branch that fails twice is the
+	// human's call, not another loop.
+	newHead, err := c.Git.RevParse(dir, "HEAD")
+	if err != nil {
+		return fmt.Errorf("pipeline: branch review head: %w", err)
+	}
+	rng = base + ".." + newHead
+	if err := WriteReviewPackage(c.Git, dir, rng, c.Paths.BranchPackage()); err != nil {
+		return err
+	}
+	prompt, err = RenderBranchReview(BranchReviewPrompt{
+		PlanPath:    c.Plan.Path,
+		PackagePath: c.Paths.BranchPackage(),
+		ReviewPath:  strings.TrimSuffix(c.Paths.BranchPackage(), ".md") + "-verdict.md",
+		Range:       rng,
+		Minors:      minors,
+	})
+	if err != nil {
+		return err
+	}
+	c.emit(0, 1, PhaseBranchReview, "")
+	review, err = c.Dispatch.Review(ctx, routing.RoleSDDBranchReviewer, prompt)
+	if err != nil {
+		return fmt.Errorf("pipeline: branch re-review: %w", err)
+	}
+	if review.Clean() {
+		_ = c.Ledger.Note("Branch review clean after one fix (%s)", rng)
+		return nil
+	}
+	for _, f := range review.Blocking() {
+		_ = c.Ledger.Note("Branch review unresolved: [%s] %s", f.Severity, f.Text)
+	}
+	return fmt.Errorf("pipeline: branch review still reports %d blocking findings; see %s", len(review.Blocking()), c.Paths.BranchPackage())
+}
+
+// Summary is the human-facing wrap-up printed when a run finishes. Merging
+// is a human decision; the controller never merges.
+func (c *Controller) Summary() string {
+	done, _ := c.Ledger.CompletedTasks()
+	minors, _ := c.Ledger.Minors()
+	var b strings.Builder
+	fmt.Fprintf(&b, "Plan %s: %d of %d tasks complete.\n", c.Plan.Slug, len(done), len(c.Plan.Tasks))
+	fmt.Fprintf(&b, "Branch: %s\nWorktree: %s\n", c.Worktree.Branch, c.Worktree.Path)
+	fmt.Fprintf(&b, "Artifacts: %s\n", c.Paths.Dir)
+	if len(minors) > 0 {
+		b.WriteString("\nOpen minor findings:\n")
+		for _, m := range minors {
+			fmt.Fprintf(&b, "  - %s\n", m)
+		}
+	}
+	b.WriteString("\nReview the branch and merge it yourself when you are satisfied.\n")
+	return b.String()
+}
+
 // commitFix commits one review-fix round.
 func (c *Controller) commitFix(t TaskSpec, round int, report ImplementerReport) (string, error) {
 	dir := c.workDir()

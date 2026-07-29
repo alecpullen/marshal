@@ -502,7 +502,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if lspEnabled(cfg.LSP) {
 		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
 		if len(servers) > 0 {
-			lspHandle = lsp.NewHandle(lsp.NewManager(state.WorkingDir, servers, state.Logger()), servers, state.Logger())
+			lspHandle = lsp.NewHandle(lsp.NewManager(state.Workspace().ActiveRoot, servers, state.Logger()), servers, state.Logger())
 		}
 	}
 	if lspHandle != nil {

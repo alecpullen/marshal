@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -35,9 +34,9 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/lsp"
+	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/rollover"
-	"marshal/internal/pipeline"
 	"marshal/internal/sandbox"
 	"marshal/internal/skills"
 	"marshal/internal/snapshot"
@@ -889,21 +888,10 @@ func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
 }
 
 // parseApprovalMode converts a string to a policy.ApprovalMode.
-// Unknown or empty values default to ModeDefault.
+// Unknown or empty values default to ModeDefault. Delegates to the policy
+// package so the TUI seeds its mode label from exactly the same mapping.
 func parseApprovalMode(s string) policy.ApprovalMode {
-	switch strings.ToLower(s) {
-	case "plan":
-		return policy.ModePlan
-	case "default":
-		return policy.ModeDefault
-	case "edit":
-		return policy.ModeEdit
-	case "copilot":
-		return policy.ModeCopilot
-	case "auto":
-		return policy.ModeAuto
-	}
-	return policy.ModeDefault
+	return policy.ParseApprovalMode(s)
 }
 
 // defaultSubtaskIterations is the tool-iteration cap for an ad-hoc agent.run

@@ -795,7 +795,11 @@ func New(state *session.State, opts ...Option) Model {
 		state:          state,
 		input:          input,
 		editingCommand: false,
-		approvalMode:   policy.ModeDefault,
+		// Seed from config, not a hardcoded ModeDefault. app.Run wires the
+		// policy engine from this same value, so hardcoding here made the
+		// status line claim "default" while the engine was auto-approving
+		// every edit.
+		approvalMode:   policy.ParseApprovalMode(state.Config.Agent.ApprovalMode),
 		ctx:            context.Background(),
 		viewport:       viewport.New(),
 		spinner:        NewSpinner(),

@@ -780,3 +780,26 @@ func evaluateSubjects(rules []permissions.Rule, permissionName string, subjects 
 	}
 	return result, true
 }
+
+// ParseApprovalMode converts a config string to an ApprovalMode. Unknown or
+// empty values fall back to ModeDefault — the safe, read-only mode.
+//
+// This lives in policy rather than in the app or TUI packages because both
+// need it and neither can import the other: app wires the policy engine from
+// config, and the TUI has to seed its own mode label from the same value or
+// the status line contradicts the engine.
+func ParseApprovalMode(s string) ApprovalMode {
+	switch strings.ToLower(s) {
+	case "plan":
+		return ModePlan
+	case "default":
+		return ModeDefault
+	case "edit":
+		return ModeEdit
+	case "copilot":
+		return ModeCopilot
+	case "auto":
+		return ModeAuto
+	}
+	return ModeDefault
+}

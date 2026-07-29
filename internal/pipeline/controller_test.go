@@ -208,3 +208,99 @@ func (f *flakyRunner) Run(ctx context.Context, dir, command string) (string, err
 	}
 	return "", nil
 }
+
+func TestReviewTaskCleanFirstPass(t *testing.T) {
+	d, prompts := scriptedDispatch(t, "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	spec, _ := c.Plan.Task(1)
+
+	res, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})
+	if err != nil {
+		t.Fatalf("reviewTask: %v", err)
+	}
+	if res.Head != "head" {
+		t.Errorf("Head = %q, want the unchanged head", res.Head)
+	}
+	if len(*prompts) != 1 {
+		t.Fatalf("dispatches = %d, want just the reviewer", len(*prompts))
+	}
+	if !strings.Contains((*prompts)[0], "Constraint A.") {
+		t.Errorf("review prompt lost the plan's global constraints:\n%s", (*prompts)[0])
+	}
+	if !strings.Contains((*prompts)[0], c.Paths.Package(1, 0)) {
+		t.Errorf("review prompt does not name the review package:\n%s", (*prompts)[0])
+	}
+}
+
+func TestReviewTaskOneFixDispatchForAllFindings(t *testing.T) {
+	d, prompts := scriptedDispatch(t,
+		"SPEC: FAIL\nQUALITY: CHANGES_REQUESTED\nFINDINGS:\n- [Critical] missing progress reporting\n- [Important] magic number 100\n- [Minor] comment typo\n",
+		"STATUS: DONE\nTESTS: go test ./... — pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	g := c.Git.(*FakeGitOps)
+	g.Dirty = true
+	spec, _ := c.Plan.Task(1)
+
+	res, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})
+	if err != nil {
+		t.Fatalf("reviewTask: %v", err)
+	}
+	if len(*prompts) != 3 {
+		t.Fatalf("dispatches = %d, want review, one fixer, re-review", len(*prompts))
+	}
+	fix := (*prompts)[1]
+	for _, want := range []string{"missing progress reporting", "magic number 100"} {
+		if !strings.Contains(fix, want) {
+			t.Errorf("fix dispatch missing %q:\n%s", want, fix)
+		}
+	}
+	if len(g.Commits) != 1 {
+		t.Fatalf("commits = %v, want one fix commit", g.Commits)
+	}
+	if !strings.Contains(g.Commits[0], "review fix (round 1)") {
+		t.Errorf("fix commit subject = %q", g.Commits[0])
+	}
+	if res.Head == "head" {
+		t.Error("result head was not advanced to the fix commit")
+	}
+	// The re-review reads a fresh package, not the first one.
+	if !strings.Contains((*prompts)[2], c.Paths.Package(1, 1)) {
+		t.Errorf("re-review reads a stale package:\n%s", (*prompts)[2])
+	}
+}
+
+func TestReviewTaskRecordsMinorsWithoutBlocking(t *testing.T) {
+	d, _ := scriptedDispatch(t, "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- [Minor] magic number 100\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	spec, _ := c.Plan.Task(1)
+
+	if _, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"}); err != nil {
+		t.Fatalf("reviewTask: %v", err)
+	}
+	minors, err := c.Ledger.Minors()
+	if err != nil {
+		t.Fatalf("Minors: %v", err)
+	}
+	if len(minors) != 1 || !strings.Contains(minors[0], "magic number 100") {
+		t.Errorf("Minors = %v, want the recorded minor finding", minors)
+	}
+}
+
+func TestReviewTaskExhaustsFixRounds(t *testing.T) {
+	failing := "SPEC: FAIL\nQUALITY: CHANGES_REQUESTED\nFINDINGS:\n- [Critical] still wrong\n"
+	fixed := "STATUS: DONE\nTESTS: pass\n"
+	d, _ := scriptedDispatch(t, failing, fixed, failing, fixed, failing)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*FakeGitOps).Dirty = true
+	spec, _ := c.Plan.Task(1)
+
+	_, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})
+	if err == nil {
+		t.Fatal("review never came back clean: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "fix rounds") {
+		t.Errorf("error = %v, want it to name the exhausted fix budget", err)
+	}
+}

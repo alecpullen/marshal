@@ -327,3 +327,110 @@ func (c *Controller) interfacesBefore(n int) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// reviewTask reviews one task's committed work and loops on fixes until
+// the review is clean or the fix budget runs out. Every blocking finding
+// from one review goes to a single fix dispatch: per-finding fixers each
+// rebuild context and re-run suites, and cost more than the task itself.
+func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult) (taskResult, error) {
+	dir := c.workDir()
+	for round := 0; ; round++ {
+		pkgPath := c.Paths.Package(t.N, round)
+		rng := res.Base + ".." + res.Head
+		if err := WriteReviewPackage(c.Git, dir, rng, pkgPath); err != nil {
+			return res, err
+		}
+		prompt, err := RenderReview(ReviewPrompt{
+			TaskN:             t.N,
+			Title:             t.Title,
+			BriefPath:         c.Paths.Brief(t.N),
+			ReportPath:        c.Paths.Report(t.N),
+			PackagePath:       pkgPath,
+			ReviewPath:        strings.TrimSuffix(pkgPath, ".md") + "-verdict.md",
+			GlobalConstraints: c.Plan.GlobalConstraints,
+		})
+		if err != nil {
+			return res, err
+		}
+		c.emit(t.N, round, PhaseReviewing, "")
+		review, err := c.Dispatch.Review(ctx, routing.RoleSDDReviewer, prompt)
+		if err != nil {
+			return res, fmt.Errorf("pipeline: task %d review: %w", t.N, err)
+		}
+		for _, f := range review.Minors() {
+			_ = c.Ledger.RecordMinor(t.N, f.Text)
+		}
+		if review.Clean() {
+			return res, nil
+		}
+		if round >= c.MaxFixRounds {
+			return res, fmt.Errorf("pipeline: task %d review still not clean after %d fix rounds", t.N, c.MaxFixRounds)
+		}
+
+		findings := review.Blocking()
+		if len(findings) == 0 {
+			// A failed verdict with no blocking findings still has to be
+			// actionable; hand the reviewer's prose to the fixer.
+			findings = []Finding{{Severity: SeverityImportant, Text: review.Raw}}
+		}
+		c.emit(t.N, round+1, PhaseFixing, "review findings")
+		fixPrompt, err := RenderFix(FixPrompt{
+			TaskN:         t.N,
+			BriefPath:     c.Paths.Brief(t.N),
+			ReportPath:    c.Paths.Report(t.N),
+			WorkDir:       dir,
+			Reason:        "the task reviewer requested changes",
+			Findings:      findings,
+			CoveringTests: res.Report.Tests,
+		})
+		if err != nil {
+			return res, err
+		}
+		report, err := c.Dispatch.Implement(ctx, routing.RoleSDDImplementer, fixPrompt)
+		if err != nil {
+			return res, fmt.Errorf("pipeline: task %d review fixer: %w", t.N, err)
+		}
+		if report.NeedsHuman() {
+			return res, c.openGate(t.N, report.Question)
+		}
+		res.Report = report
+
+		// Re-gate, then commit the fix. The head advances so the next
+		// review package covers the fix as well as the original work.
+		c.emit(t.N, round+1, PhaseVerifying, "")
+		gate, err := c.Verifier.Run(ctx, dir)
+		if err != nil {
+			return res, fmt.Errorf("pipeline: task %d re-gate: %w", t.N, err)
+		}
+		if !gate.OK && !gate.Skipped {
+			return res, fmt.Errorf("pipeline: task %d review fix broke `%s`:\n%s", t.N, gate.FailedCommand, gate.Output)
+		}
+		head, err := c.commitFix(t, round+1, report)
+		if err != nil {
+			return res, err
+		}
+		res.Head = head
+	}
+}
+
+// commitFix commits one review-fix round.
+func (c *Controller) commitFix(t TaskSpec, round int, report ImplementerReport) (string, error) {
+	dir := c.workDir()
+	dirty, err := c.Git.IsDirty(dir)
+	if err != nil {
+		return "", fmt.Errorf("pipeline: task %d status: %w", t.N, err)
+	}
+	if !dirty {
+		return "", fmt.Errorf("pipeline: task %d fix round %d changed nothing", t.N, round)
+	}
+	c.emit(t.N, round, PhaseCommitting, "")
+	msg := fmt.Sprintf("%s: task %d — review fix (round %d)", c.Plan.Slug, t.N, round)
+	if report.Tests != "" {
+		msg += "\n\n" + report.Tests
+	}
+	head, err := c.Git.CommitAll(dir, msg)
+	if err != nil {
+		return "", fmt.Errorf("pipeline: task %d fix commit: %w", t.N, err)
+	}
+	return head, nil
+}

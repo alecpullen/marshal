@@ -92,3 +92,24 @@ func TestTotalCountsBothKinds(t *testing.T) {
 		t.Fatalf("total() = %d, want 5", b.total())
 	}
 }
+
+func TestReclassifyAsOverheadMovesOneCharge(t *testing.T) {
+	b := newTurnBudget(100, ClassEdit, 0)
+	b.tools = 3
+	b.overhead = 1
+	b.reclassifyAsOverhead()
+	if b.tools != 2 || b.overhead != 2 {
+		t.Fatalf("tools=%d overhead=%d, want 2 and 2", b.tools, b.overhead)
+	}
+	if b.total() != 4 {
+		t.Fatalf("total() = %d, want 4 (reclassifying must not change the total)", b.total())
+	}
+}
+
+func TestReclassifyAsOverheadIsSafeAtZero(t *testing.T) {
+	b := newTurnBudget(100, ClassEdit, 0)
+	b.reclassifyAsOverhead()
+	if b.tools != 0 || b.overhead != 0 {
+		t.Fatalf("tools=%d overhead=%d, want both 0", b.tools, b.overhead)
+	}
+}

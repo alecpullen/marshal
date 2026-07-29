@@ -209,6 +209,15 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "failed to normalize arguments", toolCallID)}, nil
 	}
 
+	// Validate before the cache lookup and before policy/approval, so the
+	// user is never prompted to approve a call that cannot run and a bad
+	// call can never be answered from cache.
+	if err := registry.ValidateArgs(tool, args); err != nil {
+		r.countToolCall(true, false)
+		r.noteInvalidArgs()
+		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, err.Error(), toolCallID)}, nil
+	}
+
 	// Cacheable read-only cache lookup.
 	if tool.Cacheable {
 		if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
@@ -247,6 +256,14 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		if parseErr != nil {
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, parseErr.Error(), toolCallID)}, nil
+		}
+
+		// Re-validate on every pass: a pre_tool_use hook may rewrite the
+		// arguments into any shape after the user approved the original.
+		if err := registry.ValidateArgs(tool, args); err != nil {
+			r.countToolCall(true, false)
+			r.noteInvalidArgs()
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, err.Error(), toolCallID)}, nil
 		}
 
 		r.Policy.SetSessionRules(r.State.SessionRules())
@@ -429,6 +446,9 @@ func normalizeToolName(reg *registry.Registry, name string) string {
 }
 
 func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.ToolCall) ([]schema.ChatMessage, error) {
+	r.trackerMu.Lock()
+	r.invalidArgsThisRound = 0
+	r.trackerMu.Unlock()
 	msgs := make([]schema.ChatMessage, 0, len(calls))
 	for _, call := range calls {
 		call.Name = normalizeToolName(r.Registry, call.Name)
@@ -469,12 +489,23 @@ func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall)
 	if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
 		return BuildNativeToolErrorMessage(call.Name, "ask_user is not available in auto mode; proceed with your best judgment and state the assumption you made", call.ID), nil
 	}
+	// executeNativeToolCalls short-circuits on tool name before the agent
+	// path's early validation runs, so ask_user/question.ask need an
+	// explicit ValidateArgs here — the schema (required, minLength) covers
+	// both decode and content checks.
+	if tool, ok := r.Registry.Lookup(call.Name); ok {
+		if err := registry.ValidateArgs(tool, call.Args); err != nil {
+			r.countToolCall(true, false)
+			r.noteInvalidArgs()
+			return BuildNativeToolErrorMessage(call.Name, err.Error(), call.ID), nil
+		}
+	}
 	var payload struct {
 		Question string `json:"question"`
 	}
-	if err := json.Unmarshal(call.Args, &payload); err != nil || strings.TrimSpace(payload.Question) == "" {
+	if err := json.Unmarshal(call.Args, &payload); err != nil {
 		r.countToolCall(true, false)
-		return BuildNativeToolErrorMessage(call.Name, "arguments must include a question string", call.ID), nil
+		return BuildNativeToolErrorMessage(call.Name, "arguments are not valid JSON", call.ID), nil
 	}
 	answer, waitErr := r.requestAnswer(ctx, payload.Question)
 	if waitErr != nil {
@@ -504,12 +535,23 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 	if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
 		return BuildNativeToolErrorMessage(call.Name, "question.ask is not available in auto mode; proceed with your best judgment and state the assumption you made", call.ID), nil
 	}
+	// executeNativeToolCalls short-circuits on tool name before the agent
+	// path's early validation runs, so ask_user/question.ask need an
+	// explicit ValidateArgs here — the schema (minItems) covers both
+	// decode and array-emptiness checks.
+	if tool, ok := r.Registry.Lookup(call.Name); ok {
+		if err := registry.ValidateArgs(tool, call.Args); err != nil {
+			r.countToolCall(true, false)
+			r.noteInvalidArgs()
+			return BuildNativeToolErrorMessage(call.Name, err.Error(), call.ID), nil
+		}
+	}
 	var payload struct {
 		Questions []session.Question `json:"questions"`
 	}
-	if err := json.Unmarshal(call.Args, &payload); err != nil || len(payload.Questions) == 0 {
+	if err := json.Unmarshal(call.Args, &payload); err != nil {
 		r.countToolCall(true, false)
-		return BuildNativeToolErrorMessage(call.Name, "arguments must include a non-empty questions array", call.ID), nil
+		return BuildNativeToolErrorMessage(call.Name, "arguments are not valid JSON", call.ID), nil
 	}
 	answers, waitErr := r.requestQuestions(ctx, payload.Questions)
 	if waitErr != nil {

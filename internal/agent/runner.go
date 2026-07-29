@@ -248,6 +248,10 @@ type Runner struct {
 	// Nil outside of RunTask.
 	turnBudget *turnBudget
 
+	// invalidArgsThisRound counts tool calls rejected for schema violations
+	// during the current executeNativeToolCalls pass. Guarded by trackerMu.
+	invalidArgsThisRound int
+
 	// DigestModel is the model name to use for LLM-based digest generation
 	// during rollover. When empty, the runner's primary Model is used.
 	DigestModel string
@@ -675,6 +679,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			resultMsgs, execErr := r.executeNativeToolCalls(ctx, res.ToolCalls)
 			if execErr != nil {
 				return task, r.fail(task, execErr)
+			}
+			// Every call this turn was rejected before running: nothing was
+			// accomplished, so the turn is overhead, not work.
+			if invalidArgs := r.invalidArgsCount(); invalidArgs > 0 && invalidArgs == len(res.ToolCalls) {
+				budget.reclassifyAsOverhead()
+				countIterations()
 			}
 			messages = append(messages, resultMsgs...)
 			var finalized *Task

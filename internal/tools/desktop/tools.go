@@ -135,9 +135,6 @@ func (ts *toolSet) navigateTool() registry.Tool {
 		if err := decodeArgs(tool, call.Args, &args); err != nil {
 			return registry.ToolResult{}, err
 		}
-		if args.URL == "" {
-			return registry.ToolResult{}, fmt.Errorf("url is required")
-		}
 		if err := urlAllowed(args.URL, ts.cfg.URLAllowlist, ts.cfg.URLDenylist); err != nil {
 			return registry.ToolResult{}, err
 		}

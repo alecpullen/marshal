@@ -86,6 +86,22 @@ func (r *Runner) countToolCall(errored, cached bool) {
 	})
 }
 
+// noteInvalidArgs increments the per-round counter of tool calls rejected
+// for schema violations. Cleared by RunTask at the start of each round.
+func (r *Runner) noteInvalidArgs() {
+	r.trackerMu.Lock()
+	r.invalidArgsThisRound++
+	r.trackerMu.Unlock()
+}
+
+// invalidArgsCount returns the count of schema-violation rejections for
+// the current executeNativeToolCalls pass.
+func (r *Runner) invalidArgsCount() int {
+	r.trackerMu.Lock()
+	defer r.trackerMu.Unlock()
+	return r.invalidArgsThisRound
+}
+
 // emitMetrics finalizes the turn's metrics from the finished task and hands
 // them to MetricsObserver. Called exactly once per RunTask via defer.
 func (r *Runner) emitMetrics(task *Task) {

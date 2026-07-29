@@ -125,7 +125,7 @@ func (ts *toolSet) navigateTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "browser.navigate",
 		Description: "Navigate the browser to a URL. Requires approval (network risk). Subject to URL allow/deny list policy.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to navigate to"}},"required":["url"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","minLength":1,"description":"The URL to navigate to"}},"required":["url"],"additionalProperties":false}`),
 		Risk:        registry.RiskNetwork,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -162,7 +162,7 @@ func (ts *toolSet) readTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "browser.read",
 		Description: "Read simplified readable text from the current page. Optional selector targets a specific element.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string","description":"CSS selector for a specific element. Omit for full page."}}}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string","description":"CSS selector for a specific element. Omit for full page."}},"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -196,7 +196,7 @@ func (ts *toolSet) clickTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "browser.click",
 		Description: "Click an element by CSS selector. Uses Playwright auto-waiting.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string","description":"CSS selector for the element to click"}},"required":["selector"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string","minLength":1,"description":"CSS selector for the element to click"}},"required":["selector"],"additionalProperties":false}`),
 		Risk:        registry.RiskNetwork,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -228,7 +228,7 @@ func (ts *toolSet) fillTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "browser.fill",
 		Description: "Type text into an input or textarea element. Clears existing content by default.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string","description":"CSS selector for the input element"},"value":{"type":"string","description":"Text to type"},"clear":{"type":"boolean","description":"Clear field before filling (default true)"}},"required":["selector","value"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string","minLength":1,"description":"CSS selector for the input element"},"value":{"type":"string","description":"Text to type"},"clear":{"type":"boolean","description":"Clear field before filling (default true)"}},"required":["selector","value"],"additionalProperties":false}`),
 		Risk:        registry.RiskNetwork,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -262,7 +262,7 @@ func (ts *toolSet) submitTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "browser.submit",
 		Description: "Submit a form by clicking a submit button selector, or pressing Enter on the focused element if no selector given.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string","description":"CSS selector for submit button. Omit to press Enter on focused element."}}}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string","description":"CSS selector for submit button. Omit to press Enter on focused element."}},"additionalProperties":false}`),
 		Risk:        registry.RiskNetwork,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -302,7 +302,7 @@ func (ts *toolSet) screenshotTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "browser.screenshot",
 		Description: "Capture a screenshot of the current page. Returns metadata (dimensions, timestamp). In a future vision milestone, returns image bytes.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"full_page":{"type":"boolean","description":"Capture full scrollable page (default false)"}}}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"full_page":{"type":"boolean","description":"Capture full scrollable page (default false)"}},"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

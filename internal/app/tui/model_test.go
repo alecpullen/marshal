@@ -545,6 +545,51 @@ func TestScrollUpPreventsAutoBottomOnRefresh(t *testing.T) {
 	}
 }
 
+func TestMouseWheelScrollsViewport(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+	bottom := m.viewport.YOffset()
+
+	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	m = updated.(Model)
+	if m.viewport.YOffset() >= bottom {
+		t.Fatalf("mouse wheel up did not scroll up: offset %d -> %d", bottom, m.viewport.YOffset())
+	}
+	if m.viewportFollow {
+		t.Fatal("mouse wheel up did not disable viewport follow")
+	}
+}
+
+// Wheeling back down to the bottom re-arms follow, so new output resumes
+// auto-scrolling without a keypress.
+func TestMouseWheelDownAtBottomReEnablesFollow(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	m = updated.(Model)
+	if m.viewportFollow {
+		t.Fatal("precondition: wheel up should have disabled follow")
+	}
+	for i := 0; i < 20 && !m.viewport.AtBottom(); i++ {
+		updated, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+		m = updated.(Model)
+	}
+	if !m.viewportFollow {
+		t.Fatal("wheeling back to the bottom did not re-enable viewport follow")
+	}
+}
+
 func TestNewSubmissionReEnablesFollow(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	for i := 0; i < 100; i++ {

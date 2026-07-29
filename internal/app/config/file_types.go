@@ -151,10 +151,11 @@ type fileHistory struct {
 }
 
 type fileTUI struct {
-	Theme     *string           `toml:"theme"`
-	Palette   map[string]string `toml:"palette"`
-	Mode      *string           `toml:"mode"`
-	SidePanel *fileSidePanel    `toml:"side_panel"`
+	Theme        *string           `toml:"theme"`
+	Palette      map[string]string `toml:"palette"`
+	Mode         *string           `toml:"mode"`
+	MouseCapture *bool             `toml:"mouse_capture"`
+	SidePanel    *fileSidePanel    `toml:"side_panel"`
 }
 
 type fileSidePanel struct {

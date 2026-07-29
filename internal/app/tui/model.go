@@ -1395,6 +1395,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.MouseWheelMsg:
+		// Only delivered when tui.mouse_capture is on (see View). AltScreen
+		// leaves no terminal scrollback, so without this the wheel does
+		// nothing at all.
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.viewportFollow = false
+		case tea.MouseWheelDown:
+			if m.viewport.AtBottom() {
+				m.viewportFollow = true
+			}
+		}
+		return m, vpCmd
 	case tea.KeyPressMsg:
 		if mm, cmd, handled := m.handleKeypress(msg); handled {
 			return mm, cmd

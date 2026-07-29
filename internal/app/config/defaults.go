@@ -138,6 +138,7 @@ func Default() Config {
 			Enabled: true,
 		},
 		TUI: TUIConfig{
+			MouseCapture: true,
 			SidePanel: SidePanelConfig{
 				Enabled:  true,
 				MinWidth: 120,

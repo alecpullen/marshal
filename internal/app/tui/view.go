@@ -48,10 +48,18 @@ const (
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	// MouseModeNone (the zero value): do not capture mouse events. This lets
-	// the terminal emulator perform native click-drag text selection.
-	// Scrolling is keyboard-driven (PgUp/PgDn/Ctrl+U/Ctrl+D/End).
-	v.MouseMode = tea.MouseModeNone
+	// Mouse capture is a trade, so it is configurable (tui.mouse_capture,
+	// default on). With MouseModeCellMotion the wheel scrolls the
+	// transcript — necessary because AltScreen means there is no terminal
+	// scrollback to fall back on — and native click-drag text selection
+	// needs the terminal's override modifier (Option/Alt in iTerm2, Ghostty,
+	// Kitty, Terminal.app). With MouseModeNone the terminal owns the mouse
+	// entirely and scrolling is keyboard-only (PgUp/PgDn/Ctrl+U/Ctrl+D/End).
+	if m.state != nil && !m.state.Config.TUI.MouseCapture {
+		v.MouseMode = tea.MouseModeNone
+	} else {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 

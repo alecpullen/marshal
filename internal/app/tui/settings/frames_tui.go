@@ -26,6 +26,15 @@ func interfaceFrame(s *state) *frame {
 				return f
 			}(),
 			func() *field {
+				f := &field{ID: "tui.mouse_capture", Title: "Mouse capture", Kind: kindToggle,
+					TomlPath: "tui.mouse_capture",
+					Desc:     "wheel scrolls the transcript; hold Option/Alt to select text",
+					GetBool:  func() bool { return s.cfg.TUI.MouseCapture },
+					SetBool:  func(v bool) { s.cfg.TUI.MouseCapture = v }}
+				SetFieldWriteGlobal(f, true)
+				return f
+			}(),
+			func() *field {
 				f := &field{ID: "tui.side_panel.enabled", Title: "Side panel", Kind: kindToggle,
 					TomlPath: "tui.side_panel.enabled",
 					Desc:     "show the widescreen side rail on wide terminals",

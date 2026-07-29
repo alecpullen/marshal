@@ -411,8 +411,20 @@ func TestViewHasNoFooterRule(t *testing.T) {
 	}
 }
 
-func TestMouseCaptureDisabled(t *testing.T) {
+// Mouse capture defaults on so the wheel scrolls the transcript out of the
+// box — AltScreen leaves no terminal scrollback to fall back on.
+func TestMouseCaptureOnByDefault(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
+	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("View().MouseMode = %v, want MouseModeCellMotion (wheel scrolling enabled)", got)
+	}
+}
+
+// Turning it off hands the mouse back to the terminal for plain click-drag
+// text selection.
+func TestMouseCaptureDisabledByConfig(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	m.state.Config.TUI.MouseCapture = false
 	if got := m.View().MouseMode; got != tea.MouseModeNone {
 		t.Fatalf("View().MouseMode = %v, want MouseModeNone (native selection enabled)", got)
 	}

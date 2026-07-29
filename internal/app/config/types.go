@@ -97,10 +97,16 @@ type SnapshotsConfig struct {
 }
 
 type TUIConfig struct {
-	Theme     string            `toml:"theme"`
-	Palette   map[string]string `toml:"palette"`
-	Mode      string            `toml:"mode"`
-	SidePanel SidePanelConfig   `toml:"side_panel"`
+	Theme   string            `toml:"theme"`
+	Palette map[string]string `toml:"palette"`
+	Mode    string            `toml:"mode"`
+	// MouseCapture puts the terminal in mouse-reporting mode so the wheel
+	// scrolls the transcript. It is a trade: with capture on, native
+	// click-drag text selection needs the terminal's override modifier
+	// (Option/Alt in iTerm2, Ghostty, Kitty and Terminal.app). Turn it off
+	// to get plain click-drag selection back and scroll by keyboard.
+	MouseCapture bool            `toml:"mouse_capture"`
+	SidePanel    SidePanelConfig `toml:"side_panel"`
 }
 
 // SidePanelConfig controls the widescreen side rail. MinWidth is the frame

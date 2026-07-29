@@ -2,8 +2,11 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"marshal/internal/app/session"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -79,4 +82,46 @@ func toolTarget(event registry.AuditEvent) string {
 		}
 	}
 	return ""
+}
+
+// renderToolGroup renders a collapsed run of same-tool audit events as a
+// single line — count plus joined targets — or, when expanded, a header
+// line followed by one line per call showing its target and result.
+// Truncation is applied once, at the group level, against the available
+// width.
+func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) string {
+	head := fmt.Sprintf("%s ×%d", DisplayToolName(events[0].ToolName), len(events))
+	gutter := gutterPrefix("·", dimColor)
+	var b strings.Builder
+	if !expanded {
+		targets := make([]string, 0, len(events))
+		for _, ev := range events {
+			if t := toolTarget(ev); t != "" {
+				targets = append(targets, t)
+			}
+		}
+		if len(targets) > 0 {
+			head += dimSeparator + strings.Join(targets, ", ")
+		}
+		b.WriteString(gutter)
+		b.WriteString(statusOkStyle().Render(strutil.Truncate(head, max(width-3, 1), false)))
+		b.WriteString("\n")
+		return b.String()
+	}
+	b.WriteString(gutter)
+	b.WriteString(statusOkStyle().Render(head))
+	b.WriteString("\n")
+	for _, ev := range events {
+		line := toolTarget(ev)
+		if ev.ResultSummary != "" {
+			if line != "" {
+				line += dimSeparator
+			}
+			line += ev.ResultSummary
+		}
+		b.WriteString(strings.Repeat(" ", 5))
+		b.WriteString(mutedStyle().Render(strutil.Truncate(line, max(width-5, 1), false)))
+		b.WriteString("\n")
+	}
+	return b.String()
 }

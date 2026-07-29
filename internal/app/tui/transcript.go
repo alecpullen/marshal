@@ -287,13 +287,13 @@ func renderAgentMarkdown(content string, width int) string {
 	return strings.Trim(out, "\n") + "\n"
 }
 
-func renderTranscriptItem(item session.TranscriptItem, thinkingExpanded bool, width int) string {
+func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, width int) string {
 	switch item.Kind {
 	case session.KindThinking:
 		if item.Thinking == nil {
 			return ""
 		}
-		return renderThinkingSummary(item.Thinking.Text, item.Thinking.Duration, thinkingExpanded, width)
+		return renderThinkingSummary(item.Thinking.Text, item.Thinking.Duration, detailExpanded, width)
 	case session.KindAudit:
 		if item.Audit == nil {
 			return ""
@@ -305,7 +305,7 @@ func renderTranscriptItem(item session.TranscriptItem, thinkingExpanded bool, wi
 		}
 		var b strings.Builder
 		if item.Message.Reasoning != "" {
-			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, thinkingExpanded, width))
+			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, detailExpanded, width))
 		}
 		b.WriteString(renderMessage(*item.Message, width))
 		return b.String()

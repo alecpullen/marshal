@@ -198,7 +198,7 @@ type Model struct {
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
-	thinkingExpanded   bool
+	detailExpanded     bool
 	viewportFollow     bool
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
@@ -2102,8 +2102,12 @@ func (m *Model) refreshViewport() {
 	if len(items) == 0 {
 		b.WriteString(renderWelcomeBanner(m.viewport.Width()))
 	}
-	for _, item := range items {
-		b.WriteString(renderTranscriptItem(item, m.thinkingExpanded, m.viewport.Width()))
+	for _, entry := range groupTranscript(items) {
+		if entry.Group != nil {
+			b.WriteString(renderToolGroup(entry.Group, m.detailExpanded, m.viewport.Width()))
+		} else {
+			b.WriteString(renderTranscriptItem(*entry.Item, m.detailExpanded, m.viewport.Width()))
+		}
 	}
 
 	if inProgress.Active && inProgress.Reasoning != "" {

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,5 +143,43 @@ func TestToolTarget(t *testing.T) {
 				t.Errorf("toolTarget() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func groupEvents() []registry.AuditEvent {
+	return []registry.AuditEvent{
+		{ToolName: "file.read", Args: json.RawMessage(`{"path":"budget.go"}`), ResultSummary: "42 lines"},
+		{ToolName: "file.read", Args: json.RawMessage(`{"path":"runner.go"}`), ResultSummary: "88 lines"},
+		{ToolName: "file.read", Args: json.RawMessage(`{"path":"execute.go"}`), ResultSummary: "12 lines"},
+	}
+}
+
+func TestRenderToolGroupCollapsedOneLine(t *testing.T) {
+	out := stripANSI(renderToolGroup(groupEvents(), false, 80))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("collapsed run should render one line, got %d:\n%s", len(lines), out)
+	}
+	if !strings.Contains(lines[0], "×3") {
+		t.Fatalf("collapsed line missing count:\n%s", lines[0])
+	}
+	if !strings.Contains(lines[0], "budget.go, runner.go, execute.go") {
+		t.Fatalf("collapsed line missing joined targets:\n%s", lines[0])
+	}
+}
+
+func TestRenderToolGroupExpandedOneLinePerCall(t *testing.T) {
+	out := stripANSI(renderToolGroup(groupEvents(), true, 80))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expanded run should render header + 3 lines, got %d:\n%s", len(lines), out)
+	}
+	if !strings.Contains(lines[0], "×3") {
+		t.Fatalf("expanded header missing count:\n%s", lines[0])
+	}
+	for i, want := range []string{"budget.go", "runner.go", "execute.go"} {
+		if !strings.Contains(lines[i+1], want) {
+			t.Fatalf("expanded line %d missing %q:\n%s", i+1, want, lines[i+1])
+		}
 	}
 }

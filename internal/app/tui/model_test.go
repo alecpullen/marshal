@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1953,6 +1954,63 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 	}
 	if !strings.Contains(view, "default") {
 		t.Fatalf("View() missing idle status after done badge expiry:\n%s", view)
+	}
+}
+
+func TestRefreshViewportCollapsesToolRun(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	for _, p := range []string{"budget.go", "runner.go", "execute.go"} {
+		m.state.LogToolCall(registry.AuditEvent{
+			Timestamp:     time.Now(),
+			ToolName:      "file.read",
+			Args:          json.RawMessage(`{"path":"` + p + `"}`),
+			ResultSummary: "42 lines",
+		})
+	}
+	m.refreshViewport()
+	view := stripANSI(m.View().Content)
+	if strings.Count(view, "×3") != 1 {
+		t.Fatalf("collapsed run should appear exactly once with ×3:\n%s", view)
+	}
+}
+
+func TestCtrlGExpandsThinkingAndToolRuns(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.state.LogThinking(session.ThinkingEntry{
+		Text:      "reasoning about the budget",
+		Duration:  2 * time.Second,
+		StartedAt: time.Unix(100, 0),
+	})
+	for _, p := range []string{"budget.go", "runner.go", "execute.go"} {
+		m.state.LogToolCall(registry.AuditEvent{
+			Timestamp:     time.Now(),
+			ToolName:      "file.read",
+			Args:          json.RawMessage(`{"path":"` + p + `"}`),
+			ResultSummary: "42 lines",
+		})
+	}
+	m.refreshViewport()
+
+	m = sendKey(m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	if !m.detailExpanded {
+		t.Fatal("ctrl+g should set detailExpanded")
+	}
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "reasoning about the budget") {
+		t.Fatalf("ctrl+g should also expand thinking blocks:\n%s", view)
+	}
+	for _, p := range []string{"budget.go", "runner.go", "execute.go"} {
+		if !strings.Contains(view, p) {
+			t.Fatalf("expanded run missing %q:\n%s", p, view)
+		}
+	}
+
+	m = sendKey(m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	if m.detailExpanded {
+		t.Fatal("ctrl+g should toggle detailExpanded back off")
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "×3") {
+		t.Fatal("collapsing again should restore the ×3 line")
 	}
 }
 

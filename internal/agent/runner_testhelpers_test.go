@@ -147,17 +147,34 @@ func scriptRepeats(n int, resp string) []string {
 }
 
 func answerPendingQuestion(state *session.State, answer string) <-chan string {
-	questionCh := make(chan string, 1)
+	return answerPendingQuestions(state, 1, answer)
+}
+
+// answerPendingQuestions answers the next n questions the runner asks, in
+// order, from a single goroutine.
+//
+// Claiming the question — clearing PendingQuestion before sending on its
+// ResponseChan — is what makes this safe. Two answerers racing on the same
+// pending question would both send on a buffer-1 channel; the loser blocks
+// forever, the next question is never answered, and the test hangs until its
+// timeout. Answering from one goroutine and claiming first removes both
+// halves of that race.
+func answerPendingQuestions(state *session.State, n int, answer string) <-chan string {
+	questionCh := make(chan string, n)
 	go func() {
-		for {
-			if q := state.PendingQuestion(); q != nil && len(q.Questions) > 0 {
+		for i := 0; i < n; i++ {
+			for {
+				q := state.PendingQuestion()
+				if q == nil || len(q.Questions) == 0 {
+					time.Sleep(time.Millisecond)
+					continue
+				}
 				canonical := q.Questions[0].Question
+				state.SetPendingQuestion(nil) // claim before answering
 				questionCh <- canonical
 				q.ResponseChan <- []session.Answer{{Question: canonical, Answer: answer}}
-				state.SetPendingQuestion(nil)
-				return
+				break
 			}
-			time.Sleep(time.Millisecond)
 		}
 	}()
 	return questionCh

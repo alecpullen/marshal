@@ -69,13 +69,7 @@ func TestNativeAskUserCountsAgainstIterationBudget(t *testing.T) {
 	var got *TurnMetrics
 	r.MetricsObserver = func(m TurnMetrics) { got = &m }
 
-	done := make(chan struct{})
-	go func() {
-		for i := 0; i < 2; i++ {
-			answerPendingQuestion(state, "yes")
-		}
-		close(done)
-	}()
+	answerPendingQuestions(state, 2, "yes")
 
 	task, err := r.RunTask(context.Background(), "ask repeatedly")
 	if err != nil {
@@ -111,13 +105,7 @@ func TestNativeQuestionAskCountsAgainstIterationBudget(t *testing.T) {
 	var got *TurnMetrics
 	r.MetricsObserver = func(m TurnMetrics) { got = &m }
 
-	done := make(chan struct{})
-	go func() {
-		for i := 0; i < 2; i++ {
-			answerPendingQuestion(state, "yes")
-		}
-		close(done)
-	}()
+	answerPendingQuestions(state, 2, "yes")
 
 	task, err := r.RunTask(context.Background(), "ask repeatedly")
 	if err != nil {

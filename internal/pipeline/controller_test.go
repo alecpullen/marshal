@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
+	"marshal/internal/worktree"
 )
 
 // scriptedDispatch returns a Dispatcher whose exec pops one canned output
@@ -44,7 +45,7 @@ func testController(t *testing.T, d Dispatcher, fakeCmd *FakeCommandRunner) *Con
 	if err := os.WriteFile(planPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("write plan: %v", err)
 	}
-	g := NewFakeGitOps()
+	g := worktree.NewFakeGitOps()
 	g.Refs["main"] = "1111111111111111111111111111111111111111"
 	g.Heads[root] = g.Refs["main"]
 	g.Dirty = true
@@ -97,7 +98,7 @@ func TestRunTaskHappyPath(t *testing.T) {
 	}
 
 	// The controller committed, with the plan slug and task in the subject.
-	g := c.Git.(*FakeGitOps)
+	g := c.Git.(*worktree.FakeGitOps)
 	if len(g.Commits) != 1 {
 		t.Fatalf("commits = %v, want 1", g.Commits)
 	}
@@ -132,7 +133,7 @@ func TestRunTaskGateFailureDispatchesFixer(t *testing.T) {
 	if !strings.Contains((*prompts)[1], "plan.go:12: undefined: foo") {
 		t.Errorf("fix prompt does not carry the build output:\n%s", (*prompts)[1])
 	}
-	g := c.Git.(*FakeGitOps)
+	g := c.Git.(*worktree.FakeGitOps)
 	if len(g.Commits) != 1 {
 		t.Errorf("commits = %v, want exactly one (nothing is committed while the gate fails)", g.Commits)
 	}
@@ -156,7 +157,7 @@ func TestRunTaskGateExhaustionFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "fix rounds") {
 		t.Errorf("error = %v, want it to name the exhausted fix budget", err)
 	}
-	g := c.Git.(*FakeGitOps)
+	g := c.Git.(*worktree.FakeGitOps)
 	if len(g.Commits) != 0 {
 		t.Errorf("commits = %v, want none", g.Commits)
 	}
@@ -239,7 +240,7 @@ func TestReviewTaskOneFixDispatchForAllFindings(t *testing.T) {
 		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
 	)
 	c := testController(t, d, NewFakeCommandRunner())
-	g := c.Git.(*FakeGitOps)
+	g := c.Git.(*worktree.FakeGitOps)
 	g.Dirty = true
 	spec, _ := c.Plan.Task(1)
 
@@ -293,7 +294,7 @@ func TestReviewTaskExhaustsFixRounds(t *testing.T) {
 	fixed := "STATUS: DONE\nTESTS: pass\n"
 	d, _ := scriptedDispatch(t, failing, fixed, failing, fixed, failing)
 	c := testController(t, d, NewFakeCommandRunner())
-	c.Git.(*FakeGitOps).Dirty = true
+	c.Git.(*worktree.FakeGitOps).Dirty = true
 	spec, _ := c.Plan.Task(1)
 
 	_, err := c.reviewTask(context.Background(), spec, taskResult{Base: "base", Head: "head"})

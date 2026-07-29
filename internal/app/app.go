@@ -48,6 +48,7 @@ import (
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/worker"
+	"marshal/internal/worktree"
 )
 
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
@@ -847,7 +848,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 	c, err := pipeline.NewController(pipeline.ControllerOpts{
 		PlanPath: planPath,
 		RepoRoot: state.WorkingDir,
-		Git:      pipeline.CLIGitOps{},
+		Git:      worktree.CLIGitOps{},
 		Dispatch: pipeline.Dispatcher{
 			Factory: factory,
 			OnTokens: func(n int) {

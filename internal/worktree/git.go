@@ -1,4 +1,4 @@
-package pipeline
+package worktree
 
 import (
 	"fmt"
@@ -35,7 +35,7 @@ func (CLIGitOps) run(dir string, args ...string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
-		return "", fmt.Errorf("pipeline git: %s: %w: %s", strings.Join(args, " "), err, s)
+		return "", fmt.Errorf("worktree git: %s: %w: %s", strings.Join(args, " "), err, s)
 	}
 	return s, nil
 }

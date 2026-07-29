@@ -395,6 +395,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 	}
 	if s.persistenceEnabled() {
 		s.loadFromDB()
+		s.restoreWorkspace()
 	}
 	return s
 }

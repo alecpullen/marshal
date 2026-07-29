@@ -72,8 +72,9 @@ type Runtime struct {
 	SessionID      string
 	JobBroker      BrokerCloser
 	SteeringBroker BrokerCloser
-	EventBroker    BrokerCloser
-	MCPManager     MCPCloser
+	EventBroker       BrokerCloser
+	WorkspaceBroker   BrokerCloser
+	MCPManager        MCPCloser
 	Snapshot       SnapshotCloser
 	Logger         *slog.Logger
 	WorkingDir     string
@@ -258,6 +259,11 @@ func (rt *Runtime) Close(ctx context.Context) error {
 		// 5. event broker.
 		if rt.EventBroker != nil {
 			rt.EventBroker.Close()
+		}
+
+		// 5.5. workspace broker.
+		if rt.WorkspaceBroker != nil {
+			rt.WorkspaceBroker.Close()
 		}
 
 		// 5b. rollover close — end the live generation with session_end.
@@ -516,8 +522,10 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	jobBroker := pubsub.NewBroker[native.JobEvent]()
 	steeringBroker := pubsub.NewBroker[session.SteeringEvent]()
 	eventBroker := pubsub.NewBroker[session.Event]()
+	workspaceBroker := pubsub.NewBroker[session.WorkspaceEvent]()
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
+	state.SetWorkspaceBroker(workspaceBroker)
 
 	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspMgr, pipelineFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
@@ -541,6 +549,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		JobBroker:          jobBroker,
 		SteeringBroker:     steeringBroker,
 		EventBroker:        eventBroker,
+		WorkspaceBroker:    workspaceBroker,
 		JobManager:         jobMgr,
 		DesktopCloser:      desktopCloser,
 		CustomAgentFactory: subagentFactory,

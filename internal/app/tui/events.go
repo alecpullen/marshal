@@ -14,3 +14,11 @@ type steeringMsg struct {
 	queueLen int
 	message  string
 }
+
+// workspaceMsg is the tea.Msg the workspace broker pump emits when the
+// session's active root changes. Handling it re-reads git info for the new
+// root so the status line's branch and wt: segments follow immediately,
+// then re-arms the pump.
+type workspaceMsg struct {
+	activeRoot string
+}

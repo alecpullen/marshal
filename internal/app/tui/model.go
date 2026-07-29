@@ -163,6 +163,12 @@ type Model struct {
 	queuedCount    int
 	cancelling     bool
 
+	// workspaceBroker, when non-nil, delivers WorkspaceEvents so the
+	// status line's git info follows the session's active root without
+	// waiting for the 5s tick.
+	workspaceBroker *pubsub.Broker[session.WorkspaceEvent]
+	workspaceEvents <-chan pubsub.Event[session.WorkspaceEvent]
+
 	// gitInfo holds the cached branch + worktree for state.WorkingDir,
 	// refreshed on a throttled tick and on every WindowSizeMsg. lastGitRead
 	// bounds the throttle (see handleAgentTick).
@@ -400,6 +406,16 @@ func WithSteeringBroker(ctx context.Context, broker *pubsub.Broker[session.Steer
 	return func(m *Model) {
 		m.ctx = ctx
 		m.steeringBroker = broker
+	}
+}
+
+// WithWorkspaceBroker wires the broker carrying session.WorkspaceEvents.
+// When broker is nil, git info still follows the active root on the 5s
+// agent tick (used by tests that don't construct a broker).
+func WithWorkspaceBroker(ctx context.Context, broker *pubsub.Broker[session.WorkspaceEvent]) Option {
+	return func(m *Model) {
+		m.ctx = ctx
+		m.workspaceBroker = broker
 	}
 }
 
@@ -841,6 +857,9 @@ func New(state *session.State, opts ...Option) Model {
 	if m.steeringBroker != nil && m.steeringEvents == nil {
 		m.steeringEvents = m.steeringBroker.Subscribe(m.ctx)
 	}
+	if m.workspaceBroker != nil && m.workspaceEvents == nil {
+		m.workspaceEvents = m.workspaceBroker.Subscribe(m.ctx)
+	}
 
 	// Eagerly build inline approval/question forms if the session already
 	// has a pending request, so the first render shows the huh surface
@@ -852,7 +871,7 @@ func New(state *session.State, opts ...Option) Model {
 		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
 	}
 
-	m.gitInfo = gitinfo.Read(state.WorkingDir)
+	m.gitInfo = gitinfo.Read(state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
 	m.railBaseRef = gitinfo.HeadSHA(state.WorkingDir)
 
@@ -903,6 +922,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.steeringEvents != nil {
 		cmds = append(cmds, pumpSteeringEvents(m.steeringEvents))
+	}
+	if m.workspaceEvents != nil {
+		cmds = append(cmds, pumpWorkspaceEvents(m.workspaceEvents))
 	}
 	return tea.Batch(cmds...)
 }
@@ -1030,7 +1052,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Refresh git state on focus/resize: a fresh view should reflect
 		// current branch even if it changed in another tool.
-		m.gitInfo = gitinfo.Read(m.state.WorkingDir)
+		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 		m.lastGitRead = m.now()
 		m.refreshViewport()
 		return m, nil
@@ -2361,11 +2383,25 @@ func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
 	return m, pumpSteeringEvents(m.steeringEvents)
 }
 
+// handleWorkspaceMsg handles a workspaceMsg: the session's active root
+// changed, so re-read git info for the new root immediately rather than
+// waiting for the 5s tick, then re-arm the pump.
+func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
+	if msg.activeRoot != "" {
+		m.gitInfo = gitinfo.Read(msg.activeRoot)
+		m.lastGitRead = m.now()
+	}
+	if m.workspaceEvents == nil {
+		return m, nil
+	}
+	return m, pumpWorkspaceEvents(m.workspaceEvents)
+}
+
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 	if now := m.now(); m.state.WorkingDir != "" && now.Sub(m.lastGitRead) >= 5*time.Second {
-		m.gitInfo = gitinfo.Read(m.state.WorkingDir)
+		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 		m.lastGitRead = now
 	}
 	if !m.busy && m.successPulse {
@@ -2420,6 +2456,8 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleJobCount(msg)
 	case steeringMsg:
 		return m.handleSteering(msg)
+	case workspaceMsg:
+		return m.handleWorkspaceMsg(msg)
 	case agentTickMsg:
 		return m.handleAgentTick(msg)
 	case spinnerTickMsg:

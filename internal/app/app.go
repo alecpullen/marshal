@@ -1077,6 +1077,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		toolReg := rt.ToolRegistry
 		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 		steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
+		workspaceBroker := must[*pubsub.Broker[session.WorkspaceEvent]](rt.WorkspaceBroker)
 		state := rt.State
 		logger := rt.Logger
 
@@ -1119,6 +1120,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithPipelineFactory(ctx, rt.PipelineFactory))
 			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
 			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
+			tuiOpts = append(tuiOpts, tui.WithWorkspaceBroker(ctx, workspaceBroker))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
 				func(agentName string) (tui.AgentRunner, error) {

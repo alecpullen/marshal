@@ -40,3 +40,20 @@ func pumpSteeringEvents(ch <-chan pubsub.Event[session.SteeringEvent]) tea.Cmd {
 		return steeringMsg{queueLen: ev.Payload.QueueLen, message: ev.Payload.Message}
 	}
 }
+
+// pumpWorkspaceEvents reads from the model's persistent workspace
+// subscription and returns a tea.Cmd that blocks until the next
+// WorkspaceEvent lands, then returns a workspaceMsg. Re-arming reads from
+// the same channel, matching pumpSteeringEvents.
+func pumpWorkspaceEvents(ch <-chan pubsub.Event[session.WorkspaceEvent]) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return workspaceMsg{activeRoot: ev.Payload.Workspace.ActiveRoot}
+	}
+}

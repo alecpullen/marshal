@@ -1,5 +1,12 @@
 package pipeline
 
+// This file exists outside _test.go naming because the package is
+// "pipeline" (not "pipeline_test"), so the helpers are package-visible
+// and shared by reviewpkg_test.go. They were extracted from git_test.go
+// when that file moved to internal/worktree/; keeping them here avoids
+// forcing reviewpkg_test.go to import the worktree package for test
+// helpers that are structurally identical.
+
 import (
 	"os"
 	"os/exec"

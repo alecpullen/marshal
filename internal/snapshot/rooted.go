@@ -10,6 +10,8 @@ import (
 // swap. Each root gets an independent shadow repo (the shadow path derives
 // from the absolute root hash), so project-root and worktree histories
 // never mix.
+// (Pipeline run worktrees live under <projectRoot>/.marshal/pipeline/<slug>/worktrees;
+// this package neither knows nor cares.)
 type Rooted struct {
 	dataDir     string
 	projectRoot string

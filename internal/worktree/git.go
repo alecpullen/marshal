@@ -6,11 +6,12 @@ import (
 	"strings"
 )
 
-// GitOps is the seam over git. Every pipeline subsystem depends on this
-// interface, never on exec.Command directly, so the controller can be
-// tested without a real repository. Each method takes the working
-// directory it runs in: the controller resolves refs against the main
-// checkout while committing inside the run's worktree.
+// GitOps is the seam over git. Every worktree consumer (the pipeline
+// controller and the agent tool) depends on this interface, never on
+// exec.Command directly, so the controller can be tested without a real
+// repository. Each method takes the working directory it runs in: the
+// controller resolves refs against the main checkout while committing
+// inside the run's worktree.
 type GitOps interface {
 	RevParse(dir, ref string) (string, error)
 	MergeBase(dir, a, b string) (string, error)

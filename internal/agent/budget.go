@@ -89,3 +89,14 @@ func (b *turnBudget) remainingTools() int {
 // total is every model turn consumed, which is what TurnMetrics.Iterations
 // has always reported.
 func (b *turnBudget) total() int { return b.tools + b.overhead }
+
+// reclassifyAsOverhead moves one charge from the work budget to overhead.
+// RunTask charges a turn to tools before the calls execute, so a turn whose
+// every tool call was rejected before running has to be corrected after the
+// fact — nothing ran, so it was overhead.
+func (b *turnBudget) reclassifyAsOverhead() {
+	if b.tools > 0 {
+		b.tools--
+		b.overhead++
+	}
+}

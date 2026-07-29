@@ -14,7 +14,7 @@ func RegisterTool(reg *registry.Registry, idx *Index, state *session.State) {
 	reg.Register(registry.Tool{
 		Name:        "skill.load",
 		Description: "Load a skill into the agent's context by name. The system prompt lists available skills. Call this when a skill's expertise is relevant to the task.",
-		Schema:      json.RawMessage(`{"type": "object", "properties": {"name": {"type": "string", "description": "Name of the skill to load"}}, "required": ["name"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1,"description":"Name of the skill to load"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 		Cacheable:   false,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

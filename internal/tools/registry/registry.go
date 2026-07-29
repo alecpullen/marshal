@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 var (
 	ErrInvalidTool   = errors.New("invalid tool")
 	ErrDuplicateTool = errors.New("duplicate tool")
+	ErrToolNotFound  = errors.New("tool not found")
 )
 
 type Registry struct {
@@ -33,14 +35,20 @@ func (r *Registry) Register(tool Tool) error {
 	if !tool.Risk.Valid() {
 		return fmt.Errorf("%w: unknown risk level %q for %q", ErrInvalidTool, tool.Risk, tool.Name)
 	}
-	if len(tool.Schema) > 0 && !json.Valid(tool.Schema) {
-		return fmt.Errorf("%w: schema for %q is not valid JSON", ErrInvalidTool, tool.Name)
+	// Compile the schema rather than merely checking it is JSON. A schema
+	// that cannot compile would otherwise sit in the registry advertising
+	// constraints that are never enforced — fail closed instead.
+	validator, err := CompileSchema(tool.Name, tool.Schema)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidTool, err)
 	}
 	if _, exists := r.tools[tool.Name]; exists {
 		return fmt.Errorf("%w: %q", ErrDuplicateTool, tool.Name)
 	}
 
-	r.tools[tool.Name] = cloneTool(tool)
+	stored := cloneTool(tool)
+	stored.validator = validator
+	r.tools[tool.Name] = stored
 	return nil
 }
 
@@ -50,6 +58,21 @@ func (r *Registry) Lookup(name string) (Tool, bool) {
 		return Tool{}, false
 	}
 	return cloneTool(tool), true
+}
+
+// Dispatch looks up a tool, validates the call's arguments against its
+// schema, and invokes the handler. This is the authoritative enforcement
+// point: a handler reached through Dispatch has never seen arguments that
+// violate its declared schema.
+func (r *Registry) Dispatch(ctx context.Context, call ToolCall) (ToolResult, error) {
+	tool, ok := r.Lookup(call.Name)
+	if !ok {
+		return ToolResult{}, fmt.Errorf("%w: %q", ErrToolNotFound, call.Name)
+	}
+	if err := ValidateArgs(tool, call.Args); err != nil {
+		return ToolResult{}, err
+	}
+	return tool.Handler(ctx, call)
 }
 
 func (r *Registry) List() []Tool {
@@ -99,5 +122,7 @@ func cloneTool(tool Tool) Tool {
 	if len(tool.Schema) > 0 {
 		cloned.Schema = append(json.RawMessage(nil), tool.Schema...)
 	}
+	// cloned.validator intentionally shares the compiled schema: it is
+	// immutable after compilation and safe for concurrent use.
 	return cloned
 }

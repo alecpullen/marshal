@@ -74,3 +74,37 @@ func TestTodoListRaisesToolBudget(t *testing.T) {
 		t.Fatalf("ToolBudget.Max = %d, want %d (base + 3 todo steps)", got.Max, want)
 	}
 }
+
+// A turn whose every tool call was rejected for bad arguments did no work,
+// so it must not spend a slot of the tool budget.
+func TestAllInvalidArgsChargesOverheadNotTools(t *testing.T) {
+	state := newTestState(t)
+	reg, _ := strictRegistry(t)
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{"calling", "calling again", "Done."},
+		ToolCalls: [][]schema.ToolCall{
+			{{ID: "c1", Name: "strict.read", Args: json.RawMessage(`{"wrong":"key"}`)}},
+			{{ID: "c2", Name: "strict.read", Args: json.RawMessage(`{"path":"a.go"}`)}},
+			nil,
+		},
+	}
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SetForceClass(string(ClassEdit))
+	r.MaxToolIterations = 10
+
+	var got *TurnMetrics
+	r.MetricsObserver = func(m TurnMetrics) { got = &m }
+
+	if _, err := r.RunTask(context.Background(), "read something"); err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	// Two model turns issued tool calls, but only the second did any work.
+	if b := state.ToolBudget(); b.Used != 1 {
+		t.Fatalf("ToolBudget.Used = %d, want 1 (the rejected turn is overhead)", b.Used)
+	}
+	// The rejected turn still counts as a turn consumed overall.
+	if got == nil || got.Iterations < 2 {
+		t.Fatalf("Iterations = %v, want at least 2 (the rejected turn still happened)", got)
+	}
+}

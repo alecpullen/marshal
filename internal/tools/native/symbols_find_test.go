@@ -53,7 +53,7 @@ func TestSymbolsFindTool(t *testing.T) {
 		t.Fatalf("expected type File excluded by name filter: %s", res.Content)
 	}
 
-	res, err = tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"kind":"type"}`)})
+	res, err = tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"name":"","kind":"type"}`)})
 	if err != nil {
 		t.Fatalf("symbols.find kind filter failed: %v", err)
 	}
@@ -61,9 +61,9 @@ func TestSymbolsFindTool(t *testing.T) {
 		t.Fatalf("expected type File in kind-filtered content: %s", res.Content)
 	}
 
-	res, err = tool.Handler(context.Background(), registry.ToolCall{})
+	res, err = tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"name":""}`)})
 	if err != nil {
-		t.Fatalf("symbols.find with no filters failed: %v", err)
+		t.Fatalf("symbols.find with no name filter failed: %v", err)
 	}
 	if !strings.Contains(res.Summary, "3 symbols") {
 		t.Fatalf("expected 3 symbols summary, got %q", res.Summary)

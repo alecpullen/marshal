@@ -36,7 +36,7 @@ func TestClientCall(t *testing.T) {
 		t.Fatalf("Call: %v", err)
 	}
 
-	if len(res.Tools) != 1 || res.Tools[0].Name != "hello" {
+	if len(res.Tools) != 3 || res.Tools[0].Name != "hello" || res.Tools[1].Name != "broken" || res.Tools[2].Name != "goodbye" {
 		t.Errorf("unexpected tools: %+v", res)
 	}
 }
@@ -334,6 +334,8 @@ func mockServerMain() {
 			result = ListToolsResult{
 				Tools: []MCPTool{
 					{Name: "hello", Description: "says hello", InputSchema: []byte(`{"type":"object"}`)},
+					{Name: "broken", Description: "unusable schema", InputSchema: []byte(`{"type":123}`)},
+					{Name: "goodbye", Description: "says goodbye", InputSchema: []byte(`{"type":"object"}`)},
 				},
 			}
 		case "tools/call":

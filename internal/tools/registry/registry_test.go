@@ -261,6 +261,138 @@ func TestListReturnsSchemaCopies(t *testing.T) {
 	}
 }
 
+func TestRegisterRejectsUncompilableSchema(t *testing.T) {
+	r := New()
+	err := r.Register(Tool{
+		Name:    "bad.schema",
+		Schema:  json.RawMessage(`{"type":123}`),
+		Risk:    RiskReadOnly,
+		Handler: func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{}, nil },
+	})
+	if err == nil {
+		t.Fatal("Register = nil, want an error for a schema that is not a valid JSON Schema")
+	}
+	if !errors.Is(err, ErrInvalidTool) {
+		t.Fatalf("error does not wrap ErrInvalidTool: %v", err)
+	}
+	if _, ok := r.Lookup("bad.schema"); ok {
+		t.Fatal("a tool with an uncompilable schema was registered anyway")
+	}
+}
+
+func TestRegisterRejectsMalformedSchemaJSON(t *testing.T) {
+	r := New()
+	err := r.Register(Tool{
+		Name:    "bad.json",
+		Schema:  json.RawMessage(`{"type":`),
+		Risk:    RiskReadOnly,
+		Handler: func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{}, nil },
+	})
+	if err == nil {
+		t.Fatal("Register = nil, want an error for malformed schema JSON")
+	}
+}
+
+func TestRegisterAcceptsToolWithNoSchema(t *testing.T) {
+	r := New()
+	err := r.Register(Tool{
+		Name:    "no.schema",
+		Risk:    RiskReadOnly,
+		Handler: func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{}, nil },
+	})
+	if err != nil {
+		t.Fatalf("Register = %v, want nil (an absent schema means unconstrained)", err)
+	}
+	tool, _ := r.Lookup("no.schema")
+	if err := ValidateArgs(tool, json.RawMessage(`{"whatever":1}`)); err != nil {
+		t.Fatalf("ValidateArgs on an unconstrained tool = %v, want nil", err)
+	}
+}
+
+// Lookup and List clone tools; the compiled schema must survive the clone or
+// every dispatched call would validate against nothing.
+func TestClonedToolKeepsValidator(t *testing.T) {
+	r := New()
+	if err := r.Register(Tool{
+		Name:    "strict",
+		Schema:  json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`),
+		Risk:    RiskReadOnly,
+		Handler: func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{}, nil },
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	tool, ok := r.Lookup("strict")
+	if !ok {
+		t.Fatal("Lookup failed")
+	}
+	if err := ValidateArgs(tool, json.RawMessage(`{}`)); err == nil {
+		t.Fatal("cloned tool validated empty args, want an error (a is required)")
+	}
+	for _, listed := range r.List() {
+		if listed.Name == "strict" {
+			if err := ValidateArgs(listed, json.RawMessage(`{}`)); err == nil {
+				t.Fatal("listed tool lost its validator")
+			}
+		}
+	}
+}
+
+func TestDispatchRejectsInvalidArgsWithoutCallingHandler(t *testing.T) {
+	r := New()
+	called := false
+	if err := r.Register(Tool{
+		Name:   "strict.dispatch",
+		Schema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`),
+		Risk:   RiskReadOnly,
+		Handler: func(context.Context, ToolCall) (ToolResult, error) {
+			called = true
+			return ToolResult{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	_, err := r.Dispatch(context.Background(), ToolCall{Name: "strict.dispatch", Args: json.RawMessage(`{"b":1}`)})
+	if err == nil {
+		t.Fatal("Dispatch = nil, want an error for invalid args")
+	}
+	if !errors.Is(err, ErrInvalidArgs) {
+		t.Fatalf("error does not wrap ErrInvalidArgs: %v", err)
+	}
+	if called {
+		t.Fatal("handler ran despite invalid arguments")
+	}
+}
+
+func TestDispatchInvokesHandlerOnValidArgs(t *testing.T) {
+	r := New()
+	if err := r.Register(Tool{
+		Name:   "ok.dispatch",
+		Schema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`),
+		Risk:   RiskReadOnly,
+		Handler: func(_ context.Context, call ToolCall) (ToolResult, error) {
+			return ToolResult{Summary: "ran " + call.Name}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	res, err := r.Dispatch(context.Background(), ToolCall{Name: "ok.dispatch", Args: json.RawMessage(`{"a":"x"}`)})
+	if err != nil {
+		t.Fatalf("Dispatch = %v, want nil", err)
+	}
+	if res.Summary != "ran ok.dispatch" {
+		t.Fatalf("Summary = %q", res.Summary)
+	}
+}
+
+func TestDispatchUnknownTool(t *testing.T) {
+	r := New()
+	_, err := r.Dispatch(context.Background(), ToolCall{Name: "nope"})
+	if !errors.Is(err, ErrToolNotFound) {
+		t.Fatalf("error = %v, want ErrToolNotFound", err)
+	}
+}
+
 func testTool(name string) Tool {
 	return Tool{
 		Name:        name,

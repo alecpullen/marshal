@@ -18,11 +18,7 @@ type SymbolAdapter struct{ h *Handle }
 func NewSymbolAdapter(h *Handle) *SymbolAdapter { return &SymbolAdapter{h: h} }
 
 func (a *SymbolAdapter) DocumentSymbols(ctx context.Context, lang, filePath string, content []byte) ([]db.Symbol, bool) {
-	m := a.h.Get()
-	if m == nil {
-		return nil, false
-	}
-	client, ok := m.ServerFor(lang)
+	client, ok := a.h.ServerFor(lang)
 	if !ok {
 		return nil, false
 	}
@@ -56,11 +52,7 @@ func (a *QueryAdapter) Definition(ctx context.Context, filePath string, line, co
 	return a.locations(ctx, filePath, line, col, "textDocument/definition", nil)
 }
 func (a *QueryAdapter) Hover(ctx context.Context, filePath string, line, col int) (string, bool) {
-	m := a.h.Get()
-	if m == nil {
-		return "", false
-	}
-	client, ok := m.ServerFor(langFor(filePath))
+	client, ok := a.h.ServerFor(langFor(filePath))
 	if !ok {
 		return "", false
 	}
@@ -113,11 +105,7 @@ func flattenHoverContents(raw json.RawMessage) string {
 }
 
 func (a *QueryAdapter) locations(ctx context.Context, filePath string, line, col int, method string, extra map[string]any) ([]string, bool) {
-	m := a.h.Get()
-	if m == nil {
-		return nil, false
-	}
-	client, ok := m.ServerFor(langFor(filePath))
+	client, ok := a.h.ServerFor(langFor(filePath))
 	if !ok {
 		return nil, false
 	}
@@ -146,11 +134,7 @@ type DiagnosticsAdapter struct{ h *Handle }
 func NewDiagnosticsAdapter(h *Handle) *DiagnosticsAdapter { return &DiagnosticsAdapter{h: h} }
 
 func (a *DiagnosticsAdapter) Diagnostics(lang, filePath string) (string, bool) {
-	m := a.h.Get()
-	if m == nil {
-		return "", false
-	}
-	client, ok := m.ServerFor(lang)
+	client, ok := a.h.ServerFor(lang)
 	if !ok {
 		return "", false
 	}

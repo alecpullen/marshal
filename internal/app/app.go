@@ -48,6 +48,7 @@ import (
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/worker"
+	"marshal/internal/worktree"
 )
 
 type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
@@ -401,7 +402,7 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Manager, func(planPath string) tui.AgentRunner, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string) tui.AgentRunner, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
@@ -439,6 +440,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		cfg.Tools.Shell.BackgroundRetention,
 		cfg.Tools.Shell.MaxOutputBytes,
 	)
+	// Background jobs start in the session's active root, so they land in
+	// the worktree while the session is isolated.
+	jobManager.SetDirFunc(func() string { return state.Workspace().ActiveRoot })
 	// Roll back partially-built resources on any later failure. Each
 	// resource appends its cleanup as it comes up; the deferred func runs
 	// them in reverse order, but only when a failure return set buildErr.
@@ -494,17 +498,17 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	}
 	// Build LSP manager and wire adapters BEFORE RegisterAll so the
 	// toolSet and diagnostics checker receive non-nil LSP fields.
-	var lspMgr *lsp.Manager
+	var lspHandle *lsp.Handle
 	if lspEnabled(cfg.LSP) {
 		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
 		if len(servers) > 0 {
-			lspMgr = lsp.NewManager(state.WorkingDir, servers, state.Logger())
+			lspHandle = lsp.NewHandle(lsp.NewManager(state.Workspace().ActiveRoot, servers, state.Logger()), servers, state.Logger())
 		}
 	}
-	if lspMgr != nil {
-		nativeOpts.LSP = lsp.NewQueryAdapter(lspMgr)
-		nativeOpts.LSPSource = lsp.NewDiagnosticsAdapter(lspMgr)
-		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspMgr)
+	if lspHandle != nil {
+		nativeOpts.LSP = lsp.NewQueryAdapter(lspHandle)
+		nativeOpts.LSPSource = lsp.NewDiagnosticsAdapter(lspHandle)
+		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspHandle)
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
@@ -660,9 +664,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		state.BeginGeneration(genID, genSeq, genSeed)
 	}
 
-	var snapSvc *snapshot.Service
+	var snapSvc *snapshot.Rooted
 	if dataDir != "" && cfg.Snapshots.Enabled {
-		snapSvc = snapshot.New(dataDir, state.WorkingDir, int64(cfg.Snapshots.MaxFileBytes), cfg.Indexing.Ignore, state.Logger())
+		snapSvc = snapshot.NewRooted(dataDir, state.WorkingDir,
+			func() string { return state.Workspace().ActiveRoot },
+			int64(cfg.Snapshots.MaxFileBytes), cfg.Indexing.Ignore, state.Logger())
 		state.SetSnapshotter(snapSvc)
 		runner.Snapshotter = snapSvc
 		runner.SnapshotRecorder = database
@@ -712,7 +718,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	pipelineFactory := func(planPath string) tui.AgentRunner {
 		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, planPath)
 	}
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspMgr, pipelineFactory, nil
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, nil
 }
 
 // roleRunnerSpec holds the dependencies shared by the swarm and SDD
@@ -847,7 +853,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 	c, err := pipeline.NewController(pipeline.ControllerOpts{
 		PlanPath: planPath,
 		RepoRoot: state.WorkingDir,
-		Git:      pipeline.CLIGitOps{},
+		Git:      worktree.CLIGitOps{},
 		Dispatch: pipeline.Dispatcher{
 			Factory: factory,
 			OnTokens: func(n int) {
@@ -1073,6 +1079,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		toolReg := rt.ToolRegistry
 		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 		steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
+		workspaceBroker := must[*pubsub.Broker[session.WorkspaceEvent]](rt.WorkspaceBroker)
 		state := rt.State
 		logger := rt.Logger
 
@@ -1115,6 +1122,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithPipelineFactory(ctx, rt.PipelineFactory))
 			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
 			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
+			tuiOpts = append(tuiOpts, tui.WithWorkspaceBroker(ctx, workspaceBroker))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
 				func(agentName string) (tui.AgentRunner, error) {

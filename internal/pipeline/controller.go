@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"marshal/internal/llm/routing"
+	"marshal/internal/worktree"
 )
 
 // Phase names, surfaced to the Observer and rendered by the TUI panel.
@@ -51,7 +52,7 @@ var ErrHumanGateRequired = errors.New("pipeline: human gate required")
 type ControllerOpts struct {
 	PlanPath     string
 	RepoRoot     string
-	Git          GitOps
+	Git          worktree.GitOps
 	Dispatch     Dispatcher
 	Verifier     Verifier
 	MaxFixRounds int
@@ -66,10 +67,10 @@ type Controller struct {
 	Plan         *Plan
 	Paths        Paths
 	Ledger       Ledger
-	Git          GitOps
+	Git          worktree.GitOps
 	Dispatch     Dispatcher
 	Verifier     Verifier
-	Worktree     Worktree
+	Worktree     worktree.Worktree
 
 	RepoRoot     string
 	MaxFixRounds int
@@ -419,7 +420,7 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 // task cannot be completed.
 func (c *Controller) Run(ctx context.Context) error {
 	if c.Worktree.Path == "" {
-		wt, err := EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)
+		wt, err := worktree.EnsureWorktree(c.Git, c.RepoRoot, c.Paths.WorktreesDir(), "pipeline/"+c.Plan.Slug, c.TargetBranch)
 		if err != nil {
 			return err
 		}

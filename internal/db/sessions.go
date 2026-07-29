@@ -29,6 +29,10 @@ type Session struct {
 	StartedAt time.Time
 	EndedAt   *time.Time
 	Summary   string
+	// ActiveRoot and WorktreeBranch record the session's worktree rebind.
+	// Both empty when the session operates at the project root.
+	ActiveRoot     string
+	WorktreeBranch string
 }
 
 // CreateSession inserts a new agent_sessions row. The session id is generated
@@ -49,12 +53,12 @@ func (db *DB) CreateSession(sessionID string, projectID int64, title string, sta
 func (db *DB) GetSession(sessionID string) (Session, error) {
 	var s Session
 	var startedAt string
-	var endedAt, summary sql.NullString
+	var endedAt, summary, activeRoot, worktreeBranch sql.NullString
 	row := db.sqlDB.QueryRow(
-		`SELECT id, project_id, title, started_at, ended_at, summary FROM agent_sessions WHERE id = ?`,
+		`SELECT id, project_id, title, started_at, ended_at, summary, active_root, worktree_branch FROM agent_sessions WHERE id = ?`,
 		sessionID,
 	)
-	if err := row.Scan(&s.ID, &s.ProjectID, &s.Title, &startedAt, &endedAt, &summary); err != nil {
+	if err := row.Scan(&s.ID, &s.ProjectID, &s.Title, &startedAt, &endedAt, &summary, &activeRoot, &worktreeBranch); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, fmt.Errorf("session not found: %s", sessionID)
 		}
@@ -75,6 +79,12 @@ func (db *DB) GetSession(sessionID string) (Session, error) {
 	}
 	if summary.Valid {
 		s.Summary = summary.String
+	}
+	if activeRoot.Valid {
+		s.ActiveRoot = activeRoot.String
+	}
+	if worktreeBranch.Valid {
+		s.WorktreeBranch = worktreeBranch.String
 	}
 	return s, nil
 }
@@ -99,6 +109,20 @@ func (db *DB) EndSession(sessionID string, endedAt time.Time, summary string) er
 	)
 	if err != nil {
 		return fmt.Errorf("end session: %w", err)
+	}
+	return nil
+}
+
+// UpdateSessionWorkspace records the session's active workspace root and
+// worktree branch. Both are stored empty when the session operates at the
+// project root.
+func (db *DB) UpdateSessionWorkspace(sessionID, activeRoot, branch string) error {
+	_, err := db.sqlDB.Exec(
+		`UPDATE agent_sessions SET active_root = ?, worktree_branch = ? WHERE id = ?`,
+		activeRoot, branch, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("update session workspace: %w", err)
 	}
 	return nil
 }

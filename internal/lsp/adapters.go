@@ -13,12 +13,12 @@ import (
 )
 
 // SymbolAdapter implements index.LSPSymbols.
-type SymbolAdapter struct{ m *Manager }
+type SymbolAdapter struct{ h *Handle }
 
-func NewSymbolAdapter(m *Manager) *SymbolAdapter { return &SymbolAdapter{m: m} }
+func NewSymbolAdapter(h *Handle) *SymbolAdapter { return &SymbolAdapter{h: h} }
 
 func (a *SymbolAdapter) DocumentSymbols(ctx context.Context, lang, filePath string, content []byte) ([]db.Symbol, bool) {
-	client, ok := a.m.ServerFor(lang)
+	client, ok := a.h.ServerFor(lang)
 	if !ok {
 		return nil, false
 	}
@@ -41,9 +41,9 @@ func (a *SymbolAdapter) DocumentSymbols(ctx context.Context, lang, filePath stri
 }
 
 // QueryAdapter implements native.LSPQuerier.
-type QueryAdapter struct{ m *Manager }
+type QueryAdapter struct{ h *Handle }
 
-func NewQueryAdapter(m *Manager) *QueryAdapter { return &QueryAdapter{m: m} }
+func NewQueryAdapter(h *Handle) *QueryAdapter { return &QueryAdapter{h: h} }
 
 func (a *QueryAdapter) References(ctx context.Context, filePath string, line, col int) ([]string, bool) {
 	return a.locations(ctx, filePath, line, col, "textDocument/references", map[string]any{"includeDeclaration": true})
@@ -52,7 +52,7 @@ func (a *QueryAdapter) Definition(ctx context.Context, filePath string, line, co
 	return a.locations(ctx, filePath, line, col, "textDocument/definition", nil)
 }
 func (a *QueryAdapter) Hover(ctx context.Context, filePath string, line, col int) (string, bool) {
-	client, ok := a.m.ServerFor(langFor(filePath))
+	client, ok := a.h.ServerFor(langFor(filePath))
 	if !ok {
 		return "", false
 	}
@@ -105,7 +105,7 @@ func flattenHoverContents(raw json.RawMessage) string {
 }
 
 func (a *QueryAdapter) locations(ctx context.Context, filePath string, line, col int, method string, extra map[string]any) ([]string, bool) {
-	client, ok := a.m.ServerFor(langFor(filePath))
+	client, ok := a.h.ServerFor(langFor(filePath))
 	if !ok {
 		return nil, false
 	}
@@ -129,12 +129,12 @@ func (a *QueryAdapter) locations(ctx context.Context, filePath string, line, col
 }
 
 // DiagnosticsAdapter implements diagnostics.LSPSource.
-type DiagnosticsAdapter struct{ m *Manager }
+type DiagnosticsAdapter struct{ h *Handle }
 
-func NewDiagnosticsAdapter(m *Manager) *DiagnosticsAdapter { return &DiagnosticsAdapter{m: m} }
+func NewDiagnosticsAdapter(h *Handle) *DiagnosticsAdapter { return &DiagnosticsAdapter{h: h} }
 
 func (a *DiagnosticsAdapter) Diagnostics(lang, filePath string) (string, bool) {
-	client, ok := a.m.ServerFor(lang)
+	client, ok := a.h.ServerFor(lang)
 	if !ok {
 		return "", false
 	}

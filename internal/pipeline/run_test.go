@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"marshal/internal/worktree"
 )
 
 const (
@@ -20,7 +22,7 @@ func TestRunExecutesEveryTaskThenBranchReview(t *testing.T) {
 		reviewOK, // branch review
 	)
 	c := testController(t, d, NewFakeCommandRunner())
-	c.Git.(*FakeGitOps).Dirty = true
+	c.Git.(*worktree.FakeGitOps).Dirty = true
 
 	if err := c.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -49,7 +51,7 @@ func TestRunExecutesEveryTaskThenBranchReview(t *testing.T) {
 func TestRunResumesFromLedger(t *testing.T) {
 	d, prompts := scriptedDispatch(t, implDone, reviewOK, reviewOK)
 	c := testController(t, d, NewFakeCommandRunner())
-	c.Git.(*FakeGitOps).Dirty = true
+	c.Git.(*worktree.FakeGitOps).Dirty = true
 	if err := c.Ledger.MarkComplete(1, "aaaaaaaa", "bbbbbbbb"); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
 	}
@@ -81,7 +83,7 @@ func TestRunOpensGateOnQuestion(t *testing.T) {
 func TestRunAutoEscalatesBeforeGating(t *testing.T) {
 	d, prompts := scriptedDispatch(t, implAsks, implDone, reviewOK, implDone, reviewOK, reviewOK)
 	c := testController(t, d, NewFakeCommandRunner())
-	c.Git.(*FakeGitOps).Dirty = true
+	c.Git.(*worktree.FakeGitOps).Dirty = true
 	c.AutoEscalate = true
 
 	if err := c.Run(context.Background()); err != nil {
@@ -98,7 +100,7 @@ func TestRunAutoEscalatesBeforeGating(t *testing.T) {
 func TestRunResumesAfterAnswer(t *testing.T) {
 	d, prompts := scriptedDispatch(t, implAsks, implDone, reviewOK, implDone, reviewOK, reviewOK)
 	c := testController(t, d, NewFakeCommandRunner())
-	c.Git.(*FakeGitOps).Dirty = true
+	c.Git.(*worktree.FakeGitOps).Dirty = true
 
 	if err := c.Run(context.Background()); !errors.Is(err, ErrHumanGateRequired) {
 		t.Fatalf("first Run = %v, want the gate", err)
@@ -121,7 +123,7 @@ func TestBranchReviewFixesOnce(t *testing.T) {
 		reviewOK,
 	)
 	c := testController(t, d, NewFakeCommandRunner())
-	c.Git.(*FakeGitOps).Dirty = true
+	c.Git.(*worktree.FakeGitOps).Dirty = true
 
 	if err := c.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -132,7 +134,7 @@ func TestBranchReviewFixesOnce(t *testing.T) {
 	if !strings.Contains((*prompts)[5], "duplicated task 1's helper") {
 		t.Errorf("branch fix dispatch lost the finding:\n%s", (*prompts)[5])
 	}
-	g := c.Git.(*FakeGitOps)
+	g := c.Git.(*worktree.FakeGitOps)
 	last := g.Commits[len(g.Commits)-1]
 	if !strings.Contains(last, "branch review fix") {
 		t.Errorf("last commit = %q, want the branch review fix", last)
@@ -146,7 +148,7 @@ func TestBranchReviewCarriesMinorRollup(t *testing.T) {
 		reviewOK,
 	)
 	c := testController(t, d, NewFakeCommandRunner())
-	c.Git.(*FakeGitOps).Dirty = true
+	c.Git.(*worktree.FakeGitOps).Dirty = true
 
 	if err := c.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)

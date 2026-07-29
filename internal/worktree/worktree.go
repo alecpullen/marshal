@@ -1,4 +1,4 @@
-package pipeline
+package worktree
 
 import (
 	"fmt"
@@ -23,25 +23,25 @@ func EnsureWorktree(git GitOps, repoRoot, worktreesDir, branch, startRef string)
 	if git.BranchExists(repoRoot, branch) {
 		existing, err := git.WorktreeList(repoRoot)
 		if err != nil {
-			return Worktree{}, fmt.Errorf("pipeline worktree: list: %w", err)
+			return Worktree{}, fmt.Errorf("worktree: list: %w", err)
 		}
 		for _, p := range existing {
 			if p == path {
 				base, err := git.RevParse(repoRoot, branch)
 				if err != nil {
-					return Worktree{}, fmt.Errorf("pipeline worktree: rev-parse %s: %w", branch, err)
+					return Worktree{}, fmt.Errorf("worktree: rev-parse %s: %w", branch, err)
 				}
 				return Worktree{Path: path, Branch: branch, Base: base}, nil
 			}
 		}
-		return Worktree{}, fmt.Errorf("pipeline worktree: branch %s already exists but has no worktree at %s; delete the branch or remove it by hand before resuming", branch, path)
+		return Worktree{}, fmt.Errorf("worktree: branch %s already exists but has no worktree at %s; delete the branch or remove it by hand before resuming", branch, path)
 	}
 	base, err := git.RevParse(repoRoot, startRef)
 	if err != nil {
-		return Worktree{}, fmt.Errorf("pipeline worktree: rev-parse %s: %w", startRef, err)
+		return Worktree{}, fmt.Errorf("worktree: rev-parse %s: %w", startRef, err)
 	}
 	if err := git.WorktreeAdd(repoRoot, path, branch, base); err != nil {
-		return Worktree{}, fmt.Errorf("pipeline worktree: add %s: %w", path, err)
+		return Worktree{}, fmt.Errorf("worktree: add %s: %w", path, err)
 	}
 	return Worktree{Path: path, Branch: branch, Base: base}, nil
 }

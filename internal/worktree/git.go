@@ -1,4 +1,4 @@
-package pipeline
+package worktree
 
 import (
 	"fmt"
@@ -6,11 +6,12 @@ import (
 	"strings"
 )
 
-// GitOps is the seam over git. Every pipeline subsystem depends on this
-// interface, never on exec.Command directly, so the controller can be
-// tested without a real repository. Each method takes the working
-// directory it runs in: the controller resolves refs against the main
-// checkout while committing inside the run's worktree.
+// GitOps is the seam over git. Every worktree consumer (the pipeline
+// controller and the agent tool) depends on this interface, never on
+// exec.Command directly, so the controller can be tested without a real
+// repository. Each method takes the working directory it runs in: the
+// controller resolves refs against the main checkout while committing
+// inside the run's worktree.
 type GitOps interface {
 	RevParse(dir, ref string) (string, error)
 	MergeBase(dir, a, b string) (string, error)
@@ -35,7 +36,7 @@ func (CLIGitOps) run(dir string, args ...string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
-		return "", fmt.Errorf("pipeline git: %s: %w: %s", strings.Join(args, " "), err, s)
+		return "", fmt.Errorf("worktree git: %s: %w: %s", strings.Join(args, " "), err, s)
 	}
 	return s, nil
 }

@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"marshal/internal/worktree"
 )
 
 func TestWriteReviewPackage(t *testing.T) {
-	g := NewFakeGitOps()
+	g := worktree.NewFakeGitOps()
 	g.LogOut = "abc1234 task 1 — first thing"
 	g.StatOut = " a.go | 10 ++++++++++"
 	g.DiffOut = "diff --git a/a.go b/a.go\n+func A() {}"
@@ -37,7 +39,7 @@ func TestWriteReviewPackage(t *testing.T) {
 // superpowers skill warns about with HEAD~1.
 func TestWriteReviewPackageMultiCommitRange(t *testing.T) {
 	repo := initRepo(t)
-	g := CLIGitOps{}
+	g := worktree.CLIGitOps{}
 	base, err := g.RevParse(repo, "HEAD")
 	if err != nil {
 		t.Fatalf("RevParse: %v", err)

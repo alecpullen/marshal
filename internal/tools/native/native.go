@@ -189,6 +189,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.referencesTool(),
 		tools.definitionTool(),
 		tools.hoverTool(),
+		tools.workspaceWorktreeTool(),
 	}
 	if recallToolEnabled(tools.config.Session.Rollover) {
 		all = append(all, tools.recallHistoryTool())
@@ -212,6 +213,26 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	}
 
 	return nil
+}
+
+// activeRoot returns the directory tools currently operate in: the
+// session's active root when a session is wired, else the root captured
+// at construction (tests, and sessions that never enter a worktree).
+// Reading through the session on each call avoids a second, racy source
+// of truth.
+//
+// The empty-ActiveRoot fallback is defensive: SetWorkspace coerces an
+// empty ActiveRoot to ProjectRoot before storing, so the only way to
+// observe ActiveRoot == "" here is if a future caller bypasses the
+// setter. Falling back to the construction root is the safe choice in
+// that case.
+func (t *toolSet) activeRoot() string {
+	if t.sessionState != nil {
+		if ws := t.sessionState.Workspace(); ws.ActiveRoot != "" {
+			return ws.ActiveRoot
+		}
+	}
+	return t.root
 }
 
 func newToolSet(opts Options) (*toolSet, error) {

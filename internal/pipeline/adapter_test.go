@@ -7,12 +7,13 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/worktree"
 )
 
 func TestAdapterMirrorsEventsIntoSession(t *testing.T) {
 	d, _ := scriptedDispatch(t, implDone, reviewOK, implDone, reviewOK, reviewOK)
 	c := testController(t, d, NewFakeCommandRunner())
-	c.Git.(*FakeGitOps).Dirty = true
+	c.Git.(*worktree.FakeGitOps).Dirty = true
 	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	a := NewControllerAdapter(c, st)
 
@@ -34,7 +35,7 @@ func TestAdapterMirrorsEventsIntoSession(t *testing.T) {
 func TestAdapterSurfacesGateAndAnswer(t *testing.T) {
 	d, _ := scriptedDispatch(t, implAsks, implDone, reviewOK, implDone, reviewOK, reviewOK)
 	c := testController(t, d, NewFakeCommandRunner())
-	c.Git.(*FakeGitOps).Dirty = true
+	c.Git.(*worktree.FakeGitOps).Dirty = true
 	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	a := NewControllerAdapter(c, st)
 

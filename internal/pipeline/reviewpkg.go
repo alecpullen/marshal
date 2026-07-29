@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"marshal/internal/worktree"
 )
 
 // WriteReviewPackage writes the commit list, stat summary, and full diff
 // for a commit range into one file. The reviewer reads this file instead of
 // running git itself, and the diff never enters the controller's own
 // context.
-func WriteReviewPackage(git GitOps, dir, rng, path string) error {
+func WriteReviewPackage(git worktree.GitOps, dir, rng, path string) error {
 	log, err := git.LogOneline(dir, rng)
 	if err != nil {
 		return fmt.Errorf("pipeline review package: log %s: %w", rng, err)

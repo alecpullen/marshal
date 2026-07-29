@@ -136,6 +136,9 @@ type BrowserInfo struct {
 
 type State struct {
 	Config     config.Config
+	// WorkingDir is the project root and never changes for the session's
+	// lifetime. Tools that must follow a worktree rebind read
+	// Workspace().ActiveRoot instead; see workspace.go.
 	WorkingDir string
 	StartedAt  time.Time
 	db         *db.DB
@@ -172,6 +175,12 @@ type State struct {
 	trusted         bool
 	turnIndex       int
 	snapshotter     Snapshotter
+
+	// workspace is the session's current project/active-root pair and the
+	// broker rebinds are published on. Guarded by mu like the rest of this
+	// block. See workspace.go.
+	workspace       Workspace
+	workspaceBroker *pubsub.Broker[WorkspaceEvent]
 
 	runningJobs     int
 	subagentDepth   int
@@ -379,12 +388,14 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		msgByID:       make(map[int64]*Message),
 		dbIDToImID:    make(map[int64]int64),
 		nextMsgID:     1,
+		workspace:     Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	if s.persistenceEnabled() {
 		s.loadFromDB()
+		s.restoreWorkspace()
 	}
 	return s
 }

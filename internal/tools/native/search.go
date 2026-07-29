@@ -48,9 +48,9 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			limit = hardSearchMaxResults
 		}
 
-		start := t.root
+		start := t.activeRoot()
 		if args.Path != "" {
-			start, err = resolveWorkspacePathMulti(t.root, t.additionalRoots, args.Path)
+			start, err = resolveWorkspacePathMulti(t.activeRoot(), t.additionalRoots, args.Path)
 			if err != nil {
 				return registry.ToolResult{}, err
 			}
@@ -155,7 +155,7 @@ func (t *toolSet) searchFile(path string, query string, remaining int) []string 
 	if err != nil {
 		return nil
 	}
-	rel, err := workspaceRel(t.root, resolvedPath)
+	rel, err := workspaceRel(t.activeRoot(), resolvedPath)
 	if err != nil {
 		return nil
 	}

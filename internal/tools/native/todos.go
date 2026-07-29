@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
@@ -40,7 +41,16 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 			return registry.ToolResult{}, err
 		}
 		inProgress := 0
-		for _, item := range args.Todos {
+		for i, item := range args.Todos {
+			// registry.ValidateArgs only checks that the arguments are a
+			// JSON object — the declared schema's "required" is not
+			// enforced — so content has to be checked here, the same way
+			// status already is. Without this a model that names the field
+			// anything other than "content" writes a list of empty items
+			// and the todo panel draws glyphs with no text next to them.
+			if strings.TrimSpace(item.Content) == "" {
+				return registry.ToolResult{}, fmt.Errorf("todo %d has empty content; each item needs a non-empty %q string describing the task", i+1, "content")
+			}
 			switch item.Status {
 			case TodoPending, TodoInProgress, TodoCompleted:
 				if item.Status == TodoInProgress {

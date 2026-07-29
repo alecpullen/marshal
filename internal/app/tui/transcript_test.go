@@ -587,8 +587,11 @@ func TestCompletedFileWritePatchRendersDiff(t *testing.T) {
 	if !strings.Contains(out, "Edit file") {
 		t.Fatalf("missing pretty tool name: %q", out)
 	}
-	if !strings.Contains(out, "+ new") || !strings.Contains(out, "- old") {
-		t.Fatalf("missing diff content: %q", out)
+	if !strings.Contains(out, "a.go") {
+		t.Fatalf("missing file stat header: %q", out)
+	}
+	if !strings.Contains(out, "+1 −1") {
+		t.Fatalf("missing stat line: %q", out)
 	}
 }
 
@@ -605,8 +608,8 @@ func TestCompletedFileWritePatchTruncatesLongDiff(t *testing.T) {
 		ResultContent: long.String(),
 	}
 	out := stripANSI(renderCompletedToolCall(event, 80))
-	if !strings.Contains(out, "Diff:") {
-		t.Fatalf("missing diff header: %q", out)
+	if !strings.Contains(out, "a.go") {
+		t.Fatalf("missing file stat header: %q", out)
 	}
 	if !strings.Contains(out, "more lines") {
 		t.Fatalf("long diff should be truncated with indicator: %q", out)
@@ -640,5 +643,70 @@ func TestActiveToolCallNoOutputShowsNothing(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) > 3 {
 		t.Fatalf("expected at most 3 lines (header, command, blank), got %d: %q", len(lines), out)
+	}
+}
+
+// unifiedDiffForFile builds one file's worth of unified diff with pairs
+// removed/added body lines each.
+func unifiedDiffForFile(path string, pairs int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- a/%s\n+++ b/%s\n@@ -1,%d +1,%d @@\n", path, path, pairs, pairs)
+	for i := 0; i < pairs; i++ {
+		fmt.Fprintf(&b, "-old line %d\n+new line %d\n", i, i)
+	}
+	return b.String()
+}
+
+func TestCompletedToolCallRendersEveryFileInMultiFilePatch(t *testing.T) {
+	diff := unifiedDiffForFile("alpha.go", 4) + unifiedDiffForFile("beta.go", 4) + unifiedDiffForFile("gamma.go", 4)
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultSummary: "applied patch",
+		ResultContent: diff,
+	}, 80))
+	for _, path := range []string{"alpha.go", "beta.go", "gamma.go"} {
+		if !strings.Contains(out, path) {
+			t.Fatalf("diff output missing stat header for %s:\n%s", path, out)
+		}
+	}
+	if !strings.Contains(out, "+4 −4") {
+		t.Fatalf("diff output missing +N −M stats:\n%s", out)
+	}
+	// The flat 20-line cap this replaces would have dropped gamma.go's body.
+	if !strings.Contains(out, "new line 3") {
+		t.Fatalf("later files lost their body lines:\n%s", out)
+	}
+}
+
+func TestCompletedToolCallCapsBodyLinesPerFile(t *testing.T) {
+	diff := unifiedDiffForFile("big.go", 20) // 41 rendered lines: hunk header + 40 body
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultSummary: "applied patch",
+		ResultContent: diff,
+	}, 80))
+	if !strings.Contains(out, "more lines") {
+		t.Fatalf("expected per-file elision of lines:\n%s", out)
+	}
+}
+
+func TestCompletedToolCallCapsFilesShown(t *testing.T) {
+	var diff string
+	for i := 0; i < 7; i++ {
+		diff += unifiedDiffForFile(fmt.Sprintf("file%d.go", i), 1)
+	}
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultSummary: "applied patch",
+		ResultContent: diff,
+	}, 80))
+	if !strings.Contains(out, "… 1 more files") {
+		t.Fatalf("expected file-cap elision line:\n%s", out)
+	}
+	if !strings.Contains(out, "file5.go") {
+		t.Fatalf("sixth file should still render:\n%s", out)
+	}
+	if strings.Contains(out, "file6.go") {
+		t.Fatalf("seventh file should be elided:\n%s", out)
 	}
 }

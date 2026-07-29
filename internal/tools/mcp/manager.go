@@ -172,16 +172,23 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 
 	for i := range pending {
 		p := pending[i]
-		err := reg.Register(registry.Tool{
+		if err := reg.Register(registry.Tool{
 			Name:        p.name,
 			Description: p.description,
 			Schema:      p.schema,
 			Risk:        registry.RiskWorkspaceWrite, // secure default; configurable via policy
 			Deferred:    deferred,
 			Handler:     m.makeHandler(p.client, p.client.Name, p.mcpToolName),
-		})
-		if err != nil {
-			return fmt.Errorf("register MCP tool %q: %w", p.name, err)
+		}); err != nil {
+			// A third-party server may advertise a schema we cannot compile.
+			// Skip that one tool rather than losing every other tool from
+			// this server and the ones after it.
+			m.log().Warn("mcp: tool skipped",
+				"server", p.client.Name,
+				"tool", p.mcpToolName,
+				"error", err,
+			)
+			continue
 		}
 	}
 	return nil

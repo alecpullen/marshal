@@ -372,6 +372,52 @@ func TestStartAcceptsNpx(t *testing.T) {
 	}
 }
 
+// One MCP tool with an uncompilable schema must not cost the user the other
+// tools from the same server. Registration fails closed per tool (see
+// registry.Register), so without the skip the first bad tool aborts the loop.
+func TestRegisterToolsSkipsUncompilableSchema(t *testing.T) {
+	if os.Getenv("BE_MOCK_SERVER") == "1" {
+		mockServerMain()
+		return
+	}
+
+	ctx := context.Background()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"mock": {
+			Command: exe,
+			Args:    []string{"-test.run=TestRegisterToolsSkipsUncompilableSchema"},
+			Env:     map[string]string{"BE_MOCK_SERVER": "1"},
+			Trust:   "unrestricted",
+		},
+	}
+
+	mgr := NewManager(&cfg)
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer mgr.Close()
+
+	reg := registry.New()
+	if err := mgr.RegisterTools(reg); err != nil {
+		t.Fatalf("RegisterTools = %v, want nil (a bad tool must be skipped, not fatal)", err)
+	}
+
+	for _, name := range []string{"mcp.mock.hello", "mcp.mock.goodbye"} {
+		if _, ok := reg.Lookup(name); !ok {
+			t.Errorf("%s was not registered; one bad sibling took down the server", name)
+		}
+	}
+	if _, ok := reg.Lookup("mcp.mock.broken"); ok {
+		t.Error("mcp.mock.broken registered despite an uncompilable schema")
+	}
+}
+
 // hangingServerMain is a minimal MCP server that completes the initialize
 // handshake but never responds to tools/list (or any subsequent request),
 // simulating a hanging server.

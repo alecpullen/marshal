@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	implDone   = "STATUS: DONE\nTESTS: go test ./... — pass\n"
-	reviewOK   = "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n"
-	implAsks   = "STATUS: NEEDS_CONTEXT\nQUESTION: user level or system level?\n"
+	implDone = "STATUS: DONE\nTESTS: go test ./... — pass\n"
+	reviewOK = "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n"
+	implAsks = "STATUS: NEEDS_CONTEXT\nQUESTION: user level or system level?\n"
 )
 
 func TestRunExecutesEveryTaskThenBranchReview(t *testing.T) {

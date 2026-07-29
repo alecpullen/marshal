@@ -59,28 +59,28 @@ type DBCloser interface {
 // survive for the duration of a session. A Runtime created by StartRuntime
 // must be torn down with Close exactly once when the consumer is finished.
 type Runtime struct {
-	Config         config.Config
-	Layers         config.Layers
-	State          *session.State
-	Runner         *agent.Runner
-	ToolRegistry   *registry.Registry
-	SwarmRunner    *swarm.Orchestrator
+	Config       config.Config
+	Layers       config.Layers
+	State        *session.State
+	Runner       *agent.Runner
+	ToolRegistry *registry.Registry
+	SwarmRunner  *swarm.Orchestrator
 	// PipelineFactory builds a plan-execution runner for one plan file.
 	PipelineFactory func(planPath string) tui.AgentRunner
-	DB             DBCloser
-	ProjectID      int64
-	SessionID      string
-	JobBroker      BrokerCloser
-	SteeringBroker BrokerCloser
-	EventBroker       BrokerCloser
-	WorkspaceBroker   BrokerCloser
-	MCPManager        MCPCloser
-	Snapshot       SnapshotCloser
-	Logger         *slog.Logger
-	WorkingDir     string
-	HomeDir        string
-	DataDir        string
-	SkillIndex     *skills.Index
+	DB              DBCloser
+	ProjectID       int64
+	SessionID       string
+	JobBroker       BrokerCloser
+	SteeringBroker  BrokerCloser
+	EventBroker     BrokerCloser
+	WorkspaceBroker BrokerCloser
+	MCPManager      MCPCloser
+	Snapshot        SnapshotCloser
+	Logger          *slog.Logger
+	WorkingDir      string
+	HomeDir         string
+	DataDir         string
+	SkillIndex      *skills.Index
 	// PluginCommands are slash commands contributed by verified plugins.
 	// Run() registers them into the TUI command registry; headless
 	// sessions ignore them.
@@ -536,14 +536,14 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	}
 
 	rt := &Runtime{
-		Config:           cfg,
-		Layers:           layers,
-		State:            state,
-		Runner:           runner,
-		ToolRegistry:     toolReg,
-		SwarmRunner:      swarmRunner,
-		PipelineFactory:  pipelineFactory,
-		DB:               database,
+		Config:             cfg,
+		Layers:             layers,
+		State:              state,
+		Runner:             runner,
+		ToolRegistry:       toolReg,
+		SwarmRunner:        swarmRunner,
+		PipelineFactory:    pipelineFactory,
+		DB:                 database,
 		ProjectID:          projectID,
 		SessionID:          sessionID,
 		JobBroker:          jobBroker,

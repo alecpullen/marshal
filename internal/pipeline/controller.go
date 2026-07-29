@@ -64,13 +64,13 @@ type ControllerOpts struct {
 // Controller executes a plan task-by-task. It is single-threaded: exactly
 // one subagent runs at a time.
 type Controller struct {
-	Plan         *Plan
-	Paths        Paths
-	Ledger       Ledger
-	Git          worktree.GitOps
-	Dispatch     Dispatcher
-	Verifier     Verifier
-	Worktree     worktree.Worktree
+	Plan     *Plan
+	Paths    Paths
+	Ledger   Ledger
+	Git      worktree.GitOps
+	Dispatch Dispatcher
+	Verifier Verifier
+	Worktree worktree.Worktree
 
 	RepoRoot     string
 	MaxFixRounds int

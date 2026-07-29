@@ -9,12 +9,12 @@ import (
 
 func TestSDDPanelRendersPlanAndBranch(t *testing.T) {
 	p := session.SDDProgress{
-		Active:     true,
-		PlanName:   "my-plan",
-		Branch:     "pipeline/my-plan",
-		TotalTasks: 3,
+		Active:      true,
+		PlanName:    "my-plan",
+		Branch:      "pipeline/my-plan",
+		TotalTasks:  3,
 		CurrentTask: 1,
-		Phase:      "implementing",
+		Phase:       "implementing",
 	}
 	out := sddPanel(p, 60)
 	if !strings.Contains(out, "my-plan") || !strings.Contains(out, "pipeline/my-plan") {

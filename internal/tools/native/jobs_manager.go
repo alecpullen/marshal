@@ -54,8 +54,8 @@ type JobInfo struct {
 // Jobs are run through the configured CommandRunner rather than directly
 // managing OS processes.
 type JobManager struct {
-	runner         CommandRunner
-	dir            string
+	runner CommandRunner
+	dir    string
 	// dirFn, when set via SetDirFunc, resolves the working directory for
 	// each job at start time (the session's active root). Until set, jobs
 	// use dir.

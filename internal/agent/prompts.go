@@ -87,7 +87,6 @@ var roleAddenda = map[AgentRole]rolePrompt{
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Read the full plan to check coverage.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "feature-plan.md"}}}`,
 	},
-
 }
 
 const baseIdentity = `You are Marshal, a local-first coding assistant operating inside the user's repository.`

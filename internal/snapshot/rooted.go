@@ -36,7 +36,7 @@ func (r *Rooted) svc() *Service {
 	return New(r.dataDir, root, r.maxFile, r.ignore, r.logger)
 }
 
-func (r *Rooted) Track(ctx context.Context) (string, error)        { return r.svc().Track(ctx) }
+func (r *Rooted) Track(ctx context.Context) (string, error) { return r.svc().Track(ctx) }
 func (r *Rooted) Diff(ctx context.Context, hash string) (string, error) {
 	return r.svc().Diff(ctx, hash)
 }

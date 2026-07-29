@@ -135,7 +135,7 @@ type BrowserInfo struct {
 }
 
 type State struct {
-	Config     config.Config
+	Config config.Config
 	// WorkingDir is the project root and never changes for the session's
 	// lifetime. Tools that must follow a worktree rebind read
 	// Workspace().ActiveRoot instead; see workspace.go.

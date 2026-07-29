@@ -221,11 +221,11 @@ type Model struct {
 	pickerCommand string
 	dock          dock.Host
 
-	spinner           Spinner
-	spinnerFrame      string
-	successPulse      bool
-	successPulseAt    time.Time
-	now               func() time.Time
+	spinner        Spinner
+	spinnerFrame   string
+	successPulse   bool
+	successPulseAt time.Time
+	now            func() time.Time
 
 	// Pinned todo panel (Ctrl+T cycles expanded → collapsed → hidden).
 	// todosDismissed hides the all-done summary from the next turn

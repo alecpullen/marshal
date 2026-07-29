@@ -37,6 +37,9 @@ func (a *ControllerAdapter) SetForceClass(string)                   {}
 func (a *ControllerAdapter) SetPolicyRules([]config.PermissionRule) {}
 func (a *ControllerAdapter) SetApprovalMode(policy.ApprovalMode)    {}
 
-// ResolveGate delegates to the underlying controller. Called by the TUI
-// when the human resolves a gate (presses y).
+// AnswerGate delegates to the underlying controller. Called by the TUI
+// when the human answers a gate question.
+func (a *ControllerAdapter) AnswerGate(answer string) { a.c.Answer(answer) }
+
+// ResolveGate is the legacy gate resolution; kept for backward compatibility.
 func (a *ControllerAdapter) ResolveGate() { a.c.ResolveGate() }

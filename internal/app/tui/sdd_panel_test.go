@@ -7,44 +7,37 @@ import (
 	"marshal/internal/app/session"
 )
 
-func TestSDDPanelRendersTaskRows(t *testing.T) {
+func TestSDDPanelRendersPlanAndBranch(t *testing.T) {
 	p := session.SDDProgress{
-		Active:          true,
-		PlanName:        "my-plan",
-		ControllerState: "DRAIN_ITERATION",
-		TotalTasks:      3,
-		DoneTasks:       1,
-		Tasks: []session.SDDTaskStatus{
-			{Name: "T1", Phase: session.SDDPhaseDone},
-			{Name: "T2", Phase: session.SDDPhaseActive, Implementer: session.SDDPhaseActive, FixRound: 1, MaxFixes: 3},
-			{Name: "T3", Phase: session.SDDPhasePending},
-		},
-		BranchReview: session.SDDPhasePending,
+		Active:     true,
+		PlanName:   "my-plan",
+		Branch:     "pipeline/my-plan",
+		TotalTasks: 3,
+		CurrentTask: 1,
+		Phase:      "implementing",
 	}
 	out := sddPanel(p, 60)
-	if !strings.Contains(out, "T1") || !strings.Contains(out, "T2") || !strings.Contains(out, "T3") {
-		t.Errorf("panel missing task rows: %q", out)
+	if !strings.Contains(out, "my-plan") || !strings.Contains(out, "pipeline/my-plan") {
+		t.Errorf("panel missing plan/branch: %q", out)
 	}
-	if !strings.Contains(out, "drain_iteration") {
-		t.Errorf("panel missing controller state: %q", out)
+	if !strings.Contains(out, "task 1/3") || !strings.Contains(out, "implementing") {
+		t.Errorf("panel missing task/phase: %q", out)
 	}
 }
 
-func TestSDDPanelShowsRetryCount(t *testing.T) {
+func TestSDDPanelShowsFixRound(t *testing.T) {
 	p := session.SDDProgress{
-		Active:          true,
-		PlanName:        "my-plan",
-		ControllerState: "DRAIN_ITERATION",
-		TotalTasks:      2,
-		DoneTasks:       0,
-		Tasks: []session.SDDTaskStatus{
-			{Name: "T1", Phase: session.SDDPhaseActive, Implementer: session.SDDPhaseActive, FixRound: 1, MaxFixes: 3},
-			{Name: "T2", Phase: session.SDDPhaseDone},
-		},
+		Active:       true,
+		PlanName:     "p",
+		TotalTasks:   2,
+		CurrentTask:  1,
+		Phase:        "fixing",
+		FixRound:     1,
+		MaxFixRounds: 3,
 	}
 	out := sddPanel(p, 60)
-	if !strings.Contains(out, "retry 1/3") {
-		t.Errorf("panel missing retry count for T1: %q", out)
+	if !strings.Contains(out, "fix 1/3") {
+		t.Errorf("panel missing fix round: %q", out)
 	}
 }
 
@@ -56,93 +49,33 @@ func TestSDDPanelEmptyWhenInactive(t *testing.T) {
 	}
 }
 
-func TestSDDPanelShowsActiveSubPhase(t *testing.T) {
+func TestSDDPanelShowsDetailAndLedger(t *testing.T) {
 	p := session.SDDProgress{
-		Active:          true,
-		PlanName:        "p",
-		ControllerState: "RUNNING",
-		TotalTasks:      1,
-		DoneTasks:       0,
-		Tasks: []session.SDDTaskStatus{
-			{Name: "T1", Phase: session.SDDPhaseActive, Implementer: session.SDDPhaseActive},
-		},
+		Active:      true,
+		PlanName:    "p",
+		TotalTasks:  1,
+		CurrentTask: 1,
+		Phase:       "verifying",
+		Detail:      "go build ./...",
+		LastLedger:  "Task 1: gate passed",
 	}
 	out := sddPanel(p, 60)
-	if !strings.Contains(out, "implementer") {
-		t.Errorf("panel missing implementer sub-phase: %q", out)
+	if !strings.Contains(out, "go build") {
+		t.Errorf("panel missing detail: %q", out)
 	}
-}
-
-func TestActiveSubPhase(t *testing.T) {
-	cases := []struct {
-		name string
-		task session.SDDTaskStatus
-		want string
-	}{
-		{"implementer", session.SDDTaskStatus{Phase: session.SDDPhaseActive, Implementer: session.SDDPhaseActive}, "implementer"},
-		{"audit", session.SDDTaskStatus{Phase: session.SDDPhaseActive, Audit: session.SDDPhaseActive}, "audit"},
-		{"review", session.SDDTaskStatus{Phase: session.SDDPhaseActive, Review: session.SDDPhaseActive}, "review"},
-		{"default active", session.SDDTaskStatus{Phase: session.SDDPhaseActive}, "active"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := activeSubPhase(c.task)
-			if got != c.want {
-				t.Errorf("activeSubPhase(%+v) = %q, want %q", c.task, got, c.want)
-			}
-		})
-	}
-}
-
-func TestSDDPanelShowsBranchReview(t *testing.T) {
-	p := session.SDDProgress{
-		Active:          true,
-		PlanName:        "p",
-		ControllerState: "RUNNING",
-		TotalTasks:      1,
-		DoneTasks:       1,
-		Tasks: []session.SDDTaskStatus{
-			{Name: "T1", Phase: session.SDDPhaseDone},
-		},
-		BranchReview: session.SDDPhaseActive,
-	}
-	out := sddPanel(p, 60)
-	if !strings.Contains(out, "branch review: active") {
-		t.Errorf("panel missing branch review: %q", out)
-	}
-}
-
-func TestSDDPanelOmitsPendingBranchReview(t *testing.T) {
-	p := session.SDDProgress{
-		Active:          true,
-		PlanName:        "p",
-		ControllerState: "RUNNING",
-		TotalTasks:      1,
-		DoneTasks:       0,
-		Tasks: []session.SDDTaskStatus{
-			{Name: "T1", Phase: session.SDDPhaseActive, Implementer: session.SDDPhaseActive},
-		},
-		BranchReview: session.SDDPhasePending,
-	}
-	out := sddPanel(p, 60)
-	if strings.Contains(out, "branch review") {
-		t.Errorf("panel should omit pending branch review: %q", out)
+	if !strings.Contains(out, "gate passed") {
+		t.Errorf("panel missing ledger line: %q", out)
 	}
 }
 
 func TestSDDPanelShowsTokenUsage(t *testing.T) {
 	p := session.SDDProgress{
-		Active:          true,
-		PlanName:        "p",
-		ControllerState: "RUNNING",
-		TotalTasks:      2,
-		DoneTasks:       1,
-		TokensUsed:      150,
-		TokensMax:       4000,
-		Tasks: []session.SDDTaskStatus{
-			{Name: "T1", Phase: session.SDDPhaseDone},
-			{Name: "T2", Phase: session.SDDPhasePending},
-		},
+		Active:      true,
+		PlanName:    "p",
+		TotalTasks:  2,
+		CurrentTask: 1,
+		TokensUsed:  150,
+		TokensMax:   4000,
 	}
 	out := sddPanel(p, 60)
 	if !strings.Contains(out, "tokens 150/4000") {

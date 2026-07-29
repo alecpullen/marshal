@@ -8,7 +8,6 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
-	"marshal/internal/sdd"
 	"marshal/internal/tools/registry"
 )
 
@@ -19,33 +18,14 @@ import (
 // keys with no completion popup, Tab while an approval/question is
 // pending).
 func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
-	// SDD human gate: only y/n/esc are accepted while a gate is pending.
-	if m.pendingSDDGate {
-		switch msg.String() {
-		case "y":
-			m.pendingSDDGate = false
-			// ResolveGate reads the gate, advances the controller state
-			// machine, and clears it. Do NOT clear the gate here first.
-			if m.sddRunner != nil {
-				m.sddRunner.ResolveGate()
-			}
-			// Re-dispatch Run with the same plan path. The controller
-			// resumes from its saved State field. Read the plan path
-			// from the controller adapter's stored PlanPath.
-			goal := ""
-			if a, ok := m.sddRunner.(*sdd.ControllerAdapter); ok {
-				goal = a.Controller().PlanPath
-			}
-			_, cmd := m.startAgentRun(m.sddRunner, goal)
-			return *m, cmd, true
-		case "n", "esc":
-			m.pendingSDDGate = false
-			m.state.ClearSDDGate()
-			m.state.AddMessage(session.RoleSystem, "SDD gate aborted by user.", session.ContentTypePlain)
-			m.refreshViewport()
-			return *m, nil, true
-		}
-		// Any other key is swallowed while the gate is pending.
+	// Pipeline human gate: esc abandons the run; every other key falls
+	// through to the input so the user can type an answer. The Enter
+	// handler routes the submitted text to AnswerGate.
+	if m.pendingSDDGate && msg.String() == "esc" {
+		m.pendingSDDGate = false
+		m.state.ClearSDDGate()
+		m.state.AddMessage(session.RoleSystem, "Plan run stopped. Re-run /sdd with the same plan to resume from the ledger.", session.ContentTypePlain)
+		m.refreshViewport()
 		return *m, nil, true
 	}
 
@@ -191,6 +171,22 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, nil, false
 	case "enter":
+		// Pipeline human gate: submit the typed answer.
+		if m.pendingSDDGate {
+			answer := strings.TrimSpace(m.input.Value())
+			if answer == "" {
+				return *m, nil, true
+			}
+			m.input.SetValue("")
+			m.pendingSDDGate = false
+			m.state.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
+			if m.sddRunner != nil {
+				m.sddRunner.AnswerGate(answer)
+			}
+			goal := m.state.SDDProgress().PlanPath
+			_, cmd := m.startAgentRun(m.sddRunner, goal)
+			return *m, cmd, true
+		}
 		// F18: if a popup is visible, accept it (replaces the trigger
 		// token) and keep editing — Enter on a popup is a selection,
 		// not a submit. Esc is the way to dismiss without accepting.

@@ -45,8 +45,8 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
+	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
-	"marshal/internal/sdd"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -64,11 +64,10 @@ type AgentRunner interface {
 	SetForceClass(class string)
 	SetPolicyRules(rules []config.PermissionRule)
 	SetApprovalMode(mode policy.ApprovalMode)
-	// ResolveGate resolves the current SDD human gate and advances the
-	// controller state machine. Called by the TUI when the user presses y.
-	// Only the SDD runner (ControllerAdapter) implements this; the regular
-	// and swarm runners are no-ops.
-	ResolveGate()
+	// AnswerGate delivers the human's typed answer to a pipeline
+	// subagent's question. Only the pipeline runner (ControllerAdapter)
+	// acts on it; the regular and swarm runners are no-ops.
+	AnswerGate(answer string)
 }
 
 // CustomAgentRunnerFactory builds a one-shot AgentRunner for a named custom
@@ -2281,9 +2280,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.refreshRailChanged()
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: render the prompt and wait for user resolution.
-		if errors.Is(msg.err, sdd.ErrHumanGateRequired) {
+		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
 			gate := m.state.SDDGate()
-			if gate.Kind != "" {
+			if gate.Question != "" {
 				m.state.AddMessage(session.RoleSystem, sddGatePrompt(gate), session.ContentTypePlain)
 				m.pendingSDDGate = true
 				m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})

@@ -942,7 +942,7 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 func (f *fakeAgentRunner) SetForceClass(string)                   {}
 func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
 func (f *fakeAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (f *fakeAgentRunner) ResolveGate()                           {}
+func (f *fakeAgentRunner) AnswerGate(string)                           {}
 
 // blockingAgentRunner blocks on a channel in Run until the channel is
 // closed. Used by TestAgentCommandRegistersAndReleasesSessionWork to
@@ -960,7 +960,7 @@ func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
 func (b *blockingAgentRunner) SetForceClass(string)                   {}
 func (b *blockingAgentRunner) SetPolicyRules([]config.PermissionRule) {}
 func (b *blockingAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (b *blockingAgentRunner) ResolveGate()                           {}
+func (b *blockingAgentRunner) AnswerGate(string)                           {}
 
 type fakeSwarmRunner struct {
 	mu    sync.Mutex
@@ -977,7 +977,7 @@ func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
 func (f *fakeSwarmRunner) SetForceClass(string)                   {}
 func (f *fakeSwarmRunner) SetPolicyRules([]config.PermissionRule) {}
 func (f *fakeSwarmRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (f *fakeSwarmRunner) ResolveGate()                           {}
+func (f *fakeSwarmRunner) AnswerGate(string)                           {}
 
 func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -1123,7 +1123,7 @@ func (f *fakeSDDRunner) Run(ctx context.Context, planPath string) error {
 func (f *fakeSDDRunner) SetForceClass(string)                   {}
 func (f *fakeSDDRunner) SetPolicyRules([]config.PermissionRule) {}
 func (f *fakeSDDRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (f *fakeSDDRunner) ResolveGate()                           {}
+func (f *fakeSDDRunner) AnswerGate(string)                           {}
 
 func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -4241,9 +4241,9 @@ func TestApplyNewConfigInvalidatesSetRegistry(t *testing.T) {
 
 func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetSDDProgress(session.SDDProgress{Active: true, PlanName: "p", ControllerState: "DRAIN", TotalTasks: 1, Tasks: []session.SDDTaskStatus{{Name: "T1", Phase: session.SDDPhaseActive}}})
+	m.state.SetSDDProgress(session.SDDProgress{Active: true, PlanName: "p", TotalTasks: 1, CurrentTask: 1, Phase: "implementing"})
 	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "SDD · p") {
+	if !strings.Contains(view, "plan · p") {
 		t.Errorf("view missing SDD panel: %q", view)
 	}
 }
@@ -5550,7 +5550,7 @@ func (r *testAgentRunner) Run(ctx context.Context, goal string) error   { return
 func (r *testAgentRunner) SetForceClass(class string)                   {}
 func (r *testAgentRunner) SetPolicyRules(rules []config.PermissionRule) {}
 func (r *testAgentRunner) SetApprovalMode(mode policy.ApprovalMode)     {}
-func (r *testAgentRunner) ResolveGate()                                 {}
+func (r *testAgentRunner) AnswerGate(string)                                 {}
 
 // newStatusTestModelFromTemp builds a Model rooted in a temp git repo so
 // gitInfo resolves. Used by the git-info wiring tests.

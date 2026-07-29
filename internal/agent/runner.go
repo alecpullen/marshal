@@ -296,9 +296,9 @@ func (r *Runner) SetApprovalMode(m policy.ApprovalMode) {
 	}
 }
 
-// ResolveGate satisfies tui.AgentRunner. The regular agent runner does not
-// use human gates; this is a no-op.
-func (r *Runner) ResolveGate() {}
+// AnswerGate satisfies tui.AgentRunner. The interactive runner has no
+// human gates; this is a no-op.
+func (r *Runner) AnswerGate(string) {}
 
 func (r *Runner) SetPolicyRules(rules []config.PermissionRule) {
 	prules := make([]permissions.Rule, 0, len(rules))

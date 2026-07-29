@@ -426,12 +426,12 @@ func TestStatusFooterOmitsToolActivity(t *testing.T) {
 	}
 }
 
-func TestStatusLineShowsSDDControllerState(t *testing.T) {
+func TestStatusLineShowsSDDPhase(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetSDDProgress(session.SDDProgress{Active: true, ControllerState: "BRANCH_REVIEW"})
+	m.state.SetSDDProgress(session.SDDProgress{Active: true, Phase: "branch review"})
 	line := stripANSI(m.renderStatusLine(100))
-	if !strings.Contains(line, "sdd") || !strings.Contains(line, "branch_review") {
-		t.Errorf("status line missing sdd + controller state: %q", line)
+	if !strings.Contains(line, "sdd") || !strings.Contains(line, "branch review") {
+		t.Errorf("status line missing sdd + phase: %q", line)
 	}
 }
 

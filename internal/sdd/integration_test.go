@@ -144,8 +144,8 @@ func TestIntegrationEscalation(t *testing.T) {
 		t.Errorf("c.State = %v, want StateBlocked", c.State)
 	}
 	gate := ss.SDDGate()
-	if gate.Kind != "escalation" {
-		t.Errorf("SDDGate.Kind = %q, want \"escalation\"", gate.Kind)
+	if gate.Question == "" {
+		t.Errorf("SDDGate.Question is empty, want a question string")
 	}
 	if len(c.BlockedTasks) != 1 || c.BlockedTasks[0].Reason != "DIRTY_MAIN_REPO" {
 		t.Errorf("BlockedTasks = %v, want [{Task:T1 Reason:DIRTY_MAIN_REPO}]", c.BlockedTasks)

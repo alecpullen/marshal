@@ -127,8 +127,8 @@ func (c *Controller) Run(ctx context.Context) error {
 			}
 			// No approved spec — surface human gate.
 			c.SessionState.SetSDDGate(session.SDDGate{
-				Kind:   "spec_approval",
-				Reason: "spec.md needs human approval before decomposition",
+				TaskN:    0,
+				Question: "spec.md needs human approval before decomposition",
 			})
 			c.State = StateSpecGate
 			return ErrHumanGateRequired
@@ -188,7 +188,7 @@ func (c *Controller) Run(ctx context.Context) error {
 				c.BlockedTasks = report.BlockedTasks
 				c.State = StateBlocked
 			case ReportNeedsHuman:
-				c.SessionState.SetSDDGate(session.SDDGate{Kind: "escalation", Reason: "orchestrator returned NEEDS_HUMAN"})
+				c.SessionState.SetSDDGate(session.SDDGate{TaskN: 0, Question: "orchestrator returned NEEDS_HUMAN"})
 				return ErrHumanGateRequired
 			case ReportHealthAlert:
 				c.State = StateBlocked
@@ -204,13 +204,13 @@ func (c *Controller) Run(ctx context.Context) error {
 						return fmt.Errorf("controller: rescue dispatch: %w", err)
 					}
 					if rep.Status == ReportNeedsHuman {
-						c.SessionState.SetSDDGate(session.SDDGate{Kind: "escalation", Reason: "rescue recommends human intervention"})
+						c.SessionState.SetSDDGate(session.SDDGate{TaskN: 0, Question: "rescue recommends human intervention"})
 						return ErrHumanGateRequired
 					}
 					c.State = StateDrainIteration
 					continue
 				}
-				c.SessionState.SetSDDGate(session.SDDGate{Kind: "escalation", Reason: "blocked with no tasks"})
+				c.SessionState.SetSDDGate(session.SDDGate{TaskN: 0, Question: "blocked with no tasks"})
 				return ErrHumanGateRequired
 			}
 			// Attempt deterministic fixes for each blocked task.
@@ -233,7 +233,7 @@ func (c *Controller) Run(ctx context.Context) error {
 				return fmt.Errorf("controller: rescue dispatch: %w", err)
 			}
 			if rep.Status == ReportNeedsHuman {
-				c.SessionState.SetSDDGate(session.SDDGate{Kind: "escalation", Reason: "rescue recommends human intervention"})
+				c.SessionState.SetSDDGate(session.SDDGate{TaskN: 0, Question: "rescue recommends human intervention"})
 				return ErrHumanGateRequired
 			}
 			c.State = StateDrainIteration
@@ -260,7 +260,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			}
 		case StateFinalMergeGate:
 			// Surface the final merge gate.
-			c.SessionState.SetSDDGate(session.SDDGate{Kind: "final_merge", Reason: "branch review passed; confirm final merge"})
+			c.SessionState.SetSDDGate(session.SDDGate{TaskN: 0, Question: "branch review passed; confirm final merge"})
 			return ErrHumanGateRequired
 		case StateFinalize:
 			guard := FinalizeConfirm(c.Git, c.RepoState)
@@ -282,14 +282,19 @@ func (c *Controller) Run(ctx context.Context) error {
 func (c *Controller) ResolveGate() {
 	gate := c.SessionState.SDDGate()
 	c.SessionState.ClearSDDGate()
-	switch gate.Kind {
-	case "spec_approval":
-		c.State = StateDecompose
-	case "final_merge":
-		c.State = StateFinalize
-	case "escalation":
-		c.State = StateDrainIteration
-	}
+	// The new gate shape carries a question; the controller always resumes
+	// from the blocked state. The old Kind-based dispatch is replaced by
+	// the pipeline controller's Answer mechanism.
+	_ = gate
+	c.State = StateDrainIteration
+}
+
+// Answer records the human's answer to a gate question and advances the
+// state machine. Called by the TUI via the adapter.
+func (c *Controller) Answer(answer string) {
+	c.SessionState.ClearSDDGate()
+	c.State = StateDrainIteration
+	_ = answer
 }
 
 // swapOrchestratorModel rebuilds the Orchestrator with a new RunnerFactory

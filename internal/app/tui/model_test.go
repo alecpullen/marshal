@@ -1134,7 +1134,7 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithSDDRunner(context.Background(), fake),
+		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return fake }),
 	)
 	model.resize(100, 40)
 
@@ -1195,14 +1195,13 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	}
 }
 
-func TestSDDPreflightMetaShowsModelTier(t *testing.T) {
+func TestSDDPreflightMetaShowsVerifyTimeout(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.SDD.DefaultModelTier = "strong"
 	m.state.Config.SDD.VerifyTimeoutMS = 600000
 	m.openRunPreflight("sdd", m.sddRunner, "/path/plan.md")
 	view := m.dock.View(m.width, m.height)
-	if !strings.Contains(view, "strong") || !strings.Contains(view, "600000") {
-		t.Errorf("preflight meta missing model tier/timeout: %q", view)
+	if !strings.Contains(view, "600000") {
+		t.Errorf("preflight meta missing verify timeout: %q", view)
 	}
 }
 
@@ -1215,7 +1214,7 @@ func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
 	}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithSDDRunner(context.Background(), fake),
+		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return fake }),
 	)
 	model.resize(100, 40)
 
@@ -1251,7 +1250,7 @@ func TestSDDCommandWithoutPlanOpensPlanPicker(t *testing.T) {
 	}
 	model := New(state,
 		WithCommandRegistry(cmdReg),
-		WithSDDRunner(context.Background(), &fakeSDDRunner{}),
+		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return &fakeSDDRunner{} }),
 	)
 
 	updated, _ := model.dispatchCommand("/sdd")
@@ -1289,7 +1288,7 @@ func TestSDDCommandWithoutRunnerReportsUnavailable(t *testing.T) {
 	_, _ = model.dispatchCommand("/sdd")
 	messages := state.Messages()
 	last := messages[len(messages)-1]
-	if !strings.Contains(last.Content, "SDD is not available") {
+	if !strings.Contains(last.Content, "Plan execution is not available") {
 		t.Fatalf("expected unavailable message, got %q", last.Content)
 	}
 	if model.busy {

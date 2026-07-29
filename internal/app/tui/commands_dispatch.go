@@ -116,8 +116,8 @@ func init() {
 			return m, nil
 		},
 		"sdd": func(m *Model, args []string) (tea.Model, tea.Cmd) {
-			if m.sddRunner == nil {
-				m.state.AddMessage(session.RoleSystem, "SDD is not available (agent failed to initialise).", session.ContentTypePlain)
+			if m.pipelineFactory == nil {
+				m.state.AddMessage(session.RoleSystem, "Plan execution is not available (agent failed to initialise).", session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
 			}
@@ -130,7 +130,13 @@ func init() {
 			if m.busy {
 				return m, nil
 			}
-			m.openRunPreflight("sdd", m.sddRunner, planPath)
+			runner := m.pipelineFactory(planPath)
+			if runner == nil {
+				m.refreshViewport()
+				return m, nil
+			}
+			m.sddRunner = runner
+			m.openRunPreflight("sdd", runner, planPath)
 			m.refreshViewport()
 			return m, nil
 		},

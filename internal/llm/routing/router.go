@@ -267,13 +267,10 @@ var (
 	// SDDCastRoles lists the worker roles used by the SDD pipeline. The
 	// orchestrator is intentionally excluded — it is dispatched by the
 	// controller (Go state machine), not shown as a worker in the pre-flight
-	// cast list. Spec §7 (6 workers) + §18 (pre-flight cast list shows 6).
+	// cast list.
 	SDDCastRoles = []AgentRole{
 		RoleSDDImplementer,
 		RoleSDDReviewer,
 		RoleSDDBranchReviewer,
-		RoleSDDAuditor,
-		RoleSDDInvestigator,
-		RoleSDDRescue,
 	}
 )

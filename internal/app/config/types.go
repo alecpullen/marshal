@@ -58,16 +58,23 @@ type SwarmBudgetConfig struct {
 	ToolIters      map[string]int `toml:"tool_iters"`
 }
 
-// SDDConfig holds run-level subagent-driven-development settings.
+// SDDConfig holds run-level settings for the plan-execution pipeline.
 type SDDConfig struct {
-	AutoWorktree         bool   `toml:"auto_worktree"`
-	MaxFixRounds         int    `toml:"max_fix_rounds"`
-	PlansDir             string `toml:"plans_dir"`
-	VerifyTimeoutMS      int    `toml:"verify_timeout_ms"`
-	DefaultModelTier     string `toml:"default_model_tier"`
-	CleanupAtStart       bool   `toml:"cleanup_at_start"`
-	MaxTotalTokens       int    `toml:"max_total_tokens"`
-	MaxWorkerConcurrency int    `toml:"max_worker_concurrency"`
+	AutoWorktree    bool            `toml:"auto_worktree"`
+	MaxFixRounds    int             `toml:"max_fix_rounds"`
+	PlansDir        string          `toml:"plans_dir"`
+	VerifyTimeoutMS int             `toml:"verify_timeout_ms"`
+	CleanupAtStart  bool            `toml:"cleanup_at_start"`
+	MaxTotalTokens  int             `toml:"max_total_tokens"`
+	Verify          SDDVerifyConfig `toml:"verify"`
+}
+
+// SDDVerifyConfig is the build and test gate the controller runs itself
+// after every task. Empty commands fall back to the Go defaults when the
+// repository has a go.mod, and otherwise skip the gate with a visible note.
+type SDDVerifyConfig struct {
+	Build string `toml:"build"`
+	Test  string `toml:"test"`
 }
 
 type MCPConfig struct {

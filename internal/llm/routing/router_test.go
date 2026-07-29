@@ -667,10 +667,9 @@ func TestRoleEmbeddingExcludedFromAllRoles(t *testing.T) {
 
 func TestAllRolesIncludesSDDProductionRoles(t *testing.T) {
 	want := []AgentRole{
-		RoleSDDOrchestrator,
-		RoleSDDAuditor,
-		RoleSDDInvestigator,
-		RoleSDDRescue,
+		RoleSDDImplementer,
+		RoleSDDReviewer,
+		RoleSDDBranchReviewer,
 	}
 	for _, r := range want {
 		found := false
@@ -708,9 +707,6 @@ func TestSDDCastRolesIsFullProductionCast(t *testing.T) {
 		RoleSDDImplementer:    true,
 		RoleSDDReviewer:       true,
 		RoleSDDBranchReviewer: true,
-		RoleSDDAuditor:        true,
-		RoleSDDInvestigator:   true,
-		RoleSDDRescue:         true,
 	}
 	if len(SDDCastRoles) != len(want) {
 		t.Fatalf("SDDCastRoles len = %d, want %d", len(SDDCastRoles), len(want))
@@ -718,13 +714,6 @@ func TestSDDCastRolesIsFullProductionCast(t *testing.T) {
 	for _, r := range SDDCastRoles {
 		if !want[r] {
 			t.Fatalf("unexpected role in SDDCastRoles: %q", r)
-		}
-	}
-	// Orchestrator is intentionally NOT a cast role — it is dispatched by the
-	// controller, not shown in the worker pre-flight list.
-	for _, r := range SDDCastRoles {
-		if r == RoleSDDOrchestrator {
-			t.Fatal("orchestrator must not be in SDDCastRoles (it is the controller's dispatch, not a worker)")
 		}
 	}
 }

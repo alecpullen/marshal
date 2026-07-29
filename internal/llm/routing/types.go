@@ -19,10 +19,12 @@ const (
 	RoleSDDImplementer    AgentRole = "sdd_implementer"
 	RoleSDDReviewer       AgentRole = "sdd_reviewer"
 	RoleSDDBranchReviewer AgentRole = "sdd_branch_reviewer"
-	RoleSDDOrchestrator   AgentRole = "sdd_orchestrator"
-	RoleSDDAuditor        AgentRole = "sdd_auditor"
-	RoleSDDInvestigator   AgentRole = "sdd_investigator"
-	RoleSDDRescue         AgentRole = "sdd_rescue"
+	// Deprecated: these roles are unused by the pipeline controller but
+	// kept so the legacy internal/sdd package still compiles until Task 14.
+	RoleSDDOrchestrator AgentRole = "sdd_orchestrator"
+	RoleSDDAuditor      AgentRole = "sdd_auditor"
+	RoleSDDInvestigator AgentRole = "sdd_investigator"
+	RoleSDDRescue       AgentRole = "sdd_rescue"
 
 	// RoleEmbedding selects the text-embedding provider+model. It is
 	// deliberately excluded from AllRoles: embedding is not a chat role, so
@@ -49,10 +51,6 @@ var AllRoles = []AgentRole{
 	RoleSDDImplementer,
 	RoleSDDReviewer,
 	RoleSDDBranchReviewer,
-	RoleSDDOrchestrator,
-	RoleSDDAuditor,
-	RoleSDDInvestigator,
-	RoleSDDRescue,
 }
 
 type ModelPreset struct {

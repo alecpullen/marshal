@@ -162,13 +162,18 @@ func dedupe(sorted []string) []string {
 	return out
 }
 
-// ValidateArgs validates a call's arguments against the tool's schema.
-// Task 2 replaces the on-the-fly compile with the validator compiled at
-// registration.
+// ValidateArgs validates a call's arguments against the tool's schema. The
+// validator is compiled once at Register; a Tool value that never went
+// through Register (hand-built in a test, say) falls back to compiling on
+// the fly so it still validates.
 func ValidateArgs(tool Tool, args json.RawMessage) error {
-	v, err := CompileSchema(tool.Name, tool.Schema)
-	if err != nil {
-		return fmt.Errorf("%w for %q: %v", ErrInvalidArgs, tool.Name, err)
+	v := tool.validator
+	if v == nil && len(bytes.TrimSpace(tool.Schema)) > 0 {
+		compiled, err := CompileSchema(tool.Name, tool.Schema)
+		if err != nil {
+			return fmt.Errorf("%w for %q: %v", ErrInvalidArgs, tool.Name, err)
+		}
+		v = compiled
 	}
 	return v.Validate(tool.Name, args)
 }

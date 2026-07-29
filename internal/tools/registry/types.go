@@ -32,6 +32,11 @@ type Tool struct {
 	Cacheable   bool
 	Deferred    bool
 	Handler     ToolHandler
+
+	// validator is the compiled form of Schema, built once by Register.
+	// Shared by pointer through cloneTool: jsonschema.Schema is immutable
+	// after compilation and safe for concurrent use.
+	validator *Validator
 }
 
 type ToolCall struct {

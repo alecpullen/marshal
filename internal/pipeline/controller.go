@@ -465,6 +465,26 @@ func (c *Controller) Run(ctx context.Context) error {
 	return c.branchReview(ctx)
 }
 
+// renderBranchReviewPrompt writes the review package and renders the branch
+// review prompt. It is a helper shared by the initial review and the re-review.
+func (c *Controller) renderBranchReviewPrompt(ctx context.Context, rng string, minors []string) (string, error) {
+	dir := c.workDir()
+	if err := WriteReviewPackage(c.Git, dir, rng, c.Paths.BranchPackage()); err != nil {
+		return "", err
+	}
+	prompt, err := RenderBranchReview(BranchReviewPrompt{
+		PlanPath:    c.Plan.Path,
+		PackagePath: c.Paths.BranchPackage(),
+		ReviewPath:  strings.TrimSuffix(c.Paths.BranchPackage(), ".md") + "-verdict.md",
+		Range:       rng,
+		Minors:      minors,
+	})
+	if err != nil {
+		return "", err
+	}
+	return prompt, nil
+}
+
 // branchReview is the merge gate: one review over the whole branch, with
 // at most one fix dispatch carrying every blocking finding.
 func (c *Controller) branchReview(ctx context.Context) error {
@@ -478,20 +498,11 @@ func (c *Controller) branchReview(ctx context.Context) error {
 		return fmt.Errorf("pipeline: branch review merge-base: %w", err)
 	}
 	rng := base + ".." + head
-	if err := WriteReviewPackage(c.Git, dir, rng, c.Paths.BranchPackage()); err != nil {
-		return err
-	}
 	minors, err := c.Ledger.Minors()
 	if err != nil {
 		return err
 	}
-	prompt, err := RenderBranchReview(BranchReviewPrompt{
-		PlanPath:    c.Plan.Path,
-		PackagePath: c.Paths.BranchPackage(),
-		ReviewPath:  strings.TrimSuffix(c.Paths.BranchPackage(), ".md") + "-verdict.md",
-		Range:       rng,
-		Minors:      minors,
-	})
+	prompt, err := c.renderBranchReviewPrompt(ctx, rng, minors)
 	if err != nil {
 		return err
 	}
@@ -521,9 +532,19 @@ func (c *Controller) branchReview(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	report, err := c.Dispatch.Implement(ctx, routing.RoleSDDImplementer, fixPrompt)
 	if err != nil {
 		return fmt.Errorf("pipeline: branch review fixer: %w", err)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 	gate, err := c.Verifier.Run(ctx, dir)
 	if err != nil {
@@ -537,6 +558,11 @@ func (c *Controller) branchReview(ctx context.Context) error {
 		return fmt.Errorf("pipeline: branch review status: %w", err)
 	}
 	if dirty {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		msg := fmt.Sprintf("%s: branch review fix", c.Plan.Slug)
 		if report.Tests != "" {
 			msg += "\n\n" + report.Tests
@@ -552,18 +578,14 @@ func (c *Controller) branchReview(ctx context.Context) error {
 		return fmt.Errorf("pipeline: branch review head: %w", err)
 	}
 	rng = base + ".." + newHead
-	if err := WriteReviewPackage(c.Git, dir, rng, c.Paths.BranchPackage()); err != nil {
-		return err
-	}
-	prompt, err = RenderBranchReview(BranchReviewPrompt{
-		PlanPath:    c.Plan.Path,
-		PackagePath: c.Paths.BranchPackage(),
-		ReviewPath:  strings.TrimSuffix(c.Paths.BranchPackage(), ".md") + "-verdict.md",
-		Range:       rng,
-		Minors:      minors,
-	})
+	prompt, err = c.renderBranchReviewPrompt(ctx, rng, minors)
 	if err != nil {
 		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 	c.emit(0, 1, PhaseBranchReview, "")
 	review, err = c.Dispatch.Review(ctx, routing.RoleSDDBranchReviewer, prompt)

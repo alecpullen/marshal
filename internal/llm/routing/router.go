@@ -239,9 +239,8 @@ func (r *StaticRouter) Cast(roles []AgentRole) []CastEntry {
 }
 
 // WithRoleOverride returns a copy of the config with one role's binding in
-// the default profile overridden to the given preset. Used by the SDD
-// controller's model-escalation swap (rebuild RunnerFactory with a stronger
-// model for RoleSDDOrchestrator). The original config is not mutated.
+// the default profile overridden to the given preset. The original config
+// is not mutated.
 func (c Config) WithRoleOverride(role AgentRole, preset string) Config {
 	out := c
 	out.Profiles = make(map[string]AgentProfile, len(c.Profiles))

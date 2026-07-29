@@ -1198,7 +1198,7 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 func TestSDDPreflightMetaShowsVerifyTimeout(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.SDD.VerifyTimeoutMS = 600000
-	m.openRunPreflight("sdd", m.sddRunner, "/path/plan.md")
+	m.openRunPreflight("sdd", m.pipelineRunner, "/path/plan.md")
 	view := m.dock.View(m.width, m.height)
 	if !strings.Contains(view, "600000") {
 		t.Errorf("preflight meta missing verify timeout: %q", view)

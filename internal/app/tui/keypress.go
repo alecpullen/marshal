@@ -180,11 +180,11 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.input.SetValue("")
 			m.pendingSDDGate = false
 			m.state.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
-			if m.sddRunner != nil {
-				m.sddRunner.AnswerGate(answer)
+			if m.pipelineRunner != nil {
+				m.pipelineRunner.AnswerGate(answer)
 			}
 			goal := m.state.SDDProgress().PlanPath
-			_, cmd := m.startAgentRun(m.sddRunner, goal)
+			_, cmd := m.startAgentRun(m.pipelineRunner, goal)
 			return *m, cmd, true
 		}
 		// F18: if a popup is visible, accept it (replaces the trigger

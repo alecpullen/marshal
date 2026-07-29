@@ -135,7 +135,7 @@ func init() {
 				m.refreshViewport()
 				return m, nil
 			}
-			m.sddRunner = runner
+			m.pipelineRunner = runner
 			m.openRunPreflight("sdd", runner, planPath)
 			m.refreshViewport()
 			return m, nil

@@ -97,7 +97,6 @@ type Model struct {
 	editingCommand     bool
 	runner             AgentRunner
 	swarmRunner        AgentRunner
-	sddRunner          AgentRunner
 	pipelineFactory    func(planPath string) AgentRunner
 	ctx                context.Context
 	busy               bool
@@ -251,6 +250,11 @@ type Model struct {
 	// StartMsg/CancelMsg handlers.
 	pendingRun *pendingAgentRun
 
+	// pipelineRunner is the active plan-execution runner, stored between the
+	// /sdd command dispatch and the preflight confirmation (or the human gate
+	// answer). Set by the sdd command handler; consumed by the Enter key handler.
+	pipelineRunner AgentRunner
+
 	// pendingSDDGate is set when the controller returns ErrHumanGateRequired.
 	// While true, the TUI renders the gate prompt and routes y/n keypresses
 	// to resolve or abort the gate.
@@ -362,15 +366,6 @@ func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
 	return func(m *Model) {
 		m.ctx = ctx
 		m.swarmRunner = runner
-	}
-}
-
-// WithSDDRunner configures the TUI to route /sdd <plan-file> and
-// /mode→SDD submissions to the SDD orchestrator.
-func WithSDDRunner(ctx context.Context, runner AgentRunner) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.sddRunner = runner
 	}
 }
 

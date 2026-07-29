@@ -2568,7 +2568,8 @@ func TestBuildAgentRunnerRegistersDesktopToolsWhenEnabled(t *testing.T) {
 }
 
 // TestNoLegacyAgentSDDPackage asserts the old internal/agent/sdd/ prototype
-// package has been removed. It is replaced by internal/sdd/.
+// package has been removed. It was replaced by internal/sdd/ (now also
+// removed; preserved at tag sdd-prototype-v1).
 func TestNoLegacyAgentSDDPackage(t *testing.T) {
 	_, err := os.Stat(filepath.Join("..", "..", "internal", "agent", "sdd", "orchestrator.go"))
 	if err == nil {

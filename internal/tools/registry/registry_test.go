@@ -337,6 +337,62 @@ func TestClonedToolKeepsValidator(t *testing.T) {
 	}
 }
 
+func TestDispatchRejectsInvalidArgsWithoutCallingHandler(t *testing.T) {
+	r := New()
+	called := false
+	if err := r.Register(Tool{
+		Name:   "strict.dispatch",
+		Schema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`),
+		Risk:   RiskReadOnly,
+		Handler: func(context.Context, ToolCall) (ToolResult, error) {
+			called = true
+			return ToolResult{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	_, err := r.Dispatch(context.Background(), ToolCall{Name: "strict.dispatch", Args: json.RawMessage(`{"b":1}`)})
+	if err == nil {
+		t.Fatal("Dispatch = nil, want an error for invalid args")
+	}
+	if !errors.Is(err, ErrInvalidArgs) {
+		t.Fatalf("error does not wrap ErrInvalidArgs: %v", err)
+	}
+	if called {
+		t.Fatal("handler ran despite invalid arguments")
+	}
+}
+
+func TestDispatchInvokesHandlerOnValidArgs(t *testing.T) {
+	r := New()
+	if err := r.Register(Tool{
+		Name:   "ok.dispatch",
+		Schema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`),
+		Risk:   RiskReadOnly,
+		Handler: func(_ context.Context, call ToolCall) (ToolResult, error) {
+			return ToolResult{Summary: "ran " + call.Name}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	res, err := r.Dispatch(context.Background(), ToolCall{Name: "ok.dispatch", Args: json.RawMessage(`{"a":"x"}`)})
+	if err != nil {
+		t.Fatalf("Dispatch = %v, want nil", err)
+	}
+	if res.Summary != "ran ok.dispatch" {
+		t.Fatalf("Summary = %q", res.Summary)
+	}
+}
+
+func TestDispatchUnknownTool(t *testing.T) {
+	r := New()
+	_, err := r.Dispatch(context.Background(), ToolCall{Name: "nope"})
+	if !errors.Is(err, ErrToolNotFound) {
+		t.Fatalf("error = %v, want ErrToolNotFound", err)
+	}
+}
+
 func testTool(name string) Tool {
 	return Tool{
 		Name:        name,

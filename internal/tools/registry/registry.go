@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 var (
 	ErrInvalidTool   = errors.New("invalid tool")
 	ErrDuplicateTool = errors.New("duplicate tool")
+	ErrToolNotFound  = errors.New("tool not found")
 )
 
 type Registry struct {
@@ -56,6 +58,21 @@ func (r *Registry) Lookup(name string) (Tool, bool) {
 		return Tool{}, false
 	}
 	return cloneTool(tool), true
+}
+
+// Dispatch looks up a tool, validates the call's arguments against its
+// schema, and invokes the handler. This is the authoritative enforcement
+// point: a handler reached through Dispatch has never seen arguments that
+// violate its declared schema.
+func (r *Registry) Dispatch(ctx context.Context, call ToolCall) (ToolResult, error) {
+	tool, ok := r.Lookup(call.Name)
+	if !ok {
+		return ToolResult{}, fmt.Errorf("%w: %q", ErrToolNotFound, call.Name)
+	}
+	if err := ValidateArgs(tool, call.Args); err != nil {
+		return ToolResult{}, err
+	}
+	return tool.Handler(ctx, call)
 }
 
 func (r *Registry) List() []Tool {

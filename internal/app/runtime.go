@@ -92,11 +92,11 @@ type Runtime struct {
 	// applied because the trust question was deferred to the TUI.
 	TrustPromptPending bool
 
-	// LSPManager is the optional LSP server manager. When non-nil, its
-	// worker loop is started in startRuntime (shared by Run and
-	// StartRuntime, so both TUI and ACP/headless sessions get it) and its
-	// adapters are wired into the index, tools, and diagnostics subsystems.
-	LSPManager *lsp.Manager
+	// LSPManager is the optional LSP server manager handle. When non-nil,
+	// the current manager's worker loop is started in startRuntime (shared
+	// by Run and StartRuntime) and the manager is restarted against the
+	// active root on every WorkspaceEvent.
+	LSPManager *lsp.Handle
 
 	// CustomAgentFactory builds a one-shot *agent.Runner for a named custom
 	// agent. Used by the TUI's Run-now dispatch. Set by startRuntime.
@@ -527,7 +527,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	state.SetEventBroker(eventBroker)
 	state.SetWorkspaceBroker(workspaceBroker)
 
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspMgr, pipelineFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -560,24 +560,41 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		SkillIndex:         skillIndex,
 		PluginCommands:     pluginCommands,
 		TrustPromptPending: trustPromptPending,
-		LSPManager:         lspMgr,
+		LSPManager:         lspHandle,
 		ConfigReloader:     runOpts.configReloader,
 		additionalDirs:     runOpts.additionalDirs,
 		workCtx:            workCtx,
 		workCancel:         workCancel,
 	}
 	// Start the LSP manager's worker loop here so both Run (TUI) and
-	// StartRuntime (ACP/headless) get it — constructing lspMgr above only
-	// builds the manager; Run() spawns the actual language server
-	// subprocess and does the initialize handshake. Without this, every
-	// ACP session's hover/references/definition silently return "no lsp"
-	// regardless of config, because the manager is never started.
-	// workCancel (called from Quiesce) cancels workCtx, which the
-	// manager's Run() already handles by shutting servers down cleanly.
-	if lspMgr != nil {
+	// StartRuntime (ACP/headless) get it, and restart the manager against
+	// the session's active root on every WorkspaceEvent so hover /
+	// references / definition keep working inside a worktree. Each manager
+	// generation gets its own child context: a restart cancels the old
+	// generation (Run shuts its servers down cleanly) and starts the new
+	// one. workCancel (from Quiesce) ends the subscription and the current
+	// generation.
+	if lspHandle != nil {
+		runManager := func(m *lsp.Manager) context.CancelFunc {
+			mctx, cancel := context.WithCancel(workCtx)
+			go func() {
+				if err := m.Run(mctx); err != nil {
+					logger.Warn("worker exited", "worker", m.Name(), "err", err)
+				}
+			}()
+			return cancel
+		}
+		stop := runManager(lspHandle.Get())
 		go func() {
-			if err := lspMgr.Run(workCtx); err != nil {
-				logger.Warn("worker exited", "worker", lspMgr.Name(), "err", err)
+			ch := workspaceBroker.Subscribe(workCtx)
+			for {
+				ev, ok := <-ch
+				if !ok {
+					return
+				}
+				stop()
+				newM, _ := lspHandle.Restart(ev.Payload.Workspace.ActiveRoot)
+				stop = runManager(newM)
 			}
 		}()
 	}

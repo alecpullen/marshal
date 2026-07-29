@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/app/session"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 

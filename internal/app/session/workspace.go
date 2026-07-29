@@ -83,6 +83,14 @@ func (s *State) SetWorkspaceBroker(b *pubsub.Broker[WorkspaceEvent]) {
 // transcript — silently landing in the main checkout while the restored
 // transcript shows worktree work is the failure this feature exists to
 // prevent.
+//
+// WorkingDir is the source of truth for ProjectRoot (spec §1: it is
+// immutable for the session's lifetime, so using it here is correct
+// even though the recorded row could in theory hold a different path).
+//
+// The stale-clear UPDATE runs before AddMessage so a subsequent resume
+// does not re-warn about the same gone worktree; the notice itself is
+// best-effort and never blocks session construction.
 func (s *State) restoreWorkspace() {
 	row, err := s.db.GetSession(s.sessionID)
 	if err != nil || row.ActiveRoot == "" {

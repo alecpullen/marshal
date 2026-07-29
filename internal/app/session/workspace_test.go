@@ -39,6 +39,8 @@ func TestSetWorkspaceRebindsAndPublishes(t *testing.T) {
 		t.Fatalf("Workspace() = %+v, want %+v", got, wt)
 	}
 	// The §1 trap: rebinding must never move WorkingDir (the project root).
+	// Safe without s.mu: WorkingDir is set in New and never mutated
+	// (spec §1: it stays the project root for the session's lifetime).
 	if s.WorkingDir != root {
 		t.Fatalf("WorkingDir = %q, want unchanged %q", s.WorkingDir, root)
 	}

@@ -9,6 +9,13 @@ import (
 // adapters hold a Handle so the manager can be restarted against a new
 // root (when the session enters or leaves a worktree) without rewiring
 // them.
+//
+// Handle has a single consumer at a time (the startRuntime restarter
+// goroutine, which serializes on the workspace broker's Subscribe
+// channel). Restart therefore builds newM outside the write lock for
+// latency: two concurrent Restarts would each construct a manager, and
+// the loser would discard its newM silently. If Handle ever fans out
+// to multiple consumers, move the NewManager call inside the write lock.
 type Handle struct {
 	mu      sync.RWMutex
 	m       *Manager
@@ -27,6 +34,17 @@ func (h *Handle) Get() *Manager {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.m
+}
+
+// ServerFor returns the LSP client for lang from the current Manager,
+// or false if the handle has no manager or no client is registered for
+// the language. Equivalent to h.Get().ServerFor(lang) with nil-safety.
+func (h *Handle) ServerFor(lang string) (*Client, bool) {
+	m := h.Get()
+	if m == nil {
+		return nil, false
+	}
+	return m.ServerFor(lang)
 }
 
 // Restart builds a new Manager rooted at root, swaps it in, and returns

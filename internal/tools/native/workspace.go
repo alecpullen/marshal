@@ -24,7 +24,7 @@ func (t *toolSet) workspaceWorktreeTool() registry.Tool {
 		Schema:      json.RawMessage(`{"type":"object","properties":{"branch":{"type":"string","minLength":1}},"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
-	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+	tool.Handler = func(_ context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[workspaceWorktreeArgs](tool, call.Args)
 		if err != nil {
 			return registry.ToolResult{}, err

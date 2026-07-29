@@ -55,20 +55,17 @@ func TestLiveStripShowsSwarmProgress(t *testing.T) {
 func TestLiveStripShowsSDDProgress(t *testing.T) {
 	m := newLiveStripTestModel(t)
 	m.state.SetSDDProgress(session.SDDProgress{
-		Active:     true,
-		PlanName:   "phase 3",
-		TotalTasks: 7,
-		DoneTasks:  2,
-		Tasks: []session.SDDTaskStatus{
-			{Name: "task one", Phase: session.SDDPhaseDone},
-			{Name: "implement parser", Phase: session.SDDPhaseActive, Implementer: session.SDDPhaseActive},
-		},
+		Active:      true,
+		PlanName:    "phase 3",
+		TotalTasks:  7,
+		CurrentTask: 3,
+		Phase:       "implementing",
 	})
 	out := stripANSI(m.renderLiveStrip())
-	if !strings.Contains(out, "sdd task 2/7") {
+	if !strings.Contains(out, "sdd task 3/7") {
 		t.Fatalf("live strip missing sdd counts:\n%s", out)
 	}
-	if !strings.Contains(out, "implementer") {
+	if !strings.Contains(out, "implementing") {
 		t.Fatalf("live strip missing active phase:\n%s", out)
 	}
 	if strings.Count(out, "\n") != 0 {
@@ -76,13 +73,11 @@ func TestLiveStripShowsSDDProgress(t *testing.T) {
 	}
 }
 
-func TestSDDStripTextShowsAuditPhase(t *testing.T) {
-	p := session.SDDProgress{DoneTasks: 2, TotalTasks: 5, Tasks: []session.SDDTaskStatus{
-		{Name: "T3", Phase: session.SDDPhaseActive, Audit: session.SDDPhaseActive},
-	}}
+func TestSDDStripTextShowsPhase(t *testing.T) {
+	p := session.SDDProgress{CurrentTask: 3, TotalTasks: 5, Phase: "reviewing"}
 	text := sddStripText(p)
-	if !strings.Contains(text, "audit") {
-		t.Errorf("strip text missing audit phase: %q", text)
+	if !strings.Contains(text, "reviewing") {
+		t.Errorf("strip text missing phase: %q", text)
 	}
 }
 

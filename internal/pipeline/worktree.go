@@ -59,10 +59,10 @@ type FakeGitOps struct {
 	Commits   []string
 	Dirty     bool
 	// NextHead, when non-empty, is popped as the SHA of the next CommitAll.
-	NextHead []string
-	LogOut   string
-	StatOut  string
-	DiffOut  string
+	NextHead  []string
+	LogOut    string
+	StatOut   string
+	DiffOut   string
 	CommitErr error
 }
 

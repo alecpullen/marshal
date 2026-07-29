@@ -223,11 +223,6 @@ func sddFrame(s *state) *frame {
 				Desc:     "per-task build/lint/test timeout in milliseconds",
 				GetStr:   func() string { return strconv.Itoa(s.cfg.SDD.VerifyTimeoutMS) },
 				SetStr:   intSetter(0, func(v int) { s.cfg.SDD.VerifyTimeoutMS = v })},
-			{ID: "sdd.default_model_tier", Title: "Default model tier", Kind: kindScalar,
-				TomlPath: "sdd.default_model_tier",
-				Desc:     "default orchestrator model tier (fast/strong)",
-				GetStr:   func() string { return s.cfg.SDD.DefaultModelTier },
-				SetStr:   func(v string) error { s.cfg.SDD.DefaultModelTier = v; return nil }},
 			{ID: "sdd.cleanup_at_start", Title: "Cleanup at start", Kind: kindToggle,
 				TomlPath: "sdd.cleanup_at_start",
 				Desc:     "run task-cleanup --stale at SDD startup",
@@ -238,6 +233,16 @@ func sddFrame(s *state) *frame {
 				Desc:     "token budget cap for the SDD run (0 = no cap)",
 				GetStr:   func() string { return strconv.Itoa(s.cfg.SDD.MaxTotalTokens) },
 				SetStr:   intSetter(0, func(v int) { s.cfg.SDD.MaxTotalTokens = v })},
+			{ID: "sdd.verify.build", Title: "Verify build command", Kind: kindScalar,
+				TomlPath: "sdd.verify.build",
+				Desc:     "build command for per-task verification (empty = Go default)",
+				GetStr:   func() string { return s.cfg.SDD.Verify.Build },
+				SetStr:   func(v string) error { s.cfg.SDD.Verify.Build = v; return nil }},
+			{ID: "sdd.verify.test", Title: "Verify test command", Kind: kindScalar,
+				TomlPath: "sdd.verify.test",
+				Desc:     "test command for per-task verification (empty = Go default)",
+				GetStr:   func() string { return s.cfg.SDD.Verify.Test },
+				SetStr:   func(v string) error { s.cfg.SDD.Verify.Test = v; return nil }},
 		}
 	})
 }

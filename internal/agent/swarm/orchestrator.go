@@ -56,7 +56,7 @@ func New(state *session.State, factory RunnerFactory) *Orchestrator {
 func (o *Orchestrator) SetForceClass(string)                   {}
 func (o *Orchestrator) SetPolicyRules([]config.PermissionRule) {}
 func (o *Orchestrator) SetApprovalMode(policy.ApprovalMode)    {}
-func (o *Orchestrator) ResolveGate()                           {}
+func (o *Orchestrator) AnswerGate(string)                           {}
 
 func (o *Orchestrator) maxRounds() int {
 	if o.MaxFixRounds < 1 {

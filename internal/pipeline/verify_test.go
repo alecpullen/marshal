@@ -12,7 +12,7 @@ import (
 func TestVerifierPasses(t *testing.T) {
 	fake := NewFakeCommandRunner()
 	fake.SetOutput("go build ./...", "")
-	fake.SetOutput("go test ./...", "ok  \tmarshal/internal/pipeline\t0.2s")
+	fake.SetOutput("go test ./...", "ok  	marshal/internal/pipeline	0.2s")
 	v := Verifier{Build: "go build ./...", Test: "go test ./...", Timeout: time.Minute, Runner: fake}
 
 	res, err := v.Run(context.Background(), "/work")

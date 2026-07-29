@@ -233,15 +233,11 @@ type State struct {
 	sddGate SDDGate
 }
 
-// SDDGate is the gate state the SDD controller surfaces to the TUI for
-// human-gate rendering (spec approval, final merge, escalation). The
-// controller sets it via SetSDDGate; the TUI (P5) reads it to render the
-// prompt; the TUI clears it via ClearSDDGate when the human resolves.
+// SDDGate is the open question a pipeline subagent raised. The controller
+// sets it; the TUI renders it and collects the human's typed answer.
 type SDDGate struct {
-	Kind     string // "spec_approval" | "final_merge" | "escalation" | "branch_correction"
-	TaskID   string
-	Reason   string
-	Resolved bool
+	TaskN    int
+	Question string
 }
 
 // GenerationInfo records where the live rollover generation begins.

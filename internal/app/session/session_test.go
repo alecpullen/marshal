@@ -1374,16 +1374,16 @@ func TestAppendActiveToolCallOutput(t *testing.T) {
 
 func TestStateSDDGate(t *testing.T) {
 	s := newTestState()
-	if g := s.SDDGate(); g.Kind != "" {
+	if g := s.SDDGate(); g.Question != "" {
 		t.Fatalf("initial gate should be empty, got %+v", g)
 	}
-	s.SetSDDGate(SDDGate{Kind: "spec_approval", Reason: "spec.md needs approval"})
+	s.SetSDDGate(SDDGate{TaskN: 1, Question: "spec.md needs approval"})
 	g := s.SDDGate()
-	if g.Kind != "spec_approval" || g.Reason != "spec.md needs approval" {
+	if g.TaskN != 1 || g.Question != "spec.md needs approval" {
 		t.Fatalf("gate = %+v", g)
 	}
 	s.ClearSDDGate()
-	if g := s.SDDGate(); g.Kind != "" {
+	if g := s.SDDGate(); g.Question != "" {
 		t.Fatalf("cleared gate should be empty, got %+v", g)
 	}
 }

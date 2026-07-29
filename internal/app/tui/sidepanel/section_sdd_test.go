@@ -9,16 +9,13 @@ import (
 
 func sddData() Data {
 	return Data{SDD: session.SDDProgress{
-		Active:          true,
-		DoneTasks:       2,
-		TotalTasks:      4,
-		ControllerState: "implement",
-		Tasks: []session.SDDTaskStatus{
-			{Name: "scaffold resolver", Phase: session.SDDPhaseDone},
-			{Name: "add role profiles", Phase: session.SDDPhaseDone},
-			{Name: "wire route lookup", Phase: session.SDDPhaseActive},
-			{Name: "tests", Phase: session.SDDPhasePending},
-		},
+		Active:      true,
+		DoneTasks:   2,
+		TotalTasks:  4,
+		CurrentTask: 3,
+		Phase:       "implementing",
+		PlanName:    "my-plan",
+		Branch:      "pipeline/my-plan",
 	}}
 }
 
@@ -44,9 +41,9 @@ func TestSDDSectionRelevance(t *testing.T) {
 	}
 }
 
-func TestSDDSectionRendersTasks(t *testing.T) {
+func TestSDDSectionRendersPlanAndBranch(t *testing.T) {
 	got := StripANSI(strings.Join((SDDSection{}).Render(sddData(), 34, 12), "\n"))
-	for _, want := range []string{"scaffold resolver", "wire route lookup", "tests", "implement"} {
+	for _, want := range []string{"my-plan", "pipeline/my-plan", "3/4", "implementing"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Render missing %q:\n%s", want, got)
 		}
@@ -54,8 +51,8 @@ func TestSDDSectionRendersTasks(t *testing.T) {
 }
 
 func TestSDDSectionRespectsMaxRows(t *testing.T) {
-	if got := (SDDSection{}).Render(sddData(), 34, 3); len(got) > 3 {
-		t.Errorf("got %d rows, want at most 3", len(got))
+	if got := (SDDSection{}).Render(sddData(), 34, 1); len(got) > 1 {
+		t.Errorf("got %d rows, want at most 1", len(got))
 	}
 }
 
@@ -64,7 +61,7 @@ func TestSDDSectionOneLine(t *testing.T) {
 	if !strings.Contains(got, "2/4") {
 		t.Errorf("OneLine = %q, want 2/4", got)
 	}
-	if !strings.Contains(got, "implement") {
-		t.Errorf("OneLine = %q, want the controller state", got)
+	if !strings.Contains(got, "implementing") {
+		t.Errorf("OneLine = %q, want the phase", got)
 	}
 }

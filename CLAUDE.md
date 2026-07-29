@@ -32,7 +32,7 @@ go vet ./...
 
 ## Architecture
 
-The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, MCP/plugin ecosystem, sandboxed command execution with restricted/container/passthrough backends, and ACP v1 conversation lifecycle). See [docs/04-tooling-and-shell-safety.md](docs/04-tooling-and-shell-safety.md) for sandbox details and [docs/10-acp.md](docs/10-acp.md) for the ACP support matrix.
+The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, plan execution pipeline, MCP/plugin ecosystem, sandboxed command execution with restricted/container/passthrough backends, and ACP v1 conversation lifecycle). See [docs/04-tooling-and-shell-safety.md](docs/04-tooling-and-shell-safety.md) for sandbox details and [docs/10-acp.md](docs/10-acp.md) for the ACP support matrix. Removed subsystems are documented in `docs/attic/`.
 
 This tree is complete for `internal/`. Check here before building
 something — several subsystems that sound like they need writing already
@@ -45,7 +45,7 @@ Runtime and orchestration
 internal/agent/                       — agent runtime (single-agent loop)
 internal/agent/swarm/                 — swarm orchestration, lock, state, verdict
 internal/agent/agenttest/             — shared test stubs for the agent package
-internal/sdd/                         — spec-driven development: DAG, gates, worktrees, verify, rescue
+internal/pipeline/                    — plan execution: implementer/reviewer/branch-reviewer subagents, build+test gate, controller-owned commits
 internal/worker/                      — lifecycle contract for supervised background workers
 internal/pubsub/                      — in-process typed event broker
 internal/acp/                         — ACP v1 headless transport (initialize, session lifecycle, prompt/cancel, permissions)

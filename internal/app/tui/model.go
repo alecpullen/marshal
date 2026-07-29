@@ -45,8 +45,8 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
+	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
-	"marshal/internal/sdd"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -64,11 +64,10 @@ type AgentRunner interface {
 	SetForceClass(class string)
 	SetPolicyRules(rules []config.PermissionRule)
 	SetApprovalMode(mode policy.ApprovalMode)
-	// ResolveGate resolves the current SDD human gate and advances the
-	// controller state machine. Called by the TUI when the user presses y.
-	// Only the SDD runner (ControllerAdapter) implements this; the regular
-	// and swarm runners are no-ops.
-	ResolveGate()
+	// AnswerGate delivers the human's typed answer to a pipeline
+	// subagent's question. Only the pipeline runner (ControllerAdapter)
+	// acts on it; the regular and swarm runners are no-ops.
+	AnswerGate(answer string)
 }
 
 // CustomAgentRunnerFactory builds a one-shot AgentRunner for a named custom
@@ -98,7 +97,7 @@ type Model struct {
 	editingCommand     bool
 	runner             AgentRunner
 	swarmRunner        AgentRunner
-	sddRunner          AgentRunner
+	pipelineFactory    func(planPath string) AgentRunner
 	ctx                context.Context
 	busy               bool
 	configReloader     ConfigReloader
@@ -251,6 +250,11 @@ type Model struct {
 	// StartMsg/CancelMsg handlers.
 	pendingRun *pendingAgentRun
 
+	// pipelineRunner is the active plan-execution runner, stored between the
+	// /sdd command dispatch and the preflight confirmation (or the human gate
+	// answer). Set by the sdd command handler; consumed by the Enter key handler.
+	pipelineRunner AgentRunner
+
 	// pendingSDDGate is set when the controller returns ErrHumanGateRequired.
 	// While true, the TUI renders the gate prompt and routes y/n keypresses
 	// to resolve or abort the gate.
@@ -365,12 +369,13 @@ func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
 	}
 }
 
-// WithSDDRunner configures the TUI to route /sdd <plan-file> and
-// /mode→SDD submissions to the SDD orchestrator.
-func WithSDDRunner(ctx context.Context, runner AgentRunner) Option {
+// WithPipelineFactory configures the TUI to build a plan-execution runner
+// on demand when /sdd <plan-file> is submitted. The factory is called per
+// run, not at startup.
+func WithPipelineFactory(ctx context.Context, factory func(planPath string) AgentRunner) Option {
 	return func(m *Model) {
 		m.ctx = ctx
-		m.sddRunner = runner
+		m.pipelineFactory = factory
 	}
 }
 
@@ -2125,7 +2130,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		meta = []string{
 			"plan: " + strutil.Truncate(goal, 56, true),
 			fmt.Sprintf("fix rounds: %d · worktree: %s", m.state.Config.SDD.MaxFixRounds, worktree),
-			fmt.Sprintf("model tier: %s · verify timeout: %dms", m.state.Config.SDD.DefaultModelTier, m.state.Config.SDD.VerifyTimeoutMS),
+			fmt.Sprintf("verify timeout: %dms", m.state.Config.SDD.VerifyTimeoutMS),
 		}
 	}
 	rows := make([]castlist.Row, 0, len(roles))
@@ -2281,9 +2286,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.refreshRailChanged()
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: render the prompt and wait for user resolution.
-		if errors.Is(msg.err, sdd.ErrHumanGateRequired) {
+		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
 			gate := m.state.SDDGate()
-			if gate.Kind != "" {
+			if gate.Question != "" {
 				m.state.AddMessage(session.RoleSystem, sddGatePrompt(gate), session.ContentTypePlain)
 				m.pendingSDDGate = true
 				m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})

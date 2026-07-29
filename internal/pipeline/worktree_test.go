@@ -31,24 +31,23 @@ func TestEnsureWorktreeReusesExistingBranch(t *testing.T) {
 	g := NewFakeGitOps()
 	g.Refs["main"] = "1111111111111111111111111111111111111111"
 	branch := "pipeline/my-plan"
-	path := filepath.Join("/run/worktrees", "pipeline-my-plan")
 	g.Branches[branch] = true
-	g.Worktrees = append(g.Worktrees, path)
+	g.Worktrees = append(g.Worktrees, filepath.Join("/run/worktrees", "pipeline-my-plan"))
 	g.Refs[branch] = "2222222222222222222222222222222222222222"
 
 	wt, err := EnsureWorktree(g, "/repo", "/run/worktrees", branch, "main")
 	if err != nil {
 		t.Fatalf("EnsureWorktree: %v", err)
 	}
-	if wt.Path != path {
-		t.Errorf("Path = %q, want the existing %q", wt.Path, path)
-	}
 	if len(g.Added) != 0 {
-		t.Errorf("WorktreeAdd called on resume; want reuse")
+		t.Errorf("WorktreeAdd called on a resume: %v", g.Added)
+	}
+	if wt.Base != g.Refs[branch] {
+		t.Errorf("Base = %q, want %q", wt.Base, g.Refs[branch])
 	}
 }
 
-func TestEnsureWorktreeBranchExistsWithoutWorktree(t *testing.T) {
+func TestEnsureWorktreeBranchWithoutWorktree(t *testing.T) {
 	g := NewFakeGitOps()
 	g.Refs["main"] = "1111111111111111111111111111111111111111"
 	g.Branches["pipeline/my-plan"] = true

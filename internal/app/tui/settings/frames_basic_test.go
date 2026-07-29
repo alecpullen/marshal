@@ -248,7 +248,7 @@ func TestSDDFrameIncludesNewFields(t *testing.T) {
 	s := newTestSettingsState(t)
 	frame := sddFrame(s)
 	ids := fieldIDs(frame)
-	for _, want := range []string{"sdd.verify_timeout_ms", "sdd.default_model_tier", "sdd.cleanup_at_start", "sdd.max_total_tokens"} {
+	for _, want := range []string{"sdd.verify_timeout_ms", "sdd.verify.build", "sdd.verify.test", "sdd.cleanup_at_start", "sdd.max_total_tokens"} {
 		if !contains(ids, want) {
 			t.Errorf("sddFrame missing field %q; got %v", want, ids)
 		}

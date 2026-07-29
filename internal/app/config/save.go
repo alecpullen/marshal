@@ -214,14 +214,16 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	}
 	if !reflect.DeepEqual(cfg.SDD, def.SDD) {
 		file.SDD = &fileSDD{
-			AutoWorktree:         strutil.Ptr(cfg.SDD.AutoWorktree),
-			MaxFixRounds:         strutil.Ptr(cfg.SDD.MaxFixRounds),
-			PlansDir:             strutil.Ptr(cfg.SDD.PlansDir),
-			VerifyTimeoutMS:      strutil.Ptr(cfg.SDD.VerifyTimeoutMS),
-			DefaultModelTier:     strutil.Ptr(cfg.SDD.DefaultModelTier),
-			CleanupAtStart:       strutil.Ptr(cfg.SDD.CleanupAtStart),
-			MaxTotalTokens:       strutil.Ptr(cfg.SDD.MaxTotalTokens),
-			MaxWorkerConcurrency: strutil.Ptr(cfg.SDD.MaxWorkerConcurrency),
+			AutoWorktree:    strutil.Ptr(cfg.SDD.AutoWorktree),
+			MaxFixRounds:    strutil.Ptr(cfg.SDD.MaxFixRounds),
+			PlansDir:        strutil.Ptr(cfg.SDD.PlansDir),
+			VerifyTimeoutMS: strutil.Ptr(cfg.SDD.VerifyTimeoutMS),
+			CleanupAtStart:  strutil.Ptr(cfg.SDD.CleanupAtStart),
+			MaxTotalTokens:  strutil.Ptr(cfg.SDD.MaxTotalTokens),
+			Verify: &fileSDDVerify{
+				Build: strutil.Ptr(cfg.SDD.Verify.Build),
+				Test:  strutil.Ptr(cfg.SDD.Verify.Test),
+			},
 		}
 	}
 	if !reflect.DeepEqual(cfg.MCP, def.MCP) {

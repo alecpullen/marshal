@@ -568,54 +568,6 @@ func TestBaseRulesEncourageEarlyFinal(t *testing.T) {
 	}
 }
 
-func TestSDDProductionRoleAddendaPresent(t *testing.T) {
-	roles := []AgentRole{
-		RoleSDDOrchestrator,
-		RoleSDDAuditor,
-		RoleSDDInvestigator,
-		RoleSDDRescue,
-	}
-	for _, r := range roles {
-		add, ok := roleAddenda[r]
-		if !ok {
-			t.Fatalf("roleAddenda missing %q", r)
-		}
-		if add.focus == "" {
-			t.Fatalf("%q focus empty", r)
-		}
-		if len(add.allowedActions) == 0 {
-			t.Fatalf("%q allowedActions empty", r)
-		}
-		if add.example == "" {
-			t.Fatalf("%q example empty", r)
-		}
-	}
-}
-
-func TestSDDOrchestratorAddendumForbidsSourceEdits(t *testing.T) {
-	add := roleAddenda[RoleSDDOrchestrator]
-	// The orchestrator must not be allowed to patch source; it dispatches workers.
-	for _, a := range add.allowedActions {
-		if a == "patch" {
-			t.Fatal("orchestrator must not allow 'patch' — it never edits source")
-		}
-	}
-}
-
-func TestSDDAuditorReadOnly(t *testing.T) {
-	add := roleAddenda[RoleSDDAuditor]
-	for _, a := range add.allowedActions {
-		if a == "patch" || a == "tool_call" && strings.Contains(add.focus, "edit") {
-			// auditor is read-only: tool_call allowed (for read tools) but no patch
-		}
-	}
-	for _, a := range add.allowedActions {
-		if a == "patch" {
-			t.Fatal("auditor must not allow 'patch'")
-		}
-	}
-}
-
 // The existing ask_user example ("archive or delete") is a narrow binary
 // fork. Live testing (Kimi's kimi-for-coding, "improve the retry behavior
 // in the provider layer") showed a model treating a broad, open-ended

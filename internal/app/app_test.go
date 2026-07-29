@@ -387,7 +387,7 @@ func TestBuildAgentRunnerBackgroundShellUsesConfiguredSandbox(t *testing.T) {
 	t.Setenv("MARSHAL_TEST_SECRET", "super-secret-value-avoid-leak")
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, _, _, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, _, _, _, jobMgr, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestBuildAgentRunnerUsesConfiguredOutputLimit(t *testing.T) {
 	cfg.Tools.Shell.MaxOutputBytes = 8
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, _, _, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, _, _, _, jobMgr, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestReloadAgentRuntimeReplacesReachableManagerWhenIdle(t *testing.T) {
 	reloadedCfg := nativeToolAgentConfig("test-provider")
 
 	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("initial buildAgentRunner: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestReloadAgentRuntimeUpdatesSwarmConfig(t *testing.T) {
 	reloaded.Swarm.Budget.ToolIters = map[string]int{"implementer": 25}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, mcpMgr, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, mcpMgr, _, jobMgr, _, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestReloadAgentRuntimeManagesMCP(t *testing.T) {
 	}
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, _, mcpMgr, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, mcpMgr, _, jobMgr, _, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
@@ -744,7 +744,7 @@ func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
 	ctx := context.Background()
 	initialCfg := reloadableAgentConfig("test-provider")
 	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("initial buildAgentRunner: %v", err)
 	}
@@ -753,7 +753,6 @@ func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
 		Runner:       runner,
 		ToolRegistry: reg,
 		SwarmRunner:  swarmRunner,
-		SDDRunner:    sddRunner,
 		JobManager:   jobMgr,
 		State:        state,
 		workCtx:      ctx,
@@ -817,40 +816,40 @@ func TestReloadAgentRuntimeRollsBackOnFailure(t *testing.T) {
 	}
 }
 
-func TestReloadAgentRuntimeSwapsSDDRunner(t *testing.T) {
+func TestReloadAgentRuntimeSwapsPipelineFactory(t *testing.T) {
 	ctx := context.Background()
 	initial := reloadableAgentConfig("old-provider")
 
 	reloaded := reloadableAgentConfig("new-provider")
 
 	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, reg, swarmRunner, sddRunner, _, _, jobMgr, _, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, pipelineFactory, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("buildAgentRunner initial: %v", err)
 	}
-	if sddRunner == nil {
-		t.Fatal("SDD runner should not be nil")
+	if pipelineFactory == nil {
+		t.Fatal("pipeline factory should not be nil")
 	}
 
 	rt := &Runtime{
-		Runner:       runner,
-		ToolRegistry: reg,
-		SwarmRunner:  swarmRunner,
-		SDDRunner:    sddRunner,
-		JobManager:   jobMgr,
-		State:        state,
-		workCtx:      ctx,
+		Runner:          runner,
+		ToolRegistry:    reg,
+		SwarmRunner:     swarmRunner,
+		PipelineFactory: pipelineFactory,
+		JobManager:      jobMgr,
+		State:           state,
+		workCtx:         ctx,
 	}
 
 	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
-	if rt.SDDRunner == nil {
-		t.Fatal("SDD runner should not be nil after reload")
+	if rt.PipelineFactory == nil {
+		t.Fatal("pipeline factory should not be nil after reload")
 	}
 }
 
-func TestBuildSDDControllerReturnsAdapter(t *testing.T) {
+func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 	cfg := config.Default()
 	cfg.SDD.PlansDir = t.TempDir()
 	cfg.Privacy.RemoteProvidersAllowed = true
@@ -863,40 +862,21 @@ func TestBuildSDDControllerReturnsAdapter(t *testing.T) {
 	}
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"local_balanced": {Name: "local_balanced", Roles: map[routing.AgentRole]routing.RoleBinding{
-			routing.RoleSDDOrchestrator: {Preset: "fast"},
+			routing.RoleSDDImplementer: {Preset: "fast"},
 		}},
 	}
-	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	planDir := t.TempDir()
+	planPath := planDir + "/test-plan.md"
+	if err := os.WriteFile(planPath, []byte("# Test Plan\n\n## Global Constraints\n\nNone.\n\n### Task 1: Do something\n\nDo the thing.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	reg := registry.New()
 	pol := policy.NewEngine(&cfg, nil)
 	resolver := newRoutedProviderResolver(cfg, t.TempDir())
-	adapter := buildSDDController(cfg, state, reg, pol, resolver, nil, 1, nil)
+	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, planPath)
 	if adapter == nil {
-		t.Fatal("buildSDDController returned nil")
-	}
-
-	// Exercise the factory closure to confirm UsageObserver wiring feeds
-	// UsageTokens (cross-task wiring from Task 6).
-	ctrl := adapter.Controller()
-	if ctrl == nil {
-		t.Fatal("Controller() returned nil")
-	}
-
-	runner, err := ctrl.Factory(routing.RoleSDDOrchestrator, swarm.ScopeFull)
-	if err != nil {
-		t.Fatalf("Factory(RoleSDDOrchestrator, ScopeFull) error = %v", err)
-	}
-	if runner == nil {
-		t.Fatal("Factory returned nil runner")
-	}
-	if runner.UsageObserver == nil {
-		t.Fatal("UsageObserver is nil — cross-task wiring from Task 6 is broken")
-	}
-
-	// Fire the observer and verify UsageTokens accumulates.
-	runner.UsageObserver(schema.TokenUsage{TotalTokens: 42})
-	if ctrl.UsageTokens != 42 {
-		t.Fatalf("UsageTokens = %d, want 42", ctrl.UsageTokens)
+		t.Fatal("buildPipelineController returned nil")
 	}
 }
 
@@ -2588,7 +2568,8 @@ func TestBuildAgentRunnerRegistersDesktopToolsWhenEnabled(t *testing.T) {
 }
 
 // TestNoLegacyAgentSDDPackage asserts the old internal/agent/sdd/ prototype
-// package has been removed. It is replaced by internal/sdd/.
+// package has been removed. It was replaced by internal/sdd/ (now also
+// removed; preserved at tag sdd-prototype-v1).
 func TestNoLegacyAgentSDDPackage(t *testing.T) {
 	_, err := os.Stat(filepath.Join("..", "..", "internal", "agent", "sdd", "orchestrator.go"))
 	if err == nil {

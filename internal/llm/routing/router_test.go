@@ -667,10 +667,9 @@ func TestRoleEmbeddingExcludedFromAllRoles(t *testing.T) {
 
 func TestAllRolesIncludesSDDProductionRoles(t *testing.T) {
 	want := []AgentRole{
-		RoleSDDOrchestrator,
-		RoleSDDAuditor,
-		RoleSDDInvestigator,
-		RoleSDDRescue,
+		RoleSDDImplementer,
+		RoleSDDReviewer,
+		RoleSDDBranchReviewer,
 	}
 	for _, r := range want {
 		found := false
@@ -686,31 +685,11 @@ func TestAllRolesIncludesSDDProductionRoles(t *testing.T) {
 	}
 }
 
-func TestSDDRoleConstants(t *testing.T) {
-	cases := []struct {
-		role AgentRole
-		want string
-	}{
-		{RoleSDDOrchestrator, "sdd_orchestrator"},
-		{RoleSDDAuditor, "sdd_auditor"},
-		{RoleSDDInvestigator, "sdd_investigator"},
-		{RoleSDDRescue, "sdd_rescue"},
-	}
-	for _, c := range cases {
-		if string(c.role) != c.want {
-			t.Fatalf("%+v = %q, want %q", c.role, c.role, c.want)
-		}
-	}
-}
-
 func TestSDDCastRolesIsFullProductionCast(t *testing.T) {
 	want := map[AgentRole]bool{
 		RoleSDDImplementer:    true,
 		RoleSDDReviewer:       true,
 		RoleSDDBranchReviewer: true,
-		RoleSDDAuditor:        true,
-		RoleSDDInvestigator:   true,
-		RoleSDDRescue:         true,
 	}
 	if len(SDDCastRoles) != len(want) {
 		t.Fatalf("SDDCastRoles len = %d, want %d", len(SDDCastRoles), len(want))
@@ -718,13 +697,6 @@ func TestSDDCastRolesIsFullProductionCast(t *testing.T) {
 	for _, r := range SDDCastRoles {
 		if !want[r] {
 			t.Fatalf("unexpected role in SDDCastRoles: %q", r)
-		}
-	}
-	// Orchestrator is intentionally NOT a cast role — it is dispatched by the
-	// controller, not shown in the worker pre-flight list.
-	for _, r := range SDDCastRoles {
-		if r == RoleSDDOrchestrator {
-			t.Fatal("orchestrator must not be in SDDCastRoles (it is the controller's dispatch, not a worker)")
 		}
 	}
 }
@@ -739,20 +711,20 @@ func TestConfigWithRoleOverride(t *testing.T) {
 			"default": {
 				Name: "default",
 				Roles: map[AgentRole]RoleBinding{
-					RoleSDDOrchestrator: {Preset: "fast"},
+					RoleImplementer: {Preset: "fast"},
 				},
 			},
 		},
 		DefaultProfile: "default",
 	}
-	overridden := cfg.WithRoleOverride(RoleSDDOrchestrator, "pro")
+	overridden := cfg.WithRoleOverride(RoleImplementer, "pro")
 	// The original config must be unchanged.
-	if cfg.Profiles["default"].Roles[RoleSDDOrchestrator].Preset != "fast" {
+	if cfg.Profiles["default"].Roles[RoleImplementer].Preset != "fast" {
 		t.Fatal("original config was mutated")
 	}
 	// The overridden config must have the new binding.
-	if overridden.Profiles["default"].Roles[RoleSDDOrchestrator].Preset != "pro" {
-		t.Fatalf("overridden binding = %q, want pro", overridden.Profiles["default"].Roles[RoleSDDOrchestrator].Preset)
+	if overridden.Profiles["default"].Roles[RoleImplementer].Preset != "pro" {
+		t.Fatalf("overridden binding = %q, want pro", overridden.Profiles["default"].Roles[RoleImplementer].Preset)
 	}
 }
 

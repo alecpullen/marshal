@@ -28,10 +28,6 @@ const (
 	RoleSDDImplementer    AgentRole = routing.RoleSDDImplementer
 	RoleSDDReviewer       AgentRole = routing.RoleSDDReviewer
 	RoleSDDBranchReviewer AgentRole = routing.RoleSDDBranchReviewer
-	RoleSDDOrchestrator   AgentRole = routing.RoleSDDOrchestrator
-	RoleSDDAuditor        AgentRole = routing.RoleSDDAuditor
-	RoleSDDInvestigator   AgentRole = routing.RoleSDDInvestigator
-	RoleSDDRescue         AgentRole = routing.RoleSDDRescue
 )
 
 type rolePrompt struct {
@@ -91,26 +87,7 @@ var roleAddenda = map[AgentRole]rolePrompt{
 		allowedActions: []string{"tool_call", "final"},
 		example:        `{"rationale": "Read the full plan to check coverage.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "feature-plan.md"}}}`,
 	},
-	RoleSDDOrchestrator: {
-		focus:          "You are the SDD orchestrator. Run ONE drain iteration: read the state-dump, find ready tasks, dispatch workers in parallel via agent.run, run the Go-provided gates, merge completed tasks, and return a structured report. You do NOT edit source files — that is the implementer's job, enforced by your tool scope. You do NOT loop: return your report and stop; the controller re-dispatches you.",
-		allowedActions: []string{"tool_call", "final"},
-		example:        `{"rationale": "Two tasks ready; dispatch both.", "action": {"type": "tool_call", "tool": "agent.run", "args": {"goal": "Implement T2", "agent": "sdd_implementer"}}}`,
-	},
-	RoleSDDAuditor: {
-		focus:          "You are the SDD auditor. Perform static analysis on the implementer's worktree: check for undefined symbols, unused imports, naming, error wrapping. Read the contract's Allowed Files and the diff. Do NOT edit any files. Write your report to the audit report path with status PASS or FAIL on the first line.",
-		allowedActions: []string{"tool_call", "final"},
-		example:        `{"rationale": "Read the diff to audit.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "diffs/T1-base..head.diff"}}}`,
-	},
-	RoleSDDInvestigator: {
-		focus:          "You are the SDD investigator. Diagnose why a task failed (verify failure, rebase conflict, bad review). Read the failed report, the verify log, and the reviewer findings. Diagnose the root cause and recommend exactly ONE repair strategy. You have read-only tools plus bash for diagnostics (git status, test runs). Do NOT edit source.",
-		allowedActions: []string{"tool_call", "final"},
-		example:        `{"rationale": "Reproduce the failure.", "action": {"type": "tool_call", "tool": "shell.run", "args": {"command": "go test ./internal/foo"}}}`,
-	},
-	RoleSDDRescue: {
-		focus:          "You are the SDD rescue subagent. Diagnose why the orchestrator is stuck (loop, stagnation, model degradation) from the evidence bundle (dag, state, progress, reports). Recommend exactly ONE corrective action. You may recommend MODEL_ESCALATION to swap the orchestrator to a stronger model. Read-only plus bash for git diagnostics.",
-		allowedActions: []string{"tool_call", "final"},
-		example:        `{"rationale": "Check the progress log for loops.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "progress.md"}}}`,
-	},
+
 }
 
 const baseIdentity = `You are Marshal, a local-first coding assistant operating inside the user's repository.`

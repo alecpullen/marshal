@@ -16,12 +16,12 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui"
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
 	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
-	"marshal/internal/sdd"
 	"marshal/internal/skills"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
@@ -65,7 +65,8 @@ type Runtime struct {
 	Runner         *agent.Runner
 	ToolRegistry   *registry.Registry
 	SwarmRunner    *swarm.Orchestrator
-	SDDRunner      *sdd.ControllerAdapter
+	// PipelineFactory builds a plan-execution runner for one plan file.
+	PipelineFactory func(planPath string) tui.AgentRunner
 	DB             DBCloser
 	ProjectID      int64
 	SessionID      string
@@ -518,7 +519,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 
-	runner, toolReg, swarmRunner, sddRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspMgr, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspMgr, pipelineFactory, err := buildAgentRunner(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, runOpts.configReloader, homeDir)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -527,14 +528,14 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	}
 
 	rt := &Runtime{
-		Config:             cfg,
-		Layers:             layers,
-		State:              state,
-		Runner:             runner,
-		ToolRegistry:       toolReg,
-		SwarmRunner:        swarmRunner,
-		SDDRunner:          sddRunner,
-		DB:                 database,
+		Config:           cfg,
+		Layers:           layers,
+		State:            state,
+		Runner:           runner,
+		ToolRegistry:     toolReg,
+		SwarmRunner:      swarmRunner,
+		PipelineFactory:  pipelineFactory,
+		DB:               database,
 		ProjectID:          projectID,
 		SessionID:          sessionID,
 		JobBroker:          jobBroker,

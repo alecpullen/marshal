@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1908,7 +1909,7 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 	}
 }
 
-func TestStatusBarShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
+func TestActivityRowShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: time.Now().Add(-time.Second)})
 	m := New(state)
@@ -1919,14 +1920,14 @@ func TestStatusBarShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
 
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "⠋") {
-		t.Fatalf("View() missing spinner frame in status bar:\n%s", view)
+		t.Fatalf("View() missing spinner frame in activity row:\n%s", view)
 	}
 	if !strings.Contains(view, "thinking") {
-		t.Fatalf("View() missing thinking label in status bar:\n%s", view)
+		t.Fatalf("View() missing thinking label in activity row:\n%s", view)
 	}
 }
 
-func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
+func TestStatusLineOmitsCompletedToolBadge(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
@@ -1935,24 +1936,80 @@ func TestStatusBarDoneBadgeExpiresAfterDuration(t *testing.T) {
 	m.busy = true
 	m.spinnerFrame = "⠏"
 	state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Now()})
-	m.lastActivityKind = session.ActivityTool
-	m.lastActivityLabel = "shell.run: go test"
 
 	updated, _ = m.Update(agentFinishedMsg{})
 	m = updated.(Model)
 
-	if !strings.Contains(stripANSI(m.View().Content), "✔") {
-		t.Fatal("expected done badge immediately after finish")
+	if strings.Contains(stripANSI(m.View().Content), "✔") {
+		t.Fatalf("done badge should be gone; completed tools are owned by the transcript:\n%s", m.View().Content)
 	}
+}
 
-	m.lastActivityDone = m.lastActivityDone.Add(-doneDisplayDuration).Add(-time.Millisecond)
+func TestSuccessPulseExpiresAfterDuration(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.successPulse = true
+	m.successPulseAt = m.now().Add(-successPulseDuration - time.Millisecond)
+	updated, _ := m.Update(agentTickMsg{})
+	m = updated.(Model)
+	if m.successPulse {
+		t.Fatal("successPulse should expire after successPulseDuration")
+	}
+}
 
+func TestRefreshViewportCollapsesToolRun(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	for _, p := range []string{"budget.go", "runner.go", "execute.go"} {
+		m.state.LogToolCall(registry.AuditEvent{
+			Timestamp:     time.Now(),
+			ToolName:      "file.read",
+			Args:          json.RawMessage(`{"path":"` + p + `"}`),
+			ResultSummary: "42 lines",
+		})
+	}
+	m.refreshViewport()
 	view := stripANSI(m.View().Content)
-	if strings.Contains(view, "✔") {
-		t.Fatalf("done badge should have expired after %v:\n%s", doneDisplayDuration, view)
+	if strings.Count(view, "×3") != 1 {
+		t.Fatalf("collapsed run should appear exactly once with ×3:\n%s", view)
 	}
-	if !strings.Contains(view, "default") {
-		t.Fatalf("View() missing idle status after done badge expiry:\n%s", view)
+}
+
+func TestCtrlGExpandsThinkingAndToolRuns(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.state.LogThinking(session.ThinkingEntry{
+		Text:      "reasoning about the budget",
+		Duration:  2 * time.Second,
+		StartedAt: time.Unix(100, 0),
+	})
+	for _, p := range []string{"budget.go", "runner.go", "execute.go"} {
+		m.state.LogToolCall(registry.AuditEvent{
+			Timestamp:     time.Now(),
+			ToolName:      "file.read",
+			Args:          json.RawMessage(`{"path":"` + p + `"}`),
+			ResultSummary: "42 lines",
+		})
+	}
+	m.refreshViewport()
+
+	m = sendKey(m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	if !m.detailExpanded {
+		t.Fatal("ctrl+g should set detailExpanded")
+	}
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "reasoning about the budget") {
+		t.Fatalf("ctrl+g should also expand thinking blocks:\n%s", view)
+	}
+	for _, p := range []string{"budget.go", "runner.go", "execute.go"} {
+		if !strings.Contains(view, p) {
+			t.Fatalf("expanded run missing %q:\n%s", p, view)
+		}
+	}
+
+	m = sendKey(m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	if m.detailExpanded {
+		t.Fatal("ctrl+g should toggle detailExpanded back off")
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "×3") {
+		t.Fatal("collapsing again should restore the ×3 line")
 	}
 }
 
@@ -4994,7 +5051,6 @@ func TestDockedSettingsBrowserDoesNotSwallowRuntimeMessages(t *testing.T) {
 	m := New(state)
 	m.resize(100, 40)
 	m.busy = true
-	m.lastActivityKind = session.ActivityThinking
 
 	m.openSettingsBrowser("")
 	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {

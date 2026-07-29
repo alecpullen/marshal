@@ -66,7 +66,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.refreshViewport()
 		return *m, nil, true
 	case "ctrl+g":
-		m.thinkingExpanded = !m.thinkingExpanded
+		m.detailExpanded = !m.detailExpanded
 		m.lastTranscriptHash = 0
 		m.refreshViewport()
 		return *m, nil, true

@@ -186,8 +186,8 @@ func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)}
 	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(104, 0), 80)
 	plain := stripANSI(out)
-	if !strings.HasPrefix(plain, " · ") {
-		t.Fatalf("active tool call missing · gutter:\n%s", out)
+	if !strings.HasPrefix(plain, " ▸ ") {
+		t.Fatalf("active tool call missing ▸ gutter:\n%s", out)
 	}
 	if !strings.Contains(plain, "Run command") || !strings.Contains(plain, "4s") {
 		t.Fatalf("active tool call missing name/elapsed:\n%s", out)
@@ -587,8 +587,11 @@ func TestCompletedFileWritePatchRendersDiff(t *testing.T) {
 	if !strings.Contains(out, "Edit file") {
 		t.Fatalf("missing pretty tool name: %q", out)
 	}
-	if !strings.Contains(out, "+ new") || !strings.Contains(out, "- old") {
-		t.Fatalf("missing diff content: %q", out)
+	if !strings.Contains(out, "a.go") {
+		t.Fatalf("missing file stat header: %q", out)
+	}
+	if !strings.Contains(out, "+1 −1") {
+		t.Fatalf("missing stat line: %q", out)
 	}
 }
 
@@ -605,8 +608,8 @@ func TestCompletedFileWritePatchTruncatesLongDiff(t *testing.T) {
 		ResultContent: long.String(),
 	}
 	out := stripANSI(renderCompletedToolCall(event, 80))
-	if !strings.Contains(out, "Diff:") {
-		t.Fatalf("missing diff header: %q", out)
+	if !strings.Contains(out, "a.go") {
+		t.Fatalf("missing file stat header: %q", out)
 	}
 	if !strings.Contains(out, "more lines") {
 		t.Fatalf("long diff should be truncated with indicator: %q", out)
@@ -640,5 +643,89 @@ func TestActiveToolCallNoOutputShowsNothing(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) > 3 {
 		t.Fatalf("expected at most 3 lines (header, command, blank), got %d: %q", len(lines), out)
+	}
+}
+
+// unifiedDiffForFile builds one file's worth of unified diff with pairs
+// removed/added body lines each.
+func unifiedDiffForFile(path string, pairs int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- a/%s\n+++ b/%s\n@@ -1,%d +1,%d @@\n", path, path, pairs, pairs)
+	for i := 0; i < pairs; i++ {
+		fmt.Fprintf(&b, "-old line %d\n+new line %d\n", i, i)
+	}
+	return b.String()
+}
+
+func TestCompletedToolCallRendersEveryFileInMultiFilePatch(t *testing.T) {
+	diff := unifiedDiffForFile("alpha.go", 4) + unifiedDiffForFile("beta.go", 4) + unifiedDiffForFile("gamma.go", 4)
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultSummary: "applied patch",
+		ResultContent: diff,
+	}, 80))
+	for _, path := range []string{"alpha.go", "beta.go", "gamma.go"} {
+		if !strings.Contains(out, path) {
+			t.Fatalf("diff output missing stat header for %s:\n%s", path, out)
+		}
+	}
+	if !strings.Contains(out, "+4 −4") {
+		t.Fatalf("diff output missing +N −M stats:\n%s", out)
+	}
+	// The flat 20-line cap this replaces would have dropped gamma.go's body.
+	if !strings.Contains(out, "new line 3") {
+		t.Fatalf("later files lost their body lines:\n%s", out)
+	}
+}
+
+func TestCompletedToolCallCapsBodyLinesPerFile(t *testing.T) {
+	diff := unifiedDiffForFile("big.go", 20) // 41 rendered lines: hunk header + 40 body
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultSummary: "applied patch",
+		ResultContent: diff,
+	}, 80))
+	if !strings.Contains(out, "more lines") {
+		t.Fatalf("expected per-file elision of lines:\n%s", out)
+	}
+}
+
+func TestCompletedToolCallCapsFilesShown(t *testing.T) {
+	var diff string
+	for i := 0; i < 7; i++ {
+		diff += unifiedDiffForFile(fmt.Sprintf("file%d.go", i), 1)
+	}
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultSummary: "applied patch",
+		ResultContent: diff,
+	}, 80))
+	if !strings.Contains(out, "… 1 more files") {
+		t.Fatalf("expected file-cap elision line:\n%s", out)
+	}
+	if !strings.Contains(out, "file5.go") {
+		t.Fatalf("sixth file should still render:\n%s", out)
+	}
+	if strings.Contains(out, "file6.go") {
+		t.Fatalf("seventh file should be elided:\n%s", out)
+	}
+}
+
+func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
+	outs := map[string]string{
+		"user message":   renderUserMessage("hello", 80),
+		"system notice":  renderSystemNotice("note", 80),
+		"tool result":    renderToolResultLine("line1\nline2", 80),
+		"plan block":     renderPlanBlock("step 1", 80),
+		"provider error": renderProviderError(errors.New("boom"), 80),
+		"queued":         renderQueuedMessages([]string{"q1"}, 80),
+		"active tool": renderActiveToolCall(
+			session.ActiveToolCall{Name: "shell.run", Args: "go test", StartedAt: time.Unix(100, 0)},
+			session.SandboxInfo{}, false, "⠻", time.Unix(104, 0), 80),
+	}
+	for name, out := range outs {
+		if !strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\n\n") {
+			t.Errorf("%s must end with exactly one newline: %q", name, out)
+		}
 	}
 }

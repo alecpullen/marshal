@@ -272,7 +272,6 @@ func renderUserMessage(content string, width int) string {
 		b.WriteString(lipgloss.NewStyle().Foreground(userColor).Render(line))
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -287,13 +286,13 @@ func renderAgentMarkdown(content string, width int) string {
 	return strings.Trim(out, "\n") + "\n"
 }
 
-func renderTranscriptItem(item session.TranscriptItem, thinkingExpanded bool, width int) string {
+func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, width int) string {
 	switch item.Kind {
 	case session.KindThinking:
 		if item.Thinking == nil {
 			return ""
 		}
-		return renderThinkingSummary(item.Thinking.Text, item.Thinking.Duration, thinkingExpanded, width)
+		return renderThinkingSummary(item.Thinking.Text, item.Thinking.Duration, detailExpanded, width)
 	case session.KindAudit:
 		if item.Audit == nil {
 			return ""
@@ -305,7 +304,7 @@ func renderTranscriptItem(item session.TranscriptItem, thinkingExpanded bool, wi
 		}
 		var b strings.Builder
 		if item.Message.Reasoning != "" {
-			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, thinkingExpanded, width))
+			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, detailExpanded, width))
 		}
 		b.WriteString(renderMessage(*item.Message, width))
 		return b.String()
@@ -325,7 +324,6 @@ func renderSystemNotice(content string, width int) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -344,7 +342,6 @@ func renderQueuedMessages(q []string, width int) string {
 		b.WriteString(mutedStyle().Render("queued: " + strutil.Truncate(msg, max(width-12, 1), false)))
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -367,7 +364,6 @@ func renderToolResultLine(content string, width int) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -393,7 +389,6 @@ func renderPlanBlock(content string, width int) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -414,7 +409,6 @@ func renderProviderError(err error, width int) string {
 		b.WriteString(mutedStyle().Render(line))
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -429,7 +423,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		elapsed = 0
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
-	gutter := gutterPrefix("·", dimColor)
+	gutter := gutterPrefix("▸", accentColor)
 	headerLine := gutter + toolBulletStyle().Render(strutil.Truncate(head, max(width-3, 1), false))
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(headerLine))
@@ -461,7 +455,6 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -494,34 +487,109 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 	b.WriteString(style.Render(strutil.Truncate(head, max(width-3, 1), false)))
 	b.WriteString("\n")
 	if isDiffTool(event.ToolName) && event.ResultContent != "" {
-		rendered := diffview.Render(event.ResultContent, diffview.Options{
-			Width:     max(width-2, 1),
-			Mode:      diffview.ModeAuto,
-			Highlight: true,
-		})
-		lines := strings.Split(rendered, "\n")
-		const maxDiffLines = 20
-		if len(lines) > maxDiffLines {
-			lines = lines[:maxDiffLines]
-		}
-		b.WriteString(strings.Repeat(" ", 3))
-		b.WriteString(dimStyle().Render("Diff:"))
-		b.WriteString("\n")
-		for _, line := range lines {
-			if line == "" {
-				continue
+		files := splitDiffFiles(event.ResultContent)
+		shown := min(len(files), maxDiffFiles)
+		for i := 0; i < shown; i++ {
+			f := files[i]
+			stat := fmt.Sprintf("+%d −%d", f.added, f.removed)
+			if f.path != "" {
+				stat = f.path + " " + stat
 			}
-			b.WriteString(strings.Repeat(" ", 3))
-			b.WriteString(line)
+			b.WriteString("   │ ")
+			b.WriteString(dimStyle().Render(stat))
 			b.WriteString("\n")
+			rendered := diffview.Render(f.raw, diffview.Options{
+				Width:     max(width-5, 1),
+				Mode:      diffview.ModeAuto,
+				Highlight: true,
+			})
+			lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+			elided := 0
+			if len(lines) > maxDiffLinesPerFile {
+				elided = len(lines) - maxDiffLinesPerFile
+				lines = lines[:maxDiffLinesPerFile]
+			}
+			for _, line := range lines {
+				if line == "" {
+					continue
+				}
+				b.WriteString("   │ ")
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+			if elided > 0 {
+				b.WriteString("   │ ")
+				b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
+				b.WriteString("\n")
+			}
 		}
-		if len(strings.Split(rendered, "\n")) > maxDiffLines {
-			b.WriteString(strings.Repeat(" ", 3))
-			b.WriteString(dimStyle().Render(fmt.Sprintf("... (%d more lines)", len(strings.Split(rendered, "\n"))-maxDiffLines)))
+		if len(files) > shown {
+			b.WriteString("   │ ")
+			b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more files", len(files)-shown)))
 			b.WriteString("\n")
 		}
 	}
 	return b.String()
+}
+
+const (
+	// maxDiffLinesPerFile caps the rendered body lines each changed file
+	// gets; maxDiffFiles caps how many files render, so a sweeping
+	// refactor cannot flood the transcript.
+	maxDiffLinesPerFile = 12
+	maxDiffFiles        = 6
+)
+
+// diffFile is one file's slice of a unified diff, with precomputed
+// add/remove counts for the +N −M stat header.
+type diffFile struct {
+	path    string
+	raw     string
+	added   int
+	removed int
+}
+
+// splitDiffFiles splits a unified diff into per-file chunks on "--- "/
+// "+++ " header pairs. Content with no file headers is returned as a
+// single anonymous chunk so the caller still renders it.
+func splitDiffFiles(diff string) []diffFile {
+	var files []diffFile
+	var cur *diffFile
+	flush := func() {
+		if cur != nil {
+			files = append(files, *cur)
+			cur = nil
+		}
+	}
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "--- ") {
+			flush()
+			cur = &diffFile{}
+		}
+		if cur == nil {
+			continue
+		}
+		if strings.HasPrefix(line, "+++ ") {
+			path := strings.TrimPrefix(line, "+++ ")
+			path = strings.TrimPrefix(path, "b/")
+			if idx := strings.IndexByte(path, '\t'); idx >= 0 {
+				path = path[:idx]
+			}
+			cur.path = path
+		}
+		cur.raw += line + "\n"
+		switch {
+		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++ "):
+			cur.added++
+		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "--- "):
+			cur.removed++
+		}
+	}
+	flush()
+	if len(files) == 0 {
+		files = []diffFile{{raw: diff}}
+	}
+	return files
 }
 
 func isDiffTool(name string) bool {

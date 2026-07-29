@@ -80,7 +80,7 @@ const (
 	minTerminalWidth  = 80
 	minTerminalHeight = 24
 
-	doneDisplayDuration = 2 * time.Second
+	successPulseDuration = 2 * time.Second
 
 	// settingsBusyMessage is shown when runtime work makes a settings change
 	// unsafe to persist.
@@ -198,7 +198,7 @@ type Model struct {
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
-	thinkingExpanded   bool
+	detailExpanded     bool
 	viewportFollow     bool
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
@@ -217,10 +217,8 @@ type Model struct {
 
 	spinner           Spinner
 	spinnerFrame      string
-	lastActivityLabel string
-	lastActivityDone  time.Time
-	lastActivityKind  session.ActivityKind
 	successPulse      bool
+	successPulseAt    time.Time
 	now               func() time.Time
 
 	// Pinned todo panel (Ctrl+T cycles expanded → collapsed → hidden).
@@ -935,7 +933,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -1671,8 +1669,13 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-statusLineRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-statusLineRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
+
+// activityRowRows reports the rows reserved for the pinned activity row
+// above the input. The row is always reserved — even while idle — so the
+// transcript frame does not shift when the agent starts working.
+func (m Model) activityRowRows() int { return 1 }
 
 // liveStripRows reports the rows the live strip occupies: 1 while a
 // swarm/SDD run or browser session is live, 0 otherwise.
@@ -1724,7 +1727,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -2098,31 +2101,38 @@ func (m *Model) refreshViewport() {
 	}
 	m.lastTranscriptHash = hash
 
-	var b strings.Builder
+	blocks := make([]string, 0, len(items)+4)
 	if len(items) == 0 {
-		b.WriteString(renderWelcomeBanner(m.viewport.Width()))
+		blocks = append(blocks, renderWelcomeBanner(m.viewport.Width()))
 	}
-	for _, item := range items {
-		b.WriteString(renderTranscriptItem(item, m.thinkingExpanded, m.viewport.Width()))
+	for _, entry := range groupTranscript(items) {
+		var s string
+		if entry.Group != nil {
+			s = renderToolGroup(entry.Group, m.detailExpanded, m.viewport.Width())
+		} else {
+			s = renderTranscriptItem(*entry.Item, m.detailExpanded, m.viewport.Width())
+		}
+		if s != "" {
+			blocks = append(blocks, s)
+		}
 	}
-
 	if inProgress.Active && inProgress.Reasoning != "" {
-		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()))
+		blocks = append(blocks, renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()))
 	}
 	if atc, ok := m.state.ActiveToolCall(); ok {
-		b.WriteString(renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.viewport.Width()))
+		blocks = append(blocks, renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.viewport.Width()))
 	}
 	if err := m.state.ProviderError(); err != nil {
-		b.WriteString(renderProviderError(err, m.viewport.Width()))
-		b.WriteString("\n")
-		b.WriteString(mutedStyle().Render("Run /connect to add a provider, or /models to pick a model."))
-		b.WriteString("\n")
+		blocks = append(blocks, renderProviderError(err, m.viewport.Width())+
+			mutedStyle().Render("Run /connect to add a provider, or /models to pick a model.")+"\n")
 	}
 	if len(queued) > 0 {
-		b.WriteString(renderQueuedMessages(queued, m.viewport.Width()))
+		blocks = append(blocks, renderQueuedMessages(queued, m.viewport.Width()))
 	}
 
-	m.viewport.SetContent(b.String())
+	// Every block ends with exactly one newline; separation between blocks
+	// is the caller's job — one blank line, none within a block.
+	m.viewport.SetContent(strings.Join(blocks, "\n"))
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
 	}
@@ -2320,12 +2330,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.successPulse = false
 	} else if msg.err == nil {
 		m.successPulse = true
+		m.successPulseAt = m.now()
 	}
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
-	if m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
-		m.lastActivityDone = m.now()
-		m.lastActivityKind = session.ActivityIdle
-	}
 	m.updateViewportHeight()
 	m.refreshViewport()
 	return m, tickCmd()
@@ -2368,22 +2375,11 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 		m.gitInfo = gitinfo.Read(m.state.WorkingDir)
 		m.lastGitRead = now
 	}
-	if !m.busy && m.successPulse {
-		if m.lastActivityKind == session.ActivityIdle && !m.lastActivityDone.IsZero() &&
-			m.now().Sub(m.lastActivityDone) >= doneDisplayDuration {
-			m.successPulse = false
-		}
+	if !m.busy && m.successPulse && m.now().Sub(m.successPulseAt) >= successPulseDuration {
+		m.successPulse = false
 	}
 	if !m.busy && !m.successPulse {
 		return m, nil
-	}
-	act := m.state.Activity()
-	if act.Kind == session.ActivityIdle && m.lastActivityKind != session.ActivityIdle && m.lastActivityKind != "" {
-		m.lastActivityDone = m.now()
-	}
-	m.lastActivityKind = act.Kind
-	if act.Kind != session.ActivityIdle && act.Label != "" {
-		m.lastActivityLabel = act.Label
 	}
 	if m.state.PendingQuestion() != nil && m.input.Placeholder != "Type your answer..." {
 		m.input.Placeholder = "Type your answer..."

@@ -10,9 +10,11 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/strutil"
 )
 
 // ansiRe matches SGR (and empty) escape sequences that lipgloss emits.
@@ -92,6 +94,7 @@ func (m *Model) viewString() string {
 		if dockView != "" {
 			rows = append(rows, dockView)
 		}
+		rows = append(rows, m.renderActivityRow())
 		rows = append(rows, m.renderInputArea())
 		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
@@ -113,6 +116,31 @@ func (m Model) renderTranscriptFrame() string {
 		return lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}
 	return content
+}
+
+// renderActivityRow renders the pinned activity row directly above the
+// input. The row is always reserved — it renders blank while idle — so
+// the transcript frame does not shift when the agent starts working.
+func (m Model) renderActivityRow() string {
+	act := m.state.Activity()
+	if act.Kind == session.ActivityIdle {
+		return ""
+	}
+	label := strings.TrimSuffix(act.Label, "...")
+	if label == "" {
+		switch act.Kind {
+		case session.ActivityThinking:
+			label = "thinking"
+		default:
+			label = "working"
+		}
+	}
+	elapsed := m.now().Sub(act.StartedAt)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	text := spinnerLabel(m.activeSpinnerFrame(act.Kind), fmt.Sprintf("%s… %s", label, formatElapsed(elapsed)))
+	return statusBusyStyle().Render(" " + strutil.Truncate(text, max(m.leftWidth-1, 1), false))
 }
 
 func (m Model) renderInputArea() string {

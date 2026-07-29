@@ -189,6 +189,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.referencesTool(),
 		tools.definitionTool(),
 		tools.hoverTool(),
+		tools.workspaceWorktreeTool(),
 	}
 	if recallToolEnabled(tools.config.Session.Rollover) {
 		all = append(all, tools.recallHistoryTool())

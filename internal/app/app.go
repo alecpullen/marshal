@@ -402,7 +402,7 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Service, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Manager, func(planPath string) tui.AgentRunner, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Manager, func(planPath string) tui.AgentRunner, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
@@ -664,9 +664,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		state.BeginGeneration(genID, genSeq, genSeed)
 	}
 
-	var snapSvc *snapshot.Service
+	var snapSvc *snapshot.Rooted
 	if dataDir != "" && cfg.Snapshots.Enabled {
-		snapSvc = snapshot.New(dataDir, state.WorkingDir, int64(cfg.Snapshots.MaxFileBytes), cfg.Indexing.Ignore, state.Logger())
+		snapSvc = snapshot.NewRooted(dataDir, state.WorkingDir,
+			func() string { return state.Workspace().ActiveRoot },
+			int64(cfg.Snapshots.MaxFileBytes), cfg.Indexing.Ignore, state.Logger())
 		state.SetSnapshotter(snapSvc)
 		runner.Snapshotter = snapSvc
 		runner.SnapshotRecorder = database

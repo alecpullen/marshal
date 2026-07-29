@@ -696,3 +696,31 @@ func TestRenderActiveToolCallUsesRunningGutter(t *testing.T) {
 		t.Fatalf("running tool should use the ▸ gutter:\n%q", plain)
 	}
 }
+
+func TestTranscriptEntriesSeparatedByOneBlankLine(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	// Two agent messages in a row: agent prose is the renderer that
+	// previously emitted no trailing blank line, so this case only passes
+	// once the caller owns separation.
+	m.state.AddMessage(session.RoleAssistant, "first answer", session.ContentTypeMarkdown)
+	m.state.AddMessage(session.RoleAssistant, "second answer", session.ContentTypeMarkdown)
+	m.refreshViewport()
+
+	lines := strings.Split(stripANSI(m.viewport.View()), "\n")
+	first, second := -1, -1
+	for i, l := range lines {
+		if first == -1 && strings.Contains(l, "first answer") {
+			first = i
+		}
+		if strings.Contains(l, "second answer") {
+			second = i
+		}
+	}
+	if first == -1 || second == -1 {
+		t.Fatalf("transcript missing entries:\n%s", strings.Join(lines, "\n"))
+	}
+	if second != first+2 || strings.TrimSpace(lines[first+1]) != "" {
+		t.Fatalf("entries must be separated by exactly one blank line (first=%d second=%d):\n%s",
+			first, second, strings.Join(lines, "\n"))
+	}
+}

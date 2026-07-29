@@ -186,8 +186,8 @@ func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)}
 	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Unix(104, 0), 80)
 	plain := stripANSI(out)
-	if !strings.HasPrefix(plain, " · ") {
-		t.Fatalf("active tool call missing · gutter:\n%s", out)
+	if !strings.HasPrefix(plain, " ▸ ") {
+		t.Fatalf("active tool call missing ▸ gutter:\n%s", out)
 	}
 	if !strings.Contains(plain, "Run command") || !strings.Contains(plain, "4s") {
 		t.Fatalf("active tool call missing name/elapsed:\n%s", out)
@@ -708,5 +708,24 @@ func TestCompletedToolCallCapsFilesShown(t *testing.T) {
 	}
 	if strings.Contains(out, "file6.go") {
 		t.Fatalf("seventh file should be elided:\n%s", out)
+	}
+}
+
+func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
+	outs := map[string]string{
+		"user message":   renderUserMessage("hello", 80),
+		"system notice":  renderSystemNotice("note", 80),
+		"tool result":    renderToolResultLine("line1\nline2", 80),
+		"plan block":     renderPlanBlock("step 1", 80),
+		"provider error": renderProviderError(errors.New("boom"), 80),
+		"queued":         renderQueuedMessages([]string{"q1"}, 80),
+		"active tool": renderActiveToolCall(
+			session.ActiveToolCall{Name: "shell.run", Args: "go test", StartedAt: time.Unix(100, 0)},
+			session.SandboxInfo{}, false, "⠻", time.Unix(104, 0), 80),
+	}
+	for name, out := range outs {
+		if !strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\n\n") {
+			t.Errorf("%s must end with exactly one newline: %q", name, out)
+		}
 	}
 }

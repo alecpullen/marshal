@@ -2101,35 +2101,38 @@ func (m *Model) refreshViewport() {
 	}
 	m.lastTranscriptHash = hash
 
-	var b strings.Builder
+	blocks := make([]string, 0, len(items)+4)
 	if len(items) == 0 {
-		b.WriteString(renderWelcomeBanner(m.viewport.Width()))
+		blocks = append(blocks, renderWelcomeBanner(m.viewport.Width()))
 	}
 	for _, entry := range groupTranscript(items) {
+		var s string
 		if entry.Group != nil {
-			b.WriteString(renderToolGroup(entry.Group, m.detailExpanded, m.viewport.Width()))
+			s = renderToolGroup(entry.Group, m.detailExpanded, m.viewport.Width())
 		} else {
-			b.WriteString(renderTranscriptItem(*entry.Item, m.detailExpanded, m.viewport.Width()))
+			s = renderTranscriptItem(*entry.Item, m.detailExpanded, m.viewport.Width())
+		}
+		if s != "" {
+			blocks = append(blocks, s)
 		}
 	}
-
 	if inProgress.Active && inProgress.Reasoning != "" {
-		b.WriteString(renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()))
+		blocks = append(blocks, renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()))
 	}
 	if atc, ok := m.state.ActiveToolCall(); ok {
-		b.WriteString(renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.viewport.Width()))
+		blocks = append(blocks, renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.viewport.Width()))
 	}
 	if err := m.state.ProviderError(); err != nil {
-		b.WriteString(renderProviderError(err, m.viewport.Width()))
-		b.WriteString("\n")
-		b.WriteString(mutedStyle().Render("Run /connect to add a provider, or /models to pick a model."))
-		b.WriteString("\n")
+		blocks = append(blocks, renderProviderError(err, m.viewport.Width())+
+			mutedStyle().Render("Run /connect to add a provider, or /models to pick a model.")+"\n")
 	}
 	if len(queued) > 0 {
-		b.WriteString(renderQueuedMessages(queued, m.viewport.Width()))
+		blocks = append(blocks, renderQueuedMessages(queued, m.viewport.Width()))
 	}
 
-	m.viewport.SetContent(b.String())
+	// Every block ends with exactly one newline; separation between blocks
+	// is the caller's job — one blank line, none within a block.
+	m.viewport.SetContent(strings.Join(blocks, "\n"))
 	if m.viewportFollow {
 		m.viewport.GotoBottom()
 	}

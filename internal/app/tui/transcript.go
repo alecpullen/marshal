@@ -272,7 +272,6 @@ func renderUserMessage(content string, width int) string {
 		b.WriteString(lipgloss.NewStyle().Foreground(userColor).Render(line))
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -325,7 +324,6 @@ func renderSystemNotice(content string, width int) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -344,7 +342,6 @@ func renderQueuedMessages(q []string, width int) string {
 		b.WriteString(mutedStyle().Render("queued: " + strutil.Truncate(msg, max(width-12, 1), false)))
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -367,7 +364,6 @@ func renderToolResultLine(content string, width int) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -393,7 +389,6 @@ func renderPlanBlock(content string, width int) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -414,7 +409,6 @@ func renderProviderError(err error, width int) string {
 		b.WriteString(mutedStyle().Render(line))
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -461,7 +455,6 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\n")
 	return b.String()
 }
 

@@ -1911,19 +1911,19 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 
 func TestActivityRowShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "thinking...", StartedAt: time.Now().Add(-time.Second)})
 	m := New(state)
 	m.spinnerFrame = "⠋"
 	m.busy = true
+	m.turnStartedAt = m.now().Add(-time.Second)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = updated.(Model)
 
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "⠋") {
-		t.Fatalf("View() missing spinner frame in activity row:\n%s", view)
+		t.Fatalf("View() missing spinner frame in turn spinner:\n%s", view)
 	}
-	if !strings.Contains(view, "thinking") {
-		t.Fatalf("View() missing thinking label in activity row:\n%s", view)
+	if !strings.Contains(view, "1s") {
+		t.Fatalf("View() missing elapsed time in turn spinner:\n%s", view)
 	}
 }
 

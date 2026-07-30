@@ -250,6 +250,12 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 // either collapsed to one line or, when expanded, as a full boxed panel
 // matching renderThinkingBox's style.
 func renderThinkingSummary(reasoning string, duration time.Duration, expanded bool, width int) string {
+	// A thinking phase with no captured reasoning still marks its position in
+	// the transcript — models that do not expose reasoning would otherwise
+	// leave no trace of having thought. There is nothing to expand.
+	if strings.TrimSpace(reasoning) == "" {
+		return thinkingLineStyle().Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))) + "\n"
+	}
 	if !expanded {
 		return thinkingLineStyle().Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))) + "\n"
 	}

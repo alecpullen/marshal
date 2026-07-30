@@ -221,8 +221,13 @@ type Model struct {
 	pickerCommand string
 	dock          dock.Host
 
-	spinner        Spinner
-	spinnerFrame   string
+	spinner      Spinner
+	spinnerFrame string
+	// turnStartedAt is when the current agent turn began, used for the
+	// pinned turn spinner's elapsed clock. Zero while idle. Distinct from
+	// session.Activity.StartedAt, which is per-phase and resets between
+	// phases — the spinner must survive those gaps.
+	turnStartedAt  time.Time
 	successPulse   bool
 	successPulseAt time.Time
 	now            func() time.Time
@@ -955,7 +960,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -1691,7 +1696,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-statusLineRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-statusLineRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -1707,10 +1712,11 @@ func (m Model) scrollHintRows() int {
 	return 0
 }
 
-// activityRowRows reports the rows reserved for the pinned activity row
+// turnSpinnerRows reports the rows reserved for the pinned turn spinner
 // above the input. The row is always reserved — even while idle — so the
-// transcript frame does not shift when the agent starts working.
-func (m Model) activityRowRows() int { return 1 }
+// transcript frame does not shift when a turn starts. renderTurnSpinner
+// returns "" when idle and JoinVertical counts that as a row.
+func (m Model) turnSpinnerRows() int { return 1 }
 
 // liveStripRows reports the rows the live strip occupies: 1 while a
 // swarm/SDD run or browser session is live, 0 otherwise.
@@ -1762,7 +1768,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -2222,6 +2228,7 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 		return *m, nil
 	}
 	m.busy = true
+	m.turnStartedAt = m.now()
 	agentCtx, cancel := context.WithCancel(m.ctx)
 	m.agentCancel = cancel
 	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd())
@@ -2275,6 +2282,21 @@ func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
 	}
 	act := m.state.Activity()
 	if m.now().Sub(act.StartedAt) < 200*time.Millisecond {
+		return ""
+	}
+	return m.spinnerFrame
+}
+
+// turnSpinnerFrame returns the current spinner glyph for the pinned turn
+// spinner, or "" when idle or within the first 200ms of the turn. The 200ms
+// gate mirrors activeSpinnerFrame: it avoids a glyph flash on turns too fast
+// for the user to perceive. Keyed on turnStartedAt rather than
+// Activity.StartedAt so it does not reset at every phase boundary.
+func (m Model) turnSpinnerFrame() string {
+	if !m.busy || m.turnStartedAt.IsZero() {
+		return ""
+	}
+	if m.now().Sub(m.turnStartedAt) < 200*time.Millisecond {
 		return ""
 	}
 	return m.spinnerFrame
@@ -2345,6 +2367,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.cancelling = false
 	}
 	m.busy = false
+	m.turnStartedAt = time.Time{}
 	m.agentCancel = nil
 	m.refreshRailTurns()
 	m.refreshRailChanged()

@@ -183,3 +183,54 @@ func TestRenderToolGroupExpandedOneLinePerCall(t *testing.T) {
 		}
 	}
 }
+
+// TestRunningToolRendersBelowGroupThenFolds pins the shape spec §4 declares
+// correct: a running call renders on its own row beneath the group it belongs
+// to — it needs the room, since shell.run streams output there — and folds
+// into that group once it completes.
+func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
+	readEvent := func(path string, ts time.Time) registry.AuditEvent {
+		args, err := json.Marshal(map[string]string{"path": path})
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+		return registry.AuditEvent{
+			Timestamp:     ts,
+			ToolName:      "file.read",
+			Args:          args,
+			ResultSummary: "ok",
+		}
+	}
+
+	m := newTestModel(t)
+	m.resize(100, 24)
+	base := m.now()
+	m.state.LogToolCall(readEvent("budget.go", base))
+	m.state.LogToolCall(readEvent("runner.go", base.Add(time.Second)))
+	m.state.SetActiveToolCall(session.ActiveToolCall{
+		Name:      "file.read",
+		Args:      "chat.go",
+		StartedAt: base.Add(2 * time.Second),
+	})
+	m.refreshViewport()
+
+	running := stripANSI(m.viewport.View())
+	if !strings.Contains(running, DisplayToolName("file.read")+" ×2") {
+		t.Errorf("while running, want a ×2 group of completed calls:\n%s", running)
+	}
+	if !strings.Contains(running, "chat.go") {
+		t.Errorf("while running, want the in-flight target on its own row:\n%s", running)
+	}
+	if strings.Contains(running, DisplayToolName("file.read")+" ×3") {
+		t.Errorf("in-flight call must not fold into the group while running:\n%s", running)
+	}
+
+	m.state.ClearActiveToolCall()
+	m.state.LogToolCall(readEvent("chat.go", base.Add(3*time.Second)))
+	m.refreshViewport()
+
+	done := stripANSI(m.viewport.View())
+	if !strings.Contains(done, DisplayToolName("file.read")+" ×3") {
+		t.Errorf("after completion, want the call folded into a ×3 group:\n%s", done)
+	}
+}

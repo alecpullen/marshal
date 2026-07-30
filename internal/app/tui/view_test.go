@@ -209,7 +209,7 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	if m.viewport.Width() != 100 {
 		t.Fatalf("viewport.Width = %d, want 100 (full terminal width, borderless transcript)", m.viewport.Width())
 	}
-	wantHeight := 30 - m.inputAreaRows() - m.activityRowRows() - statusLineRows
+	wantHeight := 30 - m.inputAreaRows() - m.turnSpinnerRows() - statusLineRows
 	if m.viewport.Height() != wantHeight {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
 	}
@@ -655,26 +655,28 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 	}
 }
 
-func TestActivityRowReservedWhenIdle(t *testing.T) {
+func TestTurnSpinnerReservedWhenIdle(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	if got := m.renderActivityRow(); got != "" {
-		t.Fatalf("idle activity row should render blank, got %q", got)
+	if got := m.renderTurnSpinner(); got != "" {
+		t.Fatalf("idle turn spinner should render blank, got %q", got)
 	}
-	if m.activityRowRows() != 1 {
-		t.Fatalf("activityRowRows() = %d, want 1 (row always reserved)", m.activityRowRows())
+	if m.turnSpinnerRows() != 1 {
+		t.Fatalf("turnSpinnerRows() = %d, want 1 (row always reserved)", m.turnSpinnerRows())
 	}
 }
 
-func TestActivityRowShowsThinkingDirectlyAboveInput(t *testing.T) {
+func TestTurnSpinnerShowsElapsedDirectlyAboveInput(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = true
+	m.turnStartedAt = m.now().Add(-12 * time.Second)
 	m.spinnerFrame = "⠋"
-	m.now = func() time.Time { return time.Unix(112, 0) }
-	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: time.Unix(100, 0)})
 
-	row := stripANSI(m.renderActivityRow())
-	if !strings.Contains(row, "⠋") || !strings.Contains(row, "thinking") || !strings.Contains(row, "12s") {
-		t.Fatalf("activity row missing spinner/label/elapsed: %q", row)
+	row := stripANSI(m.renderTurnSpinner())
+	if !strings.Contains(row, "⠋") || !strings.Contains(row, "12s") {
+		t.Fatalf("turn spinner missing glyph/elapsed: %q", row)
+	}
+	if strings.Contains(row, "thinking") {
+		t.Fatalf("turn spinner must not show phase label: %q", row)
 	}
 
 	lines := strings.Split(strings.TrimRight(stripANSI(m.View().Content), "\n"), "\n")
@@ -682,8 +684,8 @@ func TestActivityRowShowsThinkingDirectlyAboveInput(t *testing.T) {
 	if !strings.Contains(lines[inputTop], "▍") {
 		t.Fatalf("input bar not where expected; line %d = %q", inputTop, lines[inputTop])
 	}
-	if !strings.Contains(lines[inputTop-1], "thinking") {
-		t.Fatalf("activity row must sit directly above the input; line %d = %q", inputTop-1, lines[inputTop-1])
+	if !strings.Contains(lines[inputTop-1], "⠋") {
+		t.Fatalf("turn spinner must sit directly above the input; line %d = %q", inputTop-1, lines[inputTop-1])
 	}
 }
 
@@ -722,5 +724,96 @@ func TestTranscriptEntriesSeparatedByOneBlankLine(t *testing.T) {
 	if second != first+2 || strings.TrimSpace(lines[first+1]) != "" {
 		t.Fatalf("entries must be separated by exactly one blank line (first=%d second=%d):\n%s",
 			first, second, strings.Join(lines, "\n"))
+	}
+}
+
+// TestTurnSpinnerSpansPhaseGaps is the whole point of the turn spinner: every
+// agent phase resets Activity to ActivityIdle on exit, so a phase-driven row
+// goes blank between phases — exactly when the user wants to know the agent
+// has not hung.
+func TestTurnSpinnerSpansPhaseGaps(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-24 * time.Second)
+	m.spinnerFrame = "⠹"
+	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
+
+	row := stripANSI(m.renderTurnSpinner())
+	if !strings.Contains(row, "24s") {
+		t.Errorf("spinner row = %q, want elapsed 24s while busy between phases", row)
+	}
+	if !strings.Contains(row, "⠹") {
+		t.Errorf("spinner row = %q, want a spinner glyph", row)
+	}
+	if strings.Contains(row, "thinking") {
+		t.Errorf("spinner row = %q, want no phase label", row)
+	}
+}
+
+// TestTurnSpinnerBlankWhenIdleButStillReserved pins the reserved-row
+// invariant: blank content, one row of budget.
+func TestTurnSpinnerBlankWhenIdleButStillReserved(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.busy = false
+	m.turnStartedAt = time.Time{}
+
+	if row := m.renderTurnSpinner(); row != "" {
+		t.Errorf("renderTurnSpinner() = %q, want empty when idle", row)
+	}
+	if got := m.turnSpinnerRows(); got != 1 {
+		t.Errorf("turnSpinnerRows() = %d, want 1 even when idle", got)
+	}
+}
+
+// TestTurnSpinnerGlyphGatedOnFirst200ms avoids a glyph flash on fast turns.
+// TestTurnSpinnerSitsAboveTodos pins the row order: the spinner groups with
+// the transcript whose progress it describes, and the todo list stays
+// adjacent to the input.
+func TestTurnSpinnerSitsAboveTodos(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "first task", Status: "completed"},
+		{Content: "second task", Status: "in_progress"},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-24 * time.Second)
+	m.spinnerFrame = "⠹"
+	m.refreshViewport()
+
+	lines := strings.Split(stripANSI(m.viewString()), "\n")
+	spinnerRow, firstTodoRow := -1, -1
+	for i, l := range lines {
+		if spinnerRow == -1 && strings.Contains(l, "24s") {
+			spinnerRow = i
+		}
+		if firstTodoRow == -1 && strings.Contains(l, "first task") {
+			firstTodoRow = i
+		}
+	}
+	if spinnerRow == -1 || firstTodoRow == -1 {
+		t.Fatalf("spinner row = %d, first todo row = %d; both must render", spinnerRow, firstTodoRow)
+	}
+	if spinnerRow > firstTodoRow {
+		t.Errorf("spinner row %d is below first todo row %d, want above", spinnerRow, firstTodoRow)
+	}
+	if len(lines) != 30 {
+		t.Errorf("frame = %d rows, want 30", len(lines))
+	}
+}
+
+func TestTurnSpinnerGlyphGatedOnFirst200ms(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.busy = true
+	m.spinnerFrame = "⠹"
+
+	m.turnStartedAt = m.now().Add(-50 * time.Millisecond)
+	if got := m.turnSpinnerFrame(); got != "" {
+		t.Errorf("turnSpinnerFrame() = %q at 50ms, want empty", got)
+	}
+	m.turnStartedAt = m.now().Add(-time.Second)
+	if got := m.turnSpinnerFrame(); got != "⠹" {
+		t.Errorf("turnSpinnerFrame() = %q at 1s, want ⠹", got)
 	}
 }

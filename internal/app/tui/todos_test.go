@@ -73,7 +73,11 @@ func TestTodoPanelExpandedUsesStatusGlyphs(t *testing.T) {
 
 func TestTodoPanelHeaderTracksCounts(t *testing.T) {
 	todos := sampleTodos(5, 2, 2)
-	out := stripANSI(renderTodoPanelBody(todos, todoPanelExpanded, 40, 80))
+	raw := renderTodoPanelBody(todos, todoPanelExpanded, 40, 80)
+	if !strings.Contains(raw, "\x1b[") {
+		t.Fatal("header must use ANSI styling")
+	}
+	out := stripANSI(raw)
 	if !strings.Contains(out, "tasks 2/5") {
 		t.Fatalf("panel header must show task counts:\n%s", out)
 	}

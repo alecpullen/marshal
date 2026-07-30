@@ -297,6 +297,8 @@ func renderMessage(msg session.Message, width int) string {
 		return renderPlanBlock(msg.Content, width)
 	case session.ContentTypeToolResult:
 		return renderToolResultLine(msg.Content, width)
+	case session.ContentTypeSkill:
+		return renderSkillTag(msg.Content, width)
 	case session.ContentTypeCode:
 		return gutterPrefix("▍", accentColor) + renderCodeBlock(msg.Content, max(width-3, 1)) + "\n"
 	default: // plain and markdown prose render identically
@@ -356,6 +358,22 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, widt
 		return b.String()
 	}
 	return ""
+}
+
+func renderSkillTag(name string, width int) string {
+	contentWidth := max(width-2, 1)
+	tag := "▶ skill.load: " + name
+	wrapped := ansi.Wrap(tag, contentWidth, "")
+	var b strings.Builder
+	for i, line := range strings.Split(wrapped, "\n") {
+		if i == 0 {
+			b.WriteString(mutedStyle().Render("· " + line))
+		} else {
+			b.WriteString(mutedStyle().Render("  " + line))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func renderSystemNotice(content string, width int) string {
@@ -763,13 +781,22 @@ func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 		return ""
 	}
 	gutter := gutterPrefix("?", violetColor)
+	indent := strings.Repeat(" ", 3)
+	contentWidth := max(width-3, 1)
+	questionStyle := lipgloss.NewStyle().Foreground(violetColor).Bold(true)
 	var b strings.Builder
 	for _, qs := range q.Questions {
-		b.WriteString(gutter)
-		b.WriteString(lipgloss.NewStyle().Foreground(violetColor).Bold(true).Render(qs.Question))
-		b.WriteString("\n")
+		for j, line := range strings.Split(ansi.Wrap(qs.Question, contentWidth, ""), "\n") {
+			if j == 0 {
+				b.WriteString(gutter)
+			} else {
+				b.WriteString(indent)
+			}
+			b.WriteString(questionStyle.Render(line))
+			b.WriteString("\n")
+		}
 		if len(qs.Options) > 0 {
-			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(indent)
 			b.WriteString(mutedStyle().Render("(" + strings.Join(qs.Options, " / ") + ")"))
 			b.WriteString("\n")
 		}

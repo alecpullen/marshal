@@ -238,4 +238,13 @@ CREATE TABLE IF NOT EXISTS prompt_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prompt_history_project_id ON prompt_history(project_id, id);
+
+CREATE TABLE IF NOT EXISTS project_skills (
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    skill_name TEXT NOT NULL,
+    loaded_at TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    PRIMARY KEY (project_id, skill_name)
+);
+CREATE INDEX IF NOT EXISTS idx_project_skills_project ON project_skills(project_id);
 `

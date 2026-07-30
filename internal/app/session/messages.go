@@ -24,6 +24,7 @@ const (
 	ContentTypePlan       ContentType = "plan"
 	ContentTypeDiff       ContentType = "diff"
 	ContentTypeToolResult ContentType = "tool_result"
+	ContentTypeSkill      ContentType = "skill"
 )
 
 // Message is a single turn in the session transcript. Messages form an

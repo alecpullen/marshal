@@ -205,20 +205,13 @@ func TestAuditEventsCarryFinishReason(t *testing.T) {
 	}
 }
 
-// TestLengthTruncatedActionIsStillExecuted characterises a confirmed gap, not
-// desired behavior. isLengthFinish (runner.go:56) says a response cut off at
-// the output-token limit "may carry silently truncated arguments and must not
-// be executed" — but that guard only covers native tool calls. On the
-// JSON-action path the action is executed regardless, as asserted below.
-//
-// This is the likely source of the 25-of-43 recorded file.write_patch failures
-// whose payloads stop mid-block: a patch truncated at the token limit reaches
-// the parser and is indistinguishable from a badly written one. The recorded
-// finish_reason now distinguishes them.
-//
-// When the guard is extended to this path, this test should be inverted to
-// assert the call is refused.
-func TestLengthTruncatedActionIsStillExecuted(t *testing.T) {
+// TestLengthTruncatedActionIsRefused pins the length guard on the
+// JSON-action path: isLengthFinish (runner.go:56) says a response cut off
+// at the output-token limit "may carry silently truncated arguments and
+// must not be executed". Before the guard was extended here, a truncated
+// envelope that still parsed was executed anyway — the likely source of
+// the recorded file.write_patch failures whose payloads stop mid-block.
+func TestLengthTruncatedActionIsRefused(t *testing.T) {
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{
 			`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.txt"}}}`,
@@ -238,16 +231,20 @@ func TestLengthTruncatedActionIsStillExecuted(t *testing.T) {
 	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
-	_ = runner.Run(context.Background(), "read the file")
+	if err := runner.Run(context.Background(), "read the file"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 
-	events := state.AuditLog()
-	if len(events) != 1 {
-		t.Fatalf("got %d audit events, want 1", len(events))
+	if events := state.AuditLog(); len(events) != 0 {
+		t.Fatalf("got %d audit events, want 0 — a length-truncated action must not execute", len(events))
 	}
-	if events[0].Error != "" {
-		t.Errorf("call was refused with %q; if the length guard now covers this path, invert this test", events[0].Error)
+	found := false
+	for _, m := range p.Requests[1].Messages {
+		if m.Role == schema.RoleUser && strings.Contains(m.Content, "truncated") {
+			found = true
+		}
 	}
-	if got := events[0].FinishReason; got != "length" {
-		t.Errorf("FinishReason = %q, want %q", got, "length")
+	if !found {
+		t.Fatal("no corrective user message for the truncated action")
 	}
 }

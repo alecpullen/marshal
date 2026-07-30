@@ -731,7 +731,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
 		producedValidAction = true
 
-		if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() {
+		if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() && action.Type != ActionAnswer && action.Type != ActionFinal {
 			r.State.LogThinking(session.ThinkingEntry{
 				Text:      inProgress.Reasoning,
 				Duration:  time.Since(inProgress.StartedAt),

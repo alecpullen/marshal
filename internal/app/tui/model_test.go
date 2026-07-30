@@ -3015,7 +3015,7 @@ func TestPickerRoutingOpenPickCancel(t *testing.T) {
 	}
 }
 
-// ── /model picker routing (Task 6) ──────────────────────────────────────
+// ── /models argument routing ────────────────────────────────────────────
 
 func modelTestState(t *testing.T) *session.State {
 	t.Helper()
@@ -3028,43 +3028,54 @@ func modelTestState(t *testing.T) *session.State {
 	return session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 }
 
-func TestModelBareOpensPicker(t *testing.T) {
+func TestModelsBareOpensConnectOverlay(t *testing.T) {
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
 	m.resize(80, 24)
-	updated, _ := m.dispatchCommand("/model")
+	updated, _ := m.dispatchCommand("/models")
 	m = asModel(t, updated)
-	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "model" {
-		t.Fatal("bare /model should open the picker")
-	}
-	view := stripANSI(m.View().Content)
-	for _, want := range []string{"Switch model", "test-b", "anthropic/sonnet-5", "session only"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("picker view missing %q:\n%s", want, view)
-		}
+	// No providers configured in the test state: /models falls through to
+	// the connect overlay, not a preset picker.
+	if _, ok := m.dock.Panel().(connect.Panel); !ok {
+		t.Fatal("bare /models should open the connect overlay")
 	}
 }
 
-func TestModelExactArgBypassesPicker(t *testing.T) {
+func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 	var reloaded *config.Config
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
 	m.resize(80, 24)
-	updated, _ := m.dispatchCommand("/model test-b")
+	updated, _ := m.dispatchCommand("/models test-b")
 	m = asModel(t, updated)
 	if m.dock.IsOpen() {
-		t.Fatal("exact preset arg must switch directly, no picker")
+		t.Fatal("exact preset arg must switch directly, no overlay")
 	}
 	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-b" {
 		t.Fatalf("direct switch should reload with test-b, got %+v", reloaded)
 	}
 }
 
-func TestModelUnknownArgOpensPrefilteredPicker(t *testing.T) {
+func TestModelsModelIDArgSwitchesPreset(t *testing.T) {
+	var reloaded *config.Config
+	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m.resize(80, 24)
+	// A bare model ID (not a preset name) resolves to the preset using it.
+	updated, _ := m.dispatchCommand("/models qwen2.5")
+	m = asModel(t, updated)
+	if m.dock.IsOpen() {
+		t.Fatal("model-ID arg must switch directly, no overlay")
+	}
+	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-a" {
+		t.Fatalf("model-ID switch should reload with test-a, got %+v", reloaded)
+	}
+}
+
+func TestModelsUnknownArgOpensConnectOverlay(t *testing.T) {
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
 	m.resize(80, 24)
-	updated, _ := m.dispatchCommand("/model test-a-typo-b")
+	updated, _ := m.dispatchCommand("/models test-a-typo-b")
 	m = asModel(t, updated)
-	if _, ok := m.dock.Panel().(*picker.Model); !ok {
-		t.Fatal("unknown arg should open the picker instead of erroring")
+	if _, ok := m.dock.Panel().(connect.Panel); !ok {
+		t.Fatal("unknown arg should fall through to the connect overlay")
 	}
 }
 
@@ -3072,32 +3083,14 @@ func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	var reloaded *config.Config
 	m := New(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
 	m.resize(80, 24)
-	updated, _ := m.dispatchCommand("/model")
-	m = asModel(t, updated)
-	updated, _ = m.Update(picker.PickedMsg{Value: "test-a"})
+	m.openPicker("model", "Switch model", "session only — /settings to persist", m.modelPickerItems(), "")
+	updated, _ := m.Update(picker.PickedMsg{Value: "test-a"})
 	m = asModel(t, updated)
 	if m.dock.IsOpen() {
 		t.Fatal("pick should close the modal")
 	}
 	if reloaded == nil || reloaded.AgentProfiles[singleModelProfileName].Roles[routing.RoleImplementer].Preset != "test-a" {
 		t.Fatalf("pick should reload with test-a, got %+v", reloaded)
-	}
-}
-
-func TestModelNoPresetsPointsAtSettings(t *testing.T) {
-	cfg := config.Default()
-	cfg.Models.Presets = map[string]routing.ModelPreset{}
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state, WithCommandRegistry(setupCmdReg(t)))
-	m.resize(80, 24)
-	updated, _ := m.dispatchCommand("/model")
-	m = asModel(t, updated)
-	if m.dock.IsOpen() {
-		t.Fatal("no presets: picker must not open")
-	}
-	msgs := state.Messages()
-	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "/settings") {
-		t.Fatal("should add a system message pointing at /settings")
 	}
 }
 
@@ -4482,6 +4475,43 @@ func TestApplyConnectDoneKeepsAPIKeyOutOfProjectConfig(t *testing.T) {
 	}
 }
 
+func TestApplyConnectDoneKeepsAPIKeyInRuntimeConfig(t *testing.T) {
+	m, workDir, homeDir := newModelForConfigTest(t)
+
+	m.applyConnectDone(connect.DoneMsg{
+		Provider: "openai",
+		Model:    "gpt-4o",
+		ProviderCfg: config.ProviderConfig{
+			Type:    "openai_compatible",
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-runtime-must-keep-me",
+		},
+	})
+
+	// The reload path resolves credentials from the in-memory config, never
+	// re-reading the user config file — stripping the key here would kill
+	// the runtime until restart.
+	if got := m.state.Config.Providers["openai"].APIKey; got != "sk-runtime-must-keep-me" {
+		t.Errorf("runtime config APIKey = %q, want the key retained", got)
+	}
+
+	projectData, err := os.ReadFile(config.ProjectConfigPath(workDir))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if strings.Contains(string(projectData), "sk-runtime-must-keep-me") {
+		t.Errorf("API key written to project config:\n%s", projectData)
+	}
+
+	userData, err := os.ReadFile(config.UserConfigPath(homeDir))
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if !strings.Contains(string(userData), "sk-runtime-must-keep-me") {
+		t.Errorf("API key missing from user config:\n%s", userData)
+	}
+}
+
 func TestApplyConnectDoneWithoutKeyTouchesOnlyProjectConfig(t *testing.T) {
 	m, workDir, _ := newModelForConfigTest(t)
 
@@ -4548,6 +4578,30 @@ func TestApplyConnectDoneUnknownLimitsWriteZero(t *testing.T) {
 
 	if preset.ContextWindow != 0 || preset.MaxOutputTokens != 0 {
 		t.Errorf("got %d/%d, want zeroes — zero means unknown and the runner falls back",
+			preset.ContextWindow, preset.MaxOutputTokens)
+	}
+}
+
+func TestApplyConnectDoneZeroLimitsPreserveSavedPresetValues(t *testing.T) {
+	m, _, _ := newModelForConfigTest(t)
+	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+		"openai/gpt-4o": {
+			Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o",
+			ContextWindow: 200000, MaxOutputTokens: 8192,
+		},
+	}
+
+	// Re-picking the same model with unresolved (zero) limits must not
+	// erase the figures saved earlier.
+	m.applyConnectDone(connect.DoneMsg{
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+	})
+
+	preset := m.state.Config.Models.Presets["openai/gpt-4o"]
+	if preset.ContextWindow != 200000 || preset.MaxOutputTokens != 8192 {
+		t.Errorf("got %d/%d, want the previously saved 200000/8192",
 			preset.ContextWindow, preset.MaxOutputTokens)
 	}
 }

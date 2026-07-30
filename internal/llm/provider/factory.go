@@ -19,7 +19,9 @@ import (
 // cache. Pass "" to skip limit table loading.
 //
 // remoteLimitDiscovery controls whether the limit table is fetched from
-// remote sources (OpenRouter, LiteLLM) when no local cache exists.
+// remote sources (OpenRouter, LiteLLM) when no usable cache exists. The
+// on-disk cache itself is read whenever dataDir is set — reading it makes
+// no network requests.
 func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool) (Provider, error) {
 	switch pc.Type {
 	case "", "openai_compatible":
@@ -31,8 +33,13 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 		caps.ToolCalling = pc.ToolCalling
 
 		var table *limits.Table
-		if dataDir != "" && remoteLimitDiscovery {
-			if t, err := limits.LoadTable(context.Background(), dataDir, limits.DefaultTTL); err == nil {
+		if dataDir != "" {
+			if remoteLimitDiscovery {
+				if t, err := limits.LoadTable(context.Background(), dataDir, limits.DefaultTTL); err == nil {
+					table = &t
+				}
+			} else if c, err := limits.Load(dataDir); err == nil && len(c.Table) > 0 {
+				t := limits.NewTable(c.Table)
 				table = &t
 			}
 		}

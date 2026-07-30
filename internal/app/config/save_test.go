@@ -406,8 +406,15 @@ func TestSaveProjectConfigFullSurfaceRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(loaded.Hooks, cfg.Hooks) {
 		t.Errorf("hooks: got %+v want %+v", loaded.Hooks, cfg.Hooks)
 	}
-	if !reflect.DeepEqual(loaded.Providers, cfg.Providers) {
-		t.Errorf("providers: got %+v want %+v", loaded.Providers, cfg.Providers)
+	// Literal API keys are stripped from the project file (they belong to the
+	// user config); every other provider field round trips.
+	wantProviders := make(map[string]ProviderConfig, len(cfg.Providers))
+	for name, p := range cfg.Providers {
+		p.APIKey = ""
+		wantProviders[name] = p
+	}
+	if !reflect.DeepEqual(loaded.Providers, wantProviders) {
+		t.Errorf("providers: got %+v want %+v", loaded.Providers, wantProviders)
 	}
 	if !reflect.DeepEqual(loaded.Models.Presets["fast"], cfg.Models.Presets["fast"]) {
 		t.Errorf("preset fast: got %+v want %+v", loaded.Models.Presets["fast"], cfg.Models.Presets["fast"])

@@ -26,6 +26,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
+	"marshal/internal/hooks"
 	"marshal/internal/index"
 	"marshal/internal/knowledge"
 	"marshal/internal/llm/embedding"
@@ -1126,6 +1127,21 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if firstRun {
 			tuiOpts = append(tuiOpts, tui.WithOpenConnectOnStart())
 		}
+		// Config reloading stays wired even when the initial provider build
+		// failed: /settings, /set and /connect are the recovery path. A
+		// successful reload rebuilds the runtime in place, and the runner
+		// source lets the TUI adopt the rebuilt runner (see tui.adoptRunner).
+		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
+		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
+		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
+		tuiOpts = append(tuiOpts, tui.WithRunnerSource(func() (context.Context, tui.AgentRunner) {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			if rt.Runner == nil {
+				return nil, nil
+			}
+			return ctx, rt.Runner
+		}))
 		if state.ProviderError() == nil {
 			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
@@ -1139,9 +1155,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 					return rt.CustomAgentFactory(agentName)
 				},
 			))
-			tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
-			tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
-			tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		}
 		if rt.TrustPromptPending {
 			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))
@@ -1267,9 +1280,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 }
 
 func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {
-	if rt.Runner == nil {
-		return nil
-	}
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, _, newPipelineFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir)
@@ -1291,9 +1301,21 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	oldJobMgr := rt.JobManager
 	oldDesktopCloser := rt.DesktopCloser
 
-	// Copy in-place fields.
-	rt.Runner.CopyFrom(newRunner)
-	if rt.SwarmRunner != nil && newSwarmRunner != nil {
+	// Copy in-place fields. When the startup provider build failed there is
+	// no live runner to mutate — adopt the rebuilt one wholesale (mirroring
+	// the startRuntime hook wiring) so the session can recover via /connect
+	// or /settings without a restart.
+	if rt.Runner == nil {
+		if rt.State.Trusted() && len(cfg.Hooks.Entries) > 0 {
+			newRunner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
+		}
+		rt.Runner = newRunner
+	} else {
+		rt.Runner.CopyFrom(newRunner)
+	}
+	if rt.SwarmRunner == nil {
+		rt.SwarmRunner = newSwarmRunner
+	} else if newSwarmRunner != nil {
 		*rt.SwarmRunner = *newSwarmRunner
 	}
 	if newPipelineFactory != nil {

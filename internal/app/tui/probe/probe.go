@@ -23,9 +23,13 @@ func IsLocalhost(baseURL string) bool {
 	return routing.IsLocalProvider(baseURL)
 }
 
-func Provider(fieldID, name string, pc config.ProviderConfig) tea.Cmd {
+// Provider probes name's model list. dataDir enables the on-disk limit
+// table so probed models carry context/output limits; the cached table is
+// refreshed from remote sources only when remoteLimitDiscovery is set.
+// Pass "" to skip limit resolution.
+func Provider(fieldID, name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool) tea.Cmd {
 	return func() tea.Msg {
-		p, err := provider.NewFromConfig(name, pc, "", false)
+		p, err := provider.NewFromConfig(name, pc, dataDir, remoteLimitDiscovery)
 		if err != nil {
 			return ResultMsg{FieldID: fieldID, Provider: name, Err: err}
 		}

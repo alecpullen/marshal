@@ -5,8 +5,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/provider/limits"
 )
 
 func TestNewFromConfigUsesLiteralAPIKey(t *testing.T) {
@@ -191,5 +193,39 @@ func TestNewFromConfigRejectsOllamaType(t *testing.T) {
 	_, err := NewFromConfig("ollama", config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434"}, "", false)
 	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("want unsupported type error, got %v", err)
+	}
+}
+
+func TestNewFromConfigReadsLimitsCacheWithoutRemoteDiscovery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`))
+	}))
+	defer server.Close()
+
+	// Remote discovery is off, but a warm on-disk cache must still be read —
+	// reading it makes no network requests.
+	dataDir := t.TempDir()
+	if err := limits.Save(dataDir, limits.Cache{
+		Table:     map[string]limits.Limit{"gpt-4o": {ContextWindow: 128000, MaxOutputTokens: 16384}},
+		FetchedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed limits cache: %v", err)
+	}
+
+	p, err := NewFromConfig("test", config.ProviderConfig{Type: "openai_compatible", BaseURL: server.URL}, dataDir, false)
+	if err != nil {
+		t.Fatalf("NewFromConfig returned error: %v", err)
+	}
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	if models[0].ContextWindow != 128000 || models[0].MaxOutputTokens != 16384 {
+		t.Fatalf("limits = %d/%d, want 128000/16384 from the on-disk cache",
+			models[0].ContextWindow, models[0].MaxOutputTokens)
 	}
 }

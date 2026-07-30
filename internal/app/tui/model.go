@@ -86,21 +86,26 @@ const (
 	// unsafe to persist.
 	settingsBusyMessage = "Stop the active turn and background jobs before applying settings."
 
-	// singleModelProfileName is the profile /connect and /model write into when
+	// singleModelProfileName is the profile /connect and /models write into when
 	// the user picks one model for everything.
 	singleModelProfileName = "single"
 )
 
 type Model struct {
-	state              *session.State
-	input              textarea.Model
-	editingCommand     bool
-	runner             AgentRunner
-	swarmRunner        AgentRunner
-	pipelineFactory    func(planPath string) AgentRunner
-	ctx                context.Context
-	busy               bool
-	configReloader     ConfigReloader
+	state           *session.State
+	input           textarea.Model
+	editingCommand  bool
+	runner          AgentRunner
+	swarmRunner     AgentRunner
+	pipelineFactory func(planPath string) AgentRunner
+	ctx             context.Context
+	busy            bool
+	configReloader  ConfigReloader
+	// runnerSource exposes the runtime's current runner after a config
+	// reload. Used to recover from a startup provider-build failure, where
+	// the TUI was constructed without a runner: the first successful reload
+	// rebuilds one, and adoptRunner installs it here.
+	runnerSource       func() (context.Context, AgentRunner)
 	openConnectOnStart bool
 	trustPromptDir     string
 	trustDecide        func(trust.Decision)
@@ -217,7 +222,7 @@ type Model struct {
 	// in-memory only.
 	modelCacheDir string
 
-	// Picker modal (opened by commands like /model, /rewind, /branches, /mode).
+	// Picker modal (opened by commands like /rewind, /branches, /mode).
 	// The picker itself is hosted in m.dock; pickerCommand records which
 	// command opened it so PickedMsg can dispatch correctly.
 	pickerCommand string
@@ -297,6 +302,16 @@ type ConfigReloader func(cfg config.Config) error
 func WithConfigReloader(fn ConfigReloader) Option {
 	return func(m *Model) {
 		m.configReloader = fn
+	}
+}
+
+// WithRunnerSource lets the model fetch the runtime's current runner after
+// a successful config reload. It matters when the TUI started without a
+// runner (the initial provider build failed): the reload rebuilds one, and
+// adoptRunner wires it in so the session becomes usable without a restart.
+func WithRunnerSource(fn func() (context.Context, AgentRunner)) Option {
+	return func(m *Model) {
+		m.runnerSource = fn
 	}
 }
 
@@ -489,9 +504,13 @@ func relPath(workingDir, path string) string {
 }
 
 // applyNewConfig installs cfg as the live session config and invalidates
-// anything derived from it.
+// anything derived from it. The footer mode is re-seeded from the new
+// config so a /settings or /set approval-mode change is reflected in the
+// status line (the policy engine is rebuilt from the same value by the
+// runtime reload).
 func (m *Model) applyNewConfig(cfg config.Config) {
 	m.state.Config = cfg
+	m.approvalMode = policy.ParseApprovalMode(cfg.Agent.ApprovalMode)
 	m.setReg = nil
 	m.setPopup = nil
 	m.lastInputForPopups = ""
@@ -532,10 +551,36 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 			m.applyNewConfig(cfg)
 			return nil, err
 		}
+		m.afterRuntimeReload()
 	}
 	m.applyNewConfig(cfg)
 	m.refreshDiagnostics()
 	return nil, nil
+}
+
+// afterRuntimeReload runs the recovery steps that become valid once the
+// runtime has successfully rebuilt itself from a new config: the stale
+// provider-error banner no longer applies (a rebuilt runner proves
+// provider construction worked), and a runner rebuilt after a startup
+// failure is adopted so the session becomes usable without a restart.
+func (m *Model) afterRuntimeReload() {
+	m.state.SetProviderError(nil)
+	m.adoptRunner()
+}
+
+// adoptRunner installs the runtime's rebuilt runner when the TUI started
+// without one (e.g. the initial provider build failed). An existing runner
+// is never replaced: reload mutates it in place via CopyFrom.
+func (m *Model) adoptRunner() {
+	if m.runner != nil || m.runnerSource == nil {
+		return
+	}
+	ctx, runner := m.runnerSource()
+	if runner == nil {
+		return
+	}
+	m.ctx = ctx
+	m.runner = runner
 }
 
 // settingsRegistry returns the cached /set registry, rebuilt after a config
@@ -620,6 +665,7 @@ func (m *Model) handleSetCommand(args []string) {
 					sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
 					return
 				}
+				m.afterRuntimeReload()
 			}
 			m.applyNewConfig(reg.Config())
 			if m.configLayers != nil && m.layerReloader != nil {
@@ -1102,6 +1148,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshViewport()
 					return m, nil
 				}
+				m.afterRuntimeReload()
 			}
 			m.applyNewConfig(msg.Cfg)
 			m.configSavePending = false
@@ -2618,6 +2665,7 @@ func (m *Model) openConnect(_ string) {
 		Cfg:        m.state.Config,
 		Discovered: m.discovered,
 		CfgPath:    projectConfigPath(m.state.WorkingDir),
+		DataDir:    m.modelCacheDir,
 	})
 	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
@@ -2638,6 +2686,7 @@ func (m *Model) openModels() tea.Cmd {
 		SkipToIntroModel: true,
 		AllProviders:     true,
 		ScopedProvider:   names[0],
+		DataDir:          m.modelCacheDir,
 	})
 	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
@@ -2657,7 +2706,7 @@ func (m *Model) probeProviders(names []string) tea.Cmd {
 		if !probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed {
 			continue
 		}
-		cmds = append(cmds, probe.Provider("models", n, pc))
+		cmds = append(cmds, probe.Provider("models", n, pc, m.modelCacheDir, m.state.Config.Privacy.RemoteLimitDiscovery))
 	}
 	return tea.Batch(cmds...)
 }
@@ -2784,7 +2833,10 @@ func (m *Model) openSessionPicker(prefilter string) {
 
 // setMode applies an interaction mode for the next turn. Shared by the
 // /plan, /default, /edit, /copilot, /auto, /mode commands and the
-// Tab/Shift+Tab mode-cycling hotkeys.
+// Tab/Shift+Tab mode-cycling hotkeys. The change is session-scoped (never
+// persisted to disk here), but the in-memory session config is kept in
+// sync so the /settings browser — built from m.state.Config — shows the
+// current mode instead of a stale one.
 func (m *Model) setMode(mode string) {
 	class := "edit"
 	if mode == "plan" || mode == "default" {
@@ -2795,6 +2847,7 @@ func (m *Model) setMode(mode string) {
 		m.runner.SetApprovalMode(policy.ApprovalMode(mode))
 	}
 	m.approvalMode = policy.ApprovalMode(mode)
+	m.state.Config.Agent.ApprovalMode = mode
 }
 
 // modeOrder is the canonical cycle order used by Tab/Shift+Tab.
@@ -2923,13 +2976,24 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		}
 		newCfg.Models.Presets = presets
 	}
-	newCfg.Models.Presets[presetName] = routing.ModelPreset{
+	preset := routing.ModelPreset{
 		Name:            presetName,
 		Provider:        msg.Provider,
 		Model:           msg.Model,
 		ContextWindow:   msg.ContextWindow,
 		MaxOutputTokens: msg.MaxOutputTokens,
 	}
+	// Re-picking a model whose limits came back unknown (zero) must not
+	// erase figures saved earlier — zero means "unknown", not "reset".
+	if existing, ok := newCfg.Models.Presets[presetName]; ok {
+		if preset.ContextWindow == 0 {
+			preset.ContextWindow = existing.ContextWindow
+		}
+		if preset.MaxOutputTokens == 0 {
+			preset.MaxOutputTokens = existing.MaxOutputTokens
+		}
+	}
+	newCfg.Models.Presets[presetName] = preset
 
 	if newCfg.AgentProfiles == nil {
 		newCfg.AgentProfiles = map[string]routing.AgentProfile{}
@@ -2947,7 +3011,9 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 
 	// Credentials never go to project config. Write the key to the user
 	// config first; if that fails, configure nothing rather than leaving a
-	// provider entry pointing at a key that was never saved.
+	// provider entry pointing at a key that was never saved. The in-memory
+	// config keeps the key so the reloaded runtime can use it;
+	// SaveProjectConfig strips it from what reaches the project file.
 	if msg.ProviderCfg.APIKey != "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -2961,12 +3027,6 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 				fmt.Sprintf("✗ Failed to save API key: %v", err), session.ContentTypePlain)
 			return
 		}
-		// Strip the key from the project-bound copy. persistAndReload
-		// serializes the whole Config, so leaving it set would write the
-		// secret to .marshal/config.toml as well.
-		stripped := newCfg.Providers[msg.Provider]
-		stripped.APIKey = ""
-		newCfg.Providers[msg.Provider] = stripped
 	}
 
 	saveErr, reloadErr := m.persistAndReload(newCfg)
@@ -2976,6 +3036,9 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	case reloadErr != nil:
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", reloadErr), session.ContentTypePlain)
 	default:
+		// The banner itself tells the user to run /connect; a successful
+		// switch must clear it even when no runtime reloader is wired.
+		m.state.SetProviderError(nil)
 		m.state.AddMessage(session.RoleSystem,
 			fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
 	}
@@ -3013,6 +3076,23 @@ func (m *Model) switchModelPreset(presetName string) {
 	default:
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
 	}
+}
+
+// resolveModelArg maps a /models argument to a preset name: first an exact
+// preset-name match, then a bare model ID (e.g. "glm-5.2") against each
+// preset's Model field. Model-ID matches scan presets in sorted order so
+// the result is deterministic when several presets share a model.
+func (m *Model) resolveModelArg(arg string) (string, bool) {
+	presets := m.state.Config.Models.Presets
+	if _, ok := presets[arg]; ok {
+		return arg, true
+	}
+	for _, name := range m.sortedPresetNames() {
+		if presets[name].Model == arg {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // sortedPresetNames returns model preset names sorted by provider then name,

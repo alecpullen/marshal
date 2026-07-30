@@ -80,6 +80,9 @@ type Opts struct {
 	ScopedProvider   string
 	CfgPath          string
 	AllProviders     bool
+	// DataDir enables the on-disk limit table during probing (read from
+	// cache; refreshed remotely only per privacy.remote_limit_discovery).
+	DataDir string
 }
 
 type Model struct {
@@ -106,6 +109,7 @@ type Model struct {
 	modelChosen    string
 	remoteEnabled  bool
 	allProviders   bool
+	dataDir        string
 	limits         ModelLimits
 	editingLimit   editingLimit
 }
@@ -125,6 +129,7 @@ func New(opts Opts) *Model {
 		scopedProvider: opts.ScopedProvider,
 		cfgPath:        opts.CfgPath,
 		allProviders:   opts.AllProviders,
+		dataDir:        opts.DataDir,
 	}
 	if opts.SkipToIntroModel {
 		enterPickModelStep(m, opts.ScopedProvider)
@@ -369,6 +374,20 @@ func (m *Model) enterConfirmLimits() {
 	m.err = ""
 	m.picker = nil
 	m.limits = resolveLimits(m.discovered[m.providerName], m.modelChosen)
+	// A preset saved earlier for this provider+model holds figures the user
+	// already confirmed (possibly hand-edited); prefer them over fresh
+	// lookup zeros so re-picking a model doesn't show "unknown".
+	for _, p := range m.cfg.Models.Presets {
+		if p.Provider == m.providerName && p.Model == m.modelChosen {
+			if m.limits.ContextWindow == 0 && p.ContextWindow != 0 {
+				m.limits.ContextWindow, m.limits.ContextSource = p.ContextWindow, SourcePreset
+			}
+			if m.limits.MaxOutputTokens == 0 && p.MaxOutputTokens != 0 {
+				m.limits.MaxOutputTokens, m.limits.OutputSource = p.MaxOutputTokens, SourcePreset
+			}
+			break
+		}
+	}
 }
 
 func (m *Model) startEditingContext() {
@@ -882,7 +901,7 @@ func (m *Model) advanceToPickModel() (*Model, tea.Cmd) {
 }
 
 func (m *Model) runProbe() tea.Cmd {
-	return probe.Provider("connect", m.providerName, m.providerCfg)
+	return probe.Provider("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Privacy.RemoteLimitDiscovery)
 }
 
 // refreshCmd emits a RefreshMsg naming the providers whose entries the

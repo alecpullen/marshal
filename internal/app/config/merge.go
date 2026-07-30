@@ -64,11 +64,18 @@ func merge(cfg *Config, file configFile) error {
 		if cfg.Providers == nil {
 			cfg.Providers = make(map[string]ProviderConfig, len(file.Providers))
 		}
-		// Whole-entry overwrite by key: a provider name defined in both the
-		// global and project file is fully replaced by the project file's
-		// entry (not deep-merged field-by-field), mirroring how a later file
-		// "wins" for scalar fields elsewhere in this function.
+		// Overwrite by key: a provider name defined in both the global and
+		// project file takes the project file's entry for non-credential
+		// fields, mirroring how a later file "wins" for scalar fields
+		// elsewhere in this function. Credential fields are the exception:
+		// project configs are written without API keys (they live in the
+		// user config), so an entry that names no credentials inherits them
+		// from the lower layer instead of hiding them.
 		for name, pc := range file.Providers {
+			if prev, ok := cfg.Providers[name]; ok && pc.APIKey == "" && pc.APIKeyEnv == "" {
+				pc.APIKey = prev.APIKey
+				pc.APIKeyEnv = prev.APIKeyEnv
+			}
 			cfg.Providers[name] = pc
 		}
 	}

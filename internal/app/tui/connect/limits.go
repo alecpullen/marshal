@@ -12,6 +12,7 @@ type LimitSource string
 const (
 	SourceFetched LimitSource = "fetched limits table"
 	SourceCatalog LimitSource = "local catalog"
+	SourcePreset  LimitSource = "saved preset"
 	SourceEdited  LimitSource = "edited"
 	SourceUnknown LimitSource = "unknown"
 )

@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,4 +59,28 @@ func TestPanelProjectScopeDisabled(t *testing.T) {
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open install frame
 	// The install frame should only list "global" in the scope enum.
 	// This is a smoke test; exact assertions depend on frame navigation.
+}
+
+func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	state := session.New(config.Config{}, work, time.Now(), session.Persistence{})
+	p := NewPanel(home, work, true, state)
+
+	// With no skills installed, the only selectable row is "＋ Install skill".
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(p.stack) == 0 {
+		t.Fatalf("expected install frame pushed onto stack")
+	}
+
+	view := p.View(80, 20)
+	if !strings.Contains(view, "Install skill") {
+		t.Fatalf("expected install frame title in view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Source") {
+		t.Fatalf("expected install frame Source field in view, got:\n%s", view)
+	}
+	if strings.Contains(view, "＋ Install skill") {
+		t.Fatalf("expected root list hidden while install frame is active, got:\n%s", view)
+	}
 }

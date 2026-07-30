@@ -129,7 +129,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					}
 				}
 				res := Panel("Help", false, rows)
-				res.Doc.Footer = "⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /model\n" +
+				res.Doc.Footer = "⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /models\n" +
 					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n" +
 					"pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom · ctrl+b side rail\n" +
 					"select text: hold alt/option while dragging (the mouse wheel is captured for scrolling).\n" +
@@ -307,14 +307,8 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		},
 		{
 			Name:        "models",
-			Description: "Pick a model from connected providers",
-			Group:       groupModels,
-			TUIOnly:     true,
-		},
-		{
-			Name:        "model",
-			Description: "Switch to a model preset by name",
-			Args:        "<preset-name>",
+			Description: "Pick a model from connected providers, or switch directly to a preset or model",
+			Args:        "[preset-or-model]",
 			Group:       groupModels,
 			TUIOnly:     true,
 		},

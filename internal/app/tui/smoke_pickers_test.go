@@ -54,9 +54,9 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 		expectDock bool
 	}
 	cases := []tcase{
-		{"/model bare opens picker", "/model", true, false},
-		{"/model with prefilter opens picker", "/model qw", true, false},
-		{"/model exact arg switches directly", "/model sonnet", false, false},
+		{"/models bare opens connect overlay", "/models", false, true},
+		{"/models with unknown arg opens connect overlay", "/models qw", false, true},
+		{"/models exact arg switches directly", "/models sonnet", false, false},
 		{"/rewind opens picker", "/rewind", true, false},
 		{"/branches with 1 leaf opens doc panel", "/branches", false, true},
 		{"/mode opens picker", "/mode", true, false},
@@ -100,8 +100,9 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 		})
 	}
 
-	// /model with no presets should print a /settings hint, no picker.
-	t.Run("/model with no presets points at /settings", func(t *testing.T) {
+	// /models with no presets and no providers falls through to the connect
+	// overlay.
+	t.Run("/models with no presets opens connect overlay", func(t *testing.T) {
 		emptyCfg := config.Default()
 		emptyCfg.Models.Presets = map[string]routing.ModelPreset{}
 		emptyState := session.New(emptyCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
@@ -111,14 +112,13 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 		}
 		mm := New(emptyState, WithCommandRegistry(emptyReg))
 		mm.resize(120, 40)
-		updated, _ := mm.dispatchCommand("/model")
+		updated, _ := mm.dispatchCommand("/models")
 		mm2 := *(updated.(*Model))
-		if mm2.dock.IsOpen() {
-			t.Fatal("no presets: picker must not open")
+		if !mm2.dock.IsOpen() {
+			t.Fatal("no presets/providers: connect overlay should open")
 		}
-		msgs := emptyState.Messages()
-		if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "/settings") {
-			t.Fatal("should add a system message pointing at /settings")
+		if _, ok := mm2.dock.Panel().(*picker.Model); ok {
+			t.Fatal("no presets/providers: should open the connect overlay, not a picker")
 		}
 	})
 

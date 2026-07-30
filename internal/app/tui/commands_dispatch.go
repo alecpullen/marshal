@@ -157,31 +157,17 @@ func init() {
 			m.refreshViewport()
 			return m, nil
 		},
-		"models": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			cmd := m.openModels()
-			m.refreshViewport()
-			return m, cmd
-		},
-		"model": func(m *Model, args []string) (tea.Model, tea.Cmd) {
-			presets := m.state.Config.Models.Presets
-			if len(presets) == 0 {
-				m.state.AddMessage(session.RoleSystem, "No model presets configured. Add one in /settings → Model Presets.", session.ContentTypePlain)
-				m.refreshViewport()
-				return m, nil
-			}
-			if len(args) > 0 {
-				if _, ok := presets[args[0]]; ok {
-					m.switchModelPreset(args[0])
+		"models": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			if arg := strings.TrimSpace(strings.Join(args, " ")); arg != "" {
+				if presetName, ok := m.resolveModelArg(arg); ok {
+					m.switchModelPreset(presetName)
 					m.refreshViewport()
 					return m, nil
 				}
 			}
-			// bare, or an argument that doesn't resolve: open the picker,
-			// pre-filtered with whatever was typed
-			m.openPicker("model", "Switch model", "session only — /settings to persist",
-				m.modelPickerItems(), strings.Join(args, " "))
+			cmd := m.openModels()
 			m.refreshViewport()
-			return m, nil
+			return m, cmd
 		},
 		"agents": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			m.openAgentsRoster(strings.TrimSpace(strings.Join(args, " ")))

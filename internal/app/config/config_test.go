@@ -239,7 +239,6 @@ api_key = "lmstudio-key"
 [providers.ollama]
 type = "openai_compatible"
 base_url = "http://localhost:9999/v1"
-api_key = "project-key"
 
 [providers.openrouter]
 type = "openai_compatible"
@@ -256,13 +255,17 @@ api_key_env = "OPENROUTER_API_KEY"
 		t.Fatalf("Providers = %#v, want 3 entries", cfg.Providers)
 	}
 
+	// The project entry wins for non-credential fields, but a project entry
+	// that names no credentials inherits them from the global file — project
+	// configs are written without keys, so wholesale replacement would hide
+	// the user's key.
 	wantOllama := ProviderConfig{
 		Type:    "openai_compatible",
 		BaseURL: "http://localhost:9999/v1",
-		APIKey:  "project-key",
+		APIKey:  "global-key",
 	}
 	if !reflect.DeepEqual(cfg.Providers["ollama"], wantOllama) {
-		t.Fatalf("Providers[ollama] = %#v, want project override %#v", cfg.Providers["ollama"], wantOllama)
+		t.Fatalf("Providers[ollama] = %#v, want project override with inherited key %#v", cfg.Providers["ollama"], wantOllama)
 	}
 
 	wantLMStudio := ProviderConfig{
@@ -281,6 +284,77 @@ api_key_env = "OPENROUTER_API_KEY"
 	}
 	if !reflect.DeepEqual(cfg.Providers["openrouter"], wantOpenrouter) {
 		t.Fatalf("Providers[openrouter] = %#v, want %#v", cfg.Providers["openrouter"], wantOpenrouter)
+	}
+}
+
+func TestLoadProjectProviderWithOwnCredentialsDoesNotInherit(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+
+	writeFile(t, home+"/.config/marshal/config.toml", `
+[providers.ollama]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "global-key"
+api_key_env = "GLOBAL_OLLAMA_KEY"
+`)
+
+	// The project entry sets its own env-var credential: nothing is inherited
+	// from the global entry (in particular the literal key, which would win
+	// over the env var at provider-construction time).
+	writeFile(t, work+"/.marshal/config.toml", `
+[providers.ollama]
+type = "openai_compatible"
+base_url = "http://localhost:9999/v1"
+api_key_env = "PROJECT_OLLAMA_KEY"
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	want := ProviderConfig{
+		Type:      "openai_compatible",
+		BaseURL:   "http://localhost:9999/v1",
+		APIKeyEnv: "PROJECT_OLLAMA_KEY",
+	}
+	if !reflect.DeepEqual(cfg.Providers["ollama"], want) {
+		t.Fatalf("Providers[ollama] = %#v, want %#v", cfg.Providers["ollama"], want)
+	}
+}
+
+func TestSaveProjectConfigStripsProviderAPIKeys(t *testing.T) {
+	work := t.TempDir()
+	path := ProjectConfigPath(work)
+
+	cfg := Default()
+	cfg.Providers = map[string]ProviderConfig{
+		"openai": {
+			Type:    "openai_compatible",
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-secret-should-not-be-committed",
+		},
+	}
+
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if strings.Contains(string(data), "sk-secret-should-not-be-committed") {
+		t.Fatalf("literal API key written to project config:\n%s", data)
+	}
+	if !strings.Contains(string(data), "api.openai.com") {
+		t.Fatalf("provider entry missing from project config:\n%s", data)
+	}
+	// The caller's in-memory config must keep the key — the runtime resolves
+	// credentials from it, not from the file just written.
+	if cfg.Providers["openai"].APIKey != "sk-secret-should-not-be-committed" {
+		t.Fatalf("SaveProjectConfig mutated the caller's provider entry: %#v", cfg.Providers["openai"])
 	}
 }
 

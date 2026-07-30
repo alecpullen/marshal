@@ -17,6 +17,7 @@ import (
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 )
@@ -689,6 +690,68 @@ func TestConfirmLimitsEscGoesBackToModelPick(t *testing.T) {
 
 	if m.step != stepPickModel {
 		t.Errorf("step = %v, want stepPickModel after Esc", m.step)
+	}
+}
+
+func TestConfirmLimitsPrefersSavedPresetFigures(t *testing.T) {
+	// Re-picking a model whose fresh probe returned no limits must surface
+	// the figures saved in the existing preset (possibly hand-edited),
+	// not "unknown".
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/acme-ultra-3": {
+			Name: "openai/acme-ultra-3", Provider: "openai", Model: "acme-ultra-3",
+			ContextWindow: 200000, MaxOutputTokens: 8192,
+		},
+	}
+	m := New(Opts{
+		Cfg: cfg,
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "acme-ultra-3"}}, // probed, but with zero limits
+		},
+		SkipToIntroModel: true,
+		ScopedProvider:   "openai",
+	})
+	m.handlePickerPicked(encodeModelValue("openai", "acme-ultra-3"))
+
+	if m.step != stepConfirmLimits {
+		t.Fatalf("step = %v, want stepConfirmLimits", m.step)
+	}
+	if m.limits.ContextWindow != 200000 || m.limits.MaxOutputTokens != 8192 {
+		t.Errorf("limits = %d/%d, want the saved preset's 200000/8192",
+			m.limits.ContextWindow, m.limits.MaxOutputTokens)
+	}
+	if m.limits.ContextSource != SourcePreset || m.limits.OutputSource != SourcePreset {
+		t.Errorf("sources = %q/%q, want both %q", m.limits.ContextSource, m.limits.OutputSource, SourcePreset)
+	}
+}
+
+func TestConfirmLimitsFetchedFiguresBeatSavedPreset(t *testing.T) {
+	// A fresh fetch is newer than the saved preset: non-zero discovered
+	// figures win.
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"openai/acme-ultra-3": {
+			Name: "openai/acme-ultra-3", Provider: "openai", Model: "acme-ultra-3",
+			ContextWindow: 200000, MaxOutputTokens: 8192,
+		},
+	}
+	m := New(Opts{
+		Cfg: cfg,
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "acme-ultra-3", ContextWindow: 256000, MaxOutputTokens: 4096}},
+		},
+		SkipToIntroModel: true,
+		ScopedProvider:   "openai",
+	})
+	m.handlePickerPicked(encodeModelValue("openai", "acme-ultra-3"))
+
+	if m.limits.ContextWindow != 256000 || m.limits.MaxOutputTokens != 4096 {
+		t.Errorf("limits = %d/%d, want the fetched 256000/4096",
+			m.limits.ContextWindow, m.limits.MaxOutputTokens)
+	}
+	if m.limits.ContextSource != SourceFetched || m.limits.OutputSource != SourceFetched {
+		t.Errorf("sources = %q/%q, want both %q", m.limits.ContextSource, m.limits.OutputSource, SourceFetched)
 	}
 }
 

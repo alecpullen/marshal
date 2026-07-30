@@ -28,6 +28,19 @@ func SaveProjectConfig(path string, cfg Config) error {
 		}
 	}
 
+	// Literal API keys are user-specific secrets and must never land in the
+	// project file — they live in the user config (see
+	// SaveUserConfigProviderAPIKey). Strip them from the copy being
+	// persisted; the caller's in-memory config keeps them for the runtime.
+	if len(cfg.Providers) > 0 {
+		stripped := make(map[string]ProviderConfig, len(cfg.Providers))
+		for name, p := range cfg.Providers {
+			p.APIKey = ""
+			stripped[name] = p
+		}
+		cfg.Providers = stripped
+	}
+
 	writeSections(&file, cfg, Default())
 
 	data, err := toml.Marshal(&file)

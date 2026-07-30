@@ -386,17 +386,23 @@ func TestStopCommand(t *testing.T) {
 	}
 }
 
-func TestModelCommandEmptyArgs(t *testing.T) {
+func TestModelsCommandRegistered(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
-	cmd, ok := cmdReg.Lookup("model")
+	cmd, ok := cmdReg.Lookup("models")
 	if !ok {
-		t.Fatal("model command not registered")
+		t.Fatal("models command not registered")
 	}
 	if !cmd.TUIOnly {
-		t.Error("model should be TUIOnly")
+		t.Error("models should be TUIOnly")
+	}
+	if cmd.Args != "[preset-or-model]" {
+		t.Errorf("models Args = %q, want %q", cmd.Args, "[preset-or-model]")
+	}
+	if _, ok := cmdReg.Lookup("model"); ok {
+		t.Error("/model was consolidated into /models and must not be registered")
 	}
 }
 
@@ -601,7 +607,7 @@ func TestHelpListsFlagshipCommands(t *testing.T) {
 	}
 
 	// Flagship commands that were previously hidden must now appear in /help.
-	for _, name := range []string{"connect", "models", "model", "mode", "swarm", "sdd", "settings", "memory"} {
+	for _, name := range []string{"connect", "models", "mode", "swarm", "sdd", "settings", "memory"} {
 		found := false
 		for _, n := range names {
 			if strings.HasPrefix(n, "/"+name) {
@@ -755,7 +761,7 @@ func TestHiddenCommandsStillRunnable(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	// Hidden commands must still be findable via Lookup.
-	for _, name := range []string{"stop", "plan", "default", "edit", "copilot", "auto", "mode", "swarm", "sdd", "settings", "memory", "model", "connect", "models"} {
+	for _, name := range []string{"stop", "plan", "default", "edit", "copilot", "auto", "mode", "swarm", "sdd", "settings", "memory", "connect", "models"} {
 		_, ok := cmdReg.Lookup(name)
 		if !ok {
 			t.Errorf("hidden command /%s must still be registered for Lookup", name)
@@ -1001,7 +1007,7 @@ func TestListAllIncludesHiddenCommands(t *testing.T) {
 	}
 	// Hidden commands are excluded from List (/help) but must appear in
 	// ListAll (completion popup).
-	for _, name := range []string{"settings", "model", "models", "memory", "connect", "swarm", "sdd", "mode", "plan", "default", "edit", "copilot", "auto", "stop"} {
+	for _, name := range []string{"settings", "models", "memory", "connect", "swarm", "sdd", "mode", "plan", "default", "edit", "copilot", "auto", "stop"} {
 		if !all[name] {
 			t.Errorf("ListAll() missing hidden command /%s", name)
 		}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/provider/limits"
 )
 
 func TestIsLocalhost(t *testing.T) {
@@ -43,7 +44,7 @@ func TestProviderSuccess(t *testing.T) {
 	defer srv.Close()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", false)().(ResultMsg)
 
 	if msg.Err != nil {
 		t.Fatalf("Provider err = %v", msg.Err)
@@ -63,7 +64,7 @@ func TestProviderNon200(t *testing.T) {
 	defer srv.Close()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", false)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected error for 403 response")
 	}
@@ -71,7 +72,7 @@ func TestProviderNon200(t *testing.T) {
 
 func TestProviderConnectionRefused(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1"}
-	msg := Provider("test.field", "testprov", pc)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", false)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected error for connection refused")
 	}
@@ -88,7 +89,7 @@ func TestProviderTimeout(t *testing.T) {
 	defer func() { Timeout = old }()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", false)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -103,7 +104,7 @@ func TestProviderPreservesModelLimits(t *testing.T) {
 
 	msg := Provider("f", "openai", config.ProviderConfig{
 		Type: "openai_compatible", BaseURL: srv.URL,
-	})().(ResultMsg)
+	}, "", false)().(ResultMsg)
 
 	if msg.Err != nil {
 		t.Fatalf("probe: %v", msg.Err)
@@ -118,4 +119,37 @@ func TestProviderPreservesModelLimits(t *testing.T) {
 	// whether a limits table was wired in, which this test does not do.
 	_ = msg.Models[0].ContextWindow
 	_ = msg.Models[0].MaxOutputTokens
+}
+
+func TestProviderFillsLimitsFromOnDiskCache(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`)
+	}))
+	defer srv.Close()
+
+	// A warm limits cache must be read even when remote limit discovery is
+	// off — reading it makes no network requests.
+	dataDir := t.TempDir()
+	if err := limits.Save(dataDir, limits.Cache{
+		Table:     map[string]limits.Limit{"gpt-4o": {ContextWindow: 128000, MaxOutputTokens: 16384}},
+		FetchedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed limits cache: %v", err)
+	}
+
+	msg := Provider("f", "openai", config.ProviderConfig{
+		Type: "openai_compatible", BaseURL: srv.URL,
+	}, dataDir, false)().(ResultMsg)
+
+	if msg.Err != nil {
+		t.Fatalf("probe: %v", msg.Err)
+	}
+	if len(msg.Models) != 1 {
+		t.Fatalf("got %d models, want 1", len(msg.Models))
+	}
+	if msg.Models[0].ContextWindow != 128000 || msg.Models[0].MaxOutputTokens != 16384 {
+		t.Errorf("limits = %d/%d, want 128000/16384 from the on-disk cache",
+			msg.Models[0].ContextWindow, msg.Models[0].MaxOutputTokens)
+	}
 }

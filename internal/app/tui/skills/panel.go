@@ -286,6 +286,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		p.installing = false
 		if msg.Err != nil {
 			p.installErr = msg.Err.Error()
+			p.activeList().ErrMsg = p.installErr
 			return nil
 		}
 		p.installSource = ""
@@ -337,9 +338,14 @@ func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 4 {
 		return ""
 	}
-	settings.FieldListSetSize(p.list, width-3, maxHeight-4)
-	body := "/ " + p.filter.View() + "\n" + p.list.View()
-	footer := fmt.Sprintf("%d skills", len(settings.FieldListRows(p.list)))
+	l := p.activeList()
+	settings.FieldListSetSize(l, width-3, maxHeight-4)
+	header := "/ " + p.filter.View()
+	if len(p.stack) > 0 {
+		header = settings.FrameTitle(p.stack[len(p.stack)-1])
+	}
+	body := header + "\n" + l.View()
+	footer := fmt.Sprintf("%d skills", len(settings.FieldListRows(l)))
 	content := body + "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(footer)
 	return content
 }

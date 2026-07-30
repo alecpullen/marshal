@@ -1,5 +1,5 @@
 // Package picker renders a centered modal selection list with
-// filter-as-you-type, used by slash commands (/model, /rewind, /branches,
+// filter-as-you-type, used by slash commands (/rewind, /branches,
 // /mode). Keys are fzf-style: printable characters edit the filter, ↑/↓
 // move, Enter picks, Esc cancels — j/k belong to the filter, not movement.
 package picker
@@ -74,7 +74,7 @@ func New(title, footer string, items []Item) *Model {
 	return m
 }
 
-// SetFilter pre-fills the filter query (e.g. "/model qw" with no exact
+// SetFilter pre-fills the filter query (e.g. "/rewind fix" with no exact
 // match).
 func (m *Model) SetFilter(q string) {
 	m.filter.SetValue(q)

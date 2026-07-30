@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"marshal/internal/repo"
@@ -18,17 +20,24 @@ import (
 const defaultSearchMaxResults = 50
 const hardSearchMaxResults = 200
 
+// lineMatcher reports whether a single line of text is a search hit. It is
+// either a substring check or a compiled RE2 regexp, built by repoSearchTool.
+type lineMatcher func(line string) bool
+
 type repoSearchArgs struct {
 	Query      string `json:"query"`
 	Path       string `json:"path"`
 	MaxResults int    `json:"max_results"`
+	Mode       string `json:"mode"`
+	Include    string `json:"include"`
+	Context    int    `json:"context"`
 }
 
 func (t *toolSet) repoSearchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.search",
-		Description: "Search workspace files for a case-sensitive substring.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
+		Description: "Search workspace files for matching lines. Default is a case-sensitive substring match; set mode=regex for an RE2 regular expression. Optional include glob filters files (e.g. *.go), context adds 0-3 surrounding lines per match.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"max_results":{"type":"integer"},"mode":{"type":"string","enum":["substring","regex"]},"include":{"type":"string"},"context":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -38,6 +47,30 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 		}
 		if args.Query == "" {
 			return registry.ToolResult{}, fmt.Errorf("repo.search query is required")
+		}
+
+		var match lineMatcher
+		switch args.Mode {
+		case "", "substring":
+			query := args.Query
+			match = func(line string) bool { return strings.Contains(line, query) }
+		case "regex":
+			re, err := regexp.Compile(args.Query)
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf("repo.search invalid regex %q: %w", args.Query, err)
+			}
+			match = re.MatchString
+		default:
+			return registry.ToolResult{}, fmt.Errorf("repo.search mode must be substring|regex, got %q", args.Mode)
+		}
+
+		if args.Context < 0 || args.Context > 3 {
+			return registry.ToolResult{}, fmt.Errorf("repo.search context must be between 0 and 3, got %d", args.Context)
+		}
+		if args.Include != "" {
+			if _, err := path.Match(args.Include, ""); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("repo.search invalid include glob %q: %w", args.Include, err)
+			}
 		}
 
 		limit := args.MaxResults
@@ -56,7 +89,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			}
 		}
 
-		matches, capped, walkErrs, err := t.searchFiles(ctx, start, args.Query, limit)
+		matches, capped, walkErrs, err := t.searchFiles(ctx, start, match, args.Include, args.Context, limit)
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
@@ -74,9 +107,21 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 	return tool
 }
 
-func (t *toolSet) searchFiles(ctx context.Context, start string, query string, limit int) ([]string, bool, []error, error) {
+// matchInclude reports whether rel (a slash-separated workspace-relative
+// path) matches the include glob. The pattern is tried against both the
+// full relative path and the base name, so "*.go" and "internal/*.go" both
+// behave the way grep --include users expect.
+func matchInclude(pattern, rel string) (bool, error) {
+	if ok, err := path.Match(pattern, rel); ok || err != nil {
+		return ok, err
+	}
+	return path.Match(pattern, path.Base(rel))
+}
+
+func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatcher, include string, ctxLines int, limit int) ([]string, bool, []error, error) {
 	var walkErrs []error
 	var matches []string
+	matchCount := 0
 	capped := false
 
 	err := filepath.WalkDir(start, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -92,7 +137,7 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 			return err
 		}
 		// Short-circuit once the cap is reached.
-		if len(matches) >= limit {
+		if matchCount >= limit {
 			return filepath.SkipAll
 		}
 		// Skip all symlinks — WalkDir does not follow directory symlinks on
@@ -108,9 +153,10 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 			return nil
 		}
 		if entry.Type().IsRegular() {
-			fileMatches := t.searchFile(path, query, limit-len(matches))
-			matches = append(matches, fileMatches...)
-			if len(matches) >= limit {
+			fileLines, n := t.searchFile(path, match, include, ctxLines, limit-matchCount)
+			matches = append(matches, fileLines...)
+			matchCount += n
+			if matchCount >= limit {
 				capped = true
 			}
 		}
@@ -126,21 +172,31 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, query string, l
 	return matches, capped, walkErrs, nil
 }
 
-func (t *toolSet) searchFile(path string, query string, remaining int) []string {
+// contextLine is a remembered pre-match line, kept so it can be emitted as
+// leading context if a later match lands within ctxLines of it.
+type contextLine struct {
+	no   int
+	text string
+}
+
+// searchFile returns the formatted lines to emit (matches as
+// "rel:line:text", context as "rel-line-text") and the number of actual
+// matches, which is what counts against remaining.
+func (t *toolSet) searchFile(path string, match lineMatcher, include string, ctxLines int, remaining int) ([]string, int) {
 	if remaining <= 0 {
-		return nil
+		return nil, 0
 	}
 
 	// Skip files that exceed the configurable size cap for searching.
 	if t.maxSearchableFileBytes > 0 {
 		if info, err := os.Stat(path); err == nil && info.Size() > t.maxSearchableFileBytes {
-			return nil
+			return nil, 0
 		}
 	}
 
 	file, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	defer file.Close()
 
@@ -153,28 +209,57 @@ func (t *toolSet) searchFile(path string, query string, remaining int) []string 
 	// matches the resolved root that workspaceRel uses.
 	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	rel, err := workspaceRel(t.activeRoot(), resolvedPath)
 	if err != nil {
-		return nil
+		return nil, 0
+	}
+
+	if include != "" {
+		ok, err := matchInclude(include, rel)
+		if err != nil || !ok {
+			return nil, 0
+		}
 	}
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
-	var matches []string
+	var lines []string
+	matchCount := 0
 	lineNo := 0
+	after := 0        // trailing context lines still owed to the previous match
+	emittedUpTo := 0  // highest line number already emitted (match or context)
+	var prev []contextLine
 	for scanner.Scan() {
 		lineNo++
 		line := scanner.Text()
-		if strings.Contains(line, query) {
-			matches = append(matches, fmt.Sprintf("%s:%d:%s", rel, lineNo, line))
-			if len(matches) >= remaining {
-				return matches
+		if match(line) {
+			for _, p := range prev {
+				if p.no > emittedUpTo {
+					lines = append(lines, fmt.Sprintf("%s-%d-%s", rel, p.no, p.text))
+				}
+			}
+			lines = append(lines, fmt.Sprintf("%s:%d:%s", rel, lineNo, line))
+			emittedUpTo = lineNo
+			matchCount++
+			after = ctxLines
+			if matchCount >= remaining {
+				return lines, matchCount
+			}
+		} else if after > 0 {
+			lines = append(lines, fmt.Sprintf("%s-%d-%s", rel, lineNo, line))
+			emittedUpTo = lineNo
+			after--
+		}
+		if ctxLines > 0 {
+			prev = append(prev, contextLine{no: lineNo, text: line})
+			if len(prev) > ctxLines {
+				prev = prev[1:]
 			}
 		}
 	}
 
-	return matches
+	return lines, matchCount
 }

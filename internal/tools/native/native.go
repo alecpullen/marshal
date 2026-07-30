@@ -186,6 +186,8 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
 		tools.codebaseSearchTool(),
+		tools.jsonQueryTool(),
+		tools.csvInspectTool(),
 		tools.referencesTool(),
 		tools.definitionTool(),
 		tools.hoverTool(),

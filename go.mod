@@ -15,6 +15,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/google/uuid v1.6.0
+	github.com/itchyny/gojq v0.12.19
 	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/pelletier/go-toml/v2 v2.4.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
@@ -45,6 +46,7 @@ require (
 	github.com/go-jose/go-jose/v3 v3.0.5 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
+	github.com/itchyny/timefmt-go v0.1.8 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.24 // indirect

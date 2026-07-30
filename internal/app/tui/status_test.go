@@ -196,8 +196,10 @@ func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
 		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 1000, MaxTokens: 8000},
 		Sections:   []contextpack.Section{{Title: "ctx", EstimatedTokens: 1000}},
 	})
-	line := m.renderStatusLine(70)
-	// mode + route must remain; ctx segment should be dropped (priority 3 vs 0/1/2)
+	line := m.renderStatusLine(55)
+	// mode + route must remain; ctx segment should be dropped (priority 3 vs 0/1/2).
+	// Width 55 is narrow enough that even after dropping the footer hints
+	// (now dropped first on narrow terminals), ctx still doesn't fit.
 	if !strings.Contains(line, "qwen") || !strings.Contains(line, "ollama") {
 		t.Fatalf("route dropped on narrow line:\n%s", line)
 	}
@@ -344,7 +346,7 @@ func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 func TestStatusLineShowsQueueHint(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.queuedCount = 2
-	line := stripANSI(m.renderStatusLine(100))
+	line := stripANSI(m.renderStatusLine(120))
 	if !strings.Contains(line, "Ctrl+X") || !strings.Contains(line, "clear queue") {
 		t.Fatalf("status line missing queue hint:\n%s", line)
 	}
@@ -385,9 +387,11 @@ func TestStatusLineCollapseDropsWorktreeBeforeBranch(t *testing.T) {
 	m.state.SetTrusted(true)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
 	m.gitInfo = gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
-	line := stripANSI(m.renderStatusLine(82))
+	line := stripANSI(m.renderStatusLine(58))
 	// branch shares priority 5 with dir; worktree is 6. On a tight width the
 	// worktree should be dropped while the branch survives (branch + dir both 5).
+	// Width 58 is narrow enough that even after dropping the footer hints
+	// (now dropped first on narrow terminals), worktree still doesn't fit.
 	if !strings.Contains(line, "⎇ feature") {
 		t.Fatalf("branch dropped before worktree on narrow width:\n%s", line)
 	}
@@ -480,5 +484,32 @@ func TestStatusCleanWhenNoDiagnostics(t *testing.T) {
 
 	if m.diagnosticCount != 0 {
 		t.Errorf("diagnosticCount = %d, want 0", m.diagnosticCount)
+	}
+}
+
+func TestStatusLineDropsHintsBeforePathAndWorktree(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetTrusted(true)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
+	m.gitInfo = gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
+
+	// At a wide width, both the worktree segment and the footer hints
+	// (e.g. "Tab mode", "? help") should be visible.
+	wide := stripANSI(m.renderStatusLine(120))
+	if !strings.Contains(wide, "wt:linked") {
+		t.Fatalf("wide status line missing worktree:\n%s", wide)
+	}
+	if !strings.Contains(wide, "Tab mode") {
+		t.Fatalf("wide status line missing footer hints:\n%s", wide)
+	}
+
+	// At a narrow width, the footer hints should be dropped first so that
+	// the worktree and branch info remain visible.
+	narrow := stripANSI(m.renderStatusLine(75))
+	if !strings.Contains(narrow, "⎇ feature") {
+		t.Fatalf("narrow status line missing branch (should survive hint drop):\n%s", narrow)
+	}
+	if strings.Contains(narrow, "Tab mode") {
+		t.Fatalf("narrow status line should have dropped footer hints before worktree:\n%s", narrow)
 	}
 }

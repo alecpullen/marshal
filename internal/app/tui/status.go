@@ -64,6 +64,16 @@ func (m Model) renderStatusLine(width int) string {
 	segs := m.statusLeftSegments()
 	left := joinSegs(segs)
 	right := m.statusRightSegment()
+
+	// When the terminal is narrow, drop the button-hint cluster first so
+	// that project path, worktree, and other identity segments remain
+	// visible. Approval/error indicators are never dropped this way.
+	if right != "" && m.state.PendingApproval() == nil && m.state.ProviderError() == nil {
+		if visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
+			right = ""
+		}
+	}
+
 	for len(segs) > 1 && visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
 		// drop the lowest-priority segment (highest priority number), but
 		// always preserve the first segment (the mode cue).

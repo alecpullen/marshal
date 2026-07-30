@@ -48,8 +48,11 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 	}
 	if err == nil {
 		a.state.AddMessage(session.RoleSystem, a.c.Summary(), session.ContentTypePlain)
-		a.state.UpdateSDDProgress(func(p *session.SDDProgress) { p.Phase = PhaseDone })
 	}
+	// The run is over — success or failure — so the progress chrome (live
+	// strip, SDD panel, input dimming) comes down. The gate path above
+	// returns early and intentionally keeps progress live for the resume.
+	a.state.ClearSDDProgress()
 	return err
 }
 

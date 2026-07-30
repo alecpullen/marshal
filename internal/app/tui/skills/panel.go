@@ -59,12 +59,16 @@ func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State
 	return p
 }
 
-func (p *Panel) activeList() *settings.FieldList {
+// ActiveList returns the FieldList for the current stack depth.
+func (p *Panel) ActiveList() *settings.FieldList {
 	if len(p.stack) > 0 {
 		return settings.FrameList(p.stack[len(p.stack)-1])
 	}
 	return p.list
 }
+
+// FilterValue returns the current filter text.
+func (p *Panel) FilterValue() string { return p.filter.Value() }
 
 func (p *Panel) globalSkillsDir() string {
 	home, _ := os.UserHomeDir()
@@ -286,7 +290,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		p.installing = false
 		if msg.Err != nil {
 			p.installErr = msg.Err.Error()
-			p.activeList().ErrMsg = p.installErr
+			p.ActiveList().ErrMsg = p.installErr
 			return nil
 		}
 		p.installSource = ""
@@ -311,7 +315,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			}
 			return func() tea.Msg { return settings.BrowserClosedMsg{} }
 		}
-		l := p.activeList()
+		l := p.ActiveList()
 		switch msg.String() {
 		case "up", "down":
 			return settings.FieldListUpdate(l, msg)
@@ -330,6 +334,16 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.list.Refresh()
 			return cmd
 		}
+	case tea.PasteMsg:
+		// Forward paste to the drilled frame or the field being edited;
+		// otherwise deliver it to the flat filter input.
+		if len(p.stack) > 0 || p.ActiveList().Editing() {
+			return settings.FieldListUpdate(p.ActiveList(), msg)
+		}
+		var cmd tea.Cmd
+		p.filter, cmd = p.filter.Update(msg)
+		p.list.Refresh()
+		return cmd
 	}
 	return nil
 }
@@ -338,7 +352,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 4 {
 		return ""
 	}
-	l := p.activeList()
+	l := p.ActiveList()
 	settings.FieldListSetSize(l, width-3, maxHeight-4)
 	header := "/ " + p.filter.View()
 	if len(p.stack) > 0 {

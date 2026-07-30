@@ -3705,6 +3705,23 @@ func TestIntentionalAgentCancellationDoesNotSetProviderError(t *testing.T) {
 	}
 }
 
+func TestSuccessfulTurnClearsProviderError(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	model := New(state)
+	model.busy = true
+	state.SetProviderError(errors.New("provider request timed out"))
+
+	updated, _ := model.Update(agentFinishedMsg{err: nil})
+	model = updated.(Model)
+
+	if model.busy {
+		t.Fatal("model.busy = true, want false after agentFinishedMsg")
+	}
+	if err := state.ProviderError(); err != nil {
+		t.Fatalf("ProviderError() = %v, want nil after a successful turn", err)
+	}
+}
+
 func TestDockedSettingsBrowserAppliesChangeWhenBlockedAndRetriesOnUnblock(t *testing.T) {
 	m := newTestModel(t)
 	m.state.WorkingDir = t.TempDir()

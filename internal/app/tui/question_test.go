@@ -124,7 +124,75 @@ func TestQuestionModelViewUsesGutter(t *testing.T) {
 	if strings.Contains(view, "Marshal asks") {
 		t.Fatalf("question view must not show old title:\n%s", view)
 	}
-	if !strings.Contains(view, "red / green / blue") {
-		t.Fatalf("question view missing options:\n%s", view)
+}
+
+func TestQuestionModelViewWrapsLongQuestion(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("wrapme ", 30))
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: long}},
+	}
+	qm := newQuestionModel(q, 40)
+	view := stripANSI(qm.View())
+	for _, line := range strings.Split(view, "\n") {
+		if w := len([]rune(line)); w > 40 {
+			t.Fatalf("question view line exceeds width 40 (%d cells): %q\nfull view:\n%s", w, line, view)
+		}
+	}
+}
+
+func TestQuestionModelViewRendersMarkdown(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "**Pick** one approach:"}},
+	}
+	qm := newQuestionModel(q, 80)
+	if strings.Contains(qm.View(), "**") {
+		t.Fatalf("markdown markers must not render literally:\n%s", qm.View())
+	}
+}
+
+func TestQuestionModelViewEchoesTypedInput(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "What is your name?"}},
+	}
+	qm := newQuestionModel(q, 80)
+	if msg := qm.Init()(); msg != nil {
+		qm, _ = qm.Update(msg)
+	}
+	for _, r := range "hello" {
+		qm, _ = qm.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	view := stripANSI(qm.View())
+	if !strings.Contains(view, "hello") {
+		t.Fatalf("question view must echo the in-progress typed answer:\n%s", view)
+	}
+}
+
+func TestQuestionModelViewShowsInteractiveOptions(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "Pick one:", Options: []string{"red", "green", "blue"}}},
+	}
+	qm := newQuestionModel(q, 80)
+	view := stripANSI(qm.View())
+	if strings.Contains(view, "red / green / blue") {
+		t.Fatalf("static option summary must be replaced by an interactive list:\n%s", view)
+	}
+	for _, opt := range []string{"red", "green", "blue"} {
+		if !strings.Contains(view, opt) {
+			t.Fatalf("question view missing option %q:\n%s", opt, view)
+		}
+	}
+}
+
+func TestRenderInputAreaHidesTextareaWhileQuestionPending(t *testing.T) {
+	m := newTestModel(t)
+	q := &session.PendingQuestion{
+		Questions:    []session.Question{{Question: "What is your name?"}},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
+	m.state.SetPendingQuestion(q)
+	m.questionModel = newQuestionModel(q, 76)
+	out := stripANSI(m.renderInputArea())
+	if strings.Contains(out, "▍") {
+		t.Fatalf("main textarea must not render while a question is pending (its keys go to the question form):\n%s", out)
 	}
 }

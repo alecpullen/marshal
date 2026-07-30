@@ -2396,6 +2396,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.state.SetProviderError(msg.err)
 		m.successPulse = false
 	} else if msg.err == nil {
+		// A completed turn proves the provider is reachable again — clear
+		// any stale error banner from an earlier failed turn.
+		m.state.SetProviderError(nil)
 		m.successPulse = true
 		m.successPulseAt = m.now()
 	}
@@ -2461,9 +2464,6 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 	}
 	if !m.busy && !m.successPulse {
 		return m, nil
-	}
-	if m.state.PendingQuestion() != nil && m.input.Placeholder != "Type your answer..." {
-		m.input.Placeholder = "Type your answer..."
 	}
 	m.updateViewportHeight()
 	m.refreshViewport()

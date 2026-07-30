@@ -6,7 +6,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
-	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/huhtheme"
@@ -24,6 +24,12 @@ const questionOtherSentinel = "other"
 //     "Other" sentinel option followed by a NewInput that captures the
 //     custom answer when the sentinel is picked.
 //
+// The View renders each question's text itself (markdown-rendered and
+// word-wrapped, with the ? gutter) plus the focused huh field's own View —
+// that field View is what makes free-text answers echo as they are typed
+// and option lists navigable. huh field titles stay empty so the question
+// text is not duplicated.
+//
 // Pressing Esc on any question marks every remaining question as
 // session.AnswerUnanswered.
 type questionModel struct {
@@ -39,6 +45,9 @@ type questionModel struct {
 	selects []*string
 	multis  []*[]string
 	others  []*string
+	// fields[i] lists the huh fields belonging to question i (a select plus
+	// its "Other" input, or a single input/multi-select).
+	fields [][]huh.Field
 }
 
 func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
@@ -50,6 +59,7 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 		selects: make([]*string, len(q.Questions)),
 		multis:  make([]*[]string, len(q.Questions)),
 		others:  make([]*string, len(q.Questions)),
+		fields:  make([][]huh.Field, len(q.Questions)),
 	}
 
 	var fields []huh.Field
@@ -60,35 +70,37 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 			ms := make([]string, 0)
 			qm.multis[i] = &ms
 			multi := huh.NewMultiSelect[string]().
-				Title(qst.Question).
 				Options(buildQuestionOptions(qst.Options, false)...).
 				Value(qm.multis[i]).
 				Height(8)
 			fields = append(fields, multi)
+			qm.fields[i] = append(qm.fields[i], multi)
 		case hasOptions:
 			v := ""
 			qm.selects[i] = &v
 			sel := huh.NewSelect[string]().
-				Title(qst.Question).
 				Options(buildQuestionOptions(qst.Options, qst.AllowOther)...).
 				Value(qm.selects[i])
 			fields = append(fields, sel)
+			qm.fields[i] = append(qm.fields[i], sel)
 			if qst.AllowOther {
 				fv := ""
 				qm.others[i] = &fv
-				fields = append(fields, huh.NewInput().
+				other := huh.NewInput().
 					Title("Custom answer (since you picked Other)").
 					Prompt("❯ ").
-					Value(qm.others[i]))
+					Value(qm.others[i])
+				fields = append(fields, other)
+				qm.fields[i] = append(qm.fields[i], other)
 			}
 		default:
 			v := ""
 			qm.inputs[i] = &v
 			in := huh.NewInput().
-				Title(qst.Question).
 				Prompt("❯ ").
 				Value(qm.inputs[i])
 			fields = append(fields, in)
+			qm.fields[i] = append(qm.fields[i], in)
 		}
 	}
 
@@ -103,12 +115,18 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 
 	qm.form = huh.NewForm(group).
 		WithTheme(huhtheme.WarmSunset()).
-		WithWidth(max(width, 30)).
+		WithWidth(questionFieldWidth(qm.width)).
 		WithShowHelp(false).
 		WithKeyMap(km)
 
 	qm.initCmd = qm.form.Init()
 	return qm
+}
+
+// questionFieldWidth is the width given to the huh form: the panel width
+// minus the 3-cell gutter the View indents field content with.
+func questionFieldWidth(panelWidth int) int {
+	return max(panelWidth-3, 30)
 }
 
 // buildQuestionOptions constructs a huh option list. When allowOther is
@@ -130,7 +148,7 @@ func (qm *questionModel) Init() tea.Cmd { return qm.initCmd }
 func (qm *questionModel) SetSize(width int) {
 	qm.width = width
 	if qm.form != nil {
-		qm.form.WithWidth(max(width, 30))
+		qm.form.WithWidth(questionFieldWidth(max(width, 30)))
 	}
 }
 
@@ -190,42 +208,70 @@ func (qm *questionModel) finalizeAnswers() {
 	}
 }
 
+// renderQuestionText renders the question body as markdown wrapped to
+// width, falling back to plain wrapped text when glamour is unavailable.
+func renderQuestionText(text string, width int) string {
+	if out, ok := renderMarkdown(text, width); ok {
+		return strings.Trim(out, "\n")
+	}
+	return ansi.Wrap(text, width, "")
+}
+
 func (qm *questionModel) View() string {
 	if qm.form == nil {
 		return ""
 	}
-	// Infer the focused field index from answer state (huh.Form does not
-	// expose a public Fields() method).
-	focusedIdx := 0
-	for i, a := range qm.answers {
-		if a.Answer == session.AnswerUnanswered || a.Answer == "" {
-			focusedIdx = i
-			break
-		}
-	}
-
 	gutter := gutterPrefix("?", violetColor)
+	indent := strings.Repeat(" ", 3)
+	contentWidth := max(qm.width-3, 1)
+	focused := qm.form.GetFocusedField()
+
 	var b strings.Builder
 	for i, qs := range qm.q.Questions {
-		if i == focusedIdx {
-			b.WriteString(gutter)
-			b.WriteString(lipgloss.NewStyle().Foreground(violetColor).Bold(true).Render(qs.Question))
-		} else if qm.answers[i].Answer != "" && qm.answers[i].Answer != session.AnswerUnanswered {
-			b.WriteString(gutter)
-			b.WriteString(mutedStyle().Render(qs.Question + " · " + qm.answers[i].Answer))
-		} else {
-			b.WriteString(gutter)
-			b.WriteString(mutedStyle().Render(qs.Question))
+		if ans := qm.answers[i].Answer; ans != "" && ans != session.AnswerUnanswered {
+			for j, line := range strings.Split(ansi.Wrap(qs.Question+" · "+ans, contentWidth, ""), "\n") {
+				if j == 0 {
+					b.WriteString(gutter)
+				} else {
+					b.WriteString(indent)
+				}
+				b.WriteString(mutedStyle().Render(line))
+				b.WriteString("\n")
+			}
+			continue
 		}
-		b.WriteString("\n")
-		if i == focusedIdx && len(qs.Options) > 0 {
-			opts := "(" + strings.Join(qs.Options, " / ") + ")"
-			b.WriteString(strings.Repeat(" ", 3))
-			b.WriteString(mutedStyle().Render(opts))
+		// Glamour's document margin adds 2 cells beyond the wrap width, so
+		// wrap 2 narrower to keep every line inside contentWidth.
+		for j, line := range strings.Split(renderQuestionText(qs.Question, max(contentWidth-2, 1)), "\n") {
+			if j == 0 {
+				b.WriteString(gutter)
+			} else {
+				b.WriteString(indent)
+			}
+			b.WriteString(line)
 			b.WriteString("\n")
+		}
+		if field := focusedFieldFor(focused, qm.fields[i]); field != nil {
+			for _, line := range strings.Split(strings.TrimRight(field.View(), "\n"), "\n") {
+				b.WriteString(indent)
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
 		}
 	}
 	return b.String()
+}
+
+// focusedFieldFor returns focused when it belongs to the given question's
+// field list, nil otherwise. huh.Field implementations are pointers, so
+// interface comparison is an identity check.
+func focusedFieldFor(focused huh.Field, fields []huh.Field) huh.Field {
+	for _, f := range fields {
+		if f == focused {
+			return f
+		}
+	}
+	return nil
 }
 
 func (qm *questionModel) Answers() []session.Answer { return qm.answers }

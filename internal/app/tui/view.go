@@ -149,7 +149,10 @@ func (m Model) renderInputArea() string {
 		} else {
 			rows = append(rows, renderQuestionPanel(q, inputInnerWidth))
 		}
-		rows = append(rows, m.gutteredInput())
+		// The main textarea is deliberately NOT rendered here: while a
+		// question is pending every keypress routes to the question form
+		// (handleQuestion), so a visible textarea would be a dead input
+		// that swallows nothing yet appears typable.
 	} else if tc := m.state.PendingApproval(); tc != nil {
 		if m.editingCommand {
 			rows = append(rows, m.gutteredInput())

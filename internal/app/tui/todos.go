@@ -6,10 +6,10 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 )
 
@@ -29,7 +29,7 @@ const (
 const todoPanelMaxRows = 10
 
 // renderTodoPanelBody renders the pinned todo panel: gutter-styled, no
-// box, no header. Returns "" when there is nothing to show.
+// box, one counts header row. Returns "" when there is nothing to show.
 //
 // Progress tracking is the one widget the hairline-gutter redesign makes
 // taller rather than flatter — it used to be prepended to the transcript,
@@ -68,7 +68,9 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 			focus = max(focus-lead+1, 0)
 		}
 	}
-	return chrome.ClipLines(lines, focus, budget, theme.Current())
+	header := mutedStyle().Render(fmt.Sprintf("tasks %d/%d", done, len(todos)))
+	body := chrome.ClipLines(lines, focus, max(budget-1, 1), theme.Current())
+	return header + "\n" + body
 }
 
 // todoPanelBudget is the expanded panel's row budget: never more than the
@@ -85,7 +87,7 @@ func todoOneLine(todos []native.TodoItem, done, inProgress, width int) string {
 	}
 	style := lipgloss.NewStyle().Foreground(theme.Current().FGDefault).Bold(true)
 	return gutterPrefix("▶", theme.Current().AccentPrimary) +
-		style.Render(strutil.Truncate(text, max(width-3, 1), false))
+		style.Render(ansi.Truncate(text, max(width-3, 1), ""))
 }
 
 // todoLine renders one todo row: ✓ teal done, ▶ coral bold in-progress,
@@ -97,14 +99,14 @@ func todoLine(t native.TodoItem, width int) string {
 	switch t.Status {
 	case native.TodoCompleted:
 		glyph, c = "✓", theme.Current().StatusSuccess
-		labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
+		labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Strikethrough(true)
 	case native.TodoInProgress:
 		glyph, c = "▶", theme.Current().AccentPrimary
 		labelStyle = labelStyle.Bold(true)
 	default:
 		glyph, c = "·", theme.Current().FGMuted
 	}
-	return gutterPrefix(glyph, c) + labelStyle.Render(strutil.Truncate(t.Content, max(width-3, 1), false))
+	return gutterPrefix(glyph, c) + labelStyle.Render(ansi.Truncate(t.Content, max(width-3, 1), ""))
 }
 
 // todoProgress returns the completed count and the index of the

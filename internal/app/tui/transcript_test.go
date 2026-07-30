@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/registry"
@@ -31,16 +33,26 @@ func TestTranscriptHashDistinguishesContent(t *testing.T) {
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "hello", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil)
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{})
 	b := transcriptHash([]session.TranscriptItem{
 		{
 			Kind:      session.KindMessage,
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "goodbye", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil)
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{})
 	if a == b {
 		t.Fatal("hash should differ for different content")
+	}
+}
+
+func TestTranscriptHashCoversSpinnerAndActiveTool(t *testing.T) {
+	base := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{})
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠒", session.ActiveToolCall{}); got == base {
+		t.Fatal("hash must change with the spinner frame — otherwise the live tool row freezes")
+	}
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{Name: "agent.run", Args: "investigate"}); got == base {
+		t.Fatal("hash must change with the active tool call")
 	}
 }
 
@@ -300,14 +312,14 @@ func TestUserMessageUsesCoralGutter(t *testing.T) {
 }
 
 func TestCompletedToolCallUsesGutterGlyphs(t *testing.T) {
-	ok := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "read"}, 40))
+	ok := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "read"}, false, 40))
 	if !strings.Contains(ok, "·") {
 		t.Fatalf("successful tool call should show · gutter: %q", ok)
 	}
 	if strings.Contains(ok, "done") {
 		t.Fatalf("successful tool call should not say 'done': %q", ok)
 	}
-	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "shell", Error: "boom"}, 40))
+	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "shell", Error: "boom"}, false, 40))
 	if !strings.Contains(bad, "✗") {
 		t.Fatalf("failed tool call should show ✗ gutter: %q", bad)
 	}
@@ -322,7 +334,7 @@ func TestRenderCompletedToolCallShowsHookBlockedIndicator(t *testing.T) {
 			Decision: "block",
 			Reason:   "lint gate",
 		}},
-	}, 80))
+	}, false, 80))
 	if !strings.Contains(out, "hook blocked") {
 		t.Fatalf("rendered tool call missing hook blocked indicator: %q", out)
 	}
@@ -336,7 +348,7 @@ func TestRenderCompletedToolCallShowsHookRewroteIndicator(t *testing.T) {
 			Event:   "pre_tool_use",
 			Rewrote: true,
 		}},
-	}, 80))
+	}, false, 80))
 	if !strings.Contains(out, "hook rewrote") {
 		t.Fatalf("rendered tool call missing hook rewrote indicator: %q", out)
 	}
@@ -350,7 +362,7 @@ func TestRenderCompletedToolCallShowsHookFailedOpenIndicator(t *testing.T) {
 			Event:      "pre_tool_use",
 			FailedOpen: true,
 		}},
-	}, 80))
+	}, false, 80))
 	if !strings.Contains(out, "hook failed-open") {
 		t.Fatalf("rendered tool call missing hook failed-open indicator: %q", out)
 	}
@@ -364,7 +376,7 @@ func TestRenderCompletedToolCallShowsHookCountIndicator(t *testing.T) {
 			{Event: "pre_tool_use"},
 			{Event: "pre_tool_use"},
 		},
-	}, 80))
+	}, false, 80))
 	if !strings.Contains(out, "hooks 2") {
 		t.Fatalf("rendered tool call missing hooks 2 indicator: %q", out)
 	}
@@ -476,7 +488,7 @@ func TestRenderCompletedToolCallBrowserGlyphRemoved(t *testing.T) {
 		ToolName:      "browser.navigate",
 		ResultSummary: "Navigated to https://example.com",
 	}
-	out := renderCompletedToolCall(event, 80)
+	out := renderCompletedToolCall(event, false, 80)
 	stripped := stripANSI(out)
 	if strings.Contains(stripped, "🌐") {
 		t.Fatalf("browser completed tool call should not render 🌐:\n%s", out)
@@ -583,7 +595,7 @@ func TestCompletedFileWritePatchRendersDiff(t *testing.T) {
 		ResultSummary: "Applied patches to: a.go",
 		ResultContent: "--- a.go\n+++ a.go\n@@ -1 +1 @@\n-old\n+new\n",
 	}
-	out := stripANSI(renderCompletedToolCall(event, 80))
+	out := stripANSI(renderCompletedToolCall(event, false, 80))
 	if !strings.Contains(out, "Edit file") {
 		t.Fatalf("missing pretty tool name: %q", out)
 	}
@@ -607,7 +619,7 @@ func TestCompletedFileWritePatchTruncatesLongDiff(t *testing.T) {
 		ResultSummary: "Applied patches to: a.go",
 		ResultContent: long.String(),
 	}
-	out := stripANSI(renderCompletedToolCall(event, 80))
+	out := stripANSI(renderCompletedToolCall(event, false, 80))
 	if !strings.Contains(out, "a.go") {
 		t.Fatalf("missing file stat header: %q", out)
 	}
@@ -663,7 +675,7 @@ func TestCompletedToolCallRendersEveryFileInMultiFilePatch(t *testing.T) {
 		ToolName:      "file.write_patch",
 		ResultSummary: "applied patch",
 		ResultContent: diff,
-	}, 80))
+	}, false, 80))
 	for _, path := range []string{"alpha.go", "beta.go", "gamma.go"} {
 		if !strings.Contains(out, path) {
 			t.Fatalf("diff output missing stat header for %s:\n%s", path, out)
@@ -684,7 +696,7 @@ func TestCompletedToolCallCapsBodyLinesPerFile(t *testing.T) {
 		ToolName:      "file.write_patch",
 		ResultSummary: "applied patch",
 		ResultContent: diff,
-	}, 80))
+	}, false, 80))
 	if !strings.Contains(out, "more lines") {
 		t.Fatalf("expected per-file elision of lines:\n%s", out)
 	}
@@ -699,7 +711,7 @@ func TestCompletedToolCallCapsFilesShown(t *testing.T) {
 		ToolName:      "file.write_patch",
 		ResultSummary: "applied patch",
 		ResultContent: diff,
-	}, 80))
+	}, false, 80))
 	if !strings.Contains(out, "… 1 more files") {
 		t.Fatalf("expected file-cap elision line:\n%s", out)
 	}
@@ -726,6 +738,85 @@ func TestRenderThinkingSummaryWithoutText(t *testing.T) {
 	}
 	if got := strings.Count(strings.TrimRight(expanded, "\n"), "\n") + 1; got != 1 {
 		t.Errorf("expanded render = %d lines, want 1 (nothing to expand): %q", got, expanded)
+	}
+}
+
+func TestCompletedToolCallHidesResultContentWhenCollapsed(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "agent.run",
+		ResultSummary: "subagent completed",
+		ResultContent: "full subagent report body",
+	}, false, 80))
+	if strings.Contains(out, "full subagent report body") {
+		t.Fatalf("collapsed row must not render result content:\n%s", out)
+	}
+}
+
+func TestCompletedToolCallExpandsResultContent(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "agent.run",
+		ResultSummary: "subagent completed",
+		ResultContent: "full subagent report body",
+	}, true, 80))
+	if !strings.Contains(out, "full subagent report body") {
+		t.Fatalf("expanded row must render result content:\n%s", out)
+	}
+}
+
+func TestCompletedToolCallCapsExpandedResultContent(t *testing.T) {
+	var lines []string
+	for i := 0; i < 20; i++ {
+		lines = append(lines, fmt.Sprintf("report line %d", i))
+	}
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "agent.run",
+		ResultSummary: "subagent completed",
+		ResultContent: strings.Join(lines, "\n"),
+	}, true, 80))
+	if !strings.Contains(out, "… 8 more lines") {
+		t.Fatalf("expanded content must be capped with an elision marker:\n%s", out)
+	}
+	if strings.Contains(out, "report line 19") {
+		t.Fatalf("expanded content exceeded the cap:\n%s", out)
+	}
+}
+
+func TestCompletedToolCallFitsWidthWithWideRunes(t *testing.T) {
+	out := renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.read",
+		ResultSummary: "読み込み完了 — これは幅を超えるとても長い日本語のサマリーです",
+	}, false, 40)
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if w := ansi.StringWidth(line); w > 40 {
+			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
+		}
+	}
+}
+
+func TestActiveToolCallFitsWidthWithWideRunes(t *testing.T) {
+	out := renderActiveToolCall(session.ActiveToolCall{
+		Name:      "agent.run",
+		Args:      "調査: これはとても長いサブエージェントの説明文で幅を超えます",
+		StartedAt: time.Now(),
+	}, session.SandboxInfo{}, false, "⠂", time.Now(), 40)
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if w := ansi.StringWidth(line); w > 40 {
+			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
+		}
+	}
+}
+
+func TestCompletedToolCallUsesCategoryGlyph(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "file.read", ResultSummary: "ok"}, false, 40))
+	if !strings.Contains(out, "≡") {
+		t.Fatalf("file.read row should use the ≡ gutter: %q", out)
+	}
+	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "file.read", Error: "boom"}, false, 40))
+	if !strings.Contains(bad, "✗") {
+		t.Fatalf("error state must win over the category glyph: %q", bad)
+	}
+	if strings.Contains(bad, "≡") {
+		t.Fatalf("error row must not show the category glyph: %q", bad)
 	}
 }
 

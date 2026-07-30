@@ -61,6 +61,29 @@ func isLengthFinish(reason string) bool {
 	return reason == "length" || reason == "max_tokens"
 }
 
+// actionCarriesToolWork reports whether a parsed action would execute a
+// tool: a direct call, a patch, or a parallel batch. Answers and questions
+// carry no executable payload, so a truncated answer that still parsed is
+// complete JSON and safe to accept (the native path likewise only guards
+// when tool calls exist).
+func actionCarriesToolWork(action ModelAction) bool {
+	return action.Type == ActionToolCall || action.Type == ActionPatch || len(action.Actions) > 0
+}
+
+// actionToolNames names the tools an action would have run, for the
+// truncation refusal message. A batch names every entry; JSON-mode
+// providers need no per-call replies.
+func actionToolNames(action ModelAction) []string {
+	if len(action.Actions) > 0 {
+		names := make([]string, 0, len(action.Actions))
+		for _, a := range action.Actions {
+			names = append(names, a.Tool)
+		}
+		return names
+	}
+	return []string{action.Tool}
+}
+
 // normalizeArgs returns a canonical JSON representation of a tool's
 // arguments so that {"b":1,"a":2} and {"a":2,"b":1} share the same
 // cache key. Empty arguments normalise to {}.
@@ -753,6 +776,31 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					effectiveRF = &schema.ResponseFormat{Type: "json_object"}
 				}
 			}
+			if consecutiveParseFailures >= maxConsecutiveParseFailures {
+				break
+			}
+			continue
+		}
+		if isLengthFinish(res.FinishReason) && actionCarriesToolWork(action) {
+			// The response hit the output-token limit, so the action's
+			// arguments may be silently truncated even though the envelope
+			// still parsed — a payload can be cut exactly at a JSON
+			// boundary. Refuse it, mirroring the native-path guard above.
+			// Nothing ran, so this is overhead; it also counts as a parse
+			// failure so a model stuck at the limit trips the ladder
+			// instead of looping. Refuse before producedValidAction is set:
+			// a turn that only produced truncated actions did no valid work.
+			budget.overhead++
+			countIterations()
+			consecutiveParseFailures++
+			r.withStats(func(s *turnStats) { s.m.ParseFailures++ })
+			assistantContent := raw
+			if strings.TrimSpace(assistantContent) == "" {
+				assistantContent = emptyModelResponsePlaceholder
+			}
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: assistantContent})
+			messages = append(messages, BuildTruncationMessage(actionToolNames(action)))
+			// Same consecutive-parse-failure ladder as the parseErr branch above.
 			if consecutiveParseFailures >= maxConsecutiveParseFailures {
 				break
 			}

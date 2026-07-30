@@ -75,6 +75,34 @@ func TestTodoListRaisesToolBudget(t *testing.T) {
 	}
 }
 
+// TestTruncatedJSONActionsDoNotStarveToolBudget mirrors
+// TestTruncatedResponsesDoNotStarveToolBudget for the JSON-action path:
+// refusals are charged to overhead, so the work budget survives them.
+// Two truncations against a budget of 2 would exhaust it if they were
+// charged as work.
+func TestTruncatedJSONActionsDoNotStarveToolBudget(t *testing.T) {
+	state := newTestState(t)
+	truncated := `{"rationale":"r","action":{"type":"tool_call","tool":"noop","args":{}}}`
+	p := &agenttest.ScriptedProvider{
+		Responses:     []string{truncated, truncated, `{"rationale":"r","action":{"type":"answer","content":"Done."}}`},
+		FinishReasons: []string{"length", "length", "stop"},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.SetForceClass(string(ClassQuestion))
+	r.MaxToolIterations = 2
+
+	task, err := r.RunTask(context.Background(), "explain something")
+	if err != nil {
+		t.Fatalf("RunTask err = %v", err)
+	}
+	if task.SalvagedReason != "" {
+		t.Fatalf("SalvagedReason = %q, want empty — truncation refusals must not exhaust the tool budget", task.SalvagedReason)
+	}
+	if task.Summary != "Done." {
+		t.Fatalf("Summary = %q, want %q", task.Summary, "Done.")
+	}
+}
+
 // A turn whose every tool call was rejected for bad arguments did no work,
 // so it must not spend a slot of the tool budget.
 func TestAllInvalidArgsChargesOverheadNotTools(t *testing.T) {

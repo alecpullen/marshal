@@ -343,7 +343,7 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, widt
 		if item.Audit == nil {
 			return ""
 		}
-		return renderCompletedToolCall(*item.Audit, width)
+		return renderCompletedToolCall(*item.Audit, detailExpanded, width)
 	case session.KindMessage:
 		if item.Message == nil {
 			return ""
@@ -470,23 +470,23 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
 	gutter := gutterPrefix("▸", accentColor)
-	headerLine := gutter + toolBulletStyle().Render(strutil.Truncate(head, max(width-3, 1), false))
+	headerLine := gutter + toolBulletStyle().Render(ansi.Truncate(head, max(width-3, 1), ""))
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(headerLine))
 	b.WriteString("\n")
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
 		cmdLine := "$ " + atc.Args
 		b.WriteString(strings.Repeat(" ", 3))
-		b.WriteString(mutedStyle().Render(strutil.Truncate(cmdLine, max(width-3, 1), false)))
+		b.WriteString(mutedStyle().Render(ansi.Truncate(cmdLine, max(width-3, 1), "")))
 		b.WriteString("\n")
 		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
 			b.WriteString(strings.Repeat(" ", 3))
-			b.WriteString(mutedStyle().Render(strutil.Truncate(iso, max(width-3, 1), false)))
+			b.WriteString(mutedStyle().Render(ansi.Truncate(iso, max(width-3, 1), "")))
 			b.WriteString("\n")
 		}
 	} else if atc.Args != "" {
 		b.WriteString(strings.Repeat(" ", 3))
-		b.WriteString(mutedStyle().Render(strutil.Truncate(atc.Args, max(width-3, 1), false)))
+		b.WriteString(mutedStyle().Render(ansi.Truncate(atc.Args, max(width-3, 1), "")))
 		b.WriteString("\n")
 	}
 	if atc.Output != "" {
@@ -497,15 +497,15 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		}
 		for _, line := range lines {
 			b.WriteString(strings.Repeat(" ", 3))
-			b.WriteString(mutedStyle().Render(strutil.Truncate(line, max(width-3, 1), false)))
+			b.WriteString(mutedStyle().Render(ansi.Truncate(line, max(width-3, 1), "")))
 			b.WriteString("\n")
 		}
 	}
 	return b.String()
 }
 
-func renderCompletedToolCall(event registry.AuditEvent, width int) string {
-	glyph := "·"
+func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int) string {
+	glyph := toolCategoryGlyph(event.ToolName)
 	style := statusOkStyle()
 	if event.Error != "" {
 		glyph = "✗"
@@ -530,7 +530,7 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 
 	var b strings.Builder
 	b.WriteString(gutter)
-	b.WriteString(style.Render(strutil.Truncate(head, max(width-3, 1), false)))
+	b.WriteString(style.Render(ansi.Truncate(head, max(width-3, 1), "")))
 	b.WriteString("\n")
 	if isDiffTool(event.ToolName) && event.ResultContent != "" {
 		files := splitDiffFiles(event.ResultContent)
@@ -575,6 +575,31 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 			b.WriteString("\n")
 		}
 	}
+	// Non-diff tools with captured output (agent.run is the motivating
+	// case — its ResultContent holds the subagent's report) render it on
+	// ctrl+g, with the same gutter indentation as diffs but using Wrap
+	// instead of Truncate since the content is prose, not code lines.
+	if expanded && !isDiffTool(event.ToolName) && event.ResultContent != "" {
+		lines := strings.Split(strings.TrimRight(event.ResultContent, "\n"), "\n")
+		elided := 0
+		if len(lines) > maxExpandedResultLines {
+			elided = len(lines) - maxExpandedResultLines
+			lines = lines[:maxExpandedResultLines]
+		}
+		for _, line := range lines {
+			wrapped := ansi.Wrap(line, max(width-5, 1), "")
+			for _, wl := range strings.Split(wrapped, "\n") {
+				b.WriteString("   │ ")
+				b.WriteString(dimStyle().Render(wl))
+				b.WriteString("\n")
+			}
+		}
+		if elided > 0 {
+			b.WriteString("   │ ")
+			b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 
@@ -584,6 +609,10 @@ const (
 	// refactor cannot flood the transcript.
 	maxDiffLinesPerFile = 12
 	maxDiffFiles        = 6
+	// maxExpandedResultLines caps the body an expanded (ctrl+g) non-diff
+	// tool row renders — a subagent report gets the same budget as one
+	// file's diff.
+	maxExpandedResultLines = 12
 )
 
 // diffFile is one file's slice of a unified diff, with precomputed

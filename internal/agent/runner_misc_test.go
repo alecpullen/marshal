@@ -1172,6 +1172,76 @@ func TestThinkingLoggedWhenProviderStreamsNoReasoning(t *testing.T) {
 	}
 }
 
+func TestLengthTruncatedJSONActionIsRefusedNotExecuted(t *testing.T) {
+	executed := false
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			`{"rationale":"r","action":{"type":"tool_call","tool":"risky.tool","args":{}}}`,
+			`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
+		},
+		FinishReasons: []string{"length", "stop"},
+	}
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "risky.tool", Description: "must not run", Risk: registry.RiskReadOnly,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			executed = true
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if executed {
+		t.Fatal("tool call from a length-truncated response was executed")
+	}
+	found := false
+	for _, m := range p.Requests[1].Messages {
+		if m.Role == schema.RoleUser && strings.Contains(m.Content, "truncated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no corrective user message for the truncated action")
+	}
+}
+
+// A truncated batch is refused whole: allReadOnly already restricts batches
+// to read-only tools, but truncated file.read args are still wrong data.
+func TestLengthTruncatedBatchIsRefusedWhole(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			`{"rationale":"r","actions":[{"type":"tool_call","tool":"file.read","args":{"path":"a.txt"}},{"type":"tool_call","tool":"file.read","args":{"path":"b.txt"}}]}`,
+			`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
+		},
+		FinishReasons: []string{"length", "stop"},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "read two files"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if events := state.AuditLog(); len(events) != 0 {
+		t.Fatalf("got %d audit events, want 0 — the whole batch must be refused", len(events))
+	}
+	found := false
+	for _, m := range p.Requests[1].Messages {
+		if m.Role == schema.RoleUser && strings.Contains(m.Content, "truncated") && strings.Contains(m.Content, "file.read") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no corrective user message naming the refused batch")
+	}
+}
+
 func TestRunTaskReturnsCompletedTaskWithSummary(t *testing.T) {
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale": "done", "action": {"type": "final", "content": "all findings recorded"}}`,

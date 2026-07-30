@@ -10,7 +10,7 @@ import (
 	"marshal/internal/worktree"
 )
 
-func TestAdapterMirrorsEventsIntoSession(t *testing.T) {
+func TestAdapterClearsProgressAfterRun(t *testing.T) {
 	d, _ := scriptedDispatch(t, implDone, reviewOK, implDone, reviewOK, reviewOK)
 	c := testController(t, d, NewFakeCommandRunner())
 	c.Git.(*worktree.FakeGitOps).Dirty = true
@@ -20,15 +20,24 @@ func TestAdapterMirrorsEventsIntoSession(t *testing.T) {
 	if err := a.Run(context.Background(), c.Plan.Path); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	p := st.SDDProgress()
-	if !p.Active {
-		t.Error("progress not marked active")
+	if p := st.SDDProgress(); p.Active {
+		t.Error("progress still active after a completed run — the live-strip spinner never stops")
 	}
-	if p.TotalTasks != 2 {
-		t.Errorf("TotalTasks = %d, want 2", p.TotalTasks)
+}
+
+func TestAdapterKeepsProgressLiveAtGate(t *testing.T) {
+	d, _ := scriptedDispatch(t, implAsks, implDone, reviewOK, implDone, reviewOK, reviewOK)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	a := NewControllerAdapter(c, st)
+
+	err := a.Run(context.Background(), c.Plan.Path)
+	if err == nil {
+		t.Fatal("Run: want the gate error, got nil")
 	}
-	if p.PlanName != c.Plan.Slug {
-		t.Errorf("PlanName = %q", p.PlanName)
+	if p := st.SDDProgress(); !p.Active {
+		t.Error("progress cleared at a human gate — the run resumes after AnswerGate")
 	}
 }
 
@@ -53,6 +62,33 @@ func TestAdapterSurfacesGateAndAnswer(t *testing.T) {
 	}
 	if err := a.Run(context.Background(), c.Plan.Path); err != nil {
 		t.Fatalf("resumed Run: %v", err)
+	}
+}
+
+// TestAdapterMirrorsEventFields pins the controller's session mirroring:
+// while progress is live (gate-pending), PlanName / TotalTasks / Phase must
+// all reflect what the controller has reported. After Task 5 the success
+// path clears progress, so the snapshot is taken at the gate — the only
+// window where these fields are guaranteed visible to the TUI.
+func TestAdapterMirrorsEventFields(t *testing.T) {
+	d, _ := scriptedDispatch(t, implAsks, implDone, reviewOK, implDone, reviewOK, reviewOK)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	a := NewControllerAdapter(c, st)
+
+	if err := a.Run(context.Background(), c.Plan.Path); err == nil {
+		t.Fatal("Run: want the gate error, got nil")
+	}
+	p := st.SDDProgress()
+	if p.PlanName == "" {
+		t.Error("PlanName not populated while progress is live")
+	}
+	if p.TotalTasks == 0 {
+		t.Error("TotalTasks not populated while progress is live")
+	}
+	if p.Phase == "" {
+		t.Error("Phase not populated while progress is live")
 	}
 }
 

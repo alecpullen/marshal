@@ -474,6 +474,20 @@ func BuildCorrectionMessage(err error) schema.ChatMessage {
 	}
 }
 
+// BuildTruncationMessage tells the model its tool call was refused because
+// the response hit the output token limit, so the arguments may be silently
+// truncated even though the envelope parsed. JSON-action path only: the
+// native path sends one role:tool refusal per tool-call ID instead.
+func BuildTruncationMessage(toolNames []string) schema.ChatMessage {
+	return schema.ChatMessage{
+		Role: schema.RoleUser,
+		Content: fmt.Sprintf(
+			"Tool call(s) %s were not executed: the response hit the output token limit, so the arguments may be truncated. Re-issue the call(s) with complete arguments.",
+			strings.Join(toolNames, ", "),
+		),
+	}
+}
+
 func BuildRepairMessage() schema.ChatMessage {
 	return schema.ChatMessage{
 		Role:    schema.RoleSystem,

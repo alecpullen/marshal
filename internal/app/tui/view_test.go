@@ -774,6 +774,8 @@ func TestTurnSpinnerSitsAboveTodos(t *testing.T) {
 	if err := m.state.SetTodos([]native.TodoItem{
 		{Content: "first task", Status: "completed"},
 		{Content: "second task", Status: "in_progress"},
+		{Content: "third task", Status: "pending"},
+		{Content: "fourth task", Status: "pending"},
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
@@ -788,7 +790,7 @@ func TestTurnSpinnerSitsAboveTodos(t *testing.T) {
 		if spinnerRow == -1 && strings.Contains(l, "24s") {
 			spinnerRow = i
 		}
-		if firstTodoRow == -1 && strings.Contains(l, "first task") {
+		if firstTodoRow == -1 && strings.Contains(l, "second task") {
 			firstTodoRow = i
 		}
 	}

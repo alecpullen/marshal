@@ -503,9 +503,9 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	var b strings.Builder
 	for i, hl := range headerLines {
 		if i == 0 {
-			b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(gutter + toolBulletStyle().Render(hl)))
+			b.WriteString(gutter + toolBulletStyle().Render(hl))
 		} else {
-			b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(strings.Repeat(" ", 3) + toolBulletStyle().Render(hl)))
+			b.WriteString(strings.Repeat(" ", 3) + toolBulletStyle().Render(hl))
 		}
 		b.WriteString("\n")
 	}

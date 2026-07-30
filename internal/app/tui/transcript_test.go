@@ -501,7 +501,7 @@ func TestRenderCompletedToolCallBrowserGlyphRemoved(t *testing.T) {
 	}
 }
 
-func TestActiveToolCallHasSurfaceBackground(t *testing.T) {
+func TestActiveToolCallHasNoSurfaceBackground(t *testing.T) {
 	prev := theme.Current()
 	th := theme.LoadFor(false, "xterm-256color")
 	theme.Reload(th)
@@ -513,9 +513,10 @@ func TestActiveToolCallHasSurfaceBackground(t *testing.T) {
 		StartedAt: time.Now().Add(-5 * time.Second),
 	}
 	out := renderActiveToolCall(atc, session.SandboxInfo{}, false, "⠋", time.Now(), 80)
-	// The header line should contain a 256-color background SGR (48;5;).
-	if !strings.Contains(out, "48;5;") {
-		t.Fatalf("expected background SGR (48;5;) in header line, got:\n%s", out)
+	// The header line should NOT contain a background SGR (48;5;) — the
+	// glyph should use the normal terminal background, not a gray square.
+	if strings.Contains(out, "48;5;") {
+		t.Fatalf("unexpected background SGR (48;5;) in header line, got:\n%s", out)
 	}
 }
 

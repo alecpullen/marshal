@@ -15,6 +15,8 @@ func TestToolCategoryGlyph(t *testing.T) {
 		"agent.run":        "⧉",
 		"web.fetch":        "◇",
 		"web.search":       "◇",
+		"browser.fetch":    "◇",
+		"browser.search":   "◇",
 		"git.status":       "·",
 		"todos":            "·",
 		"unknown.thing":    "·",

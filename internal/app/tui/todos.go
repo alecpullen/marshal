@@ -6,10 +6,10 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 )
 
@@ -85,7 +85,7 @@ func todoOneLine(todos []native.TodoItem, done, inProgress, width int) string {
 	}
 	style := lipgloss.NewStyle().Foreground(theme.Current().FGDefault).Bold(true)
 	return gutterPrefix("▶", theme.Current().AccentPrimary) +
-		style.Render(strutil.Truncate(text, max(width-3, 1), false))
+		style.Render(ansi.Truncate(text, max(width-3, 1), ""))
 }
 
 // todoLine renders one todo row: ✓ teal done, ▶ coral bold in-progress,
@@ -104,7 +104,7 @@ func todoLine(t native.TodoItem, width int) string {
 	default:
 		glyph, c = "·", theme.Current().FGMuted
 	}
-	return gutterPrefix(glyph, c) + labelStyle.Render(strutil.Truncate(t.Content, max(width-3, 1), false))
+	return gutterPrefix(glyph, c) + labelStyle.Render(ansi.Truncate(t.Content, max(width-3, 1), ""))
 }
 
 // todoProgress returns the completed count and the index of the

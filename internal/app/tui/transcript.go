@@ -470,23 +470,23 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
 	gutter := gutterPrefix("▸", accentColor)
-	headerLine := gutter + toolBulletStyle().Render(strutil.Truncate(head, max(width-3, 1), false))
+	headerLine := gutter + toolBulletStyle().Render(ansi.Truncate(head, max(width-3, 1), ""))
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(headerLine))
 	b.WriteString("\n")
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
 		cmdLine := "$ " + atc.Args
 		b.WriteString(strings.Repeat(" ", 3))
-		b.WriteString(mutedStyle().Render(strutil.Truncate(cmdLine, max(width-3, 1), false)))
+		b.WriteString(mutedStyle().Render(ansi.Truncate(cmdLine, max(width-3, 1), "")))
 		b.WriteString("\n")
 		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
 			b.WriteString(strings.Repeat(" ", 3))
-			b.WriteString(mutedStyle().Render(strutil.Truncate(iso, max(width-3, 1), false)))
+			b.WriteString(mutedStyle().Render(ansi.Truncate(iso, max(width-3, 1), "")))
 			b.WriteString("\n")
 		}
 	} else if atc.Args != "" {
 		b.WriteString(strings.Repeat(" ", 3))
-		b.WriteString(mutedStyle().Render(strutil.Truncate(atc.Args, max(width-3, 1), false)))
+		b.WriteString(mutedStyle().Render(ansi.Truncate(atc.Args, max(width-3, 1), "")))
 		b.WriteString("\n")
 	}
 	if atc.Output != "" {
@@ -497,7 +497,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		}
 		for _, line := range lines {
 			b.WriteString(strings.Repeat(" ", 3))
-			b.WriteString(mutedStyle().Render(strutil.Truncate(line, max(width-3, 1), false)))
+			b.WriteString(mutedStyle().Render(ansi.Truncate(line, max(width-3, 1), "")))
 			b.WriteString("\n")
 		}
 	}
@@ -530,7 +530,7 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 
 	var b strings.Builder
 	b.WriteString(gutter)
-	b.WriteString(style.Render(strutil.Truncate(head, max(width-3, 1), false)))
+	b.WriteString(style.Render(ansi.Truncate(head, max(width-3, 1), "")))
 	b.WriteString("\n")
 	if isDiffTool(event.ToolName) && event.ResultContent != "" {
 		files := splitDiffFiles(event.ResultContent)

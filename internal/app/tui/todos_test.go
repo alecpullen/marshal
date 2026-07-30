@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"marshal/internal/tools/native"
 )
 
@@ -20,6 +22,13 @@ func sampleTodos(n, doneCount, inProgressAt int) []native.TodoItem {
 		out = append(out, native.TodoItem{Content: "task " + string(rune('a'+i)), Status: status})
 	}
 	return out
+}
+
+func TestTodoLineFitsWidthWithWideRunes(t *testing.T) {
+	out := todoLine(native.TodoItem{Content: "これはとても長い日本語のタスク内容で幅を超えます", Status: native.TodoInProgress}, 20)
+	if w := ansi.StringWidth(out); w > 20 {
+		t.Fatalf("todo line is %d cells wide, budget 20: %q", w, out)
+	}
 }
 
 func TestTodoPanelEmptyForNoTodos(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/registry"
@@ -726,6 +728,31 @@ func TestRenderThinkingSummaryWithoutText(t *testing.T) {
 	}
 	if got := strings.Count(strings.TrimRight(expanded, "\n"), "\n") + 1; got != 1 {
 		t.Errorf("expanded render = %d lines, want 1 (nothing to expand): %q", got, expanded)
+	}
+}
+
+func TestCompletedToolCallFitsWidthWithWideRunes(t *testing.T) {
+	out := renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.read",
+		ResultSummary: "読み込み完了 — これは幅を超えるとても長い日本語のサマリーです",
+	}, 40)
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if w := ansi.StringWidth(line); w > 40 {
+			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
+		}
+	}
+}
+
+func TestActiveToolCallFitsWidthWithWideRunes(t *testing.T) {
+	out := renderActiveToolCall(session.ActiveToolCall{
+		Name:      "agent.run",
+		Args:      "調査: これはとても長いサブエージェントの説明文で幅を超えます",
+		StartedAt: time.Now(),
+	}, session.SandboxInfo{}, false, "⠂", time.Now(), 40)
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if w := ansi.StringWidth(line); w > 40 {
+			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
+		}
 	}
 }
 

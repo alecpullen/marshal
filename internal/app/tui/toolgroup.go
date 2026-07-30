@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"marshal/internal/app/session"
-	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -104,7 +105,7 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 			head += dimSeparator + strings.Join(targets, ", ")
 		}
 		b.WriteString(gutter)
-		b.WriteString(statusOkStyle().Render(strutil.Truncate(head, max(width-3, 1), false)))
+		b.WriteString(statusOkStyle().Render(ansi.Truncate(head, max(width-3, 1), "")))
 		b.WriteString("\n")
 		return b.String()
 	}
@@ -120,7 +121,7 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 			line += ev.ResultSummary
 		}
 		b.WriteString(strings.Repeat(" ", 5))
-		b.WriteString(mutedStyle().Render(strutil.Truncate(line, max(width-5, 1), false)))
+		b.WriteString(mutedStyle().Render(ansi.Truncate(line, max(width-5, 1), "")))
 		b.WriteString("\n")
 	}
 	return b.String()

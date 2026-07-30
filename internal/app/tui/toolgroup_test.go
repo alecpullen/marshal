@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
@@ -188,6 +190,19 @@ func TestRenderToolGroupExpandedOneLinePerCall(t *testing.T) {
 // correct: a running call renders on its own row beneath the group it belongs
 // to — it needs the room, since shell.run streams output there — and folds
 // into that group once it completes.
+func TestToolGroupFitsWidthWithWideRunes(t *testing.T) {
+	events := []registry.AuditEvent{
+		{ToolName: "file.read", ResultSummary: "ok", Args: json.RawMessage(`{"path":"内部/非常に長いパス/ファイル一.go"}`)},
+		{ToolName: "file.read", ResultSummary: "ok", Args: json.RawMessage(`{"path":"内部/別のとても長いパス/ファイル二.go"}`)},
+	}
+	out := renderToolGroup(events, false, 40)
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if w := ansi.StringWidth(line); w > 40 {
+			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
+		}
+	}
+}
+
 func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 	readEvent := func(path string, ts time.Time) registry.AuditEvent {
 		args, err := json.Marshal(map[string]string{"path": path})

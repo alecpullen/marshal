@@ -24,7 +24,7 @@ const (
 )
 
 // todoPanelMaxRows caps the pinned panel. The panel is additionally
-// capped at ~25% of the frame height, and degrades to the collapsed
+// capped at ~33% of the frame height, and degrades to the collapsed
 // one-liner when fewer than two rows are available.
 const todoPanelMaxRows = 10
 
@@ -78,9 +78,9 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 }
 
 // todoPanelBudget is the expanded panel's row budget: never more than the
-// item count, the hard cap, or ~25% of the frame.
+// item count, the hard cap, or ~33% of the frame.
 func todoPanelBudget(n, frameHeight int) int {
-	return min(n, min(todoPanelMaxRows, max(frameHeight/4, 1)))
+	return min(n, min(todoPanelMaxRows, max(frameHeight/3, 1)))
 }
 
 // todoOneLine renders `▶ tasks 3/7 · implement expression parsing`.

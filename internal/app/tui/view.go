@@ -37,10 +37,10 @@ const (
 	// adds above the completion popup's match rows.
 	completionPanelChromeRows = 1
 	// minTranscriptRows is the transcript floor reserved when budgeting the
-	// textarea's MaxHeight. When a 3-row transcript and a 1-row input do not
-	// both fit, the transcript floor yields first — a zero-row input cannot
-	// be typed into, a one-row transcript is still usable.
-	minTranscriptRows = 3
+	// textarea's MaxHeight. The todo panel is given priority over the
+	// transcript floor — a one-row transcript is still usable, and the
+	// pinned todo list is most useful when the agent is actively working.
+	minTranscriptRows = 1
 )
 
 // View assembles the full-screen frame. Alt screen and mouse mode are

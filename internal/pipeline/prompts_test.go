@@ -68,7 +68,7 @@ func TestRenderFixListsEveryFinding(t *testing.T) {
 }
 
 func TestRenderReviewCarriesConstraintsVerbatim(t *testing.T) {
-	constraints := "- minTranscriptRows is a package constant with value 3."
+	constraints := "- minTranscriptRows is a package constant with value 1."
 	got, err := RenderReview(ReviewPrompt{
 		TaskN: 4, Title: "Git seam", BriefPath: "b", ReportPath: "r",
 		PackagePath: "/run/task-4-review.md", ReviewPath: "/run/task-4-verdict.md",

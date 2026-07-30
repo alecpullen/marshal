@@ -168,13 +168,13 @@ func TestTodoPanelClipsToBudgetAndKeepsInProgressVisible(t *testing.T) {
 
 func TestTodoPanelRespectsShortFrames(t *testing.T) {
 	todos := sampleTodos(9, 2, 2)
-	// A 24-row frame gives a 6-row budget (25%).
+	// A 24-row frame gives an 8-row budget (33%).
 	out := renderTodoPanelBody(todos, todoPanelExpanded, 24, 80)
-	if rows := strings.Count(out, "\n") + 1; rows > 6 {
-		t.Fatalf("panel must respect the 25%% frame cap: %d > 6", rows)
+	if rows := strings.Count(out, "\n") + 1; rows > 8 {
+		t.Fatalf("panel must respect the 33%% frame cap: %d > 8", rows)
 	}
 	// A tiny frame degrades to the collapsed one-liner.
-	out = renderTodoPanelBody(todos, todoPanelExpanded, 6, 80)
+	out = renderTodoPanelBody(todos, todoPanelExpanded, 3, 80)
 	if strings.Contains(out, "\n") {
 		t.Fatalf("tiny frames must degrade to one row:\n%s", out)
 	}

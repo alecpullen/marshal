@@ -112,7 +112,9 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				res := Panel("Help", false, rows)
 				res.Doc.Footer = "⏎ send · esc cancel/deny · tab/shift+tab mode · alt+m /model\n" +
 					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g thinking · ctrl+t tasks · ctrl+r rollback\n" +
-					"pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom"
+					"pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom · ctrl+b side rail\n" +
+					"select text: hold alt/option while dragging (the mouse wheel is captured for scrolling).\n" +
+					"ctrl+b hides the side rail first so a selection does not span it."
 				return res
 			},
 		},

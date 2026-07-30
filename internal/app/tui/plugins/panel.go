@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ type Panel struct {
 
 	installSource   string
 	installScope    string
+	installErr      string
 	scannedContents *plugins.Contents
 	scannedName     string
 	scannedSource   string
@@ -142,7 +144,10 @@ func (p *Panel) detailFrame(e scopedEntry) *settings.Frame {
 		update := settings.NewField("action.update", "Update", settings.KindAction)
 		settings.SetFieldDesc(update, "check for a newer version")
 		settings.SetFieldAct(update, func() tea.Cmd {
-			return nil // body added in Task 15
+			p.installSource = e.Source
+			p.installScope = e.Scope
+			p.stack = append(p.stack, p.installFrame())
+			return nil
 		})
 		fields = append(fields, update)
 
@@ -174,6 +179,21 @@ type removeResultMsg struct {
 	Err   error
 }
 
+type installResultMsg struct {
+	Name  string
+	Scope string
+	Err   error
+}
+
+type scanResultMsg struct {
+	Name     string
+	Source   string
+	Scope    string
+	Contents plugins.Contents
+	ScanDir  string
+	Err      error
+}
+
 func (p *Panel) runRemove(e scopedEntry) tea.Cmd {
 	return func() tea.Msg {
 		var storeDir, lockPath string
@@ -196,6 +216,187 @@ func (p *Panel) runRemove(e scopedEntry) tea.Cmd {
 			return removeResultMsg{Err: err}
 		}
 		return removeResultMsg{Name: e.Name, Scope: e.Scope}
+	}
+}
+
+func (p *Panel) installFrame() *settings.Frame {
+	return settings.NewFrame("Install plugin", func() []*settings.Field {
+		var fields []*settings.Field
+
+		source := settings.NewField("install.source", "Source", settings.KindScalar)
+		settings.SetFieldDesc(source, "github:owner/repo, https://..., or local path")
+		settings.SetFieldGetStr(source, func() string { return p.installSource })
+		settings.SetFieldSetStr(source, func(v string) error {
+			p.installSource = v
+			return nil
+		})
+		fields = append(fields, source)
+
+		scope := settings.NewField("install.scope", "Scope", settings.KindEnum)
+		options := []string{scopeGlobal}
+		if p.projectTrusted {
+			options = append(options, scopeProject)
+		}
+		settings.SetFieldOptions(scope, func() []string { return options })
+		settings.SetFieldGetStr(scope, func() string { return p.installScope })
+		settings.SetFieldSetStr(scope, func(v string) error {
+			p.installScope = v
+			return nil
+		})
+		fields = append(fields, scope)
+
+		scan := settings.NewField("install.scan", "Scan", settings.KindAction)
+		settings.SetFieldDesc(scan, "fetch and review plugin contents")
+		settings.SetFieldAct(scan, func() tea.Cmd {
+			return p.runScan()
+		})
+		fields = append(fields, scan)
+
+		if p.scannedContents != nil {
+			// Passive content header and rows.
+			fields = append(fields, settings.NewField("confirm.passive", "Passive content", settings.KindHeader))
+			if len(p.scannedContents.Skills) == 0 && len(p.scannedContents.Commands) == 0 {
+				fields = append(fields, settings.NewField("confirm.passive.none", "(none)", settings.KindScalar))
+			}
+			for _, s := range p.scannedContents.Skills {
+				f := settings.NewField("confirm.skill."+s.Name, s.Name, settings.KindScalar)
+				settings.SetFieldGetStr(f, func() string { return s.Description })
+				fields = append(fields, f)
+			}
+			for _, c := range p.scannedContents.Commands {
+				f := settings.NewField("confirm.cmd."+c.Name, "/"+c.Name, settings.KindScalar)
+				settings.SetFieldGetStr(f, func() string { return c.Description })
+				fields = append(fields, f)
+			}
+
+			// Executable content header and rows.
+			fields = append(fields, settings.NewField("confirm.exec", "Executable content", settings.KindHeader))
+			if len(p.scannedContents.Hooks) == 0 && len(p.scannedContents.MCPServers) == 0 && len(p.scannedContents.MCPPolicies) == 0 {
+				fields = append(fields, settings.NewField("confirm.exec.none", "(none)", settings.KindScalar))
+			}
+			for _, h := range p.scannedContents.Hooks {
+				f := settings.NewField("confirm.hook."+h.Event, h.Event, settings.KindScalar)
+				settings.SetFieldGetStr(f, func() string { return h.Command })
+				fields = append(fields, f)
+			}
+			for name, srv := range p.scannedContents.MCPServers {
+				n, s := name, srv
+				f := settings.NewField("confirm.mcp."+n, n, settings.KindScalar)
+				settings.SetFieldGetStr(f, func() string { return s.Command + " " + strings.Join(s.Args, " ") })
+				fields = append(fields, f)
+			}
+
+			confirm := settings.NewField("install.confirm", "Confirm install", settings.KindAction)
+			settings.SetFieldDesc(confirm, "write plugin to disk and update lockfile")
+			settings.SetFieldAct(confirm, func() tea.Cmd {
+				return p.runInstallFromScan()
+			})
+			fields = append(fields, confirm)
+		}
+
+		return fields
+	})
+}
+
+func (p *Panel) runScan() tea.Cmd {
+	if p.installSource == "" {
+		return nil
+	}
+	ctx := context.Background()
+	source := p.installSource
+	scope := p.installScope
+	return func() tea.Msg {
+		cloneURL, name, err := plugins.NormalizeSource(source)
+		if err != nil {
+			return scanResultMsg{Err: err}
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		inst, err := plugins.NewInstaller()
+		if err != nil {
+			return scanResultMsg{Err: err}
+		}
+		tmpDir, err := os.MkdirTemp("", "marshal-plugin-tui-*")
+		if err != nil {
+			return scanResultMsg{Err: err}
+		}
+		cloneDest := filepath.Join(tmpDir, "clone")
+		_, err = inst.Clone(ctx, cloneURL, "", cloneDest)
+		if err != nil {
+			os.RemoveAll(tmpDir)
+			return scanResultMsg{Err: err}
+		}
+		_ = os.RemoveAll(filepath.Join(cloneDest, ".git"))
+		contents, err := plugins.ScanPlugin(cloneDest)
+		if err != nil {
+			os.RemoveAll(tmpDir)
+			return scanResultMsg{Err: err}
+		}
+		return scanResultMsg{Name: name, Source: cloneURL, Scope: scope, Contents: contents, ScanDir: cloneDest}
+	}
+}
+
+func (p *Panel) resetInstall() {
+	p.installSource = ""
+	p.installScope = scopeGlobal
+	p.scannedContents = nil
+	p.scannedName = ""
+	p.scannedSource = ""
+	p.scanDir = ""
+}
+
+func (p *Panel) runInstallFromScan() tea.Cmd {
+	if p.scannedContents == nil || p.scanDir == "" {
+		return nil
+	}
+	name := p.scannedName
+	scope := p.installScope
+	source := p.scannedSource
+	cloneDest := p.scanDir
+	return func() tea.Msg {
+		var storeDir, lockPath string
+		if scope == scopeGlobal {
+			storeDir = p.globalStoreDir()
+			lockPath = p.globalLockPath()
+		} else {
+			storeDir = p.projectStoreDir()
+			lockPath = p.projectLockPath()
+		}
+		hash, err := plugins.HashDir(cloneDest)
+		if err != nil {
+			os.RemoveAll(filepath.Dir(cloneDest))
+			return installResultMsg{Err: err}
+		}
+		if err := os.MkdirAll(storeDir, 0755); err != nil {
+			os.RemoveAll(filepath.Dir(cloneDest))
+			return installResultMsg{Err: err}
+		}
+		dest := filepath.Join(storeDir, name)
+		if err := os.RemoveAll(dest); err != nil {
+			os.RemoveAll(filepath.Dir(cloneDest))
+			return installResultMsg{Err: err}
+		}
+		if err := plugins.CopyDir(cloneDest, dest); err != nil {
+			os.RemoveAll(filepath.Dir(cloneDest))
+			return installResultMsg{Err: err}
+		}
+		os.RemoveAll(filepath.Dir(cloneDest))
+		commit := "unknown"
+		lf, err := plugins.ReadLockfile(lockPath)
+		if err != nil {
+			return installResultMsg{Err: err}
+		}
+		lf.Upsert(plugins.LockEntry{
+			Name:        name,
+			Source:      source,
+			Commit:      commit,
+			ContentHash: hash,
+		})
+		if err := lf.Write(lockPath); err != nil {
+			return installResultMsg{Err: err}
+		}
+		return installResultMsg{Name: name, Scope: scope}
 	}
 }
 
@@ -225,7 +426,9 @@ func (p *Panel) buildFields() []*settings.Field {
 	install := settings.NewField("action.install", "＋ Install plugin", settings.KindAction)
 	settings.SetFieldDesc(install, "install a plugin from a git URL or local path")
 	settings.SetFieldAct(install, func() tea.Cmd {
-		return nil // body added in Task 15
+		p.resetInstall()
+		p.stack = append(p.stack, p.installFrame())
+		return nil
 	})
 	fields = append(fields, install)
 
@@ -275,6 +478,25 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.list.Refresh()
 			return cmd
 		}
+	case scanResultMsg:
+		if msg.Err != nil {
+			p.installErr = msg.Err.Error()
+			return nil
+		}
+		p.scannedContents = &msg.Contents
+		p.scannedName = msg.Name
+		p.scannedSource = msg.Source
+		p.scanDir = msg.ScanDir
+		p.activeList().Refresh()
+		return nil
+	case installResultMsg:
+		if msg.Err != nil {
+			p.installErr = msg.Err.Error()
+			return nil
+		}
+		p.resetInstall()
+		settings.FieldListRefresh(p.list)
+		return nil
 	case removeResultMsg:
 		if msg.Err != nil {
 			p.activeList().ErrMsg = msg.Err.Error()

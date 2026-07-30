@@ -577,7 +577,8 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 	}
 	// Non-diff tools with captured output (agent.run is the motivating
 	// case — its ResultContent holds the subagent's report) render it on
-	// ctrl+g, with the same indentation and elision convention as diffs.
+	// ctrl+g, with the same gutter indentation as diffs but using Wrap
+	// instead of Truncate since the content is prose, not code lines.
 	if expanded && !isDiffTool(event.ToolName) && event.ResultContent != "" {
 		lines := strings.Split(strings.TrimRight(event.ResultContent, "\n"), "\n")
 		elided := 0

@@ -1387,3 +1387,14 @@ func TestStateSDDGate(t *testing.T) {
 		t.Fatalf("cleared gate should be empty, got %+v", g)
 	}
 }
+
+// TestLoggerNeverNil guards the call sites that treat logging as always
+// available (agent/runner.go, agent/execute.go): a State without a logger
+// used to hand back nil and panic on first use.
+func TestLoggerNeverNil(t *testing.T) {
+	s := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{})
+	if s.Logger() == nil {
+		t.Fatal("Logger() = nil; call sites dereference it unconditionally")
+	}
+	s.Logger().Warn("must not panic")
+}

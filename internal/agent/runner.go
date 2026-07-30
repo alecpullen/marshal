@@ -584,7 +584,23 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages, effectiveRF)
 		if err != nil {
-			return task, r.fail(task, err)
+			// A stream that failed part-way may still have delivered a usable
+			// response — a malformed SSE chunk aborts the stream without
+			// invalidating the deltas already received. Salvage it and let the
+			// normal path below judge it: if it parses, the turn continues; if
+			// it does not, the parse-failure ladder handles it. Failing here
+			// instead threw away work the model had already done.
+			//
+			// Cancellation is never salvaged: the user asked to stop.
+			if strings.TrimSpace(res.Text) == "" || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return task, r.fail(task, err)
+			}
+			r.withStats(func(s *turnStats) { s.m.StreamRecoveries++ })
+			r.State.Logger().Warn("recovered from mid-stream provider error",
+				"error", err, "salvaged_bytes", len(res.Text))
+			r.State.AddMessage(session.RoleSystem,
+				fmt.Sprintf("Recovered from a provider stream error mid-turn (%v); continuing with the response received so far.", err),
+				session.ContentTypePlain)
 		}
 		raw := res.Text
 
@@ -698,6 +714,14 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		action, parseErr := ParseAction(raw)
 		if parseErr != nil {
 			consecutiveParseFailures++
+			// Logged, not just counted: a parse failure that escalates to a
+			// failed turn is otherwise undiagnosable after the fact — the
+			// malformed output is gone and only a ParseFailures tally remains.
+			r.State.Logger().Warn("model output did not parse as an action",
+				"error", parseErr,
+				"consecutive", consecutiveParseFailures,
+				"raw", truncateForLog(raw),
+			)
 			// Some providers (Kimi's kimi-for-coding, confirmed live) reject
 			// the very next request with HTTP 400 "message ... with role
 			// 'assistant' must not be empty" if any assistant message has

@@ -33,14 +33,21 @@ func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Prov
 func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
 	attempts := r.MaxRetries + 1
 	var lastErr error
+	// best keeps the most substantial partial response seen across attempts,
+	// so an exhausted retry loop still hands the caller something to salvage
+	// rather than an empty result. See chatOnce's ChatEventError branch.
+	var best chatResult
 	for i := 0; i < attempts; i++ {
 		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
 		if err == nil {
 			return res, nil
 		}
+		if len(res.Text) > len(best.Text) {
+			best = res
+		}
 		lastErr = err
 	}
-	return chatResult{}, lastErr
+	return best, lastErr
 }
 
 func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
@@ -89,7 +96,11 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 				sb.WriteString(event.Delta)
 			}
 		case schema.ChatEventError:
-			return chatResult{}, event.Err
+			// Return what the stream already delivered. A single undecodable
+			// SSE chunk aborts the stream (openai_compatible.go:338), and the
+			// deltas before it can amount to a complete, parseable action.
+			// Discarding them turns a recoverable hiccup into a failed turn.
+			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, event.Err
 		case schema.ChatEventDone:
 			usage = event.Usage
 			toolCalls = event.ToolCalls
@@ -167,4 +178,16 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 		})
 	}
 	return defs
+}
+
+// truncateForLog bounds model output for a single log line. Parse failures log
+// the raw text so a malformed response can be diagnosed after the fact; the
+// cap keeps a runaway response from flooding the log file.
+func truncateForLog(s string) string {
+	const cap = 400
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", "\\n")
+	if len(s) <= cap {
+		return s
+	}
+	return s[:cap] + "…"
 }

@@ -1130,6 +1130,41 @@ func TestMaxTurnContextTokensUsesConfiguredWhenLarger(t *testing.T) {
 	}
 }
 
+// TestThinkingLoggedWhenProviderStreamsNoReasoning pins the signal that the
+// turn spinner's removal of the "thinking…" label depends on: a model that
+// exposes no reasoning must still leave a thinking marker in the transcript.
+func TestThinkingLoggedWhenProviderStreamsNoReasoning(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
+		},
+	}
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	if err := runner.Run(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var thinking []session.TranscriptItem
+	for _, item := range state.Transcript() {
+		if item.Kind == session.KindThinking {
+			thinking = append(thinking, item)
+		}
+	}
+	if len(thinking) == 0 {
+		t.Fatal("no KindThinking transcript item logged for a turn with no reasoning text")
+	}
+	if got := thinking[0].Thinking.Text; got != "" {
+		t.Errorf("Thinking.Text = %q, want empty", got)
+	}
+	if thinking[0].Thinking.StartedAt.IsZero() {
+		t.Error("Thinking.StartedAt is zero; duration would be measured from 1970")
+	}
+}
+
 func TestRunTaskReturnsCompletedTaskWithSummary(t *testing.T) {
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale": "done", "action": {"type": "final", "content": "all findings recorded"}}`,

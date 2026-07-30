@@ -97,6 +97,43 @@ func renderMarkdown(content string, width int) (out string, ok bool) {
 	return rendered, true
 }
 
+// tabStop is the column interval a terminal advances a "\t" to.
+const tabStop = 8
+
+// expandTabs replaces tab characters with the spaces the terminal would
+// render them as. Width math throughout the transcript goes through
+// ansi.StringWidth, which counts "\t" as a single cell — but the terminal
+// advances to the next multiple of tabStop, so unexpanded tabs make every
+// wrap decision undercount and the rendered line ends up wider than the
+// viewport, spilling under the side rail. Expanding at the point raw content
+// enters the renderers keeps measurement and rendering in agreement.
+//
+// Input is raw content, never styled output: the column accounting has no
+// notion of ANSI escapes.
+func expandTabs(s string) string {
+	if !strings.ContainsRune(s, '\t') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + tabStop)
+	col := 0
+	for _, r := range s {
+		switch r {
+		case '\t':
+			pad := tabStop - col%tabStop
+			b.WriteString(strings.Repeat(" ", pad))
+			col += pad
+		case '\n':
+			b.WriteRune(r)
+			col = 0
+		default:
+			b.WriteRune(r)
+			col += ansi.StringWidth(string(r))
+		}
+	}
+	return b.String()
+}
+
 // renderPlainProse is the fallback prose treatment when markdown
 // rendering fails: wrapped text with the transcript's 2-space indent.
 func renderPlainProse(content string, width int) string {
@@ -237,6 +274,9 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 // no role label, tool results render with a · gutter, system notices are
 // dim. Final answers use a ▍ gutter and rich-content rendering.
 func renderMessage(msg session.Message, width int) string {
+	// Expand tabs once, here, so every content-type branch below measures
+	// what the terminal will actually render. See expandTabs.
+	msg.Content = expandTabs(msg.Content)
 	if msg.Final {
 		return renderFinalAnswer(msg, width)
 	}

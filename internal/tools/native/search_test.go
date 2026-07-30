@@ -113,3 +113,95 @@ func TestRepoSearchRejectsEmptyQueryAndTraversal(t *testing.T) {
 		t.Fatal("repo.search traversal returned nil error")
 	}
 }
+
+func TestRepoSearchRegexMode(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "needle here\nn34dle there\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"n[0-9]+dle","mode":"regex"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "a.txt:2:n34dle there") {
+		t.Fatalf("Content missing regex match:\n%s", result.Content)
+	}
+	if strings.Contains(result.Content, "needle here") {
+		t.Fatalf("substring-only line should not match regex:\n%s", result.Content)
+	}
+}
+
+func TestRepoSearchInvalidRegex(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "needle\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err := invokeTool(t, reg, "repo.search", `{"query":"n[","mode":"regex"}`)
+	if err == nil {
+		t.Fatal("expected error for invalid regex")
+	}
+	if !strings.Contains(err.Error(), "invalid regex") {
+		t.Fatalf("error = %v, want it to say %q so the model can correct itself", err, "invalid regex")
+	}
+}
+
+func TestRepoSearchRejectsUnknownMode(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	if _, err := invokeTool(t, reg, "repo.search", `{"query":"x","mode":"fuzzy"}`); err == nil {
+		t.Fatal("expected error for unknown mode")
+	}
+}
+
+func TestRepoSearchIncludeGlob(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.go"), "// needle\n")
+	writeFile(t, filepath.Join(root, "a.txt"), "needle\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle","include":"*.go"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "a.go:1:// needle") {
+		t.Fatalf("Content missing a.go match:\n%s", result.Content)
+	}
+	if strings.Contains(result.Content, "a.txt") {
+		t.Fatalf("include glob should have excluded a.txt:\n%s", result.Content)
+	}
+}
+
+func TestRepoSearchContextLines(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "one\ntwo\nneedle\nfour\nfive\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle","context":1}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	for _, want := range []string{"a.txt-2-two", "a.txt:3:needle", "a.txt-4-four"} {
+		if !strings.Contains(result.Content, want) {
+			t.Fatalf("Content missing %q:\n%s", want, result.Content)
+		}
+	}
+	if strings.Contains(result.Content, "one") || strings.Contains(result.Content, "five") {
+		t.Fatalf("context=1 should not include lines 1 or 5:\n%s", result.Content)
+	}
+}

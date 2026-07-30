@@ -3,6 +3,7 @@ package plugins
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -120,9 +121,82 @@ func shortCommit(commit string) string {
 
 func (p *Panel) detailFrame(e scopedEntry) *settings.Frame {
 	return settings.NewFrame(e.Name, func() []*settings.Field {
-		// Stub — Task 14 will implement the full detail frame.
-		return nil
+		var fields []*settings.Field
+
+		name := settings.NewField("detail.name", "Name", settings.KindScalar)
+		settings.SetFieldGetStr(name, func() string { return e.Name })
+		fields = append(fields, name)
+
+		src := settings.NewField("detail.source", "Source", settings.KindScalar)
+		settings.SetFieldGetStr(src, func() string { return e.Source })
+		fields = append(fields, src)
+
+		commit := settings.NewField("detail.commit", "Commit", settings.KindScalar)
+		settings.SetFieldGetStr(commit, func() string { return e.Commit })
+		fields = append(fields, commit)
+
+		scope := settings.NewField("detail.scope", "Scope", settings.KindScalar)
+		settings.SetFieldGetStr(scope, func() string { return e.Scope })
+		fields = append(fields, scope)
+
+		update := settings.NewField("action.update", "Update", settings.KindAction)
+		settings.SetFieldDesc(update, "check for a newer version")
+		settings.SetFieldAct(update, func() tea.Cmd {
+			return nil // body added in Task 15
+		})
+		fields = append(fields, update)
+
+		remove := settings.NewField("action.remove", "Remove", settings.KindAction)
+		settings.SetFieldDesc(remove, "delete this plugin from disk")
+		settings.SetFieldActLabel(remove, func() string {
+			if p.removeArmed[e.Name] {
+				return "↵ confirm remove"
+			}
+			return "↵ remove"
+		})
+		settings.SetFieldAct(remove, func() tea.Cmd {
+			if !p.removeArmed[e.Name] {
+				p.removeArmed[e.Name] = true
+				return nil
+			}
+			p.removeArmed[e.Name] = false
+			return p.runRemove(e)
+		})
+		fields = append(fields, remove)
+
+		return fields
 	})
+}
+
+type removeResultMsg struct {
+	Name  string
+	Scope string
+	Err   error
+}
+
+func (p *Panel) runRemove(e scopedEntry) tea.Cmd {
+	return func() tea.Msg {
+		var storeDir, lockPath string
+		if e.Scope == scopeGlobal {
+			storeDir = p.globalStoreDir()
+			lockPath = p.globalLockPath()
+		} else {
+			storeDir = p.projectStoreDir()
+			lockPath = p.projectLockPath()
+		}
+		if err := os.RemoveAll(filepath.Join(storeDir, e.Name)); err != nil {
+			return removeResultMsg{Err: err}
+		}
+		lf, err := plugins.ReadLockfile(lockPath)
+		if err != nil {
+			return removeResultMsg{Err: err}
+		}
+		lf.Remove(e.Name)
+		if err := lf.Write(lockPath); err != nil {
+			return removeResultMsg{Err: err}
+		}
+		return removeResultMsg{Name: e.Name, Scope: e.Scope}
+	}
 }
 
 func (p *Panel) buildFields() []*settings.Field {
@@ -201,6 +275,17 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.list.Refresh()
 			return cmd
 		}
+	case removeResultMsg:
+		if msg.Err != nil {
+			p.activeList().ErrMsg = msg.Err.Error()
+			return nil
+		}
+		// Pop detail frame and refresh the list.
+		if len(p.stack) > 0 {
+			p.stack = p.stack[:len(p.stack)-1]
+		}
+		p.list.Refresh()
+		return nil
 	}
 	return nil
 }

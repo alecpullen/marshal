@@ -2127,7 +2127,7 @@ func (m *Model) refreshViewport() {
 	items := m.state.Transcript()
 	inProgress := m.state.InProgress()
 	streamLen := len(inProgress.Reasoning)
-	_, activeTool := m.state.ActiveToolCall()
+	atc, activeTool := m.state.ActiveToolCall()
 	busy := m.busy || activeTool || streamLen > 0
 
 	todos := m.state.Todos()
@@ -2136,7 +2136,7 @@ func (m *Model) refreshViewport() {
 		m.todosDismissed = false
 	}
 	queued := m.state.SteeringQueue()
-	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued)
+	hash := transcriptHash(items, streamLen, busy, m.viewport.Width(), todos, queued, m.spinnerFrame, atc)
 	if hash == m.lastTranscriptHash {
 		return
 	}
@@ -3119,9 +3119,13 @@ func browserGlyphStyle() lipgloss.Style {
 }
 func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
-func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string) uint64 {
+func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, width int, todos []native.TodoItem, queued []string, spinnerFrame string, atc session.ActiveToolCall) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "c=%d|w=%d|f=%d|", len(items), width, flags(streamLen, busy, len(todos), len(queued)))
+	// Live state: without the spinner frame and the active tool call the
+	// early-return in refreshViewport freezes the ▸ row for the whole
+	// duration of a long tool call (e.g. agent.run).
+	fmt.Fprintf(h, "spin=%s|atc=%s|%s|%d|", spinnerFrame, atc.Name, atc.Args, atc.StartedAt.UnixNano())
 	for _, item := range items {
 		fmt.Fprintf(h, "%d|%d|", item.Kind, item.Timestamp.UnixNano())
 		if item.Message != nil {

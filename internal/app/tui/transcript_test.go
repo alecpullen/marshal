@@ -33,16 +33,26 @@ func TestTranscriptHashDistinguishesContent(t *testing.T) {
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "hello", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil)
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{})
 	b := transcriptHash([]session.TranscriptItem{
 		{
 			Kind:      session.KindMessage,
 			Timestamp: time.Unix(0, 1),
 			Message:   &session.Message{Role: session.RoleUser, Content: "goodbye", ContentType: session.ContentTypePlain},
 		},
-	}, 0, false, 80, nil, nil)
+	}, 0, false, 80, nil, nil, "", session.ActiveToolCall{})
 	if a == b {
 		t.Fatal("hash should differ for different content")
+	}
+}
+
+func TestTranscriptHashCoversSpinnerAndActiveTool(t *testing.T) {
+	base := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{})
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠒", session.ActiveToolCall{}); got == base {
+		t.Fatal("hash must change with the spinner frame — otherwise the live tool row freezes")
+	}
+	if got := transcriptHash(nil, 0, true, 80, nil, nil, "⠂", session.ActiveToolCall{Name: "agent.run", Args: "investigate"}); got == base {
+		t.Fatal("hash must change with the active tool call")
 	}
 }
 

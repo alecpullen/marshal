@@ -69,6 +69,25 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			},
 		},
 		{
+			Name:        "save",
+			Description: "Confirm the current session is saved (auto-saved throughout)",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
+			Name:        "sessions",
+			Description: "List previous sessions and resume one",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
+			Name:        "resume",
+			Description: "Resume a previous session by ID",
+			Args:        "<session-id>",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "help",
 			Description: "Show available commands",
 			Args:        "[command]",

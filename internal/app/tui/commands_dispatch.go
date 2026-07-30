@@ -176,5 +176,24 @@ func init() {
 			m.refreshViewport()
 			return m, nil
 		},
+		"save": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.state.AddMessage(session.RoleSystem, "Session saved. Marshal auto-saves messages, todos, and workspace state as you work.", session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		},
+		"sessions": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.openSessionPicker("")
+			m.refreshViewport()
+			return m, nil
+		},
+		"resume": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			id := strings.TrimSpace(strings.Join(args, " "))
+			if id == "" {
+				m.openSessionPicker("")
+				m.refreshViewport()
+				return m, nil
+			}
+			return m.beginResume(id)
+		},
 	}
 }

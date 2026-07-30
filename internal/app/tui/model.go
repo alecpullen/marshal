@@ -219,6 +219,9 @@ type Model struct {
 	// The picker itself is hosted in m.dock; pickerCommand records which
 	// command opened it so PickedMsg can dispatch correctly.
 	pickerCommand string
+	// resumeSession is non-empty when the user asked to resume a different
+	// session; the app.Run program runner reads it from the final model.
+	resumeSession string
 	dock          dock.Host
 
 	spinner      Spinner
@@ -1303,6 +1306,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case cmdName == "sdd-plan":
 			// Dock already closed above; dispatch /sdd with the picked path.
 			return m.dispatchCommand("/sdd " + pm.Value)
+		case cmdName == "sessions":
+			if pm.Value == "" {
+				m.refreshViewport()
+				return m, nil
+			}
+			return m.beginResume(pm.Value)
 		case cmdName == "mode-elevation":
 			chosen := pm.Value
 			if tc := m.state.PendingApproval(); tc != nil {
@@ -2702,6 +2711,61 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	}
 	m.dock.Open(p)
 	m.pickerCommand = cmdName
+}
+
+// ResumeSession returns the session ID the user chose to resume, or "" if
+// the program ended normally. It is read by the app.Run program runner.
+func (m Model) ResumeSession() string { return m.resumeSession }
+
+// beginResume starts a controlled shutdown so app.Run can restart this
+// process with the requested existing session.
+func (m *Model) beginResume(id string) (tea.Model, tea.Cmd) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		m.refreshViewport()
+		return m, nil
+	}
+	m.resumeSession = id
+	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Resuming session %s...", id), session.ContentTypePlain)
+	return m, m.beginShutdown()
+}
+
+// openSessionPicker opens a picker listing previous sessions for this
+// project. The picked session ID is passed to beginResume.
+func (m *Model) openSessionPicker(prefilter string) {
+	database := m.state.DB()
+	if database == nil {
+		m.state.AddMessage(session.RoleSystem, "Session list is not available (no database).", session.ContentTypePlain)
+		return
+	}
+	sessions, _, err := database.ListSessions(context.Background(), m.state.WorkingDir, "", 100)
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not list sessions: %v", err), session.ContentTypePlain)
+		return
+	}
+	items := make([]picker.Item, 0, len(sessions))
+	for _, s := range sessions {
+		label := s.Title
+		if label == "" {
+			label = s.SessionID
+		}
+		detail := s.UpdatedAt.Format("2006-01-02 15:04") + fmt.Sprintf(" · %d messages", s.MessageCount)
+		badge := ""
+		if s.SessionID == m.state.SessionID() {
+			badge = "● now"
+		}
+		items = append(items, picker.Item{
+			Label:  label,
+			Detail: detail,
+			Badge:  badge,
+			Value:  s.SessionID,
+		})
+	}
+	if len(items) == 0 {
+		m.state.AddMessage(session.RoleSystem, "No previous sessions found for this project.", session.ContentTypePlain)
+		return
+	}
+	m.openPicker("sessions", "Resume session", "pick a previous conversation", items, prefilter)
 }
 
 // setMode applies an interaction mode for the next turn. Shared by the

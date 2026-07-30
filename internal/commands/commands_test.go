@@ -417,6 +417,34 @@ func TestRegisterAllIncludesSwarmCommand(t *testing.T) {
 	}
 }
 
+func TestSessionCommands(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	for _, tt := range []struct {
+		name     string
+		wantArgs string
+	}{
+		{"save", ""},
+		{"sessions", ""},
+		{"resume", "<session-id>"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, ok := cmdReg.Lookup(tt.name)
+			if !ok {
+				t.Fatalf("%s command not registered", tt.name)
+			}
+			if !cmd.TUIOnly {
+				t.Errorf("%s should be TUIOnly", tt.name)
+			}
+			if cmd.Args != tt.wantArgs {
+				t.Fatalf("%s Args = %q, want %q", tt.name, cmd.Args, tt.wantArgs)
+			}
+		})
+	}
+}
+
 func TestLogCommandShowsRecentAuditEvents(t *testing.T) {
 	cmdReg := New()
 	if err := RegisterAll(cmdReg, registry.New()); err != nil {

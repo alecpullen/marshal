@@ -3,8 +3,15 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"marshal/internal/agent/agenttest"
+	"marshal/internal/app/session"
+	"marshal/internal/tools/native"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/schema"
@@ -156,5 +163,91 @@ func TestRunTaskDoesNotSalvageCancellation(t *testing.T) {
 
 	if err := runner.Run(context.Background(), "do the thing"); err == nil {
 		t.Fatal("Run salvaged a cancelled stream; cancellation must stop the turn")
+	}
+}
+
+// TestAuditEventsCarryFinishReason pins the instrumentation that makes
+// truncated tool arguments diagnosable: a patch that fails to parse looks
+// identical whether the model wrote it badly or the provider cut it off at the
+// output-token limit. The finish reason is the only thing that distinguishes
+// them, so it must reach the audit record.
+func TestAuditEventsCarryFinishReason(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.txt"}}}`,
+			`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
+		},
+		FinishReasons: []string{"stop", "stop"},
+	}
+	reg := registry.New()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.RegisterAll(reg, native.Options{
+		WorkspaceRoot:  dir,
+		MaxOutputBytes: 1000,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	_ = runner.Run(context.Background(), "read the file")
+
+	events := state.AuditLog()
+	if len(events) == 0 {
+		t.Fatal("no audit events recorded")
+	}
+	if got := events[0].FinishReason; got != "stop" {
+		t.Errorf("FinishReason = %q, want %q — truncated arguments stay undiagnosable without it", got, "stop")
+	}
+}
+
+// TestLengthTruncatedActionIsStillExecuted characterises a confirmed gap, not
+// desired behavior. isLengthFinish (runner.go:56) says a response cut off at
+// the output-token limit "may carry silently truncated arguments and must not
+// be executed" — but that guard only covers native tool calls. On the
+// JSON-action path the action is executed regardless, as asserted below.
+//
+// This is the likely source of the 25-of-43 recorded file.write_patch failures
+// whose payloads stop mid-block: a patch truncated at the token limit reaches
+// the parser and is indistinguishable from a badly written one. The recorded
+// finish_reason now distinguishes them.
+//
+// When the guard is extended to this path, this test should be inverted to
+// assert the call is refused.
+func TestLengthTruncatedActionIsStillExecuted(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{
+			`{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.txt"}}}`,
+			`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
+		},
+		FinishReasons: []string{"length", "stop"},
+	}
+	reg := registry.New()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.RegisterAll(reg, native.Options{WorkspaceRoot: dir, MaxOutputBytes: 1000}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	runner := NewRunner(p, reg, pol, state, "test-model")
+
+	_ = runner.Run(context.Background(), "read the file")
+
+	events := state.AuditLog()
+	if len(events) != 1 {
+		t.Fatalf("got %d audit events, want 1", len(events))
+	}
+	if events[0].Error != "" {
+		t.Errorf("call was refused with %q; if the length guard now covers this path, invert this test", events[0].Error)
+	}
+	if got := events[0].FinishReason; got != "length" {
+		t.Errorf("FinishReason = %q, want %q", got, "length")
 	}
 }

@@ -84,8 +84,8 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		`INSERT INTO tool_calls (session_id, agent_role, model, tool_name, args_json, result_summary, risk_level, approval_state, command_exit_code, files_changed, error, created_at,
 		                          sandbox_backend, sandbox_network_isolated, sandbox_limits_json, sandbox_killed_reason, duration_ms, hooks_json,
 		                          original_args_json, rewritten,
-		                          sandbox_enabled, resource_limits, output_truncated)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                          sandbox_enabled, resource_limits, output_truncated, finish_reason)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID,
 		event.AgentRole,
 		event.Model,
@@ -109,6 +109,7 @@ func (db *DB) SaveToolCall(sessionID string, event registry.AuditEvent) error {
 		boolToInt(event.Sandbox.Enabled),
 		boolToInt(event.Sandbox.ResourceLimits),
 		boolToInt(event.Sandbox.OutputTruncated),
+		event.FinishReason,
 	)
 	if err != nil {
 		return fmt.Errorf("save tool call: %w", err)

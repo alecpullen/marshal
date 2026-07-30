@@ -38,6 +38,13 @@ type AuditEvent struct {
 	// Rewritten is true when a pre_tool_use hook rewrote the tool arguments
 	// after user approval.
 	Rewritten bool
+	// FinishReason is the provider finish reason of the model response that
+	// requested this call ("stop", "tool_calls", "length", "max_tokens", …).
+	// Recorded because a response cut off at the output-token limit can carry
+	// silently truncated arguments: a malformed patch or a half-written
+	// command is indistinguishable from a model mistake without it. Empty for
+	// synthesised events and for providers that report no reason.
+	FinishReason string
 }
 
 // HookMetadata captures the per-tool audit trail for F20 lifecycle hooks.

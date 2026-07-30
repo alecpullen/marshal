@@ -144,8 +144,8 @@ type MemoryProvider interface {
 //     calls. The seed persists across RunTask calls.
 //
 //   - Per-turn state (tracker, stats, route, pressureMessageSent,
-//     consecutiveParseFailures, consecutiveEmpty) is reset at the top of
-//     RunTask and never shared across calls.
+//     consecutiveParseFailures, consecutiveEmpty, turnFinishReason) is reset
+//     at the top of RunTask and never shared across calls.
 //
 //   - tracker, stats, and ForceClass have dedicated mutexes for their
 //     accessor methods (withStats, trackerMu, forceClassMu). All other
@@ -260,6 +260,13 @@ type Runner struct {
 	// rollover. When nil, all rollover operations are no-ops.
 	Rollover *Rollover
 
+	// turnFinishReason is the provider finish reason of the most recent model
+	// response this turn, stamped onto every audit event by logToolCall. It is
+	// per-turn state: reset at the top of RunTask, never shared across calls.
+	// Kept on the Runner rather than threaded through the execution call chain
+	// because the tool executor is several frames below where the reason is
+	// known.
+	turnFinishReason string
 	// fileIndexCache memoises the per-project file index across RunTask
 	// calls and across steering-message drains. Auto-invalidates when the
 	// projectID changes (see fileIndexCache.get).
@@ -499,6 +506,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	producedValidAction := false
 	consecutiveParseFailures := 0
 	consecutiveEmpty := 0
+	r.turnFinishReason = ""
+
 	toolCallCountThisTurn := 0
 	groundingNudgeSent := false
 	budget := newTurnBudget(r.MaxToolIterations, task.Class, len(task.Plan))
@@ -583,6 +592,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 
 		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages, effectiveRF)
+		r.turnFinishReason = res.FinishReason
 		if err != nil {
 			// A stream that failed part-way may still have delivered a usable
 			// response — a malformed SSE chunk aborts the stream without

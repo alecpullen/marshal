@@ -97,7 +97,7 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 	switch decision {
 	case policy.DecisionDeny:
 		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
-		r.State.LogToolCall(event)
+		r.logToolCall(event)
 		r.countToolCall(true, false)
 		return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}}, nil
 	case policy.DecisionConfirm:
@@ -107,7 +107,7 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		}
 		if !approved {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
-			r.State.LogToolCall(event)
+			r.logToolCall(event)
 			r.countToolCall(true, false)
 			return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by user", toolCallID)}}, nil
 		}
@@ -228,7 +228,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			logged.Summary = "(cached) " + logged.Summary
 			call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
 			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
-			r.State.LogToolCall(event)
+			r.logToolCall(event)
 			r.countToolCall(false, true)
 			msg := r.buildCachedToolResultMessage(toolName, cached, toolCallID)
 			msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
@@ -293,14 +293,14 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		if hookErr != nil {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookErr.Error()))
 			event.Hooks = hookAuditMetadata(hookOut)
-			r.State.LogToolCall(event)
+			r.logToolCall(event)
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookErr.Error(), toolCallID)}, nil
 		}
 		if hookOut.Decision == hooks.DecisionBlock {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookOut.Reason))
 			event.Hooks = hookAuditMetadata(hookOut)
-			r.State.LogToolCall(event)
+			r.logToolCall(event)
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "blocked by pre_tool_use hook: "+hookOut.Reason, toolCallID)}, nil
 		}
@@ -358,7 +358,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		event.Hooks = hookAuditMetadata(lastHookOut)
 		event.OriginalArgs = originalApprovedArgs
 		event.Rewritten = toolWasRewritten
-		r.State.LogToolCall(event)
+		r.logToolCall(event)
 		r.trackerMu.Lock()
 		count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(execErr.Error()), false)
 		r.trackerMu.Unlock()
@@ -378,7 +378,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	event.Hooks = hookAuditMetadata(lastHookOut)
 	event.OriginalArgs = originalApprovedArgs
 	event.Rewritten = toolWasRewritten
-	r.State.LogToolCall(event)
+	r.logToolCall(event)
 
 	msg := r.buildToolResultMessage(toolName, summarized, toolCallID)
 	r.trackerMu.Lock()
@@ -663,4 +663,15 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 		flat = append(flat, msgs...)
 	}
 	return flat, nil
+}
+
+// logToolCall stamps the current turn's provider finish reason onto the event
+// and records it. Every audit event the runner emits goes through here: the
+// events are built at seven sites, and a stamp applied at each of them is a
+// stamp that will be forgotten at the eighth.
+func (r *Runner) logToolCall(event registry.AuditEvent) {
+	if event.FinishReason == "" {
+		event.FinishReason = r.turnFinishReason
+	}
+	r.State.LogToolCall(event)
 }

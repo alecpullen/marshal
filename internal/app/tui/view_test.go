@@ -766,6 +766,43 @@ func TestTurnSpinnerBlankWhenIdleButStillReserved(t *testing.T) {
 }
 
 // TestTurnSpinnerGlyphGatedOnFirst200ms avoids a glyph flash on fast turns.
+// TestTurnSpinnerSitsAboveTodos pins the row order: the spinner groups with
+// the transcript whose progress it describes, and the todo list stays
+// adjacent to the input.
+func TestTurnSpinnerSitsAboveTodos(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "first task", Status: "completed"},
+		{Content: "second task", Status: "in_progress"},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-24 * time.Second)
+	m.spinnerFrame = "⠹"
+	m.refreshViewport()
+
+	lines := strings.Split(stripANSI(m.viewString()), "\n")
+	spinnerRow, firstTodoRow := -1, -1
+	for i, l := range lines {
+		if spinnerRow == -1 && strings.Contains(l, "24s") {
+			spinnerRow = i
+		}
+		if firstTodoRow == -1 && strings.Contains(l, "first task") {
+			firstTodoRow = i
+		}
+	}
+	if spinnerRow == -1 || firstTodoRow == -1 {
+		t.Fatalf("spinner row = %d, first todo row = %d; both must render", spinnerRow, firstTodoRow)
+	}
+	if spinnerRow > firstTodoRow {
+		t.Errorf("spinner row %d is below first todo row %d, want above", spinnerRow, firstTodoRow)
+	}
+	if len(lines) != 30 {
+		t.Errorf("frame = %d rows, want 30", len(lines))
+	}
+}
+
 func TestTurnSpinnerGlyphGatedOnFirst200ms(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = true

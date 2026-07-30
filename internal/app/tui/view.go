@@ -81,6 +81,9 @@ func (m *Model) viewString() string {
 		left = dockView
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
+		// The spinner groups with the transcript whose progress it
+		// describes, keeping the todo list adjacent to the input.
+		rows = append(rows, m.renderTurnSpinner())
 		if todo := m.renderTodoPanel(); todo != "" {
 			rows = append(rows, todo)
 		}
@@ -93,7 +96,6 @@ func (m *Model) viewString() string {
 		if dockView != "" {
 			rows = append(rows, dockView)
 		}
-		rows = append(rows, m.renderTurnSpinner())
 		rows = append(rows, m.renderInputArea())
 		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}

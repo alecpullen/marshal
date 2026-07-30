@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,12 @@ type Panel struct {
 	filter textfield.Model
 	list   *settings.FieldList
 	stack  []*settings.Frame
+
+	installSource string
+	installScope  string
+	installing    bool
+	installErr    string
+	removeArmed   map[string]bool
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -42,6 +49,8 @@ func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State
 		workDir:        workDir,
 		projectTrusted: projectTrusted,
 		state:          state,
+		removeArmed:    make(map[string]bool),
+		installScope:   scopeGlobal,
 	}
 	p.filter = textfield.New()
 	p.filter.SetVirtualCursor(true)
@@ -111,13 +120,90 @@ func (p *Panel) detailFrame(s skills.ScopedSkill) *settings.Frame {
 
 		remove := settings.NewField("action.remove", "Remove", settings.KindAction)
 		settings.SetFieldDesc(remove, "delete this skill from disk")
+		settings.SetFieldActLabel(remove, func() string {
+			if p.removeArmed[s.Skill.Name] {
+				return "↵ confirm remove"
+			}
+			return "↵ remove"
+		})
 		settings.SetFieldAct(remove, func() tea.Cmd {
-			return nil // body added in Task 11
+			if !p.removeArmed[s.Skill.Name] {
+				p.removeArmed[s.Skill.Name] = true
+				return nil
+			}
+			p.removeArmed[s.Skill.Name] = false
+			return p.runRemove(s)
 		})
 		fields = append(fields, remove)
 
 		return fields
 	})
+}
+
+func (p *Panel) installFrame() *settings.Frame {
+	return settings.NewFrame("Install skill", func() []*settings.Field {
+		var fields []*settings.Field
+
+		source := settings.NewField("install.source", "Source", settings.KindScalar)
+		settings.SetFieldDesc(source, "github:owner/repo, https://..., or local path")
+		settings.SetFieldGetStr(source, func() string { return p.installSource })
+		settings.SetFieldSetStr(source, func(v string) error {
+			p.installSource = v
+			return nil
+		})
+		fields = append(fields, source)
+
+		scope := settings.NewField("install.scope", "Scope", settings.KindEnum)
+		settings.SetFieldDesc(scope, "global or project")
+		options := []string{scopeGlobal}
+		if p.projectTrusted {
+			options = append(options, scopeProject)
+		}
+		settings.SetFieldOptions(scope, func() []string { return options })
+		settings.SetFieldGetStr(scope, func() string { return p.installScope })
+		settings.SetFieldSetStr(scope, func(v string) error {
+			p.installScope = v
+			return nil
+		})
+		fields = append(fields, scope)
+
+		install := settings.NewField("install.confirm", "Install", settings.KindAction)
+		settings.SetFieldDesc(install, "clone or copy the skill into the selected scope")
+		settings.SetFieldAct(install, func() tea.Cmd {
+			return p.runInstall()
+		})
+		fields = append(fields, install)
+
+		return fields
+	})
+}
+
+func (p *Panel) runInstall() tea.Cmd {
+	if p.installSource == "" {
+		return nil
+	}
+	p.installing = true
+	p.installErr = ""
+	targetDir := skills.ScopeDir(p.homeDir, p.workDir, p.installScope == scopeProject)
+	source := p.installSource
+	scope := p.installScope
+	return func() tea.Msg {
+		_, err := skills.Install(context.Background(), source, targetDir, "")
+		return installResultMsg{Scope: scope, Err: err}
+	}
+}
+
+func (p *Panel) runRemove(s skills.ScopedSkill) tea.Cmd {
+	return func() tea.Msg {
+		var path string
+		if s.Scope == scopeGlobal {
+			path = filepath.Join(p.globalSkillsDir(), s.Skill.Name)
+		} else {
+			path = filepath.Join(p.projectSkillsDir(), s.Skill.Name)
+		}
+		err := os.RemoveAll(path)
+		return removeResultMsg{Name: s.Skill.Name, Scope: s.Scope, Err: err}
+	}
 }
 
 func (p *Panel) buildFields() []*settings.Field {
@@ -147,6 +233,10 @@ func (p *Panel) buildFields() []*settings.Field {
 	install := settings.NewField("action.install", "＋ Install skill", settings.KindAction)
 	settings.SetFieldDesc(install, "install a skill from a git URL or local path")
 	settings.SetFieldAct(install, func() tea.Cmd {
+		p.installSource = ""
+		p.installScope = scopeGlobal
+		p.installErr = ""
+		p.stack = append(p.stack, p.installFrame())
 		return nil
 	})
 	fields = append(fields, install)
@@ -173,12 +263,44 @@ type loadResultMsg struct {
 	Err  error
 }
 
+type installResultMsg struct {
+	Name  string
+	Scope string
+	Err   error
+}
+
+type removeResultMsg struct {
+	Name  string
+	Scope string
+	Err   error
+}
+
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case loadResultMsg:
 		if msg.Err != nil {
 			p.list.ErrMsg = msg.Err.Error()
 		}
+		return nil
+	case installResultMsg:
+		p.installing = false
+		if msg.Err != nil {
+			p.installErr = msg.Err.Error()
+			return nil
+		}
+		p.installSource = ""
+		p.installScope = scopeGlobal
+		if p.stack != nil && len(p.stack) > 0 {
+			p.stack = p.stack[:len(p.stack)-1]
+		}
+		p.list.Refresh()
+		return nil
+	case removeResultMsg:
+		if msg.Err != nil {
+			p.list.ErrMsg = msg.Err.Error()
+			return nil
+		}
+		p.list.Refresh()
 		return nil
 	case tea.KeyPressMsg:
 		if msg.Code == tea.KeyEscape {

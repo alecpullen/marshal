@@ -56,9 +56,27 @@ func (s *Service) runGit(ctx context.Context, args ...string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		s.logger.Debug("git command failed", "args", args, "error", err, "output", string(out))
-		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return fmt.Errorf("git %s: %w%s", strings.Join(args, " "), err, gitOutputSuffix(out))
 	}
 	return nil
+}
+
+// gitOutputSuffix formats git's own output for inclusion in an error, or ""
+// when it said nothing. Callers log these errors at Warn while the raw output
+// is only logged at Debug, so without this a failure reads as a bare "exit
+// status 1" — which is how a snapshot bug stayed invisible through hundreds of
+// occurrences.
+func gitOutputSuffix(out []byte) string {
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		return ""
+	}
+	msg = strings.ReplaceAll(msg, "\n", "; ")
+	const cap = 300
+	if len(msg) > cap {
+		msg = msg[:cap] + "…"
+	}
+	return ": " + msg
 }
 
 func (s *Service) runGitOut(ctx context.Context, args ...string) (string, error) {
@@ -70,7 +88,7 @@ func (s *Service) runGitOut(ctx context.Context, args ...string) (string, error)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		s.logger.Debug("git command failed", "args", args, "error", err, "output", string(out))
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return "", fmt.Errorf("git %s: %w%s", strings.Join(args, " "), err, gitOutputSuffix(out))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -162,7 +180,61 @@ func (s *Service) largeFileExcludes(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return excludes, nil
+
+	// The walk's own ignore rules (allIgnoreRules) read only the root
+	// .gitignore, but git honors .gitignore at every directory level. Treat
+	// those rules as a pruning heuristic and let git have the final say:
+	// naming an ignored path in a pathspec makes "git add" exit 1, which
+	// would fail the whole snapshot.
+	ignored, err := s.gitIgnored(ctx, excludes)
+	if err != nil {
+		return nil, err
+	}
+	if len(ignored) == 0 {
+		return excludes, nil
+	}
+	kept := make([]string, 0, len(excludes))
+	for _, ex := range excludes {
+		if !ignored[ex] {
+			kept = append(kept, ex)
+		}
+	}
+	return kept, nil
+}
+
+// gitIgnored returns the subset of rel paths that git itself ignores, using
+// the shadow repo's ignore configuration (its info/exclude plus every
+// .gitignore in the work tree). This is the single source of truth for
+// "would git ignore this?" — reimplementing gitignore semantics is what
+// produced pathspecs git rejected.
+func (s *Service) gitIgnored(ctx context.Context, rels []string) (map[string]bool, error) {
+	if len(rels) == 0 {
+		return nil, nil
+	}
+	cmd := exec.CommandContext(ctx, "git",
+		"--git-dir="+s.shadowDir,
+		"--work-tree="+s.workTree,
+		"check-ignore", "--stdin",
+	)
+	cmd.Dir = s.workTree
+	cmd.Stdin = strings.NewReader(strings.Join(rels, "\n") + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		// check-ignore exits 1 when no input path is ignored. That is the
+		// common case, not a failure.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("git check-ignore: %w", err)
+	}
+	ignored := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			ignored[line] = true
+		}
+	}
+	return ignored, nil
 }
 
 func (s *Service) allIgnoreRules() []string {

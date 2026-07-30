@@ -684,6 +684,19 @@ func TestBuildSystemPromptAutoModeOverridesAskUserExamples(t *testing.T) {
 // amount of fuzzy-matching in file.read's error can suggest a file that
 // isn't there. The rule set must explicitly discourage guessing a path
 // before verifying it exists.
+func TestBuildTruncationMessageNamesToolsAndReason(t *testing.T) {
+	msg := BuildTruncationMessage([]string{"file.write_patch"})
+	if msg.Role != schema.RoleUser {
+		t.Fatalf("Role = %q, want %q — the JSON-action path has no tool-call IDs to answer", msg.Role, schema.RoleUser)
+	}
+	if !strings.Contains(msg.Content, "file.write_patch") {
+		t.Fatalf("content must name the refused tool: %q", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "truncated") {
+		t.Fatalf("content must explain the truncation: %q", msg.Content)
+	}
+}
+
 func TestBuildSystemPromptDiscouragesGuessingFilePaths(t *testing.T) {
 	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil, false)
 	content := msg.Content

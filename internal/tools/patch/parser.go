@@ -48,9 +48,11 @@ func Parse(proposal string) ([]FilePatch, error) {
 			return nil
 		}
 		if inSearch {
-			return fmt.Errorf("patch: unclosed SEARCH block for %q", currentPath)
+			return fmt.Errorf("patch: unclosed SEARCH block for %q: add a %q divider line, then the replacement, then %q",
+				currentPath, "=======", ">>>>>>> REPLACE")
 		}
-		return fmt.Errorf("patch: unclosed REPLACE block for %q", currentPath)
+		return fmt.Errorf("patch: unclosed REPLACE block for %q: add a %q line to close it",
+			currentPath, ">>>>>>> REPLACE")
 	}
 
 	commitChunk := func() {
@@ -123,6 +125,15 @@ func Parse(proposal string) ([]FilePatch, error) {
 	}
 	if err := flushChunk(); err != nil {
 		return nil, err
+	}
+	if len(patches) == 0 {
+		// Returning an empty slice with no error left the caller to report
+		// "no valid patches found in proposal", which tells a model nothing
+		// about what it got wrong. The error is read by the model that wrote
+		// the proposal, so it states the format instead.
+		return nil, fmt.Errorf("patch: no SEARCH/REPLACE blocks found; each edit must be written as " +
+			"a \"File: <path>\" line, then \"<<<<<<< SEARCH\", the exact existing lines, " +
+			"\"=======\", the replacement lines, and \">>>>>>> REPLACE\"")
 	}
 	return patches, nil
 }

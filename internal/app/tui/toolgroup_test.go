@@ -156,17 +156,22 @@ func groupEvents() []registry.AuditEvent {
 	}
 }
 
-func TestRenderToolGroupCollapsedOneLine(t *testing.T) {
+func TestRenderToolGroupCollapsedBulletList(t *testing.T) {
 	out := stripANSI(renderToolGroup(groupEvents(), false, 80))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("collapsed run should render one line, got %d:\n%s", len(lines), out)
+	if len(lines) != 4 {
+		t.Fatalf("collapsed run should render heading + 3 bullet lines, got %d:\n%s", len(lines), out)
 	}
-	if !strings.Contains(lines[0], "×3") {
-		t.Fatalf("collapsed line missing count:\n%s", lines[0])
+	if !strings.Contains(lines[0], "Read files:") || !strings.Contains(lines[0], "×3") {
+		t.Fatalf("heading line missing plural name or count:\n%s", lines[0])
 	}
-	if !strings.Contains(lines[0], "budget.go, runner.go, execute.go") {
-		t.Fatalf("collapsed line missing joined targets:\n%s", lines[0])
+	for i, want := range []string{"budget.go", "runner.go", "execute.go"} {
+		if !strings.Contains(lines[i+1], want) {
+			t.Fatalf("bullet line %d missing %q:\n%s", i+1, want, lines[i+1])
+		}
+		if !strings.Contains(lines[i+1], "–") {
+			t.Fatalf("bullet line %d missing en-dash bullet:\n%s", i+1, lines[i+1])
+		}
 	}
 }
 
@@ -230,13 +235,13 @@ func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 	m.refreshViewport()
 
 	running := stripANSI(m.viewport.View())
-	if !strings.Contains(running, DisplayToolName("file.read")+" ×2") {
+	if !strings.Contains(running, "Read files: ×2") {
 		t.Errorf("while running, want a ×2 group of completed calls:\n%s", running)
 	}
 	if !strings.Contains(running, "chat.go") {
 		t.Errorf("while running, want the in-flight target on its own row:\n%s", running)
 	}
-	if strings.Contains(running, DisplayToolName("file.read")+" ×3") {
+	if strings.Contains(running, "Read files: ×3") {
 		t.Errorf("in-flight call must not fold into the group while running:\n%s", running)
 	}
 
@@ -245,7 +250,7 @@ func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 	m.refreshViewport()
 
 	done := stripANSI(m.viewport.View())
-	if !strings.Contains(done, DisplayToolName("file.read")+" ×3") {
+	if !strings.Contains(done, "Read files: ×3") {
 		t.Errorf("after completion, want the call folded into a ×3 group:\n%s", done)
 	}
 }

@@ -86,15 +86,17 @@ func toolTarget(event registry.AuditEvent) string {
 }
 
 // renderToolGroup renders a collapsed run of same-tool audit events as a
-// single line — count plus joined targets — or, when expanded, a header
-// line followed by one line per call showing its target and result.
-// Truncation is applied once, at the group level, against the available
-// width.
+// heading line (plural tool name + count) followed by bullet points — one
+// per call — showing each target and result summary. When the terminal is
+// very narrow (width < 40) and the group is not expanded, it collapses to
+// a single line to avoid excessive wrapping.
 func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) string {
-	head := fmt.Sprintf("%s ×%d", DisplayToolName(events[0].ToolName), len(events))
+	head := fmt.Sprintf("%s: ×%d", pluralizeToolName(events[0].ToolName), len(events))
 	gutter := gutterPrefix(toolCategoryGlyph(events[0].ToolName), dimColor)
 	var b strings.Builder
-	if !expanded {
+
+	// Narrow terminals: collapse to a single line unless expanded.
+	if width < 40 && !expanded {
 		targets := make([]string, 0, len(events))
 		for _, ev := range events {
 			if t := toolTarget(ev); t != "" {
@@ -109,8 +111,10 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 		b.WriteString("\n")
 		return b.String()
 	}
+
+	// Default: heading line + indented bullet list.
 	b.WriteString(gutter)
-	b.WriteString(statusOkStyle().Render(head))
+	b.WriteString(statusOkStyle().Render(ansi.Wrap(head, max(width-3, 1), "")))
 	b.WriteString("\n")
 	for _, ev := range events {
 		line := toolTarget(ev)
@@ -120,8 +124,8 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 			}
 			line += ev.ResultSummary
 		}
-		b.WriteString(strings.Repeat(" ", 5))
-		b.WriteString(mutedStyle().Render(ansi.Truncate(line, max(width-5, 1), "")))
+		bullet := "  – " + line
+		b.WriteString(mutedStyle().Render(ansi.Wrap(bullet, max(width-2, 1), "")))
 		b.WriteString("\n")
 	}
 	return b.String()

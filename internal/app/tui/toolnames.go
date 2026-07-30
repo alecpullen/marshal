@@ -71,3 +71,17 @@ func DisplayToolName(name string) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// pluralizeToolName returns the display name for a tool in plural form,
+// suitable for grouped tool call headings (e.g. "Read file" → "Read files",
+// "Run command" → "Run commands").
+func pluralizeToolName(name string) string {
+	singular := DisplayToolName(name)
+	// Simple pluralization: append "s". This covers all current display
+	// names (file, command, tests, page, status, diff, symbols, todos,
+	// mode, question, user, subagent) since none end in s/x/y/z/ch/sh.
+	if strings.HasSuffix(singular, "s") || strings.HasSuffix(singular, "x") {
+		return singular + "es"
+	}
+	return singular + "s"
+}

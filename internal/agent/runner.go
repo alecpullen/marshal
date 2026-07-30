@@ -800,6 +800,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: assistantContent})
 			messages = append(messages, BuildTruncationMessage(actionToolNames(action)))
+			// Same consecutive-parse-failure ladder as the parseErr branch above.
 			if consecutiveParseFailures >= maxConsecutiveParseFailures {
 				break
 			}

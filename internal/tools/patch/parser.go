@@ -2,7 +2,25 @@ package patch
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+)
+
+// Marker matching is deliberately tolerant of cosmetic deviation. Requiring
+// exact equality caused 13 of 43 observed file.write_patch failures: models
+// emit "<<<<<<< SEARCH>", ">>>>>>> REPLACE>", or ">>>>>>> REPLACE</patch>",
+// and a marker line that fails to match becomes ordinary content, so the block
+// silently never opens or never closes.
+//
+// The tolerance is bounded by the keyword. Angle-bracket runs alone are not
+// enough to transition, so a git conflict marker inside a patched file
+// ("<<<<<<< HEAD", ">>>>>>> branch") stays content. The divider demands seven
+// or more '=' and nothing else, so a markdown heading underline ("=====")
+// inside a SEARCH block is not mistaken for it.
+var (
+	searchMarkerRe  = regexp.MustCompile(`^<{5,}\s*SEARCH\b`)
+	replaceMarkerRe = regexp.MustCompile(`^>{5,}\s*REPLACE\b`)
+	dividerRe       = regexp.MustCompile(`^={7,}$`)
 )
 
 type FilePatch struct {
@@ -74,7 +92,7 @@ func Parse(proposal string) ([]FilePatch, error) {
 			continue
 		}
 
-		if trimmed == "<<<<<<< SEARCH" {
+		if searchMarkerRe.MatchString(trimmed) {
 			if err := flushChunk(); err != nil {
 				return nil, err
 			}
@@ -82,13 +100,13 @@ func Parse(proposal string) ([]FilePatch, error) {
 			searchBuffer = nil
 			continue
 		}
-		if trimmed == "=======" && inSearch {
+		if dividerRe.MatchString(trimmed) && inSearch {
 			inSearch = false
 			inReplace = true
 			replaceBuffer = nil
 			continue
 		}
-		if trimmed == ">>>>>>> REPLACE" && inReplace {
+		if replaceMarkerRe.MatchString(trimmed) && inReplace {
 			if currentPath == "" {
 				return nil, fmt.Errorf("patch: chunk has no File: header before line %q", line)
 			}

@@ -711,6 +711,24 @@ func TestCompletedToolCallCapsFilesShown(t *testing.T) {
 	}
 }
 
+// TestRenderThinkingSummaryWithoutText covers thinking phases from models
+// that expose no reasoning: the marker must still render, and there is
+// nothing to expand.
+func TestRenderThinkingSummaryWithoutText(t *testing.T) {
+	collapsed := stripANSI(renderThinkingSummary("", 6*time.Second, false, 80))
+	if !strings.Contains(collapsed, "thought for") {
+		t.Errorf("collapsed render missing marker: %q", collapsed)
+	}
+
+	expanded := stripANSI(renderThinkingSummary("", 6*time.Second, true, 80))
+	if !strings.Contains(expanded, "thought for") {
+		t.Errorf("expanded render missing marker: %q", expanded)
+	}
+	if got := strings.Count(strings.TrimRight(expanded, "\n"), "\n") + 1; got != 1 {
+		t.Errorf("expanded render = %d lines, want 1 (nothing to expand): %q", got, expanded)
+	}
+}
+
 func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
 	outs := map[string]string{
 		"user message":   renderUserMessage("hello", 80),

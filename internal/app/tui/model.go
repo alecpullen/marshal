@@ -1691,7 +1691,20 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-statusLineRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-statusLineRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputChromeRows()-minTranscriptRows, 1)
+}
+
+// scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
+// occupies above the transcript: 1 while the user has scrolled off the
+// bottom of an overflowing transcript, 0 otherwise. It is a row of the left
+// column like any other, so it must be in the budget — an unbudgeted row
+// makes the column taller than the terminal and pushes the input area off
+// the bottom of the screen.
+func (m Model) scrollHintRows() int {
+	if !m.viewportFollow && m.viewport.TotalLineCount() > m.viewport.Height() {
+		return 1
+	}
+	return 0
 }
 
 // activityRowRows reports the rows reserved for the pinned activity row
@@ -1749,7 +1762,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.activityRowRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}

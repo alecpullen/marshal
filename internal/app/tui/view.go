@@ -111,7 +111,7 @@ func (m Model) renderTranscriptFrame() string {
 	vpWidth := max(m.leftWidth, 1)
 	vpHeight := max(m.viewport.Height(), 1)
 	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.viewport.View())
-	if !m.viewportFollow && m.viewport.TotalLineCount() > m.viewport.Height() {
+	if m.scrollHintRows() > 0 {
 		hint := mutedStyle().Render("↑ scrolled — End to follow")
 		return lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}

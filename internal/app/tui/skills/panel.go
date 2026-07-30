@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
 	"marshal/internal/app/tui/settings"
@@ -25,6 +26,7 @@ type Panel struct {
 	homeDir        string
 	workDir        string
 	projectTrusted bool
+	state          *session.State
 
 	filter textfield.Model
 	list   *settings.FieldList
@@ -34,11 +36,12 @@ type Panel struct {
 var _ dock.Panel = (*Panel)(nil)
 
 // NewPanel builds a skills panel.
-func NewPanel(homeDir, workDir string, projectTrusted bool) *Panel {
+func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State) *Panel {
 	p := &Panel{
 		homeDir:        homeDir,
 		workDir:        workDir,
 		projectTrusted: projectTrusted,
+		state:          state,
 	}
 	p.filter = textfield.New()
 	p.filter.SetVirtualCursor(true)
@@ -75,11 +78,45 @@ func (p *Panel) activeIndex() *skills.Index {
 }
 
 func (p *Panel) detailFrame(s skills.ScopedSkill) *settings.Frame {
-	// Stub: Task 10 will implement the detail view.
-	return settings.NewFrame("skill."+s.Skill.Name, func() []*settings.Field {
-		return []*settings.Field{
-			settings.NewField("name", s.Skill.Name, settings.KindHeader),
-		}
+	return settings.NewFrame(s.Skill.Name, func() []*settings.Field {
+		var fields []*settings.Field
+
+		info := settings.NewField("detail.name", "Name", settings.KindScalar)
+		settings.SetFieldGetStr(info, func() string { return s.Skill.Name })
+		fields = append(fields, info)
+
+		desc := settings.NewField("detail.desc", "Description", settings.KindScalar)
+		settings.SetFieldGetStr(desc, func() string { return s.Skill.Description })
+		fields = append(fields, desc)
+
+		scope := settings.NewField("detail.scope", "Scope", settings.KindScalar)
+		settings.SetFieldGetStr(scope, func() string { return s.Scope })
+		fields = append(fields, scope)
+
+		load := settings.NewField("action.load", "Load now", settings.KindAction)
+		settings.SetFieldDesc(load, "inject this skill into the current session")
+		settings.SetFieldAct(load, func() tea.Cmd {
+			return func() tea.Msg {
+				if p.state == nil {
+					return loadResultMsg{Err: fmt.Errorf("no session available")}
+				}
+				idx := p.activeIndex()
+				if err := skills.LoadSkillIntoSession(idx, p.state, s.Skill.Name); err != nil {
+					return loadResultMsg{Err: err}
+				}
+				return loadResultMsg{Name: s.Skill.Name}
+			}
+		})
+		fields = append(fields, load)
+
+		remove := settings.NewField("action.remove", "Remove", settings.KindAction)
+		settings.SetFieldDesc(remove, "delete this skill from disk")
+		settings.SetFieldAct(remove, func() tea.Cmd {
+			return nil // body added in Task 11
+		})
+		fields = append(fields, remove)
+
+		return fields
 	})
 }
 
@@ -131,8 +168,18 @@ func (p *Panel) buildFields() []*settings.Field {
 	return filtered
 }
 
+type loadResultMsg struct {
+	Name string
+	Err  error
+}
+
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case loadResultMsg:
+		if msg.Err != nil {
+			p.list.ErrMsg = msg.Err.Error()
+		}
+		return nil
 	case tea.KeyPressMsg:
 		if msg.Code == tea.KeyEscape {
 			if len(p.stack) > 0 {

@@ -363,16 +363,11 @@ func (p *Panel) runInstallFromScan() tea.Cmd {
 			storeDir = p.projectStoreDir()
 			lockPath = p.projectLockPath()
 		}
-		hash, err := plugins.HashDir(cloneDest)
-		if err != nil {
-			os.RemoveAll(filepath.Dir(cloneDest))
-			return installResultMsg{Err: err}
-		}
+		dest := filepath.Join(storeDir, name)
 		if err := os.MkdirAll(storeDir, 0755); err != nil {
 			os.RemoveAll(filepath.Dir(cloneDest))
 			return installResultMsg{Err: err}
 		}
-		dest := filepath.Join(storeDir, name)
 		if err := os.RemoveAll(dest); err != nil {
 			os.RemoveAll(filepath.Dir(cloneDest))
 			return installResultMsg{Err: err}
@@ -382,6 +377,10 @@ func (p *Panel) runInstallFromScan() tea.Cmd {
 			return installResultMsg{Err: err}
 		}
 		os.RemoveAll(filepath.Dir(cloneDest))
+		hash, err := plugins.HashDir(dest)
+		if err != nil {
+			return installResultMsg{Err: err}
+		}
 		commit := "unknown"
 		lf, err := plugins.ReadLockfile(lockPath)
 		if err != nil {

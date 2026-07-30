@@ -46,9 +46,10 @@ var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations w
 
 var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
 
-// ErrRequestTimedOut is returned by requestApproval / requestQuestions when
-// the TUI (or bridge channel) does not respond within RequestTimeout. It
-// prevents a goroutine leak when the TUI exits without sending a decision.
+// ErrRequestTimedOut is returned by requestApproval when the TUI (or bridge
+// channel) does not respond within RequestTimeout. It prevents a goroutine
+// leak when the TUI exits without sending a decision. requestQuestions has
+// no such timeout — see its doc comment.
 var ErrRequestTimedOut = errors.New("agent: request timed out")
 
 const defaultRequestTimeout = 5 * time.Minute

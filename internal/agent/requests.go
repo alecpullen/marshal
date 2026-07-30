@@ -77,6 +77,13 @@ func (r *Runner) requestAnswer(ctx context.Context, question string) (string, er
 
 // requestQuestions blocks on the TUI for one or more structured Answers.
 // It produces the same shape the native question.ask tool produces.
+//
+// Unlike requestApproval there is no wall-clock timeout here: a user
+// reading and answering a question is not a hung request, and failing the
+// turn after a few minutes punishes them for thinking. The wait still ends
+// on ctx cancellation (turn cancel/shutdown) and on
+// State.ResolvePendingForShutdown, which answers every pending question
+// with Unanswered.
 func (r *Runner) requestQuestions(ctx context.Context, questions []session.Question) ([]session.Answer, error) {
 	for _, q := range questions {
 		r.State.AddMessage(session.RoleAssistant, q.Question, session.ContentTypeMarkdown)
@@ -89,7 +96,6 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 	label := buildQuestionLabel(questions)
 	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: label, StartedAt: r.Now()})
 
-	timeout := r.effectiveRequestTimeout()
 	select {
 	case answers := <-q.ResponseChan:
 		r.State.SetPendingQuestion(nil)
@@ -99,10 +105,6 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 		r.State.SetPendingQuestion(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		return nil, ctx.Err()
-	case <-time.After(timeout):
-		r.State.SetPendingQuestion(nil)
-		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		return nil, ErrRequestTimedOut
 	}
 }
 

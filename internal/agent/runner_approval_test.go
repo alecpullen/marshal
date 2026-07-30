@@ -134,18 +134,86 @@ func TestRequestApprovalTimeout(t *testing.T) {
 	}
 }
 
-func TestRequestQuestionsTimeout(t *testing.T) {
+func TestRequestQuestionsWaitsForAnswer(t *testing.T) {
 	state := newTestState(t)
 	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	// Even with a tiny legacy RequestTimeout, questions must wait for the
+	// user — a person reading a question is not a hung request.
 	r.RequestTimeout = 10 * time.Millisecond
 
-	ctx := context.Background()
-	_, err := r.requestQuestions(ctx, []session.Question{{Question: "Q?"}})
-	if !errors.Is(err, ErrRequestTimedOut) {
-		t.Fatalf("requestQuestions err = %v, want ErrRequestTimedOut", err)
+	type result struct {
+		answers []session.Answer
+		err     error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		answers, err := r.requestQuestions(context.Background(), []session.Question{{Question: "Q?"}})
+		resCh <- result{answers, err}
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for state.PendingQuestion() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("PendingQuestion never appeared")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	// Well past the legacy timeout, the runner must still be waiting.
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case res := <-resCh:
+		t.Fatalf("requestQuestions returned before the user answered: %+v", res)
+	default:
+	}
+
+	state.PendingQuestion().Respond([]session.Answer{{Question: "Q?", Answer: "A"}})
+	select {
+	case res := <-resCh:
+		if res.err != nil {
+			t.Fatalf("requestQuestions err = %v, want nil", res.err)
+		}
+		if len(res.answers) != 1 || res.answers[0].Answer != "A" {
+			t.Fatalf("answers = %+v, want one answer %q", res.answers, "A")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requestQuestions did not return after Respond")
+	}
+}
+
+func TestRequestQuestionsContextCancel(t *testing.T) {
+	state := newTestState(t)
+	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resCh := make(chan error, 1)
+	go func() {
+		_, err := r.requestQuestions(ctx, []session.Question{{Question: "Q?"}})
+		resCh <- err
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for state.PendingQuestion() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("PendingQuestion never appeared")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	cancel()
+	select {
+	case err := <-resCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("requestQuestions err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requestQuestions did not unblock on context cancel")
 	}
 	if state.PendingQuestion() != nil {
-		t.Fatal("PendingQuestion should be nil after timeout")
+		t.Fatal("PendingQuestion should be nil after cancel")
 	}
 }
 

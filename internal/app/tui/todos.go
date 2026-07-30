@@ -29,7 +29,7 @@ const (
 const todoPanelMaxRows = 10
 
 // renderTodoPanelBody renders the pinned todo panel: gutter-styled, no
-// box, no header. Returns "" when there is nothing to show.
+// box, one counts header row. Returns "" when there is nothing to show.
 //
 // Progress tracking is the one widget the hairline-gutter redesign makes
 // taller rather than flatter — it used to be prepended to the transcript,

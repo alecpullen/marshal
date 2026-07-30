@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
 	"marshal/internal/app/tui/settings"
@@ -26,6 +27,7 @@ type Panel struct {
 	homeDir        string
 	workDir        string
 	projectTrusted bool
+	state          *session.State
 
 	filter textfield.Model
 	list   *settings.FieldList
@@ -44,11 +46,12 @@ type Panel struct {
 var _ dock.Panel = (*Panel)(nil)
 
 // NewPanel builds a plugins panel.
-func NewPanel(homeDir, workDir string, projectTrusted bool) *Panel {
+func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State) *Panel {
 	p := &Panel{
 		homeDir:        homeDir,
 		workDir:        workDir,
 		projectTrusted: projectTrusted,
+		state:          state,
 		removeArmed:    make(map[string]bool),
 		installScope:   scopeGlobal,
 	}
@@ -495,6 +498,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		}
 		p.resetInstall()
 		settings.FieldListRefresh(p.list)
+		if p.state != nil {
+			p.state.AddMessage(session.RoleSystem, "Restart Marshal to activate the plugin change.", session.ContentTypePlain)
+		}
 		return nil
 	case removeResultMsg:
 		if msg.Err != nil {
@@ -506,6 +512,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.stack = p.stack[:len(p.stack)-1]
 		}
 		p.list.Refresh()
+		if p.state != nil {
+			p.state.AddMessage(session.RoleSystem, "Restart Marshal to activate the plugin change.", session.ContentTypePlain)
+		}
 		return nil
 	}
 	return nil

@@ -4,7 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/plugins"
 )
@@ -25,7 +28,7 @@ func TestPanelRootList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := NewPanel(home, work, true)
+	p := NewPanel(home, work, true, session.New(config.Config{}, work, time.Now(), session.Persistence{}))
 	rows := settings.FieldListRows(p.list)
 	found := false
 	for _, r := range rows {

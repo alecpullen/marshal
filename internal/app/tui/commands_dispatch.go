@@ -53,7 +53,7 @@ func init() {
 			return m, nil
 		},
 		"plugins": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.state.Trusted()))
+			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state))
 			m.refreshViewport()
 			return m, nil
 		},

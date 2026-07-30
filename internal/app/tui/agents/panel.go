@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
@@ -660,7 +661,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	if len(p.stack) == 0 {
 		body = "/ " + p.filter.View() + "\n"
 		if p.showLegend {
-			legend := "● preset bound  ◆ custom agent bound  ↩ impl fallback  legacy  ⚠ unresolved  ←/→ drill"
+			legend := glyph.Brand + " preset bound  " + glyph.CustomAgent + " custom agent bound  ↩ impl fallback  legacy  ⚠ unresolved  ←/→ drill"
 			body += lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(legend) + "\n"
 		}
 	}
@@ -680,14 +681,14 @@ func (p *Panel) View(width, maxHeight int) string {
 }
 
 // resolveGlyph returns the glyph and source label for a cast entry.
-func resolveGlyph(ce routing.CastEntry) (glyph, source string) {
+func resolveGlyph(ce routing.CastEntry) (mark, source string) {
 	if ce.Err != nil {
-		return "⚠", "unresolved"
+		return glyph.Warning, "unresolved"
 	}
 	if ce.Route.CustomAgent != nil {
-		return "◆", "custom agent"
+		return glyph.CustomAgent, "custom agent"
 	}
-	return "●", "preset"
+	return glyph.Brand, "preset"
 }
 
 // roleTitle returns a human-readable title for a role.

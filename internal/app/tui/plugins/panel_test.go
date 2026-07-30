@@ -66,3 +66,92 @@ func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
 		t.Fatalf("expected root list hidden while install frame is active, got:\n%s", view)
 	}
 }
+
+// TestPanelOwnsAsyncResults pins that every async result this panel emits is
+// claimed via dock.MessageOwner. The result types are unexported, so the model
+// cannot route them by type; an unclaimed message is dropped and its Update
+// case becomes dead code, leaving the action silently non-functional.
+func TestPanelOwnsAsyncResults(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	for _, msg := range []tea.Msg{
+		installResultMsg{},
+		removeResultMsg{},
+		scanResultMsg{},
+	} {
+		if !p.OwnsMsg(msg) {
+			t.Errorf("OwnsMsg(%T) = false, want true — this message would be dropped", msg)
+		}
+	}
+	if p.OwnsMsg(tea.KeyPressMsg{}) {
+		t.Error("OwnsMsg claimed a keypress; the dock routes those already")
+	}
+}
+
+// TestScanWithEmptySourceReportsError pins that an empty source surfaces an
+// error rather than silently returning a nil command.
+func TestScanWithEmptySourceReportsError(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p.stack = append(p.stack, p.installFrame())
+	p.installSource = "   "
+
+	if cmd := p.runScan(); cmd != nil {
+		t.Fatal("expected no command for an empty source")
+	}
+	if p.installErr == "" {
+		t.Error("empty source produced no error message — the action looks broken")
+	}
+	if p.activeList().ErrMsg == "" {
+		t.Error("error was not surfaced on the visible list")
+	}
+}
+
+// TestConfirmInstallWithoutScanReportsError pins the same for the confirm step.
+func TestConfirmInstallWithoutScanReportsError(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p.stack = append(p.stack, p.installFrame())
+
+	if cmd := p.runInstallFromScan(); cmd != nil {
+		t.Fatal("expected no command without a scan")
+	}
+	if p.activeList().ErrMsg == "" {
+		t.Error("confirming without a scan was silent")
+	}
+}
+
+// TestScanErrorIsVisible pins that a failed scan renders. p.installErr used to
+// be assigned and never read, so failures showed nothing at all.
+func TestScanErrorIsVisible(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p.stack = append(p.stack, p.installFrame())
+	p.busy = "scanning"
+
+	p.Update(scanResultMsg{Err: errBoom{}})
+
+	if p.busy != "" {
+		t.Error("busy state not cleared after a failed scan")
+	}
+	if !strings.Contains(p.activeList().ErrMsg, "boom") {
+		t.Errorf("scan error not surfaced: %q", p.activeList().ErrMsg)
+	}
+}
+
+// TestInFlightAndConfirmationAreRendered pins that a slow clone and a
+// completed action both show something, rather than looking like a no-op.
+func TestInFlightAndConfirmationAreRendered(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+
+	p.busy = "scanning"
+	if out := p.View(60, 12); !strings.Contains(out, "scanning") {
+		t.Errorf("in-flight scan not shown in the view:\n%s", out)
+	}
+
+	p.busy = ""
+	p.status = "installed foo (global)"
+	if out := p.View(60, 12); !strings.Contains(out, "installed foo") {
+		t.Errorf("confirmation not shown in the view:\n%s", out)
+	}
+}
+
+type errBoom struct{}
+
+func (errBoom) Error() string { return "boom" }

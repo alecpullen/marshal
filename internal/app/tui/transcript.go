@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/diffview"
 	"marshal/internal/strutil"
@@ -22,15 +23,20 @@ import (
 
 // marshalStyleConfig adapts glamour's dark style to the Warm Sunset
 // palette: coral H1 instead of the banner-style default, violet section
-// headings. Document text (252) and the 2-space margin already match the
-// transcript's prose treatment.
-func marshalStyleConfig() gansi.StyleConfig {
+// headings.
+//
+// The document margin is pinned to gutterWidth so agent prose starts in the
+// same column as every gutter-prefixed item. Glamour's default margin is 2,
+// which left prose one column to the left of the tool rows and final answers
+// surrounding it.
+func marshalStyleConfig(margin uint) gansi.StyleConfig {
 	cfg := styles.DarkStyleConfig
 	cfg.Heading.StylePrimitive.Color = strutil.Ptr("175") // violetColor
 	cfg.H1.StylePrimitive = gansi.StylePrimitive{
-		Color: strutil.Ptr("209"), // coralColor
+		Color: strutil.Ptr("209"), // accentColor
 		Bold:  strutil.Ptr(true),
 	}
+	cfg.Document.Margin = &margin
 	return cfg
 }
 
@@ -39,9 +45,14 @@ const maxRenderers = 4
 // mdRenderers caches glamour renderers by wrap width; building one parses
 // the full style config, which is too slow to repeat per message. The cache
 // is bounded to prevent unbounded growth on repeated resizes.
+type rendererKey struct {
+	width  int
+	margin uint
+}
+
 var (
 	mdMu        sync.Mutex
-	mdRenderers = map[int]*glamour.TermRenderer{}
+	mdRenderers = map[rendererKey]*glamour.TermRenderer{}
 )
 
 func abs(a int) int {
@@ -53,18 +64,19 @@ func abs(a int) int {
 
 // getRenderer returns a cached glamour renderer for the requested width,
 // evicting the entry farthest from width when the cache is full.
-func getRenderer(width int) *glamour.TermRenderer {
+func getRenderer(width int, margin uint) *glamour.TermRenderer {
+	key := rendererKey{width: width, margin: margin}
 	mdMu.Lock()
 	defer mdMu.Unlock()
-	if r, ok := mdRenderers[width]; ok {
+	if r, ok := mdRenderers[key]; ok {
 		return r
 	}
 	if len(mdRenderers) >= maxRenderers {
-		var evictKey int
+		var evictKey rendererKey
 		var evictDist int
 		first := true
 		for k := range mdRenderers {
-			d := abs(k - width)
+			d := abs(k.width - width)
 			if first || d > evictDist {
 				evictKey, evictDist, first = k, d, false
 			}
@@ -72,21 +84,29 @@ func getRenderer(width int) *glamour.TermRenderer {
 		delete(mdRenderers, evictKey)
 	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStyles(marshalStyleConfig()),
+		glamour.WithStyles(marshalStyleConfig(margin)),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
 		return nil
 	}
-	mdRenderers[width] = r
+	mdRenderers[key] = r
 	return r
 }
 
 // renderMarkdown renders content as ANSI-styled markdown wrapped to
 // width. ok is false when glamour is unavailable (renderer construction
 // or rendering failed); callers fall back to plain text.
+// renderMarkdown renders prose that supplies its own gutter, so glamour adds
+// no margin of its own.
 func renderMarkdown(content string, width int) (out string, ok bool) {
-	r := getRenderer(width)
+	return renderMarkdownWithMargin(content, width, 0)
+}
+
+// renderMarkdownWithMargin renders prose that stands alone in the transcript,
+// with glamour's document margin doing the indenting.
+func renderMarkdownWithMargin(content string, width int, margin uint) (out string, ok bool) {
+	r := getRenderer(width, margin)
 	if r == nil {
 		return "", false
 	}
@@ -137,21 +157,55 @@ func expandTabs(s string) string {
 // renderPlainProse is the fallback prose treatment when markdown
 // rendering fails: wrapped text with the transcript's 2-space indent.
 func renderPlainProse(content string, width int) string {
-	contentWidth := max(width-4, 1)
+	cw := contentWidth(width)
 	var b strings.Builder
 	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
-		wrapped := ansi.Wrap(line, contentWidth, "")
-		for i, wl := range strings.Split(wrapped, "\n") {
-			if i == 0 {
-				b.WriteString("  ")
-			} else {
-				b.WriteString("    ")
-			}
+		wrapped := ansi.Wrap(line, cw, "")
+		for _, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(continuation())
 			b.WriteString(wl)
 			b.WriteString("\n")
 		}
 	}
 	return b.String()
+}
+
+// The transcript's indentation contract. Every renderer measures and indents
+// through these three values and the helpers below — no literal column math.
+//
+// Before this contract each renderer computed its own indent, so a single turn
+// staircased across five different columns (2 for prose and system notices, 3
+// for tool rows and final answers, 5 for diff bodies) with no meaning attached
+// to the steps. The ragged left edge was the single largest contributor to the
+// transcript reading as "messy".
+const (
+	// gutterWidth is the width of a glyph gutter (" X "). Every top-level
+	// transcript item starts here.
+	gutterWidth = 3
+	// continuationIndent aligns the wrapped lines of a gutter-prefixed item
+	// under its first line.
+	continuationIndent = gutterWidth
+	// nestedBodyIndent is the column for content subordinate to a gutter row:
+	// diff hunks, expanded tool results, plan bodies. It is the gutter width
+	// plus the two-cell nested rail (see nestedRail).
+	nestedBodyIndent = gutterWidth + 2
+)
+
+// contentWidth is the wrap budget for text that sits behind a gutter.
+func contentWidth(width int) int { return max(width-gutterWidth, 1) }
+
+// nestedContentWidth is the wrap budget for nested bodies (diffs, expanded
+// results) that sit behind the nested rail.
+func nestedContentWidth(width int) int { return max(width-nestedBodyIndent, 1) }
+
+// continuation is the indent for wrapped lines of a gutter-prefixed item.
+func continuation() string { return strings.Repeat(" ", continuationIndent) }
+
+// nestedRail is the prefix for content subordinate to a gutter row. It uses
+// the same ▍ rail glyph as every other structural rail in the UI rather than a
+// second box-drawing idiom.
+func nestedRail() string {
+	return continuation() + lipgloss.NewStyle().Foreground(dimColor).Render(glyph.Rail) + " "
 }
 
 // gutterPrefix renders the hairline gutter marker: a single glyph preceded
@@ -186,8 +240,8 @@ func renderFinalAnswer(msg session.Message, width int) string {
 	if width < 10 {
 		width = 10
 	}
-	gutter := gutterPrefix("▍", accentColor)
-	contentWidth := max(width-3, 1)
+	gutter := gutterPrefix(glyph.Rail, accentColor)
+	cw := contentWidth(width)
 
 	var b strings.Builder
 	if msg.Salvaged {
@@ -200,9 +254,9 @@ func renderFinalAnswer(msg session.Message, width int) string {
 		b.WriteString("\n")
 	}
 
-	body, ok := renderMarkdown(msg.Content, contentWidth)
+	body, ok := renderMarkdown(msg.Content, cw)
 	if !ok {
-		body = renderPlainProse(msg.Content, contentWidth)
+		body = renderPlainProse(msg.Content, cw)
 	}
 	for _, line := range strings.Split(strings.Trim(body, "\n"), "\n") {
 		b.WriteString(gutter)
@@ -224,7 +278,7 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 	if reasoning == "" {
 		return ""
 	}
-	contentWidth := max(width-3, 1)
+	cw := contentWidth(width)
 	lines := strings.Split(reasoning, "\n")
 	tailLines := lines
 	if len(lines) > 3 {
@@ -232,13 +286,13 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 	}
 	var b strings.Builder
 	header := spinnerLabel(spinnerFrame, "thinking")
-	b.WriteString(gutterPrefix("·", dimColor))
+	b.WriteString(gutterPrefix(glyph.Ambient, dimColor))
 	b.WriteString(thinkingLineStyle().Render(header))
 	b.WriteString("\n")
 	for _, line := range tailLines {
-		wrapped := ansi.Wrap(line, contentWidth, "")
+		wrapped := ansi.Wrap(line, cw, "")
 		for _, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString(gutterPrefix("▍", dimColor))
+			b.WriteString(gutterPrefix(glyph.Rail, dimColor))
 			b.WriteString(thinkingLineStyle().Render(wl))
 			b.WriteString("\n")
 		}
@@ -249,25 +303,32 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 // renderThinkingSummary renders a finished message's captured reasoning,
 // either collapsed to one line or, when expanded, as a full boxed panel
 // matching renderThinkingBox's style.
+// collapsedThinkingLine is the one-line "thought for 3s" marker, on the same
+// gutter as every other transcript item.
+func collapsedThinkingLine(duration time.Duration) string {
+	return gutterPrefix(glyph.Thinking, dimColor) +
+		thinkingLineStyle().Render(fmt.Sprintf("thought for %s", formatThinkDuration(duration))) + "\n"
+}
+
 func renderThinkingSummary(reasoning string, duration time.Duration, expanded bool, width int) string {
 	// A thinking phase with no captured reasoning still marks its position in
 	// the transcript — models that do not expose reasoning would otherwise
 	// leave no trace of having thought. There is nothing to expand.
 	if strings.TrimSpace(reasoning) == "" {
-		return thinkingLineStyle().Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))) + "\n"
+		return collapsedThinkingLine(duration)
 	}
 	if !expanded {
-		return thinkingLineStyle().Render(fmt.Sprintf("  ⚙ thought for %s", formatThinkDuration(duration))) + "\n"
+		return collapsedThinkingLine(duration)
 	}
-	contentWidth := max(width-3, 1)
+	cw := contentWidth(width)
 	var b strings.Builder
-	b.WriteString(gutterPrefix("▍", dimColor))
-	b.WriteString(thinkingLineStyle().Render(fmt.Sprintf("⚙ thought for %s", formatThinkDuration(duration))))
+	b.WriteString(gutterPrefix(glyph.Thinking, dimColor))
+	b.WriteString(thinkingLineStyle().Render(fmt.Sprintf("thought for %s", formatThinkDuration(duration))))
 	b.WriteString("\n")
 	for _, line := range strings.Split(strings.TrimSpace(reasoning), "\n") {
-		wrapped := ansi.Wrap(line, contentWidth, "")
+		wrapped := ansi.Wrap(line, cw, "")
 		for _, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString(gutterPrefix("▍", dimColor))
+			b.WriteString(gutterPrefix(glyph.Rail, dimColor))
 			b.WriteString(thinkingLineStyle().Render(wl))
 			b.WriteString("\n")
 		}
@@ -300,22 +361,34 @@ func renderMessage(msg session.Message, width int) string {
 	case session.ContentTypeSkill:
 		return renderSkillTag(msg.Content, width)
 	case session.ContentTypeCode:
-		return gutterPrefix("▍", accentColor) + renderCodeBlock(msg.Content, max(width-3, 1)) + "\n"
+		return gutterPrefix(glyph.Rail, accentColor) + renderCodeBlock(msg.Content, max(width-3, 1)) + "\n"
 	default: // plain and markdown prose render identically
 		return renderAgentMarkdown(msg.Content, width)
 	}
 }
 
+// renderTurnSeparator marks where a new user turn begins. The transcript is
+// otherwise one undifferentiated flow of gutter-prefixed lines with nothing
+// to scan back to, which makes a long session hard to navigate.
+//
+// It is deliberately a hairline rule rather than a boxed header: the content
+// is the interface, and the separator only needs to be findable, not loud.
+func renderTurnSeparator(width int) string {
+	w := max(width-gutterWidth, 1)
+	rule := strings.Repeat("─", w)
+	return continuation() + lipgloss.NewStyle().Foreground(theme.Current().BorderMuted).Render(rule) + "\n"
+}
+
 func renderUserMessage(content string, width int) string {
-	gutter := gutterPrefix("❯", coralColor)
-	contentWidth := max(width-3, 1)
-	wrapped := ansi.Wrap(content, contentWidth, "")
+	gutter := gutterPrefix(glyph.User, accentColor)
+	cw := contentWidth(width)
+	wrapped := ansi.Wrap(content, cw, "")
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {
 			b.WriteString(gutter)
 		} else {
-			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(continuation())
 		}
 		b.WriteString(lipgloss.NewStyle().Foreground(userColor).Render(line))
 		b.WriteString("\n")
@@ -324,10 +397,11 @@ func renderUserMessage(content string, width int) string {
 }
 
 func renderAgentMarkdown(content string, width int) string {
-	// Glamour's document margin provides the transcript's 2-space prose
-	// indent; wrap to width-2 so rendered lines stay inside the viewport.
-	contentWidth := max(width-2, 1)
-	out, ok := renderMarkdown(content, contentWidth)
+	// Glamour's document margin (pinned to gutterWidth in marshalStyleConfig)
+	// provides the prose indent; wrap to the matching budget so rendered lines
+	// stay inside the viewport.
+	cw := contentWidth(width)
+	out, ok := renderMarkdownWithMargin(content, cw, gutterWidth)
 	if !ok {
 		out = renderPlainProse(content, width)
 	}
@@ -361,31 +435,32 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, widt
 }
 
 func renderSkillTag(name string, width int) string {
-	contentWidth := max(width-2, 1)
-	tag := "▶ skill.load: " + name
-	wrapped := ansi.Wrap(tag, contentWidth, "")
+	cw := contentWidth(width)
+	wrapped := ansi.Wrap("skill.load: "+name, cw, "")
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {
-			b.WriteString(mutedStyle().Render("· " + line))
+			b.WriteString(gutterPrefix(glyph.Ambient, dimColor))
 		} else {
-			b.WriteString(mutedStyle().Render("  " + line))
+			b.WriteString(continuation())
 		}
+		b.WriteString(mutedStyle().Render(line))
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
 func renderSystemNotice(content string, width int) string {
-	contentWidth := max(width-2, 1)
-	wrapped := ansi.Wrap(content, contentWidth, "")
+	cw := contentWidth(width)
+	wrapped := ansi.Wrap(content, cw, "")
 	var b strings.Builder
 	for i, line := range strings.Split(wrapped, "\n") {
 		if i == 0 {
-			b.WriteString(mutedStyle().Render("· " + line))
+			b.WriteString(gutterPrefix(glyph.Ambient, dimColor))
 		} else {
-			b.WriteString(mutedStyle().Render("  " + line))
+			b.WriteString(continuation())
 		}
+		b.WriteString(mutedStyle().Render(line))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -399,7 +474,7 @@ func renderQueuedMessages(q []string, width int) string {
 	if len(q) == 0 {
 		return ""
 	}
-	gutter := gutterPrefix("·", dimColor)
+	gutter := gutterPrefix(glyph.Ambient, dimColor)
 	var b strings.Builder
 	for _, msg := range q {
 		b.WriteString(gutter)
@@ -414,25 +489,24 @@ func renderToolResultLine(content string, width int) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	gutter := gutterPrefix("·", dimColor)
-	contentWidth := max(width-3, 1)
+	gutter := gutterPrefix(glyph.Ambient, dimColor)
+	cw := contentWidth(width)
 	var b strings.Builder
-	firstWrapped := ansi.Wrap(strings.TrimSpace(lines[0]), contentWidth, "")
+	firstWrapped := ansi.Wrap(strings.TrimSpace(lines[0]), cw, "")
 	firstLines := strings.Split(firstWrapped, "\n")
 	for i, wl := range firstLines {
 		if i == 0 {
 			b.WriteString(gutter)
 		} else {
-			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(continuation())
 		}
 		b.WriteString(mutedStyle().Render(wl))
 		b.WriteString("\n")
 	}
-	continuation := lines[1:]
-	for _, line := range continuation {
-		wrapped := ansi.Wrap(line, contentWidth, "")
+	for _, line := range lines[1:] {
+		wrapped := ansi.Wrap(line, cw, "")
 		for _, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
@@ -441,8 +515,7 @@ func renderToolResultLine(content string, width int) string {
 }
 
 func renderPlanBlock(content string, width int) string {
-	gutter := gutterPrefix("·", dimColor)
-	contentWidth := max(width-3, 1)
+	gutter := gutterPrefix(glyph.Ambient, dimColor)
 	var b strings.Builder
 	b.WriteString(gutter)
 	b.WriteString(mutedStyle().Render("plan"))
@@ -451,14 +524,10 @@ func renderPlanBlock(content string, width int) string {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		wrapped := ansi.Wrap(line, contentWidth, "")
-		for j, wl := range strings.Split(wrapped, "\n") {
-			b.WriteString(strings.Repeat(" ", 3))
-			if j == 0 {
-				b.WriteString("  " + wl)
-			} else {
-				b.WriteString("    " + wl)
-			}
+		wrapped := ansi.Wrap(line, nestedContentWidth(width), "")
+		for _, wl := range strings.Split(wrapped, "\n") {
+			b.WriteString(nestedRail())
+			b.WriteString(wl)
 			b.WriteString("\n")
 		}
 	}
@@ -466,19 +535,19 @@ func renderPlanBlock(content string, width int) string {
 }
 
 func renderProviderError(err error, width int) string {
-	contentWidth := max(width-3, 1)
-	wrapped := ansi.Wrap("provider: "+err.Error(), contentWidth, "")
+	cw := contentWidth(width)
+	wrapped := ansi.Wrap("provider: "+err.Error(), cw, "")
 	lines := strings.Split(wrapped, "\n")
 	if len(lines) == 0 {
 		return ""
 	}
-	gutter := gutterPrefix("✗", errorColor)
+	gutter := gutterPrefix(glyph.Error, errorColor)
 	var b strings.Builder
 	b.WriteString(gutter)
 	b.WriteString(errorStyle().Render(lines[0]))
 	b.WriteString("\n")
 	for _, line := range lines[1:] {
-		b.WriteString(strings.Repeat(" ", 3))
+		b.WriteString(continuation())
 		b.WriteString(mutedStyle().Render(line))
 		b.WriteString("\n")
 	}
@@ -496,39 +565,39 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		elapsed = 0
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
-	gutter := gutterPrefix("▸", accentColor)
-	contentWidth := max(width-3, 1)
-	headerWrapped := ansi.Wrap(head, contentWidth, "")
+	gutter := gutterPrefix(glyph.Running, accentColor)
+	cw := contentWidth(width)
+	headerWrapped := ansi.Wrap(head, cw, "")
 	headerLines := strings.Split(headerWrapped, "\n")
 	var b strings.Builder
 	for i, hl := range headerLines {
 		if i == 0 {
 			b.WriteString(gutter + toolBulletStyle().Render(hl))
 		} else {
-			b.WriteString(strings.Repeat(" ", 3) + toolBulletStyle().Render(hl))
+			b.WriteString(continuation() + toolBulletStyle().Render(hl))
 		}
 		b.WriteString("\n")
 	}
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
 		cmdLine := "$ " + atc.Args
-		cmdWrapped := ansi.Wrap(cmdLine, contentWidth, "")
+		cmdWrapped := ansi.Wrap(cmdLine, cw, "")
 		for _, wl := range strings.Split(cmdWrapped, "\n") {
-			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
 		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
-			isoWrapped := ansi.Wrap(iso, contentWidth, "")
+			isoWrapped := ansi.Wrap(iso, cw, "")
 			for _, wl := range strings.Split(isoWrapped, "\n") {
-				b.WriteString(strings.Repeat(" ", 3))
+				b.WriteString(continuation())
 				b.WriteString(mutedStyle().Render(wl))
 				b.WriteString("\n")
 			}
 		}
 	} else if atc.Args != "" {
-		argsWrapped := ansi.Wrap(atc.Args, contentWidth, "")
+		argsWrapped := ansi.Wrap(atc.Args, cw, "")
 		for _, wl := range strings.Split(argsWrapped, "\n") {
-			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
@@ -540,9 +609,9 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 			lines = lines[len(lines)-tail:]
 		}
 		for _, line := range lines {
-			wrapped := ansi.Wrap(line, contentWidth, "")
+			wrapped := ansi.Wrap(line, cw, "")
 			for _, wl := range strings.Split(wrapped, "\n") {
-				b.WriteString(strings.Repeat(" ", 3))
+				b.WriteString(continuation())
 				b.WriteString(mutedStyle().Render(wl))
 				b.WriteString("\n")
 			}
@@ -552,19 +621,19 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 }
 
 func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int) string {
-	glyph := toolCategoryGlyph(event.ToolName)
+	g := toolCategoryGlyph(event.ToolName)
 	style := statusOkStyle()
 	if event.Error != "" {
-		glyph = "✗"
+		g = glyph.Error
 		style = errorStyle()
 	}
-	var gutterColor color.Color
+	// Glyph and label share the state colour in both directions; success used
+	// to pair a muted glyph with a green label while errors made both red.
+	gutterColor := theme.Current().FGMuted
 	if event.Error != "" {
 		gutterColor = theme.Current().StatusError
-	} else {
-		gutterColor = theme.Current().FGMuted
 	}
-	gutter := gutterPrefix(glyph, gutterColor)
+	gutter := gutterPrefix(g, gutterColor)
 	head := DisplayToolName(event.ToolName)
 	if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
 		head += dimSeparator + hookHint
@@ -575,15 +644,15 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 		head += dimSeparator + event.ResultSummary
 	}
 
-	contentWidth := max(width-3, 1)
+	cw := contentWidth(width)
 	var b strings.Builder
-	headWrapped := ansi.Wrap(head, contentWidth, "")
+	headWrapped := ansi.Wrap(head, cw, "")
 	headLines := strings.Split(headWrapped, "\n")
 	for i, hl := range headLines {
 		if i == 0 {
 			b.WriteString(gutter)
 		} else {
-			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(continuation())
 		}
 		b.WriteString(style.Render(hl))
 		b.WriteString("\n")
@@ -597,11 +666,11 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 			if f.path != "" {
 				stat = f.path + " " + stat
 			}
-			b.WriteString("   │ ")
+			b.WriteString(nestedRail())
 			b.WriteString(dimStyle().Render(stat))
 			b.WriteString("\n")
 			rendered := diffview.Render(f.raw, diffview.Options{
-				Width:     max(width-5, 1),
+				Width:     nestedContentWidth(width),
 				Mode:      diffview.ModeAuto,
 				Highlight: true,
 			})
@@ -615,18 +684,18 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 				if line == "" {
 					continue
 				}
-				b.WriteString("   │ ")
+				b.WriteString(nestedRail())
 				b.WriteString(line)
 				b.WriteString("\n")
 			}
 			if elided > 0 {
-				b.WriteString("   │ ")
+				b.WriteString(nestedRail())
 				b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
 				b.WriteString("\n")
 			}
 		}
 		if len(files) > shown {
-			b.WriteString("   │ ")
+			b.WriteString(nestedRail())
 			b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more files", len(files)-shown)))
 			b.WriteString("\n")
 		}
@@ -643,15 +712,15 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 			lines = lines[:maxExpandedResultLines]
 		}
 		for _, line := range lines {
-			wrapped := ansi.Wrap(line, max(width-5, 1), "")
+			wrapped := ansi.Wrap(line, nestedContentWidth(width), "")
 			for _, wl := range strings.Split(wrapped, "\n") {
-				b.WriteString("   │ ")
+				b.WriteString(nestedRail())
 				b.WriteString(dimStyle().Render(wl))
 				b.WriteString("\n")
 			}
 		}
 		if elided > 0 {
-			b.WriteString("   │ ")
+			b.WriteString(nestedRail())
 			b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
 			b.WriteString("\n")
 		}
@@ -794,7 +863,7 @@ func sandboxIsolationText(sb session.SandboxInfo, allowNetwork bool) string {
 
 func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int) string {
 	var b strings.Builder
-	b.WriteString(gutterPrefix("⚠", warningColor))
+	b.WriteString(gutterPrefix(glyph.Warning, warningColor))
 	headParts := []string{}
 	if tc.Name == "shell.run" {
 		headParts = append(headParts, tc.Command)
@@ -809,23 +878,54 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, al
 	b.WriteString("\n")
 
 	b.WriteString(gutterPrefix(" ", warningColor))
-	b.WriteString(mutedStyle().Render("▸ allow   always   session   edit   deny"))
+	b.WriteString(approvalActionRow(0))
 	b.WriteString("\n")
 	return b.String()
+}
+
+// approvalActions are the approval choices with their mnemonic keys.
+var approvalActions = []struct{ key, label string }{
+	{"a", "allow"},
+	{"A", "always"},
+	{"s", "session"},
+	{"e", "edit"},
+	{"d", "deny"},
+}
+
+// approvalActionRow renders the choices with the armed one on the selection
+// background and every mnemonic key shown. It used to be a space-aligned run
+// of uniformly muted words whose armed entry was marked only by a leading ▸,
+// with the keys not surfaced at all.
+func approvalActionRow(armed int) string {
+	th := theme.Current()
+	parts := make([]string, 0, len(approvalActions))
+	for i, a := range approvalActions {
+		label := a.key + " " + a.label
+		if i == armed {
+			parts = append(parts, lipgloss.NewStyle().
+				Foreground(th.FGEmphasis).
+				Background(th.BGSelection).
+				Bold(true).
+				Render(" "+glyph.Running+" "+label+" "))
+			continue
+		}
+		parts = append(parts, mutedStyle().Render("   "+label+" "))
+	}
+	return strings.Join(parts, "")
 }
 
 func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 	if q == nil || len(q.Questions) == 0 {
 		return ""
 	}
-	gutter := gutterPrefix("?", violetColor)
-	indent := strings.Repeat(" ", 3)
+	gutter := gutterPrefix(glyph.Question, violetColor)
+	indent := continuation()
 	// contentWidth leaves room for the ▍ rail cell plus the 3-cell gutter.
-	contentWidth := max(width-4, 1)
+	cw := contentWidth(width)
 	questionStyle := lipgloss.NewStyle().Foreground(violetColor).Bold(true)
 	var b strings.Builder
 	for _, qs := range q.Questions {
-		for j, line := range strings.Split(ansi.Wrap(qs.Question, contentWidth, ""), "\n") {
+		for j, line := range strings.Split(ansi.Wrap(qs.Question, cw, ""), "\n") {
 			if j == 0 {
 				b.WriteString(gutter)
 			} else {
@@ -848,8 +948,8 @@ func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 // persistent title bar.
 func renderWelcomeBanner(width int) string {
 	_ = width
-	dot := lipgloss.NewStyle().Foreground(coralColor).Render("●")
-	brand := lipgloss.NewStyle().Foreground(coralColor).Bold(true).Render("marshal")
+	dot := lipgloss.NewStyle().Foreground(accentColor).Render(glyph.Brand)
+	brand := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("marshal")
 	tagline := mutedStyle().Render("local-first coding agent")
 	cta := mutedStyle().Render("Type a question, or " + lipgloss.NewStyle().Bold(true).Render("/") + " for commands.")
 	return "  " + dot + " " + brand + dimSeparator + tagline + "\n\n  " + cta + "\n\n"

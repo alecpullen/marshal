@@ -34,6 +34,28 @@ type Panel interface {
 	Sizing() Sizing
 }
 
+// MessageOwner is the optional interface a Panel implements when it emits
+// its own async result messages (an install finishing, a scan returning).
+//
+// The dock host forwards keypresses and pastes to the active panel
+// unconditionally, but every other message keeps flowing to the main model's
+// handlers so background work continues. A panel whose result types are
+// unexported can therefore never be routed by the model — the message matches
+// no case and is silently dropped, leaving the panel's own Update case dead
+// code. OwnsMsg closes that gap: the panel claims its own messages by type and
+// the host delivers them without the model needing to name them.
+type MessageOwner interface {
+	OwnsMsg(msg tea.Msg) bool
+}
+
+// OwnsMsg reports whether the active panel claims msg as its own async
+// result. False when no panel is open or the panel does not implement
+// MessageOwner.
+func (h *Host) OwnsMsg(msg tea.Msg) bool {
+	owner, ok := h.panel.(MessageOwner)
+	return ok && owner.OwnsMsg(msg)
+}
+
 // MaxRows is the dock's height budget: 40% of the frame height, floor 6.
 func MaxRows(frameHeight int) int {
 	return max(frameHeight*2/5, 6)

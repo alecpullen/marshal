@@ -12,6 +12,7 @@ import (
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 )
@@ -134,7 +135,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	// Blocked indicator.
 	if p.blocked() {
 		rows = append(rows, "")
-		rows = append(rows, errorStyle().Render("  ⚠ fix errors above before starting"))
+		rows = append(rows, errorStyle().Render("  "+glyph.Warning+" fix errors above before starting"))
 	}
 
 	listH := maxHeight - 1

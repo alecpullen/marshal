@@ -77,3 +77,38 @@ func TestHostViewBudgetsBySizingHint(t *testing.T) {
 		t.Fatal("FullFrameOpen() = true with a Docked panel open")
 	}
 }
+
+type ownerPanel struct {
+	got []tea.Msg
+}
+
+type ownedMsg struct{}
+
+func (p *ownerPanel) Update(msg tea.Msg) tea.Cmd { p.got = append(p.got, msg); return nil }
+func (p *ownerPanel) View(w, h int) string       { return "" }
+func (p *ownerPanel) Sizing() Sizing             { return Docked }
+func (p *ownerPanel) OwnsMsg(msg tea.Msg) bool   { _, ok := msg.(ownedMsg); return ok }
+
+func TestHostOwnsMsg(t *testing.T) {
+	var h Host
+	if h.OwnsMsg(ownedMsg{}) {
+		t.Error("empty host claimed a message")
+	}
+
+	h.Open(&ownerPanel{})
+	if !h.OwnsMsg(ownedMsg{}) {
+		t.Error("host did not claim the panel's own message")
+	}
+	if h.OwnsMsg(struct{}{}) {
+		t.Error("host claimed a message the panel does not own")
+	}
+}
+
+// A panel that does not implement MessageOwner must not claim anything.
+func TestHostOwnsMsgNonOwner(t *testing.T) {
+	var h Host
+	h.Open(&stubPanel{})
+	if h.OwnsMsg(ownedMsg{}) {
+		t.Error("non-owner panel claimed a message")
+	}
+}

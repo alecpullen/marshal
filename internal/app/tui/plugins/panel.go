@@ -33,9 +33,15 @@ type Panel struct {
 	list   *settings.FieldList
 	stack  []*settings.Frame
 
-	installSource   string
-	installScope    string
-	installErr      string
+	installSource string
+	installScope  string
+	installErr    string
+	// busy names the async operation in flight ("scanning", "installing") so
+	// a slow git clone is not indistinguishable from a dead key binding.
+	busy string
+	// status is a transient confirmation line, so a completed action is
+	// never silent.
+	status          string
 	scannedContents *plugins.Contents
 	scannedName     string
 	scannedSource   string
@@ -197,6 +203,25 @@ type scanResultMsg struct {
 	Err      error
 }
 
+// OwnsMsg claims this panel's async result messages so the dock host
+// delivers them. Without it the model cannot name these unexported types
+// and drops them, so an install, scan, or remove completes while the UI
+// shows nothing at all. See dock.MessageOwner.
+func (p *Panel) OwnsMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case installResultMsg, removeResultMsg, scanResultMsg:
+		return true
+	}
+	return false
+}
+
+// fail records an error and surfaces it on the visible list. Storing it only
+// on p.installErr rendered nowhere, so failures were silent.
+func (p *Panel) fail(msg string) {
+	p.installErr = msg
+	p.activeList().ErrMsg = msg
+}
+
 func (p *Panel) runRemove(e scopedEntry) tea.Cmd {
 	return func() tea.Msg {
 		var storeDir, lockPath string
@@ -250,6 +275,12 @@ func (p *Panel) installFrame() *settings.Frame {
 
 		scan := settings.NewField("install.scan", "Scan", settings.KindAction)
 		settings.SetFieldDesc(scan, "fetch and review plugin contents")
+		settings.SetFieldActLabel(scan, func() string {
+			if p.busy == "scanning" {
+				return "scanning…"
+			}
+			return "↵ scan"
+		})
 		settings.SetFieldAct(scan, func() tea.Cmd {
 			return p.runScan()
 		})
@@ -291,6 +322,12 @@ func (p *Panel) installFrame() *settings.Frame {
 
 			confirm := settings.NewField("install.confirm", "Confirm install", settings.KindAction)
 			settings.SetFieldDesc(confirm, "write plugin to disk and update lockfile")
+			settings.SetFieldActLabel(confirm, func() string {
+				if p.busy == "installing" {
+					return "installing…"
+				}
+				return "↵ install"
+			})
 			settings.SetFieldAct(confirm, func() tea.Cmd {
 				return p.runInstallFromScan()
 			})
@@ -302,9 +339,15 @@ func (p *Panel) installFrame() *settings.Frame {
 }
 
 func (p *Panel) runScan() tea.Cmd {
-	if p.installSource == "" {
+	if p.busy != "" {
 		return nil
 	}
+	if strings.TrimSpace(p.installSource) == "" {
+		p.fail("enter a source first")
+		return nil
+	}
+	p.busy = "scanning"
+	p.installErr = ""
 	ctx := context.Background()
 	source := p.installSource
 	scope := p.installScope
@@ -350,9 +393,15 @@ func (p *Panel) resetInstall() {
 }
 
 func (p *Panel) runInstallFromScan() tea.Cmd {
-	if p.scannedContents == nil || p.scanDir == "" {
+	if p.busy != "" {
 		return nil
 	}
+	if p.scannedContents == nil || p.scanDir == "" {
+		p.fail("scan a source first")
+		return nil
+	}
+	p.busy = "installing"
+	p.installErr = ""
 	name := p.scannedName
 	scope := p.installScope
 	source := p.scannedSource
@@ -481,8 +530,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return cmd
 		}
 	case scanResultMsg:
+		p.busy = ""
 		if msg.Err != nil {
-			p.installErr = msg.Err.Error()
+			p.fail(msg.Err.Error())
 			return nil
 		}
 		p.scannedContents = &msg.Contents
@@ -492,10 +542,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		p.activeList().Refresh()
 		return nil
 	case installResultMsg:
+		p.busy = ""
 		if msg.Err != nil {
-			p.installErr = msg.Err.Error()
+			p.fail(msg.Err.Error())
 			return nil
 		}
+		p.status = fmt.Sprintf("installed %s (%s)", msg.Name, msg.Scope)
 		p.resetInstall()
 		settings.FieldListRefresh(p.list)
 		if p.state != nil {
@@ -503,10 +555,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case removeResultMsg:
+		p.busy = ""
 		if msg.Err != nil {
-			p.activeList().ErrMsg = msg.Err.Error()
+			p.fail(msg.Err.Error())
 			return nil
 		}
+		p.status = fmt.Sprintf("removed %s (%s)", msg.Name, msg.Scope)
 		// Pop detail frame and refresh the list.
 		if len(p.stack) > 0 {
 			p.stack = p.stack[:len(p.stack)-1]
@@ -532,6 +586,12 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	body := header + "\n" + l.View()
 	footer := fmt.Sprintf("%d plugins", len(settings.FieldListRows(l)))
+	switch {
+	case p.busy != "":
+		footer += " · " + p.busy + "…"
+	case p.status != "":
+		footer += " · " + p.status
+	}
 	content := body + "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(footer)
 	return content
 }

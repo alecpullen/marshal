@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/strutil"
 )
 
@@ -27,7 +28,7 @@ func (m Model) renderLiveStrip() string {
 		return liveStripLine(spinner, spinnerLabel(spinner, sddStripText(p)), m.leftWidth)
 	}
 	if bi := m.state.BrowserInfo(); bi.SessionOpen {
-		return liveStripLine("·", browserStripText(bi, spinner), m.leftWidth)
+		return liveStripLine(glyph.Ambient, browserStripText(bi, spinner), m.leftWidth)
 	}
 	return ""
 }
@@ -73,11 +74,10 @@ func sddStripText(p session.SDDProgress) string {
 	return text
 }
 
-// browserStripText renders `🌐 example.com/docs · Title · standalone`
-// plus the tool spinner while a browser action is in flight. 🌐 stays in
-// the content (it is double-width and may never occupy the gutter).
+// browserStripText renders `◇ example.com/docs · Title · standalone`
+// plus the tool spinner while a browser action is in flight.
 func browserStripText(bi session.BrowserInfo, spinner string) string {
-	text := browserGlyphStyle().Render("🌐") + " " + urlStyle().Render(truncateURL(bi.URL, 40))
+	text := browserGlyphStyle().Render(glyph.Web) + " " + urlStyle().Render(truncateURL(bi.URL, 40))
 	if bi.Title != "" {
 		text += dimSep(bi.Title)
 	}

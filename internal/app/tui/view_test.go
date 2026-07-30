@@ -636,7 +636,7 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 	}
 	todoRow, inputRow := -1, -1
 	for i, line := range lines {
-		if strings.Contains(line, "▶ implement parser") {
+		if strings.Contains(line, "▸ implement parser") {
 			todoRow = i
 		}
 		if strings.Contains(line, "▍") && strings.Contains(line, "❯") {

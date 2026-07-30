@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/strutil"
 )
 
@@ -27,13 +28,13 @@ func (SwarmSection) Relevant(d Data) bool { return d.Swarm.Active }
 func roleGlyph(s session.SwarmRoleStatus) string {
 	switch s {
 	case session.SwarmRoleDone:
-		return "✓"
+		return glyph.OK
 	case session.SwarmRoleFailed:
 		return "✘"
 	case session.SwarmRoleActive:
 		return "◐"
 	default:
-		return "·"
+		return glyph.Ambient
 	}
 }
 

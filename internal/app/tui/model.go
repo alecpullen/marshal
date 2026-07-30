@@ -846,7 +846,7 @@ func New(state *session.State, opts ...Option) Model {
 	// computedPrompt() (the Prompt style). Set it to a plain style so the
 	// prompt keeps its default color — the ❯ glyph is visually distinct on
 	// its own. (If you want the ❯ coral, set these to
-	// lipgloss.NewStyle().Foreground(coralColor).Bold(true) instead.)
+	// lipgloss.NewStyle().Foreground(accentColor).Bold(true) instead.)
 	styles.Focused.Prompt = lipgloss.NewStyle()
 	styles.Blurred.Prompt = lipgloss.NewStyle()
 
@@ -869,7 +869,7 @@ func New(state *session.State, opts ...Option) Model {
 
 	// The textarea keeps its virtual cursor (the v2 default); the coral
 	// colour fills the rendered cursor block.
-	styles.Cursor.Color = coralColor
+	styles.Cursor.Color = accentColor
 	styles.Cursor.Blink = true
 	input.SetStyles(styles)
 
@@ -1438,6 +1438,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.(type) {
 		case tea.KeyPressMsg, tea.PasteMsg:
 			return m, m.dock.Update(msg)
+		default:
+			// A panel's own async results (install finished, scan returned)
+			// are typically unexported, so no case above can name them and
+			// they would otherwise fall through and be dropped — leaving the
+			// panel's Update case dead code. Let the panel claim them.
+			if m.dock.OwnsMsg(msg) {
+				return m, m.dock.Update(msg)
+			}
 		}
 		// Other non-key messages (ticks, agent events) keep flowing to the
 		// normal handlers below so background work continues.
@@ -2204,6 +2212,14 @@ func (m *Model) popOldestSteering() (string, bool) {
 	return msg, ok
 }
 
+// isUserTurn reports whether a transcript item is a user prompt, the boundary
+// the turn separator marks.
+func isUserTurn(item session.TranscriptItem) bool {
+	return item.Kind == session.KindMessage &&
+		item.Message != nil &&
+		item.Message.Role == session.RoleUser
+}
+
 func (m *Model) refreshViewport() {
 	m.updateViewportHeight()
 	items := m.state.Transcript()
@@ -2228,7 +2244,16 @@ func (m *Model) refreshViewport() {
 	if len(items) == 0 {
 		blocks = append(blocks, renderWelcomeBanner(m.viewport.Width()))
 	}
+	firstTurn := true
 	for _, entry := range groupTranscript(items) {
+		// A separator precedes every user turn but the first, so the rule
+		// always reads as "a new turn starts here" rather than as a header.
+		if entry.Group == nil && isUserTurn(*entry.Item) {
+			if !firstTurn {
+				blocks = append(blocks, renderTurnSeparator(m.viewport.Width()))
+			}
+			firstTurn = false
+		}
 		var s string
 		if entry.Group != nil {
 			s = renderToolGroup(entry.Group, m.detailExpanded, m.viewport.Width())
@@ -3203,20 +3228,24 @@ func visibleRunes(s string) int {
 
 var activeTheme theme.Theme
 
+// Package-level shortcuts for the active theme's slots, named for what they
+// mean rather than what they look like.
+//
+// There used to be two parallel sets here — an appearance-named one (coral,
+// gold, teal, orange, mauve) alongside this semantic one — aliasing the same
+// slots, so coralColor and accentColor were literally the same value. That let
+// call sites pick colors by appearance, which is how a palette drifts, and it
+// reintroduced one layer down exactly what the theme package's doc forbids.
 var (
-	coralColor  color.Color
-	goldColor   color.Color
-	tealColor   color.Color
-	orangeColor color.Color
-	mauveColor  color.Color
-	userColor   color.Color
-
-	accentColor  color.Color
-	violetColor  color.Color
-	dimColor     color.Color
-	successColor color.Color
-	warningColor color.Color
-	errorColor   color.Color
+	accentColor   color.Color // AccentPrimary
+	violetColor   color.Color // AccentSecondary
+	tertiaryColor color.Color // AccentTertiary
+	borderColor   color.Color // BorderMuted
+	userColor     color.Color // UserPrompt
+	dimColor      color.Color // FGMuted
+	successColor  color.Color // StatusSuccess
+	warningColor  color.Color // StatusWarning
+	errorColor    color.Color // StatusError
 
 	dimSeparator = " · "
 )
@@ -3224,15 +3253,11 @@ var (
 func loadTheme(tui config.TUIConfig) {
 	activeTheme = theme.LoadWithConfig(tui.Theme, tui.Mode, theme.PaletteOverrides(tui.Palette))
 
-	coralColor = activeTheme.AccentPrimary
-	goldColor = activeTheme.AccentTertiary
-	tealColor = activeTheme.StatusSuccess
-	orangeColor = activeTheme.StatusWarning
-	mauveColor = activeTheme.BorderMuted
-	userColor = activeTheme.UserPrompt
-
 	accentColor = activeTheme.AccentPrimary
 	violetColor = activeTheme.AccentSecondary
+	tertiaryColor = activeTheme.AccentTertiary
+	borderColor = activeTheme.BorderMuted
+	userColor = activeTheme.UserPrompt
 	dimColor = activeTheme.FGMuted
 	successColor = activeTheme.StatusSuccess
 	warningColor = activeTheme.StatusWarning
@@ -3246,8 +3271,13 @@ func mutedStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.C
 func panelTitleStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().FGEmphasis).Bold(true)
 }
+
+// thinkingLineStyle is muted only. Italic used to be layered on top, but
+// terminals render SGR 3 as reverse video or drop it entirely, and muted
+// italic was the least legible combination in the UI. The ⚙ glyph already
+// marks the line as reasoning.
 func thinkingLineStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Italic(true)
+	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
 }
 func codeSurfaceStyle() lipgloss.Style {
 	return lipgloss.NewStyle().

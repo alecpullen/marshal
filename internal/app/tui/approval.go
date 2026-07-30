@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/huhtheme"
 	"marshal/internal/diffview"
 )
@@ -226,7 +227,7 @@ func (am *approvalModel) View() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(gutterPrefix("⚠", warningColor))
+	b.WriteString(gutterPrefix(glyph.Warning, warningColor))
 	headParts := []string{}
 	if am.tc.Name == "shell.run" {
 		headParts = append(headParts, am.tc.Command)
@@ -247,7 +248,7 @@ func (am *approvalModel) View() string {
 		style := mutedStyle()
 		prefix := "  "
 		if selected {
-			style = lipgloss.NewStyle().Foreground(coralColor).Bold(true)
+			style = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
 			prefix = "▸ "
 			if am.submitPending {
 				prefix = "▸ "
@@ -287,7 +288,7 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 	text := lipgloss.NewStyle()
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⚠ Approval needed (←/→, enter to select)"))
+	b.WriteString(titleStyle.Render(glyph.Warning + " Approval needed (←/→, enter to select)"))
 	b.WriteString("\n")
 
 	if tc.Name == "shell.run" {

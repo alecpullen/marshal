@@ -16,7 +16,7 @@ import (
 
 func TestRendererCacheEvicts(t *testing.T) {
 	for i := 0; i < 20; i++ {
-		_ = getRenderer(60 + i*7)
+		_ = getRenderer(60+i*7, 0)
 	}
 	mdMu.Lock()
 	size := len(mdRenderers)
@@ -124,8 +124,9 @@ func TestRenderToolResultUsesGutter(t *testing.T) {
 
 func TestRenderSystemNoticeIsDim(t *testing.T) {
 	out := renderMessage(session.Message{Role: session.RoleSystem, Content: "Agent turn cancelled.", ContentType: session.ContentTypePlain}, 80)
-	if !strings.Contains(out, "· Agent turn cancelled.") {
-		t.Fatalf("system notice missing dim · prefix:\n%s", out)
+	// The notice sits on the shared 3-cell gutter, like every other item.
+	if !strings.Contains(stripANSI(out), " · Agent turn cancelled.") {
+		t.Fatalf("system notice missing dim · gutter:\n%s", out)
 	}
 }
 

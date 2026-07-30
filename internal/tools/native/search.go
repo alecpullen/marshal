@@ -229,8 +229,8 @@ func (t *toolSet) searchFile(path string, match lineMatcher, include string, ctx
 	var lines []string
 	matchCount := 0
 	lineNo := 0
-	after := 0        // trailing context lines still owed to the previous match
-	emittedUpTo := 0  // highest line number already emitted (match or context)
+	after := 0       // trailing context lines still owed to the previous match
+	emittedUpTo := 0 // highest line number already emitted (match or context)
 	var prev []contextLine
 	for scanner.Scan() {
 		lineNo++

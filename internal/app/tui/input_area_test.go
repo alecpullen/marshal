@@ -21,8 +21,8 @@ func TestInputChromeRowsExcludesTextarea(t *testing.T) {
 func TestDynamicMaxHeightBudget(t *testing.T) {
 	m := newViewTestModel(t, 80, 40)
 	// 40 - transcriptFrameRows(0) - statusLineRows(1) - turnSpinnerRows(1)
-	// - minTranscriptRows(1); no todo panel, live strip, dock, or popup.
-	if got, want := m.input.MaxHeight, 37; got != want {
+	// - minTranscriptRows(4); no todo panel, live strip, dock, or popup.
+	if got, want := m.input.MaxHeight, 34; got != want {
 		t.Fatalf("input.MaxHeight = %d, want %d", got, want)
 	}
 }
@@ -32,7 +32,7 @@ func TestInputGrowsBeyondEightRows(t *testing.T) {
 	m.input, _ = m.input.Update(tea.PasteMsg{Content: strings.Repeat("a line of text\n", 11)}) // 12 lines
 	m.updateViewportHeight()
 	if got := m.input.Height(); got != 12 {
-		t.Fatalf("input.Height() = %d, want 12 (old cap was 8; budget here is 37)", got)
+		t.Fatalf("input.Height() = %d, want 12 (old cap was 8; budget here is 34)", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -86,8 +87,8 @@ func TestTodoPanelExpandedUsesStatusGlyphs(t *testing.T) {
 	if !strings.Contains(out, "✓ task a") {
 		t.Fatalf("completed todo missing ✓ gutter:\n%s", out)
 	}
-	if !strings.Contains(out, "▶ task b") {
-		t.Fatalf("in-progress todo missing ▶ gutter:\n%s", out)
+	if !strings.Contains(out, "▸ task b") {
+		t.Fatalf("in-progress todo missing ▸ gutter:\n%s", out)
 	}
 	if !strings.Contains(out, "· task c") {
 		t.Fatalf("pending todo missing · gutter:\n%s", out)
@@ -110,13 +111,17 @@ func TestTodoPanelHeaderTracksCounts(t *testing.T) {
 	}
 }
 
-func TestTodoLineStrikethroughWhenDone(t *testing.T) {
+// Completed todos are muted, not struck through: SGR 9 support is patchy and
+// muted-plus-strikethrough was the least legible pairing in the UI. The ✓
+// glyph carries the "done" meaning on its own.
+func TestTodoLineDoneIsMutedNotStruckThrough(t *testing.T) {
 	item := native.TodoItem{Content: "done task", Status: native.TodoCompleted}
 	out := todoLine(item, 80)
-	// The strikethrough SGR code (9) may be combined with the foreground
-	// color (e.g. \x1b[90;9m). Check for the presence of ";9m" or "[9m".
-	if !strings.Contains(out, ";9m") && !strings.Contains(out, "[9m") {
-		t.Fatalf("completed todo must use strikethrough style:\n%q", out)
+	if strings.Contains(out, ";9m") || strings.Contains(out, "[9m") {
+		t.Fatalf("completed todo must not use strikethrough:\n%q", out)
+	}
+	if !strings.Contains(stripANSITodo(out), "✓ done task") {
+		t.Fatalf("completed todo missing ✓ glyph:\n%q", out)
 	}
 }
 
@@ -199,3 +204,8 @@ func TestTodoSignatureChangesWithContentAndStatus(t *testing.T) {
 		t.Fatal("signature must be stable for identical lists")
 	}
 }
+
+// stripANSITodo removes SGR sequences for glyph assertions.
+func stripANSITodo(s string) string { return ansiTodoRe.ReplaceAllString(s, "") }
+
+var ansiTodoRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)

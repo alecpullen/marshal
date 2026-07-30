@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 )
 
@@ -40,7 +41,7 @@ func PanelWithHints(title, hints, content string, w, h int, focused bool, th the
 			titleStyle = lipgloss.NewStyle().Bold(true).Foreground(th.AccentSecondary)
 		}
 	}
-	gutter := lipgloss.NewStyle().Foreground(gutterColor).Render("▍") + " "
+	gutter := lipgloss.NewStyle().Foreground(gutterColor).Render(glyph.Rail) + " "
 	inner := w - 2
 	if inner < 1 {
 		inner = 1

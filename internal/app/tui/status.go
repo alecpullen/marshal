@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
@@ -55,6 +56,17 @@ func untrustedStyle() lipgloss.Style {
 // segments above stand out.
 func dimStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
+}
+
+// identityStyle renders the "where am I" cluster — working directory, git
+// branch, worktree — at normal foreground weight.
+//
+// The status line can carry a dozen segments. Rendering all of them dim made
+// it a uniform wall of text that had to be read rather than scanned, so the
+// segments are split across three weights: the mode cue is bold accent,
+// identity is normal, and metrics stay dim.
+func identityStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().FGDefault)
 }
 
 // renderStatusLine is the single row of persistent chrome below the input:
@@ -145,12 +157,12 @@ func (m Model) statusLeftSegments() []statusSeg {
 
 	route := m.state.ActiveRoute()
 	if route.Active {
-		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("%s @ %s", route.Model, route.Provider)), priority: 1})
+		segs = append(segs, statusSeg{text: identityStyle().Render(fmt.Sprintf("%s @ %s", route.Model, route.Provider)), priority: 1})
 		if route.LocalOnly {
 			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 2})
 		}
 	} else {
-		segs = append(segs, statusSeg{text: dimStyle().Render("no model"), priority: 1})
+		segs = append(segs, statusSeg{text: identityStyle().Render("no model"), priority: 1})
 		if !m.state.Config.Privacy.RemoteProvidersAllowed {
 			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 2})
 		}
@@ -180,7 +192,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	}
 
 	if wd := m.state.WorkingDir; wd != "" {
-		segs = append(segs, statusSeg{text: dimStyle().Render(filepath.Base(wd)), priority: 5})
+		segs = append(segs, statusSeg{text: identityStyle().Render(filepath.Base(wd)), priority: 5})
 	}
 
 	// Git context: branch + worktree, inserted right after dir so cwd and
@@ -234,7 +246,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 
 	if m.diagnosticCount > 0 {
 		segs = append(segs, statusSeg{
-			text:     warningStyle().Render(fmt.Sprintf("⚠ %d config issues · /doctor", m.diagnosticCount)),
+			text:     warningStyle().Render(fmt.Sprintf(glyph.Warning+" %d config issues · /doctor", m.diagnosticCount)),
 			priority: 10,
 		})
 	}
@@ -243,17 +255,17 @@ func (m Model) statusLeftSegments() []statusSeg {
 }
 
 func browserStatusText(bi session.BrowserInfo) string {
-	glyph := browserGlyphStyle().Render("🌐")
+	g := browserGlyphStyle().Render(glyph.Web)
 	url := truncateURL(bi.URL, 20)
 	if url == "" {
 		url = bi.Mode
 	}
-	return glyph + " " + url
+	return g + " " + url
 }
 
 func (m Model) statusRightSegment() string {
 	if m.state.PendingApproval() != nil {
-		return warningStyle().Render("⚠ approval")
+		return warningStyle().Render(glyph.Warning + " approval")
 	}
 	if m.state.ProviderError() != nil {
 		return errorStyle().Render("✘ error")

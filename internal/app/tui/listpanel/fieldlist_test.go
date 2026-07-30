@@ -158,6 +158,31 @@ func TestScalarInlineEditAcceptsPaste(t *testing.T) {
 	}
 }
 
+func TestScalarPasteAutoOpensEdit(t *testing.T) {
+	var got string
+	fl := NewFieldList(func() []*Field {
+		return []*Field{ScalarField("t.Paste", "Token",
+			func() string { return got },
+			func(v string) error { got = v; return nil })}
+	})
+	fl.SetSize(60, 20)
+
+	// Paste without first pressing Enter to open edit mode.
+	fl.Update(tea.PasteMsg{Content: "github:owner/repo"})
+	if !fl.Editing() {
+		t.Fatal("paste on a scalar field should auto-open edit mode")
+	}
+	if fl.input.Value() != "github:owner/repo" {
+		t.Fatalf("paste should populate the input, got %q", fl.input.Value())
+	}
+
+	// Confirm with Enter and verify the value was saved.
+	fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got != "github:owner/repo" {
+		t.Fatalf("pasted value should apply after confirm, got %q", got)
+	}
+}
+
 func TestScalarReadOnlyRowIgnoresEnter(t *testing.T) {
 	fl := NewFieldList(func() []*Field {
 		return []*Field{{ID: "t.ro", Title: "Preset", Kind: KindScalar, GetStr: func() string { return "qwen" }}}

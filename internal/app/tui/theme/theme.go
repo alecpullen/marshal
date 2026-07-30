@@ -90,7 +90,7 @@ var warmSunset256 = Theme{
 	StatusError:     lipgloss.Color("203"),
 	StatusWarning:   lipgloss.Color("172"),
 	StatusSuccess:   lipgloss.Color("43"),
-	StatusInfo:      lipgloss.Color("43"),
+	StatusInfo:      lipgloss.Color("81"),
 }
 
 // warmSunset16 maps the Warm Sunset palette onto the 16-ANSI relative set
@@ -104,7 +104,7 @@ var warmSunset16 = Theme{
 	BGSurface:       lipgloss.Color("8"),
 	BGSelection:     lipgloss.Color("4"),
 	AccentPrimary:   lipgloss.Color("5"),
-	AccentSecondary: lipgloss.Color("5"),
+	AccentSecondary: lipgloss.Color("6"),
 	AccentTertiary:  lipgloss.Color("3"),
 	UserPrompt:      lipgloss.Color("7"),
 	StatusError:     lipgloss.Color("1"),
@@ -144,10 +144,17 @@ func LoadFor(noColor bool, term string) Theme {
 	if noColor {
 		return monochromeTheme()
 	}
-	if strings.Contains(term, "256color") || strings.Contains(term, "kitty") || strings.Contains(term, "wezterm") {
+	if supports256(term) {
 		return warmSunset256
 	}
 	return warmSunset16
+}
+
+// supports256 reports whether TERM advertises a 256-color palette.
+func supports256(term string) bool {
+	return strings.Contains(term, "256color") ||
+		strings.Contains(term, "kitty") ||
+		strings.Contains(term, "wezterm")
 }
 
 // Mode constants for LoadWithConfig.
@@ -183,12 +190,11 @@ func LoadWithConfig(name string, mode string, overrides PaletteOverrides) Theme 
 
 	base, ok := LookupPreset(lookupName)
 	if !ok {
-		base = warmSunset256
+		base, lookupName = warmSunset256, "warm-sunset"
 	}
 
-	term := os.Getenv("TERM")
-	if !strings.Contains(term, "256color") && !strings.Contains(term, "kitty") && !strings.Contains(term, "wezterm") {
-		base = warmSunset16
+	if !supports256(os.Getenv("TERM")) {
+		base = sixteenFor(lookupName, base)
 	}
 
 	if overrides != nil {
@@ -196,6 +202,26 @@ func LoadWithConfig(name string, mode string, overrides PaletteOverrides) Theme 
 	}
 
 	return base
+}
+
+// presets16 holds hand-tuned 16-color tables. A preset with an entry here
+// uses it verbatim; every other preset is derived by downsampling. Hand-tuning
+// wins because a person can weigh which distinctions matter most in a palette
+// this small, which nearest-color matching cannot.
+var presets16 = map[string]Theme{
+	"warm-sunset": warmSunset16,
+}
+
+// sixteenFor returns the 16-color rendering of a preset: the hand-tuned table
+// when one exists, otherwise a downsample of the 256-color original.
+//
+// Previously every preset fell back to warmSunset16 regardless of name, so
+// choosing any other theme on a non-256-color terminal silently did nothing.
+func sixteenFor(name string, base Theme) Theme {
+	if t, ok := presets16[name]; ok {
+		return t
+	}
+	return downsampleTo16(base)
 }
 
 // Names returns the list of preset names sorted lexicographically for a

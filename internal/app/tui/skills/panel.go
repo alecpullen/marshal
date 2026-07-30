@@ -37,7 +37,10 @@ type Panel struct {
 	installScope  string
 	installing    bool
 	installErr    string
-	removeArmed   map[string]bool
+	// status is a transient confirmation line ("installed foo (global)")
+	// rendered in the footer, so a completed action is never silent.
+	status      string
+	removeArmed map[string]bool
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -173,6 +176,12 @@ func (p *Panel) installFrame() *settings.Frame {
 
 		install := settings.NewField("install.confirm", "Install", settings.KindAction)
 		settings.SetFieldDesc(install, "clone or copy the skill into the selected scope")
+		settings.SetFieldActLabel(install, func() string {
+			if p.installing {
+				return "installing…"
+			}
+			return "↵ install"
+		})
 		settings.SetFieldAct(install, func() tea.Cmd {
 			return p.runInstall()
 		})
@@ -183,7 +192,14 @@ func (p *Panel) installFrame() *settings.Frame {
 }
 
 func (p *Panel) runInstall() tea.Cmd {
-	if p.installSource == "" {
+	if p.installing {
+		return nil
+	}
+	if strings.TrimSpace(p.installSource) == "" {
+		// Returning nil here silently did nothing, which is indistinguishable
+		// from a broken key binding. Surface it on the list's error row.
+		p.installErr = "enter a source first"
+		p.ActiveList().ErrMsg = p.installErr
 		return nil
 	}
 	p.installing = true
@@ -192,8 +208,8 @@ func (p *Panel) runInstall() tea.Cmd {
 	source := p.installSource
 	scope := p.installScope
 	return func() tea.Msg {
-		_, err := skills.Install(context.Background(), source, targetDir, "")
-		return installResultMsg{Scope: scope, Err: err}
+		name, err := skills.Install(context.Background(), source, targetDir, "")
+		return installResultMsg{Name: name, Scope: scope, Err: err}
 	}
 }
 
@@ -279,6 +295,18 @@ type removeResultMsg struct {
 	Err   error
 }
 
+// OwnsMsg claims this panel's async result messages so the dock host
+// delivers them. Without it the model cannot name these unexported types
+// and drops them, so an install or remove completes on disk while the UI
+// shows nothing at all. See dock.MessageOwner.
+func (p *Panel) OwnsMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case loadResultMsg, installResultMsg, removeResultMsg:
+		return true
+	}
+	return false
+}
+
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case loadResultMsg:
@@ -295,7 +323,8 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		}
 		p.installSource = ""
 		p.installScope = scopeGlobal
-		if p.stack != nil && len(p.stack) > 0 {
+		p.status = fmt.Sprintf("installed %s (%s)", msg.Name, msg.Scope)
+		if len(p.stack) > 0 {
 			p.stack = p.stack[:len(p.stack)-1]
 		}
 		p.list.Refresh()
@@ -304,6 +333,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		if msg.Err != nil {
 			p.list.ErrMsg = msg.Err.Error()
 			return nil
+		}
+		p.status = fmt.Sprintf("removed %s (%s)", msg.Name, msg.Scope)
+		// A remove drills in from the detail frame; pop back so the refreshed
+		// list is what the user lands on.
+		if len(p.stack) > 0 {
+			p.stack = p.stack[:len(p.stack)-1]
 		}
 		p.list.Refresh()
 		return nil
@@ -360,6 +395,14 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	body := header + "\n" + l.View()
 	footer := fmt.Sprintf("%d skills", len(settings.FieldListRows(l)))
+	// An in-flight install (a git clone can take seconds) and a completed one
+	// both used to render nothing, making a working action look broken.
+	switch {
+	case p.installing:
+		footer += " · installing…"
+	case p.status != "":
+		footer += " · " + p.status
+	}
 	content := body + "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(footer)
 	return content
 }

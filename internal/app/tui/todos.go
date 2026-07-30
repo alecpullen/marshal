@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/native"
 )
@@ -44,7 +45,7 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 	width = max(width-1, 1)
 	done, inProgress := todoProgress(todos)
 	if done == len(todos) {
-		return chromeRail(mutedStyle().Render(fmt.Sprintf(" ✓ %d tasks done", len(todos))), dimColor)
+		return chromeRail(mutedStyle().Render(fmt.Sprintf(" "+glyph.OK+" %d tasks done", len(todos))), dimColor)
 	}
 	budget := todoPanelBudget(len(todos), frameHeight)
 	if mode == todoPanelCollapsed || budget < 2 {
@@ -67,14 +68,14 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 			lead++
 		}
 		if lead > 1 {
-			summary := mutedStyle().Render(fmt.Sprintf(" ✓ %d done", lead))
+			summary := mutedStyle().Render(fmt.Sprintf(" "+glyph.OK+" %d done", lead))
 			lines = append([]string{summary}, lines[lead:]...)
 			focus = max(focus-lead+1, 0)
 		}
 	}
 	header := mutedStyle().Render(fmt.Sprintf(" tasks %d/%d", done, len(todos)))
 	body := chrome.ClipLines(lines, focus, max(budget-1, 1), theme.Current())
-	return chromeRail(header+"\n"+body, dimColor)
+	return chromeRailWidth(header+"\n"+body, dimColor, width)
 }
 
 // todoPanelBudget is the expanded panel's row budget: never more than the
@@ -83,34 +84,34 @@ func todoPanelBudget(n, frameHeight int) int {
 	return min(n, min(todoPanelMaxRows, max(frameHeight/3, 1)))
 }
 
-// todoOneLine renders `▶ tasks 3/7 · implement expression parsing`.
+// todoOneLine renders `▸ tasks 3/7 · implement expression parsing`.
 func todoOneLine(todos []native.TodoItem, done, inProgress, width int) string {
 	text := fmt.Sprintf("tasks %d/%d", done, len(todos))
 	if inProgress >= 0 {
 		text += " · " + todos[inProgress].Content
 	}
 	style := lipgloss.NewStyle().Foreground(theme.Current().FGDefault).Bold(true)
-	return gutterPrefix("▶", theme.Current().AccentPrimary) +
-		style.Render(ansi.Truncate(text, max(width-3, 1), ""))
+	return gutterPrefix(glyph.Running, theme.Current().AccentPrimary) +
+		style.Render(ansi.Truncate(text, max(width-3, 1), "…"))
 }
 
-// todoLine renders one todo row: ✓ teal done, ▶ coral bold in-progress,
+// todoLine renders one todo row: ✓ teal done, ▸ coral bold in-progress,
 // · muted pending — matching native.TodoItem's statuses exactly.
 func todoLine(t native.TodoItem, width int) string {
-	var glyph string
+	var g string
 	var c color.Color
 	labelStyle := lipgloss.NewStyle().Foreground(theme.Current().FGDefault)
 	switch t.Status {
 	case native.TodoCompleted:
-		glyph, c = "✓", theme.Current().StatusSuccess
-		labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Strikethrough(true)
+		g, c = glyph.OK, theme.Current().StatusSuccess
+		labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
 	case native.TodoInProgress:
-		glyph, c = "▶", theme.Current().AccentPrimary
+		g, c = glyph.Running, theme.Current().AccentPrimary
 		labelStyle = labelStyle.Bold(true)
 	default:
-		glyph, c = "·", theme.Current().FGMuted
+		g, c = glyph.Ambient, theme.Current().FGMuted
 	}
-	return gutterPrefix(glyph, c) + labelStyle.Render(ansi.Truncate(t.Content, max(width-3, 1), ""))
+	return gutterPrefix(g, c) + labelStyle.Render(ansi.Truncate(t.Content, max(width-3, 1), "…"))
 }
 
 // todoProgress returns the completed count and the index of the

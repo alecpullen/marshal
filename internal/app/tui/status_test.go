@@ -15,6 +15,10 @@ import (
 
 func newStatusTestModel(t *testing.T) Model {
 	t.Helper()
+	// Some status tests assert on color styling; force the default
+	// warm-sunset palette even when the outer environment sets NO_COLOR,
+	// which would otherwise resolve every slot to NoColor{} and emit no SGR.
+	t.Setenv("NO_COLOR", "")
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := New(state)
 	m.resize(100, 30)

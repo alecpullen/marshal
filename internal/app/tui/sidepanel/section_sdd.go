@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/app/tui/glyph"
 )
 
 // SDDSection is the spec-driven-development task list. The live
@@ -37,7 +39,7 @@ func (SDDSection) Render(d Data, width, maxRows int) []string {
 }
 
 func (SDDSection) OneLine(d Data, width int) string {
-	line := fmt.Sprintf("▶ sdd %d/%d", d.SDD.DoneTasks, d.SDD.TotalTasks)
+	line := fmt.Sprintf(glyph.Running+" sdd %d/%d", d.SDD.DoneTasks, d.SDD.TotalTasks)
 	if d.SDD.Phase != "" {
 		line += " · " + d.SDD.Phase
 	}

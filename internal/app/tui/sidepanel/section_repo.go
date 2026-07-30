@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/strutil"
 )
 
@@ -50,7 +51,7 @@ func (RepoSection) Render(d Data, width, maxRows int) []string {
 		sb := d.State.SandboxInfo()
 		net := "✘"
 		if d.State.Config.Tools.Shell.AllowNetwork {
-			net = "✓"
+			net = glyph.OK
 		}
 		rows = append(rows, fmt.Sprintf(" sandbox %s · net %s", sb.Backend, net))
 		rows = append(rows, fmt.Sprintf(" %d tools loaded", len(d.State.LoadedToolNames())))

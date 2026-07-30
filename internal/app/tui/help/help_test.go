@@ -54,8 +54,13 @@ func TestFooterApprovalWording(t *testing.T) {
 	if strings.Contains(out, "Enter×2") {
 		t.Fatalf("stale 'Enter×2' label still present: %q", out)
 	}
-	if !strings.Contains(out, "Enter arm") || !strings.Contains(out, "Enter submit") {
-		t.Fatalf("expected 'Enter arm' and 'Enter submit', got %q", out)
+	// One hint per key: the footer used to emit Enter twice in the same row,
+	// labelled "arm" and "submit".
+	if strings.Count(out, "Enter") != 1 {
+		t.Fatalf("expected exactly one Enter hint, got %q", out)
+	}
+	if !strings.Contains(out, "Enter confirm") {
+		t.Fatalf("expected 'Enter confirm', got %q", out)
 	}
 }
 

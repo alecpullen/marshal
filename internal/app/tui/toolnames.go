@@ -1,6 +1,10 @@
 package tui
 
-import "strings"
+import (
+	"strings"
+
+	"marshal/internal/app/tui/glyph"
+)
 
 var toolDisplayNames = map[string]string{
 	"file.read":        "Read file",
@@ -32,19 +36,19 @@ var toolCategoryGlyphs = []struct {
 	prefix string
 	glyph  string
 }{
-	{"file.write", "✎"},
-	{"patch.", "✎"},
-	{"file.", "≡"},
-	{"shell.", "›"},
-	{"test.", "›"},
-	{"repo.search", "⌕"},
-	{"codebase.search", "⌕"},
-	{"json.", "⌕"},
-	{"csv.", "⌕"},
-	{"symbols.", "⌕"},
-	{"agent.", "⧉"},
-	{"web.", "◇"},
-	{"browser.", "◇"},
+	{"file.write", glyph.Edit},
+	{"patch.", glyph.Edit},
+	{"file.", glyph.File},
+	{"shell.", glyph.Shell},
+	{"test.", glyph.Shell},
+	{"repo.search", glyph.Search},
+	{"codebase.search", glyph.Search},
+	{"json.", glyph.Search},
+	{"csv.", glyph.Search},
+	{"symbols.", glyph.Search},
+	{"agent.", glyph.Agent},
+	{"web.", glyph.Web},
+	{"browser.", glyph.Web},
 }
 
 // toolCategoryGlyph returns the gutter glyph for a tool's category, or the
@@ -55,7 +59,7 @@ func toolCategoryGlyph(name string) string {
 			return c.glyph
 		}
 	}
-	return "·"
+	return glyph.Ambient
 }
 
 // DisplayToolName returns a human-readable label for a tool. Unknown tools

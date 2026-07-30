@@ -77,7 +77,7 @@ var warmSunsetLight256 = Theme{
 	StatusError:     lipgloss.Color("203"),
 	StatusWarning:   lipgloss.Color("172"),
 	StatusSuccess:   lipgloss.Color("43"),
-	StatusInfo:      lipgloss.Color("43"),
+	StatusInfo:      lipgloss.Color("31"),
 }
 
 var draculaLight256 = Theme{

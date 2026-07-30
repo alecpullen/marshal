@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
@@ -37,10 +38,13 @@ const (
 	// adds above the completion popup's match rows.
 	completionPanelChromeRows = 1
 	// minTranscriptRows is the transcript floor reserved when budgeting the
-	// textarea's MaxHeight. The todo panel is given priority over the
-	// transcript floor — a one-row transcript is still usable, and the
-	// pinned todo list is most useful when the agent is actively working.
-	minTranscriptRows = 1
+	// textarea's MaxHeight. The todo panel still takes priority over the
+	// transcript when space is tight — the pinned todo list is most useful
+	// while the agent is working — but the floor is a readable window rather
+	// than a single row: the todo panel, SDD panel, live strip, and completion
+	// popup all stack above the input, and a busy session could squeeze the
+	// transcript to one line.
+	minTranscriptRows = 4
 )
 
 // View assembles the full-screen frame. Alt screen and mouse mode are
@@ -179,7 +183,7 @@ func (m Model) renderInputArea() string {
 func (m Model) inputBarColor() color.Color {
 	switch {
 	case m.successPulse:
-		return tealColor
+		return successColor
 	case m.state.PendingQuestion() != nil:
 		return violetColor
 	case m.state.PendingApproval() != nil:
@@ -187,14 +191,14 @@ func (m Model) inputBarColor() color.Color {
 	case m.state.SDDProgress().Active, !m.input.Focused():
 		return dimColor
 	default:
-		return coralColor
+		return accentColor
 	}
 }
 
 // gutteredInput renders the textarea with the ▍ state bar prepended to
 // every display line.
 func (m Model) gutteredInput() string {
-	bar := lipgloss.NewStyle().Foreground(m.inputBarColor()).Render("▍")
+	bar := lipgloss.NewStyle().Foreground(m.inputBarColor()).Render(glyph.Rail)
 	lines := strings.Split(m.input.View(), "\n")
 	for i := range lines {
 		lines[i] = bar + lines[i]
@@ -207,21 +211,51 @@ func (m Model) gutteredInput() string {
 // todos) read as one contained unit with the input. A trailing newline on s
 // is preserved; empty input stays empty.
 func chromeRail(s string, c color.Color) string {
+	return chromeRailWidth(s, c, 0)
+}
+
+// chromeRailWidth is chromeRail with an optional surface background painted
+// out to w cells.
+//
+// Layering bg.base → bg.surface is what separates a panel from the transcript
+// without spending rows on a border; the palette defined BGSurface but only
+// code blocks used it, leaving every panel flat in the same plane. w <= 0
+// paints no background, which is what monochrome mode needs.
+func chromeRailWidth(s string, c color.Color, w int) string {
 	if s == "" {
 		return ""
 	}
 	trailing := strings.HasSuffix(s, "\n")
 	body := strings.TrimRight(s, "\n")
-	bar := lipgloss.NewStyle().Foreground(c).Render("▍")
+	bar := lipgloss.NewStyle().Foreground(c).Render(glyph.Rail)
+	paint := w > 0 && !monochrome()
+	surface := lipgloss.NewStyle()
+	if paint {
+		surface = surface.Background(theme.Current().BGSurface).Width(w)
+	}
 	lines := strings.Split(body, "\n")
 	for i := range lines {
-		lines[i] = bar + lines[i]
+		line := lines[i]
+		if paint {
+			// Only clip when a width was actually supplied; w == 0 means
+			// "no surface", not "truncate to nothing".
+			line = ansi.Truncate(line, w, "…")
+		}
+		lines[i] = bar + surface.Render(line)
 	}
 	out := strings.Join(lines, "\n")
 	if trailing {
 		out += "\n"
 	}
 	return out
+}
+
+// monochrome reports whether the active theme emits no color, in which case a
+// surface background would be indistinguishable from the base and the ▍ rail
+// is doing all the separating.
+func monochrome() bool {
+	_, ok := theme.Current().BGSurface.(lipgloss.NoColor)
+	return ok
 }
 
 // highlightMatches bolds runes at the given byte indices using the

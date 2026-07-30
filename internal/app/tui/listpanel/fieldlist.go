@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
@@ -205,6 +206,21 @@ func (fl *FieldList) Update(msg tea.Msg) tea.Cmd {
 	}
 	if fl.editing {
 		return fl.updateEdit(msg)
+	}
+
+	// Auto-open edit mode when a paste arrives on an editable scalar
+	// field. Without this, pasting into a field that is not yet being
+	// edited silently drops the paste, which is confusing in panels
+	// like the skills install frame.
+	if paste, ok := msg.(tea.PasteMsg); ok {
+		row := fl.CursorRow()
+		if row != nil && row.Kind == KindScalar && row.SetStr != nil {
+			fl.openRow(row)
+			if fl.editing {
+				fl.input, _ = fl.input.Update(paste)
+			}
+		}
+		return nil
 	}
 
 	k, ok := msg.(tea.KeyPressMsg)
@@ -592,7 +608,7 @@ func (fl *FieldList) View() string {
 		val := fl.valueCell(row, isCursor)
 		title := row.Title
 		if row.Warn {
-			title = flWarnStyle().Render("⚠ ") + title
+			title = flWarnStyle().Render(glyph.Warning+" ") + title
 		}
 		gap := fl.width - lipgloss.Width(marker) - lipgloss.Width(title) - lipgloss.Width(val)
 		if gap < 1 {
@@ -605,7 +621,7 @@ func (fl *FieldList) View() string {
 		}
 		lines = append(lines, line)
 		if isCursor && fl.ErrMsg != "" {
-			lines = append(lines, "    "+flErrStyle().Render("⚠ "+fl.ErrMsg))
+			lines = append(lines, "    "+flErrStyle().Render(glyph.Warning+" "+fl.ErrMsg))
 		}
 		if isCursor && row.Desc != "" && !fl.Editing() && !fl.descSuppressed {
 			lines = append(lines, "    "+DescStyle().Render(row.Desc))
@@ -623,7 +639,7 @@ func (fl *FieldList) View() string {
 	if fl.adding {
 		lines = append(lines, "▸ "+fl.KeyPrompt+": "+fl.keyInput.View())
 		if fl.ErrMsg != "" {
-			lines = append(lines, "    "+flErrStyle().Render("⚠ "+fl.ErrMsg))
+			lines = append(lines, "    "+flErrStyle().Render(glyph.Warning+" "+fl.ErrMsg))
 		}
 	}
 	return clipLines(lines, cursorLine, fl.height)

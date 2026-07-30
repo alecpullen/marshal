@@ -49,10 +49,11 @@ func Footer(h FooterHints) string {
 	if h.QuestionPending {
 		segs = append(segs, pair("Enter", "answer"), pair("Esc", "skip"))
 	} else if h.ApprovalPending && !h.EditingCommand {
+		// One hint per key: this used to emit Enter twice, labelled "arm" and
+		// "submit", in the same row.
 		segs = append(segs,
 			pair("←→", "choose"),
-			pair("Enter", "arm"),
-			pair("Enter", "submit"),
+			pair("Enter", "confirm"),
 			pair("Esc", "deny"),
 		)
 	} else if h.EditingCommand {

@@ -249,3 +249,14 @@ func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 		t.Errorf("after completion, want the call folded into a ×3 group:\n%s", done)
 	}
 }
+
+func TestToolGroupUsesCategoryGlyph(t *testing.T) {
+	events := []registry.AuditEvent{
+		{ToolName: "file.read", ResultSummary: "ok"},
+		{ToolName: "file.read", ResultSummary: "ok"},
+	}
+	out := stripANSI(renderToolGroup(events, false, 80))
+	if !strings.Contains(out, "≡") {
+		t.Fatalf("file.read group should use the ≡ gutter: %q", out)
+	}
+}

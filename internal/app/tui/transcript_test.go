@@ -806,6 +806,20 @@ func TestActiveToolCallFitsWidthWithWideRunes(t *testing.T) {
 	}
 }
 
+func TestCompletedToolCallUsesCategoryGlyph(t *testing.T) {
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "file.read", ResultSummary: "ok"}, false, 40))
+	if !strings.Contains(out, "≡") {
+		t.Fatalf("file.read row should use the ≡ gutter: %q", out)
+	}
+	bad := stripANSI(renderCompletedToolCall(registry.AuditEvent{ToolName: "file.read", Error: "boom"}, false, 40))
+	if !strings.Contains(bad, "✗") {
+		t.Fatalf("error state must win over the category glyph: %q", bad)
+	}
+	if strings.Contains(bad, "≡") {
+		t.Fatalf("error row must not show the category glyph: %q", bad)
+	}
+}
+
 func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
 	outs := map[string]string{
 		"user message":   renderUserMessage("hello", 80),

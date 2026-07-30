@@ -505,7 +505,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 }
 
 func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int) string {
-	glyph := "·"
+	glyph := toolCategoryGlyph(event.ToolName)
 	style := statusOkStyle()
 	if event.Error != "" {
 		glyph = "✗"

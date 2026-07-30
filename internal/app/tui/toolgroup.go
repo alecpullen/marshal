@@ -92,7 +92,7 @@ func toolTarget(event registry.AuditEvent) string {
 // width.
 func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) string {
 	head := fmt.Sprintf("%s ×%d", DisplayToolName(events[0].ToolName), len(events))
-	gutter := gutterPrefix("·", dimColor)
+	gutter := gutterPrefix(toolCategoryGlyph(events[0].ToolName), dimColor)
 	var b strings.Builder
 	if !expanded {
 		targets := make([]string, 0, len(events))

@@ -45,10 +45,20 @@ func TestTodoPanelHiddenMode(t *testing.T) {
 }
 
 func TestTodoPanelExpandedUsesStatusGlyphs(t *testing.T) {
-	todos := sampleTodos(3, 1, 1)
+	// 6 items → budget=6, body=5 rows after header — enough to show all
+	// three glyph types (· pending, ▶ in-progress, ✓ completed) within
+	// the clipped window.
+	todos := []native.TodoItem{
+		{Content: "task a", Status: native.TodoCompleted},
+		{Content: "task b", Status: native.TodoInProgress},
+		{Content: "task c", Status: native.TodoPending},
+		{Content: "task d", Status: native.TodoPending},
+		{Content: "task e", Status: native.TodoPending},
+		{Content: "task f", Status: native.TodoPending},
+	}
 	out := stripANSI(renderTodoPanelBody(todos, todoPanelExpanded, 40, 80))
-	if strings.Contains(out, "Tasks:") {
-		t.Fatalf("panel must not carry a header:\n%s", out)
+	if !strings.Contains(out, "tasks 1/6") {
+		t.Fatalf("panel must carry a header with counts:\n%s", out)
 	}
 	if !strings.Contains(out, "✓ task a") {
 		t.Fatalf("completed todo missing ✓ gutter:\n%s", out)
@@ -58,6 +68,36 @@ func TestTodoPanelExpandedUsesStatusGlyphs(t *testing.T) {
 	}
 	if !strings.Contains(out, "· task c") {
 		t.Fatalf("pending todo missing · gutter:\n%s", out)
+	}
+}
+
+func TestTodoPanelHeaderTracksCounts(t *testing.T) {
+	todos := sampleTodos(5, 2, 2)
+	out := stripANSI(renderTodoPanelBody(todos, todoPanelExpanded, 40, 80))
+	if !strings.Contains(out, "tasks 2/5") {
+		t.Fatalf("panel header must show task counts:\n%s", out)
+	}
+	lines := strings.Split(out, "\n")
+	if !strings.Contains(lines[0], "tasks 2/5") {
+		t.Fatalf("header must be the first line:\n%s", out)
+	}
+}
+
+func TestTodoLineStrikethroughWhenDone(t *testing.T) {
+	item := native.TodoItem{Content: "done task", Status: native.TodoCompleted}
+	out := todoLine(item, 80)
+	// The strikethrough SGR code (9) may be combined with the foreground
+	// color (e.g. \x1b[90;9m). Check for the presence of ";9m" or "[9m".
+	if !strings.Contains(out, ";9m") && !strings.Contains(out, "[9m") {
+		t.Fatalf("completed todo must use strikethrough style:\n%q", out)
+	}
+}
+
+func TestTodoLineNoStrikethroughWhenPending(t *testing.T) {
+	item := native.TodoItem{Content: "pending task", Status: native.TodoPending}
+	out := todoLine(item, 80)
+	if strings.Contains(out, "\x1b[9m") {
+		t.Fatalf("pending todo must not use strikethrough style:\n%q", out)
 	}
 }
 

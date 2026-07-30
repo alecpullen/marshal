@@ -68,7 +68,9 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 			focus = max(focus-lead+1, 0)
 		}
 	}
-	return chrome.ClipLines(lines, focus, budget, theme.Current())
+	header := mutedStyle().Render(fmt.Sprintf("tasks %d/%d", done, len(todos)))
+	body := chrome.ClipLines(lines, focus, max(budget-1, 1), theme.Current())
+	return header + "\n" + body
 }
 
 // todoPanelBudget is the expanded panel's row budget: never more than the
@@ -97,7 +99,7 @@ func todoLine(t native.TodoItem, width int) string {
 	switch t.Status {
 	case native.TodoCompleted:
 		glyph, c = "✓", theme.Current().StatusSuccess
-		labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
+		labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Strikethrough(true)
 	case native.TodoInProgress:
 		glyph, c = "▶", theme.Current().AccentPrimary
 		labelStyle = labelStyle.Bold(true)

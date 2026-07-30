@@ -28,7 +28,7 @@ const questionOtherSentinel = "other"
 // word-wrapped, with the ? gutter) plus the focused huh field's own View —
 // that field View is what makes free-text answers echo as they are typed
 // and option lists navigable. huh field titles stay empty so the question
-// text is not duplicated.
+// text is not duplicated. Every line wears the ▍ chrome rail in violet.
 //
 // Pressing Esc on any question marks every remaining question as
 // session.AnswerUnanswered.
@@ -124,9 +124,9 @@ func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
 }
 
 // questionFieldWidth is the width given to the huh form: the panel width
-// minus the 3-cell gutter the View indents field content with.
+// minus the ▍ rail cell and the 3-cell indent the View gives field content.
 func questionFieldWidth(panelWidth int) int {
-	return max(panelWidth-3, 30)
+	return max(panelWidth-4, 30)
 }
 
 // buildQuestionOptions constructs a huh option list. When allowOther is
@@ -223,7 +223,8 @@ func (qm *questionModel) View() string {
 	}
 	gutter := gutterPrefix("?", violetColor)
 	indent := strings.Repeat(" ", 3)
-	contentWidth := max(qm.width-3, 1)
+	// contentWidth leaves room for the ▍ rail cell plus the 3-cell gutter.
+	contentWidth := max(qm.width-4, 1)
 	focused := qm.form.GetFocusedField()
 
 	var b strings.Builder
@@ -259,7 +260,8 @@ func (qm *questionModel) View() string {
 			}
 		}
 	}
-	return b.String()
+	// Chrome rail: violet while a question is pending (see inputBarColor).
+	return chromeRail(b.String(), violetColor)
 }
 
 // focusedFieldFor returns focused when it belongs to the given question's

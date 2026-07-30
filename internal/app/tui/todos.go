@@ -30,6 +30,8 @@ const todoPanelMaxRows = 10
 
 // renderTodoPanelBody renders the pinned todo panel: gutter-styled, no
 // box, one counts header row. Returns "" when there is nothing to show.
+// Every line wears the ▍ chrome rail (dim — the panel is ambient, not an
+// input state), so it reads as one unit with the input stack below it.
 //
 // Progress tracking is the one widget the hairline-gutter redesign makes
 // taller rather than flatter — it used to be prepended to the transcript,
@@ -38,13 +40,15 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 	if len(todos) == 0 || mode == todoPanelHidden {
 		return ""
 	}
+	// Reserve one cell for the ▍ rail so inner width math stays honest.
+	width = max(width-1, 1)
 	done, inProgress := todoProgress(todos)
 	if done == len(todos) {
-		return mutedStyle().Render(fmt.Sprintf(" ✓ %d tasks done", len(todos)))
+		return chromeRail(mutedStyle().Render(fmt.Sprintf(" ✓ %d tasks done", len(todos))), dimColor)
 	}
 	budget := todoPanelBudget(len(todos), frameHeight)
 	if mode == todoPanelCollapsed || budget < 2 {
-		return todoOneLine(todos, done, inProgress, width)
+		return chromeRail(todoOneLine(todos, done, inProgress, width), dimColor)
 	}
 
 	lines := make([]string, 0, len(todos))
@@ -68,9 +72,9 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 			focus = max(focus-lead+1, 0)
 		}
 	}
-	header := mutedStyle().Render(fmt.Sprintf("tasks %d/%d", done, len(todos)))
+	header := mutedStyle().Render(fmt.Sprintf(" tasks %d/%d", done, len(todos)))
 	body := chrome.ClipLines(lines, focus, max(budget-1, 1), theme.Current())
-	return header + "\n" + body
+	return chromeRail(header+"\n"+body, dimColor)
 }
 
 // todoPanelBudget is the expanded panel's row budget: never more than the

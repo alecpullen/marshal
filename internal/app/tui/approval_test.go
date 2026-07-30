@@ -150,3 +150,63 @@ func TestApprovalDialogLabelsContainFlatSelector(t *testing.T) {
 		}
 	}
 }
+
+func TestApprovalNavigatesHorizontally(t *testing.T) {
+	tc := &session.PendingToolCall{
+		Name: "shell.run",
+		Args: `{"command":"ls"}`,
+	}
+	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+
+	// The choices render on one horizontal row, so ←/→ (and h/l) move the
+	// selection; ↑/↓/j/k must do nothing.
+	am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if am.selected != 1 {
+		t.Fatalf("right should move selection to 1; got %d", am.selected)
+	}
+	am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if am.selected != 2 {
+		t.Fatalf("second right should move selection to 2; got %d", am.selected)
+	}
+	am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	if am.selected != 1 {
+		t.Fatalf("left should move selection back to 1; got %d", am.selected)
+	}
+	am, _ = am.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if am.selected != 2 {
+		t.Fatalf("l should move selection to 2; got %d", am.selected)
+	}
+	am, _ = am.Update(tea.KeyPressMsg{Code: 'h', Text: "h"})
+	if am.selected != 1 {
+		t.Fatalf("h should move selection back to 1; got %d", am.selected)
+	}
+	for _, vertical := range []tea.KeyPressMsg{
+		{Code: tea.KeyDown},
+		{Code: tea.KeyUp},
+		{Code: 'j', Text: "j"},
+		{Code: 'k', Text: "k"},
+	} {
+		am, _ = am.Update(vertical)
+		if am.selected != 1 {
+			t.Fatalf("vertical key %q must not move a horizontal selector; got %d", vertical.String(), am.selected)
+		}
+	}
+}
+
+func TestApprovalViewHasChromeRail(t *testing.T) {
+	tc := &session.PendingToolCall{
+		Name: "file.write_patch",
+		Args: `{"path":"a.go"}`,
+		Diff: "--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+	}
+	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	lines := strings.Split(strings.TrimRight(stripANSI(am.View()), "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("approval view too short to rail:\n%s", am.View())
+	}
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "▍") {
+			t.Errorf("line %d missing the ▍ chrome rail: %q\nfull view:\n%s", i, line, stripANSI(am.View()))
+		}
+	}
+}

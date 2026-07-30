@@ -44,6 +44,29 @@ func TestTodoPanelHiddenMode(t *testing.T) {
 	}
 }
 
+func TestTodoPanelHasChromeRail(t *testing.T) {
+	todos := sampleTodos(3, 1, 1)
+	out := stripANSI(renderTodoPanelBody(todos, todoPanelExpanded, 40, 80))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("todo panel too short to rail:\n%s", out)
+	}
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "▍") {
+			t.Errorf("todo panel line %d missing the ▍ chrome rail: %q\nfull panel:\n%s", i, line, out)
+		}
+	}
+
+	// The collapsed one-liner and the all-done summary wear the rail too.
+	if one := stripANSI(renderTodoPanelBody(todos, todoPanelCollapsed, 40, 80)); !strings.HasPrefix(one, "▍") {
+		t.Fatalf("collapsed one-liner missing the ▍ chrome rail: %q", one)
+	}
+	done := sampleTodos(3, 3, -1)
+	if all := stripANSI(renderTodoPanelBody(done, todoPanelExpanded, 40, 80)); !strings.HasPrefix(all, "▍") {
+		t.Fatalf("all-done summary missing the ▍ chrome rail: %q", all)
+	}
+}
+
 func TestTodoPanelExpandedUsesStatusGlyphs(t *testing.T) {
 	// 6 items → budget=6, body=5 rows after header — enough to show all
 	// three glyph types (· pending, ▶ in-progress, ✓ completed) within

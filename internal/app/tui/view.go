@@ -202,6 +202,28 @@ func (m Model) gutteredInput() string {
 	return strings.Join(lines, "\n")
 }
 
+// chromeRail prefixes every line of s with the ▍ state bar in color c — the
+// same rail the input box wears — so stacked panels (approval, question,
+// todos) read as one contained unit with the input. A trailing newline on s
+// is preserved; empty input stays empty.
+func chromeRail(s string, c color.Color) string {
+	if s == "" {
+		return ""
+	}
+	trailing := strings.HasSuffix(s, "\n")
+	body := strings.TrimRight(s, "\n")
+	bar := lipgloss.NewStyle().Foreground(c).Render("▍")
+	lines := strings.Split(body, "\n")
+	for i := range lines {
+		lines[i] = bar + lines[i]
+	}
+	out := strings.Join(lines, "\n")
+	if trailing {
+		out += "\n"
+	}
+	return out
+}
+
 // highlightMatches bolds runes at the given byte indices using the
 // active theme's AccentPrimary color. The indices are byte positions in
 // the (ASCII-dominated) text. For non-ASCII text the highlight may

@@ -828,7 +828,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 		t.Fatal("View() missing proposed command")
 	}
 
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
@@ -870,8 +870,8 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
@@ -907,9 +907,9 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
@@ -929,10 +929,10 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
@@ -2405,9 +2405,9 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 		t.Fatalf("View() missing risk text:\n%s", view)
 	}
 
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	m = updated.(Model)
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})

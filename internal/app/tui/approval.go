@@ -53,7 +53,7 @@ type approvalModel struct {
 	tc     *session.PendingToolCall
 	choice approvalChoice
 	// candidates is the ordered list of approval choices the user can pick.
-	// Tracked locally so we can update am.choice from j/k navigation
+	// Tracked locally so we can update am.choice from h/l navigation
 	// without forwarding to huh (which we don't, because we intercept
 	// Enter to drive the explicit two-step submit flow).
 	candidates    []approvalChoice
@@ -171,14 +171,14 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 			}
 			am.submitPending = true
 			return am, nil
-		case "up", "k":
+		case "left", "h":
 			if am.selected > 0 {
 				am.selected--
 				am.choice = am.candidates[am.selected]
 				am.submitPending = false
 			}
 			return am, nil
-		case "down", "j":
+		case "right", "l":
 			if am.selected < len(am.candidates)-1 {
 				am.selected++
 				am.choice = am.candidates[am.selected]
@@ -214,12 +214,13 @@ func (am *approvalModel) View() string {
 			Mode:      diffview.ModeAuto,
 			Highlight: true,
 		})
-		// Render the diff as a surface-tinted block.
+		// Render the diff as a surface-tinted block. Width is am.width-3:
+		// one cell for the ▍ rail plus the surface's own horizontal padding.
 		for _, line := range strings.Split(diff, "\n") {
 			if line == "" {
 				continue
 			}
-			b.WriteString(codeSurfaceStyle().Width(max(am.width-2, 1)).Render(line))
+			b.WriteString(codeSurfaceStyle().Width(max(am.width-3, 1)).Render(line))
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
@@ -267,7 +268,11 @@ func (am *approvalModel) View() string {
 		b.WriteString(promptPrefixStyle().Render("Press Enter again to confirm"))
 		b.WriteString("\n")
 	}
-	return b.String()
+
+	// Chrome rail: the same ▍ state bar the input box wears (warning color
+	// while an approval is pending — see inputBarColor), prefixed on every
+	// line so the whole panel reads as one contained unit.
+	return chromeRail(b.String(), warningColor)
 }
 
 func (am *approvalModel) Choice() approvalChoice { return am.choice }
@@ -282,7 +287,7 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 	text := lipgloss.NewStyle()
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⚠ Approval needed (j/k, enter to select)"))
+	b.WriteString(titleStyle.Render("⚠ Approval needed (←/→, enter to select)"))
 	b.WriteString("\n")
 
 	if tc.Name == "shell.run" {

@@ -118,11 +118,33 @@ func TestQuestionModelViewUsesGutter(t *testing.T) {
 	}
 	qm := newQuestionModel(q, 80)
 	view := stripANSI(qm.View())
-	if !strings.HasPrefix(view, " ? ") {
-		t.Fatalf("question view missing ? gutter:\n%s", view)
+	if !strings.HasPrefix(view, "▍ ? ") {
+		t.Fatalf("question view missing ▍ rail + ? gutter:\n%s", view)
 	}
 	if strings.Contains(view, "Marshal asks") {
 		t.Fatalf("question view must not show old title:\n%s", view)
+	}
+}
+
+func TestQuestionModelViewHasChromeRail(t *testing.T) {
+	q := &session.PendingQuestion{
+		Questions: []session.Question{
+			{Question: "Pick one:", Options: []string{"red", "green"}},
+			{Question: "Why?"},
+		},
+	}
+	qm := newQuestionModel(q, 60)
+	if msg := qm.Init()(); msg != nil {
+		qm, _ = qm.Update(msg)
+	}
+	lines := strings.Split(strings.TrimRight(stripANSI(qm.View()), "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("question view too short to rail:\n%s", qm.View())
+	}
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "▍") {
+			t.Errorf("line %d missing the ▍ chrome rail: %q\nfull view:\n%s", i, line, stripANSI(qm.View()))
+		}
 	}
 }
 
@@ -192,7 +214,9 @@ func TestRenderInputAreaHidesTextareaWhileQuestionPending(t *testing.T) {
 	m.state.SetPendingQuestion(q)
 	m.questionModel = newQuestionModel(q, 76)
 	out := stripANSI(m.renderInputArea())
-	if strings.Contains(out, "▍") {
+	// The dead textarea's tell is its placeholder; the ▍ rail is legitimate
+	// chrome on the question panel itself.
+	if strings.Contains(out, "Ask Marshal...") {
 		t.Fatalf("main textarea must not render while a question is pending (its keys go to the question form):\n%s", out)
 	}
 }

@@ -820,6 +820,108 @@ func TestCompletedToolCallUsesCategoryGlyph(t *testing.T) {
 	}
 }
 
+func TestToolResultLineWrapsLongFirstLine(t *testing.T) {
+	long := strings.Repeat("abcdefghij", 10) // 100 chars
+	out := stripANSI(renderToolResultLine(long, 30))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
+	}
+	for _, line := range lines {
+		if w := ansi.StringWidth(line); w > 30 {
+			t.Fatalf("line is %d cells wide, budget 30: %q", w, line)
+		}
+	}
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, "abcdefghijabcdefghij") {
+		t.Fatalf("wrapped output is missing content (was it truncated?):\n%s", out)
+	}
+}
+
+func TestActiveToolCallWrapsLongArgs(t *testing.T) {
+	long := strings.Repeat("path-segment-", 10) // 130 chars
+	out := stripANSI(renderActiveToolCall(session.ActiveToolCall{
+		Name:      "agent.run",
+		Args:      long,
+		StartedAt: time.Now(),
+	}, session.SandboxInfo{}, false, "⠂", time.Now(), 30))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
+	}
+	for _, line := range lines {
+		if w := ansi.StringWidth(line); w > 30 {
+			t.Fatalf("line is %d cells wide, budget 30: %q", w, line)
+		}
+	}
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, "path-segment-") {
+		t.Fatalf("wrapped output is missing content:\n%s", out)
+	}
+}
+
+func TestActiveToolCallWrapsLongOutput(t *testing.T) {
+	long := strings.Repeat("outputline", 10) // 100 chars on one line
+	out := stripANSI(renderActiveToolCall(session.ActiveToolCall{
+		Name:      "shell.run",
+		Args:      "echo test",
+		Output:    long,
+		StartedAt: time.Now(),
+	}, session.SandboxInfo{}, false, "⠂", time.Now(), 30))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	for _, line := range lines {
+		if w := ansi.StringWidth(line); w > 30 {
+			t.Fatalf("line is %d cells wide, budget 30: %q", w, line)
+		}
+	}
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, "outputline") {
+		t.Fatalf("wrapped output is missing content:\n%s", out)
+	}
+}
+
+func TestCompletedToolCallWrapsLongSummary(t *testing.T) {
+	long := strings.Repeat("summary-part-", 10) // 130 chars
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.read",
+		ResultSummary: long,
+	}, false, 30))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
+	}
+	for _, line := range lines {
+		if w := ansi.StringWidth(line); w > 30 {
+			t.Fatalf("line is %d cells wide, budget 30: %q", w, line)
+		}
+	}
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, "summary-part-") {
+		t.Fatalf("wrapped output is missing content:\n%s", out)
+	}
+}
+
+func TestCompletedToolCallWrapsLongError(t *testing.T) {
+	long := strings.Repeat("error-detail-", 10) // 130 chars
+	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName: "shell.run",
+		Error:    long,
+	}, false, 30))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
+	}
+	for _, line := range lines {
+		if w := ansi.StringWidth(line); w > 30 {
+			t.Fatalf("line is %d cells wide, budget 30: %q", w, line)
+		}
+	}
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, "error-detail-") {
+		t.Fatalf("wrapped output is missing content:\n%s", out)
+	}
+}
+
 func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
 	outs := map[string]string{
 		"user message":   renderUserMessage("hello", 80),

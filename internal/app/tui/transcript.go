@@ -415,13 +415,22 @@ func renderToolResultLine(content string, width int) string {
 		return ""
 	}
 	gutter := gutterPrefix("·", dimColor)
+	contentWidth := max(width-3, 1)
 	var b strings.Builder
-	b.WriteString(gutter)
-	b.WriteString(strutil.Truncate(strings.TrimSpace(lines[0]), max(width-3, 1), false))
-	b.WriteString("\n")
+	firstWrapped := ansi.Wrap(strings.TrimSpace(lines[0]), contentWidth, "")
+	firstLines := strings.Split(firstWrapped, "\n")
+	for i, wl := range firstLines {
+		if i == 0 {
+			b.WriteString(gutter)
+		} else {
+			b.WriteString(strings.Repeat(" ", 3))
+		}
+		b.WriteString(mutedStyle().Render(wl))
+		b.WriteString("\n")
+	}
 	continuation := lines[1:]
 	for _, line := range continuation {
-		wrapped := ansi.Wrap(line, max(width-3, 1), "")
+		wrapped := ansi.Wrap(line, contentWidth, "")
 		for _, wl := range strings.Split(wrapped, "\n") {
 			b.WriteString(strings.Repeat(" ", 3))
 			b.WriteString(mutedStyle().Render(wl))
@@ -488,24 +497,41 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	}
 	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
 	gutter := gutterPrefix("▸", accentColor)
-	headerLine := gutter + toolBulletStyle().Render(ansi.Truncate(head, max(width-3, 1), ""))
+	contentWidth := max(width-3, 1)
+	headerWrapped := ansi.Wrap(head, contentWidth, "")
+	headerLines := strings.Split(headerWrapped, "\n")
 	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(headerLine))
-	b.WriteString("\n")
+	for i, hl := range headerLines {
+		if i == 0 {
+			b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(gutter + toolBulletStyle().Render(hl)))
+		} else {
+			b.WriteString(lipgloss.NewStyle().Background(theme.Current().BGSurface).Render(strings.Repeat(" ", 3) + toolBulletStyle().Render(hl)))
+		}
+		b.WriteString("\n")
+	}
 	if atc.Name == "shell.run" || atc.Name == "test.run" {
 		cmdLine := "$ " + atc.Args
-		b.WriteString(strings.Repeat(" ", 3))
-		b.WriteString(mutedStyle().Render(ansi.Truncate(cmdLine, max(width-3, 1), "")))
-		b.WriteString("\n")
-		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
+		cmdWrapped := ansi.Wrap(cmdLine, contentWidth, "")
+		for _, wl := range strings.Split(cmdWrapped, "\n") {
 			b.WriteString(strings.Repeat(" ", 3))
-			b.WriteString(mutedStyle().Render(ansi.Truncate(iso, max(width-3, 1), "")))
+			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
+		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
+			isoWrapped := ansi.Wrap(iso, contentWidth, "")
+			for _, wl := range strings.Split(isoWrapped, "\n") {
+				b.WriteString(strings.Repeat(" ", 3))
+				b.WriteString(mutedStyle().Render(wl))
+				b.WriteString("\n")
+			}
+		}
 	} else if atc.Args != "" {
-		b.WriteString(strings.Repeat(" ", 3))
-		b.WriteString(mutedStyle().Render(ansi.Truncate(atc.Args, max(width-3, 1), "")))
-		b.WriteString("\n")
+		argsWrapped := ansi.Wrap(atc.Args, contentWidth, "")
+		for _, wl := range strings.Split(argsWrapped, "\n") {
+			b.WriteString(strings.Repeat(" ", 3))
+			b.WriteString(mutedStyle().Render(wl))
+			b.WriteString("\n")
+		}
 	}
 	if atc.Output != "" {
 		lines := strings.Split(strings.TrimRight(atc.Output, "\n"), "\n")
@@ -514,9 +540,12 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 			lines = lines[len(lines)-tail:]
 		}
 		for _, line := range lines {
-			b.WriteString(strings.Repeat(" ", 3))
-			b.WriteString(mutedStyle().Render(ansi.Truncate(line, max(width-3, 1), "")))
-			b.WriteString("\n")
+			wrapped := ansi.Wrap(line, contentWidth, "")
+			for _, wl := range strings.Split(wrapped, "\n") {
+				b.WriteString(strings.Repeat(" ", 3))
+				b.WriteString(mutedStyle().Render(wl))
+				b.WriteString("\n")
+			}
 		}
 	}
 	return b.String()
@@ -546,10 +575,19 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 		head += dimSeparator + event.ResultSummary
 	}
 
+	contentWidth := max(width-3, 1)
 	var b strings.Builder
-	b.WriteString(gutter)
-	b.WriteString(style.Render(ansi.Truncate(head, max(width-3, 1), "")))
-	b.WriteString("\n")
+	headWrapped := ansi.Wrap(head, contentWidth, "")
+	headLines := strings.Split(headWrapped, "\n")
+	for i, hl := range headLines {
+		if i == 0 {
+			b.WriteString(gutter)
+		} else {
+			b.WriteString(strings.Repeat(" ", 3))
+		}
+		b.WriteString(style.Render(hl))
+		b.WriteString("\n")
+	}
 	if isDiffTool(event.ToolName) && event.ResultContent != "" {
 		files := splitDiffFiles(event.ResultContent)
 		shown := min(len(files), maxDiffFiles)

@@ -7,6 +7,8 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
+	"marshal/internal/app/tui/plugins"
+	"marshal/internal/app/tui/skills"
 )
 
 // tuiCommandEffects holds the interactive logic for commands registered
@@ -42,6 +44,16 @@ func init() {
 				return m, nil
 			}
 			m.dock.Open(memory.NewPanel(m.memoryDB, m.memoryProject))
+			m.refreshViewport()
+			return m, nil
+		},
+		"skills": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.dock.Open(skills.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state))
+			m.refreshViewport()
+			return m, nil
+		},
+		"plugins": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state))
 			m.refreshViewport()
 			return m, nil
 		},

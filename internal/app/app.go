@@ -1140,6 +1140,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				},
 			))
 			tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
+			tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
+			tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		}
 		if rt.TrustPromptPending {
 			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))

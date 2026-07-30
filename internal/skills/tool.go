@@ -23,29 +23,22 @@ func RegisterTool(reg *registry.Registry, idx *Index, state *session.State) {
 	})
 }
 
-func handleSkillLoad(call registry.ToolCall, idx *Index, state *session.State) (registry.ToolResult, error) {
-	var args struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(call.Args, &args); err != nil {
-		return registry.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-	if args.Name == "" {
-		return registry.ToolResult{}, fmt.Errorf("missing required argument: name")
-	}
-
-	skill, ok := idx.Load(args.Name)
+// LoadSkillIntoSession loads a skill by name into the session state.
+// It checks that the skill exists, is not already active, and fits within
+// the context budget before adding it as a system message.
+func LoadSkillIntoSession(idx *Index, state *session.State, name string) error {
+	skill, ok := idx.Load(name)
 	if !ok {
 		available := idx.List()
 		names := make([]string, len(available))
 		for i, s := range available {
 			names[i] = s.Name
 		}
-		return registry.ToolResult{}, fmt.Errorf("unknown skill %q. Available: %v", args.Name, names)
+		return fmt.Errorf("unknown skill %q. Available: %v", name, names)
 	}
 
-	if state.HasActiveSkill(args.Name) {
-		return registry.ToolResult{}, fmt.Errorf("skill %q is already active", args.Name)
+	if state.HasActiveSkill(name) {
+		return fmt.Errorf("skill %q is already active", name)
 	}
 
 	pack := state.ContextPack()
@@ -53,7 +46,7 @@ func handleSkillLoad(call registry.ToolCall, idx *Index, state *session.State) (
 		estimatedBody := contextpack.EstimateTokens(skill.Body)
 		remaining := pack.TokenUsage.MaxTokens - pack.TokenUsage.EstimatedTokens
 		if estimatedBody > remaining {
-			return registry.ToolResult{}, fmt.Errorf(
+			return fmt.Errorf(
 				"cannot load skill: body is ~%d tokens but only %d tokens remain in context budget",
 				estimatedBody, remaining,
 			)
@@ -67,8 +60,23 @@ func handleSkillLoad(call registry.ToolCall, idx *Index, state *session.State) (
 		skill.Body + "\n```\n"
 	state.AddMessage(session.RoleSystem, wrapped, session.ContentTypePlain)
 	state.ActivateSkill(skill.Name)
+	return nil
+}
 
+func handleSkillLoad(call registry.ToolCall, idx *Index, state *session.State) (registry.ToolResult, error) {
+	var args struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(call.Args, &args); err != nil {
+		return registry.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
+	}
+	if args.Name == "" {
+		return registry.ToolResult{}, fmt.Errorf("missing required argument: name")
+	}
+	if err := LoadSkillIntoSession(idx, state, args.Name); err != nil {
+		return registry.ToolResult{}, err
+	}
 	return registry.ToolResult{
-		Summary: fmt.Sprintf("Skill %q loaded into context (%d chars).", skill.Name, len(skill.Body)),
+		Summary: fmt.Sprintf("Skill %q loaded into context.", args.Name),
 	}, nil
 }

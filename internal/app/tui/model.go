@@ -106,6 +106,8 @@ type Model struct {
 	trustDecide        func(trust.Decision)
 	memoryDB           *db.DB
 	memoryProject      int64
+	homeDir            string
+	workDir            string
 	cmdRegistry        *commands.Registry
 	agentCancel        context.CancelFunc
 	approvalMode       policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
@@ -318,6 +320,18 @@ func WithTrustPrompt(workingDir string, decide func(trust.Decision)) Option {
 func WithCommandRegistry(reg *commands.Registry) Option {
 	return func(m *Model) {
 		m.cmdRegistry = reg
+	}
+}
+
+func WithHomeDir(homeDir string) Option {
+	return func(m *Model) {
+		m.homeDir = homeDir
+	}
+}
+
+func WithWorkingDir(workDir string) Option {
+	return func(m *Model) {
+		m.workDir = workDir
 	}
 }
 

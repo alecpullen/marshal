@@ -357,6 +357,18 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "skills",
+			Description: "Manage installed skills",
+			Group:       groupSettings,
+			TUIOnly:     true,
+		},
+		{
+			Name:        "plugins",
+			Description: "Manage installed plugins",
+			Group:       groupSettings,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "rollback",
 			Description: "Rollback last patch",
 			Group:       groupChanges,

@@ -76,14 +76,11 @@ func SaveUserConfigSection(path string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 		header := "# Marshal global configuration\n"
 		data = append([]byte(header), data...)
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeUserConfigFile(path, data)
 }
 
 // writeSections applies every editable section of cfg onto file in place,
@@ -336,6 +333,41 @@ func activePresetName(cfg Config) string {
 	return binding.Preset
 }
 
+// userConfigFileMode and userConfigDirMode are the permissions for the
+// user-global config, which stores provider API keys inline
+// (SaveUserConfigProviderAPIKey). Every writer of that file must go through
+// writeUserConfigFile.
+//
+// These were 0644/0755, which left plaintext credentials readable by every
+// other user on the machine. The project config is exempt because
+// SaveProjectConfig strips API keys before persisting — it is a shared,
+// often-committed file by design.
+const (
+	userConfigFileMode = 0o600
+	userConfigDirMode  = 0o700
+)
+
+// writeUserConfigFile writes the user-global config with owner-only
+// permissions, tightening the file first if it already exists with broader
+// ones.
+//
+// The re-tighten matters: os.WriteFile only applies its mode when creating a
+// file, so a config written by an older build keeps its 0644 forever
+// otherwise, and the leak silently survives the fix.
+func writeUserConfigFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), userConfigDirMode); err != nil {
+		return err
+	}
+	if info, err := os.Stat(path); err == nil {
+		if info.Mode().Perm()&0o077 != 0 {
+			if cerr := os.Chmod(path, userConfigFileMode); cerr != nil {
+				return fmt.Errorf("tighten config permissions: %w", cerr)
+			}
+		}
+	}
+	return os.WriteFile(path, data, userConfigFileMode)
+}
+
 func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
 	file, err := loadFile(path)
 	if err != nil {
@@ -353,9 +385,6 @@ func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
 	// Prepend a minimal header if the file is being created for the first time.
 	// loadFile returns an empty configFile when the file does not exist, so we
 	// check whether the file exists on disk.
@@ -363,7 +392,7 @@ func SaveUserConfigProviderAPIKey(path, providerName, apiKey string) error {
 		header := "# Marshal global configuration\n"
 		data = append([]byte(header), data...)
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeUserConfigFile(path, data)
 }
 
 // validateProviderBaseURL returns an error if the base URL is not a
@@ -403,8 +432,5 @@ func SaveUserConfigRule(path string, rule PermissionRule) error {
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
+	return writeUserConfigFile(path, data)
 }

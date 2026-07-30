@@ -204,3 +204,35 @@ func TestTerminalSubscriptionTimeoutDropsEvent(t *testing.T) {
 
 // guard against accidental import of strings without use
 var _ = strings.Builder{}
+
+// TestRecoverSendOnClosedRePanicsOnRealDefects pins A-06: the send-path guard
+// exists for the send-on-closed-channel race only. A bare recover() there
+// swallowed genuine defects, turning a nil dereference in delivery into events
+// that silently never arrive.
+func TestRecoverSendOnClosedRePanicsOnRealDefects(t *testing.T) {
+	t.Run("absorbs the close race", func(t *testing.T) {
+		func() {
+			defer recoverSendOnClosed("test")
+			ch := make(chan int)
+			close(ch)
+			ch <- 1 // panics: send on closed channel
+		}()
+		// Reaching here means the panic was absorbed, as intended.
+	})
+
+	t.Run("re-panics on anything else", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("unrelated panic was swallowed by the send guard")
+			}
+			if got, ok := r.(string); !ok || got != "unrelated defect" {
+				t.Fatalf("re-panicked with %v, want the original value", r)
+			}
+		}()
+		func() {
+			defer recoverSendOnClosed("test")
+			panic("unrelated defect")
+		}()
+	})
+}

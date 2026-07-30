@@ -961,8 +961,13 @@ func TestTUIRollbackFlow(t *testing.T) {
 
 	model := New(state)
 
-	// Update with Ctrl+R to trigger rollback
+	// Ctrl+R arms; a second Ctrl+R performs the rollback.
 	updated, _ := model.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	model = updated.(Model)
+	if !state.HasBackup() {
+		t.Fatal("first Ctrl+R must only arm, not roll back")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	model = updated.(Model)
 
 	if state.HasBackup() {
@@ -3585,8 +3590,12 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 		trigger func(m *Model) tea.Cmd
 	}{
 		{
+			// Ctrl+C interrupts on the first press and quits on the second;
+			// this table covers the shutdown half.
 			name: "ctrl+c",
 			trigger: func(m *Model) tea.Cmd {
+				updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+				*m = updated.(Model)
 				updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 				*m = updated.(Model)
 				return cmd

@@ -56,11 +56,28 @@ func Default() Config {
 				Confirm:               CommandRules{Commands: []string{"go get", "npm install"}},
 				Deny:                  PatternRules{Patterns: []string{"rm -rf", "sudo", "curl * | sh"}},
 				Sandbox: SandboxConfig{
-					Backend:          "restricted",
-					MemoryLimitMB:    0,
-					CPUSeconds:       0,
-					MaxProcesses:     0,
-					FileSizeLimitMB:  0,
+					Backend: "restricted",
+					// Memory, CPU, and file-size caps stay opt-in: a build or
+					// test suite can legitimately be large or slow, and a cap
+					// that kills real work trains users to disable the sandbox
+					// outright.
+					MemoryLimitMB:   0,
+					CPUSeconds:      0,
+					FileSizeLimitMB: 0,
+					// A process cap is the exception, and is on by default.
+					// With every limit unset, restrictedWrapCommand emitted no
+					// ulimit at all, leaving a fork bomb entirely unguarded —
+					// the guardrails do not classify one, and `restricted`
+					// provides no filesystem or process isolation.
+					//
+					// 2048 is deliberately generous. `ulimit -u` is per-UID on
+					// unix, not per-process-tree, so it is shared with every
+					// other process the user is already running; a tight cap
+					// would fail in ways that look nothing like their cause. A
+					// fork bomb spawns without bound and hits this immediately,
+					// while no ordinary build or parallel test run approaches
+					// it.
+					MaxProcesses:     2048,
 					ContainerRuntime: "auto",
 					// ContainerImage intentionally empty here: the single
 					// source of truth for the default image lives in

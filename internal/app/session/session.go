@@ -225,7 +225,7 @@ type State struct {
 	nextMsgID  int64
 	parentOf   map[int64]int64
 	childrenOf map[int64][]int64
-	msgByID    map[int64]*Message
+	msgByID    map[int64]Message
 	// dbIDToImID maps a persisted DB message id to the in-memory id
 	// allocated for it at cold start. Only used during loadFromDB and set
 	// to nil when the load completes. Holding s.mu around accesses.
@@ -385,7 +385,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		loadedTools:   make(map[string]bool),
 		parentOf:      make(map[int64]int64),
 		childrenOf:    make(map[int64][]int64),
-		msgByID:       make(map[int64]*Message),
+		msgByID:       make(map[int64]Message),
 		dbIDToImID:    make(map[int64]int64),
 		nextMsgID:     1,
 		workspace:     Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
@@ -962,6 +962,14 @@ func (s *State) ActivateSkill(name string) {
 	s.activeSkills[name] = true
 }
 
+// ActiveSkills returns the active skill names in sorted order.
+//
+// The sort is load-bearing, not cosmetic: this slice renders into the system
+// prompt (agent/prompts.go, "## Active Skills"), which is messages[0] — the
+// provider's cache prefix. Prefix caching requires byte-identical bytes, so
+// returning map order meant that with two or more active skills the prompt
+// could reorder on any rebuild and silently miss the cache, on a tool that
+// measures exactly that cost (db.turn_metrics.cache_read_tokens).
 func (s *State) ActiveSkills() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -969,6 +977,7 @@ func (s *State) ActiveSkills() []string {
 	for name := range s.activeSkills {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 

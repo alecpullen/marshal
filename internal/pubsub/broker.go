@@ -18,6 +18,7 @@ package pubsub
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -86,7 +87,7 @@ func sendBlocking[T any](s *subscription[T], ev Event[T]) {
 		return
 	}
 	defer s.exit()
-	defer func() { recover() }()
+	defer recoverSendOnClosed(ev.Type)
 	select {
 	case s.ch <- ev:
 	case <-s.stopCh:
@@ -95,13 +96,33 @@ func sendBlocking[T any](s *subscription[T], ev Event[T]) {
 	}
 }
 
+// recoverSendOnClosed absorbs the send-on-closed-channel panic that the
+// enter/exit/closeOnce protocol deliberately races with, and re-panics on
+// anything else.
+//
+// This used to be a bare `defer func() { recover() }()`, which discarded every
+// panic in the send path — a nil dereference in delivery would surface only as
+// events silently not arriving, with no log line and no crash.
+func recoverSendOnClosed(topic string) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if err, ok := r.(error); ok && strings.Contains(err.Error(), "send on closed channel") {
+		slog.Default().Debug("publish raced subscription close; event dropped", "topic", topic)
+		return
+	}
+	// Not the race this guard exists for — a real defect. Let it surface.
+	panic(r)
+}
+
 // sendBestEffort is for non-terminal subscribers: drop on overflow.
 func sendBestEffort[T any](s *subscription[T], ev Event[T]) {
 	if !s.enter() {
 		return
 	}
 	defer s.exit()
-	defer func() { recover() }()
+	defer recoverSendOnClosed(ev.Type)
 	// Try non-blocking first.
 	select {
 	case s.ch <- ev:

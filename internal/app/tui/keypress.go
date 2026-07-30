@@ -29,6 +29,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		return *m, nil, true
 	}
 
+	// Any key other than a second Ctrl+R disarms a pending rollback, so the
+	// armed state can never outlive the keystroke that set it.
+	if m.rollbackArmed && msg.String() != "ctrl+r" {
+		m.rollbackArmed = false
+	}
+
 	switch msg.String() {
 	case "?":
 		// ? on an empty textarea prints the help cheatsheet to the
@@ -84,12 +90,33 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		return *m, nil, true
 	case "ctrl+r":
 		if m.state.HasBackup() {
-			_ = m.state.RollbackBackup()
-			m.state.LogToolCall(registry.AuditEvent{
+			// Arm on the first press, revert on the second. Ctrl+R is
+			// reverse-i-search in every readline shell, so it gets pressed
+			// reflexively; without this it silently rewrote the working tree
+			// on a single keystroke. Every other destructive surface here
+			// (tool approval, skill/plugin removal) confirms first.
+			if !m.rollbackArmed {
+				m.rollbackArmed = true
+				m.state.AddMessage(session.RoleSystem,
+					"Press Ctrl+R again to revert the last patch, or any other key to cancel.",
+					session.ContentTypePlain)
+				m.refreshViewport()
+				return *m, nil, true
+			}
+			m.rollbackArmed = false
+			// The error is load-bearing: a partial rollback leaves a mixed
+			// working tree, and reporting success would hide that from both
+			// the user and the audit trail.
+			ev := registry.AuditEvent{
 				Timestamp:     time.Now(),
 				ToolName:      "rollback",
 				ResultSummary: "Rollback applied successfully",
-			})
+			}
+			if err := m.state.RollbackBackup(); err != nil {
+				ev.Error = err.Error()
+				ev.ResultSummary = "Rollback failed"
+			}
+			m.state.LogToolCall(ev)
 			m.refreshViewport()
 		}
 		return *m, nil, true

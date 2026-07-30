@@ -128,7 +128,14 @@ func (s *State) loadFromDB() {
 		// Stash on the msgByID map so rebuildActiveBranch can find it.
 		// We don't append to s.messages here — that is the job of
 		// rebuildActiveBranch (single source of truth for ordering).
-		s.msgByID[imID] = &msg
+		//
+		// The map holds values, not pointers. appendMessage used to store
+		// &s.messages[len-1], an interior pointer that any reallocating append
+		// orphaned and that rebuildActiveBranch invalidated wholesale by
+		// assigning a fresh slice. It read correctly only because Message is
+		// never mutated in place, while pinning every superseded backing array
+		// against collection.
+		s.msgByID[imID] = msg
 	}
 
 	// The last row in dbMessages is the leaf; record both its in-memory
@@ -208,7 +215,7 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 	if parent != 0 {
 		s.childrenOf[parent] = append(s.childrenOf[parent], id)
 	}
-	s.msgByID[id] = &s.messages[len(s.messages)-1]
+	s.msgByID[id] = msg
 	s.leafID = id
 	published := msg
 	s.mu.Unlock()
@@ -261,7 +268,7 @@ func (s *State) rebuildActiveBranch() {
 	msgs := make([]Message, 0, len(path))
 	for _, id := range path {
 		if m, ok := s.msgByID[id]; ok {
-			msgs = append(msgs, *m)
+			msgs = append(msgs, m)
 		}
 	}
 	s.messages = msgs

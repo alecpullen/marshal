@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -15,7 +16,9 @@ import (
 // recordingProvider is a scripted provider that also records Chat calls.
 type recordingProvider struct {
 	responses []string
-	calls     int
+	// calls is atomic: the concurrent-rename test spins on it from the test
+	// goroutine while Chat increments it from the generate goroutine.
+	calls atomic.Int64
 	// block, if non-nil, is closed by the test to release a pending Chat.
 	block chan struct{}
 }
@@ -25,8 +28,7 @@ func (r *recordingProvider) Models(ctx context.Context) ([]schema.ModelInfo, err
 	return nil, nil
 }
 func (r *recordingProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
-	idx := r.calls
-	r.calls++
+	idx := int(r.calls.Add(1)) - 1
 	resp := "title"
 	if idx < len(r.responses) {
 		resp = r.responses[idx]
@@ -72,8 +74,8 @@ func TestGenerateTitleSkipsWhenTitleAlreadySetManually(t *testing.T) {
 	if got := state.Title(); got != "my manual title" {
 		t.Fatalf("manual title overwritten: %q", got)
 	}
-	if p.calls != 0 {
-		t.Fatalf("provider called %d times, want 0 (manual title should skip)", p.calls)
+	if got := p.calls.Load(); got != 0 {
+		t.Fatalf("provider called %d times, want 0 (manual title should skip)", got)
 	}
 }
 
@@ -112,7 +114,7 @@ func TestGenerateTitleDoesNotOverwriteConcurrentRename(t *testing.T) {
 
 	// Wait until the provider has been entered (so we know we are past the
 	// early-return check), then issue the rename and release the provider.
-	for p.calls == 0 {
+	for p.calls.Load() == 0 {
 		time.Sleep(time.Millisecond)
 	}
 	state.SetTitleManual("manual")
@@ -123,8 +125,8 @@ func TestGenerateTitleDoesNotOverwriteConcurrentRename(t *testing.T) {
 	if got := state.Title(); got != "manual" {
 		t.Fatalf("title = %q, want %q (manual title overwritten by auto-title)", got, "manual")
 	}
-	if p.calls != 1 {
-		t.Fatalf("provider calls = %d, want 1 (test should have passed the early-return guard)", p.calls)
+	if got := p.calls.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want 1 (test should have passed the early-return guard)", got)
 	}
 }
 

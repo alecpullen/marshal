@@ -3,10 +3,12 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1397,4 +1399,64 @@ func TestLoggerNeverNil(t *testing.T) {
 		t.Fatal("Logger() = nil; call sites dereference it unconditionally")
 	}
 	s.Logger().Warn("must not panic")
+}
+
+// TestActiveSkillsIsSorted pins A-01: the returned slice renders into the
+// system prompt, which is the provider's cache prefix. Map order there meant
+// the prompt bytes could change between rebuilds of an identical state,
+// silently missing the prompt cache.
+func TestActiveSkillsIsSorted(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+	for _, name := range []string{"zebra", "alpha", "mike", "bravo"} {
+		s.ActivateSkill(name)
+	}
+
+	want := []string{"alpha", "bravo", "mike", "zebra"}
+	// Repeat: a single pass can match by luck under Go's randomized map order.
+	for i := 0; i < 50; i++ {
+		got := s.ActiveSkills()
+		if !slices.Equal(got, want) {
+			t.Fatalf("iteration %d: ActiveSkills() = %v, want %v", i, got, want)
+		}
+	}
+}
+
+// TestMessageTreeSurvivesReallocationAndRebuild pins A-05: msgByID holds
+// values, so growth of s.messages and the wholesale slice replacement done by
+// rebuildActiveBranch (Rewind/SwitchBranch) cannot desynchronise the tree from
+// the active branch.
+func TestMessageTreeSurvivesReallocationAndRebuild(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+
+	// Enough appends to force several reallocations of the backing array.
+	for i := 0; i < 64; i++ {
+		s.AddMessage(RoleUser, fmt.Sprintf("msg-%d", i), ContentTypePlain)
+	}
+	msgs := s.Messages()
+	if len(msgs) != 64 {
+		t.Fatalf("len(Messages()) = %d, want 64", len(msgs))
+	}
+	forkFrom := msgs[10].ID
+
+	// Rewind replaces s.messages with a freshly allocated slice.
+	s.Rewind(forkFrom)
+	s.AddMessage(RoleUser, "branch-b", ContentTypePlain)
+
+	branches := s.Branches()
+	if len(branches) != 2 {
+		t.Fatalf("expected 2 branch tips after fork, got %d", len(branches))
+	}
+
+	// Switching back must reconstruct the original branch verbatim from the
+	// tree, including messages recorded before any reallocation.
+	s.SwitchBranch(msgs[63].ID)
+	got := s.Messages()
+	if len(got) != 64 {
+		t.Fatalf("after SwitchBranch len = %d, want 64", len(got))
+	}
+	for i, m := range got {
+		if want := fmt.Sprintf("msg-%d", i); m.Content != want {
+			t.Fatalf("message %d = %q, want %q", i, m.Content, want)
+		}
+	}
 }

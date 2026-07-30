@@ -212,7 +212,13 @@ type Model struct {
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
 	detailExpanded     bool
-	viewportFollow     bool
+	// rollbackArmed is the first half of Ctrl+R's arm-then-confirm. Cleared
+	// by any other keypress; see handleKeypress.
+	rollbackArmed bool
+	// interruptArmed is set when Ctrl+C has interrupted a turn, so a second
+	// press quits. Cleared by any other keypress.
+	interruptArmed bool
+	viewportFollow bool
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
@@ -1099,11 +1105,32 @@ func (m Model) railData() sidepanel.Data {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Ctrl+C cancels the in-flight turn, resolves pending state, and quits.
-	// Check it before any overlay routing so it can never be captured by a
-	// form's keymap.
+	// Ctrl+C interrupts an in-flight turn on the first press and quits on the
+	// second. Checked before any overlay routing so it can never be captured
+	// by a form's keymap.
+	//
+	// It used to quit outright on the first press. Ctrl+C is the universal
+	// "stop what you're doing" reflex, so the moment a user most wants to
+	// interrupt a slow or misbehaving turn was exactly the moment they lost
+	// the session — and with AltScreen there is no scrollback to read
+	// afterwards. Esc already had the interrupt semantics; the better-known
+	// key just did the more destructive thing.
 	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+c" {
+		if m.busy && !m.interruptArmed {
+			m.interruptArmed = true
+			m.cancelTurn()
+			m.state.AddMessage(session.RoleSystem,
+				"Turn interrupted. Press Ctrl+C again to quit.",
+				session.ContentTypePlain)
+			m.refreshViewport()
+			return m, nil
+		}
 		return m, m.beginShutdown()
+	}
+	// Any other keypress clears the armed quit, so Ctrl+C never quits on a
+	// press the user has mentally separated from the interrupt.
+	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() != "ctrl+c" {
+		m.interruptArmed = false
 	}
 
 	// WindowSizeMsg must always resize the underlying layout (and the
@@ -1675,12 +1702,19 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 		return m, nil
 	case choiceRollback:
 		if m.state.HasBackup() {
-			_ = m.state.RollbackBackup()
-			m.state.LogToolCall(registry.AuditEvent{
+			// The error is load-bearing: a partial rollback leaves a mixed
+			// working tree, and reporting success would hide that from both
+			// the user and the audit trail.
+			ev := registry.AuditEvent{
 				Timestamp:     time.Now(),
 				ToolName:      "rollback",
 				ResultSummary: "Rollback applied successfully",
-			})
+			}
+			if err := m.state.RollbackBackup(); err != nil {
+				ev.Error = err.Error()
+				ev.ResultSummary = "Rollback failed"
+			}
+			m.state.LogToolCall(ev)
 			m.lastTranscriptHash = 0
 			m.refreshViewport()
 			// Keep the approval open so the user can then approve/deny the

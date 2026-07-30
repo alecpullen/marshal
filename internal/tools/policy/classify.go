@@ -24,6 +24,8 @@ type Classification struct {
 //   - git clean with force flags (-f/-fd/-fdx/-fx)
 //   - git reset --hard
 //   - chmod/chown with recursive flags (-R/--recursive)
+//   - find with -delete, or with -exec/-execdir running a destructive payload
+//   - dd writing to an output file (of=), unconditionally so for a device
 //
 // All other commands return Classification with Risk set to RiskCommand.
 func ClassifyCommand(input string) (Classification, error) {
@@ -53,12 +55,66 @@ func ClassifyCommand(input string) (Classification, error) {
 		if hasFlagInArgs(args[1:], "r", "R", "recursive") {
 			return Classification{Risk: registry.RiskDestructive, Reason: name + " -R"}, nil
 		}
+	case "find":
+		if reason := classifyFind(args[1:]); reason != "" {
+			return Classification{Risk: registry.RiskDestructive, Reason: reason}, nil
+		}
+	case "dd":
+		if reason := classifyDD(args[1:]); reason != "" {
+			return Classification{Risk: registry.RiskDestructive, Reason: reason}, nil
+		}
 	}
 
 	return Classification{Risk: registry.RiskCommand, Reason: "command"}, nil
 }
 
 // lastSegment returns the last /-separated component of p.
+// destructivePayloads are argv0 names that make a find -exec destructive.
+var destructivePayloads = map[string]bool{
+	"rm": true, "rmdir": true, "shred": true, "truncate": true,
+	"unlink": true, "dd": true, "mkfs": true,
+}
+
+// classifyFind reports why a find invocation is destructive, or "" if it is
+// not. find is a first-class deletion primitive with no "rm" anywhere in the
+// command string, so neither the substring guardrails nor the argv0 switch
+// above would otherwise see it.
+//
+// Matching is argv-aware on purpose: `find . -name '*-delete*'` is a search,
+// not a deletion, and must not trip this.
+func classifyFind(args []string) string {
+	for i, a := range args {
+		switch a {
+		case "-delete":
+			return "find -delete"
+		case "-exec", "-execdir", "-ok", "-okdir":
+			// The payload is the next token; anything after it is that
+			// command's own arguments.
+			if i+1 < len(args) && destructivePayloads[lastSegment(args[i+1])] {
+				return "find " + a + " " + lastSegment(args[i+1])
+			}
+		}
+	}
+	return ""
+}
+
+// classifyDD reports why a dd invocation is destructive, or "" if it is not.
+// dd without an of= operand only reads, which is why the check is on the
+// output operand rather than the command name.
+func classifyDD(args []string) string {
+	for _, a := range args {
+		out, ok := strings.CutPrefix(a, "of=")
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(out, "/dev/") {
+			return "dd of=" + out + " (writes to a device)"
+		}
+		return "dd of=" + out
+	}
+	return ""
+}
+
 func lastSegment(p string) string {
 	if idx := strings.LastIndex(p, "/"); idx >= 0 {
 		return p[idx+1:]

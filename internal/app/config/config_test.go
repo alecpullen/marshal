@@ -627,8 +627,18 @@ func TestDefaultSandboxBackendIsRestricted(t *testing.T) {
 	if sb.MemoryLimitMB != 0 {
 		t.Fatalf("default memory limit = %d, want 0 (opt-in)", sb.MemoryLimitMB)
 	}
-	if sb.MaxProcesses != 0 {
-		t.Fatalf("default max processes = %d, want 0 (opt-in)", sb.MaxProcesses)
+	// Memory/CPU/file-size stay opt-in (a cap that kills a legitimate build
+	// trains users to disable the sandbox), but the process cap is on by
+	// default: with every limit unset the restricted backend emitted no
+	// ulimit at all, leaving a fork bomb unguarded.
+	if sb.MaxProcesses != 2048 {
+		t.Fatalf("default max processes = %d, want 2048", sb.MaxProcesses)
+	}
+	if sb.CPUSeconds != 0 {
+		t.Fatalf("default cpu seconds = %d, want 0 (opt-in)", sb.CPUSeconds)
+	}
+	if sb.FileSizeLimitMB != 0 {
+		t.Fatalf("default file size limit = %d, want 0 (opt-in)", sb.FileSizeLimitMB)
 	}
 	if sb.ContainerRuntime != "auto" {
 		t.Fatalf("default container runtime = %q, want auto", sb.ContainerRuntime)

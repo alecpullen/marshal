@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -313,10 +314,22 @@ func (p *Panel) installFrame() *settings.Frame {
 				settings.SetFieldGetStr(f, func() string { return h.Command })
 				fields = append(fields, f)
 			}
-			for name, srv := range p.scannedContents.MCPServers {
-				n, s := name, srv
+			// Sorted, because map order reshuffled the list between renders
+			// of the same data — on the screen whose whole purpose is letting
+			// the user read and trust exactly these entries.
+			for _, n := range sortedKeys(p.scannedContents.MCPServers) {
+				srv := p.scannedContents.MCPServers[n]
 				f := settings.NewField("confirm.mcp."+n, n, settings.KindScalar)
-				settings.SetFieldGetStr(f, func() string { return s.Command + " " + strings.Join(s.Args, " ") })
+				settings.SetFieldGetStr(f, func() string { return srv.Command + " " + strings.Join(srv.Args, " ") })
+				fields = append(fields, f)
+			}
+			// MCP policies gated the "(none)" row above but were never
+			// displayed, so a plugin carrying only policies asked the user to
+			// confirm executable content the screen refused to show.
+			for _, n := range sortedKeys(p.scannedContents.MCPPolicies) {
+				policy := p.scannedContents.MCPPolicies[n]
+				f := settings.NewField("confirm.mcppolicy."+n, n, settings.KindScalar)
+				settings.SetFieldGetStr(f, func() string { return policy })
 				fields = append(fields, f)
 			}
 
@@ -383,12 +396,31 @@ func (p *Panel) runScan() tea.Cmd {
 	}
 }
 
+// resetInstall clears the install/scan working state, discarding the scan's
+// temporary clone.
+//
+// The clone outlives runScan (the confirm step copies from it), so it cannot
+// be cleaned up with a deferred RemoveAll the way skills.Install does. That
+// left every abandoned scan — Esc, panel close, or reopening the install
+// frame — leaking a full repository clone into the temp dir.
 func (p *Panel) resetInstall() {
+	p.discardScan()
 	p.installSource = ""
 	p.installScope = scopeGlobal
 	p.scannedContents = nil
 	p.scannedName = ""
 	p.scannedSource = ""
+}
+
+// discardScan removes the temporary clone created by runScan, if any.
+// Safe to call when no scan is outstanding.
+func (p *Panel) discardScan() {
+	if p.scanDir == "" {
+		return
+	}
+	// runScan clones into <tmp>/clone, so the directory to remove is the
+	// parent — matching what the confirm path does at the end of an install.
+	os.RemoveAll(filepath.Dir(p.scanDir))
 	p.scanDir = ""
 }
 
@@ -451,6 +483,17 @@ func (p *Panel) runInstallFromScan() tea.Cmd {
 	}
 }
 
+// sortedKeys returns a map's keys in a stable order, so trust-review screens
+// render the same list the same way every time.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (p *Panel) buildFields() []*settings.Field {
 	query := strings.TrimSpace(p.filter.Value())
 	entries := p.lockEntries()
@@ -506,8 +549,13 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		if msg.Code == tea.KeyEscape {
 			if len(p.stack) > 0 {
 				p.stack = p.stack[:len(p.stack)-1]
+				// Leaving the install frame abandons any outstanding scan.
+				if len(p.stack) == 0 {
+					p.discardScan()
+				}
 				return nil
 			}
+			p.discardScan()
 			return func() tea.Msg { return settings.BrowserClosedMsg{} }
 		}
 		l := p.activeList()
@@ -545,9 +593,20 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		p.busy = ""
 		if msg.Err != nil {
 			p.fail(msg.Err.Error())
+			// Most install error paths have already removed the clone, so the
+			// scan state now points at nothing. Clear it rather than leave a
+			// Confirm action that would copy from a deleted directory.
+			p.scanDir = ""
+			p.scannedContents = nil
+			p.scannedName = ""
+			p.scannedSource = ""
+			p.activeList().Refresh()
 			return nil
 		}
 		p.status = fmt.Sprintf("installed %s (%s)", msg.Name, msg.Scope)
+		// The install command already removed the clone; drop the reference
+		// so resetInstall does not try to remove it a second time.
+		p.scanDir = ""
 		p.resetInstall()
 		settings.FieldListRefresh(p.list)
 		if p.state != nil {

@@ -3,6 +3,7 @@ package plugins
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -155,3 +156,94 @@ func TestInFlightAndConfirmationAreRendered(t *testing.T) {
 type errBoom struct{}
 
 func (errBoom) Error() string { return "boom" }
+
+// TestAbandonedScanRemovesTempClone pins A-02: the scan's clone outlives
+// runScan (the confirm step copies from it), so it cannot use a deferred
+// RemoveAll. Every path that abandons the scan must clean it up, or each
+// abandoned install leaks a full repository clone.
+func TestAbandonedScanRemovesTempClone(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+
+	tmpDir := t.TempDir()
+	cloneDir := filepath.Join(tmpDir, "scan", "clone")
+	if err := os.MkdirAll(cloneDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	p.scanDir = cloneDir
+	p.scannedContents = &plugins.Contents{}
+
+	p.resetInstall()
+
+	if p.scanDir != "" {
+		t.Error("scanDir not cleared")
+	}
+	if _, err := os.Stat(filepath.Dir(cloneDir)); !os.IsNotExist(err) {
+		t.Errorf("temp clone not removed: %v", err)
+	}
+}
+
+// TestConfirmScreenListsAllExecutableContent pins A-03: MCPPolicies counted
+// toward suppressing the "(none)" row but were never displayed, so a plugin
+// carrying only policies asked the user to confirm executable content the
+// screen refused to show.
+func TestConfirmScreenListsAllExecutableContent(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p.scannedContents = &plugins.Contents{
+		MCPPolicies: map[string]string{"net-policy": "deny egress"},
+	}
+	p.stack = append(p.stack, p.installFrame())
+
+	var titles []string
+	for _, f := range settings.FieldListRows(p.activeList()) {
+		titles = append(titles, settings.FieldTitle(f))
+	}
+	// Scope the check to the executable section: a "(none)" under Passive
+	// content is correct here, since the plugin carries no skills or commands.
+	exec := titles
+	for i, tl := range titles {
+		if tl == "Executable content" {
+			exec = titles[i:]
+			break
+		}
+	}
+	joined := strings.Join(exec, "|")
+	if !strings.Contains(joined, "net-policy") {
+		t.Errorf("MCP policy not shown on the confirmation screen: %v", titles)
+	}
+	if strings.Contains(joined, "(none)") {
+		t.Errorf("claimed no executable content while carrying a policy: %v", exec)
+	}
+}
+
+// TestConfirmScreenOrdersMCPEntriesStably pins A-04: map order reshuffled the
+// trust-review list between renders of identical data.
+func TestConfirmScreenOrdersMCPEntriesStably(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p.scannedContents = &plugins.Contents{
+		MCPServers: map[string]config.MCPServerConfig{
+			"zebra": {Command: "z"}, "alpha": {Command: "a"},
+			"mike": {Command: "m"}, "bravo": {Command: "b"},
+		},
+	}
+
+	var first []string
+	for i := 0; i < 25; i++ {
+		p.stack = []*settings.Frame{p.installFrame()}
+		var got []string
+		for _, f := range settings.FieldListRows(p.activeList()) {
+			if id := settings.FieldID(f); strings.HasPrefix(id, "confirm.mcp.") {
+				got = append(got, id)
+			}
+		}
+		if first == nil {
+			first = got
+			continue
+		}
+		if !slices.Equal(got, first) {
+			t.Fatalf("MCP order unstable across renders:\n first=%v\n now  =%v", first, got)
+		}
+	}
+	if !slices.IsSorted(first) {
+		t.Errorf("MCP entries not sorted: %v", first)
+	}
+}

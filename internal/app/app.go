@@ -51,7 +51,17 @@ import (
 	"marshal/internal/worktree"
 )
 
-type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) error
+// ProgramResult is the value returned by a ProgramRunner. It carries the
+// bubbletea program outcome plus an optional request to resume a different
+// session.
+type ProgramResult struct {
+	Err           error
+	ResumeSession string // non-empty => tear down and restart WithExistingSession
+}
+
+// ProgramRunner runs the TUI program. The default runner adapts tea.Program;
+// tests inject a runner that returns a ProgramResult directly.
+type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult
 type configLoader func(config.LoadOptions) (config.Config, error)
 
 // must asserts raw to T, panicking with a descriptive message on mismatch.
@@ -1185,8 +1195,21 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		default:
 		}
 
-		progErr := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
+		progResult := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
 
+		if progResult.ResumeSession != "" && progResult.Err == nil {
+			// User chose to resume a different session. Tear down the
+			// current runtime without finalising knowledge (the current
+			// transcript is already persisted; knowledge can run when that
+			// session is eventually exited) and restart startRuntime in
+			// existing-session mode.
+			_ = rt.Close(context.Background())
+			runOpts.sessionID = ""
+			runOpts.existingSessionID = progResult.ResumeSession
+			continue
+		}
+
+		progErr := progResult.Err
 		if !reloadForTrust {
 			// Phase 1: quiesce — cancel and join active work/jobs without
 			// closing persistence so knowledge finalization can use the DB.
@@ -1313,13 +1336,17 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	return cleanupErr
 }
 
-func runProgram(ctx context.Context, model tea.Model, output io.Writer) error {
+func runProgram(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 	program := tea.NewProgram(model,
 		tea.WithOutput(output),
 		tea.WithContext(ctx),
 	)
-	_, err := program.Run()
-	return err
+	finalModel, err := program.Run()
+	res := ProgramResult{Err: err}
+	if signaller, ok := finalModel.(interface{ ResumeSession() string }); ok {
+		res.ResumeSession = signaller.ResumeSession()
+	}
+	return res
 }
 
 // loadFileIndexPaths fetches the repo's known file paths for the

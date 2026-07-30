@@ -19,6 +19,7 @@ import (
 	"unsafe"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
@@ -114,9 +115,9 @@ func TestRunSkipsProgramAndConfigLoadWhenContextIsCancelled(t *testing.T) {
 			loaderCalled = true
 			return config.Default(), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			runnerCalled = true
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -149,12 +150,12 @@ func TestRunStartsProgram(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			called = true
 			if output != stdout {
 				t.Fatal("runner did not receive stdout buffer")
 			}
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -189,11 +190,11 @@ func TestRunPassesAppContextToRunner(t *testing.T) {
 			WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 				return config.Default(), nil
 			}),
-			WithProgramRunner(func(runCtx context.Context, model tea.Model, output io.Writer) error {
+			WithProgramRunner(func(runCtx context.Context, model tea.Model, output io.Writer) ProgramResult {
 				close(runnerStarted)
 				<-runCtx.Done()
 				close(runnerObservedCancel)
-				return nil
+				return ProgramResult{}
 			}),
 		)
 	}()
@@ -236,9 +237,9 @@ func TestWithProgramRunnerNilLeavesRunnerConfigurable(t *testing.T) {
 			return config.Default(), nil
 		}),
 		WithProgramRunner(nil),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			called = true
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -934,9 +935,9 @@ func TestRunReturnsInjectedConfigLoadError(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Config{}, wantErr
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			t.Fatal("program runner should not be called on config load failure")
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if !errors.Is(err, wantErr) {
@@ -963,9 +964,9 @@ func TestRunCreatesDatabase(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	runnerCalled := false
-	runner := func(ctx context.Context, model tea.Model, output io.Writer) error {
+	runner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 		runnerCalled = true
-		return nil
+		return ProgramResult{}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1017,8 +1018,8 @@ func TestRunLogsToFileNotTerminal(t *testing.T) {
 
 	err = Run(ctx, stdout, WithNow(func() time.Time {
 		return time.Unix(1000, 0)
-	}), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
-		return nil
+	}), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+		return ProgramResult{}
 	}), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
@@ -1055,10 +1056,10 @@ func TestRunDisplaysInactiveRouteWhenNoProviderConfigured(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 			view = updated.View().Content
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -1105,10 +1106,10 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return cfg, nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 			view = updated.View().Content
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -1140,8 +1141,8 @@ func TestRunTriggersKnowledgeEndSessionButSkipsWithNoMessages(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
-			return nil
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -1181,14 +1182,14 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			m := model.(tui.Model)
 			updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 			m = updated.(tui.Model)
 			updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 			m = updated.(tui.Model)
 			view = m.View().Content
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -1196,6 +1197,89 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 	}
 	if !strings.Contains(view, "Memory") {
 		t.Fatalf("view missing memory browser after Ctrl+K:\n%s", view)
+	}
+}
+
+// TestRunResumesExistingSession verifies that when the program runner asks
+// to resume a different session, Run tears down the current runtime and
+// restarts with the existing session loaded.
+func TestRunResumesExistingSession(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte("[project]\nname = \"test\"\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	// Bootstrap the database and project by starting the runtime once,
+	// then seed a second session with a persisted message to resume.
+	ctx, cancel := context.WithCancel(context.Background())
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(dir),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+	)
+	if err != nil {
+		cancel()
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	database := must[*db.DB](rt.DB)
+	projectID := rt.ProjectID
+	resumeSessionID := "sess_to_resume"
+	startedAt := time.Unix(1000, 0)
+	if err := database.CreateSession(resumeSessionID, projectID, "Resumed session", startedAt); err != nil {
+		_ = rt.Close(context.Background())
+		cancel()
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := database.SaveMessage(resumeSessionID, string(session.RoleUser), "hello from the past", string(session.ContentTypePlain), startedAt, "", 0, true, 0); err != nil {
+		_ = rt.Close(context.Background())
+		cancel()
+		t.Fatalf("save message: %v", err)
+	}
+	if err := rt.Close(context.Background()); err != nil {
+		cancel()
+		t.Fatalf("close runtime: %v", err)
+	}
+	cancel()
+
+	var runs int
+	var resumedView string
+	err = Run(context.Background(), bytes.NewBuffer(nil),
+		WithWorkingDir(dir),
+		WithNow(func() time.Time { return time.Unix(200, 0) }),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			runs++
+			if runs == 1 {
+				// First run: ask to resume the pre-seeded session.
+				return ProgramResult{ResumeSession: resumeSessionID}
+			}
+			// Second run: render the model and capture the transcript view.
+			m := model.(tui.Model)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			resumedView = updated.View().Content
+			return ProgramResult{}
+		}),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if runs != 2 {
+		t.Fatalf("expected Run to start the program twice, got %d", runs)
+	}
+	if !strings.Contains(ansi.Strip(resumedView), "hello from the past") {
+		t.Fatalf("resumed session transcript not rendered; view:\n%s", resumedView)
 	}
 }
 
@@ -1222,14 +1306,14 @@ func TestRunUsesLiveConfigForShutdownKnowledgePass(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return initialCfg, nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			state := modelState(t, model)
 			state.AddMessage(session.RoleUser, "summarize this session", session.ContentTypePlain)
 
 			m := model.(tui.Model)
 			updated, _ := m.Update(settings.ChangedMsg{Cfg: reloadedCfg})
 			_ = updated.(tui.Model)
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -1275,10 +1359,10 @@ func TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			state := modelState(t, model)
 			state.AddMessage(session.RoleUser, "keep session history", session.ContentTypePlain)
-			return wantErr
+			return ProgramResult{Err: wantErr}
 		}),
 	)
 	if !errors.Is(err, wantErr) {
@@ -1335,10 +1419,10 @@ func TestRunBoundsShutdownKnowledgePass(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			state := modelState(t, model)
 			state.AddMessage(session.RoleUser, "keep session history", session.ContentTypePlain)
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -1564,7 +1648,7 @@ security_reviewer = "mock_preset"
 	err = Run(context.Background(), stdout,
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 			called = true
 			state := modelState(t, model)
 			if state == nil {
@@ -1576,7 +1660,7 @@ security_reviewer = "mock_preset"
 			if state.Config.Commands.Test != "go test ./..." {
 				t.Errorf("expected test command 'go test ./...', got %q", state.Config.Commands.Test)
 			}
-			return nil
+			return ProgramResult{}
 		}),
 	)
 	if err != nil {
@@ -1613,18 +1697,18 @@ func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
 	var statePtr *session.State
 	workEnded := make(chan struct{})
 
-	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) error {
+	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 		statePtr = modelState(t, model)
 		statePtr.AddMessage(session.RoleUser, "summarise this turn", session.ContentTypePlain)
 		if err := statePtr.BeginWork(); err != nil {
-			return err
+			return ProgramResult{Err: err}
 		}
 		go func() {
 			<-statePtr.Done() // closed by State.Shutdown during Quiesce
 			statePtr.EndWork()
 			close(workEnded)
 		}()
-		return nil
+		return ProgramResult{}
 	}
 
 	// Hook: verify during the knowledge window that the session is
@@ -1707,7 +1791,7 @@ func TestRunReloadsAfterInlineTrust(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // keep the real trust store out of the test
 
 	var runs int
-	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) error {
+	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 		runs++
 		st := modelState(t, model)
 		switch runs {
@@ -1726,7 +1810,7 @@ func TestRunReloadsAfterInlineTrust(t *testing.T) {
 				t.Errorf("phase 2 config name = %q, want trusted-inline", st.Config.Project.Name)
 			}
 		}
-		return nil
+		return ProgramResult{}
 	}
 
 	var nowUnix int64 = 100
@@ -2222,12 +2306,12 @@ func TestRunOpensConnectOnFirstRun(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	var sawConnect bool
-	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) error {
+	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 		updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 		if strings.Contains(updated.View().Content, "Connect a provider") {
 			sawConnect = true
 		}
-		return nil
+		return ProgramResult{}
 	}
 
 	if err := Run(context.Background(), bytes.NewBuffer(nil),
@@ -2398,8 +2482,8 @@ func TestInjectedWorkerStartsAndStops(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
-			return nil
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			return ProgramResult{}
 		}),
 		WithWorker(fake),
 	)
@@ -2495,8 +2579,8 @@ func TestRunResolvesOptionsOnce(t *testing.T) {
 		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 			return config.Default(), nil
 		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) error {
-			return nil
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			return ProgramResult{}
 		}),
 		customOpt,
 	)

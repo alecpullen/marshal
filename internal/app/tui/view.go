@@ -10,7 +10,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
@@ -94,7 +93,7 @@ func (m *Model) viewString() string {
 		if dockView != "" {
 			rows = append(rows, dockView)
 		}
-		rows = append(rows, m.renderActivityRow())
+		rows = append(rows, m.renderTurnSpinner())
 		rows = append(rows, m.renderInputArea())
 		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
@@ -118,28 +117,23 @@ func (m Model) renderTranscriptFrame() string {
 	return content
 }
 
-// renderActivityRow renders the pinned activity row directly above the
-// input. The row is always reserved — it renders blank while idle — so
-// the transcript frame does not shift when the agent starts working.
-func (m Model) renderActivityRow() string {
-	act := m.state.Activity()
-	if act.Kind == session.ActivityIdle {
+// renderTurnSpinner renders the pinned spinner row directly above the todo
+// panel. It answers one question — is the agent still running? — and so is
+// driven by the turn-level busy flag rather than session.Activity, which
+// resets to ActivityIdle between phases. Elapsed time only: the phase detail
+// belongs to the transcript's live blocks.
+//
+// The row is always reserved (see turnSpinnerRows); it renders blank while
+// idle so the transcript frame does not shift when a turn starts.
+func (m Model) renderTurnSpinner() string {
+	if !m.busy || m.turnStartedAt.IsZero() {
 		return ""
 	}
-	label := strings.TrimSuffix(act.Label, "...")
-	if label == "" {
-		switch act.Kind {
-		case session.ActivityThinking:
-			label = "thinking"
-		default:
-			label = "working"
-		}
-	}
-	elapsed := m.now().Sub(act.StartedAt)
+	elapsed := m.now().Sub(m.turnStartedAt)
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	text := spinnerLabel(m.activeSpinnerFrame(act.Kind), fmt.Sprintf("%s… %s", label, formatElapsed(elapsed)))
+	text := spinnerLabel(m.turnSpinnerFrame(), formatElapsed(elapsed))
 	return statusBusyStyle().Render(" " + strutil.Truncate(text, max(m.leftWidth-1, 1), false))
 }
 

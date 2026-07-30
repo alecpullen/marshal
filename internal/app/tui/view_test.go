@@ -655,6 +655,52 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 	}
 }
 
+func TestSDDPanelDoesNotPushInputOffScreen(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetSDDProgress(session.SDDProgress{
+		Active:      true,
+		PlanName:    "test-plan",
+		Branch:      "feat/test",
+		CurrentTask: 2,
+		TotalTasks:  5,
+		Phase:       "implement",
+		Detail:      "working on the parser",
+		LastLedger:  "wrote 120 lines",
+	})
+	m.refreshViewport()
+
+	frame := stripANSI(m.viewString())
+	lines := strings.Split(frame, "\n")
+	if len(lines) != m.height {
+		t.Fatalf("frame height = %d, want %d (SDD panel pushed input off screen)\n%s", len(lines), m.height, frame)
+	}
+
+	// The SDD panel content must be visible.
+	sddRow := -1
+	for i, line := range lines {
+		if strings.Contains(line, "test-plan") {
+			sddRow = i
+		}
+	}
+	if sddRow < 0 {
+		t.Fatalf("SDD panel missing from the frame:\n%s", frame)
+	}
+
+	// The input box must be visible (the ❯ prompt).
+	inputRow := -1
+	for i, line := range lines {
+		if strings.Contains(line, "❯") {
+			inputRow = i
+		}
+	}
+	if inputRow < 0 {
+		t.Fatalf("input box missing from the frame:\n%s", frame)
+	}
+	if inputRow >= m.height {
+		t.Fatalf("input box at row %d is off-screen (height %d)\n%s", inputRow, m.height, frame)
+	}
+}
+
 func TestTurnSpinnerReservedWhenIdle(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	if got := m.renderTurnSpinner(); got != "" {

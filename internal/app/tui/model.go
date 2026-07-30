@@ -1023,7 +1023,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.sddPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -1766,7 +1766,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-statusLineRows-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-statusLineRows-m.todoPanelRows()-m.sddPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -1817,6 +1817,18 @@ func (m Model) todoPanelRows() int {
 	return lipgloss.Height(body)
 }
 
+// sddPanelRows reports the rows the SDD progress panel occupies. The
+// panel is rendered in the left column stack (view.go) but its height
+// must be budgeted — otherwise the frame grows taller than the terminal
+// and the input area is pushed off the bottom of the screen.
+func (m Model) sddPanelRows() int {
+	sd := m.state.SDDProgress()
+	if !sd.Active {
+		return 0
+	}
+	return lipgloss.Height(sddPanel(sd, m.leftWidth))
+}
+
 // stripShowsBrowser reports whether the live strip is currently rendering
 // the browser session (rather than a swarm or SDD run).
 func (m Model) stripShowsBrowser() bool {
@@ -1838,7 +1850,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.sddPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}

@@ -1,31 +1,61 @@
-// Package skills provides the docked panel for browsing and managing skills.
-//
-// STUB — will be replaced by Task 7 (and modified by Tasks 9/10/11).
 package skills
 
 import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/tui/dock"
+	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/textfield"
 )
 
-// Panel is a docked skills browser.
-type Panel struct{}
+// Panel is the TUI management surface for installed skills.
+type Panel struct {
+	homeDir        string
+	workDir        string
+	projectTrusted bool
+
+	filter textfield.Model
+	list   *settings.FieldList
+	stack  []*settings.Frame
+}
 
 var _ dock.Panel = (*Panel)(nil)
 
-// NewPanel creates a skills browser panel.
-// Signature matches the dispatch call in commands_dispatch.go.
-// Task 10 will add a *session.State parameter.
+// NewPanel builds a skills panel.
 func NewPanel(homeDir, workDir string, projectTrusted bool) *Panel {
-	return &Panel{}
+	p := &Panel{
+		homeDir:        homeDir,
+		workDir:        workDir,
+		projectTrusted: projectTrusted,
+	}
+	p.filter = textfield.New()
+	p.filter.SetVirtualCursor(true)
+	p.filter.Focus()
+	p.list = settings.NewFieldList(p.buildFields)
+	return p
 }
 
-// Update handles messages for the skills panel.
-func (p *Panel) Update(msg tea.Msg) tea.Cmd { return nil }
+func (p *Panel) buildFields() []*settings.Field {
+	return []*settings.Field{
+		settings.NewField("stub", "Skills panel placeholder", settings.KindHeader),
+	}
+}
 
-// View renders the skills panel.
-func (p *Panel) View(width, maxHeight int) string { return "" }
+func (p *Panel) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		if msg.Code == tea.KeyEscape {
+			return func() tea.Msg { return settings.BrowserClosedMsg{} }
+		}
+		l := p.list
+		cmd := settings.FieldListUpdate(l, msg)
+		_ = cmd
+	}
+	return nil
+}
 
-// Sizing reports the panel's height-budget hint.
+func (p *Panel) View(width, maxHeight int) string {
+	return "Skills panel\n" + p.list.View()
+}
+
 func (p *Panel) Sizing() dock.Sizing { return dock.Docked }

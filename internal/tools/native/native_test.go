@@ -40,6 +40,8 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"diagnostics.check":  registry.RiskReadOnly,
 		"tools.select":       registry.RiskReadOnly,
 		"codebase_search":    registry.RiskReadOnly,
+		"json.query":         registry.RiskReadOnly,
+		"csv.inspect":        registry.RiskReadOnly,
 		"references":         registry.RiskReadOnly,
 		"definition":         registry.RiskReadOnly,
 		"hover":              registry.RiskReadOnly,

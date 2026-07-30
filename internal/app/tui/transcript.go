@@ -343,7 +343,7 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, widt
 		if item.Audit == nil {
 			return ""
 		}
-		return renderCompletedToolCall(*item.Audit, width)
+		return renderCompletedToolCall(*item.Audit, detailExpanded, width)
 	case session.KindMessage:
 		if item.Message == nil {
 			return ""
@@ -504,7 +504,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	return b.String()
 }
 
-func renderCompletedToolCall(event registry.AuditEvent, width int) string {
+func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int) string {
 	glyph := "·"
 	style := statusOkStyle()
 	if event.Error != "" {
@@ -575,6 +575,30 @@ func renderCompletedToolCall(event registry.AuditEvent, width int) string {
 			b.WriteString("\n")
 		}
 	}
+	// Non-diff tools with captured output (agent.run is the motivating
+	// case — its ResultContent holds the subagent's report) render it on
+	// ctrl+g, with the same indentation and elision convention as diffs.
+	if expanded && !isDiffTool(event.ToolName) && event.ResultContent != "" {
+		lines := strings.Split(strings.TrimRight(event.ResultContent, "\n"), "\n")
+		elided := 0
+		if len(lines) > maxExpandedResultLines {
+			elided = len(lines) - maxExpandedResultLines
+			lines = lines[:maxExpandedResultLines]
+		}
+		for _, line := range lines {
+			wrapped := ansi.Wrap(line, max(width-5, 1), "")
+			for _, wl := range strings.Split(wrapped, "\n") {
+				b.WriteString("   │ ")
+				b.WriteString(dimStyle().Render(wl))
+				b.WriteString("\n")
+			}
+		}
+		if elided > 0 {
+			b.WriteString("   │ ")
+			b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 
@@ -584,6 +608,10 @@ const (
 	// refactor cannot flood the transcript.
 	maxDiffLinesPerFile = 12
 	maxDiffFiles        = 6
+	// maxExpandedResultLines caps the body an expanded (ctrl+g) non-diff
+	// tool row renders — a subagent report gets the same budget as one
+	// file's diff.
+	maxExpandedResultLines = 12
 )
 
 // diffFile is one file's slice of a unified diff, with precomputed

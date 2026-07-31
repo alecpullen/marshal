@@ -8,6 +8,7 @@ import (
 
 const recentTurnMetricsDefaultLimit = 50
 const recentTurnMetricsMaxLimit = 200
+const maxTurnMetricsRows = 2000
 
 // TokenCategorySet is a bitmask of token categories present in a turn.
 type TokenCategorySet uint8
@@ -111,7 +112,23 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("turn metrics insert id: %w", err)
 	}
+	if err := db.pruneTurnMetrics(row.ProjectID); err != nil {
+		return id, fmt.Errorf("insert turn metrics: %w", err)
+	}
 	return id, nil
+}
+
+func (db *DB) pruneTurnMetrics(projectID int64) error {
+	_, err := db.sqlDB.Exec(
+		`DELETE FROM turn_metrics WHERE id IN (
+			SELECT id FROM turn_metrics WHERE project_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?
+		)`,
+		projectID, maxTurnMetricsRows,
+	)
+	if err != nil {
+		return fmt.Errorf("prune turn metrics: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) RecentTurnMetrics(projectID int64, limit int) ([]TurnMetricsRow, error) {

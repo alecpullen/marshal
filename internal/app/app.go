@@ -1282,7 +1282,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, _, newPipelineFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, err := buildAgentRunner(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
@@ -1300,6 +1300,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	oldMCP := rt.MCPManager
 	oldJobMgr := rt.JobManager
 	oldDesktopCloser := rt.DesktopCloser
+	oldLSP := rt.LSPManager
 
 	// Copy in-place fields. When the startup provider build failed there is
 	// no live runner to mutate — adopt the rebuilt one wholesale (mirroring
@@ -1334,6 +1335,11 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	} else {
 		rt.Snapshot = nil
 	}
+	if newLSPHandle != nil {
+		rt.LSPManager = newLSPHandle
+	} else {
+		rt.LSPManager = nil
+	}
 	rt.JobManager = newJobMgr
 	rt.DesktopCloser = newDesktopCloser
 	rt.CustomAgentFactory = newSubagentFactory
@@ -1356,6 +1362,14 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 	if oldDesktopCloser != nil {
 		oldDesktopCloser()
+	}
+	if oldLSP != nil && oldLSP != newLSPHandle {
+		// Stop the old LSP manager generation. Start a new one if the reload
+		// produced a handle, otherwise leave the slot empty.
+		rt.lspCancel()
+		if newLSPHandle != nil {
+			rt.lspCancel = rt.runLSPManager(rt.LSPManager.Get())
+		}
 	}
 	return cleanupErr
 }

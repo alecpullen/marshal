@@ -56,8 +56,8 @@ func TestPolicyEngine_Evaluate_Guardrails(t *testing.T) {
 
 func TestPolicyEngine_Evaluate_AllowConfirmDenyRules(t *testing.T) {
 	cfg := config.Default()
-	cfg.Tools.Shell.Allow.Commands = []string{"go test", "git status"}
-	cfg.Tools.Shell.Confirm.Commands = []string{"go get", "npm install"}
+	cfg.Tools.Shell.Allow.Commands = []string{"go test ./...", "go test", "git status"}
+	cfg.Tools.Shell.Confirm.Commands = []string{"go get github.com/stretchr/testify@latest", "npm install"}
 	cfg.Tools.Shell.Deny.Patterns = []string{"*destructive*", "kill -9 *"}
 
 	pe := NewEngine(&cfg, []string{})
@@ -68,10 +68,10 @@ func TestPolicyEngine_Evaluate_AllowConfirmDenyRules(t *testing.T) {
 	}{
 		{"go test ./...", DecisionAllow},
 		{"go test", DecisionAllow},
-		{"go test-helper", DecisionConfirm}, // Prefix mismatch on word boundary
+		{"go test-helper", DecisionConfirm}, // Exact-match only; "go test" does not match
 		{"git status", DecisionAllow},
-		{"go get github.com/stretchr/testify", DecisionConfirm},
-		{"npm install --save-dev jest", DecisionConfirm},
+		{"go get github.com/stretchr/testify", DecisionConfirm}, // No exact match for "go get"
+		{"npm install --save-dev jest", DecisionConfirm},          // No exact match for "npm install"
 		{"some destructive command", DecisionDeny},
 		{"kill -9 1234", DecisionDeny},
 		{"docker ps", DecisionConfirm}, // Default fallback (requires confirmation)
@@ -91,7 +91,7 @@ func TestPolicyEngine_Evaluate_AllowConfirmDenyRules(t *testing.T) {
 func TestPolicyEngine_Evaluate_SessionRules(t *testing.T) {
 	cfg := config.Default()
 	// No config rules allowed, but add to session rules
-	pe := NewEngine(&cfg, []string{"npm run dev"})
+	pe := NewEngine(&cfg, []string{"npm run dev --port 3000"})
 
 	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "npm run dev --port 3000"})
 	if err != nil {
@@ -119,12 +119,12 @@ func TestPolicyEngine_Evaluate_AutoApprove(t *testing.T) {
 
 func TestPolicyEngine_Evaluate_TestRunDefault(t *testing.T) {
 	cfg := config.Default()
-	cfg.Tools.Shell.Allow.Commands = []string{"go test"}
+	cfg.Tools.Shell.Allow.Commands = []string{"go test ./..."}
 
 	pe := NewEngine(&cfg, []string{})
 
 	// test.run without command argument should resolve to default test command (go test ./...)
-	// which matches config allow rules since "go test ./..." has prefix "go test"
+	// which matches config allow rules via exact match.
 	dec, _, err := pe.Evaluate("test.run", map[string]interface{}{})
 	if err != nil {
 		t.Fatalf("Evaluate error: %v", err)
@@ -145,7 +145,7 @@ func TestSetSessionRulesUpdatesEvaluateDecisions(t *testing.T) {
 		t.Fatalf("decision before session rule = %v, want %v", decision, DecisionConfirm)
 	}
 
-	pe.SetSessionRules([]string{"echo"})
+	pe.SetSessionRules([]string{"echo hi"})
 
 	decision, _, err = pe.Evaluate("shell.run", map[string]interface{}{"command": "echo hi"})
 	if err != nil {
@@ -630,7 +630,7 @@ func TestEvaluate_ClassifyCommand_Guardrail(t *testing.T) {
 		{"rm -r -f /tmp/x", DecisionDeny, "rm -r -f"},
 		{"rm -fr /tmp/x", DecisionDeny, "rm -r -f"},
 		{"sudo mkfs /dev/sda", DecisionDeny, "blocked by conservative guardrail"},
-		{"echo hi | rm -rf /tmp", DecisionDeny, "rm -rf"},
+		{"echo hi | rm -rf /tmp", DecisionDeny, "blocked by conservative guardrail"},
 		{"rm /tmp/x", DecisionConfirm, ""},
 	}
 

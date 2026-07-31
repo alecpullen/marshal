@@ -156,6 +156,9 @@ func SetFieldPickOptions(f *Field, opts func() []picker.Item) { f.PickOptions = 
 // SetFieldPickOnPick sets the PickOnPick closure of a field.
 func SetFieldPickOnPick(f *Field, pick func(string) error) { f.PickOnPick = pick }
 
+// FieldPickOnPick returns the PickOnPick closure of a field, or nil.
+func FieldPickOnPick(f *Field) func(string) error { return f.PickOnPick }
+
 // SetFieldPickAllowCustom sets the PickAllowCustom flag.
 func SetFieldPickAllowCustom(f *Field, allow bool) { f.PickAllowCustom = allow }
 

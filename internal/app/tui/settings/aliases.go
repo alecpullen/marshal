@@ -84,6 +84,7 @@ var (
 	SetFieldActLabel           = listpanel.SetFieldActLabel
 	SetFieldPickOptions        = listpanel.SetFieldPickOptions
 	SetFieldPickOnPick         = listpanel.SetFieldPickOnPick
+	FieldPickOnPick            = listpanel.FieldPickOnPick
 	SetFieldPickAllowCustom    = listpanel.SetFieldPickAllowCustom
 	SetFieldKeywords           = listpanel.SetFieldKeywords
 	SetFieldWarn               = listpanel.SetFieldWarn

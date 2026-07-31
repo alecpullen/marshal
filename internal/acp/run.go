@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"marshal/internal/app"
@@ -134,7 +135,13 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 				Run:       run,
 				Events:    evBroker,
 				SetMode: func(mode string) error {
-					rt.Runner.SetApprovalMode(policy.ApprovalMode(mode))
+					m := policy.ParseApprovalMode(mode)
+					// Reject unknown modes explicitly instead of silently falling
+					// back to the default read-only mode.
+					if string(m) != strings.ToLower(mode) {
+						return fmt.Errorf("invalid approval mode %q", mode)
+					}
+					rt.Runner.SetApprovalMode(m)
 					return nil
 				},
 				Steer: rt.State.PushSteering,

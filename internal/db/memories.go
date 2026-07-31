@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const maxMemoryRows = 1000
+
 const (
 	MemoryConfidenceTentative = "tentative"
 	MemoryConfidenceConfirmed = "confirmed"
@@ -32,6 +34,22 @@ func (db *DB) SaveMemory(projectID int64, kind, content, sourceSessionID string,
 	)
 	if err != nil {
 		return fmt.Errorf("save memory: %w", err)
+	}
+	if err := db.pruneMemories(projectID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (db *DB) pruneMemories(projectID int64) error {
+	_, err := db.sqlDB.Exec(
+		`DELETE FROM memories WHERE id IN (
+			SELECT id FROM memories WHERE project_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?
+		)`,
+		projectID, maxMemoryRows,
+	)
+	if err != nil {
+		return fmt.Errorf("prune memories: %w", err)
 	}
 	return nil
 }

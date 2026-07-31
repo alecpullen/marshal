@@ -138,6 +138,50 @@ func TestBrokerCloseClosesAllChannels(t *testing.T) {
 	}
 }
 
+func TestBrokerSubscribeAfterCloseReturnsClosedChannel(t *testing.T) {
+	b := NewBroker[string]()
+	b.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := b.Subscribe(ctx)
+
+	if _, ok := <-ch; ok {
+		t.Fatal("Subscribe after Close returned an open channel")
+	}
+
+	// Subsequent Publish is a no-op and does not panic.
+	b.Publish("after-close", "data")
+}
+
+func TestBrokerSubscribeGoroutineExitsOnClose(t *testing.T) {
+	b := NewBroker[string]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Use a long-lived context; the goroutine should still exit on Close.
+	_ = b.Subscribe(ctx)
+	b.Close()
+
+	// Give the goroutine time to exit, then verify no goroutine is still
+	// trying to remove from subs by subscribing again (would race otherwise).
+	done := make(chan struct{})
+	go func() {
+		// The previous unsubscribe goroutine should have exited once Close
+		// shut down its subscription. Re-subscribing after Close is safe.
+		ch := b.Subscribe(ctx)
+		if _, ok := <-ch; ok {
+			t.Error("Subscribe after Close returned an open channel")
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Subscribe after Close did not complete promptly; goroutine leak suspected")
+	}
+}
+
 func TestBrokerStressParallel(t *testing.T) {
 	b := NewBroker[int]()
 	const subs = 8
@@ -181,14 +225,14 @@ func TestTerminalSubscriptionBlocksUntilConsumed(t *testing.T) {
 	<-done
 }
 
-func TestTerminalSubscriptionTimeoutDropsEvent(t *testing.T) {
+func TestTerminalSubscriptionDoesNotDropOnTimeout(t *testing.T) {
 	b := NewBroker[string](WithBufferSize[string](0))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_ = b.Subscribe(ctx, WithTerminal[string]())
+	ch := b.Subscribe(ctx, WithTerminal[string]())
 
-	// Publish 2 events without draining. Each sendBlocking has a 500ms
-	// timeout, so the publisher must unblock within ~1.2s total.
+	// Publish 2 events without draining. Terminal sends must not drop
+	// after a 500ms publisher-side timeout, so the publisher stays blocked.
 	done := make(chan struct{})
 	go func() {
 		b.Publish("a", "1")
@@ -197,8 +241,22 @@ func TestTerminalSubscriptionTimeoutDropsEvent(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("terminal publish did not time out; publisher blocked forever")
+		t.Fatal("terminal publish completed before drain; event was dropped")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Drain both events; the publisher unblocks only after delivery.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatalf("terminal event %d never delivered", i)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("publisher never unblocked after drain")
 	}
 }
 

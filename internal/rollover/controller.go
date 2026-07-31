@@ -42,6 +42,7 @@ type Controller struct {
 	turnsInGen int
 	requested  bool
 	closed     bool
+	failed     bool // true if begin failed after EndGeneration; controller is unusable
 }
 
 // Start opens generation 0.
@@ -73,6 +74,10 @@ func (c *Controller) Archive(ctx context.Context, msgs []schema.ChatMessage) err
 	}
 
 	c.mu.Lock()
+	if c.failed {
+		c.mu.Unlock()
+		return fmt.Errorf("archive: rollover controller is in a failed state")
+	}
 	genID := c.genID
 	startSeq := c.turnSeq
 	c.turnSeq += len(msgs)
@@ -105,6 +110,10 @@ func (c *Controller) EndTurn() {
 // the model's full context window is used instead for the percentage calculation.
 func (c *Controller) Due(ctx context.Context, wire []schema.ChatMessage, contextWindow int) bool {
 	c.mu.Lock()
+	if c.failed {
+		c.mu.Unlock()
+		return false
+	}
 	turnsInGen := c.turnsInGen
 	requested := c.requested
 	c.mu.Unlock()
@@ -137,6 +146,10 @@ func (c *Controller) Due(ctx context.Context, wire []schema.ChatMessage, context
 // Rollover closes the old generation, digests it, and opens the next.
 func (c *Controller) Rollover(ctx context.Context, h GenerationHandle) (seedDigest string, err error) {
 	c.mu.Lock()
+	if c.failed {
+		c.mu.Unlock()
+		return "", fmt.Errorf("rollover: controller is in a failed state")
+	}
 	genID, genSeq := c.genID, c.genSeq
 	c.mu.Unlock()
 
@@ -159,6 +172,7 @@ func (c *Controller) Rollover(ctx context.Context, h GenerationHandle) (seedDige
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.begin(genSeq+1, digest, source); err != nil {
+		c.failed = true
 		return "", fmt.Errorf("begin generation %d: %w", genSeq+1, err)
 	}
 	return digest, nil
@@ -168,7 +182,7 @@ func (c *Controller) Rollover(ctx context.Context, h GenerationHandle) (seedDige
 func (c *Controller) Close(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed || c.failed {
 		return nil
 	}
 	c.closed = true
@@ -176,7 +190,8 @@ func (c *Controller) Close(ctx context.Context) error {
 }
 
 // begin starts a new generation with the given seq, seed digest, and source.
-// Must be called with c.mu held.
+// Must be called with c.mu held. On failure c.genID is cleared and c.failed
+// is set so the controller does not keep archiving into a dead generation.
 func (c *Controller) begin(seq int, seedDigest, digestSource string) error {
 	genID := c.NewID()
 	now := c.Now()
@@ -189,6 +204,8 @@ func (c *Controller) begin(seq int, seedDigest, digestSource string) error {
 		DigestSource: digestSource,
 	}
 	if err := c.Store.BeginGeneration(g); err != nil {
+		c.failed = true
+		c.genID = ""
 		return fmt.Errorf("begin generation: %w", err)
 	}
 	c.genID = genID

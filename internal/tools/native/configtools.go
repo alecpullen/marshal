@@ -180,9 +180,12 @@ func (t *toolSet) configAgentSetTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("decode config.agent.set args: %w", err)
 		}
 		scope := args.resolvedScope()
+		// Flipping approval_mode to an auto-approving mode (auto/copilot)
+		// removes confirmation prompts, so treat it as destructive.
+		approvalModeWeakened := args.ApprovalMode != nil && (*args.ApprovalMode == "auto" || *args.ApprovalMode == "copilot") && t.config.Agent.ApprovalMode != *args.ApprovalMode
 		// Build a diff summary for the approval reason.
 		reason := fmt.Sprintf("config.agent.set (%s scope): update agent section", scope)
-		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+		return t.commitConfigWrite(ctx, scope, reason, approvalModeWeakened, func(cfg *config.Config) {
 			if args.Provider != nil {
 				cfg.Agent.Provider = *args.Provider
 			}
@@ -790,7 +793,13 @@ func (t *toolSet) configToolsShellSetTool() registry.Tool {
 			}
 		}
 		scope := args.resolvedScope()
-		destructive := args.AutoApprove != nil && *args.AutoApprove
+		// Changing the command allow/confirm/deny lists or weakening the
+		// dynamic-argv0 guardrail widens the agent's own approval surface, so
+		// treat those as destructive (forced approval) even in auto/copilot mode.
+		guardrailWeakened := args.GuardrailDynamicArgv0 != nil && *args.GuardrailDynamicArgv0 == "off" && t.config.Tools.Shell.GuardrailDynamicArgv0 != "off"
+		destructive := (args.AutoApprove != nil && *args.AutoApprove) ||
+			args.Allow != nil || args.Confirm != nil || args.Deny != nil ||
+			guardrailWeakened
 		reason := fmt.Sprintf("config.tools.shell.set (%s scope): update tools.shell section", scope)
 		return t.commitConfigWrite(ctx, scope, reason, destructive, func(cfg *config.Config) {
 			if args.DefaultTimeoutSeconds != nil {
@@ -913,7 +922,9 @@ func (t *toolSet) configDiagnosticsSetTool() registry.Tool {
 		}
 		scope := args.resolvedScope()
 		reason := fmt.Sprintf("config.diagnostics.set (%s scope): update diagnostics section", scope)
-		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+		// Diagnostics commands auto-run after file edits with full shell access,
+		// so changing them requires forced approval even in auto/copilot mode.
+		return t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
 			if args.Commands != nil {
 				if cfg.Diagnostics.Commands == nil {
 					cfg.Diagnostics.Commands = make(map[string]string)
@@ -950,7 +961,10 @@ func (t *toolSet) configHooksSetTool() registry.Tool {
 		}
 		scope := args.resolvedScope()
 		reason := fmt.Sprintf("config.hooks.set (%s scope): update hooks section", scope)
-		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
+		// Hooks run arbitrary shell commands on tool events, so installing or
+		// modifying them is treated as a destructive change requiring forced
+		// approval even in auto/copilot mode.
+		return t.commitConfigWrite(ctx, scope, reason, true, func(cfg *config.Config) {
 			if args.FailClosed != nil {
 				cfg.Hooks.FailClosed = *args.FailClosed
 			}

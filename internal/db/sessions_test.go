@@ -493,6 +493,99 @@ func TestDeleteSessionUnknownIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestDeleteSessionCleansOrphanedData verifies that deleting a session removes
+// rows in tables that do not FK to agent_sessions, and that the contentless
+// FTS5 index for generation turns is cleaned up via the delete trigger.
+func TestDeleteSessionCleansOrphanedData(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	projectID, _ := db.GetOrCreateProject("/r", "r")
+	sid := "sess-cleanup"
+	if err := db.CreateSession(sid, projectID, "cleanup", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	now := time.Now().UTC()
+
+	if _, err := db.SaveSnapshot(sid, 1, "hash1", []string{"a.go"}, now); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := db.SaveTodos(sid, []TodoItem{{Content: "todo", Status: "open"}}); err != nil {
+		t.Fatalf("SaveTodos: %v", err)
+	}
+	if _, err := db.sqlDB.Exec(
+		"INSERT INTO file_reads (session_id, path, read_at) VALUES (?, ?, ?)",
+		sid, "read.go", now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert file_reads: %v", err)
+	}
+	if _, err := db.sqlDB.Exec(
+		"INSERT INTO file_writes (session_id, path, written_at) VALUES (?, ?, ?)",
+		sid, "write.go", now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert file_writes: %v", err)
+	}
+
+	if err := db.BeginGeneration(Generation{
+		ID:        "gen-cleanup",
+		SessionID: sid,
+		Seq:       1,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("BeginGeneration: %v", err)
+	}
+	if err := db.ArchiveTurns("gen-cleanup", []ArchivedTurn{
+		{TurnSeq: 1, Role: "user", Content: "find me", CreatedAt: now},
+	}, 1024, now); err != nil {
+		t.Fatalf("ArchiveTurns: %v", err)
+	}
+
+	var ftsBefore int
+	if err := db.sqlDB.QueryRow("SELECT COUNT(*) FROM generation_turns_fts").Scan(&ftsBefore); err != nil {
+		t.Fatalf("count fts before: %v", err)
+	}
+	if ftsBefore != 1 {
+		t.Fatalf("fts rows before delete = %d, want 1", ftsBefore)
+	}
+
+	existed, err := db.DeleteSession(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if !existed {
+		t.Fatal("expected existed=true")
+	}
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"snapshots", "SELECT COUNT(*) FROM snapshots WHERE session_id = ?"},
+		{"file_reads", "SELECT COUNT(*) FROM file_reads WHERE session_id = ?"},
+		{"file_writes", "SELECT COUNT(*) FROM file_writes WHERE session_id = ?"},
+		{"session_state", "SELECT COUNT(*) FROM session_state WHERE session_id = ?"},
+		{"session_generations", "SELECT COUNT(*) FROM session_generations WHERE session_id = ?"},
+		{"agent_sessions", "SELECT COUNT(*) FROM agent_sessions WHERE id = ?"},
+	}
+	for _, c := range cases {
+		var count int
+		if err := db.sqlDB.QueryRow(c.query, sid).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", c.name, err)
+		}
+		if count != 0 {
+			t.Errorf("%s still has %d row(s) after DeleteSession", c.name, count)
+		}
+	}
+
+	var ftsAfter int
+	if err := db.sqlDB.QueryRow("SELECT COUNT(*) FROM generation_turns_fts").Scan(&ftsAfter); err != nil {
+		t.Fatalf("count fts after: %v", err)
+	}
+	if ftsAfter != 0 {
+		t.Errorf("generation_turns_fts still has %d row(s) after DeleteSession", ftsAfter)
+	}
+}
+
 func TestMessagesOnBranchLongChain(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

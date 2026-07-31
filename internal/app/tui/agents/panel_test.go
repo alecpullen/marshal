@@ -227,6 +227,33 @@ func TestRosterPersistNoopWhenNoCommit(t *testing.T) {
 	}
 }
 
+// TestRosterProfilePickerMutatesState verifies that picking a new active
+// profile from the roster root actually changes the working state's profile
+// default, not just a captured struct copy.
+func TestRosterProfilePickerMutatesState(t *testing.T) {
+	cfg := config.Default()
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"fast": {Name: "fast", Roles: map[routing.AgentRole]routing.RoleBinding{}},
+		"slow": {Name: "slow", Roles: map[routing.AgentRole]routing.RoleBinding{}},
+	}
+	cfg.Profile.Default = "fast"
+	p := NewRosterPanel(cfg, "", "", nil)
+
+	// Simulate the profile picker's OnPick callback directly; in the UI this is
+	// invoked via the picker overlay after pressing Enter on the Profile row.
+	profileField := settings.FieldListCursorRow(p.list)
+	if settings.FieldTitle(profileField) != "Profile" {
+		t.Fatalf("cursor not on Profile row: %q", settings.FieldTitle(profileField))
+	}
+	if err := settings.FieldPickOnPick(profileField)("slow"); err != nil {
+		t.Fatalf("OnPick failed: %v", err)
+	}
+
+	if got := settings.StateCfg(p.state).Profile.Default; got != "slow" {
+		t.Fatalf("profile default = %q, want slow (picker wrote to a copy)", got)
+	}
+}
+
 // TestRosterRolePickerOpensOverlay tests that pressing Enter on a role field
 // opens a picker overlay locally, and that PickedMsg triggers persistence.
 func TestRosterRolePickerOpensOverlay(t *testing.T) {

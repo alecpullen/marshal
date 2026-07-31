@@ -194,6 +194,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS generation_turns_fts USING fts5(
     tokenize='porter unicode61'
 );
 
+-- generation_turns_fts is a contentless FTS5 table, so cascading deletes of
+-- generation_turns rows do not automatically remove the index entries. This
+-- trigger keeps the FTS index in sync whenever a generation_turns row is
+-- deleted (including via ON DELETE CASCADE from session_generations).
+-- Contentless FTS5 tables require the special 'delete' command to remove
+-- index entries; a plain DELETE FROM the FTS table is rejected.
+CREATE TRIGGER IF NOT EXISTS trg_generation_turns_fts_delete
+AFTER DELETE ON generation_turns
+BEGIN
+    INSERT INTO generation_turns_fts(generation_turns_fts, rowid, content)
+    VALUES('delete', OLD.id, NULL);
+END;
+
 CREATE TABLE IF NOT EXISTS token_calibration (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,

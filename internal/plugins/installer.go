@@ -33,7 +33,8 @@ func (i *Installer) Clone(ctx context.Context, source, ref, dest string) (string
 	if ref != "" {
 		args = append(args, "--branch", ref)
 	}
-	args = append(args, source, dest)
+	// "--" prevents sources beginning with "-" from being parsed as git flags.
+	args = append(args, "--", source, dest)
 	if err := i.run(ctx, "", args...); err != nil {
 		return "", fmt.Errorf("clone %s: %w", source, err)
 	}

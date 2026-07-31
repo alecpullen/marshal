@@ -19,9 +19,9 @@ type fakeFileState struct {
 	todoErr   error
 }
 
-func (f *fakeFileState) WrittenFiles() ([]string, error) { return f.written, nil }
-func (f *fakeFileState) ReadFiles() ([]string, error)    { return f.read, nil }
-func (f *fakeFileState) GitStatusShort() (string, error) {
+func (f *fakeFileState) WrittenFiles() ([]string, error)            { return f.written, nil }
+func (f *fakeFileState) ReadFiles() ([]string, error)               { return f.read, nil }
+func (f *fakeFileState) GitStatusShort(ctx context.Context) (string, error) {
 	if f.statusErr != nil {
 		return "", f.statusErr
 	}
@@ -30,7 +30,7 @@ func (f *fakeFileState) GitStatusShort() (string, error) {
 	}
 	return f.status, nil
 }
-func (f *fakeFileState) OutstandingTodos() (string, error) {
+func (f *fakeFileState) OutstandingTodos(ctx context.Context) (string, error) {
 	if f.todoErr != nil {
 		return "", f.todoErr
 	}

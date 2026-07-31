@@ -258,6 +258,7 @@ type Runner struct {
 	RunTaskFunc RunTaskFunc
 
 	forceClassMu sync.Mutex
+	approvalMu   sync.Mutex
 	tracker      *progressTracker
 	trackerMu    sync.Mutex
 	stats        *turnStats
@@ -315,6 +316,7 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 		MaxParallelActions:   DefaultMaxParallelActions,
 		MaxToolResultChars:   DefaultMaxToolResultChars,
 		MaxTurnContextTokens: DefaultMaxTurnContextTokens,
+		tracker:              newProgressTracker(),
 	}
 }
 

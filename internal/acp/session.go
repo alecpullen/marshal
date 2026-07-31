@@ -169,6 +169,26 @@ func (m *SessionManager) requireReady() (TurnCanceller, error) {
 	return m.cancel, nil
 }
 
+// validateDeleteParams validates only the fields that matter for
+// session/delete: cwd and sessionId. It enforces the trusted-roots boundary
+// (F-SEC-33) without demanding irrelevant mcpServers/additionalDirectories
+// constraints carried by the shared lifecycle validator.
+func validateDeleteParams(p *sessionParams) error {
+	if strings.TrimSpace(p.Cwd) == "" {
+		return invalidParamsError("cwd is required")
+	}
+	if !filepath.IsAbs(p.Cwd) {
+		return invalidParamsError("cwd must be an absolute path")
+	}
+	if err := validateWorkingPaths(p.Cwd, nil); err != nil {
+		return invalidParamsError("%v", err)
+	}
+	if p.SessionID == "" {
+		return invalidParamsError("sessionId is required")
+	}
+	return nil
+}
+
 // validateLifecycleParams enforces the F21 v1 supported-parameter matrix.
 // Returns an *jsonRPCError with code invalidParams on the first failure.
 func validateLifecycleParams(p *sessionParams, requireSessionID bool) error {
@@ -384,11 +404,8 @@ func (m *SessionManager) Delete(ctx context.Context, params json.RawMessage) (an
 	if err := decodeParams(params, &p, "session/delete"); err != nil {
 		return nil, err
 	}
-	if err := validateLifecycleParams(&p, true); err != nil {
+	if err := validateDeleteParams(&p); err != nil {
 		return nil, err
-	}
-	if len(p.AdditionalDirectories) > 0 {
-		return nil, invalidParamsError("additionalDirectories is not supported for session/delete")
 	}
 	if replaceErr := m.replaceExisting(ctx, p.SessionID, cancel); replaceErr != nil {
 		return nil, replaceErr
@@ -427,6 +444,11 @@ func (m *SessionManager) List(ctx context.Context, params json.RawMessage) (any,
 	}
 	if !filepath.IsAbs(p.Cwd) {
 		return nil, invalidParamsError("cwd must be an absolute path")
+	}
+	// Enforce the same trusted-roots boundary as every other lifecycle method
+	// (F-SEC-33).
+	if err := validateWorkingPaths(p.Cwd, nil); err != nil {
+		return nil, invalidParamsError("%v", err)
 	}
 
 	entries, next, err := m.lister.ListSessions(ctx, p.Cwd, p.Cursor, 0)

@@ -29,8 +29,8 @@ func TestHeadlessResolverNoStoredTrust(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if decision != DecisionTrustSession {
-		t.Fatalf("decision = %s, want TrustSession", decision)
+	if decision != DecisionDontTrust {
+		t.Fatalf("decision = %s, want DontTrust", decision)
 	}
 
 	// Verify the warning was logged.
@@ -132,8 +132,8 @@ func TestHeadlessResolverHashMismatchDegrades(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if decision != DecisionTrustSession {
-		t.Fatalf("decision = %s, want TrustSession (degraded)", decision)
+	if decision != DecisionDontTrust {
+		t.Fatalf("decision = %s, want DontTrust (config changed)", decision)
 	}
 
 	// Verify the warning about config change was logged.
@@ -166,7 +166,7 @@ func TestHeadlessResolverRecordIsNoop(t *testing.T) {
 	}
 }
 
-func TestHeadlessResolverSessionCache(t *testing.T) {
+func TestHeadlessResolverNoStoredTrustIsConsistent(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := t.TempDir()
 	store := NewStore(dataDir)
@@ -185,28 +185,17 @@ func TestHeadlessResolverSessionCache(t *testing.T) {
 
 	resolver := NewHeadlessResolver(store, log)
 
-	// First call: no stored trust, returns TrustSession.
-	decision, err := resolver.Resolve(dir, true)
-	if err != nil {
-		t.Fatalf("Resolve first: %v", err)
-	}
-	if decision != DecisionTrustSession {
-		t.Fatalf("first decision = %s, want TrustSession", decision)
-	}
-
-	// Second call: should hit session cache and return TrustSession
-	// without logging another warning.
-	buf.Reset()
-	decision, err = resolver.Resolve(dir, true)
-	if err != nil {
-		t.Fatalf("Resolve second: %v", err)
-	}
-	if decision != DecisionTrustSession {
-		t.Fatalf("second decision = %s, want TrustSession", decision)
-	}
-
-	// No new warning should have been logged.
-	if buf.Len() > 0 {
-		t.Fatalf("expected no log on cached resolution, got: %s", buf.String())
+	for i := 0; i < 2; i++ {
+		buf.Reset()
+		decision, err := resolver.Resolve(dir, true)
+		if err != nil {
+			t.Fatalf("Resolve #%d: %v", i+1, err)
+		}
+		if decision != DecisionDontTrust {
+			t.Fatalf("decision #%d = %s, want DontTrust", i+1, decision)
+		}
+		if !bytes.Contains(buf.Bytes(), []byte("no stored trust")) {
+			t.Fatalf("expected warning log on call #%d, got: %s", i+1, buf.String())
+		}
 	}
 }

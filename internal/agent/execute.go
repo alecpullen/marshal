@@ -101,7 +101,13 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		r.countToolCall(true, false)
 		return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}}, nil
 	case policy.DecisionConfirm:
+		// State.PendingApproval is a single slot; two concurrent approvals
+		// would overwrite each other and strand the first caller. Serialize
+		// all approval requests on this runner, including those launched
+		// from the parallel read-only batch in executeActions.
+		r.approvalMu.Lock()
 		approved, edited, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason)
+		r.approvalMu.Unlock()
 		if waitErr != nil {
 			return policyLoopResult{}, waitErr
 		}

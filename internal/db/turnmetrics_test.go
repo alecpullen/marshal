@@ -167,6 +167,45 @@ func TestInsertAndRecentTurnMetricsWithNewFields(t *testing.T) {
 	}
 }
 
+func TestInsertTurnMetricsPrunesOldRows(t *testing.T) {
+	database, projectID := openMetricsTestDB(t)
+	for i := 0; i < maxTurnMetricsRows+2; i++ {
+		row := sampleRow(projectID, "")
+		row.Iterations = i + 1
+		if _, err := database.InsertTurnMetrics(row); err != nil {
+			t.Fatalf("InsertTurnMetrics %d: %v", i, err)
+		}
+	}
+	// RecentTurnMetrics caps its result at recentTurnMetricsMaxLimit, so verify
+	// the total pruned row count directly and then check the capped view.
+	var total int
+	if err := database.sqlDB.QueryRow("SELECT COUNT(*) FROM turn_metrics WHERE project_id = ?", projectID).Scan(&total); err != nil {
+		t.Fatalf("count turn_metrics: %v", err)
+	}
+	if total != maxTurnMetricsRows {
+		t.Fatalf("after prune got %d total rows, want %d", total, maxTurnMetricsRows)
+	}
+
+	rows, err := database.RecentTurnMetrics(projectID, recentTurnMetricsMaxLimit)
+	if err != nil {
+		t.Fatalf("RecentTurnMetrics: %v", err)
+	}
+	if len(rows) != recentTurnMetricsMaxLimit {
+		t.Fatalf("RecentTurnMetrics returned %d rows, want %d", len(rows), recentTurnMetricsMaxLimit)
+	}
+	// RecentTurnMetrics returns newest first. We inserted max+2 rows with
+	// iterations 1..max+2; pruning deletes the two oldest, so the newest
+	// retained row has iterations max+2 and the oldest retained has 3.
+	wantNewest := maxTurnMetricsRows + 2
+	wantOldestVisible := wantNewest - recentTurnMetricsMaxLimit + 1
+	if rows[0].Iterations != wantNewest {
+		t.Errorf("newest iterations = %d, want %d", rows[0].Iterations, wantNewest)
+	}
+	if rows[len(rows)-1].Iterations != wantOldestVisible {
+		t.Errorf("oldest visible iterations = %d, want %d", rows[len(rows)-1].Iterations, wantOldestVisible)
+	}
+}
+
 func TestAggregateTurnMetrics(t *testing.T) {
 	database, projectID := openMetricsTestDB(t)
 	if err := database.CreateSession("sess_agg", projectID, "", time.Now()); err != nil {

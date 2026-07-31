@@ -8,27 +8,31 @@ import (
 // HeadlessResolver implements Resolver for headless (ACP) sessions.
 // It never prompts the user and never persists trust decisions.
 // Record is a no-op.
+//
+// Because there is no user present to approve a project config, Resolve is
+// fail-closed: it only grants trust when a stored permanent trust record
+// exists and the on-disk project config hash matches the trusted hash.
 type HeadlessResolver struct {
-	store   *Store
-	log     *slog.Logger
-	session map[string]bool
+	store *Store
+	log   *slog.Logger
 }
 
 // NewHeadlessResolver creates a HeadlessResolver that uses store for
 // reading previously-recorded permanent trust and log for warnings.
 func NewHeadlessResolver(store *Store, log *slog.Logger) *HeadlessResolver {
 	return &HeadlessResolver{
-		store:   store,
-		log:     log,
-		session: map[string]bool{},
+		store: store,
+		log:   log,
 	}
 }
 
 // Resolve resolves trust for workingDir without user interaction.
 //
-//   - If no stored trust exists, returns DecisionTrustSession and logs a warning.
+//   - If no project config exists, returns DecisionDontTrust.
 //   - If stored permanent trust exists and the config hash matches, returns DecisionTrustPermanent.
-//   - If stored hash doesn't match (config changed), degrades to DecisionTrustSession.
+//   - If no stored trust exists, or the stored hash doesn't match (config changed),
+//     returns DecisionDontTrust. Headless sessions cannot prompt, so they must not
+//     extend trust to an unverified or changed config.
 func (r *HeadlessResolver) Resolve(workingDir string, hasProjectConfig bool) (Decision, error) {
 	if !hasProjectConfig {
 		return DecisionDontTrust, nil
@@ -36,39 +40,30 @@ func (r *HeadlessResolver) Resolve(workingDir string, hasProjectConfig bool) (De
 
 	abs, _ := filepath.Abs(workingDir)
 
-	// Check session cache first.
-	if r.session[abs] {
-		return DecisionTrustSession, nil
-	}
-
 	trusted, err := r.store.IsTrusted(abs)
 	if err != nil {
 		return DecisionDontTrust, err
 	}
-
-	if trusted {
-		currentHash, hashErr := ConfigHashFor(workingDir)
-		if hashErr != nil {
-			return DecisionDontTrust, hashErr
-		}
-		storedHash, _ := r.store.StoredConfigHash(abs)
-		if storedHash == currentHash {
-			return DecisionTrustPermanent, nil
-		}
-		// Config changed: degrade to session trust.
-		r.session[abs] = true
-		r.log.Warn("project config changed since trust was recorded; degrading to session trust",
+	if !trusted {
+		r.log.Warn("no stored trust for project; refusing trust in headless mode",
 			"dir", abs,
 		)
-		return DecisionTrustSession, nil
+		return DecisionDontTrust, nil
 	}
 
-	// No stored trust: grant session trust with a warning.
-	r.session[abs] = true
-	r.log.Warn("no stored trust for project; granting session trust in headless mode",
-		"dir", abs,
-	)
-	return DecisionTrustSession, nil
+	currentHash, hashErr := ConfigHashFor(workingDir)
+	if hashErr != nil {
+		return DecisionDontTrust, hashErr
+	}
+	storedHash, _ := r.store.StoredConfigHash(abs)
+	if storedHash != currentHash {
+		r.log.Warn("project config changed since trust was recorded; refusing trust in headless mode",
+			"dir", abs,
+		)
+		return DecisionDontTrust, nil
+	}
+
+	return DecisionTrustPermanent, nil
 }
 
 // Record is a no-op — headless mode never persists trust decisions.

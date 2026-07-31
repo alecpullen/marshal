@@ -86,6 +86,11 @@ func (db *DB) Migrate() error {
 	// these columns, so the additions are no-ops in that case. Each table
 	// is introspected once.
 	checked := map[string]map[string]bool{}
+	// The parent_id backfill is a one-time migration for legacy databases
+	// that existed before the column was added. It must run exactly once,
+	// because a rewind-to-root deliberately stores NULL parent_id for new
+	// roots and re-running the backfill would re-attach them (B-04).
+	addedParentID := false
 	for _, c := range migrationColumns {
 		cols, ok := checked[c.table]
 		if !ok {
@@ -104,17 +109,22 @@ func (db *DB) Migrate() error {
 			return fmt.Errorf("add column %s to %s: %w", c.name, c.table, err)
 		}
 		cols[c.name] = true
+		if c.table == "messages" && c.name == "parent_id" {
+			addedParentID = true
+		}
 	}
 
 	// Backfill existing linear rows: parent = previous row in the same session.
-	if _, err := db.sqlDB.Exec(`
-		UPDATE messages SET parent_id = (
-			SELECT m2.id FROM messages m2
-			WHERE m2.session_id = messages.session_id AND m2.id < messages.id
-			ORDER BY m2.id DESC LIMIT 1
-		) WHERE parent_id IS NULL
-	`); err != nil {
-		return fmt.Errorf("backfill parent_id: %w", err)
+	if addedParentID {
+		if _, err := db.sqlDB.Exec(`
+			UPDATE messages SET parent_id = (
+				SELECT m2.id FROM messages m2
+				WHERE m2.session_id = messages.session_id AND m2.id < messages.id
+				ORDER BY m2.id DESC LIMIT 1
+			) WHERE parent_id IS NULL
+		`); err != nil {
+			return fmt.Errorf("backfill parent_id: %w", err)
+		}
 	}
 	// Set each session's leaf to its max message id.
 	if _, err := db.sqlDB.Exec(`

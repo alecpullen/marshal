@@ -60,6 +60,7 @@ type subscription[T any] struct {
 	ch        chan Event[T]
 	stopCh    chan struct{}
 	closeOnce sync.Once
+	ctx       context.Context
 
 	mu       sync.Mutex
 	closed   bool
@@ -68,20 +69,21 @@ type subscription[T any] struct {
 	terminal bool
 }
 
-func newSubscription[T any](buffer int) *subscription[T] {
+func newSubscription[T any](ctx context.Context, buffer int) *subscription[T] {
 	if buffer < 0 {
 		buffer = 0
 	}
 	return &subscription[T]{
 		ch:     make(chan Event[T], buffer),
 		stopCh: make(chan struct{}),
+		ctx:    ctx,
 		buffer: buffer,
 	}
 }
 
 // sendBlocking is for terminal subscribers: must receive. Blocks until
-// delivered, ctx-cancelled, sub closed, or a 500ms timeout elapses (in
-// which case a warning is logged and the event is dropped).
+// delivered, ctx-cancelled, or sub closed. Terminal events are never
+// dropped by a publisher-side timeout.
 func sendBlocking[T any](s *subscription[T], ev Event[T]) {
 	if !s.enter() {
 		return
@@ -91,8 +93,7 @@ func sendBlocking[T any](s *subscription[T], ev Event[T]) {
 	select {
 	case s.ch <- ev:
 	case <-s.stopCh:
-	case <-time.After(500 * time.Millisecond):
-		slog.Default().Warn("terminal subscription slow; dropping", "topic", ev.Type)
+	case <-s.ctx.Done():
 	}
 }
 
@@ -209,11 +210,14 @@ func NewBroker[T any](opts ...Option[T]) *Broker[T] {
 // Subscribe returns a receive channel. When ctx is cancelled the channel
 // is closed and the subscription is removed. A terminal subscriber also
 // unblocks any pending Publish on ctx cancellation.
+//
+// Subscribe after Close returns an already-closed channel and starts no
+// goroutine, so callers ranging over the channel terminate immediately.
 func (b *Broker[T]) Subscribe(ctx context.Context, opts ...Option[T]) <-chan Event[T] {
 	b.mu.RLock()
 	defaults := b.defaultOpts
 	b.mu.RUnlock()
-	s := newSubscription[T](16)
+	s := newSubscription[T](ctx, 16)
 	for _, opt := range defaults {
 		opt(s)
 	}
@@ -225,11 +229,21 @@ func (b *Broker[T]) Subscribe(ctx context.Context, opts ...Option[T]) <-chan Eve
 	}
 
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		s.shutdown()
+		return s.ch
+	}
 	b.subs = append(b.subs, s)
 	b.mu.Unlock()
 
 	go func() {
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-s.stopCh:
+			// Broker closed or subscription already shut down; nothing to do.
+			return
+		}
 		b.mu.Lock()
 		for i, sub := range b.subs {
 			if sub == s {

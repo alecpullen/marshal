@@ -18,6 +18,14 @@ import (
 // keys with no completion popup, Tab while an approval/question is
 // pending).
 func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	// readlineShortcutAvailable reports whether a key that shadows standard
+	// readline/textarea bindings should be handled globally right now. When
+	// the input has text or the user is editing a command, those keys fall
+	// through to the textarea so shell muscle memory (Ctrl+U clears the
+	// prompt, End goes to line-end, etc.) keeps working.
+	readlineShortcutAvailable := func() bool {
+		return m.input.Value() == "" && !m.editingCommand
+	}
 	// Pipeline human gate: esc abandons the run; every other key falls
 	// through to the input so the user can type an answer. The Enter
 	// handler routes the submitted text to AnswerGate.
@@ -61,10 +69,16 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.openSettingsBrowser("")
 		return *m, nil, true
 	case "ctrl+p":
+		if !readlineShortcutAvailable() {
+			return *m, nil, false
+		}
 		cmd := m.openModels()
 		m.refreshViewport()
 		return *m, cmd, true
 	case "ctrl+k":
+		if !readlineShortcutAvailable() {
+			return *m, nil, false
+		}
 		if m.memoryDB == nil {
 			return *m, nil, true
 		}
@@ -77,12 +91,18 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.refreshViewport()
 		return *m, nil, true
 	case "ctrl+t":
+		if !readlineShortcutAvailable() {
+			return *m, nil, false
+		}
 		// Cycle the pinned todo panel: expanded → collapsed → hidden.
 		// State persists for the session.
 		m.todoPanelMode = (m.todoPanelMode + 1) % todoPanelModeCount
 		m.updateViewportHeight()
 		return *m, nil, true
 	case "ctrl+b":
+		if !readlineShortcutAvailable() {
+			return *m, nil, false
+		}
 		// Toggle the widescreen side rail for the session. Not persisted;
 		// [tui.side_panel].enabled is the durable setting.
 		m.railHidden = !m.railHidden
@@ -131,16 +151,25 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, vpCmd, true
 	case "ctrl+u":
+		if !readlineShortcutAvailable() {
+			return *m, nil, false
+		}
 		m.viewport.HalfPageUp()
 		m.viewportFollow = false
 		return *m, nil, true
 	case "ctrl+d":
+		if !readlineShortcutAvailable() {
+			return *m, nil, false
+		}
 		m.viewport.HalfPageDown()
 		if m.viewport.AtBottom() {
 			m.viewportFollow = true
 		}
 		return *m, nil, true
 	case "end":
+		if !readlineShortcutAvailable() {
+			return *m, nil, false
+		}
 		m.viewport.GotoBottom()
 		m.viewportFollow = true
 		return *m, nil, true

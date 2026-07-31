@@ -1505,13 +1505,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// to the approval form so selection navigation round-trips correctly.
 	// The edit sub-mode captures the edited command/args in the main
 	// textarea before the decision is sent.
+	//
+	// Scroll gestures are handled first so the user can review transcript
+	// history before approving a destructive command.
 	if tc := m.state.PendingApproval(); tc != nil {
+		if updated, cmd, handled := m.scrollTranscript(msg); handled {
+			return updated, cmd
+		}
 		return m.handleApproval(msg, tc)
 	}
 
 	// Inline question prompt: when a clarifying question is pending, route
-	// messages to the question form.
+	// messages to the question form. Scroll gestures are handled first so the
+	// transcript remains navigable while the question is visible.
 	if q := m.state.PendingQuestion(); q != nil {
+		if updated, cmd, handled := m.scrollTranscript(msg); handled {
+			return updated, cmd
+		}
 		return m.handleQuestion(msg, q)
 	}
 
@@ -1752,6 +1762,57 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 	m.updateViewportHeight()
 	m.lastTranscriptHash = 0
 	return m, nil
+}
+
+// scrollTranscript routes viewport scroll gestures to the transcript
+// viewport so the user can review history while an approval or question
+// panel is open. It returns (model, cmd, true) when the message was handled.
+func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case tea.MouseWheelMsg:
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.viewportFollow = false
+		case tea.MouseWheelDown:
+			if m.viewport.AtBottom() {
+				m.viewportFollow = true
+			}
+		}
+		return *m, vpCmd, true
+	}
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		switch k.String() {
+		case "pgup":
+			var vpCmd tea.Cmd
+			m.viewport, vpCmd = m.viewport.Update(msg)
+			m.viewportFollow = false
+			return *m, vpCmd, true
+		case "pgdown":
+			var vpCmd tea.Cmd
+			m.viewport, vpCmd = m.viewport.Update(msg)
+			if m.viewport.AtBottom() {
+				m.viewportFollow = true
+			}
+			return *m, vpCmd, true
+		case "ctrl+u":
+			m.viewport.HalfPageUp()
+			m.viewportFollow = false
+			return *m, nil, true
+		case "ctrl+d":
+			m.viewport.HalfPageDown()
+			if m.viewport.AtBottom() {
+				m.viewportFollow = true
+			}
+			return *m, nil, true
+		case "end":
+			m.viewport.GotoBottom()
+			m.viewportFollow = true
+			return *m, nil, true
+		}
+	}
+	return *m, nil, false
 }
 
 // inputChromeRows counts the rows the input area reserves for everything

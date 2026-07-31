@@ -154,8 +154,15 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 	// Pass through allowlisted env so the command has PATH/HOME/etc inside
 	// the container. Empty allowlist = no env (consistent with restricted
 	// mode's behavior for explicit-empty allowlist).
+	//
+	// Apply the same secret/dangerous-key filtering the restricted backend
+	// uses: a user-supplied allowlist must not be used to inject secrets,
+	// dynamic-loader keys, or shell-hijack variables into the container.
 	for _, key := range c.cfg.EnvAllowlist {
 		if c.envDenySet[key] {
+			continue
+		}
+		if envutil.IsDangerousKey(key) || envutil.IsSecretKey(key) {
 			continue
 		}
 		if v, ok := os.LookupEnv(key); ok {

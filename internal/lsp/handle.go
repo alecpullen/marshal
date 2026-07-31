@@ -47,6 +47,15 @@ func (h *Handle) ServerFor(lang string) (*Client, bool) {
 	return m.ServerFor(lang)
 }
 
+// Root returns the manager's workspace root, or "" if there is no manager.
+func (h *Handle) Root() string {
+	m := h.Get()
+	if m == nil {
+		return ""
+	}
+	return m.Root()
+}
+
 // Restart builds a new Manager rooted at root, swaps it in, and returns
 // both managers. The caller shuts old down and runs newM.
 func (h *Handle) Restart(root string) (newM, old *Manager) {

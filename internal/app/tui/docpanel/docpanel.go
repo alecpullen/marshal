@@ -109,15 +109,29 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	pw := layout.PanelWidth(width)
 	inner := pw - 3
-	p.stack.SetSize(inner, max(maxHeight-3, 1))
+
+	// Reserve the rendered footer height so the keybinding cheatsheet is not
+	// clipped by chrome.PanelWithHints. The chrome adds one header row, so the
+	// list plus footer must fit in maxHeight-1 rows.
+	footerHeight := 0
+	footer := ""
+	if len(p.stack.Stack) == 1 && p.doc.Footer != "" {
+		footer = lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(p.doc.Footer)
+		footerHeight = lipgloss.Height(footer)
+	}
+	listHeight := maxHeight - 1 - footerHeight
+	if listHeight < 1 {
+		listHeight = 1
+	}
+	p.stack.SetSize(inner, listHeight)
 
 	title := p.doc.Title
 	if len(p.stack.Stack) > 1 {
 		title = p.stack.Breadcrumb(p.doc.Title)
 	}
 	body := p.stack.Top().List.View()
-	if len(p.stack.Stack) == 1 && p.doc.Footer != "" {
-		body += "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(p.doc.Footer)
+	if footer != "" {
+		body += "\n" + footer
 	}
 	hints := "↑↓ move · ↵ select · esc back"
 	if len(p.stack.Stack) == 1 {

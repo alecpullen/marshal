@@ -120,10 +120,11 @@ func Search(ctx context.Context, database *db.DB, sessionID, query string, limit
 	fmt.Fprintf(&b, "Found %d match(es):\n\n", len(hits))
 	for _, h := range hits {
 		fmt.Fprintf(&b, "  gen %d, turn %d (%s)\n", h.GenerationSeq, h.Turn.TurnSeq, h.Turn.Role)
-		// Show a snippet of the content
-		snippet := h.Turn.Content
-		if len(snippet) > 200 {
-			snippet = snippet[:200] + "..."
+		// Show a snippet of the content (truncate on rune boundaries, not bytes).
+		runes := []rune(h.Turn.Content)
+		snippet := string(runes)
+		if len(runes) > 200 {
+			snippet = string(runes[:200]) + "..."
 		}
 		// Indent the snippet
 		for _, line := range strings.Split(snippet, "\n") {

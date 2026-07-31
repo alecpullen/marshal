@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"marshal/internal/app/config"
@@ -174,24 +177,53 @@ func runHook(ctx context.Context, command string, payload any) ([]byte, error) {
 		return nil, err
 	}
 
-	if err := json.NewEncoder(stdin).Encode(payload); err != nil {
-		_ = stdin.Close()
-		_ = cmd.Wait()
-		return nil, err
-	}
-	_ = stdin.Close()
+	// Write stdin in its own goroutine. A large payload can fill the 64KB
+	// pipe buffer and block before the hook drains stdout; draining stdout
+	// concurrently prevents both deadlock and spurious EPIPE failures for
+	// hooks that do not read stdin.
+	stdinErrCh := make(chan error, 1)
+	go func() {
+		defer func() { _ = stdin.Close() }()
+		if err := json.NewEncoder(stdin).Encode(payload); err != nil && !isBrokenPipe(err) {
+			stdinErrCh <- err
+			return
+		}
+		stdinErrCh <- nil
+	}()
 
 	stdout := &limitedBuffer{max: maxHookOutputBytes}
 	_, _ = io.Copy(stdout, stdoutPipe)
 
-	if err := cmd.Wait(); err != nil {
-		return stdout.bytes(), err
+	waitErr := cmd.Wait()
+	encodeErr := <-stdinErrCh
+
+	if waitErr != nil {
+		return stdout.bytes(), waitErr
+	}
+	if encodeErr != nil {
+		return stdout.bytes(), encodeErr
 	}
 
 	if stdout.truncated {
 		return stdout.bytes(), fmt.Errorf("hook output exceeded %d bytes", maxHookOutputBytes)
 	}
 	return stdout.bytes(), nil
+}
+
+// isBrokenPipe reports whether err is an EPIPE / broken-pipe / closed-pipe
+// error that can be safely ignored when a hook does not read stdin.
+func isBrokenPipe(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, os.ErrClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		return errors.Is(opErr.Err, syscall.EPIPE) || errors.Is(opErr.Err, os.ErrClosed)
+	}
+	return false
 }
 
 // scrubHookEnv returns a copy of parentEnv with secret-bearing vars

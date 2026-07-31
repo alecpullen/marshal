@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -51,6 +52,7 @@ func DetectServers(configured map[string]ServerSpec, disabled map[string]bool) m
 
 type serverState struct {
 	client *Client
+	cmd    *exec.Cmd
 	ready  bool
 }
 
@@ -67,10 +69,20 @@ func NewManager(root string, servers map[string]ServerSpec, log *slog.Logger) *M
 	if log == nil {
 		log = slog.Default()
 	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
 	return &Manager{root: root, servers: servers, log: log, state: map[string]*serverState{}}
 }
 
 func (m *Manager) Name() string { return "lsp-manager" }
+
+// Root returns the workspace root for this manager.
+func (m *Manager) Root() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.root
+}
 
 // Run spawns configured servers and supervises them until ctx is cancelled.
 // Each server is started in its own goroutine so a hung Initialize does not
@@ -110,23 +122,35 @@ func (m *Manager) startServer(ctx context.Context, lang string, spec ServerSpec)
 	client := newClient(stdin, stdout)
 	initCtx, cancel := context.WithTimeout(ctx, initializeTimeout)
 	defer cancel()
-	if err := client.Initialize(initCtx, "file://"+m.root); err != nil {
+	if err := client.Initialize(initCtx, toFileURI("", m.root)); err != nil {
 		m.log.Debug("lsp initialize", "lang", lang, "err", err)
-		// Kill the child process on init failure so it does not leak.
-		cmd.Process.Kill()
+		// Reap the child process on init failure so it does not become a zombie.
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
 		return
 	}
 	m.mu.Lock()
-	m.state[lang] = &serverState{client: client, ready: true}
+	m.state[lang] = &serverState{client: client, cmd: cmd, ready: true}
 	m.mu.Unlock()
 }
 
 func (m *Manager) shutdownAll() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	states := make([]*serverState, 0, len(m.state))
 	for _, st := range m.state {
+		states = append(states, st)
+	}
+	m.mu.Unlock()
+
+	for _, st := range states {
 		if st.client != nil {
 			st.client.Close()
+		}
+		if st.cmd != nil && st.cmd.Process != nil {
+			_ = st.cmd.Process.Kill()
+			_ = st.cmd.Wait()
 		}
 	}
 }

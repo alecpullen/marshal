@@ -123,7 +123,7 @@ func New() *Registry {
 }
 
 func (r *Registry) Register(cmd Command) error {
-	name := strings.TrimSpace(cmd.Name)
+	name := strings.ToLower(strings.TrimSpace(cmd.Name))
 	if name == "" {
 		return fmt.Errorf("%w: name is required", ErrInvalidCommand)
 	}
@@ -133,6 +133,7 @@ func (r *Registry) Register(cmd Command) error {
 	if _, exists := r.commands[name]; exists {
 		return fmt.Errorf("%w: %q", ErrDuplicateCommand, name)
 	}
+	cmd.Name = name
 	r.commands[name] = cmd
 	return nil
 }

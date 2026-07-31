@@ -134,7 +134,7 @@ func (p *Panel) matchedFields() []*settings.Field {
 	})
 	settings.SetFieldPickOnPick(profileField, func(v string) error {
 		if _, ok := cfg.AgentProfiles[v]; ok {
-			cfg.Profile.Default = v
+			settings.SetStateProfileDefault(p.state, v)
 		}
 		return nil
 	})
@@ -604,7 +604,7 @@ func (p *Panel) persistNow() tea.Cmd {
 // a change, save the config to disk and emit a ChangedMsg so the model can
 // apply and reload it.
 func (p *Panel) maybePersist(inner tea.Cmd) tea.Cmd {
-	if !settings.FieldListCommitted(p.list) {
+	if !settings.FieldListCommitted(p.activeList()) {
 		return inner
 	}
 	cfg := settings.StateCfg(p.state)
@@ -677,7 +677,14 @@ func (p *Panel) View(width, maxHeight int) string {
 
 	content := body + "\n" + lipgloss.NewStyle().Foreground(theme.Current().FGMuted).Render(footer)
 	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
-	return chrome.PanelWithHints(title, "", content, panelWidth, panelHeight, true, theme.Current())
+
+	var hints string
+	if len(p.stack) > 0 {
+		hints = "↑↓ select · ↵ edit · Esc back"
+	} else {
+		hints = "↑↓ select · ↵ open · ? legend · Esc close"
+	}
+	return chrome.PanelWithHints(title, hints, content, panelWidth, panelHeight, true, theme.Current())
 }
 
 // resolveGlyph returns the glyph and source label for a cast entry.

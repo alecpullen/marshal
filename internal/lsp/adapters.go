@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,7 +24,7 @@ func (a *SymbolAdapter) DocumentSymbols(ctx context.Context, lang, filePath stri
 	if !ok {
 		return nil, false
 	}
-	uri := "file://" + filePath
+	uri := toFileURI(a.h.Root(), filePath)
 	_ = client.Notify("textDocument/didOpen", map[string]any{
 		"textDocument": map[string]any{"uri": uri, "languageId": lang, "version": 1, "text": string(content)},
 	})
@@ -30,6 +32,7 @@ func (a *SymbolAdapter) DocumentSymbols(ctx context.Context, lang, filePath stri
 		"textDocument": map[string]any{"uri": uri},
 	})
 	_ = client.Notify("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": uri}})
+	client.ClearDiagnostics(uri)
 	if err != nil {
 		return nil, false
 	}
@@ -56,7 +59,7 @@ func (a *QueryAdapter) Hover(ctx context.Context, filePath string, line, col int
 	if !ok {
 		return "", false
 	}
-	raw, err := client.Request(ctx, "textDocument/hover", posParams(filePath, line, col, nil))
+	raw, err := client.Request(ctx, "textDocument/hover", posParams(a.h.Root(), filePath, line, col, nil))
 	if err != nil {
 		return "", false
 	}
@@ -109,7 +112,7 @@ func (a *QueryAdapter) locations(ctx context.Context, filePath string, line, col
 	if !ok {
 		return nil, false
 	}
-	raw, err := client.Request(ctx, method, posParams(filePath, line, col, extra))
+	raw, err := client.Request(ctx, method, posParams(a.h.Root(), filePath, line, col, extra))
 	if err != nil {
 		return nil, false
 	}
@@ -123,7 +126,11 @@ func (a *QueryAdapter) locations(ctx context.Context, filePath string, line, col
 	}
 	out := make([]string, 0, len(locs))
 	for _, l := range locs {
-		out = append(out, fmt.Sprintf("%s:%d", strings.TrimPrefix(l.URI, "file://"), l.Range.Start.Line+1))
+		p, err := fromFileURI(l.URI)
+		if err != nil {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s:%d", p, l.Range.Start.Line+1))
 	}
 	return out, true
 }
@@ -138,7 +145,7 @@ func (a *DiagnosticsAdapter) Diagnostics(lang, filePath string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	uri := "file://" + filePath
+	uri := toFileURI(a.h.Root(), filePath)
 
 	// Read file content (cap at 2 MiB to avoid OOM on generated files).
 	info, err := os.Stat(filePath)
@@ -161,6 +168,7 @@ func (a *DiagnosticsAdapter) Diagnostics(lang, filePath string) (string, bool) {
 	defer func() {
 		if opened {
 			_ = client.Notify("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": uri}})
+			client.ClearDiagnostics(uri)
 		}
 	}()
 
@@ -196,9 +204,39 @@ func jsonUnmarshal(raw []byte, v any) error {
 	return json.Unmarshal(raw, v)
 }
 
-func posParams(filePath string, line, col int, extra map[string]any) map[string]any {
+// toFileURI converts a possibly-relative file path into a valid file:// URI,
+// resolving it against root when necessary and percent-encoding characters
+// that are invalid in a URI path (spaces, #, %, etc.).
+func toFileURI(root, filePath string) string {
+	if !filepath.IsAbs(filePath) {
+		if root != "" {
+			filePath = filepath.Join(root, filePath)
+		} else {
+			if abs, err := filepath.Abs(filePath); err == nil {
+				filePath = abs
+			}
+		}
+	}
+	filePath = filepath.ToSlash(filePath)
+	if !strings.HasPrefix(filePath, "/") {
+		filePath = "/" + filePath
+	}
+	return (&url.URL{Scheme: "file", Path: filePath}).String()
+}
+
+// fromFileURI converts a file:// URI back to an OS-native absolute path,
+// percent-decoding any encoded characters.
+func fromFileURI(uri string) (string, error) {
+	u, err := url.Parse(uri)
+	if err != nil || u.Scheme != "file" {
+		return "", fmt.Errorf("not a file URI: %q", uri)
+	}
+	return filepath.FromSlash(u.Path), nil
+}
+
+func posParams(root, filePath string, line, col int, extra map[string]any) map[string]any {
 	p := map[string]any{
-		"textDocument": map[string]any{"uri": "file://" + filePath},
+		"textDocument": map[string]any{"uri": toFileURI(root, filePath)},
 		"position":     map[string]any{"line": line, "character": col},
 	}
 	for k, v := range extra {

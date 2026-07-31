@@ -66,8 +66,10 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 				continue
 			}
 			content := t.Message.Content
+			reasoning := t.Message.Reasoning
 			if redactOn {
 				content = redact.Secrets(content)
+				reasoning = redact.Secrets(reasoning)
 			}
 			contentHTML := contentToHTML(md, content, t.Message.ContentType)
 			cls := "user"
@@ -84,22 +86,26 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 				MessageClass: cls,
 				RoleLabel:    role,
 				ContentHTML:  contentHTML,
-				Reasoning:    t.Message.Reasoning,
+				Reasoning:    reasoning,
 			})
 		case session.KindAudit:
 			if t.Audit == nil {
 				continue
 			}
 			args := string(t.Audit.Args)
+			resultSummary := t.Audit.ResultSummary
+			toolError := t.Audit.Error
 			if redactOn {
 				args = redact.Secrets(args)
+				resultSummary = redact.Secrets(resultSummary)
+				toolError = redact.Secrets(toolError)
 			}
 			items = append(items, item{
 				IsTool:        true,
 				ToolName:      t.Audit.ToolName,
-				ResultSummary: t.Audit.ResultSummary,
+				ResultSummary: resultSummary,
 				ToolArgs:      args,
-				ToolError:     t.Audit.Error,
+				ToolError:     toolError,
 			})
 		}
 	}

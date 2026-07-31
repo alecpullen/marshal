@@ -530,6 +530,58 @@ func TestController_Rollover_EndGenerationError(t *testing.T) {
 	}
 }
 
+func TestController_Rollover_BeginGenerationErrorLeavesFailedState(t *testing.T) {
+	store := &fakeStore{}
+	c := newTestController(store, &fakeDigestProvider{digest: "summary", source: SourceLLMSummary}, &fakeCounter{}, Policy{})
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	genID, genSeq, _ := c.Current()
+	store.beginErr = errors.New("begin failed")
+	handle := GenerationHandle{
+		SessionID:    "test-session",
+		GenerationID: genID,
+		Seq:          genSeq,
+	}
+	_, err := c.Rollover(context.Background(), handle)
+	if err == nil {
+		t.Fatal("expected error from Rollover when BeginGeneration fails")
+	}
+
+	// The old generation was ended, but c.genID must not reference it.
+	currentGenID, _, _ := c.Current()
+	if currentGenID == genID {
+		t.Errorf("Current() still references ended generation %q", genID)
+	}
+	if currentGenID != "" {
+		t.Errorf("Current() genID = %q, want empty", currentGenID)
+	}
+
+	// The controller should refuse further work instead of archiving into
+	// the dead generation.
+	if c.Due(context.Background(), nil, 10000) {
+		t.Error("Due returned true after rollover failure")
+	}
+	if err := c.Archive(context.Background(), []schema.ChatMessage{{Role: schema.RoleUser, Content: "x"}}); err == nil {
+		t.Error("Archive succeeded after rollover failure")
+	}
+	if _, err := c.Rollover(context.Background(), handle); err == nil {
+		t.Error("second Rollover succeeded after rollover failure")
+	}
+
+	// Close must be idempotent: the old generation is already ended.
+	if err := c.Close(context.Background()); err != nil {
+		t.Fatalf("Close after rollover failure: %v", err)
+	}
+	store.mu.Lock()
+	ended := len(store.ended)
+	store.mu.Unlock()
+	if ended != 1 {
+		t.Errorf("expected 1 ended generation, got %d", ended)
+	}
+}
+
 func TestController_Close_EndsLiveGeneration(t *testing.T) {
 	store := &fakeStore{}
 	c := newTestController(store, &fakeDigestProvider{}, &fakeCounter{}, Policy{})

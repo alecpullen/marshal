@@ -99,7 +99,7 @@ func TestSessionLifecycleValidation(t *testing.T) {
 		StartRuntime: fakeRuntimeStart(&idSeq, nil),
 		CloseRuntime: noopClose(),
 		Notify:       func(method string, params any) error { return nil },
-		Lister:       &fakeLister{},
+		Lister:       &fakeLister{deleteExisted: true},
 	})
 	m.SetTurnCanceller(noopCancel())
 
@@ -135,8 +135,11 @@ func TestSessionLifecycleValidation(t *testing.T) {
 		{"delete missing cwd", "delete", `{"sessionId":"sess_x","mcpServers":[]}`, invalidParams},
 		{"delete relative cwd", "delete", `{"cwd":"relative/path","sessionId":"sess_x","mcpServers":[]}`, invalidParams},
 		{"delete missing sessionId", "delete", `{"cwd":"` + absCwd + `","mcpServers":[]}`, invalidParams},
-		{"delete non-empty mcpServers", "delete", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[{"name":"x"}]}`, invalidParams},
-		{"delete non-empty additional directories", "delete", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/tmp/extra"]}`, invalidParams},
+		// Delete accepts the natural {cwd, sessionId} payload without mcpServers.
+		{"delete natural payload", "delete", `{"cwd":"` + absCwd + `","sessionId":"sess_delete_ok"}`, 0},
+		// Delete ignores mcpServers/additionalDirectories rather than rejecting them.
+		{"delete non-empty mcpServers", "delete", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[{"name":"x"}]}`, 0},
+		{"delete non-empty additional directories", "delete", `{"cwd":"` + absCwd + `","sessionId":"sess_x","mcpServers":[],"additionalDirectories":["/tmp/extra"]}`, 0},
 	}
 
 	for _, tc := range cases {
@@ -825,6 +828,24 @@ func TestSessionListProjectsFromLister(t *testing.T) {
 	}
 	if _, hasNext := obj["nextCursor"]; hasNext {
 		t.Fatalf("unexpected nextCursor: %+v", obj["nextCursor"])
+	}
+}
+
+func TestSessionListRejectsUntrustedRoot(t *testing.T) {
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&atomic.Int64{}, nil),
+		CloseRuntime: noopClose(),
+		Lister:       &fakeLister{},
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	_, err := m.List(context.Background(), json.RawMessage(`{"cwd":"/"}`))
+	if err == nil {
+		t.Fatal("expected error for cwd outside trusted roots")
+	}
+	var rpcErr *jsonRPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != invalidParams {
+		t.Fatalf("expected invalidParams, got %v", err)
 	}
 }
 

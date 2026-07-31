@@ -72,6 +72,21 @@ func TestExtract(t *testing.T) {
 			input:   "```json\n```",
 			wantErr: true,
 		},
+		{
+			name:  "stray closing brace before object",
+			input: `} {"action": {"x": 1}}`,
+			want:  `{"action": {"x": 1}}`,
+		},
+		{
+			name:  "prose with unmatched brace then object",
+			input: `close the brace } then use: {"cmd":"echo hi"}`,
+			want:  `{"cmd":"echo hi"}`,
+		},
+		{
+			name:    "multiple stray braces without real object",
+			input:   `} } }`,
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const maxPromptHistoryRows = 1000
+
 // SavePrompt records one submitted prompt for a project. Empty submissions
 // are skipped and consecutive duplicates are collapsed, so mashing enter on
 // the same prompt does not fill history with copies.
@@ -31,6 +33,22 @@ func (db *DB) SavePrompt(projectID int64, content string, createdAt time.Time) e
 		projectID, content, createdAt.UTC().Format(time.RFC3339),
 	); err != nil {
 		return fmt.Errorf("insert prompt: %w", err)
+	}
+	if err := db.prunePromptHistory(projectID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (db *DB) prunePromptHistory(projectID int64) error {
+	_, err := db.sqlDB.Exec(
+		`DELETE FROM prompt_history WHERE id IN (
+			SELECT id FROM prompt_history WHERE project_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?
+		)`,
+		projectID, maxPromptHistoryRows,
+	)
+	if err != nil {
+		return fmt.Errorf("prune prompt history: %w", err)
 	}
 	return nil
 }

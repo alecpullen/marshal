@@ -329,15 +329,43 @@ func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 	return messages, nil
 }
 
-// DeleteSession deletes a session and its messages (via CASCADE).
+// DeleteSession deletes a session and its messages (via CASCADE). It also
+// removes session-scoped rows in tables that do not declare an FK back to
+// agent_sessions: snapshots, file_reads, file_writes, and session_state.
+// FTS rows for generation turns are removed by the AFTER DELETE trigger on
+// generation_turns (see migrations.go).
 func (db *DB) DeleteSession(ctx context.Context, sessionID string) (bool, error) {
-	res, err := db.sqlDB.ExecContext(ctx, "DELETE FROM agent_sessions WHERE id = ?", sessionID)
+	tx, err := db.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("delete session: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Explicitly clean up tables without a foreign-key relationship to
+	// agent_sessions so deleting a session does not leave orphaned metadata.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM snapshots WHERE session_id = ?", sessionID); err != nil {
+		return false, fmt.Errorf("delete session snapshots: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM file_reads WHERE session_id = ?", sessionID); err != nil {
+		return false, fmt.Errorf("delete session file reads: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM file_writes WHERE session_id = ?", sessionID); err != nil {
+		return false, fmt.Errorf("delete session file writes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM session_state WHERE session_id = ?", sessionID); err != nil {
+		return false, fmt.Errorf("delete session state: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, "DELETE FROM agent_sessions WHERE id = ?", sessionID)
 	if err != nil {
 		return false, fmt.Errorf("delete session: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("delete session rows affected: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("delete session: commit: %w", err)
 	}
 	return n > 0, nil
 }

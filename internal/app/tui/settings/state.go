@@ -60,6 +60,13 @@ type State = state
 // StateCfg returns the config from a state.
 func StateCfg(s *State) config.Config { return s.cfg }
 
+// SetStateProfileDefault sets the active profile default on the working state.
+// Used by the agents roster picker, which holds a struct copy of the config
+// and needs to mutate the state's live copy.
+func SetStateProfileDefault(s *State, v string) {
+	s.cfg.Profile.Default = v
+}
+
 // cloneConfig deep-copies every map and slice reachable from cfg that the
 // settings panes can mutate, so edits to the working copy never leak into
 // the caller's config.
@@ -77,6 +84,14 @@ func cloneConfig(cfg config.Config) config.Config {
 		}
 	}
 	out.Agents = maps.Clone(cfg.Agents)
+	if cfg.CustomAgents != nil {
+		out.CustomAgents = make(map[string]routing.CustomAgent, len(cfg.CustomAgents))
+		for name, a := range cfg.CustomAgents {
+			ca := a
+			ca.ToolDenylist = slices.Clone(a.ToolDenylist)
+			out.CustomAgents[name] = ca
+		}
+	}
 	out.Tools.Shell.Allow.Commands = slices.Clone(cfg.Tools.Shell.Allow.Commands)
 	out.Tools.Shell.Confirm.Commands = slices.Clone(cfg.Tools.Shell.Confirm.Commands)
 	out.Tools.Shell.Deny.Patterns = slices.Clone(cfg.Tools.Shell.Deny.Patterns)

@@ -93,23 +93,25 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	activePresetName := activePresetName(cfg)
 	if activePresetName == "" {
 		file.Agent = &fileAgent{
-			Provider:             strutil.Ptr(cfg.Agent.Provider),
-			Model:                strutil.Ptr(cfg.Agent.Model),
-			MaxToolIterations:    strutil.Ptr(cfg.Agent.MaxToolIterations),
-			MaxRetries:           strutil.Ptr(cfg.Agent.MaxRetries),
-			MaxTurnContextTokens: strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
-			PlanFirst:            strutil.Ptr(cfg.Agent.PlanFirst),
-			SubtaskIterations:    strutil.Ptr(cfg.Agent.SubtaskIterations),
-			ApprovalMode:         strutil.Ptr(cfg.Agent.ApprovalMode),
+			Provider:                 strutil.Ptr(cfg.Agent.Provider),
+			Model:                    strutil.Ptr(cfg.Agent.Model),
+			MaxToolIterations:        strutil.Ptr(cfg.Agent.MaxToolIterations),
+			MaxRetries:               strutil.Ptr(cfg.Agent.MaxRetries),
+			MaxTurnContextTokens:     strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
+			MaxStructuredOutputChars: strutil.Ptr(cfg.Agent.MaxStructuredOutputChars),
+			PlanFirst:                strutil.Ptr(cfg.Agent.PlanFirst),
+			SubtaskIterations:        strutil.Ptr(cfg.Agent.SubtaskIterations),
+			ApprovalMode:             strutil.Ptr(cfg.Agent.ApprovalMode),
 		}
 	} else {
 		file.Agent = &fileAgent{
-			MaxToolIterations:    strutil.Ptr(cfg.Agent.MaxToolIterations),
-			MaxRetries:           strutil.Ptr(cfg.Agent.MaxRetries),
-			MaxTurnContextTokens: strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
-			PlanFirst:            strutil.Ptr(cfg.Agent.PlanFirst),
-			SubtaskIterations:    strutil.Ptr(cfg.Agent.SubtaskIterations),
-			ApprovalMode:         strutil.Ptr(cfg.Agent.ApprovalMode),
+			MaxToolIterations:        strutil.Ptr(cfg.Agent.MaxToolIterations),
+			MaxRetries:               strutil.Ptr(cfg.Agent.MaxRetries),
+			MaxTurnContextTokens:     strutil.Ptr(cfg.Agent.MaxTurnContextTokens),
+			MaxStructuredOutputChars: strutil.Ptr(cfg.Agent.MaxStructuredOutputChars),
+			PlanFirst:                strutil.Ptr(cfg.Agent.PlanFirst),
+			SubtaskIterations:        strutil.Ptr(cfg.Agent.SubtaskIterations),
+			ApprovalMode:             strutil.Ptr(cfg.Agent.ApprovalMode),
 		}
 	}
 
@@ -175,6 +177,8 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			Ignore:                 cfg.Indexing.Ignore,
 			MaxIndexableFileBytes:  strutil.Ptr(cfg.Indexing.MaxIndexableFileBytes),
 			MaxSearchableFileBytes: strutil.Ptr(cfg.Indexing.MaxSearchableFileBytes),
+			Watch:                  cfg.Indexing.Watch,
+			WatchDebounceMs:        strutil.Ptr(cfg.Indexing.WatchDebounceMs),
 		}
 	}
 	if cfg.Web != def.Web {

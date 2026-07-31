@@ -85,8 +85,8 @@ func (f *FilesState) queryPaths(query string) ([]string, error) {
 // exit (typically 128, "not a git repository") is mapped to errNoGit so the
 // provider degrades to a files-only digest; any other failure is a real
 // error.
-func (f *FilesState) GitStatusShort() (string, error) {
-	res, err := f.runner.Run(context.Background(), CommandRequest{
+func (f *FilesState) GitStatusShort(ctx context.Context) (string, error) {
+	res, err := f.runner.Run(ctx, CommandRequest{
 		Command: "git status --short",
 		Dir:     f.root,
 		Timeout: 30 * time.Second,
@@ -104,13 +104,18 @@ func (f *FilesState) GitStatusShort() (string, error) {
 
 // OutstandingTodos runs a scoped `git grep` for TODO/FIXME/XXX markers. It is
 // best-effort: any error (including no-git) returns "" so the digest simply
-// omits the section. Tracked Go files are the default scope.
-func (f *FilesState) OutstandingTodos() (string, error) {
-	res, err := f.runner.Run(context.Background(), CommandRequest{
+// omits the section, but context cancellation/deadline is propagated so the
+// caller does not block on a cancelled turn. Tracked Go files are the default
+// scope.
+func (f *FilesState) OutstandingTodos(ctx context.Context) (string, error) {
+	res, err := f.runner.Run(ctx, CommandRequest{
 		Command: "git grep -nE 'TODO|FIXME|XXX' -- ':*.go'",
 		Dir:     f.root,
 		Timeout: 30 * time.Second,
 	})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", ctxErr
+	}
 	if err != nil || res.ExitCode != 0 {
 		return "", nil
 	}

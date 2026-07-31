@@ -41,6 +41,13 @@ func newClient(w io.Writer, r io.Reader) *Client {
 
 func (c *Client) Close() { close(c.closed) }
 
+// ClearDiagnostics removes cached diagnostics for uri (e.g. after didClose).
+func (c *Client) ClearDiagnostics(uri string) {
+	c.diagMu.Lock()
+	delete(c.diags, uri)
+	c.diagMu.Unlock()
+}
+
 // writeMessage serializes a framed message to the server's stdin.
 func (c *Client) writeMessage(body []byte) error {
 	c.writeMu.Lock()
@@ -112,6 +119,13 @@ func (c *Client) readLoop() {
 			continue
 		}
 		if m.ID != nil {
+			if m.Method != "" {
+				// Server-to-client request: must be answered, but must never be
+				// routed to a pending client response channel.
+				c.handleServerRequest(*m.ID, m.Method, m.Params)
+				continue
+			}
+			// Response to one of our requests.
 			c.mu.Lock()
 			ch := c.pending[*m.ID]
 			delete(c.pending, *m.ID)
@@ -135,6 +149,38 @@ func (c *Client) readLoop() {
 	}
 }
 
+// respond sends a JSON-RPC response to the server.
+func (c *Client) respond(id int, result any) error {
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+	if err != nil {
+		return err
+	}
+	return c.writeMessage(body)
+}
+
+// handleServerRequest answers server-to-client requests so the server does not
+// block waiting for a response. Unknown methods receive a null result.
+func (c *Client) handleServerRequest(id int, method string, params json.RawMessage) {
+	var result any
+	switch method {
+	case "workspace/configuration":
+		// Return an array of nulls with one entry per requested item.
+		var p struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if json.Unmarshal(params, &p) == nil && len(p.Items) > 0 {
+			result = make([]any, len(p.Items))
+		} else {
+			result = []any{}
+		}
+	default:
+		// client/registerCapability, window/workDoneProgress/create, etc.
+		// all accept a null/void result.
+		result = nil
+	}
+	_ = c.respond(id, result)
+}
+
 // Request sends a request and waits for its response.
 func (c *Client) Request(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.mu.Lock()
@@ -153,8 +199,14 @@ func (c *Client) Request(ctx context.Context, method string, params any) (json.R
 	}
 	select {
 	case <-ctx.Done():
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
 		return nil, ctx.Err()
 	case <-c.closed:
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
 		return nil, fmt.Errorf("lsp client closed")
 	case res := <-ch:
 		return res, nil

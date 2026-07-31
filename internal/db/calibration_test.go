@@ -61,6 +61,39 @@ func TestCalibrationSummaryEmpty(t *testing.T) {
 	}
 }
 
+func TestInsertCalibrationSamplePrunesOldRows(t *testing.T) {
+	d := newTestDB(t)
+	defer d.Close()
+	pid, err := d.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CreateSession("s1", pid, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxCalibrationRows+2; i++ {
+		_, err := d.InsertCalibrationSample(CalibrationSample{
+			ProjectID:       pid,
+			SessionID:       "s1",
+			Provider:        "p",
+			Model:           "m",
+			EstimatorTokens: i,
+			ProviderTokens:  i + 1,
+			CreatedAt:       time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	sum, err := d.CalibrationSummary(pid, "")
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if sum.Samples != maxCalibrationRows {
+		t.Fatalf("samples = %d, want %d", sum.Samples, maxCalibrationRows)
+	}
+}
+
 func approxEqual(a, b, tol float64) bool {
 	d := a - b
 	if d < 0 {

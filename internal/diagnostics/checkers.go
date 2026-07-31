@@ -3,10 +3,13 @@ package diagnostics
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"marshal/internal/sandbox/envutil"
 )
 
 const maxDiagnosticsLines = 30
@@ -15,7 +18,24 @@ const maxDiagnosticsLines = 30
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 func execRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = scrubDiagnosticsEnv(os.Environ())
+	return cmd.CombinedOutput()
+}
+
+// scrubDiagnosticsEnv returns a copy of parentEnv with secret-bearing and
+// dynamic-loader variables removed. Diagnostics commands auto-run after file
+// edits, so they must not inherit credentials or hijack the loader.
+func scrubDiagnosticsEnv(parentEnv []string) []string {
+	out := make([]string, 0, len(parentEnv))
+	for _, kv := range parentEnv {
+		key := envutil.EnvKey(kv)
+		if envutil.IsSecretKey(key) || envutil.IsDangerousKey(key) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // LSPSource is an optional diagnostics source that is consulted before the

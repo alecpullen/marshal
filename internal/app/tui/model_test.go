@@ -721,6 +721,59 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 	}
 }
 
+func TestScrollWorksWhileApprovalPending(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	tc := &session.PendingToolCall{
+		ID:      "approval-scroll",
+		Name:    "shell.run",
+		Command: "echo hi",
+		Risk:    "low",
+	}
+	state.SetPendingApproval(tc)
+
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+	bottom := m.viewport.YOffset()
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	m = updated.(Model)
+	if m.viewport.YOffset() >= bottom {
+		t.Fatalf("PgUp did not scroll while approval pending: offset %d -> %d", bottom, m.viewport.YOffset())
+	}
+	if m.viewportFollow {
+		t.Fatal("PgUp should disable viewport follow while approval pending")
+	}
+}
+
+func TestScrollWorksWhileQuestionPending(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	for i := 0; i < 100; i++ {
+		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
+	}
+	q := &session.PendingQuestion{
+		Questions: []session.Question{{Question: "what?"}},
+	}
+	state.SetPendingQuestion(q)
+
+	m := New(state)
+	m.resize(80, 24)
+	m.refreshViewport()
+	bottom := m.viewport.YOffset()
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	m = updated.(Model)
+	if m.viewport.YOffset() >= bottom {
+		t.Fatalf("PgUp did not scroll while question pending: offset %d -> %d", bottom, m.viewport.YOffset())
+	}
+	if m.viewportFollow {
+		t.Fatal("PgUp should disable viewport follow while question pending")
+	}
+}
+
 func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	message := "This transcript line should be wide enough to wrap differently after resizing from a wide terminal down to a narrow terminal."

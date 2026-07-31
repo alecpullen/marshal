@@ -105,7 +105,10 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 		Schema: json.RawMessage(
 			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
-		Risk: registry.RiskReadOnly,
+		// The tool itself delegates to a child runner that may execute write
+		// tools and shell commands. Treating it as read-only bypassed the
+		// pre-write snapshot, WriteGate, and parallel-batch guards.
+		Risk: registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeAgentRunArgs(tool, call.Args)

@@ -18,9 +18,18 @@ import (
 
 const (
 	defaultWebFetchTimeout = 30 * time.Second
+	ssrfResolveTimeout     = 5 * time.Second
 )
 
 var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
+
+// ipResolver matches net.DefaultResolver so tests can inject fake DNS.
+type ipResolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
+// defaultResolver is the production resolver used by SSRF checks.
+var defaultResolver ipResolver = net.DefaultResolver
 
 type webFetchArgs struct {
 	URL string `json:"url"`
@@ -65,6 +74,9 @@ func (t *toolSet) webFetchTool() registry.Tool {
 		if client == nil {
 			client = &http.Client{
 				Timeout: timeout,
+				Transport: &http.Transport{
+					DialContext: makeSafeDialContext(defaultResolver),
+				},
 				CheckRedirect: func(req *http.Request, via []*http.Request) error {
 					if len(via) >= 5 {
 						return fmt.Errorf("too many redirects")
@@ -135,7 +147,12 @@ func (t *toolSet) webSearchTool() registry.Tool {
 		}
 		client := t.webHTTPClient
 		if client == nil {
-			client = &http.Client{Timeout: timeout}
+			client = &http.Client{
+				Timeout: timeout,
+				Transport: &http.Transport{
+					DialContext: makeSafeDialContext(defaultResolver),
+				},
+			}
 		} else if client.Timeout == 0 {
 			client2 := *client
 			client2.Timeout = timeout
@@ -173,6 +190,10 @@ func (t *toolSet) webSearchTool() registry.Tool {
 }
 
 func isPrivateURL(u *url.URL) bool {
+	return isPrivateURLWithResolver(u, defaultResolver)
+}
+
+func isPrivateURLWithResolver(u *url.URL, resolver ipResolver) bool {
 	host := u.Hostname()
 	if host == "" {
 		return true
@@ -181,9 +202,63 @@ func isPrivateURL(u *url.URL) bool {
 		return true
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate()
+		return isPrivateIP(ip)
+	}
+	if resolver == nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ssrfResolveTimeout)
+	defer cancel()
+	ips, err := resolver.LookupIPAddr(ctx, host)
+	if err != nil || len(ips) == 0 {
+		return true
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip.IP) {
+			return true
+		}
 	}
 	return false
+}
+
+func isPrivateIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate()
+}
+
+func makeSafeDialContext(resolver ipResolver) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+		}
+		if strings.EqualFold(host, "localhost") {
+			return nil, fmt.Errorf("localhost is not allowed")
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if isPrivateIP(ip) {
+				return nil, fmt.Errorf("private address %s is not allowed", addr)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		}
+		if resolver == nil {
+			return nil, fmt.Errorf("no resolver available")
+		}
+		ips, err := resolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("could not resolve %q: %w", host, err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no IPs returned for %q", host)
+		}
+		for _, ip := range ips {
+			if isPrivateIP(ip.IP) {
+				return nil, fmt.Errorf("resolved private address for %q", host)
+			}
+		}
+		// Pin to the first resolved IP to prevent DNS rebinding during the connection.
+		dialAddr := net.JoinHostPort(ips[0].IP.String(), port)
+		return (&net.Dialer{}).DialContext(ctx, network, dialAddr)
+	}
 }
 
 func htmlToText(s string) string {

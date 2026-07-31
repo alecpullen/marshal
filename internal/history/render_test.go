@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/db"
 )
@@ -208,6 +209,63 @@ func TestSearchNoMatches(t *testing.T) {
 	}
 	if out != "No matches found." {
 		t.Errorf("expected 'No matches found.', got: %s", out)
+	}
+}
+
+func TestSearchUTF8SnippetTruncation(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	sessionID := seedSession(t, database)
+	now := time.Now().UTC()
+
+	g := db.Generation{
+		ID: "gen-search-utf8", SessionID: sessionID, Seq: 1,
+		StartedAt: now,
+	}
+	if err := database.BeginGeneration(g); err != nil {
+		t.Fatalf("BeginGeneration: %v", err)
+	}
+
+	// 80 "a " tokens (160 runes / 160 bytes) plus 100 é runes (200 bytes).
+	// Total 260 runes / 360 bytes, so truncation happens and byte 200 falls
+	// inside the é rune sequence, which a naive byte-200 slice would split.
+	content := strings.Repeat("a ", 80) + strings.Repeat("é", 100)
+	if err := database.ArchiveTurns("gen-search-utf8", []db.ArchivedTurn{
+		{TurnSeq: 1, Role: "user", Content: content, CreatedAt: now},
+	}, 1024, now); err != nil {
+		t.Fatalf("ArchiveTurns: %v", err)
+	}
+
+	out, err := Search(context.Background(), database, sessionID, "a", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if !strings.Contains(out, "Found 1 match") {
+		t.Errorf("expected 1 match, got: %s", out)
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("Search output is not valid UTF-8: %q", out)
+	}
+
+	// Extract the indented snippet line that follows the gen/turn header.
+	var snippet string
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "gen 1, turn 1") && i+1 < len(lines) {
+			snippet = strings.TrimPrefix(lines[i+1], "    ")
+			break
+		}
+	}
+
+	// The snippet should be 200 runes of content plus the truncation marker.
+	runes := []rune(snippet)
+	if len(runes) != 203 {
+		t.Errorf("expected 203 runes (200 content + ...), got %d", len(runes))
+	}
+	if string(runes[200:203]) != "..." {
+		t.Errorf("expected trailing ..., got %q", string(runes[200:203]))
 	}
 }
 

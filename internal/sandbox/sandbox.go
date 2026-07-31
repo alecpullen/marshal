@@ -141,6 +141,15 @@ func metaFor(caps Capabilities, cfg Config) registry.SandboxMeta {
 	if caps.Backend == "restricted" && !ulimitSupportsMem() {
 		memBytes = 0
 	}
+	// Honest reporting: only emit limits the backend actually enforces.
+	// The restricted backend applies MaxProcesses via ulimit -u; the
+	// container backend does not pass --pids-limit, so recording it would
+	// be a phantom isolation claim.
+	maxProcesses := cfg.MaxProcesses
+	if caps.Backend == "container" {
+		maxProcesses = 0
+	}
+
 	return registry.SandboxMeta{
 		Enabled:            true,
 		Backend:            caps.Backend,
@@ -149,6 +158,6 @@ func metaFor(caps Capabilities, cfg Config) registry.SandboxMeta {
 		ResourceLimits:     caps.ResourceLimits,
 		MemoryLimitBytes:   memBytes,
 		CPUSeconds:         cfg.CPUSeconds,
-		MaxProcesses:       cfg.MaxProcesses,
+		MaxProcesses:       maxProcesses,
 	}
 }

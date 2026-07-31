@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const maxCalibrationRows = 1000
+
 // CalibrationSample is one paired observation of the EstimatorCounter's
 // token count versus the provider-reported prompt-token count for a single
 // chat turn.
@@ -54,7 +56,23 @@ func (db *DB) InsertCalibrationSample(s CalibrationSample) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("calibration insert id: %w", err)
 	}
+	if err := db.pruneCalibration(s.ProjectID); err != nil {
+		return id, fmt.Errorf("insert calibration sample: %w", err)
+	}
 	return id, nil
+}
+
+func (db *DB) pruneCalibration(projectID int64) error {
+	_, err := db.sqlDB.Exec(
+		`DELETE FROM token_calibration WHERE id IN (
+			SELECT id FROM token_calibration WHERE project_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?
+		)`,
+		projectID, maxCalibrationRows,
+	)
+	if err != nil {
+		return fmt.Errorf("prune calibration: %w", err)
+	}
+	return nil
 }
 
 // CalibrationSummary aggregates calibration samples for a project (and,

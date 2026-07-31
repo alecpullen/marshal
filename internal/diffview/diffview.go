@@ -261,30 +261,39 @@ var (
 func renderUnified(b *strings.Builder, h Hunk, opts Options) int {
 	lang := detectLanguage(h)
 	count := 0
+	// Unified lines are prefixed with two visible cells ("+ ", "- ", "  ").
+	// Truncate the content so the full rendered line fits within opts.Width.
+	maxContentWidth := opts.Width - 2
+	if maxContentWidth < 1 {
+		maxContentWidth = 1
+	}
 	for _, ln := range h.Lines {
 		if count >= maxRenderLines {
 			return count
 		}
 		switch ln.Kind {
 		case LineHunkHeader:
-			b.WriteString(hunkStyle.Render(ln.Content))
+			b.WriteString(hunkStyle.Render(truncateVisible(ln.Content, opts.Width)))
 		case LineAdded:
 			content := ln.Content
 			if opts.Highlight {
 				content = highlightCode(content, lang)
 			}
+			content = truncateVisible(content, maxContentWidth)
 			b.WriteString(addedStyle.Render("+ " + content))
 		case LineRemoved:
 			content := ln.Content
 			if opts.Highlight {
 				content = highlightCode(content, lang)
 			}
+			content = truncateVisible(content, maxContentWidth)
 			b.WriteString(removedStyle.Render("- " + content))
 		case LineContext:
 			content := ln.Content
 			if opts.Highlight {
 				content = highlightCode(content, lang)
 			}
+			content = truncateVisible(content, maxContentWidth)
 			b.WriteString(contextStyle.Render("  " + content))
 		}
 		b.WriteString("\n")

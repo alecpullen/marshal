@@ -62,6 +62,11 @@ func Extract(raw string) (string, error) {
 			}
 			depth++
 		case '}':
+			if depth == 0 {
+				// Stray '}' before the first object begins; ignore it so it
+				// cannot drive depth negative and misalign the real object.
+				continue
+			}
 			depth--
 			if depth == 0 && start != -1 {
 				return trimmed[start : i+1], nil

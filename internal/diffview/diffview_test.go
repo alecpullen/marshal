@@ -92,6 +92,20 @@ func TestRenderModeAutoSelectsUnifiedAt80(t *testing.T) {
 	}
 }
 
+func TestRenderUnifiedTruncatesLongLines(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	diff := fmt.Sprintf("--- a/f.go\n+++ b/f.go\n@@ -1,1 +1,1 @@\n-%s\n+%s\n", long, long)
+	out := Render(diff, Options{Width: 75, Mode: ModeUnified, Highlight: false})
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if w := lipgloss.Width(line); w > 75 {
+			t.Fatalf("unified line width = %d, want <= 75: %q", w, ansi.Strip(line))
+		}
+	}
+}
+
 func TestRenderFallsBackOnGarbage(t *testing.T) {
 	out := Render("not a diff at all", Options{Width: 80, Mode: ModeUnified, Highlight: true})
 	if !strings.Contains(out, "not a diff at all") {

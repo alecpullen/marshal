@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
@@ -45,9 +47,38 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 		if len(res.Text) > len(best.Text) {
 			best = res
 		}
+		if !isRetryableChatError(err) {
+			return best, err
+		}
 		lastErr = err
+		if i < attempts-1 {
+			// Small exponential backoff so a transient provider hiccup does
+			// not become a tight retry loop. Base 50ms gives 50ms/100ms/200ms.
+			time.Sleep(time.Duration(1<<i) * 50 * time.Millisecond)
+		}
 	}
 	return best, lastErr
+}
+
+// isRetryableChatError classifies errors so the retry loop stops wasting
+// requests on failures that cannot succeed. Non-retryable errors are:
+//   - context cancellation/timeout (the user asked to stop or we ran out of time)
+//   - provider 4xx responses, except 429 Too Many Requests which is a rate-limit
+//     signal worth retrying.
+func isRetryableChatError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var pe *provider.ProviderError
+	if errors.As(err, &pe) {
+		if pe.StatusCode >= 400 && pe.StatusCode < 500 && pe.StatusCode != 429 {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {

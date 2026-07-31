@@ -177,6 +177,35 @@ func TestRenderRedactsSecretsWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestRenderRedactsReasoningAndToolSummaryAndError(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+
+	state.BeginStreaming()
+	state.AppendThinking("I should use DB_PASSWORD=hunter2")
+	state.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypePlain)
+
+	state.LogToolCall(registry.AuditEvent{
+		ToolName:      "shell.run",
+		Args:          []byte(`{"command":"echo done"}`),
+		ResultSummary: "output: GITHUB_TOKEN=ghp_1234567890abcdef and xoxb-1234567890-ABC",
+		Error:         "failed: DB_PASSWORD=hunter2",
+	})
+
+	html, err := Render(state, true)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	out := string(html)
+	for _, secret := range []string{"hunter2", "ghp_1234567890abcdef", "xoxb-1234567890-ABC"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("secret %q survived redaction in export", secret)
+		}
+	}
+	if !strings.Contains(out, redact.MaskToken) {
+		t.Fatal("redaction marker absent")
+	}
+}
+
 func sessionMinimalConfig() config.Config {
 	return config.Default()
 }

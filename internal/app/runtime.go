@@ -97,6 +97,10 @@ type Runtime struct {
 	// by Run and StartRuntime) and the manager is restarted against the
 	// active root on every WorkspaceEvent.
 	LSPManager *lsp.Handle
+	// lspCancel stops the current LSP manager's Run loop. It is managed by
+	// startRuntime and reloadAgentRuntime so the manager can be hot-swapped
+	// when config reload changes the LSP server set.
+	lspCancel context.CancelFunc
 
 	// CustomAgentFactory builds a one-shot *agent.Runner for a named custom
 	// agent. Used by the TUI's Run-now dispatch. Set by startRuntime.
@@ -118,6 +122,19 @@ type Runtime struct {
 	closeOnce   sync.Once
 	quiesceErr  error
 	closeErr    error
+}
+
+// runLSPManager starts m's Run loop under a child of rt.workCtx and returns a
+// cancel function that stops it. It mirrors the inline runManager closure in
+// startRuntime but can be reused during config reload.
+func (rt *Runtime) runLSPManager(m *lsp.Manager) context.CancelFunc {
+	mctx, cancel := context.WithCancel(rt.workCtx)
+	go func() {
+		if err := m.Run(mctx); err != nil {
+			rt.Logger.Warn("worker exited", "worker", m.Name(), "err", err)
+		}
+	}()
+	return cancel
 }
 
 // AdditionalDirectories returns the list of extra workspace roots registered
@@ -573,28 +590,21 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// generation gets its own child context: a restart cancels the old
 	// generation (Run shuts its servers down cleanly) and starts the new
 	// one. workCancel (from Quiesce) ends the subscription and the current
-	// generation.
-	if lspHandle != nil {
-		runManager := func(m *lsp.Manager) context.CancelFunc {
-			mctx, cancel := context.WithCancel(workCtx)
-			go func() {
-				if err := m.Run(mctx); err != nil {
-					logger.Warn("worker exited", "worker", m.Name(), "err", err)
-				}
-			}()
-			return cancel
-		}
-		stop := runManager(lspHandle.Get())
+	// generation. The closure references rt.LSPManager (not the local
+	// lspHandle) so config reload can swap in a new handle and have the
+	// next restart use it.
+	if rt.LSPManager != nil {
+		rt.lspCancel = rt.runLSPManager(rt.LSPManager.Get())
 		go func() {
-			ch := workspaceBroker.Subscribe(workCtx)
+			ch := workspaceBroker.Subscribe(rt.workCtx)
 			for {
 				ev, ok := <-ch
 				if !ok {
 					return
 				}
-				stop()
-				newM, _ := lspHandle.Restart(ev.Payload.Workspace.ActiveRoot)
-				stop = runManager(newM)
+				rt.lspCancel()
+				newM, _ := rt.LSPManager.Restart(ev.Payload.Workspace.ActiveRoot)
+				rt.lspCancel = rt.runLSPManager(newM)
 			}
 		}()
 	}

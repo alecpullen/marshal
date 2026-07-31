@@ -26,6 +26,9 @@ func Install(ctx context.Context, source, targetDir, name string) (string, error
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return "", fmt.Errorf("create skills directory: %w", err)
 	}
+	if name != "" && !ValidName(name) {
+		return "", fmt.Errorf("invalid skill name %q", name)
+	}
 
 	// Git URL install.
 	if looksLikeGitURL(source) {
@@ -49,6 +52,15 @@ func Install(ctx context.Context, source, targetDir, name string) (string, error
 		return "", fmt.Errorf("source must be a .md skill file or a SKILL.md bundle directory")
 	}
 	return installSingleFile(source, targetDir, name)
+}
+
+// ValidName reports whether name is safe to use as a single directory
+// name in the skills store. Mirrors plugins.ValidName.
+func ValidName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsAny(name, `/\`)
 }
 
 func looksLikeGitURL(source string) bool {
@@ -85,7 +97,8 @@ func installGit(ctx context.Context, source, targetDir, name string) (string, er
 	defer os.RemoveAll(tmpDir)
 
 	cloneDir := filepath.Join(tmpDir, "src")
-	args := []string{"clone", "--depth", "1", url, cloneDir}
+	// "--" prevents URLs beginning with "-" from being parsed as git flags.
+	args := []string{"clone", "--depth", "1", "--", url, cloneDir}
 	if err := runGit(ctx, git, "", args...); err != nil {
 		return "", fmt.Errorf("clone %s: %w", url, err)
 	}

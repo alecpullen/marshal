@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -201,14 +200,11 @@ func SaveUserConfigValue(path, dottedPath string, value any) error {
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 		header := "# Marshal global configuration\n"
 		data = append([]byte(header), data...)
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeUserConfigFile(path, data)
 }
 
 // setPath sets value at a dotted TOML path inside the file mirror,

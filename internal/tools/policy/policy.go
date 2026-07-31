@@ -42,9 +42,14 @@ const (
 // argv-aware AST checks below that also catch -R and --recursive.
 // See hasRecursiveFlag and the chmod/chown check in analyzeCommand.
 var guardrailPatterns = []string{
-	"sudo", "rm -rf", "git reset --hard", "git clean -fd",
+	"sudo", "git reset --hard", "git clean -fd",
 	"mkfs", "shutdown", "reboot",
 }
+
+// legacyRMGuardrail is checked by the legacy fallback because the AST path
+// handles rm with argv-aware stageIsRMDestructive / ClassifyCommand and must
+// not false-positive on "echo rm -rf /tmp".
+var legacyRMGuardrail = []string{"rm -rf", "rm -fr", "rm -r -f"}
 
 type PolicyEngine struct {
 	config       *config.Config
@@ -433,6 +438,11 @@ func isBlockedByGuardrailLegacy(cmd string) bool {
 			return true
 		}
 	}
+	for _, b := range legacyRMGuardrail {
+		if strings.Contains(cmd, b) {
+			return true
+		}
+	}
 
 	// Network installer check (curl/wget piped to sh/bash/zsh)
 	if (strings.Contains(cmd, "curl") || strings.Contains(cmd, "wget")) && strings.Contains(cmd, "|") {
@@ -521,6 +531,19 @@ func analyzeCommand(cmd string) (guardrailVerdict, error) {
 	}
 	if len(stages) == 0 {
 		return guardrailVerdict{}, nil
+	}
+
+	// Stage-level rm guardrail: catches rm with recursive+force after common
+	// wrappers (env, nice) and as an xargs payload. ClassifyCommand only
+	// inspects the top-level argv0 of the whole command string, so these
+	// variants would otherwise evade the guardrail.
+	for _, st := range stages {
+		if stageIsRMDestructive(st) {
+			return guardrailVerdict{
+				blocked: true,
+				reason:  "blocked by conservative guardrail: rm -r -f",
+			}, nil
+		}
 	}
 
 	// Use argv-aware classification (shlex-based) for destructive patterns
@@ -644,18 +667,128 @@ func isGitPushFloor(cmd string) bool {
 	stages, err := parseStages(cmd)
 	if err == nil {
 		for _, s := range stages {
-			if s.argv0 == "git" && len(s.args) > 0 && s.args[0] == "push" {
+			if stageIsGitPush(s) {
 				return true
 			}
 		}
 		return false
 	}
-	// Legacy fallback: trimmed, lowercased, words-based.
+	// Legacy fallback: trimmed, lowercased, words-based. Only recognizes a
+	// plain `git push` (no path prefix or wrapper) when parsing fails.
 	trimmed := strings.TrimSpace(strings.ToLower(cmd))
 	words := strings.Fields(trimmed)
 	if len(words) >= 2 && words[0] == "git" && words[1] == "push" {
 		return true
 	}
+	return false
+}
+
+// stageIsGitPush reports whether a parsed pipeline stage is a git push
+// invocation. It handles path-prefixed git binaries, git global options such
+// as `-c key=val`, and common prefix wrappers like `env` and `nice`.
+func stageIsGitPush(s stage) bool {
+	argv := skipCommonWrappers(append([]string{s.argv0}, s.args...))
+	if len(argv) == 0 || lastSegment(argv[0]) != "git" {
+		return false
+	}
+	i := 1
+	for i < len(argv) {
+		a := argv[i]
+		// Git global options that take a value.
+		if a == "-c" || a == "--config" || a == "--exec-path" || a == "--git-dir" ||
+			a == "--work-tree" || a == "--namespace" || a == "-C" {
+			i += 2
+			continue
+		}
+		// Other options (flag or long-flag) are skipped; the first non-option
+		// token must be the git subcommand.
+		if strings.HasPrefix(a, "-") && len(a) > 1 {
+			i++
+			continue
+		}
+		break
+	}
+	return i < len(argv) && argv[i] == "push"
+}
+
+// skipCommonWrappers strips leading wrapper commands such as env and nice
+// (and their simplest flags/assignments) so that the real command argv is
+// exposed for guardrail and floor checks.
+func skipCommonWrappers(argv []string) []string {
+	i := 0
+	for i < len(argv) {
+		name := lastSegment(argv[i])
+		switch name {
+		case "env":
+			i++
+			for i < len(argv) {
+				a := argv[i]
+				// Environment assignments: FOO=bar
+				if strings.Contains(a, "=") && !strings.HasPrefix(a, "-") {
+					i++
+					continue
+				}
+				if a == "-i" || a == "--ignore-environment" {
+					i++
+					continue
+				}
+				if a == "-u" || a == "--unset" {
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(a, "--unset=") {
+					i++
+					continue
+				}
+				break
+			}
+		case "nice":
+			i++
+			if i < len(argv) && (argv[i] == "-n" || argv[i] == "--adjustment") {
+				i += 2
+			} else if i < len(argv) && strings.HasPrefix(argv[i], "--adjustment=") {
+				i++
+			}
+		default:
+			return argv[i:]
+		}
+	}
+	return argv[i:]
+}
+
+// stageIsRMDestructive reports whether a pipeline stage runs rm with both
+// recursive and force flags. It inspects the effective command after common
+// wrappers and also detects rm as an xargs payload.
+func stageIsRMDestructive(s stage) bool {
+	argv := skipCommonWrappers(append([]string{s.argv0}, s.args...))
+	if len(argv) > 0 && lastSegment(argv[0]) == "rm" {
+		if hasFlagInArgs(argv[1:], "r", "R", "recursive") && hasFlagInArgs(argv[1:], "f", "force") {
+			return true
+		}
+	}
+
+	// xargs payload: xargs [options] rm -fr ...
+	if len(argv) > 0 && lastSegment(argv[0]) == "xargs" {
+		i := 1
+		for i < len(argv) {
+			a := argv[i]
+			if a == "-I" || a == "-i" || a == "-L" || a == "-n" || a == "-P" || a == "-s" {
+				i += 2
+				continue
+			}
+			if strings.HasPrefix(a, "-") {
+				i++
+				continue
+			}
+			break
+		}
+		if i < len(argv) && lastSegment(argv[i]) == "rm" {
+			if hasFlagInArgs(argv[i+1:], "r", "R", "recursive") && hasFlagInArgs(argv[i+1:], "f", "force") {
+				return true
+			}
+		}
+	}
+
 	return false
 }
 
@@ -665,10 +798,7 @@ func matchRule(command, prefix string) bool {
 	}
 	command = normalizeCommand(command)
 	prefix = normalizeCommand(prefix)
-	if command == prefix {
-		return true
-	}
-	return strings.HasPrefix(command, prefix+" ")
+	return command == prefix
 }
 
 func regexMatch(pattern, subject string) bool {

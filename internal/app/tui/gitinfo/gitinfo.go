@@ -21,6 +21,11 @@ import (
 const (
 	maxBranchRunes   = 20
 	maxWorktreeRunes = 16
+
+	// cacheTTL bounds how long Read serves a cached entry. Callers such as
+	// the TUI status line re-read on every agent tick and resize expecting
+	// the current branch; without a TTL the cache would stay stale forever.
+	cacheTTL = 2 * time.Second
 )
 
 // Info describes the git state of a working directory. The zero value
@@ -32,20 +37,29 @@ type Info struct {
 	InRepo   bool
 }
 
-var cache sync.Map // workingDir (string) -> Info
+type cachedInfo struct {
+	info      Info
+	cachedAt  time.Time
+}
+
+var cache sync.Map // workingDir (string) -> cachedInfo
 
 // Read returns cached git info for workingDir, reading from disk on a cache
-// miss. Safe for concurrent callers. On any parse error it returns the zero
-// Info and caches it (so a non-repo dir is only walked once).
+// miss or when the cached entry is older than cacheTTL. Safe for concurrent
+// callers. On any parse error it returns the zero Info and caches it (so a
+// non-repo dir is only walked once per TTL).
 func Read(workingDir string) Info {
 	if workingDir == "" {
 		return Info{}
 	}
 	if v, ok := cache.Load(workingDir); ok {
-		return v.(Info)
+		c := v.(cachedInfo)
+		if time.Since(c.cachedAt) < cacheTTL {
+			return c.info
+		}
 	}
 	info := readUncached(workingDir)
-	cache.Store(workingDir, info)
+	cache.Store(workingDir, cachedInfo{info: info, cachedAt: time.Now()})
 	return info
 }
 

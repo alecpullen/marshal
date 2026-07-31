@@ -65,6 +65,20 @@ func TestPanelDrillInAndBack(t *testing.T) {
 	}
 }
 
+func TestPanelFooterNotClipped(t *testing.T) {
+	footer := "line one\nline two\nline three\nline four\nline five"
+	p := New(commands.Doc{Title: "Help", Footer: footer, Rows: []commands.Row{
+		{Header: "Group"},
+		{Text: "one", Detail: "first"},
+	}}, testState(t))
+	out := p.View(100, 24)
+	for _, want := range []string{"line one", "line two", "line three", "line four", "line five"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("footer missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestPanelActionEmitsActionMsg(t *testing.T) {
 	ran := false
 	p := New(commands.Doc{Title: "T", Rows: []commands.Row{

@@ -402,6 +402,67 @@ func TestContainer_AvPathForSimpleCommands_Docker(t *testing.T) {
 	}
 }
 
+// TestContainerMeta_DoesNotReportPhantomMaxProcesses verifies that the
+// container backend reports MaxProcesses=0 in audit metadata even when
+// cfg.MaxProcesses is set, because buildArgs does not pass --pids-limit.
+func TestContainerMeta_DoesNotReportPhantomMaxProcesses(t *testing.T) {
+	c := &Container{
+		cfg:         Config{MaxProcesses: 128},
+		runtime:     "docker",
+		runtimePath: "/usr/bin/docker",
+		envDenySet:  make(map[string]bool),
+	}
+	meta := metaFor(c.Capabilities(), c.cfg)
+	if meta.MaxProcesses != 0 {
+		t.Fatalf("container meta MaxProcesses = %d, want 0 (not enforced)", meta.MaxProcesses)
+	}
+}
+
+// TestContainerBuildArgs_DropsSecretAndDangerousAllowlistKeys verifies that
+// env_allowlist entries matching secret or dangerous-key predicates are
+// silently dropped before being passed to `docker run -e`, matching the
+// restricted backend's behavior.
+func TestContainerBuildArgs_DropsSecretAndDangerousAllowlistKeys(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-secret")
+	t.Setenv("LD_PRELOAD", "/tmp/evil.so")
+	t.Setenv("MARSHAL_SAFE", "ok_value")
+
+	c := &Container{
+		cfg: Config{
+			EnvAllowlist: []string{"ANTHROPIC_API_KEY", "LD_PRELOAD", "MARSHAL_SAFE"},
+		},
+		runtime:     "docker",
+		runtimePath: "/usr/bin/docker",
+		envDenySet:  make(map[string]bool),
+	}
+	args := c.buildArgs("echo hello", "alpine:latest", "/workspace")
+
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] != "-e" {
+			continue
+		}
+		kv := args[i+1]
+		key, _, _ := strings.Cut(kv, "=")
+		if key == "ANTHROPIC_API_KEY" {
+			t.Fatalf("secret allowlist key leaked into container args: %q", kv)
+		}
+		if key == "LD_PRELOAD" {
+			t.Fatalf("dangerous allowlist key leaked into container args: %q", kv)
+		}
+	}
+
+	foundSafe := false
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-e" && args[i+1] == "MARSHAL_SAFE=ok_value" {
+			foundSafe = true
+			break
+		}
+	}
+	if !foundSafe {
+		t.Fatalf("non-secret allowlist key should be passed through, got args: %v", args)
+	}
+}
+
 // TestContainerBuildArgs_RoutesDestructiveThroughShell verifies that
 // destructive commands (e.g. rm -rf) are routed through /bin/sh -lc even
 // when the command contains no shell metacharacters. This ensures shell

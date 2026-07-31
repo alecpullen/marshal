@@ -33,6 +33,10 @@ const (
 type Message struct {
 	ID            int64
 	ParentID      int64
+	// DBID is the persisted SQLite row id for this message. It is non-zero
+	// for messages that were written to (or loaded from) the database and
+	// zero for transient in-memory-only messages.
+	DBID          int64
 	Role          Role
 	Content       string
 	ContentType   ContentType
@@ -112,6 +116,7 @@ func (s *State) loadFromDB() {
 		msg := Message{
 			ID:            imID,
 			ParentID:      imParent,
+			DBID:          dm.ID,
 			Role:          Role(dm.Role),
 			Content:       dm.Content,
 			ContentType:   ContentType(dm.ContentType),
@@ -177,15 +182,22 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 	createdAt := time.Now()
 
 	var id int64
+	var dbID int64
 	persisted := false
 	if s.persistenceEnabled() {
-		dbID, err := s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), createdAt, reasoning, thinkDuration, final, s.leafDBID)
+		var err error
+		dbID, err = s.db.SaveMessage(s.sessionID, string(role), content, string(contentType), createdAt, reasoning, thinkDuration, final, s.leafDBID)
 		if err != nil {
 			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
 		} else {
 			id = dbID
 			s.leafDBID = dbID
 			persisted = true
+			// Keep the persisted branch tip current so restarts reconstruct
+			// the transcript correctly (B-01).
+			if err := s.db.SetBranchLeaf(s.sessionID, dbID); err != nil {
+				s.logger.Error("set branch leaf failed", "error", err, "session_id", s.sessionID, "leaf", dbID)
+			}
 		}
 	}
 	if !persisted {
@@ -193,12 +205,15 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 		// counter. The message still lands in the tree, it just isn't
 		// persisted — same degrade semantics as before.
 		id = s.nextMsgID
-		s.nextMsgID++
 	}
+	// Always advance the transient-ID counter so a failed SaveMessage can
+	// never reuse the id of the previous leaf (B-21).
+	s.nextMsgID++
 
 	msg := Message{
 		ID:            id,
 		ParentID:      parent,
+		DBID:          dbID,
 		Role:          role,
 		Content:       content,
 		ContentType:   contentType,
@@ -286,12 +301,17 @@ func (s *State) Rewind(turnMsgID int64) int64 {
 		return s.leafID
 	}
 	s.leafID = parent
-	if parent == 0 {
-		s.leafDBID = 0
+	s.leafDBID = 0
+	if parent != 0 {
+		if m, ok := s.msgByID[parent]; ok {
+			s.leafDBID = m.DBID
+		}
 	}
 	s.rebuildActiveBranch()
 	if s.persistenceEnabled() {
-		_ = s.db.SetBranchLeaf(s.sessionID, parent)
+		if err := s.db.SetBranchLeaf(s.sessionID, s.leafDBID); err != nil {
+			s.logger.Error("set branch leaf failed", "error", err, "session_id", s.sessionID, "leaf", s.leafDBID)
+		}
 	}
 	return parent
 }
@@ -316,11 +336,18 @@ func (s *State) Branches() []int64 {
 func (s *State) SwitchBranch(leafID int64) {
 	s.mu.Lock()
 	s.leafID = leafID
+	var leafDBID int64
+	if m, ok := s.msgByID[leafID]; ok {
+		leafDBID = m.DBID
+	}
+	s.leafDBID = leafDBID
 	s.rebuildActiveBranch()
 	s.mu.Unlock()
 
 	if s.persistenceEnabled() {
-		_ = s.db.SetBranchLeaf(s.sessionID, leafID)
+		if err := s.db.SetBranchLeaf(s.sessionID, leafDBID); err != nil {
+			s.logger.Error("set branch leaf failed", "error", err, "session_id", s.sessionID, "leaf", leafDBID)
+		}
 	}
 }
 

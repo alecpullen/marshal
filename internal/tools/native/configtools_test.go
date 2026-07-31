@@ -284,12 +284,16 @@ func TestConfigAgentSetGlobalScopeDeniedAborts(t *testing.T) {
 }
 
 func TestCommandRiskTools(t *testing.T) {
-	testSectionWrite(t, "config.diagnostics.set", (*toolSet).configDiagnosticsSetTool, `{"commands":{"go vet":"go vet ./..."}}`, func(c config.Config) bool { return c.Diagnostics.Commands["go vet"] == "go vet ./..." })
-	testSectionWrite(t, "config.tools.shell.sandbox.set", (*toolSet).configToolsShellSandboxSetTool, `{"memory_limit_mb":512}`, func(c config.Config) bool { return c.Tools.Shell.Sandbox.MemoryLimitMB == 512 })
-	testSectionWrite(t, "config.tools.shell.set", (*toolSet).configToolsShellSetTool, `{"default_timeout_seconds":30}`, func(c config.Config) bool { return c.Tools.Shell.DefaultTimeoutSeconds == 30 })
-	testSectionWrite(t, "config.hooks.set", (*toolSet).configHooksSetTool, `{"fail_closed":true,"entries":[{"event":"pre_tool","command":"echo hi"}]}`, func(c config.Config) bool {
+	st := newAutoApproveSessionState()
+	testSectionWriteWithState(t, "config.diagnostics.set", (*toolSet).configDiagnosticsSetTool, `{"commands":{"go vet":"go vet ./..."}}`, func(c config.Config) bool { return c.Diagnostics.Commands["go vet"] == "go vet ./..." }, st)
+	st = newAutoApproveSessionState()
+	testSectionWriteWithState(t, "config.tools.shell.sandbox.set", (*toolSet).configToolsShellSandboxSetTool, `{"memory_limit_mb":512}`, func(c config.Config) bool { return c.Tools.Shell.Sandbox.MemoryLimitMB == 512 }, st)
+	st = newAutoApproveSessionState()
+	testSectionWriteWithState(t, "config.tools.shell.set", (*toolSet).configToolsShellSetTool, `{"default_timeout_seconds":30}`, func(c config.Config) bool { return c.Tools.Shell.DefaultTimeoutSeconds == 30 }, st)
+	st = newAutoApproveSessionState()
+	testSectionWriteWithState(t, "config.hooks.set", (*toolSet).configHooksSetTool, `{"fail_closed":true,"entries":[{"event":"pre_tool","command":"echo hi"}]}`, func(c config.Config) bool {
 		return c.Hooks.FailClosed && len(c.Hooks.Entries) == 1 && c.Hooks.Entries[0].Command == "echo hi"
-	})
+	}, st)
 }
 
 func newAutoApproveSessionState() *session.State {

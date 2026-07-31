@@ -101,3 +101,28 @@ func TestRecentPromptsLimitAndProjectScope(t *testing.T) {
 		t.Fatalf("RecentPrompts(limit=2) = %v, want [p4 p3]", got)
 	}
 }
+
+func TestSavePromptPrunesOldEntries(t *testing.T) {
+	database, projectID := openHistoryTestDB(t)
+	now := time.Unix(100, 0)
+	for i := 0; i < maxPromptHistoryRows+2; i++ {
+		if err := database.SavePrompt(projectID, fmt.Sprintf("prompt-%d", i), now); err != nil {
+			t.Fatalf("SavePrompt %d: %v", i, err)
+		}
+	}
+	got, err := database.RecentPrompts(projectID, maxPromptHistoryRows+10)
+	if err != nil {
+		t.Fatalf("RecentPrompts: %v", err)
+	}
+	if len(got) != maxPromptHistoryRows {
+		t.Fatalf("after prune got %d rows, want %d", len(got), maxPromptHistoryRows)
+	}
+	wantNewest := fmt.Sprintf("prompt-%d", maxPromptHistoryRows+1)
+	wantOldest := "prompt-2"
+	if got[0] != wantNewest {
+		t.Errorf("newest = %q, want %q", got[0], wantNewest)
+	}
+	if got[len(got)-1] != wantOldest {
+		t.Errorf("oldest retained = %q, want %q", got[len(got)-1], wantOldest)
+	}
+}

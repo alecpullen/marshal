@@ -26,11 +26,11 @@ type fileStateSource interface {
 	// GitStatusShort returns `git status --short` stdout. It returns
 	// errNoGit when the workspace is not a git repo; any other error is
 	// fatal.
-	GitStatusShort() (string, error)
+	GitStatusShort(ctx context.Context) (string, error)
 	// OutstandingTodos returns grep output for TODO/FIXME/XXX markers in
 	// tracked source files, or "" when unavailable. Errors are treated
 	// as "no todos" (non-fatal).
-	OutstandingTodos() (string, error)
+	OutstandingTodos(ctx context.Context) (string, error)
 }
 
 // FilesDigestProvider produces a structured resume digest from the session's
@@ -57,7 +57,7 @@ func (p *FilesDigestProvider) Name() string { return "files" }
 // present-but-failing git command fails the whole digest (returned as an
 // error) so the controller's minimal fallback takes over rather than
 // silently claiming "no changes."
-func (p *FilesDigestProvider) Digest(_ context.Context, h GenerationHandle) (string, string, error) {
+func (p *FilesDigestProvider) Digest(ctx context.Context, h GenerationHandle) (string, string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Generation %d — resuming from structured on-disk state.\n\n", h.Seq)
 
@@ -96,7 +96,7 @@ func (p *FilesDigestProvider) Digest(_ context.Context, h GenerationHandle) (str
 		}
 	}
 
-	status, serr := p.state.GitStatusShort()
+	status, serr := p.state.GitStatusShort(ctx)
 	if serr != nil && !errors.Is(serr, errNoGit) {
 		// git is present but the command failed — state is unknown.
 		return "", "", fmt.Errorf("files digest: git status: %w", serr)
@@ -113,7 +113,7 @@ func (p *FilesDigestProvider) Digest(_ context.Context, h GenerationHandle) (str
 		}
 	}
 
-	todos, terr := p.state.OutstandingTodos()
+	todos, terr := p.state.OutstandingTodos(ctx)
 	if terr == nil && strings.TrimSpace(todos) != "" {
 		b.WriteString("\n## Outstanding TODO/FIXME/XXX markers\n")
 		b.WriteString(todos)

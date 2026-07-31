@@ -429,3 +429,140 @@ func TestTrimSectionContentHelper(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeScratchpadEmptyIsNoOp(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
+		},
+	}
+	got := MergeScratchpad(pack, nil, DefaultMaxTokens, nil)
+	for _, s := range got.Sections {
+		if s.Kind == SectionScratchpad {
+			t.Fatal("empty scratchpad should not add a section")
+		}
+	}
+	if len(got.Sections) != 1 {
+		t.Fatalf("section count = %d, want 1", len(got.Sections))
+	}
+}
+
+func TestMergeScratchpadInsertsSection(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
+		},
+	}
+	entries := []ScratchpadEntry{
+		{Key: "audit", Content: "result line", Format: "text"},
+	}
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, nil)
+	found := false
+	for _, s := range got.Sections {
+		if s.Kind == SectionScratchpad {
+			found = true
+			if !strings.Contains(s.Content, "audit") || !strings.Contains(s.Content, "result line") {
+				t.Fatalf("scratchpad section content = %q", s.Content)
+			}
+			if s.Priority != 50 {
+				t.Fatalf("priority = %d, want 50", s.Priority)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a scratchpad section")
+	}
+}
+
+func TestMergeScratchpadReplacesExisting(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionScratchpad, Title: "Scratchpad", Content: "old", Priority: 50, EstimatedTokens: 1},
+		},
+	}
+	entries := []ScratchpadEntry{
+		{Key: "new-key", Content: "new content", Format: "json"},
+	}
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, nil)
+	count := 0
+	for _, s := range got.Sections {
+		if s.Kind == SectionScratchpad {
+			count++
+			if !strings.Contains(s.Content, "new-key") {
+				t.Fatalf("expected new content, got %q", s.Content)
+			}
+			if strings.Contains(s.Content, "old") {
+				t.Fatal("old content should have been replaced")
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("scratchpad section count = %d, want 1", count)
+	}
+}
+
+func TestMergeScratchpadInsertsBeforeFileSnippets(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
+			{Kind: SectionFileSnippet, Title: "app.go", Content: "package app", EstimatedTokens: 3},
+		},
+	}
+	entries := []ScratchpadEntry{
+		{Key: "files", Content: "a.go b.go", Format: "text"},
+	}
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, nil)
+	scratchIdx := -1
+	snippetIdx := -1
+	for i, s := range got.Sections {
+		if s.Kind == SectionScratchpad {
+			scratchIdx = i
+		}
+		if s.Kind == SectionFileSnippet {
+			snippetIdx = i
+		}
+	}
+	if scratchIdx == -1 {
+		t.Fatal("scratchpad section not found")
+	}
+	if snippetIdx == -1 {
+		t.Fatal("file snippet section not found")
+	}
+	if scratchIdx >= snippetIdx {
+		t.Fatalf("scratchpad at %d should be before file snippet at %d", scratchIdx, snippetIdx)
+	}
+}
+
+func TestMergeScratchpadEmptyRemovesSection(t *testing.T) {
+	pack := Pack{
+		Sections: []Section{
+			{Kind: SectionScratchpad, Title: "Scratchpad", Content: "old", Priority: 50, EstimatedTokens: 1},
+			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
+		},
+	}
+	got := MergeScratchpad(pack, nil, DefaultMaxTokens, nil)
+	for _, s := range got.Sections {
+		if s.Kind == SectionScratchpad {
+			t.Fatal("empty entries should remove the scratchpad section")
+		}
+	}
+}
+
+func TestMergeScratchpadTruncatesLongPreview(t *testing.T) {
+	pack := Pack{}
+	longContent := strings.Repeat("x", 200)
+	entries := []ScratchpadEntry{
+		{Key: "big", Content: longContent, Format: "text"},
+	}
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, nil)
+	for _, s := range got.Sections {
+		if s.Kind == SectionScratchpad {
+			if !strings.Contains(s.Content, "...") {
+				t.Fatalf("expected preview truncation with '...', got %q", s.Content)
+			}
+			if strings.Contains(s.Content, strings.Repeat("x", 130)) {
+				t.Fatal("preview should be truncated before 130 chars of content")
+			}
+		}
+	}
+}

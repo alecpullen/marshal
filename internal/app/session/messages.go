@@ -153,6 +153,13 @@ func (s *State) loadFromDB() {
 	// The translation map is only needed while loading; drop it so the
 	// session doesn't carry a stale dual-id mapping for its lifetime.
 	s.dbIDToImID = nil
+
+	// Restore scratchpad entries from the session_state table.
+	if entries, err := s.db.LoadScratchpad(s.sessionID); err == nil {
+		s.scratchpad = entries
+	} else {
+		s.logger.Warn("failed to load scratchpad", "error", err)
+	}
 }
 
 func (s *State) persistenceEnabled() bool {

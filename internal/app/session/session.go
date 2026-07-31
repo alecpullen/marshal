@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -165,6 +166,7 @@ type State struct {
 	activity        Activity
 	plan            []string
 	todos           []db.TodoItem
+	scratchpad      []db.ScratchpadEntry
 	activeSkills    map[string]bool
 	loadedTools     map[string]bool
 	toolBudget      ToolBudget
@@ -849,6 +851,83 @@ func (s *State) Todos() []db.TodoItem {
 	result := make([]db.TodoItem, len(s.todos))
 	copy(result, s.todos)
 	return result
+}
+
+// SetScratchpadEntry upserts a single entry by key. The full entry set is
+// persisted to the session_state table. Returns nil if the store is not
+// available (no session state).
+func (s *State) SetScratchpadEntry(key, content, format string) error {
+	if strings.TrimSpace(key) == "" {
+		return fmt.Errorf("scratchpad key must not be empty")
+	}
+	now := time.Now().Unix()
+	s.mu.Lock()
+	found := false
+	for i, e := range s.scratchpad {
+		if e.Key == key {
+			s.scratchpad[i].Content = content
+			s.scratchpad[i].Format = format
+			s.scratchpad[i].Updated = now
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.scratchpad = append(s.scratchpad, db.ScratchpadEntry{
+			Key:     key,
+			Content: content,
+			Format:  format,
+			Updated: now,
+		})
+	}
+	s.mu.Unlock()
+	if s.persistenceEnabled() {
+		if err := s.db.SaveScratchpad(s.sessionID, s.scratchpad); err != nil {
+			s.logger.Warn("failed to persist scratchpad", "error", err)
+		}
+	}
+	return nil
+}
+
+// DeleteScratchpadEntry removes a single entry by key. Returns nil if the
+// key does not exist (idempotent).
+func (s *State) DeleteScratchpadEntry(key string) error {
+	s.mu.Lock()
+	for i, e := range s.scratchpad {
+		if e.Key == key {
+			s.scratchpad = append(s.scratchpad[:i], s.scratchpad[i+1:]...)
+			s.mu.Unlock()
+			if s.persistenceEnabled() {
+				if err := s.db.SaveScratchpad(s.sessionID, s.scratchpad); err != nil {
+					s.logger.Warn("failed to persist scratchpad", "error", err)
+				}
+			}
+			return nil
+		}
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+// Scratchpad returns a defensive copy of all entries.
+func (s *State) Scratchpad() []db.ScratchpadEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]db.ScratchpadEntry, len(s.scratchpad))
+	copy(result, s.scratchpad)
+	return result
+}
+
+// ScratchpadEntry returns a single entry by key, or ok=false if not found.
+func (s *State) ScratchpadEntry(key string) (db.ScratchpadEntry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.scratchpad {
+		if e.Key == key {
+			return e, true
+		}
+	}
+	return db.ScratchpadEntry{}, false
 }
 
 func (s *State) AddSessionRule(prefix string) {

@@ -104,6 +104,30 @@ func (r *Runner) mergeMemories(maxTokenOverride int) {
 	r.State.SetContextPack(contextpack.MergeMemories(current, memories, maxTokens, r.Now))
 }
 
+// mergeScratchpad injects the session's current scratchpad entries into
+// the context pack as a projection section. Called during turn setup so
+// the agent can see what keys it has parked without consuming the full
+// content in the context budget.
+func (r *Runner) mergeScratchpad(maxTokenOverride int) {
+	entries := r.State.Scratchpad()
+	if len(entries) == 0 {
+		return
+	}
+	current := r.State.ContextPack()
+	maxTokens := maxTokenOverride
+	if maxTokens <= 0 {
+		maxTokens = current.TokenUsage.MaxTokens
+	}
+	if maxTokens <= 0 {
+		maxTokens = contextpack.DefaultMaxTokens
+	}
+	cpEntries := make([]contextpack.ScratchpadEntry, len(entries))
+	for i, e := range entries {
+		cpEntries[i] = contextpack.ScratchpadEntry{Key: e.Key, Content: e.Content, Format: e.Format}
+	}
+	r.State.SetContextPack(contextpack.MergeScratchpad(current, cpEntries, maxTokens, r.Now))
+}
+
 // semanticSource resolves the embedding source for passive semantic context
 // injection. Returns nil when embeddings are not configured (graceful-off).
 func (r *Runner) semanticSource(projectID int64) retrieval.Source {

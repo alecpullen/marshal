@@ -1460,3 +1460,83 @@ func TestMessageTreeSurvivesReallocationAndRebuild(t *testing.T) {
 		}
 	}
 }
+
+func TestScratchpadSetAndGet(t *testing.T) {
+	s := newTestState()
+	if err := s.SetScratchpadEntry("key1", "content1", "text"); err != nil {
+		t.Fatalf("SetScratchpadEntry: %v", err)
+	}
+	entry, ok := s.ScratchpadEntry("key1")
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	if entry.Content != "content1" || entry.Format != "text" {
+		t.Fatalf("entry = %+v", entry)
+	}
+}
+
+func TestScratchpadSetOverwrites(t *testing.T) {
+	s := newTestState()
+	s.SetScratchpadEntry("k", "old", "text")
+	s.SetScratchpadEntry("k", "new", "json")
+	entry, ok := s.ScratchpadEntry("k")
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	if entry.Content != "new" || entry.Format != "json" {
+		t.Fatalf("entry = %+v, want new/json", entry)
+	}
+}
+
+func TestScratchpadEntryNotFound(t *testing.T) {
+	s := newTestState()
+	_, ok := s.ScratchpadEntry("missing")
+	if ok {
+		t.Fatal("should not find missing key")
+	}
+}
+
+func TestScratchpadDeleteIdempotent(t *testing.T) {
+	s := newTestState()
+	s.SetScratchpadEntry("k", "v", "text")
+	if err := s.DeleteScratchpadEntry("k"); err != nil {
+		t.Fatalf("DeleteScratchpadEntry: %v", err)
+	}
+	_, ok := s.ScratchpadEntry("k")
+	if ok {
+		t.Fatal("entry should have been deleted")
+	}
+	// Deleting again should not error.
+	if err := s.DeleteScratchpadEntry("k"); err != nil {
+		t.Fatalf("idempotent delete should not error: %v", err)
+	}
+}
+
+func TestScratchpadReturnsDefensiveCopy(t *testing.T) {
+	s := newTestState()
+	s.SetScratchpadEntry("k", "v", "text")
+	entries := s.Scratchpad()
+	entries[0].Content = "mutated"
+	got := s.Scratchpad()
+	if got[0].Content != "v" {
+		t.Fatalf("Scratchpad() did not return a defensive copy: %q", got[0].Content)
+	}
+}
+
+func TestScratchpadSetRejectsEmptyKey(t *testing.T) {
+	s := newTestState()
+	err := s.SetScratchpadEntry("", "content", "text")
+	if err == nil {
+		t.Fatal("expected error for empty key")
+	}
+}
+
+func TestScratchpadMultipleEntries(t *testing.T) {
+	s := newTestState()
+	s.SetScratchpadEntry("a", "alpha", "text")
+	s.SetScratchpadEntry("b", "beta", "json")
+	entries := s.Scratchpad()
+	if len(entries) != 2 {
+		t.Fatalf("len = %d, want 2", len(entries))
+	}
+}

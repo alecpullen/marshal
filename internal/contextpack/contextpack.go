@@ -10,6 +10,7 @@ const (
 	SectionRepoCard    SectionKind = "repo_card"
 	SectionMemory      SectionKind = "memory"
 	SectionPlan        SectionKind = "plan"
+	SectionScratchpad  SectionKind = "scratchpad"
 	SectionFileSnippet SectionKind = "file_snippet"
 	SectionToolOutput  SectionKind = "tool_output"
 	SectionSemantic    SectionKind = "semantic"
@@ -51,6 +52,15 @@ type FileSnippet struct {
 type MemoryNote struct {
 	Kind    string
 	Content string
+}
+
+// ScratchpadEntry is contextpack's own view of a scratchpad entry —
+// just enough to render a projection section. Declared here (not
+// imported from internal/db) to avoid a circular dependency.
+type ScratchpadEntry struct {
+	Key     string
+	Content string
+	Format  string
 }
 
 func (p Pack) IsEmpty() bool {

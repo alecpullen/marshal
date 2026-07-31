@@ -237,6 +237,49 @@ func newSemanticSection(snippets []FileSnippet) (Section, bool) {
 	}, true
 }
 
+// newScratchpadSection builds a projection section from scratchpad
+// entries. Each entry is rendered as a single line showing the key,
+// format, estimated token count, and a one-line preview of the content
+// (truncated to 120 chars). This keeps the projection compact so it
+// stays within the context budget while giving the agent enough
+// information to decide whether to call scratchpad.read for full content.
+func newScratchpadSection(entries []ScratchpadEntry) (Section, bool) {
+	if len(entries) == 0 {
+		return Section{}, false
+	}
+	var lines []string
+	for _, e := range entries {
+		preview := strings.ReplaceAll(e.Content, "\n", " ")
+		preview = strings.TrimSpace(preview)
+		if len(preview) > 120 {
+			preview = preview[:120] + "..."
+		}
+		tokens := EstimateTokens(e.Content)
+		format := e.Format
+		if format == "" {
+			format = "text"
+		}
+		lines = append(lines, fmt.Sprintf("%s (%s, ~%d tokens): %s", e.Key, format, tokens, preview))
+	}
+	return Section{
+		Kind:     SectionScratchpad,
+		Title:    "Scratchpad",
+		Priority: 50,
+		Content:  strings.Join(lines, "\n"),
+	}, true
+}
+
+// MergeScratchpad replaces any existing scratchpad section with a
+// projection built from entries, inserted before file-snippet/tool-output
+// sections, then rebudgets within maxTokens. Empty entries removes the
+// section.
+func MergeScratchpad(pack Pack, entries []ScratchpadEntry, maxTokens int, now func() time.Time) Pack {
+	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
+	sec, ok := newScratchpadSection(entries)
+	sections := replaceSection(pack.Sections, SectionScratchpad, sec, ok, SectionFileSnippet, SectionToolOutput)
+	return buildPackFromSections(sections, maxTokens, generatedAt)
+}
+
 // MergeSemanticContext replaces any existing semantic section with one built
 // from snippets, inserted before file-snippet/tool-output sections, then
 // rebudgets within maxTokens. Empty snippets removes the section.

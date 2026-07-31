@@ -461,6 +461,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	})
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
+	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 
 	effectiveRF := r.ResponseFormat
 

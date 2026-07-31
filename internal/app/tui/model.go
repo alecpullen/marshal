@@ -212,6 +212,19 @@ type Model struct {
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
 	detailExpanded     bool
+	// itemExpanded holds per-item expand/collapse overrides set by clicking
+	// a transcript block. An item with no entry here follows detailExpanded.
+	// Cleared whenever ctrl+g flips the global default (see keypress.go).
+	itemExpanded map[itemKey]bool
+	// activeToolExpanded is a click override for the single in-flight tool
+	// call block (renderActiveToolCall) — it has no stable itemKey since it
+	// isn't logged to the audit log until it completes. Reset to false
+	// whenever a new tool starts; see refreshViewport.
+	activeToolExpanded bool
+	// activeToolStartedAt tracks the in-flight tool call's StartedAt so
+	// refreshViewport can detect "a new tool started" and reset
+	// activeToolExpanded. Zero when no tool is active.
+	activeToolStartedAt time.Time
 	// rollbackArmed is the first half of Ctrl+R's arm-then-confirm. Cleared
 	// by any other keypress; see handleKeypress.
 	rollbackArmed bool
@@ -894,6 +907,7 @@ func New(state *session.State, opts ...Option) Model {
 		now:            time.Now,
 		viewportFollow: true,
 		discovered:     map[string][]schema.ModelInfo{},
+		itemExpanded:   map[itemKey]bool{},
 	}
 	for _, opt := range opts {
 		opt(&m)

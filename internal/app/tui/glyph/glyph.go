@@ -59,4 +59,11 @@ const (
 	Brand = "●"
 	// CustomAgent marks a cast entry bound to a user-defined agent.
 	CustomAgent = "◆"
+
+	// DisclosureCollapsed marks a transcript block with hidden detail a
+	// click can reveal (a thinking summary's full reasoning, a tool call's
+	// full result or diff). DisclosureExpanded marks the same block once
+	// clicked open.
+	DisclosureCollapsed = "▹"
+	DisclosureExpanded  = "▿"
 )

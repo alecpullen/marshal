@@ -304,10 +304,16 @@ func renderThinkingBox(reasoning, spinnerFrame string, width int) string {
 // either collapsed to one line or, when expanded, as a full boxed panel
 // matching renderThinkingBox's style.
 // collapsedThinkingLine is the one-line "thought for 3s" marker, on the same
-// gutter as every other transcript item.
-func collapsedThinkingLine(duration time.Duration) string {
+// gutter as every other transcript item. disclosure is glyph.DisclosureCollapsed
+// when the block has reasoning text a click can reveal, or "" when there's
+// nothing to expand.
+func collapsedThinkingLine(duration time.Duration, disclosure string) string {
+	label := fmt.Sprintf("thought for %s", formatThinkDuration(duration))
+	if disclosure != "" {
+		label += " " + disclosure
+	}
 	return gutterPrefix(glyph.Thinking, dimColor) +
-		thinkingLineStyle().Render(fmt.Sprintf("thought for %s", formatThinkDuration(duration))) + "\n"
+		thinkingLineStyle().Render(label) + "\n"
 }
 
 func renderThinkingSummary(reasoning string, duration time.Duration, expanded bool, width int) string {
@@ -315,15 +321,15 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 	// the transcript — models that do not expose reasoning would otherwise
 	// leave no trace of having thought. There is nothing to expand.
 	if strings.TrimSpace(reasoning) == "" {
-		return collapsedThinkingLine(duration)
+		return collapsedThinkingLine(duration, "")
 	}
 	if !expanded {
-		return collapsedThinkingLine(duration)
+		return collapsedThinkingLine(duration, glyph.DisclosureCollapsed)
 	}
 	cw := contentWidth(width)
 	var b strings.Builder
 	b.WriteString(gutterPrefix(glyph.Thinking, dimColor))
-	b.WriteString(thinkingLineStyle().Render(fmt.Sprintf("thought for %s", formatThinkDuration(duration))))
+	b.WriteString(thinkingLineStyle().Render(fmt.Sprintf("thought for %s %s", formatThinkDuration(duration), glyph.DisclosureExpanded)))
 	b.WriteString("\n")
 	for _, line := range strings.Split(strings.TrimSpace(reasoning), "\n") {
 		wrapped := ansi.Wrap(line, cw, "")
@@ -642,6 +648,13 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 		head += dimSeparator + event.Error
 	} else if event.ResultSummary != "" {
 		head += dimSeparator + event.ResultSummary
+	}
+	if event.ResultContent != "" {
+		if expanded {
+			head += " " + glyph.DisclosureExpanded
+		} else {
+			head += " " + glyph.DisclosureCollapsed
+		}
 	}
 
 	cw := contentWidth(width)

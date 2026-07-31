@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/registry"
 )
@@ -991,5 +992,40 @@ func TestRenderActiveToolCallExpandedShowsFullOutput(t *testing.T) {
 	expanded := renderActiveToolCall(atc, session.SandboxInfo{}, false, "", time.Unix(101, 0), true, 80)
 	if !strings.Contains(expanded, "output line 0") {
 		t.Fatal("expected expanded output to include the first line")
+	}
+}
+
+func TestThinkingSummaryShowsDisclosureGlyphOnlyWhenExpandable(t *testing.T) {
+	noReasoning := renderThinkingSummary("", time.Second, false, 80)
+	if strings.Contains(noReasoning, glyph.DisclosureCollapsed) {
+		t.Fatal("a thinking phase with no reasoning has nothing to expand")
+	}
+
+	collapsed := renderThinkingSummary("some reasoning", time.Second, false, 80)
+	if !strings.Contains(collapsed, glyph.DisclosureCollapsed) {
+		t.Fatal("expected the collapsed disclosure glyph")
+	}
+
+	expanded := renderThinkingSummary("some reasoning", time.Second, true, 80)
+	if !strings.Contains(expanded, glyph.DisclosureExpanded) {
+		t.Fatal("expected the expanded disclosure glyph")
+	}
+}
+
+func TestCompletedToolCallShowsDisclosureGlyphWhenResultContentPresent(t *testing.T) {
+	withResult := registry.AuditEvent{ToolName: "file.read", ResultContent: "some content"}
+	collapsed := renderCompletedToolCall(withResult, false, 80)
+	if !strings.Contains(collapsed, glyph.DisclosureCollapsed) {
+		t.Fatal("expected the collapsed disclosure glyph when ResultContent is present")
+	}
+	expanded := renderCompletedToolCall(withResult, true, 80)
+	if !strings.Contains(expanded, glyph.DisclosureExpanded) {
+		t.Fatal("expected the expanded disclosure glyph when ResultContent is present")
+	}
+
+	withoutResult := registry.AuditEvent{ToolName: "file.read"}
+	rendered := renderCompletedToolCall(withoutResult, false, 80)
+	if strings.Contains(rendered, glyph.DisclosureCollapsed) || strings.Contains(rendered, glyph.DisclosureExpanded) {
+		t.Fatal("expected no disclosure glyph when there is nothing to expand")
 	}
 }

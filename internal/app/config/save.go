@@ -181,6 +181,9 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			WatchDebounceMs:        strutil.Ptr(cfg.Indexing.WatchDebounceMs),
 		}
 	}
+	if !reflect.DeepEqual(cfg.Skills, def.Skills) {
+		file.Skills = &fileSkills{Autoload: cfg.Skills.Autoload}
+	}
 	if cfg.Web != def.Web {
 		file.Web = &fileWeb{
 			Enabled:        strutil.Ptr(cfg.Web.Enabled),

@@ -65,6 +65,10 @@ type fileIndexing struct {
 	WatchDebounceMs        *int     `toml:"watch_debounce_ms"`
 }
 
+type fileSkills struct {
+	Autoload []string `toml:"autoload"`
+}
+
 type fileShell struct {
 	DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
 	MaxOutputBytes        *int          `toml:"max_output_bytes"`
@@ -248,6 +252,7 @@ type configFile struct {
 	Diagnostics *fileDiagnostics `toml:"diagnostics"`
 	Hooks       *fileHooks       `toml:"hooks"`
 	Session     *fileSession     `toml:"session"`
+	Skills      *fileSkills      `toml:"skills"`
 	// Providers stays a plain map: nil already distinguishes absent/present.
 	Providers map[string]ProviderConfig `toml:"providers"`
 	Models    *fileModels               `toml:"models"`

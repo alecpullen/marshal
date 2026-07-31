@@ -1232,3 +1232,53 @@ func TestLoadSkipProjectConfig(t *testing.T) {
 		t.Fatal("nil-resolver default must still apply project config (unchanged)")
 	}
 }
+
+// skills.autoload has to survive the file layer in both directions: merge
+// (so the config is honoured at startup) and writeSections (so editing the
+// list in /settings actually persists).
+func TestSkillsAutoloadMergesFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[skills]\nautoload = ['using-superpowers', 'brainstorming']\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&cfg, file); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"using-superpowers", "brainstorming"}
+	if !reflect.DeepEqual(cfg.Skills.Autoload, want) {
+		t.Fatalf("Autoload = %v, want %v", cfg.Skills.Autoload, want)
+	}
+}
+
+func TestSkillsAutoloadRoundTripsThroughSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Default()
+	cfg.Skills.Autoload = []string{"using-superpowers"}
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&reloaded, file); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reloaded.Skills.Autoload, cfg.Skills.Autoload) {
+		t.Fatalf("Autoload = %v, want %v", reloaded.Skills.Autoload, cfg.Skills.Autoload)
+	}
+}
+
+// The default must stay empty: nothing autoloads unless asked for.
+func TestSkillsAutoloadDefaultsEmpty(t *testing.T) {
+	if got := Default().Skills.Autoload; len(got) != 0 {
+		t.Fatalf("default Autoload = %v, want empty", got)
+	}
+}

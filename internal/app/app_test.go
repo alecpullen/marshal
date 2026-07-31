@@ -1205,6 +1205,11 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 // restarts with the existing session loaded.
 func TestRunResumesExistingSession(t *testing.T) {
 	dir := t.TempDir()
+	// Run() resolves the user config from the real home dir, so without an
+	// isolated HOME the developer's own config leaks into the assertion —
+	// a populated skills.autoload, for one, prepends skill bodies to the
+	// transcript and pushes the resumed message out of the captured view.
+	t.Setenv("HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
 	}
@@ -1830,6 +1835,9 @@ func TestRunReloadsAfterInlineTrust(t *testing.T) {
 
 func TestStartRuntimeLoadsExistingSessionWithoutDuplicateInsert(t *testing.T) {
 	tmp := t.TempDir()
+	// Isolate from the developer's real user config: an autoloaded skill
+	// adds a system message and throws off the transcript count.
+	t.Setenv("HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
 	}

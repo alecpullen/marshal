@@ -107,9 +107,24 @@ const baseRules = `Rules:
 - After editing, run the narrowest useful validation.
 - If the request is ambiguous, or a decision would materially change the outcome, ask the user with the question.ask native tool (or the ask_user envelope action) instead of guessing. Prefer question.ask when you have multiple related questions, optional choices, or multi-select needs; it presents them all in a single round-trip.
 - Summarise results clearly.
-- Use tools only to obtain facts you don't already have in the transcript or context pack.
+- Use fact-gathering tools only to obtain facts you don't already have in the transcript or context pack. This does not apply to skill.load: skills carry method, not facts, and are worth loading before you have gathered anything.
 - Once the requested change is made and validated, produce a final answer — do not keep exploring.
 - Stop after validation succeeds; do not re-verify work that already passed.`
+
+// skillDirective introduces the skill roster. Listing skills is not enough
+// on its own — models treat a bare inventory as reference material and wait
+// to be told to load one. The instruction has to be explicit that deciding
+// to load a skill is the model's job, and that skills may chain.
+const skillDirective = `Skills are instruction sets you load on demand with the skill.load tool. Deciding to load one is YOUR job — the user will not ask you to.
+
+Before you start any task, scan this list and load every skill whose description matches what you are about to do. Load it BEFORE acting, not after. If a loaded skill tells you to use another skill, load that one too. When in doubt, load it: an unhelpful skill costs a few tokens, a skipped one costs the whole approach.
+`
+
+// skillReminder is the last line of the system prompt. It targets the case
+// the roster alone does not catch: a conversational opener with no repository
+// work in it yet, which is precisely when a design or process skill should
+// fire and when the model is least inclined to call a tool.
+const skillReminder = `Reminder: check the Skills list before your first action on a request, including requests that are only a discussion — designing a feature, planning an approach, or deciding how to build something all have skills that must be loaded BEFORE you reply. Loading a skill is itself a valid first action; do not answer first and load later.`
 
 const todoAddendum = `
 Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end.
@@ -299,25 +314,28 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 		activeMap[name] = true
 	}
 
-	if len(activeMap) > 0 {
-		b.WriteString("\n## Active Skills\n")
-		for _, name := range activeSkills {
-			b.WriteString(fmt.Sprintf("- `%s` — (Injected into context above)\n", name))
+	var list []skills.Skill
+	if skillIndex != nil {
+		list = skillIndex.List()
+	}
+	if len(list) == 0 {
+		b.WriteString("\n## Skills\nNo skills are available for this project.\n")
+	} else {
+		// Every skill is listed on every turn, active or not. Suites like
+		// superpowers are interconnected — one skill routinely instructs you
+		// to load another — so hiding the roster once something is active
+		// strands the rest of the suite.
+		b.WriteString("\n## Skills\n")
+		b.WriteString(skillDirective)
+		b.WriteString("\n")
+		for _, skill := range list {
+			if activeMap[skill.Name] {
+				b.WriteString(fmt.Sprintf("- `%s` (ACTIVE — body already in context) — %s\n", skill.Name, skill.Description))
+				continue
+			}
+			b.WriteString(fmt.Sprintf("- `%s` — %s\n", skill.Name, skill.Description))
 		}
 		b.WriteString("\n")
-	} else if skillIndex != nil {
-		list := skillIndex.List()
-		if len(list) > 0 {
-			b.WriteString("\n## Available Skills\n")
-			for _, skill := range list {
-				b.WriteString(fmt.Sprintf("- `%s` — %s\n", skill.Name, skill.Description))
-			}
-			b.WriteString("\nNo skills are active. Call skill.load <name> to activate a skill when relevant to the task.\n")
-		} else {
-			b.WriteString("\n## Available Skills\nNo skills are available for this project.\n")
-		}
-	} else {
-		b.WriteString("\n## Available Skills\nNo skills are available for this project.\n")
 	}
 
 	b.WriteString("\n")
@@ -339,6 +357,15 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 	}
 	b.WriteString("\n\n")
 	b.WriteString(renderRoleAddendum(rp, nativeTools))
+	// The skill reminder is repeated last, after the output format, because
+	// the output-format block frames tools as being for repository facts and
+	// edits — which points away from skill.load on exactly the openers
+	// ("let's build X") where a skill matters most. The final instruction
+	// carries the most weight, so the roster gets the last word too.
+	if len(list) > 0 {
+		b.WriteString("\n\n")
+		b.WriteString(skillReminder)
+	}
 	if addendum != "" {
 		b.WriteString("\n\n## Agent Instructions\n\n")
 		b.WriteString(addendum)

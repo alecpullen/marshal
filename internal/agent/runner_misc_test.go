@@ -1076,8 +1076,8 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	if !strings.Contains(systemPromptMsgs[0], "Debugging workflow") {
 		t.Fatal("first system prompt should include skill description")
 	}
-	if !strings.Contains(systemPromptMsgs[1], "Active Skills") {
-		t.Fatal("second system prompt should show Active Skills")
+	if !strings.Contains(systemPromptMsgs[1], "ACTIVE") {
+		t.Fatal("second system prompt should mark the debug skill active")
 	}
 }
 

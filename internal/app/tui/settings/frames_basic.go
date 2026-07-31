@@ -128,6 +128,19 @@ func indexingFrame(s *state) *frame {
 	})
 }
 
+func skillsFrame(s *state) *frame {
+	return newFrame("Skills", func() []*field {
+		return []*field{
+			func() *field {
+				f := listDrillExt("skills.autoload", "Autoload", &s.cfg.Skills.Autoload, sliceOpts(&s.cfg.Skills.Autoload))
+				f.TomlPath = "skills.autoload"
+				f.Desc = "skills injected into every session before the first turn"
+				return f
+			}(),
+		}
+	})
+}
+
 func webFrame(s *state) *frame {
 	return newFrame("Web", func() []*field {
 		return []*field{

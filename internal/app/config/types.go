@@ -32,6 +32,7 @@ type Config struct {
 	Diagnostics   DiagnosticsConfig                     `toml:"diagnostics"`
 	Hooks         HooksConfig                           `toml:"hooks"`
 	Session       SessionConfig                         `toml:"session"`
+	Skills        SkillsConfig                          `toml:"skills"`
 	LSP           LSPConfig                             `toml:"lsp"`
 }
 
@@ -335,6 +336,22 @@ type PrivacyConfig struct {
 	RemoteLimitDiscovery   bool `toml:"remote_limit_discovery,omitempty"`
 	RedactSecrets          bool `toml:"redact_secrets"`
 	IncludeGitignoredFiles bool `toml:"include_gitignored_files"`
+}
+
+// SkillsConfig controls skill activation.
+type SkillsConfig struct {
+	// Autoload names skills injected into every session's context before
+	// the first turn, without the model choosing to load them.
+	//
+	// Skill suites are usually rooted in an entry-point skill that teaches
+	// the model when to reach for the rest (superpowers' using-superpowers
+	// is the canonical case). Leaving that entry point behind skill.load is
+	// circular: the model has to already be skill-minded to load the skill
+	// that makes it skill-minded. Autoload breaks the cycle.
+	//
+	// Unknown names are logged and skipped, never fatal — a config that
+	// outlives an uninstalled skill should not stop the session starting.
+	Autoload []string `toml:"autoload"`
 }
 
 type IndexingConfig struct {

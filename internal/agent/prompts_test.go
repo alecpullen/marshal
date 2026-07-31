@@ -338,8 +338,8 @@ func TestBuildSystemPromptIncludesAvailableSkills(t *testing.T) {
 	msg := BuildSystemPrompt(RoleGeneral, nil, idx, nil, false)
 	content := msg.Content
 
-	if !strings.Contains(content, "Available Skills") {
-		t.Fatal("system prompt should contain 'Available Skills' section placeholder")
+	if !strings.Contains(content, "Skills") {
+		t.Fatal("system prompt should contain a Skills section placeholder")
 	}
 }
 
@@ -373,14 +373,29 @@ func TestBuildSystemPromptWithActiveSkills(t *testing.T) {
 	msg := BuildSystemPrompt(RoleGeneral, nil, idx, active, false)
 	content := msg.Content
 
-	if !strings.Contains(content, "Active Skills") {
-		t.Fatal("system prompt should show 'Active Skills' when skills are loaded")
+	if !strings.Contains(content, "ACTIVE") {
+		t.Fatal("system prompt should mark a loaded skill as active")
 	}
 	if !strings.Contains(content, "`debug`") {
 		t.Fatal("system prompt should list active skill name")
 	}
-	if strings.Contains(content, "skill.load") {
-		t.Fatal("system prompt should NOT mention skill.load when skills are active")
+}
+
+// An active skill must not hide the rest of the roster. Skill suites are
+// interconnected — one skill routinely tells the model to load another —
+// so dropping the list on the first load stranded every remaining skill.
+func TestBuildSystemPromptKeepsRosterWhenSkillActive(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("debug", skills.Skill{Name: "debug", Description: "Debugging workflow"})
+	idx.Set("deploy", skills.Skill{Name: "deploy", Description: "Deployment workflows"})
+
+	content := BuildSystemPrompt(RoleGeneral, nil, idx, []string{"debug"}, false).Content
+
+	if !strings.Contains(content, "`deploy`") || !strings.Contains(content, "Deployment workflows") {
+		t.Fatalf("inactive skills must stay listed while another is active:\n%s", content)
+	}
+	if !strings.Contains(content, "skill.load") {
+		t.Fatal("system prompt should still explain skill.load while a skill is active")
 	}
 }
 
@@ -702,5 +717,30 @@ func TestBuildSystemPromptDiscouragesGuessingFilePaths(t *testing.T) {
 	content := msg.Content
 	if !strings.Contains(content, "guessed path") && !strings.Contains(content, "guessing a path") {
 		t.Errorf("prompt missing guidance against guessing file paths before verifying they exist\n%s", content)
+	}
+}
+
+// The output-format block frames tools as being for repository facts and
+// edits, which points away from skill.load on conversational openers. The
+// reminder has to hold the final slot to counterweight it.
+func TestSkillReminderHoldsTheLastSlot(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("brainstorming", skills.Skill{Name: "brainstorming", Description: "design work"})
+
+	content := BuildSystemPrompt(RoleGeneral, nil, idx, nil, false).Content
+
+	if !strings.Contains(content, skillReminder) {
+		t.Fatal("system prompt should end with the skill reminder")
+	}
+	if idx := strings.Index(content, skillReminder); idx < strings.Index(content, baseOutputFormat) {
+		t.Fatal("skill reminder must come after the output format block")
+	}
+}
+
+// With no skills installed the reminder is noise pointing at an empty list.
+func TestNoSkillReminderWhenNoSkills(t *testing.T) {
+	content := BuildSystemPrompt(RoleGeneral, nil, nil, nil, false).Content
+	if strings.Contains(content, skillReminder) {
+		t.Fatal("no reminder should appear when no skills are available")
 	}
 }

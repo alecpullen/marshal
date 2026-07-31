@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -535,6 +536,8 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 	}
 
+	autoloadSkills(cfg, skillIndex, state, logger)
+
 	workCtx, workCancel := context.WithCancel(ctx)
 	jobBroker := pubsub.NewBroker[native.JobEvent]()
 	steeringBroker := pubsub.NewBroker[session.SteeringEvent]()
@@ -624,6 +627,30 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		rt.resourceClosers = append(rt.resourceClosers, func() { _ = logFile.Close() })
 	}
 	return rt, nil
+}
+
+// autoloadSkills injects the configured always-on skills into the session
+// before the first turn.
+//
+// Relying on the model to call skill.load for a suite's entry point does not
+// work in practice: the entry point is exactly the skill that teaches the
+// model to reach for skills at all, so nothing prompts it to load that one.
+// Autoloaded skills bypass the decision entirely.
+//
+// Failures are logged and skipped. An uninstalled skill named in config, or
+// one too large for the remaining budget, must not stop the session.
+func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, logger *slog.Logger) {
+	for _, name := range cfg.Skills.Autoload {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if err := skills.LoadSkillIntoSession(idx, state, name); err != nil {
+			logger.Warn("skipping autoload skill", "skill", name, "error", err)
+			continue
+		}
+		logger.Info("autoloaded skill", "skill", name)
+	}
 }
 
 func resolveWorkingDir(override string) (string, error) {

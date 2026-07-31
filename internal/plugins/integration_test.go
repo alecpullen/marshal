@@ -72,8 +72,8 @@ func TestPluginSkillReachesSystemPrompt(t *testing.T) {
 	}
 
 	msg := agent.BuildSystemPrompt(agent.RoleGeneral, nil, idx, nil, false)
-	if !strings.Contains(msg.Content, "## Available Skills") {
-		t.Fatal("system prompt missing Available Skills section")
+	if !strings.Contains(msg.Content, "## Skills") {
+		t.Fatal("system prompt missing Skills section")
 	}
 	if !strings.Contains(msg.Content, "`e2e-skill`") {
 		t.Fatal("system prompt does not advertise the plugin skill")

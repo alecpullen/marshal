@@ -1,12 +1,20 @@
 package session
 
+import "time"
+
 // SDDProgress is the live state of a plan-execution run, rendered by the
-// TUI panel. The controller emits events; the app layer maps them here.
+// TUI's run panel. The controller emits events; the app layer maps them
+// here. Tasks holds the plan's task titles in order so the panel can
+// render the checklist; StartedAt/EndedAt bracket the run for the elapsed
+// readouts. When the run ends, Active flips off and Finished flips on —
+// the panel collapses to a one-line summary until the next user turn
+// calls ClearSDDProgress.
 type SDDProgress struct {
 	Active       bool
 	PlanName     string
 	PlanPath     string
 	Branch       string
+	Tasks        []string
 	TotalTasks   int
 	DoneTasks    int
 	CurrentTask  int
@@ -17,6 +25,10 @@ type SDDProgress struct {
 	TokensUsed   int
 	TokensMax    int
 	LastLedger   string
+	StartedAt    time.Time
+	Finished     bool
+	Succeeded    bool
+	EndedAt      time.Time
 }
 
 func (s *State) SetSDDProgress(p SDDProgress) {
@@ -52,4 +64,16 @@ func (s *State) ClearSDDProgress() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sddProgress = SDDProgress{}
+}
+
+// FinishSDDRun marks the run ended. Unlike ClearSDDProgress it keeps the
+// summary data (tasks, counts, timing) so the TUI can render the collapsed
+// done/stopped line until the user's next turn.
+func (s *State) FinishSDDRun(succeeded bool, endedAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sddProgress.Active = false
+	s.sddProgress.Finished = true
+	s.sddProgress.Succeeded = succeeded
+	s.sddProgress.EndedAt = endedAt
 }

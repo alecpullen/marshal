@@ -278,6 +278,11 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if todosAllDone(m.state.Todos()) {
 			m.todosDismissed = true
 		}
+		// A finished run's collapsed summary belongs to that run; the
+		// next user turn clears it, same as the all-done todo summary.
+		if m.state.SDDProgress().Finished {
+			m.state.ClearSDDProgress()
+		}
 		m.dismissCompletionPopups()
 		m.updateViewportHeight()
 		m.viewportFollow = true

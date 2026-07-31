@@ -434,12 +434,15 @@ func TestStatusFooterOmitsToolActivity(t *testing.T) {
 	}
 }
 
-func TestStatusLineShowsSDDPhase(t *testing.T) {
+func TestStatusLineShowsSDDModeOnly(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetSDDProgress(session.SDDProgress{Active: true, Phase: "branch review"})
+	m.state.SetSDDProgress(session.SDDProgress{Active: true, Phase: "branch review", CurrentTask: 2, TotalTasks: 5})
 	line := stripANSI(m.renderStatusLine(100))
-	if !strings.Contains(line, "sdd") || !strings.Contains(line, "branch review") {
-		t.Errorf("status line missing sdd + phase: %q", line)
+	if !strings.Contains(line, "sdd") {
+		t.Errorf("status line missing sdd mode cue: %q", line)
+	}
+	if strings.Contains(line, "branch review") || strings.Contains(line, "task 2/5") {
+		t.Errorf("status line must not duplicate the run panel's task/phase: %q", line)
 	}
 }
 

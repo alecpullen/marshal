@@ -659,7 +659,10 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 	}
 	if isDiffTool(event.ToolName) && event.ResultContent != "" {
 		files := splitDiffFiles(event.ResultContent)
-		shown := min(len(files), maxDiffFiles)
+		shown := len(files)
+		if !expanded {
+			shown = min(shown, maxDiffFiles)
+		}
 		for i := 0; i < shown; i++ {
 			f := files[i]
 			stat := fmt.Sprintf("+%d −%d", f.added, f.removed)
@@ -676,7 +679,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 			})
 			lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 			elided := 0
-			if len(lines) > maxDiffLinesPerFile {
+			if !expanded && len(lines) > maxDiffLinesPerFile {
 				elided = len(lines) - maxDiffLinesPerFile
 				lines = lines[:maxDiffLinesPerFile]
 			}
@@ -694,7 +697,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, width int
 				b.WriteString("\n")
 			}
 		}
-		if len(files) > shown {
+		if !expanded && len(files) > shown {
 			b.WriteString(nestedRail())
 			b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more files", len(files)-shown)))
 			b.WriteString("\n")

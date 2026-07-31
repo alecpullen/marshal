@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,33 @@ func TestCtrlGClearsPerItemOverrides(t *testing.T) {
 	}
 	if len(mm.itemExpanded) != 0 {
 		t.Fatalf("itemExpanded = %v, want cleared", mm.itemExpanded)
+	}
+}
+
+func TestRefreshViewportUsesPerItemExpandForThinking(t *testing.T) {
+	m := newTestModel(t)
+	ts1 := time.Unix(300, 0)
+	ts2 := time.Unix(301, 0)
+	m.state.LogThinking(session.ThinkingEntry{Text: "reasoning one", Duration: time.Second, StartedAt: ts1})
+	m.state.LogThinking(session.ThinkingEntry{Text: "reasoning two", Duration: time.Second, StartedAt: ts2})
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	content := m.viewport.GetContent()
+	if strings.Contains(content, "reasoning one") || strings.Contains(content, "reasoning two") {
+		t.Fatalf("expected both thinking blocks collapsed by default, got: %s", content)
+	}
+
+	m.toggleItemExpanded(itemKey{ts: ts1, kind: session.KindThinking})
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	content = m.viewport.GetContent()
+	if !strings.Contains(content, "reasoning one") {
+		t.Fatal("expected the clicked item's reasoning to be visible")
+	}
+	if strings.Contains(content, "reasoning two") {
+		t.Fatal("expected the other item to remain collapsed")
 	}
 }
 

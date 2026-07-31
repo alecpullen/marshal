@@ -924,6 +924,31 @@ func TestCompletedToolCallWrapsLongError(t *testing.T) {
 	}
 }
 
+func TestRenderCompletedToolCallExpandedShowsFullDiff(t *testing.T) {
+	var diff strings.Builder
+	diff.WriteString("--- a/file.go\n+++ b/file.go\n")
+	for i := 0; i < maxDiffLinesPerFile+5; i++ {
+		diff.WriteString(fmt.Sprintf("+line %d\n", i))
+	}
+	event := registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultContent: diff.String(),
+	}
+
+	collapsed := renderCompletedToolCall(event, false, 80)
+	if !strings.Contains(collapsed, "more lines") {
+		t.Fatal("expected collapsed diff to elide lines")
+	}
+
+	expanded := renderCompletedToolCall(event, true, 80)
+	if strings.Contains(expanded, "more lines") {
+		t.Fatalf("expected expanded diff to show every line, got: %s", expanded)
+	}
+	if strings.Count(expanded, "+line ") != maxDiffLinesPerFile+5 {
+		t.Fatalf("expected all %d added lines, got %d", maxDiffLinesPerFile+5, strings.Count(expanded, "+line "))
+	}
+}
+
 func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
 	outs := map[string]string{
 		"user message":   renderUserMessage("hello", 80),

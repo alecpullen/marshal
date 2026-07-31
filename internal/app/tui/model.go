@@ -2365,9 +2365,11 @@ func (m *Model) refreshViewport() {
 		}
 		var s string
 		if entry.Group != nil {
-			s = renderToolGroup(entry.Group, m.detailExpanded, m.viewport.Width())
+			expanded := m.isExpanded(itemKeyForGroup(entry.Group))
+			s = renderToolGroup(entry.Group, expanded, m.viewport.Width())
 		} else {
-			s = renderTranscriptItem(*entry.Item, m.detailExpanded, m.viewport.Width())
+			expanded := m.isExpanded(itemKeyFor(entry.Item))
+			s = renderTranscriptItem(*entry.Item, expanded, m.viewport.Width())
 		}
 		if s != "" {
 			blocks = append(blocks, s)

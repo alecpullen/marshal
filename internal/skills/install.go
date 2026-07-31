@@ -70,6 +70,9 @@ func looksLikeGitURL(source string) bool {
 	if strings.HasPrefix(source, "git@") {
 		return true
 	}
+	if strings.HasPrefix(source, "https://") || strings.HasPrefix(source, "http://") {
+		return true
+	}
 	if strings.HasSuffix(source, ".git") {
 		return true
 	}

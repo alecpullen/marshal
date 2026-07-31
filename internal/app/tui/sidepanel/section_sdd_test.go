@@ -3,6 +3,7 @@ package sidepanel
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/app/session"
 )
@@ -82,5 +83,47 @@ func TestSDDSectionOneLine(t *testing.T) {
 	}
 	if !strings.Contains(got, "implementing") {
 		t.Errorf("OneLine = %q, want the phase", got)
+	}
+}
+
+func TestSDDSectionFinishedSuccess(t *testing.T) {
+	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	ended := time.Date(2026, 7, 30, 10, 23, 41, 0, time.UTC)
+	d := Data{
+		SDD: session.SDDProgress{
+			Finished:   true,
+			Succeeded:  true,
+			DoneTasks:  4,
+			TotalTasks: 4,
+			Tasks:      []string{"A", "B", "C", "D"},
+			StartedAt:  started,
+			EndedAt:    ended,
+		},
+	}
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 50, 12), "\n"))
+	want := " ✓ sdd done — 4/4 tasks · 23m 41s"
+	if got != want {
+		t.Errorf("Render(finished success) =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestSDDSectionFinishedFailure(t *testing.T) {
+	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	ended := time.Date(2026, 7, 30, 10, 0, 12, 0, time.UTC)
+	d := Data{
+		SDD: session.SDDProgress{
+			Finished:   true,
+			Succeeded:  false,
+			DoneTasks:  2,
+			TotalTasks: 4,
+			Tasks:      []string{"A", "B", "C", "D"},
+			StartedAt:  started,
+			EndedAt:    ended,
+		},
+	}
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 50, 12), "\n"))
+	want := " ✗ sdd stopped — 2/4 tasks · 12s"
+	if got != want {
+		t.Errorf("Render(finished failure) =\n  %q\nwant\n  %q", got, want)
 	}
 }

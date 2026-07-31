@@ -2,11 +2,21 @@ package sidepanel
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/glyph"
 )
+
+// formatElapsed formats a duration for the finished summary line, matching
+// the run panel's format: "23m 41s" or "12s".
+func formatElapsed(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+}
 
 // SDDSection mirrors the run panel when the side rail is open: the summary
 // (task count, phase, detail) plus the plan checklist with the same status
@@ -22,6 +32,23 @@ func (SDDSection) Clippable() bool { return true }
 func (SDDSection) Relevant(d Data) bool { return d.SDD.Active || d.SDD.Finished }
 
 func (SDDSection) Render(d Data, width, maxRows int) []string {
+	if d.SDD.Finished {
+		elapsed := d.SDD.EndedAt.Sub(d.SDD.StartedAt)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		var g, verb string
+		if d.SDD.Succeeded {
+			g = glyph.OK
+			verb = "sdd done"
+		} else {
+			g = glyph.Error
+			verb = "sdd stopped"
+		}
+		line := fmt.Sprintf(" %s %s — %d/%d tasks · %s", g, verb, d.SDD.DoneTasks, d.SDD.TotalTasks, formatElapsed(elapsed))
+		line = ansi.Truncate(line, width, "…")
+		return []string{line}
+	}
 	g := d.Spinner
 	if g == "" {
 		g = glyph.Running

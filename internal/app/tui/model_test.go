@@ -4416,8 +4416,11 @@ func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetSDDProgress(session.SDDProgress{Active: true, PlanName: "p", TotalTasks: 1, CurrentTask: 1, Phase: "implementing"})
 	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "plan · p") {
-		t.Errorf("view missing SDD panel: %q", view)
+	if !strings.Contains(view, "task 1/1") || !strings.Contains(view, "implementing") {
+		t.Errorf("view missing run panel: %q", view)
+	}
+	if strings.Contains(view, "plan · p") {
+		t.Errorf("old SDD panel still rendered alongside the run panel: %q", view)
 	}
 }
 

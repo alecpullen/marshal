@@ -657,35 +657,42 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 	}
 }
 
-func TestSDDPanelDoesNotPushInputOffScreen(t *testing.T) {
+func TestRunPanelDoesNotPushInputOffScreen(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetSDDProgress(session.SDDProgress{
 		Active:      true,
 		PlanName:    "test-plan",
 		Branch:      "feat/test",
 		CurrentTask: 2,
+		DoneTasks:   1,
 		TotalTasks:  5,
 		Phase:       "implement",
 		Detail:      "working on the parser",
-		LastLedger:  "wrote 120 lines",
+		Tasks:       []string{"Scaffold", "Parse", "Evaluate", "Report", "Cleanup"},
+		StartedAt:   m.now().Add(-time.Minute),
 	})
 	m.refreshViewport()
 
 	frame := stripANSI(m.viewString())
 	lines := strings.Split(frame, "\n")
 	if len(lines) != m.height {
-		t.Fatalf("frame height = %d, want %d (SDD panel pushed input off screen)\n%s", len(lines), m.height, frame)
+		t.Fatalf("frame height = %d, want %d (run panel pushed input off screen)\n%s", len(lines), m.height, frame)
 	}
 
-	// The SDD panel content must be visible.
-	sddRow := -1
+	// The run panel summary must be visible.
+	panelRow := -1
 	for i, line := range lines {
-		if strings.Contains(line, "test-plan") {
-			sddRow = i
+		if strings.Contains(line, "task 2/5") {
+			panelRow = i
 		}
 	}
-	if sddRow < 0 {
-		t.Fatalf("SDD panel missing from the frame:\n%s", frame)
+	if panelRow < 0 {
+		t.Fatalf("run panel missing from the frame:\n%s", frame)
+	}
+
+	// The plan checklist renders task titles — the old SDD panel never did.
+	if !strings.Contains(frame, "▸ 2 Parse") {
+		t.Fatalf("run panel checklist missing from the frame:\n%s", frame)
 	}
 
 	// The input box must be visible (the ❯ prompt).
@@ -810,6 +817,19 @@ func TestTurnSpinnerBlankWhenIdleButStillReserved(t *testing.T) {
 	}
 	if got := m.turnSpinnerRows(); got != 1 {
 		t.Errorf("turnSpinnerRows() = %d, want 1 even when idle", got)
+	}
+}
+
+// During an SDD run the run panel owns the only spinner, so the pinned
+// turn-spinner row collapses entirely — no blank reserved row.
+func TestTurnSpinnerRowDroppedDuringSDD(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.state.SetSDDProgress(session.SDDProgress{Active: true})
+	if got := m.turnSpinnerRows(); got != 0 {
+		t.Errorf("turnSpinnerRows() = %d during SDD, want 0", got)
+	}
+	if row := m.renderTurnSpinner(); row != "" {
+		t.Errorf("renderTurnSpinner() = %q during SDD, want empty", row)
 	}
 }
 

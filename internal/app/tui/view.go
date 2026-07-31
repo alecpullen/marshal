@@ -81,18 +81,22 @@ func (m *Model) viewString() string {
 	var left string
 	if m.dock.FullFrameOpen() {
 		// A FullFrame panel owns everything above the status line: the
-		// transcript, todo panel, live strip, and input area are hidden.
+		// transcript, todo panel, run panel, live strip, and input area are hidden.
 		left = dockView
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
 		// The spinner groups with the transcript whose progress it
-		// describes, keeping the todo list adjacent to the input.
-		rows = append(rows, m.renderTurnSpinner())
+		// describes, keeping the todo list adjacent to the input. During
+		// an SDD run the run panel owns the only spinner, so this row
+		// collapses entirely (see turnSpinnerRows).
+		if !m.state.SDDProgress().Active {
+			rows = append(rows, m.renderTurnSpinner())
+		}
 		if todo := m.renderTodoPanel(); todo != "" {
 			rows = append(rows, todo)
 		}
-		if sd := m.state.SDDProgress(); sd.Active {
-			rows = append(rows, sddPanel(sd, m.leftWidth))
+		if panel := m.renderRunPanel(); panel != "" {
+			rows = append(rows, panel)
 		}
 		if strip := m.renderLiveStrip(); strip != "" {
 			rows = append(rows, strip)

@@ -23,6 +23,7 @@ require (
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/yuin/goldmark v1.7.8
 	golang.org/x/text v0.24.0
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.53.0
 	mvdan.cc/sh/v3 v3.13.1
 )

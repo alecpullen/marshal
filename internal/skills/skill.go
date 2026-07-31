@@ -8,6 +8,7 @@ import (
 	"marshal/internal/tools/registry"
 
 	"github.com/pelletier/go-toml/v2"
+	"gopkg.in/yaml.v3"
 )
 
 // DefaultSkillRisk is the risk level assigned to a skill when its
@@ -62,22 +63,37 @@ func (idx *Index) List() []Skill {
 }
 
 type frontmatter struct {
-	Name        string `toml:"name"`
-	Description string `toml:"description"`
-	Risk        string `toml:"risk"`
+	Name        string `toml:"name"        yaml:"name"`
+	Description string `toml:"description" yaml:"description"`
+	Risk        string `toml:"risk"        yaml:"risk"`
 }
 
 func parseFrontmatter(raw string) (Skill, error) {
-	const delimiter = "+++\n"
+	// Support both TOML (+++) and YAML (---) frontmatter delimiters.
+	// YAML is common in third-party skill suites (e.g. github.com/obra/superpowers).
 
-	idx := strings.Index(raw, delimiter)
-	if idx != 0 {
-		return Skill{}, fmt.Errorf("skill file must start with +++ delimiter")
+	const (
+		tomlDelimiter = "+++\n"
+		yamlDelimiter  = "---\n"
+	)
+
+	switch {
+	case strings.HasPrefix(raw, tomlDelimiter):
+		return parseTOMLFrontmatter(raw, tomlDelimiter)
+	case strings.HasPrefix(raw, yamlDelimiter):
+		return parseYAMLFrontmatter(raw, yamlDelimiter)
+	case strings.HasPrefix(raw, "---\r"):
+		// YAML with CRLF line endings.
+		return parseYAMLFrontmatter(raw, "---\r")
+	default:
+		return Skill{}, fmt.Errorf("skill file must start with +++ (TOML) or --- (YAML) delimiter")
 	}
+}
 
+func parseTOMLFrontmatter(raw, delimiter string) (Skill, error) {
 	end := strings.Index(raw[len(delimiter):], delimiter)
 	if end == -1 {
-		return Skill{}, fmt.Errorf("skill file missing closing +++ delimiter")
+		return Skill{}, fmt.Errorf("skill file missing closing %s delimiter", delimiter)
 	}
 
 	fmRaw := raw[len(delimiter) : len(delimiter)+end]
@@ -88,6 +104,27 @@ func parseFrontmatter(raw string) (Skill, error) {
 		return Skill{}, fmt.Errorf("parse frontmatter: %w", err)
 	}
 
+	return validateSkill(fm, body)
+}
+
+func parseYAMLFrontmatter(raw, delimiter string) (Skill, error) {
+	end := strings.Index(raw[len(delimiter):], delimiter)
+	if end == -1 {
+		return Skill{}, fmt.Errorf("skill file missing closing %s delimiter", delimiter)
+	}
+
+	fmRaw := raw[len(delimiter) : len(delimiter)+end]
+	body := strings.TrimLeft(raw[len(delimiter)+end+len(delimiter):], "\n")
+
+	var fm frontmatter
+	if err := yaml.Unmarshal([]byte(fmRaw), &fm); err != nil {
+		return Skill{}, fmt.Errorf("parse frontmatter: %w", err)
+	}
+
+	return validateSkill(fm, body)
+}
+
+func validateSkill(fm frontmatter, body string) (Skill, error) {
 	if fm.Name == "" {
 		return Skill{}, fmt.Errorf("skill frontmatter missing required field: name")
 	}

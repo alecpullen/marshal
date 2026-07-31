@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -41,10 +42,6 @@ func Install(ctx context.Context, source, targetDir, name string) (string, error
 	}
 
 	if info.IsDir() {
-		bundle := filepath.Join(source, BundleFileName)
-		if _, err := os.Stat(bundle); err == nil {
-			return installBundleFile(bundle, targetDir, name)
-		}
 		return installBundleDir(source, targetDir, name)
 	}
 
@@ -84,7 +81,12 @@ func installGit(ctx context.Context, source, targetDir, name string) (string, er
 	if err != nil {
 		return "", err
 	}
-	if name == "" {
+	// An explicitly-provided name means "install only the first matching
+	// bundle and rename it". An auto-derived name (from the URL) must not
+	// trigger that behaviour — it would install only one skill from a
+	// multi-skill suite and rename it to the repo name.
+	explicitName := name != ""
+	if !explicitName {
 		name = defaultName
 	}
 
@@ -109,7 +111,7 @@ func installGit(ctx context.Context, source, targetDir, name string) (string, er
 	// If the repo root contains a SKILL.md, treat it as a single bundle.
 	rootBundle := filepath.Join(cloneDir, BundleFileName)
 	if _, err := os.Stat(rootBundle); err == nil {
-		return installBundleFile(rootBundle, targetDir, name)
+		return installBundleDir(filepath.Dir(rootBundle), targetDir, name)
 	}
 
 	// Otherwise copy every skills/<name>/SKILL.md bundle found.
@@ -128,17 +130,17 @@ func installGit(ctx context.Context, source, targetDir, name string) (string, er
 			continue
 		}
 		bundleName := e.Name()
-		if name != "" {
+		if explicitName {
 			// If user passed a specific name, install only the first matching
 			// bundle and rename it.
 			bundleName = name
 		}
-		path, err := installBundleFile(bundle, targetDir, bundleName)
+		path, err := installBundleDir(filepath.Dir(bundle), targetDir, bundleName)
 		if err != nil {
 			return "", err
 		}
 		installed = path
-		if name != "" {
+		if explicitName {
 			break
 		}
 	}
@@ -187,22 +189,6 @@ func installSingleFile(source, targetDir, name string) (string, error) {
 	return dest, os.WriteFile(dest, data, 0644)
 }
 
-func installBundleFile(bundlePath, targetDir, name string) (string, error) {
-	if name == "" {
-		name = filepath.Base(filepath.Dir(bundlePath))
-	}
-	dest := filepath.Join(targetDir, name)
-	if err := os.MkdirAll(dest, 0755); err != nil {
-		return "", err
-	}
-	destFile := filepath.Join(dest, BundleFileName)
-	data, err := os.ReadFile(bundlePath)
-	if err != nil {
-		return "", err
-	}
-	return dest, os.WriteFile(destFile, data, 0644)
-}
-
 func installBundleDir(source, targetDir, name string) (string, error) {
 	if name == "" {
 		name = filepath.Base(source)
@@ -211,23 +197,33 @@ func installBundleDir(source, targetDir, name string) (string, error) {
 	if err := os.MkdirAll(dest, 0755); err != nil {
 		return "", err
 	}
-	entries, err := os.ReadDir(source)
+	err := filepath.WalkDir(source, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
 	if err != nil {
 		return "", err
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		src := filepath.Join(source, e.Name())
-		dst := filepath.Join(dest, e.Name())
-		data, err := os.ReadFile(src)
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(dst, data, 0644); err != nil {
-			return "", err
-		}
 	}
 	return dest, nil
 }

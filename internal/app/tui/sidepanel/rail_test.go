@@ -418,3 +418,31 @@ func TestRailWithoutFooterUnchanged(t *testing.T) {
 		t.Errorf("bottom row = %q, want just the divider when no footer is present", plain)
 	}
 }
+
+// The footer's own header is a bare rule (SessionSection.Title() is ""),
+// and View used to prepend a second one — drawing two identical full-width
+// rules back to back above the session block.
+func TestFooterHasNoDoubleRule(t *testing.T) {
+	r := New(mk("alpha", 0, 2), footerSection(2))
+	lines := strings.Split(r.View(Data{}, 30, 20), "\n")
+
+	isRule := func(s string) bool {
+		body := strings.TrimPrefix(StripANSI(s), "│ ")
+		return body != "" && strings.Trim(body, "─") == ""
+	}
+	for i := 1; i < len(lines); i++ {
+		if isRule(lines[i-1]) && isRule(lines[i]) {
+			t.Fatalf("adjacent rules at rows %d/%d:\n%s", i-1, i, StripANSI(strings.Join(lines, "\n")))
+		}
+	}
+	// The single rule separating body from footer must survive.
+	rules := 0
+	for _, l := range lines {
+		if isRule(l) {
+			rules++
+		}
+	}
+	if rules != 1 {
+		t.Fatalf("want exactly one footer rule, got %d", rules)
+	}
+}

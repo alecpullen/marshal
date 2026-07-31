@@ -9,6 +9,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -863,5 +865,33 @@ func TestTurnSpinnerGlyphGatedOnFirst200ms(t *testing.T) {
 	m.turnStartedAt = m.now().Add(-time.Second)
 	if got := m.turnSpinnerFrame(); got != "⠹" {
 		t.Errorf("turnSpinnerFrame() = %q at 1s, want ⠹", got)
+	}
+}
+
+// A surface background wrapped around pre-styled content is cut short by
+// the inner spans' own resets, leaving the color only in the gaps — which
+// is what made the todo panel look like it had a light band around every
+// label instead of behind it.
+func TestReassertBackgroundReopensAfterInnerResets(t *testing.T) {
+	bg := lipgloss.Color("#202030")
+	open, _, ok := strings.Cut(lipgloss.NewStyle().Background(bg).Render("\x00"), "\x00")
+	if !ok || open == "" {
+		t.Skip("color profile emits no background sequence")
+	}
+
+	line := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000")).Render("todo") + " tail"
+	got := reassertBackground(line, bg)
+
+	if strings.Count(got, open) != strings.Count(line, ansi.ResetStyle) {
+		t.Fatalf("background not reopened after every reset: %q", got)
+	}
+	if ansi.Strip(got) != ansi.Strip(line) {
+		t.Fatalf("visible text changed: %q vs %q", ansi.Strip(got), ansi.Strip(line))
+	}
+}
+
+func TestReassertBackgroundLeavesPlainTextAlone(t *testing.T) {
+	if got := reassertBackground("plain", lipgloss.Color("#202030")); got != "plain" {
+		t.Fatalf("got %q, want %q", got, "plain")
 	}
 }

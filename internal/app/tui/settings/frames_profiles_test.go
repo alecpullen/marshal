@@ -62,8 +62,14 @@ func TestProfileEntryHasOneRowPerRole(t *testing.T) {
 	}
 	detail := localRow.Build()
 	detailRows := detail.List.Rows()
-	if len(detailRows) != len(routing.AllRoles) {
-		t.Fatalf("profile detail should have %d rows (one per role), got %d", len(routing.AllRoles), len(detailRows))
+	// AllRoles + the embedding role, which is not in AllRoles but must
+	// still be settable from /settings.
+	wantRows := len(routing.AllRoles) + 1
+	if len(detailRows) != wantRows {
+		t.Fatalf("profile detail should have %d rows (one per role), got %d", wantRows, len(detailRows))
+	}
+	if last := detailRows[len(detailRows)-1].ID; last != "profiles.local.embedding" {
+		t.Fatalf("last row id = %q, want profiles.local.embedding", last)
 	}
 	firstRole := routing.AllRoles[0]
 	expectedID := "profiles.local." + string(firstRole)

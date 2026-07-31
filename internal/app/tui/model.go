@@ -2562,10 +2562,17 @@ func (m Model) settingsBlockReason() string {
 // handleAgentFinished handles an agentFinishedMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
-	if m.cancelling {
+	// A cancelled turn's error is an artifact of the cancellation, not a
+	// provider fault. It does not reliably wrap context.Canceled: a stream
+	// aborted mid-flight surfaces as a wrapped transport error ("provider
+	// %q: chat request failed: ..."), which used to pin a bogus error banner
+	// under the transcript until the next successful turn.
+	cancelled := m.cancelling
+	if cancelled {
 		m.state.ClearSteering()
 		m.queuedCount = 0
 		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
+		m.state.SetProviderError(nil)
 		m.cancelling = false
 	}
 	m.busy = false
@@ -2573,7 +2580,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.agentCancel = nil
 	m.refreshRailTurns()
 	m.refreshRailChanged()
-	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: render the prompt and wait for user resolution.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
 			gate := m.state.SDDGate()

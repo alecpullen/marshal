@@ -25,6 +25,7 @@ var roleTitles = map[routing.AgentRole]string{
 	routing.RoleSDDImplementer:    "SDD implementer",
 	routing.RoleSDDReviewer:       "SDD reviewer",
 	routing.RoleSDDBranchReviewer: "SDD branch reviewer",
+	routing.RoleEmbedding:         "Embeddings",
 }
 
 func roleTitle(role routing.AgentRole) string {
@@ -63,10 +64,15 @@ func profilesFrame(s *state) *frame {
 		},
 		func(k string) *frame {
 			return newFrame(k, func() []*field {
-				fields := make([]*field, 0, len(routing.AllRoles))
+				fields := make([]*field, 0, len(routing.AllRoles)+1)
 				for _, role := range routing.AllRoles {
 					fields = append(fields, rolePresetField(s, k, role))
 				}
+				// Embedding is not in AllRoles (it is not a chat role and
+				// has no implementer fallback), but it still has to be
+				// settable somewhere — otherwise semantic search can only
+				// be configured by hand-editing config.toml.
+				fields = append(fields, rolePresetField(s, k, routing.RoleEmbedding))
 				return fields
 			})
 		},
@@ -116,6 +122,11 @@ func rolePresetField(s *state, profile string, role routing.AgentRole) *field {
 		s.cfg.AgentProfiles[profile] = p
 	}
 	desc := "preset for the " + roleTitle(role) + " role · unset falls back to the agent default"
+	if role == routing.RoleEmbedding {
+		// ResolveEmbedding has no implementer fallback: unset means the
+		// feature is off, not that a default kicks in.
+		desc = "model used to embed code for semantic search · unset disables embeddings"
+	}
 	if preset, ok := s.cfg.Models.Presets[get()]; ok {
 		desc = "→ " + preset.Provider + "/" + preset.Model + " · d clears"
 	}

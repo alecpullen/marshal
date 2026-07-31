@@ -137,8 +137,15 @@ func (r *Rail) View(d Data, width, height int) string {
 	footerRows := []string{}
 	if footerIdx >= 0 {
 		footerRows = sectionRows(live[footerIdx], d, states[footerIdx], costs[footerIdx], bodies[footerIdx], inner)
-		// The footer is introduced by a bare rule, then a blank row above.
-		footerRows = append([]string{"", Header("", "", inner)}, footerRows...)
+		// The footer is set off by a blank row. A bare rule is added only
+		// when the footer has no titled header of its own — sectionRows
+		// already emits `title ─────` in every state but StateOneLine, and
+		// stacking a bare rule on top of that drew two adjacent rules.
+		intro := []string{""}
+		if states[footerIdx] == StateOneLine {
+			intro = append(intro, Header("", "", inner))
+		}
+		footerRows = append(intro, footerRows...)
 	}
 
 	// If the footer cannot fit at the requested height, drop it entirely.

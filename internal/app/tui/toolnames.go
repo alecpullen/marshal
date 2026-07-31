@@ -76,16 +76,50 @@ func DisplayToolName(name string) string {
 	return strings.Join(parts, " ")
 }
 
+// toolPluralNames overrides the generic pluralizer for tools whose display
+// name does not take a bare "s" — either because the noun is already plural
+// ("Run tests"), because it needs "es" ("Apply patches"), or because the
+// head noun is not the last word ("Query JSON" → "Query JSON documents").
+var toolPluralNames = map[string]string{
+	"file.write_patch": "Edit files",
+	"patch.apply":      "Apply patches",
+	"test.run":         "Run tests",
+	"repo.search":      "Search repo",
+	"codebase.search":  "Codebase searches",
+	"json.query":       "Query JSON",
+	"csv.inspect":      "Inspect CSVs",
+	"web.search":       "Search web",
+	"git.status":       "Git status",
+	"symbols.find":     "Find symbols",
+	"todos":            "Update todos",
+}
+
 // pluralizeToolName returns the display name for a tool in plural form,
 // suitable for grouped tool call headings (e.g. "Read file" → "Read files",
-// "Run command" → "Run commands").
+// "Run command" → "Run commands"). Known tools come from toolPluralNames;
+// everything else falls back to English's regular rules.
 func pluralizeToolName(name string) string {
-	singular := DisplayToolName(name)
-	// Simple pluralization: append "s". This covers all current display
-	// names (file, command, tests, page, status, diff, symbols, todos,
-	// mode, question, user, subagent) since none end in s/x/y/z/ch/sh.
-	if strings.HasSuffix(singular, "s") || strings.HasSuffix(singular, "x") {
-		return singular + "es"
+	if plural, ok := toolPluralNames[name]; ok {
+		return plural
 	}
-	return singular + "s"
+	singular := DisplayToolName(name)
+	switch {
+	case singular == "":
+		return ""
+	// Already plural (or a non-count noun): leave it alone. Appending to
+	// these is what produced "Run testses" and "Find symbolses".
+	case strings.HasSuffix(singular, "s"):
+		return singular
+	case strings.HasSuffix(singular, "x"), strings.HasSuffix(singular, "z"),
+		strings.HasSuffix(singular, "ch"), strings.HasSuffix(singular, "sh"):
+		return singular + "es"
+	case len(singular) >= 2 && strings.HasSuffix(singular, "y") && !isVowel(singular[len(singular)-2]):
+		return singular[:len(singular)-1] + "ies"
+	default:
+		return singular + "s"
+	}
+}
+
+func isVowel(b byte) bool {
+	return strings.IndexByte("aeiouAEIOU", b) >= 0
 }

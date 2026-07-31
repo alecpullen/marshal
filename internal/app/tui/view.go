@@ -240,6 +240,7 @@ func chromeRailWidth(s string, c color.Color, w int) string {
 			// Only clip when a width was actually supplied; w == 0 means
 			// "no surface", not "truncate to nothing".
 			line = ansi.Truncate(line, w, "…")
+			line = reassertBackground(line, theme.Current().BGSurface)
 		}
 		lines[i] = bar + surface.Render(line)
 	}
@@ -248,6 +249,31 @@ func chromeRailWidth(s string, c color.Color, w int) string {
 		out += "\n"
 	}
 	return out
+}
+
+// reassertBackground re-emits bg after every SGR reset inside an
+// already-styled line.
+//
+// Wrapping pre-styled content in a Background() style does not do what it
+// looks like it does: each inner Render closes with \x1b[0m, which clears
+// the outer background along with the foreground. The result is a row where
+// only the gaps between styled spans — the leading gutter and the trailing
+// pad — carry the surface color, so the todo panel showed a light band
+// around every label instead of behind it.
+//
+// The bg opener is obtained from lipgloss rather than hand-built so it stays
+// correct across color profiles (truecolor, 256, ANSI).
+func reassertBackground(line string, bg color.Color) string {
+	if line == "" {
+		return line
+	}
+	const sentinel = "\x00"
+	rendered := lipgloss.NewStyle().Background(bg).Render(sentinel)
+	open, _, ok := strings.Cut(rendered, sentinel)
+	if !ok || open == "" {
+		return line
+	}
+	return strings.ReplaceAll(line, ansi.ResetStyle, ansi.ResetStyle+open)
 }
 
 // monochrome reports whether the active theme emits no color, in which case a

@@ -6174,3 +6174,39 @@ func TestNoCacheDirIsHarmless(t *testing.T) {
 		t.Error("in-session discovery must still work without a cache dir")
 	}
 }
+
+// Cancelling a turn aborts the provider stream mid-flight, and the transport
+// error that surfaces ("provider %q: chat request failed: ...") does not
+// wrap context.Canceled. Treating it as a provider fault pinned a bogus
+// error banner under the transcript until the next successful turn.
+func TestCancelledTurnDoesNotSetProviderError(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.busy = true
+	m.cancelling = true
+
+	updated, _ := m.Update(agentFinishedMsg{
+		err: fmt.Errorf("provider %q: chat request failed: %w", "ollama", errors.New("unexpected EOF")),
+	})
+	m = updated.(Model)
+
+	if err := m.state.ProviderError(); err != nil {
+		t.Fatalf("cancelled turn set a provider error banner: %v", err)
+	}
+	if m.cancelling {
+		t.Fatal("cancelling flag should be cleared")
+	}
+}
+
+// A genuine provider failure on a turn the user did not cancel must still
+// raise the banner.
+func TestUncancelledProviderFailureSetsProviderError(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.busy = true
+
+	updated, _ := m.Update(agentFinishedMsg{err: errors.New("connection refused")})
+	m = updated.(Model)
+
+	if m.state.ProviderError() == nil {
+		t.Fatal("provider failure should set the error banner")
+	}
+}

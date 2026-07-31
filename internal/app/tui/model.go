@@ -225,6 +225,10 @@ type Model struct {
 	// refreshViewport can detect "a new tool started" and reset
 	// activeToolExpanded. Zero when no tool is active.
 	activeToolStartedAt time.Time
+	// clickRegions maps content-line ranges in the transcript viewport to
+	// the transcript block occupying them, rebuilt every time refreshViewport
+	// rebuilds blocks. See click.go.
+	clickRegions []clickRegion
 	// rollbackArmed is the first half of Ctrl+R's arm-then-confirm. Cleared
 	// by any other keypress; see handleKeypress.
 	rollbackArmed bool
@@ -2358,8 +2362,27 @@ func (m *Model) refreshViewport() {
 	m.lastTranscriptHash = hash
 
 	blocks := make([]string, 0, len(items)+4)
+	regions := make([]clickRegion, 0, len(items))
+	lineCursor := 0
+	// addBlock appends s to blocks (if non-empty) and, when target is
+	// non-nil, records the content-line range it occupies so a later click
+	// can find it (see click.go). strings.Count is exact regardless of a
+	// block's internal formatting, because it counts the same "\n"
+	// characters strings.Join below will actually lay out on screen.
+	addBlock := func(s string, target *clickTarget) {
+		if s == "" {
+			return
+		}
+		blocks = append(blocks, s)
+		n := strings.Count(s, "\n")
+		if target != nil {
+			regions = append(regions, clickRegion{startLine: lineCursor, endLine: lineCursor + n, target: *target})
+		}
+		lineCursor += n + 1 // +1 for the blank separator strings.Join inserts
+	}
+
 	if len(items) == 0 {
-		blocks = append(blocks, renderWelcomeBanner(m.viewport.Width()))
+		addBlock(renderWelcomeBanner(m.viewport.Width()), nil)
 	}
 	firstTurn := true
 	for _, entry := range groupTranscript(items) {
@@ -2367,36 +2390,42 @@ func (m *Model) refreshViewport() {
 		// always reads as "a new turn starts here" rather than as a header.
 		if entry.Group == nil && isUserTurn(*entry.Item) {
 			if !firstTurn {
-				blocks = append(blocks, renderTurnSeparator(m.viewport.Width()))
+				addBlock(renderTurnSeparator(m.viewport.Width()), nil)
 			}
 			firstTurn = false
 		}
-		var s string
 		if entry.Group != nil {
-			expanded := m.isExpanded(itemKeyForGroup(entry.Group))
-			s = renderToolGroup(entry.Group, expanded, m.viewport.Width())
+			key := itemKeyForGroup(entry.Group)
+			expanded := m.isExpanded(key)
+			s := renderToolGroup(entry.Group, expanded, m.viewport.Width())
+			addBlock(s, &clickTarget{key: key})
 		} else {
-			expanded := m.isExpanded(itemKeyFor(entry.Item))
-			s = renderTranscriptItem(*entry.Item, expanded, m.viewport.Width())
-		}
-		if s != "" {
-			blocks = append(blocks, s)
+			key := itemKeyFor(entry.Item)
+			expanded := m.isExpanded(key)
+			s := renderTranscriptItem(*entry.Item, expanded, m.viewport.Width())
+			var target *clickTarget
+			if entry.Item.Kind == session.KindThinking || entry.Item.Kind == session.KindAudit {
+				target = &clickTarget{key: key}
+			}
+			addBlock(s, target)
 		}
 	}
 	if inProgress.Active && inProgress.Reasoning != "" {
-		blocks = append(blocks, renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()))
+		addBlock(renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()), nil)
 	}
 	if atc, ok := m.state.ActiveToolCall(); ok {
-		blocks = append(blocks, renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolExpanded, m.viewport.Width()))
+		s := renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolExpanded, m.viewport.Width())
+		addBlock(s, &clickTarget{isActiveTool: true})
 	}
 	if err := m.state.ProviderError(); err != nil {
-		blocks = append(blocks, renderProviderError(err, m.viewport.Width())+
-			mutedStyle().Render("Run /connect to add a provider, or /models to pick a model.")+"\n")
+		addBlock(renderProviderError(err, m.viewport.Width())+
+			mutedStyle().Render("Run /connect to add a provider, or /models to pick a model.")+"\n", nil)
 	}
 	if len(queued) > 0 {
-		blocks = append(blocks, renderQueuedMessages(queued, m.viewport.Width()))
+		addBlock(renderQueuedMessages(queued, m.viewport.Width()), nil)
 	}
 
+	m.clickRegions = regions
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	m.viewport.SetContent(strings.Join(blocks, "\n"))

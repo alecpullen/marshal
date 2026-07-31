@@ -2553,9 +2553,14 @@ func spinnerLabel(spinner, label string) string {
 // activeSpinnerFrame returns the current spinner frame glyph if the activity
 // has been running for at least 200ms, or "" when the activity just started.
 // This avoids a flash of the spinner glyph before the user can perceive the
-// activity. For ActivityIdle it always returns "".
+// activity. For ActivityIdle it always returns "". During an SDD run it
+// always returns "": the run panel owns the only spinner on screen, so
+// transcript activity rows render their static glyph with elapsed time.
 func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
 	if kind == session.ActivityIdle {
+		return ""
+	}
+	if m.state.SDDProgress().Active {
 		return ""
 	}
 	act := m.state.Activity()

@@ -9,8 +9,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/app/tui/glyph"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -888,30 +889,29 @@ func TestTurnSpinnerGlyphGatedOnFirst200ms(t *testing.T) {
 	}
 }
 
-// A surface background wrapped around pre-styled content is cut short by
-// the inner spans' own resets, leaving the color only in the gaps — which
-// is what made the todo panel look like it had a light band around every
-// label instead of behind it.
-func TestReassertBackgroundReopensAfterInnerResets(t *testing.T) {
-	bg := lipgloss.Color("#202030")
-	open, _, ok := strings.Cut(lipgloss.NewStyle().Background(bg).Render("\x00"), "\x00")
-	if !ok || open == "" {
-		t.Skip("color profile emits no background sequence")
+// Rail panels paint no background: the ▍ rail carries the grouping, and a
+// painted band renders as a light stripe around content on light/16-color
+// terminal themes.
+func TestChromeRailWidthPaintsNoBackground(t *testing.T) {
+	out := chromeRailWidth(" row one\nrow two ", dimColor, 40)
+	if strings.Contains(out, "48;") || strings.Contains(out, "[48;") {
+		t.Fatalf("chromeRailWidth must not emit background SGR:\n%q", out)
 	}
-
-	line := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000")).Render("todo") + " tail"
-	got := reassertBackground(line, bg)
-
-	if strings.Count(got, open) != strings.Count(line, ansi.ResetStyle) {
-		t.Fatalf("background not reopened after every reset: %q", got)
+	lines := strings.Split(out, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 railed lines, got %d:\n%q", len(lines), out)
 	}
-	if ansi.Strip(got) != ansi.Strip(line) {
-		t.Fatalf("visible text changed: %q vs %q", ansi.Strip(got), ansi.Strip(line))
+	for i, l := range lines {
+		if !strings.Contains(stripANSI(l), "row") {
+			t.Errorf("line %d lost its content: %q", i, l)
+		}
 	}
 }
 
-func TestReassertBackgroundLeavesPlainTextAlone(t *testing.T) {
-	if got := reassertBackground("plain", lipgloss.Color("#202030")); got != "plain" {
-		t.Fatalf("got %q, want %q", got, "plain")
+func TestChromeRailWidthTruncatesToWidth(t *testing.T) {
+	out := chromeRailWidth(strings.Repeat("x", 50), dimColor, 20)
+	plain := strings.TrimPrefix(ansi.Strip(out), glyph.Rail)
+	if w := ansi.StringWidth(plain); w > 20 {
+		t.Fatalf("content not truncated to width: %d > 20", w)
 	}
 }

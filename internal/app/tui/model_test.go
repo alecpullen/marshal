@@ -6210,3 +6210,20 @@ func TestUncancelledProviderFailureSetsProviderError(t *testing.T) {
 		t.Fatal("provider failure should set the error banner")
 	}
 }
+
+func TestRefreshViewportResetsActiveToolExpandedOnNewTool(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0)})
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+	m.activeToolExpanded = true
+
+	// A new tool starts (different StartedAt): the override must reset.
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(501, 0)})
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	if m.activeToolExpanded {
+		t.Fatal("expected activeToolExpanded to reset when a new tool starts")
+	}
+}

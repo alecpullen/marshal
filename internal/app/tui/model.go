@@ -2335,6 +2335,14 @@ func (m *Model) refreshViewport() {
 	inProgress := m.state.InProgress()
 	streamLen := len(inProgress.Reasoning)
 	atc, activeTool := m.state.ActiveToolCall()
+	if activeTool {
+		if atc.StartedAt != m.activeToolStartedAt {
+			m.activeToolStartedAt = atc.StartedAt
+			m.activeToolExpanded = false
+		}
+	} else {
+		m.activeToolStartedAt = time.Time{}
+	}
 	busy := m.busy || activeTool || streamLen > 0
 
 	todos := m.state.Todos()
@@ -2379,7 +2387,7 @@ func (m *Model) refreshViewport() {
 		blocks = append(blocks, renderThinkingBox(inProgress.Reasoning, m.activeSpinnerFrame(session.ActivityThinking), m.viewport.Width()))
 	}
 	if atc, ok := m.state.ActiveToolCall(); ok {
-		blocks = append(blocks, renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.viewport.Width()))
+		blocks = append(blocks, renderActiveToolCall(atc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.activeSpinnerFrame(session.ActivityTool), m.now(), m.activeToolExpanded, m.viewport.Width()))
 	}
 	if err := m.state.ProviderError(); err != nil {
 		blocks = append(blocks, renderProviderError(err, m.viewport.Width())+

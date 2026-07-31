@@ -740,7 +740,7 @@ func TestTurnSpinnerShowsElapsedDirectlyAboveInput(t *testing.T) {
 func TestRenderActiveToolCallUsesRunningGutter(t *testing.T) {
 	out := renderActiveToolCall(
 		session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)},
-		session.SandboxInfo{}, false, "⠻", time.Unix(104, 0), 80)
+		session.SandboxInfo{}, false, "⠻", time.Unix(104, 0), false, 80)
 	plain := stripANSI(out)
 	if !strings.HasPrefix(plain, " ▸ ") {
 		t.Fatalf("running tool should use the ▸ gutter:\n%q", plain)

@@ -559,7 +559,7 @@ func renderProviderError(err error, width int) string {
 // sandbox backend is active, an isolation-status line, both dim-indented
 // under the gutter. When the tool has streamed output, the last 6 lines
 // are rendered dim-indented beneath the command line.
-func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, width int) string {
+func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, expanded bool, width int) string {
 	elapsed := now.Sub(atc.StartedAt)
 	if elapsed < 0 {
 		elapsed = 0
@@ -605,7 +605,7 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	if atc.Output != "" {
 		lines := strings.Split(strings.TrimRight(atc.Output, "\n"), "\n")
 		const tail = 6
-		if len(lines) > tail {
+		if !expanded && len(lines) > tail {
 			lines = lines[len(lines)-tail:]
 		}
 		for _, line := range lines {

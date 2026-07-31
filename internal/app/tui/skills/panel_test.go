@@ -230,3 +230,35 @@ func TestAutoloadShowsInRowSummary(t *testing.T) {
 		t.Fatalf("row summary = %q, want it to mention autoload", got)
 	}
 }
+
+// The footer counted every row in the active list, so a single installed
+// skill read "3 skills" (header + skill + install action) and drilling into
+// one read "6 skills" (its detail fields).
+func TestFooterCountsSkillsNotRows(t *testing.T) {
+	p, _ := newAutoloadPanel(t)
+
+	if got := p.countLabel(); got != "1 skill" {
+		t.Fatalf("root count = %q, want %q", got, "1 skill")
+	}
+
+	p.stack = append(p.stack, p.detailFrame(scopedDebug(t, p)))
+	if got := p.countLabel(); got != "1 skill" {
+		t.Fatalf("detail count = %q, want %q", got, "1 skill")
+	}
+}
+
+func TestFooterCountTracksFilter(t *testing.T) {
+	p, _ := newAutoloadPanel(t)
+	p.filter.SetValue("nomatch")
+	p.list.Refresh()
+
+	if got := p.countLabel(); got != "0 skills" {
+		t.Fatalf("filtered count = %q, want %q", got, "0 skills")
+	}
+
+	p.filter.SetValue("debug")
+	p.list.Refresh()
+	if got := p.countLabel(); got != "1 skill" {
+		t.Fatalf("filtered count = %q, want %q", got, "1 skill")
+	}
+}

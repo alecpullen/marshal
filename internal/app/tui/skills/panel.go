@@ -455,6 +455,28 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
+// countLabel is the footer's skill count.
+//
+// It counts skill rows specifically rather than every row in the active
+// list. The list also carries a header and the install action, and a
+// drilled-in detail frame carries none of them — so counting rows reported
+// "3 skills" for a single installed skill and "6 skills" while viewing one
+// skill's detail. Counting `skill.` rows in the root list keeps the number
+// honest at any stack depth and still tracks the filter, since filtering
+// rebuilds that list.
+func (p *Panel) countLabel() string {
+	n := 0
+	for _, f := range settings.FieldListRows(p.list) {
+		if strings.HasPrefix(settings.FieldID(f), "skill.") {
+			n++
+		}
+	}
+	if n == 1 {
+		return "1 skill"
+	}
+	return fmt.Sprintf("%d skills", n)
+}
+
 func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 4 {
 		return ""
@@ -466,7 +488,7 @@ func (p *Panel) View(width, maxHeight int) string {
 		header = settings.FrameTitle(p.stack[len(p.stack)-1])
 	}
 	body := header + "\n" + l.View()
-	footer := fmt.Sprintf("%d skills", len(settings.FieldListRows(l)))
+	footer := p.countLabel()
 	// An in-flight install (a git clone can take seconds) and a completed one
 	// both used to render nothing, making a working action look broken.
 	switch {

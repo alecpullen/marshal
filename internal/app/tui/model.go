@@ -1118,6 +1118,7 @@ func (m Model) railData() sidepanel.Data {
 		Rules:   m.state.SessionRules(),
 		Swarm:   m.state.SwarmProgress(),
 		SDD:     m.state.SDDProgress(),
+		Spinner: m.turnSpinnerFrame(),
 		Now:     m.now(),
 	}
 }

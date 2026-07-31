@@ -8,8 +8,10 @@ import (
 	"marshal/internal/app/tui/glyph"
 )
 
-// SDDSection is the spec-driven-development task list. The live
-// strip shows only "sdd 3/7"; this is the list behind that count.
+// SDDSection mirrors the run panel when the side rail is open: the summary
+// (task count, phase, detail) plus the plan checklist with the same status
+// derivation. It is a mirror, not a replacement — the main column's panel
+// stays.
 type SDDSection struct{}
 
 func (SDDSection) ID() string      { return "sdd" }
@@ -17,17 +19,35 @@ func (SDDSection) Title() string   { return "SDD" }
 func (SDDSection) Priority() int   { return 0 }
 func (SDDSection) Clippable() bool { return true }
 
-func (SDDSection) Relevant(d Data) bool { return d.SDD.Active }
+func (SDDSection) Relevant(d Data) bool { return d.SDD.Active || d.SDD.Finished }
 
 func (SDDSection) Render(d Data, width, maxRows int) []string {
-	rows := make([]string, 0, 2)
-	rows = append(rows, fmt.Sprintf(" plan · %s", d.SDD.PlanName))
-	if d.SDD.Branch != "" {
-		rows = append(rows, fmt.Sprintf(" branch · %s", d.SDD.Branch))
+	g := d.Spinner
+	if g == "" {
+		g = glyph.Running
 	}
-	rows = append(rows, fmt.Sprintf(" task %d/%d · %s", d.SDD.CurrentTask, d.SDD.TotalTasks, d.SDD.Phase))
+	summary := fmt.Sprintf("task %d/%d", d.SDD.CurrentTask, d.SDD.TotalTasks)
+	if d.SDD.Phase != "" {
+		summary += " · " + d.SDD.Phase
+	}
+	rows := []string{fmt.Sprintf(" %s %s", g, summary)}
+	if d.SDD.Detail != "" {
+		rows = append(rows, "   "+d.SDD.Detail)
+	}
 	if d.SDD.FixRound > 0 {
-		rows = append(rows, fmt.Sprintf(" fix %d/%d", d.SDD.FixRound, d.SDD.MaxFixRounds))
+		rows = append(rows, fmt.Sprintf("   fix %d/%d", d.SDD.FixRound, d.SDD.MaxFixRounds))
+	}
+	for i, title := range d.SDD.Tasks {
+		var tg string
+		switch {
+		case i < d.SDD.DoneTasks:
+			tg = glyph.OK
+		case i == d.SDD.CurrentTask-1:
+			tg = glyph.Running
+		default:
+			tg = glyph.Ambient
+		}
+		rows = append(rows, fmt.Sprintf(" %s %d %s", tg, i+1, title))
 	}
 	if maxRows > 0 && len(rows) > maxRows {
 		rows = rows[:maxRows]

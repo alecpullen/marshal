@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/skills"
 )
 
 func TestPanelRootList(t *testing.T) {
@@ -121,5 +122,111 @@ func TestInstallWithEmptySourceReportsError(t *testing.T) {
 	}
 	if got := p.ActiveList().ErrMsg; got == "" {
 		t.Error("error was not surfaced on the visible list")
+	}
+}
+
+// scopedDebug is the ScopedSkill the fixture panel has installed.
+func scopedDebug(t *testing.T, p *Panel) skills.ScopedSkill {
+	t.Helper()
+	scoped, err := skills.ListScopes(p.globalSkillsDir(), p.projectSkillsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range scoped {
+		if s.Skill.Name == "debug" {
+			return s
+		}
+	}
+	t.Fatal("debug skill not found")
+	return skills.ScopedSkill{}
+}
+
+// newAutoloadPanel builds a panel over one installed global skill.
+func newAutoloadPanel(t *testing.T) (*Panel, string) {
+	t.Helper()
+	home, work := t.TempDir(), t.TempDir()
+	dir := filepath.Join(home, ".config", "marshal", "skills")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	body := "+++\nname = \"debug\"\ndescription = \"debugging skill\"\n+++\n\n# Debug"
+	if err := os.WriteFile(filepath.Join(dir, "debug.md"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	state := session.New(config.Default(), work, time.Now(), session.Persistence{})
+	return NewPanel(home, work, true, state), home
+}
+
+func fieldByID(t *testing.T, fields []*settings.Field, id string) *settings.Field {
+	t.Helper()
+	for _, f := range fields {
+		if settings.FieldID(f) == id {
+			return f
+		}
+	}
+	t.Fatalf("no field %q", id)
+	return nil
+}
+
+// Toggling autoload has to reach disk, or the setting silently vanishes
+// when the session ends — which is the whole point of it being persistent.
+func TestAutoloadToggleWritesUserConfig(t *testing.T) {
+	p, home := newAutoloadPanel(t)
+	frame := p.detailFrame(scopedDebug(t, p))
+	auto := fieldByID(t, settings.FieldListRows(settings.FrameList(frame)), "detail.autoload")
+
+	if auto.GetBool() {
+		t.Fatal("should start off")
+	}
+	auto.SetBool(true)
+
+	if !p.isAutoloaded("debug") {
+		t.Fatal("in-memory config not updated")
+	}
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Skills.Autoload) != 1 || cfg.Skills.Autoload[0] != "debug" {
+		t.Fatalf("on-disk autoload = %v, want [debug]", cfg.Skills.Autoload)
+	}
+
+	auto.SetBool(false)
+	cfg, err = config.Load(config.LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Skills.Autoload) != 0 {
+		t.Fatalf("autoload should be empty after toggling off, got %v", cfg.Skills.Autoload)
+	}
+}
+
+// Toggling one skill must not disturb entries for skills managed elsewhere.
+func TestAutoloadTogglePreservesOtherEntries(t *testing.T) {
+	p, home := newAutoloadPanel(t)
+	p.state.Config.Skills.Autoload = []string{"using-superpowers"}
+
+	frame := p.detailFrame(scopedDebug(t, p))
+	fieldByID(t, settings.FieldListRows(settings.FrameList(frame)), "detail.autoload").SetBool(true)
+
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"using-superpowers", "debug"}
+	if strings.Join(cfg.Skills.Autoload, ",") != strings.Join(want, ",") {
+		t.Fatalf("autoload = %v, want %v", cfg.Skills.Autoload, want)
+	}
+}
+
+// An always-on skill is invisible from the list without a marker.
+func TestAutoloadShowsInRowSummary(t *testing.T) {
+	p, _ := newAutoloadPanel(t)
+	p.state.Config.Skills.Autoload = []string{"debug"}
+	p.list.Refresh()
+
+	row := fieldByID(t, settings.FieldListRows(p.list), "skill.debug")
+	if got := row.Summary(); !strings.Contains(got, "autoload") {
+		t.Fatalf("row summary = %q, want it to mention autoload", got)
 	}
 }

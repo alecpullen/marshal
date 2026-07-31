@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
@@ -73,12 +74,70 @@ func (p *Panel) ActiveList() *settings.FieldList {
 // FilterValue returns the current filter text.
 func (p *Panel) FilterValue() string { return p.filter.Value() }
 
-func (p *Panel) globalSkillsDir() string {
-	home, _ := os.UserHomeDir()
+// homeRoot is the home directory the panel resolves user-level paths
+// against: the injected one when tests supply it, the real one otherwise.
+func (p *Panel) homeRoot() string {
 	if p.homeDir != "" {
-		home = p.homeDir
+		return p.homeDir
 	}
-	return filepath.Join(home, ".config", "marshal", "skills")
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+func (p *Panel) globalSkillsDir() string {
+	return filepath.Join(config.UserDir(p.homeRoot()), "skills")
+}
+
+// isAutoloaded reports whether name is in the effective skills.autoload list.
+func (p *Panel) isAutoloaded(name string) bool {
+	if p.state == nil {
+		return false
+	}
+	for _, n := range p.state.Config.Skills.Autoload {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// setAutoload adds or removes name from skills.autoload and persists it.
+//
+// Autoload always writes to the user config, never the project one, even
+// for a project-scoped skill. It is a preference about how you want the
+// agent to behave, not a property of the repository, and writing it
+// project-side would commit one developer's always-on skills into a shared
+// tree. SaveUserConfigValue writes just this key, so the rest of the user
+// config — and the project layer — are left alone.
+func (p *Panel) setAutoload(name string, on bool) {
+	if p.state == nil {
+		p.ActiveList().ErrMsg = "no session available"
+		return
+	}
+	current := p.state.Config.Skills.Autoload
+	next := make([]string, 0, len(current)+1)
+	for _, n := range current {
+		if n != name {
+			next = append(next, n)
+		}
+	}
+	if on {
+		next = append(next, name)
+	}
+	path := config.UserConfigPath(p.homeRoot())
+	if err := config.SaveUserConfigValue(path, "skills.autoload", next); err != nil {
+		p.ActiveList().ErrMsg = fmt.Sprintf("save autoload: %v", err)
+		return
+	}
+	// Mirror the write in memory so the toggle reflects immediately; the
+	// injection itself is a startup step, so it takes effect next session.
+	p.state.Config.Skills.Autoload = next
+	p.ActiveList().ErrMsg = ""
+	if on {
+		p.status = fmt.Sprintf("%s autoloads next session", name)
+	} else {
+		p.status = fmt.Sprintf("%s no longer autoloads", name)
+	}
 }
 
 func (p *Panel) projectSkillsDir() string {
@@ -108,6 +167,12 @@ func (p *Panel) detailFrame(s skills.ScopedSkill) *settings.Frame {
 		scope := settings.NewField("detail.scope", "Scope", settings.KindScalar)
 		settings.SetFieldGetStr(scope, func() string { return s.Scope })
 		fields = append(fields, scope)
+
+		auto := settings.NewField("detail.autoload", "Autoload", settings.KindToggle)
+		settings.SetFieldDesc(auto, "inject into every session at startup · saved to the global config")
+		settings.SetFieldGetBool(auto, func() bool { return p.isAutoloaded(s.Skill.Name) })
+		settings.SetFieldSetBool(auto, func(v bool) { p.setAutoload(s.Skill.Name, v) })
+		fields = append(fields, auto)
 
 		load := settings.NewField("action.load", "Load now", settings.KindAction)
 		settings.SetFieldDesc(load, "inject this skill into the current session")
@@ -239,7 +304,14 @@ func (p *Panel) buildFields() []*settings.Field {
 		name := s.Skill.Name
 		f := settings.NewField("skill."+name, name, settings.KindDrill)
 		settings.SetFieldDesc(f, fmt.Sprintf("%s · %s", s.Scope, s.Skill.Description))
-		settings.SetFieldSummary(f, func() string { return s.Scope })
+		// Which skills are always-on is otherwise invisible without opening
+		// the config file, so it belongs in the row summary.
+		settings.SetFieldSummary(f, func() string {
+			if p.isAutoloaded(name) {
+				return s.Scope + " · autoload"
+			}
+			return s.Scope
+		})
 		settings.SetFieldBuild(f, func() *settings.Frame { return p.detailFrame(s) })
 		fields = append(fields, f)
 	}

@@ -12,10 +12,10 @@ import (
 )
 
 // renderLiveStrip renders the one-row activity strip that replaced the
-// swarm roster panel, the SDD progress panel, and the browser bar. Only
-// one source is shown at a time, in priority order: an active swarm run,
-// then an active SDD run, then an open browser session. Returns "" when
-// none of them is live.
+// swarm roster panel and the browser bar. Only one source is shown at a
+// time, in priority order: an active swarm run, then an open browser
+// session. Returns "" when neither is live. SDD progress is deliberately
+// absent — the run panel owns it (one progress surface per run).
 //
 // Continuous progress lives here; terminal transitions (a role finishing,
 // a phase changing) print `·` events into the transcript instead.
@@ -23,9 +23,6 @@ func (m Model) renderLiveStrip() string {
 	spinner := m.activeSpinnerFrame(session.ActivityTool)
 	if p := m.state.SwarmProgress(); p.Active {
 		return liveStripLine(spinner, spinnerLabel(spinner, swarmStripText(p)), m.leftWidth)
-	}
-	if p := m.state.SDDProgress(); p.Active {
-		return liveStripLine(spinner, spinnerLabel(spinner, sddStripText(p)), m.leftWidth)
 	}
 	if bi := m.state.BrowserInfo(); bi.SessionOpen {
 		return liveStripLine(glyph.Ambient, browserStripText(bi, spinner), m.leftWidth)
@@ -60,16 +57,6 @@ func swarmStripText(p session.SwarmProgress) string {
 		if detail != "" {
 			text += " — " + detail
 		}
-	}
-	return text
-}
-
-// sddStripText renders `sdd task 3/7 · implementing` (or the current phase)
-// showing the current task and phase from the pipeline progress.
-func sddStripText(p session.SDDProgress) string {
-	text := fmt.Sprintf("sdd task %d/%d", p.CurrentTask, p.TotalTasks)
-	if p.Phase != "" {
-		text += " · " + p.Phase
 	}
 	return text
 }

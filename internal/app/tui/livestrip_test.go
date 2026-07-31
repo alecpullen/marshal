@@ -52,7 +52,7 @@ func TestLiveStripShowsSwarmProgress(t *testing.T) {
 	}
 }
 
-func TestLiveStripShowsSDDProgress(t *testing.T) {
+func TestLiveStripEmptyDuringSDDRun(t *testing.T) {
 	m := newLiveStripTestModel(t)
 	m.state.SetSDDProgress(session.SDDProgress{
 		Active:      true,
@@ -61,23 +61,8 @@ func TestLiveStripShowsSDDProgress(t *testing.T) {
 		CurrentTask: 3,
 		Phase:       "implementing",
 	})
-	out := stripANSI(m.renderLiveStrip())
-	if !strings.Contains(out, "sdd task 3/7") {
-		t.Fatalf("live strip missing sdd counts:\n%s", out)
-	}
-	if !strings.Contains(out, "implementing") {
-		t.Fatalf("live strip missing active phase:\n%s", out)
-	}
-	if strings.Count(out, "\n") != 0 {
-		t.Fatalf("live strip must be one row:\n%s", out)
-	}
-}
-
-func TestSDDStripTextShowsPhase(t *testing.T) {
-	p := session.SDDProgress{CurrentTask: 3, TotalTasks: 5, Phase: "reviewing"}
-	text := sddStripText(p)
-	if !strings.Contains(text, "reviewing") {
-		t.Errorf("strip text missing phase: %q", text)
+	if out := m.renderLiveStrip(); out != "" {
+		t.Fatalf("live strip must stay empty during an SDD run — the run panel owns SDD progress, got %q", out)
 	}
 }
 

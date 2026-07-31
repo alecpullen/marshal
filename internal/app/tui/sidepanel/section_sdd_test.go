@@ -3,20 +3,26 @@ package sidepanel
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/app/session"
 )
 
 func sddData() Data {
-	return Data{SDD: session.SDDProgress{
-		Active:      true,
-		DoneTasks:   2,
-		TotalTasks:  4,
-		CurrentTask: 3,
-		Phase:       "implementing",
-		PlanName:    "my-plan",
-		Branch:      "pipeline/my-plan",
-	}}
+	return Data{
+		Spinner: "⠋",
+		SDD: session.SDDProgress{
+			Active:      true,
+			DoneTasks:   2,
+			TotalTasks:  4,
+			CurrentTask: 3,
+			Phase:       "implementing",
+			Detail:      "src/auth.go",
+			PlanName:    "my-plan",
+			Branch:      "pipeline/my-plan",
+			Tasks:       []string{"Scaffold config", "Add theme slots", "Consolidate run panel", "Remove live strip"},
+		},
+	}
 }
 
 func TestSDDSectionIdentity(t *testing.T) {
@@ -39,14 +45,28 @@ func TestSDDSectionRelevance(t *testing.T) {
 	if !(SDDSection{}).Relevant(sddData()) {
 		t.Error("Relevant(active run) = false, want true")
 	}
+	finished := Data{SDD: session.SDDProgress{Finished: true}}
+	if !(SDDSection{}).Relevant(finished) {
+		t.Error("Relevant(finished run) = false, want true — the collapsed summary still shows")
+	}
 }
 
-func TestSDDSectionRendersPlanAndBranch(t *testing.T) {
+func TestSDDSectionRendersSummaryAndChecklist(t *testing.T) {
 	got := StripANSI(strings.Join((SDDSection{}).Render(sddData(), 34, 12), "\n"))
-	for _, want := range []string{"my-plan", "pipeline/my-plan", "3/4", "implementing"} {
+	for _, want := range []string{"⠋", "task 3/4", "implementing", "src/auth.go",
+		"✓ 1 Scaffold config", "✓ 2 Add theme slots", "▸ 3 Consolidate run panel", "· 4 Remove live strip"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Render missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestSDDSectionStaticGlyphWhenSpinnerGated(t *testing.T) {
+	d := sddData()
+	d.Spinner = ""
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 34, 12), "\n"))
+	if !strings.Contains(got, "▸ task 3/4") {
+		t.Errorf("summary must fall back to the static ▸ glyph:\n%s", got)
 	}
 }
 
@@ -63,5 +83,47 @@ func TestSDDSectionOneLine(t *testing.T) {
 	}
 	if !strings.Contains(got, "implementing") {
 		t.Errorf("OneLine = %q, want the phase", got)
+	}
+}
+
+func TestSDDSectionFinishedSuccess(t *testing.T) {
+	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	ended := time.Date(2026, 7, 30, 10, 23, 41, 0, time.UTC)
+	d := Data{
+		SDD: session.SDDProgress{
+			Finished:   true,
+			Succeeded:  true,
+			DoneTasks:  4,
+			TotalTasks: 4,
+			Tasks:      []string{"A", "B", "C", "D"},
+			StartedAt:  started,
+			EndedAt:    ended,
+		},
+	}
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 50, 12), "\n"))
+	want := " ✓ sdd done — 4/4 tasks · 23m 41s"
+	if got != want {
+		t.Errorf("Render(finished success) =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestSDDSectionFinishedFailure(t *testing.T) {
+	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	ended := time.Date(2026, 7, 30, 10, 0, 12, 0, time.UTC)
+	d := Data{
+		SDD: session.SDDProgress{
+			Finished:   true,
+			Succeeded:  false,
+			DoneTasks:  2,
+			TotalTasks: 4,
+			Tasks:      []string{"A", "B", "C", "D"},
+			StartedAt:  started,
+			EndedAt:    ended,
+		},
+	}
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 50, 12), "\n"))
+	want := " ✗ sdd stopped — 2/4 tasks · 12s"
+	if got != want {
+		t.Errorf("Render(finished failure) =\n  %q\nwant\n  %q", got, want)
 	}
 }

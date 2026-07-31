@@ -63,6 +63,10 @@ type Data struct {
 	// SDD is the SDD run progress, held directly so tests don't need a
 	// live session.
 	SDD session.SDDProgress
+
+	// Spinner is the current shared spinner frame ("" when gated or
+	// idle), so live sections tick in lockstep with the main column.
+	Spinner string
 }
 
 // Section is one read-only block in the rail. Sections are pure functions

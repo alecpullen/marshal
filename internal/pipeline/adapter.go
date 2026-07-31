@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -33,10 +34,18 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 	}
 	a.state.UpdateSDDProgress(func(p *session.SDDProgress) {
 		p.Active = true
+		p.Finished = false
+		p.Succeeded = false
 		p.PlanName = a.c.Plan.Slug
 		p.PlanPath = a.c.Plan.Path
 		p.TotalTasks = len(a.c.Plan.Tasks)
 		p.MaxFixRounds = a.c.MaxFixRounds
+		p.StartedAt = time.Now()
+		titles := make([]string, len(a.c.Plan.Tasks))
+		for i, t := range a.c.Plan.Tasks {
+			titles[i] = t.Title
+		}
+		p.Tasks = titles
 	})
 	err := a.c.Run(ctx)
 	a.state.UpdateSDDProgress(func(p *session.SDDProgress) {
@@ -49,10 +58,11 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 	if err == nil {
 		a.state.AddMessage(session.RoleSystem, a.c.Summary(), session.ContentTypePlain)
 	}
-	// The run is over — success or failure — so the progress chrome (live
-	// strip, SDD panel, input dimming) comes down. The gate path above
-	// returns early and intentionally keeps progress live for the resume.
-	a.state.ClearSDDProgress()
+	// The run is over — success or failure — so the live chrome (run-panel
+	// spinner, input dimming) comes down and the panel collapses to its
+	// one-line summary. The gate path above returns early and intentionally
+	// keeps progress live for the resume.
+	a.state.FinishSDDRun(err == nil, time.Now())
 	return err
 }
 

@@ -212,10 +212,8 @@ func (m Model) statusLeftSegments() []statusSeg {
 	}
 
 	if sp := m.state.SDDProgress(); sp.Active {
-		segs = append(segs, statusSeg{text: fmt.Sprintf("task %d/%d", sp.CurrentTask, sp.TotalTasks), priority: 1})
-		if sp.Phase != "" {
-			segs = append(segs, statusSeg{text: sp.Phase, priority: 1})
-		}
+		// The run panel owns task counts and phase; the status line keeps
+		// only the mode cue (modeSegment) and the token budget.
 		if sp.TokensMax > 0 || sp.TokensUsed > 0 {
 			segs = append(segs, statusSeg{text: fmt.Sprintf("sdd tokens %s/%s",
 				strutil.CompactTokens(sp.TokensUsed),

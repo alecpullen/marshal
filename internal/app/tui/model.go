@@ -1047,7 +1047,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.sddPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -1118,6 +1118,7 @@ func (m Model) railData() sidepanel.Data {
 		Rules:   m.state.SessionRules(),
 		Swarm:   m.state.SwarmProgress(),
 		SDD:     m.state.SDDProgress(),
+		Spinner: m.turnSpinnerFrame(),
 		Now:     m.now(),
 	}
 }
@@ -1897,7 +1898,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-statusLineRows-m.todoPanelRows()-m.sddPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -1916,8 +1917,14 @@ func (m Model) scrollHintRows() int {
 // turnSpinnerRows reports the rows reserved for the pinned turn spinner
 // above the input. The row is always reserved — even while idle — so the
 // transcript frame does not shift when a turn starts. renderTurnSpinner
-// returns "" when idle and JoinVertical counts that as a row.
-func (m Model) turnSpinnerRows() int { return 1 }
+// returns "" when idle and JoinVertical counts that as a row. During an
+// SDD run the row collapses to zero: the run panel owns the only spinner.
+func (m Model) turnSpinnerRows() int {
+	if m.state.SDDProgress().Active {
+		return 0
+	}
+	return 1
+}
 
 // liveStripRows reports the rows the live strip occupies: 1 while a
 // swarm/SDD run or browser session is live, 0 otherwise.
@@ -1948,16 +1955,23 @@ func (m Model) todoPanelRows() int {
 	return lipgloss.Height(body)
 }
 
-// sddPanelRows reports the rows the SDD progress panel occupies. The
-// panel is rendered in the left column stack (view.go) but its height
-// must be budgeted — otherwise the frame grows taller than the terminal
-// and the input area is pushed off the bottom of the screen.
-func (m Model) sddPanelRows() int {
-	sd := m.state.SDDProgress()
-	if !sd.Active {
+// renderRunPanel renders the consolidated SDD run panel for the current
+// frame. The panel owns the only spinner on screen during a run; the
+// glyph comes from turnSpinnerFrame so it shares the 200ms flash gate.
+func (m Model) renderRunPanel() string {
+	return renderRunPanel(m.state.SDDProgress(), m.state.SDDGate(), m.turnSpinnerFrame(), m.now(), m.height, m.leftWidth)
+}
+
+// runPanelRows reports the rows the run panel occupies. The panel is
+// rendered in the left column stack (view.go) but its height must be
+// budgeted — otherwise the frame grows taller than the terminal and the
+// input area is pushed off the bottom of the screen.
+func (m Model) runPanelRows() int {
+	panel := m.renderRunPanel()
+	if panel == "" {
 		return 0
 	}
-	return lipgloss.Height(sddPanel(sd, m.leftWidth))
+	return lipgloss.Height(panel)
 }
 
 // stripShowsBrowser reports whether the live strip is currently rendering
@@ -1981,7 +1995,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.sddPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -2540,9 +2554,14 @@ func spinnerLabel(spinner, label string) string {
 // activeSpinnerFrame returns the current spinner frame glyph if the activity
 // has been running for at least 200ms, or "" when the activity just started.
 // This avoids a flash of the spinner glyph before the user can perceive the
-// activity. For ActivityIdle it always returns "".
+// activity. For ActivityIdle it always returns "". During an SDD run it
+// always returns "": the run panel owns the only spinner on screen, so
+// transcript activity rows render their static glyph with elapsed time.
 func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
 	if kind == session.ActivityIdle {
+		return ""
+	}
+	if m.state.SDDProgress().Active {
 		return ""
 	}
 	act := m.state.Activity()

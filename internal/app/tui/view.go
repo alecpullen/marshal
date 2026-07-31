@@ -81,18 +81,22 @@ func (m *Model) viewString() string {
 	var left string
 	if m.dock.FullFrameOpen() {
 		// A FullFrame panel owns everything above the status line: the
-		// transcript, todo panel, live strip, and input area are hidden.
+		// transcript, todo panel, run panel, live strip, and input area are hidden.
 		left = dockView
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
 		// The spinner groups with the transcript whose progress it
-		// describes, keeping the todo list adjacent to the input.
-		rows = append(rows, m.renderTurnSpinner())
+		// describes, keeping the todo list adjacent to the input. During
+		// an SDD run the run panel owns the only spinner, so this row
+		// collapses entirely (see turnSpinnerRows).
+		if !m.state.SDDProgress().Active {
+			rows = append(rows, m.renderTurnSpinner())
+		}
 		if todo := m.renderTodoPanel(); todo != "" {
 			rows = append(rows, todo)
 		}
-		if sd := m.state.SDDProgress(); sd.Active {
-			rows = append(rows, sddPanel(sd, m.leftWidth))
+		if panel := m.renderRunPanel(); panel != "" {
+			rows = append(rows, panel)
 		}
 		if strip := m.renderLiveStrip(); strip != "" {
 			rows = append(rows, strip)
@@ -214,13 +218,11 @@ func chromeRail(s string, c color.Color) string {
 	return chromeRailWidth(s, c, 0)
 }
 
-// chromeRailWidth is chromeRail with an optional surface background painted
-// out to w cells.
-//
-// Layering bg.base → bg.surface is what separates a panel from the transcript
-// without spending rows on a border; the palette defined BGSurface but only
-// code blocks used it, leaving every panel flat in the same plane. w <= 0
-// paints no background, which is what monochrome mode needs.
+// chromeRailWidth is chromeRail with lines truncated to w cells. The ▍
+// rail carries the panel grouping on its own — a painted surface band
+// renders as a light stripe around content on light terminal themes and
+// in the 16-color palette (BGSurface = ANSI bright black), so panels paint
+// no background. w <= 0 skips truncation.
 func chromeRailWidth(s string, c color.Color, w int) string {
 	if s == "" {
 		return ""
@@ -228,60 +230,18 @@ func chromeRailWidth(s string, c color.Color, w int) string {
 	trailing := strings.HasSuffix(s, "\n")
 	body := strings.TrimRight(s, "\n")
 	bar := lipgloss.NewStyle().Foreground(c).Render(glyph.Rail)
-	paint := w > 0 && !monochrome()
-	surface := lipgloss.NewStyle()
-	if paint {
-		surface = surface.Background(theme.Current().BGSurface).Width(w)
-	}
 	lines := strings.Split(body, "\n")
 	for i := range lines {
-		line := lines[i]
-		if paint {
-			// Only clip when a width was actually supplied; w == 0 means
-			// "no surface", not "truncate to nothing".
-			line = ansi.Truncate(line, w, "…")
-			line = reassertBackground(line, theme.Current().BGSurface)
+		if w > 0 {
+			lines[i] = ansi.Truncate(lines[i], w, "…")
 		}
-		lines[i] = bar + surface.Render(line)
+		lines[i] = bar + lines[i]
 	}
 	out := strings.Join(lines, "\n")
 	if trailing {
 		out += "\n"
 	}
 	return out
-}
-
-// reassertBackground re-emits bg after every SGR reset inside an
-// already-styled line.
-//
-// Wrapping pre-styled content in a Background() style does not do what it
-// looks like it does: each inner Render closes with \x1b[0m, which clears
-// the outer background along with the foreground. The result is a row where
-// only the gaps between styled spans — the leading gutter and the trailing
-// pad — carry the surface color, so the todo panel showed a light band
-// around every label instead of behind it.
-//
-// The bg opener is obtained from lipgloss rather than hand-built so it stays
-// correct across color profiles (truecolor, 256, ANSI).
-func reassertBackground(line string, bg color.Color) string {
-	if line == "" {
-		return line
-	}
-	const sentinel = "\x00"
-	rendered := lipgloss.NewStyle().Background(bg).Render(sentinel)
-	open, _, ok := strings.Cut(rendered, sentinel)
-	if !ok || open == "" {
-		return line
-	}
-	return strings.ReplaceAll(line, ansi.ResetStyle, ansi.ResetStyle+open)
-}
-
-// monochrome reports whether the active theme emits no color, in which case a
-// surface background would be indistinguishable from the base and the ▍ rail
-// is doing all the separating.
-func monochrome() bool {
-	_, ok := theme.Current().BGSurface.(lipgloss.NoColor)
-	return ok
 }
 
 // highlightMatches bolds runes at the given byte indices using the

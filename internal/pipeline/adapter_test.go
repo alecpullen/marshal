@@ -36,8 +36,12 @@ func TestAdapterKeepsProgressLiveAtGate(t *testing.T) {
 	if err == nil {
 		t.Fatal("Run: want the gate error, got nil")
 	}
-	if p := st.SDDProgress(); !p.Active {
+	p := st.SDDProgress()
+	if !p.Active {
 		t.Error("progress cleared at a human gate — the run resumes after AnswerGate")
+	}
+	if p.Finished {
+		t.Error("run marked finished at a human gate — it resumes after AnswerGate")
 	}
 }
 
@@ -89,6 +93,36 @@ func TestAdapterMirrorsEventFields(t *testing.T) {
 	}
 	if p.Phase == "" {
 		t.Error("Phase not populated while progress is live")
+	}
+}
+
+func TestAdapterFinishesRunWithSummary(t *testing.T) {
+	d, _ := scriptedDispatch(t, implDone, reviewOK, implDone, reviewOK, reviewOK)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	a := NewControllerAdapter(c, st)
+
+	if err := a.Run(context.Background(), c.Plan.Path); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	p := st.SDDProgress()
+	if p.Active {
+		t.Error("progress still active after a completed run")
+	}
+	if !p.Finished || !p.Succeeded {
+		t.Errorf("Finished=%v Succeeded=%v, want true/true", p.Finished, p.Succeeded)
+	}
+	if len(p.Tasks) != len(c.Plan.Tasks) {
+		t.Fatalf("Tasks = %d titles, want %d", len(p.Tasks), len(c.Plan.Tasks))
+	}
+	for i, title := range p.Tasks {
+		if title != c.Plan.Tasks[i].Title {
+			t.Errorf("Tasks[%d] = %q, want %q", i, title, c.Plan.Tasks[i].Title)
+		}
+	}
+	if p.StartedAt.IsZero() || p.EndedAt.IsZero() {
+		t.Error("StartedAt/EndedAt not recorded")
 	}
 }
 

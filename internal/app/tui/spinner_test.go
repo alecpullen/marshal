@@ -128,6 +128,23 @@ func TestSpinnerTickMsgDoesNotAdvanceOrReArmWhenNotBusy(t *testing.T) {
 	}
 }
 
+func TestSpinnerHiddenDuringSDDRun(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	now := time.Unix(100, 0)
+	m := New(state)
+	m.now = func() time.Time { return now }
+	m.spinnerFrame = "⠋"
+	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: now.Add(-time.Second)})
+	m.state.SetSDDProgress(session.SDDProgress{Active: true})
+
+	// Past the 200ms gate the spinner would normally show — but during an
+	// SDD run the run panel owns all motion, so transcript activity rows
+	// get "" and render their static glyph instead.
+	if frame := m.activeSpinnerFrame(session.ActivityThinking); frame != "" {
+		t.Fatalf("activeSpinnerFrame during SDD = %q, want \"\" (run panel owns the spinner)", frame)
+	}
+}
+
 func TestAgentTickNoLongerAdvancesSpinner(t *testing.T) {
 	// Verify that the agentTickMsg handler no longer calls m.spinner.Next().
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})

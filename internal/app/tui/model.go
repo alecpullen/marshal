@@ -1568,6 +1568,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, vpCmd
+	case tea.MouseClickMsg:
+		if cmd, handled := m.handleTranscriptClick(msg); handled {
+			return m, cmd
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		if mm, cmd, handled := m.handleKeypress(msg); handled {
 			return mm, cmd
@@ -1799,6 +1804,11 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			}
 		}
 		return *m, vpCmd, true
+	case tea.MouseClickMsg:
+		if cmd, handled := m.handleTranscriptClick(msg); handled {
+			return *m, cmd, true
+		}
+		return *m, nil, false
 	}
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		switch k.String() {

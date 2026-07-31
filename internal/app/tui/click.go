@@ -1,5 +1,7 @@
 package tui
 
+import tea "charm.land/bubbletea/v2"
+
 // clickTarget identifies what a click region toggles: either a keyed
 // transcript item/group (see itemKey in expand.go) or the singleton
 // in-flight active-tool-call block, which has no stable key.
@@ -44,4 +46,31 @@ func (m *Model) regionAt(line int) (clickTarget, bool) {
 		}
 	}
 	return clickTarget{}, false
+}
+
+// handleTranscriptClick toggles the transcript block under a left click, if
+// any. handled reports whether the click landed on a region (regardless of
+// whether that region was already at its target state — a click always
+// consumes the event once it's inside the viewport bounds, matching the
+// wheel-scroll handling right above it in Update).
+func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
+	if msg.Button != tea.MouseLeft {
+		return nil, false
+	}
+	line, ok := m.contentLineForClick(msg.X, msg.Y)
+	if !ok {
+		return nil, false
+	}
+	target, ok := m.regionAt(line)
+	if !ok {
+		return nil, false
+	}
+	if target.isActiveTool {
+		m.activeToolExpanded = !m.activeToolExpanded
+	} else {
+		m.toggleItemExpanded(target.key)
+	}
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+	return nil, true
 }

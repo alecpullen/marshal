@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
 )
@@ -71,5 +74,55 @@ func TestRegionAtFindsContainingRegion(t *testing.T) {
 	target, ok := m.regionAt(4)
 	if !ok || !target.isActiveTool {
 		t.Fatalf("regionAt(4) = %+v, %v, want the active-tool region", target, ok)
+	}
+}
+
+func TestMouseClickTogglesThinkingBlock(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+	ts := time.Unix(700, 0)
+	m.state.LogThinking(session.ThinkingEntry{Text: "click me", Duration: time.Second, StartedAt: ts})
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	key := itemKey{ts: ts, kind: session.KindThinking}
+	var region clickRegion
+	found := false
+	for _, r := range m.clickRegions {
+		if r.target.key == key {
+			region, found = r, true
+		}
+	}
+	if !found {
+		t.Fatal("expected a click region for the thinking block")
+	}
+
+	top := m.scrollHintRows()
+	y := top + region.startLine - m.viewport.YOffset()
+	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+
+	if !mm.isExpanded(key) {
+		t.Fatal("expected the click to expand the thinking block")
+	}
+	if !strings.Contains(mm.viewport.GetContent(), "click me") {
+		t.Fatal("expected the reasoning text to be visible after the click")
+	}
+}
+
+func TestMouseClickOutsideViewportIsNoop(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 24)
+	ts := time.Unix(701, 0)
+	m.state.LogThinking(session.ThinkingEntry{Text: "leave me collapsed", Duration: time.Second, StartedAt: ts})
+	m.lastTranscriptHash = 0
+	m.refreshViewport()
+
+	updated, _ := m.Update(tea.MouseClickMsg{X: m.leftWidth + 10, Y: 0, Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+
+	key := itemKey{ts: ts, kind: session.KindThinking}
+	if mm.isExpanded(key) {
+		t.Fatal("expected an out-of-bounds click to be a no-op")
 	}
 }

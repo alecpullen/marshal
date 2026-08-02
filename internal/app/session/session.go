@@ -191,6 +191,8 @@ type State struct {
 	title           string
 	titleSet        bool
 
+	scratchpadConfig config.ScratchpadConfig
+
 	// Task 5: work gate for shutdown sequencing. workMu protects
 	// quiescing and is paired with workWG so BeginQuiesce can set the
 	// gate before WaitForWork begins polling the waitgroup.
@@ -372,25 +374,28 @@ func WithDepth(d int) Option {
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opts ...Option) *State {
 	ctx, cancel := context.WithCancel(context.Background())
+	scratchpadCfg := cfg.Scratchpad
+	scratchpadCfg.ApplyDefaults()
 	s := &State{
-		Config:        cfg,
-		WorkingDir:    workingDir,
-		StartedAt:     now,
-		db:            p.DB,
-		sessionID:     p.SessionID,
-		logger:        p.Logger,
-		ctx:           ctx,
-		cancel:        cancel,
-		turnToolCache: make(map[string]registry.ToolResult),
-		activity:      Activity{Kind: ActivityIdle},
-		activeSkills:  make(map[string]bool),
-		loadedTools:   make(map[string]bool),
-		parentOf:      make(map[int64]int64),
-		childrenOf:    make(map[int64][]int64),
-		msgByID:       make(map[int64]Message),
-		dbIDToImID:    make(map[int64]int64),
-		nextMsgID:     1,
-		workspace:     Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
+		Config:           cfg,
+		WorkingDir:       workingDir,
+		StartedAt:        now,
+		db:               p.DB,
+		sessionID:        p.SessionID,
+		logger:           p.Logger,
+		ctx:              ctx,
+		cancel:           cancel,
+		turnToolCache:    make(map[string]registry.ToolResult),
+		activity:         Activity{Kind: ActivityIdle},
+		activeSkills:     make(map[string]bool),
+		loadedTools:      make(map[string]bool),
+		parentOf:         make(map[int64]int64),
+		childrenOf:       make(map[int64][]int64),
+		msgByID:          make(map[int64]Message),
+		dbIDToImID:       make(map[int64]int64),
+		nextMsgID:        1,
+		workspace:        Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
+		scratchpadConfig: scratchpadCfg,
 	}
 	for _, opt := range opts {
 		opt(s)

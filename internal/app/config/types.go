@@ -34,6 +34,33 @@ type Config struct {
 	Session       SessionConfig                         `toml:"session"`
 	Skills        SkillsConfig                          `toml:"skills"`
 	LSP           LSPConfig                             `toml:"lsp"`
+	Scratchpad    ScratchpadConfig                      `toml:"scratchpad"`
+}
+
+// ScratchpadConfig limits the agent's working-memory scratchpad so it
+// cannot crowd out the context pack.
+type ScratchpadConfig struct {
+	MaxEntries          int `toml:"max_entries"`
+	MaxTotalTokens      int `toml:"max_total_tokens"`
+	MaxEntryTokens      int `toml:"max_entry_tokens"`
+	ProjectionMaxTokens int `toml:"projection_max_tokens"`
+}
+
+// ApplyDefaults fills in zero or negative scratchpad budget fields with
+// sensible defaults.
+func (c *ScratchpadConfig) ApplyDefaults() {
+	if c.MaxEntries <= 0 {
+		c.MaxEntries = 32
+	}
+	if c.MaxTotalTokens <= 0 {
+		c.MaxTotalTokens = 8000
+	}
+	if c.MaxEntryTokens <= 0 {
+		c.MaxEntryTokens = 4000
+	}
+	if c.ProjectionMaxTokens <= 0 {
+		c.ProjectionMaxTokens = 1000
+	}
 }
 
 type ModelsConfig struct {

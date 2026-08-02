@@ -356,5 +356,11 @@ func merge(cfg *Config, file configFile) error {
 			}
 		}
 	}
+	if file.Scratchpad != nil {
+		set(&cfg.Scratchpad.MaxEntries, file.Scratchpad.MaxEntries)
+		set(&cfg.Scratchpad.MaxTotalTokens, file.Scratchpad.MaxTotalTokens)
+		set(&cfg.Scratchpad.MaxEntryTokens, file.Scratchpad.MaxEntryTokens)
+		set(&cfg.Scratchpad.ProjectionMaxTokens, file.Scratchpad.ProjectionMaxTokens)
+	}
 	return nil
 }

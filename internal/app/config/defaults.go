@@ -173,5 +173,6 @@ func Default() Config {
 		// user-specific (see docs/09-configuration-examples.md).
 	}
 	cfg.Privacy.RemoteLimitDiscovery = cfg.Privacy.RemoteProvidersAllowed
+	cfg.Scratchpad.ApplyDefaults()
 	return cfg
 }

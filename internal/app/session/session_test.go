@@ -780,6 +780,63 @@ func TestAddMessageSalvaged(t *testing.T) {
 	}
 }
 
+func TestStateScratchpadConfigDefaults(t *testing.T) {
+	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	if s.scratchpadConfig.MaxEntries != 32 {
+		t.Errorf("MaxEntries = %d, want 32", s.scratchpadConfig.MaxEntries)
+	}
+	if s.scratchpadConfig.MaxTotalTokens != 8000 {
+		t.Errorf("MaxTotalTokens = %d, want 8000", s.scratchpadConfig.MaxTotalTokens)
+	}
+	if s.scratchpadConfig.MaxEntryTokens != 4000 {
+		t.Errorf("MaxEntryTokens = %d, want 4000", s.scratchpadConfig.MaxEntryTokens)
+	}
+	if s.scratchpadConfig.ProjectionMaxTokens != 1000 {
+		t.Errorf("ProjectionMaxTokens = %d, want 1000", s.scratchpadConfig.ProjectionMaxTokens)
+	}
+}
+
+func TestStateScratchpadConfigPreservesExplicitValues(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{
+		MaxEntries:          16,
+		MaxTotalTokens:      4000,
+		MaxEntryTokens:      2000,
+		ProjectionMaxTokens: 500,
+	}
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
+	if s.scratchpadConfig.MaxEntries != 16 {
+		t.Errorf("MaxEntries = %d, want 16", s.scratchpadConfig.MaxEntries)
+	}
+	if s.scratchpadConfig.MaxTotalTokens != 4000 {
+		t.Errorf("MaxTotalTokens = %d, want 4000", s.scratchpadConfig.MaxTotalTokens)
+	}
+	if s.scratchpadConfig.MaxEntryTokens != 2000 {
+		t.Errorf("MaxEntryTokens = %d, want 2000", s.scratchpadConfig.MaxEntryTokens)
+	}
+	if s.scratchpadConfig.ProjectionMaxTokens != 500 {
+		t.Errorf("ProjectionMaxTokens = %d, want 500", s.scratchpadConfig.ProjectionMaxTokens)
+	}
+}
+
+func TestStateScratchpadConfigAppliesDefaultsToZeroValues(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{}
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
+	if s.scratchpadConfig.MaxEntries != 32 {
+		t.Errorf("MaxEntries = %d, want 32", s.scratchpadConfig.MaxEntries)
+	}
+	if s.scratchpadConfig.MaxTotalTokens != 8000 {
+		t.Errorf("MaxTotalTokens = %d, want 8000", s.scratchpadConfig.MaxTotalTokens)
+	}
+	if s.scratchpadConfig.MaxEntryTokens != 4000 {
+		t.Errorf("MaxEntryTokens = %d, want 4000", s.scratchpadConfig.MaxEntryTokens)
+	}
+	if s.scratchpadConfig.ProjectionMaxTokens != 1000 {
+		t.Errorf("ProjectionMaxTokens = %d, want 1000", s.scratchpadConfig.ProjectionMaxTokens)
+	}
+}
+
 func TestRewindStartsNewBranch(t *testing.T) {
 	state := newTestState()
 	state.AddMessage(RoleUser, "turn1", ContentTypePlain)

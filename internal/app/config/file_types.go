@@ -232,6 +232,13 @@ type fileLSP struct {
 	Servers map[string]fileLSPServer `toml:"servers"`
 }
 
+type fileScratchpad struct {
+	MaxEntries          *int `toml:"max_entries"`
+	MaxTotalTokens      *int `toml:"max_total_tokens"`
+	MaxEntryTokens      *int `toml:"max_entry_tokens"`
+	ProjectionMaxTokens *int `toml:"projection_max_tokens"`
+}
+
 type configFile struct {
 	Project     *fileProject     `toml:"project"`
 	Commands    *fileCommands    `toml:"commands"`
@@ -265,4 +272,5 @@ type configFile struct {
 	CustomAgents map[string]routing.CustomAgent       `toml:"custom_agents"`
 	Agents       map[routing.AgentRole]fileAgentEntry `toml:"agents"`
 	LSP          *fileLSP                             `toml:"lsp"`
+	Scratchpad   *fileScratchpad                       `toml:"scratchpad"`
 }

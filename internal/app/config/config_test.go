@@ -556,6 +556,112 @@ plans_dir = "docs/plans"
 	}
 }
 
+func TestScratchpadConfigDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Scratchpad.MaxEntries != 32 {
+		t.Errorf("MaxEntries default = %d, want 32", cfg.Scratchpad.MaxEntries)
+	}
+	if cfg.Scratchpad.MaxTotalTokens != 8000 {
+		t.Errorf("MaxTotalTokens default = %d, want 8000", cfg.Scratchpad.MaxTotalTokens)
+	}
+	if cfg.Scratchpad.MaxEntryTokens != 4000 {
+		t.Errorf("MaxEntryTokens default = %d, want 4000", cfg.Scratchpad.MaxEntryTokens)
+	}
+	if cfg.Scratchpad.ProjectionMaxTokens != 1000 {
+		t.Errorf("ProjectionMaxTokens default = %d, want 1000", cfg.Scratchpad.ProjectionMaxTokens)
+	}
+}
+
+func TestScratchpadConfigMergesFromFile(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[scratchpad]
+max_entries = 16
+max_total_tokens = 4000
+max_entry_tokens = 2000
+projection_max_tokens = 500
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Scratchpad.MaxEntries != 16 {
+		t.Errorf("MaxEntries = %d, want 16", cfg.Scratchpad.MaxEntries)
+	}
+	if cfg.Scratchpad.MaxTotalTokens != 4000 {
+		t.Errorf("MaxTotalTokens = %d, want 4000", cfg.Scratchpad.MaxTotalTokens)
+	}
+	if cfg.Scratchpad.MaxEntryTokens != 2000 {
+		t.Errorf("MaxEntryTokens = %d, want 2000", cfg.Scratchpad.MaxEntryTokens)
+	}
+	if cfg.Scratchpad.ProjectionMaxTokens != 500 {
+		t.Errorf("ProjectionMaxTokens = %d, want 500", cfg.Scratchpad.ProjectionMaxTokens)
+	}
+}
+
+func TestScratchpadApplyDefaultsPreservesExplicitValues(t *testing.T) {
+	cfg := ScratchpadConfig{
+		MaxEntries:          64,
+		MaxTotalTokens:      16000,
+		MaxEntryTokens:      8000,
+		ProjectionMaxTokens: 2000,
+	}
+	cfg.ApplyDefaults()
+	if cfg.MaxEntries != 64 {
+		t.Errorf("MaxEntries = %d, want 64", cfg.MaxEntries)
+	}
+	if cfg.MaxTotalTokens != 16000 {
+		t.Errorf("MaxTotalTokens = %d, want 16000", cfg.MaxTotalTokens)
+	}
+	if cfg.MaxEntryTokens != 8000 {
+		t.Errorf("MaxEntryTokens = %d, want 8000", cfg.MaxEntryTokens)
+	}
+	if cfg.ProjectionMaxTokens != 2000 {
+		t.Errorf("ProjectionMaxTokens = %d, want 2000", cfg.ProjectionMaxTokens)
+	}
+}
+
+func TestScratchpadApplyDefaultsFillsZeroValues(t *testing.T) {
+	cfg := ScratchpadConfig{}
+	cfg.ApplyDefaults()
+	if cfg.MaxEntries != 32 {
+		t.Errorf("MaxEntries = %d, want 32", cfg.MaxEntries)
+	}
+	if cfg.MaxTotalTokens != 8000 {
+		t.Errorf("MaxTotalTokens = %d, want 8000", cfg.MaxTotalTokens)
+	}
+	if cfg.MaxEntryTokens != 4000 {
+		t.Errorf("MaxEntryTokens = %d, want 4000", cfg.MaxEntryTokens)
+	}
+	if cfg.ProjectionMaxTokens != 1000 {
+		t.Errorf("ProjectionMaxTokens = %d, want 1000", cfg.ProjectionMaxTokens)
+	}
+}
+
+func TestScratchpadApplyDefaultsReplacesNegativeValues(t *testing.T) {
+	cfg := ScratchpadConfig{
+		MaxEntries:          -1,
+		MaxTotalTokens:      -1,
+		MaxEntryTokens:      -1,
+		ProjectionMaxTokens: -1,
+	}
+	cfg.ApplyDefaults()
+	if cfg.MaxEntries != 32 {
+		t.Errorf("MaxEntries = %d, want 32", cfg.MaxEntries)
+	}
+	if cfg.MaxTotalTokens != 8000 {
+		t.Errorf("MaxTotalTokens = %d, want 8000", cfg.MaxTotalTokens)
+	}
+	if cfg.MaxEntryTokens != 4000 {
+		t.Errorf("MaxEntryTokens = %d, want 4000", cfg.MaxEntryTokens)
+	}
+	if cfg.ProjectionMaxTokens != 1000 {
+		t.Errorf("ProjectionMaxTokens = %d, want 1000", cfg.ProjectionMaxTokens)
+	}
+}
+
 func writeFile(t *testing.T, path string, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

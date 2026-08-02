@@ -1932,3 +1932,73 @@ func TestScratchpadColdLoadWithoutMessages(t *testing.T) {
 		t.Fatalf("entry = %+v, want x/chi", entries[0])
 	}
 }
+
+// testLogHandler captures slog Records for assertions in tests.
+type testLogHandler struct {
+	records []slog.Record
+}
+
+func (h *testLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *testLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *testLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *testLogHandler) WithGroup(name string) slog.Handler        { return h }
+
+func TestScratchpadDebugLogs(t *testing.T) {
+	handler := &testLogHandler{}
+	logger := slog.New(handler)
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{
+		MaxEntries:          1,
+		MaxTotalTokens:      10000,
+		MaxEntryTokens:      10000,
+		ProjectionMaxTokens: 1000,
+	}
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{Logger: logger})
+
+	if err := s.SetScratchpadEntry("old", "old content", "text"); err != nil {
+		t.Fatalf("set old: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := s.SetScratchpadEntry("new", "new content", "text"); err != nil {
+		t.Fatalf("set new: %v", err)
+	}
+
+	_, ok := s.ScratchpadEntry("new")
+	if !ok {
+		t.Fatal("expected to find new entry")
+	}
+	_, ok = s.ScratchpadEntry("missing")
+	if ok {
+		t.Fatal("expected missing entry to not be found")
+	}
+	if err := s.DeleteScratchpadEntry("new"); err != nil {
+		t.Fatalf("delete new: %v", err)
+	}
+	if err := s.DeleteScratchpadEntry("missing"); err != nil {
+		t.Fatalf("delete missing: %v", err)
+	}
+
+	var writes, reads, deletes int
+	for _, r := range handler.records {
+		switch r.Message {
+		case "scratchpad write":
+			writes++
+		case "scratchpad read":
+			reads++
+		case "scratchpad delete":
+			deletes++
+		}
+	}
+	if writes != 2 {
+		t.Fatalf("got %d scratchpad write logs, want 2", writes)
+	}
+	if reads != 2 {
+		t.Fatalf("got %d scratchpad read logs, want 2", reads)
+	}
+	if deletes != 1 {
+		t.Fatalf("got %d scratchpad delete logs, want 1", deletes)
+	}
+}

@@ -914,6 +914,11 @@ func (s *State) SetScratchpadEntry(key, content, format string) error {
 			}
 		}
 	}
+	s.Logger().Debug("scratchpad write",
+		"key", key,
+		"tokens", tokens,
+		"total_entries", len(s.scratchpad),
+	)
 	return nil
 }
 
@@ -925,6 +930,10 @@ func (s *State) DeleteScratchpadEntry(key string) error {
 
 	_, existed := s.scratchpad[key]
 	delete(s.scratchpad, key)
+
+	if existed {
+		s.Logger().Debug("scratchpad delete", "key", key)
+	}
 
 	if existed && s.persistenceEnabled() {
 		if err := s.db.DeleteScratchpadEntry(s.sessionID, key); err != nil {
@@ -946,6 +955,7 @@ func (s *State) ScratchpadEntry(key string) (db.ScratchpadEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.scratchpad[key]
+	s.Logger().Debug("scratchpad read", "key", key, "hit", ok)
 	return e, ok
 }
 

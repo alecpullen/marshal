@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
+	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 )
 
@@ -792,6 +793,81 @@ func TestACPWireCommandDispatchListAndRun(t *testing.T) {
 	resp = readResponse(t, h, "3")
 	if frameError(resp) == nil {
 		t.Fatal("session/command(settings): got no error, want an error (TUI-only)")
+	}
+}
+
+// --- Test 8: SDD start/gate/answer wire-level integration ---
+
+// TestACPWireSDDStartGateAndAnswer wires a TurnManager with a
+// PipelineFactory that returns a fakeAgentRunner, registers
+// session/sdd_start and session/sdd_answer, and exercises the
+// full gate-and-answer flow over the wire.
+func TestACPWireSDDStartGateAndAnswer(t *testing.T) {
+	state := &session.State{}
+	state.SetSDDGate(session.SDDGate{}) // ensure a clean start; SDDStart populates it via the fake runner below
+
+	callCount := 0
+	factory := func(planPath string) AgentRunner {
+		return &fakeAgentRunner{
+			run: func(ctx context.Context, goal string) error {
+				callCount++
+				if callCount == 1 {
+					state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "pick one"})
+					return pipeline.ErrHumanGateRequired
+				}
+				state.ClearSDDGate()
+				return nil
+			},
+		}
+	}
+
+	turns := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID:       sessionID,
+				BeginWork:       identityBeginWork,
+				Events:          pubsub.NewBroker[session.Event](),
+				State:           state,
+				PipelineFactory: factory,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	h := newWireHarness(t, func(srv *Server) {
+		srv.Handle("session/sdd_start", turns.SDDStart)
+		srv.Handle("session/sdd_answer", turns.SDDAnswer)
+	})
+	defer h.close(t)
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(1), "method": "session/sdd_start",
+		"params": map[string]any{"sessionId": "sess_gate", "planPath": "docs/plan.md"},
+	})
+	resp := readResponse(t, h, "1")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/sdd_start error: %+v", errObj)
+	}
+	res, _ := frameResult(resp).(map[string]any)
+	if res["stopReason"] != "gate" {
+		t.Fatalf("session/sdd_start stopReason = %v, want %q", res["stopReason"], "gate")
+	}
+	gate, _ := res["gate"].(map[string]any)
+	if gate == nil || gate["question"] != "pick one" {
+		t.Fatalf("session/sdd_start gate = %v, want question %q", gate, "pick one")
+	}
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(2), "method": "session/sdd_answer",
+		"params": map[string]any{"sessionId": "sess_gate", "answer": "option b"},
+	})
+	resp = readResponse(t, h, "2")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/sdd_answer error: %+v", errObj)
+	}
+	res, _ = frameResult(resp).(map[string]any)
+	if res["stopReason"] != "end_turn" {
+		t.Fatalf("session/sdd_answer stopReason = %v, want %q", res["stopReason"], "end_turn")
 	}
 }
 

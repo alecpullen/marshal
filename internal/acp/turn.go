@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,8 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/policy"
 )
 
 // PromptTurnParams is the JSON-RPC body for session/prompt.
@@ -25,11 +29,42 @@ type PromptTurnResult struct {
 	StopReason string `json:"stopReason"`
 }
 
+// SwarmStartParams is the JSON-RPC body for session/swarm_start.
+type SwarmStartParams struct {
+	SessionID string `json:"sessionId"`
+	Goal      string `json:"goal"`
+}
+
+// SwarmCastEntry is one role in the SwarmTurnResult's post-run cast list.
+type SwarmCastEntry struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// SwarmTurnResult is the JSON-RPC result for session/swarm_start.
+type SwarmTurnResult struct {
+	StopReason string           `json:"stopReason"`
+	Cast       []SwarmCastEntry `json:"cast,omitempty"`
+}
+
 // RunnerFunc is the per-turn execution surface. Decoupling the turn
 // manager from *agent.Runner keeps the ACP package free of the
 // provider/tool/registry/policy dependency chain and lets unit tests stub
 // turns in a few lines.
 type RunnerFunc func(ctx context.Context, prompt string) error
+
+// AgentRunner is the swarm/SDD execution surface. Its method set matches
+// tui.AgentRunner structurally, so *swarm.Orchestrator and
+// PipelineFactory-built runners (both sourced from app.Runtime) satisfy it
+// without internal/acp importing internal/app/tui — the same decoupling
+// RunnerFunc already gives regular turns.
+type AgentRunner interface {
+	Run(ctx context.Context, goal string) error
+	SetForceClass(class string)
+	SetPolicyRules(rules []config.PermissionRule)
+	SetApprovalMode(mode policy.ApprovalMode)
+	AnswerGate(answer string)
+}
 
 // TurnRuntime is the per-session slice of state the turn manager needs.
 type TurnRuntime struct {
@@ -43,6 +78,15 @@ type TurnRuntime struct {
 	// Steer enqueues a mid-turn steering message, consumed by the runner
 	// at its next loop-top. Nil means the runtime does not support steering.
 	Steer func(text string)
+	// State is the session's shared state, needed for reading swarm/SDD
+	// progress and gate status. Never nil for a runtime built by
+	// SessionManager; tests may still construct a TurnRuntime with a nil
+	// State when they don't exercise a path that reads it.
+	State *session.State
+	// SwarmRunner runs a swarm turn for a goal. Nil when swarm is unavailable.
+	SwarmRunner AgentRunner
+	// PipelineFactory builds a plan-execution runner for one plan path. Nil when plan execution is unavailable.
+	PipelineFactory func(planPath string) AgentRunner
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -79,6 +123,18 @@ type TurnManager struct {
 
 	activeTurnsMu sync.Mutex
 	activeTurns   map[string]*activeTurn
+
+	// pipelineRunnersMu guards pipelineRunners, tracking the in-flight SDD
+	// runner (and the plan path it was built for) per session so
+	// SDDAnswer can resume the same instance a human gate paused.
+	pipelineRunnersMu sync.Mutex
+	pipelineRunners   map[string]*sddRun
+}
+
+// sddRun is one session's in-flight (possibly gated) SDD run.
+type sddRun struct {
+	runner   AgentRunner
+	planPath string
 }
 
 func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
@@ -89,10 +145,11 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		panic("acp: TurnManagerConfig.Notify is required")
 	}
 	tm := &TurnManager{
-		lookup:      cfg.Lookup,
-		notify:      cfg.Notify,
-		perms:       cfg.Perms,
-		activeTurns: map[string]*activeTurn{},
+		lookup:          cfg.Lookup,
+		notify:          cfg.Notify,
+		perms:           cfg.Perms,
+		activeTurns:     map[string]*activeTurn{},
+		pipelineRunners: map[string]*sddRun{},
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)
@@ -242,11 +299,7 @@ func (m *TurnManager) HasActiveTurn(sessionID string) bool {
 }
 
 // PromptTurn drives a single agent turn for the named session. It looks
-// up the runtime, normalises the prompt, reserves the per-session slot,
-// registers runtime work, subscribes to the event broker with terminal
-// delivery, starts the runner in a goroutine, forwards session events
-// as session/update notifications, and returns PromptTurnResult on
-// success.
+// up the runtime, normalises the prompt, and delegates to runTurn.
 //
 // If a turn is already running for the same session, the duplicate is
 // rejected with a serverError (-32000) and the first turn is unaffected.
@@ -272,6 +325,68 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
 	}
 
+	return m.runTurn(ctx, p.SessionID, rt, rt.Run, prompt, resultOrError)
+}
+
+// SwarmStart handles session/swarm_start. Like session/prompt, this call is
+// synchronous and blocks until the run finishes or is cancelled via
+// session/cancel from another in-flight request; Cast reflects the final
+// role roster read from session state after the run completes, not a live
+// preflight snapshot.
+func (m *TurnManager) SwarmStart(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SwarmStartParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/swarm_start params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/swarm_start requires sessionId")
+	}
+	if strings.TrimSpace(p.Goal) == "" {
+		return nil, invalidParamsError("session/swarm_start requires a non-empty goal")
+	}
+
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.SwarmRunner == nil {
+		return nil, serverErrorf("session %s does not support swarm runs", p.SessionID)
+	}
+
+	res, err := m.runTurn(ctx, p.SessionID, rt, RunnerFunc(rt.SwarmRunner.Run), p.Goal, resultOrError)
+	if err != nil {
+		return nil, err
+	}
+	ptr := res.(PromptTurnResult)
+	result := SwarmTurnResult{StopReason: ptr.StopReason}
+	if rt.State != nil {
+		for _, r := range rt.State.SwarmProgress().Roles {
+			result.Cast = append(result.Cast, SwarmCastEntry{Name: r.Name, Status: string(r.Status)})
+		}
+	}
+	return result, nil
+}
+
+// runTurn reserves the per-session active-turn slot, runs run(turnCtx, arg)
+// to completion while forwarding session events as session/update
+// notifications, and resolves the result via resultOf once run finishes
+// (or the turn is cancelled). Shared by PromptTurn, SwarmStart, SDDStart,
+// and SDDAnswer — the only things that differ between them are which
+// RunnerFunc executes, what argument it receives, and how a terminal error
+// maps to a wire result.
+//
+// If a turn is already running for sessionID, the duplicate is rejected
+// with a serverError (-32000) and the first turn is unaffected.
+func (m *TurnManager) runTurn(
+	ctx context.Context,
+	sessionID string,
+	rt *TurnRuntime,
+	run RunnerFunc,
+	arg string,
+	resultOf func(runErr error, slot *activeTurn) (any, error),
+) (any, error) {
 	// Create a slot context before making the slot visible so that
 	// CancelAndWait never observes a slot without a cancel function.
 	slotCtx, slotCancel := context.WithCancel(ctx)
@@ -282,20 +397,20 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 
 	// Reserve the per-session slot.
 	m.activeTurnsMu.Lock()
-	if _, exists := m.activeTurns[p.SessionID]; exists {
+	if _, exists := m.activeTurns[sessionID]; exists {
 		m.activeTurnsMu.Unlock()
 		slotCancel()
-		return nil, serverErrorf("session %s already has an active turn", p.SessionID)
+		return nil, serverErrorf("session %s already has an active turn", sessionID)
 	}
-	m.activeTurns[p.SessionID] = slot
+	m.activeTurns[sessionID] = slot
 	m.activeTurnsMu.Unlock()
 
 	// Cleanup: cancel slot, remove from map, close done channel.
 	defer func() {
 		slotCancel()
 		m.activeTurnsMu.Lock()
-		if m.activeTurns[p.SessionID] == slot {
-			delete(m.activeTurns, p.SessionID)
+		if m.activeTurns[sessionID] == slot {
+			delete(m.activeTurns, sessionID)
 		}
 		m.activeTurnsMu.Unlock()
 		close(slot.done)
@@ -315,7 +430,7 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- rt.Run(turnCtx, prompt)
+		runErr <- run(turnCtx, arg)
 	}()
 
 	// proj carries per-turn projection state: the accumulated thinking
@@ -333,7 +448,7 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		update, hasUpdate := eventToSessionUpdate(ev, proj)
 		if hasUpdate {
 			if notifyErr := m.notify("session/update", SessionUpdateParams{
-				SessionID: p.SessionID,
+				SessionID: sessionID,
 				Update:    update,
 			}); notifyErr != nil {
 				// Treat notify error as fatal.
@@ -354,7 +469,7 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 				// turn proceeds. Log so operators can see the misconfig.
 				pa.Respond(session.UserApprovalDecision{Approved: false})
 				slog.Default().Warn("acp: pending approval arrived but no permission bridge; denied",
-					"session", p.SessionID, "approval", pa.ID)
+					"session", sessionID, "approval", pa.ID)
 			} else {
 				go func() {
 					decision, err := m.bridge.Request(turnCtx, pa)
@@ -377,10 +492,10 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 						if rt.SetMode != nil {
 							if err := rt.SetMode(chosen); err != nil {
 								slog.Default().Warn("acp: apply mode elevation",
-									"session", p.SessionID, "mode", chosen, "err", err)
+									"session", sessionID, "mode", chosen, "err", err)
 							} else {
 								_ = m.notify("session/update", SessionUpdateParams{
-									SessionID: p.SessionID,
+									SessionID: sessionID,
 									Update:    map[string]any{"kind": "mode_changed", "mode": chosen},
 								})
 							}
@@ -408,9 +523,9 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 				go func() {
 					qctx, cancel := context.WithTimeout(turnCtx, questionWait)
 					defer cancel()
-					if err := m.qbridge.Ask(qctx, p.SessionID, pending); err != nil {
+					if err := m.qbridge.Ask(qctx, sessionID, pending); err != nil {
 						slog.Default().Warn("acp: question bridge failed; answering Unanswered",
-							"session", p.SessionID, "err", err)
+							"session", sessionID, "err", err)
 						pending.Respond(session.UnansweredAnswers(pending.Questions))
 					}
 				}()
@@ -453,11 +568,11 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		select {
 		case ev, ok := <-sub:
 			if !ok {
-				return resultOrError(runErrVal, slot)
+				return resultOf(runErrVal, slot)
 			}
 			forward(ev)
 		default:
-			return resultOrError(runErrVal, slot)
+			return resultOf(runErrVal, slot)
 		}
 	}
 }
@@ -471,6 +586,147 @@ func resultOrError(runErr error, slot *activeTurn) (any, error) {
 		return nil, runErr
 	}
 	return PromptTurnResult{StopReason: "end_turn"}, nil
+}
+
+// SDDStartParams is the JSON-RPC body for session/sdd_start.
+type SDDStartParams struct {
+	SessionID string `json:"sessionId"`
+	PlanPath  string `json:"planPath"`
+}
+
+// SDDGateInfo describes a pending human-gate question raised by a plan
+// subagent. Named distinctly from session.SDDGate to avoid colliding with
+// that (unexported-field-bearing) type on the wire.
+type SDDGateInfo struct {
+	TaskN    int    `json:"taskN"`
+	Question string `json:"question"`
+}
+
+// SDDTurnResult is the JSON-RPC result for session/sdd_start and
+// session/sdd_answer.
+type SDDTurnResult struct {
+	StopReason string       `json:"stopReason"`
+	Gate       *SDDGateInfo `json:"gate,omitempty"`
+}
+
+// sddResultOf maps a finished (or gated) SDD turn to a wire result. Unlike
+// resultOrError, a pipeline.ErrHumanGateRequired terminal error is not an
+// error at the wire level — it's a distinct stopReason the client resolves
+// via session/sdd_answer.
+func sddResultOf(runErr error, slot *activeTurn) (any, error) {
+	if slot.clientCancelled.Load() {
+		return SDDTurnResult{StopReason: "cancelled"}, nil
+	}
+	if errors.Is(runErr, pipeline.ErrHumanGateRequired) {
+		return SDDTurnResult{StopReason: "gate"}, nil
+	}
+	if runErr != nil {
+		return nil, runErr
+	}
+	return SDDTurnResult{StopReason: "end_turn"}, nil
+}
+
+// finishSDDResult fills in Gate details (sddResultOf can't reach
+// rt.State) and retires the stored pipeline runner once the run is no
+// longer resumable (anything but a fresh gate). Shared by SDDStart and
+// SDDAnswer.
+func (m *TurnManager) finishSDDResult(sessionID string, rt *TurnRuntime, res any, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	result := res.(SDDTurnResult)
+	if result.StopReason == "gate" {
+		if rt.State != nil {
+			g := rt.State.SDDGate()
+			if g.Question != "" {
+				result.Gate = &SDDGateInfo{TaskN: g.TaskN, Question: g.Question}
+			}
+		}
+		return result, nil
+	}
+	m.pipelineRunnersMu.Lock()
+	delete(m.pipelineRunners, sessionID)
+	m.pipelineRunnersMu.Unlock()
+	return result, nil
+}
+
+// SDDAnswerParams is the JSON-RPC body for session/sdd_answer.
+type SDDAnswerParams struct {
+	SessionID string `json:"sessionId"`
+	Answer    string `json:"answer"`
+}
+
+// SDDAnswer handles session/sdd_answer: it resolves a pending human gate
+// raised by SDDStart (or a previous SDDAnswer) and resumes the same
+// runner instance on the same plan path, re-entering runTurn — this
+// re-reserves the active-turn slot for the duration of the resumed run.
+func (m *TurnManager) SDDAnswer(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SDDAnswerParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/sdd_answer params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/sdd_answer requires sessionId")
+	}
+	if strings.TrimSpace(p.Answer) == "" {
+		return nil, invalidParamsError("session/sdd_answer requires a non-empty answer")
+	}
+
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+
+	m.pipelineRunnersMu.Lock()
+	run, exists := m.pipelineRunners[p.SessionID]
+	m.pipelineRunnersMu.Unlock()
+	if !exists {
+		return nil, serverErrorf("session %s has no plan-execution run waiting on an answer", p.SessionID)
+	}
+
+	run.runner.AnswerGate(p.Answer)
+	res, err := m.runTurn(ctx, p.SessionID, rt, RunnerFunc(run.runner.Run), run.planPath, sddResultOf)
+	return m.finishSDDResult(p.SessionID, rt, res, err)
+}
+
+// SDDStart handles session/sdd_start. Like session/prompt, this call is
+// synchronous. When the underlying controller raises a human gate, the
+// call still returns successfully with StopReason "gate" and the pending
+// question — resolve it with session/sdd_answer.
+func (m *TurnManager) SDDStart(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SDDStartParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/sdd_start params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/sdd_start requires sessionId")
+	}
+	if strings.TrimSpace(p.PlanPath) == "" {
+		return nil, invalidParamsError("session/sdd_start requires a non-empty planPath")
+	}
+
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.PipelineFactory == nil {
+		return nil, serverErrorf("session %s does not support plan execution", p.SessionID)
+	}
+	runner := rt.PipelineFactory(p.PlanPath)
+	if runner == nil {
+		return nil, serverErrorf("could not build a runner for plan %q", p.PlanPath)
+	}
+
+	m.pipelineRunnersMu.Lock()
+	m.pipelineRunners[p.SessionID] = &sddRun{runner: runner, planPath: p.PlanPath}
+	m.pipelineRunnersMu.Unlock()
+
+	res, err := m.runTurn(ctx, p.SessionID, rt, RunnerFunc(runner.Run), p.PlanPath, sddResultOf)
+	return m.finishSDDResult(p.SessionID, rt, res, err)
 }
 
 // SetModeParams is the JSON-RPC body for session/set_mode.
@@ -562,6 +818,133 @@ func (m *TurnManager) Steer(ctx context.Context, params json.RawMessage) (any, e
 	}
 	rt.Steer(p.Text)
 	return map[string]any{}, nil
+}
+
+// sessionIDParams is the shared JSON-RPC params body for poll-style status
+// methods that only need a sessionId.
+type sessionIDParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+// SwarmRoleInfo mirrors session.SwarmRole for JSON transport.
+type SwarmRoleInfo struct {
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	Detail    string    `json:"detail,omitempty"`
+	Tokens    int       `json:"tokens"`
+	StartedAt time.Time `json:"startedAt,omitempty"`
+}
+
+// SwarmStatusResult is the JSON-RPC result for session/swarm_status.
+type SwarmStatusResult struct {
+	Goal       string          `json:"goal,omitempty"`
+	Active     bool            `json:"active"`
+	Roles      []SwarmRoleInfo `json:"roles,omitempty"`
+	TokensUsed int             `json:"tokensUsed"`
+	TokensMax  int             `json:"tokensMax"`
+}
+
+// SwarmStatus handles session/swarm_status: a poll-style read of the
+// session's current swarm progress. Always safe to call, including before
+// any run has started (returns the zero value, Active: false).
+func (m *TurnManager) SwarmStatus(ctx context.Context, params json.RawMessage) (any, error) {
+	var p sessionIDParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/swarm_status params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/swarm_status requires sessionId")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.State == nil {
+		return nil, &jsonRPCError{Code: internalError, Message: "session has no state"}
+	}
+	prog := rt.State.SwarmProgress()
+	result := SwarmStatusResult{
+		Goal:       prog.Goal,
+		Active:     prog.Active,
+		TokensUsed: prog.TokensUsed,
+		TokensMax:  prog.TokensMax,
+	}
+	for _, r := range prog.Roles {
+		result.Roles = append(result.Roles, SwarmRoleInfo{
+			Name: r.Name, Status: string(r.Status), Detail: r.Detail,
+			Tokens: r.Tokens, StartedAt: r.StartedAt,
+		})
+	}
+	return result, nil
+}
+
+// SDDStatusResult is the JSON-RPC result for session/sdd_status.
+type SDDStatusResult struct {
+	Active       bool         `json:"active"`
+	PlanName     string       `json:"planName,omitempty"`
+	PlanPath     string       `json:"planPath,omitempty"`
+	Branch       string       `json:"branch,omitempty"`
+	Tasks        []string     `json:"tasks,omitempty"`
+	TotalTasks   int          `json:"totalTasks"`
+	DoneTasks    int          `json:"doneTasks"`
+	CurrentTask  int          `json:"currentTask"`
+	Phase        string       `json:"phase,omitempty"`
+	Detail       string       `json:"detail,omitempty"`
+	FixRound     int          `json:"fixRound"`
+	MaxFixRounds int          `json:"maxFixRounds"`
+	TokensUsed   int          `json:"tokensUsed"`
+	TokensMax    int          `json:"tokensMax"`
+	Finished     bool         `json:"finished"`
+	Succeeded    bool         `json:"succeeded"`
+	Gate         *SDDGateInfo `json:"gate,omitempty"`
+}
+
+// SDDStatus handles session/sdd_status: a poll-style read of the session's
+// current plan-execution progress plus any pending gate. Always safe to
+// call, including before any run has started.
+func (m *TurnManager) SDDStatus(ctx context.Context, params json.RawMessage) (any, error) {
+	var p sessionIDParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/sdd_status params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/sdd_status requires sessionId")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.State == nil {
+		return nil, &jsonRPCError{Code: internalError, Message: "session has no state"}
+	}
+	prog := rt.State.SDDProgress()
+	g := rt.State.SDDGate()
+	result := SDDStatusResult{
+		Active:       prog.Active,
+		PlanName:     prog.PlanName,
+		PlanPath:     prog.PlanPath,
+		Branch:       prog.Branch,
+		Tasks:        prog.Tasks,
+		TotalTasks:   prog.TotalTasks,
+		DoneTasks:    prog.DoneTasks,
+		CurrentTask:  prog.CurrentTask,
+		Phase:        prog.Phase,
+		Detail:       prog.Detail,
+		FixRound:     prog.FixRound,
+		MaxFixRounds: prog.MaxFixRounds,
+		TokensUsed:   prog.TokensUsed,
+		TokensMax:    prog.TokensMax,
+		Finished:     prog.Finished,
+		Succeeded:    prog.Succeeded,
+	}
+	if g.Question != "" {
+		result.Gate = &SDDGateInfo{TaskN: g.TaskN, Question: g.Question}
+	}
+	return result, nil
 }
 
 // Cancel is the notification handler for session/cancel. It marks the

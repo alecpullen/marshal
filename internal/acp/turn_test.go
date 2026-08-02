@@ -13,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -22,6 +25,107 @@ import (
 // the context and returns a no-op finish function.
 func identityBeginWork(ctx context.Context) (context.Context, func(), error) {
 	return ctx, func() {}, nil
+}
+
+// fakeAgentRunner is a minimal AgentRunner for tests that don't need real
+// swarm/pipeline machinery — only Run and AnswerGate are ever exercised by
+// TurnManager; the other three methods exist to satisfy the interface.
+type fakeAgentRunner struct {
+	run        func(ctx context.Context, goal string) error
+	answerGate func(answer string)
+}
+
+func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
+	if f.run == nil {
+		return nil
+	}
+	return f.run(ctx, goal)
+}
+func (f *fakeAgentRunner) SetForceClass(string)                   {}
+func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
+func (f *fakeAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (f *fakeAgentRunner) AnswerGate(answer string) {
+	if f.answerGate != nil {
+		f.answerGate(answer)
+	}
+}
+
+func TestSwarmStartRunsSwarmRunnerAndReturnsCast(t *testing.T) {
+	state := &session.State{}
+	state.SetSwarmProgress(session.SwarmProgress{
+		Goal:   "ship it",
+		Active: false,
+		Roles: []session.SwarmRole{
+			{Name: "planner", Status: session.SwarmRoleDone},
+			{Name: "implementer", Status: session.SwarmRoleDone},
+		},
+	})
+
+	var gotGoal string
+	fakeSwarm := &fakeAgentRunner{
+		run: func(ctx context.Context, goal string) error {
+			gotGoal = goal
+			return nil
+		},
+	}
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID:   sessionID,
+				BeginWork:   identityBeginWork,
+				Events:      pubsub.NewBroker[session.Event](),
+				State:       state,
+				SwarmRunner: fakeSwarm,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	raw, _ := json.Marshal(SwarmStartParams{SessionID: "sess_1", Goal: "ship it"})
+	res, err := manager.SwarmStart(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SwarmStart: %v", err)
+	}
+	result, ok := res.(SwarmTurnResult)
+	if !ok {
+		t.Fatalf("SwarmStart result type = %T, want SwarmTurnResult", res)
+	}
+	if result.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want %q", result.StopReason, "end_turn")
+	}
+	if gotGoal != "ship it" {
+		t.Errorf("runner received goal = %q, want %q", gotGoal, "ship it")
+	}
+	if len(result.Cast) != 2 || result.Cast[0].Name != "planner" || result.Cast[0].Status != "done" {
+		t.Errorf("Cast = %+v, want [{planner done} {implementer done}]", result.Cast)
+	}
+}
+
+func TestSwarmStartRejectsEmptyGoal(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SwarmStartParams{SessionID: "sess_1", Goal: "  "})
+	_, err := manager.SwarmStart(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SwarmStart with blank goal: got nil error, want an error")
+	}
+}
+
+func TestSwarmStartRejectsWhenSwarmUnavailable(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, SwarmRunner: nil}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SwarmStartParams{SessionID: "sess_1", Goal: "ship it"})
+	_, err := manager.SwarmStart(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SwarmStart with nil SwarmRunner: got nil error, want an error")
+	}
 }
 
 func TestPromptTurnRunsRunner(t *testing.T) {
@@ -1668,5 +1772,301 @@ func TestCapToolText(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "… (truncated)") {
 		t.Fatalf("capped text missing truncation suffix")
+	}
+}
+
+func TestSDDStartRunsToEndTurn(t *testing.T) {
+	state := &session.State{}
+	var gotPath string
+	factory := func(planPath string) AgentRunner {
+		return &fakeAgentRunner{run: func(ctx context.Context, goal string) error {
+			gotPath = goal
+			return nil
+		}}
+	}
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID:       sessionID,
+				BeginWork:       identityBeginWork,
+				Events:          pubsub.NewBroker[session.Event](),
+				State:           state,
+				PipelineFactory: factory,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	raw, _ := json.Marshal(SDDStartParams{SessionID: "sess_1", PlanPath: "docs/plan.md"})
+	res, err := manager.SDDStart(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SDDStart: %v", err)
+	}
+	result, ok := res.(SDDTurnResult)
+	if !ok {
+		t.Fatalf("SDDStart result type = %T, want SDDTurnResult", res)
+	}
+	if result.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want %q", result.StopReason, "end_turn")
+	}
+	if gotPath != "docs/plan.md" {
+		t.Errorf("runner received goal = %q, want %q", gotPath, "docs/plan.md")
+	}
+}
+
+func TestSDDStartReturnsGateOnHumanGateRequired(t *testing.T) {
+	state := &session.State{}
+	state.SetSDDGate(session.SDDGate{TaskN: 2, Question: "which approach?"})
+	factory := func(planPath string) AgentRunner {
+		return &fakeAgentRunner{run: func(ctx context.Context, goal string) error {
+			return pipeline.ErrHumanGateRequired
+		}}
+	}
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID:       sessionID,
+				BeginWork:       identityBeginWork,
+				Events:          pubsub.NewBroker[session.Event](),
+				State:           state,
+				PipelineFactory: factory,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	raw, _ := json.Marshal(SDDStartParams{SessionID: "sess_1", PlanPath: "docs/plan.md"})
+	res, err := manager.SDDStart(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SDDStart: %v", err)
+	}
+	result := res.(SDDTurnResult)
+	if result.StopReason != "gate" {
+		t.Fatalf("StopReason = %q, want %q", result.StopReason, "gate")
+	}
+	if result.Gate == nil || result.Gate.TaskN != 2 || result.Gate.Question != "which approach?" {
+		t.Fatalf("Gate = %+v, want {TaskN:2 Question:\"which approach?\"}", result.Gate)
+	}
+}
+
+func TestSDDStartRejectsEmptyPlanPath(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SDDStartParams{SessionID: "sess_1", PlanPath: " "})
+	_, err := manager.SDDStart(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SDDStart with blank planPath: got nil error, want an error")
+	}
+}
+
+func TestSDDStartRejectsWhenPipelineUnavailable(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, PipelineFactory: nil}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SDDStartParams{SessionID: "sess_1", PlanPath: "docs/plan.md"})
+	_, err := manager.SDDStart(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SDDStart with nil PipelineFactory: got nil error, want an error")
+	}
+}
+
+func TestSDDAnswerResumesGatedRunAndReachesEndTurn(t *testing.T) {
+	state := &session.State{}
+	state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "pick one"})
+
+	callCount := 0
+	var gotAnswer string
+	runner := &fakeAgentRunner{
+		run: func(ctx context.Context, goal string) error {
+			callCount++
+			if callCount == 1 {
+				return pipeline.ErrHumanGateRequired
+			}
+			state.ClearSDDGate()
+			return nil
+		},
+		answerGate: func(answer string) { gotAnswer = answer },
+	}
+	factory := func(planPath string) AgentRunner { return runner }
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID:       sessionID,
+				BeginWork:       identityBeginWork,
+				Events:          pubsub.NewBroker[session.Event](),
+				State:           state,
+				PipelineFactory: factory,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	startRaw, _ := json.Marshal(SDDStartParams{SessionID: "sess_1", PlanPath: "docs/plan.md"})
+	startRes, err := manager.SDDStart(context.Background(), startRaw)
+	if err != nil {
+		t.Fatalf("SDDStart: %v", err)
+	}
+	if startRes.(SDDTurnResult).StopReason != "gate" {
+		t.Fatalf("SDDStart StopReason = %q, want %q", startRes.(SDDTurnResult).StopReason, "gate")
+	}
+
+	answerRaw, _ := json.Marshal(SDDAnswerParams{SessionID: "sess_1", Answer: "option b"})
+	answerRes, err := manager.SDDAnswer(context.Background(), answerRaw)
+	if err != nil {
+		t.Fatalf("SDDAnswer: %v", err)
+	}
+	result, ok := answerRes.(SDDTurnResult)
+	if !ok {
+		t.Fatalf("SDDAnswer result type = %T, want SDDTurnResult", answerRes)
+	}
+	if result.StopReason != "end_turn" {
+		t.Errorf("SDDAnswer StopReason = %q, want %q", result.StopReason, "end_turn")
+	}
+	if gotAnswer != "option b" {
+		t.Errorf("AnswerGate received = %q, want %q", gotAnswer, "option b")
+	}
+	if callCount != 2 {
+		t.Errorf("runner.Run called %d times, want 2", callCount)
+	}
+}
+
+func TestSDDAnswerRejectsWhenNoRunIsGated(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SDDAnswerParams{SessionID: "sess_never_started", Answer: "x"})
+	_, err := manager.SDDAnswer(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SDDAnswer with no gated run: got nil error, want an error")
+	}
+}
+
+func TestSDDAnswerRejectsEmptyAnswer(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SDDAnswerParams{SessionID: "sess_1", Answer: " "})
+	_, err := manager.SDDAnswer(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SDDAnswer with blank answer: got nil error, want an error")
+	}
+}
+
+func TestSwarmStatusReflectsSessionState(t *testing.T) {
+	state := &session.State{}
+	state.SetSwarmProgress(session.SwarmProgress{
+		Goal:   "ship it",
+		Active: true,
+		Roles: []session.SwarmRole{
+			{Name: "planner", Status: session.SwarmRoleActive, Detail: "thinking", Tokens: 120},
+		},
+		TokensUsed: 120,
+		TokensMax:  4000,
+	})
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, State: state}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	raw, _ := json.Marshal(map[string]any{"sessionId": "sess_1"})
+	res, err := manager.SwarmStatus(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SwarmStatus: %v", err)
+	}
+	result := res.(SwarmStatusResult)
+	if !result.Active || result.Goal != "ship it" || result.TokensUsed != 120 {
+		t.Fatalf("SwarmStatus = %+v, unexpected", result)
+	}
+	if len(result.Roles) != 1 || result.Roles[0].Status != "active" || result.Roles[0].Detail != "thinking" {
+		t.Fatalf("SwarmStatus.Roles = %+v, unexpected", result.Roles)
+	}
+}
+
+func TestSwarmStatusRequiresSessionID(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.SwarmStatus(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("SwarmStatus with no sessionId: got nil error, want an error")
+	}
+}
+
+func TestSDDStatusReflectsSessionStateAndGate(t *testing.T) {
+	state := &session.State{}
+	state.SetSDDProgress(session.SDDProgress{
+		Active: true, PlanName: "my-plan", TotalTasks: 3, DoneTasks: 1, Phase: "implement",
+	})
+	state.SetSDDGate(session.SDDGate{TaskN: 2, Question: "which approach?"})
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, State: state}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	raw, _ := json.Marshal(map[string]any{"sessionId": "sess_1"})
+	res, err := manager.SDDStatus(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SDDStatus: %v", err)
+	}
+	result := res.(SDDStatusResult)
+	if !result.Active || result.PlanName != "my-plan" || result.TotalTasks != 3 || result.DoneTasks != 1 {
+		t.Fatalf("SDDStatus = %+v, unexpected", result)
+	}
+	if result.Gate == nil || result.Gate.TaskN != 2 || result.Gate.Question != "which approach?" {
+		t.Fatalf("SDDStatus.Gate = %+v, unexpected", result.Gate)
+	}
+}
+
+func TestSDDStatusOmitsGateWhenNoneIsPending(t *testing.T) {
+	state := &session.State{}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, State: state}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(map[string]any{"sessionId": "sess_1"})
+	res, err := manager.SDDStatus(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SDDStatus: %v", err)
+	}
+	if res.(SDDStatusResult).Gate != nil {
+		t.Fatalf("SDDStatus.Gate = %+v, want nil", res.(SDDStatusResult).Gate)
+	}
+}
+
+func TestSDDStartRejectsWhenFactoryReturnsNil(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID:       sessionID,
+				PipelineFactory: func(planPath string) AgentRunner { return nil },
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SDDStartParams{SessionID: "sess_1", PlanPath: "docs/plan.md"})
+	_, err := manager.SDDStart(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SDDStart when factory returns nil: got nil error, want an error")
 	}
 }

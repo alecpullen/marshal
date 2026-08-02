@@ -894,10 +894,19 @@ func (s *State) SetScratchpadEntry(key, content, format string) error {
 			evictedKeys = append(evictedKeys, e.Key)
 		}
 	}
+	// The new key is not in preSnapshot. If enforcement self-evicted it,
+	// make sure any DB row for this key (including a previous value) is
+	// removed and do not re-save it.
+	if _, ok := s.scratchpad[key]; !ok && !slices.Contains(evictedKeys, key) {
+		evictedKeys = append(evictedKeys, key)
+	}
 
 	if s.persistenceEnabled() {
-		if err := s.db.SaveScratchpadEntry(s.sessionID, entry); err != nil {
-			s.logger.Warn("failed to persist scratchpad entry", "error", err)
+		// Only persist the new value if it survived enforcement.
+		if _, ok := s.scratchpad[key]; ok {
+			if err := s.db.SaveScratchpadEntry(s.sessionID, entry); err != nil {
+				s.logger.Warn("failed to persist scratchpad entry", "error", err)
+			}
 		}
 		for _, evictedKey := range evictedKeys {
 			if err := s.db.DeleteScratchpadEntry(s.sessionID, evictedKey); err != nil {
@@ -912,9 +921,10 @@ func (s *State) SetScratchpadEntry(key, content, format string) error {
 // key does not exist (idempotent).
 func (s *State) DeleteScratchpadEntry(key string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	_, existed := s.scratchpad[key]
 	delete(s.scratchpad, key)
-	s.mu.Unlock()
 
 	if existed && s.persistenceEnabled() {
 		if err := s.db.DeleteScratchpadEntry(s.sessionID, key); err != nil {
@@ -946,8 +956,9 @@ func (s *State) scratchpadSnapshotLocked() []db.ScratchpadEntry {
 	for _, e := range s.scratchpad {
 		out = append(out, e)
 	}
-	// Sort newest first so callers get deterministic order.
-	slices.SortFunc(out, func(a, b db.ScratchpadEntry) int {
+	// Sort newest first so callers get deterministic order. Stable sort keeps
+	// insertion order when Updated values are equal.
+	slices.SortStableFunc(out, func(a, b db.ScratchpadEntry) int {
 		if a.Updated > b.Updated {
 			return -1
 		}
@@ -971,7 +982,9 @@ func (s *State) enforceScratchpadBudgetLocked() {
 	for _, e := range s.scratchpad {
 		entries = append(entries, e)
 	}
-	slices.SortFunc(entries, func(a, b db.ScratchpadEntry) int {
+	// Stable sort keeps insertion order for equal Updated values so eviction
+	// is deterministic.
+	slices.SortStableFunc(entries, func(a, b db.ScratchpadEntry) int {
 		if a.Updated < b.Updated {
 			return -1
 		}

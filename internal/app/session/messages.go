@@ -33,8 +33,8 @@ const (
 // append-only tree: each message has a ParentID (0 for the root), and the
 // active branch is the path from root to leafID.
 type Message struct {
-	ID            int64
-	ParentID      int64
+	ID       int64
+	ParentID int64
 	// DBID is the persisted SQLite row id for this message. It is non-zero
 	// for messages that were written to (or loaded from) the database and
 	// zero for transient in-memory-only messages.
@@ -80,83 +80,82 @@ func (s *State) loadFromDB() {
 		s.loadErr = err
 		return
 	}
-	if leafDBID == 0 {
-		return
-	}
 
-	dbMessages, err := s.db.MessagesOnBranch(s.sessionID, leafDBID)
-	if err != nil {
-		s.logger.Error("loadFromDB: messages on branch", "error", err, "session_id", s.sessionID, "leaf", leafDBID)
-		s.loadErr = err
-		return
-	}
-	if len(dbMessages) == 0 {
-		return
-	}
-
-	// Walk root -> leaf (MessagesOnBranch returns chronological order).
-	// Allocate a stable in-memory id per loaded row starting at nextMsgID,
-	// and record parent / child relations using the in-memory ids so the
-	// tree mirror is internally consistent.
-	for _, dm := range dbMessages {
-		imID := s.nextMsgID
-		s.nextMsgID++
-
-		// Find this row's in-memory parent id: it was the in-memory id
-		// we allocated for dm.ParentID, which equals imID-1 only for
-		// a linear branch. Look it up via a dbID->imID translation
-		// table built on the fly (cheap for cold-start sizes).
-		var imParent int64
-		if dm.ParentID > 0 {
-			imParent = s.dbIDToImID[dm.ParentID]
+	if leafDBID != 0 {
+		dbMessages, err := s.db.MessagesOnBranch(s.sessionID, leafDBID)
+		if err != nil {
+			s.logger.Error("loadFromDB: messages on branch", "error", err, "session_id", s.sessionID, "leaf", leafDBID)
+			s.loadErr = err
+			return
 		}
+		if len(dbMessages) > 0 {
+			// Walk root -> leaf (MessagesOnBranch returns chronological order).
+			// Allocate a stable in-memory id per loaded row starting at nextMsgID,
+			// and record parent / child relations using the in-memory ids so the
+			// tree mirror is internally consistent.
+			for _, dm := range dbMessages {
+				imID := s.nextMsgID
+				s.nextMsgID++
 
-		thinkDur := time.Duration(0)
-		if dm.ThinkDurationMs > 0 {
-			thinkDur = time.Duration(dm.ThinkDurationMs) * time.Millisecond
+				// Find this row's in-memory parent id: it was the in-memory id
+				// we allocated for dm.ParentID, which equals imID-1 only for
+				// a linear branch. Look it up via a dbID->imID translation
+				// table built on the fly (cheap for cold-start sizes).
+				var imParent int64
+				if dm.ParentID > 0 {
+					imParent = s.dbIDToImID[dm.ParentID]
+				}
+
+				thinkDur := time.Duration(0)
+				if dm.ThinkDurationMs > 0 {
+					thinkDur = time.Duration(dm.ThinkDurationMs) * time.Millisecond
+				}
+				msg := Message{
+					ID:            imID,
+					ParentID:      imParent,
+					DBID:          dm.ID,
+					Role:          Role(dm.Role),
+					Content:       dm.Content,
+					ContentType:   ContentType(dm.ContentType),
+					Reasoning:     dm.Reasoning,
+					ThinkDuration: thinkDur,
+					CreatedAt:     dm.CreatedAt,
+					Final:         dm.Final,
+				}
+				s.parentOf[imID] = imParent
+				if imParent != 0 {
+					s.childrenOf[imParent] = append(s.childrenOf[imParent], imID)
+				}
+				s.dbIDToImID[dm.ID] = imID
+				// Stash on the msgByID map so rebuildActiveBranch can find it.
+				// We don't append to s.messages here — that is the job of
+				// rebuildActiveBranch (single source of truth for ordering).
+				//
+				// The map holds values, not pointers. appendMessage used to store
+				// &s.messages[len-1], an interior pointer that any reallocating append
+				// orphaned and that rebuildActiveBranch invalidated wholesale by
+				// assigning a fresh slice. It read correctly only because Message is
+				// never mutated in place, while pinning every superseded backing array
+				// against collection.
+				s.msgByID[imID] = msg
+			}
+
+			// The last row in dbMessages is the leaf; record both its in-memory
+			// id and its DB id so the next AddMessage picks up the right parent.
+			leaf := dbMessages[len(dbMessages)-1]
+			imLeaf := s.dbIDToImID[leaf.ID]
+			s.leafID = imLeaf
+			s.leafDBID = leaf.ID
+			s.rebuildActiveBranch()
+			// The translation map is only needed while loading; drop it so the
+			// session doesn't carry a stale dual-id mapping for its lifetime.
+			s.dbIDToImID = nil
 		}
-		msg := Message{
-			ID:            imID,
-			ParentID:      imParent,
-			DBID:          dm.ID,
-			Role:          Role(dm.Role),
-			Content:       dm.Content,
-			ContentType:   ContentType(dm.ContentType),
-			Reasoning:     dm.Reasoning,
-			ThinkDuration: thinkDur,
-			CreatedAt:     dm.CreatedAt,
-			Final:         dm.Final,
-		}
-		s.parentOf[imID] = imParent
-		if imParent != 0 {
-			s.childrenOf[imParent] = append(s.childrenOf[imParent], imID)
-		}
-		s.dbIDToImID[dm.ID] = imID
-		// Stash on the msgByID map so rebuildActiveBranch can find it.
-		// We don't append to s.messages here — that is the job of
-		// rebuildActiveBranch (single source of truth for ordering).
-		//
-		// The map holds values, not pointers. appendMessage used to store
-		// &s.messages[len-1], an interior pointer that any reallocating append
-		// orphaned and that rebuildActiveBranch invalidated wholesale by
-		// assigning a fresh slice. It read correctly only because Message is
-		// never mutated in place, while pinning every superseded backing array
-		// against collection.
-		s.msgByID[imID] = msg
 	}
-
-	// The last row in dbMessages is the leaf; record both its in-memory
-	// id and its DB id so the next AddMessage picks up the right parent.
-	leaf := dbMessages[len(dbMessages)-1]
-	imLeaf := s.dbIDToImID[leaf.ID]
-	s.leafID = imLeaf
-	s.leafDBID = leaf.ID
-	s.rebuildActiveBranch()
-	// The translation map is only needed while loading; drop it so the
-	// session doesn't carry a stale dual-id mapping for its lifetime.
-	s.dbIDToImID = nil
 
 	// Restore scratchpad entries from the per-key scratchpad_entries table.
+	// This is independent of message state so a session with scratchpad data
+	// but no messages still cold-starts correctly.
 	if entries, err := s.db.LoadScratchpad(s.sessionID); err == nil {
 		s.scratchpad = make(map[string]db.ScratchpadEntry, len(entries))
 		for _, e := range entries {

@@ -1808,3 +1808,86 @@ func TestScratchpadPersistenceDeletesEvictedEntries(t *testing.T) {
 		t.Fatalf("db keys = %+v, want [new]", loaded)
 	}
 }
+
+func TestScratchpadSelfEvictedNewEntryNotPersisted(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+	sessionID := "scratchpad-self-evict-sess"
+	if err := dbConn.CreateSession(sessionID, projectID, "self-evict", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{
+		MaxEntries:          100,
+		MaxTotalTokens:      5,
+		MaxEntryTokens:      100,
+		ProjectionMaxTokens: 1000,
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+
+	// 24 ASCII chars => 6 tokens. This is under MaxEntryTokens but exceeds
+	// MaxTotalTokens, so the entry is added and then immediately self-evicted.
+	if err := s.SetScratchpadEntry("big", strings.Repeat("x", 24), "text"); err != nil {
+		t.Fatalf("set big: %v", err)
+	}
+
+	if _, ok := s.ScratchpadEntry("big"); ok {
+		t.Fatal("self-evicted entry should not be in memory")
+	}
+
+	loaded, err := dbConn.LoadScratchpad(sessionID)
+	if err != nil {
+		t.Fatalf("load scratchpad: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("db rows = %d, want 0 for self-evicted entry", len(loaded))
+	}
+}
+
+func TestScratchpadColdLoadWithoutMessages(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+	sessionID := "scratchpad-no-msgs-sess"
+	if err := dbConn.CreateSession(sessionID, projectID, "no-msgs", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	cfg := config.Default()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	first := New(cfg, "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+	if err := first.SetScratchpadEntry("x", "chi", "text"); err != nil {
+		t.Fatalf("set x: %v", err)
+	}
+
+	// Second State loads the same session without any persisted messages.
+	second := New(cfg, "/repo", time.Unix(200, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+	entries := second.Scratchpad()
+	if len(entries) != 1 {
+		t.Fatalf("cold-load entries = %d, want 1", len(entries))
+	}
+	if entries[0].Key != "x" || entries[0].Content != "chi" {
+		t.Fatalf("entry = %+v, want x/chi", entries[0])
+	}
+}

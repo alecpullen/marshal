@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
 )
@@ -83,6 +85,8 @@ type TurnRuntime struct {
 	State *session.State
 	// SwarmRunner runs a swarm turn for a goal. Nil when swarm is unavailable.
 	SwarmRunner AgentRunner
+	// PipelineFactory builds a plan-execution runner for one plan path. Nil when plan execution is unavailable.
+	PipelineFactory func(planPath string) AgentRunner
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -119,6 +123,18 @@ type TurnManager struct {
 
 	activeTurnsMu sync.Mutex
 	activeTurns   map[string]*activeTurn
+
+	// pipelineRunnersMu guards pipelineRunners, tracking the in-flight SDD
+	// runner (and the plan path it was built for) per session so
+	// SDDAnswer can resume the same instance a human gate paused.
+	pipelineRunnersMu sync.Mutex
+	pipelineRunners   map[string]*sddRun
+}
+
+// sddRun is one session's in-flight (possibly gated) SDD run.
+type sddRun struct {
+	runner   AgentRunner
+	planPath string
 }
 
 func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
@@ -129,10 +145,11 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		panic("acp: TurnManagerConfig.Notify is required")
 	}
 	tm := &TurnManager{
-		lookup:      cfg.Lookup,
-		notify:      cfg.Notify,
-		perms:       cfg.Perms,
-		activeTurns: map[string]*activeTurn{},
+		lookup:          cfg.Lookup,
+		notify:          cfg.Notify,
+		perms:           cfg.Perms,
+		activeTurns:     map[string]*activeTurn{},
+		pipelineRunners: map[string]*sddRun{},
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)
@@ -569,6 +586,106 @@ func resultOrError(runErr error, slot *activeTurn) (any, error) {
 		return nil, runErr
 	}
 	return PromptTurnResult{StopReason: "end_turn"}, nil
+}
+
+// SDDStartParams is the JSON-RPC body for session/sdd_start.
+type SDDStartParams struct {
+	SessionID string `json:"sessionId"`
+	PlanPath  string `json:"planPath"`
+}
+
+// SDDGateInfo describes a pending human-gate question raised by a plan
+// subagent. Named distinctly from session.SDDGate to avoid colliding with
+// that (unexported-field-bearing) type on the wire.
+type SDDGateInfo struct {
+	TaskN    int    `json:"taskN"`
+	Question string `json:"question"`
+}
+
+// SDDTurnResult is the JSON-RPC result for session/sdd_start and
+// session/sdd_answer.
+type SDDTurnResult struct {
+	StopReason string       `json:"stopReason"`
+	Gate       *SDDGateInfo `json:"gate,omitempty"`
+}
+
+// sddResultOf maps a finished (or gated) SDD turn to a wire result. Unlike
+// resultOrError, a pipeline.ErrHumanGateRequired terminal error is not an
+// error at the wire level — it's a distinct stopReason the client resolves
+// via session/sdd_answer.
+func sddResultOf(runErr error, slot *activeTurn) (any, error) {
+	if slot.clientCancelled.Load() {
+		return SDDTurnResult{StopReason: "cancelled"}, nil
+	}
+	if errors.Is(runErr, pipeline.ErrHumanGateRequired) {
+		return SDDTurnResult{StopReason: "gate"}, nil
+	}
+	if runErr != nil {
+		return nil, runErr
+	}
+	return SDDTurnResult{StopReason: "end_turn"}, nil
+}
+
+// finishSDDResult fills in Gate details (sddResultOf can't reach
+// rt.State) and retires the stored pipeline runner once the run is no
+// longer resumable (anything but a fresh gate). Shared by SDDStart and
+// SDDAnswer.
+func (m *TurnManager) finishSDDResult(sessionID string, rt *TurnRuntime, res any, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	result := res.(SDDTurnResult)
+	if result.StopReason == "gate" {
+		if rt.State != nil {
+			g := rt.State.SDDGate()
+			if g.Question != "" {
+				result.Gate = &SDDGateInfo{TaskN: g.TaskN, Question: g.Question}
+			}
+		}
+		return result, nil
+	}
+	m.pipelineRunnersMu.Lock()
+	delete(m.pipelineRunners, sessionID)
+	m.pipelineRunnersMu.Unlock()
+	return result, nil
+}
+
+// SDDStart handles session/sdd_start. Like session/prompt, this call is
+// synchronous. When the underlying controller raises a human gate, the
+// call still returns successfully with StopReason "gate" and the pending
+// question — resolve it with session/sdd_answer.
+func (m *TurnManager) SDDStart(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SDDStartParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/sdd_start params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/sdd_start requires sessionId")
+	}
+	if strings.TrimSpace(p.PlanPath) == "" {
+		return nil, invalidParamsError("session/sdd_start requires a non-empty planPath")
+	}
+
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.PipelineFactory == nil {
+		return nil, serverErrorf("session %s does not support plan execution", p.SessionID)
+	}
+	runner := rt.PipelineFactory(p.PlanPath)
+	if runner == nil {
+		return nil, serverErrorf("could not build a runner for plan %q", p.PlanPath)
+	}
+
+	m.pipelineRunnersMu.Lock()
+	m.pipelineRunners[p.SessionID] = &sddRun{runner: runner, planPath: p.PlanPath}
+	m.pipelineRunnersMu.Unlock()
+
+	res, err := m.runTurn(ctx, p.SessionID, rt, RunnerFunc(runner.Run), p.PlanPath, sddResultOf)
+	return m.finishSDDResult(p.SessionID, rt, res, err)
 }
 
 // SetModeParams is the JSON-RPC body for session/set_mode.

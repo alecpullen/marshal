@@ -55,10 +55,11 @@ type Message struct {
 	ToolCallCount int
 }
 
-// loadFromDB reconstructs the in-memory message tree for the current
-// session from the persisted rows. It is called once from New when
-// persistence is enabled. If the DB has no messages for this session
-// (or the session is missing), the state stays empty.
+// loadFromDB reconstructs the in-memory message tree and scratchpad state
+// for the current session from the persisted rows. It is called once from
+// New when persistence is enabled. Message state and scratchpad state are
+// loaded independently, so a session with scratchpad data but no messages
+// (or vice versa) still cold-starts correctly.
 //
 // Concurrency: takes s.mu for the entire load. Idempotency: refuses to
 // run if the in-memory tree is already populated, so calling New twice

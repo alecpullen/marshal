@@ -110,10 +110,21 @@ func (r *Runner) mergeMemories(maxTokenOverride int) {
 // content in the context budget.
 func (r *Runner) mergeScratchpad(maxTokenOverride int) {
 	entries := r.State.Scratchpad()
-	if len(entries) == 0 {
-		return
-	}
 	current := r.State.ContextPack()
+	if len(entries) == 0 {
+		// Nothing to inject, but we still need to clear a stale projection
+		// if the previous turn left one behind.
+		hasScratchpad := false
+		for _, s := range current.Sections {
+			if s.Kind == contextpack.SectionScratchpad {
+				hasScratchpad = true
+				break
+			}
+		}
+		if !hasScratchpad {
+			return
+		}
+	}
 	maxTokens := maxTokenOverride
 	if maxTokens <= 0 {
 		maxTokens = current.TokenUsage.MaxTokens

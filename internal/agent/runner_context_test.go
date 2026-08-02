@@ -80,6 +80,33 @@ func TestMergeScratchpadPassesConfiguredProjectionBudget(t *testing.T) {
 	}
 }
 
+func TestMergeScratchpadRemovingLastEntryRemovesProjection(t *testing.T) {
+	state := newTestState(t)
+	if err := state.SetScratchpadEntry("only", "only entry content", "text"); err != nil {
+		t.Fatalf("SetScratchpadEntry: %v", err)
+	}
+	state.SetContextPack(contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionRepoCard, Content: "Project: marshal", EstimatedTokens: 4},
+			{Kind: contextpack.SectionScratchpad, Title: "Scratchpad", Content: "old projection", Priority: 50, EstimatedTokens: 2},
+		},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 6},
+	})
+
+	if err := state.DeleteScratchpadEntry("only"); err != nil {
+		t.Fatalf("DeleteScratchpadEntry: %v", err)
+	}
+
+	runner := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.mergeScratchpad(0)
+
+	for _, section := range state.ContextPack().Sections {
+		if section.Kind == contextpack.SectionScratchpad {
+			t.Fatalf("stale scratchpad section remained after deleting last entry: %#v", state.ContextPack().Sections)
+		}
+	}
+}
+
 func TestRunInjectsStoredContextPack(t *testing.T) {
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"simple","action":{"type":"answer","content":"Marshal is indexed."}}`,

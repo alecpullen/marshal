@@ -853,37 +853,30 @@ func (s *State) Todos() []db.TodoItem {
 	return result
 }
 
-// SetScratchpadEntry upserts a single entry by key. The full entry set is
-// persisted to the session_state table. Returns nil if the store is not
-// available (no session state).
+// SetScratchpadEntry upserts a single entry by key. The entry is persisted
+// to the scratchpad_entries table. Returns nil if the store is not available
+// (no session state).
 func (s *State) SetScratchpadEntry(key, content, format string) error {
 	if strings.TrimSpace(key) == "" {
 		return fmt.Errorf("scratchpad key must not be empty")
 	}
-	now := time.Now().Unix()
+	entry := db.NewScratchpadEntry(key, content, format)
 	s.mu.Lock()
 	found := false
 	for i, e := range s.scratchpad {
 		if e.Key == key {
-			s.scratchpad[i].Content = content
-			s.scratchpad[i].Format = format
-			s.scratchpad[i].Updated = now
+			s.scratchpad[i] = entry
 			found = true
 			break
 		}
 	}
 	if !found {
-		s.scratchpad = append(s.scratchpad, db.ScratchpadEntry{
-			Key:     key,
-			Content: content,
-			Format:  format,
-			Updated: now,
-		})
+		s.scratchpad = append(s.scratchpad, entry)
 	}
 	s.mu.Unlock()
 	if s.persistenceEnabled() {
-		if err := s.db.SaveScratchpad(s.sessionID, s.scratchpad); err != nil {
-			s.logger.Warn("failed to persist scratchpad", "error", err)
+		if err := s.db.SaveScratchpadEntry(s.sessionID, entry); err != nil {
+			s.logger.Warn("failed to persist scratchpad entry", "error", err)
 		}
 	}
 	return nil
@@ -898,8 +891,8 @@ func (s *State) DeleteScratchpadEntry(key string) error {
 			s.scratchpad = append(s.scratchpad[:i], s.scratchpad[i+1:]...)
 			s.mu.Unlock()
 			if s.persistenceEnabled() {
-				if err := s.db.SaveScratchpad(s.sessionID, s.scratchpad); err != nil {
-					s.logger.Warn("failed to persist scratchpad", "error", err)
+				if err := s.db.DeleteScratchpadEntry(s.sessionID, key); err != nil {
+					s.logger.Warn("failed to delete scratchpad entry", "error", err)
 				}
 			}
 			return nil

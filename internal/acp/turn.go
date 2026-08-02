@@ -230,6 +230,17 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 	return nil, false
 }
 
+// HasActiveTurn reports whether sessionID currently has an in-flight
+// prompt turn. Used by CommandManager to reject session/command while a
+// turn is running, the same way the TUI disables command dispatch while
+// the agent is busy.
+func (m *TurnManager) HasActiveTurn(sessionID string) bool {
+	m.activeTurnsMu.Lock()
+	defer m.activeTurnsMu.Unlock()
+	_, ok := m.activeTurns[sessionID]
+	return ok
+}
+
 // PromptTurn drives a single agent turn for the named session. It looks
 // up the runtime, normalises the prompt, reserves the per-session slot,
 // registers runtime work, subscribes to the event broker with terminal

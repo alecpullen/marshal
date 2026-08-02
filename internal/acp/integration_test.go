@@ -797,7 +797,7 @@ func TestACPWireCommandDispatchListAndRun(t *testing.T) {
 
 // randPerm returns a pseudo-random permutation of [0,n). The seed is
 // derived from time.Now so the order varies across test runs, but the
-// function is deterministic given a given wall clock.
+// function is deterministic given a fixed wall clock.
 func randPerm(n int) []int {
 	out := make([]int, n)
 	for i := range out {

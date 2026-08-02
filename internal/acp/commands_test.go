@@ -221,3 +221,46 @@ func TestCommandManagerCommandListUnknownSession(t *testing.T) {
 		t.Fatal("CommandList for unknown session: got nil error, want an error")
 	}
 }
+
+func TestCommandManagerCommandRejectsMalformedParams(t *testing.T) {
+	reg := newTestCommandRegistry(t)
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+		},
+		HasActive: func(sessionID string) bool { return false },
+	})
+	_, err := mgr.Command(context.Background(), json.RawMessage(`{"sessionId": `))
+	if err == nil {
+		t.Fatal("Command with malformed params JSON: got nil error, want an error")
+	}
+}
+
+func TestCommandManagerCommandRejectsNilRegistry(t *testing.T) {
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			return &CommandRuntime{State: &session.State{}, Registry: nil}, true
+		},
+		HasActive: func(sessionID string) bool { return false },
+	})
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_1", Name: "diff"})
+	_, err := mgr.Command(context.Background(), raw)
+	if err == nil {
+		t.Fatal("Command with nil Registry: got nil error, want an error")
+	}
+}
+
+func TestCommandManagerCommandRejectsPromptBodyOnly(t *testing.T) {
+	reg := newTestCommandRegistry(t)
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+		},
+		HasActive: func(sessionID string) bool { return false },
+	})
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_1", Name: "someplugincmd"})
+	_, err := mgr.Command(context.Background(), raw)
+	if err == nil {
+		t.Fatal("Command(someplugincmd): got nil error, want an error (prompt-body command has no headless handler)")
+	}
+}

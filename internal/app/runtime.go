@@ -560,6 +560,10 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	}
 
 	cmdReg := commands.New()
+	// Surfaced via state.SetProviderError rather than aborting startRuntime,
+	// matching the buildAgentRunner error handling immediately above: a
+	// registration failure here is a programming error (duplicate/invalid
+	// command), not a reason to fail the whole runtime construction.
 	if regErr := commands.RegisterAll(cmdReg, toolReg); regErr != nil {
 		state.SetProviderError(regErr)
 	}

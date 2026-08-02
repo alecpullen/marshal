@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
-	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
@@ -34,6 +34,14 @@ type scratchpadReadArgs struct {
 
 type scratchpadDeleteArgs struct {
 	Key string `json:"key"`
+}
+
+func estimateTokens(text string) int {
+	runes := utf8.RuneCountInString(text)
+	if runes == 0 {
+		return 0
+	}
+	return (runes + 3) / 4
 }
 
 func (t *toolSet) scratchpadWriteTool() registry.Tool {
@@ -125,7 +133,7 @@ func (t *toolSet) scratchpadListTool() registry.Tool {
 		}
 		var lines []string
 		for _, e := range entries {
-			tokens := contextpack.EstimateTokens(e.Content)
+			tokens := estimateTokens(e.Content)
 			fmtVal := e.Format
 			if fmtVal == "" {
 				fmtVal = "text"

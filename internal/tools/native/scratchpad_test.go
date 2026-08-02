@@ -141,6 +141,54 @@ func TestScratchpadListShowsEntries(t *testing.T) {
 	if !strings.Contains(res.Summary, "2 scratchpad entries") {
 		t.Fatalf("summary = %q", res.Summary)
 	}
+	wantAlpha := "alpha (text, ~2 tokens)"
+	wantBeta := "beta (json, ~2 tokens)"
+	if !strings.Contains(res.Content, wantAlpha) {
+		t.Fatalf("content = %q, want substring %q", res.Content, wantAlpha)
+	}
+	if !strings.Contains(res.Content, wantBeta) {
+		t.Fatalf("content = %q, want substring %q", res.Content, wantBeta)
+	}
+}
+
+func TestScratchpadListDefaultsEmptyFormatToText(t *testing.T) {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	tools := &toolSet{sessionState: state}
+
+	writeTool := tools.scratchpadWriteTool()
+	args, _ := json.Marshal(map[string]any{"key": "gamma", "content": "gamma content"})
+	writeTool.Handler(context.Background(), registry.ToolCall{Args: args})
+
+	listTool := tools.scratchpadListTool()
+	res, err := listTool.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage("{}")})
+	if err != nil {
+		t.Fatalf("list error: %v", err)
+	}
+	want := "gamma (text, ~4 tokens)"
+	if !strings.Contains(res.Content, want) {
+		t.Fatalf("content = %q, want substring %q", res.Content, want)
+	}
+}
+
+func TestScratchpadEstimateTokens(t *testing.T) {
+	cases := []struct {
+		input string
+		want  int
+	}{
+		{"", 0},
+		{"a", 1},
+		{"abcd", 1},
+		{"abcde", 2},
+		{"🙂", 1},
+		{"first", 2},
+		{"second", 2},
+	}
+	for _, tc := range cases {
+		got := estimateTokens(tc.input)
+		if got != tc.want {
+			t.Errorf("estimateTokens(%q) = %d, want %d", tc.input, got, tc.want)
+		}
+	}
 }
 
 func TestScratchpadDeleteRemovesEntry(t *testing.T) {

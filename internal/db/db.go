@@ -137,6 +137,49 @@ func (db *DB) Migrate() error {
 		return fmt.Errorf("backfill leaf_message_id: %w", err)
 	}
 
+	if err := db.runMigrations(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// runMigrations applies any registered migrations that have not yet been
+// recorded in schema_migrations. Each migration runs inside its own
+// transaction and is recorded only on success.
+func (db *DB) runMigrations() error {
+	var maxVersion int
+	err := db.sqlDB.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&maxVersion)
+	if err != nil {
+		return fmt.Errorf("check schema migrations version: %w", err)
+	}
+
+	for i, m := range migrations {
+		version := i + 1
+		if version <= maxVersion {
+			continue
+		}
+
+		tx, err := db.sqlDB.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration %d: %w", version, err)
+		}
+
+		if err := m(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("run migration %d: %w", version, err)
+		}
+
+		if _, err := tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", version); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration %d: %w", version, err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %d: %w", version, err)
+		}
+	}
+
 	return nil
 }
 

@@ -1,6 +1,13 @@
 package db
 
+import "database/sql"
+
 const schema = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     root_path TEXT UNIQUE NOT NULL,
@@ -261,3 +268,27 @@ CREATE TABLE IF NOT EXISTS project_skills (
 );
 CREATE INDEX IF NOT EXISTS idx_project_skills_project ON project_skills(project_id);
 `
+
+// migrations is the ordered list of post-CREATE-TABLE schema changes.
+// Each function is executed inside a transaction and recorded in
+// schema_migrations by its 1-based index.
+var migrations []func(*sql.Tx) error
+
+func init() {
+	migrations = append(migrations, migrateScratchpadEntries)
+}
+
+func migrateScratchpadEntries(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS scratchpad_entries (
+			session_id TEXT NOT NULL,
+			entry_key TEXT NOT NULL,
+			content TEXT NOT NULL,
+			format TEXT NOT NULL,
+			updated INTEGER NOT NULL,
+			size_bytes INTEGER NOT NULL,
+			PRIMARY KEY (session_id, entry_key)
+		)
+	`)
+	return err
+}

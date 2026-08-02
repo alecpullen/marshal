@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/commands"
 	"marshal/internal/pubsub"
 )
 
@@ -720,9 +721,83 @@ func TestACPWireConcurrentFramesRemainValidJSON(t *testing.T) {
 	}
 }
 
+// --- Test 7: command dispatch wire-level integration ---
+
+// TestACPWireCommandDispatchListAndRun wires a CommandManager with a
+// real commands.Registry into a Server and exercises session/command_list
+// and session/command over the actual JSON encode/decode wire transport.
+func TestACPWireCommandDispatchListAndRun(t *testing.T) {
+	reg := commands.New()
+	if err := reg.Register(commands.Command{
+		Name: "diff",
+		Handler: func(state *session.State, args []string) commands.Result {
+			return commands.Text("no changes")
+		},
+	}); err != nil {
+		t.Fatalf("register diff: %v", err)
+	}
+	if err := reg.Register(commands.Command{
+		Name:    "settings",
+		TUIOnly: true,
+	}); err != nil {
+		t.Fatalf("register settings: %v", err)
+	}
+
+	turns := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	cmds := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			if sessionID != "sess_cmd" {
+				return nil, false
+			}
+			return &CommandRuntime{State: &session.State{}, Registry: reg}, true
+		},
+		HasActive: turns.HasActiveTurn,
+	})
+
+	h := newWireHarness(t, func(srv *Server) {
+		srv.Handle("session/command", cmds.Command)
+		srv.Handle("session/command_list", cmds.CommandList)
+	})
+	defer h.close(t)
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(1), "method": "session/command_list",
+		"params": map[string]any{"sessionId": "sess_cmd"},
+	})
+	resp := readResponse(t, h, "1")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/command_list error: %+v", errObj)
+	}
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(2), "method": "session/command",
+		"params": map[string]any{"sessionId": "sess_cmd", "name": "diff"},
+	})
+	resp = readResponse(t, h, "2")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/command(diff) error: %+v", errObj)
+	}
+	res, _ := frameResult(resp).(map[string]any)
+	if res["text"] != "no changes" {
+		t.Fatalf("session/command(diff) text = %v, want %q", res["text"], "no changes")
+	}
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(3), "method": "session/command",
+		"params": map[string]any{"sessionId": "sess_cmd", "name": "settings"},
+	})
+	resp = readResponse(t, h, "3")
+	if frameError(resp) == nil {
+		t.Fatal("session/command(settings): got no error, want an error (TUI-only)")
+	}
+}
+
 // randPerm returns a pseudo-random permutation of [0,n). The seed is
 // derived from time.Now so the order varies across test runs, but the
-// function is deterministic given a fixed wall clock.
+// function is deterministic given a given wall clock.
 func randPerm(n int) []int {
 	out := make([]int, n)
 	for i := range out {

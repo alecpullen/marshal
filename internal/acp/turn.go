@@ -10,8 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/policy"
 )
 
 // PromptTurnParams is the JSON-RPC body for session/prompt.
@@ -25,11 +27,42 @@ type PromptTurnResult struct {
 	StopReason string `json:"stopReason"`
 }
 
+// SwarmStartParams is the JSON-RPC body for session/swarm_start.
+type SwarmStartParams struct {
+	SessionID string `json:"sessionId"`
+	Goal      string `json:"goal"`
+}
+
+// SwarmCastEntry is one role in the SwarmTurnResult's post-run cast list.
+type SwarmCastEntry struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// SwarmTurnResult is the JSON-RPC result for session/swarm_start.
+type SwarmTurnResult struct {
+	StopReason string           `json:"stopReason"`
+	Cast       []SwarmCastEntry `json:"cast,omitempty"`
+}
+
 // RunnerFunc is the per-turn execution surface. Decoupling the turn
 // manager from *agent.Runner keeps the ACP package free of the
 // provider/tool/registry/policy dependency chain and lets unit tests stub
 // turns in a few lines.
 type RunnerFunc func(ctx context.Context, prompt string) error
+
+// AgentRunner is the swarm/SDD execution surface. Its method set matches
+// tui.AgentRunner structurally, so *swarm.Orchestrator and
+// PipelineFactory-built runners (both sourced from app.Runtime) satisfy it
+// without internal/acp importing internal/app/tui — the same decoupling
+// RunnerFunc already gives regular turns.
+type AgentRunner interface {
+	Run(ctx context.Context, goal string) error
+	SetForceClass(class string)
+	SetPolicyRules(rules []config.PermissionRule)
+	SetApprovalMode(mode policy.ApprovalMode)
+	AnswerGate(answer string)
+}
 
 // TurnRuntime is the per-session slice of state the turn manager needs.
 type TurnRuntime struct {
@@ -48,6 +81,8 @@ type TurnRuntime struct {
 	// SessionManager; tests may still construct a TurnRuntime with a nil
 	// State when they don't exercise a path that reads it.
 	State *session.State
+	// SwarmRunner runs a swarm turn for a goal. Nil when swarm is unavailable.
+	SwarmRunner AgentRunner
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -274,6 +309,47 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 	}
 
 	return m.runTurn(ctx, p.SessionID, rt, rt.Run, prompt, resultOrError)
+}
+
+// SwarmStart handles session/swarm_start. Like session/prompt, this call is
+// synchronous and blocks until the run finishes or is cancelled via
+// session/cancel from another in-flight request; Cast reflects the final
+// role roster read from session state after the run completes, not a live
+// preflight snapshot.
+func (m *TurnManager) SwarmStart(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SwarmStartParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/swarm_start params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/swarm_start requires sessionId")
+	}
+	if strings.TrimSpace(p.Goal) == "" {
+		return nil, invalidParamsError("session/swarm_start requires a non-empty goal")
+	}
+
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.SwarmRunner == nil {
+		return nil, serverErrorf("session %s does not support swarm runs", p.SessionID)
+	}
+
+	res, err := m.runTurn(ctx, p.SessionID, rt, RunnerFunc(rt.SwarmRunner.Run), p.Goal, resultOrError)
+	if err != nil {
+		return nil, err
+	}
+	ptr := res.(PromptTurnResult)
+	result := SwarmTurnResult{StopReason: ptr.StopReason}
+	if rt.State != nil {
+		for _, r := range rt.State.SwarmProgress().Roles {
+			result.Cast = append(result.Cast, SwarmCastEntry{Name: r.Name, Status: string(r.Status)})
+		}
+	}
+	return result, nil
 }
 
 // runTurn reserves the per-session active-turn slot, runs run(turnCtx, arg)

@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -22,6 +24,107 @@ import (
 // the context and returns a no-op finish function.
 func identityBeginWork(ctx context.Context) (context.Context, func(), error) {
 	return ctx, func() {}, nil
+}
+
+// fakeAgentRunner is a minimal AgentRunner for tests that don't need real
+// swarm/pipeline machinery — only Run and AnswerGate are ever exercised by
+// TurnManager; the other three methods exist to satisfy the interface.
+type fakeAgentRunner struct {
+	run        func(ctx context.Context, goal string) error
+	answerGate func(answer string)
+}
+
+func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
+	if f.run == nil {
+		return nil
+	}
+	return f.run(ctx, goal)
+}
+func (f *fakeAgentRunner) SetForceClass(string)                   {}
+func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
+func (f *fakeAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (f *fakeAgentRunner) AnswerGate(answer string) {
+	if f.answerGate != nil {
+		f.answerGate(answer)
+	}
+}
+
+func TestSwarmStartRunsSwarmRunnerAndReturnsCast(t *testing.T) {
+	state := &session.State{}
+	state.SetSwarmProgress(session.SwarmProgress{
+		Goal:   "ship it",
+		Active: false,
+		Roles: []session.SwarmRole{
+			{Name: "planner", Status: session.SwarmRoleDone},
+			{Name: "implementer", Status: session.SwarmRoleDone},
+		},
+	})
+
+	var gotGoal string
+	fakeSwarm := &fakeAgentRunner{
+		run: func(ctx context.Context, goal string) error {
+			gotGoal = goal
+			return nil
+		},
+	}
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID:   sessionID,
+				BeginWork:   identityBeginWork,
+				Events:      pubsub.NewBroker[session.Event](),
+				State:       state,
+				SwarmRunner: fakeSwarm,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	raw, _ := json.Marshal(SwarmStartParams{SessionID: "sess_1", Goal: "ship it"})
+	res, err := manager.SwarmStart(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SwarmStart: %v", err)
+	}
+	result, ok := res.(SwarmTurnResult)
+	if !ok {
+		t.Fatalf("SwarmStart result type = %T, want SwarmTurnResult", res)
+	}
+	if result.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want %q", result.StopReason, "end_turn")
+	}
+	if gotGoal != "ship it" {
+		t.Errorf("runner received goal = %q, want %q", gotGoal, "ship it")
+	}
+	if len(result.Cast) != 2 || result.Cast[0].Name != "planner" || result.Cast[0].Status != "done" {
+		t.Errorf("Cast = %+v, want [{planner done} {implementer done}]", result.Cast)
+	}
+}
+
+func TestSwarmStartRejectsEmptyGoal(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SwarmStartParams{SessionID: "sess_1", Goal: "  "})
+	_, err := manager.SwarmStart(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SwarmStart with blank goal: got nil error, want an error")
+	}
+}
+
+func TestSwarmStartRejectsWhenSwarmUnavailable(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, SwarmRunner: nil}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SwarmStartParams{SessionID: "sess_1", Goal: "ship it"})
+	_, err := manager.SwarmStart(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SwarmStart with nil SwarmRunner: got nil error, want an error")
+	}
 }
 
 func TestPromptTurnRunsRunner(t *testing.T) {

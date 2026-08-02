@@ -1946,6 +1946,16 @@ func (h *testLogHandler) Handle(_ context.Context, r slog.Record) error {
 func (h *testLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
 func (h *testLogHandler) WithGroup(name string) slog.Handler        { return h }
 
+// recordAttrs collects a slog.Record's attributes into a map.
+func recordAttrs(r slog.Record) map[string]any {
+	attrs := make(map[string]any)
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	return attrs
+}
+
 func TestScratchpadDebugLogs(t *testing.T) {
 	handler := &testLogHandler{}
 	logger := slog.New(handler)
@@ -1961,7 +1971,6 @@ func TestScratchpadDebugLogs(t *testing.T) {
 	if err := s.SetScratchpadEntry("old", "old content", "text"); err != nil {
 		t.Fatalf("set old: %v", err)
 	}
-	time.Sleep(10 * time.Millisecond)
 	if err := s.SetScratchpadEntry("new", "new content", "text"); err != nil {
 		t.Fatalf("set new: %v", err)
 	}
@@ -1981,15 +1990,56 @@ func TestScratchpadDebugLogs(t *testing.T) {
 		t.Fatalf("delete missing: %v", err)
 	}
 
-	var writes, reads, deletes int
+	var writes, reads, deletes, evictions int
 	for _, r := range handler.records {
+		attrs := recordAttrs(r)
 		switch r.Message {
 		case "scratchpad write":
 			writes++
+			key, _ := attrs["key"].(string)
+			tokens, _ := attrs["tokens"].(int64)
+			totalEntries, _ := attrs["total_entries"].(int64)
+			var wantTokens int64
+			switch key {
+			case "old":
+				wantTokens = int64(contextpack.EstimateTokens("old content"))
+			case "new":
+				wantTokens = int64(contextpack.EstimateTokens("new content"))
+			default:
+				t.Errorf("write log key = %q, want old or new", key)
+			}
+			if tokens != wantTokens {
+				t.Errorf("write log tokens for %s = %d, want %d", key, tokens, wantTokens)
+			}
+			if totalEntries != 1 {
+				t.Errorf("write log total_entries for %s = %d, want 1", key, totalEntries)
+			}
 		case "scratchpad read":
 			reads++
+			key, _ := attrs["key"].(string)
+			hit, _ := attrs["hit"].(bool)
+			switch key {
+			case "new":
+				if !hit {
+					t.Errorf("read log hit for %s = %v, want true", key, hit)
+				}
+			case "missing":
+				if hit {
+					t.Errorf("read log hit for %s = %v, want false", key, hit)
+				}
+			default:
+				t.Errorf("read log key = %q, want new or missing", key)
+			}
 		case "scratchpad delete":
 			deletes++
+			if key, _ := attrs["key"].(string); key != "new" {
+				t.Errorf("delete log key = %q, want new", key)
+			}
+		case "scratchpad eviction":
+			evictions++
+			if key, _ := attrs["key"].(string); key != "old" {
+				t.Errorf("eviction log key = %q, want old", key)
+			}
 		}
 	}
 	if writes != 2 {
@@ -2000,5 +2050,8 @@ func TestScratchpadDebugLogs(t *testing.T) {
 	}
 	if deletes != 1 {
 		t.Fatalf("got %d scratchpad delete logs, want 1", deletes)
+	}
+	if evictions != 1 {
+		t.Fatalf("got %d scratchpad eviction logs, want 1", evictions)
 	}
 }

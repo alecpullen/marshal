@@ -1022,6 +1022,7 @@ func (s *State) enforceScratchpadBudgetLocked() {
 		if len(s.scratchpad) <= s.scratchpadConfig.MaxEntries && totalTokens <= s.scratchpadConfig.MaxTotalTokens {
 			break
 		}
+		s.Logger().Debug("scratchpad eviction", "key", e.Key)
 		delete(s.scratchpad, e.Key)
 		totalTokens -= contextpack.EstimateTokens(e.Content)
 	}

@@ -11,7 +11,7 @@ type ScratchpadEntry struct {
 	Key       string `json:"key"`
 	Content   string `json:"content"`
 	Format    string `json:"format"`    // "text" | "json" | "table"
-	Updated   int64  `json:"updated"`   // unix timestamp
+	Updated   int64  `json:"updated"`   // unix timestamp in milliseconds
 	SizeBytes int    `json:"size_bytes"`
 }
 
@@ -79,7 +79,7 @@ func NewScratchpadEntry(key, content, format string) ScratchpadEntry {
 		Key:       key,
 		Content:   content,
 		Format:    format,
-		Updated:   time.Now().Unix(),
+		Updated:   time.Now().UnixMilli(),
 		SizeBytes: len(content),
 	}
 }

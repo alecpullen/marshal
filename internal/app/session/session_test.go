@@ -1639,9 +1639,9 @@ func TestScratchpadEvictionByMaxEntries(t *testing.T) {
 	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
 
 	s.SetScratchpadEntry("first", "one", "text")
-	time.Sleep(1 * time.Second)
+	time.Sleep(10 * time.Millisecond)
 	s.SetScratchpadEntry("second", "two", "text")
-	time.Sleep(1 * time.Second)
+	time.Sleep(10 * time.Millisecond)
 	s.SetScratchpadEntry("third", "three", "text")
 
 	entries := s.Scratchpad()
@@ -1671,7 +1671,7 @@ func TestScratchpadEvictionByMaxTotalTokens(t *testing.T) {
 	// Two entries = 12 tokens, exceeding MaxTotalTokens=10, so the oldest is evicted.
 	content := strings.Repeat("x", 24)
 	s.SetScratchpadEntry("first", content, "text")
-	time.Sleep(1 * time.Second)
+	time.Sleep(10 * time.Millisecond)
 	s.SetScratchpadEntry("second", content, "text")
 
 	entries := s.Scratchpad()
@@ -1694,13 +1694,13 @@ func TestScratchpadEvictionOldestFirst(t *testing.T) {
 	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
 
 	s.SetScratchpadEntry("old", "old content", "text")
-	time.Sleep(1 * time.Second)
+	time.Sleep(10 * time.Millisecond)
 	s.SetScratchpadEntry("mid", "mid content", "text")
-	time.Sleep(1 * time.Second)
+	time.Sleep(10 * time.Millisecond)
 	s.SetScratchpadEntry("new", "new content", "text")
 
 	// Update the middle entry so it becomes newest; the originally oldest should still go first.
-	time.Sleep(1 * time.Second)
+	time.Sleep(10 * time.Millisecond)
 	s.SetScratchpadEntry("mid", "mid content updated", "text")
 
 	entries := s.Scratchpad()
@@ -1744,7 +1744,7 @@ func TestScratchpadColdLoadPopulatesMap(t *testing.T) {
 	if err := first.SetScratchpadEntry("a", "alpha", "text"); err != nil {
 		t.Fatalf("set a: %v", err)
 	}
-	time.Sleep(1 * time.Second)
+	time.Sleep(10 * time.Millisecond)
 	if err := first.SetScratchpadEntry("b", "beta", "json"); err != nil {
 		t.Fatalf("set b: %v", err)
 	}
@@ -1794,7 +1794,7 @@ func TestScratchpadPersistenceDeletesEvictedEntries(t *testing.T) {
 	if err := s.SetScratchpadEntry("old", "old content", "text"); err != nil {
 		t.Fatalf("set old: %v", err)
 	}
-	time.Sleep(1 * time.Second)
+	time.Sleep(10 * time.Millisecond)
 	if err := s.SetScratchpadEntry("new", "new content", "text"); err != nil {
 		t.Fatalf("set new: %v", err)
 	}

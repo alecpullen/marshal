@@ -883,6 +883,8 @@ func (s *State) SetScratchpadEntry(key, content, format string) error {
 	entry := db.NewScratchpadEntry(key, content, format)
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	preSnapshot := s.scratchpadSnapshotLocked()
 	s.scratchpad[key] = entry
 	s.enforceScratchpadBudgetLocked()
@@ -892,7 +894,6 @@ func (s *State) SetScratchpadEntry(key, content, format string) error {
 			evictedKeys = append(evictedKeys, e.Key)
 		}
 	}
-	s.mu.Unlock()
 
 	if s.persistenceEnabled() {
 		if err := s.db.SaveScratchpadEntry(s.sessionID, entry); err != nil {

@@ -123,7 +123,7 @@ func (r *Runner) mergeScratchpad(maxTokenOverride int) {
 	}
 	cpEntries := make([]contextpack.ScratchpadEntry, len(entries))
 	for i, e := range entries {
-		cpEntries[i] = contextpack.ScratchpadEntry{Key: e.Key, Content: e.Content, Format: e.Format}
+		cpEntries[i] = contextpack.ScratchpadEntry{Key: e.Key, Content: e.Content, Format: e.Format, Updated: e.Updated}
 	}
 	r.State.SetContextPack(contextpack.MergeScratchpad(current, cpEntries, maxTokens, r.Now))
 }

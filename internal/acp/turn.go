@@ -820,6 +820,133 @@ func (m *TurnManager) Steer(ctx context.Context, params json.RawMessage) (any, e
 	return map[string]any{}, nil
 }
 
+// sessionIDParams is the shared JSON-RPC params body for poll-style status
+// methods that only need a sessionId.
+type sessionIDParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+// SwarmRoleInfo mirrors session.SwarmRole for JSON transport.
+type SwarmRoleInfo struct {
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	Detail    string    `json:"detail,omitempty"`
+	Tokens    int       `json:"tokens"`
+	StartedAt time.Time `json:"startedAt,omitempty"`
+}
+
+// SwarmStatusResult is the JSON-RPC result for session/swarm_status.
+type SwarmStatusResult struct {
+	Goal       string          `json:"goal,omitempty"`
+	Active     bool            `json:"active"`
+	Roles      []SwarmRoleInfo `json:"roles,omitempty"`
+	TokensUsed int             `json:"tokensUsed"`
+	TokensMax  int             `json:"tokensMax"`
+}
+
+// SwarmStatus handles session/swarm_status: a poll-style read of the
+// session's current swarm progress. Always safe to call, including before
+// any run has started (returns the zero value, Active: false).
+func (m *TurnManager) SwarmStatus(ctx context.Context, params json.RawMessage) (any, error) {
+	var p sessionIDParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/swarm_status params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/swarm_status requires sessionId")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.State == nil {
+		return nil, &jsonRPCError{Code: internalError, Message: "session has no state"}
+	}
+	prog := rt.State.SwarmProgress()
+	result := SwarmStatusResult{
+		Goal:       prog.Goal,
+		Active:     prog.Active,
+		TokensUsed: prog.TokensUsed,
+		TokensMax:  prog.TokensMax,
+	}
+	for _, r := range prog.Roles {
+		result.Roles = append(result.Roles, SwarmRoleInfo{
+			Name: r.Name, Status: string(r.Status), Detail: r.Detail,
+			Tokens: r.Tokens, StartedAt: r.StartedAt,
+		})
+	}
+	return result, nil
+}
+
+// SDDStatusResult is the JSON-RPC result for session/sdd_status.
+type SDDStatusResult struct {
+	Active       bool         `json:"active"`
+	PlanName     string       `json:"planName,omitempty"`
+	PlanPath     string       `json:"planPath,omitempty"`
+	Branch       string       `json:"branch,omitempty"`
+	Tasks        []string     `json:"tasks,omitempty"`
+	TotalTasks   int          `json:"totalTasks"`
+	DoneTasks    int          `json:"doneTasks"`
+	CurrentTask  int          `json:"currentTask"`
+	Phase        string       `json:"phase,omitempty"`
+	Detail       string       `json:"detail,omitempty"`
+	FixRound     int          `json:"fixRound"`
+	MaxFixRounds int          `json:"maxFixRounds"`
+	TokensUsed   int          `json:"tokensUsed"`
+	TokensMax    int          `json:"tokensMax"`
+	Finished     bool         `json:"finished"`
+	Succeeded    bool         `json:"succeeded"`
+	Gate         *SDDGateInfo `json:"gate,omitempty"`
+}
+
+// SDDStatus handles session/sdd_status: a poll-style read of the session's
+// current plan-execution progress plus any pending gate. Always safe to
+// call, including before any run has started.
+func (m *TurnManager) SDDStatus(ctx context.Context, params json.RawMessage) (any, error) {
+	var p sessionIDParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/sdd_status params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/sdd_status requires sessionId")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.State == nil {
+		return nil, &jsonRPCError{Code: internalError, Message: "session has no state"}
+	}
+	prog := rt.State.SDDProgress()
+	g := rt.State.SDDGate()
+	result := SDDStatusResult{
+		Active:       prog.Active,
+		PlanName:     prog.PlanName,
+		PlanPath:     prog.PlanPath,
+		Branch:       prog.Branch,
+		Tasks:        prog.Tasks,
+		TotalTasks:   prog.TotalTasks,
+		DoneTasks:    prog.DoneTasks,
+		CurrentTask:  prog.CurrentTask,
+		Phase:        prog.Phase,
+		Detail:       prog.Detail,
+		FixRound:     prog.FixRound,
+		MaxFixRounds: prog.MaxFixRounds,
+		TokensUsed:   prog.TokensUsed,
+		TokensMax:    prog.TokensMax,
+		Finished:     prog.Finished,
+		Succeeded:    prog.Succeeded,
+	}
+	if g.Question != "" {
+		result.Gate = &SDDGateInfo{TaskN: g.TaskN, Question: g.Question}
+	}
+	return result, nil
+}
+
 // Cancel is the notification handler for session/cancel. It marks the
 // active turn for the named session as client-cancelled, cancels its
 // context, and returns immediately without waiting for the runner.

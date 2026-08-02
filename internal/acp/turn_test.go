@@ -1964,6 +1964,96 @@ func TestSDDAnswerRejectsEmptyAnswer(t *testing.T) {
 	}
 }
 
+func TestSwarmStatusReflectsSessionState(t *testing.T) {
+	state := &session.State{}
+	state.SetSwarmProgress(session.SwarmProgress{
+		Goal:   "ship it",
+		Active: true,
+		Roles: []session.SwarmRole{
+			{Name: "planner", Status: session.SwarmRoleActive, Detail: "thinking", Tokens: 120},
+		},
+		TokensUsed: 120,
+		TokensMax:  4000,
+	})
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, State: state}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	raw, _ := json.Marshal(map[string]any{"sessionId": "sess_1"})
+	res, err := manager.SwarmStatus(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SwarmStatus: %v", err)
+	}
+	result := res.(SwarmStatusResult)
+	if !result.Active || result.Goal != "ship it" || result.TokensUsed != 120 {
+		t.Fatalf("SwarmStatus = %+v, unexpected", result)
+	}
+	if len(result.Roles) != 1 || result.Roles[0].Status != "active" || result.Roles[0].Detail != "thinking" {
+		t.Fatalf("SwarmStatus.Roles = %+v, unexpected", result.Roles)
+	}
+}
+
+func TestSwarmStatusRequiresSessionID(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.SwarmStatus(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("SwarmStatus with no sessionId: got nil error, want an error")
+	}
+}
+
+func TestSDDStatusReflectsSessionStateAndGate(t *testing.T) {
+	state := &session.State{}
+	state.SetSDDProgress(session.SDDProgress{
+		Active: true, PlanName: "my-plan", TotalTasks: 3, DoneTasks: 1, Phase: "implement",
+	})
+	state.SetSDDGate(session.SDDGate{TaskN: 2, Question: "which approach?"})
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, State: state}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	raw, _ := json.Marshal(map[string]any{"sessionId": "sess_1"})
+	res, err := manager.SDDStatus(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SDDStatus: %v", err)
+	}
+	result := res.(SDDStatusResult)
+	if !result.Active || result.PlanName != "my-plan" || result.TotalTasks != 3 || result.DoneTasks != 1 {
+		t.Fatalf("SDDStatus = %+v, unexpected", result)
+	}
+	if result.Gate == nil || result.Gate.TaskN != 2 || result.Gate.Question != "which approach?" {
+		t.Fatalf("SDDStatus.Gate = %+v, unexpected", result.Gate)
+	}
+}
+
+func TestSDDStatusOmitsGateWhenNoneIsPending(t *testing.T) {
+	state := &session.State{}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, State: state}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(map[string]any{"sessionId": "sess_1"})
+	res, err := manager.SDDStatus(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("SDDStatus: %v", err)
+	}
+	if res.(SDDStatusResult).Gate != nil {
+		t.Fatalf("SDDStatus.Gate = %+v, want nil", res.(SDDStatusResult).Gate)
+	}
+}
+
 func TestSDDStartRejectsWhenFactoryReturnsNil(t *testing.T) {
 	manager := NewTurnManager(TurnManagerConfig{
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {

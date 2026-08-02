@@ -566,3 +566,32 @@ func TestMergeScratchpadTruncatesLongPreview(t *testing.T) {
 		}
 	}
 }
+
+func TestNewScratchpadSectionIncludesAge(t *testing.T) {
+	now := time.Now()
+	entries := []ScratchpadEntry{
+		{Key: "audit", Content: "results", Format: "json", Updated: now.Add(-5 * time.Minute).UnixMilli()},
+	}
+	sec, ok := newScratchpadSection(entries, 1000, now)
+	if !ok {
+		t.Fatal("expected section")
+	}
+	if !strings.Contains(sec.Content, "5m ago") {
+		t.Fatalf("expected relative age in content, got:\n%s", sec.Content)
+	}
+}
+
+func TestNewScratchpadSectionTruncatesProjection(t *testing.T) {
+	now := time.Now()
+	entries := []ScratchpadEntry{
+		{Key: "a", Content: "long content here", Format: "text", Updated: now.UnixMilli()},
+		{Key: "b", Content: "more long content", Format: "text", Updated: now.UnixMilli()},
+	}
+	sec, ok := newScratchpadSection(entries, 30, now)
+	if !ok {
+		t.Fatal("expected section")
+	}
+	if !strings.Contains(sec.Content, "...") {
+		t.Fatalf("expected truncation indicator, got:\n%s", sec.Content)
+	}
+}

@@ -237,30 +237,38 @@ func newSemanticSection(snippets []FileSnippet) (Section, bool) {
 	}, true
 }
 
-// newScratchpadSection builds a projection section from scratchpad
-// entries. Each entry is rendered as a single line showing the key,
-// format, estimated token count, and a one-line preview of the content
-// (truncated to 120 chars). This keeps the projection compact so it
-// stays within the context budget while giving the agent enough
-// information to decide whether to call scratchpad.read for full content.
-func newScratchpadSection(entries []ScratchpadEntry) (Section, bool) {
+func newScratchpadSection(entries []ScratchpadEntry, projectionMaxTokens int, now time.Time) (Section, bool) {
 	if len(entries) == 0 {
 		return Section{}, false
 	}
-	var lines []string
+
+	const header = "Keys parked in working memory (use scratchpad.read for full content):"
+	lines := []string{header}
+	used := EstimateTokens(header)
+
 	for _, e := range entries {
 		preview := strings.ReplaceAll(e.Content, "\n", " ")
 		preview = strings.TrimSpace(preview)
-		if len(preview) > 120 {
-			preview = preview[:120] + "..."
+		if len(preview) > 80 {
+			preview = preview[:80] + "..."
 		}
 		tokens := EstimateTokens(e.Content)
 		format := e.Format
 		if format == "" {
 			format = "text"
 		}
-		lines = append(lines, fmt.Sprintf("%s (%s, ~%d tokens): %s", e.Key, format, tokens, preview))
+		age := formatAge(e.Updated, now)
+		line := fmt.Sprintf("- %s (%s, ~%d tokens, %s): %s", e.Key, format, tokens, age, preview)
+		lineTokens := EstimateTokens(line)
+
+		if used+lineTokens > projectionMaxTokens && len(lines) > 1 {
+			lines = append(lines, "...")
+			break
+		}
+		lines = append(lines, line)
+		used += lineTokens
 	}
+
 	return Section{
 		Kind:     SectionScratchpad,
 		Title:    "Scratchpad",
@@ -269,13 +277,30 @@ func newScratchpadSection(entries []ScratchpadEntry) (Section, bool) {
 	}, true
 }
 
+func formatAge(updated int64, now time.Time) string {
+	if updated <= 0 {
+		return "unknown age"
+	}
+	d := now.Sub(time.UnixMilli(updated))
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
 // MergeScratchpad replaces any existing scratchpad section with a
 // projection built from entries, inserted before file-snippet/tool-output
 // sections, then rebudgets within maxTokens. Empty entries removes the
 // section.
 func MergeScratchpad(pack Pack, entries []ScratchpadEntry, maxTokens int, now func() time.Time) Pack {
 	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
-	sec, ok := newScratchpadSection(entries)
+	sec, ok := newScratchpadSection(entries, pack.TokenUsage.MaxTokens/8, generatedAt)
 	sections := replaceSection(pack.Sections, SectionScratchpad, sec, ok, SectionFileSnippet, SectionToolOutput)
 	return buildPackFromSections(sections, maxTokens, generatedAt)
 }

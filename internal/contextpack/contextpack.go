@@ -61,6 +61,7 @@ type ScratchpadEntry struct {
 	Key     string
 	Content string
 	Format  string
+	Updated int64 // unix timestamp in milliseconds
 }
 
 func (p Pack) IsEmpty() bool {

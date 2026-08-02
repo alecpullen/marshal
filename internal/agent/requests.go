@@ -47,7 +47,7 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 	label := fmt.Sprintf("waiting for approval: %s", command)
 	r.State.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: label, StartedAt: r.Now()})
 
-	timeout := r.effectiveRequestTimeout()
+	timeout := r.effectiveApprovalTimeout()
 	select {
 	case decision := <-tc.ResponseChan:
 		r.State.SetPendingApproval(nil)
@@ -108,13 +108,13 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 	}
 }
 
-// effectiveRequestTimeout returns the request timeout to use, falling back
-// to a sensible default if r.RequestTimeout is zero.
-func (r *Runner) effectiveRequestTimeout() time.Duration {
-	if r.RequestTimeout > 0 {
-		return r.RequestTimeout
+// effectiveApprovalTimeout returns the approval-wait timeout to use, falling
+// back to a sensible default if r.ApprovalTimeout is zero.
+func (r *Runner) effectiveApprovalTimeout() time.Duration {
+	if r.ApprovalTimeout > 0 {
+		return r.ApprovalTimeout
 	}
-	return defaultRequestTimeout
+	return defaultApprovalTimeout
 }
 
 // buildQuestionLabel returns a human-readable activity label that includes a

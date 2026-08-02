@@ -81,12 +81,22 @@ func isRetryableChatError(err error) bool {
 	return true
 }
 
-func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
-	if r.RequestTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, r.RequestTimeout)
-		defer cancel()
+// effectiveChatTimeout returns the per-request timeout for the model call
+// itself, falling back to a sensible default if r.ChatTimeout is zero. This
+// is deliberately independent of ApprovalTimeout: a runner configured with a
+// short approval-wait ceiling (e.g. for SDD/swarm subagents) must not have
+// that same ceiling silently truncate a slow-but-working chat completion.
+func (r *Runner) effectiveChatTimeout() time.Duration {
+	if r.ChatTimeout > 0 {
+		return r.ChatTimeout
 	}
+	return defaultChatTimeout
+}
+
+func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, r.effectiveChatTimeout())
+	defer cancel()
 
 	var tools []schema.ToolDefinition
 	if r.NativeTools {

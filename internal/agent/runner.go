@@ -47,12 +47,18 @@ var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations w
 var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
 
 // ErrRequestTimedOut is returned by requestApproval when the TUI (or bridge
-// channel) does not respond within RequestTimeout. It prevents a goroutine
+// channel) does not respond within ApprovalTimeout. It prevents a goroutine
 // leak when the TUI exits without sending a decision. requestQuestions has
 // no such timeout — see its doc comment.
 var ErrRequestTimedOut = errors.New("agent: request timed out")
 
-const defaultRequestTimeout = 5 * time.Minute
+// defaultApprovalTimeout is the fallback used when ApprovalTimeout is unset.
+const defaultApprovalTimeout = 5 * time.Minute
+
+// defaultChatTimeout is the fallback used when ChatTimeout is unset —
+// notably by the ad-hoc agent.run subagent path, which never sets either
+// timeout field explicitly.
+const defaultChatTimeout = 5 * time.Minute
 
 // isLengthFinish reports whether the provider cut the response off at the
 // output-token limit ("length" for OpenAI-compatible providers, "max_tokens"
@@ -156,8 +162,8 @@ type MemoryProvider interface {
 //   - A *Runner IS safe for sequential re-use: after one RunTask returns,
 //     the next call starts from a clean per-turn state. Fields that persist
 //     across calls (Provider, Registry, Policy, State, Model, RouteResolver,
-//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, RequestTimeout,
-//     ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
+//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, ApprovalTimeout,
+//     ChatTimeout, ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
 //     ForceClass, SkillIndex, Role, WriteGate, UsageObserver,
 //     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleGenerator,
 //     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID,
@@ -190,13 +196,21 @@ type Runner struct {
 	MaxToolIterations    int
 	MaxRetries           int
 	MaxTurnContextTokens int
-	RequestTimeout       time.Duration
-	ResponseFormat       *schema.ResponseFormat
-	NativeTools          bool
-	MaxParallelActions   int
-	MaxToolResultChars   int
-	ForceClass           string // if set, overrides Classify() in Run()
-	SkillIndex           *skills.Index
+	// ApprovalTimeout bounds requestApproval's wait for a TUI decision. It
+	// has no bearing on model chat calls — see ChatTimeout.
+	ApprovalTimeout time.Duration
+	// ChatTimeout bounds chatOnce's per-request context deadline for the
+	// model call itself. It is deliberately separate from ApprovalTimeout:
+	// a short approval-wait ceiling (e.g. 60s, appropriate for a human
+	// glancing at a prompt) must never cut off a slower-but-working
+	// completion from a large-context cloud model.
+	ChatTimeout        time.Duration
+	ResponseFormat     *schema.ResponseFormat
+	NativeTools        bool
+	MaxParallelActions int
+	MaxToolResultChars int
+	ForceClass         string // if set, overrides Classify() in Run()
+	SkillIndex         *skills.Index
 
 	// Pricing holds the resolved per-token-category rates for the active
 	// model, used by emitMetrics to compute EstimatedCostCents. Set by
@@ -367,7 +381,8 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.MaxToolIterations = other.MaxToolIterations
 	r.MaxRetries = other.MaxRetries
 	r.MaxTurnContextTokens = other.MaxTurnContextTokens
-	r.RequestTimeout = other.RequestTimeout
+	r.ApprovalTimeout = other.ApprovalTimeout
+	r.ChatTimeout = other.ChatTimeout
 	r.ResponseFormat = other.ResponseFormat
 	r.NativeTools = other.NativeTools
 	r.MaxParallelActions = other.MaxParallelActions

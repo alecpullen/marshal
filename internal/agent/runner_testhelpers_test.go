@@ -78,6 +78,35 @@ func (p *blockingProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	return events, nil
 }
 
+// delayedProvider succeeds after a fixed delay, or errors if ctx is
+// cancelled first. Used to prove chatOnce's timeout is governed by
+// ChatTimeout, independent of ApprovalTimeout.
+type delayedProvider struct {
+	delay time.Duration
+}
+
+func (p *delayedProvider) Name() string { return "delayed" }
+
+func (p *delayedProvider) Models(ctx context.Context) ([]schema.ModelInfo, error) { return nil, nil }
+
+func (p *delayedProvider) Capabilities(ctx context.Context) schema.ProviderCapabilities {
+	return schema.ProviderCapabilities{}
+}
+
+func (p *delayedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	events := make(chan schema.ChatEvent, 1)
+	go func() {
+		defer close(events)
+		select {
+		case <-time.After(p.delay):
+			events <- schema.ChatEvent{Type: schema.ChatEventDone, FinishReason: "stop"}
+		case <-ctx.Done():
+			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: ctx.Err()}
+		}
+	}()
+	return events, nil
+}
+
 // recordingGate records how many times Acquire() is called.
 type recordingGate struct {
 	mu           sync.Mutex

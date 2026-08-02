@@ -619,7 +619,7 @@ func TestChatOnceTimesOutPerRequest(t *testing.T) {
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	runner := NewRunner(&blockingProvider{}, reg, pol, state, "test-model")
-	runner.RequestTimeout = 50 * time.Millisecond
+	runner.ChatTimeout = 50 * time.Millisecond
 
 	start := time.Now()
 	_, err := runner.chatOnce(context.Background(), &blockingProvider{}, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)
@@ -630,6 +630,40 @@ func TestChatOnceTimesOutPerRequest(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("chatOnce took too long to time out: %v", elapsed)
+	}
+}
+
+// TestChatOnceNotBoundByApprovalTimeout is the regression test for the
+// timeout conflation bug: a short ApprovalTimeout (the TUI approval/question
+// wait ceiling) must not cut off a slower-but-working chat completion.
+// ChatTimeout is the only field that should bound chatOnce.
+func TestChatOnceNotBoundByApprovalTimeout(t *testing.T) {
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	prov := &delayedProvider{delay: 100 * time.Millisecond}
+	runner := NewRunner(prov, reg, pol, state, "test-model")
+	runner.ApprovalTimeout = 10 * time.Millisecond
+	runner.ChatTimeout = 500 * time.Millisecond
+
+	_, err := runner.chatOnce(context.Background(), prov, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)
+	if err != nil {
+		t.Fatalf("chatOnce err = %v, want success despite tiny ApprovalTimeout", err)
+	}
+}
+
+// TestChatOnceDefaultsChatTimeoutWhenUnset covers the ad-hoc subagent path
+// (internal/app/app.go's agent.run child runner), which never sets a timeout
+// at all. chatOnce must still apply a bounded default rather than blocking
+// forever on a stuck connection.
+func TestChatOnceDefaultsChatTimeoutWhenUnset(t *testing.T) {
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	state := newTestState(t)
+	runner := NewRunner(&blockingProvider{}, reg, pol, state, "test-model")
+
+	if got := runner.effectiveChatTimeout(); got <= 0 {
+		t.Fatalf("effectiveChatTimeout() = %v, want a positive default when ChatTimeout is unset", got)
 	}
 }
 

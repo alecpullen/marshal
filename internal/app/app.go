@@ -104,10 +104,12 @@ type Option func(*options)
 var (
 	shutdownKnowledgeTimeout = 5 * time.Second
 
-	// agentRequestTimeout is the ceiling for approval/question requests on
-	// interactive, swarm, and SDD runners. (agent.Runner's own 5-minute
-	// default covers ad-hoc subagent runners.)
-	agentRequestTimeout = 60 * time.Second
+	// agentApprovalTimeout is the ceiling for approval/question requests on
+	// interactive, swarm, and SDD runners. It bounds only the TUI wait, not
+	// the model chat call itself — see agent.Runner.ChatTimeout, which is
+	// left unset here so those runners get agent.Runner's own longer
+	// default, appropriate for large-context cloud models.
+	agentApprovalTimeout = 60 * time.Second
 )
 
 func WithNow(now func() time.Time) Option {
@@ -625,8 +627,8 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		runner.MaxTurnContextTokens = cfg.Agent.MaxTurnContextTokens
 	}
 	runner.PlanFirst = cfg.Agent.PlanFirst
-	if runner.RequestTimeout == 0 {
-		runner.RequestTimeout = agentRequestTimeout
+	if runner.ApprovalTimeout == 0 {
+		runner.ApprovalTimeout = agentApprovalTimeout
 	}
 
 	// T17: wire rollover controller into the runner when enabled.
@@ -775,7 +777,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	r.MemoryProvider = s.memory
 	r.ProjectID = s.projectID
 	r.MetricsObserver = s.metricsObserver
-	r.RequestTimeout = agentRequestTimeout
+	r.ApprovalTimeout = agentApprovalTimeout
 	// Role prompts embed the shared plan, so skip the per-turn
 	// classify/plan pass (class "question" bypasses planning).
 	r.SetForceClass("question")

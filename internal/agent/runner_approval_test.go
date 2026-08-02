@@ -120,7 +120,7 @@ func TestNativeQuestionAskCountsAgainstIterationBudget(t *testing.T) {
 func TestRequestApprovalTimeout(t *testing.T) {
 	state := newTestState(t)
 	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	r.RequestTimeout = 10 * time.Millisecond
+	r.ApprovalTimeout = 10 * time.Millisecond
 
 	ctx := context.Background()
 	// Tool that will never get a response — the channel has a buffer of 1 but
@@ -137,9 +137,9 @@ func TestRequestApprovalTimeout(t *testing.T) {
 func TestRequestQuestionsWaitsForAnswer(t *testing.T) {
 	state := newTestState(t)
 	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	// Even with a tiny legacy RequestTimeout, questions must wait for the
+	// Even with a tiny ApprovalTimeout, questions must wait for the
 	// user — a person reading a question is not a hung request.
-	r.RequestTimeout = 10 * time.Millisecond
+	r.ApprovalTimeout = 10 * time.Millisecond
 
 	type result struct {
 		answers []session.Answer

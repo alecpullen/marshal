@@ -48,7 +48,7 @@ func TestParallelReadOnlyApprovalsAreSerialized(t *testing.T) {
 	})
 
 	r := NewRunner(nil, reg, pol, state, "test-model")
-	r.RequestTimeout = 200 * time.Millisecond // fail fast if an approval is lost
+	r.ApprovalTimeout = 200 * time.Millisecond // fail fast if an approval is lost
 
 	// Answer every pending approval as it appears. We track the last tool we
 	// answered so a stale read of the same PendingToolCall does not count as a

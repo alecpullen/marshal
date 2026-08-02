@@ -38,8 +38,8 @@ type Info struct {
 }
 
 type cachedInfo struct {
-	info      Info
-	cachedAt  time.Time
+	info     Info
+	cachedAt time.Time
 }
 
 var cache sync.Map // workingDir (string) -> cachedInfo

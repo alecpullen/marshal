@@ -272,5 +272,5 @@ type configFile struct {
 	CustomAgents map[string]routing.CustomAgent       `toml:"custom_agents"`
 	Agents       map[routing.AgentRole]fileAgentEntry `toml:"agents"`
 	LSP          *fileLSP                             `toml:"lsp"`
-	Scratchpad   *fileScratchpad                       `toml:"scratchpad"`
+	Scratchpad   *fileScratchpad                      `toml:"scratchpad"`
 }

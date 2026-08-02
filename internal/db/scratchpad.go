@@ -10,8 +10,8 @@ import (
 type ScratchpadEntry struct {
 	Key       string `json:"key"`
 	Content   string `json:"content"`
-	Format    string `json:"format"`    // "text" | "json" | "table"
-	Updated   int64  `json:"updated"`   // unix timestamp in milliseconds
+	Format    string `json:"format"`  // "text" | "json" | "table"
+	Updated   int64  `json:"updated"` // unix timestamp in milliseconds
 	SizeBytes int    `json:"size_bytes"`
 }
 

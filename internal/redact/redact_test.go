@@ -31,9 +31,9 @@ func TestSecretsLeavesNormalText(t *testing.T) {
 
 func TestSecretsMasksGenericSecretKeyNames(t *testing.T) {
 	cases := []struct {
-		name    string
-		input   string
-		secret  string
+		name   string
+		input  string
+		secret string
 	}{
 		{"DB_PASSWORD", "DB_PASSWORD=hunter2", "hunter2"},
 		{"API_KEY suffix", "MY_API_KEY=sk-proj-1234567890abcdef", "sk-proj-1234567890abcdef"},

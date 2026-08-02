@@ -71,7 +71,7 @@ func TestPolicyEngine_Evaluate_AllowConfirmDenyRules(t *testing.T) {
 		{"go test-helper", DecisionConfirm}, // Exact-match only; "go test" does not match
 		{"git status", DecisionAllow},
 		{"go get github.com/stretchr/testify", DecisionConfirm}, // No exact match for "go get"
-		{"npm install --save-dev jest", DecisionConfirm},          // No exact match for "npm install"
+		{"npm install --save-dev jest", DecisionConfirm},        // No exact match for "npm install"
 		{"some destructive command", DecisionDeny},
 		{"kill -9 1234", DecisionDeny},
 		{"docker ps", DecisionConfirm}, // Default fallback (requires confirmation)

@@ -37,7 +37,9 @@ func TestAgentRunRejectedFromParallelReadOnlyBatch(t *testing.T) {
 		Description: "delegate",
 		Schema:      json.RawMessage(`{"type":"object"}`),
 		Risk:        registry.RiskWorkspaceWrite,
-		Handler:     func(_ context.Context, _ registry.ToolCall) (registry.ToolResult, error) { return registry.ToolResult{}, nil },
+		Handler: func(_ context.Context, _ registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{}, nil
+		},
 	}); err != nil {
 		t.Fatalf("register agent.run: %v", err)
 	}
@@ -46,7 +48,9 @@ func TestAgentRunRejectedFromParallelReadOnlyBatch(t *testing.T) {
 		Description: "read",
 		Schema:      json.RawMessage(`{"type":"object"}`),
 		Risk:        registry.RiskReadOnly,
-		Handler:     func(_ context.Context, _ registry.ToolCall) (registry.ToolResult, error) { return registry.ToolResult{}, nil },
+		Handler: func(_ context.Context, _ registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{}, nil
+		},
 	}); err != nil {
 		t.Fatalf("register file.read: %v", err)
 	}

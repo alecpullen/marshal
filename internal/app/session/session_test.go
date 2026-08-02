@@ -1944,7 +1944,7 @@ func (h *testLogHandler) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 func (h *testLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
-func (h *testLogHandler) WithGroup(name string) slog.Handler        { return h }
+func (h *testLogHandler) WithGroup(name string) slog.Handler       { return h }
 
 // recordAttrs collects a slog.Record's attributes into a map.
 func recordAttrs(r slog.Record) map[string]any {

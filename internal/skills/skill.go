@@ -74,7 +74,7 @@ func parseFrontmatter(raw string) (Skill, error) {
 
 	const (
 		tomlDelimiter = "+++\n"
-		yamlDelimiter  = "---\n"
+		yamlDelimiter = "---\n"
 	)
 
 	switch {

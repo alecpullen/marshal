@@ -291,11 +291,8 @@ func buildSystemPrompt(role AgentRole, tools []registry.Tool, deferredTools []re
 			break
 		}
 	}
-	for _, tool := range tools {
-		if tool.Name == "scratchpad.write" {
-			b.WriteString(scratchpadAddendum)
-			break
-		}
+	if nativeTools {
+		b.WriteString(scratchpadAddendum)
 	}
 	if d := modeDirective(mode); d != "" {
 		b.WriteString("\n\n")

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
@@ -45,11 +46,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"references":         registry.RiskReadOnly,
 		"definition":         registry.RiskReadOnly,
 		"hover":              registry.RiskReadOnly,
-		"workspace.worktree":     registry.RiskWorkspaceWrite,
-		"scratchpad.write":       registry.RiskWorkspaceWrite,
-		"scratchpad.read":        registry.RiskReadOnly,
-		"scratchpad.list":        registry.RiskReadOnly,
-		"scratchpad.delete":      registry.RiskWorkspaceWrite,
+		"workspace.worktree": registry.RiskWorkspaceWrite,
 	}
 	if got := reg.List(); len(got) != len(want) {
 		t.Fatalf("len(List()) = %d, want %d", len(got), len(want))
@@ -67,6 +64,31 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		}
 		if len(tool.Schema) == 0 {
 			t.Fatalf("%s Schema is empty", name)
+		}
+	}
+}
+
+func TestRegisterAllOmitsScratchpadWithoutSessionState(t *testing.T) {
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range []string{"scratchpad.write", "scratchpad.read", "scratchpad.list", "scratchpad.delete"} {
+		if _, ok := reg.Lookup(name); ok {
+			t.Fatalf("expected %s to be omitted when SessionState is nil", name)
+		}
+	}
+}
+
+func TestRegisterAllIncludesScratchpadWithSessionState(t *testing.T) {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, SessionState: state}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range []string{"scratchpad.write", "scratchpad.read", "scratchpad.list", "scratchpad.delete"} {
+		if _, ok := reg.Lookup(name); !ok {
+			t.Fatalf("expected %s to be registered when SessionState is set", name)
 		}
 	}
 }

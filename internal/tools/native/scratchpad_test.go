@@ -191,6 +191,20 @@ func TestScratchpadWriteRejectsEmptyKey(t *testing.T) {
 	}
 }
 
+func TestScratchpadWriteRejectsNilSessionState(t *testing.T) {
+	tools := &toolSet{sessionState: nil}
+
+	writeTool := tools.scratchpadWriteTool()
+	args, _ := json.Marshal(map[string]any{"key": "k", "content": "data", "format": "text"})
+	_, err := writeTool.Handler(context.Background(), registry.ToolCall{Args: args})
+	if err == nil {
+		t.Fatal("expected error when session state is nil")
+	}
+	if !strings.Contains(err.Error(), "scratchpad store not available") {
+		t.Fatalf("error = %v, want scratchpad store not available", err)
+	}
+}
+
 func TestScratchpadWriteRejectsEmptyContent(t *testing.T) {
 	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
 	tools := &toolSet{sessionState: state}

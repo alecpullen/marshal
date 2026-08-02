@@ -177,10 +177,6 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.repoCardTool(),
 		tools.symbolsFindTool(),
 		tools.todoWriteTool(),
-		tools.scratchpadWriteTool(),
-		tools.scratchpadReadTool(),
-		tools.scratchpadListTool(),
-		tools.scratchpadDeleteTool(),
 		tools.jobOutputTool(),
 		tools.jobKillTool(),
 		tools.jobListTool(),
@@ -196,6 +192,14 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.definitionTool(),
 		tools.hoverTool(),
 		tools.workspaceWorktreeTool(),
+	}
+	if tools.sessionState != nil {
+		all = append(all,
+			tools.scratchpadWriteTool(),
+			tools.scratchpadReadTool(),
+			tools.scratchpadListTool(),
+			tools.scratchpadDeleteTool(),
+		)
 	}
 	if recallToolEnabled(tools.config.Session.Rollover) {
 		all = append(all, tools.recallHistoryTool())

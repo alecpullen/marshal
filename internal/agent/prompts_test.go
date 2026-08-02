@@ -561,6 +561,20 @@ func TestBuildSystemPromptWithModeDefaultAdvertisesModeRequest(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptIncludesScratchpadAddendumForNativeTools(t *testing.T) {
+	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, true, policy.ModeAuto, "")
+	if !strings.Contains(prompt.Content, "scratchpad.write") {
+		t.Fatal("expected scratchpad addendum when nativeTools is true")
+	}
+}
+
+func TestBuildSystemPromptOmitsScratchpadAddendumForJSONTools(t *testing.T) {
+	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, false, policy.ModeAuto, "")
+	if strings.Contains(prompt.Content, "scratchpad.write") {
+		t.Fatal("expected no scratchpad addendum when nativeTools is false")
+	}
+}
+
 func TestBuildSystemPromptWithAddendum(t *testing.T) {
 	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "Be extra careful with diffs.")
 	if !strings.Contains(msg.Content, "Be extra careful with diffs.") {

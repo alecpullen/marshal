@@ -1877,6 +1877,93 @@ func TestSDDStartRejectsWhenPipelineUnavailable(t *testing.T) {
 	}
 }
 
+func TestSDDAnswerResumesGatedRunAndReachesEndTurn(t *testing.T) {
+	state := &session.State{}
+	state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "pick one"})
+
+	callCount := 0
+	var gotAnswer string
+	runner := &fakeAgentRunner{
+		run: func(ctx context.Context, goal string) error {
+			callCount++
+			if callCount == 1 {
+				return pipeline.ErrHumanGateRequired
+			}
+			state.ClearSDDGate()
+			return nil
+		},
+		answerGate: func(answer string) { gotAnswer = answer },
+	}
+	factory := func(planPath string) AgentRunner { return runner }
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID:       sessionID,
+				BeginWork:       identityBeginWork,
+				Events:          pubsub.NewBroker[session.Event](),
+				State:           state,
+				PipelineFactory: factory,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	startRaw, _ := json.Marshal(SDDStartParams{SessionID: "sess_1", PlanPath: "docs/plan.md"})
+	startRes, err := manager.SDDStart(context.Background(), startRaw)
+	if err != nil {
+		t.Fatalf("SDDStart: %v", err)
+	}
+	if startRes.(SDDTurnResult).StopReason != "gate" {
+		t.Fatalf("SDDStart StopReason = %q, want %q", startRes.(SDDTurnResult).StopReason, "gate")
+	}
+
+	answerRaw, _ := json.Marshal(SDDAnswerParams{SessionID: "sess_1", Answer: "option b"})
+	answerRes, err := manager.SDDAnswer(context.Background(), answerRaw)
+	if err != nil {
+		t.Fatalf("SDDAnswer: %v", err)
+	}
+	result, ok := answerRes.(SDDTurnResult)
+	if !ok {
+		t.Fatalf("SDDAnswer result type = %T, want SDDTurnResult", answerRes)
+	}
+	if result.StopReason != "end_turn" {
+		t.Errorf("SDDAnswer StopReason = %q, want %q", result.StopReason, "end_turn")
+	}
+	if gotAnswer != "option b" {
+		t.Errorf("AnswerGate received = %q, want %q", gotAnswer, "option b")
+	}
+	if callCount != 2 {
+		t.Errorf("runner.Run called %d times, want 2", callCount)
+	}
+}
+
+func TestSDDAnswerRejectsWhenNoRunIsGated(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SDDAnswerParams{SessionID: "sess_never_started", Answer: "x"})
+	_, err := manager.SDDAnswer(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SDDAnswer with no gated run: got nil error, want an error")
+	}
+}
+
+func TestSDDAnswerRejectsEmptyAnswer(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	raw, _ := json.Marshal(SDDAnswerParams{SessionID: "sess_1", Answer: " "})
+	_, err := manager.SDDAnswer(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SDDAnswer with blank answer: got nil error, want an error")
+	}
+}
+
 func TestSDDStartRejectsWhenFactoryReturnsNil(t *testing.T) {
 	manager := NewTurnManager(TurnManagerConfig{
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {

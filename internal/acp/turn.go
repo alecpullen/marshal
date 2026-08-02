@@ -650,6 +650,47 @@ func (m *TurnManager) finishSDDResult(sessionID string, rt *TurnRuntime, res any
 	return result, nil
 }
 
+// SDDAnswerParams is the JSON-RPC body for session/sdd_answer.
+type SDDAnswerParams struct {
+	SessionID string `json:"sessionId"`
+	Answer    string `json:"answer"`
+}
+
+// SDDAnswer handles session/sdd_answer: it resolves a pending human gate
+// raised by SDDStart (or a previous SDDAnswer) and resumes the same
+// runner instance on the same plan path, re-entering runTurn — this
+// re-reserves the active-turn slot for the duration of the resumed run.
+func (m *TurnManager) SDDAnswer(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SDDAnswerParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/sdd_answer params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/sdd_answer requires sessionId")
+	}
+	if strings.TrimSpace(p.Answer) == "" {
+		return nil, invalidParamsError("session/sdd_answer requires a non-empty answer")
+	}
+
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+
+	m.pipelineRunnersMu.Lock()
+	run, exists := m.pipelineRunners[p.SessionID]
+	m.pipelineRunnersMu.Unlock()
+	if !exists {
+		return nil, serverErrorf("session %s has no plan-execution run waiting on an answer", p.SessionID)
+	}
+
+	run.runner.AnswerGate(p.Answer)
+	res, err := m.runTurn(ctx, p.SessionID, rt, RunnerFunc(run.runner.Run), run.planPath, sddResultOf)
+	return m.finishSDDResult(p.SessionID, rt, res, err)
+}
+
 // SDDStart handles session/sdd_start. Like session/prompt, this call is
 // synchronous. When the underlying controller raises a human gate, the
 // call still returns successfully with StopReason "gate" and the pending

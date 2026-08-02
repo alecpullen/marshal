@@ -146,6 +146,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					return nil
 				},
 				Steer: rt.State.PushSteering,
+				State: rt.State,
 			}, true
 		},
 		Notify:    srv.Notify,

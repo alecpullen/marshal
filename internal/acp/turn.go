@@ -43,6 +43,11 @@ type TurnRuntime struct {
 	// Steer enqueues a mid-turn steering message, consumed by the runner
 	// at its next loop-top. Nil means the runtime does not support steering.
 	Steer func(text string)
+	// State is the session's shared state, needed for reading swarm/SDD
+	// progress and gate status. Never nil for a runtime built by
+	// SessionManager; tests may still construct a TurnRuntime with a nil
+	// State when they don't exercise a path that reads it.
+	State *session.State
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -242,11 +247,7 @@ func (m *TurnManager) HasActiveTurn(sessionID string) bool {
 }
 
 // PromptTurn drives a single agent turn for the named session. It looks
-// up the runtime, normalises the prompt, reserves the per-session slot,
-// registers runtime work, subscribes to the event broker with terminal
-// delivery, starts the runner in a goroutine, forwards session events
-// as session/update notifications, and returns PromptTurnResult on
-// success.
+// up the runtime, normalises the prompt, and delegates to runTurn.
 //
 // If a turn is already running for the same session, the duplicate is
 // rejected with a serverError (-32000) and the first turn is unaffected.
@@ -272,6 +273,27 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
 	}
 
+	return m.runTurn(ctx, p.SessionID, rt, rt.Run, prompt, resultOrError)
+}
+
+// runTurn reserves the per-session active-turn slot, runs run(turnCtx, arg)
+// to completion while forwarding session events as session/update
+// notifications, and resolves the result via resultOf once run finishes
+// (or the turn is cancelled). Shared by PromptTurn, SwarmStart, SDDStart,
+// and SDDAnswer — the only things that differ between them are which
+// RunnerFunc executes, what argument it receives, and how a terminal error
+// maps to a wire result.
+//
+// If a turn is already running for sessionID, the duplicate is rejected
+// with a serverError (-32000) and the first turn is unaffected.
+func (m *TurnManager) runTurn(
+	ctx context.Context,
+	sessionID string,
+	rt *TurnRuntime,
+	run RunnerFunc,
+	arg string,
+	resultOf func(runErr error, slot *activeTurn) (any, error),
+) (any, error) {
 	// Create a slot context before making the slot visible so that
 	// CancelAndWait never observes a slot without a cancel function.
 	slotCtx, slotCancel := context.WithCancel(ctx)
@@ -282,20 +304,20 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 
 	// Reserve the per-session slot.
 	m.activeTurnsMu.Lock()
-	if _, exists := m.activeTurns[p.SessionID]; exists {
+	if _, exists := m.activeTurns[sessionID]; exists {
 		m.activeTurnsMu.Unlock()
 		slotCancel()
-		return nil, serverErrorf("session %s already has an active turn", p.SessionID)
+		return nil, serverErrorf("session %s already has an active turn", sessionID)
 	}
-	m.activeTurns[p.SessionID] = slot
+	m.activeTurns[sessionID] = slot
 	m.activeTurnsMu.Unlock()
 
 	// Cleanup: cancel slot, remove from map, close done channel.
 	defer func() {
 		slotCancel()
 		m.activeTurnsMu.Lock()
-		if m.activeTurns[p.SessionID] == slot {
-			delete(m.activeTurns, p.SessionID)
+		if m.activeTurns[sessionID] == slot {
+			delete(m.activeTurns, sessionID)
 		}
 		m.activeTurnsMu.Unlock()
 		close(slot.done)
@@ -315,7 +337,7 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- rt.Run(turnCtx, prompt)
+		runErr <- run(turnCtx, arg)
 	}()
 
 	// proj carries per-turn projection state: the accumulated thinking
@@ -333,7 +355,7 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		update, hasUpdate := eventToSessionUpdate(ev, proj)
 		if hasUpdate {
 			if notifyErr := m.notify("session/update", SessionUpdateParams{
-				SessionID: p.SessionID,
+				SessionID: sessionID,
 				Update:    update,
 			}); notifyErr != nil {
 				// Treat notify error as fatal.
@@ -354,7 +376,7 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 				// turn proceeds. Log so operators can see the misconfig.
 				pa.Respond(session.UserApprovalDecision{Approved: false})
 				slog.Default().Warn("acp: pending approval arrived but no permission bridge; denied",
-					"session", p.SessionID, "approval", pa.ID)
+					"session", sessionID, "approval", pa.ID)
 			} else {
 				go func() {
 					decision, err := m.bridge.Request(turnCtx, pa)
@@ -377,10 +399,10 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 						if rt.SetMode != nil {
 							if err := rt.SetMode(chosen); err != nil {
 								slog.Default().Warn("acp: apply mode elevation",
-									"session", p.SessionID, "mode", chosen, "err", err)
+									"session", sessionID, "mode", chosen, "err", err)
 							} else {
 								_ = m.notify("session/update", SessionUpdateParams{
-									SessionID: p.SessionID,
+									SessionID: sessionID,
 									Update:    map[string]any{"kind": "mode_changed", "mode": chosen},
 								})
 							}
@@ -408,9 +430,9 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 				go func() {
 					qctx, cancel := context.WithTimeout(turnCtx, questionWait)
 					defer cancel()
-					if err := m.qbridge.Ask(qctx, p.SessionID, pending); err != nil {
+					if err := m.qbridge.Ask(qctx, sessionID, pending); err != nil {
 						slog.Default().Warn("acp: question bridge failed; answering Unanswered",
-							"session", p.SessionID, "err", err)
+							"session", sessionID, "err", err)
 						pending.Respond(session.UnansweredAnswers(pending.Questions))
 					}
 				}()
@@ -453,11 +475,11 @@ func (m *TurnManager) PromptTurn(ctx context.Context, params json.RawMessage) (a
 		select {
 		case ev, ok := <-sub:
 			if !ok {
-				return resultOrError(runErrVal, slot)
+				return resultOf(runErrVal, slot)
 			}
 			forward(ev)
 		default:
-			return resultOrError(runErrVal, slot)
+			return resultOf(runErrVal, slot)
 		}
 	}
 }

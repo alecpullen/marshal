@@ -29,10 +29,11 @@ func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, 
 		return nil, errEmptyHandoffSummary
 	}
 
+	r.contextPackMsgIndex = -1
 	fresh := []schema.ChatMessage{
 		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum),
 	}
-	fresh = appendContextPackMessage(fresh, r.State.ContextPack())
+	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},
 		schema.ChatMessage{Role: schema.RoleAssistant, Content: "Progress summary (earlier transcript was compacted to fit the context budget):\n\n" + summary},

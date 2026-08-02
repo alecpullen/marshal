@@ -180,9 +180,34 @@ func (r *Runner) mergeSemantic(ctx context.Context, goal string, projectID int64
 	r.State.SetContextPack(contextpack.MergeSemanticContext(current, snips, maxTokens, r.Now))
 }
 
-func appendContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pack) []schema.ChatMessage {
-	if msg, ok := BuildContextPackMessage(pack); ok {
-		return append(messages, msg)
+// setContextPackMessage ensures messages contains exactly one up-to-date
+// context-pack message, replacing the one tracked at r.contextPackMsgIndex.
+// It updates r.contextPackMsgIndex to the message's final index. Callers that
+// rebuild messages from scratch must reset r.contextPackMsgIndex to -1 first.
+func (r *Runner) setContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pack) []schema.ChatMessage {
+	msg, ok := BuildContextPackMessage(pack)
+	if !ok {
+		// Empty pack: remove the tracked message if it still exists.
+		if r.contextPackMsgIndex >= 0 && r.contextPackMsgIndex < len(messages) {
+			messages = append(messages[:r.contextPackMsgIndex], messages[r.contextPackMsgIndex+1:]...)
+		}
+		r.contextPackMsgIndex = -1
+		return messages
+	}
+
+	if r.contextPackMsgIndex >= 0 && r.contextPackMsgIndex < len(messages) {
+		messages[r.contextPackMsgIndex] = msg
+		return messages
+	}
+
+	// No tracked message or index is stale: insert right after the system
+	// prompt (index 0). If there is no system prompt, prepend.
+	if len(messages) > 0 {
+		messages = append(messages[:1], append([]schema.ChatMessage{msg}, messages[1:]...)...)
+		r.contextPackMsgIndex = 1
+	} else {
+		messages = []schema.ChatMessage{msg}
+		r.contextPackMsgIndex = 0
 	}
 	return messages
 }

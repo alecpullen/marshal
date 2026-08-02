@@ -174,8 +174,9 @@ type MemoryProvider interface {
 //     calls. The seed persists across RunTask calls.
 //
 //   - Per-turn state (tracker, stats, route, pressureMessageSent,
-//     consecutiveParseFailures, consecutiveEmpty, turnFinishReason) is reset
-//     at the top of RunTask and never shared across calls.
+//     consecutiveParseFailures, consecutiveEmpty, turnFinishReason,
+//     contextPackMsgIndex) is reset at the top of RunTask and never shared
+//     across calls.
 //
 //   - tracker, stats, and ForceClass have dedicated mutexes for their
 //     accessor methods (withStats, trackerMu, forceClassMu). All other
@@ -306,6 +307,10 @@ type Runner struct {
 	// because the tool executor is several frames below where the reason is
 	// known.
 	turnFinishReason string
+	// contextPackMsgIndex tracks the position of the single context-pack
+	// message in the current turn's wire transcript. -1 means no context-pack
+	// message is currently tracked. Reset at the start of each RunTask.
+	contextPackMsgIndex int
 	// fileIndexCache memoises the per-project file index across RunTask
 	// calls and across steering-message drains. Auto-invalidates when the
 	// projectID changes (see fileIndexCache.get).
@@ -459,6 +464,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}}
 	r.statsMu.Unlock()
 
+	// Per-turn reset: there is no tracked context-pack message yet.
+	r.contextPackMsgIndex = -1
+
 	task := NewTask(goal, r.Now())
 	defer func() { r.emitMetrics(task) }()
 	r.forceClassMu.Lock()
@@ -493,7 +501,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	messages := []schema.ChatMessage{
 		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum),
 	}
-	messages = appendContextPackMessage(messages, r.State.ContextPack())
+	messages = r.setContextPackMessage(messages, r.State.ContextPack())
 	if r.role() == RoleGeneral {
 		messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens, r.State.Generation())...)
 	}
@@ -531,8 +539,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
+			r.contextPackMsgIndex = -1
 			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum)}
-			messages = appendContextPackMessage(messages, updatedPack)
+			messages = r.setContextPackMessage(messages, updatedPack)
 			if r.role() == RoleGeneral {
 				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens, r.State.Generation())...)
 			}
@@ -606,7 +615,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		if len(steeringPins) > 0 {
 			pack := contextpack.PinFiles(r.State.ContextPack(), steeringPins)
 			r.State.SetContextPack(pack)
-			messages = appendContextPackMessage(messages, pack)
+			messages = r.setContextPackMessage(messages, pack)
 		}
 
 		if !pressureMessageSent && budget.remainingTools() <= finalizePressureThreshold {
@@ -620,6 +629,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			messages[0] = BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, currentSkills, r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum)
 			lastRenderedSkills = currentSkills
 		}
+
+		// Refresh the scratchpad projection before the next model call so
+		// entries written in earlier turns (e.g. scratchpad.write) appear in
+		// the context pack of subsequent turns.
+		r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
+		messages = r.setContextPackMessage(messages, r.State.ContextPack())
 
 		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
 			// T13: unified intra-turn compaction — rollover when enabled,

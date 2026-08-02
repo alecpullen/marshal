@@ -837,6 +837,47 @@ func TestStateScratchpadConfigAppliesDefaultsToZeroValues(t *testing.T) {
 	}
 }
 
+func TestStateScratchpadConfigAccessorReturnsAppliedDefaults(t *testing.T) {
+	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	cfg := s.ScratchpadConfig()
+	if cfg.MaxEntries != 32 {
+		t.Errorf("MaxEntries = %d, want 32", cfg.MaxEntries)
+	}
+	if cfg.MaxTotalTokens != 8000 {
+		t.Errorf("MaxTotalTokens = %d, want 8000", cfg.MaxTotalTokens)
+	}
+	if cfg.MaxEntryTokens != 4000 {
+		t.Errorf("MaxEntryTokens = %d, want 4000", cfg.MaxEntryTokens)
+	}
+	if cfg.ProjectionMaxTokens != 1000 {
+		t.Errorf("ProjectionMaxTokens = %d, want 1000", cfg.ProjectionMaxTokens)
+	}
+}
+
+func TestStateScratchpadConfigAccessorReturnsConfiguredValues(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{
+		MaxEntries:          16,
+		MaxTotalTokens:      4000,
+		MaxEntryTokens:      2000,
+		ProjectionMaxTokens: 500,
+	}
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
+	got := s.ScratchpadConfig()
+	if got.MaxEntries != 16 {
+		t.Errorf("MaxEntries = %d, want 16", got.MaxEntries)
+	}
+	if got.MaxTotalTokens != 4000 {
+		t.Errorf("MaxTotalTokens = %d, want 4000", got.MaxTotalTokens)
+	}
+	if got.MaxEntryTokens != 2000 {
+		t.Errorf("MaxEntryTokens = %d, want 2000", got.MaxEntryTokens)
+	}
+	if got.ProjectionMaxTokens != 500 {
+		t.Errorf("ProjectionMaxTokens = %d, want 500", got.ProjectionMaxTokens)
+	}
+}
+
 func TestRewindStartsNewBranch(t *testing.T) {
 	state := newTestState()
 	state.AddMessage(RoleUser, "turn1", ContentTypePlain)

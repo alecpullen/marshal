@@ -125,7 +125,7 @@ func (r *Runner) mergeScratchpad(maxTokenOverride int) {
 	for i, e := range entries {
 		cpEntries[i] = contextpack.ScratchpadEntry{Key: e.Key, Content: e.Content, Format: e.Format, Updated: e.Updated}
 	}
-	r.State.SetContextPack(contextpack.MergeScratchpad(current, cpEntries, maxTokens, r.Now))
+	r.State.SetContextPack(contextpack.MergeScratchpad(current, cpEntries, maxTokens, r.State.ScratchpadConfig().ProjectionMaxTokens, r.Now))
 }
 
 // semanticSource resolves the embedding source for passive semantic context

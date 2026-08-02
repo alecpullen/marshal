@@ -297,10 +297,15 @@ func formatAge(updated int64, now time.Time) string {
 // MergeScratchpad replaces any existing scratchpad section with a
 // projection built from entries, inserted before file-snippet/tool-output
 // sections, then rebudgets within maxTokens. Empty entries removes the
-// section.
-func MergeScratchpad(pack Pack, entries []ScratchpadEntry, maxTokens int, now func() time.Time) Pack {
+// section. projectionMaxTokens caps the size of the scratchpad projection;
+// when zero or negative it defaults to one eighth of the pack's current
+// max-token budget.
+func MergeScratchpad(pack Pack, entries []ScratchpadEntry, maxTokens, projectionMaxTokens int, now func() time.Time) Pack {
 	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
-	sec, ok := newScratchpadSection(entries, pack.TokenUsage.MaxTokens/8, generatedAt)
+	if projectionMaxTokens <= 0 {
+		projectionMaxTokens = pack.TokenUsage.MaxTokens / 8
+	}
+	sec, ok := newScratchpadSection(entries, projectionMaxTokens, generatedAt)
 	sections := replaceSection(pack.Sections, SectionScratchpad, sec, ok, SectionFileSnippet, SectionToolOutput)
 	return buildPackFromSections(sections, maxTokens, generatedAt)
 }

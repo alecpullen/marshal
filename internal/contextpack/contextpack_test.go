@@ -436,7 +436,7 @@ func TestMergeScratchpadEmptyIsNoOp(t *testing.T) {
 			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
 		},
 	}
-	got := MergeScratchpad(pack, nil, DefaultMaxTokens, nil)
+	got := MergeScratchpad(pack, nil, DefaultMaxTokens, 0, nil)
 	for _, s := range got.Sections {
 		if s.Kind == SectionScratchpad {
 			t.Fatal("empty scratchpad should not add a section")
@@ -456,7 +456,7 @@ func TestMergeScratchpadInsertsSection(t *testing.T) {
 	entries := []ScratchpadEntry{
 		{Key: "audit", Content: "result line", Format: "text"},
 	}
-	got := MergeScratchpad(pack, entries, DefaultMaxTokens, nil)
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, 0, nil)
 	found := false
 	for _, s := range got.Sections {
 		if s.Kind == SectionScratchpad {
@@ -483,7 +483,7 @@ func TestMergeScratchpadReplacesExisting(t *testing.T) {
 	entries := []ScratchpadEntry{
 		{Key: "new-key", Content: "new content", Format: "json"},
 	}
-	got := MergeScratchpad(pack, entries, DefaultMaxTokens, nil)
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, 0, nil)
 	count := 0
 	for _, s := range got.Sections {
 		if s.Kind == SectionScratchpad {
@@ -511,7 +511,7 @@ func TestMergeScratchpadInsertsBeforeFileSnippets(t *testing.T) {
 	entries := []ScratchpadEntry{
 		{Key: "files", Content: "a.go b.go", Format: "text"},
 	}
-	got := MergeScratchpad(pack, entries, DefaultMaxTokens, nil)
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, 0, nil)
 	scratchIdx := -1
 	snippetIdx := -1
 	for i, s := range got.Sections {
@@ -540,7 +540,7 @@ func TestMergeScratchpadEmptyRemovesSection(t *testing.T) {
 			{Kind: SectionRepoCard, Title: "Repo Card", Content: "Project", EstimatedTokens: 2},
 		},
 	}
-	got := MergeScratchpad(pack, nil, DefaultMaxTokens, nil)
+	got := MergeScratchpad(pack, nil, DefaultMaxTokens, 0, nil)
 	for _, s := range got.Sections {
 		if s.Kind == SectionScratchpad {
 			t.Fatal("empty entries should remove the scratchpad section")
@@ -554,7 +554,7 @@ func TestMergeScratchpadTruncatesLongPreview(t *testing.T) {
 	entries := []ScratchpadEntry{
 		{Key: "big", Content: longContent, Format: "text"},
 	}
-	got := MergeScratchpad(pack, entries, DefaultMaxTokens, nil)
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, 0, nil)
 	for _, s := range got.Sections {
 		if s.Kind == SectionScratchpad {
 			if !strings.Contains(s.Content, "...") {
@@ -564,6 +564,54 @@ func TestMergeScratchpadTruncatesLongPreview(t *testing.T) {
 				t.Fatal("preview should be truncated before 130 chars of content")
 			}
 		}
+	}
+}
+
+func TestMergeScratchpadUsesExplicitProjectionBudget(t *testing.T) {
+	pack := Pack{TokenUsage: TokenUsage{MaxTokens: 10000}}
+	entries := []ScratchpadEntry{
+		{Key: "a", Content: "long content here", Format: "text"},
+		{Key: "b", Content: "more long content", Format: "text"},
+	}
+	// A tiny explicit budget forces truncation after the first entry.
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, 30, nil)
+	var found bool
+	for _, s := range got.Sections {
+		if s.Kind == SectionScratchpad {
+			found = true
+			if !strings.Contains(s.Content, "...") {
+				t.Fatalf("expected projection truncation with '...', got %q", s.Content)
+			}
+			if strings.Contains(s.Content, "b (") {
+				t.Fatalf("second entry should be truncated out of projection, got %q", s.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a scratchpad section")
+	}
+}
+
+func TestMergeScratchpadProjectionBudgetDefaultsToPackMaxTokensEighth(t *testing.T) {
+	pack := Pack{TokenUsage: TokenUsage{MaxTokens: 80}}
+	entries := []ScratchpadEntry{
+		{Key: "a", Content: "long content here", Format: "text"},
+		{Key: "b", Content: "more long content", Format: "text"},
+	}
+	// Passing 0 should fall back to pack.TokenUsage.MaxTokens / 8 = 10,
+	// which is smaller than the combined projection lines and forces truncation.
+	got := MergeScratchpad(pack, entries, DefaultMaxTokens, 0, nil)
+	var found bool
+	for _, s := range got.Sections {
+		if s.Kind == SectionScratchpad {
+			found = true
+			if !strings.Contains(s.Content, "...") {
+				t.Fatalf("expected fallback projection budget to truncate, got %q", s.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a scratchpad section")
 	}
 }
 

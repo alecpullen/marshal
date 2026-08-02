@@ -949,6 +949,15 @@ func (s *State) ScratchpadEntry(key string) (db.ScratchpadEntry, bool) {
 	return e, ok
 }
 
+// ScratchpadConfig returns the applied scratchpad configuration for this
+// session. Defaults are populated by New, so the returned value is always
+// usable.
+func (s *State) ScratchpadConfig() config.ScratchpadConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.scratchpadConfig
+}
+
 // scratchpadSnapshotLocked returns a defensive copy of all entries sorted
 // newest first so callers get deterministic order.
 func (s *State) scratchpadSnapshotLocked() []db.ScratchpadEntry {

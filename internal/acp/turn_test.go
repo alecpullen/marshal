@@ -1003,6 +1003,54 @@ func TestPromptTurnAnswersUnsupportedQuestionsAsUnanswered(t *testing.T) {
 	}
 }
 
+func TestTurnManagerHasActiveTurnReflectsInFlightPrompt(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					close(started)
+					<-release
+					return nil
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	if manager.HasActiveTurn("sess_x") {
+		t.Fatal("HasActiveTurn = true before any prompt started, want false")
+	}
+
+	raw, _ := json.Marshal(PromptTurnParams{
+		SessionID: "sess_x",
+		Prompt:    []ContentBlock{{Type: "text", Text: "go"}},
+	})
+	done := make(chan struct{})
+	go func() {
+		manager.PromptTurn(context.Background(), raw)
+		close(done)
+	}()
+
+	<-started
+	if !manager.HasActiveTurn("sess_x") {
+		t.Fatal("HasActiveTurn = false while a prompt is running, want true")
+	}
+	if manager.HasActiveTurn("sess_other") {
+		t.Fatal("HasActiveTurn = true for an unrelated session, want false")
+	}
+
+	close(release)
+	<-done
+	if manager.HasActiveTurn("sess_x") {
+		t.Fatal("HasActiveTurn = true after the prompt finished, want false")
+	}
+}
+
 // TestCancelWithIDIsRejected verifies that session/cancel — which the
 // ACP plan defines as a notification — is rejected with invalidRequest
 // (-32600) when a client sends it WITH a request id. An id-bearing

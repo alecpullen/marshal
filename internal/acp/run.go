@@ -86,6 +86,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					"resume":                map[string]any{},
 					"additionalDirectories": map[string]any{},
 					"delete":                map[string]any{},
+					"commandDispatch":       map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{
@@ -156,6 +157,19 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	srv.Handle("session/set_mode", turns.SetMode)
 	srv.Handle("session/steer", turns.Steer)
 	srv.HandleNotification("session/cancel", turns.Cancel)
+
+	cmds := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			rt, ok := manager.Get(sessionID)
+			if !ok || rt == nil {
+				return nil, false
+			}
+			return &CommandRuntime{State: rt.State, Registry: rt.CommandRegistry}, true
+		},
+		HasActive: turns.HasActiveTurn,
+	})
+	srv.Handle("session/command", cmds.Command)
+	srv.Handle("session/command_list", cmds.CommandList)
 
 	serveErr := srv.Serve(ctx)
 

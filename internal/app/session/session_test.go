@@ -1597,3 +1597,214 @@ func TestScratchpadMultipleEntries(t *testing.T) {
 		t.Fatalf("len = %d, want 2", len(entries))
 	}
 }
+
+func TestScratchpadSetRejectsEmptyContent(t *testing.T) {
+	s := newTestState()
+	err := s.SetScratchpadEntry("key", "", "text")
+	if err == nil {
+		t.Fatal("expected error for empty content")
+	}
+	err = s.SetScratchpadEntry("key", "   ", "text")
+	if err == nil {
+		t.Fatal("expected error for whitespace-only content")
+	}
+}
+
+func TestScratchpadSetRejectsOversizedEntry(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{
+		MaxEntries:          32,
+		MaxTotalTokens:      8000,
+		MaxEntryTokens:      10,
+		ProjectionMaxTokens: 1000,
+	}
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
+
+	// EstimateTokens is ceil(runes/4). 40 chars => 10 tokens, equal to max; 41 chars => 11.
+	longContent := strings.Repeat("a", 41)
+	err := s.SetScratchpadEntry("big", longContent, "text")
+	if err == nil {
+		t.Fatal("expected error for oversized entry")
+	}
+}
+
+func TestScratchpadEvictionByMaxEntries(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{
+		MaxEntries:          2,
+		MaxTotalTokens:      10000,
+		MaxEntryTokens:      10000,
+		ProjectionMaxTokens: 1000,
+	}
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
+
+	s.SetScratchpadEntry("first", "one", "text")
+	time.Sleep(1 * time.Second)
+	s.SetScratchpadEntry("second", "two", "text")
+	time.Sleep(1 * time.Second)
+	s.SetScratchpadEntry("third", "three", "text")
+
+	entries := s.Scratchpad()
+	if len(entries) != 2 {
+		t.Fatalf("len = %d, want 2 after eviction", len(entries))
+	}
+	// Newest-first order.
+	if entries[0].Key != "third" || entries[1].Key != "second" {
+		t.Fatalf("entries = %+v, want newest two (third, second)", entries)
+	}
+	if _, ok := s.ScratchpadEntry("first"); ok {
+		t.Fatal("oldest entry should have been evicted")
+	}
+}
+
+func TestScratchpadEvictionByMaxTotalTokens(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{
+		MaxEntries:          100,
+		MaxTotalTokens:      10,
+		MaxEntryTokens:      100,
+		ProjectionMaxTokens: 1000,
+	}
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
+
+	// 24 ASCII chars => (24+3)/4 = 6 tokens per entry.
+	// Two entries = 12 tokens, exceeding MaxTotalTokens=10, so the oldest is evicted.
+	content := strings.Repeat("x", 24)
+	s.SetScratchpadEntry("first", content, "text")
+	time.Sleep(1 * time.Second)
+	s.SetScratchpadEntry("second", content, "text")
+
+	entries := s.Scratchpad()
+	if len(entries) != 1 {
+		t.Fatalf("len = %d, want 1 after token-budget eviction", len(entries))
+	}
+	if entries[0].Key != "second" {
+		t.Fatalf("remaining entry = %q, want second", entries[0].Key)
+	}
+}
+
+func TestScratchpadEvictionOldestFirst(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{
+		MaxEntries:          2,
+		MaxTotalTokens:      10000,
+		MaxEntryTokens:      10000,
+		ProjectionMaxTokens: 1000,
+	}
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
+
+	s.SetScratchpadEntry("old", "old content", "text")
+	time.Sleep(1 * time.Second)
+	s.SetScratchpadEntry("mid", "mid content", "text")
+	time.Sleep(1 * time.Second)
+	s.SetScratchpadEntry("new", "new content", "text")
+
+	// Update the middle entry so it becomes newest; the originally oldest should still go first.
+	time.Sleep(1 * time.Second)
+	s.SetScratchpadEntry("mid", "mid content updated", "text")
+
+	entries := s.Scratchpad()
+	if len(entries) != 2 {
+		t.Fatalf("len = %d, want 2", len(entries))
+	}
+	if entries[0].Key != "mid" {
+		t.Fatalf("newest entry = %q, want mid", entries[0].Key)
+	}
+	if entries[1].Key != "new" {
+		t.Fatalf("second entry = %q, want new", entries[1].Key)
+	}
+	if _, ok := s.ScratchpadEntry("old"); ok {
+		t.Fatal("oldest entry should have been evicted")
+	}
+}
+
+func TestScratchpadColdLoadPopulatesMap(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+	sessionID := "scratchpad-cold-sess"
+	if err := dbConn.CreateSession(sessionID, projectID, "cold", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	cfg := config.Default()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	first := New(cfg, "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+	// Add a message so loadFromDB has a leaf and proceeds to load the scratchpad.
+	first.AddMessage(RoleUser, "hello", ContentTypePlain)
+	if err := first.SetScratchpadEntry("a", "alpha", "text"); err != nil {
+		t.Fatalf("set a: %v", err)
+	}
+	time.Sleep(1 * time.Second)
+	if err := first.SetScratchpadEntry("b", "beta", "json"); err != nil {
+		t.Fatalf("set b: %v", err)
+	}
+
+	second := New(cfg, "/repo", time.Unix(200, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+	entries := second.Scratchpad()
+	if len(entries) != 2 {
+		t.Fatalf("cold-load entries = %d, want 2", len(entries))
+	}
+	// LoadScratchpad orders newest first; "b" was set second.
+	if entries[0].Key != "b" || entries[0].Content != "beta" || entries[0].Format != "json" {
+		t.Fatalf("entry[0] = %+v, want b/beta/json", entries[0])
+	}
+	if entries[1].Key != "a" || entries[1].Content != "alpha" || entries[1].Format != "text" {
+		t.Fatalf("entry[1] = %+v, want a/alpha/text", entries[1])
+	}
+}
+
+func TestScratchpadPersistenceDeletesEvictedEntries(t *testing.T) {
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+	sessionID := "scratchpad-evict-sess"
+	if err := dbConn.CreateSession(sessionID, projectID, "evict", time.Now().UTC()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.Scratchpad = config.ScratchpadConfig{
+		MaxEntries:          1,
+		MaxTotalTokens:      10000,
+		MaxEntryTokens:      10000,
+		ProjectionMaxTokens: 1000,
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{DB: dbConn, SessionID: sessionID, Logger: logger})
+
+	if err := s.SetScratchpadEntry("old", "old content", "text"); err != nil {
+		t.Fatalf("set old: %v", err)
+	}
+	time.Sleep(1 * time.Second)
+	if err := s.SetScratchpadEntry("new", "new content", "text"); err != nil {
+		t.Fatalf("set new: %v", err)
+	}
+
+	// The DB should only contain the newest entry.
+	loaded, err := dbConn.LoadScratchpad(sessionID)
+	if err != nil {
+		t.Fatalf("load scratchpad: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Key != "new" {
+		t.Fatalf("db keys = %+v, want [new]", loaded)
+	}
+}

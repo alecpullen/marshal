@@ -3,6 +3,8 @@ package session
 import (
 	"sort"
 	"time"
+
+	"marshal/internal/db"
 )
 
 // Role identifies the sender of a message.
@@ -154,9 +156,12 @@ func (s *State) loadFromDB() {
 	// session doesn't carry a stale dual-id mapping for its lifetime.
 	s.dbIDToImID = nil
 
-	// Restore scratchpad entries from the session_state table.
+	// Restore scratchpad entries from the per-key scratchpad_entries table.
 	if entries, err := s.db.LoadScratchpad(s.sessionID); err == nil {
-		s.scratchpad = entries
+		s.scratchpad = make(map[string]db.ScratchpadEntry, len(entries))
+		for _, e := range entries {
+			s.scratchpad[e.Key] = e
+		}
 	} else {
 		s.logger.Warn("failed to load scratchpad", "error", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -166,7 +167,7 @@ type State struct {
 	activity        Activity
 	plan            []string
 	todos           []db.TodoItem
-	scratchpad      []db.ScratchpadEntry
+	scratchpad      map[string]db.ScratchpadEntry
 	activeSkills    map[string]bool
 	loadedTools     map[string]bool
 	toolBudget      ToolBudget
@@ -395,6 +396,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		dbIDToImID:       make(map[int64]int64),
 		nextMsgID:        1,
 		workspace:        Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
+		scratchpad:       make(map[string]db.ScratchpadEntry),
 		scratchpadConfig: scratchpadCfg,
 	}
 	for _, opt := range opts {
@@ -858,30 +860,48 @@ func (s *State) Todos() []db.TodoItem {
 	return result
 }
 
-// SetScratchpadEntry upserts a single entry by key. The entry is persisted
-// to the scratchpad_entries table. Returns nil if the store is not available
-// (no session state).
+// SetScratchpadEntry upserts a single entry by key. Empty keys or content are
+// rejected, and entries larger than MaxEntryTokens are refused. After the
+// upsert the scratchpad budget is enforced by evicting oldest entries first.
+// The entry is persisted to the scratchpad_entries table.
 func (s *State) SetScratchpadEntry(key, content, format string) error {
 	if strings.TrimSpace(key) == "" {
 		return fmt.Errorf("scratchpad key must not be empty")
 	}
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("scratchpad content must not be empty")
+	}
+	if format == "" {
+		format = "text"
+	}
+
+	tokens := contextpack.EstimateTokens(content)
+	if tokens > s.scratchpadConfig.MaxEntryTokens {
+		return fmt.Errorf("scratchpad entry %q is ~%d tokens, exceeds max %d", key, tokens, s.scratchpadConfig.MaxEntryTokens)
+	}
+
 	entry := db.NewScratchpadEntry(key, content, format)
+
 	s.mu.Lock()
-	found := false
-	for i, e := range s.scratchpad {
-		if e.Key == key {
-			s.scratchpad[i] = entry
-			found = true
-			break
+	preSnapshot := s.scratchpadSnapshotLocked()
+	s.scratchpad[key] = entry
+	s.enforceScratchpadBudgetLocked()
+	var evictedKeys []string
+	for _, e := range preSnapshot {
+		if _, ok := s.scratchpad[e.Key]; !ok {
+			evictedKeys = append(evictedKeys, e.Key)
 		}
 	}
-	if !found {
-		s.scratchpad = append(s.scratchpad, entry)
-	}
 	s.mu.Unlock()
+
 	if s.persistenceEnabled() {
 		if err := s.db.SaveScratchpadEntry(s.sessionID, entry); err != nil {
 			s.logger.Warn("failed to persist scratchpad entry", "error", err)
+		}
+		for _, evictedKey := range evictedKeys {
+			if err := s.db.DeleteScratchpadEntry(s.sessionID, evictedKey); err != nil {
+				s.logger.Warn("failed to delete evicted scratchpad entry", "error", err, "key", evictedKey)
+			}
 		}
 	}
 	return nil
@@ -891,41 +911,87 @@ func (s *State) SetScratchpadEntry(key, content, format string) error {
 // key does not exist (idempotent).
 func (s *State) DeleteScratchpadEntry(key string) error {
 	s.mu.Lock()
-	for i, e := range s.scratchpad {
-		if e.Key == key {
-			s.scratchpad = append(s.scratchpad[:i], s.scratchpad[i+1:]...)
-			s.mu.Unlock()
-			if s.persistenceEnabled() {
-				if err := s.db.DeleteScratchpadEntry(s.sessionID, key); err != nil {
-					s.logger.Warn("failed to delete scratchpad entry", "error", err)
-				}
-			}
-			return nil
+	_, existed := s.scratchpad[key]
+	delete(s.scratchpad, key)
+	s.mu.Unlock()
+
+	if existed && s.persistenceEnabled() {
+		if err := s.db.DeleteScratchpadEntry(s.sessionID, key); err != nil {
+			s.logger.Warn("failed to delete scratchpad entry", "error", err, "key", key)
 		}
 	}
-	s.mu.Unlock()
 	return nil
 }
 
-// Scratchpad returns a defensive copy of all entries.
+// Scratchpad returns a defensive copy of all entries sorted newest first.
 func (s *State) Scratchpad() []db.ScratchpadEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result := make([]db.ScratchpadEntry, len(s.scratchpad))
-	copy(result, s.scratchpad)
-	return result
+	return s.scratchpadSnapshotLocked()
 }
 
 // ScratchpadEntry returns a single entry by key, or ok=false if not found.
 func (s *State) ScratchpadEntry(key string) (db.ScratchpadEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	e, ok := s.scratchpad[key]
+	return e, ok
+}
+
+// scratchpadSnapshotLocked returns a defensive copy of all entries sorted
+// newest first so callers get deterministic order.
+func (s *State) scratchpadSnapshotLocked() []db.ScratchpadEntry {
+	out := make([]db.ScratchpadEntry, 0, len(s.scratchpad))
 	for _, e := range s.scratchpad {
-		if e.Key == key {
-			return e, true
-		}
+		out = append(out, e)
 	}
-	return db.ScratchpadEntry{}, false
+	// Sort newest first so callers get deterministic order.
+	slices.SortFunc(out, func(a, b db.ScratchpadEntry) int {
+		if a.Updated > b.Updated {
+			return -1
+		}
+		if a.Updated < b.Updated {
+			return 1
+		}
+		return 0
+	})
+	return out
+}
+
+// enforceScratchpadBudgetLocked evicts oldest entries first until the
+// scratchpad satisfies both MaxEntries and MaxTotalTokens.
+func (s *State) enforceScratchpadBudgetLocked() {
+	if len(s.scratchpad) == 0 {
+		return
+	}
+
+	// Build a list oldest-first by Updated.
+	entries := make([]db.ScratchpadEntry, 0, len(s.scratchpad))
+	for _, e := range s.scratchpad {
+		entries = append(entries, e)
+	}
+	slices.SortFunc(entries, func(a, b db.ScratchpadEntry) int {
+		if a.Updated < b.Updated {
+			return -1
+		}
+		if a.Updated > b.Updated {
+			return 1
+		}
+		return 0
+	})
+
+	totalTokens := 0
+	for _, e := range s.scratchpad {
+		totalTokens += contextpack.EstimateTokens(e.Content)
+	}
+
+	for _, e := range entries {
+		if len(s.scratchpad) <= s.scratchpadConfig.MaxEntries && totalTokens <= s.scratchpadConfig.MaxTotalTokens {
+			break
+		}
+		delete(s.scratchpad, e.Key)
+		totalTokens -= contextpack.EstimateTokens(e.Content)
+	}
 }
 
 func (s *State) AddSessionRule(prefix string) {

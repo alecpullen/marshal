@@ -86,8 +86,12 @@ type Runtime struct {
 	// Run() registers them into the TUI command registry; headless
 	// sessions ignore them.
 	PluginCommands []commands.Command
-	JobManager     *native.JobManager
-	DesktopCloser  func()
+	// CommandRegistry holds every built-in command plus PluginCommands,
+	// shared by the TUI and any headless transport (ACP). Built once here
+	// so there is a single source of truth for command registration.
+	CommandRegistry *commands.Registry
+	JobManager      *native.JobManager
+	DesktopCloser   func()
 
 	// TrustPromptPending reports that a project config exists but was not
 	// applied because the trust question was deferred to the TUI.
@@ -555,6 +559,16 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		state.SetProviderError(err)
 	}
 
+	cmdReg := commands.New()
+	if regErr := commands.RegisterAll(cmdReg, toolReg); regErr != nil {
+		state.SetProviderError(regErr)
+	}
+	for _, cmd := range pluginCommands {
+		if regErr := cmdReg.Register(cmd); regErr != nil {
+			logger.Warn("skipping plugin command", "command", cmd.Name, "error", regErr)
+		}
+	}
+
 	rt := &Runtime{
 		Config:             cfg,
 		Layers:             layers,
@@ -579,6 +593,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		DataDir:            dataDir,
 		SkillIndex:         skillIndex,
 		PluginCommands:     pluginCommands,
+		CommandRegistry:    cmdReg,
 		TrustPromptPending: trustPromptPending,
 		LSPManager:         lspHandle,
 		ConfigReloader:     runOpts.configReloader,

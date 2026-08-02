@@ -22,7 +22,6 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
-	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
@@ -1096,15 +1095,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		state := rt.State
 		logger := rt.Logger
 
-		cmdReg := commands.New()
-		if err := commands.RegisterAll(cmdReg, toolReg); err != nil {
-			return fmt.Errorf("register commands: %w", err)
-		}
-		for _, cmd := range rt.PluginCommands {
-			if err := cmdReg.Register(cmd); err != nil {
-				logger.Warn("skipping plugin command", "command", cmd.Name, "error", err)
-			}
-		}
+		cmdReg := rt.CommandRegistry
 
 		var tuiOpts []tui.Option
 		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))

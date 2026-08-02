@@ -510,6 +510,34 @@ func TestStartRuntimeAppliesStoredTrustWithoutPrompt(t *testing.T) {
 	}
 }
 
+func TestStartRuntimePopulatesCommandRegistry(t *testing.T) {
+	dir := t.TempDir()
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWd)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	rt, err := StartRuntime(context.Background(), WithNow(func() time.Time { return time.Unix(200, 0) }))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	if rt.CommandRegistry == nil {
+		t.Fatal("CommandRegistry is nil, want a populated registry")
+	}
+	if _, ok := rt.CommandRegistry.Lookup("diff"); !ok {
+		t.Fatal(`CommandRegistry.Lookup("diff") = false, want true (built-in command missing)`)
+	}
+	if _, ok := rt.CommandRegistry.Lookup("swarm"); !ok {
+		t.Fatal(`CommandRegistry.Lookup("swarm") = false, want true (swarm is TUIOnly but still registered)`)
+	}
+}
+
 func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 	prevTimeout := jobShutdownTimeout
 	jobShutdownTimeout = 50 * time.Millisecond

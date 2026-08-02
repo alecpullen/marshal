@@ -87,6 +87,8 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					"additionalDirectories": map[string]any{},
 					"delete":                map[string]any{},
 					"commandDispatch":       map[string]any{},
+					"swarmDispatch":         map[string]any{},
+					"sddDispatch":           map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{
@@ -130,6 +132,22 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 			var run RunnerFunc
 			run = rt.Runner.Run
 			evBroker, _ := rt.EventBroker.(*pubsub.Broker[session.Event])
+
+			// Box rt.SwarmRunner (a concrete *swarm.Orchestrator) into the
+			// AgentRunner interface only when non-nil — assigning a nil
+			// concrete pointer directly would produce a non-nil interface
+			// wrapping nil, which SwarmStart's `== nil` check would miss.
+			var swarmRunner AgentRunner
+			if rt.SwarmRunner != nil {
+				swarmRunner = rt.SwarmRunner
+			}
+			var pipelineFactory func(planPath string) AgentRunner
+			if rt.PipelineFactory != nil {
+				pipelineFactory = func(planPath string) AgentRunner {
+					return rt.PipelineFactory(planPath)
+				}
+			}
+
 			return &TurnRuntime{
 				SessionID: sessionID,
 				BeginWork: rt.BeginWork,
@@ -145,8 +163,10 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					rt.Runner.SetApprovalMode(m)
 					return nil
 				},
-				Steer: rt.State.PushSteering,
-				State: rt.State,
+				Steer:           rt.State.PushSteering,
+				State:           rt.State,
+				SwarmRunner:     swarmRunner,
+				PipelineFactory: pipelineFactory,
 			}, true
 		},
 		Notify:    srv.Notify,
@@ -158,6 +178,12 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	srv.Handle("session/set_mode", turns.SetMode)
 	srv.Handle("session/steer", turns.Steer)
 	srv.HandleNotification("session/cancel", turns.Cancel)
+
+	srv.Handle("session/swarm_start", turns.SwarmStart)
+	srv.Handle("session/swarm_status", turns.SwarmStatus)
+	srv.Handle("session/sdd_start", turns.SDDStart)
+	srv.Handle("session/sdd_answer", turns.SDDAnswer)
+	srv.Handle("session/sdd_status", turns.SDDStatus)
 
 	cmds := NewCommandManager(CommandManagerConfig{
 		Lookup: func(sessionID string) (*CommandRuntime, bool) {

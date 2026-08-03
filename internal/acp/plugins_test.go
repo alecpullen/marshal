@@ -203,6 +203,106 @@ func TestPluginsInstallDiscardRemovesStagingWithoutInstalling(t *testing.T) {
 	}
 }
 
+func TestPluginsInstallConfirmWritesStoreAndLockfileWithRealCommit(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	wantCommit := initPluginRepo(t, src, map[string]string{"commands/hello.md": testCommandFile})
+	home := t.TempDir()
+	work := t.TempDir()
+
+	mgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
+			return &PluginsRuntime{HomeDir: home, WorkingDir: work, Trusted: true}, true
+		},
+	})
+	scanRaw, _ := json.Marshal(PluginsInstallScanParams{SessionID: "sess_1", Source: src})
+	scanRes, err := mgr.PluginsInstallScan(context.Background(), scanRaw)
+	if err != nil {
+		t.Fatalf("PluginsInstallScan: %v", err)
+	}
+	scanResult := scanRes.(PluginsInstallScanResult)
+	tempDir := mgr.scans["sess_1"][scanResult.ScanToken].tempDir
+
+	confirmRaw, _ := json.Marshal(PluginsInstallConfirmParams{
+		SessionID: "sess_1", ScanToken: scanResult.ScanToken, Scope: "global",
+	})
+	confirmRes, err := mgr.PluginsInstallConfirm(context.Background(), confirmRaw)
+	if err != nil {
+		t.Fatalf("PluginsInstallConfirm: %v", err)
+	}
+	if confirmRes.(PluginsInstallResult).Name != scanResult.Name {
+		t.Errorf("PluginsInstallConfirm.Name = %q, want %q", confirmRes.(PluginsInstallResult).Name, scanResult.Name)
+	}
+
+	if _, err := os.Stat(filepath.Join(plugins.GlobalStoreDir(home), scanResult.Name, "commands", "hello.md")); err != nil {
+		t.Fatalf("installed content missing: %v", err)
+	}
+	lf, err := plugins.ReadLockfile(plugins.GlobalLockPath(home))
+	if err != nil {
+		t.Fatalf("ReadLockfile: %v", err)
+	}
+	entry, found := lf.Find(scanResult.Name)
+	if !found {
+		t.Fatal("lockfile has no entry for the installed plugin")
+	}
+	if entry.Commit != wantCommit {
+		t.Errorf("lockfile Commit = %q, want %q (must not be \"unknown\")", entry.Commit, wantCommit)
+	}
+	if entry.ContentHash == "" {
+		t.Error("lockfile ContentHash is empty")
+	}
+
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("temp dir %s still exists after confirm", tempDir)
+	}
+}
+
+func TestPluginsInstallConfirmRejectsProjectScopeWhenUntrusted(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	initPluginRepo(t, src, map[string]string{"commands/hello.md": testCommandFile})
+
+	mgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
+			return &PluginsRuntime{HomeDir: t.TempDir(), WorkingDir: t.TempDir(), Trusted: false}, true
+		},
+	})
+	scanRaw, _ := json.Marshal(PluginsInstallScanParams{SessionID: "sess_1", Source: src})
+	scanRes, err := mgr.PluginsInstallScan(context.Background(), scanRaw)
+	if err != nil {
+		t.Fatalf("PluginsInstallScan: %v", err)
+	}
+	token := scanRes.(PluginsInstallScanResult).ScanToken
+
+	confirmRaw, _ := json.Marshal(PluginsInstallConfirmParams{SessionID: "sess_1", ScanToken: token, Scope: "project"})
+	_, err = mgr.PluginsInstallConfirm(context.Background(), confirmRaw)
+	if err == nil {
+		t.Fatal("PluginsInstallConfirm with scope=project on an untrusted session: got nil error, want an error")
+	}
+}
+
+func TestPluginsInstallConfirmRejectsUnknownToken(t *testing.T) {
+	mgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
+			return &PluginsRuntime{HomeDir: t.TempDir(), WorkingDir: t.TempDir(), Trusted: true}, true
+		},
+	})
+	raw, _ := json.Marshal(PluginsInstallConfirmParams{SessionID: "sess_1", ScanToken: "stg_nonexistent", Scope: "global"})
+	_, err := mgr.PluginsInstallConfirm(context.Background(), raw)
+	if err == nil {
+		t.Fatal("PluginsInstallConfirm with unknown token: got nil error, want an error")
+	}
+}
+
+func TestPluginsInstallConfirmRejectsInvalidScope(t *testing.T) {
+	mgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) { return nil, false },
+	})
+	raw, _ := json.Marshal(PluginsInstallConfirmParams{SessionID: "sess_1", ScanToken: "stg_x", Scope: "nowhere"})
+	_, err := mgr.PluginsInstallConfirm(context.Background(), raw)
+	if err == nil {
+		t.Fatal("PluginsInstallConfirm with invalid scope: got nil error, want an error")
+	}
+}
+
 func TestPluginsInstallDiscardRejectsUnknownToken(t *testing.T) {
 	mgr := NewPluginsManager(PluginsManagerConfig{
 		Lookup: func(sessionID string) (*PluginsRuntime, bool) { return nil, false },

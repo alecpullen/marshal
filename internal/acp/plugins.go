@@ -266,3 +266,85 @@ func (m *PluginsManager) PluginsInstallDiscard(ctx context.Context, params json.
 	os.RemoveAll(staged.tempDir)
 	return map[string]any{}, nil
 }
+
+func validPluginScope(scope string) bool {
+	return scope == "global" || scope == "project"
+}
+
+// PluginsInstallConfirmParams is the JSON-RPC body for
+// session/plugins_install_confirm.
+type PluginsInstallConfirmParams struct {
+	SessionID string `json:"sessionId"`
+	ScanToken string `json:"scanToken"`
+	Scope     string `json:"scope"`
+}
+
+// PluginsInstallResult is the JSON-RPC result for
+// session/plugins_install_confirm.
+type PluginsInstallResult struct {
+	Name string `json:"name"`
+}
+
+// PluginsInstallConfirm handles session/plugins_install_confirm: commits
+// a previously scanned install into the real plugin store. scope
+// "project" is rejected outright on an untrusted session — never
+// silently redirected to global or silently no-op'd.
+func (m *PluginsManager) PluginsInstallConfirm(ctx context.Context, params json.RawMessage) (any, error) {
+	var p PluginsInstallConfirmParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, invalidParamsError("parse session/plugins_install_confirm params: %v", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/plugins_install_confirm requires sessionId")
+	}
+	if !validPluginScope(p.Scope) {
+		return nil, invalidParamsError("invalid scope %q: want \"global\" or \"project\"", p.Scope)
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if p.Scope == "project" && !rt.Trusted {
+		return nil, serverErrorf("project scope requires a trusted session")
+	}
+	staged, ok := m.takeScan(p.SessionID, p.ScanToken)
+	if !ok {
+		return nil, serverErrorf("no staged plugin scan %q for session %s", p.ScanToken, p.SessionID)
+	}
+	defer os.RemoveAll(staged.tempDir)
+
+	var storeDir, lockPath string
+	if p.Scope == "project" {
+		storeDir, lockPath = plugins.ProjectStoreDir(rt.WorkingDir), plugins.ProjectLockPath(rt.WorkingDir)
+	} else {
+		storeDir, lockPath = plugins.GlobalStoreDir(rt.HomeDir), plugins.GlobalLockPath(rt.HomeDir)
+	}
+	dest := filepath.Join(storeDir, staged.name)
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("create store dir: %v", err)}
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("clear existing install: %v", err)}
+	}
+	if err := plugins.CopyDir(staged.cloneDest, dest); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("install plugin: %v", err)}
+	}
+	hash, err := plugins.HashDir(dest)
+	if err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("hash installed plugin: %v", err)}
+	}
+	lf, err := plugins.ReadLockfile(lockPath)
+	if err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("read lockfile: %v", err)}
+	}
+	lf.Upsert(plugins.LockEntry{
+		Name: staged.name, Source: staged.source, Ref: staged.ref,
+		Commit: staged.commit, ContentHash: hash, InstalledAt: time.Now(),
+	})
+	if err := lf.Write(lockPath); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("write lockfile: %v", err)}
+	}
+	return PluginsInstallResult{Name: staged.name}, nil
+}

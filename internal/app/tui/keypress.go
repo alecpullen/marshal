@@ -101,6 +101,23 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.todoPanelMode = (m.todoPanelMode + 1) % todoPanelModeCount
 		m.updateViewportHeight()
 		return *m, nil, true
+	case "ctrl+s":
+		if !readlineShortcutAvailable() {
+			return *m, nil, false
+		}
+		// Release the mouse to the terminal (or take it back) for the
+		// session. Capture and native click-drag selection cannot coexist —
+		// the terminal delivers events to one or the other — so copying a
+		// block of output previously meant editing [tui].mouse_capture and
+		// restarting, or knowing the terminal's override modifier.
+		m.mouseReleased = !m.mouseReleased
+		verb := "released to the terminal — click-drag to select, keys to scroll (PgUp/PgDn/Ctrl+U/Ctrl+D/End)"
+		if !m.mouseReleased {
+			verb = "captured — wheel scrolls the transcript"
+		}
+		m.state.AddMessage(session.RoleSystem, "Mouse "+verb+". Ctrl+S to toggle.", session.ContentTypePlain)
+		m.refreshViewport()
+		return *m, nil, true
 	case "ctrl+b":
 		if !readlineShortcutAvailable() {
 			return *m, nil, false

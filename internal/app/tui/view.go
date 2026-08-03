@@ -60,7 +60,10 @@ func (m Model) View() tea.View {
 	// needs the terminal's override modifier (Option/Alt in iTerm2, Ghostty,
 	// Kitty, Terminal.app). With MouseModeNone the terminal owns the mouse
 	// entirely and scrolling is keyboard-only (PgUp/PgDn/Ctrl+U/Ctrl+D/End).
-	if m.state != nil && !m.state.Config.TUI.MouseCapture {
+	// Ctrl+S flips this per session without touching config, so a user who
+	// wants to copy a block of output can release the mouse and take it back
+	// again without editing a TOML file or restarting.
+	if m.mouseReleased || (m.state != nil && !m.state.Config.TUI.MouseCapture) {
 		v.MouseMode = tea.MouseModeNone
 	} else {
 		v.MouseMode = tea.MouseModeCellMotion

@@ -81,7 +81,18 @@ func (m Model) renderStatusLine(width int) string {
 	// that project path, worktree, and other identity segments remain
 	// visible. Approval/error indicators are never dropped this way.
 	if right != "" && m.state.PendingApproval() == nil && m.state.ProviderError() == nil {
-		if visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
+		fits := func(s string) bool {
+			return visibleRunes(left)+visibleRunes(s)+statusHorizontalPadding+statusMinGap <= width
+		}
+		// Shed the optional Ctrl+S mouse hint before sacrificing the whole
+		// cluster: dropping "clear queue" to keep a mouse-mode reminder is
+		// the wrong trade, and the cluster is one string that goes as a unit.
+		if !fits(right) {
+			hints := m.footerHints()
+			hints.SuppressMouseHint = true
+			right = help.Footer(hints)
+		}
+		if !fits(right) {
 			right = ""
 		}
 	}
@@ -285,5 +296,6 @@ func (m Model) footerHints() help.FooterHints {
 		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
 		TodosActive:          len(m.state.Todos()) > 0,
 		RailEnabled:          m.railEnabled(),
+		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 	}
 }

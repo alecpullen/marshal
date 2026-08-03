@@ -1029,3 +1029,52 @@ func TestCompletedToolCallShowsDisclosureGlyphWhenResultContentPresent(t *testin
 		t.Fatal("expected no disclosure glyph when there is nothing to expand")
 	}
 }
+
+// TestMarkdownEmitsRichStyling pins the actual SGR codes for bold, italic,
+// and heading colour. The pre-existing guard only asserted that *some* escape
+// sequence was present, which passes even when every one of these degrades to
+// plain text — the failure mode this package kept shipping.
+func TestMarkdownEmitsRichStyling(t *testing.T) {
+	out := renderAgentMarkdown("# Title\n\nSome **bold** and *italic* text.\n", 100)
+	for _, c := range []struct{ name, sgr string }{
+		{"bold", ";1m"},
+		{"italic", ";3m"},
+		{"H1 accent colour", "38;5;209"},
+	} {
+		if !strings.Contains(out, c.sgr) {
+			t.Errorf("markdown output lost %s (%q):\n%q", c.name, c.sgr, out)
+		}
+	}
+}
+
+// TestIndentedMarkdownStillRenders is the regression guard for the root cause
+// of raw "#" and "**" reaching the transcript: CommonMark reads a line
+// indented four or more spaces as a code block, and expandTabs turns one
+// leading tab into tabStop spaces before glamour ever sees the content.
+func TestIndentedMarkdownStillRenders(t *testing.T) {
+	cases := map[string]string{
+		"flush left": "# Title\n\n**bold** text\n",
+		"tab":        "\t# Title\n\n\t**bold** text\n",
+		"four space": "    # Title\n\n    **bold** text\n",
+		"two space":  "  # Title\n\n  **bold** text\n",
+	}
+	for name, src := range cases {
+		out := renderAgentMarkdown(expandTabs(src), 100)
+		if strings.Contains(out, "**") || strings.Contains(out, "# Title") {
+			t.Errorf("%s: raw markdown leaked to the transcript:\n%q", name, out)
+		}
+	}
+}
+
+// TestDedentPreservesRelativeIndent guards the other direction: the dedent
+// must not flatten nested structure, only the flat outer indent.
+func TestDedentPreservesRelativeIndent(t *testing.T) {
+	got := dedentMarkdown("    - outer\n      - nested\n")
+	if want := "- outer\n  - nested\n"; got != want {
+		t.Errorf("dedentMarkdown() = %q, want %q", got, want)
+	}
+	src := "# Flush\n\n    indented code\n"
+	if got := dedentMarkdown(src); got != src {
+		t.Errorf("dedentMarkdown() altered a flush-left document: %q", got)
+	}
+}

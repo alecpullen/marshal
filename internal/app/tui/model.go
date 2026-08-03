@@ -197,6 +197,13 @@ type Model struct {
 	rail *sidepanel.Rail
 	// railHidden is the session-only Ctrl+B override. Not persisted.
 	railHidden bool
+	// mouseReleased is the session-only Ctrl+S override that hands the mouse
+	// back to the terminal so click-drag text selection works without the
+	// terminal's modifier key. Not persisted; [tui].mouse_capture is the
+	// durable setting. Capture and native selection are mutually exclusive —
+	// the terminal cannot deliver events to both — so this is a toggle rather
+	// than something the two features can share.
+	mouseReleased bool
 	// railRepoStats is refreshed on turn boundaries, never during render.
 	railRepoStats sidepanel.RepoStats
 	// railTurns is the recent turn-metrics cache, refreshed when a turn

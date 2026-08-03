@@ -110,11 +110,61 @@ func renderMarkdownWithMargin(content string, width int, margin uint) (out strin
 	if r == nil {
 		return "", false
 	}
-	rendered, err := r.Render(content)
+	rendered, err := r.Render(dedentMarkdown(content))
 	if err != nil {
 		return "", false
 	}
 	return rendered, true
+}
+
+// dedentMarkdown strips the whitespace prefix common to every non-blank line
+// before the content reaches glamour.
+//
+// CommonMark treats any line indented four or more spaces as an indented code
+// block, and a code block renders "#" and "**" literally — so a response the
+// model happened to indent arrives in the transcript as raw markdown with the
+// syntax showing. expandTabs makes this worse rather than better: it runs
+// ahead of the markdown parser and turns a single leading tab into tabStop
+// spaces, which is always past the four-space threshold.
+//
+// The prefix is measured in bytes and removed uniformly, so indentation
+// *within* the document (nested lists, fenced code interiors) keeps its
+// relative shape; only the flat outer indent that misleads the parser goes.
+// Blank lines are ignored when measuring and left alone when stripping.
+//
+// A document whose first line is flush left has a common prefix of "" and is
+// returned untouched, which is the overwhelmingly common case.
+func dedentMarkdown(content string) string {
+	lines := strings.Split(content, "\n")
+	prefix := ""
+	found := false
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		if !found {
+			prefix, found = indent, true
+			continue
+		}
+		// Shrink to the longest shared prefix of the two indents.
+		n := min(len(prefix), len(indent))
+		i := 0
+		for i < n && prefix[i] == indent[i] {
+			i++
+		}
+		prefix = prefix[:i]
+		if prefix == "" {
+			return content
+		}
+	}
+	if !found || prefix == "" {
+		return content
+	}
+	for i, line := range lines {
+		lines[i] = strings.TrimPrefix(line, prefix)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // tabStop is the column interval a terminal advances a "\t" to.

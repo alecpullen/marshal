@@ -915,3 +915,30 @@ func TestChromeRailWidthTruncatesToWidth(t *testing.T) {
 		t.Fatalf("content not truncated to width: %d > 20", w)
 	}
 }
+
+// TestMouseToggleReleasesAndReclaims pins the Ctrl+S round trip. Mouse capture
+// and native click-drag selection are mutually exclusive, and the default has
+// flip-flopped in git history (39f0660 disabled capture for selection, 266f09e
+// re-enabled it for wheel scrolling) because each side was only reachable by
+// editing config and restarting. The toggle is what makes the default a
+// preference rather than a decision, so it is worth guarding.
+func TestMouseToggleReleasesAndReclaims(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("initial MouseMode = %v, want MouseModeCellMotion", got)
+	}
+
+	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if !handled {
+		t.Fatal("Ctrl+S was not handled")
+	}
+	m2 := mm.(Model)
+	if got := m2.View().MouseMode; got != tea.MouseModeNone {
+		t.Fatalf("after Ctrl+S MouseMode = %v, want MouseModeNone (native selection)", got)
+	}
+
+	mm, _, _ = m2.handleKeypress(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if got := mm.(Model).View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("after second Ctrl+S MouseMode = %v, want MouseModeCellMotion (wheel restored)", got)
+	}
+}

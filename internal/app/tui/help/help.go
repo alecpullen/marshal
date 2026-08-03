@@ -31,6 +31,18 @@ type FooterHints struct {
 	// RailEnabled is true when the side rail is configured and the terminal
 	// is wide enough, so the Ctrl+B toggle is actionable.
 	RailEnabled bool
+	// MouseReleased reports that the mouse currently belongs to the terminal
+	// (Ctrl+S). The hint's label flips on it: a user who has released the
+	// mouse needs to be told how to get wheel scrolling back, and a user who
+	// has not needs to be told selection is one key away.
+	MouseReleased bool
+	// SuppressMouseHint drops the Ctrl+S hint. The status line renders the
+	// hint cluster all-or-nothing — it is one right-aligned string, dropped
+	// whole when it will not fit — so an unconditional extra hint pushes the
+	// entire cluster (including "clear queue") off a narrow terminal. The
+	// caller retries with this set when the full cluster overflows, which
+	// makes the mouse hint the first thing shed rather than the last.
+	SuppressMouseHint bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -44,6 +56,12 @@ func Footer(h FooterHints) string {
 	// cheatsheet to the transcript). During approval/question/popup/edit
 	// forms ? is consumed by the form itself.
 	showHelpHint := !h.QuestionPending && !h.ApprovalPending && !h.PopupOpen && !h.EditingCommand
+
+	// The mouse hint is only actionable while idle, but it is appended after
+	// the queue hint rather than inside the idle branch: the footer is
+	// truncated to the frame width, and losing "clear queue" to a mouse-mode
+	// reminder is the wrong trade.
+	showMouseHint := false
 
 	var segs []string
 	if h.QuestionPending {
@@ -81,9 +99,17 @@ func Footer(h FooterHints) string {
 		if h.RailEnabled {
 			segs = append(segs, pair("Ctrl+B", "rail"))
 		}
+		showMouseHint = true
 	}
 	if h.QueueNonEmpty {
 		segs = append(segs, pair("Ctrl+X", "clear queue"))
+	}
+	if showMouseHint && !h.SuppressMouseHint {
+		if h.MouseReleased {
+			segs = append(segs, pair("Ctrl+S", "scroll"))
+		} else {
+			segs = append(segs, pair("Ctrl+S", "select"))
+		}
 	}
 	if showHelpHint {
 		segs = append(segs, pair("?", "help"))

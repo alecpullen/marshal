@@ -2239,3 +2239,131 @@ func runGit(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
+
+// capturingNotifier records every notify call so tests can assert on
+// which session/update kinds fired, in what order, without depending on
+// forward()'s own message/tool_call/mode_changed notifications.
+type capturingNotifier struct {
+	mu    sync.Mutex
+	calls []capturedNotify
+}
+
+type capturedNotify struct {
+	method string
+	params any
+}
+
+func (c *capturingNotifier) notify(method string, params any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, capturedNotify{method, params})
+	return nil
+}
+
+// telemetryCalls returns every session_telemetry Update payload seen, in
+// order.
+func (c *capturingNotifier) telemetryCalls() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []map[string]any
+	for _, call := range c.calls {
+		if call.method != "session/update" {
+			continue
+		}
+		p, ok := call.params.(SessionUpdateParams)
+		if !ok {
+			continue
+		}
+		if p.Update["kind"] == "session_telemetry" {
+			out = append(out, p.Update)
+		}
+	}
+	return out
+}
+
+func TestPromptTurnEmitsSessionTelemetryExactlyOnce(t *testing.T) {
+	state := session.New(config.Default(), "/tmp", time.Now(), session.Persistence{})
+	notifier := &capturingNotifier{}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					state.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypePlain)
+					return nil
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+				State:  state,
+			}, true
+		},
+		Notify: notifier.notify,
+	})
+
+	raw, _ := json.Marshal(PromptTurnParams{
+		SessionID: "sess_1",
+		Prompt:    []ContentBlock{{Type: "text", Text: "hi"}},
+	})
+	if _, err := manager.PromptTurn(context.Background(), raw); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+
+	calls := notifier.telemetryCalls()
+	if len(calls) != 1 {
+		t.Fatalf("session_telemetry notify count = %d, want 1 (calls: %+v)", len(calls), calls)
+	}
+	footer, ok := calls[0]["sessionFooter"].(TelemetrySessionFooter)
+	if !ok || footer.Turns != 1 {
+		t.Fatalf("sessionFooter = %+v (ok=%v), want Turns=1", calls[0]["sessionFooter"], ok)
+	}
+}
+
+func TestSDDStartEmitsSessionTelemetryEvenOnGate(t *testing.T) {
+	state := &session.State{}
+	state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "pick one"})
+	notifier := &capturingNotifier{}
+	factory := func(planPath string) AgentRunner {
+		return &fakeAgentRunner{run: func(ctx context.Context, goal string) error {
+			return pipeline.ErrHumanGateRequired
+		}}
+	}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID, BeginWork: identityBeginWork,
+				Events: pubsub.NewBroker[session.Event](), State: state,
+				PipelineFactory: factory,
+			}, true
+		},
+		Notify: notifier.notify,
+	})
+
+	raw, _ := json.Marshal(SDDStartParams{SessionID: "sess_1", PlanPath: "docs/plan.md"})
+	if _, err := manager.SDDStart(context.Background(), raw); err != nil {
+		t.Fatalf("SDDStart: %v", err)
+	}
+
+	if len(notifier.telemetryCalls()) != 1 {
+		t.Fatalf("session_telemetry notify count = %d, want 1 even though the run ended on a gate", len(notifier.telemetryCalls()))
+	}
+}
+
+func TestFinishTurnSkipsTelemetryWhenStateIsNil(t *testing.T) {
+	notifier := &capturingNotifier{}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: notifier.notify,
+	})
+	rt := &TurnRuntime{SessionID: "sess_1", State: nil}
+	slot := &activeTurn{}
+	res, err := manager.finishTurn("sess_1", rt, nil, slot, resultOrError)
+	if err != nil {
+		t.Fatalf("finishTurn: %v", err)
+	}
+	if res.(PromptTurnResult).StopReason != "end_turn" {
+		t.Fatalf("finishTurn result = %+v, want end_turn", res)
+	}
+	if len(notifier.telemetryCalls()) != 0 {
+		t.Fatal("finishTurn emitted telemetry despite rt.State being nil")
+	}
+}

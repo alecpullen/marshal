@@ -581,11 +581,11 @@ func (m *TurnManager) runTurn(
 		select {
 		case ev, ok := <-sub:
 			if !ok {
-				return resultOf(runErrVal, slot)
+				return m.finishTurn(sessionID, rt, runErrVal, slot, resultOf)
 			}
 			forward(ev)
 		default:
-			return resultOf(runErrVal, slot)
+			return m.finishTurn(sessionID, rt, runErrVal, slot, resultOf)
 		}
 	}
 }
@@ -785,6 +785,50 @@ func (m *TurnManager) buildChangedFiles(sessionID string, state *session.State) 
 		out[i] = TelemetryChangedFile{Path: f.Path, Added: f.Added, Removed: f.Removed}
 	}
 	return out
+}
+
+// buildTelemetry assembles the full session_telemetry payload. Every
+// top-level field is always present (never a nil-marshaling-to-null
+// slice), so a client can treat this as a full-replace snapshot.
+func (m *TurnManager) buildTelemetry(sessionID string, state *session.State) map[string]any {
+	rules := state.SessionRules()
+	if rules == nil {
+		rules = []string{}
+	}
+	return map[string]any{
+		"kind":          "session_telemetry",
+		"context":       buildTelemetryContext(state),
+		"changedFiles":  m.buildChangedFiles(sessionID, state),
+		"toolStats":     buildToolStats(state.AuditLog()),
+		"rules":         rules,
+		"sessionFooter": buildSessionFooter(state),
+	}
+}
+
+// finishTurn resolves a turn's result via resultOf, then fires a
+// best-effort session_telemetry notification built from rt.State before
+// returning. A telemetry notify failure is logged, never surfaced as the
+// turn's own error — the turn's result is already decided by the time
+// this runs. Fires on every outcome (end_turn, cancelled, and SDD's
+// gate) since state may have changed even when a run didn't reach a
+// terminal success.
+func (m *TurnManager) finishTurn(
+	sessionID string,
+	rt *TurnRuntime,
+	runErrVal error,
+	slot *activeTurn,
+	resultOf func(runErr error, slot *activeTurn) (any, error),
+) (any, error) {
+	result, err := resultOf(runErrVal, slot)
+	if rt.State != nil {
+		if notifyErr := m.notify("session/update", SessionUpdateParams{
+			SessionID: sessionID,
+			Update:    m.buildTelemetry(sessionID, rt.State),
+		}); notifyErr != nil {
+			slog.Default().Warn("acp: session_telemetry notify failed", "session", sessionID, "err", notifyErr)
+		}
+	}
+	return result, err
 }
 
 // SDDAnswerParams is the JSON-RPC body for session/sdd_answer.

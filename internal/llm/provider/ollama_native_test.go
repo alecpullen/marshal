@@ -315,6 +315,31 @@ func TestOllamaCapabilityProbeKeepsToolsWhenSupported(t *testing.T) {
 	}
 }
 
+func TestOllamaModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tags" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:7b","model":"qwen2.5-coder:7b","size":4683071232,"details":{"family":"qwen2","parameter_size":"7.6B"}},{"name":"llama3.1:8b","model":"llama3.1:8b","size":4661211424,"details":{"family":"llama","parameter_size":"8.0B"}}]}`))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("got %d models, want 2", len(models))
+	}
+	if models[0].ID != "qwen2.5-coder:7b" || models[0].OwnedBy != "ollama" {
+		t.Fatalf("models[0] = %+v", models[0])
+	}
+	if models[1].ID != "llama3.1:8b" {
+		t.Fatalf("models[1] = %+v", models[1])
+	}
+}
+
 func TestOllamaCapabilityProbeFallbackOnOldServer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

@@ -423,7 +423,47 @@ func (p *OllamaNative) probeModelCaps(ctx context.Context, model string) ollamaM
 	return caps
 }
 
-// Models is implemented in Task 6.
+// --- model listing ---
+
+type ollamaTagsResponse struct {
+	Models []ollamaTagModel `json:"models"`
+}
+
+type ollamaTagModel struct {
+	Name string `json:"name"`
+}
+
+// Models lists locally pulled models via GET /api/tags. The endpoint
+// reports no context-window metadata, so limit-table enrichment applies
+// when a table is configured, exactly as in OpenAICompatible.Models.
 func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
-	return nil, errors.New("provider: OllamaNative.Models not yet implemented")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/api/tags", nil)
+	if err != nil {
+		return nil, fmt.Errorf("provider %q: build models request: %w", p.name, err)
+	}
+	p.setHeaders(req)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, p.connHint(fmt.Errorf("provider %q: models request failed: %w", p.name, err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, p.httpError(resp)
+	}
+	var parsed ollamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("provider %q: decode models response: %w", p.name, err)
+	}
+	models := make([]schema.ModelInfo, 0, len(parsed.Models))
+	for _, m := range parsed.Models {
+		info := schema.ModelInfo{ID: m.Name, OwnedBy: "ollama"}
+		if p.limitsTable != nil {
+			if lim, ok := p.limitsTable.Lookup(p.name, m.Name); ok {
+				info.ContextWindow = lim.ContextWindow
+				info.MaxOutputTokens = lim.MaxOutputTokens
+			}
+		}
+		models = append(models, info)
+	}
+	return models, nil
 }

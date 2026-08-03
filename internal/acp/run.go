@@ -93,6 +93,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					"sessionTelemetry":      map[string]any{},
 					"memoryAccess":          map[string]any{},
 					"agentsRoster":          map[string]any{},
+					"skillsAccess":          map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{
@@ -177,7 +178,6 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 		Perms:     &serverPermissionClient{server: srv},
 		Questions: &serverQuestionClient{server: srv},
 	})
-	manager.SetTurnCanceller(turns.CancelAndWait)
 	srv.Handle("session/prompt", turns.PromptTurn)
 	srv.Handle("session/set_mode", turns.SetMode)
 	srv.Handle("session/steer", turns.Steer)
@@ -216,6 +216,28 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	srv.Handle("session/memory_delete", mem.MemoryDelete)
 	srv.Handle("session/memory_set_confidence", mem.MemorySetConfidence)
 	srv.Handle("session/agents_roster", mem.AgentsRoster)
+
+	skillsMgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
+			rt, ok := manager.Get(sessionID)
+			if !ok || rt == nil {
+				return nil, false
+			}
+			return &SkillsRuntime{HomeDir: rt.HomeDir, WorkingDir: rt.WorkingDir, State: rt.State}, true
+		},
+	})
+	srv.Handle("session/skills_list", skillsMgr.SkillsList)
+	srv.Handle("session/skills_install_preview", skillsMgr.SkillsInstallPreview)
+	srv.Handle("session/skills_install_confirm", skillsMgr.SkillsInstallConfirm)
+	srv.Handle("session/skills_install_discard", skillsMgr.SkillsInstallDiscard)
+	srv.Handle("session/skills_remove", skillsMgr.SkillsRemove)
+	srv.Handle("session/skills_load", skillsMgr.SkillsLoad)
+
+	manager.SetTurnCanceller(func(ctx context.Context, sessionID string) error {
+		err := turns.CancelAndWait(ctx, sessionID)
+		skillsMgr.CloseSession(sessionID)
+		return err
+	})
 
 	serveErr := srv.Serve(ctx)
 

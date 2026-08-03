@@ -990,6 +990,66 @@ func TestACPWireMemoryListAndDelete(t *testing.T) {
 	}
 }
 
+// --- Test 11: skills install preview/confirm/list wire-level integration ---
+
+// TestACPWireSkillsInstallPreviewConfirmAndList wires a SkillsManager
+// with a Lookup that returns a SkillsRuntime backed by temp dirs, then
+// exercises session/skills_install_preview, session/skills_install_confirm,
+// and session/skills_list over the actual JSON wire transport.
+func TestACPWireSkillsInstallPreviewConfirmAndList(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	srcDir := t.TempDir()
+	source := writeTestSkillFile(t, srcDir, "wire-skill")
+
+	skillsMgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
+			return &SkillsRuntime{HomeDir: home, WorkingDir: work}, true
+		},
+	})
+
+	h := newWireHarness(t, func(srv *Server) {
+		srv.Handle("session/skills_install_preview", skillsMgr.SkillsInstallPreview)
+		srv.Handle("session/skills_install_confirm", skillsMgr.SkillsInstallConfirm)
+		srv.Handle("session/skills_list", skillsMgr.SkillsList)
+	})
+	defer h.close(t)
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(1), "method": "session/skills_install_preview",
+		"params": map[string]any{"sessionId": "sess_wire", "source": source},
+	})
+	resp := readResponse(t, h, "1")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/skills_install_preview error: %+v", errObj)
+	}
+	res, _ := frameResult(resp).(map[string]any)
+	token, _ := res["stagingToken"].(string)
+	if token == "" {
+		t.Fatalf("session/skills_install_preview result = %v, missing stagingToken", res)
+	}
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(2), "method": "session/skills_install_confirm",
+		"params": map[string]any{"sessionId": "sess_wire", "stagingToken": token, "scope": "global"},
+	})
+	resp = readResponse(t, h, "2")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/skills_install_confirm error: %+v", errObj)
+	}
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(3), "method": "session/skills_list",
+		"params": map[string]any{"sessionId": "sess_wire"},
+	})
+	resp = readResponse(t, h, "3")
+	res, _ = frameResult(resp).(map[string]any)
+	list, _ := res["skills"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("session/skills_list after confirm = %v, want one entry", res["skills"])
+	}
+}
+
 // randPerm returns a pseudo-random permutation of [0,n). The seed is
 // derived from time.Now so the order varies across test runs, but the
 // function is deterministic given a fixed wall clock.

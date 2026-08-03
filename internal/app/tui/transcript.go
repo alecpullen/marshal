@@ -1016,7 +1016,7 @@ func renderWelcomeBanner(width int) string {
 	_ = width
 	dot := lipgloss.NewStyle().Foreground(accentColor).Render(glyph.Brand)
 	brand := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("marshal")
-	tagline := mutedStyle().Render("local-first coding agent")
+	tagline := mutedStyle().Render("local-friendly coding agent")
 	cta := mutedStyle().Render("Type a question, or " + lipgloss.NewStyle().Bold(true).Render("/") + " for commands.")
 	return "  " + dot + " " + brand + dimSeparator + tagline + "\n\n  " + cta + "\n\n"
 }

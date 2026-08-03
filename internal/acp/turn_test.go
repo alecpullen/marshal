@@ -15,6 +15,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/contextpack"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
@@ -2068,5 +2069,80 @@ func TestSDDStartRejectsWhenFactoryReturnsNil(t *testing.T) {
 	_, err := manager.SDDStart(context.Background(), raw)
 	if err == nil {
 		t.Fatal("SDDStart when factory returns nil: got nil error, want an error")
+	}
+}
+
+func TestBuildTelemetryContextReflectsMessagesAndPack(t *testing.T) {
+	state := session.New(config.Default(), "/tmp", time.Now(), session.Persistence{})
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
+	state.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Title: "repo card"}, {Title: "memory"}},
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 500, MaxTokens: 8000},
+	})
+
+	got := buildTelemetryContext(state)
+	want := TelemetryContext{
+		Messages: 2, MessageChars: len("hello") + len("hi there"),
+		PackTokens: 500, PackMaxTokens: 8000, PackSections: 2,
+	}
+	if got != want {
+		t.Errorf("buildTelemetryContext = %+v, want %+v", got, want)
+	}
+}
+
+func TestBuildTelemetryContextEmptyState(t *testing.T) {
+	got := buildTelemetryContext(&session.State{})
+	want := TelemetryContext{}
+	if got != want {
+		t.Errorf("buildTelemetryContext(empty) = %+v, want %+v", got, want)
+	}
+}
+
+func TestBuildToolStatsAggregatesByToolMostCalledFirst(t *testing.T) {
+	events := []registry.AuditEvent{
+		{ToolName: "read", Duration: 10 * time.Millisecond},
+		{ToolName: "shell.run", Duration: 800 * time.Millisecond, Error: "exit 1"},
+		{ToolName: "read", Duration: 20 * time.Millisecond},
+		{ToolName: "read", Duration: 5 * time.Millisecond},
+	}
+	got := buildToolStats(events)
+	want := []TelemetryToolStat{
+		{Name: "read", Calls: 3, Errors: 0, SlowestMs: 20},
+		{Name: "shell.run", Calls: 1, Errors: 1, SlowestMs: 800},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("buildToolStats returned %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("buildToolStats[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestBuildToolStatsEmptyReturnsEmptySliceNotNil(t *testing.T) {
+	got := buildToolStats(nil)
+	if got == nil {
+		t.Fatal("buildToolStats(nil) = nil, want a non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("buildToolStats(nil) = %+v, want empty", got)
+	}
+}
+
+func TestBuildSessionFooterCountsFinalAssistantMessagesAndLastTurnTokens(t *testing.T) {
+	state := session.New(config.Default(), "/tmp", time.Now(), session.Persistence{})
+	state.AddMessage(session.RoleUser, "turn 1", session.ContentTypePlain)
+	state.AddMessageFinal(session.RoleAssistant, "answer 1", session.ContentTypePlain)
+	state.AddMessage(session.RoleUser, "turn 2", session.ContentTypePlain)
+	state.AddMessageFinal(session.RoleAssistant, "answer 2", session.ContentTypePlain)
+	state.SetTurnUsage(1234)
+	state.SetTurnContextWindow(8000)
+
+	got := buildSessionFooter(state)
+	want := TelemetrySessionFooter{Turns: 2, LastTurnTokensUsed: 1234, LastTurnTokensWindow: 8000}
+	if got != want {
+		t.Errorf("buildSessionFooter = %+v, want %+v", got, want)
 	}
 }

@@ -871,6 +871,65 @@ func TestACPWireSDDStartGateAndAnswer(t *testing.T) {
 	}
 }
 
+// --- Test 9: session_telemetry wire-level integration ---
+
+// TestACPWirePromptTurnIncludesSessionTelemetry sends a session/prompt
+// over the real JSON transport and confirms a session_telemetry
+// session/update notification arrives before the prompt's terminal
+// response.
+func TestACPWirePromptTurnIncludesSessionTelemetry(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	broker := pubsub.NewBroker[session.Event]()
+	runFn := RunnerFunc(func(ctx context.Context, prompt string) error {
+		state.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypePlain)
+		return nil
+	})
+
+	h := newWireHarness(t, func(srv *Server) {
+		turns := NewTurnManager(TurnManagerConfig{
+			Lookup: func(sessionID string) (*TurnRuntime, bool) {
+				return &TurnRuntime{
+					SessionID: sessionID, BeginWork: identityBeginWork,
+					Run: runFn, Events: broker, State: state,
+				}, true
+			},
+			Notify: srv.Notify,
+		})
+		srv.Handle("session/prompt", turns.PromptTurn)
+	})
+	defer h.close(t)
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(1), "method": "session/prompt",
+		"params": map[string]any{
+			"sessionId": "sess_telemetry",
+			"prompt":    []map[string]any{{"type": "text", "text": "go"}},
+		},
+	})
+
+	foundTelemetry := false
+	for !foundTelemetry {
+		f := h.next(t)
+		if frameMethod(f) != "session/update" {
+			continue
+		}
+		params, _ := f["params"].(map[string]any)
+		update, _ := params["update"].(map[string]any)
+		if update["kind"] == "session_telemetry" {
+			foundTelemetry = true
+			if _, ok := update["sessionFooter"]; !ok {
+				t.Fatal("session_telemetry update missing sessionFooter field")
+			}
+		}
+		if frameID(f) == "1" {
+			// Reached the prompt's own terminal response without seeing
+			// telemetry first — fail with a clear message rather than
+			// looping forever.
+			t.Fatal("saw the session/prompt response before any session_telemetry update")
+		}
+	}
+}
+
 // randPerm returns a pseudo-random permutation of [0,n). The seed is
 // derived from time.Now so the order varies across test runs, but the
 // function is deterministic given a fixed wall clock.

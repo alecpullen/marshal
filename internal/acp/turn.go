@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,9 +14,12 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/changedfiles"
+	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
+	"marshal/internal/tools/registry"
 )
 
 // PromptTurnParams is the JSON-RPC body for session/prompt.
@@ -129,6 +133,14 @@ type TurnManager struct {
 	// SDDAnswer can resume the same instance a human gate paused.
 	pipelineRunnersMu sync.Mutex
 	pipelineRunners   map[string]*sddRun
+
+	// baseRefsMu guards baseRefs, the per-session fixed diff base for
+	// session_telemetry's changed-files section — computed once on first
+	// use and cached, mirroring the TUI's railBaseRef (fixed at
+	// construction, not recomputed against current HEAD on every refresh,
+	// since SDD/swarm runs make commits mid-session).
+	baseRefsMu sync.Mutex
+	baseRefs   map[string]string
 }
 
 // sddRun is one session's in-flight (possibly gated) SDD run.
@@ -150,6 +162,7 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		perms:           cfg.Perms,
 		activeTurns:     map[string]*activeTurn{},
 		pipelineRunners: map[string]*sddRun{},
+		baseRefs:        map[string]string{},
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)
@@ -568,11 +581,11 @@ func (m *TurnManager) runTurn(
 		select {
 		case ev, ok := <-sub:
 			if !ok {
-				return resultOf(runErrVal, slot)
+				return m.finishTurn(sessionID, rt, runErrVal, slot, resultOf)
 			}
 			forward(ev)
 		default:
-			return resultOf(runErrVal, slot)
+			return m.finishTurn(sessionID, rt, runErrVal, slot, resultOf)
 		}
 	}
 }
@@ -648,6 +661,174 @@ func (m *TurnManager) finishSDDResult(sessionID string, rt *TurnRuntime, res any
 	delete(m.pipelineRunners, sessionID)
 	m.pipelineRunnersMu.Unlock()
 	return result, nil
+}
+
+// TelemetryContext is the "context" section of a session_telemetry
+// session/update payload.
+type TelemetryContext struct {
+	Messages      int `json:"messages"`
+	MessageChars  int `json:"messageChars"`
+	PackTokens    int `json:"packTokens"`
+	PackMaxTokens int `json:"packMaxTokens"`
+	PackSections  int `json:"packSections"`
+}
+
+func buildTelemetryContext(state *session.State) TelemetryContext {
+	msgs := state.Messages()
+	var chars int
+	for _, msg := range msgs {
+		chars += len(msg.Content)
+	}
+	pack := state.ContextPack()
+	return TelemetryContext{
+		Messages:      len(msgs),
+		MessageChars:  chars,
+		PackTokens:    pack.TokenUsage.EstimatedTokens,
+		PackMaxTokens: pack.TokenUsage.MaxTokens,
+		PackSections:  len(pack.Sections),
+	}
+}
+
+// TelemetryToolStat is one entry in the "toolStats" section.
+type TelemetryToolStat struct {
+	Name      string `json:"name"`
+	Calls     int    `json:"calls"`
+	Errors    int    `json:"errors"`
+	SlowestMs int64  `json:"slowestMs"`
+}
+
+// buildToolStats aggregates an audit log by tool name, most-called first
+// (ties break alphabetically), the same ordering as the TUI's
+// sidepanel.ToolStats — reimplemented here rather than imported to keep
+// internal/acp free of any internal/app/tui/sidepanel dependency.
+func buildToolStats(events []registry.AuditEvent) []TelemetryToolStat {
+	idx := map[string]*TelemetryToolStat{}
+	for _, e := range events {
+		s, ok := idx[e.ToolName]
+		if !ok {
+			s = &TelemetryToolStat{Name: e.ToolName}
+			idx[e.ToolName] = s
+		}
+		s.Calls++
+		if e.Error != "" {
+			s.Errors++
+		}
+		if ms := e.Duration.Milliseconds(); ms > s.SlowestMs {
+			s.SlowestMs = ms
+		}
+	}
+	out := make([]TelemetryToolStat, 0, len(idx))
+	for _, s := range idx {
+		out = append(out, *s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Calls != out[j].Calls {
+			return out[i].Calls > out[j].Calls
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// TelemetrySessionFooter is the "sessionFooter" section. Unlike the TUI's
+// DB-backed SessionSection (cumulative tokens/elapsed across up to 24
+// turns), this is built entirely from in-memory session.State — no DB
+// dependency was added to TurnRuntime for this. Turns counts completed
+// assistant turns; token fields reflect only the most recent turn.
+type TelemetrySessionFooter struct {
+	Turns                int `json:"turns"`
+	LastTurnTokensUsed   int `json:"lastTurnTokensUsed"`
+	LastTurnTokensWindow int `json:"lastTurnTokensWindow"`
+}
+
+func buildSessionFooter(state *session.State) TelemetrySessionFooter {
+	var turns int
+	for _, msg := range state.Messages() {
+		if msg.Role == session.RoleAssistant && msg.Final {
+			turns++
+		}
+	}
+	used, window := state.TurnUsage()
+	return TelemetrySessionFooter{
+		Turns:                turns,
+		LastTurnTokensUsed:   used,
+		LastTurnTokensWindow: window,
+	}
+}
+
+// baseRefFor returns the fixed commit sessionID's changed-files diff is
+// computed against, computing and caching it via gitinfo.HeadSHA on first
+// use.
+func (m *TurnManager) baseRefFor(sessionID, workingDir string) string {
+	m.baseRefsMu.Lock()
+	defer m.baseRefsMu.Unlock()
+	if ref, ok := m.baseRefs[sessionID]; ok {
+		return ref
+	}
+	ref := gitinfo.HeadSHA(workingDir)
+	m.baseRefs[sessionID] = ref
+	return ref
+}
+
+// TelemetryChangedFile is one entry in the "changedFiles" section.
+type TelemetryChangedFile struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+}
+
+func (m *TurnManager) buildChangedFiles(sessionID string, state *session.State) []TelemetryChangedFile {
+	ref := m.baseRefFor(sessionID, state.WorkingDir)
+	files := changedfiles.Read(state.WorkingDir, ref)
+	out := make([]TelemetryChangedFile, len(files))
+	for i, f := range files {
+		out[i] = TelemetryChangedFile{Path: f.Path, Added: f.Added, Removed: f.Removed}
+	}
+	return out
+}
+
+// buildTelemetry assembles the full session_telemetry payload. Every
+// top-level field is always present (never a nil-marshaling-to-null
+// slice), so a client can treat this as a full-replace snapshot.
+func (m *TurnManager) buildTelemetry(sessionID string, state *session.State) map[string]any {
+	rules := state.SessionRules()
+	if rules == nil {
+		rules = []string{}
+	}
+	return map[string]any{
+		"kind":          "session_telemetry",
+		"context":       buildTelemetryContext(state),
+		"changedFiles":  m.buildChangedFiles(sessionID, state),
+		"toolStats":     buildToolStats(state.AuditLog()),
+		"rules":         rules,
+		"sessionFooter": buildSessionFooter(state),
+	}
+}
+
+// finishTurn resolves a turn's result via resultOf, then fires a
+// best-effort session_telemetry notification built from rt.State before
+// returning. A telemetry notify failure is logged, never surfaced as the
+// turn's own error — the turn's result is already decided by the time
+// this runs. Fires on every outcome (end_turn, cancelled, and SDD's
+// gate) since state may have changed even when a run didn't reach a
+// terminal success.
+func (m *TurnManager) finishTurn(
+	sessionID string,
+	rt *TurnRuntime,
+	runErrVal error,
+	slot *activeTurn,
+	resultOf func(runErr error, slot *activeTurn) (any, error),
+) (any, error) {
+	result, err := resultOf(runErrVal, slot)
+	if rt.State != nil {
+		if notifyErr := m.notify("session/update", SessionUpdateParams{
+			SessionID: sessionID,
+			Update:    m.buildTelemetry(sessionID, rt.State),
+		}); notifyErr != nil {
+			slog.Default().Warn("acp: session_telemetry notify failed", "session", sessionID, "err", notifyErr)
+		}
+	}
+	return result, err
 }
 
 // SDDAnswerParams is the JSON-RPC body for session/sdd_answer.

@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +18,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/contextpack"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
@@ -2068,5 +2072,298 @@ func TestSDDStartRejectsWhenFactoryReturnsNil(t *testing.T) {
 	_, err := manager.SDDStart(context.Background(), raw)
 	if err == nil {
 		t.Fatal("SDDStart when factory returns nil: got nil error, want an error")
+	}
+}
+
+func TestBuildTelemetryContextReflectsMessagesAndPack(t *testing.T) {
+	state := session.New(config.Default(), "/tmp", time.Now(), session.Persistence{})
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "hi there", session.ContentTypePlain)
+	state.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Title: "repo card"}, {Title: "memory"}},
+		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 500, MaxTokens: 8000},
+	})
+
+	got := buildTelemetryContext(state)
+	want := TelemetryContext{
+		Messages: 2, MessageChars: len("hello") + len("hi there"),
+		PackTokens: 500, PackMaxTokens: 8000, PackSections: 2,
+	}
+	if got != want {
+		t.Errorf("buildTelemetryContext = %+v, want %+v", got, want)
+	}
+}
+
+func TestBuildTelemetryContextEmptyState(t *testing.T) {
+	got := buildTelemetryContext(&session.State{})
+	want := TelemetryContext{}
+	if got != want {
+		t.Errorf("buildTelemetryContext(empty) = %+v, want %+v", got, want)
+	}
+}
+
+func TestBuildToolStatsAggregatesByToolMostCalledFirst(t *testing.T) {
+	events := []registry.AuditEvent{
+		{ToolName: "read", Duration: 10 * time.Millisecond},
+		{ToolName: "shell.run", Duration: 800 * time.Millisecond, Error: "exit 1"},
+		{ToolName: "read", Duration: 20 * time.Millisecond},
+		{ToolName: "read", Duration: 5 * time.Millisecond},
+	}
+	got := buildToolStats(events)
+	want := []TelemetryToolStat{
+		{Name: "read", Calls: 3, Errors: 0, SlowestMs: 20},
+		{Name: "shell.run", Calls: 1, Errors: 1, SlowestMs: 800},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("buildToolStats returned %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("buildToolStats[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestBuildToolStatsEmptyReturnsEmptySliceNotNil(t *testing.T) {
+	got := buildToolStats(nil)
+	if got == nil {
+		t.Fatal("buildToolStats(nil) = nil, want a non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("buildToolStats(nil) = %+v, want empty", got)
+	}
+}
+
+func TestBuildSessionFooterCountsFinalAssistantMessagesAndLastTurnTokens(t *testing.T) {
+	state := session.New(config.Default(), "/tmp", time.Now(), session.Persistence{})
+	state.AddMessage(session.RoleUser, "turn 1", session.ContentTypePlain)
+	state.AddMessageFinal(session.RoleAssistant, "answer 1", session.ContentTypePlain)
+	state.AddMessage(session.RoleUser, "turn 2", session.ContentTypePlain)
+	state.AddMessageFinal(session.RoleAssistant, "answer 2", session.ContentTypePlain)
+	state.SetTurnUsage(1234)
+	state.SetTurnContextWindow(8000)
+
+	got := buildSessionFooter(state)
+	want := TelemetrySessionFooter{Turns: 2, LastTurnTokensUsed: 1234, LastTurnTokensWindow: 8000}
+	if got != want {
+		t.Errorf("buildSessionFooter = %+v, want %+v", got, want)
+	}
+}
+
+func TestBaseRefForCachesFirstValuePerSession(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir) // helper added below; skips the test if git is unavailable
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	first := manager.baseRefFor("sess_1", dir)
+	if first == "" {
+		t.Fatal("baseRefFor returned empty ref for a real git repo")
+	}
+
+	// Make a commit — if baseRefFor recomputed HeadSHA on every call, the
+	// second call would return the new commit instead of the cached one.
+	runGit(t, dir, "commit", "--allow-empty", "-m", "second commit")
+
+	second := manager.baseRefFor("sess_1", dir)
+	if second != first {
+		t.Fatalf("baseRefFor second call = %q, want cached %q (unchanged despite a new commit)", second, first)
+	}
+
+	// A different session ID gets its own cache entry, computed fresh.
+	third := manager.baseRefFor("sess_2", dir)
+	if third == first {
+		t.Fatal("baseRefFor for a different session returned the stale sess_1 value instead of computing fresh")
+	}
+}
+
+func TestBuildChangedFilesReflectsWorkingTreeDiff(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	state := &session.State{}
+	state.WorkingDir = dir // confirm this is a settable field, not constructor-only, before writing this line
+
+	// Establish the base ref before making any changes.
+	base := manager.baseRefFor("sess_1", dir)
+	if base == "" {
+		t.Fatal("expected a non-empty base ref")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("line1\nline2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "new.txt")
+
+	got := manager.buildChangedFiles("sess_1", state)
+	if len(got) != 1 || got[0].Path != "new.txt" || got[0].Added != 2 {
+		t.Fatalf("buildChangedFiles = %+v, want one entry for new.txt with Added=2", got)
+	}
+}
+
+func TestBuildChangedFilesEmptyReturnsEmptySliceNotNil(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	got := manager.buildChangedFiles("sess_nonexistent_dir", &session.State{})
+	if got == nil {
+		t.Fatal("buildChangedFiles = nil, want a non-nil empty slice")
+	}
+}
+
+// initGitRepo creates a minimal git repo with one commit in dir, skipping
+// the test if git is unavailable. Shared by base-ref/changed-files tests.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "t@t")
+	runGit(t, dir, "config", "user.name", "t")
+	runGit(t, dir, "commit", "--allow-empty", "-m", "initial")
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// capturingNotifier records every notify call so tests can assert on
+// which session/update kinds fired, in what order, without depending on
+// forward()'s own message/tool_call/mode_changed notifications.
+type capturingNotifier struct {
+	mu    sync.Mutex
+	calls []capturedNotify
+}
+
+type capturedNotify struct {
+	method string
+	params any
+}
+
+func (c *capturingNotifier) notify(method string, params any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, capturedNotify{method, params})
+	return nil
+}
+
+// telemetryCalls returns every session_telemetry Update payload seen, in
+// order.
+func (c *capturingNotifier) telemetryCalls() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []map[string]any
+	for _, call := range c.calls {
+		if call.method != "session/update" {
+			continue
+		}
+		p, ok := call.params.(SessionUpdateParams)
+		if !ok {
+			continue
+		}
+		if p.Update["kind"] == "session_telemetry" {
+			out = append(out, p.Update)
+		}
+	}
+	return out
+}
+
+func TestPromptTurnEmitsSessionTelemetryExactlyOnce(t *testing.T) {
+	state := session.New(config.Default(), "/tmp", time.Now(), session.Persistence{})
+	notifier := &capturingNotifier{}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					state.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypePlain)
+					return nil
+				}),
+				Events: pubsub.NewBroker[session.Event](),
+				State:  state,
+			}, true
+		},
+		Notify: notifier.notify,
+	})
+
+	raw, _ := json.Marshal(PromptTurnParams{
+		SessionID: "sess_1",
+		Prompt:    []ContentBlock{{Type: "text", Text: "hi"}},
+	})
+	if _, err := manager.PromptTurn(context.Background(), raw); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+
+	calls := notifier.telemetryCalls()
+	if len(calls) != 1 {
+		t.Fatalf("session_telemetry notify count = %d, want 1 (calls: %+v)", len(calls), calls)
+	}
+	footer, ok := calls[0]["sessionFooter"].(TelemetrySessionFooter)
+	if !ok || footer.Turns != 1 {
+		t.Fatalf("sessionFooter = %+v (ok=%v), want Turns=1", calls[0]["sessionFooter"], ok)
+	}
+}
+
+func TestSDDStartEmitsSessionTelemetryEvenOnGate(t *testing.T) {
+	state := &session.State{}
+	state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "pick one"})
+	notifier := &capturingNotifier{}
+	factory := func(planPath string) AgentRunner {
+		return &fakeAgentRunner{run: func(ctx context.Context, goal string) error {
+			return pipeline.ErrHumanGateRequired
+		}}
+	}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID, BeginWork: identityBeginWork,
+				Events: pubsub.NewBroker[session.Event](), State: state,
+				PipelineFactory: factory,
+			}, true
+		},
+		Notify: notifier.notify,
+	})
+
+	raw, _ := json.Marshal(SDDStartParams{SessionID: "sess_1", PlanPath: "docs/plan.md"})
+	if _, err := manager.SDDStart(context.Background(), raw); err != nil {
+		t.Fatalf("SDDStart: %v", err)
+	}
+
+	if len(notifier.telemetryCalls()) != 1 {
+		t.Fatalf("session_telemetry notify count = %d, want 1 even though the run ended on a gate", len(notifier.telemetryCalls()))
+	}
+}
+
+func TestFinishTurnSkipsTelemetryWhenStateIsNil(t *testing.T) {
+	notifier := &capturingNotifier{}
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: notifier.notify,
+	})
+	rt := &TurnRuntime{SessionID: "sess_1", State: nil}
+	slot := &activeTurn{}
+	res, err := manager.finishTurn("sess_1", rt, nil, slot, resultOrError)
+	if err != nil {
+		t.Fatalf("finishTurn: %v", err)
+	}
+	if res.(PromptTurnResult).StopReason != "end_turn" {
+		t.Fatalf("finishTurn result = %+v, want end_turn", res)
+	}
+	if len(notifier.telemetryCalls()) != 0 {
+		t.Fatal("finishTurn emitted telemetry despite rt.State being nil")
 	}
 }

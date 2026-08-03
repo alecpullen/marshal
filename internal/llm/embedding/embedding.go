@@ -1,4 +1,4 @@
-// Package embedding provides Marshal's local-first text embedding capability:
+// Package embedding provides Marshal's local-friendly text embedding capability:
 // an Embedder abstraction plus Ollama-native and OpenAI-compatible backends.
 // Embedders are NOT safe for concurrent use (they cache the vector dimension
 // after the first embed); callers serialize or construct one per worker.

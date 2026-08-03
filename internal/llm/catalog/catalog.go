@@ -1,4 +1,4 @@
-// Package catalog holds Marshal's curated, local-first table of well-known
+// Package catalog holds Marshal's curated, local-friendly table of well-known
 // model context windows and max output tokens. It is a small Go map, never a
 // network fetch (docs/12 F12 R1). Unknown models resolve to (0, 0) so the
 // runner keeps its configured budget rather than guessing.

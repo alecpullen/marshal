@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -306,6 +307,67 @@ func (m *SkillsManager) SkillsInstallDiscard(ctx context.Context, params json.Ra
 	}
 	os.RemoveAll(staged.tempDir)
 	return map[string]any{}, nil
+}
+
+// SkillsLoadParams is the JSON-RPC body for session/skills_load.
+type SkillsLoadParams struct {
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
+}
+
+// SkillsLoad handles session/skills_load. Builds a fresh index from disk
+// on every call (not a cached index), matching the TUI's own "Load now"
+// action (internal/app/tui/skills/panel.go's activeIndex()) — so a
+// just-confirmed install is loadable immediately, with no cache
+// invalidation step to worry about.
+func (m *SkillsManager) SkillsLoad(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SkillsLoadParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, invalidParamsError("parse session/skills_load params: %v", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/skills_load requires sessionId")
+	}
+	if p.Name == "" {
+		return nil, invalidParamsError("session/skills_load requires name")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.State == nil {
+		return nil, &jsonRPCError{Code: internalError, Message: "session has no state"}
+	}
+	idx, err := skills.LoadSkills(
+		skills.ScopeDir(rt.HomeDir, rt.WorkingDir, false),
+		skills.ScopeDir(rt.HomeDir, rt.WorkingDir, true),
+	)
+	if err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("load skills index: %v", err)}
+	}
+	if err := skills.LoadSkillIntoSession(idx, rt.State, p.Name); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: err.Error()}
+	}
+	return map[string]any{}, nil
+}
+
+// CloseSession removes every staged (previewed, never confirmed or
+// discarded) install for sessionID, so an abandoned preview doesn't leak
+// a temp directory forever. Best-effort: no error return, since a
+// cleanup failure must never block a session from actually closing.
+func (m *SkillsManager) CloseSession(sessionID string) {
+	m.stagingMu.Lock()
+	byToken := m.staging[sessionID]
+	delete(m.staging, sessionID)
+	m.stagingMu.Unlock()
+
+	for _, staged := range byToken {
+		if err := os.RemoveAll(staged.tempDir); err != nil {
+			slog.Default().Warn("acp: failed to clean up staged skill install", "session", sessionID, "tempDir", staged.tempDir, "err", err)
+		}
+	}
 }
 
 // copyPath copies src to dst. If src is a regular file, dst is written

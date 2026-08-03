@@ -6,6 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 )
 
 func writeTestSkillFile(t *testing.T, dir, name string) string {
@@ -250,4 +254,97 @@ func TestSkillsRemoveRejectsInvalidScope(t *testing.T) {
 	if err == nil {
 		t.Fatal("SkillsRemove with invalid scope: got nil error, want an error")
 	}
+}
+
+func newTestState() *session.State {
+	return session.New(config.Default(), "/tmp", time.Unix(100, 0), session.Persistence{})
+}
+
+func TestSkillsLoadActivatesSkillInSession(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	globalDir := filepath.Join(home, ".config", "marshal", "skills")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkillFile(t, globalDir, "loadable-skill")
+	state := newTestState()
+
+	mgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
+			return &SkillsRuntime{HomeDir: home, WorkingDir: work, State: state}, true
+		},
+	})
+	raw, _ := json.Marshal(SkillsLoadParams{SessionID: "sess_1", Name: "loadable-skill"})
+	if _, err := mgr.SkillsLoad(context.Background(), raw); err != nil {
+		t.Fatalf("SkillsLoad: %v", err)
+	}
+	if !state.HasActiveSkill("loadable-skill") {
+		t.Fatal("state does not have loadable-skill active after SkillsLoad")
+	}
+}
+
+func TestSkillsLoadRejectsUnknownSkill(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	state := newTestState()
+	mgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
+			return &SkillsRuntime{HomeDir: home, WorkingDir: work, State: state}, true
+		},
+	})
+	raw, _ := json.Marshal(SkillsLoadParams{SessionID: "sess_1", Name: "does-not-exist"})
+	_, err := mgr.SkillsLoad(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SkillsLoad for an unknown skill: got nil error, want an error")
+	}
+}
+
+func TestSkillsLoadRejectsNilState(t *testing.T) {
+	mgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
+			return &SkillsRuntime{HomeDir: t.TempDir(), WorkingDir: t.TempDir(), State: nil}, true
+		},
+	})
+	raw, _ := json.Marshal(SkillsLoadParams{SessionID: "sess_1", Name: "x"})
+	_, err := mgr.SkillsLoad(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SkillsLoad with nil State: got nil error, want an error")
+	}
+}
+
+func TestCloseSessionRemovesStagedTempDirs(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	srcDir := t.TempDir()
+	source := writeTestSkillFile(t, srcDir, "abandoned-skill")
+
+	mgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
+			return &SkillsRuntime{HomeDir: home, WorkingDir: work}, true
+		},
+	})
+	previewRaw, _ := json.Marshal(SkillsInstallPreviewParams{SessionID: "sess_close", Source: source})
+	previewRes, err := mgr.SkillsInstallPreview(context.Background(), previewRaw)
+	if err != nil {
+		t.Fatalf("SkillsInstallPreview: %v", err)
+	}
+	token := previewRes.(SkillsInstallPreviewResult).StagingToken
+	tempDir := mgr.staging["sess_close"][token].tempDir
+
+	mgr.CloseSession("sess_close")
+
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("temp dir %s still exists after CloseSession", tempDir)
+	}
+	if _, exists := mgr.staging["sess_close"]; exists {
+		t.Fatal("staging map still has an entry for sess_close after CloseSession")
+	}
+}
+
+func TestCloseSessionIsNoOpForSessionWithNoStaging(t *testing.T) {
+	mgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) { return nil, false },
+	})
+	mgr.CloseSession("sess_never_staged") // must not panic
 }

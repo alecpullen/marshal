@@ -46,7 +46,7 @@ func TestBuildSystemPromptContainsBaseSections(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"You are Marshal, a local-first coding assistant",
+		"You are Marshal, a local-friendly coding assistant",
 		"You receive a context pack with each turn",
 		"Prefer small, verifiable changes",
 		"Respond with exactly one JSON object",
@@ -121,7 +121,7 @@ func TestBuildSystemPromptNativeModeOmitsJSONEnvelopeScaffolding(t *testing.T) {
 	content := msg.Content
 
 	for _, want := range []string{
-		"You are Marshal, a local-first coding assistant",
+		"You are Marshal, a local-friendly coding assistant",
 		"Prefer small, verifiable changes",
 		"You are an implementer",
 		"Available tools:",

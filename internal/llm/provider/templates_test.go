@@ -69,6 +69,11 @@ func TestTemplatesCoverPopularProviders(t *testing.T) {
 }
 
 func TestTemplatesAreWellFormed(t *testing.T) {
+	knownTypes := map[string]bool{
+		"openai_compatible": true,
+		"ollama":            true,
+		"anthropic":         true,
+	}
 	for _, tpl := range All() {
 		if tpl.ID == "" {
 			t.Errorf("template with empty ID: %+v", tpl)
@@ -76,8 +81,8 @@ func TestTemplatesAreWellFormed(t *testing.T) {
 		if tpl.Label == "" {
 			t.Errorf("template %q has no label", tpl.ID)
 		}
-		if tpl.Type != "openai_compatible" {
-			t.Errorf("template %q type = %q, want openai_compatible — it is the only chat provider type",
+		if !knownTypes[tpl.Type] {
+			t.Errorf("template %q type = %q, want one of openai_compatible/ollama/anthropic",
 				tpl.ID, tpl.Type)
 		}
 		// The generic custom template intentionally has no base URL.

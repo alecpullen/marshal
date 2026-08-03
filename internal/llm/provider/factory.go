@@ -7,7 +7,12 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/provider/limits"
+	"marshal/internal/llm/schema"
 )
+
+// defaultOllamaKeepAlive is applied when a native Ollama provider does not
+// set keep_alive. Mirrors embedding.DefaultOllamaKeepAlive — keep in sync.
+const defaultOllamaKeepAlive = "30m"
 
 // NewFromConfig builds a Provider from a single [providers.<name>] entry.
 // API key resolution (api_key literal vs api_key_env lookup) happens here,
@@ -50,6 +55,40 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 			APIKey:       apiKey,
 			Capabilities: &caps,
 			LimitsTable:  table,
+		})
+	case "ollama":
+		apiKey, err := resolveAPIKey(pc)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		caps := DefaultCapabilities()
+		caps.ToolCalling = pc.ToolCalling
+		keepAlive := pc.KeepAlive
+		if keepAlive == "" {
+			keepAlive = defaultOllamaKeepAlive
+		}
+		return NewOllamaNative(Options{
+			Name:         name,
+			BaseURL:      pc.BaseURL,
+			APIKey:       apiKey,
+			Capabilities: &caps,
+			KeepAlive:    keepAlive,
+		})
+	case "anthropic":
+		apiKey, err := resolveAPIKey(pc)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		if apiKey == "" {
+			return nil, fmt.Errorf("provider %q: anthropic providers require api_key or api_key_env", name)
+		}
+		caps := schema.ProviderCapabilities{ToolCalling: true, JSONMode: false, StructuredOutput: false}
+		return NewAnthropic(Options{
+			Name:           name,
+			BaseURL:        pc.BaseURL,
+			APIKey:         apiKey,
+			Capabilities:   &caps,
+			ThinkingBudget: pc.ThinkingBudget,
 		})
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported type %q", name, pc.Type)

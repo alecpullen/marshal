@@ -188,11 +188,67 @@ func TestNewFromConfigErrorsOnUnsupportedProviderType(t *testing.T) {
 	}
 }
 
-func TestNewFromConfigRejectsOllamaType(t *testing.T) {
-	// "ollama" is an embedding-only Type; the chat factory must reject it.
-	_, err := NewFromConfig("ollama", config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434"}, "", false)
-	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
-		t.Fatalf("want unsupported type error, got %v", err)
+func TestNewFromConfigOllamaNative(t *testing.T) {
+	p, err := NewFromConfig("local", config.ProviderConfig{
+		Type:    "ollama",
+		BaseURL: "http://localhost:11434",
+	}, "", false)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	on, ok := p.(*OllamaNative)
+	if !ok {
+		t.Fatalf("got %T, want *OllamaNative", p)
+	}
+	if on.keepAlive != defaultOllamaKeepAlive {
+		t.Fatalf("keepAlive = %q, want default %q", on.keepAlive, defaultOllamaKeepAlive)
+	}
+}
+
+func TestNewFromConfigOllamaNativeExplicitKeepAlive(t *testing.T) {
+	p, err := NewFromConfig("local", config.ProviderConfig{
+		Type:      "ollama",
+		BaseURL:   "http://localhost:11434",
+		KeepAlive: "-1",
+	}, "", false)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if got := p.(*OllamaNative).keepAlive; got != "-1" {
+		t.Fatalf("keepAlive = %q, want -1", got)
+	}
+}
+
+func TestNewFromConfigAnthropic(t *testing.T) {
+	t.Setenv("MARSHAL_TEST_FACTORY_ANTHROPIC_KEY", "sk-test")
+	p, err := NewFromConfig("claude", config.ProviderConfig{
+		Type:           "anthropic",
+		BaseURL:        "https://api.anthropic.com",
+		APIKeyEnv:      "MARSHAL_TEST_FACTORY_ANTHROPIC_KEY",
+		ThinkingBudget: 4096,
+	}, "", false)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	a, ok := p.(*Anthropic)
+	if !ok {
+		t.Fatalf("got %T, want *Anthropic", p)
+	}
+	if a.thinkingBudget != 4096 {
+		t.Fatalf("thinkingBudget = %d, want 4096", a.thinkingBudget)
+	}
+	if !a.capabilities.ToolCalling {
+		t.Fatal("anthropic capabilities must advertise ToolCalling")
+	}
+}
+
+func TestNewFromConfigAnthropicRequiresKey(t *testing.T) {
+	_, err := NewFromConfig("claude", config.ProviderConfig{
+		Type:    "anthropic",
+		BaseURL: "https://api.anthropic.com",
+	}, "", false)
+	if err == nil {
+		t.Fatal("expected error for missing API key, got nil")
 	}
 }
 

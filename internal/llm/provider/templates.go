@@ -18,8 +18,8 @@ var templates = map[string]ProviderTemplate{
 	"ollama": {
 		ID:      "ollama",
 		Label:   "Ollama (local)",
-		Type:    "openai_compatible",
-		BaseURL: "http://localhost:11434/v1",
+		Type:    "ollama",
+		BaseURL: "http://localhost:11434",
 		Local:   true,
 		Models:  []string{"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5:7b", "llama3.1:8b"},
 	},
@@ -69,8 +69,8 @@ var templates = map[string]ProviderTemplate{
 	"anthropic": {
 		ID:          "anthropic",
 		Label:       "Anthropic",
-		Type:        "openai_compatible",
-		BaseURL:     "https://api.anthropic.com/v1",
+		Type:        "anthropic",
+		BaseURL:     "https://api.anthropic.com",
 		ToolCalling: true,
 		KeyEnv:      "ANTHROPIC_API_KEY",
 		KeyHint:     "Get a key at https://console.anthropic.com/settings/keys",

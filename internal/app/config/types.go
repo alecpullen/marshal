@@ -240,8 +240,8 @@ type CalibrationConfig struct {
 }
 
 // WebConfig gates outbound network access from agent-side tools (web.fetch
-// and web.search). It is disabled by default — Marshal is local-first and
-// opt-in for anytying that talks to the public internet. Search is further
+// and web.search). It is disabled by default — Marshal is local-friendly and
+// opt-in for anything that talks to the public internet. Search is further
 // conditional on SearchURL being set; web.fetch is available whenever
 // Enabled is true.
 type WebConfig struct {
@@ -336,7 +336,7 @@ type ProfileConfig struct {
 
 // AgentConfig names which configured provider and model the agent loop
 // (Milestone H) uses. Both fields are intentionally blank in Default():
-// Marshal is local-first with no built-in provider assumptions (see
+// Marshal is local-friendly with no built-in provider assumptions (see
 // Providers' Default() comment) — the app runs with the agent loop disabled
 // until a user configures both a [providers.<name>] entry and this section.
 type AgentConfig struct {

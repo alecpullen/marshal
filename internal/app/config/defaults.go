@@ -168,7 +168,7 @@ func Default() Config {
 			FailClosed: false,
 			Entries:    nil,
 		},
-		// Providers is intentionally left nil: Marshal is local-first with no
+		// Providers is intentionally left nil: Marshal is local-friendly with no
 		// built-in provider assumptions, and provider URLs/keys are
 		// user-specific (see docs/09-configuration-examples.md).
 	}

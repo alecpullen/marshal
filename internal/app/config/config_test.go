@@ -401,7 +401,7 @@ func TestLoadParsesAgentSection(t *testing.T) {
 func TestDefaultLeavesAgentProviderEmpty(t *testing.T) {
 	cfg := Default()
 	if cfg.Agent.Provider != "" || cfg.Agent.Model != "" {
-		t.Fatalf("Default().Agent = %#v, want zero value (local-first: no assumed provider)", cfg.Agent)
+		t.Fatalf("Default().Agent = %#v, want zero value (local-friendly: no assumed provider)", cfg.Agent)
 	}
 }
 

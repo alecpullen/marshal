@@ -89,6 +89,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					"commandDispatch":       map[string]any{},
 					"swarmDispatch":         map[string]any{},
 					"sddDispatch":           map[string]any{},
+					"sessionTelemetry":      map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{

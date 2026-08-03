@@ -134,6 +134,91 @@ func TestOllamaChatNonStreamingEvents(t *testing.T) {
 	assertChannelClosed(t, events)
 }
 
+func TestOllamaChatStreaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(
+			`{"message":{"role":"assistant","content":"hel"},"done":false}` + "\n" +
+				`{"message":{"role":"assistant","content":"lo"},"done":false}` + "\n" +
+				`{"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":7,"eval_count":3}` + "\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hel" {
+		t.Fatalf("event 1 = %+v, want Delta %q", ev1, "hel")
+	}
+	ev2, _ := recvEvent(t, events)
+	if ev2.Type != schema.ChatEventDelta || ev2.Delta != "lo" {
+		t.Fatalf("event 2 = %+v, want Delta %q", ev2, "lo")
+	}
+	ev3, _ := recvEvent(t, events)
+	if ev3.Type != schema.ChatEventDone || ev3.FinishReason != "stop" {
+		t.Fatalf("event 3 = %+v, want Done stop", ev3)
+	}
+	if ev3.Usage == nil || ev3.Usage.PromptTokens != 7 || ev3.Usage.CompletionTokens != 3 {
+		t.Fatalf("Usage = %+v, want prompt=7 completion=3", ev3.Usage)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestOllamaChatStreamingThinkingAndToolCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(
+			`{"message":{"role":"assistant","thinking":"hmm"},"done":false}` + "\n" +
+				`{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"b.go"}}}]},"done":false}` + "\n" +
+				`{"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":1}` + "\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Kind != schema.DeltaThinking || ev1.Delta != "hmm" {
+		t.Fatalf("event 1 = %+v, want thinking Delta %q", ev1, "hmm")
+	}
+	ev2, _ := recvEvent(t, events)
+	if ev2.Type != schema.ChatEventDone {
+		t.Fatalf("event 2 = %+v, want Done", ev2)
+	}
+	if len(ev2.ToolCalls) != 1 || ev2.ToolCalls[0].Name != "read_file" {
+		t.Fatalf("ToolCalls = %+v, want one read_file call", ev2.ToolCalls)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestOllamaChatStreamingErrorLine(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(`{"error":"model requires more system memory"}` + "\n"))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ev, _ := recvEvent(t, events)
+	if ev.Type != schema.ChatEventError || ev.Err == nil {
+		t.Fatalf("event = %+v, want Error", ev)
+	}
+	assertChannelClosed(t, events)
+}
+
 func TestOllamaChatHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

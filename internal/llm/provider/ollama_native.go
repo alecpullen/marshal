@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -311,11 +312,55 @@ func (p *OllamaNative) readChatResponse(body io.ReadCloser, events chan<- schema
 	}
 }
 
-// streamChatEvents is a placeholder — Task 4 implements streaming.
+// streamChatEvents consumes Ollama's NDJSON stream: one JSON object per
+// line, terminated by an object with done:true carrying token counts.
 func (p *OllamaNative) streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	defer close(events)
 	defer body.Close()
-	events <- schema.ChatEvent{Type: schema.ChatEventError, Err: errors.New("provider: streaming not yet implemented")}
+
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	var toolCalls []schema.ToolCall
+	var usage *schema.TokenUsage
+	var finishReason string
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var chunk ollamaChatChunk
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("decode stream line: %w", err)}
+			return
+		}
+		if chunk.Error != "" {
+			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: errors.New(chunk.Error)}
+			return
+		}
+		if chunk.Message.Thinking != "" {
+			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: chunk.Message.Thinking}
+		}
+		if chunk.Message.Content != "" {
+			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: chunk.Message.Content}
+		}
+		toolCalls = append(toolCalls, ollamaToolCallsFromWire(chunk.Message.ToolCalls)...)
+		if chunk.Done {
+			finishReason = chunk.DoneReason
+			usage = ollamaUsageFrom(chunk)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("read stream: %w", err)}
+		return
+	}
+	events <- schema.ChatEvent{
+		Type:         schema.ChatEventDone,
+		FinishReason: finishReason,
+		Usage:        usage,
+		ToolCalls:    toolCalls,
+	}
 }
 
 // modelSupportsTools is a placeholder until Task 5 wires /api/show probing;

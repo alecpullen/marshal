@@ -10,22 +10,30 @@ import (
 	"time"
 )
 
+// DefaultOllamaKeepAlive is applied when a native Ollama provider does not
+// set keep_alive: models stay loaded for 30 minutes after each request so
+// repeated indexing runs do not pay model-load latency. Mirrored in
+// package provider (chat backend) — keep the two in sync.
+const DefaultOllamaKeepAlive = "30m"
+
 // ollamaEmbedder talks to Ollama's native /api/embed endpoint, which accepts
 // an array input and returns embeddings in input order.
 type ollamaEmbedder struct {
-	client  *http.Client
-	baseURL string
-	apiKey  string
-	model   string
-	dims    int
+	client    *http.Client
+	baseURL   string
+	apiKey    string
+	model     string
+	keepAlive string
+	dims      int
 }
 
-func newOllamaEmbedder(baseURL, apiKey, model string) *ollamaEmbedder {
+func newOllamaEmbedder(baseURL, apiKey, model, keepAlive string) *ollamaEmbedder {
 	return &ollamaEmbedder{
-		client:  &http.Client{Timeout: 60 * time.Second},
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
+		client:    &http.Client{Timeout: 60 * time.Second},
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		apiKey:    apiKey,
+		model:     model,
+		keepAlive: keepAlive,
 	}
 }
 
@@ -33,8 +41,9 @@ func (e *ollamaEmbedder) Model() string { return e.model }
 func (e *ollamaEmbedder) Dims() int     { return e.dims }
 
 type ollamaEmbedRequest struct {
-	Model string   `json:"model"`
-	Input []string `json:"input"`
+	Model     string   `json:"model"`
+	Input     []string `json:"input"`
+	KeepAlive string   `json:"keep_alive,omitempty"`
 }
 
 type ollamaEmbedResponse struct {
@@ -67,7 +76,7 @@ func (e *ollamaEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 }
 
 func (e *ollamaEmbedder) embedOnce(ctx context.Context, batch []string) ([][]float32, error) {
-	body, err := json.Marshal(ollamaEmbedRequest{Model: e.model, Input: batch})
+	body, err := json.Marshal(ollamaEmbedRequest{Model: e.model, Input: batch, KeepAlive: e.keepAlive})
 	if err != nil {
 		return nil, err
 	}

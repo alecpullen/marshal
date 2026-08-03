@@ -23,7 +23,11 @@ func NewFromConfig(name string, pc config.ProviderConfig, model string) (Embedde
 	}
 	switch pc.Type {
 	case "ollama":
-		return newOllamaEmbedder(pc.BaseURL, apiKey, model), nil
+		keepAlive := pc.KeepAlive
+		if keepAlive == "" {
+			keepAlive = DefaultOllamaKeepAlive
+		}
+		return newOllamaEmbedder(pc.BaseURL, apiKey, model, keepAlive), nil
 	case "", "openai_compatible":
 		return newOpenAIEmbedder(pc.BaseURL, apiKey, model), nil
 	default:

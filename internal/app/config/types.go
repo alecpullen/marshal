@@ -392,14 +392,24 @@ type IndexingConfig struct {
 	WatchDebounceMs        int      `toml:"watch_debounce_ms"` // default 1000
 }
 
-// ProviderConfig is one [providers.<name>] entry. Only the fields needed
-// for the generic OpenAI-compatible provider are present.
+// ProviderConfig is one [providers.<name>] entry. Type selects the wire
+// protocol: "openai_compatible" (default when empty), "ollama" (native
+// Ollama /api/* endpoints — chat and embeddings), or "anthropic" (native
+// Messages API).
 type ProviderConfig struct {
-	Type        string `toml:"type"` // "openai_compatible" (default when empty) or "ollama"; "ollama" selects the native embedding backend and is not a chat provider type
+	Type        string `toml:"type"` // "openai_compatible" (default when empty), "ollama", or "anthropic"
 	BaseURL     string `toml:"base_url"`
 	APIKey      string `toml:"api_key"`      // literal key; wins over APIKeyEnv if both set
 	APIKeyEnv   string `toml:"api_key_env"`  // env var name to resolve at provider-construction time (NOT resolved here)
-	ToolCalling bool   `toml:"tool_calling"` // provider advertises native OpenAI-compatible tool-calling support
+	ToolCalling bool   `toml:"tool_calling"` // provider advertises native tool-calling support
+	// KeepAlive is honored only by native Ollama backends (chat /api/chat and
+	// embeddings /api/embed): how long a model stays loaded after a request.
+	// Duration string ("30m"), "-1" = never unload, "0" = unload immediately.
+	// Empty means the provider default ("30m") applies.
+	KeepAlive string `toml:"keep_alive"`
+	// ThinkingBudget is honored only by the native Anthropic backend: token
+	// budget for extended thinking. 0 (the default) disables thinking.
+	ThinkingBudget int `toml:"thinking_budget"`
 }
 
 type LoadOptions struct {

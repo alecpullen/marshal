@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**Marshal** is a local-first TUI coding agent for developers who want control over inference, context, tooling, and repository knowledge. Built in Go with Bubble Tea. The binary is named `marshal`.
+**Marshal** is a local-friendly TUI coding agent for developers who want control over inference, context, tooling, and repository knowledge. Built in Go with Bubble Tea. The binary is named `marshal`.
 
 ## Commands
 
@@ -97,7 +97,7 @@ internal/llm/provider/templates.go    — built-in provider templates (ollama, o
 internal/llm/catalog/                 — curated table of well-known models
 internal/llm/schema/                  — tool/response schema types
 internal/llm/streaming/               — streaming response handling
-internal/llm/embedding/               — local-first text embedding
+internal/llm/embedding/               — local-friendly text embedding
 internal/llm/pricing/                 — per-model token pricing table
 
 Repo intelligence
@@ -154,7 +154,7 @@ Design specs live in `docs/superpowers/specs/`, implementation plans in `docs/su
 
 ## Design constraints
 
-- **Local-first**: default config has `remote_providers_allowed = false`. Don't assume a hosted model.
+- **Local-friendly**: default config has no built-in providers; remote providers are allowed but must be configured explicitly. Don't assume a hosted model.
 - **Provider-flexible**: the model layer is swappable without TUI changes.
 - **Tool-safe**: shell execution is classified and requires user approval before running.
 - The TUI is responsible for rendering only — no routing, policy, or prompt logic should live there.

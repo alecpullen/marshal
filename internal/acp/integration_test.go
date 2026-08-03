@@ -930,6 +930,66 @@ func TestACPWirePromptTurnIncludesSessionTelemetry(t *testing.T) {
 	}
 }
 
+// --- Test 10: memory list/delete wire-level integration ---
+
+// TestACPWireMemoryListAndDelete wires a MemoryManager with a real
+// in-memory DB into a Server and exercises session/memory_list and
+// session/memory_delete over the actual JSON encode/decode wire transport.
+func TestACPWireMemoryListAndDelete(t *testing.T) {
+	d, projectID := newMemoryTestDB(t)
+	if err := d.SaveMemory(projectID, "fact", "wire test entry", "sess_a", time.Now()); err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+
+	mem := NewMemoryManager(MemoryManagerConfig{
+		Lookup: func(sessionID string) (*MemoryRuntime, bool) {
+			return &MemoryRuntime{DB: d, ProjectID: projectID}, true
+		},
+	})
+
+	h := newWireHarness(t, func(srv *Server) {
+		srv.Handle("session/memory_list", mem.MemoryList)
+		srv.Handle("session/memory_delete", mem.MemoryDelete)
+	})
+	defer h.close(t)
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(1), "method": "session/memory_list",
+		"params": map[string]any{"sessionId": "sess_mem"},
+	})
+	resp := readResponse(t, h, "1")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/memory_list error: %+v", errObj)
+	}
+	res, _ := frameResult(resp).(map[string]any)
+	entries, _ := res["entries"].([]any)
+	if len(entries) != 1 {
+		t.Fatalf("session/memory_list entries = %v, want 1", res["entries"])
+	}
+	entry, _ := entries[0].(map[string]any)
+	idFloat, _ := entry["id"].(float64)
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(2), "method": "session/memory_delete",
+		"params": map[string]any{"sessionId": "sess_mem", "id": idFloat},
+	})
+	resp = readResponse(t, h, "2")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/memory_delete error: %+v", errObj)
+	}
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(3), "method": "session/memory_list",
+		"params": map[string]any{"sessionId": "sess_mem"},
+	})
+	resp = readResponse(t, h, "3")
+	res, _ = frameResult(resp).(map[string]any)
+	entries, _ = res["entries"].([]any)
+	if len(entries) != 0 {
+		t.Fatalf("session/memory_list after delete = %v, want empty", res["entries"])
+	}
+}
+
 // randPerm returns a pseudo-random permutation of [0,n). The seed is
 // derived from time.Now so the order varies across test runs, but the
 // function is deterministic given a fixed wall clock.

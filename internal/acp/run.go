@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
 	"marshal/internal/trust"
@@ -90,6 +91,8 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					"swarmDispatch":         map[string]any{},
 					"sddDispatch":           map[string]any{},
 					"sessionTelemetry":      map[string]any{},
+					"memoryAccess":          map[string]any{},
+					"agentsRoster":          map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{
@@ -198,6 +201,21 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	})
 	srv.Handle("session/command", cmds.Command)
 	srv.Handle("session/command_list", cmds.CommandList)
+
+	mem := NewMemoryManager(MemoryManagerConfig{
+		Lookup: func(sessionID string) (*MemoryRuntime, bool) {
+			rt, ok := manager.Get(sessionID)
+			if !ok || rt == nil {
+				return nil, false
+			}
+			dbHandle, _ := rt.DB.(*db.DB)
+			return &MemoryRuntime{DB: dbHandle, ProjectID: rt.ProjectID, State: rt.State}, true
+		},
+	})
+	srv.Handle("session/memory_list", mem.MemoryList)
+	srv.Handle("session/memory_delete", mem.MemoryDelete)
+	srv.Handle("session/memory_set_confidence", mem.MemorySetConfidence)
+	srv.Handle("session/agents_roster", mem.AgentsRoster)
 
 	serveErr := srv.Serve(ctx)
 

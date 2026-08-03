@@ -1,9 +1,11 @@
 # Marshal
 
-Local-first terminal coding agent.
+A terminal coding agent with local-friendly defaults and provider choice.
 
-Use your own models — Ollama, OpenRouter, or any OpenAI-compatible endpoint.
-Swap providers without rewriting workflows. Keep repository knowledge local.
+Marshal is a terminal-native coding agent that understands your repository,
+edits files, runs shell commands and tests, and keeps project context across
+sessions — with local models as first-class citizens and the freedom to use
+any OpenAI-compatible endpoint.
 
 ## Quick start
 
@@ -23,7 +25,8 @@ Config is merged in order (later wins):
 2. `~/.config/marshal/config.toml`
 3. `.marshal/config.toml` (per-project)
 
-Define a provider and a model preset, then choose a default profile:
+Point Marshal at Ollama, LM Studio, vLLM, OpenRouter, or any OpenAI-compatible
+endpoint by defining a provider and a model preset, then choose a default profile:
 
 ```toml
 [providers.ollama]
@@ -44,6 +47,7 @@ default = "coder"
 
 ```
 cmd/marshal/main.go            — thin entrypoint
+internal/acp/                  — ACP v1 headless JSON-RPC server
 internal/agent/                — single-agent + swarm runtimes
 internal/app/                  — dependency wiring, config, session
 internal/app/tui/              — Bubble Tea TUI
@@ -52,35 +56,41 @@ internal/contextpack/          — context budget + pack builder
 internal/db/                   — SQLite project/session persistence
 internal/knowledge/            — durable project memory
 internal/llm/                  — provider abstraction, routing
+internal/pipeline/             — plan execution pipeline
+internal/plugins/              — skill/MCP/plugin loading and verification
 internal/repo/                 — repo scanner, symbol index, repo map
+internal/sandbox/              — isolated command execution backends
 internal/skills/               — skill-based instruction sets
 internal/tools/native/         — read, search, shell, git, …
 internal/tools/patch/          — diff apply + approval
 internal/tools/policy/         — shell command risk classification
 internal/tools/registry/       — tool registration + dispatch
-internal/tools/mcp/            — MCP plugin support
+internal/tools/mcp/            — MCP client and server management
+internal/worktree/             — git worktree helpers
 ```
 
 ## Key features
 
-- **Provider-flexible** — OpenAI-compatible transport; swap models at `/profile`.
+- **Provider-flexible** — Ollama, OpenRouter, LM Studio, vLLM, or any OpenAI-compatible endpoint; swap at `/profile`.
 - **Role-based routing** — use small models for search, strong models for patches.
-- **Repository intelligence** — tree-sitter symbol index, repo map, file summaries.
-- **Context management** — pack builder with token budgets; view at `/context`.
-- **Safe tools** — shell commands inspected, classified, and approval-gated.
+- **Repository intelligence** — tree-sitter symbol index, repo map, and file summaries.
+- **Context management** — pack builder with token budgets; inspect usage at `/context`.
+- **Safe, sandboxed tools** — shell commands classified, approval-gated, and run isolated by default.
 - **Git integration** — automatically checkpoint the working tree before tooling.
 - **Persistent sessions** — project state, messages, and memory stored in SQLite.
 - **Knowledge agent** — durable project knowledge survives session boundaries.
 - **Skill system** — loadable skill-based instruction sets for specialised workflows.
 - **Slash commands** — `/plan`, `/review`, `/test`, `/memory`, `/profile`, etc.
-- **Swarm runtime** — multi-agent orchestration with specialist roles (planner, repo scout, implementer, tester, reviewer).
+- **Swarm runtime** — multi-agent orchestration with specialist roles.
 - **MCP/plugin ecosystem** — connect external tools via MCP protocol, namespaced and permissioned.
-- **ACP v1 conversation lifecycle** — headless `marshal acp` subcommand over stdio JSON-RPC 2.0 with initialize, session lifecycle, prompt/cancel, and permission methods. See [docs/10-acp.md](docs/10-acp.md) for the supported feature matrix and limitations.
+- **ACP v1 headless mode** — `marshal acp` over stdio JSON-RPC 2.0 for editor/IDE integration.
 
-## Design commitments
+## Design principles
 
-- **Local-first** — default config prohibits remote providers; the tool works
-  fully offline with Ollama/llama.cpp/LM Studio.
+- **Local-friendly** — works great offline with Ollama, LM Studio, or llama.cpp,
+  without blocking remote providers when you need them.
+- **Provider-flexible** — swap providers or model presets without rewriting
+  workflows.
 - **Tool-safe** — every shell execution is classified, presented with a risk
   label, and requires user approval.
 - **Transparent** — the status bar and transcript show active model, route,
@@ -108,24 +118,13 @@ go build ./cmd/marshal
 go test ./test/usability/... -run TestScripted -v
 ```
 
-## Roadmap
+## Project status
 
-| Milestone | Status |
-|-----------|--------|
-| A–M: skeleton, TUI, config, tools, approval, git, DB, repo scan, symbols, context packs, role routing | Complete |
-| N: durable knowledge agent | Complete |
-| O: swarm runtime & specialist roles | Complete |
-| P: MCP/plugin ecosystem | Complete |
-| Q: sandboxed command execution | Complete |
+Marshal is under active development. Core agent functionality, the knowledge
+agent, swarm runtime, MCP/plugin system, sandboxed command execution, and ACP
+headless mode are all implemented and usable. Expect breaking changes as the
+APIs stabilise.
 
 ## License
 
 MIT
-
-## Project status
-
-Marshal is under active development. Core functionality is usable; the knowledge
-agent, swarm runtime, MCP plugin system, and sandboxed command execution are
-implemented. Three sandbox backends are available — see
-[docs/04-tooling-and-shell-safety.md](docs/04-tooling-and-shell-safety.md) for
-details. Expect breaking changes as the APIs stabilise.

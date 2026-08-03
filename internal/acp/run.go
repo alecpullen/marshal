@@ -94,6 +94,7 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 					"memoryAccess":          map[string]any{},
 					"agentsRoster":          map[string]any{},
 					"skillsAccess":          map[string]any{},
+					"pluginsAccess":         map[string]any{},
 				},
 			},
 			"agentInfo": map[string]any{
@@ -233,9 +234,26 @@ func runWithConfig(ctx context.Context, stdin io.Reader, stdout io.Writer, cfg r
 	srv.Handle("session/skills_remove", skillsMgr.SkillsRemove)
 	srv.Handle("session/skills_load", skillsMgr.SkillsLoad)
 
+	pluginsMgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
+			rt, ok := manager.Get(sessionID)
+			if !ok || rt == nil {
+				return nil, false
+			}
+			trusted := rt.State != nil && rt.State.Trusted()
+			return &PluginsRuntime{HomeDir: rt.HomeDir, WorkingDir: rt.WorkingDir, Trusted: trusted}, true
+		},
+	})
+	srv.Handle("session/plugins_list", pluginsMgr.PluginsList)
+	srv.Handle("session/plugins_install_scan", pluginsMgr.PluginsInstallScan)
+	srv.Handle("session/plugins_install_confirm", pluginsMgr.PluginsInstallConfirm)
+	srv.Handle("session/plugins_install_discard", pluginsMgr.PluginsInstallDiscard)
+	srv.Handle("session/plugins_remove", pluginsMgr.PluginsRemove)
+
 	manager.SetTurnCanceller(func(ctx context.Context, sessionID string) error {
 		err := turns.CancelAndWait(ctx, sessionID)
 		skillsMgr.CloseSession(sessionID)
+		pluginsMgr.CloseSession(sessionID)
 		return err
 	})
 

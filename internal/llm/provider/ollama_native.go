@@ -1,0 +1,330 @@
+package provider
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+
+	"marshal/internal/llm/provider/limits"
+	"marshal/internal/llm/schema"
+)
+
+// OllamaNative talks to Ollama's native /api/* endpoints instead of the
+// OpenAI-compatible shim. The native API is required for keep_alive (model
+// warm-ness control) and per-model capability probing via /api/show.
+type OllamaNative struct {
+	name         string
+	baseURL      string
+	apiKey       string
+	httpClient   *http.Client
+	capabilities schema.ProviderCapabilities
+	keepAlive    string
+	limitsTable  *limits.Table
+
+	capsMu    sync.Mutex
+	capsCache map[string]ollamaModelCaps
+}
+
+// NewOllamaNative builds a native Ollama provider. opts.KeepAlive should
+// already carry the resolved value (factory applies the "30m" default).
+func NewOllamaNative(opts Options) (*OllamaNative, error) {
+	if opts.Name == "" {
+		return nil, errors.New("provider: name is required")
+	}
+	if opts.BaseURL == "" {
+		return nil, fmt.Errorf("provider %q: base_url is required", opts.Name)
+	}
+	client := opts.HTTPClient
+	if client == nil {
+		client = &http.Client{}
+	}
+	caps := DefaultCapabilities()
+	if opts.Capabilities != nil {
+		caps = *opts.Capabilities
+	}
+	return &OllamaNative{
+		name:         opts.Name,
+		baseURL:      strings.TrimRight(opts.BaseURL, "/"),
+		apiKey:       opts.APIKey,
+		httpClient:   client,
+		capabilities: caps,
+		keepAlive:    opts.KeepAlive,
+		limitsTable:  opts.LimitsTable,
+		capsCache:    make(map[string]ollamaModelCaps),
+	}, nil
+}
+
+func (p *OllamaNative) Name() string { return p.name }
+
+func (p *OllamaNative) Capabilities(ctx context.Context) schema.ProviderCapabilities {
+	return p.capabilities
+}
+
+func (p *OllamaNative) setHeaders(req *http.Request) {
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+}
+
+func (p *OllamaNative) httpError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return &ProviderError{Provider: p.name, StatusCode: resp.StatusCode, Body: string(body)}
+}
+
+// ollamaConnHint appends a startup hint when the server is unreachable —
+// the common case for a local Ollama provider.
+func (p *OllamaNative) connHint(err error) error {
+	if strings.Contains(err.Error(), "connection refused") {
+		return fmt.Errorf("%w (is Ollama running? expected at %s)", err, p.baseURL)
+	}
+	return err
+}
+
+// ollamaModelCaps caches per-model capability results from /api/show.
+// Task 5 wires the actual probing; the type is declared here so the struct
+// compiles.
+type ollamaModelCaps struct {
+	ToolCalling bool
+}
+
+// --- wire types ---
+
+type ollamaChatRequest struct {
+	Model     string          `json:"model"`
+	Messages  []ollamaMessage `json:"messages"`
+	Stream    bool            `json:"stream"`
+	KeepAlive string          `json:"keep_alive,omitempty"`
+	Options   *ollamaOptions  `json:"options,omitempty"`
+	Tools     []ollamaTool    `json:"tools,omitempty"`
+	Format    json.RawMessage `json:"format,omitempty"`
+}
+
+type ollamaOptions struct {
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	NumPredict  *int     `json:"num_predict,omitempty"`
+	Stop        []string `json:"stop,omitempty"`
+}
+
+type ollamaMessage struct {
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+}
+
+type ollamaToolCall struct {
+	Function ollamaToolCallFunction `json:"function"`
+}
+
+type ollamaToolCallFunction struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+type ollamaTool struct {
+	Type     string           `json:"type"`
+	Function ollamaToolFunction `json:"function"`
+}
+
+type ollamaToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// ollamaChatChunk is both the streaming NDJSON line shape and the
+// non-streaming response body.
+type ollamaChatChunk struct {
+	Message         ollamaChatChunkMessage `json:"message"`
+	Done            bool                   `json:"done"`
+	DoneReason      string                 `json:"done_reason"`
+	PromptEvalCount int                    `json:"prompt_eval_count"`
+	EvalCount       int                    `json:"eval_count"`
+	Error           string                 `json:"error"`
+}
+
+type ollamaChatChunkMessage struct {
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	Thinking  string           `json:"thinking"`
+	ToolCalls []ollamaToolCall `json:"tool_calls"`
+}
+
+// --- request building ---
+
+func (p *OllamaNative) buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
+	if req.Model == "" {
+		return nil, errors.New("chat request: model is required")
+	}
+	if len(req.Messages) == 0 {
+		return nil, errors.New("chat request: at least one message is required")
+	}
+	messages := make([]ollamaMessage, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		om := ollamaMessage{Role: string(m.Role), Content: m.Content}
+		for _, call := range m.ToolCalls {
+			args := call.Args
+			if len(args) == 0 || !json.Valid(args) {
+				args = json.RawMessage(`{}`)
+			}
+			om.ToolCalls = append(om.ToolCalls, ollamaToolCall{
+				Function: ollamaToolCallFunction{Name: call.Name, Arguments: args},
+			})
+		}
+		messages = append(messages, om)
+	}
+	var tools []ollamaTool
+	for _, tool := range req.Tools {
+		tools = append(tools, ollamaTool{
+			Type: "function",
+			Function: ollamaToolFunction{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.Parameters,
+			},
+		})
+	}
+	var opts *ollamaOptions
+	if req.Temperature != nil || req.TopP != nil || req.MaxTokens != nil || len(req.Stop) > 0 {
+		opts = &ollamaOptions{
+			Temperature: req.Temperature,
+			TopP:        req.TopP,
+			NumPredict:  req.MaxTokens,
+			Stop:        req.Stop,
+		}
+	}
+	var format json.RawMessage
+	if req.ResponseFormat != nil {
+		if req.ResponseFormat.JSONSchema != nil && len(req.ResponseFormat.JSONSchema.Schema) > 0 {
+			format = req.ResponseFormat.JSONSchema.Schema
+		} else {
+			format = json.RawMessage(`"json"`)
+		}
+	}
+	return json.Marshal(ollamaChatRequest{
+		Model:     req.Model,
+		Messages:  messages,
+		Stream:    req.Stream,
+		KeepAlive: p.keepAlive,
+		Options:   opts,
+		Tools:     tools,
+		Format:    format,
+	})
+}
+
+// --- response normalization ---
+
+// ollamaToolCallsFromWire converts native tool calls. Ollama assigns no
+// call IDs, so stable sequential IDs are generated for history round-trips.
+func ollamaToolCallsFromWire(calls []ollamaToolCall) []schema.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]schema.ToolCall, 0, len(calls))
+	for i, call := range calls {
+		out = append(out, schema.ToolCall{
+			ID:   fmt.Sprintf("ollama-%d", i),
+			Name: call.Function.Name,
+			Args: call.Function.Arguments,
+		})
+	}
+	out, _ = repairToolCalls(out)
+	return out
+}
+
+func ollamaUsageFrom(chunk ollamaChatChunk) *schema.TokenUsage {
+	return &schema.TokenUsage{
+		PromptTokens:     chunk.PromptEvalCount,
+		CompletionTokens: chunk.EvalCount,
+		TotalTokens:      chunk.PromptEvalCount + chunk.EvalCount,
+	}
+}
+
+// --- Chat ---
+
+// Chat posts to /api/chat. HTTP-level failures return synchronously; once
+// the channel is handed back, failures arrive as one ChatEventError followed
+// by channel close (same contract as OpenAICompatible.Chat).
+func (p *OllamaNative) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	if len(req.Tools) > 0 && !p.modelSupportsTools(ctx, req.Model) {
+		req.Tools = nil
+	}
+	body, err := p.buildChatRequestBody(req)
+	if err != nil {
+		return nil, fmt.Errorf("provider %q: %w", p.name, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("provider %q: build chat request: %w", p.name, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	p.setHeaders(httpReq)
+
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, p.connHint(fmt.Errorf("provider %q: chat request failed: %w", p.name, err))
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, p.httpError(resp)
+	}
+
+	events := make(chan schema.ChatEvent)
+	if req.Stream {
+		go p.streamChatEvents(resp.Body, events)
+	} else {
+		go p.readChatResponse(resp.Body, events)
+	}
+	return events, nil
+}
+
+func (p *OllamaNative) readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
+	defer close(events)
+	defer body.Close()
+
+	var parsed ollamaChatChunk
+	if err := json.NewDecoder(body).Decode(&parsed); err != nil {
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("decode chat response: %w", err)}
+		return
+	}
+	if parsed.Error != "" {
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: errors.New(parsed.Error)}
+		return
+	}
+	if parsed.Message.Thinking != "" {
+		events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: parsed.Message.Thinking}
+	}
+	if parsed.Message.Content != "" {
+		events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: parsed.Message.Content}
+	}
+	events <- schema.ChatEvent{
+		Type:         schema.ChatEventDone,
+		FinishReason: parsed.DoneReason,
+		Usage:        ollamaUsageFrom(parsed),
+		ToolCalls:    ollamaToolCallsFromWire(parsed.Message.ToolCalls),
+	}
+}
+
+// streamChatEvents is a placeholder — Task 4 implements streaming.
+func (p *OllamaNative) streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
+	defer close(events)
+	defer body.Close()
+	events <- schema.ChatEvent{Type: schema.ChatEventError, Err: errors.New("provider: streaming not yet implemented")}
+}
+
+// modelSupportsTools is a placeholder until Task 5 wires /api/show probing;
+// for now the provider-level config value decides.
+func (p *OllamaNative) modelSupportsTools(ctx context.Context, model string) bool {
+	return p.capabilities.ToolCalling
+}
+
+// Models is implemented in Task 6.
+func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
+	return nil, errors.New("provider: OllamaNative.Models not yet implemented")
+}

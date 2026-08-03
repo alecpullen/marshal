@@ -27,6 +27,12 @@ type Options struct {
 	// LimitsTable is an optional merged limit table used to enrich model
 	// listings. When nil, model limits are left unknown.
 	LimitsTable *limits.Table
+	// KeepAlive is honored only by the native Ollama backend: how long the
+	// model stays loaded after each request. Passed verbatim to the wire.
+	KeepAlive string
+	// ThinkingBudget is honored only by the native Anthropic backend: token
+	// budget for extended thinking. 0 disables thinking.
+	ThinkingBudget int
 }
 
 type OpenAICompatible struct {

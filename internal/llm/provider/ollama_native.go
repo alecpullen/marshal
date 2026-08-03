@@ -87,11 +87,18 @@ func (p *OllamaNative) connHint(err error) error {
 	return err
 }
 
-// ollamaModelCaps caches per-model capability results from /api/show.
-// Task 5 wires the actual probing; the type is declared here so the struct
-// compiles.
+// --- per-model capability probing (/api/show) ---
+
+// ollamaModelCaps caches one model's probed capabilities. known=false means
+// the server did not report capabilities (old Ollama) or the probe failed;
+// callers then fall back to the provider-level config value.
 type ollamaModelCaps struct {
-	ToolCalling bool
+	tools bool
+	known bool
+}
+
+type ollamaShowResponse struct {
+	Capabilities []string `json:"capabilities"`
 }
 
 // --- wire types ---
@@ -363,10 +370,57 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, events chan<- schema
 	}
 }
 
-// modelSupportsTools is a placeholder until Task 5 wires /api/show probing;
-// for now the provider-level config value decides.
+// modelSupportsTools resolves tool-calling support for one model, probing
+// /api/show once per model and caching the result (including failures).
 func (p *OllamaNative) modelSupportsTools(ctx context.Context, model string) bool {
-	return p.capabilities.ToolCalling
+	p.capsMu.Lock()
+	caps, ok := p.capsCache[model]
+	p.capsMu.Unlock()
+	if !ok {
+		caps = p.probeModelCaps(ctx, model)
+		p.capsMu.Lock()
+		p.capsCache[model] = caps
+		p.capsMu.Unlock()
+	}
+	if !caps.known {
+		return p.capabilities.ToolCalling
+	}
+	return caps.tools
+}
+
+func (p *OllamaNative) probeModelCaps(ctx context.Context, model string) ollamaModelCaps {
+	body, err := json.Marshal(map[string]string{"model": model})
+	if err != nil {
+		return ollamaModelCaps{}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/api/show", bytes.NewReader(body))
+	if err != nil {
+		return ollamaModelCaps{}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	p.setHeaders(req)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return ollamaModelCaps{}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ollamaModelCaps{}
+	}
+	var parsed ollamaShowResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return ollamaModelCaps{}
+	}
+	if parsed.Capabilities == nil {
+		return ollamaModelCaps{} // old server: field absent entirely
+	}
+	caps := ollamaModelCaps{known: true}
+	for _, c := range parsed.Capabilities {
+		if c == "tools" {
+			caps.tools = true
+		}
+	}
+	return caps
 }
 
 // Models is implemented in Task 6.

@@ -239,3 +239,112 @@ func TestOllamaChatHTTPError(t *testing.T) {
 		t.Fatalf("StatusCode = %d, want 404", pe.StatusCode)
 	}
 }
+
+func TestOllamaCapabilityProbeStripsTools(t *testing.T) {
+	var chatBodies []map[string]any
+	var showCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			showCalls++
+			// Model without "tools" in its capabilities array.
+			_, _ = w.Write([]byte(`{"capabilities":["completion"]}`))
+		case "/api/chat":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode chat body: %v", err)
+			}
+			chatBodies = append(chatBodies, body)
+			_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	req := chatReq(false)
+	req.Tools = []schema.ToolDefinition{{Name: "read_file", Parameters: json.RawMessage(`{}`)}}
+
+	for i := 0; i < 2; i++ {
+		events, err := p.Chat(t.Context(), req)
+		if err != nil {
+			t.Fatalf("Chat %d: %v", i, err)
+		}
+		for range events {
+		}
+	}
+
+	if len(chatBodies) != 2 {
+		t.Fatalf("got %d chat requests, want 2", len(chatBodies))
+	}
+	for i, body := range chatBodies {
+		if _, present := body["tools"]; present {
+			t.Fatalf("chat request %d still contains tools after caps probe", i)
+		}
+	}
+	if showCalls != 1 {
+		t.Fatalf("/api/show called %d times, want 1 (result must be cached)", showCalls)
+	}
+}
+
+func TestOllamaCapabilityProbeKeepsToolsWhenSupported(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			_, _ = w.Write([]byte(`{"capabilities":["completion","tools"]}`))
+		case "/api/chat":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if _, present := body["tools"]; !present {
+				t.Fatal("tools stripped despite model advertising tools capability")
+			}
+			_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done":true}`))
+		}
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	req := chatReq(false)
+	req.Tools = []schema.ToolDefinition{{Name: "read_file", Parameters: json.RawMessage(`{}`)}}
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	for range events {
+	}
+}
+
+func TestOllamaCapabilityProbeFallbackOnOldServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			// Old Ollama: no capabilities field at all.
+			_, _ = w.Write([]byte(`{"modelfile":"FROM llama3.1"}`))
+		case "/api/chat":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			// ProviderConfig.ToolCalling=true (set below) is the fallback.
+			if _, present := body["tools"]; !present {
+				t.Fatal("tools stripped; expected config fallback to keep them")
+			}
+			_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done":true}`))
+		}
+	}))
+	defer server.Close()
+
+	caps := DefaultCapabilities()
+	caps.ToolCalling = true
+	p, err := NewOllamaNative(Options{Name: "test-ollama", BaseURL: server.URL, Capabilities: &caps})
+	if err != nil {
+		t.Fatalf("NewOllamaNative: %v", err)
+	}
+	req := chatReq(false)
+	req.Tools = []schema.ToolDefinition{{Name: "read_file", Parameters: json.RawMessage(`{}`)}}
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	for range events {
+	}
+}

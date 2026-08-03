@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -347,4 +348,73 @@ func (m *PluginsManager) PluginsInstallConfirm(ctx context.Context, params json.
 		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("write lockfile: %v", err)}
 	}
 	return PluginsInstallResult{Name: staged.name}, nil
+}
+
+// PluginsRemoveParams is the JSON-RPC body for session/plugins_remove.
+type PluginsRemoveParams struct {
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
+	Scope     string `json:"scope"`
+}
+
+// PluginsRemove handles session/plugins_remove. No confirmation step —
+// the explicit RPC call is itself the confirmation. Project scope is
+// rejected outright on an untrusted session, same as confirm.
+func (m *PluginsManager) PluginsRemove(ctx context.Context, params json.RawMessage) (any, error) {
+	var p PluginsRemoveParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, invalidParamsError("parse session/plugins_remove params: %v", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/plugins_remove requires sessionId")
+	}
+	if p.Name == "" {
+		return nil, invalidParamsError("session/plugins_remove requires name")
+	}
+	if !validPluginScope(p.Scope) {
+		return nil, invalidParamsError("invalid scope %q: want \"global\" or \"project\"", p.Scope)
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if p.Scope == "project" && !rt.Trusted {
+		return nil, serverErrorf("project scope requires a trusted session")
+	}
+	var storeDir, lockPath string
+	if p.Scope == "project" {
+		storeDir, lockPath = plugins.ProjectStoreDir(rt.WorkingDir), plugins.ProjectLockPath(rt.WorkingDir)
+	} else {
+		storeDir, lockPath = plugins.GlobalStoreDir(rt.HomeDir), plugins.GlobalLockPath(rt.HomeDir)
+	}
+	if err := os.RemoveAll(filepath.Join(storeDir, p.Name)); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("remove plugin: %v", err)}
+	}
+	lf, err := plugins.ReadLockfile(lockPath)
+	if err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("read lockfile: %v", err)}
+	}
+	lf.Remove(p.Name)
+	if err := lf.Write(lockPath); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("write lockfile: %v", err)}
+	}
+	return map[string]any{}, nil
+}
+
+// CloseSession removes every scanned (not yet confirmed or discarded)
+// install for sessionID. Best-effort: no error return, since a cleanup
+// failure must never block a session from actually closing.
+func (m *PluginsManager) CloseSession(sessionID string) {
+	m.scansMu.Lock()
+	byToken := m.scans[sessionID]
+	delete(m.scans, sessionID)
+	m.scansMu.Unlock()
+
+	for _, staged := range byToken {
+		if err := os.RemoveAll(staged.tempDir); err != nil {
+			slog.Default().Warn("acp: failed to clean up scanned plugin install", "session", sessionID, "tempDir", staged.tempDir, "err", err)
+		}
+	}
 }

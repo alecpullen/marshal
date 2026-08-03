@@ -1066,3 +1066,63 @@ func randPerm(n int) []int {
 	}
 	return out
 }
+
+// --- Test 12: plugins install scan/confirm/list wire-level integration ---
+
+// TestACPWirePluginsInstallScanConfirmAndList wires a PluginsManager
+// with a Lookup that returns a PluginsRuntime backed by temp dirs, then
+// exercises session/plugins_install_scan, session/plugins_install_confirm,
+// and session/plugins_list over the actual JSON wire transport.
+func TestACPWirePluginsInstallScanConfirmAndList(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	initPluginRepo(t, src, map[string]string{"commands/hello.md": testCommandFile})
+	home := t.TempDir()
+	work := t.TempDir()
+
+	pluginsMgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
+			return &PluginsRuntime{HomeDir: home, WorkingDir: work, Trusted: true}, true
+		},
+	})
+
+	h := newWireHarness(t, func(srv *Server) {
+		srv.Handle("session/plugins_install_scan", pluginsMgr.PluginsInstallScan)
+		srv.Handle("session/plugins_install_confirm", pluginsMgr.PluginsInstallConfirm)
+		srv.Handle("session/plugins_list", pluginsMgr.PluginsList)
+	})
+	defer h.close(t)
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(1), "method": "session/plugins_install_scan",
+		"params": map[string]any{"sessionId": "sess_wire", "source": src},
+	})
+	resp := readResponse(t, h, "1")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/plugins_install_scan error: %+v", errObj)
+	}
+	res, _ := frameResult(resp).(map[string]any)
+	token, _ := res["scanToken"].(string)
+	if token == "" {
+		t.Fatalf("session/plugins_install_scan result = %v, missing scanToken", res)
+	}
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(2), "method": "session/plugins_install_confirm",
+		"params": map[string]any{"sessionId": "sess_wire", "scanToken": token, "scope": "global"},
+	})
+	resp = readResponse(t, h, "2")
+	if errObj := frameError(resp); errObj != nil {
+		t.Fatalf("session/plugins_install_confirm error: %+v", errObj)
+	}
+
+	h.send(t, map[string]any{
+		"jsonrpc": "2.0", "id": float64(3), "method": "session/plugins_list",
+		"params": map[string]any{"sessionId": "sess_wire"},
+	})
+	resp = readResponse(t, h, "3")
+	res, _ = frameResult(resp).(map[string]any)
+	list, _ := res["plugins"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("session/plugins_list after confirm = %v, want one entry", res["plugins"])
+	}
+}

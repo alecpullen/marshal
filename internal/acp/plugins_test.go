@@ -313,3 +313,86 @@ func TestPluginsInstallDiscardRejectsUnknownToken(t *testing.T) {
 		t.Fatal("PluginsInstallDiscard with unknown token: got nil error, want an error")
 	}
 }
+
+func TestPluginsRemoveDeletesStoreAndLockEntry(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	initPluginRepo(t, src, map[string]string{"commands/hello.md": testCommandFile})
+	home := t.TempDir()
+	work := t.TempDir()
+
+	mgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
+			return &PluginsRuntime{HomeDir: home, WorkingDir: work, Trusted: true}, true
+		},
+	})
+	scanRaw, _ := json.Marshal(PluginsInstallScanParams{SessionID: "sess_1", Source: src})
+	scanRes, err := mgr.PluginsInstallScan(context.Background(), scanRaw)
+	if err != nil {
+		t.Fatalf("PluginsInstallScan: %v", err)
+	}
+	scanResult := scanRes.(PluginsInstallScanResult)
+	confirmRaw, _ := json.Marshal(PluginsInstallConfirmParams{SessionID: "sess_1", ScanToken: scanResult.ScanToken, Scope: "global"})
+	if _, err := mgr.PluginsInstallConfirm(context.Background(), confirmRaw); err != nil {
+		t.Fatalf("PluginsInstallConfirm: %v", err)
+	}
+
+	removeRaw, _ := json.Marshal(PluginsRemoveParams{SessionID: "sess_1", Name: scanResult.Name, Scope: "global"})
+	if _, err := mgr.PluginsRemove(context.Background(), removeRaw); err != nil {
+		t.Fatalf("PluginsRemove: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(plugins.GlobalStoreDir(home), scanResult.Name)); !os.IsNotExist(err) {
+		t.Fatalf("plugin store dir still exists after remove (stat err = %v)", err)
+	}
+	lf, err := plugins.ReadLockfile(plugins.GlobalLockPath(home))
+	if err != nil {
+		t.Fatalf("ReadLockfile: %v", err)
+	}
+	if _, found := lf.Find(scanResult.Name); found {
+		t.Fatal("lockfile still has an entry after remove")
+	}
+}
+
+func TestPluginsRemoveRejectsProjectScopeWhenUntrusted(t *testing.T) {
+	mgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
+			return &PluginsRuntime{HomeDir: t.TempDir(), WorkingDir: t.TempDir(), Trusted: false}, true
+		},
+	})
+	raw, _ := json.Marshal(PluginsRemoveParams{SessionID: "sess_1", Name: "x", Scope: "project"})
+	_, err := mgr.PluginsRemove(context.Background(), raw)
+	if err == nil {
+		t.Fatal("PluginsRemove with scope=project on an untrusted session: got nil error, want an error")
+	}
+}
+
+func TestPluginsCloseSessionRemovesScannedTempDirs(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	initPluginRepo(t, src, map[string]string{"commands/hello.md": testCommandFile})
+
+	mgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
+			return &PluginsRuntime{HomeDir: t.TempDir(), WorkingDir: t.TempDir(), Trusted: true}, true
+		},
+	})
+	scanRaw, _ := json.Marshal(PluginsInstallScanParams{SessionID: "sess_close", Source: src})
+	scanRes, err := mgr.PluginsInstallScan(context.Background(), scanRaw)
+	if err != nil {
+		t.Fatalf("PluginsInstallScan: %v", err)
+	}
+	token := scanRes.(PluginsInstallScanResult).ScanToken
+	tempDir := mgr.scans["sess_close"][token].tempDir
+
+	mgr.CloseSession("sess_close")
+
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("temp dir %s still exists after CloseSession", tempDir)
+	}
+}
+
+func TestPluginsCloseSessionIsNoOpForSessionWithNoScans(t *testing.T) {
+	mgr := NewPluginsManager(PluginsManagerConfig{
+		Lookup: func(sessionID string) (*PluginsRuntime, bool) { return nil, false },
+	})
+	mgr.CloseSession("sess_never_scanned") // must not panic
+}

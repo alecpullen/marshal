@@ -348,3 +348,78 @@ func TestCloseSessionIsNoOpForSessionWithNoStaging(t *testing.T) {
 	})
 	mgr.CloseSession("sess_never_staged") // must not panic
 }
+
+// TestSkillsRemoveRejectsPathTraversal guards a path-traversal hole in a
+// method reachable over the wire: session/skills_remove joined the
+// client-supplied name onto the scope directory and handed the result to
+// os.RemoveAll, so a name like "../../.." deleted an arbitrary directory
+// tree outside the skills scope.
+func TestSkillsRemoveRejectsPathTraversal(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	victim := filepath.Join(home, "important")
+	if err := os.MkdirAll(victim, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
+			return &SkillsRuntime{HomeDir: home, WorkingDir: work}, true
+		},
+	})
+	for _, name := range []string{
+		"../../../important",
+		"..",
+		"nested/child",
+		filepath.Join(home, "important"),
+	} {
+		raw, _ := json.Marshal(SkillsRemoveParams{SessionID: "sess_1", Name: name, Scope: "global"})
+		if _, err := mgr.SkillsRemove(context.Background(), raw); err == nil {
+			t.Errorf("SkillsRemove(%q): got nil error, want rejection", name)
+		}
+		if _, err := os.Stat(victim); os.IsNotExist(err) {
+			t.Fatalf("SkillsRemove(%q) deleted %s outside the skills scope", name, victim)
+		}
+	}
+}
+
+// TestSkillsRemoveBundleDirectory covers the other on-disk layout: a skill
+// stored as a bundle directory rather than a flat <name>.md file.
+func TestSkillsRemoveBundleDirectory(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	bundle := filepath.Join(home, ".config", "marshal", "skills", "bundled")
+	if err := os.MkdirAll(bundle, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkillFile(t, bundle, "SKILL")
+
+	mgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
+			return &SkillsRuntime{HomeDir: home, WorkingDir: work}, true
+		},
+	})
+	raw, _ := json.Marshal(SkillsRemoveParams{SessionID: "sess_1", Name: "bundled", Scope: "global"})
+	if _, err := mgr.SkillsRemove(context.Background(), raw); err != nil {
+		t.Fatalf("SkillsRemove: %v", err)
+	}
+	if _, err := os.Stat(bundle); !os.IsNotExist(err) {
+		t.Fatalf("bundle dir still exists after SkillsRemove (stat err = %v)", err)
+	}
+}
+
+// TestSkillsRemoveUnknownSkillErrors pins the behaviour that hid the
+// single-file bug: os.RemoveAll returns nil for a path that does not exist,
+// so removing a skill that was never there used to report success.
+func TestSkillsRemoveUnknownSkillErrors(t *testing.T) {
+	home := t.TempDir()
+	mgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
+			return &SkillsRuntime{HomeDir: home, WorkingDir: t.TempDir()}, true
+		},
+	})
+	raw, _ := json.Marshal(SkillsRemoveParams{SessionID: "sess_1", Name: "never-installed", Scope: "global"})
+	if _, err := mgr.SkillsRemove(context.Background(), raw); err == nil {
+		t.Fatal("SkillsRemove of an absent skill: got nil error, want an error")
+	}
+}

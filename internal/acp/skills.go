@@ -62,6 +62,26 @@ func validScope(scope string) bool {
 	return scope == "global" || scope == "project"
 }
 
+// validSkillName reports whether name is safe to join onto a scope
+// directory. Skill names identify a file or bundle directory directly
+// inside that scope, so anything that can redirect the join — a separator,
+// a parent traversal, an absolute or volume-qualified path — is rejected
+// rather than cleaned. This is enforced because the name arrives from an
+// ACP client over the wire and SkillsRemove hands the result to
+// os.RemoveAll: a name like "../../.." would otherwise delete an arbitrary
+// directory tree outside the skills scope.
+func validSkillName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsRune(name, '/') || strings.ContainsRune(name, os.PathSeparator) {
+		return false
+	}
+	// filepath.IsAbs misses "C:foo" style volume-relative paths on Windows,
+	// which VolumeName catches.
+	return !filepath.IsAbs(name) && filepath.VolumeName(name) == ""
+}
+
 // SkillEntry mirrors skills.ScopedSkill for JSON transport.
 type SkillEntry struct {
 	Name        string `json:"name"`
@@ -126,6 +146,9 @@ func (m *SkillsManager) SkillsRemove(ctx context.Context, params json.RawMessage
 	if p.Name == "" {
 		return nil, invalidParamsError("session/skills_remove requires name")
 	}
+	if !validSkillName(p.Name) {
+		return nil, invalidParamsError("invalid skill name %q", p.Name)
+	}
 	if !validScope(p.Scope) {
 		return nil, invalidParamsError("invalid scope %q: want \"global\" or \"project\"", p.Scope)
 	}
@@ -134,8 +157,27 @@ func (m *SkillsManager) SkillsRemove(ctx context.Context, params json.RawMessage
 		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
 	}
 	dir := skills.ScopeDir(rt.HomeDir, rt.WorkingDir, p.Scope == "project")
-	if err := os.RemoveAll(filepath.Join(dir, p.Name)); err != nil {
-		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("remove skill: %v", err)}
+
+	// A skill is stored either as a bundle directory or as a flat <name>.md
+	// file (see skills/loader.go, and Install, which writes the flat form for
+	// any non-bundle source). Removing only the directory left every
+	// single-file skill on disk while still reporting success, because
+	// os.RemoveAll returns nil for a path that does not exist.
+	removed := false
+	for _, path := range []string{
+		filepath.Join(dir, p.Name),
+		filepath.Join(dir, p.Name+".md"),
+	} {
+		if _, err := os.Lstat(path); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("remove skill: %v", err)}
+		}
+		removed = true
+	}
+	if !removed {
+		return nil, invalidParamsError("no %s skill named %q", p.Scope, p.Name)
 	}
 	return map[string]any{}, nil
 }

@@ -327,6 +327,31 @@ func TestAnthropicStreamingThinkingDelta(t *testing.T) {
 	assertChannelClosed(t, events)
 }
 
+func TestAnthropicModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != "sk-test" {
+			t.Fatalf("x-api-key = %q, want sk-test", got)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"type":"model","id":"claude-sonnet-4-5","display_name":"Claude Sonnet 4.5"},{"type":"model","id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5"}],"has_more":false}`))
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("got %d models, want 2", len(models))
+	}
+	if models[0].ID != "claude-sonnet-4-5" || models[0].OwnedBy != "anthropic" {
+		t.Fatalf("models[0] = %+v", models[0])
+	}
+}
+
 func TestAnthropicChatHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

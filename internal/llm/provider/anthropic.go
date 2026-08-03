@@ -495,7 +495,37 @@ func (p *Anthropic) streamChatEvents(body io.ReadCloser, events chan<- schema.Ch
 	}
 }
 
-// Models is implemented in Task 9.
+// --- model listing ---
+
+type anthropicModelsResponse struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+// Models lists available models via GET /v1/models. The endpoint reports no
+// context-window metadata; limits come from the static catalog or config.
 func (p *Anthropic) Models(ctx context.Context) ([]schema.ModelInfo, error) {
-	return nil, errors.New("provider: Anthropic.Models not yet implemented")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("provider %q: build models request: %w", p.name, err)
+	}
+	p.setHeaders(req)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("provider %q: models request failed: %w", p.name, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, p.httpError(resp)
+	}
+	var parsed anthropicModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("provider %q: decode models response: %w", p.name, err)
+	}
+	models := make([]schema.ModelInfo, 0, len(parsed.Data))
+	for _, m := range parsed.Data {
+		models = append(models, schema.ModelInfo{ID: m.ID, OwnedBy: "anthropic"})
+	}
+	return models, nil
 }

@@ -185,6 +185,148 @@ func TestAnthropicChatNonStreamingEvents(t *testing.T) {
 	assertChannelClosed(t, events)
 }
 
+func TestAnthropicStreamingTextAndUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: message_start\n" +
+				`data: {"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":10,"cache_creation_input_tokens":2}}}` + "\n\n" +
+				"event: content_block_start\n" +
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}` + "\n\n" +
+				"event: content_block_stop\n" +
+				`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+				"event: message_delta\n" +
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}` + "\n\n" +
+				"event: message_stop\n" +
+				`data: {"type":"message_stop"}` + "\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hel" {
+		t.Fatalf("event 1 = %+v, want Delta hel", ev1)
+	}
+	ev2, _ := recvEvent(t, events)
+	if ev2.Type != schema.ChatEventDelta || ev2.Delta != "lo" {
+		t.Fatalf("event 2 = %+v, want Delta lo", ev2)
+	}
+	ev3, _ := recvEvent(t, events)
+	if ev3.Type != schema.ChatEventDone || ev3.FinishReason != "stop" {
+		t.Fatalf("event 3 = %+v, want Done stop", ev3)
+	}
+	if ev3.Usage == nil || ev3.Usage.PromptTokens != 24 || ev3.Usage.CompletionTokens != 4 {
+		t.Fatalf("Usage = %+v, want prompt=24 (12+10+2) completion=4", ev3.Usage)
+	}
+	if ev3.Usage.CacheReadTokens != 10 || ev3.Usage.CacheWriteTokens != 2 {
+		t.Fatalf("cache tokens = %+v, want read=10 write=2", ev3.Usage)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestAnthropicStreamingToolUseAccumulation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: message_start\n" +
+				`data: {"type":"message_start","message":{"usage":{"input_tokens":5}}}` + "\n\n" +
+				"event: content_block_start\n" +
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file"}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"d.go\"}"}}` + "\n\n" +
+				"event: content_block_stop\n" +
+				`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+				"event: message_delta\n" +
+				`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}` + "\n\n" +
+				"event: message_stop\n" +
+				`data: {"type":"message_stop"}` + "\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	ev, _ := recvEvent(t, events)
+	if ev.Type != schema.ChatEventDone {
+		t.Fatalf("event = %+v, want Done", ev)
+	}
+	if ev.FinishReason != "tool_calls" {
+		t.Fatalf("FinishReason = %q, want tool_calls", ev.FinishReason)
+	}
+	if len(ev.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %+v, want 1", ev.ToolCalls)
+	}
+	call := ev.ToolCalls[0]
+	if call.ID != "toolu_1" || call.Name != "read_file" {
+		t.Fatalf("call = %+v", call)
+	}
+	if string(call.Args) != `{"path":"d.go"}` {
+		t.Fatalf("Args = %s, want accumulated JSON", call.Args)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestAnthropicStreamingThinkingDelta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: message_start\n" +
+				`data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}` + "\n\n" +
+				"event: content_block_start\n" +
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"pondering"}}` + "\n\n" +
+				"event: content_block_stop\n" +
+				`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+				"event: content_block_start\n" +
+				`data: {"type":"content_block_start","index":1,"content_block":{"type":"text"}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}` + "\n\n" +
+				"event: message_delta\n" +
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}` + "\n\n" +
+				"event: message_stop\n" +
+				`data: {"type":"message_stop"}` + "\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Kind != schema.DeltaThinking || ev1.Delta != "pondering" {
+		t.Fatalf("event 1 = %+v, want thinking Delta", ev1)
+	}
+	ev2, _ := recvEvent(t, events)
+	if ev2.Type != schema.ChatEventDelta || ev2.Kind != schema.DeltaAnswer || ev2.Delta != "answer" {
+		t.Fatalf("event 2 = %+v, want answer Delta", ev2)
+	}
+	ev3, _ := recvEvent(t, events)
+	if ev3.Type != schema.ChatEventDone {
+		t.Fatalf("event 3 = %+v, want Done", ev3)
+	}
+	assertChannelClosed(t, events)
+}
+
 func TestAnthropicChatHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

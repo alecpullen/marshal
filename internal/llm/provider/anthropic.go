@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"marshal/internal/llm/schema"
+	"marshal/internal/llm/streaming"
 )
 
 // anthropicAPIVersion is the Messages API version header value.
@@ -368,11 +370,129 @@ func (p *Anthropic) readChatResponse(body io.ReadCloser, events chan<- schema.Ch
 	}
 }
 
-// streamChatEvents is a stub for Task 8.
+// --- streaming ---
+
+// anthropicStreamEvent is the union of every SSE data payload the Messages
+// API emits; the Type field discriminates.
+type anthropicStreamEvent struct {
+	Type         string                 `json:"type"`
+	Index        int                    `json:"index"`
+	ContentBlock *anthropicContentBlock `json:"content_block"`
+	Delta        *anthropicStreamDelta  `json:"delta"`
+	Message      *anthropicResponse    `json:"message"`
+	Usage        *anthropicUsage       `json:"usage"`
+}
+
+type anthropicStreamDelta struct {
+	Type        string `json:"type"` // text_delta, thinking_delta, input_json_delta
+	Text        string `json:"text"`
+	Thinking    string `json:"thinking"`
+	PartialJSON string `json:"partial_json"`
+	StopReason  string `json:"stop_reason"`
+}
+
+// anthropicBlockBuffer accumulates one content block's streamed state.
+type anthropicBlockBuffer struct {
+	isToolUse bool
+	id        string
+	name      string
+	args      strings.Builder
+}
+
+// streamChatEvents consumes the Messages API SSE stream: typed events walk
+// content blocks by index, with tool_use input arriving as JSON fragments.
 func (p *Anthropic) streamChatEvents(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	defer close(events)
 	defer body.Close()
-	events <- schema.ChatEvent{Type: schema.ChatEventError, Err: errors.New("Anthropic streaming not yet implemented")}
+
+	dec := streaming.NewDecoder(body)
+	blocks := make(map[int]*anthropicBlockBuffer)
+	var usage anthropicUsage
+	var haveUsage bool
+	var finishReason string
+
+	for dec.Next() {
+		data := strings.TrimSpace(dec.Event().Data)
+		if data == "" {
+			continue
+		}
+		var ev anthropicStreamEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("decode stream event: %w", err)}
+			return
+		}
+		switch ev.Type {
+		case "message_start":
+			if ev.Message != nil {
+				usage = ev.Message.Usage
+				haveUsage = true
+			}
+		case "content_block_start":
+			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+				blocks[ev.Index] = &anthropicBlockBuffer{
+					isToolUse: true,
+					id:        ev.ContentBlock.ID,
+					name:      ev.ContentBlock.Name,
+				}
+			}
+		case "content_block_delta":
+			if ev.Delta == nil {
+				continue
+			}
+			switch ev.Delta.Type {
+			case "text_delta":
+				events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: ev.Delta.Text}
+			case "thinking_delta":
+				events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: ev.Delta.Thinking}
+			case "input_json_delta":
+				if buf := blocks[ev.Index]; buf != nil {
+					buf.args.WriteString(ev.Delta.PartialJSON)
+				}
+			}
+		case "message_delta":
+			if ev.Delta != nil && ev.Delta.StopReason != "" {
+				finishReason = anthropicFinishReason(ev.Delta.StopReason)
+			}
+			if ev.Usage != nil {
+				usage.OutputTokens = ev.Usage.OutputTokens
+			}
+		case "error":
+			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("stream error event: %s", data)}
+			return
+		}
+		// content_block_stop, message_stop, ping: no action needed.
+	}
+	if err := dec.Err(); err != nil {
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("read stream: %w", err)}
+		return
+	}
+
+	indexes := make([]int, 0, len(blocks))
+	for index := range blocks {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	toolCalls := make([]schema.ToolCall, 0, len(indexes))
+	for _, index := range indexes {
+		buf := blocks[index]
+		toolCalls = append(toolCalls, schema.ToolCall{
+			ID:   buf.id,
+			Name: buf.name,
+			Args: json.RawMessage(buf.args.String()),
+		})
+	}
+	toolCalls, _ = repairToolCalls(toolCalls)
+
+	var usageOut *schema.TokenUsage
+	if haveUsage {
+		usageOut = anthropicUsageFrom(usage)
+	}
+	events <- schema.ChatEvent{
+		Type:         schema.ChatEventDone,
+		FinishReason: finishReason,
+		Usage:        usageOut,
+		ToolCalls:    toolCalls,
+	}
 }
 
 // Models is implemented in Task 9.

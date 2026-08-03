@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 )
 
 func newMemoryTestDB(t *testing.T) (*db.DB, int64) {
@@ -146,5 +149,80 @@ func TestMemoryDeleteRejectsZeroID(t *testing.T) {
 	_, err := mgr.MemoryDelete(context.Background(), raw)
 	if err == nil {
 		t.Fatal("MemoryDelete with id=0: got nil error, want an error")
+	}
+}
+
+func TestMemorySetConfidenceUpdatesRow(t *testing.T) {
+	d, projectID := newMemoryTestDB(t)
+	if err := d.SaveMemory(projectID, "fact", "x", "sess_a", time.Now()); err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	rows, _ := d.GetMemories(projectID)
+	id := rows[0].ID
+
+	mgr := NewMemoryManager(MemoryManagerConfig{
+		Lookup: func(sessionID string) (*MemoryRuntime, bool) {
+			return &MemoryRuntime{DB: d, ProjectID: projectID}, true
+		},
+	})
+	raw, _ := json.Marshal(MemorySetConfidenceParams{SessionID: "sess_1", ID: id, Confidence: "confirmed"})
+	if _, err := mgr.MemorySetConfidence(context.Background(), raw); err != nil {
+		t.Fatalf("MemorySetConfidence: %v", err)
+	}
+
+	rows, _ = d.GetMemories(projectID)
+	if rows[0].Confidence != "confirmed" {
+		t.Fatalf("Confidence after set = %q, want %q", rows[0].Confidence, "confirmed")
+	}
+}
+
+func TestMemorySetConfidenceRejectsInvalidValue(t *testing.T) {
+	mgr := NewMemoryManager(MemoryManagerConfig{
+		Lookup: func(sessionID string) (*MemoryRuntime, bool) { return nil, false },
+	})
+	raw, _ := json.Marshal(MemorySetConfidenceParams{SessionID: "sess_1", ID: 1, Confidence: "definitely-maybe"})
+	_, err := mgr.MemorySetConfidence(context.Background(), raw)
+	if err == nil {
+		t.Fatal("MemorySetConfidence with invalid confidence: got nil error, want an error")
+	}
+}
+
+func TestAgentsRosterResolvesConfiguredRoles(t *testing.T) {
+	state := &session.State{}
+	cfg := config.Default()
+	state.Config = cfg
+
+	mgr := NewMemoryManager(MemoryManagerConfig{
+		Lookup: func(sessionID string) (*MemoryRuntime, bool) {
+			return &MemoryRuntime{State: state}, true
+		},
+	})
+	raw, _ := json.Marshal(map[string]any{"sessionId": "sess_1"})
+	res, err := mgr.AgentsRoster(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("AgentsRoster: %v", err)
+	}
+	result, ok := res.(AgentsRosterResult)
+	if !ok {
+		t.Fatalf("AgentsRoster result type = %T, want AgentsRosterResult", res)
+	}
+	if len(result.Roles) != len(routing.AllRoles) {
+		t.Fatalf("len(Roles) = %d, want %d (one per routing.AllRoles entry)", len(result.Roles), len(routing.AllRoles))
+	}
+	if result.SwarmBudget.MaxTotalTokens != cfg.Swarm.Budget.MaxTotalTokens {
+		t.Errorf("SwarmBudget.MaxTotalTokens = %d, want %d", result.SwarmBudget.MaxTotalTokens, cfg.Swarm.Budget.MaxTotalTokens)
+	}
+	if result.SDDBudget.MaxTotalTokens != cfg.SDD.MaxTotalTokens {
+		t.Errorf("SDDBudget.MaxTotalTokens = %d, want %d", result.SDDBudget.MaxTotalTokens, cfg.SDD.MaxTotalTokens)
+	}
+}
+
+func TestAgentsRosterRequiresSessionID(t *testing.T) {
+	mgr := NewMemoryManager(MemoryManagerConfig{
+		Lookup: func(sessionID string) (*MemoryRuntime, bool) { return nil, false },
+	})
+	_, err := mgr.AgentsRoster(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("AgentsRoster with no sessionId: got nil error, want an error")
 	}
 }

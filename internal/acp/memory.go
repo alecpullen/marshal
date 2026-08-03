@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 )
 
 // MemoryRuntime is the per-session slice of state MemoryManager needs.
@@ -120,4 +121,126 @@ func (m *MemoryManager) MemoryDelete(ctx context.Context, params json.RawMessage
 		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("delete memory: %v", err)}
 	}
 	return map[string]any{}, nil
+}
+
+var validMemoryConfidence = map[string]bool{"tentative": true, "confirmed": true, "stale": true}
+
+// MemorySetConfidenceParams is the JSON-RPC body for
+// session/memory_set_confidence.
+type MemorySetConfidenceParams struct {
+	SessionID  string `json:"sessionId"`
+	ID         int64  `json:"id"`
+	Confidence string `json:"confidence"`
+}
+
+// MemorySetConfidence handles session/memory_set_confidence. Goes beyond
+// what the TUI's memory panel exposes (db.SetMemoryConfidence exists but
+// no TUI path calls it) — an intentional, explicitly-scoped addition.
+func (m *MemoryManager) MemorySetConfidence(ctx context.Context, params json.RawMessage) (any, error) {
+	var p MemorySetConfidenceParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, invalidParamsError("parse session/memory_set_confidence params: %v", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/memory_set_confidence requires sessionId")
+	}
+	if p.ID == 0 {
+		return nil, invalidParamsError("session/memory_set_confidence requires a non-zero id")
+	}
+	if !validMemoryConfidence[p.Confidence] {
+		return nil, invalidParamsError("invalid confidence %q: want one of tentative, confirmed, stale", p.Confidence)
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.DB == nil {
+		return nil, &jsonRPCError{Code: internalError, Message: "session has no database handle"}
+	}
+	if err := rt.DB.SetMemoryConfidence(p.ID, p.Confidence, time.Now()); err != nil {
+		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("set memory confidence: %v", err)}
+	}
+	return map[string]any{}, nil
+}
+
+// RosterRole is one role's resolved binding in the session/agents_roster
+// result.
+type RosterRole struct {
+	Role        string `json:"role"`
+	Profile     string `json:"profile"`
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	PresetName  string `json:"presetName,omitempty"`
+	CustomAgent string `json:"customAgent,omitempty"`
+	LocalOnly   bool   `json:"localOnly"`
+	Error       string `json:"error,omitempty"`
+}
+
+// RosterBudget is one subsystem's token/round budget.
+type RosterBudget struct {
+	MaxFixRounds   int `json:"maxFixRounds"`
+	MaxTotalTokens int `json:"maxTotalTokens"`
+}
+
+// AgentsRosterResult is the JSON-RPC result for session/agents_roster.
+type AgentsRosterResult struct {
+	Roles       []RosterRole `json:"roles"`
+	SwarmBudget RosterBudget `json:"swarmBudget"`
+	SDDBudget   RosterBudget `json:"sddBudget"`
+}
+
+// AgentsRoster handles session/agents_roster: a read-only resolved view
+// of every role's live binding, plus swarm/SDD budgets. There is no
+// write counterpart — roster "editing" is general settings mutation
+// under the hood (same config.Config, same config.SaveProjectConfig
+// persistence /settings uses), out of this sub-project's scope.
+func (m *MemoryManager) AgentsRoster(ctx context.Context, params json.RawMessage) (any, error) {
+	var p sessionIDParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, invalidParamsError("parse session/agents_roster params: %v", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/agents_roster requires sessionId")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	if rt.State == nil {
+		return nil, &jsonRPCError{Code: internalError, Message: "session has no state"}
+	}
+	cfg := rt.State.Config
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	cast := router.Cast(routing.AllRoles)
+	roles := make([]RosterRole, len(cast))
+	for i, ce := range cast {
+		r := RosterRole{
+			Role:       string(ce.Role),
+			Profile:    ce.Route.Profile,
+			Provider:   ce.Route.Preset.Provider,
+			Model:      ce.Route.Preset.Model,
+			PresetName: ce.Route.Preset.Name,
+			LocalOnly:  ce.Route.Preset.LocalOnly,
+		}
+		if ce.Route.CustomAgent != nil {
+			r.CustomAgent = ce.Route.CustomAgent.Name
+		}
+		if ce.Err != nil {
+			r.Error = ce.Err.Error()
+		}
+		roles[i] = r
+	}
+	return AgentsRosterResult{
+		Roles: roles,
+		SwarmBudget: RosterBudget{
+			MaxFixRounds: cfg.Swarm.Budget.MaxFixRounds, MaxTotalTokens: cfg.Swarm.Budget.MaxTotalTokens,
+		},
+		SDDBudget: RosterBudget{
+			MaxFixRounds: cfg.SDD.MaxFixRounds, MaxTotalTokens: cfg.SDD.MaxTotalTokens,
+		},
+	}, nil
 }

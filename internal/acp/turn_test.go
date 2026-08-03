@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2144,5 +2147,95 @@ func TestBuildSessionFooterCountsFinalAssistantMessagesAndLastTurnTokens(t *test
 	want := TelemetrySessionFooter{Turns: 2, LastTurnTokensUsed: 1234, LastTurnTokensWindow: 8000}
 	if got != want {
 		t.Errorf("buildSessionFooter = %+v, want %+v", got, want)
+	}
+}
+
+func TestBaseRefForCachesFirstValuePerSession(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir) // helper added below; skips the test if git is unavailable
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	first := manager.baseRefFor("sess_1", dir)
+	if first == "" {
+		t.Fatal("baseRefFor returned empty ref for a real git repo")
+	}
+
+	// Make a commit — if baseRefFor recomputed HeadSHA on every call, the
+	// second call would return the new commit instead of the cached one.
+	runGit(t, dir, "commit", "--allow-empty", "-m", "second commit")
+
+	second := manager.baseRefFor("sess_1", dir)
+	if second != first {
+		t.Fatalf("baseRefFor second call = %q, want cached %q (unchanged despite a new commit)", second, first)
+	}
+
+	// A different session ID gets its own cache entry, computed fresh.
+	third := manager.baseRefFor("sess_2", dir)
+	if third == first {
+		t.Fatal("baseRefFor for a different session returned the stale sess_1 value instead of computing fresh")
+	}
+}
+
+func TestBuildChangedFilesReflectsWorkingTreeDiff(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	state := &session.State{}
+	state.WorkingDir = dir // confirm this is a settable field, not constructor-only, before writing this line
+
+	// Establish the base ref before making any changes.
+	base := manager.baseRefFor("sess_1", dir)
+	if base == "" {
+		t.Fatal("expected a non-empty base ref")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("line1\nline2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "new.txt")
+
+	got := manager.buildChangedFiles("sess_1", state)
+	if len(got) != 1 || got[0].Path != "new.txt" || got[0].Added != 2 {
+		t.Fatalf("buildChangedFiles = %+v, want one entry for new.txt with Added=2", got)
+	}
+}
+
+func TestBuildChangedFilesEmptyReturnsEmptySliceNotNil(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	got := manager.buildChangedFiles("sess_nonexistent_dir", &session.State{})
+	if got == nil {
+		t.Fatal("buildChangedFiles = nil, want a non-nil empty slice")
+	}
+}
+
+// initGitRepo creates a minimal git repo with one commit in dir, skipping
+// the test if git is unavailable. Shared by base-ref/changed-files tests.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "t@t")
+	runGit(t, dir, "config", "user.name", "t")
+	runGit(t, dir, "commit", "--allow-empty", "-m", "initial")
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }

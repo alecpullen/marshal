@@ -14,6 +14,8 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/changedfiles"
+	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
@@ -131,6 +133,14 @@ type TurnManager struct {
 	// SDDAnswer can resume the same instance a human gate paused.
 	pipelineRunnersMu sync.Mutex
 	pipelineRunners   map[string]*sddRun
+
+	// baseRefsMu guards baseRefs, the per-session fixed diff base for
+	// session_telemetry's changed-files section — computed once on first
+	// use and cached, mirroring the TUI's railBaseRef (fixed at
+	// construction, not recomputed against current HEAD on every refresh,
+	// since SDD/swarm runs make commits mid-session).
+	baseRefsMu sync.Mutex
+	baseRefs   map[string]string
 }
 
 // sddRun is one session's in-flight (possibly gated) SDD run.
@@ -152,6 +162,7 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		perms:           cfg.Perms,
 		activeTurns:     map[string]*activeTurn{},
 		pipelineRunners: map[string]*sddRun{},
+		baseRefs:        map[string]string{},
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)
@@ -743,6 +754,37 @@ func buildSessionFooter(state *session.State) TelemetrySessionFooter {
 		LastTurnTokensUsed:   used,
 		LastTurnTokensWindow: window,
 	}
+}
+
+// baseRefFor returns the fixed commit sessionID's changed-files diff is
+// computed against, computing and caching it via gitinfo.HeadSHA on first
+// use.
+func (m *TurnManager) baseRefFor(sessionID, workingDir string) string {
+	m.baseRefsMu.Lock()
+	defer m.baseRefsMu.Unlock()
+	if ref, ok := m.baseRefs[sessionID]; ok {
+		return ref
+	}
+	ref := gitinfo.HeadSHA(workingDir)
+	m.baseRefs[sessionID] = ref
+	return ref
+}
+
+// TelemetryChangedFile is one entry in the "changedFiles" section.
+type TelemetryChangedFile struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+}
+
+func (m *TurnManager) buildChangedFiles(sessionID string, state *session.State) []TelemetryChangedFile {
+	ref := m.baseRefFor(sessionID, state.WorkingDir)
+	files := changedfiles.Read(state.WorkingDir, ref)
+	out := make([]TelemetryChangedFile, len(files))
+	for i, f := range files {
+		out[i] = TelemetryChangedFile{Path: f.Path, Added: f.Added, Removed: f.Removed}
+	}
+	return out
 }
 
 // SDDAnswerParams is the JSON-RPC body for session/sdd_answer.

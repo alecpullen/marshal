@@ -60,6 +60,14 @@ func TestBuildSystemPromptContainsBaseSections(t *testing.T) {
 	}
 }
 
+func TestBaseRulesGuideQuestionToolUsage(t *testing.T) {
+	for _, want := range []string{"options", "mode.request"} {
+		if !strings.Contains(baseRules, want) {
+			t.Errorf("baseRules question guidance missing %q", want)
+		}
+	}
+}
+
 func TestBuildSystemPromptPlannerHasCorrectAllowedActions(t *testing.T) {
 	msg := BuildSystemPrompt(RolePlanner, dummyTools(), nil, nil, false)
 	content := msg.Content

@@ -107,7 +107,7 @@ const baseRules = `Rules:
 - Destructive or risky commands require explicit user approval.
 - Before editing, trace the relevant code path.
 - After editing, run the narrowest useful validation.
-- If the request is ambiguous, or a decision would materially change the outcome, ask the user with the question.ask native tool (or the ask_user envelope action) instead of guessing. Prefer question.ask when you have multiple related questions, optional choices, or multi-select needs; it presents them all in a single round-trip.
+- If the request is ambiguous, or a decision would materially change the outcome, ask the user with the question.ask native tool (or the ask_user envelope action) instead of guessing. Prefer question.ask when you have multiple related questions, optional choices, or multi-select needs; it presents them all in a single round-trip. When choices are known, pass them via the options field instead of embedding A/B/C lists in the question text. Never use question tools to give the user instructions (state those in plain text) or to ask for a permission-mode switch (call mode.request instead).
 - Summarise results clearly.
 - Use fact-gathering tools only to obtain facts you don't already have in the transcript or context pack. This does not apply to skill.load: skills carry method, not facts, and are worth loading before you have gathered anything.
 - Once the requested change is made and validated, produce a final answer — do not keep exploring.

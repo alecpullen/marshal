@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +106,24 @@ func TestAskUserAliasWrapsSingleQuestion(t *testing.T) {
 	}
 	if res.res.Summary != "user answered" {
 		t.Fatalf("summary = %q, want user answered", res.res.Summary)
+	}
+}
+
+func TestQuestionToolDescriptionsGuideUsage(t *testing.T) {
+	tools := &toolSet{}
+
+	ask := tools.questionAskTool()
+	for _, want := range []string{"options", "never embed", "mode.request"} {
+		if !strings.Contains(ask.Description, want) {
+			t.Errorf("question.ask description missing %q\n%s", want, ask.Description)
+		}
+	}
+
+	alias := tools.askUserTool()
+	for _, want := range []string{"question.ask", "mode.request"} {
+		if !strings.Contains(alias.Description, want) {
+			t.Errorf("ask_user description missing %q\n%s", want, alias.Description)
+		}
 	}
 }
 

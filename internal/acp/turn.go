@@ -236,6 +236,13 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 	switch ev.Type {
 	case session.EventMessageAdded:
 		if ev.Payload.Message != nil {
+			// Skill bodies are model context, not user-facing text;
+			// forwarding them would dump the full skill file into the
+			// client's transcript. The compact ContentTypeSkill tag
+			// still goes through as the visible trace of the load.
+			if ev.Payload.Message.ContentType == session.ContentTypeSkillBody {
+				return nil, false
+			}
 			return messageUpdate(*ev.Payload.Message), true
 		}
 	case session.EventThinkingChanged:

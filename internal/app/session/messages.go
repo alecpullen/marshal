@@ -27,6 +27,11 @@ const (
 	ContentTypeDiff       ContentType = "diff"
 	ContentTypeToolResult ContentType = "tool_result"
 	ContentTypeSkill      ContentType = "skill"
+	// ContentTypeSkillBody marks a message carrying a loaded skill's
+	// reference body. It exists so the body reaches the model and persists
+	// with the session, but it is not rendered in the transcript — the
+	// compact ContentTypeSkill tag is the user-facing trace of the load.
+	ContentTypeSkillBody ContentType = "skill_body"
 )
 
 // Message is a single turn in the session transcript. Messages form an

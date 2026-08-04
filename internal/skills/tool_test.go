@@ -57,11 +57,17 @@ func TestSkillLoadToolSuccess(t *testing.T) {
 	}
 
 	msgs := state.Messages()
-	if len(msgs) != 1 {
-		t.Fatalf("Messages length = %d, want 1", len(msgs))
+	if len(msgs) != 2 {
+		t.Fatalf("Messages length = %d, want 2 (hidden body + visible tag)", len(msgs))
 	}
 	if msgs[0].Role != session.RoleSystem {
 		t.Fatalf("Message role = %q, want system", msgs[0].Role)
+	}
+	if msgs[0].ContentType != session.ContentTypeSkillBody {
+		t.Fatalf("Body content type = %q, want skill_body", msgs[0].ContentType)
+	}
+	if msgs[1].ContentType != session.ContentTypeSkill || msgs[1].Content != "debug" {
+		t.Fatalf("Tag message = (%q, %q), want (skill, debug)", msgs[1].ContentType, msgs[1].Content)
 	}
 	// Content should be wrapped in a reference-material marker.
 	if !strings.Contains(msgs[0].Content, "reference material") {
@@ -193,8 +199,8 @@ func TestSkillBodyIsWrappedAsReference(t *testing.T) {
 	}
 
 	msgs := state.Messages()
-	if len(msgs) != 1 {
-		t.Fatalf("Messages length = %d, want 1", len(msgs))
+	if len(msgs) != 2 {
+		t.Fatalf("Messages length = %d, want 2 (hidden body + visible tag)", len(msgs))
 	}
 
 	content := msgs[0].Content

@@ -26,6 +26,11 @@ func RegisterTool(reg *registry.Registry, idx *Index, state *session.State) {
 // LoadSkillIntoSession loads a skill by name into the session state.
 // It checks that the skill exists, is not already active, and fits within
 // the context budget before adding it as a system message.
+//
+// Two messages are added: the wrapped body (ContentTypeSkillBody), which
+// feeds the model and persists but is hidden from the transcript, and a
+// compact tag (ContentTypeSkill) so the transcript shows a one-line
+// "skill.load: <name>" trace instead of the full body.
 func LoadSkillIntoSession(idx *Index, state *session.State, name string) error {
 	skill, ok := idx.Load(name)
 	if !ok {
@@ -58,7 +63,8 @@ func LoadSkillIntoSession(idx *Index, state *session.State, name string) error {
 		"skill_name: " + skill.Name + "\n" +
 		"---\n" +
 		skill.Body + "\n```\n"
-	state.AddMessage(session.RoleSystem, wrapped, session.ContentTypePlain)
+	state.AddMessage(session.RoleSystem, wrapped, session.ContentTypeSkillBody)
+	state.AddMessage(session.RoleSystem, skill.Name, session.ContentTypeSkill)
 	state.ActivateSkill(skill.Name)
 	return nil
 }

@@ -400,6 +400,16 @@ func renderMessage(msg session.Message, width int) string {
 	// Expand tabs once, here, so every content-type branch below measures
 	// what the terminal will actually render. See expandTabs.
 	msg.Content = expandTabs(msg.Content)
+	// Skill messages are handled before the role branches: the body
+	// (ContentTypeSkillBody) is model context, not transcript content, and
+	// the tag (ContentTypeSkill) renders as a compact one-line trace
+	// regardless of the role it was stored under (always RoleSystem today).
+	switch msg.ContentType {
+	case session.ContentTypeSkillBody:
+		return ""
+	case session.ContentTypeSkill:
+		return renderSkillTag(msg.Content, width)
+	}
 	if msg.Final {
 		return renderFinalAnswer(msg, width)
 	}
@@ -414,8 +424,6 @@ func renderMessage(msg session.Message, width int) string {
 		return renderPlanBlock(msg.Content, width)
 	case session.ContentTypeToolResult:
 		return renderToolResultLine(msg.Content, width)
-	case session.ContentTypeSkill:
-		return renderSkillTag(msg.Content, width)
 	case session.ContentTypeCode:
 		return gutterPrefix(glyph.Rail, accentColor) + renderCodeBlock(msg.Content, max(width-3, 1)) + "\n"
 	default: // plain and markdown prose render identically

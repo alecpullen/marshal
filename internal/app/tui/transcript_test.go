@@ -228,6 +228,32 @@ func TestRenderProviderErrorInline(t *testing.T) {
 	}
 }
 
+func TestRenderMessageSkillMessages(t *testing.T) {
+	t.Run("skill body hidden", func(t *testing.T) {
+		msg := session.Message{
+			Role: session.RoleSystem,
+			Content: "```\n# The following is reference material loaded from a skill file.\n" +
+				"skill_name: using-superpowers\n---\n# Using Skills\n\nThe full body.\n```\n",
+			ContentType: session.ContentTypeSkillBody,
+		}
+		if out := renderMessage(msg, 80); out != "" {
+			t.Fatalf("skill body must not render in the transcript, got:\n%s", out)
+		}
+	})
+
+	t.Run("skill tag compact", func(t *testing.T) {
+		msg := session.Message{
+			Role:        session.RoleSystem,
+			Content:     "using-superpowers",
+			ContentType: session.ContentTypeSkill,
+		}
+		plain := stripANSI(renderMessage(msg, 80))
+		if !strings.Contains(plain, "skill.load: using-superpowers") {
+			t.Fatalf("expected compact skill.load tag, got:\n%s", plain)
+		}
+	})
+}
+
 func TestRenderTranscriptItem(t *testing.T) {
 	width := 80
 

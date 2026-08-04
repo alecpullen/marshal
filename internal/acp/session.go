@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"marshal/internal/app"
+	"marshal/internal/app/session"
 	"marshal/internal/db"
 )
 
@@ -600,6 +601,11 @@ func (m *SessionManager) replay(ctx context.Context, rt *app.Runtime) error {
 		return nil
 	}
 	for _, msg := range rt.State.Messages() {
+		// Skill bodies are model context, not user-facing text; replaying
+		// them would dump the full skill file into the client's transcript.
+		if msg.ContentType == session.ContentTypeSkillBody {
+			continue
+		}
 		update := messageUpdate(msg)
 		if err := m.notify("session/update", SessionUpdateParams{
 			SessionID: rt.SessionID,

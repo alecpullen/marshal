@@ -166,6 +166,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 
 	all := []registry.Tool{
 		tools.fileReadTool(),
+		tools.filePageTool(),
 		tools.fileWritePatchTool(),
 		tools.repoSearchTool(),
 		tools.gitStatusTool(),

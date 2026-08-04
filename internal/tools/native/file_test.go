@@ -1,6 +1,7 @@
 package native
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -76,6 +77,124 @@ func TestFileReadRejectsInvalidRange(t *testing.T) {
 	_, err := invokeTool(t, reg, "file.read", `{"path":"notes.txt","start_line":3,"end_line":2}`)
 	if err == nil {
 		t.Fatal("file.read invalid range returned nil error")
+	}
+}
+
+func TestFilePageReadsFirstPage(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\nthree\nfour\nfive\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":1,"page_size":2}`)
+	if err != nil {
+		t.Fatalf("file.page returned error: %v", err)
+	}
+	if result.Content != "one\ntwo" {
+		t.Fatalf("Content = %q, want first two lines", result.Content)
+	}
+	if !strings.Contains(result.Summary, "page 1") || !strings.Contains(result.Summary, "lines 1-2 of 5") {
+		t.Fatalf("Summary = %q, want page and line info", result.Summary)
+	}
+}
+
+func TestFilePageReadsSecondPage(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\nthree\nfour\nfive\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":2,"page_size":2}`)
+	if err != nil {
+		t.Fatalf("file.page returned error: %v", err)
+	}
+	if result.Content != "three\nfour" {
+		t.Fatalf("Content = %q, want middle two lines", result.Content)
+	}
+	if !strings.Contains(result.Summary, "lines 3-4 of 5") {
+		t.Fatalf("Summary = %q, want lines 3-4 of 5", result.Summary)
+	}
+}
+
+func TestFilePageDefaultsPageSize(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\nthree\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	result, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":1}`)
+	if err != nil {
+		t.Fatalf("file.page returned error: %v", err)
+	}
+	if result.Content != "one\ntwo\nthree\n" {
+		t.Fatalf("Content = %q, want all lines with default page size", result.Content)
+	}
+}
+
+func TestFilePageRejectsPastEnd(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":5,"page_size":2}`)
+	if err == nil {
+		t.Fatal("file.page past end returned nil error")
+	}
+}
+
+func TestFilePageRejectsInvalidPage(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":0}`)
+	if err == nil {
+		t.Fatal("file.page page 0 returned nil error")
+	}
+}
+
+func TestFilePageReadsFileLargerThanOutputLimit(t *testing.T) {
+	root := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < 20000; i++ {
+		fmt.Fprintf(&sb, "line %05d\n", i)
+	}
+	writeFile(t, filepath.Join(root, "big.txt"), sb.String())
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// file.read should reject the whole file because it exceeds the default
+	// per-tool output limit.
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"big.txt"}`); err == nil {
+		t.Fatal("file.read should reject a file larger than max output bytes")
+	}
+
+	// file.page should still be able to page through it.
+	result, err := invokeTool(t, reg, "file.page", `{"path":"big.txt","page":1,"page_size":3}`)
+	if err != nil {
+		t.Fatalf("file.page returned error: %v", err)
+	}
+	want := "line 00000\nline 00001\nline 00002"
+	if result.Content != want {
+		t.Fatalf("Content = %q, want %q", result.Content, want)
+	}
+	if !strings.Contains(result.Summary, "lines 1-3 of 20000") {
+		t.Fatalf("Summary = %q, want lines 1-3 of 20000", result.Summary)
 	}
 }
 

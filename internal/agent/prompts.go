@@ -93,6 +93,8 @@ const baseIdentity = `You are Marshal, a local-friendly coding assistant operati
 
 const baseEnvironment = `You receive a context pack with each turn. It contains relevant files, symbols, summaries, recent tool results, and durable project memories. Use it before asking to read files, but request raw files when you need un-summarised content or specific line ranges.
 
+When a tool result is large, use file.read with start_line/end_line (1-based, inclusive) or use file.page to read one page at a time instead of re-reading the spilled output file.
+
 Project memories are durable facts about the codebase. You may read them in the context pack; you do not update them directly during a normal turn.
 
 Tool results from earlier in the conversation are in the transcript and context pack.`
@@ -151,6 +153,8 @@ Examples:
 
 {"rationale": "I need to read the relevant source file before editing.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "internal/agent/prompts.go"}}}
 
+{"rationale": "The file is large; read only the section I need.", "action": {"type": "tool_call", "tool": "file.read", "args": {"path": "internal/agent/prompts.go", "start_line": 1, "end_line": 80}}}
+
 {"rationale": "Replace the placeholder patch example with a concrete search/replace block.", "action": {"type": "patch", "content": "File: path/to/file.go\n<<<<<<< SEARCH\nold line\n=======\nnew line\n>>>>>>> REPLACE"}}
 
 {"rationale": "The task is finished and all tests pass.", "action": {"type": "final", "content": "Updated the system prompt with few-shot examples for every action type."}}
@@ -161,7 +165,7 @@ Examples:
 
 For parallel read-only work, you may return multiple tool calls in one response using the "actions" array. Every entry must be a read-only "tool_call". Example:
 
-{"rationale": "Read both files at once.", "actions": [{"type": "tool_call", "tool": "file.read", "args": {"path": "a.go"}}, {"type": "tool_call", "tool": "file.read", "args": {"path": "b.go"}}]}
+{"rationale": "Read both files at once.", "actions": [{"type": "tool_call", "tool": "file.read", "args": {"path": "a.go", "start_line": 1, "end_line": 60}}, {"type": "tool_call", "tool": "file.read", "args": {"path": "b.go", "start_line": 1, "end_line": 60}}]}
 
 For patch actions use search/replace blocks, one block per file. Do not use unified diff syntax.`
 

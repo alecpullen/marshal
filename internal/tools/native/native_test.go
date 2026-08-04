@@ -21,6 +21,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 
 	want := map[string]registry.RiskLevel{
 		"file.read":          registry.RiskReadOnly,
+		"file.page":          registry.RiskReadOnly,
 		"file.write_patch":   registry.RiskWorkspaceWrite,
 		"repo.search":        registry.RiskReadOnly,
 		"repo.index":         registry.RiskReadOnly,

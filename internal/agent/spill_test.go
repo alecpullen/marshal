@@ -31,7 +31,7 @@ func TestSpillToolResultWritesFileAndReturnsPreview(t *testing.T) {
 	if !strings.Contains(out.Content, "full_output_path:") {
 		t.Fatalf("spilled result missing path pointer:\n%s", out.Content)
 	}
-	if !strings.Contains(out.Content, "file.read") {
+	if !strings.Contains(out.Content, "file.read") || !strings.Contains(out.Content, "start_line") || !strings.Contains(out.Content, "file.page") {
 		t.Fatalf("spilled result missing paging instruction:\n%s", out.Content)
 	}
 	if !strings.HasPrefix(out.Content, big[:spillPreviewChars]) {

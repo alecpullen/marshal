@@ -32,7 +32,7 @@ go vet ./...
 
 ## Architecture
 
-The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, plan execution pipeline, MCP/plugin ecosystem, sandboxed command execution with restricted/container/passthrough backends, and ACP v1 conversation lifecycle). See [docs/04-tooling-and-shell-safety.md](docs/04-tooling-and-shell-safety.md) for sandbox details and [docs/10-acp.md](docs/10-acp.md) for the ACP support matrix. Removed subsystems are documented in `docs/attic/`.
+The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, plan execution pipeline, MCP/plugin ecosystem, sandboxed command execution with restricted/container/passthrough backends, and ACP v1 conversation lifecycle). See `.docs-archive/04-tooling-and-shell-safety.md` for sandbox details and `.docs-archive/10-acp.md` for the ACP support matrix. Removed subsystems are documented in `.docs-archive/attic/`.
 
 This tree is complete for `internal/`. Check here before building
 something — several subsystems that sound like they need writing already
@@ -150,7 +150,7 @@ Config is merged in order (later wins):
 
 ### Specs and plans
 
-Design specs live in `docs/superpowers/specs/`, implementation plans in `docs/superpowers/plans/`, both named `YYYY-MM-DD-<topic>.md`. Check for an existing spec before designing something new — several approved-but-unimplemented designs currently sit there. `docs/02-system-architecture.md` describes the full intended architecture, which runs ahead of what is built.
+Historical design specs and implementation plans are archived in `.docs-archive/superpowers/specs/` and `.docs-archive/superpowers/plans/`. They are intentionally gitignored and must not be committed to the repo. If you need to write a new spec or plan, keep it in a gitignored location (for example, under `.docs-archive/superpowers/`) and do not add it to the public git tree.
 
 ## Design constraints
 

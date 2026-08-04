@@ -58,7 +58,7 @@ import (
 // kick off a turn and get back a terminal error (or nil). It is satisfied
 // structurally by *agent.Runner without this package importing
 // internal/agent — the TUI stays a rendering layer with no policy/prompt
-// logic, per CLAUDE.md's design constraints.
+// logic, per AGENTS.md's design constraints.
 type AgentRunner interface {
 	Run(ctx context.Context, goal string) error
 	SetForceClass(class string)

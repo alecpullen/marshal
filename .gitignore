@@ -17,6 +17,10 @@ coverage.txt
 .worktrees/
 /main/
 .agent/
+.claude/
+.kilo/
+.opencode/
+.workpowers/
 
 # Local project config and database
 .marshal/

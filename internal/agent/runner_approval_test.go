@@ -40,16 +40,22 @@ func TestNativeQuestionAskDeclined(t *testing.T) {
 	if task.Summary != "Done." {
 		t.Fatalf("Summary = %q, want Done.", task.Summary)
 	}
-	// Verify the runner used the correct sentinel constant by checking state messages.
-	foundUnanswered := false
-	for _, a := range state.Messages() {
-		if strings.Contains(a.Content, "Unanswered") {
-			foundUnanswered = true
-			break
+	// A declined question leaves no transcript record; the decline is only
+	// fed back to the model.
+	for _, m := range state.Messages() {
+		if strings.Contains(m.Content, "Unanswered") || strings.Contains(m.Content, "Keep legacy?") {
+			t.Fatalf("declined question must not be recorded in the transcript: %q", m.Content)
 		}
 	}
-	if !foundUnanswered {
-		t.Fatal("expected state to contain AnswerUnanswered sentinel in content after declined question.ask")
+	last := p.Requests[len(p.Requests)-1]
+	foundDecline := false
+	for _, m := range last.Messages {
+		if strings.Contains(m.Content, "declined to answer every question") {
+			foundDecline = true
+		}
+	}
+	if !foundDecline {
+		t.Fatal("decline marker not fed back to the model")
 	}
 }
 

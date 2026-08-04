@@ -943,7 +943,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				}
 			} else {
 				consecutiveEmpty = 0
-				r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "User answered: " + answer})
 			}
 		case ActionQuestionAsk:
@@ -989,7 +988,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				for _, a := range answers {
 					parts = append(parts, fmt.Sprintf("%q: %q", a.Question, a.Answer))
 				}
-				r.State.AddMessage(session.RoleUser, "User answers: "+strings.Join(parts, ", "), session.ContentTypePlain)
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "User answers: " + strings.Join(parts, ", ")})
 			}
 		default:

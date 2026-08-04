@@ -45,17 +45,20 @@ func TestRunHandlesAskUserAction(t *testing.T) {
 	if !found {
 		t.Fatal("answer not fed back to the model")
 	}
-	var sawQuestion, sawAnswer bool
+	var sawRecord, sawQuestionEcho bool
 	for _, m := range state.Messages() {
 		if m.Role == session.RoleAssistant && strings.Contains(m.Content, "Archive or delete?") {
-			sawQuestion = true
+			sawQuestionEcho = true
 		}
-		if m.Role == session.RoleUser && m.Content == "archive" {
-			sawAnswer = true
+		if m.Role == session.RoleUser && m.Content == `- "Archive or delete?": "archive"` {
+			sawRecord = true
 		}
 	}
-	if !sawQuestion || !sawAnswer {
-		t.Fatalf("transcript missing question(%v)/answer(%v)", sawQuestion, sawAnswer)
+	if sawQuestionEcho {
+		t.Fatal("question text must not be written to the transcript before the popup")
+	}
+	if !sawRecord {
+		t.Fatal("transcript missing the Q&A record")
 	}
 }
 

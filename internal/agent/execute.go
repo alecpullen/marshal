@@ -528,7 +528,6 @@ func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall)
 		r.trackerMu.Unlock()
 		return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."}, nil
 	}
-	r.State.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
 	return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "User answered: " + answer}, nil
 }
 
@@ -576,7 +575,6 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 		}
 		parts = append(parts, fmt.Sprintf("- %q: %q", a.Question, a.Answer))
 	}
-	r.State.AddMessage(session.RoleUser, strings.Join(parts[1:], "\n"), session.ContentTypePlain)
 	if allUnanswered {
 		r.trackerMu.Lock()
 		r.tracker.recordIdle("question.ask declined")

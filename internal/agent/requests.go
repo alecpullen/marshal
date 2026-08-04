@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"marshal/internal/app/session"
@@ -85,9 +86,6 @@ func (r *Runner) requestAnswer(ctx context.Context, question string) (string, er
 // State.ResolvePendingForShutdown, which answers every pending question
 // with Unanswered.
 func (r *Runner) requestQuestions(ctx context.Context, questions []session.Question) ([]session.Answer, error) {
-	for _, q := range questions {
-		r.State.AddMessage(session.RoleAssistant, q.Question, session.ContentTypeMarkdown)
-	}
 	q := &session.PendingQuestion{
 		Questions:    questions,
 		ResponseChan: make(chan []session.Answer, 1),
@@ -100,6 +98,7 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 	case answers := <-q.ResponseChan:
 		r.State.SetPendingQuestion(nil)
 		r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
+		recordQuestionAnswers(r.State, answers)
 		return answers, nil
 	case <-ctx.Done():
 		r.State.SetPendingQuestion(nil)
@@ -128,4 +127,24 @@ func buildQuestionLabel(questions []session.Question) string {
 		return "waiting for your answer: " + q
 	}
 	return fmt.Sprintf("waiting for your answer (Q1/%d): %s", len(questions), q)
+}
+
+// recordQuestionAnswers writes the permanent transcript record of a
+// question round-trip. The popup owns the question text while asking
+// (internal/app/tui/question.go), so the transcript keeps only this
+// compact Q&A entry — written once here for every dispatch path (native
+// question.ask, native ask_user, JSON envelope). Declined and unanswered
+// questions are omitted; nothing is recorded when every question went
+// unanswered.
+func recordQuestionAnswers(state *session.State, answers []session.Answer) {
+	var lines []string
+	for _, a := range answers {
+		if a.Answer == "" || a.Answer == session.AnswerUnanswered {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %q: %q", a.Question, a.Answer))
+	}
+	if len(lines) > 0 {
+		state.AddMessage(session.RoleUser, strings.Join(lines, "\n"), session.ContentTypePlain)
+	}
 }

@@ -379,8 +379,8 @@ type anthropicStreamEvent struct {
 	Index        int                    `json:"index"`
 	ContentBlock *anthropicContentBlock `json:"content_block"`
 	Delta        *anthropicStreamDelta  `json:"delta"`
-	Message      *anthropicResponse    `json:"message"`
-	Usage        *anthropicUsage       `json:"usage"`
+	Message      *anthropicResponse     `json:"message"`
+	Usage        *anthropicUsage        `json:"usage"`
 }
 
 type anthropicStreamDelta struct {

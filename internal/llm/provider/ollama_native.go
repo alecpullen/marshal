@@ -136,7 +136,7 @@ type ollamaToolCallFunction struct {
 }
 
 type ollamaTool struct {
-	Type     string           `json:"type"`
+	Type     string             `json:"type"`
 	Function ollamaToolFunction `json:"function"`
 }
 

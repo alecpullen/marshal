@@ -21,3 +21,12 @@ coverage.txt
 # Local project config and database
 .marshal/
 api.fish
+
+# Documentation archive and workflow artifacts
+.docs-archive/
+docs/superpowers/
+skills-lock.json
+
+# Test/build binaries
+*.test
+tui.test

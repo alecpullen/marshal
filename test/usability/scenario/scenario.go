@@ -20,6 +20,7 @@ type RunnerConfig struct {
 	Height     int
 	ReportDir  string
 	WorkDir    string
+	Env        []string
 }
 
 // Runner executes one scenario against Marshal.
@@ -76,6 +77,7 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 		Width:      r.cfg.Width,
 		Height:     r.cfg.Height,
 		WorkDir:    workDir,
+		Env:        r.cfg.Env,
 	})
 	if err != nil {
 		result.Error = err.Error()

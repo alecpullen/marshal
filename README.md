@@ -120,10 +120,10 @@ go test ./test/usability/... -run TestScripted -v
 
 ## Project status
 
-Marshal is under active development. Core agent functionality, the knowledge
-agent, swarm runtime, MCP/plugin system, sandboxed command execution, and ACP
-headless mode are all implemented and usable. Expect breaking changes as the
-APIs stabilise.
+Marshal is a functional, local-first terminal coding agent. Core functionality
+— agent loop, repository intelligence, tool safety, multi-agent swarm,
+MCP/plugin ecosystem, sandboxed execution, and ACP headless mode — is
+implemented and usable.
 
 ## License
 

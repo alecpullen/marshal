@@ -84,6 +84,11 @@ const (
 	ActivityTool     ActivityKind = "tool"
 	ActivityApproval ActivityKind = "approval"
 	ActivityQuestion ActivityKind = "question"
+	// ActivityReconnecting marks a wait-for-connectivity pause: the provider
+	// connection dropped mid-turn and the agent is backing off before
+	// resending the same request. Distinct from ActivityThinking so the UI
+	// can tell "the model is slow" apart from "the network is down".
+	ActivityReconnecting ActivityKind = "reconnecting"
 )
 
 type Activity struct {

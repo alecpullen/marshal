@@ -4,13 +4,42 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
 )
+
+// reconnectMaxWait bounds the total time the wait-for-connectivity loop
+// will spend waiting for a dropped connection to come back before giving
+// up and failing the turn with the last network error. Two minutes covers
+// typical Wi-Fi roams, VPN reconnects, and sleep/wake cycles without
+// hanging a turn forever when the outage is real.
+const reconnectMaxWait = 2 * time.Minute
+
+// reconnectBackoff returns the delay before the i-th reconnect attempt
+// (0-based): 1s, 2s, 5s, then 10s capped. Long enough to ride out a
+// network blip, short enough that the first retry lands while the
+// connection is often still establishing.
+func reconnectBackoff(attempt int) time.Duration {
+	switch {
+	case attempt <= 0:
+		return 1 * time.Second
+	case attempt == 1:
+		return 2 * time.Second
+	case attempt == 2:
+		return 5 * time.Second
+	default:
+		return 10 * time.Second
+	}
+}
 
 type chatResult struct {
 	Text         string
@@ -47,6 +76,24 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 		if len(res.Text) > len(best.Text) {
 			best = res
 		}
+		if isNetworkError(err) {
+			// A dropped connection is not a request problem: retrying the
+			// normal ladder burns the whole budget in ~150ms, long before a
+			// real network blip (Wi-Fi roam, VPN reconnect, sleep/wake)
+			// heals. Wait for connectivity instead, resending the same
+			// request until it succeeds, the outage outlasts
+			// reconnectMaxWait, or the provider answers with a non-network
+			// error (which falls through to the normal ladder below).
+			res, err = r.waitForConnectivity(ctx, p, model, messages, responseFormat, includeNativeTools, err, &best)
+			if err == nil {
+				return res, nil
+			}
+			if isNetworkError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return best, err
+			}
+			// Connectivity is back but the provider answered with an HTTP or
+			// decoding error — handle it like any first-attempt failure.
+		}
 		if !isRetryableChatError(err) {
 			return best, err
 		}
@@ -54,10 +101,127 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 		if i < attempts-1 {
 			// Small exponential backoff so a transient provider hiccup does
 			// not become a tight retry loop. Base 50ms gives 50ms/100ms/200ms.
-			time.Sleep(time.Duration(1<<i) * 50 * time.Millisecond)
+			// Ctx-aware so Esc during the wait stops the turn immediately.
+			if serr := r.sleepCtx(ctx, time.Duration(1<<i)*50*time.Millisecond); serr != nil {
+				return best, serr
+			}
 		}
 	}
 	return best, lastErr
+}
+
+// waitForConnectivity resends the same chat request while the provider is
+// unreachable, backing off 1s/2s/5s/10s(capped) between attempts, for up
+// to reconnectMaxWait in total. It publishes an ActivityReconnecting
+// status while waiting so the user sees "connection lost — retrying"
+// instead of a stalled turn. It returns success, the last network error
+// when the cap is reached, ctx cancellation when the user aborts, or the
+// provider's first non-network error once connectivity is back.
+func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool, firstErr error, best *chatResult) (chatResult, error) {
+	started := r.Now()
+	if r.State != nil {
+		r.State.Logger().Warn("provider connection lost; waiting for connectivity", "error", firstErr, "max_wait", reconnectMaxWait)
+	}
+	for attempt := 0; ; attempt++ {
+		delay := reconnectBackoff(attempt)
+		if r.State != nil {
+			r.State.SetActivity(session.Activity{
+				Kind:      session.ActivityReconnecting,
+				Label:     fmt.Sprintf("connection lost — retrying in %s", delay.Round(time.Second)),
+				StartedAt: r.Now(),
+			})
+		}
+		if err := r.sleepCtx(ctx, delay); err != nil {
+			return *best, err
+		}
+		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
+		if err == nil {
+			if r.State != nil {
+				r.State.Logger().Info("provider connection restored", "waited", r.Now().Sub(started).Round(time.Second), "attempts", attempt+1)
+			}
+			return res, nil
+		}
+		if len(res.Text) > len(best.Text) {
+			*best = res
+		}
+		if !isNetworkError(err) {
+			// The network is back; this is a provider answer, not a drop.
+			return res, err
+		}
+		if r.Now().Sub(started)+reconnectBackoff(attempt+1) > reconnectMaxWait {
+			if r.State != nil {
+				r.State.Logger().Warn("provider connection did not recover; failing turn", "waited", r.Now().Sub(started).Round(time.Second), "error", err)
+			}
+			return *best, err
+		}
+	}
+}
+
+// sleepCtx sleeps for d or until ctx is done, whichever comes first, so a
+// reconnect wait never outlives an Esc or a turn deadline. Runner.Sleep
+// overrides it in tests.
+func (r *Runner) sleepCtx(ctx context.Context, d time.Duration) error {
+	if r.Sleep != nil {
+		return r.Sleep(ctx, d)
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// isNetworkError reports whether err looks like a lost or unreachable
+// connection rather than a provider answer: the shapes http.Client.Do
+// produces when the network is down (*url.Error wrapping *net.OpError or a
+// syscall errno, *net.DNSError) and the EOF family a dropped stream
+// surfaces mid-read. HTTP responses (ProviderError, any status) are
+// answers — the network demonstrably worked — and context errors mean the
+// caller, not the network, ended the request.
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var pe *provider.ProviderError
+	if errors.As(err, &pe) {
+		return false
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return true
+	}
+	var ne *net.OpError
+	if errors.As(err, &ne) {
+		return true
+	}
+	var de *net.DNSError
+	if errors.As(err, &de) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	for _, errno := range []syscall.Errno{
+		syscall.ECONNRESET,
+		syscall.ECONNREFUSED,
+		syscall.ECONNABORTED,
+		syscall.ETIMEDOUT,
+		syscall.ENETUNREACH,
+		syscall.ENETDOWN,
+		syscall.EHOSTUNREACH,
+		syscall.EPIPE,
+	} {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
 }
 
 // isRetryableChatError classifies errors so the retry loop stops wasting

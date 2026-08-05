@@ -194,6 +194,10 @@ type Runner struct {
 	MemoryProvider       MemoryProvider
 	ProjectID            int64
 	Now                  func() time.Time
+	// Sleep backs the reconnect wait loop's backoff. Nil means a ctx-aware
+	// time.Sleep; tests substitute an instant (or clock-advancing) fake so
+	// reconnect behaviour can be exercised without real waiting.
+	Sleep                func(ctx context.Context, d time.Duration) error
 	MaxToolIterations    int
 	MaxRetries           int
 	MaxTurnContextTokens int
@@ -383,6 +387,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.MemoryProvider = other.MemoryProvider
 	r.ProjectID = other.ProjectID
 	r.Now = other.Now
+	r.Sleep = other.Sleep
 	r.MaxToolIterations = other.MaxToolIterations
 	r.MaxRetries = other.MaxRetries
 	r.MaxTurnContextTokens = other.MaxTurnContextTokens

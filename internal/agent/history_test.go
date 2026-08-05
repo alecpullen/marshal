@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -8,6 +9,43 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/schema"
 )
+
+// TestBuildHistory_TieredAging covers the rules from Task 6/C of the
+// context-management plan: 10 turns of ~2000-token assistant answers
+// under a 6000-token budget. All 10 user messages must survive (rule
+// 1), the oldest assistant answers must be stubs (rule 3), and the
+// newest 4 exchanges stay full (rule 2).
+func TestBuildHistory_TieredAging(t *testing.T) {
+	big := strings.Repeat("x ", 4000) // ~8000 chars ~2000 tokens each
+	prior := make([]session.Message, 0, 20)
+	for i := 0; i < 10; i++ {
+		prior = append(prior,
+			session.Message{Role: session.RoleUser, Content: fmt.Sprintf("user-%d", i), ContentType: session.ContentTypePlain},
+			session.Message{Role: session.RoleAssistant, Content: big, ContentType: session.ContentTypeMarkdown, Final: true},
+		)
+	}
+	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil)
+	// Rule (1): all 10 user messages survive.
+	userCount := 0
+	for _, m := range msgs {
+		if m.Role == schema.RoleUser {
+			userCount++
+		}
+	}
+	if userCount != 10 {
+		t.Fatalf("kept %d user messages, want 10 (rule 1)", userCount)
+	}
+	// Rule (3): the oldest assistant answer is a stub, not full text.
+	stubs := 0
+	for _, m := range msgs {
+		if m.Role == schema.RoleAssistant && strings.HasPrefix(m.Content, "[older assistant answer") {
+			stubs++
+		}
+	}
+	if stubs < 1 {
+		t.Fatalf("expected at least one stub (oldest assistant), got %d", stubs)
+	}
+}
 
 func TestBuildHistoryMessagesKeepsUserAndFinalAssistantTurns(t *testing.T) {
 	prior := []session.Message{

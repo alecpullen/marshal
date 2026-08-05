@@ -119,6 +119,7 @@ type fileSwarm struct {
 type fileSDD struct {
 	AutoWorktree    *bool          `toml:"auto_worktree"`
 	MaxFixRounds    *int           `toml:"max_fix_rounds"`
+	DispatchRetries *int           `toml:"dispatch_retries"`
 	PlansDir        *string        `toml:"plans_dir"`
 	VerifyTimeoutMS *int           `toml:"verify_timeout_ms"`
 	CleanupAtStart  *bool          `toml:"cleanup_at_start"`

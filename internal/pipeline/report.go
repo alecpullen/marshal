@@ -1,10 +1,17 @@
 package pipeline
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 )
+
+// ErrReportParse indicates that an implementer or reviewer produced output
+// that does not match the required report format. The controller retries
+// these at the dispatch level because a fresh subagent can recover from a
+// malformed response.
+var ErrReportParse = errors.New("pipeline report: unparseable output")
 
 // Status is the implementer's verdict, the first line of its report.
 type Status string
@@ -56,10 +63,10 @@ func ParseImplementerReport(text string) (ImplementerReport, error) {
 	switch r.Status {
 	case StatusDone, StatusDoneWithConcerns, StatusNeedsContext, StatusBlocked:
 	default:
-		return r, fmt.Errorf("pipeline report: missing or unknown STATUS (got %q)", r.Status)
+		return r, fmt.Errorf("%w: missing or unknown STATUS (got %q)", ErrReportParse, r.Status)
 	}
 	if r.NeedsHuman() && r.Question == "" {
-		return r, fmt.Errorf("pipeline report: status %s requires a QUESTION line", r.Status)
+		return r, fmt.Errorf("%w: status %s requires a QUESTION line", ErrReportParse, r.Status)
 	}
 	return r, nil
 }
@@ -143,7 +150,7 @@ func ParseReviewReport(text string) (ReviewReport, error) {
 		}
 	}
 	if !sawSpec || !sawQuality {
-		return r, fmt.Errorf("pipeline review: report must carry both SPEC and QUALITY verdicts")
+		return r, fmt.Errorf("%w: report must carry both SPEC and QUALITY verdicts", ErrReportParse)
 	}
 	return r, nil
 }

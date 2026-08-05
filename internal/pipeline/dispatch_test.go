@@ -29,7 +29,7 @@ func TestDispatcherImplementParsesReport(t *testing.T) {
 			return "STATUS: DONE\nTESTS: go test ./... — pass\n", nil
 		},
 	}
-	rep, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "prompt")
+	rep, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "", "prompt")
 	if err != nil {
 		t.Fatalf("Implement: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestDispatcherReviewRunsReadOnly(t *testing.T) {
 			return "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", nil
 		},
 	}
-	rev, err := d.Review(context.Background(), routing.RoleSDDReviewer, "prompt")
+	rev, err := d.Review(context.Background(), routing.RoleSDDReviewer, "", "prompt")
 	if err != nil {
 		t.Fatalf("Review: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestDispatcherPropagatesUnparseableOutput(t *testing.T) {
 			return "I did the thing, boss.", nil
 		},
 	}
-	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "p"); err == nil {
+	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "", "p"); err == nil {
 		t.Fatal("unparseable implementer output: want error, got nil")
 	}
 }
@@ -96,7 +96,7 @@ func TestRunExecRegistersCardForChildSessionRunner(t *testing.T) {
 			}, nil
 		},
 	}
-	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "do the task"); err != nil {
+	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "task label", "do the task"); err != nil {
 		t.Fatalf("Implement: %v", err)
 	}
 	subs := parent.Subagents()
@@ -113,8 +113,11 @@ func TestRunExecRegistersCardForChildSessionRunner(t *testing.T) {
 	if v.Summary == "" {
 		t.Error("summary empty, want the task summary on the finished card")
 	}
-	if !strings.Contains(v.Label, "do the task") {
+	if !strings.Contains(v.Label, "task label") {
 		t.Errorf("label = %q, want it to name the dispatched prompt", v.Label)
+	}
+	if strings.Contains(v.Label, "do the task") {
+		t.Errorf("label = %q, should not contain the full prompt", v.Label)
 	}
 }
 
@@ -133,7 +136,7 @@ func TestRunExecSkipsCardForSharedStateRunner(t *testing.T) {
 			}, nil
 		},
 	}
-	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "p"); err != nil {
+	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "", "p"); err != nil {
 		t.Fatalf("Implement: %v", err)
 	}
 	if n := len(parent.Subagents()); n != 0 {
@@ -157,7 +160,7 @@ func TestRunExecMarksCardFailedOnError(t *testing.T) {
 			}, nil
 		},
 	}
-	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "p"); err == nil {
+	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "", "p"); err == nil {
 		t.Fatal("Implement: want error, got nil")
 	}
 	subs := parent.Subagents()
@@ -183,7 +186,7 @@ func TestRunExecWithoutParentState(t *testing.T) {
 			}, nil
 		},
 	}
-	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "p"); err != nil {
+	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "", "p"); err != nil {
 		t.Fatalf("Implement: %v", err)
 	}
 }

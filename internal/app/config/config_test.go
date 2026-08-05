@@ -526,6 +526,9 @@ func TestSDDConfigDefaults(t *testing.T) {
 	if cfg.SDD.MaxFixRounds != 3 {
 		t.Errorf("MaxFixRounds default = %d, want 3", cfg.SDD.MaxFixRounds)
 	}
+	if cfg.SDD.DispatchRetries != 2 {
+		t.Errorf("DispatchRetries default = %d, want 2", cfg.SDD.DispatchRetries)
+	}
 	if cfg.SDD.PlansDir != ".marshal/plans" {
 		t.Errorf("PlansDir default = %q, want %q", cfg.SDD.PlansDir, ".marshal/plans")
 	}
@@ -538,6 +541,7 @@ func TestSDDConfigMergesFromFile(t *testing.T) {
 [sdd]
 auto_worktree = false
 max_fix_rounds = 5
+dispatch_retries = 4
 plans_dir = "docs/plans"
 `)
 
@@ -550,6 +554,9 @@ plans_dir = "docs/plans"
 	}
 	if cfg.SDD.MaxFixRounds != 5 {
 		t.Errorf("MaxFixRounds = %d, want 5", cfg.SDD.MaxFixRounds)
+	}
+	if cfg.SDD.DispatchRetries != 4 {
+		t.Errorf("DispatchRetries = %d, want 4", cfg.SDD.DispatchRetries)
 	}
 	if cfg.SDD.PlansDir != "docs/plans" {
 		t.Errorf("PlansDir = %q, want %q", cfg.SDD.PlansDir, "docs/plans")

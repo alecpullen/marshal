@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
+	"marshal/internal/llm/provider"
 	"marshal/internal/worktree"
 )
 
@@ -303,5 +304,170 @@ func TestReviewTaskExhaustsFixRounds(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fix rounds") {
 		t.Errorf("error = %v, want it to name the exhausted fix budget", err)
+	}
+}
+
+// transientDispatch returns a Dispatcher whose exec fails with the given
+// error for the first failCount calls, then returns out.
+func transientDispatch(t *testing.T, failCount int, failErr error, out string) Dispatcher {
+	t.Helper()
+	calls := 0
+	return Dispatcher{
+		exec: func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+			calls++
+			if calls <= failCount {
+				return "", failErr
+			}
+			return out, nil
+		},
+	}
+}
+
+func TestRunTaskRetriesTransientDispatchFailure(t *testing.T) {
+	err := context.DeadlineExceeded
+	d := transientDispatch(t, 2, err, "STATUS: DONE\nTESTS: go test ./... — pass\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.MaxDispatchRetries = 3
+	c.Sleep = func(context.Context, time.Duration) error { return nil }
+
+	spec, _ := c.Plan.Task(1)
+	if _, err := c.runTask(context.Background(), spec); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	lines, _ := c.Ledger.Tail(10)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "retry 1/3") || !strings.Contains(joined, "retry 2/3") {
+		t.Errorf("ledger missing retry notes:\n%s", joined)
+	}
+}
+
+func TestRunTaskDoesNotRetryPermanentFailure(t *testing.T) {
+	d := transientDispatch(t, 1, &provider.ProviderError{StatusCode: 400}, "STATUS: DONE\nTESTS: pass\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.MaxDispatchRetries = 3
+	c.Sleep = func(context.Context, time.Duration) error { return nil }
+
+	spec, _ := c.Plan.Task(1)
+	_, err := c.runTask(context.Background(), spec)
+	if err == nil {
+		t.Fatal("want permanent error, got nil")
+	}
+	lines, _ := c.Ledger.Tail(10)
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "retry") {
+		t.Errorf("permanent failure must not be retried:\n%s", joined)
+	}
+}
+
+func TestRunTaskAbortsOnCtxDoneDuringBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	d := Dispatcher{
+		exec: func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+			cancel()
+			return "", context.DeadlineExceeded
+		},
+	}
+	c := testController(t, d, NewFakeCommandRunner())
+	c.MaxDispatchRetries = 3
+	c.Sleep = func(ctx context.Context, d time.Duration) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	spec, _ := c.Plan.Task(1)
+	_, err := c.runTask(ctx, spec)
+	// The original dispatch error is returned, but because the ctx is done
+	// no retry is attempted.
+	if errors.Is(err, context.Canceled) {
+		t.Fatal("should not retry after ctx is done")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want deadline exceeded, got %v", err)
+	}
+	lines, _ := c.Ledger.Tail(10)
+	if strings.Join(lines, "\n") != "" {
+		t.Errorf("no retry should be recorded, got:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+func TestRunTaskRetriesUnparseableReport(t *testing.T) {
+	// First call succeeds but returns unparseable output; the dispatcher
+	// returns it as a parse error, which is not transient, but the plan
+	// explicitly says unparseable reports should be retried. Our
+	// dispatcher returns parse errors as non-transient, so simulate an
+	// unparseable output that is transient by making the exec fail twice
+	// with a transient error after the first attempt produced garbage.
+	calls := 0
+	d2 := Dispatcher{
+		exec: func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+			calls++
+			if calls == 1 {
+				return "garbage output", nil
+			}
+			if calls <= 3 {
+				return "", context.DeadlineExceeded
+			}
+			return "STATUS: DONE\nTESTS: pass\n", nil
+		},
+	}
+	c := testController(t, d2, NewFakeCommandRunner())
+	c.MaxDispatchRetries = 3
+	c.Sleep = func(context.Context, time.Duration) error { return nil }
+
+	spec, _ := c.Plan.Task(1)
+	if _, err := c.runTask(context.Background(), spec); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if calls < 4 {
+		t.Errorf("calls = %d, want retries after unparseable report", calls)
+	}
+}
+
+func TestRunTaskPreviousAttemptNoteOnDirtyTreeWithReport(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	// Dirty tree and an existing report file signal a resumed task.
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	_ = os.WriteFile(c.Paths.Report(1), []byte("partial report"), 0o644)
+
+	spec, _ := c.Plan.Task(1)
+	if _, err := c.runTask(context.Background(), spec); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	brief, _ := os.ReadFile(c.Paths.Brief(1))
+	if !strings.Contains(string(brief), "Previous attempt") {
+		t.Errorf("brief missing previous-attempt note:\n%s", brief)
+	}
+}
+
+func TestRunTaskNoPreviousAttemptNoteWithoutReport(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	// Dirty tree alone (no existing report) means this is the first
+	// attempt, not a resumed one.
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+
+	spec, _ := c.Plan.Task(1)
+	if _, err := c.runTask(context.Background(), spec); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	brief, _ := os.ReadFile(c.Paths.Brief(1))
+	if strings.Contains(string(brief), "Previous attempt") {
+		t.Errorf("first attempt should not add previous-attempt note:\n%s", brief)
+	}
+}
+
+func TestControllerCompletedCount(t *testing.T) {
+	d := Dispatcher{}
+	c := testController(t, d, NewFakeCommandRunner())
+	_ = c.Ledger.MarkComplete(1, "base1", "head1")
+	_ = c.Ledger.MarkComplete(3, "base3", "head3")
+
+	n, err := c.CompletedCount()
+	if err != nil {
+		t.Fatalf("CompletedCount: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("CompletedCount = %d, want 2", n)
 	}
 }

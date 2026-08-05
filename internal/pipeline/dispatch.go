@@ -27,15 +27,15 @@ type Dispatcher struct {
 	exec func(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error)
 }
 
-func (d Dispatcher) run(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+func (d Dispatcher) run(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, label, prompt string) (string, error) {
 	if d.exec != nil {
 		return d.exec(ctx, role, scope, prompt)
 	}
-	return d.runExec(ctx, role, scope, prompt)
+	return d.runExec(ctx, role, scope, label, prompt)
 }
 
 // runExec builds a role-bound runner and runs one task on it.
-func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, prompt string) (string, error) {
+func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swarm.RegistryScope, label, prompt string) (string, error) {
 	if d.Factory == nil {
 		return "", fmt.Errorf("pipeline dispatch: no runner factory")
 	}
@@ -52,7 +52,10 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 	registered := d.State != nil && runner.State != nil && runner.State != d.State
 	var view session.SubagentView
 	if registered {
-		view = d.State.RegisterSubagent(fmt.Sprintf("%s: %s", role, truncateForError(prompt)), runner.State)
+		if label == "" {
+			label = truncateForError(prompt)
+		}
+		view = d.State.RegisterSubagent(fmt.Sprintf("%s · %s", role, label), runner.State)
 	}
 	task, err := runner.RunTask(ctx, prompt)
 	if err != nil {
@@ -75,8 +78,10 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 }
 
 // Implement dispatches an implementer or fixer and parses its report.
-func (d Dispatcher) Implement(ctx context.Context, role agent.AgentRole, prompt string) (ImplementerReport, error) {
-	out, err := d.run(ctx, role, swarm.ScopeFull, prompt)
+// label is used for the parent-session subagent card; when empty the
+// prompt's first 240 characters are used.
+func (d Dispatcher) Implement(ctx context.Context, role agent.AgentRole, label, prompt string) (ImplementerReport, error) {
+	out, err := d.run(ctx, role, swarm.ScopeFull, label, prompt)
 	if err != nil {
 		return ImplementerReport{}, err
 	}
@@ -88,8 +93,10 @@ func (d Dispatcher) Implement(ctx context.Context, role agent.AgentRole, prompt 
 }
 
 // Review dispatches a reviewer and parses its verdicts.
-func (d Dispatcher) Review(ctx context.Context, role agent.AgentRole, prompt string) (ReviewReport, error) {
-	out, err := d.run(ctx, role, swarm.ScopeReadOnly, prompt)
+// label is used for the parent-session subagent card; when empty the
+// prompt's first 240 characters are used.
+func (d Dispatcher) Review(ctx context.Context, role agent.AgentRole, label, prompt string) (ReviewReport, error) {
+	out, err := d.run(ctx, role, swarm.ScopeReadOnly, label, prompt)
 	if err != nil {
 		return ReviewReport{}, err
 	}

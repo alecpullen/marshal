@@ -105,6 +105,7 @@ func Default() Config {
 		SDD: SDDConfig{
 			AutoWorktree:    true,
 			MaxFixRounds:    3,
+			DispatchRetries: 2,
 			PlansDir:        ".marshal/plans",
 			VerifyTimeoutMS: 300000,
 			CleanupAtStart:  true,

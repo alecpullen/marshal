@@ -7,7 +7,9 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
+	"marshal/internal/agent"
 	"marshal/internal/llm/routing"
 	"marshal/internal/worktree"
 )
@@ -50,15 +52,20 @@ var ErrHumanGateRequired = errors.New("pipeline: human gate required")
 
 // ControllerOpts are the constructor's inputs.
 type ControllerOpts struct {
-	PlanPath     string
-	RepoRoot     string
-	Git          worktree.GitOps
-	Dispatch     Dispatcher
-	Verifier     Verifier
-	MaxFixRounds int
-	AutoEscalate bool
-	Observer     Observer
-	TargetBranch string
+	PlanPath           string
+	RepoRoot           string
+	Git                worktree.GitOps
+	Dispatch           Dispatcher
+	Verifier           Verifier
+	MaxFixRounds       int
+	MaxDispatchRetries int
+	AutoEscalate       bool
+	Observer           Observer
+	TargetBranch       string
+
+	// Sleep is the delay implementation used between dispatch retries.
+	// When nil, sleepCtx is used. Tests override this to avoid real time.
+	Sleep func(context.Context, time.Duration) error
 }
 
 // Controller executes a plan task-by-task. It is single-threaded: exactly
@@ -72,13 +79,18 @@ type Controller struct {
 	Verifier Verifier
 	Worktree worktree.Worktree
 
-	RepoRoot     string
-	MaxFixRounds int
+	RepoRoot           string
+	MaxFixRounds       int
+	MaxDispatchRetries int
 	// AutoEscalate mirrors the session's auto approval mode: retry a
 	// blocked task once on the reviewer tier before opening a human gate.
 	AutoEscalate bool
 	Observer     Observer
 	TargetBranch string
+
+	// Sleep is the delay implementation used between dispatch retries.
+	// When nil, sleepCtx is used. Tests override this to avoid real time.
+	Sleep func(context.Context, time.Duration) error
 
 	// pendingQuestion and pendingAnswer carry a human gate across Run calls.
 	pendingQuestion string
@@ -106,22 +118,77 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 	if opts.MaxFixRounds <= 0 {
 		opts.MaxFixRounds = 3
 	}
+	if opts.MaxDispatchRetries <= 0 {
+		opts.MaxDispatchRetries = 2
+	}
 	if opts.TargetBranch == "" {
 		opts.TargetBranch = "main"
 	}
+	if opts.Sleep == nil {
+		opts.Sleep = sleepCtx
+	}
 	return &Controller{
-		Plan:         plan,
-		Paths:        paths,
-		Ledger:       Ledger{Path: paths.Ledger()},
-		Git:          opts.Git,
-		Dispatch:     opts.Dispatch,
-		Verifier:     opts.Verifier,
-		RepoRoot:     opts.RepoRoot,
-		MaxFixRounds: opts.MaxFixRounds,
-		AutoEscalate: opts.AutoEscalate,
-		Observer:     opts.Observer,
-		TargetBranch: opts.TargetBranch,
+		Plan:               plan,
+		Paths:              paths,
+		Ledger:             Ledger{Path: paths.Ledger()},
+		Git:                opts.Git,
+		Dispatch:           opts.Dispatch,
+		Verifier:           opts.Verifier,
+		RepoRoot:           opts.RepoRoot,
+		MaxFixRounds:       opts.MaxFixRounds,
+		MaxDispatchRetries: opts.MaxDispatchRetries,
+		Sleep:              opts.Sleep,
+		AutoEscalate:       opts.AutoEscalate,
+		Observer:           opts.Observer,
+		TargetBranch:       opts.TargetBranch,
 	}, nil
+}
+
+// CompletedCount returns the number of tasks the ledger marks complete.
+func (c *Controller) CompletedCount() (int, error) {
+	done, err := c.Ledger.CompletedTasks()
+	if err != nil {
+		return 0, err
+	}
+	return len(done), nil
+}
+
+// implementWithRetry dispatches an implementer, retrying transient failures
+// with fresh subagents.
+func (c *Controller) implementWithRetry(ctx context.Context, taskN int, phase string, role agent.AgentRole, label, prompt string) (ImplementerReport, error) {
+	return dispatchWithRetry(ctx, c, taskN, phase, role, prompt, func(ctx context.Context, role agent.AgentRole, prompt string) (ImplementerReport, error) {
+		return c.Dispatch.Implement(ctx, role, label, prompt)
+	})
+}
+
+// reviewWithRetry dispatches a reviewer, retrying transient failures with
+// fresh subagents.
+func (c *Controller) reviewWithRetry(ctx context.Context, taskN int, phase string, role agent.AgentRole, label, prompt string) (ReviewReport, error) {
+	return dispatchWithRetry(ctx, c, taskN, phase, role, prompt, func(ctx context.Context, role agent.AgentRole, prompt string) (ReviewReport, error) {
+		return c.Dispatch.Review(ctx, role, label, prompt)
+	})
+}
+
+// dispatchWithRetry runs fn until it succeeds, the error is not transient,
+// or the retry budget is exhausted. It emits progress events and ledger
+// notes for each retry.
+func dispatchWithRetry[R any](ctx context.Context, c *Controller, taskN int, phase string, role agent.AgentRole, prompt string, fn func(context.Context, agent.AgentRole, string) (R, error)) (R, error) {
+	var zero R
+	for attempt := 0; attempt <= c.MaxDispatchRetries; attempt++ {
+		res, err := fn(ctx, role, prompt)
+		if err == nil {
+			return res, nil
+		}
+		if attempt == c.MaxDispatchRetries || !isTransientDispatchError(ctx, err) {
+			return zero, err
+		}
+		c.emit(taskN, 0, phase, fmt.Sprintf("retry %d/%d · %s", attempt+1, c.MaxDispatchRetries, shortErr(err)))
+		_ = c.Ledger.Note("Task %d: retry %d/%d after: %v", taskN, attempt+1, c.MaxDispatchRetries, err)
+		if sleepErr := c.Sleep(ctx, retryBackoff(attempt)); sleepErr != nil {
+			return zero, sleepErr
+		}
+	}
+	return zero, fmt.Errorf("dispatch retry budget exhausted")
 }
 
 // emit sends one progress event, tolerating a nil Observer.
@@ -169,6 +236,14 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 	if err := WriteBrief(briefPath, t); err != nil {
 		return taskResult{}, err
 	}
+	if dirty, _ := c.Git.IsDirty(dir); dirty {
+		if _, err := os.Stat(c.Paths.Report(t.N)); err == nil {
+			if f, err := os.OpenFile(briefPath, os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+				fmt.Fprint(f, "\n## Previous attempt\n\nA previous attempt at this task was interrupted and may have left partial uncommitted changes in the worktree. Review them, keep what is correct, and finish the task.\n")
+				f.Close()
+			}
+		}
+	}
 
 	prompt, err := RenderImplementer(ImplementerPrompt{
 		TaskN:      t.N,
@@ -189,7 +264,8 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 	if c.escalated {
 		role = routing.RoleSDDReviewer
 	}
-	report, err := c.Dispatch.Implement(ctx, role, prompt)
+	label := fmt.Sprintf("task %d — %s", t.N, t.Title)
+	report, err := c.implementWithRetry(ctx, t.N, PhaseImplementing, role, label, prompt)
 	if err != nil {
 		return taskResult{}, fmt.Errorf("pipeline: task %d implementer: %w", t.N, err)
 	}
@@ -233,7 +309,8 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 		if err != nil {
 			return taskResult{}, err
 		}
-		report, err = c.Dispatch.Implement(ctx, routing.RoleSDDImplementer, fixPrompt)
+		label := fmt.Sprintf("task %d fix — %s", t.N, t.Title)
+		report, err = c.implementWithRetry(ctx, t.N, PhaseFixing, routing.RoleSDDImplementer, label, fixPrompt)
 		if err != nil {
 			return taskResult{}, fmt.Errorf("pipeline: task %d gate fixer: %w", t.N, err)
 		}
@@ -354,7 +431,8 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 			return res, err
 		}
 		c.emit(t.N, round, PhaseReviewing, "")
-		review, err := c.Dispatch.Review(ctx, routing.RoleSDDReviewer, prompt)
+		label := fmt.Sprintf("task %d review", t.N)
+		review, err := c.reviewWithRetry(ctx, t.N, PhaseReviewing, routing.RoleSDDReviewer, label, prompt)
 		if err != nil {
 			return res, fmt.Errorf("pipeline: task %d review: %w", t.N, err)
 		}
@@ -387,7 +465,8 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 		if err != nil {
 			return res, err
 		}
-		report, err := c.Dispatch.Implement(ctx, routing.RoleSDDImplementer, fixPrompt)
+		var report ImplementerReport
+		report, err = c.implementWithRetry(ctx, t.N, PhaseFixing, routing.RoleSDDImplementer, fmt.Sprintf("task %d review fix", t.N), fixPrompt)
 		if err != nil {
 			return res, fmt.Errorf("pipeline: task %d review fixer: %w", t.N, err)
 		}
@@ -508,7 +587,7 @@ func (c *Controller) branchReview(ctx context.Context) error {
 		return err
 	}
 	c.emit(0, 0, PhaseBranchReview, "")
-	review, err := c.Dispatch.Review(ctx, routing.RoleSDDBranchReviewer, prompt)
+	review, err := c.reviewWithRetry(ctx, 0, PhaseBranchReview, routing.RoleSDDBranchReviewer, "branch review", prompt)
 	if err != nil {
 		return fmt.Errorf("pipeline: branch review: %w", err)
 	}
@@ -538,7 +617,7 @@ func (c *Controller) branchReview(ctx context.Context) error {
 		return ctx.Err()
 	default:
 	}
-	report, err := c.Dispatch.Implement(ctx, routing.RoleSDDImplementer, fixPrompt)
+	report, err := c.implementWithRetry(ctx, 0, PhaseFixing, routing.RoleSDDImplementer, "branch review fix", fixPrompt)
 	if err != nil {
 		return fmt.Errorf("pipeline: branch review fixer: %w", err)
 	}
@@ -589,7 +668,7 @@ func (c *Controller) branchReview(ctx context.Context) error {
 	default:
 	}
 	c.emit(0, 1, PhaseBranchReview, "")
-	review, err = c.Dispatch.Review(ctx, routing.RoleSDDBranchReviewer, prompt)
+	review, err = c.reviewWithRetry(ctx, 0, PhaseBranchReview, routing.RoleSDDBranchReviewer, "branch re-review", prompt)
 	if err != nil {
 		return fmt.Errorf("pipeline: branch re-review: %w", err)
 	}

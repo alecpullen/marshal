@@ -190,6 +190,7 @@ func merge(cfg *Config, file configFile) error {
 	if file.SDD != nil {
 		set(&cfg.SDD.AutoWorktree, file.SDD.AutoWorktree)
 		set(&cfg.SDD.MaxFixRounds, file.SDD.MaxFixRounds)
+		set(&cfg.SDD.DispatchRetries, file.SDD.DispatchRetries)
 		set(&cfg.SDD.PlansDir, file.SDD.PlansDir)
 		set(&cfg.SDD.VerifyTimeoutMS, file.SDD.VerifyTimeoutMS)
 		set(&cfg.SDD.CleanupAtStart, file.SDD.CleanupAtStart)

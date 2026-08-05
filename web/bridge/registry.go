@@ -58,6 +58,12 @@ type Registry struct {
 	// session (e.g. "bridge_restarted"). Task 3's event bus consumes it.
 	OnEvent func(sessionId string, payload any)
 
+	// RootCwd is the default working directory for the HTTP load
+	// endpoint when the request body omits cwd. The binary wiring
+	// (cmd/webbridge --cwd-root) sets it; empty means load requires an
+	// explicit cwd in the request body.
+	RootCwd string
+
 	mu       sync.Mutex
 	sessions map[string]*sessionInfo
 

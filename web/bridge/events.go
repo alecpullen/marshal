@@ -140,6 +140,25 @@ func (l *EventLog) Replay(sessionID string, afterID int64) ([]Event, bool) {
 	return out, afterID < oldest
 }
 
+// Tail returns the retained events for a session in id order, oldest
+// first. Unlike Replay it is a fresh read with no cursor semantics and
+// no overflow signal: the caller gets whatever the ring still holds.
+// The HTTP load endpoint uses it to hand the SPA enough history to
+// render current state without an SSE reconnect.
+func (l *EventLog) Tail(sessionID string) []Event {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	sl := l.sessions[sessionID]
+	if sl == nil || sl.count == 0 {
+		return nil
+	}
+	out := make([]Event, 0, sl.count)
+	for i := 0; i < sl.count; i++ {
+		out = append(out, sl.buf[(sl.head+i)%ringCap])
+	}
+	return out
+}
+
 // Subscribe registers a live consumer for a session and returns its
 // channel plus an unsubscribe function. The returned func is idempotent
 // and closes the channel.

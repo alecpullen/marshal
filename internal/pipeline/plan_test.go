@@ -60,6 +60,36 @@ func TestParsePlan(t *testing.T) {
 	}
 }
 
+func TestParsePlanAcceptsDoubleHashTaskHeadings(t *testing.T) {
+	plan := "# Plan\n\n" +
+		"## Global Constraints\n\n" +
+		"- One.\n\n" +
+		"## Task 1: First thing\n\n" +
+		"Body one.\n\n" +
+		"## Task 2: Second thing\n\n" +
+		"Body two.\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plan.md")
+	if err := os.WriteFile(path, []byte(plan), 0644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+
+	p, err := ParsePlan(path)
+	if err != nil {
+		t.Fatalf("ParsePlan: %v", err)
+	}
+	if len(p.Tasks) != 2 {
+		t.Fatalf("len(Tasks) = %d, want 2", len(p.Tasks))
+	}
+	if p.Tasks[0].N != 1 || p.Tasks[0].Title != "First thing" {
+		t.Errorf("Tasks[0] = %d/%q, want 1/%q", p.Tasks[0].N, p.Tasks[0].Title, "First thing")
+	}
+	if p.Tasks[1].N != 2 || p.Tasks[1].Title != "Second thing" {
+		t.Errorf("Tasks[1] = %d/%q, want 2/%q", p.Tasks[1].N, p.Tasks[1].Title, "Second thing")
+	}
+}
+
 func TestParsePlanNoTasks(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.md")

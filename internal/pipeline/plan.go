@@ -13,12 +13,13 @@ import (
 	"strings"
 )
 
-// taskHeadingRe matches "### Task N: <title>" headings. Capture groups: N, title.
-var taskHeadingRe = regexp.MustCompile(`^### Task (\d+):\s*(.+)$`)
+// taskHeadingRe matches "## Task N: <title>" or "### Task N: <title>"
+// headings. Capture groups: N, title.
+var taskHeadingRe = regexp.MustCompile(`^#{2,3} Task (\d+):\s*(.+)$`)
 
 // TaskSpec is one task extracted from a plan file. Body is the task's
-// verbatim markdown, from its "### Task N:" heading to the line before the
-// next task heading, including any nested "###" headings inside it.
+// verbatim markdown, from its task heading to the line before the next task
+// heading, including any nested "###" headings inside it.
 type TaskSpec struct {
 	N     int
 	Title string
@@ -35,9 +36,9 @@ type Plan struct {
 }
 
 // ParsePlan reads a plan file and extracts its Global Constraints section
-// and its "### Task N:" sections, in file order. It returns an error if the
-// plan contains no tasks — an unexecutable plan is a caller error, not an
-// empty run.
+// and its "## Task N:" or "### Task N:" sections, in file order. It returns
+// an error if the plan contains no tasks — an unexecutable plan is a caller
+// error, not an empty run.
 func ParsePlan(path string) (*Plan, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -78,7 +79,7 @@ func ParsePlan(path string) (*Plan, error) {
 	flush()
 
 	if len(p.Tasks) == 0 {
-		return nil, fmt.Errorf("pipeline plan: %s contains no `### Task N:` sections", path)
+		return nil, fmt.Errorf("pipeline plan: %s contains no `## Task N:` or `### Task N:` sections", path)
 	}
 	p.GlobalConstraints = extractSection(lines, "## Global Constraints")
 	return p, nil

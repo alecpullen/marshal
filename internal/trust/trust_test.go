@@ -192,6 +192,78 @@ func TestStoreStoredConfigHash(t *testing.T) {
 	}
 }
 
+func TestStoreRefreshConfigHash(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	abs, _ := filepath.Abs(dir)
+
+	if err := store.SetTrust(abs, true, "oldhash"); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
+	before, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	trustedAt := before[abs].TrustedAt
+
+	if err := store.RefreshConfigHash(abs, "newhash"); err != nil {
+		t.Fatalf("RefreshConfigHash: %v", err)
+	}
+
+	hash, err := store.StoredConfigHash(abs)
+	if err != nil {
+		t.Fatalf("StoredConfigHash: %v", err)
+	}
+	if hash != "newhash" {
+		t.Fatalf("StoredConfigHash = %q, want newhash", hash)
+	}
+	after, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load after refresh: %v", err)
+	}
+	if !after[abs].Trusted {
+		t.Fatal("refresh cleared the trusted flag")
+	}
+	if !after[abs].TrustedAt.Equal(trustedAt) {
+		t.Fatalf("refresh changed TrustedAt: was %v, now %v", trustedAt, after[abs].TrustedAt)
+	}
+}
+
+// RefreshConfigHash must never grant trust: it only updates an existing
+// trusted record, so a project that was never trusted (or was trusted
+// for the session only) stays untrusted.
+func TestStoreRefreshConfigHashNeverGrantsTrust(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	abs, _ := filepath.Abs(dir)
+
+	if err := store.RefreshConfigHash(abs, "newhash"); err != nil {
+		t.Fatalf("RefreshConfigHash absent record: %v", err)
+	}
+	trusted, err := store.IsTrusted(abs)
+	if err != nil {
+		t.Fatalf("IsTrusted: %v", err)
+	}
+	if trusted {
+		t.Fatal("RefreshConfigHash created a trusted record from nothing")
+	}
+
+	// Session-only trust leaves no record; refresh must not create one.
+	if err := store.SetTrust(abs, false, ""); err != nil {
+		t.Fatalf("SetTrust session: %v", err)
+	}
+	if err := store.RefreshConfigHash(abs, "newhash"); err != nil {
+		t.Fatalf("RefreshConfigHash session-only: %v", err)
+	}
+	trusted, err = store.IsTrusted(abs)
+	if err != nil {
+		t.Fatalf("IsTrusted after session-only: %v", err)
+	}
+	if trusted {
+		t.Fatal("RefreshConfigHash promoted session-only trust to permanent")
+	}
+}
+
 func TestStoreLoadToleratesZonelessTimestamp(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)

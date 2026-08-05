@@ -109,6 +109,10 @@ type Model struct {
 	openConnectOnStart bool
 	trustPromptDir     string
 	trustDecide        func(trust.Decision)
+	// trustRefresh, when set, advances the permanent-trust config hash after
+	// an interactive project-config save succeeds: the user approved the new
+	// config from a trusted session, so the next launch must not re-prompt.
+	trustRefresh       func(workingDir string)
 	memoryDB           *db.DB
 	memoryProject      int64
 	homeDir            string
@@ -362,6 +366,13 @@ func WithTrustPrompt(workingDir string, decide func(trust.Decision)) Option {
 	}
 }
 
+// WithTrustRefresh registers a hook invoked after an interactive
+// project-config save succeeds, so permanent trust can track config edits
+// the user made from a trusted session instead of re-prompting next launch.
+func WithTrustRefresh(refresh func(workingDir string)) Option {
+	return func(m *Model) { m.trustRefresh = refresh }
+}
+
 func WithCommandRegistry(reg *commands.Registry) Option {
 	return func(m *Model) {
 		m.cmdRegistry = reg
@@ -571,6 +582,9 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 		return err, nil
 	}
 	m.configSavePending = false
+	if m.trustRefresh != nil {
+		m.trustRefresh(m.state.WorkingDir)
+	}
 	if m.configReloader != nil {
 		// reloadAgentRuntime may install cfg before reporting a cleanup
 		// error; invalidate config-derived state before attempting it.
@@ -1205,6 +1219,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.applyNewConfig(msg.Cfg)
 			m.configSavePending = false
+			if !msg.GlobalTarget && m.trustRefresh != nil {
+				m.trustRefresh(m.state.WorkingDir)
+			}
 			if m.configLayers != nil && m.layerReloader != nil {
 				if layers, ok := m.layerReloader(); ok {
 					*m.configLayers = &layers

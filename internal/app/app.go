@@ -1056,17 +1056,34 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	// First-run detection: when no config exists yet, open the connect
 	// panel in the TUI instead of running a separate onboarding wizard.
 	firstRun := !config.HasConfig(config.LoadOptions{HomeDir: homeDir, WorkingDir: workingDir})
+	trustStoreDir := filepath.Join(homeDir, ".local", "share", "marshal")
 	trustDecide := func(d trust.Decision) {
 		switch d {
 		case trust.DecisionTrustPermanent:
 			abs, _ := filepath.Abs(workingDir)
 			hash, _ := trust.ConfigHashFor(workingDir)
-			_ = trust.NewStore(filepath.Join(homeDir, ".local", "share", "marshal")).SetTrust(abs, true, hash)
+			_ = trust.NewStore(trustStoreDir).SetTrust(abs, true, hash)
 			reloadForTrust = true
 		case trust.DecisionTrustSession:
 			runOpts.sessionTrusted = true
 			reloadForTrust = true
 		}
+	}
+	// Interactive project-config saves (/settings, /set, /agents) made from
+	// a trusted session advance the permanent-trust config hash so the next
+	// launch doesn't re-prompt. RefreshConfigHash is a no-op when the project
+	// has no permanent-trust record, so external or agent-made config edits
+	// (which never hit this path) still force re-trust.
+	trustRefresh := func(dir string) {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return
+		}
+		hash, err := trust.ConfigHashFor(dir)
+		if err != nil {
+			return
+		}
+		_ = trust.NewStore(trustStoreDir).RefreshConfigHash(abs, hash)
 	}
 
 	defer func() {
@@ -1152,6 +1169,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.TrustPromptPending {
 			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))
 		}
+		tuiOpts = append(tuiOpts, tui.WithTrustRefresh(trustRefresh))
 		if rt.DataDir != "" {
 			tuiOpts = append(tuiOpts, tui.WithModelCache(rt.DataDir))
 		}

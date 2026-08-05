@@ -146,6 +146,29 @@ func (s *Store) StoredConfigHash(absPath string) (string, error) {
 	return r.ConfigHash, nil
 }
 
+// RefreshConfigHash updates the stored config hash on an existing trusted
+// record, preserving Trusted and TrustedAt. It is used when a trusted
+// session intentionally modifies the project config (e.g. /settings, /set):
+// the user has implicitly approved the new config, so the hash recorded at
+// trust time is advanced to match. It never creates or promotes a record —
+// absent or untrusted entries are left untouched, so external or agent-made
+// config changes still force a re-prompt.
+func (s *Store) RefreshConfigHash(absPath string, configHash string) error {
+	records, err := s.Load()
+	if err != nil {
+		// Corrupted store: nothing safe to refresh; leave it for the
+		// prompt path to re-establish trust.
+		return nil
+	}
+	r, ok := records[absPath]
+	if !ok || !r.Trusted {
+		return nil
+	}
+	r.ConfigHash = configHash
+	records[absPath] = r
+	return s.Save(records)
+}
+
 func (s *Store) SetTrust(absPath string, permanent bool, configHash string) error {
 	if !permanent {
 		return nil

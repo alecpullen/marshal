@@ -102,6 +102,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			PlanFirst:                strutil.Ptr(cfg.Agent.PlanFirst),
 			SubtaskIterations:        strutil.Ptr(cfg.Agent.SubtaskIterations),
 			ApprovalMode:             strutil.Ptr(cfg.Agent.ApprovalMode),
+			HistoryBudgetTokens:      strutil.Ptr(cfg.Agent.HistoryBudgetTokens),
 		}
 	} else {
 		file.Agent = &fileAgent{
@@ -112,6 +113,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			PlanFirst:                strutil.Ptr(cfg.Agent.PlanFirst),
 			SubtaskIterations:        strutil.Ptr(cfg.Agent.SubtaskIterations),
 			ApprovalMode:             strutil.Ptr(cfg.Agent.ApprovalMode),
+			HistoryBudgetTokens:      strutil.Ptr(cfg.Agent.HistoryBudgetTokens),
 		}
 	}
 

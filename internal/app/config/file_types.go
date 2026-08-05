@@ -46,6 +46,7 @@ type fileAgent struct {
 	PlanFirst                *bool   `toml:"plan_first"`
 	SubtaskIterations        *int    `toml:"subtask_iterations"`
 	ApprovalMode             *string `toml:"approval_mode"`
+	HistoryBudgetTokens      *int    `toml:"history_budget_tokens"`
 }
 
 type filePrivacy struct {

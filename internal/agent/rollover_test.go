@@ -361,7 +361,7 @@ func TestRolloverAndContinueFallsBackToSummarize(t *testing.T) {
 		{Role: schema.RoleUser, Content: "fix the bug"},
 		{Role: schema.RoleUser, Content: "some large output"},
 	}
-	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "fix the bug")
+	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "fix the bug", runner.MaxTurnContextTokens)
 	if err != nil {
 		t.Fatalf("rolloverAndContinue: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestRolloverAndContinueWithRolloverEnabled(t *testing.T) {
 	wire := []schema.ChatMessage{
 		{Role: schema.RoleUser, Content: "hello"},
 	}
-	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "test goal")
+	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "test goal", runner.MaxTurnContextTokens)
 	if err != nil {
 		t.Fatalf("rolloverAndContinue: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestRolloverAndContinueNilRollover(t *testing.T) {
 	wire := []schema.ChatMessage{
 		{Role: schema.RoleUser, Content: "goal"},
 	}
-	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "goal")
+	fresh, err := rolloverAndContinue(context.Background(), runner, wire, "goal", runner.MaxTurnContextTokens)
 	if err != nil {
 		t.Fatalf("rolloverAndContinue: %v", err)
 	}

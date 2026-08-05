@@ -91,9 +91,11 @@ func (m *Model) viewString() string {
 		// The spinner groups with the transcript whose progress it
 		// describes, keeping the todo list adjacent to the input. During
 		// an SDD run the run panel owns the only spinner, so this row
-		// collapses entirely (see turnSpinnerRows).
-		if !m.state.SDDProgress().Active {
-			rows = append(rows, m.renderTurnSpinner())
+		// collapses entirely (see turnSpinnerRows). An idle spinner
+		// renders "", which JoinVertical would pad into a blank row
+		// above the todo panel — skip it instead.
+		if spinner := m.renderTurnSpinner(); spinner != "" {
+			rows = append(rows, spinner)
 		}
 		if todo := m.renderTodoPanel(); todo != "" {
 			rows = append(rows, todo)
@@ -110,6 +112,13 @@ func (m *Model) viewString() string {
 		rows = append(rows, m.renderInputArea())
 		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
+	// Hard invariant: the left column must never be taller than the frame
+	// minus the status line. Every panel is budgeted (see the *Rows
+	// helpers), but a budget miscount in any state used to push the input
+	// area and status footer off the bottom of the screen. Clip surplus
+	// rows from the top — the transcript is the topmost block and is
+	// scrollable, so nothing the user must always see is lost.
+	left = clipLeftColumn(left, m.height-statusLineRows)
 	if m.railEnabled() {
 		railHeight := m.height - statusLineRows
 		if rv := m.rail.View(m.railData(), m.railWidth, railHeight); rv != "" {
@@ -117,6 +126,21 @@ func (m *Model) viewString() string {
 		}
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
+}
+
+// clipLeftColumn trims s to at most maxRows, dropping surplus lines from
+// the top so bottom chrome (input area, status line) stays on screen even
+// if a panel budget miscounts. Under-height columns are returned as-is.
+func clipLeftColumn(s string, maxRows int) string {
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	height := lipgloss.Height(s)
+	if height <= maxRows {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	return strings.Join(lines[height-maxRows:], "\n")
 }
 
 func (m Model) renderTranscriptFrame() string {
@@ -165,11 +189,15 @@ func (m Model) renderInputArea() string {
 		// (handleQuestion), so a visible textarea would be a dead input
 		// that swallows nothing yet appears typable.
 	} else if tc := m.state.PendingApproval(); tc != nil {
-		if m.editingCommand {
+		switch {
+		case isModeElevationApproval(tc):
+			// The mode-elevation dock picker owns this decision; rendering
+			// the approve/deny panel here too showed both UIs at once.
+		case m.editingCommand:
 			rows = append(rows, m.gutteredInput())
-		} else if m.approvalModel != nil {
+		case m.approvalModel != nil:
 			rows = append(rows, m.approvalModel.View())
-		} else {
+		default:
 			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth))
 		}
 	} else {

@@ -1619,6 +1619,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// isModeElevationApproval reports whether a pending approval is a mode
+// elevation request: its decision UI is the dock picker, so the inline
+// approval chooser/panel must not render for it.
+func isModeElevationApproval(tc *session.PendingToolCall) bool {
+	return tc.Name == "mode.request" || strings.HasPrefix(tc.Reason, "mode-elevation:")
+}
+
 // handleApproval routes messages to the inline approval chooser (or the
 // edit-command textarea sub-mode) while a tool-call approval is pending. It
 // is called before the main keypress switch so huh's internal navigation
@@ -1629,7 +1636,7 @@ func (m Model) handleApproval(msg tea.Msg, tc *session.PendingToolCall) (tea.Mod
 	// open, keypresses are routed to the picker and non-key messages
 	// return early here. On PickedMsg the main Update switch handles the
 	// response and mode change.
-	if tc.Name == "mode.request" || strings.HasPrefix(tc.Reason, "mode-elevation:") {
+	if isModeElevationApproval(tc) {
 		if m.dock.IsOpen() {
 			// Picker already open; don't interfere.
 			return m, nil
@@ -1887,14 +1894,19 @@ func (m Model) inputChromeRows() int {
 		}
 		rows += lipgloss.Height(content)
 	} else if tc := m.state.PendingApproval(); tc != nil {
-		content := ""
-		if m.editingCommand {
+		// Mirror renderInputArea's switch exactly so the budget never
+		// disagrees with what is on screen.
+		var content string
+		switch {
+		case isModeElevationApproval(tc):
+			// The dock picker owns the decision; nothing renders here.
+		case m.editingCommand:
 			// The ❯ prompt is rendered inside the textarea by SetPromptFunc,
 			// so m.input.View() already includes it — do not prepend it again.
 			content = m.input.View()
-		} else if m.approvalModel != nil {
+		case m.approvalModel != nil:
 			content = m.approvalModel.View()
-		} else {
+		default:
 			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1))
 		}
 		rows += lipgloss.Height(content)
@@ -1939,12 +1951,15 @@ func (m Model) scrollHintRows() int {
 }
 
 // turnSpinnerRows reports the rows reserved for the pinned turn spinner
-// above the input. The row is always reserved — even while idle — so the
-// transcript frame does not shift when a turn starts. renderTurnSpinner
-// returns "" when idle and JoinVertical counts that as a row. During an
-// SDD run the row collapses to zero: the run panel owns the only spinner.
+// above the input. The row exists only while a turn is running: reserving
+// it while idle rendered as a blank line directly above the todo panel.
+// During an SDD run the row collapses to zero: the run panel owns the only
+// spinner. Mirrors renderTurnSpinner's render condition exactly.
 func (m Model) turnSpinnerRows() int {
 	if m.state.SDDProgress().Active {
+		return 0
+	}
+	if !m.busy || m.turnStartedAt.IsZero() {
 		return 0
 	}
 	return 1

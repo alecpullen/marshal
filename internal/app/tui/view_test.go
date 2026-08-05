@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -716,8 +717,50 @@ func TestTurnSpinnerReservedWhenIdle(t *testing.T) {
 	if got := m.renderTurnSpinner(); got != "" {
 		t.Fatalf("idle turn spinner should render blank, got %q", got)
 	}
-	if m.turnSpinnerRows() != 1 {
-		t.Fatalf("turnSpinnerRows() = %d, want 1 (row always reserved)", m.turnSpinnerRows())
+	if m.turnSpinnerRows() != 0 {
+		t.Fatalf("turnSpinnerRows() = %d, want 0 when idle (no blank reserved row)", m.turnSpinnerRows())
+	}
+}
+
+// TestNoBlankRowAboveTodoPanelWhenIdle pins the reported bug: an idle
+// session with todos showed a blank line at the top of the todo panel —
+// the always-reserved (but empty) turn-spinner row. The row now only
+// occupies the frame while a turn is actually running.
+func TestNoBlankRowAboveTodoPanelWhenIdle(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	if err := m.state.SetTodos([]native.TodoItem{
+		{Content: "first task", Status: "completed"},
+		{Content: "second task", Status: "in_progress"},
+		{Content: "third task", Status: "pending"},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	// Fill the transcript so its bottom row is real content: an empty
+	// viewport pads with blanks, which would mask the spinner row.
+	for i := 0; i < 40; i++ {
+		m.state.AddMessage(session.RoleAssistant, fmt.Sprintf("transcript filler %d", i), session.ContentTypePlain)
+	}
+	m.refreshViewport()
+
+	lines := strings.Split(stripANSI(m.viewString()), "\n")
+	todoRow := -1
+	for i, l := range lines {
+		if strings.Contains(l, "tasks 1/3") {
+			todoRow = i
+			break
+		}
+	}
+	if todoRow < 0 {
+		t.Fatalf("todo header missing from frame:\n%s", strings.Join(lines, "\n"))
+	}
+	// The transcript renderer trails each entry with one blank separator
+	// line, so one blank above the panel is legitimate. Two in a row means
+	// the empty spinner row is back.
+	if todoRow < 2 || strings.TrimSpace(lines[todoRow-2]) == "" {
+		t.Errorf("more than one blank line above the todo panel:\n%s", strings.Join(lines, "\n"))
+	}
+	if len(lines) != 30 {
+		t.Errorf("frame = %d rows, want 30", len(lines))
 	}
 }
 
@@ -806,8 +849,9 @@ func TestTurnSpinnerSpansPhaseGaps(t *testing.T) {
 	}
 }
 
-// TestTurnSpinnerBlankWhenIdleButStillReserved pins the reserved-row
-// invariant: blank content, one row of budget.
+// TestTurnSpinnerBlankWhenIdleButStillReserved pins the idle invariant:
+// blank content and no row of budget — the row only exists while a turn
+// runs, so an idle frame has no blank line above the todo panel.
 func TestTurnSpinnerBlankWhenIdleButStillReserved(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = false
@@ -816,8 +860,8 @@ func TestTurnSpinnerBlankWhenIdleButStillReserved(t *testing.T) {
 	if row := m.renderTurnSpinner(); row != "" {
 		t.Errorf("renderTurnSpinner() = %q, want empty when idle", row)
 	}
-	if got := m.turnSpinnerRows(); got != 1 {
-		t.Errorf("turnSpinnerRows() = %d, want 1 even when idle", got)
+	if got := m.turnSpinnerRows(); got != 0 {
+		t.Errorf("turnSpinnerRows() = %d, want 0 when idle", got)
 	}
 }
 

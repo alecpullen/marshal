@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -79,5 +82,35 @@ func TestSetModeMirrorsSessionConfig(t *testing.T) {
 	}
 	if got := m.state.Config.Agent.ApprovalMode; got != "auto" {
 		t.Fatalf("state.Config.Agent.ApprovalMode = %q, want %q", got, "auto")
+	}
+}
+
+// TestModeElevationHidesApprovalPanel pins the reported duplication: while
+// the mode-elevation picker is open for a mode.request, the input area must
+// NOT also render the normal approve/deny approval panel — the picker owns
+// the decision UI.
+func TestModeElevationHidesApprovalPanel(t *testing.T) {
+	m := newViewTestModel(t, 100, 30)
+	m.state.SetPendingApproval(&session.PendingToolCall{
+		ID:           "call_mode",
+		Name:         "mode.request",
+		Reason:       "switch to an editing mode",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	})
+	m.refreshViewport()
+
+	// Route any keypress through Update so handleApproval opens the
+	// mode-elevation dock picker.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'x'})
+	m = updated.(Model)
+	if !m.dock.IsOpen() {
+		t.Fatal("mode-elevation picker did not open in the dock")
+	}
+
+	area := stripANSI(m.renderInputArea())
+	for _, label := range []string{"allow", "deny"} {
+		if strings.Contains(area, label) {
+			t.Errorf("input area shows the approve/deny panel (%q) alongside the mode-elevation picker:\n%s", label, area)
+		}
 	}
 }

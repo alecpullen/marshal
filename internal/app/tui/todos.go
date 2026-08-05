@@ -29,6 +29,10 @@ const (
 // one-liner when fewer than two rows are available.
 const todoPanelMaxRows = 10
 
+// todoPanelMaxVisibleItems is the default number of todo item rows the
+// expanded panel shows before clipping (the header row is additional).
+const todoPanelMaxVisibleItems = 6
+
 // renderTodoPanelBody renders the pinned todo panel: gutter-styled, no
 // box, one counts header row. Returns "" when there is nothing to show.
 // Every line wears the ▍ chrome rail (dim — the panel is ambient, not an
@@ -78,10 +82,13 @@ func renderTodoPanelBody(todos []native.TodoItem, mode todoPanelMode, frameHeigh
 	return chromeRailWidth(header+"\n"+body, dimColor, width)
 }
 
-// todoPanelBudget is the expanded panel's row budget: never more than the
-// item count, the hard cap, or ~33% of the frame.
+// todoPanelBudget is the expanded panel's total row budget: one header row
+// plus up to todoPanelMaxVisibleItems item rows, never more than the hard
+// cap or ~33% of the frame. The header used to consume one of n's rows,
+// so a three-item list rendered as header + 2 items with an "↑ more"
+// indicator; the budget now always has room for the header.
 func todoPanelBudget(n, frameHeight int) int {
-	return min(n, min(todoPanelMaxRows, max(frameHeight/3, 1)))
+	return min(1+min(n, todoPanelMaxVisibleItems), min(todoPanelMaxRows, max(frameHeight/3, 1)))
 }
 
 // todoOneLine renders `▸ tasks 3/7 · implement expression parsing`.

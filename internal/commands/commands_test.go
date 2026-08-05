@@ -294,17 +294,15 @@ func TestNewCommand(t *testing.T) {
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
-	state := newTestState()
-	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	state.AddMessage(session.RoleAssistant, "hi", session.ContentTypePlain)
-
-	cmd, _ := cmdReg.Lookup("new")
-	result := cmd.Handler(state, nil).Text
-	if !strings.Contains(result, "Cleared 2 messages") {
-		t.Errorf("new command output wrong: %s", result)
+	cmd, ok := cmdReg.Lookup("new")
+	if !ok {
+		t.Fatal("expected /new to be registered")
 	}
-	if len(state.Messages()) != 0 {
-		t.Errorf("expected 0 messages after clear, got %d", len(state.Messages()))
+	if !cmd.TUIOnly {
+		t.Error("expected /new to be TUIOnly")
+	}
+	if cmd.Handler != nil {
+		t.Error("expected /new handler to be nil; it is implemented by the TUI")
 	}
 }
 

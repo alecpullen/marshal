@@ -1142,6 +1142,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// successful reload rebuilds the runtime in place, and the runner
 		// source lets the TUI adopt the rebuilt runner (see tui.adoptRunner).
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
+		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(rt))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithRunnerSource(func() (context.Context, tui.AgentRunner) {
@@ -1298,6 +1299,165 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// iterations.
 		_ = rt.Close(context.Background())
 	}
+}
+
+// NewSession ends the current session's live generation, persists a new
+// agent_sessions row, builds a fresh session.State and agent runner, and
+// atomically swaps them into the runtime. The database and brokers are
+// reused, so /new and /clear can start a clean conversation without
+// restarting Marshal. On success it returns the new state/runner/etc. so
+// the TUI can re-point its model fields.
+func (rt *Runtime) NewSession(ctx context.Context) (*tui.SessionSwapResult, error) {
+	rt.mu.Lock()
+
+	if rt.State == nil {
+		rt.mu.Unlock()
+		return nil, errors.New("runtime has no active session")
+	}
+	if rt.DB == nil {
+		rt.mu.Unlock()
+		return nil, errors.New("runtime has no database")
+	}
+
+	database := must[*db.DB](rt.DB)
+
+	// Close the previous session's live generation so its generation row is
+	// ended with a reason.
+	if rt.Runner != nil && rt.Runner.Rollover != nil {
+		if err := rt.Runner.Rollover.Close(ctx); err != nil {
+			rt.Logger.Warn("failed to close previous rollover generation", "error", err)
+		}
+	}
+
+	oldState := rt.State
+	cfg := oldState.Config
+	now := time.Now()
+	newSessionID := fmt.Sprintf("sess_%d", now.UnixNano())
+	if err := database.CreateSession(newSessionID, rt.ProjectID, "", now); err != nil {
+		rt.mu.Unlock()
+		return nil, fmt.Errorf("create session: %w", err)
+	}
+
+	newState := session.New(cfg, rt.WorkingDir, now, session.Persistence{
+		DB:        database,
+		SessionID: newSessionID,
+		Logger:    rt.Logger,
+	})
+	newState.SetTrusted(oldState.Trusted())
+	newState.SetLayers(oldState.Layers())
+	newState.SetWorkspace(oldState.Workspace())
+
+	// Reuse the runtime's shared brokers; the TUI subscriptions stay alive.
+	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
+	steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
+	eventBroker := must[*pubsub.Broker[session.Event]](rt.EventBroker)
+	workspaceBroker := must[*pubsub.Broker[session.WorkspaceEvent]](rt.WorkspaceBroker)
+	newState.SetSteeringBroker(steeringBroker)
+	newState.SetEventBroker(eventBroker)
+	newState.SetWorkspaceBroker(workspaceBroker)
+
+	autoloadSkills(cfg, rt.SkillIndex, newState, rt.Logger)
+
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, err := buildAgentRunner(
+		rt.workCtx, cfg, newState, database, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, rt.ConfigReloader, rt.HomeDir,
+	)
+	if err != nil {
+		rt.mu.Unlock()
+		return nil, fmt.Errorf("build agent runner: %w", err)
+	}
+	if newState.Trusted() && len(cfg.Hooks.Entries) > 0 {
+		newRunner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
+	}
+
+	// Capture old resources for cleanup after releasing the lock.
+	oldRunner := rt.Runner
+	oldSwarmRunner := rt.SwarmRunner
+	oldToolReg := rt.ToolRegistry
+	oldMCP := rt.MCPManager
+	oldSnap := rt.Snapshot
+	oldJobMgr := rt.JobManager
+	oldDesktopCloser := rt.DesktopCloser
+	oldLSP := rt.LSPManager
+	oldPipelineFactory := rt.PipelineFactory
+	oldCustomAgentFactory := rt.CustomAgentFactory
+
+	// Swap runtime pointers to the new session infrastructure.
+	rt.State = newState
+	rt.SessionID = newSessionID
+	rt.Runner = newRunner
+	rt.SwarmRunner = newSwarmRunner
+	rt.ToolRegistry = newReg
+	rt.PipelineFactory = newPipelineFactory
+	rt.CustomAgentFactory = newSubagentFactory
+	if newMCP != nil {
+		rt.MCPManager = newMCP
+	} else {
+		rt.MCPManager = nil
+	}
+	if newSnap != nil {
+		rt.Snapshot = newSnap
+	} else {
+		rt.Snapshot = nil
+	}
+	rt.JobManager = newJobMgr
+	rt.DesktopCloser = newDesktopCloser
+	rt.LSPManager = newLSPHandle
+
+	// Restart the LSP manager against the new session's active root.
+	if rt.lspCancel != nil {
+		rt.lspCancel()
+		rt.lspCancel = nil
+	}
+	if rt.LSPManager != nil {
+		rt.lspCancel = rt.runLSPManager(rt.LSPManager.Get())
+	}
+
+	rt.mu.Unlock()
+
+	// Best-effort cleanup of the old session's infrastructure. Errors are
+	// logged but do not fail the swap.
+	if oldRunner != nil && oldRunner.Rollover != nil {
+		// Already closed before the swap.
+		_ = oldRunner
+	}
+	if oldJobMgr != nil {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := oldJobMgr.Shutdown(sc); err != nil {
+			rt.Logger.Warn("failed to shut down previous job manager", "error", err)
+		}
+	}
+	if oldMCP != nil {
+		if err := oldMCP.Close(); err != nil {
+			rt.Logger.Warn("failed to close previous MCP manager", "error", err)
+		}
+	}
+	if oldDesktopCloser != nil {
+		oldDesktopCloser()
+	}
+	if oldSnap != nil {
+		sc, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := oldSnap.Prune(sc, rt.Config.Snapshots.RetentionDays); err != nil {
+			rt.Logger.Warn("failed to prune previous snapshot service", "error", err)
+		}
+	}
+	_ = oldSwarmRunner
+	_ = oldToolReg
+	_ = oldLSP
+	_ = oldPipelineFactory
+	_ = oldCustomAgentFactory
+
+	return &tui.SessionSwapResult{
+		State:           newState,
+		Runner:          newRunner,
+		SwarmRunner:     newSwarmRunner,
+		PipelineFactory: newPipelineFactory,
+		ToolRegistry:    newReg,
+		CustomAgentFactory: func(agentName string) (tui.AgentRunner, error) {
+			return newSubagentFactory(agentName)
+		},
+	}, nil
 }
 
 func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) error {

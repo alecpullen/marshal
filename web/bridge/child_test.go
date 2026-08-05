@@ -79,6 +79,15 @@ func runHelperChild(mode string) {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "helper saw request %s\n", req.Method)
+		if mode == "registry" || mode == "registry-die" {
+			handleRegistryMode(&req, enc)
+			// registry-die kills the process only after session/new, so
+			// the post-restart session/resume survives on generation 2.
+			if mode == "registry-die" && req.Method == "session/new" {
+				os.Exit(1)
+			}
+			continue
+		}
 		resp := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      req.ID,
@@ -88,6 +97,54 @@ func runHelperChild(mode string) {
 		if mode == "die" {
 			os.Exit(1)
 		}
+	}
+}
+
+// handleRegistryMode backs the registry tests: session/new returns a
+// sessionId, everything else returns an empty object. The trigger
+// methods test/ask_permission and test/ask_question make the helper
+// issue a child-initiated request and report the bridge's response on
+// stderr, where tests can observe it via StderrLog.
+func handleRegistryMode(req *struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}, enc *json.Encoder) {
+	switch req.Method {
+	case "session/new":
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{"sessionId": "s-1"},
+		})
+	case "test/ask_permission", "test/ask_question":
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{},
+		})
+		method := "session/request_permission"
+		params := map[string]any{"toolCallId": "tc-1", "toolName": "shell.run"}
+		if req.Method == "test/ask_question" {
+			method = "session/request_question"
+			params = map[string]any{
+				"sessionId":  "s-1",
+				"questionId": "q-1",
+				"questions":  []map[string]any{{"question": "proceed?"}},
+			}
+		}
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      9000,
+			"method":  method,
+			"params":  params,
+		})
+	default:
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{},
+		})
 	}
 }
 

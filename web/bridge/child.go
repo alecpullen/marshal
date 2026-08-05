@@ -69,9 +69,15 @@ type Child struct {
 	// OnRestart is invoked after each unexpected exit, once the
 	// replacement process has spawned. Intended for session resume.
 	OnRestart func()
-	// OnNotification is invoked for each inbound notification. It runs
-	// on the read goroutine and must not block.
+	// OnNotification is invoked for each inbound notification (a frame
+	// with a method and no id). It runs on the read goroutine and must
+	// not block.
 	OnNotification func(method string, params json.RawMessage)
+	// OnRequest handles a child-initiated request (a frame with both a
+	// method and an integer id), e.g. session/request_permission. It
+	// runs on its own goroutine and may block; the returned result or
+	// error is written back to the child as the JSON-RPC response.
+	OnRequest func(id int, method string, params json.RawMessage) (result any, err error)
 
 	mu         sync.Mutex // guards cmd, stdin, stdout, stderrPipe, stopping, started
 	cmd        *exec.Cmd
@@ -336,14 +342,22 @@ func (c *Child) readLoop(r io.Reader) {
 		idRaw, hasID := probe["id"]
 
 		if hasMethod {
-			// Inbound notification or child-initiated request. ACP child
-			// requests are not yet supported (Task 2+); both surface
-			// through OnNotification.
-			if c.OnNotification == nil {
-				continue
-			}
 			var method string
 			if err := json.Unmarshal(methodRaw, &method); err != nil {
+				continue
+			}
+			if hasID && c.OnRequest != nil {
+				// Child-initiated request (e.g. session/request_permission).
+				// Handle on a separate goroutine: the handler may block
+				// and readLoop must keep draining.
+				var id int
+				if err := json.Unmarshal(idRaw, &id); err != nil {
+					continue
+				}
+				go c.answerRequest(id, method, probe["params"])
+				continue
+			}
+			if c.OnNotification == nil {
 				continue
 			}
 			c.OnNotification(method, probe["params"])
@@ -380,6 +394,25 @@ func (c *Child) readLoop(r io.Reader) {
 			ch <- res
 		}
 	}
+}
+
+// answerRequest invokes OnRequest for one child-initiated request and
+// writes the JSON-RPC response back. Runs on its own goroutine.
+func (c *Child) answerRequest(id int, method string, params json.RawMessage) {
+	result, err := c.OnRequest(id, method, params)
+	if err != nil {
+		_ = c.writeFrame(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      id,
+			"error":   map[string]any{"code": -32000, "message": err.Error()},
+		})
+		return
+	}
+	_ = c.writeFrame(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result":  result,
+	})
 }
 
 // drainStderr copies the child's stderr into the bounded log buffer

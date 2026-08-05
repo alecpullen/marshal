@@ -227,6 +227,22 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 	// never reuse the id of the previous leaf (B-21).
 	s.nextMsgID++
 
+	// Task 3/A1: flush the per-turn tool audit ledger into SQLite when
+	// this message is an assistant final turn. Best-effort: log and
+	// continue on failure so a write error never breaks the turn. The
+	// in-memory buffer is always cleared at the message boundary so the
+	// next turn starts fresh — persistence only happens when a DB is
+	// attached.
+	if role == RoleAssistant && final && len(s.toolAuditThisTurn) > 0 {
+		if persisted && dbID != 0 {
+			pendingEntries := append([]db.ToolAuditEntry(nil), s.toolAuditThisTurn...)
+			if err := s.db.SaveTurnToolAudit(s.sessionID, dbID, pendingEntries); err != nil {
+				s.logger.Warn("save turn tool audit failed", "error", err, "session_id", s.sessionID, "message_db_id", dbID)
+			}
+		}
+		s.toolAuditThisTurn = nil
+	}
+
 	msg := Message{
 		ID:            id,
 		ParentID:      parent,

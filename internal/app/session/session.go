@@ -183,6 +183,12 @@ type State struct {
 	activeSkills    map[string]bool
 	loadedTools     map[string]bool
 	toolBudget      ToolBudget
+	// toolAuditThisTurn is the per-turn accumulator for the cross-turn
+	// ledger (Task 3/A1). LogToolCall appends here as well as to
+	// auditLog, and appendMessage flushes it to the turn_tool_audit table
+	// when an assistant final message persists. Best-effort: failures are
+	// logged and do not abort the turn.
+	toolAuditThisTurn []db.ToolAuditEntry
 	swarmProgress   SwarmProgress
 	sddProgress     SDDProgress
 	sandbox         SandboxInfo
@@ -1065,6 +1071,17 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 		event.Timestamp = time.Now()
 	}
 	s.auditLog = append(s.auditLog, event)
+	// Also accumulate into the per-turn ledger buffer. The compaction in
+	// summary string and the (ok) marker are filled in here so the
+	// ledger stays a one-line summary, while auditLog retains the full
+	// event for inspection.
+	s.toolAuditThisTurn = append(s.toolAuditThisTurn, db.ToolAuditEntry{
+		Seq:     len(s.toolAuditThisTurn) + 1,
+		Tool:    event.ToolName,
+		Summary: ledgerSummaryFor(event),
+		Ok:      event.Error == "" && event.Approval != registry.ApprovalDenied,
+		Tokens:  estimateAuditTokens(event),
+	})
 	published := event
 	s.mu.Unlock()
 
@@ -1075,6 +1092,22 @@ func (s *State) LogToolCall(event registry.AuditEvent) {
 			s.logger.Error("save tool call failed", "error", err, "session_id", s.sessionID, "tool", event.ToolName)
 		}
 	}
+}
+
+// ledgerSummaryFor condenses a full AuditEvent into the one-line form
+// the cross-turn ledger uses. The exact format is owned by Task 4/A2
+// (ledger.go). This stub returns ResultSummary so the existing test
+// suite keeps passing; the real ledger builder will replace it once
+// Task 4 lands — see the wider plan commit series.
+func ledgerSummaryFor(ev registry.AuditEvent) string {
+	if ev.ResultSummary != "" {
+		return ev.ResultSummary
+	}
+	return ev.ToolName
+}
+
+func estimateAuditTokens(ev registry.AuditEvent) int {
+	return estimateTokensForAuditEvent(ev)
 }
 
 func (s *State) AuditLog() []registry.AuditEvent {

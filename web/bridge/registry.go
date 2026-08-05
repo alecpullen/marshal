@@ -302,9 +302,13 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 	}
 }
 
-// resumeAll runs on child restart: resume every tracked session, mark
-// in-flight turns interrupted, and emit bridge_restarted.
+// resumeAll runs on child restart: fail any pending permission/question
+// waits (their request ids died with the old generation), resume every
+// tracked session, mark in-flight turns interrupted, and emit
+// bridge_restarted.
 func (r *Registry) resumeAll() {
+	r.clearPending()
+
 	r.mu.Lock()
 	ids := make([]string, 0, len(r.sessions))
 	cwds := make(map[string]string, len(r.sessions))
@@ -321,6 +325,25 @@ func (r *Registry) resumeAll() {
 		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id})
 		r.emitEvent(id, map[string]any{"type": "bridge_restarted"})
 	}
+}
+
+// clearPending drains both pending maps, unblocking every waiter with
+// deny/decline. Used on child restart: the old generation's request ids
+// are gone, so waiting (or resolving) against them is meaningless.
+func (r *Registry) clearPending() {
+	r.permMu.Lock()
+	for id, ch := range r.permissions {
+		ch <- Decision{Approved: false}
+		delete(r.permissions, id)
+	}
+	r.permMu.Unlock()
+
+	r.quesMu.Lock()
+	for id, ch := range r.questions {
+		ch <- Answers{Declined: true}
+		delete(r.questions, id)
+	}
+	r.quesMu.Unlock()
 }
 
 func (r *Registry) lookup(id string) (*sessionInfo, bool) {

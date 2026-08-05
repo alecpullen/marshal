@@ -244,3 +244,43 @@ func TestRegistryRestartResumesSessions(t *testing.T) {
 		t.Fatal("restart should mark in-flight turn interrupted")
 	}
 }
+
+func TestRegistryRestartClearsPending(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry-die")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, "/tmp/work", ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Wait for the restart (triggered by registry-die exiting after
+	// session/new), then trigger a permission request on generation 2.
+	waitFor(t, 3*time.Second, "restart", func() bool {
+		return strings.Contains(c0Stderr(r), "session/resume")
+	})
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "pending permission", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return ok
+	})
+
+	// Simulate a second restart: clearPending must drain the map and a
+	// late resolve must report ErrGone.
+	r.clearPending()
+	r.permMu.Lock()
+	_, ok := r.permissions["tc-1"]
+	r.permMu.Unlock()
+	if ok {
+		t.Fatal("clearPending left stale permission entry")
+	}
+	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
+		t.Fatalf("resolve after clear: want ErrGone, got %v", err)
+	}
+}
+
+// c0Stderr reaches the child through the registry for stderr asserts.
+func c0Stderr(r *Registry) string { return r.child.StderrLog() }

@@ -40,6 +40,7 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.PlanFirst, file.Agent.PlanFirst)
 		set(&cfg.Agent.SubtaskIterations, file.Agent.SubtaskIterations)
 		set(&cfg.Agent.ApprovalMode, file.Agent.ApprovalMode)
+		set(&cfg.Agent.HistoryBudgetTokens, file.Agent.HistoryBudgetTokens)
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)

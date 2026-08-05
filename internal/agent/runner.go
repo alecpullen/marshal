@@ -518,20 +518,24 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum),
 	}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
-	if r.role() == RoleGeneral {
-		// Task 4/A2: load the cross-turn ledger. Best-effort — a DB
-		// error here falls back to the legacy placeholder rather than
-		// failing the turn.
-		var ledger map[int64][]db.ToolAuditEntry
-		if r.State != nil && r.State.DB() != nil && r.State.SessionID() != "" {
-			if got, err := r.State.DB().LoadAllTurnToolAudit(r.State.SessionID()); err == nil {
-				ledger = got
-			} else {
-				r.State.Logger().Warn("load turn tool audit for history failed", "error", err)
+		if r.role() == RoleGeneral {
+			// Task 4/A2: load the cross-turn ledger. Best-effort — a DB
+			// error here falls back to the legacy placeholder rather than
+			// failing the turn.
+			var ledger map[int64][]db.ToolAuditEntry
+			if r.State != nil && r.State.DB() != nil && r.State.SessionID() != "" {
+				if got, err := r.State.DB().LoadAllTurnToolAudit(r.State.SessionID()); err == nil {
+					ledger = got
+				} else {
+					r.State.Logger().Warn("load turn tool audit for history failed", "error", err)
+				}
 			}
+			// Task 5/B: adaptive history budget. r.HistoryBudgetTokens is
+			// the user's explicit override (or 0); the rest is derived
+			// from the resolved model window via historyBudget.
+			budget := historyBudget(route.Window, r.HistoryBudgetTokens)
+			messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
 		}
-		messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens, r.State.Generation(), ledger)...)
-	}
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
 	// T12: end-of-turn flushArchive and maybeRollover so cross-turn rollover
@@ -578,7 +582,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 						r.State.Logger().Warn("load turn tool audit for history failed", "error", err)
 					}
 				}
-				messages = append(messages, buildHistoryMessages(priorTranscript, r.HistoryBudgetTokens, r.State.Generation(), ledger)...)
+				budget := historyBudget(route.Window, r.HistoryBudgetTokens)
+				messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
 			}
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}

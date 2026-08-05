@@ -47,6 +47,50 @@ func TestAutoloadSkillsInjectsConfiguredSkills(t *testing.T) {
 	if !found {
 		t.Fatal("skill body should be injected into the transcript")
 	}
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeSkill {
+			t.Fatalf("autoload should not post ContentTypeSkill tag, got %q", m.Content)
+		}
+	}
+	bodyFound := false
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeSkillBody {
+			bodyFound = true
+		}
+	}
+	if !bodyFound {
+		t.Fatal("autoload should still inject the skill body")
+	}
+}
+
+func TestAutoloadSkillsQuietButExplicitSkillLoadPostsTag(t *testing.T) {
+	idx := skills.NewIndex()
+	idx.Set("using-superpowers", skills.Skill{
+		Name: "using-superpowers", Description: "how to use skills", Body: "ALWAYS check for a skill first.",
+	})
+	cfg := config.Default()
+	cfg.Skills.Autoload = []string{"using-superpowers"}
+	state := autoloadTestState(t, cfg)
+
+	autoloadSkills(cfg, idx, state, discardLogger())
+	if err := skills.LoadSkillIntoSession(idx, state, "using-superpowers"); err == nil {
+		t.Fatal("explicit skill.load after autoload should fail because already active")
+	}
+
+	// Reset and load explicitly to verify the tag path.
+	state = autoloadTestState(t, cfg)
+	if err := skills.LoadSkillIntoSession(idx, state, "using-superpowers"); err != nil {
+		t.Fatalf("explicit skill.load: %v", err)
+	}
+	var foundTag bool
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeSkill && m.Content == "using-superpowers" {
+			foundTag = true
+		}
+	}
+	if !foundTag {
+		t.Fatal("explicit skill.load should post ContentTypeSkill tag")
+	}
 }
 
 // A config entry that outlives its skill must not stop the session starting.

@@ -895,9 +895,10 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 			cfg.SDD.Verify.Test,
 			time.Duration(cfg.SDD.VerifyTimeoutMS)*time.Millisecond,
 		),
-		MaxFixRounds: cfg.SDD.MaxFixRounds,
-		AutoEscalate: parseApprovalMode(cfg.Agent.ApprovalMode) == policy.ModeAuto,
-		TargetBranch: "main",
+		MaxFixRounds:       cfg.SDD.MaxFixRounds,
+		MaxDispatchRetries: cfg.SDD.DispatchRetries,
+		AutoEscalate:       parseApprovalMode(cfg.Agent.ApprovalMode) == policy.ModeAuto,
+		TargetBranch:       "main",
 	})
 	if err != nil {
 		state.Logger().Warn("pipeline: controller construction failed", "error", err)

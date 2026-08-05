@@ -664,7 +664,7 @@ func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, 
 		if name == "" {
 			continue
 		}
-		if err := skills.LoadSkillIntoSession(idx, state, name); err != nil {
+		if err := skills.LoadSkillIntoSessionQuiet(idx, state, name); err != nil {
 			logger.Warn("skipping autoload skill", "skill", name, "error", err)
 			continue
 		}

@@ -54,13 +54,19 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "new",
 			Description: "Start a new conversation",
 			Group:       groupChat,
-			TUIOnly:     true,
+			Handler: func(state *session.State, args []string) Result {
+				count := state.ClearMessages()
+				return Text(fmt.Sprintf("Started new conversation. Cleared %d messages.", count))
+			},
 		},
 		{
 			Name:        "clear",
 			Description: "Start a new conversation (alias for /new)",
 			Group:       groupChat,
-			TUIOnly:     true,
+			Handler: func(state *session.State, args []string) Result {
+				count := state.ClearMessages()
+				return Text(fmt.Sprintf("Started new conversation. Cleared %d messages.", count))
+			},
 		},
 		{
 			Name:        "save",

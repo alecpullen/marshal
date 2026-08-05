@@ -25,7 +25,8 @@ const runPanelMaxRows = 6
 // during a run, the plan checklist windowed around the current task, and
 // the human-gate question when the pipeline is waiting for an answer. After
 // the run ends it collapses to a one-line summary until the next user turn
-// clears it (keypress.go).
+// clears it (keypress.go). The bar has no background per the unified
+// chrome design.
 func renderRunPanel(p session.SDDProgress, gate session.SDDGate, spinner string, now time.Time, frameHeight, width int) string {
 	if !p.Active && !p.Finished {
 		return ""
@@ -44,15 +45,14 @@ func renderRunPanel(p session.SDDProgress, gate session.SDDGate, spinner string,
 	return runPanelBar(strings.Join(sections, "\n"), width)
 }
 
-// runPanelBar renders content as a full-width horizontal bar with a surface
-// background, replacing the old vertical chrome rail. In monochrome mode the
-// background slot is NoColor and the bar falls back to layout alone.
+// runPanelBar renders content as a full-width horizontal bar with no
+// background, replacing the old vertical chrome rail. It keeps the width
+// layout semantics so the text spans the full frame.
 func runPanelBar(content string, width int) string {
 	if width < 1 {
 		width = 1
 	}
 	return lipgloss.NewStyle().
-		Background(theme.Current().BGSurface).
 		Width(width).
 		MaxWidth(width).
 		Render(content)
@@ -127,7 +127,10 @@ func runPanelGateLine(g session.SDDGate, width int) string {
 }
 
 // runPanelFinishedLine renders the collapsed post-run summary:
-// `✓ sdd done — 7/7 tasks · 23m 41s` or `✗ sdd stopped — 3/7 tasks · 12s`.
+// `✓ sdd done — 7/7 tasks · 23m 41s` or
+// `✗ sdd stopped — 3/7 tasks · 12s · <reason> — /sdd to resume`.
+// When the panel is narrow the resume hint is dropped first, then the
+// reason.
 func runPanelFinishedLine(p session.SDDProgress, width int) string {
 	elapsed := p.EndedAt.Sub(p.StartedAt)
 	if elapsed < 0 {
@@ -140,6 +143,21 @@ func runPanelFinishedLine(p session.SDDProgress, width int) string {
 	} else {
 		g, c, verb = glyph.Error, theme.Current().StatusError, "sdd stopped"
 	}
-	label := fmt.Sprintf("%s — %d/%d tasks · %s", verb, p.DoneTasks, p.TotalTasks, formatElapsed(elapsed))
-	return gutterPrefix(g, c) + mutedStyle().Render(ansi.Truncate(label, max(width-3, 1), "…"))
+	base := fmt.Sprintf("%s — %d/%d tasks · %s", verb, p.DoneTasks, p.TotalTasks, formatElapsed(elapsed))
+	var reason, hint string
+	if !p.Succeeded && p.Error != "" {
+		reason = " · " + p.Error
+	}
+	if !p.Succeeded {
+		hint = " — /sdd to resume"
+	}
+	budget := max(width-3, 1)
+	label := base + reason + hint
+	if ansi.StringWidth(label) > budget && hint != "" {
+		label = base + reason
+	}
+	if ansi.StringWidth(label) > budget && reason != "" {
+		label = base
+	}
+	return gutterPrefix(g, c) + mutedStyle().Render(ansi.Truncate(label, budget, "…"))
 }

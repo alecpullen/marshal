@@ -1,6 +1,9 @@
 package session
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // SDDProgress is the live state of a plan-execution run, rendered by the
 // TUI's run panel. The controller emits events; the app layer maps them
@@ -29,6 +32,7 @@ type SDDProgress struct {
 	Finished     bool
 	Succeeded    bool
 	EndedAt      time.Time
+	Error        string
 }
 
 func (s *State) SetSDDProgress(p SDDProgress) {
@@ -68,12 +72,33 @@ func (s *State) ClearSDDProgress() {
 
 // FinishSDDRun marks the run ended. Unlike ClearSDDProgress it keeps the
 // summary data (tasks, counts, timing) so the TUI can render the collapsed
-// done/stopped line until the user's next turn.
-func (s *State) FinishSDDRun(succeeded bool, endedAt time.Time) {
+// done/stopped line until the user's next turn. runErr is stored as a
+// one-line summary for the stopped-line reason.
+func (s *State) FinishSDDRun(succeeded bool, endedAt time.Time, runErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sddProgress.Active = false
 	s.sddProgress.Finished = true
 	s.sddProgress.Succeeded = succeeded
 	s.sddProgress.EndedAt = endedAt
+	if runErr != nil {
+		s.sddProgress.Error = shortErr(runErr)
+	} else {
+		s.sddProgress.Error = ""
+	}
+}
+
+// shortErr returns the first line of err truncated to 80 characters.
+func shortErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 80 {
+		s = s[:80] + "…"
+	}
+	return s
 }

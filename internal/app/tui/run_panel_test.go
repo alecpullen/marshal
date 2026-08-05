@@ -105,8 +105,42 @@ func TestRunPanelFinishedFailure(t *testing.T) {
 	p := runPanelFixture()
 	p.Active, p.Finished, p.Succeeded = false, true, false
 	p.EndedAt = p.StartedAt.Add(12 * time.Second)
-	out := ansi.Strip(renderRunPanel(p, session.SDDGate{}, "⠋", time.Unix(100, 0), 40, 100))
-	if !strings.Contains(out, "✗") || !strings.Contains(out, "sdd stopped — 2/4 tasks · 12s") {
-		t.Errorf("collapsed failure line wrong:\n%s", out)
+	out := renderRunPanel(p, session.SDDGate{}, "⠋", time.Unix(100, 0), 40, 100)
+	stripped := ansi.Strip(out)
+	if !strings.Contains(stripped, "✗") || !strings.Contains(stripped, "sdd stopped — 2/4 tasks · 12s") {
+		t.Errorf("collapsed failure line wrong:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "/sdd to resume") {
+		t.Errorf("failure line missing resume hint:\n%s", stripped)
+	}
+	if strings.Contains(out, "\x1b[48;") || strings.Contains(out, "\x1b[48m") {
+		t.Errorf("finished panel must not have a background color:\n%s", out)
+	}
+}
+
+func TestRunPanelFinishedFailureWithReason(t *testing.T) {
+	p := runPanelFixture()
+	p.Active, p.Finished, p.Succeeded = false, true, false
+	p.EndedAt = p.StartedAt.Add(12 * time.Second)
+	p.Error = "transient timeout"
+	out := ansi.Strip(renderRunPanel(p, session.SDDGate{}, "⠋", time.Unix(100, 0), 100, 100))
+	want := "sdd stopped — 2/4 tasks · 12s · transient timeout — /sdd to resume"
+	if !strings.Contains(out, want) {
+		t.Errorf("failure line missing reason:\n%s\nwant %q", out, want)
+	}
+}
+
+func TestRunPanelFinishedFailureTruncatesHintFirst(t *testing.T) {
+	p := runPanelFixture()
+	p.Active, p.Finished, p.Succeeded = false, true, false
+	p.EndedAt = p.StartedAt.Add(12 * time.Second)
+	p.Error = "transient timeout"
+	out := ansi.Strip(renderRunPanel(p, session.SDDGate{}, "⠋", time.Unix(100, 0), 40, 55))
+	want := "sdd stopped — 2/4 tasks · 12s · transient timeout"
+	if !strings.Contains(out, want) {
+		t.Errorf("narrow failure line should keep reason and drop hint:\n%s\nwant %q", out, want)
+	}
+	if strings.Contains(out, "/sdd to resume") {
+		t.Errorf("narrow failure line should drop resume hint:\n%s", out)
 	}
 }

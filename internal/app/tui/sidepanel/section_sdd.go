@@ -45,7 +45,21 @@ func (SDDSection) Render(d Data, width, maxRows int) []string {
 			g = glyph.Error
 			verb = "sdd stopped"
 		}
-		line := fmt.Sprintf(" %s %s — %d/%d tasks · %s", g, verb, d.SDD.DoneTasks, d.SDD.TotalTasks, formatElapsed(elapsed))
+		base := fmt.Sprintf(" %s %s — %d/%d tasks · %s", g, verb, d.SDD.DoneTasks, d.SDD.TotalTasks, formatElapsed(elapsed))
+		var reason, hint string
+		if !d.SDD.Succeeded && d.SDD.Error != "" {
+			reason = " · " + d.SDD.Error
+		}
+		if !d.SDD.Succeeded {
+			hint = " — /sdd to resume"
+		}
+		line := base + reason + hint
+		if ansi.StringWidth(line) > width && hint != "" {
+			line = base + reason
+		}
+		if ansi.StringWidth(line) > width && reason != "" {
+			line = base
+		}
 		line = ansi.Truncate(line, width, "…")
 		return []string{line}
 	}

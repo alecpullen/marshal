@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"marshal/internal/app/config"
@@ -47,6 +48,9 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 		}
 		p.Tasks = titles
 	})
+	if completed, err := a.c.CompletedCount(); err == nil && completed > 0 {
+		a.state.AddMessage(session.RoleSystem, fmt.Sprintf("Resuming %s at task %d/%d (ledger from previous run)", a.c.Plan.Slug, completed+1, len(a.c.Plan.Tasks)), session.ContentTypePlain)
+	}
 	err := a.c.Run(ctx)
 	a.state.UpdateSDDProgress(func(p *session.SDDProgress) {
 		p.Branch = a.c.Worktree.Branch
@@ -62,7 +66,7 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 	// spinner, input dimming) comes down and the panel collapses to its
 	// one-line summary. The gate path above returns early and intentionally
 	// keeps progress live for the resume.
-	a.state.FinishSDDRun(err == nil, time.Now())
+	a.state.FinishSDDRun(err == nil, time.Now(), err)
 	return err
 }
 

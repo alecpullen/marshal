@@ -122,8 +122,51 @@ func TestSDDSectionFinishedFailure(t *testing.T) {
 		},
 	}
 	got := StripANSI(strings.Join((SDDSection{}).Render(d, 50, 12), "\n"))
-	want := " ✗ sdd stopped — 2/4 tasks · 12s"
+	want := " ✗ sdd stopped — 2/4 tasks · 12s — /sdd to resume"
 	if got != want {
 		t.Errorf("Render(finished failure) =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestSDDSectionFinishedFailureWithReason(t *testing.T) {
+	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	ended := time.Date(2026, 7, 30, 10, 0, 12, 0, time.UTC)
+	d := Data{
+		SDD: session.SDDProgress{
+			Finished:   true,
+			Succeeded:  false,
+			DoneTasks:  2,
+			TotalTasks: 4,
+			Tasks:      []string{"A", "B", "C", "D"},
+			StartedAt:  started,
+			EndedAt:    ended,
+			Error:      "transient timeout",
+		},
+	}
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 80, 12), "\n"))
+	want := " ✗ sdd stopped — 2/4 tasks · 12s · transient timeout — /sdd to resume"
+	if got != want {
+		t.Errorf("Render(finished failure with reason) =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestSDDSectionFinishedFailureTruncatesHintFirst(t *testing.T) {
+	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	ended := time.Date(2026, 7, 30, 10, 0, 12, 0, time.UTC)
+	d := Data{
+		SDD: session.SDDProgress{
+			Finished:   true,
+			Succeeded:  false,
+			DoneTasks:  2,
+			TotalTasks: 4,
+			StartedAt:  started,
+			EndedAt:    ended,
+			Error:      "transient timeout",
+		},
+	}
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 55, 12), "\n"))
+	want := " ✗ sdd stopped — 2/4 tasks · 12s · transient timeout"
+	if got != want {
+		t.Errorf("Render(narrow finished failure) =\n  %q\nwant\n  %q", got, want)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/llm/schema"
 )
 
@@ -28,7 +29,14 @@ const defaultHistoryBudgetTokens = 8000
 // the boundary is ignored and all messages are replayed — this prevents
 // silent history blanking when the boundary ID is absent from the active
 // branch.
-func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo session.GenerationInfo) []schema.ChatMessage {
+//
+// audits is the cross-turn ledger payload keyed by message DBID
+// (result of db.DB.LoadAllTurnToolAudit). When non-nil, every assistant
+// turn that has matching ledger entries gets a compact "tools: ..." line
+// prepended in place of the legacy "(N tool calls were executed)"
+// placeholder. When nil (older sessions without the turn_tool_audit
+// table, or legacy message replay), the legacy placeholder is used.
+func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo session.GenerationInfo, audits map[int64][]db.ToolAuditEntry) []schema.ChatMessage {
 	if maxTokens <= 0 {
 		maxTokens = defaultHistoryBudgetTokens
 	}
@@ -59,10 +67,20 @@ func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo sessio
 		case session.RoleAssistant:
 			if m.Final && !m.Salvaged {
 				if m.ToolCallCount > 0 {
-					candidates = append(candidates, schema.ChatMessage{
-						Role:    schema.RoleSystem,
-						Content: fmt.Sprintf("(%d tool call(s) were executed by the assistant before the following answer.)", m.ToolCallCount),
-					})
+					// Prefer the compact ledger line over the legacy
+					// placeholder when the turn persisted audit data;
+					// fall back to the placeholder for old sessions.
+					if line := LedgerLine(audits[m.DBID]); line != "" {
+						candidates = append(candidates, schema.ChatMessage{
+							Role:    schema.RoleSystem,
+							Content: fmt.Sprintf("Previous turn tool activity — %s", line),
+						})
+					} else {
+						candidates = append(candidates, schema.ChatMessage{
+							Role:    schema.RoleSystem,
+							Content: fmt.Sprintf("(%d tool call(s) were executed by the assistant before the following answer.)", m.ToolCallCount),
+						})
+					}
 				}
 				candidates = append(candidates, schema.ChatMessage{Role: schema.RoleAssistant, Content: m.Content})
 			}

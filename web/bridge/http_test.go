@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,11 @@ func newTestServer(t *testing.T, token string) (*Server, *Registry, *EventLog, *
 	c := newTestChild(t, "registry")
 	r := NewRegistry(c)
 	r.PendingTimeout = 300 * time.Millisecond
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	r.RootCwd = cwd
 	l := NewEventLog()
 	Attach(l, c, r)
 	if err := c.Start(); err != nil {
@@ -210,6 +216,9 @@ func TestHTTPLoadSession(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
+	// Clear the helper's default root so we can test the no-cwd rejection.
+	r.RootCwd = ""
+
 	// Without a configured root and no body cwd, load rejects.
 	if rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/load", nil, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("no cwd: status = %d, want 400", rec.Code)
@@ -250,6 +259,23 @@ func TestHTTPLoadSession(t *testing.T) {
 	}
 	if info, ok := r.Sessions()["s-2"]; !ok || info.Cwd != "/tmp/other" {
 		t.Errorf("s-2 not tracked under body cwd: %+v", r.Sessions())
+	}
+}
+
+func TestHTTPConfig(t *testing.T) {
+	s, _, _, _ := newTestServer(t, "")
+	rec := doReq(t, s, http.MethodGet, "/api/config", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config: status = %d, want 200", rec.Code)
+	}
+	var out struct {
+		CwdRoot string `json:"cwdRoot"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if out.CwdRoot == "" {
+		t.Fatalf("config returned empty cwdRoot")
 	}
 }
 

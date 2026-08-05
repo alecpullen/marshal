@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 // maxBodyBytes bounds inbound request bodies. Prompt and steer text
@@ -36,12 +37,20 @@ func NewServer(reg *Registry, log *EventLog, token string) *Server {
 	return s
 }
 
-// ServeHTTP implements http.Handler.
+// ServeHTTP implements http.Handler. Non-API paths are served by the
+// embedded SPA (index.html fallback for client-side routing); /api paths
+// go through the mux (with optional bearer auth) so method mismatches
+// still produce 405.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(r.URL.Path, "/api/") {
+		staticHandler().ServeHTTP(w, r)
+		return
+	}
 	s.http.ServeHTTP(w, r)
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /api/config", s.config)
 	s.mux.HandleFunc("GET /api/sessions", s.listSessions)
 	s.mux.HandleFunc("POST /api/sessions", s.newSession)
 	s.mux.HandleFunc("POST /api/sessions/{id}/load", s.loadSession)
@@ -97,6 +106,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+// config exposes read-only bridge configuration needed by the SPA.
+func (s *Server) config(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"cwdRoot": s.reg.RootCwd})
 }
 
 // listSessions proxies ACP session/list: all sessions known to the

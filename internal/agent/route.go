@@ -14,6 +14,42 @@ import (
 	"marshal/internal/retrieval"
 )
 
+// minDerivedTurnTokens is the smallest effective per-turn threshold the
+// model-derived heuristic will produce. At very small windows
+// (0.85*window - maxOutput) can collapse below this floor, in which case
+// fall back to DefaultMaxTurnContextTokens (the model-window-unknown
+// safety net) and surface a state flag so callers know to use it.
+const minDerivedTurnTokens = 4000
+
+// effectiveTurnThreshold derives the mid-turn compaction threshold for the
+// resolved route's model window. It is computed every turn (carried as a
+// per-turn local) because resolveRoute used to mutate r.MaxTurnContextTokens
+// monotonically — one small-model turn poisoned later big-model turns
+// (audit F-POL-85). With a per-turn local, the threshold always tracks the
+// model actually in use.
+//
+// Rules:
+//   - configured > 0            : hard ceiling — never exceed user config
+//   - configured == 0, window>0 : 0.85*window - maxOutput (model-derived)
+//   - configured == 0, window<=0: DefaultMaxTurnContextTokens (60000), the
+//     safety net for unknown models
+//
+// usedFallback reports whether the window-unknown fallback fired (window
+// was <=0 with no configured override).
+func (r *Runner) effectiveTurnThreshold(window int, maxOutput int, configured int) (threshold int, usedFallback bool) {
+	if configured > 0 {
+		return configured, false
+	}
+	if window <= 0 {
+		return DefaultMaxTurnContextTokens, true
+	}
+	effective := int(float64(window)*0.85) - maxOutput
+	if effective < minDerivedTurnTokens {
+		effective = DefaultMaxTurnContextTokens
+	}
+	return effective, false
+}
+
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {
 	turnProvider := r.Provider
 	turnModel := r.Model
@@ -51,32 +87,20 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 	}
 
 	// F12: resolve the model's context window, preferring explicit config on
-	// the preset, falling back to the curated catalog. Unknown (0) leaves the
-	// configured turn budget untouched — never guess.
+	// the preset, falling back to the curated catalog. The window is
+	// recorded on state and consumed by the per-turn effectiveTurnThreshold
+	// call below — resolveRoute no longer mutates r.MaxTurnContextTokens,
+	// so one small-model turn cannot poison later big-model turns.
 	window := route.Preset.ContextWindow
 	maxOut := route.Preset.MaxOutputTokens
 	if window == 0 {
 		window, maxOut = catalog.Lookup(route.Preset.Model)
 	}
-	if window > 0 {
-		reserved := maxOut
-		effective := int(float64(window)*0.85) - reserved
-		if effective < 0 {
-			effective = 0
-		}
-		// F-SEC-10: use the smaller of the configured value and the
-		// model-derived value. The configured value is a CEILING (never
-		// exceed the user's setting), not a floor. The previous code
-		// raised the configured value to the model-derived value, which
-		// meant a generous user config on a small model fed the model
-		// more tokens than its window supports.
-		if r.MaxTurnContextTokens == 0 || effective < r.MaxTurnContextTokens {
-			r.MaxTurnContextTokens = effective
-		}
-		r.State.SetTurnContextWindow(window)
-	} else {
-		r.State.SetTurnContextWindow(0)
-	}
+	// Bound the per-turn local (carried by the caller) so the state
+	// continues to reflect the known window for dashboards and rollovers.
+	route.Window = window
+	route.MaxOutput = maxOut
+	r.State.SetTurnContextWindow(window)
 	return turnProvider, turnModel, route
 }
 

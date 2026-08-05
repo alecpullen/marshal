@@ -487,6 +487,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		s.m.Provider = turnProvider.Name()
 		s.m.Model = turnModel
 	})
+	// D1: derive a per-turn compaction threshold from the resolved route's
+	// window. Carried as a local so the threshold tracks the model actually
+	// in use, never poisoned across turns by a smaller model's window.
+	turnThreshold, turnThresholdFallback := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
+	if turnThresholdFallback {
+		// Unknown window: tell the model so it can warn or react; the
+		// safety-net threshold of DefaultMaxTurnContextTokens still
+		// applies regardless.
+		r.State.AddMessage(session.RoleSystem, "Could not resolve the model context window; using a conservative per-turn budget. Configure models with explicit context_window or add the model to the catalog for accurate thresholds.", session.ContentTypePlain)
+	}
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
 	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
@@ -521,7 +531,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if _, err := r.Rollover.flushArchive(ctx, messages); err != nil {
 				r.State.Logger().Warn("end-of-turn flush archive failed", "error", err)
 			}
-			if _, err := r.Rollover.maybeRollover(ctx, messages, r.MaxTurnContextTokens); err != nil {
+			if _, err := r.Rollover.maybeRollover(ctx, messages, turnThreshold); err != nil {
 				r.State.Logger().Warn("end-of-turn maybe rollover failed", "error", err)
 			}
 		}
@@ -641,10 +651,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 		messages = r.setContextPackMessage(messages, r.State.ContextPack())
 
-		if r.MaxTurnContextTokens > 0 && estimateTokens(messages) > r.MaxTurnContextTokens {
+		if turnThreshold > 0 && estimateTokens(messages) > turnThreshold {
 			// T13: unified intra-turn compaction — rollover when enabled,
 			// fall back to summarizeAndContinue when disabled.
-			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal); cerr == nil {
+			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold); cerr == nil {
 				messages = fresh
 				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
 			} else {

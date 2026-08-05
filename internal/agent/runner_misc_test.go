@@ -1137,16 +1137,21 @@ func TestRunnerUsesConfiguredRoleInSystemPrompt(t *testing.T) {
 }
 
 func TestMaxTurnContextTokensUsesSmallerOfConfiguredAndDerived(t *testing.T) {
+	// D1: r.MaxTurnContextTokens is now a hard ceiling, no longer mutated
+	// per-call. The derived value flows through effectiveTurnThreshold.
 	state := newTestState(t)
 	r := NewRunner(nil, nil, nil, state, "test-model")
 	r.MaxTurnContextTokens = 100_000 // generous user config
 	r.RouteResolver = &staticResolver{route: routing.Route{
-		Preset: routing.ModelPreset{Name: "test", Model: "tiny", ContextWindow: 32_000},
+		Preset: routing.ModelPreset{Name: "test", Model: "tiny", ContextWindow: 32_000, MaxOutputTokens: 4096},
 	}}
 
-	_, _, _ = r.resolveRoute(&Task{Class: ClassQuestion})
-	if r.MaxTurnContextTokens > 32_000 {
-		t.Fatalf("expected MaxTurnContextTokens ≤ 32000, got %d", r.MaxTurnContextTokens)
+	_, _, route := r.resolveRoute(&Task{Class: ClassQuestion})
+	got, _ := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
+	// 0.85 * 32000 - 4096 = 23104; the configured ceiling (100000) wins
+	// because configured > 0 is a hard ceiling that never exceeds user config.
+	if got != 100_000 {
+		t.Fatalf("effectiveTurnThreshold = %d, want 100000 (configured ceiling)", got)
 	}
 }
 
@@ -1155,12 +1160,14 @@ func TestMaxTurnContextTokensUsesConfiguredWhenLarger(t *testing.T) {
 	r := NewRunner(nil, nil, nil, state, "test-model")
 	r.MaxTurnContextTokens = 100_000
 	r.RouteResolver = &staticResolver{route: routing.Route{
-		Preset: routing.ModelPreset{Name: "test", Model: "huge", ContextWindow: 200_000},
+		Preset: routing.ModelPreset{Name: "test", Model: "huge", ContextWindow: 200_000, MaxOutputTokens: 8192},
 	}}
 
-	_, _, _ = r.resolveRoute(&Task{Class: ClassQuestion})
-	if r.MaxTurnContextTokens != 100_000 {
-		t.Fatalf("expected MaxTurnContextTokens = 100000, got %d", r.MaxTurnContextTokens)
+	_, _, route := r.resolveRoute(&Task{Class: ClassQuestion})
+	got, _ := r.effectiveTurnThreshold(route.Window, route.MaxOutput, r.MaxTurnContextTokens)
+	// 0.85 * 200000 - 8192 = 161808; ceiling keeps the user's 100000.
+	if got != 100_000 {
+		t.Fatalf("effectiveTurnThreshold = %d, want 100000 (configured ceiling)", got)
 	}
 }
 

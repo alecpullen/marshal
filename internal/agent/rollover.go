@@ -90,11 +90,17 @@ func (r *Rollover) compactContext(ctx context.Context, wire []schema.ChatMessage
 // is disabled it falls back to summarizeAndContinue. When rollover is enabled
 // but not due (seedDigest is empty), it also falls back to
 // summarizeAndContinue so the prior wire is not silently discarded.
-func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessage, goal string) ([]schema.ChatMessage, error) {
+//
+// turnThreshold is the per-turn-derived compaction threshold (see
+// Runner.effectiveTurnThreshold). It is passed in rather than read from the
+// runner so the same threshold that triggered compaction bounds the
+// archival decision — otherwise a small-window turn can roll over too
+// aggressively and a big-window turn can hold past its real ceiling.
+func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessage, goal string, turnThreshold int) ([]schema.ChatMessage, error) {
 	if r == nil || r.Rollover == nil || r.Rollover.Controller == nil {
 		return r.summarizeAndContinue(ctx, r.Provider, r.Model, wire, goal, r.ResponseFormat)
 	}
-	seedDigest, err := r.Rollover.compactContext(ctx, wire, r.MaxTurnContextTokens)
+	seedDigest, err := r.Rollover.compactContext(ctx, wire, turnThreshold)
 	if err != nil {
 		return nil, fmt.Errorf("rollover and continue: %w", err)
 	}

@@ -108,6 +108,12 @@ func (c *Child) Start() error {
 	c.pendMu.Unlock()
 	c.mu.Unlock()
 	if err := c.spawn(); err != nil {
+		// Leave the Child in its pre-Start state so a cleanup Stop()
+		// does not block forever on done.
+		c.mu.Lock()
+		c.started = false
+		close(c.done)
+		c.mu.Unlock()
 		return err
 	}
 	go c.supervise()
@@ -147,6 +153,10 @@ func (c *Child) Stop() {
 // RawMessage is the response's "result".
 func (c *Child) Request(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.pendMu.Lock()
+	if c.pending == nil {
+		c.pendMu.Unlock()
+		return nil, errStopped
+	}
 	id := c.nextID
 	c.nextID++
 	ch := make(chan requestResult, 1)

@@ -81,6 +81,11 @@ func (m *Model) viewString() string {
 	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()
 
+	// The SDD run panel is a full-width top bar rendered above the left
+	// column and the side rail. It owns the only spinner on screen during a
+	// run, so the turn spinner row collapses entirely (see turnSpinnerRows).
+	topBar := m.renderRunPanel()
+
 	var left string
 	if m.dock.FullFrameOpen() {
 		// A FullFrame panel owns everything above the status line: the
@@ -90,7 +95,7 @@ func (m *Model) viewString() string {
 		rows := []string{m.renderTranscriptFrame()}
 		// The spinner groups with the transcript whose progress it
 		// describes, keeping the todo list adjacent to the input. During
-		// an SDD run the run panel owns the only spinner, so this row
+		// an SDD run the top bar owns the only spinner, so this row
 		// collapses entirely (see turnSpinnerRows). An idle spinner
 		// renders "", which JoinVertical would pad into a blank row
 		// above the todo panel — skip it instead.
@@ -99,9 +104,6 @@ func (m *Model) viewString() string {
 		}
 		if todo := m.renderTodoPanel(); todo != "" {
 			rows = append(rows, todo)
-		}
-		if panel := m.renderRunPanel(); panel != "" {
-			rows = append(rows, panel)
 		}
 		if strip := m.renderLiveStrip(); strip != "" {
 			rows = append(rows, strip)
@@ -113,17 +115,24 @@ func (m *Model) viewString() string {
 		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
 	// Hard invariant: the left column must never be taller than the frame
-	// minus the status line. Every panel is budgeted (see the *Rows
-	// helpers), but a budget miscount in any state used to push the input
-	// area and status footer off the bottom of the screen. Clip surplus
-	// rows from the top — the transcript is the topmost block and is
-	// scrollable, so nothing the user must always see is lost.
-	left = clipLeftColumn(left, m.height-statusLineRows)
+	// minus the status line and any top bar. Every panel is budgeted (see
+	// the *Rows helpers), but a budget miscount in any state used to push
+	// the input area and status footer off the bottom of the screen. Clip
+	// surplus rows from the top — the transcript is the topmost block and
+	// is scrollable, so nothing the user must always see is lost.
+	leftHeight := m.height - statusLineRows
+	if topBar != "" {
+		leftHeight -= lipgloss.Height(topBar)
+	}
+	left = clipLeftColumn(left, leftHeight)
 	if m.railEnabled() {
 		railHeight := m.height - statusLineRows
 		if rv := m.rail.View(m.railData(), m.railWidth, railHeight); rv != "" {
 			left = lipgloss.JoinHorizontal(lipgloss.Top, left, rv)
 		}
+	}
+	if topBar != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, topBar, left, m.renderStatusLine(m.width))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
 }

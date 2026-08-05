@@ -13,9 +13,10 @@ import (
 	"strings"
 )
 
-// taskHeadingRe matches "## Task N: <title>" or "### Task N: <title>"
-// headings. Capture groups: N, title.
-var taskHeadingRe = regexp.MustCompile(`^#{2,3} Task (\d+):\s*(.+)$`)
+// taskHeadingRe matches "## Task N: <title>", "## Task N (label): <title>",
+// "### Task N: <title>", or "### Task N (label): <title>" headings.
+// Capture groups: N, title.
+var taskHeadingRe = regexp.MustCompile(`^#{2,3} Task (\d+)(?:\s*\([^)]*\))?:\s*(.+)$`)
 
 // TaskSpec is one task extracted from a plan file. Body is the task's
 // verbatim markdown, from its task heading to the line before the next task
@@ -36,9 +37,10 @@ type Plan struct {
 }
 
 // ParsePlan reads a plan file and extracts its Global Constraints section
-// and its "## Task N:" or "### Task N:" sections, in file order. It returns
-// an error if the plan contains no tasks — an unexecutable plan is a caller
-// error, not an empty run.
+// and its "## Task N:" / "## Task N (label):" / "### Task N:" /
+// "### Task N (label):" sections, in file order. It returns an error if the
+// plan contains no tasks — an unexecutable plan is a caller error, not an
+// empty run.
 func ParsePlan(path string) (*Plan, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -20,18 +20,19 @@ import (
 // and gate rows are not counted against it.
 const runPanelMaxRows = 6
 
-// renderRunPanel renders the single SDD progress surface: one summary line
-// carrying the only spinner on screen during a run, the plan checklist
-// windowed around the current task, and the human-gate question when the
-// pipeline is waiting for an answer. After the run ends it collapses to a
-// one-line summary until the next user turn clears it (keypress.go).
+// renderRunPanel renders the single SDD progress surface as a full-width
+// horizontal top bar: one summary line carrying the only spinner on screen
+// during a run, the plan checklist windowed around the current task, and
+// the human-gate question when the pipeline is waiting for an answer. After
+// the run ends it collapses to a one-line summary until the next user turn
+// clears it (keypress.go).
 func renderRunPanel(p session.SDDProgress, gate session.SDDGate, spinner string, now time.Time, frameHeight, width int) string {
 	if !p.Active && !p.Finished {
 		return ""
 	}
-	width = max(width-1, 1) // reserve the ▍ rail cell
+	width = max(width, 1)
 	if p.Finished {
-		return chromeRail(runPanelFinishedLine(p, width), dimColor)
+		return runPanelBar(runPanelFinishedLine(p, width), width)
 	}
 	sections := []string{runPanelSummaryLine(p, spinner, now, width)}
 	if checklist := runPanelChecklist(p, frameHeight, width); checklist != "" {
@@ -40,7 +41,21 @@ func renderRunPanel(p session.SDDProgress, gate session.SDDGate, spinner string,
 	if gate.Question != "" {
 		sections = append(sections, runPanelGateLine(gate, width))
 	}
-	return chromeRail(strings.Join(sections, "\n"), dimColor)
+	return runPanelBar(strings.Join(sections, "\n"), width)
+}
+
+// runPanelBar renders content as a full-width horizontal bar with a surface
+// background, replacing the old vertical chrome rail. In monochrome mode the
+// background slot is NoColor and the bar falls back to layout alone.
+func runPanelBar(content string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	return lipgloss.NewStyle().
+		Background(theme.Current().BGSurface).
+		Width(width).
+		MaxWidth(width).
+		Render(content)
 }
 
 // runPanelSummaryLine renders `⠋ task 3/7 · implementing · fix 1/3 ·

@@ -150,7 +150,12 @@ func (r *Registry) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// Prompt starts a turn (session/prompt) with a single text block.
+// Prompt starts a turn (session/prompt) with a single text block. The
+// ACP session/prompt request blocks until the turn completes, so the
+// caller (the HTTP layer) invokes it on its own goroutine. Busy is set
+// before dispatch and cleared when the turn ends, however it ends; a
+// bridge-side turn_end event carries the stop reason, since ACP
+// signals turn completion only via this request's response.
 func (r *Registry) Prompt(ctx context.Context, id, text string) error {
 	if _, ok := r.lookup(id); !ok {
 		return ErrUnknownSession
@@ -159,10 +164,18 @@ func (r *Registry) Prompt(ctx context.Context, id, text string) error {
 		"sessionId": id,
 		"prompt":    []map[string]string{{"type": "text", "text": text}},
 	}
-	if _, err := r.child.Request(ctx, "session/prompt", params); err != nil {
+	r.setBusy(id, true)
+	res, err := r.child.Request(ctx, "session/prompt", params)
+	r.setBusy(id, false)
+	if err != nil {
+		r.emitEvent(id, map[string]any{"type": "turn_end", "error": err.Error()})
 		return err
 	}
-	r.setBusy(id, true)
+	var out struct {
+		StopReason string `json:"stopReason"`
+	}
+	_ = json.Unmarshal(res, &out)
+	r.emitEvent(id, map[string]any{"type": "turn_end", "stopReason": out.StopReason})
 	return nil
 }
 

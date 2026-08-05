@@ -53,11 +53,19 @@ func TestRegistryWrappers(t *testing.T) {
 	if err := r.Load(ctx, "/tmp/work", "s-2"); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := r.Prompt(ctx, "s-1", "hello"); err != nil {
+	// session/prompt blocks until the turn completes (the fake child
+	// holds its response for 200ms), so run it on a goroutine and
+	// observe Busy mid-turn, then cleared once the turn ends.
+	promptErr := make(chan error, 1)
+	go func() { promptErr <- r.Prompt(ctx, "s-1", "hello") }()
+	waitFor(t, 2*time.Second, "session busy during turn", func() bool {
+		return r.Sessions()["s-1"].Busy
+	})
+	if err := <-promptErr; err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	if !r.Sessions()["s-1"].Busy {
-		t.Fatal("Prompt did not mark session busy")
+	if r.Sessions()["s-1"].Busy {
+		t.Fatal("session still busy after turn ended")
 	}
 	if err := r.Steer(ctx, "s-1", "actually"); err != nil {
 		t.Fatalf("Steer: %v", err)

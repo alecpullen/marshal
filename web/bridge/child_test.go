@@ -117,6 +117,32 @@ func handleRegistryMode(req *struct {
 			"id":      req.ID,
 			"result":  map[string]any{"sessionId": "s-1"},
 		})
+	case "test/emit_update":
+		// Reply, then emit one session/update notification so the event
+		// log wiring can be observed end to end.
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{},
+		})
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "session/update",
+			"params": map[string]any{
+				"sessionId": "s-1",
+				"update":    map[string]any{"kind": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "hi"}},
+			},
+		})
+	case "session/prompt":
+		// ACP's session/prompt blocks until the turn completes. Hold the
+		// response briefly so tests can observe the bridge's busy state
+		// mid-turn before the (empty) turn result goes back.
+		time.Sleep(200 * time.Millisecond)
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{"stopReason": "end_turn"},
+		})
 	case "test/ask_permission", "test/ask_question":
 		_ = enc.Encode(map[string]any{
 			"jsonrpc": "2.0",

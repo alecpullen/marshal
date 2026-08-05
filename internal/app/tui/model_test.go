@@ -15,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -1397,6 +1398,87 @@ func TestSDDCommandWithoutRunnerReportsUnavailable(t *testing.T) {
 	}
 	if model.busy {
 		t.Fatal("model must not be busy after unavailable message")
+	}
+}
+
+func TestSDDPlanPickerIncludesCustomPathOption(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	model := New(state)
+	model.resize(100, 40)
+	model.openSDDPlanPicker()
+
+	p, ok := model.dock.Panel().(*picker.Model)
+	if !ok {
+		t.Fatalf("expected *picker.Model, got %T", model.dock.Panel())
+	}
+	view := ansi.Strip(p.View(model.width, model.height))
+	if !strings.Contains(view, "Custom plan path...") {
+		t.Fatalf("plan picker should offer a custom path option, got:\n%s", view)
+	}
+}
+
+func TestSDDPlanPickerCustomPathOpensCustomPathPicker(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	model := New(state)
+	model.resize(100, 40)
+	model.openSDDPlanPicker()
+
+	updated, _ := model.Update(picker.PickedMsg{Value: sddCustomPlanPathValue})
+	m := asModel(t, updated)
+
+	p, ok := m.dock.Panel().(*picker.Model)
+	if !ok {
+		t.Fatalf("expected *picker.Model after custom-path pick, got %T", m.dock.Panel())
+	}
+	view := ansi.Strip(p.View(model.width, model.height))
+	if !strings.Contains(view, "Custom plan path") {
+		t.Fatalf("custom path picker title missing, got:\n%s", view)
+	}
+	if m.pickerCommand != "sdd-plan" {
+		t.Fatalf("pickerCommand = %q, want %q", m.pickerCommand, "sdd-plan")
+	}
+}
+
+func TestSDDCustomPathPickerDispatchesPlanPath(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeSDDRunner{}
+	model := New(state,
+		WithCommandRegistry(cmdReg),
+		WithPipelineFactory(context.Background(), func(planPath string) AgentRunner { return fake }),
+	)
+	model.resize(100, 40)
+
+	// Open the custom-path picker directly.
+	model.openSDDCustomPlanPathPicker()
+
+	// Type a plan path into the filter.
+	customPath := "/elsewhere/roadmap.md"
+	for _, r := range customPath {
+		updated, _ := model.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		model = asModel(t, updated)
+	}
+
+	// Submit the typed path. The picker returns a command that emits
+	// picker.PickedMsg, which must round-trip through Update.
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Text: "enter"})
+	if cmd == nil {
+		t.Fatal("enter in custom path picker should return a command")
+	}
+	updated, _ = asModel(t, updated).Update(cmd())
+	m := asModel(t, updated)
+
+	if m.pendingRun == nil {
+		t.Fatal("expected pendingRun after dispatching custom /sdd path")
+	}
+	if m.pendingRun.goal != customPath {
+		t.Fatalf("pendingRun.goal = %q, want %q", m.pendingRun.goal, customPath)
+	}
+	if _, ok := m.dock.Panel().(*castlist.Panel); !ok {
+		t.Fatalf("expected *castlist.Panel, got %T", m.dock.Panel())
 	}
 }
 

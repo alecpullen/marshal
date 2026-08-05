@@ -89,6 +89,11 @@ const (
 	// singleModelProfileName is the profile /connect and /models write into when
 	// the user picks one model for everything.
 	singleModelProfileName = "single"
+
+	// sddCustomPlanPathValue is the picker value emitted by the "Custom plan
+	// path..." item in the SDD plan picker. It is not a valid filesystem path,
+	// so it cannot collide with an auto-detected plan.
+	sddCustomPlanPathValue = "__sdd_custom_path__"
 )
 
 type Model struct {
@@ -112,16 +117,16 @@ type Model struct {
 	// trustRefresh, when set, advances the permanent-trust config hash after
 	// an interactive project-config save succeeds: the user approved the new
 	// config from a trusted session, so the next launch must not re-prompt.
-	trustRefresh       func(workingDir string)
-	memoryDB           *db.DB
-	memoryProject      int64
-	homeDir            string
-	workDir            string
-	cmdRegistry        *commands.Registry
-	agentCancel        context.CancelFunc
-	approvalMode       policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
-	approvalModel      *approvalModel
-	questionModel      *questionModel
+	trustRefresh  func(workingDir string)
+	memoryDB      *db.DB
+	memoryProject int64
+	homeDir       string
+	workDir       string
+	cmdRegistry   *commands.Registry
+	agentCancel   context.CancelFunc
+	approvalMode  policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
+	approvalModel *approvalModel
+	questionModel *questionModel
 
 	// F18: editor completions. cmdPopup is fed by the commands registry
 	// (triggered by `/` at position 0) and filePopup is fed by the repo
@@ -1441,6 +1446,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case cmdName == "mode":
 			return m.dispatchCommand("/" + pm.Value)
 		case cmdName == "sdd-plan":
+			if pm.Value == sddCustomPlanPathValue {
+				m.openSDDCustomPlanPathPicker()
+				m.refreshViewport()
+				return m, nil
+			}
 			// Dock already closed above; dispatch /sdd with the picked path.
 			return m.dispatchCommand("/sdd " + pm.Value)
 		case cmdName == "sessions":
@@ -3275,7 +3285,17 @@ func (m *Model) openSDDPlanPicker() {
 	if len(items) == 0 {
 		items = append(items, picker.Item{Label: "No plans found — generate one", Detail: "run the planner first", Value: "generate"})
 	}
+	items = append(items, picker.Item{Label: "Custom plan path...", Detail: "type or paste a path", Value: sddCustomPlanPathValue})
 	p := picker.New("Pick a plan", "SDD workflow", items)
+	p.SetAllowCustom(true)
+	m.dock.Open(p)
+	m.pickerCommand = "sdd-plan"
+}
+
+// openSDDCustomPlanPathPicker opens a dedicated picker for typing or pasting
+// a plan path that was not auto-detected in the SDD plans directory.
+func (m *Model) openSDDCustomPlanPathPicker() {
+	p := picker.New("Custom plan path", "type or paste a path below", []picker.Item{})
 	p.SetAllowCustom(true)
 	m.dock.Open(p)
 	m.pickerCommand = "sdd-plan"

@@ -149,7 +149,14 @@ func (m Model) renderTranscriptFrame() string {
 	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.viewport.View())
 	if m.scrollHintRows() > 0 {
 		hint := mutedStyle().Render("↑ scrolled — End to follow")
-		return lipgloss.JoinVertical(lipgloss.Left, hint, content)
+		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
+	}
+	if v, ok := m.drilledInto(); ok {
+		crumb := lipgloss.NewStyle().Foreground(accentColor).Render(glyph.Brand+" orchestrator") +
+			mutedStyle().Render(" "+glyph.Running+" ") +
+			lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(glyph.Agent+" "+v.Label) +
+			mutedStyle().Render("  (Esc to go back)")
+		content = lipgloss.JoinVertical(lipgloss.Left, crumb, content)
 	}
 	return content
 }

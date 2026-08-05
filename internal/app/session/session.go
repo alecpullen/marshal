@@ -66,6 +66,10 @@ const (
 	KindMessage TranscriptKind = iota
 	KindThinking
 	KindAudit
+	// KindSubagent is a subagent summary card (see SubagentView) rendered in
+	// place of that subagent's full tool log. Clicking it drills into the
+	// child session's live transcript.
+	KindSubagent
 )
 
 type TranscriptItem struct {
@@ -74,6 +78,9 @@ type TranscriptItem struct {
 	Message   *Message
 	Audit     *registry.AuditEvent
 	Thinking  *ThinkingEntry
+	// Subagent is set when Kind == KindSubagent: the summary card for one
+	// registered subagent, rendered in place of its full tool log.
+	Subagent *SubagentView
 }
 
 type ActivityKind string
@@ -193,6 +200,11 @@ type State struct {
 	runningJobs     int
 	subagentDepth   int
 	subagentConcurr int
+	// subagents is the registry of subagent summary cards (see subagents.go)
+	// surfaced in the parent transcript; subagentBroker publishes their
+	// lifecycle events so the TUI re-renders without polling.
+	subagents      []SubagentView
+	subagentBroker *pubsub.Broker[SubagentEvent]
 	turnUsage       turnUsage
 	title           string
 	titleSet        bool
@@ -1103,6 +1115,21 @@ func (s *State) Transcript() []TranscriptItem {
 			Timestamp: t.StartedAt,
 			Kind:      KindThinking,
 			Thinking:  &t,
+		})
+	}
+
+	for i := range s.subagents {
+		v := s.subagents[i]
+		// Refresh the completed-tool-call count from the live child transcript
+		// so the running card can show "N tool calls" without a separate poll.
+		if v.Child != nil {
+			v.ToolCalls = v.Child.CompletedToolCallCount()
+			s.subagents[i].ToolCalls = v.ToolCalls
+		}
+		items = append(items, TranscriptItem{
+			Timestamp: v.StartedAt,
+			Kind:      KindSubagent,
+			Subagent:  &v,
 		})
 	}
 

@@ -20,9 +20,9 @@ import (
 // factory never gets a chance to "build" it into a parent).
 func TestSubagentDepthLimit(t *testing.T) {
 	called := false
-	factory := func(_ string) (*Runner, error) {
+	factory := func(_ string) (*Runner, *session.State, error) {
 		called = true
-		return &Runner{}, nil
+		return &Runner{}, nil, nil
 	}
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(2))
 
@@ -80,9 +80,9 @@ func TestSubagentConcurrencyLimit(t *testing.T) {
 	}
 
 	factoryCalls := 0
-	factory := func(_ string) (*Runner, error) {
+	factory := func(_ string) (*Runner, *session.State, error) {
 		factoryCalls++
-		return &Runner{}, nil
+		return &Runner{}, nil, nil
 	}
 	tool := NewSubagentTool(factory, registry.New(), state)
 	_, err := tool.Handler(t.Context(), registry.ToolCall{Args: []byte(`{"prompt":"x","description":"y"}`)})
@@ -192,12 +192,12 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 
 func TestNewSubagentToolAgentArgResolves(t *testing.T) {
 	called := ""
-	factory := func(agentName string) (*Runner, error) {
+	factory := func(agentName string) (*Runner, *session.State, error) {
 		called = agentName
 		r := &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
 			return &Task{Summary: "ok"}, nil
 		}}
-		return r, nil
+		return r, nil, nil
 	}
 	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
 	res, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -215,13 +215,13 @@ func TestNewSubagentToolAgentArgResolves(t *testing.T) {
 }
 
 func TestNewSubagentToolNoAgentArgStillWorks(t *testing.T) {
-	factory := func(agentName string) (*Runner, error) {
+	factory := func(agentName string) (*Runner, *session.State, error) {
 		if agentName != "" {
 			t.Fatalf("factory called with %q, want empty", agentName)
 		}
 		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
 			return &Task{Summary: "ok"}, nil
-		}}, nil
+		}}, nil, nil
 	}
 	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
 	if _, err := tool.Handler(context.Background(), registry.ToolCall{

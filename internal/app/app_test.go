@@ -2412,7 +2412,7 @@ func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
 	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
-	child, err := factory("my-scout")
+	child, _, err := factory("my-scout")
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
@@ -2456,7 +2456,7 @@ func TestSubagentFactoryAdHocHasObserversToo(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
 	pol := policy.NewEngine(&cfg, nil)
 	factory := buildSubagentFactory(cfg, parentState, nil, reg, pol, "fallback", router, nil, 1)
-	child, err := factory("")
+	child, _, err := factory("")
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}

@@ -15,10 +15,10 @@ import (
 // agent.run must not be RiskReadOnly because its child runner can execute
 // write tools and shell commands.
 func TestAgentRunIsWriteRisk(t *testing.T) {
-	factory := func(_ string) (*Runner, error) {
+	factory := func(_ string) (*Runner, *session.State, error) {
 		return &Runner{RunTaskFunc: func(context.Context, string) (*Task, error) {
 			return &Task{Summary: "ok"}, nil
-		}}, nil
+		}}, nil, nil
 	}
 	tool := NewSubagentTool(factory, registry.New(), session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}))
 	if tool.Risk != registry.RiskWorkspaceWrite {

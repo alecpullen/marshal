@@ -240,6 +240,12 @@ type Model struct {
 	// the transcript block occupying them, rebuilt every time refreshViewport
 	// rebuilds blocks. See click.go.
 	clickRegions []clickRegion
+	// viewStack is the subagent drill-down stack: when non-empty, the
+	// transcript viewport renders the top subagent's child session instead
+	// of the orchestrator's. Pushed by clicking a subagent card (see
+	// click.go), popped by Esc (see keypress.go). Depth is ≤1 today
+	// (nested agent.run is forbidden) but the stack is kept general.
+	viewStack []session.SubagentView
 	// rollbackArmed is the first half of Ctrl+R's arm-then-confirm. Cleared
 	// by any other keypress; see handleKeypress.
 	rollbackArmed bool
@@ -1068,7 +1074,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // railEnabled reports whether the side rail is being rendered.
@@ -1934,7 +1940,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -2034,7 +2040,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.todoPanelRows()-m.runPanelRows()-m.liveStripRows()-m.dockRows()-m.turnSpinnerRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -2396,12 +2402,82 @@ func isUserTurn(item session.TranscriptItem) bool {
 		item.Message.Role == session.RoleUser
 }
 
+// drilledInto returns the subagent whose transcript is currently drilled
+// into (top of viewStack), or false when the viewport shows the
+// orchestrator's own transcript.
+func (m *Model) drilledInto() (session.SubagentView, bool) {
+	if len(m.viewStack) == 0 {
+		return session.SubagentView{}, false
+	}
+	return m.viewStack[len(m.viewStack)-1], true
+}
+
+// drillIntoSubagent pushes a subagent onto the view stack so its child
+// session's transcript replaces the orchestrator's in the viewport.
+// Cards without a child session (status-only) are not drillable.
+func (m *Model) drillIntoSubagent(v session.SubagentView) {
+	if v.Child == nil {
+		return
+	}
+	m.viewStack = append(m.viewStack, v)
+	m.lastTranscriptHash = 0
+	m.viewportFollow = true
+}
+
+// popDrill pops one level of subagent drill-down, returning false when the
+// viewport was already showing the orchestrator's transcript.
+func (m *Model) popDrill() bool {
+	if len(m.viewStack) == 0 {
+		return false
+	}
+	m.viewStack = m.viewStack[:len(m.viewStack)-1]
+	m.lastTranscriptHash = 0
+	return true
+}
+
+// breadcrumbRows reports the rows the drill-down breadcrumb occupies above
+// the transcript: 1 while drilled into a subagent, 0 otherwise. It is a
+// row of the left column like any other and must be in the height budget
+// (see scrollHintRows).
+func (m Model) breadcrumbRows() int {
+	if len(m.viewStack) > 0 {
+		return 1
+	}
+	return 0
+}
+
 func (m *Model) refreshViewport() {
 	m.updateViewportHeight()
-	items := m.state.Transcript()
-	inProgress := m.state.InProgress()
+	// While drilled into a subagent, render the child session's transcript
+	// (and its live blocks) in place of the orchestrator's. The parent
+	// transcript is left untouched so popping back restores it as-is.
+	transcriptState := m.state
+	drilled, drilling := m.drilledInto()
+	if drilling {
+		if drilled.Child != nil {
+			transcriptState = drilled.Child
+		} else {
+			drilling = false
+		}
+	}
+	items := transcriptState.Transcript()
+	if !drilling {
+		// The completed agent.run audit event duplicates the subagent card
+		// (its full result content is the verbose subagent log); the card
+		// replaces it in the parent view. While drilled in, the child's own
+		// audit events render normally.
+		filtered := items[:0]
+		for _, item := range items {
+			if item.Kind == session.KindAudit && item.Audit != nil && item.Audit.ToolName == "agent.run" {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
+	}
+	inProgress := transcriptState.InProgress()
 	streamLen := len(inProgress.Reasoning)
-	atc, activeTool := m.state.ActiveToolCall()
+	atc, activeTool := transcriptState.ActiveToolCall()
 	if activeTool {
 		if atc.StartedAt != m.activeToolStartedAt {
 			m.activeToolStartedAt = atc.StartedAt
@@ -2467,8 +2543,13 @@ func (m *Model) refreshViewport() {
 			expanded := m.isExpanded(key)
 			s := renderTranscriptItem(*entry.Item, expanded, m.viewport.Width())
 			var target *clickTarget
-			if entry.Item.Kind == session.KindThinking || entry.Item.Kind == session.KindAudit {
+			switch entry.Item.Kind {
+			case session.KindThinking, session.KindAudit:
 				target = &clickTarget{key: key}
+			case session.KindSubagent:
+				if entry.Item.Subagent != nil && entry.Item.Subagent.Child != nil {
+					target = &clickTarget{subagent: entry.Item.Subagent}
+				}
 			}
 			addBlock(s, target)
 		}
@@ -3553,6 +3634,12 @@ func transcriptHash(items []session.TranscriptItem, streamLen int, busy bool, wi
 		fmt.Fprintf(h, "%d|%d|", item.Kind, item.Timestamp.UnixNano())
 		if item.Message != nil {
 			fmt.Fprintf(h, "%s|%s|%s\x00", item.Message.Role, item.Message.ContentType, item.Message.Content)
+		}
+		if item.Subagent != nil {
+			// Subagent cards are live while the child runs: status, tool-call
+			// count, and summary must bust the viewport cache or the card
+			// freezes at registration time.
+			fmt.Fprintf(h, "sub=%d|%v|%s|%d|%d|%s\x00", item.Subagent.ID, item.Subagent.Status, item.Subagent.Label, item.Subagent.ToolCalls, item.Subagent.EndedAt.UnixNano(), item.Subagent.Summary)
 		}
 	}
 	for _, todo := range todos {

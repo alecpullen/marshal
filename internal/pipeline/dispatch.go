@@ -6,6 +6,7 @@ import (
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
+	"marshal/internal/app/session"
 	"marshal/internal/llm/schema"
 )
 
@@ -13,6 +14,12 @@ import (
 // fresh: it inherits no conversation history, only the prompt it is given.
 type Dispatcher struct {
 	Factory swarm.RunnerFactory
+	// State, when non-nil, is the parent session that receives a subagent
+	// summary card per dispatched role runner. The card is registered only
+	// when the factory-built runner runs on its own child session (runner.
+	// State != State); a runner sharing the parent session logs to the
+	// parent transcript directly and needs no card.
+	State *session.State
 	// OnTokens, when non-nil, receives each subagent's total token usage.
 	OnTokens func(int)
 
@@ -39,12 +46,30 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 	if d.OnTokens != nil {
 		runner.UsageObserver = func(u schema.TokenUsage) { d.OnTokens(u.TotalTokens) }
 	}
+	// Register a summary card on the parent session only when the runner
+	// streams into its own child session; a shared-session runner already
+	// logs to the parent transcript directly.
+	registered := d.State != nil && runner.State != nil && runner.State != d.State
+	var view session.SubagentView
+	if registered {
+		view = d.State.RegisterSubagent(fmt.Sprintf("%s: %s", role, truncateForError(prompt)), runner.State)
+	}
 	task, err := runner.RunTask(ctx, prompt)
 	if err != nil {
+		if registered {
+			d.State.FinishSubagent(view.ID, "", err)
+		}
 		return "", fmt.Errorf("pipeline dispatch: %s run: %w", role, err)
 	}
 	if task == nil {
-		return "", fmt.Errorf("pipeline dispatch: %s returned no task", role)
+		err := fmt.Errorf("pipeline dispatch: %s returned no task", role)
+		if registered {
+			d.State.FinishSubagent(view.ID, "", err)
+		}
+		return "", err
+	}
+	if registered {
+		d.State.FinishSubagent(view.ID, task.Summary, nil)
 	}
 	return task.Summary, nil
 }

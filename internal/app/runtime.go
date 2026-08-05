@@ -109,7 +109,7 @@ type Runtime struct {
 
 	// CustomAgentFactory builds a one-shot *agent.Runner for a named custom
 	// agent. Used by the TUI's Run-now dispatch. Set by startRuntime.
-	CustomAgentFactory func(agentName string) (*agent.Runner, error)
+	CustomAgentFactory agent.SubagentRunnerFactory
 	// ConfigReloader hot-swaps the agent runtime from a new config. Set by
 	// Run() after the TUI is live; nil when the runtime is headless.
 	ConfigReloader func(config.Config) error

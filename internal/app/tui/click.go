@@ -1,13 +1,19 @@
 package tui
 
-import tea "charm.land/bubbletea/v2"
+import (
+	tea "charm.land/bubbletea/v2"
+
+	"marshal/internal/app/session"
+)
 
 // clickTarget identifies what a click region toggles: either a keyed
-// transcript item/group (see itemKey in expand.go) or the singleton
-// in-flight active-tool-call block, which has no stable key.
+// transcript item/group (see itemKey in expand.go), the singleton
+// in-flight active-tool-call block, which has no stable key, or a
+// subagent card that drills into the subagent's transcript.
 type clickTarget struct {
 	key          itemKey
 	isActiveTool bool
+	subagent     *session.SubagentView
 }
 
 // clickRegion is a half-open [startLine, endLine) range of content lines in
@@ -65,7 +71,9 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok {
 		return nil, false
 	}
-	if target.isActiveTool {
+	if target.subagent != nil {
+		m.drillIntoSubagent(*target.subagent)
+	} else if target.isActiveTool {
 		m.activeToolExpanded = !m.activeToolExpanded
 	} else {
 		m.toggleItemExpanded(target.key)

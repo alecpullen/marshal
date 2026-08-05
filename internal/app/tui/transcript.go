@@ -494,8 +494,74 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, widt
 		}
 		b.WriteString(renderMessage(*item.Message, width))
 		return b.String()
+	case session.KindSubagent:
+		if item.Subagent == nil {
+			return ""
+		}
+		return renderSubagentCard(*item.Subagent, detailExpanded, width)
 	}
 	return ""
+}
+
+// renderSubagentCard renders a subagent's one-line status card in the
+// parent transcript: status glyph, label, live tool-call count and elapsed
+// time while running (duration when finished), plus a hint that clicking
+// drills into the subagent's own transcript. When expanded (ctrl+g or a
+// per-item override) the subagent's final summary is appended below.
+func renderSubagentCard(v session.SubagentView, expanded bool, width int) string {
+	g := glyph.Agent
+	gutterColor := accentColor
+	style := statusBusyStyle()
+	switch v.Status {
+	case session.SubagentDone:
+		g = glyph.OK
+		gutterColor = theme.Current().FGMuted
+		style = statusOkStyle()
+	case session.SubagentFailed:
+		g = glyph.Error
+		gutterColor = theme.Current().StatusError
+		style = errorStyle()
+	}
+	gutter := gutterPrefix(g, gutterColor)
+
+	head := glyph.Agent + " " + v.Label
+	if v.ToolCalls > 0 {
+		head += dimSeparator + fmt.Sprintf("%d tool calls", v.ToolCalls)
+	}
+	var dur string
+	if v.Status == session.SubagentRunning {
+		dur = formatElapsed(max(time.Since(v.StartedAt), 0))
+	} else if !v.EndedAt.IsZero() {
+		dur = formatElapsed(max(v.EndedAt.Sub(v.StartedAt), 0))
+	}
+	if dur != "" {
+		head += dimSeparator + dur
+	}
+	if v.Child != nil {
+		head += dimSeparator + "click to inspect"
+	}
+
+	cw := contentWidth(width)
+	var b strings.Builder
+	headWrapped := ansi.Wrap(head, cw, "")
+	for i, hl := range strings.Split(headWrapped, "\n") {
+		if i == 0 {
+			b.WriteString(gutter)
+		} else {
+			b.WriteString(continuation())
+		}
+		b.WriteString(style.Render(hl))
+		b.WriteString("\n")
+	}
+	if expanded && v.Summary != "" {
+		wrapped := ansi.Wrap(v.Summary, cw, "")
+		for _, line := range strings.Split(wrapped, "\n") {
+			b.WriteString(continuation())
+			b.WriteString(mutedStyle().Render(line))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 func renderSkillTag(name string, width int) string {

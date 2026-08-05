@@ -751,6 +751,7 @@ type roleRunnerSpec struct {
 	writeGate        agent.WriteGate         // swarm only; nil for SDD
 	metricsObserver  func(agent.TurnMetrics) // swarm only; nil for SDD
 	applyAgentLimits bool                    // swarm copies retries/ctx tokens/plan-first
+	childSession     bool                    // SDD pipeline: each role runner gets a fresh child session
 }
 
 // newRunner builds one role runner. It satisfies swarm.RunnerFactory (and,
@@ -769,7 +770,15 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 			toolReg = s.testerReg
 		}
 	}
-	r := agent.NewRunner(p, toolReg, s.pol, s.state, route.Preset.Model)
+	// Pipeline role runners stream into a fresh child session so their turn
+	// and tool noise stays out of the orchestrator transcript; the parent
+	// shows a drillable summary card instead. Depth is parent+1 so any
+	// nested subagent attempt is rejected by the child's own depth guard.
+	runnerState := s.state
+	if s.childSession {
+		runnerState = session.New(s.state.Config, s.state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(s.state.SubagentDepth()+1))
+	}
+	r := agent.NewRunner(p, toolReg, s.pol, runnerState, route.Preset.Model)
 	r.Role = role
 	r.WriteGate = s.writeGate
 	r.SkillIndex = s.skillIndex
@@ -856,6 +865,8 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		skillIndex:  skillIndex,
 		memory:      &dbMemoryProvider{db: database},
 		projectID:   projectID,
+
+		childSession: true,
 	}
 	factory := func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
 		return spec.newRunner(role, scope)
@@ -868,6 +879,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		Git:      worktree.CLIGitOps{},
 		Dispatch: pipeline.Dispatcher{
 			Factory: factory,
+			State:   state,
 			OnTokens: func(n int) {
 				if adapter == nil {
 					return
@@ -939,7 +951,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		subtaskIters = defaultSubtaskIterations
 	}
 	metricsObserver := metricsRecorder(database, projectID, parentState.SessionID(), parentState.Logger())
-	return func(agentName string) (*agent.Runner, error) {
+	return func(agentName string) (*agent.Runner, *session.State, error) {
 		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1))
 		roReg := agent.SubtaskScopeView(parentReg)
 		role := agent.RoleSubtask
@@ -950,7 +962,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 		if agentName != "" && router != nil {
 			route, err := router.ResolveCustomAgent(agentName, agent.RoleSubtask)
 			if err != nil {
-				return nil, fmt.Errorf("agent.run: %w", err)
+				return nil, nil, fmt.Errorf("agent.run: %w", err)
 			}
 			model = route.Preset.Model
 			pricingRates = pricing.Lookup(route.Preset)
@@ -980,7 +992,7 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 			used, _ := parentState.TurnUsage()
 			parentState.SetTurnUsage(used + usage.PromptTokens + usage.CompletionTokens)
 		}
-		return child, nil
+		return child, childState, nil
 	}
 }
 
@@ -1162,7 +1174,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
 				func(agentName string) (tui.AgentRunner, error) {
-					return rt.CustomAgentFactory(agentName)
+					runner, _, err := rt.CustomAgentFactory(agentName)
+					return runner, err
 				},
 			))
 		}

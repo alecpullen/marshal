@@ -62,6 +62,13 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.activeCompletionPopup().dismiss()
 			return *m, nil, true
 		}
+		// While drilled into a subagent, esc pops back to the parent
+		// transcript rather than cancelling the in-flight turn. Use
+		// ctrl+c (once to interrupt, twice to quit) to stop work.
+		if m.popDrill() {
+			m.refreshViewport()
+			return *m, nil, true
+		}
 		m.resetHistoryNav()
 		m.cancelTurn()
 		return *m, nil, true

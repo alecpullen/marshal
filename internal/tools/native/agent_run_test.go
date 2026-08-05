@@ -26,9 +26,9 @@ func TestAgentRunToolRegistersAndDispatchesToChild(t *testing.T) {
 		gotChild  *agent.Runner
 		calls     int
 	)
-	factory := func(_ string) (*agent.Runner, error) {
+	factory := func(_ string) (*agent.Runner, *session.State, error) {
 		calls++
-		return &agent.Runner{State: state}, nil
+		return &agent.Runner{State: state}, state, nil
 	}
 	exec := func(ctx context.Context, child *agent.Runner, prompt string) (string, error) {
 		gotChild = child
@@ -82,9 +82,9 @@ func TestAgentRunToolRejectsWhenDepthLimitReached(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(2))
 
 	factoryCalls := 0
-	factory := func(_ string) (*agent.Runner, error) {
+	factory := func(_ string) (*agent.Runner, *session.State, error) {
 		factoryCalls++
-		return &agent.Runner{}, nil
+		return &agent.Runner{}, nil, nil
 	}
 	exec := func(ctx context.Context, child *agent.Runner, prompt string) (string, error) {
 		t.Fatal("exec must not be called when the depth guard rejects")
@@ -112,8 +112,8 @@ func TestAgentRunToolRejectsWhenConcurrencyLimitReached(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	state.SetSubagentConcurrency(2)
 
-	factory := func(_ string) (*agent.Runner, error) {
-		return &agent.Runner{}, nil
+	factory := func(_ string) (*agent.Runner, *session.State, error) {
+		return &agent.Runner{}, nil, nil
 	}
 	tool := agent.NewSubagentTool(factory, reg, state)
 	_, err := tool.Handler(context.Background(), registry.ToolCall{
@@ -131,7 +131,7 @@ func TestAgentRunToolRejectsWhenConcurrencyLimitReached(t *testing.T) {
 func TestAgentRunToolRejectsMissingArgs(t *testing.T) {
 	reg := registry.New()
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	tool := agent.NewSubagentTool(func(_ string) (*agent.Runner, error) { return &agent.Runner{}, nil }, reg, state)
+	tool := agent.NewSubagentTool(func(_ string) (*agent.Runner, *session.State, error) { return &agent.Runner{}, nil, nil }, reg, state)
 
 	cases := []struct {
 		name string

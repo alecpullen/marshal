@@ -19,7 +19,7 @@ import (
 // on the returned runner. This keeps the per-session construction
 // (provider resolution, route, registry view sizing, role binding) in one
 // place while leaving the prompt fetching/decoding to the tool handler.
-type SubagentRunnerFactory func(agentName string) (*Runner, error)
+type SubagentRunnerFactory func(agentName string) (*Runner, *session.State, error)
 
 // runSubagentChild is the default runner runtime the agent.run tool uses to
 // execute a child runner. It is a small wrapper around RunTask that returns
@@ -120,11 +120,16 @@ func NewSubagentTool(factory SubagentRunnerFactory, reg *registry.Registry, stat
 		}
 		defer state.ExitSubagent()
 
-		child, err := factory(args.Agent)
+		child, childState, err := factory(args.Agent)
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)
 		}
+		// Register a summary card in the parent transcript in place of the
+		// child's full tool log; the drill-down view reaches the live child
+		// transcript through the registered Child state.
+		view := state.RegisterSubagent(args.Description, childState)
 		summary, err := cfg.exec(ctx, child, args.Prompt)
+		state.FinishSubagent(view.ID, summary, err)
 		if err != nil {
 			return registry.ToolResult{}, err
 		}

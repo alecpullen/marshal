@@ -1,0 +1,387 @@
+package bridge
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"marshal/internal/app/session"
+)
+
+// ErrGone is returned by ResolvePermission and ResolveQuestion when the
+// pending entry no longer exists (late or duplicate response). The HTTP
+// layer maps it to 410 Gone.
+var ErrGone = errors.New("bridge: pending request already resolved or expired")
+
+// ErrUnknownSession is returned by session-scoped methods for ids the
+// Registry does not track. The HTTP layer maps it to 404.
+var ErrUnknownSession = errors.New("bridge: unknown session")
+
+// Decision is the HTTP-facing shape of a permission decision. It maps
+// 1:1 onto the ACP session/request_permission result.
+type Decision struct {
+	Approved bool   `json:"approved"`
+	Edited   string `json:"edited,omitempty"`
+}
+
+// Answers is the HTTP-facing shape of a question response. Declined
+// maps to the ACP {declined:true} result; otherwise Answers carries one
+// entry per question, in order.
+type Answers struct {
+	Answers  []session.Answer `json:"answers,omitempty"`
+	Declined bool             `json:"declined,omitempty"`
+}
+
+// sessionInfo tracks one active session's bridge-side state.
+type sessionInfo struct {
+	Cwd string `json:"cwd"`
+	// Busy is true while a turn is in flight (prompt sent, no turn end
+	// observed). A child restart marks it interrupted (Busy=false).
+	Busy bool `json:"busy"`
+}
+
+// Registry tracks active sessions and brokers the child-initiated
+// permission and question requests to the HTTP layer.
+type Registry struct {
+	child *Child
+
+	// PendingTimeout bounds how long a permission/question request from
+	// the child waits for an HTTP response before the registry answers
+	// declined/denied to ACP. Defaults to 30s (matching the
+	// CancelAndWait bound in internal/acp/turn.go); injectable for tests.
+	PendingTimeout time.Duration
+
+	// OnEvent, if set, is invoked with bridge-originated events for a
+	// session (e.g. "bridge_restarted"). Task 3's event bus consumes it.
+	OnEvent func(sessionId string, payload any)
+
+	// RootCwd is the default working directory for the HTTP load
+	// endpoint when the request body omits cwd. The binary wiring
+	// (cmd/webbridge --cwd-root) sets it; empty means load requires an
+	// explicit cwd in the request body.
+	RootCwd string
+
+	mu       sync.Mutex
+	sessions map[string]*sessionInfo
+
+	permMu      sync.Mutex
+	permissions map[string]chan Decision
+
+	quesMu    sync.Mutex
+	questions map[string]chan Answers
+}
+
+// NewRegistry wires a Registry onto a started Child, installing the
+// OnRequest and OnRestart hooks.
+func NewRegistry(child *Child) *Registry {
+	r := &Registry{
+		child:          child,
+		PendingTimeout: 30 * time.Second,
+		sessions:       make(map[string]*sessionInfo),
+		permissions:    make(map[string]chan Decision),
+		questions:      make(map[string]chan Answers),
+	}
+	child.OnRequest = r.handleChildRequest
+	prevOnRestart := child.OnRestart
+	child.OnRestart = func() {
+		if prevOnRestart != nil {
+			prevOnRestart()
+		}
+		// resumeAll blocks on child.Request; run it off the
+		// supervision goroutine so a stalled resume cannot wedge
+		// restarts or Stop.
+		go r.resumeAll()
+	}
+	return r
+}
+
+// sessionParams mirrors internal/acp sessionParams: cwd plus optional
+// sessionId, used by session/new, session/load, session/resume and
+// session/delete.
+type sessionParams struct {
+	Cwd       string `json:"cwd"`
+	SessionID string `json:"sessionId,omitempty"`
+}
+
+// New creates a session (session/new), or resumes an existing one when
+// sessionId is non-empty. Returns the active session id.
+func (r *Registry) New(ctx context.Context, cwd, sessionId string) (string, error) {
+	res, err := r.child.Request(ctx, "session/new", sessionParams{Cwd: cwd, SessionID: sessionId})
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return "", fmt.Errorf("bridge: decode session/new result: %w", err)
+	}
+	if out.SessionID == "" {
+		return "", errors.New("bridge: session/new returned empty sessionId")
+	}
+	r.mu.Lock()
+	r.sessions[out.SessionID] = &sessionInfo{Cwd: cwd}
+	r.mu.Unlock()
+	return out.SessionID, nil
+}
+
+// Load attaches to an existing session (session/load) and starts
+// tracking it.
+func (r *Registry) Load(ctx context.Context, cwd, id string) error {
+	if _, err := r.child.Request(ctx, "session/load", sessionParams{Cwd: cwd, SessionID: id}); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.sessions[id] = &sessionInfo{Cwd: cwd}
+	r.mu.Unlock()
+	return nil
+}
+
+// Delete removes the session record (session/delete) and stops tracking
+// it.
+func (r *Registry) Delete(ctx context.Context, id string) error {
+	info, ok := r.lookup(id)
+	if !ok {
+		return ErrUnknownSession
+	}
+	if _, err := r.child.Request(ctx, "session/delete", sessionParams{Cwd: info.Cwd, SessionID: id}); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	delete(r.sessions, id)
+	r.mu.Unlock()
+	return nil
+}
+
+// Prompt starts a turn (session/prompt) with a single text block. The
+// ACP session/prompt request blocks until the turn completes, so the
+// caller (the HTTP layer) invokes it on its own goroutine. Busy is set
+// before dispatch and cleared when the turn ends, however it ends; a
+// bridge-side turn_end event carries the stop reason, since ACP
+// signals turn completion only via this request's response.
+func (r *Registry) Prompt(ctx context.Context, id, text string) error {
+	if _, ok := r.lookup(id); !ok {
+		return ErrUnknownSession
+	}
+	params := map[string]any{
+		"sessionId": id,
+		"prompt":    []map[string]string{{"type": "text", "text": text}},
+	}
+	r.setBusy(id, true)
+	res, err := r.child.Request(ctx, "session/prompt", params)
+	r.setBusy(id, false)
+	if err != nil {
+		r.emitEvent(id, map[string]any{"type": "turn_end", "error": err.Error()})
+		return err
+	}
+	var out struct {
+		StopReason string `json:"stopReason"`
+	}
+	_ = json.Unmarshal(res, &out)
+	r.emitEvent(id, map[string]any{"type": "turn_end", "stopReason": out.StopReason})
+	return nil
+}
+
+// Cancel interrupts the in-flight turn (session/cancel notification).
+func (r *Registry) Cancel(ctx context.Context, id string) error {
+	if _, ok := r.lookup(id); !ok {
+		return ErrUnknownSession
+	}
+	return r.child.Notify("session/cancel", map[string]string{"sessionId": id})
+}
+
+// Steer redirects the in-flight turn (session/steer).
+func (r *Registry) Steer(ctx context.Context, id, text string) error {
+	if _, ok := r.lookup(id); !ok {
+		return ErrUnknownSession
+	}
+	_, err := r.child.Request(ctx, "session/steer", map[string]string{"sessionId": id, "text": text})
+	return err
+}
+
+// SetMode switches the session's permission mode (session/set_mode).
+func (r *Registry) SetMode(ctx context.Context, id, mode string) error {
+	if _, ok := r.lookup(id); !ok {
+		return ErrUnknownSession
+	}
+	_, err := r.child.Request(ctx, "session/set_mode", map[string]string{"sessionId": id, "mode": mode})
+	return err
+}
+
+// Sessions returns a snapshot of tracked sessions for the event bus and
+// HTTP layer.
+func (r *Registry) Sessions() map[string]sessionInfo {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]sessionInfo, len(r.sessions))
+	for id, info := range r.sessions {
+		out[id] = *info
+	}
+	return out
+}
+
+// ResolvePermission delivers the HTTP layer's decision to a pending
+// session/request_permission. Late or duplicate resolves return ErrGone.
+func (r *Registry) ResolvePermission(toolCallId string, d Decision) error {
+	r.permMu.Lock()
+	ch, ok := r.permissions[toolCallId]
+	if ok {
+		delete(r.permissions, toolCallId)
+	}
+	r.permMu.Unlock()
+	if !ok {
+		return ErrGone
+	}
+	ch <- d
+	return nil
+}
+
+// ResolveQuestion delivers the HTTP layer's answers to a pending
+// session/request_question. Late or duplicate resolves return ErrGone.
+func (r *Registry) ResolveQuestion(questionId string, a Answers) error {
+	r.quesMu.Lock()
+	ch, ok := r.questions[questionId]
+	if ok {
+		delete(r.questions, questionId)
+	}
+	r.quesMu.Unlock()
+	if !ok {
+		return ErrGone
+	}
+	ch <- a
+	return nil
+}
+
+// handleChildRequest is installed as the Child's OnRequest. It brokers
+// permission and question requests to the HTTP layer with a bounded
+// wait; unknown methods get a JSON-RPC method-not-found error.
+func (r *Registry) handleChildRequest(id int, method string, params json.RawMessage) (any, error) {
+	switch method {
+	case "session/request_permission":
+		return r.awaitPermission(params)
+	case "session/request_question":
+		return r.awaitQuestion(params)
+	default:
+		return nil, fmt.Errorf("bridge: unsupported child request %q", method)
+	}
+}
+
+func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
+	var req struct {
+		ToolCallID string `json:"toolCallId"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || req.ToolCallID == "" {
+		return map[string]any{"approved": false}, nil
+	}
+	ch := make(chan Decision, 1)
+	r.permMu.Lock()
+	r.permissions[req.ToolCallID] = ch
+	r.permMu.Unlock()
+	r.emitEvent("", map[string]any{"type": "permission_request", "toolCallId": req.ToolCallID, "params": params})
+
+	select {
+	case d := <-ch:
+		return map[string]any{"approved": d.Approved, "edited": d.Edited}, nil
+	case <-time.After(r.PendingTimeout):
+		r.permMu.Lock()
+		delete(r.permissions, req.ToolCallID)
+		r.permMu.Unlock()
+		return map[string]any{"approved": false}, nil
+	}
+}
+
+func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
+	var req struct {
+		QuestionID string `json:"questionId"`
+		SessionID  string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || req.QuestionID == "" {
+		return map[string]any{"declined": true}, nil
+	}
+	ch := make(chan Answers, 1)
+	r.quesMu.Lock()
+	r.questions[req.QuestionID] = ch
+	r.quesMu.Unlock()
+	r.emitEvent(req.SessionID, map[string]any{"type": "question_request", "questionId": req.QuestionID, "params": params})
+
+	select {
+	case a := <-ch:
+		if a.Declined {
+			return map[string]any{"declined": true}, nil
+		}
+		return map[string]any{"answers": a.Answers}, nil
+	case <-time.After(r.PendingTimeout):
+		r.quesMu.Lock()
+		delete(r.questions, req.QuestionID)
+		r.quesMu.Unlock()
+		return map[string]any{"declined": true}, nil
+	}
+}
+
+// resumeAll runs on child restart: fail any pending permission/question
+// waits (their request ids died with the old generation), resume every
+// tracked session, mark in-flight turns interrupted, and emit
+// bridge_restarted.
+func (r *Registry) resumeAll() {
+	r.clearPending()
+
+	r.mu.Lock()
+	ids := make([]string, 0, len(r.sessions))
+	cwds := make(map[string]string, len(r.sessions))
+	for id, info := range r.sessions {
+		ids = append(ids, id)
+		cwds[id] = info.Cwd
+		info.Busy = false // in-flight turn was interrupted by the restart
+	}
+	r.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for _, id := range ids {
+		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id})
+		r.emitEvent(id, map[string]any{"type": "bridge_restarted"})
+	}
+}
+
+// clearPending drains both pending maps, unblocking every waiter with
+// deny/decline. Used on child restart: the old generation's request ids
+// are gone, so waiting (or resolving) against them is meaningless.
+func (r *Registry) clearPending() {
+	r.permMu.Lock()
+	for id, ch := range r.permissions {
+		ch <- Decision{Approved: false}
+		delete(r.permissions, id)
+	}
+	r.permMu.Unlock()
+
+	r.quesMu.Lock()
+	for id, ch := range r.questions {
+		ch <- Answers{Declined: true}
+		delete(r.questions, id)
+	}
+	r.quesMu.Unlock()
+}
+
+func (r *Registry) lookup(id string) (*sessionInfo, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	info, ok := r.sessions[id]
+	return info, ok
+}
+
+func (r *Registry) setBusy(id string, busy bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if info, ok := r.sessions[id]; ok {
+		info.Busy = busy
+	}
+}
+
+func (r *Registry) emitEvent(sessionId string, payload any) {
+	if r.OnEvent != nil {
+		r.OnEvent(sessionId, payload)
+	}
+}

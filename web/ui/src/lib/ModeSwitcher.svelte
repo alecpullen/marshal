@@ -1,0 +1,27 @@
+<script lang="ts">
+  import { MODES, type Mode } from './store.js'
+
+  interface Props {
+    mode: Mode
+    onChange: (mode: Mode) => void | Promise<void>
+  }
+
+  let { mode, onChange }: Props = $props()
+</script>
+
+<select value={mode} onchange={(e) => onChange(e.currentTarget.value as Mode)}>
+  {#each MODES as m (m)}
+    <option value={m}>{m}</option>
+  {/each}
+</select>
+
+<style>
+  select {
+    padding: 0.4rem 0.5rem;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    text-transform: capitalize;
+  }
+</style>

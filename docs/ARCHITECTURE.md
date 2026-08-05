@@ -26,6 +26,8 @@ Marshal is a terminal-native coding agent built in Go. It wires together a Bubbl
 | Knowledge | `internal/knowledge/`, `internal/contextpack/`, `internal/rollover/` | Durable project memory, context budget, long-session rollover. |
 | Persistence | `internal/db/`, `internal/snapshot/`, `internal/filetrack/` | SQLite schema, workspace snapshots, file access tracking. |
 | ACP | `internal/acp/` | Headless JSON-RPC server for editor/IDE integration. |
+| Web bridge | `web/bridge/`, `cmd/webbridge/` | HTTP/SSE bridge that supervises `marshal acp` and exposes sessions to browsers. |
+| Web UI | `web/ui/` | Svelte 5 + Vite + TypeScript SPA (dev-only Node toolchain; build output is embedded by `web/bridge`). |
 
 ## Data flow of a single turn
 
@@ -46,6 +48,18 @@ Results streamed back to TUI transcript
     ↓
 State persisted to SQLite
 ```
+
+## Web UI dependency rules
+
+- `web/bridge/` and `cmd/webbridge/` are pure Go and embed only the compiled
+  assets from `web/bridge/static/` via `//go:embed`. The Go module graph does
+  not depend on Node.
+- `web/ui/` is a standalone Node project used only at development/build time.
+  Running `npm run build` in `web/ui` writes hashed static assets into
+  `web/bridge/static/`; the next `go build ./cmd/webbridge` embeds them.
+- During pure-Go development, `web/bridge/static/` contains a placeholder
+  `index.html` so `webbridge` still serves a useful landing page before the
+  SPA is built.
 
 ## Design principles
 

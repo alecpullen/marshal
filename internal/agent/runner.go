@@ -652,6 +652,21 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		messages = r.setContextPackMessage(messages, r.State.ContextPack())
 
 		if turnThreshold > 0 && estimateTokens(messages) > turnThreshold {
+			// D2: prune superseded tool outputs first. Most overflows are
+			// 2-3 huge tool results, especially re-reads of the same
+			// file. Pruning before summarizing is cheaper, preserves the
+			// most recent copy, and often drops us back below the
+			// threshold without needing the LLM at all.
+			if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && estimateTokens(prunedMsgs) <= turnThreshold {
+				messages = prunedMsgs
+				r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n)
+				continue
+			} else if n > 0 {
+				// Pruning helped but not enough — keep the pruned wire
+				// and proceed to compaction. The freshest reads survive.
+				messages = prunedMsgs
+			}
+
 			// T13: unified intra-turn compaction — rollover when enabled,
 			// fall back to summarizeAndContinue when disabled.
 			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold); cerr == nil {

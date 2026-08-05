@@ -2158,10 +2158,16 @@ func TestSlashCommandNotSentToAgent(t *testing.T) {
 	}
 }
 
-func TestSlashCommandClearMessages(t *testing.T) {
+func TestSlashCommandNewSession(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	cmdReg := setupCmdReg(t)
-	model := New(state, WithCommandRegistry(cmdReg))
+
+	// Fake in-place session swapper: returns a fresh state so /new starts
+	// a clean conversation without a real runtime.
+	freshState := session.New(config.Default(), "/repo", time.Unix(101, 0), session.Persistence{})
+	swapper := &fakeSessionSwapper{state: freshState}
+
+	model := New(state, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2170,13 +2176,27 @@ func TestSlashCommandClearMessages(t *testing.T) {
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
+	if !swapper.called {
+		t.Fatal("expected session swapper to be called for /new")
+	}
 	msgs := m.state.Messages()
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 system message after /new, got %d", len(msgs))
 	}
-	if !strings.Contains(msgs[0].Content, "Cleared") {
-		t.Errorf("expected system message to mention clearing, got: %s", msgs[0].Content)
+	if !strings.Contains(msgs[0].Content, "Started new conversation") {
+		t.Errorf("expected system message to mention new conversation, got: %s", msgs[0].Content)
 	}
+}
+
+// fakeSessionSwapper is a test double for SessionSwapper.
+type fakeSessionSwapper struct {
+	called bool
+	state  *session.State
+}
+
+func (f *fakeSessionSwapper) NewSession(ctx context.Context) (*SessionSwapResult, error) {
+	f.called = true
+	return &SessionSwapResult{State: f.state}, nil
 }
 
 func TestSlashCommandBusyStillDispatched(t *testing.T) {

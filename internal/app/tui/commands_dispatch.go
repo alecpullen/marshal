@@ -179,6 +179,12 @@ func init() {
 			m.refreshViewport()
 			return m, nil
 		},
+		"new": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			return m.newSession()
+		},
+		"clear": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			return m.newSession()
+		},
 		"sessions": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.openSessionPicker("")
 			m.refreshViewport()

@@ -76,6 +76,22 @@ type AgentRunner interface {
 // name is unknown or the factory is not available.
 type CustomAgentRunnerFactory func(agentName string) (AgentRunner, error)
 
+// SessionSwapResult carries the new session and its agent infrastructure
+// back to the TUI after an in-place /new or /clear swap.
+type SessionSwapResult struct {
+	State              *session.State
+	Runner             AgentRunner
+	SwarmRunner        AgentRunner
+	PipelineFactory    func(planPath string) AgentRunner
+	ToolRegistry       *registry.Registry
+	CustomAgentFactory CustomAgentRunnerFactory
+}
+
+// SessionSwapper builds a brand-new session and swaps it into the runtime.
+type SessionSwapper interface {
+	NewSession(ctx context.Context) (*SessionSwapResult, error)
+}
+
 const (
 	minTerminalWidth  = 80
 	minTerminalHeight = 24
@@ -106,6 +122,9 @@ type Model struct {
 	// the TUI was constructed without a runner: the first successful reload
 	// rebuilds one, and adoptRunner installs it here.
 	runnerSource       func() (context.Context, AgentRunner)
+	// sessionSwapper builds and swaps in a brand-new session for /new and
+	// /clear without restarting the process.
+	sessionSwapper     SessionSwapper
 	openConnectOnStart bool
 	trustPromptDir     string
 	trustDecide        func(trust.Decision)
@@ -336,6 +355,14 @@ type ConfigReloader func(cfg config.Config) error
 func WithConfigReloader(fn ConfigReloader) Option {
 	return func(m *Model) {
 		m.configReloader = fn
+	}
+}
+
+// WithSessionSwapper wires the runtime's in-place session swapper so /new
+// and /clear can start a fresh conversation without restarting Marshal.
+func WithSessionSwapper(swapper SessionSwapper) Option {
+	return func(m *Model) {
+		m.sessionSwapper = swapper
 	}
 }
 
@@ -625,6 +652,52 @@ func (m *Model) adoptRunner() {
 	}
 	m.ctx = ctx
 	m.runner = runner
+}
+
+// newSession swaps in a brand-new session (/new and /clear). It guards
+// against an active turn, asks the runtime to build and swap the session,
+// then re-points the TUI model at the new state and runner.
+func (m *Model) newSession() (tea.Model, tea.Cmd) {
+	if m.busy {
+		m.state.AddMessage(session.RoleSystem, "Stop the active turn before starting a new conversation.", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+	if m.sessionSwapper == nil {
+		m.state.AddMessage(session.RoleSystem, "New session is not available.", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+
+	res, err := m.sessionSwapper.NewSession(m.ctx)
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to start new conversation: %v", err), session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+
+	m.state = res.State
+	m.runner = res.Runner
+	m.swarmRunner = res.SwarmRunner
+	m.pipelineFactory = res.PipelineFactory
+	m.toolRegistry = res.ToolRegistry
+	m.customAgentFactory = res.CustomAgentFactory
+
+	// Reset cached counters and viewport state so the footer and transcript
+	// reflect the fresh session.
+	m.jobCount = 0
+	m.queuedCount = 0
+	m.lastTranscriptHash = 0
+	m.itemExpanded = make(map[itemKey]bool)
+	m.activeToolExpanded = false
+	m.activeToolStartedAt = time.Time{}
+	m.clickRegions = nil
+	m.railTurns = nil
+	m.railChanged = nil
+
+	m.state.AddMessage(session.RoleSystem, "Started new conversation.", session.ContentTypePlain)
+	m.refreshViewport()
+	return m, nil
 }
 
 // settingsRegistry returns the cached /set registry, rebuilt after a config

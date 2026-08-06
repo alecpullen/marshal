@@ -6372,3 +6372,47 @@ func TestRefreshViewportResetsActiveToolExpandedOnNewTool(t *testing.T) {
 		t.Fatal("expected activeToolExpanded to reset when a new tool starts")
 	}
 }
+
+func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	t.Setenv("HOME", home)
+	m := newTestModel(t)
+	m.state.WorkingDir = work
+	m.workDir = work
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"openai": {
+			Type:      "openai_compatible",
+			BaseURL:   "https://api.openai.com/v1",
+			APIKeyEnv: "MISSING_OPENAI_KEY",
+		},
+	}
+	// Simulate the doctor panel emitting FixMsg after selecting the fixable row.
+	updated, _ := m.Update(doctorpanel.FixMsg{Provider: "openai"})
+	m = asModel(t, updated)
+	if m.doctorFixProvider != "openai" {
+		t.Fatalf("doctorFixProvider = %q, want openai", m.doctorFixProvider)
+	}
+	// Type a key and submit.
+	m.input.SetValue("sk-test-123")
+	updated, _, _ = m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, updated)
+	if m.doctorFixProvider != "" {
+		t.Fatal("expected doctor fix mode to exit")
+	}
+	// Verify the key was saved to the user config.
+	cfg, err := config.LoadLayers(config.LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	pc, ok := cfg.Merged.Providers["openai"]
+	if !ok {
+		t.Fatal("openai provider missing from reloaded config")
+	}
+	if pc.APIKey != "sk-test-123" {
+		t.Fatalf("APIKey = %q, want sk-test-123", pc.APIKey)
+	}
+	if pc.APIKeyEnv != "" {
+		t.Fatalf("APIKeyEnv = %q, want empty", pc.APIKeyEnv)
+	}
+}

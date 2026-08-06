@@ -31,6 +31,7 @@ import (
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
+	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
@@ -275,6 +276,13 @@ type Model struct {
 	// session; the app.Run program runner reads it from the final model.
 	resumeSession string
 	dock          dock.Host
+
+	// doctorFixProvider is non-empty while the /doctor panel is in key-input
+	// sub-mode: the input prompt asks for an API key for this provider.
+	// savedInputPlaceholder restores the input placeholder when the sub-mode
+	// exits.
+	doctorFixProvider     string
+	savedInputPlaceholder string
 
 	spinner      Spinner
 	spinnerFrame string
@@ -1336,6 +1344,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Result.Text != "" {
 			m.state.AddMessage(session.RoleSystem, msg.Result.Text, session.ContentTypePlain)
 		}
+		m.refreshViewport()
+		return m, nil
+	case doctorpanel.FixMsg:
+		m.doctorFixProvider = msg.Provider
+		m.savedInputPlaceholder = m.input.Placeholder
+		m.input.Reset()
+		m.input.Placeholder = "Enter API key for " + msg.Provider
 		m.refreshViewport()
 		return m, nil
 	}

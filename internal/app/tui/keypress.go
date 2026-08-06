@@ -68,6 +68,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 					m.dock.Open(doctorpanel.New(m.state, diags))
 				}
 			}
+			m.input.Reset()
 			m.input.Placeholder = m.savedInputPlaceholder
 			m.doctorFixProvider = ""
 			m.savedInputPlaceholder = ""

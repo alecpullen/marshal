@@ -3,7 +3,7 @@ package provider
 import "testing"
 
 func TestLookupKnownTemplates(t *testing.T) {
-	for _, id := range []string{"ollama", "lmstudio", "openrouter", "groq", "openai", "openai_compatible"} {
+	for _, id := range []string{"ollama", "ollama-cloud", "lmstudio", "openrouter", "groq", "openai", "openai_compatible"} {
 		tpl, ok := Lookup(id)
 		if !ok {
 			t.Fatalf("Lookup(%q) = not found", id)
@@ -40,16 +40,35 @@ func TestOpenrouterIsRemoteWithKeyEnv(t *testing.T) {
 	}
 }
 
+func TestOllamaCloudIsRemoteWithKeyEnv(t *testing.T) {
+	tpl, ok := Lookup("ollama-cloud")
+	if !ok {
+		t.Fatal("Lookup(ollama-cloud) should succeed")
+	}
+	if tpl.Local {
+		t.Fatal("ollama-cloud template must be Local=false")
+	}
+	if tpl.KeyEnv == "" {
+		t.Fatal("ollama-cloud template must suggest a KeyEnv")
+	}
+	if tpl.BaseURL == "" {
+		t.Fatal("ollama-cloud template must have a BaseURL")
+	}
+	if tpl.Type != "ollama" {
+		t.Fatalf("ollama-cloud template type = %q, want ollama", tpl.Type)
+	}
+}
+
 func TestAllReturnsAll(t *testing.T) {
 	all := All()
-	if len(all) < 16 {
-		t.Fatalf("All() returned %d templates, want >= 16", len(all))
+	if len(all) < 17 {
+		t.Fatalf("All() returned %d templates, want >= 17", len(all))
 	}
 	ids := map[string]bool{}
 	for _, tpl := range all {
 		ids[tpl.ID] = true
 	}
-	for _, id := range []string{"ollama", "lmstudio", "openrouter", "groq", "openai", "openai_compatible"} {
+	for _, id := range []string{"ollama", "ollama-cloud", "lmstudio", "openrouter", "groq", "openai", "openai_compatible"} {
 		if !ids[id] {
 			t.Fatalf("All() missing template %q", id)
 		}

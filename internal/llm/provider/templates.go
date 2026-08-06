@@ -23,6 +23,14 @@ var templates = map[string]ProviderTemplate{
 		Local:   true,
 		Models:  []string{"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5:7b", "llama3.1:8b"},
 	},
+	"ollama-cloud": {
+		ID:      "ollama-cloud",
+		Label:   "Ollama Cloud",
+		Type:    "ollama",
+		BaseURL: "https://ollama.com",
+		KeyEnv:  "OLLAMA_API_KEY",
+		KeyHint: "Get a key at https://ollama.com/settings/keys",
+	},
 	"lmstudio": {
 		ID:      "lmstudio",
 		Label:   "LM Studio (local)",

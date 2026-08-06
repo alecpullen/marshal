@@ -1,0 +1,41 @@
+version: 2
+
+project_name: marshal
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: marshal
+    main: ./cmd/marshal
+    binary: marshal
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
+
+release:
+  draft: true
+  prerelease: auto
+
+changelog:
+  use: git

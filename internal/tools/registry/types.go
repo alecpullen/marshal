@@ -22,7 +22,7 @@ const (
 
 func (r RiskLevel) Valid() bool {
 	switch r {
-	case RiskReadOnly, RiskWorkspaceWrite, RiskCommand, RiskNetwork, RiskDestructive:
+	case RiskReadOnly, RiskWorkspaceWrite, RiskCommand, RiskNetwork, RiskDestructive, RiskEnvironment:
 		return true
 	default:
 		return false

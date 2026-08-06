@@ -14,6 +14,7 @@ func TestRiskLevelValidAcceptsDocumentedValues(t *testing.T) {
 		RiskCommand,
 		RiskNetwork,
 		RiskDestructive,
+		RiskEnvironment,
 	} {
 		if !risk.Valid() {
 			t.Fatalf("%q Valid() = false, want true", risk)

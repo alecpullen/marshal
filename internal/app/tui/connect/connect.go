@@ -856,6 +856,7 @@ func (m *Model) confirmInput() (*Model, tea.Cmd) {
 			m.providerCfg.APIKey = ""
 		} else if v != "" {
 			m.providerCfg.APIKey = v
+			m.providerCfg.APIKeyEnv = "" // clear template env reference when using a literal key
 		} else if m.template.KeyEnv != "" {
 			m.providerCfg.APIKeyEnv = m.template.KeyEnv
 			m.providerCfg.APIKey = ""

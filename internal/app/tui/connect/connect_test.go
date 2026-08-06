@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
+	"marshal/internal/app/tui/textfield"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -111,8 +112,8 @@ func TestAPIKeyEnterAdvancesToProbing(t *testing.T) {
 	if updated.providerCfg.APIKey != "sk-test-1234" {
 		t.Fatalf("api key not captured: %q", updated.providerCfg.APIKey)
 	}
-	if updated.providerCfg.APIKeyEnv != "OPENROUTER_API_KEY" {
-		t.Fatalf("api_key_env not set from template: %q", updated.providerCfg.APIKeyEnv)
+	if updated.providerCfg.APIKeyEnv != "" {
+		t.Fatalf("api_key_env should be cleared after literal key entry: %q", updated.providerCfg.APIKeyEnv)
 	}
 }
 
@@ -1197,5 +1198,23 @@ func TestRefreshKeyInactiveOutsideModelStep(t *testing.T) {
 		if _, ok := cmd().(RefreshMsg); ok {
 			t.Error("refresh should only be bound in the model step")
 		}
+	}
+}
+
+func TestLiteralKeyClearsTemplateEnvRef(t *testing.T) {
+	m := &Model{
+		step:        stepAPIKey,
+		template:    provider.ProviderTemplate{ID: "openai", KeyEnv: "OPENAI_API_KEY"},
+		providerCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com", APIKeyEnv: "OPENAI_API_KEY"},
+		input:       textfield.New(),
+	}
+	m.input.SetValue("sk-test-123")
+	m.input.Focus()
+	m.confirmInput()
+	if m.providerCfg.APIKey != "sk-test-123" {
+		t.Fatalf("APIKey = %q, want sk-test-123", m.providerCfg.APIKey)
+	}
+	if m.providerCfg.APIKeyEnv != "" {
+		t.Fatalf("APIKeyEnv = %q, want empty after literal key entry", m.providerCfg.APIKeyEnv)
 	}
 }

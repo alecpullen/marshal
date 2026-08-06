@@ -955,3 +955,55 @@ func TestSetApprovalModeIsThreadSafe(t *testing.T) {
 		t.Fatalf("after SetApprovalMode(ModePlan), ApprovalMode = %q, want %q", pe.ApprovalMode(), ModePlan)
 	}
 }
+
+// TestEnvironmentCommandsAlwaysConfirm: environment-mutating commands must
+// keep their Confirm in auto-approve modes — copilot/auto own the
+// workspace, not the machine (postmortem 2026-08-06: go clean -cache ran
+// ungated in copilot mode).
+func TestEnvironmentCommandsAlwaysConfirm(t *testing.T) {
+	for _, mode := range []ApprovalMode{ModeCopilot, ModeAuto, ModeEdit} {
+		pe := NewEngine(&config.Config{}, nil)
+		pe.SetApprovalMode(mode)
+		dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "go clean -cache"})
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if dec != DecisionConfirm {
+			t.Errorf("%s: go clean -cache = %s, want confirm", mode, dec)
+		}
+		if !strings.Contains(reason, "outside the working directory") {
+			t.Errorf("%s: reason = %q, want environment explanation", mode, reason)
+		}
+	}
+}
+
+// TestEnvironmentCommandsYieldToExplicitRules: a user who writes an allow
+// rule for an environment command has made the risk decision explicitly;
+// the rule wins, as it does for other classifications.
+func TestEnvironmentCommandsYieldToExplicitRules(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Tools.Shell.Allow.Commands = []string{"go clean -cache"}
+	pe := NewEngine(cfg, nil)
+	pe.SetApprovalMode(ModeAuto)
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "go clean -cache"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec != DecisionAllow {
+		t.Fatalf("allow-listed environment command = %s, want allow", dec)
+	}
+}
+
+// TestNonEnvironmentCommandStillAutoApproves: guard against overreach —
+// an ordinary failing-exit command keeps today's auto-approve behavior.
+func TestNonEnvironmentCommandStillAutoApproves(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeAuto)
+	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "go clean ./..."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec != DecisionAllow {
+		t.Fatalf("workspace-local go clean in auto mode = %s, want allow", dec)
+	}
+}

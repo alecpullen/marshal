@@ -51,6 +51,18 @@ var guardrailPatterns = []string{
 // not false-positive on "echo rm -rf /tmp".
 var legacyRMGuardrail = []string{"rm -rf", "rm -fr", "rm -r -f"}
 
+// reasonEnvironment prefixes the Confirm reason for environment-mutating
+// commands. applyModeTransform matches on it (the same reason-matching
+// pattern isGuardrailDeny uses) so the Confirm survives auto-approve modes.
+const reasonEnvironment = "mutates state outside the working directory"
+
+// isEnvironmentConfirm reports whether a Confirm reason came from the
+// environment-mutation classification, which auto-approve modes must not
+// downgrade.
+func isEnvironmentConfirm(reason string) bool {
+	return strings.HasPrefix(reason, reasonEnvironment)
+}
+
 type PolicyEngine struct {
 	config       *config.Config
 	sessionRules []string
@@ -222,7 +234,7 @@ func applyModeTransform(mode ApprovalMode, toolName string, args map[string]inte
 	case ModeEdit:
 		return decision, reason
 	case ModeCopilot, ModeAuto:
-		if decision == DecisionConfirm {
+		if decision == DecisionConfirm && !isEnvironmentConfirm(reason) {
 			return DecisionAllow, fmt.Sprintf("auto-approved in %s mode", mode)
 		}
 		return decision, reason
@@ -424,6 +436,14 @@ func evaluateShellRules(cfg *config.Config, sessionRules []string, normCmd strin
 		if matchRule(normCmd, prefix) {
 			return DecisionConfirm, "requires confirmation by config confirm rule: " + prefix
 		}
+	}
+	// Environment-mutating commands (cache wipes, global config, system
+	// package managers) always require explicit approval, even in
+	// auto-approve modes. Runs after explicit user allow/confirm rules so
+	// users can opt into specific environment commands, and before the
+	// auto-approve fallback so auto modes don't silently approve it.
+	if cls, err := ClassifyCommand(normCmd); err == nil && cls.Risk == registry.RiskEnvironment {
+		return DecisionConfirm, reasonEnvironment + ": " + cls.Reason
 	}
 	if cfg.Tools.Shell.AutoApprove {
 		return DecisionAllow, "allowed by auto-approve fallback"

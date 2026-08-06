@@ -13,6 +13,11 @@ const (
 	RiskCommand        RiskLevel = "command"
 	RiskNetwork        RiskLevel = "network"
 	RiskDestructive    RiskLevel = "destructive"
+	// RiskEnvironment marks commands that mutate state OUTSIDE the
+	// working directory (build/package caches, global config, system
+	// package managers). It always requires explicit approval, even in
+	// auto-approve modes: those modes own the workspace, not the machine.
+	RiskEnvironment RiskLevel = "environment"
 )
 
 func (r RiskLevel) Valid() bool {

@@ -39,6 +39,10 @@ func ClassifyCommand(input string) (Classification, error) {
 
 	name := lastSegment(args[0])
 
+	if reason := classifyEnvironment(name, args); reason != "" {
+		return Classification{Risk: registry.RiskEnvironment, Reason: reason}, nil
+	}
+
 	switch name {
 	case "rm":
 		if hasFlagInArgs(args[1:], "r", "R", "recursive") && hasFlagInArgs(args[1:], "f", "force") {
@@ -176,4 +180,47 @@ func hasFlagInArgs(args []string, names ...string) bool {
 		}
 	}
 	return false
+}
+
+// classifyEnvironment reports why a command mutates state outside the
+// working directory (build/package caches, global git config, system
+// package managers), or "" if it does not. Checked before the destructive
+// switch: the two tiers never overlap (environment commands touch global
+// state; destructive commands destroy workspace files).
+func classifyEnvironment(name string, args []string) string {
+	switch name {
+	case "go":
+		if hasSubcmd(args, "clean") && (hasArg(args, "cache") || hasArg(args, "modcache")) {
+			return "go clean -cache/-modcache"
+		}
+	case "git":
+		if hasSubcmd(args, "config") && hasArg(args, "global") {
+			return "git config --global"
+		}
+	case "npm":
+		if hasSubcmd(args, "cache") && hasSubcmd(args, "clean") {
+			return "npm cache clean"
+		}
+	case "pip", "pip3":
+		if hasSubcmd(args, "cache") && (hasSubcmd(args, "purge") || hasSubcmd(args, "remove")) {
+			return name + " cache purge/remove"
+		}
+	case "yarn":
+		if hasSubcmd(args, "cache") && hasSubcmd(args, "clean") {
+			return "yarn cache clean"
+		}
+	case "brew":
+		for _, sub := range []string{"install", "uninstall", "cleanup"} {
+			if hasSubcmd(args, sub) {
+				return "brew " + sub
+			}
+		}
+	case "apt", "apt-get", "dnf", "yum":
+		for _, sub := range []string{"install", "remove", "purge"} {
+			if hasSubcmd(args, sub) {
+				return name + " " + sub
+			}
+		}
+	}
+	return ""
 }

@@ -88,6 +88,16 @@ func TestPickCustomEntersBaseURL(t *testing.T) {
 	}
 }
 
+func TestPickOpenAICompatibleEntersBaseURL(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	m := New(Opts{Cfg: cfg})
+	updated, _ := m.Update(pickerPicked("openai_compatible"))
+	if updated.step != stepBaseURL {
+		t.Fatalf("openai_compatible template should enter baseURL, got step = %v", updated.step)
+	}
+}
+
 func TestAPIKeyEnterAdvancesToProbing(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true

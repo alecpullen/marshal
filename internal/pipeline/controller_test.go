@@ -471,3 +471,58 @@ func TestControllerCompletedCount(t *testing.T) {
 		t.Errorf("CompletedCount = %d, want 2", n)
 	}
 }
+
+func TestCleanupWorktreesRemovesAndPrunes(t *testing.T) {
+	c := &Controller{
+		RepoRoot: "/repo",
+		Git:      worktree.NewFakeGitOps(),
+		Worktree: worktree.Worktree{Path: "/repo/.marshal/pipeline/slug/worktrees/slug", Branch: "pipeline/slug"},
+	}
+	fake := c.Git.(*worktree.FakeGitOps)
+	orig := c.Worktree.Path
+	if err := c.CleanupWorktrees(); err != nil {
+		t.Fatalf("CleanupWorktrees: %v", err)
+	}
+	if len(fake.Removed) != 1 || fake.Removed[0] != orig {
+		t.Fatalf("Removed = %v, want [%s]", fake.Removed, orig)
+	}
+	if !fake.Pruned {
+		t.Fatal("expected prune after remove")
+	}
+	if c.Worktree.Path != "" {
+		t.Fatal("Worktree.Path should be cleared after cleanup")
+	}
+	// Idempotent: second call is a no-op.
+	if err := c.CleanupWorktrees(); err != nil {
+		t.Fatalf("second CleanupWorktrees: %v", err)
+	}
+	if len(fake.Removed) != 1 {
+		t.Fatalf("second call removed again: %v", fake.Removed)
+	}
+}
+
+func TestCleanupWorktreesKeepsDirtyWorktree(t *testing.T) {
+	fake := worktree.NewFakeGitOps()
+	fake.RemoveErr = errors.New("fatal: 'x' contains modified or untracked files")
+	c := &Controller{
+		RepoRoot: "/repo",
+		Git:      fake,
+		Worktree: worktree.Worktree{Path: "/wt", Branch: "pipeline/slug"},
+	}
+	if err := c.CleanupWorktrees(); err == nil {
+		t.Fatal("expected the git refusal to propagate")
+	}
+	if fake.Pruned {
+		t.Fatal("prune must not run when remove fails")
+	}
+	if c.Worktree.Path != "/wt" {
+		t.Fatal("dirty worktree path must be kept for resume")
+	}
+}
+
+func TestCleanupWorktreesNoWorktree(t *testing.T) {
+	c := &Controller{Git: worktree.NewFakeGitOps()}
+	if err := c.CleanupWorktrees(); err != nil {
+		t.Fatalf("no-worktree cleanup should be a no-op, got %v", err)
+	}
+}

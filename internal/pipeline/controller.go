@@ -701,6 +701,30 @@ func (c *Controller) Summary() string {
 	return b.String()
 }
 
+// CleanupWorktrees removes the run's git worktree after a terminal
+// successful run. The worktree is scratch space; leaving it under
+// .marshal/pipeline/<slug>/worktrees/ lets stale checkouts of the same
+// packages accumulate inside the repo (postmortem 2026-08-06).
+//
+// Safe by construction: git refuses to remove a dirty worktree, and that
+// refusal is returned (never --forced) so user work is preserved — the
+// caller logs it and moves on. Idempotent: a no-op once Path is cleared.
+// Failed and paused runs keep their worktree so a resume finds the tree
+// as it was; cleanup happens when the resumed run later succeeds.
+func (c *Controller) CleanupWorktrees() error {
+	if c.Worktree.Path == "" {
+		return nil
+	}
+	if err := c.Git.WorktreeRemove(c.RepoRoot, c.Worktree.Path); err != nil {
+		return err
+	}
+	if err := c.Git.WorktreePrune(c.RepoRoot); err != nil {
+		return err
+	}
+	c.Worktree.Path = ""
+	return nil
+}
+
 // commitFix commits one review-fix round.
 func (c *Controller) commitFix(t TaskSpec, round int, report ImplementerReport) (string, error) {
 	dir := c.workDir()

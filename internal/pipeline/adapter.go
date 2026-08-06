@@ -61,6 +61,16 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 	}
 	if err == nil {
 		a.state.AddMessage(session.RoleSystem, a.c.Summary(), session.ContentTypePlain)
+		// Terminal success: the run's worktree is scratch space. Remove it
+		// so stale checkouts stop accumulating inside the repo. The branch
+		// carries the work; failures are resumable and keep their worktree.
+		// Cleanup is best-effort — a dirty-worktree refusal is logged, never
+		// forced, and never fails the run.
+		if cerr := a.c.CleanupWorktrees(); cerr != nil {
+			a.state.Logger().Warn("pipeline worktree cleanup failed; worktree kept", "error", cerr, "path", a.c.Worktree.Path)
+		} else {
+			a.state.AddMessage(session.RoleSystem, fmt.Sprintf("Pipeline worktree removed; branch %s retained for review and merge.", a.c.Worktree.Branch), session.ContentTypePlain)
+		}
 	}
 	// The run is over — success or failure — so the live chrome (run-panel
 	// spinner, input dimming) comes down and the panel collapses to its

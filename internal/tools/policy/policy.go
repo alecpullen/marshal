@@ -145,6 +145,28 @@ func (pe *PolicyEngine) ApprovalMode() ApprovalMode {
 	return pe.approvalMode
 }
 
+// Clone returns an independent copy of the engine: same config, rules,
+// session rules, registry, logger, and approval mode, but with its own
+// lock, so later mutations (SetApprovalMode, SetRules, …) on either engine
+// do not leak into the other. Used to give unattended subagent runners an
+// auto-approving engine without changing the interactive session's mode.
+func (pe *PolicyEngine) Clone() *PolicyEngine {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	rules := make([]permissions.Rule, len(pe.rules))
+	copy(rules, pe.rules)
+	sessionRules := make([]string, len(pe.sessionRules))
+	copy(sessionRules, pe.sessionRules)
+	return &PolicyEngine{
+		config:       pe.config,
+		sessionRules: sessionRules,
+		rules:        rules,
+		logger:       pe.logger,
+		approvalMode: pe.approvalMode,
+		registry:     pe.registry,
+	}
+}
+
 // WithRegistry sets the tool registry the policy engine consults to look
 // up a tool's registered Risk level. When nil (the default), the engine
 // falls back to the legacy "low-risk read tool" allow for any non-shell

@@ -775,10 +775,18 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	// shows a drillable summary card instead. Depth is parent+1 so any
 	// nested subagent attempt is rejected by the child's own depth guard.
 	runnerState := s.state
+	pol := s.pol
 	if s.childSession {
 		runnerState = session.New(s.state.Config, s.state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(s.state.SubagentDepth()+1))
+		// No UI watches a child session's pending approvals: an interactive
+		// Confirm would wait out ApprovalTimeout and fail the turn with
+		// "agent: request timed out". Unattended runners therefore evaluate
+		// under an auto-approving clone of the shared engine (guardrails and
+		// the git-push floor still apply), leaving the parent mode intact.
+		pol = s.pol.Clone()
+		pol.SetApprovalMode(policy.ModeAuto)
 	}
-	r := agent.NewRunner(p, toolReg, s.pol, runnerState, route.Preset.Model)
+	r := agent.NewRunner(p, toolReg, pol, runnerState, route.Preset.Model)
 	r.Role = role
 	r.WriteGate = s.writeGate
 	r.SkillIndex = s.skillIndex

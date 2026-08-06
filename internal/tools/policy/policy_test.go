@@ -831,6 +831,40 @@ func TestEditModeIsNoOp(t *testing.T) {
 	}
 }
 
+func TestCloneCopiesStateAndStaysIndependent(t *testing.T) {
+	pe := NewEngine(&config.Config{}, nil)
+	pe.SetApprovalMode(ModeEdit)
+	reg := registry.New()
+	reg.Register(registry.Tool{
+		Name: "file.write_patch", Description: "write", Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ran"}, nil
+		},
+	})
+	pe.WithRegistry(reg)
+	args := map[string]interface{}{"patch": "File: a\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}
+
+	clone := pe.Clone()
+	if clone == pe {
+		t.Fatal("Clone returned the same engine")
+	}
+	// State is copied: the clone evaluates identically at birth.
+	if dec, _, err := clone.Evaluate("file.write_patch", args); err != nil || dec != DecisionConfirm {
+		t.Fatalf("fresh clone file.write_patch = %v, %v; want Confirm", dec, err)
+	}
+	// Mutating the clone does not leak into the original.
+	clone.SetApprovalMode(ModeAuto)
+	if dec, _, err := clone.Evaluate("file.write_patch", args); err != nil || dec != DecisionAllow {
+		t.Fatalf("auto clone file.write_patch = %v, %v; want Allow", dec, err)
+	}
+	if pe.ApprovalMode() != ModeEdit {
+		t.Fatalf("original mode = %q, want %q after clone mutation", pe.ApprovalMode(), ModeEdit)
+	}
+	if dec, _, err := pe.Evaluate("file.write_patch", args); err != nil || dec != DecisionConfirm {
+		t.Fatalf("original file.write_patch = %v, %v; want Confirm after clone mutation", dec, err)
+	}
+}
+
 // dummyHandler is a minimal ToolHandler for registry tests.
 var dummyHandler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 	return registry.ToolResult{}, nil

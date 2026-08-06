@@ -2388,6 +2388,109 @@ func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
 	}
 }
 
+// TestPipelineRoleRunnerAutoApprovesInChildSession pins the SDD approval
+// contract: pipeline role runners stream into child sessions that no UI
+// watches, so an interactive Confirm would wait out the approval timeout and
+// fail the turn with "agent: request timed out". Child-session runners must
+// therefore evaluate under an auto-approving clone of the shared engine,
+// leaving the parent's mode untouched. Swarm runners share the parent
+// session (their approvals reach the TUI) and keep the shared engine.
+func TestPipelineRoleRunnerAutoApprovesInChildSession(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleSDDImplementer: {Preset: "fast"},
+		}},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+	}
+	resolver := newRoutedProviderResolver(cfg, "")
+	reg := registry.New()
+	handler := func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		return registry.ToolResult{Summary: "ran"}, nil
+	}
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: handler})
+	_ = reg.Register(registry.Tool{Name: "file.write_patch", Risk: registry.RiskWorkspaceWrite, Handler: handler})
+	pol := policy.NewEngine(&cfg, nil)
+	pol.WithRegistry(reg)
+	pol.SetApprovalMode(policy.ModeEdit)
+	spec := roleRunnerSpec{
+		cfg:          cfg,
+		resolver:     resolver,
+		reg:          reg,
+		readOnlyReg:  registry.ReadOnlyView(reg),
+		pol:          pol,
+		state:        session.New(cfg, t.TempDir(), time.Now(), session.Persistence{}),
+		childSession: true,
+	}
+	runner, err := spec.newRunner(agent.RoleSDDImplementer, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("newRunner: %v", err)
+	}
+	args := map[string]interface{}{"patch": "File: a\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}
+	dec, reason, err := runner.Policy.Evaluate("file.write_patch", args)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if dec != policy.DecisionAllow {
+		t.Fatalf("pipeline role runner file.write_patch = %v (%q), want Allow (unattended subagent must not wait on approval)", dec, reason)
+	}
+	if pol.ApprovalMode() != policy.ModeEdit {
+		t.Fatalf("parent engine mode = %q, want %q (subagent clone must not mutate the session mode)", pol.ApprovalMode(), policy.ModeEdit)
+	}
+	if dec, _, err := pol.Evaluate("file.write_patch", args); err != nil || dec != policy.DecisionConfirm {
+		t.Fatalf("parent engine file.write_patch = %v, %v; want Confirm", dec, err)
+	}
+	if runner.Policy == pol {
+		t.Fatal("child-session runner shares the parent policy engine; want an independent clone")
+	}
+}
+
+// TestSwarmRoleRunnerSharesParentPolicy pins the other half of the contract:
+// swarm runners share the parent session, so their approvals are visible in
+// the TUI and they keep the shared engine (mode switches apply to them).
+func TestSwarmRoleRunnerSharesParentPolicy(t *testing.T) {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Profile.Default = "p"
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "test", ToolCalling: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
+	}
+	resolver := newRoutedProviderResolver(cfg, "")
+	reg := registry.New()
+	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly})
+	pol := policy.NewEngine(&cfg, nil)
+	spec := roleRunnerSpec{
+		cfg:         cfg,
+		resolver:    resolver,
+		reg:         reg,
+		readOnlyReg: registry.ReadOnlyView(reg),
+		pol:         pol,
+		state:       session.New(cfg, t.TempDir(), time.Now(), session.Persistence{}),
+	}
+	runner, err := spec.newRunner(agent.RoleImplementer, swarm.ScopeFull)
+	if err != nil {
+		t.Fatalf("newRunner: %v", err)
+	}
+	if runner.Policy != pol {
+		t.Fatal("swarm role runner should share the parent policy engine")
+	}
+}
+
 func TestSubagentFactoryWiresTokenTracking(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true

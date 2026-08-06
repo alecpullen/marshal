@@ -52,9 +52,9 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		}
 	}
 
-	// 3: APIKeyEnv absent from environment
+	// 3: APIKeyEnv absent from environment (only relevant when no literal api_key is set)
 	for name, pc := range cfg.Providers {
-		if pc.APIKeyEnv == "" {
+		if pc.APIKeyEnv == "" || pc.APIKey != "" {
 			continue
 		}
 		path := "providers." + name + ".api_key_env"

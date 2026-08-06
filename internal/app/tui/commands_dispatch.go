@@ -5,7 +5,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
@@ -54,6 +56,12 @@ func init() {
 		},
 		"plugins": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state))
+			m.refreshViewport()
+			return m, nil
+		},
+		"doctor": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			diags := config.Diagnose(m.state.Config, m.state.Layers())
+			m.dock.Open(doctorpanel.New(m.state, diags))
 			m.refreshViewport()
 			return m, nil
 		},

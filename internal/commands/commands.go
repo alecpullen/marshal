@@ -342,7 +342,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name:        "doctor",
 			Description: "Report configuration problems",
 			Group:       groupSettings,
-			Handler:     doctorHandler,
+			TUIOnly:     true,
 		},
 		{
 			Name:        "memory",

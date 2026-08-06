@@ -29,6 +29,9 @@ func Default() Config {
 			RedactSecrets:          true,
 			IncludeGitignoredFiles: false,
 		},
+		Skills: SkillsConfig{
+			MaxActive: 3,
+		},
 		Indexing: IndexingConfig{
 			UseTreesitter:          false,
 			UseEmbeddings:          false,

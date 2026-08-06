@@ -67,7 +67,8 @@ type fileIndexing struct {
 }
 
 type fileSkills struct {
-	Autoload []string `toml:"autoload"`
+	Autoload  []string `toml:"autoload"`
+	MaxActive *int     `toml:"max_active"`
 }
 
 type fileShell struct {

@@ -47,8 +47,11 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Privacy.RedactSecrets, file.Privacy.RedactSecrets)
 		set(&cfg.Privacy.IncludeGitignoredFiles, file.Privacy.IncludeGitignoredFiles)
 	}
-	if file.Skills != nil && file.Skills.Autoload != nil {
-		cfg.Skills.Autoload = file.Skills.Autoload
+	if file.Skills != nil {
+		if file.Skills.Autoload != nil {
+			cfg.Skills.Autoload = file.Skills.Autoload
+		}
+		set(&cfg.Skills.MaxActive, file.Skills.MaxActive)
 	}
 	if file.Indexing != nil {
 		set(&cfg.Indexing.UseTreesitter, file.Indexing.UseTreesitter)

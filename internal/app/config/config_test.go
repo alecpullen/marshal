@@ -1395,3 +1395,47 @@ func TestSkillsAutoloadDefaultsEmpty(t *testing.T) {
 		t.Fatalf("default Autoload = %v, want empty", got)
 	}
 }
+
+func TestSkillsMaxActiveDefaultsThree(t *testing.T) {
+	if got := Default().Skills.MaxActive; got != 3 {
+		t.Fatalf("Default().Skills.MaxActive = %d, want 3", got)
+	}
+}
+
+func TestSkillsMaxActiveMergesFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[skills]\nmax_active = 7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&cfg, file); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Skills.MaxActive != 7 {
+		t.Fatalf("merged MaxActive = %d, want 7", cfg.Skills.MaxActive)
+	}
+}
+
+func TestSkillsMaxActiveRoundTripsThroughSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Default()
+	cfg.Skills.MaxActive = 5
+	if err := SaveProjectConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&reloaded, file); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Skills.MaxActive != 5 {
+		t.Fatalf("reloaded MaxActive = %d, want 5", reloaded.Skills.MaxActive)
+	}
+}

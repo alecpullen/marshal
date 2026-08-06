@@ -385,6 +385,12 @@ type SkillsConfig struct {
 	// Unknown names are logged and skipped, never fatal — a config that
 	// outlives an uninstalled skill should not stop the session starting.
 	Autoload []string `toml:"autoload"`
+	// MaxActive caps how many skills the model may have explicitly loaded
+	// via skill.load at once (autoloaded skills are user-configured
+	// always-on and do not count). It exists because an eager model will
+	// otherwise load every tangentially-related skill and burn the context
+	// budget on method text that does not apply to the task. 0 = unlimited.
+	MaxActive int `toml:"max_active"`
 }
 
 type IndexingConfig struct {

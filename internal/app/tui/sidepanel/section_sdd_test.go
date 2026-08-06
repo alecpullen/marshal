@@ -1,6 +1,7 @@
 package sidepanel
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,37 @@ func TestSDDSectionStaticGlyphWhenSpinnerGated(t *testing.T) {
 func TestSDDSectionRespectsMaxRows(t *testing.T) {
 	if got := (SDDSection{}).Render(sddData(), 34, 1); len(got) > 1 {
 		t.Errorf("got %d rows, want at most 1", len(got))
+	}
+}
+
+// A long plan must never scroll the active task off the rail: the task
+// rows window around the current task the way the main run panel's
+// checklist does, instead of truncating from the top.
+func TestSDDSectionWindowsChecklistAroundCurrentTask(t *testing.T) {
+	tasks := make([]string, 20)
+	for i := range tasks {
+		tasks[i] = fmt.Sprintf("Task number %d", i+1)
+	}
+	d := Data{
+		Spinner: "⠋",
+		SDD: session.SDDProgress{
+			Active:      true,
+			DoneTasks:   14,
+			TotalTasks:  20,
+			CurrentTask: 15,
+			Phase:       "implementing",
+			Tasks:       tasks,
+		},
+	}
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 40, 8), "\n"))
+	if !strings.Contains(got, "15 Task number 15") {
+		t.Errorf("current task 15 must stay visible on a 20-task plan:\n%s", got)
+	}
+	if strings.Contains(got, "1 Task number 1\n") {
+		t.Errorf("window must follow the cursor, not start at task 1:\n%s", got)
+	}
+	if !strings.Contains(got, "task 15/20") {
+		t.Errorf("summary row must survive the windowing:\n%s", got)
 	}
 }
 

@@ -2,11 +2,14 @@ package sidepanel
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/theme"
 )
 
 // formatElapsed formats a duration for the finished summary line, matching
@@ -78,6 +81,7 @@ func (SDDSection) Render(d Data, width, maxRows int) []string {
 	if d.SDD.FixRound > 0 {
 		rows = append(rows, fmt.Sprintf("   fix %d/%d", d.SDD.FixRound, d.SDD.MaxFixRounds))
 	}
+	tasks := make([]string, 0, len(d.SDD.Tasks))
 	for i, title := range d.SDD.Tasks {
 		var tg string
 		switch {
@@ -88,8 +92,18 @@ func (SDDSection) Render(d Data, width, maxRows int) []string {
 		default:
 			tg = glyph.Ambient
 		}
-		rows = append(rows, fmt.Sprintf(" %s %d %s", tg, i+1, title))
+		tasks = append(tasks, fmt.Sprintf(" %s %d %s", tg, i+1, title))
 	}
+	// Window the checklist around the current task rather than truncating
+	// from the top: on a long plan the active task is the one row that must
+	// never be clipped away. This is the same policy (and the same helper)
+	// the main run panel's checklist uses. The summary rows above are held
+	// out of the window so they always survive.
+	if budget := maxRows - len(rows); maxRows > 0 && budget > 0 && len(tasks) > budget {
+		focus := min(max(d.SDD.CurrentTask-1, 0), len(tasks)-1)
+		tasks = strings.Split(chrome.ClipLines(tasks, focus, budget, theme.Current()), "\n")
+	}
+	rows = append(rows, tasks...)
 	if maxRows > 0 && len(rows) > maxRows {
 		rows = rows[:maxRows]
 	}

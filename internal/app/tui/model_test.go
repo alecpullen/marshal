@@ -22,6 +22,7 @@ import (
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
+	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
@@ -690,6 +691,35 @@ func TestCtrlKWithoutMemoryStoreDoesNothing(t *testing.T) {
 	}
 	if strings.Contains(stripANSI(m.View().Content), "Memory") {
 		t.Fatalf("View() should not show memory browser without memory store:\n%s", stripANSI(m.View().Content))
+	}
+}
+
+func TestDoctorOpensDockPanel(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, nil); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
+	}
+	m := New(state, WithCommandRegistry(cmdReg))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = updated.(Model)
+	if m.dock.IsOpen() {
+		t.Fatal("expected dock to be closed before /doctor")
+	}
+	updated, cmd := m.dispatchCommand("/doctor")
+	m = asModel(t, updated)
+	if cmd != nil {
+		t.Fatalf("expected nil cmd from /doctor dispatch, got %v", cmd)
+	}
+	if !m.dock.IsOpen() {
+		t.Fatal("expected /doctor to open the dock")
+	}
+	if _, ok := m.dock.Panel().(*doctorpanel.Panel); !ok {
+		t.Fatalf("expected doctorpanel.Panel in dock, got %T", m.dock.Panel())
+	}
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "Doctor") {
+		t.Fatalf("View() should render the Doctor panel:\n%s", view)
 	}
 }
 

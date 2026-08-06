@@ -45,6 +45,7 @@ func diagsToFields(diags []config.Diagnostic) []*listpanel.Field {
 	if len(diags) == 0 {
 		out = append(out, &listpanel.Field{
 			ID: "clean", Title: "No problems found.", Kind: listpanel.KindScalar,
+			GetStr: func() string { return "" },
 		})
 		return out
 	}

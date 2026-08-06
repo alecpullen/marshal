@@ -3319,6 +3319,13 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		newCfg.Providers = map[string]config.ProviderConfig{}
 	}
 	if msg.ProviderCfg.Type != "" {
+		// A literal key was just persisted to the user config. Ensure the
+		// project snapshot (and therefore the project file) does not retain a
+		// stale api_key_env reference from the provider template, which would
+		// shadow the saved literal key during layered config merge.
+		if msg.ProviderCfg.APIKey != "" {
+			msg.ProviderCfg.APIKeyEnv = ""
+		}
 		newCfg.Providers[msg.Provider] = msg.ProviderCfg
 	}
 	if msg.EnabledRemote {

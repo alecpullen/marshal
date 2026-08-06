@@ -4753,6 +4753,36 @@ func TestApplyConnectDoneZeroLimitsPreserveSavedPresetValues(t *testing.T) {
 	}
 }
 
+func TestConnectDoneClearsEnvRefWhenSavingLiteralKey(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	t.Setenv("HOME", home)
+	m := newTestModel(t)
+	m.state.WorkingDir = work
+	m.workDir = work
+	m.applyConnectDone(connect.DoneMsg{
+		Provider: "openai",
+		Model:    "gpt-4o",
+		ProviderCfg: config.ProviderConfig{
+			Type:        "openai_compatible",
+			BaseURL:     "https://api.openai.com/v1",
+			APIKey:      "sk-test-123",
+			APIKeyEnv:   "OPENAI_API_KEY",
+			ToolCalling: true,
+		},
+	})
+	pc, ok := m.state.Config.Providers["openai"]
+	if !ok {
+		t.Fatal("expected openai provider in state config")
+	}
+	if pc.APIKeyEnv != "" {
+		t.Fatalf("APIKeyEnv = %q, want empty after saving literal key", pc.APIKeyEnv)
+	}
+	if pc.APIKey != "sk-test-123" {
+		t.Fatalf("APIKey = %q, want sk-test-123", pc.APIKey)
+	}
+}
+
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})

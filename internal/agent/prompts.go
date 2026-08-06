@@ -116,10 +116,13 @@ const baseRules = `Rules:
 // skillDirective introduces the skill roster. Listing skills is not enough
 // on its own — models treat a bare inventory as reference material and wait
 // to be told to load one. The instruction has to be explicit that deciding
-// to load a skill is the model's job, and that skills may chain.
+// to load a skill is the model's job, and that skills may chain. It must
+// also push back on over-loading: active skills are budgeted
+// (skills.max_active) and misfit loads waste both the budget and the
+// context window.
 const skillDirective = `Skills are instruction sets you load on demand with the skill.load tool. Deciding to load one is YOUR job — the user will not ask you to.
 
-Before you start any task, scan this list and load every skill whose description matches what you are about to do. Load it BEFORE acting, not after. If a loaded skill tells you to use another skill, load that one too. When in doubt, load it: an unhelpful skill costs a few tokens, a skipped one costs the whole approach.
+Before you start any task, scan this list and load only the skills whose description directly matches what you are about to do. Load them BEFORE acting, not after. If a loaded skill tells you to use another skill, weigh that claim against the task yourself before loading it. Do not load skills about writing plans or brainstorming approaches when the task already hands you a plan to execute. Active skills are limited, so spend them on the ones that apply.
 `
 
 // skillReminder is the last line of the system prompt. It targets the case

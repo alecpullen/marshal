@@ -766,3 +766,19 @@ func TestNoSkillReminderWhenNoSkills(t *testing.T) {
 		t.Fatal("no reminder should appear when no skills are available")
 	}
 }
+
+// TestSkillDirectiveFavorsRelevance: the old directive said "When in doubt,
+// load it", which drove misfit loads (brainstorming/writing-plans on an
+// execute-existing-plan task — postmortem 2026-08-06). The directive must
+// now push the other way: load only what directly applies.
+func TestSkillDirectiveFavorsRelevance(t *testing.T) {
+	if strings.Contains(skillDirective, "When in doubt, load it") {
+		t.Fatal("directive still encourages speculative loads")
+	}
+	if !strings.Contains(skillDirective, "directly matches") {
+		t.Fatal("directive should require a direct task match")
+	}
+	if !strings.Contains(skillDirective, "already hands you a plan") {
+		t.Fatal("directive should call out the existing-plan case")
+	}
+}

@@ -64,6 +64,11 @@ type FakeGitOps struct {
 	StatOut   string
 	DiffOut   string
 	CommitErr error
+	// Removed records paths passed to WorktreeRemove; RemoveErr simulates
+	// git refusing (e.g. dirty worktree). Pruned records a prune call.
+	Removed   []string
+	Pruned    bool
+	RemoveErr error
 }
 
 func NewFakeGitOps() *FakeGitOps {
@@ -104,6 +109,19 @@ func (f *FakeGitOps) WorktreeAdd(dir, path, branch, startPoint string) error {
 }
 
 func (f *FakeGitOps) WorktreeList(dir string) ([]string, error) { return f.Worktrees, nil }
+
+func (f *FakeGitOps) WorktreeRemove(dir, path string) error {
+	if f.RemoveErr != nil {
+		return f.RemoveErr
+	}
+	f.Removed = append(f.Removed, path)
+	return nil
+}
+
+func (f *FakeGitOps) WorktreePrune(dir string) error {
+	f.Pruned = true
+	return nil
+}
 
 // IsDirty reports the Dirty field. Dirty is sticky: CommitAll does not
 // clear it, so a scripted multi-task run keeps producing commits without

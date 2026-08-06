@@ -113,3 +113,48 @@ func TestCLIGitOpsCommitAllNothingToCommit(t *testing.T) {
 		t.Fatal("CommitAll with a clean tree: want error, got nil")
 	}
 }
+
+func TestCLIWorktreeRemoveAndPrune(t *testing.T) {
+	repo := initRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	g := CLIGitOps{}
+	if err := g.WorktreeAdd(repo, wtPath, "feature-x", "HEAD"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	if err := g.WorktreeRemove(repo, wtPath); err != nil {
+		t.Fatalf("WorktreeRemove: %v", err)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatal("worktree dir still exists after remove")
+	}
+	if err := g.WorktreePrune(repo); err != nil {
+		t.Fatalf("WorktreePrune: %v", err)
+	}
+	wts, err := g.WorktreeList(repo)
+	if err != nil {
+		t.Fatalf("WorktreeList: %v", err)
+	}
+	for _, w := range wts {
+		if w == wtPath {
+			t.Fatal("removed worktree still listed")
+		}
+	}
+}
+
+func TestCLIWorktreeRemoveDirtyRefuses(t *testing.T) {
+	repo := initRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	g := CLIGitOps{}
+	if err := g.WorktreeAdd(repo, wtPath, "feature-y", "HEAD"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "dirty.txt"), []byte("user work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.WorktreeRemove(repo, wtPath); err == nil {
+		t.Fatal("WorktreeRemove on dirty worktree succeeded; git should refuse")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatal("dirty worktree must be kept")
+	}
+}

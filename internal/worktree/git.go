@@ -18,6 +18,11 @@ type GitOps interface {
 	BranchExists(dir, branch string) bool
 	WorktreeAdd(dir, path, branch, startPoint string) error
 	WorktreeList(dir string) ([]string, error)
+	// WorktreeRemove removes the worktree at path. git refuses when the
+	// worktree has uncommitted changes — callers treat that error as
+	// "kept", never retry with --force.
+	WorktreeRemove(dir, path string) error
+	WorktreePrune(dir string) error
 	IsDirty(dir string) (bool, error)
 	// CommitAll stages every change (including untracked files) and
 	// commits it, returning the new HEAD SHA. It returns an error when
@@ -71,6 +76,16 @@ func (g CLIGitOps) WorktreeList(dir string) ([]string, error) {
 		}
 	}
 	return paths, nil
+}
+
+func (g CLIGitOps) WorktreeRemove(dir, path string) error {
+	_, err := g.run(dir, "worktree", "remove", path)
+	return err
+}
+
+func (g CLIGitOps) WorktreePrune(dir string) error {
+	_, err := g.run(dir, "worktree", "prune")
+	return err
 }
 
 func (g CLIGitOps) IsDirty(dir string) (bool, error) {

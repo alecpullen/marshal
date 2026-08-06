@@ -238,3 +238,58 @@ func TestSkillLoadToolMissingNameArg(t *testing.T) {
 		t.Fatal("expected error for missing name arg")
 	}
 }
+
+func TestSkillLoadBudgetEnforced(t *testing.T) {
+	idx := NewIndex()
+	for _, name := range []string{"one", "two", "three"} {
+		idx.skills[name] = Skill{Name: name, Description: "d", Body: "body " + name}
+	}
+	state := newTestState()
+	state.Config.Skills.MaxActive = 2
+
+	if err := LoadSkillIntoSession(idx, state, "one"); err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	if err := LoadSkillIntoSession(idx, state, "two"); err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	err := LoadSkillIntoSession(idx, state, "three")
+	if err == nil || !strings.Contains(err.Error(), "skill budget reached") {
+		t.Fatalf("third load should hit the budget, got %v", err)
+	}
+	if state.HasActiveSkill("three") {
+		t.Fatal("refused skill must not become active")
+	}
+}
+
+func TestSkillLoadBudgetIgnoresAutoloaded(t *testing.T) {
+	idx := NewIndex()
+	for _, name := range []string{"auto", "one"} {
+		idx.skills[name] = Skill{Name: name, Description: "d", Body: "body " + name}
+	}
+	state := newTestState()
+	state.Config.Skills.MaxActive = 1
+	state.Config.Skills.Autoload = []string{"auto"}
+
+	if err := LoadSkillIntoSessionQuiet(idx, state, "auto"); err != nil {
+		t.Fatalf("autoload: %v", err)
+	}
+	// The autoloaded skill must not consume the explicit-load budget.
+	if err := LoadSkillIntoSession(idx, state, "one"); err != nil {
+		t.Fatalf("explicit load under budget: %v", err)
+	}
+}
+
+func TestSkillLoadBudgetZeroUnlimited(t *testing.T) {
+	idx := NewIndex()
+	for _, name := range []string{"a", "b", "c", "d"} {
+		idx.skills[name] = Skill{Name: name, Description: "d", Body: "body " + name}
+	}
+	state := newTestState()
+	state.Config.Skills.MaxActive = 0
+	for _, name := range []string{"a", "b", "c", "d"} {
+		if err := LoadSkillIntoSession(idx, state, name); err != nil {
+			t.Fatalf("unlimited load %s: %v", name, err)
+		}
+	}
+}

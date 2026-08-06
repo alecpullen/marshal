@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"fmt"
 	"time"
 
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/strutil"
 )
 
 // TurnMetrics summarises one RunTask execution. It is emitted exactly once
@@ -75,6 +77,21 @@ func (r *Runner) withStats(f func(*turnStats)) {
 	if r.stats != nil {
 		f(r.stats)
 	}
+}
+
+// turnUsageLine formats the provider-reported token usage accumulated this
+// turn for display in the session export. Empty when the provider reported
+// no usage (e.g. local providers without usage fields).
+func (r *Runner) turnUsageLine() string {
+	line := ""
+	r.withStats(func(s *turnStats) {
+		p, c := s.m.PromptTokens, s.m.CompletionTokens
+		if p == 0 && c == 0 {
+			return
+		}
+		line = fmt.Sprintf("%s prompt + %s completion tokens", strutil.CompactTokens(p), strutil.CompactTokens(c))
+	})
+	return line
 }
 
 // countToolCall records one tool message fed back to the model.

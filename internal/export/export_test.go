@@ -211,3 +211,40 @@ func sessionMinimalConfig() config.Config {
 }
 
 func zeroTime() time.Time { return time.Time{} }
+
+// TestRenderIncludesUsageLine: per-turn token usage stored on the final
+// assistant message must appear in the export's .usage block (session
+// postmortem 2026-08-06, finding 3).
+func TestRenderIncludesUsageLine(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
+	state.AddMessageFinalWithUsage(session.RoleAssistant, "done", session.ContentTypeMarkdown, 2, "12k prompt + 3k completion tokens")
+
+	html, err := Render(state, false)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(html)
+	if !strings.Contains(s, `class="usage"`) {
+		t.Fatal("usage block missing from export")
+	}
+	// html/template escapes "+" as &#43;, so assert on the escaped-safe parts.
+	if !strings.Contains(s, "12k prompt") || !strings.Contains(s, "3k completion tokens") {
+		t.Fatal("usage text missing from export")
+	}
+}
+
+// TestRenderOmitsUsageLineWhenEmpty: messages without recorded usage must
+// not render an empty .usage block.
+func TestRenderOmitsUsageLineWhenEmpty(t *testing.T) {
+	state := session.New(sessionMinimalConfig(), "/repo", zeroTime(), session.Persistence{})
+	state.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypeMarkdown)
+
+	html, err := Render(state, false)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if strings.Contains(string(html), `<div class="usage">`) {
+		t.Fatal("empty usage block rendered")
+	}
+}

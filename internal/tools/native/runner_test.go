@@ -3,6 +3,7 @@ package native
 import (
 	"bytes"
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -141,5 +142,23 @@ func TestExecRunnerEnforcesTimeout(t *testing.T) {
 	}
 	if elapsed > 10*time.Second {
 		t.Fatalf("command ran %v — timeout not enforced", elapsed)
+	}
+}
+
+// TestExecRunnerPipelineFailureExitCode: a command failing early in a
+// pipeline (e.g. `go vet ./... 2>&1 | head -50`) must surface a non-zero
+// exit code — reporting head's success hides real build/vet failures from
+// the agent (session postmortem 2026-08-06, finding 2).
+func TestExecRunnerPipelineFailureExitCode(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available; pipefail path untestable")
+	}
+	runner := execRunner{}
+	req := CommandRequest{
+		Command: "ls /nonexistent_dir_marshal_test 2>&1 | head -1",
+	}
+	result, _ := runner.Run(context.Background(), req)
+	if result.ExitCode == 0 {
+		t.Fatal("pipeline with failing first command reported exit code 0")
 	}
 }

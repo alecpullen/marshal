@@ -42,7 +42,7 @@ func spillToolResult(workDir, toolName string, result registry.ToolResult, maxCh
 	out := result
 	out.Summary = result.Summary + " [output spilled to file]"
 	out.Content = result.Content[:spillPreviewChars] + fmt.Sprintf(
-		"\n\n[output truncated: %d chars total, preview above]\nfull_output_path: %s\nTo continue reading, use file.read on the original path with start_line/end_line, or use file.page with the desired page number. Avoid reading this spill file directly.",
+		"\n\n[output truncated: %d chars total, preview above]\nfull_output_path: %s\nTo continue reading, use file.read on the full_output_path above (or on the original path) with start_line/end_line, or use file.page with the desired page number.",
 		len(result.Content), rel,
 	)
 	return out

@@ -199,7 +199,12 @@ func (c *Container) buildArgs(command, image, workdir string) []string {
 	if shellFree {
 		inner = strings.Fields(command)
 	} else {
-		inner = []string{"/bin/sh", "-lc", command}
+		// Best-effort pipefail: container images may ship dash or
+		// busybox sh without pipefail support, so a failed `set` is
+		// swallowed and the pipeline runs with last-stage semantics
+		// (same as before). On bash/ash it makes failures early in a
+		// pipeline surface a non-zero exit code.
+		inner = []string{"/bin/sh", "-lc", "set -o pipefail 2>/dev/null || true; " + command}
 	}
 	if c.cfg.CPUSeconds > 0 {
 		args = append(args,

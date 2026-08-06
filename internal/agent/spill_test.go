@@ -67,3 +67,22 @@ func TestSpillToolResultFallsBackToTruncationOnBadDir(t *testing.T) {
 		t.Fatalf("fallback did not truncate: %d chars", len(out.Content))
 	}
 }
+
+// TestSpillToolResultPointsAtReadableSpillFile: the spill pointer must not
+// tell the model to avoid the spill file — that clause steered agents into
+// cp/rename workarounds instead of just paging the file (session postmortem
+// 2026-08-06, finding 4).
+func TestSpillToolResultPointsAtReadableSpillFile(t *testing.T) {
+	dir := t.TempDir()
+	big := strings.Repeat("line of output\n", 2000)
+	in := registry.ToolResult{Summary: "ok", Content: big}
+
+	out := spillToolResult(dir, "shell.run", in, 8000)
+
+	if strings.Contains(out.Content, "Avoid reading this spill file") {
+		t.Fatalf("spill pointer still discourages reading the spill file:\n%s", out.Content)
+	}
+	if !strings.Contains(out.Content, "full_output_path:") {
+		t.Fatalf("spilled result missing path pointer:\n%s", out.Content)
+	}
+}

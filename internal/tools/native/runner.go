@@ -37,9 +37,22 @@ func (execRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, e
 
 	// Fall through to shell path: commands with shell metacharacters,
 	// destructive commands, or commands that failed to parse.
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", req.Command)
+	cmd := shellCommand(ctx, req.Command)
 	cmd.Dir = req.Dir
 	return runCmd(ctx, cmd, req)
+}
+
+// shellCommand builds the shell-wrapped command for the shell path. It
+// prefers bash with pipefail so a command failing early in a pipeline
+// (e.g. `go vet ./... 2>&1 | head -50`) surfaces a non-zero exit code
+// instead of the last stage's success — otherwise piped build/test
+// failures are invisible to the agent. Falls back to /bin/sh when bash
+// is unavailable.
+func shellCommand(ctx context.Context, command string) *exec.Cmd {
+	if bash, err := exec.LookPath("bash"); err == nil {
+		return exec.CommandContext(ctx, bash, "-o", "pipefail", "-lc", command)
+	}
+	return exec.CommandContext(ctx, "/bin/sh", "-lc", command)
 }
 
 // runCmd wires stdout/stderr observers, starts, waits, and returns the result.

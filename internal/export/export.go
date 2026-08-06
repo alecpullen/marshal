@@ -87,6 +87,7 @@ func Render(state *session.State, redactOn bool) ([]byte, error) {
 				RoleLabel:    role,
 				ContentHTML:  contentHTML,
 				Reasoning:    reasoning,
+				Usage:        t.Message.Usage,
 			})
 		case session.KindAudit:
 			if t.Audit == nil {

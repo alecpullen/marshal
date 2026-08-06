@@ -780,7 +780,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					r.State.AddMessageSalvaged(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, string(reasonUnverified))
 					return task, nil
 				}
-				r.State.AddMessageFinalWithToolCount(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, toolCallCountThisTurn)
+				r.State.AddMessageFinalWithUsage(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, toolCallCountThisTurn, r.turnUsageLine())
 				return task, nil
 			}
 
@@ -949,7 +949,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = next
 				continue
 			}
-			r.State.AddMessageFinalWithToolCount(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, toolCallCountThisTurn)
+			r.State.AddMessageFinalWithUsage(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, toolCallCountThisTurn, r.turnUsageLine())
 			return task, nil
 		case ActionToolCall, ActionPatch:
 			toolCallCountThisTurn++

@@ -58,6 +58,11 @@ type Message struct {
 	// to SQLite) — it survives across session/prompt calls within a live
 	// process but resets to 0 after a session/load replay from disk.
 	ToolCallCount int
+	// Usage is a human-readable per-turn token-usage line (e.g. "12k
+	// prompt + 3k completion tokens") recorded on final assistant messages
+	// when the provider reported usage. In-memory only, like
+	// ToolCallCount — it feeds the session export's .usage block.
+	Usage string
 }
 
 // loadFromDB reconstructs the in-memory message tree and scratchpad state
@@ -183,7 +188,7 @@ func (s *State) persistenceEnabled() bool {
 // s.mu is held across the DB write: appends are per-session serialized
 // anyway, and holding it closes the race where a concurrent Rewind /
 // SwitchBranch could orphan a stashed pointer mid-promotion.
-func (s *State) appendMessage(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int) {
+func (s *State) appendMessage(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string) {
 	s.mu.Lock()
 	reasoning := s.inProgress.Reasoning
 	var thinkDuration time.Duration
@@ -257,6 +262,7 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 		Salvaged:      salvaged,
 		SalvageReason: salvageReason,
 		ToolCallCount: toolCallCount,
+		Usage:         usage,
 	}
 	s.messages = append(s.messages, msg)
 	s.parentOf[id] = parent
@@ -272,22 +278,28 @@ func (s *State) appendMessage(role Role, content string, contentType ContentType
 }
 
 func (s *State) AddMessage(role Role, content string, contentType ContentType) {
-	s.appendMessage(role, content, contentType, false, false, "", 0)
+	s.appendMessage(role, content, contentType, false, false, "", 0, "")
 }
 
 func (s *State) AddMessageFinal(role Role, content string, contentType ContentType) {
-	s.appendMessage(role, content, contentType, true, false, "", 0)
+	s.appendMessage(role, content, contentType, true, false, "", 0, "")
 }
 
 // AddMessageFinalWithToolCount is AddMessageFinal plus a record of how many
 // real tool calls the runner executed during the turn, so a later turn's
 // history replay can distinguish a verified completion from a prose-only one.
 func (s *State) AddMessageFinalWithToolCount(role Role, content string, contentType ContentType, toolCallCount int) {
-	s.appendMessage(role, content, contentType, true, false, "", toolCallCount)
+	s.appendMessage(role, content, contentType, true, false, "", toolCallCount, "")
+}
+
+// AddMessageFinalWithUsage is AddMessageFinalWithToolCount plus a
+// human-readable per-turn token-usage line for the session export.
+func (s *State) AddMessageFinalWithUsage(role Role, content string, contentType ContentType, toolCallCount int, usage string) {
+	s.appendMessage(role, content, contentType, true, false, "", toolCallCount, usage)
 }
 
 func (s *State) AddMessageSalvaged(role Role, content string, contentType ContentType, reason string) {
-	s.appendMessage(role, content, contentType, true, true, reason, 0)
+	s.appendMessage(role, content, contentType, true, true, reason, 0, "")
 }
 
 func (s *State) Messages() []Message {

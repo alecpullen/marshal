@@ -478,3 +478,31 @@ func TestScanContinuesOnHashError(t *testing.T) {
 		t.Fatal("bad.go should have an empty hash (read failed)")
 	}
 }
+
+// TestScannerSkipsMarshalDir: .marshal holds agent state — spill files,
+// pipeline/session worktrees with full repo checkouts — and must never be
+// walked by scanning or search (session postmortem 2026-08-06, finding 1).
+func TestScannerSkipsMarshalDir(t *testing.T) {
+	if !IsDefaultIgnoredDir(".marshal") {
+		t.Fatal(".marshal is not in the default ignored dir set")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal", "tool-results"), 0755); err != nil {
+		t.Fatalf("create .marshal/tool-results: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".marshal", "tool-results", "spill.txt"), []byte("spill"), 0644); err != nil {
+		t.Fatalf("write spill.txt: %v", err)
+	}
+
+	scanner := NewScanner(Config{Root: dir})
+	scanned, err := scanner.ScanDetailed()
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(scanned) != 1 || scanned[0].Path != "main.go" {
+		t.Fatalf("expected only main.go, got %+v", scanned)
+	}
+}

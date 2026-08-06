@@ -207,3 +207,24 @@ func TestUsageAggregatorLocalModelNoCapabilities(t *testing.T) {
 		t.Fatal("CatCacheWrite should not be set for local model")
 	}
 }
+
+// TestTurnUsageLineFormatsProviderUsage: the per-turn usage line attached
+// to final assistant messages (for the session export's .usage block) must
+// compact token counts and stay empty when the provider reported nothing
+// (session postmortem 2026-08-06, finding 3).
+func TestTurnUsageLineFormatsProviderUsage(t *testing.T) {
+	r := &Runner{}
+	if got := r.turnUsageLine(); got != "" {
+		t.Fatalf("nil stats: turnUsageLine() = %q, want empty", got)
+	}
+
+	r.stats = &turnStats{}
+	if got := r.turnUsageLine(); got != "" {
+		t.Fatalf("zero usage: turnUsageLine() = %q, want empty", got)
+	}
+
+	r.stats = &turnStats{m: TurnMetrics{PromptTokens: 12345, CompletionTokens: 340}}
+	if got := r.turnUsageLine(); got != "12k prompt + 340 completion tokens" {
+		t.Fatalf("turnUsageLine() = %q, want %q", got, "12k prompt + 340 completion tokens")
+	}
+}

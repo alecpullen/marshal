@@ -491,10 +491,11 @@ func TestContainerBuildArgs_RoutesDestructiveThroughShell(t *testing.T) {
 		t.Errorf("expected /bin/sh -lc in args for destructive command, got %v", args)
 	}
 
-	// Verify the command string is present after -lc.
+	// Verify the command string is present after -lc (behind the pipefail
+	// prefix applied to the shell path).
 	cmdFound := false
 	for i, a := range args {
-		if a == "-lc" && i+1 < len(args) && args[i+1] == "rm -rf /tmp/x" {
+		if a == "-lc" && i+1 < len(args) && strings.HasSuffix(args[i+1], "rm -rf /tmp/x") {
 			cmdFound = true
 			break
 		}
@@ -567,5 +568,32 @@ func TestContainer_AvPathForSimpleCommands(t *testing.T) {
 	}
 	if res.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, want 0", res.ExitCode)
+	}
+}
+
+// TestContainerBuildArgs_SetsPipefailInShellPath: in-container pipelines
+// must also fail loudly — a command failing early in a pipeline should not
+// report the last stage's exit code. Container images may lack bash, so
+// this is a best-effort `set -o pipefail` prefix on the /bin/sh path
+// (session postmortem 2026-08-06, finding 2).
+func TestContainerBuildArgs_SetsPipefailInShellPath(t *testing.T) {
+	c := &Container{
+		cfg:         Config{},
+		runtime:     "docker",
+		runtimePath: "/usr/bin/docker",
+		envDenySet:  make(map[string]bool),
+	}
+
+	args := c.buildArgs("go vet ./... 2>&1 | head -50", "golang:alpine", "/workspace")
+
+	cmdFound := false
+	for i, a := range args {
+		if a == "-lc" && i+1 < len(args) && strings.Contains(args[i+1], "pipefail") && strings.Contains(args[i+1], "go vet ./... 2>&1 | head -50") {
+			cmdFound = true
+			break
+		}
+	}
+	if !cmdFound {
+		t.Errorf("expected pipefail-wrapped command after -lc, got %v", args)
 	}
 }

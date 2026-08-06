@@ -2055,3 +2055,22 @@ func TestScratchpadDebugLogs(t *testing.T) {
 		t.Fatalf("got %d scratchpad eviction logs, want 1", evictions)
 	}
 }
+
+// TestAddMessageFinalWithUsageStoresUsage: the export needs per-turn token
+// usage on the final assistant message (session postmortem 2026-08-06,
+// finding 3 — the .usage template block was dead because nothing populated it).
+func TestAddMessageFinalWithUsageStoresUsage(t *testing.T) {
+	state := newTestState()
+	state.AddMessageFinalWithUsage(RoleAssistant, "answer", ContentTypeMarkdown, 5, "12k prompt + 3k completion tokens")
+
+	messages := state.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("len(Messages()) = %d, want 1", len(messages))
+	}
+	if messages[0].ToolCallCount != 5 {
+		t.Fatalf("ToolCallCount = %d, want 5", messages[0].ToolCallCount)
+	}
+	if messages[0].Usage != "12k prompt + 3k completion tokens" {
+		t.Fatalf("Usage = %q, want %q", messages[0].Usage, "12k prompt + 3k completion tokens")
+	}
+}

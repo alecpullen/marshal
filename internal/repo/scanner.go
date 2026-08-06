@@ -43,6 +43,11 @@ type Scanner struct {
 var defaultIgnoredDirs = map[string]bool{
 	".git": true, ".idea": true, ".superpowers": true, ".worktrees": true,
 	".agent": true, ".claude": true,
+	// .marshal holds agent state: spill files and pipeline/session
+	// worktrees containing full repo checkouts. Walking it pollutes
+	// search results and sends agents debugging stale copies of the
+	// same packages.
+	".marshal":     true,
 	"node_modules": true, "vendor": true, "dist": true, "build": true, "tmp": true,
 }
 

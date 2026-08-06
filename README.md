@@ -125,6 +125,22 @@ Marshal is a functional, local-first terminal coding agent. Core functionality
 MCP/plugin ecosystem, sandboxed execution, and ACP headless mode — is
 implemented and usable.
 
+## Releasing
+
+Marshal uses [GoReleaser](https://goreleaser.com/) with the
+`goreleaser-cross` image to build Linux and macOS binaries with CGO enabled.
+
+To cut a release:
+
+```bash
+git tag -a v0.3.1 -m "Release v0.3.1"
+git push origin v0.3.1
+```
+
+The `release` GitHub Actions workflow will run tests, build the binaries,
+create a draft release, and attach the archives and checksums file. Review
+the draft in the GitHub web UI, then publish it.
+
 ## License
 
 MIT

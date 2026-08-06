@@ -94,6 +94,29 @@ func TestDiagnoseUnsetAPIKeyEnv(t *testing.T) {
 	}
 }
 
+func TestDiagnoseAPIKeyEnvSilentWhenLiteralKeySet(t *testing.T) {
+	t.Setenv("MARSHAL_TEST_UNSET_KEY", "")
+	cfg := Default()
+	cfg.Providers = map[string]ProviderConfig{
+		"p": {Type: "openai_compatible", BaseURL: "https://x.example/v1", APIKey: "sk-present", APIKeyEnv: "MARSHAL_TEST_UNSET_KEY"},
+	}
+	if hasPath(Diagnose(cfg, Layers{}), "providers.p.api_key_env") {
+		t.Error("want no diagnostic when api_key is present even if api_key_env is unset")
+	}
+}
+
+func TestDiagnoseFixableEnvKeyIsReported(t *testing.T) {
+	t.Setenv("MARSHAL_TEST_UNSET_KEY", "")
+	cfg := Default()
+	cfg.Providers = map[string]ProviderConfig{
+		"p": {Type: "openai_compatible", BaseURL: "https://x.example/v1", APIKeyEnv: "MARSHAL_TEST_UNSET_KEY"},
+	}
+	ds := Diagnose(cfg, Layers{})
+	if !hasPath(ds, "providers.p.api_key_env") {
+		t.Errorf("want a diagnostic for the unset env var, got %v", diagPaths(ds))
+	}
+}
+
 func TestDiagnoseSetAPIKeyEnvIsSilent(t *testing.T) {
 	t.Setenv("MARSHAL_TEST_SET_KEY", "sk-present")
 	cfg := Default()

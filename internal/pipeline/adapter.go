@@ -86,11 +86,12 @@ func (a *ControllerAdapter) Event(ev Event) {
 	a.state.UpdateSDDProgress(func(p *session.SDDProgress) {
 		p.CurrentTask = ev.TaskN
 		p.TotalTasks = ev.TotalTasks
+		old := p.Phase
 		p.Phase = ev.Phase
 		p.Detail = ev.Detail
 		p.FixRound = ev.FixRound
 		p.MaxFixRounds = ev.MaxFixRounds
-		if ev.Phase != p.Phase {
+		if ev.Phase != old {
 			p.PhaseStartedAt = time.Now()
 		}
 		if ev.Phase == PhaseDone {

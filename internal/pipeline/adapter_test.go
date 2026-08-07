@@ -251,3 +251,37 @@ func TestAdapterStillUpdatesProgressScalars(t *testing.T) {
 		t.Errorf("progress scalars regressed: %#v", p)
 	}
 }
+
+// TestAdapterStampsPhaseStartedAtOnPhaseChange pins the per-phase elapsed
+// clock the run panel needs (Task 7). The stamp must be set on the very
+// first phase (transition from "" to a real phase) and on every subsequent
+// change, but must NOT be reset when an event reports the same phase again
+// (e.g. two fixing events during one fix round).
+func TestAdapterStampsPhaseStartedAtOnPhaseChange(t *testing.T) {
+	st := newAdapterTestState(t)
+	a := &ControllerAdapter{state: st}
+
+	a.Event(Event{TaskN: 1, Phase: PhaseImplementing})
+	first := st.SDDProgress()
+	if first.PhaseStartedAt.IsZero() {
+		t.Fatal("PhaseStartedAt not set on the initial transition from \"\" to implementing")
+	}
+
+	firstStamp := first.PhaseStartedAt
+	a.Event(Event{TaskN: 1, Phase: PhaseFixing})
+	a.Event(Event{TaskN: 1, Phase: PhaseFixing}) // same phase again
+	p := st.SDDProgress()
+	if p.PhaseStartedAt.Equal(firstStamp) {
+		t.Error("PhaseStartedAt not restamped when the phase changed")
+	}
+	if p.Phase != PhaseFixing {
+		t.Errorf("Phase = %q, want %q", p.Phase, PhaseFixing)
+	}
+
+	fixStamp := p.PhaseStartedAt
+	a.Event(Event{TaskN: 1, Phase: PhaseFixing})
+	p = st.SDDProgress()
+	if !p.PhaseStartedAt.Equal(fixStamp) {
+		t.Error("PhaseStartedAt reset even though the phase did not change")
+	}
+}

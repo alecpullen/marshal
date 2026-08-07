@@ -24,14 +24,43 @@ var ErrNotFound = errors.New("jsonextract: no JSON object found in input")
 // not confuse the parse.
 //
 // Returns ErrNotFound if no balanced object is present.
+// Repair is opt-in: a caller that would silently misread a truncated payload
+// (the knowledge extractor turning a cut-off memory list into "no memories")
+// must keep getting ErrNotFound. Only callers that explicitly want the
+// salvage call ExtractRepairing.
 func Extract(raw string) (string, error) {
+	text, repaired, err := ExtractRepairing(raw)
+	if err != nil {
+		return "", err
+	}
+	if repaired {
+		return "", ErrNotFound
+	}
+	return text, nil
+}
+
+// ExtractRepairing behaves like Extract, but when the input ends with
+// containers still open it closes them from the depth stack and returns the
+// balanced result with repaired = true. Only closing punctuation is
+// appended: no content is invented, nothing inside a string literal is
+// touched, and an unterminated string literal is not repaired (the value
+// would be a guess). Callers that must not act on a guess should check
+// repaired.
+func ExtractRepairing(raw string) (text string, repaired bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	trimmed = strings.TrimPrefix(trimmed, "```json")
 	trimmed = strings.TrimPrefix(trimmed, "```")
 	trimmed = strings.TrimSuffix(trimmed, "```")
 	trimmed = strings.TrimSpace(trimmed)
 
-	depth := 0
+	// stack holds the closing punctuation owed by each open container, so a
+	// truncated payload can be balanced without re-scanning.
+	var stack []byte
+	// drop holds byte offsets of stray closing punctuation — a ']' where an
+	// object is open, the "]}" tail models emit when they confuse the single
+	// and parallel action forms. Keeping it would return invalid JSON, so it
+	// is excised from the result instead.
+	var drop []int
 	start := -1
 	inString := false
 	escaped := false
@@ -57,22 +86,73 @@ func Extract(raw string) (string, error) {
 			inString = true
 			escaped = false
 		case '{':
-			if depth == 0 {
+			if len(stack) == 0 {
 				start = i
 			}
-			depth++
+			stack = append(stack, '}')
+		case '[':
+			// Arrays only matter once inside the object; a bare leading '['
+			// is not an object start, so it is ignored until then.
+			if len(stack) > 0 {
+				stack = append(stack, ']')
+			}
+		case ']':
+			switch {
+			case len(stack) > 0 && stack[len(stack)-1] == ']':
+				stack = stack[:len(stack)-1]
+			case len(stack) > 0:
+				// An object is open, so this ']' closes nothing.
+				drop = append(drop, i)
+			}
 		case '}':
-			if depth == 0 {
+			if len(stack) == 0 {
 				// Stray '}' before the first object begins; ignore it so it
 				// cannot drive depth negative and misalign the real object.
 				continue
 			}
-			depth--
-			if depth == 0 && start != -1 {
-				return trimmed[start : i+1], nil
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 && start != -1 {
+				return excise(trimmed[start:i+1], drop, start)
 			}
 		}
 	}
 
-	return "", ErrNotFound
+	// Input ended with containers still open. Close them if the tail is
+	// structurally repairable: an object was started, and we are not stranded
+	// mid-string with a value we would have to invent.
+	if start != -1 && len(stack) > 0 && !inString {
+		text, _, err := excise(trimmed[start:], drop, start)
+		if err != nil {
+			return "", false, err
+		}
+		var b strings.Builder
+		b.WriteString(text)
+		for i := len(stack) - 1; i >= 0; i-- {
+			b.WriteByte(stack[i])
+		}
+		return b.String(), true, nil
+	}
+
+	return "", false, ErrNotFound
+}
+
+// excise removes stray closing punctuation from an extracted object. offsets
+// are absolute positions in the scanned text; start rebases them onto s.
+func excise(s string, offsets []int, start int) (string, bool, error) {
+	if len(offsets) == 0 {
+		return s, false, nil
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	prev := 0
+	for _, off := range offsets {
+		rel := off - start
+		if rel < prev || rel >= len(s) {
+			continue
+		}
+		b.WriteString(s[prev:rel])
+		prev = rel + 1
+	}
+	b.WriteString(s[prev:])
+	return b.String(), true, nil
 }

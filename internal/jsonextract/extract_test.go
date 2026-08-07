@@ -58,6 +58,8 @@ func TestExtract(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// Extract stays strict; only ExtractRepairing salvages a
+			// truncated tail. See TestExtractRepairing.
 			name:    "unmatched opening brace",
 			input:   `{"a": 1, "b": 2`,
 			wantErr: true,
@@ -105,6 +107,78 @@ func TestExtract(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("Extract = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractRepairing(t *testing.T) {
+	tests := []struct {
+		name         string
+		input        string
+		want         string
+		wantRepaired bool
+		wantErr      bool
+	}{
+		{
+			name:  "balanced object is not repaired",
+			input: `{"action": {"type": "final"}}`,
+			want:  `{"action": {"type": "final"}}`,
+		},
+		{
+			name:         "truncated object is closed",
+			input:        `{"rationale": "x", "action": {"type": "final"`,
+			want:         `{"rationale": "x", "action": {"type": "final"}}`,
+			wantRepaired: true,
+		},
+		{
+			name:         "truncated array is closed",
+			input:        `{"actions": [{"type": "tool_call"}`,
+			want:         `{"actions": [{"type": "tool_call"}]}`,
+			wantRepaired: true,
+		},
+		{
+			// The "]}" tail models emit when they confuse the single-action
+			// and parallel-actions forms. The stray ']' must be excised, or
+			// the result is not valid JSON.
+			name:         "stray array close is excised",
+			input:        `{"action": {"type": "final", "content": "hi"}]}`,
+			want:         `{"action": {"type": "final", "content": "hi"}}`,
+			wantRepaired: true,
+		},
+		{
+			name:  "brackets inside strings are untouched",
+			input: `{"content": "an array ends with ]} here"}`,
+			want:  `{"content": "an array ends with ]} here"}`,
+		},
+		{
+			name:    "unterminated string is not repaired",
+			input:   `{"action": {"content": "half a sen`,
+			wantErr: true,
+		},
+		{
+			name:    "no object at all",
+			input:   "I think the answer is 42.",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, repaired, err := ExtractRepairing(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ExtractRepairing = %q, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ExtractRepairing returned error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("text = %q, want %q", got, tt.want)
+			}
+			if repaired != tt.wantRepaired {
+				t.Errorf("repaired = %v, want %v", repaired, tt.wantRepaired)
 			}
 		})
 	}

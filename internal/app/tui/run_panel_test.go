@@ -144,3 +144,16 @@ func TestRunPanelFinishedFailureTruncatesHintFirst(t *testing.T) {
 		t.Errorf("narrow failure line should drop resume hint:\n%s", out)
 	}
 }
+
+func TestNextTurnClearsRunEvents(t *testing.T) {
+	m := newTestModel(t)
+	m.state.AddRunEvent(session.RunEvent{Kind: session.RunEventCommit, TaskN: 1, Title: "a3f9e21"})
+	m.state.FinishSDDRun(true, time.Now(), nil)
+
+	m.clearFinishedRun() // the helper that already calls ClearSDDProgress
+
+	if n := len(m.state.RunEvents()); n != 0 {
+		t.Errorf("got %d run events after the next turn, want 0 — a second run must not "+
+			"append to the first run's log", n)
+	}
+}

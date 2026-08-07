@@ -371,9 +371,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		// A finished run's collapsed summary belongs to that run; the
 		// next user turn clears it, same as the all-done todo summary.
-		if m.state.SDDProgress().Finished {
-			m.state.ClearSDDProgress()
-		}
+		m.clearFinishedRun()
 		m.dismissCompletionPopups()
 		m.updateViewportHeight()
 		m.viewportFollow = true
@@ -398,4 +396,14 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		return mm, cmd, true
 	}
 	return *m, nil, false
+}
+
+// clearFinishedRun clears a finished run's collapsed summary and its event
+// log on the user's next turn, so a second run's events don't append to the
+// first run's.
+func (m *Model) clearFinishedRun() {
+	if m.state.SDDProgress().Finished {
+		m.state.ClearSDDProgress()
+		m.state.ClearRunEvents()
+	}
 }

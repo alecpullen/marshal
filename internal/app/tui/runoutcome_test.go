@@ -47,7 +47,7 @@ func rowTexts(doc commands.Doc) []string {
 }
 
 func TestOutcomeDocSuccessOffersTheBranchDiff(t *testing.T) {
-	doc := runOutcomeDoc(succeededRun(), worktree.NewFakeGitOps(), "/repo", 100)
+	doc := runOutcomeDoc(succeededRun(), worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
 	joined := strings.Join(rowTexts(doc), "\n")
 
 	for _, want := range []string{"pipeline/add-retries", "4/4", "diff", "ledger", "artifacts"} {
@@ -58,7 +58,7 @@ func TestOutcomeDocSuccessOffersTheBranchDiff(t *testing.T) {
 }
 
 func TestOutcomeDocFailureKeepsTheReason(t *testing.T) {
-	doc := runOutcomeDoc(failedRun(), worktree.NewFakeGitOps(), "/repo", 100)
+	doc := runOutcomeDoc(failedRun(), worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
 	joined := strings.Join(rowTexts(doc), "\n")
 
 	if !strings.Contains(joined, "go test ./...") {
@@ -70,7 +70,7 @@ func TestOutcomeDocFailureKeepsTheReason(t *testing.T) {
 }
 
 func TestOutcomeDocFailureOffersResume(t *testing.T) {
-	doc := runOutcomeDoc(failedRun(), worktree.NewFakeGitOps(), "/repo", 100)
+	doc := runOutcomeDoc(failedRun(), worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
 	joined := strings.Join(rowTexts(doc), "\n")
 	if !strings.Contains(joined, sddResumeHint) {
 		t.Errorf("a failed run must say how to resume, in the shared wording:\n%s", joined)
@@ -78,7 +78,7 @@ func TestOutcomeDocFailureOffersResume(t *testing.T) {
 }
 
 func TestOutcomeDocSuccessDoesNotOfferResume(t *testing.T) {
-	doc := runOutcomeDoc(succeededRun(), worktree.NewFakeGitOps(), "/repo", 100)
+	doc := runOutcomeDoc(succeededRun(), worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
 	if strings.Contains(strings.Join(rowTexts(doc), "\n"), sddResumeHint) {
 		t.Error("a completed run has nothing to resume")
 	}
@@ -87,17 +87,94 @@ func TestOutcomeDocSuccessDoesNotOfferResume(t *testing.T) {
 func TestOutcomeDocHandlesMissingBranchGracefully(t *testing.T) {
 	p := succeededRun()
 	p.Branch = ""
-	doc := runOutcomeDoc(p, worktree.NewFakeGitOps(), "/repo", 100)
+	doc := runOutcomeDoc(p, worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
 	if len(doc.Rows) == 0 {
 		t.Error("a run with no branch must still render an outcome, not an empty panel")
 	}
 }
 
 func TestOutcomeDocWithNoRunAtAll(t *testing.T) {
-	doc := runOutcomeDoc(session.SDDProgress{}, worktree.NewFakeGitOps(), "/repo", 100)
+	doc := runOutcomeDoc(session.SDDProgress{}, worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
 	joined := strings.Join(rowTexts(doc), "\n")
 	if !strings.Contains(strings.ToLower(joined), "no plan run") {
 		t.Errorf("with no run recorded the doc must say so plainly:\n%s", joined)
+	}
+}
+
+func activeRun() (session.SDDProgress, time.Time) {
+	p := etaTestProgress()
+	p.PlanName = "add-retries"
+	p.Branch = "pipeline/add-retries"
+	p.BaseRef = "main"
+	p.LedgerPath = "/repo/.marshal/pipeline/add-retries/ledger.md"
+	return p, etaTestNow(p)
+}
+
+func TestOutcomeDocMidRunSaysRunningNotStopped(t *testing.T) {
+	p, now := activeRun()
+	doc := runOutcomeDoc(p, worktree.NewFakeGitOps(), "/repo", now, 100)
+	joined := strings.Join(rowTexts(doc), "\n")
+
+	if strings.Contains(joined, "stopped") {
+		t.Errorf("an in-flight run must not be described as stopped:\n%s", joined)
+	}
+	if !strings.Contains(joined, "running") {
+		t.Errorf("an in-flight run must say it is running:\n%s", joined)
+	}
+}
+
+func TestOutcomeDocMidRunElapsedIsPositive(t *testing.T) {
+	p, now := activeRun()
+	doc := runOutcomeDoc(p, worktree.NewFakeGitOps(), "/repo", now, 100)
+	joined := strings.Join(rowTexts(doc), "\n")
+
+	if strings.Contains(joined, "-") && strings.Contains(joined, "9223372036") {
+		t.Errorf("elapsed computed from a zero EndedAt overflowed:\n%s", joined)
+	}
+	if !strings.Contains(joined, "16m") {
+		t.Errorf("elapsed must be measured against now for a live run:\n%s", joined)
+	}
+}
+
+func TestOutcomeDocMidRunListsThePlan(t *testing.T) {
+	p, now := activeRun()
+	p.Tasks = []string{"Add config field", "Wire the resolver", "Add retry helper",
+		"Thread the timeout", "Add the metrics hook", "Wire the config flag", "Document the knob"}
+	doc := runOutcomeDoc(p, worktree.NewFakeGitOps(), "/repo", now, 100)
+	joined := strings.Join(rowTexts(doc), "\n")
+
+	for _, want := range []string{"Add config field", "Thread the timeout", "Document the knob"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the plan section must list every task; missing %q:\n%s", want, joined)
+		}
+	}
+	// Completed tasks carry their duration; pending tasks do not.
+	if !strings.Contains(joined, "2m 2s") {
+		t.Errorf("a completed task must show its duration:\n%s", joined)
+	}
+}
+
+func TestOutcomeDocMidRunShowsProgressAndETA(t *testing.T) {
+	p, now := activeRun()
+	doc := runOutcomeDoc(p, worktree.NewFakeGitOps(), "/repo", now, 100)
+	joined := strings.Join(rowTexts(doc), "\n")
+
+	for _, want := range []string{"4/7", "43%", "~6–25m left"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("progress row missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestOutcomeDocFinishedPathUnchanged(t *testing.T) {
+	doc := runOutcomeDoc(succeededRun(), worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
+	joined := strings.Join(rowTexts(doc), "\n")
+
+	if !strings.Contains(joined, "completed") {
+		t.Errorf("the finished path must still say completed:\n%s", joined)
+	}
+	if strings.Contains(joined, "left") {
+		t.Errorf("a finished run has no remaining-time estimate:\n%s", joined)
 	}
 }
 

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/commands"
 	"marshal/internal/diffview"
 	"marshal/internal/worktree"
@@ -27,7 +29,7 @@ const diffContextLines = 3
 // controller.go CleanupWorktrees) and leaves only a branch name, while a
 // failed run collapsed to an 80-character truncated error with no route to
 // the ledger or the per-task reports.
-func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, width int) commands.Doc {
+func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, now time.Time, width int) commands.Doc {
 	if !p.Finished && !p.Active {
 		return commands.Doc{
 			Title:  "Plan run",
@@ -36,16 +38,27 @@ func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, 
 		}
 	}
 
-	var rows []commands.Row
+	live := p.Active && !p.Finished
 
+	// A live run has no EndedAt; measuring against it produced an
+	// overflowed negative duration.
+	end := p.EndedAt
+	if end.IsZero() {
+		end = now
+	}
 	status := "stopped"
-	if p.Succeeded {
+	switch {
+	case live:
+		status = "running"
+	case p.Succeeded:
 		status = "completed"
 	}
+
+	var rows []commands.Row
 	rows = append(rows, commands.Row{Header: "Run"})
 	rows = append(rows, commands.Row{
 		Text:   p.PlanName,
-		Detail: fmt.Sprintf("%s · %d/%d tasks · %s", status, p.DoneTasks, p.TotalTasks, formatElapsed(p.EndedAt.Sub(p.StartedAt))),
+		Detail: fmt.Sprintf("%s · %d/%d tasks · %s", status, p.DoneTasks, p.TotalTasks, formatElapsed(end.Sub(p.StartedAt))),
 	})
 	if p.Branch != "" {
 		rows = append(rows, commands.Row{Text: "branch", Detail: p.Branch})
@@ -53,6 +66,30 @@ func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, 
 	if p.Error != "" {
 		// The full reason, not the 80-character panel truncation.
 		rows = append(rows, commands.Row{Text: "reason", Detail: p.Error})
+	}
+
+	if live {
+		progress := fmt.Sprintf("task %d/%d", p.CurrentTask, p.TotalTasks)
+		if p.TotalTasks > 0 {
+			progress += " · " + formatPercent(p.DoneTasks, p.TotalTasks)
+		}
+		if p.Phase != "" {
+			progress += " · " + p.Phase
+		}
+		if low, high, openEnded, ok := estimateRemaining(p, now); ok {
+			progress += " · " + formatETA(low, high, openEnded)
+		}
+		rows = append(rows, commands.Row{Header: "Progress"})
+		rows = append(rows, commands.Row{Text: progress})
+	}
+	if len(p.Tasks) > 0 {
+		rows = append(rows, commands.Row{Header: "Plan"})
+		for i, title := range p.Tasks {
+			rows = append(rows, commands.Row{
+				Text:   fmt.Sprintf("%s %d %s", taskGlyph(i, p), i+1, title),
+				Detail: taskDuration(i, p, now),
+			})
+		}
 	}
 
 	rows = append(rows, commands.Row{Header: "Inspect"})
@@ -89,6 +126,39 @@ func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, 
 		footer = sddResumeHint
 	}
 	return commands.Doc{Title: "Plan run — " + p.PlanName, Rows: rows, Footer: footer}
+}
+
+// taskGlyph marks a task done, in progress, or pending — the same status
+// derivation the side rail uses.
+func taskGlyph(i int, p session.SDDProgress) string {
+	switch {
+	case i < p.DoneTasks:
+		return glyph.OK
+	case i == p.CurrentTask-1 && p.Active:
+		return glyph.Running
+	default:
+		return glyph.Ambient
+	}
+}
+
+// taskDuration renders a task's elapsed time: its full duration once
+// complete, its running time while in flight, and nothing when pending.
+func taskDuration(i int, p session.SDDProgress, now time.Time) string {
+	if i < 0 || i >= len(p.TaskTimings) {
+		return ""
+	}
+	t := p.TaskTimings[i]
+	if t.StartedAt.IsZero() {
+		return ""
+	}
+	end := t.EndedAt
+	if end.IsZero() {
+		end = now
+	}
+	if d := end.Sub(t.StartedAt); d > 0 {
+		return formatElapsed(d)
+	}
+	return ""
 }
 
 // branchDiff renders the run branch's changes against its base. It is

@@ -163,7 +163,7 @@ func init() {
 			return m, nil
 		},
 		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			doc := runOutcomeDoc(m.state.SDDProgress(), worktree.CLIGitOps{}, m.state.WorkingDir, m.width)
+			doc := runOutcomeDoc(m.state.SDDProgress(), worktree.CLIGitOps{}, m.state.WorkingDir, m.now(), m.width)
 			m.dock.Open(docpanel.New(doc, m.state))
 			m.refreshViewport()
 			return m, nil

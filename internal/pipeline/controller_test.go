@@ -690,3 +690,74 @@ func TestOpenGateContextIsEmptyForBranchLevelGates(t *testing.T) {
 		t.Errorf("task 0 is not a plan task; title = %q, want empty", title)
 	}
 }
+
+func TestRunWritesCheckpointOnTaskStart(t *testing.T) {
+	d, _ := scriptedDispatch(t,
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"STATUS: DONE\nTESTS: pass\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	rs := NewRunStore(c.Paths)
+	last, ok, err := rs.LastCheckpoint()
+	if err != nil {
+		t.Fatalf("LastCheckpoint: %v", err)
+	}
+	if !ok {
+		t.Fatal("no checkpoint written")
+	}
+	if last.Phase != PhaseDone && last.Phase != "run_finished" {
+		t.Errorf("last checkpoint phase = %q, want done or run_finished", last.Phase)
+	}
+}
+
+func TestRunRecoversCommittedTaskWithoutRedispatch(t *testing.T) {
+	d, prompts := scriptedDispatch(t, "STATUS: DONE\nTESTS: pass\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n", "SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	g := c.Git.(*worktree.FakeGitOps)
+	g.Dirty = true
+
+	// Simulate a prior run that committed task 1 but crashed before
+	// writing the completion ledger line.
+	c.RunStore = NewRunStore(c.Paths)
+	_ = c.RunStore.CreateManifest(Manifest{
+		RunID: "crashed-run", PlanPath: c.Plan.Path,
+		RepoRoot: c.RepoRoot, PipelineBranch: "pipeline/test-plan",
+	})
+	// Task 1 was committed: record the checkpoint and the commit.
+	_ = c.RunStore.AppendCheckpoint(Checkpoint{Seq: 1, RunID: "crashed-run", Phase: "task_completed", TaskN: 1, BaseSHA: "111111", HeadSHA: "aaaaaaa"})
+	g.Refs["HEAD"] = "aaaaaaa"
+	g.Heads[c.workDir()] = "aaaaaaa"
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Task 1 should NOT have been redispatched: only task 2 + branch review.
+	if len(*prompts) != 3 {
+		t.Fatalf("dispatches = %d, want 3 (task 2 impl + task 2 review + branch review), got prompts:\n%v", len(*prompts), *prompts)
+	}
+}
+
+func TestRunRestoresGateAfterCrash(t *testing.T) {
+	d, _ := scriptedDispatch(t, "STATUS: NEEDS_CONTEXT\nQUESTION: which level?\n")
+	c := testController(t, d, NewFakeCommandRunner())
+	c.RunStore = NewRunStore(c.Paths)
+	_ = c.RunStore.CreateManifest(Manifest{RunID: "crashed-run", PlanPath: c.Plan.Path, RepoRoot: c.RepoRoot, PipelineBranch: "pipeline/test-plan"})
+	_ = c.RunStore.AppendCheckpoint(Checkpoint{Seq: 1, RunID: "crashed-run", Phase: PhaseBlocked, TaskN: 1, GateQuestion: "which level?"})
+
+	err := c.Run(context.Background())
+	if !errors.Is(err, ErrHumanGateRequired) {
+		t.Fatalf("Run = %v, want ErrHumanGateRequired", err)
+	}
+	if c.Question() != "which level?" {
+		t.Errorf("Question() = %q, want %q", c.Question(), "which level?")
+	}
+}

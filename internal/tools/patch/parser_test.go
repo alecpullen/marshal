@@ -76,11 +76,81 @@ func TestParseRejectsUnclosedSearch(t *testing.T) {
 	}
 }
 
-func TestParseRejectsUnclosedReplace(t *testing.T) {
+func TestParseRepairsReplaceClosedByEOF(t *testing.T) {
+	// EOF is an unambiguous terminator when a replacement is present. This
+	// used to be a hard error, so nothing that previously parsed changes.
 	input := "File: foo.go\n<<<<<<< SEARCH\nhello\n=======\nworld\n"
-	_, err := Parse(input)
-	if err == nil {
-		t.Fatal("expected error for unclosed REPLACE block, got nil")
+	res, err := ParseRepairing(input)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 1 || len(res.Patches[0].Chunks) != 1 {
+		t.Fatalf("patches = %+v, want one chunk", res.Patches)
+	}
+	if got := res.Patches[0].Chunks[0].Replace; got != "world" {
+		t.Errorf("Replace = %q, want %q", got, "world")
+	}
+	if len(res.Repairs) != 1 {
+		t.Errorf("Repairs = %v, want exactly one note", res.Repairs)
+	}
+}
+
+// TestParseRepairsDividerUsedAsTerminator reproduces the exact failure from
+// session 1786111806174657000: every block was closed with "=======" instead
+// of ">>>>>>> REPLACE". The stray divider used to land in the replace buffer
+// as content and then the next File: line errored.
+func TestParseRepairsDividerUsedAsTerminator(t *testing.T) {
+	input := strings.Join([]string{
+		"File: a.go",
+		"<<<<<<< SEARCH",
+		"old a",
+		"=======",
+		"new a",
+		"=======",
+		"File: b.go",
+		"<<<<<<< SEARCH",
+		"old b",
+		"=======",
+		"new b",
+		"=======",
+	}, "\n")
+	res, err := ParseRepairing(input)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Patches) != 2 {
+		t.Fatalf("patches = %+v, want 2 files", res.Patches)
+	}
+	for i, want := range []struct{ path, replace string }{{"a.go", "new a"}, {"b.go", "new b"}} {
+		if res.Patches[i].Path != want.path {
+			t.Errorf("patch %d path = %q, want %q", i, res.Patches[i].Path, want.path)
+		}
+		if got := res.Patches[i].Chunks[0].Replace; got != want.replace {
+			t.Errorf("patch %d Replace = %q, want %q (stray divider must not survive)", i, got, want.replace)
+		}
+	}
+	if len(res.Repairs) != 2 {
+		t.Errorf("Repairs = %v, want one note per repaired block", res.Repairs)
+	}
+}
+
+func TestParseStillRejectsEmptyReplaceAtEOF(t *testing.T) {
+	// Truncation and "delete these lines" are indistinguishable here, and
+	// guessing deletes code. Must stay an error.
+	input := "File: foo.go\n<<<<<<< SEARCH\nhello\n=======\n"
+	if _, err := ParseRepairing(input); err == nil {
+		t.Fatal("expected error for an empty REPLACE block at EOF, got nil")
+	}
+}
+
+func TestParseCleanInputReportsNoRepairs(t *testing.T) {
+	input := "File: foo.go\n<<<<<<< SEARCH\nhello\n=======\nworld\n>>>>>>> REPLACE\n"
+	res, err := ParseRepairing(input)
+	if err != nil {
+		t.Fatalf("ParseRepairing: %v", err)
+	}
+	if len(res.Repairs) != 0 {
+		t.Errorf("Repairs = %v, want none for a well-formed proposal", res.Repairs)
 	}
 }
 

@@ -33,8 +33,30 @@ type PatchChunk struct {
 	Replace string
 }
 
+// Parse reads a SEARCH/REPLACE proposal. Repairs holds a note for every
+// deviation it healed rather than rejected, so the caller can tell the model
+// what it got wrong without forcing a whole new proposal.
+type Result struct {
+	Patches []FilePatch
+	Repairs []string
+}
+
+// Parse is the strict-signature wrapper kept for existing callers.
 func Parse(proposal string) ([]FilePatch, error) {
+	res, err := ParseRepairing(proposal)
+	return res.Patches, err
+}
+
+// ParseRepairing parses a proposal, recovering from terminator mistakes that
+// have an unambiguous reading. A REPLACE block left open at a "File:" line or
+// at end of input is committed rather than rejected: both are unambiguous
+// terminators, and the alternative was already a hard error, so nothing that
+// used to parse changes meaning. A trailing "=======" on such a block is
+// dropped — models reach for the divider as the closing marker, and leaving
+// it in silently corrupts the replacement text.
+func ParseRepairing(proposal string) (Result, error) {
 	var patches []FilePatch
+	var repairs []string
 	lines := strings.Split(strings.ReplaceAll(proposal, "\r\n", "\n"), "\n")
 
 	var currentPath string
@@ -43,7 +65,10 @@ func Parse(proposal string) ([]FilePatch, error) {
 	inSearch := false
 	inReplace := false
 
-	flushChunk := func() error {
+	// declared here so flushChunk can call it; defined below.
+	var commitChunk func()
+
+	flushChunk := func(terminator string) error {
 		if !(inSearch || inReplace) {
 			return nil
 		}
@@ -51,11 +76,41 @@ func Parse(proposal string) ([]FilePatch, error) {
 			return fmt.Errorf("patch: unclosed SEARCH block for %q: add a %q divider line, then the replacement, then %q",
 				currentPath, "=======", ">>>>>>> REPLACE")
 		}
-		return fmt.Errorf("patch: unclosed REPLACE block for %q: add a %q line to close it",
-			currentPath, ">>>>>>> REPLACE")
+		// An open REPLACE block: commit it if it carries a replacement and a
+		// path. An empty buffer stays an error — "delete these lines" and
+		// "the output got cut off" look identical, and guessing deletes code.
+		// Trailing blank lines are an artifact of the missing terminator —
+		// the normal path never captures them because the marker line ends
+		// the block. Only this repair path trims.
+		trimTrailingBlanks := func() {
+			for len(replaceBuffer) > 0 && strings.TrimSpace(replaceBuffer[len(replaceBuffer)-1]) == "" {
+				replaceBuffer = replaceBuffer[:len(replaceBuffer)-1]
+			}
+		}
+		droppedDivider := false
+		trimTrailingBlanks()
+		for len(replaceBuffer) > 0 && dividerRe.MatchString(strings.TrimSpace(replaceBuffer[len(replaceBuffer)-1])) {
+			replaceBuffer = replaceBuffer[:len(replaceBuffer)-1]
+			droppedDivider = true
+			trimTrailingBlanks()
+		}
+		if currentPath == "" || len(replaceBuffer) == 0 {
+			return fmt.Errorf("patch: unclosed REPLACE block for %q: add a %q line to close it",
+				currentPath, ">>>>>>> REPLACE")
+		}
+		marker := ">>>>>>> REPLACE"
+		if droppedDivider {
+			marker = "======="
+		}
+		repairs = append(repairs, fmt.Sprintf(
+			"%s: REPLACE block closed with %q instead of %q; treated %s as the terminator",
+			currentPath, marker, ">>>>>>> REPLACE", terminator))
+		inReplace = false
+		commitChunk()
+		return nil
 	}
 
-	commitChunk := func() {
+	commitChunk = func() {
 		chunk := PatchChunk{
 			Search:  strings.Join(searchBuffer, "\n"),
 			Replace: strings.Join(replaceBuffer, "\n"),
@@ -87,16 +142,16 @@ func Parse(proposal string) ([]FilePatch, error) {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "File:") {
-			if err := flushChunk(); err != nil {
-				return nil, err
+			if err := flushChunk("the next File: line"); err != nil {
+				return Result{}, err
 			}
 			currentPath = strings.TrimSpace(strings.TrimPrefix(trimmed, "File:"))
 			continue
 		}
 
 		if searchMarkerRe.MatchString(trimmed) {
-			if err := flushChunk(); err != nil {
-				return nil, err
+			if err := flushChunk("the next SEARCH marker"); err != nil {
+				return Result{}, err
 			}
 			inSearch = true
 			searchBuffer = nil
@@ -110,7 +165,7 @@ func Parse(proposal string) ([]FilePatch, error) {
 		}
 		if replaceMarkerRe.MatchString(trimmed) && inReplace {
 			if currentPath == "" {
-				return nil, fmt.Errorf("patch: chunk has no File: header before line %q", line)
+				return Result{}, fmt.Errorf("patch: chunk has no File: header before line %q", line)
 			}
 			inReplace = false
 			commitChunk()
@@ -123,17 +178,17 @@ func Parse(proposal string) ([]FilePatch, error) {
 			replaceBuffer = append(replaceBuffer, line)
 		}
 	}
-	if err := flushChunk(); err != nil {
-		return nil, err
+	if err := flushChunk("end of the proposal"); err != nil {
+		return Result{}, err
 	}
 	if len(patches) == 0 {
 		// Returning an empty slice with no error left the caller to report
 		// "no valid patches found in proposal", which tells a model nothing
 		// about what it got wrong. The error is read by the model that wrote
 		// the proposal, so it states the format instead.
-		return nil, fmt.Errorf("patch: no SEARCH/REPLACE blocks found; each edit must be written as " +
+		return Result{}, fmt.Errorf("patch: no SEARCH/REPLACE blocks found; each edit must be written as " +
 			"a \"File: <path>\" line, then \"<<<<<<< SEARCH\", the exact existing lines, " +
 			"\"=======\", the replacement lines, and \">>>>>>> REPLACE\"")
 	}
-	return patches, nil
+	return Result{Patches: patches, Repairs: repairs}, nil
 }

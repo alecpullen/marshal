@@ -21,8 +21,11 @@ func TestParseErrorsNameWhatIsMissing(t *testing.T) {
 			want:  []string{"unclosed SEARCH", "a.go", "======="},
 		},
 		{
-			name:  "unclosed replace names the terminator",
-			input: "File: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n",
+			// A replacement present at EOF is repaired (see
+			// TestParseRepairsReplaceClosedByEOF); only an empty one still
+			// errors, because truncation and deletion look identical.
+			name:  "unclosed empty replace names the terminator",
+			input: "File: a.go\n<<<<<<< SEARCH\nold\n=======\n",
 			want:  []string{"unclosed REPLACE", "a.go", ">>>>>>> REPLACE"},
 		},
 		{

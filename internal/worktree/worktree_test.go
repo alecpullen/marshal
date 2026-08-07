@@ -56,3 +56,22 @@ func TestEnsureWorktreeBranchWithoutWorktree(t *testing.T) {
 		t.Fatal("branch exists but no worktree: want error, got nil")
 	}
 }
+
+func TestFakeGitOpsRecordsCalls(t *testing.T) {
+	g := NewFakeGitOps()
+	g.Refs["main"] = "1111111111111111111111111111111111111111"
+
+	if _, err := EnsureWorktree(g, "/repo", "/run/worktrees", "pipeline/my-plan", "main"); err != nil {
+		t.Fatalf("EnsureWorktree: %v", err)
+	}
+	got := g.Calls()
+	want := []string{"BranchExists", "RevParse", "WorktreeAdd"}
+	if len(got) != len(want) {
+		t.Fatalf("Calls() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Calls()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

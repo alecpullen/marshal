@@ -69,7 +69,13 @@ type FakeGitOps struct {
 	Removed   []string
 	Pruned    bool
 	RemoveErr error
+	// Calls records every method invocation in order, so tests can assert
+	// a consumer only ever reads (e.g. only Diff, never WorktreeAdd).
+	calls []string
 }
+
+// Calls returns the recorded method-invocation log in order.
+func (f *FakeGitOps) Calls() []string { return f.calls }
 
 func NewFakeGitOps() *FakeGitOps {
 	return &FakeGitOps{
@@ -79,7 +85,11 @@ func NewFakeGitOps() *FakeGitOps {
 	}
 }
 
+// record appends the method name to the call log.
+func (f *FakeGitOps) record(name string) { f.calls = append(f.calls, name) }
+
 func (f *FakeGitOps) RevParse(dir, ref string) (string, error) {
+	f.record("RevParse")
 	if sha, ok := f.Refs[ref]; ok {
 		return sha, nil
 	}
@@ -92,15 +102,20 @@ func (f *FakeGitOps) RevParse(dir, ref string) (string, error) {
 }
 
 func (f *FakeGitOps) MergeBase(dir, a, b string) (string, error) {
+	f.record("MergeBase")
 	if sha, ok := f.Refs["merge-base"]; ok {
 		return sha, nil
 	}
 	return f.RevParse(dir, a)
 }
 
-func (f *FakeGitOps) BranchExists(dir, branch string) bool { return f.Branches[branch] }
+func (f *FakeGitOps) BranchExists(dir, branch string) bool {
+	f.record("BranchExists")
+	return f.Branches[branch]
+}
 
 func (f *FakeGitOps) WorktreeAdd(dir, path, branch, startPoint string) error {
+	f.record("WorktreeAdd")
 	f.Added = append(f.Added, path)
 	f.Branches[branch] = true
 	f.Worktrees = append(f.Worktrees, path)
@@ -108,9 +123,13 @@ func (f *FakeGitOps) WorktreeAdd(dir, path, branch, startPoint string) error {
 	return nil
 }
 
-func (f *FakeGitOps) WorktreeList(dir string) ([]string, error) { return f.Worktrees, nil }
+func (f *FakeGitOps) WorktreeList(dir string) ([]string, error) {
+	f.record("WorktreeList")
+	return f.Worktrees, nil
+}
 
 func (f *FakeGitOps) WorktreeRemove(dir, path string) error {
+	f.record("WorktreeRemove")
 	if f.RemoveErr != nil {
 		return f.RemoveErr
 	}
@@ -119,6 +138,7 @@ func (f *FakeGitOps) WorktreeRemove(dir, path string) error {
 }
 
 func (f *FakeGitOps) WorktreePrune(dir string) error {
+	f.record("WorktreePrune")
 	f.Pruned = true
 	return nil
 }
@@ -126,9 +146,10 @@ func (f *FakeGitOps) WorktreePrune(dir string) error {
 // IsDirty reports the Dirty field. Dirty is sticky: CommitAll does not
 // clear it, so a scripted multi-task run keeps producing commits without
 // the test resetting the flag between tasks.
-func (f *FakeGitOps) IsDirty(dir string) (bool, error) { return f.Dirty, nil }
+func (f *FakeGitOps) IsDirty(dir string) (bool, error) { f.record("IsDirty"); return f.Dirty, nil }
 
 func (f *FakeGitOps) CommitAll(dir, message string) (string, error) {
+	f.record("CommitAll")
 	if f.CommitErr != nil {
 		return "", f.CommitErr
 	}
@@ -142,8 +163,15 @@ func (f *FakeGitOps) CommitAll(dir, message string) (string, error) {
 	return head, nil
 }
 
-func (f *FakeGitOps) LogOneline(dir, rng string) (string, error) { return f.LogOut, nil }
-func (f *FakeGitOps) DiffStat(dir, rng string) (string, error)   { return f.StatOut, nil }
+func (f *FakeGitOps) LogOneline(dir, rng string) (string, error) {
+	f.record("LogOneline")
+	return f.LogOut, nil
+}
+func (f *FakeGitOps) DiffStat(dir, rng string) (string, error) {
+	f.record("DiffStat")
+	return f.StatOut, nil
+}
 func (f *FakeGitOps) Diff(dir, rng string, contextLines int) (string, error) {
+	f.record("Diff")
 	return f.DiffOut, nil
 }

@@ -696,7 +696,7 @@ func TestCurrentToolLabelFileWritePatch(t *testing.T) {
 	state := newTestState()
 	state.SetActiveToolCall(ActiveToolCall{
 		Name: "file.write_patch",
-		Args: "File: internal/app/config/config.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE",
+		Path: "internal/app/config/config.go",
 	})
 	if got := state.CurrentToolLabel(); got != "editing internal/app/config/config.go" {
 		t.Fatalf("CurrentToolLabel() = %q, want %q", got, "editing internal/app/config/config.go")
@@ -705,29 +705,9 @@ func TestCurrentToolLabelFileWritePatch(t *testing.T) {
 
 func TestCurrentToolLabelFileWritePatchNoPath(t *testing.T) {
 	state := newTestState()
-	state.SetActiveToolCall(ActiveToolCall{Name: "file.write_patch", Args: "patch"})
+	state.SetActiveToolCall(ActiveToolCall{Name: "file.write_patch"})
 	if got := state.CurrentToolLabel(); got != "file.write_patch" {
 		t.Fatalf("CurrentToolLabel() = %q, want %q", got, "file.write_patch")
-	}
-}
-
-func TestFirstPatchPath(t *testing.T) {
-	cases := []struct {
-		name string
-		args string
-		want string
-	}{
-		{"first file line", "File: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE", "a.go"},
-		{"leading whitespace", "  File:   b.go  \n<<<<<<< SEARCH", "b.go"},
-		{"no file line", "<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE", ""},
-		{"empty", "", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := firstPatchPath(tc.args); got != tc.want {
-				t.Fatalf("firstPatchPath(%q) = %q, want %q", tc.args, got, tc.want)
-			}
-		})
 	}
 }
 

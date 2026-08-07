@@ -330,6 +330,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	r.State.SetActiveToolCall(session.ActiveToolCall{
 		Name:      toolName,
 		Args:      SummarizeToolArgs(toolName, args),
+		Path:      firstPatchPathFromArgs(toolName, args),
 		StartedAt: r.Now(),
 	})
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})

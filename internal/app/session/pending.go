@@ -114,6 +114,7 @@ func (p *PendingToolCall) Respond(d UserApprovalDecision) {
 type ActiveToolCall struct {
 	Name      string
 	Args      string
+	Path      string
 	Output    string
 	StartedAt time.Time
 }

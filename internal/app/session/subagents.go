@@ -1,7 +1,6 @@
 package session
 
 import (
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -152,23 +151,11 @@ func (s *State) CurrentToolLabel() string {
 	atc := *s.activeToolCall
 	switch atc.Name {
 	case "file.write_patch":
-		if path := firstPatchPath(atc.Args); path != "" {
-			return "editing " + path
+		if atc.Path != "" {
+			return "editing " + atc.Path
 		}
 	}
 	return atc.Name
-}
-
-// firstPatchPath extracts the first "File: <path>" line from a patch
-// proposal's args, used to name the file a file-edit tool is working on.
-func firstPatchPath(args string) string {
-	for _, line := range strings.Split(args, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "File:") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "File:"))
-		}
-	}
-	return ""
 }
 
 // SetSubagentBroker wires the broker RegisterSubagent/FinishSubagent publish

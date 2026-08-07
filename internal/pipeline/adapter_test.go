@@ -232,6 +232,27 @@ func TestAdapterMapsCommitRetryConcernAndSkip(t *testing.T) {
 	}
 }
 
+func TestAdapterMapsPhaseDoneToTaskDoneEvent(t *testing.T) {
+	st := newAdapterTestState(t)
+	a := &ControllerAdapter{state: st}
+
+	a.Event(Event{TaskN: 2, Phase: PhaseDone, Detail: "task 2 — Scaffold"})
+
+	evs := st.RunEvents()
+	if len(evs) != 1 {
+		t.Fatalf("got %d run events, want 1", len(evs))
+	}
+	if evs[0].Kind != session.RunEventTaskDone {
+		t.Errorf("Kind = %v, want RunEventTaskDone", evs[0].Kind)
+	}
+	if evs[0].TaskN != 2 {
+		t.Errorf("TaskN = %d, want 2", evs[0].TaskN)
+	}
+	if evs[0].Detail != "task 2 — Scaffold" {
+		t.Errorf("Detail = %q, want the phase detail", evs[0].Detail)
+	}
+}
+
 func TestAdapterIgnoresNilAndUnknownPayloads(t *testing.T) {
 	st := newAdapterTestState(t)
 	a := &ControllerAdapter{state: st}

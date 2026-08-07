@@ -105,6 +105,13 @@ func (a *ControllerAdapter) Event(ev Event) {
 // A nil or unrecognised payload records nothing — the log is best-effort
 // detail, never a source of errors.
 func (a *ControllerAdapter) recordRunEvents(ev Event) {
+	if ev.Phase == PhaseDone {
+		a.state.AddRunEvent(session.RunEvent{
+			Kind:   session.RunEventTaskDone,
+			TaskN:  ev.TaskN,
+			Detail: ev.Detail,
+		})
+	}
 	switch p := ev.Payload.(type) {
 	case VerifyFailedPayload:
 		a.state.AddRunEvent(session.RunEvent{

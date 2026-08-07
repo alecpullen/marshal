@@ -1,6 +1,9 @@
 package agent
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 func SummarizeToolArgs(toolName string, args json.RawMessage) string {
 	if len(args) == 0 {
@@ -27,10 +30,9 @@ func SummarizeToolArgs(toolName string, args json.RawMessage) string {
 		}
 		return ""
 	case "file.write_patch":
-		if p, ok := m["patch"].(string); ok {
-			return p
-		}
-		return ""
+		// The patch body is large and would flood the live tool-call line;
+		// the file path is surfaced separately via ActiveToolCall.Path.
+		return "patch"
 	default:
 		for _, v := range m {
 			if s, ok := v.(string); ok && s != "" {
@@ -39,4 +41,29 @@ func SummarizeToolArgs(toolName string, args json.RawMessage) string {
 		}
 		return ""
 	}
+}
+
+// firstPatchPathFromArgs extracts the first "File: <path>" line from a
+// file.write_patch proposal's raw args, used to name the file a file-edit
+// tool is working on. It returns "" for any other tool or when no path is
+// present.
+func firstPatchPathFromArgs(toolName string, args json.RawMessage) string {
+	if toolName != "file.write_patch" || len(args) == 0 {
+		return ""
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(args, &m); err != nil {
+		return ""
+	}
+	p, ok := m["patch"].(string)
+	if !ok {
+		return ""
+	}
+	for _, line := range strings.Split(p, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "File:") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "File:"))
+		}
+	}
+	return ""
 }

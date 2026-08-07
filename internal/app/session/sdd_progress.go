@@ -5,6 +5,18 @@ import (
 	"time"
 )
 
+// TaskTiming brackets one plan task. Indexed by task position, parallel to
+// SDDProgress.Tasks: a zero StartedAt means the task has not begun, and a
+// zero EndedAt means it is still running.
+//
+// It feeds two consumers: the remaining-time estimate, which needs the
+// durations of completed tasks, and /run's checklist, which shows each
+// task's elapsed time.
+type TaskTiming struct {
+	StartedAt time.Time
+	EndedAt   time.Time
+}
+
 // SDDProgress is the live state of a plan-execution run, rendered by the
 // TUI's run panel. The controller emits events; the app layer maps them
 // here. Tasks holds the plan's task titles in order so the panel can
@@ -25,6 +37,7 @@ type SDDProgress struct {
 	LedgerPath     string
 	ArtifactsDir   string
 	Tasks          []string
+	TaskTimings    []TaskTiming
 	TotalTasks     int
 	DoneTasks      int
 	CurrentTask    int

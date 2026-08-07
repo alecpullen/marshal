@@ -20,6 +20,14 @@ type state struct {
 	actionState      map[string]actionState
 	connectRequested bool
 	pendingCmd       tea.Cmd
+
+	// dataDir enables on-disk limit resolution for probes launched from
+	// settings. Empty disables it, which silently strips context/output
+	// limits from every discovered model.
+	dataDir string
+	// probed records providers already probed during this browser's
+	// lifetime, so rebuilding a frame does not re-probe on every refresh.
+	probed map[string]bool
 }
 
 type actionState struct {
@@ -32,8 +40,40 @@ func newState(cfg config.Config) *state {
 		cfg:         working,
 		discovered:  map[string][]schema.ModelInfo{},
 		actionState: map[string]actionState{},
+		probed:      map[string]bool{},
 	}
 }
+
+// queueCmd adds a command to the pending batch. Unlike assigning pendingCmd
+// directly it never drops an already-queued command, so a frame can probe
+// several providers in one pass.
+func (s *state) queueCmd(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if s.pendingCmd == nil {
+		s.pendingCmd = cmd
+		return
+	}
+	s.pendingCmd = tea.Batch(s.pendingCmd, cmd)
+}
+
+// markProbed reports whether provider should be probed now, recording it so
+// later calls return false.
+func (s *state) markProbed(provider string) bool {
+	if s.probed == nil {
+		s.probed = map[string]bool{}
+	}
+	if s.probed[provider] {
+		return false
+	}
+	s.probed[provider] = true
+	return true
+}
+
+// SetDataDir sets the limit-resolution data directory. Exported for the
+// agents panel, which builds a state directly.
+func (s *state) SetDataDir(dir string) { s.dataDir = dir }
 
 // NewState is the exported constructor for *State (alias for *state).
 func NewState(cfg config.Config) *state { return newState(cfg) }

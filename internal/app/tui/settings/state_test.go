@@ -3,6 +3,8 @@ package settings
 import (
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
 )
@@ -57,5 +59,39 @@ func TestCloneConfigDeepCopiesCustomAgents(t *testing.T) {
 	}
 	if len(srcCA.ToolDenylist) != 2 {
 		t.Fatalf("clone shares ToolDenylist slice with source: got %v", srcCA.ToolDenylist)
+	}
+}
+
+func TestQueueCmdBatchesInsteadOfOverwriting(t *testing.T) {
+	s := newState(config.Default())
+	fired := 0
+	s.queueCmd(func() tea.Msg { fired++; return nil })
+	s.queueCmd(func() tea.Msg { fired++; return nil })
+	cmd := s.takePendingCmd()
+	if cmd == nil {
+		t.Fatal("takePendingCmd returned nil after two queued commands")
+	}
+	cmd() // a tea.Batch's own func returns a BatchMsg holding both cmds
+	if s.takePendingCmd() != nil {
+		t.Error("takePendingCmd must clear the queue")
+	}
+}
+
+func TestMarkProbedIsOnceOnly(t *testing.T) {
+	s := newState(config.Default())
+	if !s.markProbed("ollama") {
+		t.Fatal("first markProbed must return true")
+	}
+	if s.markProbed("ollama") {
+		t.Error("second markProbed for the same provider must return false")
+	}
+	if !s.markProbed("groq") {
+		t.Error("a different provider must still return true")
+	}
+}
+
+func TestStateDataDirDefaultsEmpty(t *testing.T) {
+	if got := newState(config.Default()).dataDir; got != "" {
+		t.Errorf("dataDir = %q, want empty by default", got)
 	}
 }

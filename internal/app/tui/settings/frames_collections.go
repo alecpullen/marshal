@@ -246,7 +246,7 @@ func modelPickerField(s *state, id string, providerName func() string, getModel 
 				if !probe.IsLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
 					return fmt.Errorf("remote providers are disabled (enable Remote providers in Privacy)")
 				}
-				s.pendingCmd = probe.Provider("discover."+id, pn, pc, "", s.cfg.Privacy.RemoteLimitDiscovery)
+				s.pendingCmd = probe.Provider("discover."+id, pn, pc, s.dataDir, s.cfg.Privacy.RemoteLimitDiscovery)
 				return nil
 			}
 			return setModel(v)
@@ -437,7 +437,7 @@ func testConnectionField(s *state, k string) *field {
 				return nil
 			}
 			s.actionState[fieldID] = actionState{label: "\u2026"}
-			return probe.Provider(fieldID, k, pc, "", s.cfg.Privacy.RemoteLimitDiscovery)
+			return probe.Provider(fieldID, k, pc, s.dataDir, s.cfg.Privacy.RemoteLimitDiscovery)
 		},
 	}
 }

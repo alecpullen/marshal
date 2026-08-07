@@ -795,6 +795,7 @@ func (m *Model) openSettingsBrowser(query string) {
 		projectConfigPath(m.state.WorkingDir),
 		query,
 		settings.WithProvenance(m.provenanceForPath),
+		settings.WithDataDir(m.modelCacheDir),
 	)
 	// m.state.Config may already hold an unsaved change left behind by a
 	// previous failed save (browser or /set) — applyNewConfig keeps it

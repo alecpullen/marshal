@@ -38,6 +38,13 @@ func WithUserConfigPath(path string) BrowserOption {
 	return func(b *BrowserPanel) { b.userConfigPath = path }
 }
 
+// WithDataDir sets the data directory used to resolve context and output
+// limits for probed models. Without it, discovered models carry zero limits
+// and presets created from them save context_window = 0.
+func WithDataDir(dir string) BrowserOption {
+	return func(b *BrowserPanel) { b.reg.st.dataDir = dir }
+}
+
 // BrowserPanel is the docked settings browser. It presents a filterable flat
 // registry while reusing the existing field list and collection drill frames.
 // Every config mutation is persisted immediately.
@@ -401,6 +408,13 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 		b.filter, cmd = b.filter.Update(key)
 		b.list.Refresh()
 		b.list.SetCursor(0)
+	}
+	// Flush queued commands (e.g. model probes queued while building a
+	// picker's options) on every pass, not only after a pick. takePendingCmd
+	// clearing the slot makes this idempotent with the flush inside
+	// handlePickerPicked.
+	if queued := b.reg.st.takePendingCmd(); queued != nil {
+		return tea.Batch(b.flushChanges(cmd, committed), queued)
 	}
 	return b.flushChanges(cmd, committed)
 }

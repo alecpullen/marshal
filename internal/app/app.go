@@ -646,6 +646,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 		runner.MaxToolResultChars = cfg.Agent.MaxToolResultChars
 	}
 	runner.PlanFirst = cfg.Agent.PlanFirst
+	runner.SuppressParseRepairFeedback = !cfg.Agent.ParseRepairFeedbackEnabled()
 	if runner.ApprovalTimeout == 0 {
 		runner.ApprovalTimeout = agentApprovalTimeout
 	}

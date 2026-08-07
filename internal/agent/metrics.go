@@ -28,6 +28,10 @@ type TurnMetrics struct {
 	// In native tool-calling mode this is always 0 because the provider
 	// returns parsed tool_calls directly.
 	ParseFailures int
+	// ParseRepairs counts envelope deviations healed in place instead of
+	// being bounced back for a regeneration. A rising count with a flat
+	// ParseFailures means tolerance is absorbing a real prompt problem.
+	ParseRepairs int
 	// StreamRecoveries counts turns continued from a partial response after
 	// the provider stream failed mid-flight (e.g. an undecodable SSE chunk).
 	// A non-zero value means the turn survived an error that used to end it.

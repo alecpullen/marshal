@@ -529,6 +529,23 @@ func BuildTruncationMessage(toolNames []string) schema.ChatMessage {
 	}
 }
 
+// BuildRepairNoticeMessage tells the model its envelope was malformed but
+// was healed, so it corrects the shape next turn instead of relying on the
+// repair indefinitely. The action still ran — this is a notice, not a
+// rejection, and must not read as one.
+func BuildRepairNoticeMessage(repairs []string) *schema.ChatMessage {
+	if len(repairs) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("Your last action ran, but its envelope was malformed and had to be repaired:\n")
+	for _, r := range repairs {
+		b.WriteString("- " + r + "\n")
+	}
+	b.WriteString("Emit the correct shape next time; do not resend the action.")
+	return &schema.ChatMessage{Role: schema.RoleUser, Content: b.String()}
+}
+
 func BuildRepairMessage() schema.ChatMessage {
 	return schema.ChatMessage{
 		Role:    schema.RoleSystem,

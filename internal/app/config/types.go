@@ -366,6 +366,16 @@ type AgentConfig struct {
 	// "default", "edit", "copilot", or "auto". Default "default". See
 	// docs/superpowers/specs/2026-07-24-approval-modes-design.md.
 	ApprovalMode string `toml:"approval_mode"`
+	// ParseRepairFeedback tells the model when its action envelope was
+	// malformed but repaired, so it emits the right shape next turn instead
+	// of relying on the repair. Default true. Set false to save the tokens
+	// — repairs still happen either way, they just go unmentioned.
+	ParseRepairFeedback *bool `toml:"parse_repair_feedback,omitempty"`
+}
+
+// ParseRepairFeedbackEnabled resolves the tri-state toggle: unset means on.
+func (a AgentConfig) ParseRepairFeedbackEnabled() bool {
+	return a.ParseRepairFeedback == nil || *a.ParseRepairFeedback
 }
 
 type PrivacyConfig struct {

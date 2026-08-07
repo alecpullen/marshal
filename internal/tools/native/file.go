@@ -255,10 +255,11 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			return registry.ToolResult{}, err
 		}
 
-		patches, err := patch.Parse(args.Patch)
+		parsed, err := patch.ParseRepairing(args.Patch)
 		if err != nil {
 			return registry.ToolResult{}, fmt.Errorf("parse patch error: %w", err)
 		}
+		patches, patchRepairs := parsed.Patches, parsed.Repairs
 		if len(patches) == 0 {
 			return registry.ToolResult{}, fmt.Errorf("no valid patches found in proposal")
 		}
@@ -391,6 +392,14 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 		}
 
 		content := strings.Join(diffs, "\n\n")
+		// Surface healed format mistakes so the model corrects its next
+		// proposal instead of relying on the repair. The patch applied, so
+		// this is a notice appended to a success, not an error.
+		if len(patchRepairs) > 0 {
+			content += "\n\nNote — the proposal's format was repaired before applying:\n- " +
+				strings.Join(patchRepairs, "\n- ") +
+				"\nClose every REPLACE block with \">>>>>>> REPLACE\"."
+		}
 		if t.diagnostics != nil {
 			diag, _ := t.diagnostics.Check(paths, languageOf(paths))
 			if diag != "" {

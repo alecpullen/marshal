@@ -225,6 +225,12 @@ type Runner struct {
 	// means local/unpriced (cost = 0).
 	Pricing pricing.ModelPricing
 
+	// SuppressParseRepairFeedback silences the note that tells the model its
+	// envelope was repaired. Repairs still happen and are still counted —
+	// only the per-incident feedback message is dropped, for users who want
+	// the tokens back. Set from agent.parse_repair_feedback = false.
+	SuppressParseRepairFeedback bool
+
 	// LimitsTable is the merged OpenRouter/LiteLLM limit table used to
 	// resolve a preset's context window and max output when the preset does
 	// not state them. Nil means "not loaded" — resolution degrades to the
@@ -645,6 +651,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	pressureMessageSent := false
 	producedValidAction := false
 	consecutiveParseFailures := 0
+	// pendingRepairNote carries a "your envelope was malformed but I fixed
+	// it" message, appended after the assistant turn so the model reads it
+	// before its next response. Zero value means nothing to report.
+	var pendingRepairNote *schema.ChatMessage
 	consecutiveEmpty := 0
 	r.turnFinishReason = ""
 
@@ -884,7 +894,20 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			continue
 		}
 
-		action, parseErr := ParseAction(raw)
+		action, repairs, parseErr := ParseActionRepairing(raw, r.knownTool)
+		if parseErr == nil && len(repairs) > 0 {
+			r.withStats(func(s *turnStats) { s.m.ParseRepairs += len(repairs) })
+			r.State.Logger().Info("repaired model action envelope",
+				"repairs", repairs,
+				"raw", truncateForLog(raw),
+			)
+			// Fed back by default so the model corrects itself next turn
+			// rather than leaning on the repair forever. Users on a tight
+			// token budget can silence it (agent.parse_repair_feedback).
+			if !r.SuppressParseRepairFeedback {
+				pendingRepairNote = BuildRepairNoticeMessage(repairs)
+			}
+		}
 		if parseErr != nil {
 			consecutiveParseFailures++
 			// Logged, not just counted: a parse failure that escalates to a
@@ -951,6 +974,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		budget.tools++
 		countIterations()
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
+		if pendingRepairNote != nil {
+			messages = append(messages, *pendingRepairNote)
+			pendingRepairNote = nil
+		}
 		producedValidAction = true
 
 		if inProgress := r.State.InProgress(); !inProgress.StartedAt.IsZero() && action.Type != ActionAnswer && action.Type != ActionFinal {

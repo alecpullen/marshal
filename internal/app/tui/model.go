@@ -2653,7 +2653,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 			}
 			if c.Err == nil {
 				tasks = fmt.Sprintf("%d tasks", c.Tasks)
-				if c.Done > 0 {
+				if c.LedgerErr == nil && c.Done > 0 {
 					tasks += fmt.Sprintf(" · resuming at %d", c.Done+1)
 				}
 			}
@@ -3369,6 +3369,9 @@ func (m *Model) openSDDPlanPicker() {
 		switch {
 		case c.Err != nil:
 			item.Detail = c.Err.Error()
+			item.Badge = "unreadable"
+		case c.LedgerErr != nil:
+			item.Detail = fmt.Sprintf("%d tasks · ledger unreadable", c.Tasks)
 			item.Badge = "unreadable"
 		case c.Resumable():
 			item.Detail = fmt.Sprintf("%d tasks · %d done", c.Tasks, c.Done)

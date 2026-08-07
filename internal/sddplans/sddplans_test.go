@@ -134,4 +134,66 @@ func TestResumableRequiresPartialProgress(t *testing.T) {
 	if (Candidate{Tasks: 0, Done: 0, Err: os.ErrNotExist}).Resumable() {
 		t.Error("an unparseable plan is never resumable")
 	}
+	if (Candidate{Tasks: 4, Done: 2, LedgerErr: os.ErrPermission}).Resumable() {
+		t.Error("a plan with an unreadable ledger is never resumable")
+	}
+}
+
+func TestDiscoverMissingLedgerIsFreshRun(t *testing.T) {
+	root := t.TempDir()
+	writePlan(t, filepath.Join(root, ".marshal/plans"), "add-retries.md", twoTaskPlan)
+
+	got := Discover(root, ".marshal/plans")
+	if len(got) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(got))
+	}
+	c := got[0]
+	if c.Err != nil {
+		t.Fatalf("unexpected parse error: %v", c.Err)
+	}
+	if c.LedgerErr != nil {
+		t.Fatalf("a missing ledger must not be an error, got %v", c.LedgerErr)
+	}
+	if c.Done != 0 {
+		t.Errorf("Done = %d, want 0 for a fresh run", c.Done)
+	}
+	if c.Resumable() {
+		t.Error("a fresh run must not be resumable")
+	}
+}
+
+func TestDiscoverSurfacesUnreadableLedger(t *testing.T) {
+	root := t.TempDir()
+	writePlan(t, filepath.Join(root, ".marshal/plans"), "add-retries.md", twoTaskPlan)
+
+	paths, err := pipeline.NewPaths(root, "add-retries")
+	if err != nil {
+		t.Fatalf("NewPaths: %v", err)
+	}
+	ledgerPath := paths.Ledger()
+	if err := os.WriteFile(ledgerPath, []byte("Task 1: complete (commits aaaaaaa..bbbbbbb, review clean)\n"), 0o644); err != nil {
+		t.Fatalf("write ledger: %v", err)
+	}
+	if err := os.Chmod(ledgerPath, 0o000); err != nil {
+		t.Fatalf("chmod ledger: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(ledgerPath, 0o644) })
+
+	got := Discover(root, ".marshal/plans")
+	if len(got) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(got))
+	}
+	c := got[0]
+	if c.Err != nil {
+		t.Fatalf("unexpected parse error: %v", c.Err)
+	}
+	if c.LedgerErr == nil {
+		t.Fatal("a present-but-unreadable ledger must surface an error, not a silent 0 done")
+	}
+	if c.Done != 0 {
+		t.Errorf("Done = %d, want 0 when the ledger cannot be read", c.Done)
+	}
+	if c.Resumable() {
+		t.Error("a plan with an unreadable ledger must not be resumable")
+	}
 }

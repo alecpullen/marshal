@@ -20,11 +20,16 @@ type Candidate struct {
 	Tasks int
 	Done  int
 	Err   error
+	// LedgerErr is set when the plan parsed but its progress ledger could
+	// not be read. It is distinct from Err (an unparseable plan): a plan
+	// with an unreadable ledger is not a fresh run, and must not be shown
+	// as "0 done" as if it had never started.
+	LedgerErr error
 }
 
 // Resumable reports whether a previous run left this plan partly complete.
 func (c Candidate) Resumable() bool {
-	return c.Err == nil && c.Tasks > 0 && c.Done > 0 && c.Done < c.Tasks
+	return c.Err == nil && c.LedgerErr == nil && c.Tasks > 0 && c.Done > 0 && c.Done < c.Tasks
 }
 
 // Discover lists every *.md file in plansDir (relative to repoRoot), parses
@@ -53,22 +58,24 @@ func Discover(repoRoot, plansDir string) []Candidate {
 			continue
 		}
 		c.Tasks = len(plan.Tasks)
-		c.Done = completedCount(repoRoot, c.Slug)
+		c.Done, c.LedgerErr = completedCount(repoRoot, c.Slug)
 		out = append(out, c)
 	}
 	return out
 }
 
 // completedCount reads how many tasks a previous run finished. A missing
-// ledger means nothing has run, which is zero, not an error.
-func completedCount(repoRoot, slug string) int {
+// ledger means nothing has run, which is zero, not an error. A ledger that
+// exists but cannot be read is surfaced as an error so the picker does not
+// masquerade a corrupted ledger as a fresh run.
+func completedCount(repoRoot, slug string) (int, error) {
 	paths, err := pipeline.NewPaths(repoRoot, slug)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	done, err := (pipeline.Ledger{Path: paths.Ledger()}).CompletedTasks()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return len(done)
+	return len(done), nil
 }

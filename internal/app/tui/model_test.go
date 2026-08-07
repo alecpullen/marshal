@@ -6544,6 +6544,40 @@ func TestSDDPlanPickerFlagsUnparseablePlans(t *testing.T) {
 	}
 }
 
+func TestSDDPlanPickerFlagsUnreadableLedger(t *testing.T) {
+	m := newTestModelInRepo(t)
+	writeTestPlan(t, m.state.WorkingDir, "add-retries.md", 3)
+
+	paths, err := pipeline.NewPaths(m.state.WorkingDir, "add-retries")
+	if err != nil {
+		t.Fatalf("NewPaths: %v", err)
+	}
+	ledgerPath := paths.Ledger()
+	if err := os.WriteFile(ledgerPath, []byte("Task 1: complete (commits aaaaaaa..bbbbbbb, review clean)\n"), 0o644); err != nil {
+		t.Fatalf("write ledger: %v", err)
+	}
+	if err := os.Chmod(ledgerPath, 0o000); err != nil {
+		t.Fatalf("chmod ledger: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(ledgerPath, 0o644) })
+
+	m.openSDDPlanPicker()
+
+	items := pickerItems(t, m)
+	var found bool
+	for _, it := range items {
+		if strings.Contains(it.Label, "add-retries.md") {
+			found = true
+			if !strings.Contains(strings.ToLower(it.Detail), "unreadable") {
+				t.Errorf("a plan with an unreadable ledger must be flagged, got Detail = %q", it.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Error("a plan with an unreadable ledger must still be listed")
+	}
+}
+
 func TestSDDPlanPickerPinsResumableRunFirst(t *testing.T) {
 	m := newTestModelInRepo(t)
 	writeTestPlan(t, m.state.WorkingDir, "aaa-first-alphabetically.md", 2)

@@ -3,12 +3,99 @@ package settings
 import (
 	"fmt"
 	"maps"
+	"regexp"
+	"strings"
 
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/probe"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
+	"marshal/internal/strutil"
 )
 
 const unsetRoleValue = "__unset__"
+
+const (
+	// modelValuePrefix marks a picker value carrying a raw provider+model
+	// rather than a preset name: "model:<provider>/<model id>". Split on the
+	// FIRST slash only — model ids legitimately contain slashes
+	// ("moonshotai/kimi-k2-instruct").
+	modelValuePrefix = "model:"
+	// refreshModelsValue re-probes every configured provider.
+	refreshModelsValue = "__refresh_models__"
+)
+
+var slugUnsafeRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// slugify reduces a provider/model pair to a preset name safe for a TOML key.
+func slugify(s string) string {
+	return strings.Trim(slugUnsafeRe.ReplaceAllString(strings.ToLower(s), "-"), "-")
+}
+
+// presetForModel returns the name of a preset bound to providerName+modelID,
+// reusing an existing one when the pair already appears in config and
+// creating one seeded from info otherwise.
+func presetForModel(s *state, providerName, modelID string, info schema.ModelInfo) string {
+	for _, name := range sortedKeys(s.cfg.Models.Presets) {
+		p := s.cfg.Models.Presets[name]
+		if p.Provider == providerName && p.Model == modelID {
+			return name
+		}
+	}
+	base := slugify(providerName + "-" + modelID)
+	if base == "" {
+		base = "preset"
+	}
+	name := base
+	for i := 2; ; i++ {
+		if _, taken := s.cfg.Models.Presets[name]; !taken {
+			break
+		}
+		name = fmt.Sprintf("%s-%d", base, i)
+	}
+	if s.cfg.Models.Presets == nil {
+		s.cfg.Models.Presets = map[string]routing.ModelPreset{}
+	}
+	s.cfg.Models.Presets[name] = routing.ModelPreset{
+		Name:            name,
+		Provider:        providerName,
+		Model:           modelID,
+		ContextWindow:   info.ContextWindow,
+		MaxOutputTokens: info.MaxOutputTokens,
+		LocalOnly:       probe.IsLocalhost(s.cfg.Providers[providerName].BaseURL),
+	}
+	return name
+}
+
+// discoveredInfo returns the ModelInfo a probe reported for a provider's
+// model, or the zero value when discovery has not seen it.
+func discoveredInfo(s *state, providerName, modelID string) schema.ModelInfo {
+	for _, mi := range s.discovered[providerName] {
+		if mi.ID == modelID {
+			return mi
+		}
+	}
+	return schema.ModelInfo{}
+}
+
+// probeAllProviders queues a probe for every configured provider not yet
+// probed during this browser's lifetime. Remote providers are skipped when
+// the privacy gate blocks them, matching the preset model picker.
+func probeAllProviders(s *state, force bool) {
+	for _, name := range sortedKeys(s.cfg.Providers) {
+		pc := s.cfg.Providers[name]
+		if !probe.IsLocalhost(pc.BaseURL) && !s.cfg.Privacy.RemoteProvidersAllowed {
+			continue
+		}
+		if force {
+			delete(s.probed, name)
+		}
+		if !s.markProbed(name) {
+			continue
+		}
+		s.queueCmd(probe.Provider("discover.profiles."+name, name, pc, s.dataDir, s.cfg.Privacy.RemoteLimitDiscovery))
+	}
+}
 
 var roleTitles = map[routing.AgentRole]string{
 	routing.RoleRouter:            "Router",
@@ -242,24 +329,53 @@ func roleModelField(s *state, profile string, role routing.AgentRole) *field {
 	}
 }
 
-// rolePickerItems and applyRolePick are completed in Task 9; this task keeps
-// the preset-only behavior so the frame stays usable between commits.
 func rolePickerItems(s *state, profile string, role routing.AgentRole) []picker.Item {
-	names := sortedKeys(s.cfg.Models.Presets)
-	if len(names) == 0 {
-		return []picker.Item{{Label: "Add a preset first in Model Presets", Value: "__none__", Badge: "required"}}
-	}
+	probeAllProviders(s, false)
+
 	current := getRoleBinding(s, profile, role)
-	items := make([]picker.Item, 0, len(names)+1)
-	for _, n := range names {
+	var items []picker.Item
+
+	// picker.Item.Group renders a real group header in the unfiltered view
+	// and disappears under a filter — no synthetic unselectable rows.
+	for _, n := range sortedKeys(s.cfg.Models.Presets) {
 		p := s.cfg.Models.Presets[n]
 		badge := ""
 		if n == current {
 			badge = "● now"
 		}
-		items = append(items, picker.Item{Label: n, Detail: p.Provider + "/" + p.Model, Badge: badge, Value: n})
+		items = append(items, picker.Item{
+			Label: n, Detail: p.Provider + "/" + p.Model,
+			Badge: badge, Group: "presets", Value: n,
+		})
 	}
-	return append(items, picker.Item{Label: unsetLabel(s, profile, role), Value: unsetRoleValue, Badge: "clear"})
+
+	for _, providerName := range sortedKeys(s.cfg.Providers) {
+		for _, mi := range s.discovered[providerName] {
+			items = append(items, picker.Item{
+				Label:  mi.ID,
+				Detail: limitDetail(mi),
+				Group:  providerName + " (discovered)",
+				Value:  modelValuePrefix + providerName + "/" + mi.ID,
+			})
+		}
+	}
+
+	items = append(items, picker.Item{Label: unsetLabel(s, profile, role), Value: unsetRoleValue, Badge: "clear"})
+	items = append(items, picker.Item{Label: "Refresh discovered models", Value: refreshModelsValue, Badge: "refresh"})
+	return items
+}
+
+// limitDetail renders a discovered model's limits, or "" when unknown —
+// never the number 0, which would read as a real cap.
+func limitDetail(mi schema.ModelInfo) string {
+	switch {
+	case mi.ContextWindow == 0:
+		return ""
+	case mi.MaxOutputTokens == 0:
+		return strutil.CompactTokens(mi.ContextWindow) + " ctx"
+	default:
+		return strutil.CompactTokens(mi.ContextWindow) + " ctx · " + strutil.CompactTokens(mi.MaxOutputTokens) + " out"
+	}
 }
 
 // unsetLabel names what the role would fall back to, so "unset" reads as a
@@ -275,11 +391,20 @@ func unsetLabel(s *state, profile string, role routing.AgentRole) string {
 }
 
 func applyRolePick(s *state, profile string, role routing.AgentRole, v string) error {
-	switch v {
-	case "__none__":
-		return fmt.Errorf("add a preset first in the Model Presets section")
-	case unsetRoleValue:
+	switch {
+	case v == unsetRoleValue:
 		setRoleBinding(s, profile, role, "")
+		return nil
+	case v == refreshModelsValue:
+		probeAllProviders(s, true)
+		return nil
+	case strings.HasPrefix(v, modelValuePrefix):
+		rest := strings.TrimPrefix(v, modelValuePrefix)
+		providerName, modelID, ok := strings.Cut(rest, "/")
+		if !ok || providerName == "" || modelID == "" {
+			return fmt.Errorf("malformed model selection %q", v)
+		}
+		setRoleBinding(s, profile, role, presetForModel(s, providerName, modelID, discoveredInfo(s, providerName, modelID)))
 		return nil
 	}
 	if _, ok := s.cfg.Models.Presets[v]; !ok {

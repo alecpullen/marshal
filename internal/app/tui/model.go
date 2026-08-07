@@ -2056,7 +2056,7 @@ func (m Model) todoPanelRows() int {
 // frame. The panel owns the only spinner on screen during a run; the
 // glyph comes from turnSpinnerFrame so it shares the 200ms flash gate.
 func (m Model) renderRunPanel() string {
-	return renderRunPanel(m.state.SDDProgress(), m.turnSpinnerFrame(), m.now(), m.height, m.width)
+	return renderRunPanel(m.state.SDDProgress(), m.turnSpinnerFrame(), m.now(), m.width)
 }
 
 // runPanelRows reports the rows the run panel occupies. The panel is

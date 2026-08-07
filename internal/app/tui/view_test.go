@@ -692,11 +692,6 @@ func TestRunPanelDoesNotPushInputOffScreen(t *testing.T) {
 		t.Fatalf("run panel missing from the frame:\n%s", frame)
 	}
 
-	// The plan checklist renders task titles — the old SDD panel never did.
-	if !strings.Contains(frame, "▸ 2 Parse") {
-		t.Fatalf("run panel checklist missing from the frame:\n%s", frame)
-	}
-
 	// The input box must be visible (the ❯ prompt).
 	inputRow := -1
 	for i, line := range lines {

@@ -10,24 +10,22 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/tools/native"
 )
 
-// runPanelMaxRows caps the checklist rows inside the run panel. The summary
-// and gate rows are not counted against it.
-const runPanelMaxRows = 6
-
-// renderRunPanel renders the single SDD progress surface as a full-width
-// horizontal top bar: one summary line carrying the only spinner on screen
-// during a run, the plan checklist windowed around the current task. After
-// the run ends it collapses to a one-line summary until the next user turn
-// clears it (keypress.go). The bar has no background per the unified
-// chrome design. The human-gate question no longer lives here — the docked
-// gate panel owns it (one surface, not two).
-func renderRunPanel(p session.SDDProgress, spinner string, now time.Time, frameHeight, width int) string {
+// renderRunPanel renders the run's orientation row: where the run is and
+// roughly how much is left, in exactly one line.
+//
+// It deliberately does not show the plan checklist. Every row this panel
+// occupies is subtracted from the transcript viewport (model.go), and the
+// transcript is where a run's actual content now lives — verify output,
+// review findings, commits. /run shows the checklist on demand instead, at
+// no cost to the transcript.
+//
+// After the run ends it collapses to a one-line summary until the next user
+// turn clears it (keypress.go).
+func renderRunPanel(p session.SDDProgress, spinner string, now time.Time, width int) string {
 	if !p.Active && !p.Finished {
 		return ""
 	}
@@ -35,11 +33,7 @@ func renderRunPanel(p session.SDDProgress, spinner string, now time.Time, frameH
 	if p.Finished {
 		return runPanelBar(runPanelFinishedLine(p, width), width)
 	}
-	sections := []string{runPanelSummaryLine(p, spinner, now, width)}
-	if checklist := runPanelChecklist(p, frameHeight, width); checklist != "" {
-		sections = append(sections, checklist)
-	}
-	return runPanelBar(strings.Join(sections, "\n"), width)
+	return runPanelBar(runPanelSummaryLine(p, spinner, now, width), width)
 }
 
 // runPanelBar renders content as a full-width horizontal bar with no
@@ -55,71 +49,93 @@ func runPanelBar(content string, width int) string {
 		Render(content)
 }
 
-// runPanelSummaryLine renders `⠋ task 3/7 · implementing · fix 1/3 ·
-// src/auth.go · 4m 12s`, omitting empty segments. The gutter glyph is the
-// shared spinner frame; while the frame is gated (first 200ms of a turn)
-// it falls back to the static Running glyph so the row never shifts.
+// runSeg is one segment of the summary line. Higher priority drops first;
+// priority 0 is never dropped. glue joins the segment to its predecessor
+// with a space rather than the separator, so a phase and its elapsed time
+// read as one phrase while remaining independently droppable.
+type runSeg struct {
+	text     string
+	priority int
+	glue     bool
+}
+
+// joinRunSegs renders segments left to right, gluing where asked.
+func joinRunSegs(segs []runSeg) string {
+	var b strings.Builder
+	for i, s := range segs {
+		switch {
+		case i == 0:
+		case s.glue:
+			b.WriteString(" ")
+		default:
+			b.WriteString(dimSeparator)
+		}
+		b.WriteString(s.text)
+	}
+	return b.String()
+}
+
+// runPanelSummaryLine renders `⠋ task 4/7 · 43% · verifying 2m 14s ·
+// ~6–25m left`, dropping whole segments as width shrinks rather than
+// truncating mid-word. The drop order is documented in the run-panel layout
+// spec; the task counter is the floor and always survives.
 func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, width int) string {
-	text := fmt.Sprintf("task %d/%d", p.CurrentTask, p.TotalTasks)
+	segs := []runSeg{{text: fmt.Sprintf("task %d/%d", p.CurrentTask, p.TotalTasks), priority: 0}}
+
+	// Percent counts completed tasks only: the in-flight task is not done,
+	// and counting it would overstate progress on every render. Rounded,
+	// not truncated — integer division renders 3/7 as 42%, which is wrong
+	// by a percentage point on most fractions.
+	if p.TotalTasks > 0 {
+		segs = append(segs, runSeg{text: formatPercent(p.DoneTasks, p.TotalTasks), priority: 6})
+	}
 	if p.Phase != "" {
-		text += " · " + p.Phase
-		// Per-phase elapsed distinguishes a slow test suite from a hang;
-		// whole-run elapsed alone cannot.
+		segs = append(segs, runSeg{text: p.Phase, priority: 1})
 		if !p.PhaseStartedAt.IsZero() {
 			if d := now.Sub(p.PhaseStartedAt); d > 0 {
-				text += " " + formatElapsed(d)
+				segs = append(segs, runSeg{text: formatElapsed(d), priority: 2, glue: true})
 			}
 		}
 	}
 	if p.FixRound > 0 {
-		text += fmt.Sprintf(" · fix %d/%d", p.FixRound, p.MaxFixRounds)
+		segs = append(segs, runSeg{
+			text:     fmt.Sprintf("fix %d/%d", p.FixRound, p.MaxFixRounds),
+			priority: 3,
+		})
 	}
-	if p.Detail != "" {
-		text += " · " + p.Detail
+	if low, high, openEnded, ok := estimateRemaining(p, now); ok {
+		segs = append(segs, runSeg{text: formatETA(low, high, openEnded), priority: 4})
 	}
 	if !p.StartedAt.IsZero() {
-		elapsed := now.Sub(p.StartedAt)
-		if elapsed < 0 {
-			elapsed = 0
+		if d := now.Sub(p.StartedAt); d > 0 {
+			segs = append(segs, runSeg{text: formatElapsed(d), priority: 5})
 		}
-		text += " · " + formatElapsed(elapsed)
 	}
+	if p.Detail != "" {
+		segs = append(segs, runSeg{text: p.Detail, priority: 7})
+	}
+
+	// Drop the lowest-priority segment until the line fits, always keeping
+	// segs[0]. Mirrors the status line's loop (status.go).
+	budget := max(width-3, 1)
+	text := joinRunSegs(segs)
+	for len(segs) > 1 && ansi.StringWidth(text) > budget {
+		worst := 1
+		for i := 2; i < len(segs); i++ {
+			if segs[i].priority > segs[worst].priority {
+				worst = i
+			}
+		}
+		segs = append(segs[:worst], segs[worst+1:]...)
+		text = joinRunSegs(segs)
+	}
+
 	g := spinner
 	if g == "" {
 		g = glyph.Running
 	}
 	return gutterPrefix(g, accentColor) +
-		statusBusyStyle().Render(ansi.Truncate(text, max(width-3, 1), "…"))
-}
-
-// runPanelChecklist renders the plan tasks with todo-style status glyphs,
-// windowed around the current task by chrome.ClipLines (which adds the
-// ↑ more / ↓ more marker rows when it clips).
-func runPanelChecklist(p session.SDDProgress, frameHeight, width int) string {
-	if len(p.Tasks) == 0 {
-		return ""
-	}
-	lines := make([]string, 0, len(p.Tasks))
-	for i, title := range p.Tasks {
-		lines = append(lines, todoLine(runPanelTodo(i, title, p), width))
-	}
-	focus := min(max(p.CurrentTask-1, 0), len(lines)-1)
-	budget := min(len(lines), min(runPanelMaxRows, max(frameHeight/4, 2)))
-	return chrome.ClipLines(lines, focus, budget, theme.Current())
-}
-
-// runPanelTodo maps a plan task's position in the run to a todo item so the
-// checklist reuses the todo panel's row rendering: done before the current
-// task, in-progress at it, pending after.
-func runPanelTodo(i int, title string, p session.SDDProgress) native.TodoItem {
-	status := native.TodoPending
-	switch {
-	case i < p.DoneTasks:
-		status = native.TodoCompleted
-	case i == p.CurrentTask-1:
-		status = native.TodoInProgress
-	}
-	return native.TodoItem{Content: fmt.Sprintf("%d %s", i+1, title), Status: status}
+		statusBusyStyle().Render(ansi.Truncate(text, budget, "…"))
 }
 
 // runPanelFinishedLine renders the collapsed post-run summary:

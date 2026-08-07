@@ -6416,3 +6416,26 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 		t.Fatalf("APIKeyEnv = %q, want empty", pc.APIKeyEnv)
 	}
 }
+
+func TestDrillIntoLatestRunningSubagentByKey(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	m.state.RegisterSubagent("sdd_implementer · task 3", child)
+
+	if !m.drillIntoLatestRunningSubagent() {
+		t.Fatal("drill-in must succeed when a subagent is running")
+	}
+	if _, ok := m.drilledInto(); !ok {
+		t.Error("the view stack must hold the running subagent after drill-in")
+	}
+}
+
+func TestDrillInDoesNothingWithoutARunningSubagent(t *testing.T) {
+	m := newTestModel(t)
+	if m.drillIntoLatestRunningSubagent() {
+		t.Error("drill-in must report false when nothing is running")
+	}
+	if _, ok := m.drilledInto(); ok {
+		t.Error("the view stack must stay empty")
+	}
+}

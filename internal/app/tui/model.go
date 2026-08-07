@@ -2449,6 +2449,20 @@ func (m *Model) drillIntoSubagent(v session.SubagentView) {
 	m.viewportFollow = true
 }
 
+// drillIntoLatestRunningSubagent pushes the most recently registered
+// running subagent onto the view stack, so inspecting live work does not
+// require a mouse. Returns false when no subagent is running.
+func (m *Model) drillIntoLatestRunningSubagent() bool {
+	subs := m.state.Subagents()
+	for i := len(subs) - 1; i >= 0; i-- {
+		if subs[i].Status == session.SubagentRunning && subs[i].Child != nil {
+			m.drillIntoSubagent(subs[i])
+			return true
+		}
+	}
+	return false
+}
+
 // popDrill pops one level of subagent drill-down, returning false when the
 // viewport was already showing the orchestrator's transcript.
 func (m *Model) popDrill() bool {

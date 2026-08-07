@@ -297,5 +297,17 @@ func (m Model) footerHints() help.FooterHints {
 		TodosActive:          len(m.state.Todos()) > 0,
 		RailEnabled:          m.railEnabled(),
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
+		RunActive:            m.hasRunningSubagent(),
 	}
+}
+
+// hasRunningSubagent reports whether any registered subagent is currently
+// running, which makes the Ctrl+I drill-in hint actionable.
+func (m Model) hasRunningSubagent() bool {
+	for _, v := range m.state.Subagents() {
+		if v.Status == session.SubagentRunning {
+			return true
+		}
+	}
+	return false
 }

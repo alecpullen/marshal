@@ -45,9 +45,9 @@ func TestSummarizeToolArgsEmptyArgs(t *testing.T) {
 }
 
 func TestSummarizeToolArgsPatch(t *testing.T) {
-	args, _ := json.Marshal(map[string]string{"patch": "<<<<\nold\n====\nnew\n>>>>"})
+	args, _ := json.Marshal(map[string]string{"patch": "File: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"})
 	got := SummarizeToolArgs("file.write_patch", args)
-	if got != "patch" {
-		t.Fatalf("SummarizeToolArgs(file.write_patch) = %q, want %q", got, "patch")
+	if got != "File: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE" {
+		t.Fatalf("SummarizeToolArgs(file.write_patch) = %q, want the patch body", got)
 	}
 }

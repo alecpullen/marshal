@@ -677,6 +677,60 @@ func TestActiveToolCallClear(t *testing.T) {
 	}
 }
 
+func TestCurrentToolLabelIdle(t *testing.T) {
+	state := newTestState()
+	if got := state.CurrentToolLabel(); got != "" {
+		t.Fatalf("CurrentToolLabel() idle = %q, want empty", got)
+	}
+}
+
+func TestCurrentToolLabelFallbackName(t *testing.T) {
+	state := newTestState()
+	state.SetActiveToolCall(ActiveToolCall{Name: "shell.run", Args: "go test ./..."})
+	if got := state.CurrentToolLabel(); got != "shell.run" {
+		t.Fatalf("CurrentToolLabel() = %q, want %q", got, "shell.run")
+	}
+}
+
+func TestCurrentToolLabelFileWritePatch(t *testing.T) {
+	state := newTestState()
+	state.SetActiveToolCall(ActiveToolCall{
+		Name: "file.write_patch",
+		Args: "File: internal/app/config/config.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE",
+	})
+	if got := state.CurrentToolLabel(); got != "editing internal/app/config/config.go" {
+		t.Fatalf("CurrentToolLabel() = %q, want %q", got, "editing internal/app/config/config.go")
+	}
+}
+
+func TestCurrentToolLabelFileWritePatchNoPath(t *testing.T) {
+	state := newTestState()
+	state.SetActiveToolCall(ActiveToolCall{Name: "file.write_patch", Args: "patch"})
+	if got := state.CurrentToolLabel(); got != "file.write_patch" {
+		t.Fatalf("CurrentToolLabel() = %q, want %q", got, "file.write_patch")
+	}
+}
+
+func TestFirstPatchPath(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+		want string
+	}{
+		{"first file line", "File: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE", "a.go"},
+		{"leading whitespace", "  File:   b.go  \n<<<<<<< SEARCH", "b.go"},
+		{"no file line", "<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := firstPatchPath(tc.args); got != tc.want {
+				t.Fatalf("firstPatchPath(%q) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMessageFinalField(t *testing.T) {
 	state := newTestState()
 	state.AddMessage(RoleAssistant, "here is the answer", ContentTypeMarkdown)

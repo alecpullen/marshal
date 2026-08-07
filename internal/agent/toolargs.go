@@ -27,7 +27,10 @@ func SummarizeToolArgs(toolName string, args json.RawMessage) string {
 		}
 		return ""
 	case "file.write_patch":
-		return "patch"
+		if p, ok := m["patch"].(string); ok {
+			return p
+		}
+		return ""
 	default:
 		for _, v := range m {
 			if s, ok := v.(string); ok && s != "" {

@@ -23,6 +23,7 @@ import (
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/doctorpanel"
+	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
@@ -6683,5 +6684,99 @@ func TestSwarmPreflightUnchanged(t *testing.T) {
 	got := stripANSI(m.dock.Panel().View(100, 30))
 	if !strings.Contains(got, "goal:") {
 		t.Errorf("the swarm preflight must be untouched by the SDD rewrite:\n%s", got)
+	}
+}
+
+// recordingPipelineRunner is a minimal AgentRunner that records the last
+// AnswerGate argument, so a test can assert the human's answer reaches the
+// runner. The pipeline runner (ControllerAdapter) is the only real
+// implementation that acts on AnswerGate; the others are no-ops.
+type recordingPipelineRunner struct {
+	answer string
+}
+
+func (r *recordingPipelineRunner) Run(ctx context.Context, goal string) error {
+	return nil
+}
+
+func (r *recordingPipelineRunner) SetForceClass(string)                   {}
+func (r *recordingPipelineRunner) SetPolicyRules([]config.PermissionRule) {}
+func (r *recordingPipelineRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (r *recordingPipelineRunner) AnswerGate(answer string)               { r.answer = answer }
+
+func TestGateOpensPanelNotATranscriptMessage(t *testing.T) {
+	m := newTestModelInRepo(t)
+	m.state.SetSDDGate(session.SDDGate{
+		TaskN: 2, TaskTitle: "Wire the resolver", Question: "Which timeout applies?",
+	})
+
+	m2, _ := m.handleAgentFinished(agentFinishedMsg{err: pipeline.ErrHumanGateRequired})
+
+	if !m2.dock.IsOpen() {
+		t.Fatal("a gate must open the dock panel")
+	}
+	if _, ok := m2.dock.Panel().(*gatepanel.Panel); !ok {
+		t.Fatalf("dock holds %T, want *gatepanel.Panel", m2.dock.Panel())
+	}
+	for _, msg := range m2.state.Messages() {
+		if strings.Contains(msg.Content, "Which timeout applies?") {
+			t.Error("the question must not also be printed into the transcript — one surface, not two")
+		}
+	}
+}
+
+func TestAnswerMsgResumesTheRun(t *testing.T) {
+	m := newTestModelInRepo(t)
+	runner := &recordingPipelineRunner{}
+	m.pipelineRunner = runner
+	m.state.SetSDDProgress(session.SDDProgress{PlanPath: "/plans/p.md"})
+	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})
+	m.dock.Open(gatepanel.New(m.state.SDDGate()))
+
+	m2, cmd := m.Update(gatepanel.AnswerMsg{Text: "use 30s"})
+	mm := m2.(Model)
+
+	if runner.answer != "use 30s" {
+		t.Errorf("runner got answer %q, want %q", runner.answer, "use 30s")
+	}
+	if mm.dock.IsOpen() {
+		t.Error("answering must close the gate panel")
+	}
+	if cmd == nil {
+		t.Error("answering must resume the run")
+	}
+	var sawEcho bool
+	for _, msg := range mm.state.Messages() {
+		if msg.Role == session.RoleUser && strings.Contains(msg.Content, "use 30s") {
+			sawEcho = true
+		}
+	}
+	if !sawEcho {
+		t.Error("the answer must be echoed into the transcript as a user message")
+	}
+}
+
+func TestStopMsgEndsTheRun(t *testing.T) {
+	m := newTestModelInRepo(t)
+	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})
+	m.dock.Open(gatepanel.New(m.state.SDDGate()))
+
+	m2, _ := m.Update(gatepanel.StopMsg{})
+	mm := m2.(Model)
+
+	if mm.dock.IsOpen() {
+		t.Error("stopping must close the gate panel")
+	}
+	if g := mm.state.SDDGate(); g.Question != "" {
+		t.Error("stopping must clear the gate")
+	}
+	var sawStop bool
+	for _, msg := range mm.state.Messages() {
+		if strings.Contains(msg.Content, "stopped") {
+			sawStop = true
+		}
+	}
+	if !sawStop {
+		t.Error("stopping must tell the user the run stopped and how to resume")
 	}
 }

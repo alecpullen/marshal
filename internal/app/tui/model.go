@@ -32,6 +32,7 @@ import (
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
+	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
@@ -332,11 +333,6 @@ type Model struct {
 	// /sdd command dispatch and the preflight confirmation (or the human gate
 	// answer). Set by the sdd command handler; consumed by the Enter key handler.
 	pipelineRunner AgentRunner
-
-	// pendingSDDGate is set when the controller returns ErrHumanGateRequired.
-	// While true, the TUI renders the gate prompt and routes y/n keypresses
-	// to resolve or abort the gate.
-	pendingSDDGate bool
 
 	// configLayers is a pointer to the runtime's Layers snapshot, shared so
 	// the model can read provenance after each successful persist.
@@ -1531,6 +1527,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViewport()
 		return m, nil
+	case gatepanel.AnswerMsg:
+		m.dock.CloseNow()
+		m.state.AddMessage(session.RoleUser, pm.Text, session.ContentTypePlain)
+		if m.pipelineRunner == nil {
+			m.refreshViewport()
+			return m, nil
+		}
+		m.pipelineRunner.AnswerGate(pm.Text)
+		goal := m.state.SDDProgress().PlanPath
+		return m.startAgentRun(m.pipelineRunner, goal)
+
+	case gatepanel.StopMsg:
+		m.dock.CloseNow()
+		m.state.ClearSDDGate()
+		m.state.AddMessage(session.RoleSystem,
+			"Plan run stopped. Run /sdd and pick the same plan to resume from the ledger.",
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+
 	case castlist.StartMsg:
 		m.dock.CloseNow()
 		run := m.pendingRun
@@ -2040,7 +2056,7 @@ func (m Model) todoPanelRows() int {
 // frame. The panel owns the only spinner on screen during a run; the
 // glyph comes from turnSpinnerFrame so it shares the 200ms flash gate.
 func (m Model) renderRunPanel() string {
-	return renderRunPanel(m.state.SDDProgress(), m.state.SDDGate(), m.turnSpinnerFrame(), m.now(), m.height, m.width)
+	return renderRunPanel(m.state.SDDProgress(), m.turnSpinnerFrame(), m.now(), m.height, m.width)
 }
 
 // runPanelRows reports the rows the run panel occupies. The panel is
@@ -2864,12 +2880,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.refreshRailTurns()
 	m.refreshRailChanged()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
-		// SDD human gate: render the prompt and wait for user resolution.
+		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
 			gate := m.state.SDDGate()
 			if gate.Question != "" {
-				m.state.AddMessage(session.RoleSystem, sddGatePrompt(gate), session.ContentTypePlain)
-				m.pendingSDDGate = true
+				// One surface: the panel carries the question, its context,
+				// and the key hints. Nothing goes to the transcript here.
+				m.dock.Open(gatepanel.New(gate))
 				m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 				m.updateViewportHeight()
 				m.refreshViewport()

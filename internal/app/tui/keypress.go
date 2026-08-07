@@ -93,17 +93,6 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	readlineShortcutAvailable := func() bool {
 		return m.input.Value() == "" && !m.editingCommand
 	}
-	// Pipeline human gate: esc abandons the run; every other key falls
-	// through to the input so the user can type an answer. The Enter
-	// handler routes the submitted text to AnswerGate.
-	if m.pendingSDDGate && msg.String() == "esc" {
-		m.pendingSDDGate = false
-		m.state.ClearSDDGate()
-		m.state.AddMessage(session.RoleSystem, "Plan run stopped. Re-run /sdd with the same plan to resume from the ledger.", session.ContentTypePlain)
-		m.refreshViewport()
-		return *m, nil, true
-	}
-
 	// Any key other than a second Ctrl+R disarms a pending rollback, so the
 	// armed state can never outlive the keystroke that set it.
 	if m.rollbackArmed && msg.String() != "ctrl+r" {
@@ -331,22 +320,6 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return *m, nil, false
 	case "enter":
-		// Pipeline human gate: submit the typed answer.
-		if m.pendingSDDGate {
-			answer := strings.TrimSpace(m.input.Value())
-			if answer == "" {
-				return *m, nil, true
-			}
-			m.input.SetValue("")
-			m.pendingSDDGate = false
-			m.state.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
-			if m.pipelineRunner != nil {
-				m.pipelineRunner.AnswerGate(answer)
-			}
-			goal := m.state.SDDProgress().PlanPath
-			_, cmd := m.startAgentRun(m.pipelineRunner, goal)
-			return *m, cmd, true
-		}
 		// F18: if a popup is visible, accept it (replaces the trigger
 		// token) and keep editing — Enter on a popup is a selection,
 		// not a submit. Esc is the way to dismiss without accepting.

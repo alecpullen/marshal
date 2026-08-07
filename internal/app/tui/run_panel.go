@@ -22,12 +22,12 @@ const runPanelMaxRows = 6
 
 // renderRunPanel renders the single SDD progress surface as a full-width
 // horizontal top bar: one summary line carrying the only spinner on screen
-// during a run, the plan checklist windowed around the current task, and
-// the human-gate question when the pipeline is waiting for an answer. After
+// during a run, the plan checklist windowed around the current task. After
 // the run ends it collapses to a one-line summary until the next user turn
 // clears it (keypress.go). The bar has no background per the unified
-// chrome design.
-func renderRunPanel(p session.SDDProgress, gate session.SDDGate, spinner string, now time.Time, frameHeight, width int) string {
+// chrome design. The human-gate question no longer lives here — the docked
+// gate panel owns it (one surface, not two).
+func renderRunPanel(p session.SDDProgress, spinner string, now time.Time, frameHeight, width int) string {
 	if !p.Active && !p.Finished {
 		return ""
 	}
@@ -38,9 +38,6 @@ func renderRunPanel(p session.SDDProgress, gate session.SDDGate, spinner string,
 	sections := []string{runPanelSummaryLine(p, spinner, now, width)}
 	if checklist := runPanelChecklist(p, frameHeight, width); checklist != "" {
 		sections = append(sections, checklist)
-	}
-	if gate.Question != "" {
-		sections = append(sections, runPanelGateLine(gate, width))
 	}
 	return runPanelBar(strings.Join(sections, "\n"), width)
 }
@@ -123,14 +120,6 @@ func runPanelTodo(i int, title string, p session.SDDProgress) native.TodoItem {
 		status = native.TodoInProgress
 	}
 	return native.TodoItem{Content: fmt.Sprintf("%d %s", i+1, title), Status: status}
-}
-
-// runPanelGateLine renders the question a pipeline subagent raised, in the
-// warning color — it is the one row in the panel that needs the user.
-func runPanelGateLine(g session.SDDGate, width int) string {
-	text := fmt.Sprintf("Task %d needs an answer: %s", g.TaskN, g.Question)
-	return gutterPrefix(glyph.Warning, warningColor) +
-		lipgloss.NewStyle().Foreground(warningColor).Render(ansi.Truncate(text, max(width-3, 1), "…"))
 }
 
 // runPanelFinishedLine renders the collapsed post-run summary:

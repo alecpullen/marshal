@@ -77,6 +77,11 @@ type Controller struct {
 	// pendingQuestion and pendingAnswer carry a human gate across Run calls.
 	pendingQuestion string
 	pendingAnswer   string
+	// gateTaskTitle and gateReport carry the context of the open gate: the
+	// asking task's title and the implementer's full report, so the human can
+	// see why the subagent is asking.
+	gateTaskTitle string
+	gateReport    string
 	// escalated records that the current task already had its automatic
 	// retry on the stronger model.
 	escalated bool
@@ -262,7 +267,7 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 		return taskResult{}, fmt.Errorf("pipeline: task %d implementer: %w", t.N, err)
 	}
 	if report.NeedsHuman() {
-		return taskResult{Report: report}, c.openGate(t.N, report.Question)
+		return taskResult{Report: report}, c.openGateWithContext(t.N, report.Question, report)
 	}
 	if report.Status == StatusDoneWithConcerns && report.Concerns != "" {
 		_ = c.Ledger.Note("Task %d: implementer concern: %s", t.N, report.Concerns)
@@ -315,7 +320,7 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 			return taskResult{}, fmt.Errorf("pipeline: task %d gate fixer: %w", t.N, err)
 		}
 		if report.NeedsHuman() {
-			return taskResult{Report: report}, c.openGate(t.N, report.Question)
+			return taskResult{Report: report}, c.openGateWithContext(t.N, report.Question, report)
 		}
 	}
 
@@ -364,8 +369,30 @@ func (c *Controller) openGate(taskN int, question string) error {
 	return ErrHumanGateRequired
 }
 
+// openGateWithContext records a subagent's question along with the context
+// needed to answer it: the asking task's title and the implementer's full
+// report. openGate remains for callers with no report in hand.
+func (c *Controller) openGateWithContext(taskN int, question string, report ImplementerReport) error {
+	c.gateTaskTitle = ""
+	for _, t := range c.Plan.Tasks {
+		if t.N == taskN {
+			c.gateTaskTitle = t.Title
+			break
+		}
+	}
+	c.gateReport = report.Raw
+	return c.openGate(taskN, question)
+}
+
 // Question returns the unanswered subagent question, if any.
 func (c *Controller) Question() string { return c.pendingQuestion }
+
+// QuestionContext returns the asking task's title and the implementer's
+// report for the open gate. Both are empty when there is no gate or when
+// the gate is branch-level rather than task-level.
+func (c *Controller) QuestionContext() (string, string) {
+	return c.gateTaskTitle, c.gateReport
+}
 
 // Answer supplies the human's answer to the open question. It is appended
 // to the task's brief so the re-dispatched implementer reads it as part of
@@ -478,7 +505,7 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 			return res, fmt.Errorf("pipeline: task %d review fixer: %w", t.N, err)
 		}
 		if report.NeedsHuman() {
-			return res, c.openGate(t.N, report.Question)
+			return res, c.openGateWithContext(t.N, report.Question, report)
 		}
 		res.Report = report
 

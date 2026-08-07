@@ -660,3 +660,33 @@ func TestRunEmitsGateSkippedPayload(t *testing.T) {
 	}
 	t.Fatal("no GateSkippedPayload emitted; a skipped gate is indistinguishable from a pass")
 }
+
+func TestOpenGateRecordsTaskTitleAndReport(t *testing.T) {
+	c := &Controller{Plan: &Plan{Tasks: []TaskSpec{{N: 1, Title: "Add the retry helper"}}}}
+
+	c.openGateWithContext(1, "Reuse the existing backoff?", ImplementerReport{
+		Status:   StatusNeedsContext,
+		Question: "Reuse the existing backoff?",
+		Raw:      "STATUS: NEEDS_CONTEXT\nQUESTION: Reuse the existing backoff?",
+	})
+
+	if got := c.Question(); got != "Reuse the existing backoff?" {
+		t.Errorf("Question() = %q", got)
+	}
+	title, report := c.QuestionContext()
+	if title != "Add the retry helper" {
+		t.Errorf("task title = %q, want the plan task's title", title)
+	}
+	if !strings.Contains(report, "NEEDS_CONTEXT") {
+		t.Errorf("report = %q, want the implementer's raw report", report)
+	}
+}
+
+func TestOpenGateContextIsEmptyForBranchLevelGates(t *testing.T) {
+	c := &Controller{Plan: &Plan{Tasks: []TaskSpec{{N: 1, Title: "Only task"}}}}
+	c.openGateWithContext(0, "branch-level question", ImplementerReport{Raw: "raw"})
+	title, _ := c.QuestionContext()
+	if title != "" {
+		t.Errorf("task 0 is not a plan task; title = %q, want empty", title)
+	}
+}

@@ -56,7 +56,13 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 		p.Branch = a.c.Worktree.Branch
 	})
 	if errors.Is(err, ErrHumanGateRequired) {
-		a.state.SetSDDGate(session.SDDGate{TaskN: a.c.nextTask, Question: a.c.Question()})
+		title, report := a.c.QuestionContext()
+		a.state.SetSDDGate(session.SDDGate{
+			TaskN:     a.c.nextTask,
+			Question:  a.c.Question(),
+			TaskTitle: title,
+			Report:    report,
+		})
 		return err
 	}
 	if err == nil {

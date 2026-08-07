@@ -64,6 +64,14 @@ type Field struct {
 	PickPending     func() bool
 	PickAllowCustom bool
 
+	// Display overrides the rendered value cell: it returns the value to
+	// show plus a dim badge rendered after it. GetStr keeps reporting the
+	// stored value, because the search registry snapshots it for
+	// reset-to-defaults and configdiff compares against it — a row showing
+	// an inherited value must not read as modified. Nil means render from
+	// GetStr as usual.
+	Display func() (value, badge string)
+
 	// writeGlobal marks a person-preference/credential row: commits write
 	// the user-global config instead of the project config.
 	writeGlobal bool

@@ -567,3 +567,40 @@ func TestDisarmCurrent(t *testing.T) {
 		t.Fatal("DisarmCurrent should call the cursor row's disarm")
 	}
 }
+
+func TestValueCellUsesDisplayOverride(t *testing.T) {
+	stored := "deep"
+	row := &Field{
+		ID:      "profiles.coding.reviewer",
+		Title:   "Reviewer",
+		Kind:    KindPicker,
+		GetStr:  func() string { return stored },
+		Display: func() (string, string) { return "claude-opus-4-5", "← base" },
+	}
+	fl := NewFieldList(func() []*Field { return []*Field{row} })
+	fl.SetSize(80, 10)
+	out := fl.View()
+	if !strings.Contains(out, "claude-opus-4-5") {
+		t.Errorf("view must render the Display value, got:\n%s", out)
+	}
+	if !strings.Contains(out, "← base") {
+		t.Errorf("view must render the Display badge, got:\n%s", out)
+	}
+	if row.GetStr() != "deep" {
+		t.Error("Display must not disturb GetStr — /set and diffing depend on it")
+	}
+}
+
+func TestValueCellWithoutDisplayIsUnchanged(t *testing.T) {
+	row := &Field{
+		ID:     "presets.main.model",
+		Title:  "Model",
+		Kind:   KindPicker,
+		GetStr: func() string { return "gpt-4o" },
+	}
+	fl := NewFieldList(func() []*Field { return []*Field{row} })
+	fl.SetSize(80, 10)
+	if out := fl.View(); !strings.Contains(out, "gpt-4o") {
+		t.Errorf("nil Display must preserve GetStr rendering, got:\n%s", out)
+	}
+}

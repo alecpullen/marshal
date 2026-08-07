@@ -527,6 +527,17 @@ func indexOf(ss []string, s string) int {
 
 // valueCell renders the right-hand value for a row.
 func (fl *FieldList) valueCell(row *Field, isCursor bool) string {
+	if row.Display != nil && row.Kind != KindHeader && !(fl.editing && isCursor) {
+		value, badge := row.Display()
+		if value == "" {
+			value = "—"
+		}
+		out := flValueStyle().Render(value)
+		if badge != "" {
+			out += " " + DescStyle().Render(badge)
+		}
+		return out
+	}
 	switch row.Kind {
 	case KindToggle:
 		if row.GetBool() {

@@ -12,6 +12,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/retrieval"
+	"marshal/internal/skills"
 )
 
 // minDerivedTurnTokens is the smallest effective per-turn threshold the
@@ -243,6 +244,44 @@ func (r *Runner) setContextPackMessage(messages []schema.ChatMessage, pack conte
 	} else {
 		messages = []schema.ChatMessage{msg}
 		r.contextPackMsgIndex = 0
+	}
+	return messages
+}
+
+// appendSkillBodies appends the wrapped body of every active skill whose
+// body is not already on the wire, and records it as emitted. The system
+// prompt tells the model an active skill's "body already in context", so
+// something has to actually put it there: the session-state copy written
+// by skills.LoadSkillIntoSession is transcript-only, and history replay
+// (buildHistoryMessages) drops system messages, so neither delivers it.
+//
+// Bodies are appended at the end rather than pinned near the top: skills
+// are append-only (never deactivated), appending keeps a mid-turn load
+// adjacent to its skill.load tool result, and it leaves
+// contextPackMsgIndex undisturbed.
+//
+// Callers that rebuild the wire from scratch must reset r.emittedSkills
+// to nil first so every active skill is re-emitted onto the new wire.
+func (r *Runner) appendSkillBodies(messages []schema.ChatMessage) []schema.ChatMessage {
+	if r.SkillIndex == nil || r.State == nil {
+		return messages
+	}
+	if r.emittedSkills == nil {
+		r.emittedSkills = make(map[string]bool)
+	}
+	for _, name := range r.State.ActiveSkills() {
+		if r.emittedSkills[name] {
+			continue
+		}
+		skill, ok := r.SkillIndex.Load(name)
+		if !ok {
+			continue
+		}
+		messages = append(messages, schema.ChatMessage{
+			Role:    schema.RoleSystem,
+			Content: skills.WrapBody(skill),
+		})
+		r.emittedSkills[name] = true
 	}
 	return messages
 }

@@ -11,8 +11,8 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/db"
 	"marshal/internal/contextpack"
+	"marshal/internal/db"
 	"marshal/internal/hooks"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
@@ -186,15 +186,15 @@ type MemoryProvider interface {
 type UsageObserver func(usage schema.TokenUsage)
 
 type Runner struct {
-	Provider             provider.Provider
-	Registry             *registry.Registry
-	Policy               *policy.PolicyEngine
-	State                *session.State
-	Model                string
-	RouteResolver        RouteResolver
-	MemoryProvider       MemoryProvider
-	ProjectID            int64
-	Now                  func() time.Time
+	Provider       provider.Provider
+	Registry       *registry.Registry
+	Policy         *policy.PolicyEngine
+	State          *session.State
+	Model          string
+	RouteResolver  RouteResolver
+	MemoryProvider MemoryProvider
+	ProjectID      int64
+	Now            func() time.Time
 	// Sleep backs the reconnect wait loop's backoff. Nil means a ctx-aware
 	// time.Sleep; tests substitute an instant (or clock-advancing) fake so
 	// reconnect behaviour can be exercised without real waiting.
@@ -316,6 +316,11 @@ type Runner struct {
 	// message in the current turn's wire transcript. -1 means no context-pack
 	// message is currently tracked. Reset at the start of each RunTask.
 	contextPackMsgIndex int
+	// emittedSkills tracks which active skills already have their body on
+	// the current turn's wire transcript, so appendSkillBodies stays
+	// idempotent across loop iterations. Per-turn state: reset at the top
+	// of RunTask and whenever the wire is rebuilt from scratch.
+	emittedSkills map[string]bool
 	// fileIndexCache memoises the per-project file index across RunTask
 	// calls and across steering-message drains. Auto-invalidates when the
 	// projectID changes (see fileIndexCache.get).
@@ -470,8 +475,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}}
 	r.statsMu.Unlock()
 
-	// Per-turn reset: there is no tracked context-pack message yet.
+	// Per-turn reset: there is no tracked context-pack message yet, and no
+	// skill body has been written to this turn's wire.
 	r.contextPackMsgIndex = -1
+	r.emittedSkills = nil
 
 	task := NewTask(goal, r.Now())
 	defer func() { r.emitMetrics(task) }()
@@ -518,24 +525,25 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum),
 	}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
-		if r.role() == RoleGeneral {
-			// Task 4/A2: load the cross-turn ledger. Best-effort — a DB
-			// error here falls back to the legacy placeholder rather than
-			// failing the turn.
-			var ledger map[int64][]db.ToolAuditEntry
-			if r.State != nil && r.State.DB() != nil && r.State.SessionID() != "" {
-				if got, err := r.State.DB().LoadAllTurnToolAudit(r.State.SessionID()); err == nil {
-					ledger = got
-				} else {
-					r.State.Logger().Warn("load turn tool audit for history failed", "error", err)
-				}
+	messages = r.appendSkillBodies(messages)
+	if r.role() == RoleGeneral {
+		// Task 4/A2: load the cross-turn ledger. Best-effort — a DB
+		// error here falls back to the legacy placeholder rather than
+		// failing the turn.
+		var ledger map[int64][]db.ToolAuditEntry
+		if r.State != nil && r.State.DB() != nil && r.State.SessionID() != "" {
+			if got, err := r.State.DB().LoadAllTurnToolAudit(r.State.SessionID()); err == nil {
+				ledger = got
+			} else {
+				r.State.Logger().Warn("load turn tool audit for history failed", "error", err)
 			}
-			// Task 5/B: adaptive history budget. r.HistoryBudgetTokens is
-			// the user's explicit override (or 0); the rest is derived
-			// from the resolved model window via historyBudget.
-			budget := historyBudget(route.Window, r.HistoryBudgetTokens)
-			messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
 		}
+		// Task 5/B: adaptive history budget. r.HistoryBudgetTokens is
+		// the user's explicit override (or 0); the rest is derived
+		// from the resolved model window via historyBudget.
+		budget := historyBudget(route.Window, r.HistoryBudgetTokens)
+		messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
+	}
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
 	// T12: end-of-turn flushArchive and maybeRollover so cross-turn rollover
@@ -571,8 +579,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			updatedPack := contextpack.RefreshPlanWithBudget(current, task.Plan, maxTokens, r.Now)
 			r.State.SetContextPack(updatedPack)
 			r.contextPackMsgIndex = -1
+			r.emittedSkills = nil
 			messages = []schema.ChatMessage{BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum)}
 			messages = r.setContextPackMessage(messages, updatedPack)
+			messages = r.appendSkillBodies(messages)
 			if r.role() == RoleGeneral {
 				var ledger map[int64][]db.ToolAuditEntry
 				if r.State != nil && r.State.DB() != nil && r.State.SessionID() != "" {
@@ -675,6 +685,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// the context pack of subsequent turns.
 		r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 		messages = r.setContextPackMessage(messages, r.State.ContextPack())
+		// Deliver the body of any skill loaded since the last iteration.
+		messages = r.appendSkillBodies(messages)
 
 		if turnThreshold > 0 && estimateTokens(messages) > turnThreshold {
 			// D2: prune superseded tool outputs first. Most overflows are

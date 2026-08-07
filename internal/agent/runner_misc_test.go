@@ -1115,6 +1115,58 @@ func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	}
 }
 
+// The system prompt marks a loaded skill "ACTIVE — body already in
+// context", so the body must actually be on the wire. The session-state
+// copy is transcript-only and history replay drops system messages, so
+// without appendSkillBodies the model was told to follow a skill it had
+// never been shown.
+func TestRunSendsSkillBodyToProviderAfterLoad(t *testing.T) {
+	const body = "# Debug\n\nSteps: reproduce, isolate, fix, verify.\n"
+
+	idx := skills.NewIndex()
+	idx.Set("debug", skills.Skill{
+		Name:        "debug",
+		Description: "Debugging workflow",
+		Body:        body,
+	})
+
+	reg := registry.New()
+	state := newTestState(t)
+	pol := policy.NewEngine(&config.Config{}, nil)
+	skills.RegisterTool(reg, idx, state)
+
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"need debugging workflow","action":{"type":"tool_call","tool":"skill.load","args":{"name":"debug"}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Debug skill loaded and used."}}`,
+	}}
+	runner := NewRunner(p, reg, pol, state, "test-model")
+	runner.SkillIndex = idx
+
+	if err := runner.Run(context.Background(), "Debug this"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(p.Requests) < 2 {
+		t.Fatalf("expected at least 2 provider requests, got %d", len(p.Requests))
+	}
+
+	countBodies := func(req schema.ChatRequest) int {
+		n := 0
+		for _, msg := range req.Messages {
+			if strings.Contains(msg.Content, body) {
+				n++
+			}
+		}
+		return n
+	}
+
+	if n := countBodies(p.Requests[0]); n != 0 {
+		t.Fatalf("skill body on the wire before skill.load: %d occurrences", n)
+	}
+	if n := countBodies(p.Requests[1]); n != 1 {
+		t.Fatalf("skill body occurrences on the request after load = %d, want 1", n)
+	}
+}
+
 func TestRunnerUsesConfiguredRoleInSystemPrompt(t *testing.T) {
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale": "done", "action": {"type": "final", "content": "review complete"}}`,

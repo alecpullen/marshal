@@ -1,0 +1,49 @@
+package pipeline
+
+import (
+	"path/filepath"
+
+	"marshal/internal/tools/registry"
+)
+
+// ExecutionContext is the per-dispatch isolation context: where workers
+// operate, where artifacts live, and how artifact paths are expressed in
+// prompts. It is created by the controller after acquiring the worktree
+// and passed to every dispatch.
+type ExecutionContext struct {
+	RepoRoot      string
+	WorkspaceRoot string
+	ArtifactRoot  string
+	ArtifactAlias string
+}
+
+// ArtifactPath returns the filesystem path for an artifact relative to the
+// artifact root.
+func (c ExecutionContext) ArtifactPath(rel string) string {
+	return filepath.Join(c.ArtifactRoot, rel)
+}
+
+// NamedRoots returns the alias-to-path map for native tool construction.
+func (c ExecutionContext) NamedRoots() map[string]string {
+	if c.ArtifactAlias == "" {
+		return nil
+	}
+	return map[string]string{c.ArtifactAlias: c.ArtifactRoot}
+}
+
+// RegistryFactory builds a fresh tool registry bound to the given execution
+// context and session scope. Each dispatch creates its own registry so
+// native tool handlers close over the correct workspace root and artifact
+// aliases rather than the parent session's project root.
+type RegistryFactory func(ctx ExecutionContext, scope RegistryScope) (*registry.Registry, error)
+
+// RegistryScope controls which tools are available to the built registry,
+// mirroring swarm.RegistryScope for the pipeline's simpler read-only /
+// full distinction.
+type RegistryScope int
+
+const (
+	ScopeFull RegistryScope = iota
+	ScopeReadOnly
+	ScopeArtifactWriter // read-only source + artifact-only writes (reviewers)
+)

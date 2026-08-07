@@ -4,12 +4,31 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+)
+
+// MatchKind reports how a limit was found, so callers can distinguish a
+// keyed hit from an inference across differently-named entries.
+type MatchKind int
+
+const (
+	MatchNone    MatchKind = iota // nothing known
+	MatchExact                    // keyed hit on provider/model, model, or /model
+	MatchVariant                  // inferred from a differently-named entry
 )
 
 // Table is a merged provider/model-keyed limit table with lookup helpers.
 type Table struct {
 	entries map[string]Limit
+	index   *normIndex
+}
+
+// normIndex is the lazily built normalized view of a Table. It is a pointer
+// so Table keeps a value receiver while still memoizing the build.
+type normIndex struct {
+	once  sync.Once
+	byKey map[string]Limit
 }
 
 // NewTable wraps a raw merged table.
@@ -17,38 +36,126 @@ func NewTable(entries map[string]Limit) Table {
 	if entries == nil {
 		entries = map[string]Limit{}
 	}
-	return Table{entries: entries}
+	return Table{entries: entries, index: &normIndex{}}
 }
 
-// Lookup returns the best limit for a model using the hierarchy:
-// 1. exact provider/model key
-// 2. bare model name key (no provider prefix)
-// 3. any provider/model key whose model suffix matches
-// 4. false if nothing is known.
-func (t Table) Lookup(providerName, modelID string) (Limit, bool) {
+// normalized returns the normalized index, building it once. Colliding
+// normalized keys resolve to the smallest non-zero figure per field:
+// under-budgeting is recoverable, exceeding a real limit is a hard failure.
+func (t Table) normalized() map[string]Limit {
+	if t.index == nil {
+		return nil
+	}
+	t.index.once.Do(func() {
+		built := make(map[string]Limit, len(t.entries))
+		for key, lim := range t.entries {
+			n := norm(key)
+			if n == "" {
+				continue
+			}
+			if existing, ok := built[n]; ok {
+				built[n] = smallest(existing, lim)
+				continue
+			}
+			built[n] = lim
+		}
+		t.index.byKey = built
+	})
+	return t.index.byKey
+}
+
+// smallest merges two candidate limits field-by-field, preferring the
+// smaller non-zero value.
+func smallest(a, b Limit) Limit {
+	out := a
+	if a.ContextWindow == 0 || (b.ContextWindow != 0 && b.ContextWindow < a.ContextWindow) {
+		out.ContextWindow = b.ContextWindow
+	}
+	if a.MaxOutputTokens == 0 || (b.MaxOutputTokens != 0 && b.MaxOutputTokens < a.MaxOutputTokens) {
+		out.MaxOutputTokens = b.MaxOutputTokens
+	}
+	return out
+}
+
+func known(lim Limit) bool { return lim.ContextWindow != 0 || lim.MaxOutputTokens != 0 }
+
+// Lookup returns the best limit for a model and how it was found:
+//  1. exact provider/model key            → MatchExact
+//  2. bare model name key                 → MatchExact
+//  3. any provider/model key with a matching model suffix → MatchExact
+//  4. normalized-id match                 → MatchVariant
+//  5. unambiguous prefix match after role-suffix stripping → MatchVariant
+//  6. nothing                             → MatchNone
+func (t Table) Lookup(providerName, modelID string) (Limit, MatchKind) {
+	if modelID == "" || t.entries == nil {
+		return Limit{}, MatchNone
+	}
+
 	// 1. Exact match.
-	key := providerName + "/" + modelID
-	if lim, ok := t.entries[key]; ok && (lim.ContextWindow != 0 || lim.MaxOutputTokens != 0) {
-		return lim, true
+	if lim, ok := t.entries[providerName+"/"+modelID]; ok && known(lim) {
+		return lim, MatchExact
 	}
 	// 2. Bare model name key (no provider prefix).
-	if lim, ok := t.entries[modelID]; ok && (lim.ContextWindow != 0 || lim.MaxOutputTokens != 0) {
-		return lim, true
+	if lim, ok := t.entries[modelID]; ok && known(lim) {
+		return lim, MatchExact
 	}
-	// 3. Model-name-only fallback: find any key ending with "/<modelID>"
-	//    that has the needed fields.
+	// 3. Model-name-only fallback: any key ending with "/<modelID>".
 	suffix := "/" + modelID
 	var best Limit
 	var found bool
-	for k, lim := range t.entries {
-		if strings.HasSuffix(k, suffix) {
-			if !found || (best.ContextWindow == 0 && lim.ContextWindow != 0) {
-				best = lim
-				found = true
+	for key, lim := range t.entries {
+		if !strings.HasSuffix(key, suffix) {
+			continue
+		}
+		if !found {
+			best, found = lim, true
+			continue
+		}
+		best = smallest(best, lim)
+	}
+	if found && known(best) {
+		return best, MatchExact
+	}
+
+	index := t.normalized()
+	if len(index) == 0 {
+		return Limit{}, MatchNone
+	}
+
+	// 4. Normalized match.
+	query := norm(modelID)
+	if query == "" {
+		return Limit{}, MatchNone
+	}
+	if lim, ok := index[query]; ok && known(lim) {
+		return lim, MatchVariant
+	}
+
+	// 5. Unambiguous prefix match. Short queries are rejected outright —
+	//    a 3-character stem is a prefix of far too much to be evidence.
+	stem := stripRoleSuffix(query)
+	if len(stem) < 4 {
+		return Limit{}, MatchNone
+	}
+	var candidate Limit
+	matches := 0
+	for key, lim := range index {
+		keyStem := stripRoleSuffix(key)
+		if len(keyStem) < 4 || !known(lim) {
+			continue
+		}
+		if strings.HasPrefix(stem, keyStem) || strings.HasPrefix(keyStem, stem) {
+			candidate = lim
+			matches++
+			if matches > 1 {
+				return Limit{}, MatchNone
 			}
 		}
 	}
-	return best, found
+	if matches == 1 {
+		return candidate, MatchVariant
+	}
+	return Limit{}, MatchNone
 }
 
 // Refresh fetches both public sources, merges them, and writes the cache.

@@ -72,9 +72,9 @@ func TestTableLookupExactProviderModel(t *testing.T) {
 		"azure_ai/deepseek-v4-flash": {ContextWindow: 1000000, MaxOutputTokens: 384000},
 		"deepseek-v4-flash":          {ContextWindow: 8192, MaxOutputTokens: 8192},
 	})
-	lim, ok := tbl.Lookup("azure_ai", "deepseek-v4-flash")
-	if !ok {
-		t.Fatal("expected exact match")
+	lim, kind := tbl.Lookup("azure_ai", "deepseek-v4-flash")
+	if kind != MatchExact {
+		t.Fatalf("kind = %v, want MatchExact", kind)
 	}
 	if lim.ContextWindow != 1000000 {
 		t.Errorf("ContextWindow = %d, want 1000000", lim.ContextWindow)
@@ -85,9 +85,9 @@ func TestTableLookupModelNameFallback(t *testing.T) {
 	tbl := NewTable(map[string]Limit{
 		"deepseek-v4-flash": {ContextWindow: 8192, MaxOutputTokens: 8192},
 	})
-	lim, ok := tbl.Lookup("ollama-cloud", "deepseek-v4-flash")
-	if !ok {
-		t.Fatal("expected model-name fallback match")
+	lim, kind := tbl.Lookup("ollama-cloud", "deepseek-v4-flash")
+	if kind != MatchExact {
+		t.Fatalf("kind = %v, want MatchExact", kind)
 	}
 	if lim.ContextWindow != 8192 {
 		t.Errorf("ContextWindow = %d, want 8192", lim.ContextWindow)
@@ -96,9 +96,9 @@ func TestTableLookupModelNameFallback(t *testing.T) {
 
 func TestTableLookupMissing(t *testing.T) {
 	tbl := NewTable(map[string]Limit{})
-	_, ok := tbl.Lookup("unknown", "unknown")
-	if ok {
-		t.Error("expected no match")
+	_, kind := tbl.Lookup("unknown", "unknown")
+	if kind != MatchNone {
+		t.Errorf("kind = %v, want MatchNone", kind)
 	}
 }
 

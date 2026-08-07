@@ -34,6 +34,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
+	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -4826,6 +4827,72 @@ func newTestModel(t *testing.T) Model {
 	return m
 }
 
+// newTestModelInRepo is like newTestModel but with a real repo working dir
+// (a temp dir is fine; the tests write plans into
+// m.state.WorkingDir/.marshal/plans).
+func newTestModelInRepo(t *testing.T) Model {
+	t.Helper()
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg))
+	m.resize(80, 24)
+	m.refreshViewport()
+	return m
+}
+
+// writeTestPlan writes a plan with n "## Task N:" sections into
+// dir/.marshal/plans/name.
+func writeTestPlan(t *testing.T, dir, name string, n int) {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("# Test Plan\n\n## Global Constraints\n\n- keep it green\n\n")
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "## Task %d: Do thing %d\n\nBody for task %d.\n\n", i, i, i)
+	}
+	writeRawTestPlan(t, dir, name, b.String())
+}
+
+// writeRawTestPlan writes body verbatim into dir/.marshal/plans/name.
+func writeRawTestPlan(t *testing.T, dir, name, body string) {
+	t.Helper()
+	plansDir := filepath.Join(dir, ".marshal", "plans")
+	if err := os.MkdirAll(plansDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plansDir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// markTestLedgerComplete marks tasks 1..n complete in the ledger for the
+// given plan slug.
+func markTestLedgerComplete(t *testing.T, dir, slug string, n int) {
+	t.Helper()
+	paths, err := pipeline.NewPaths(dir, slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := pipeline.Ledger{Path: paths.Ledger()}
+	for i := 1; i <= n; i++ {
+		if err := ledger.MarkComplete(i, "aaaaaaa", "bbbbbbb"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// pickerItems returns the open dock panel's picker items.
+func pickerItems(t *testing.T, m Model) []picker.Item {
+	t.Helper()
+	p, ok := m.dock.Panel().(*picker.Model)
+	if !ok {
+		t.Fatalf("expected *picker.Model, got %T", m.dock.Panel())
+	}
+	return p.Items()
+}
+
 // newTestState is a session.State with default config, used by tests that
 // need to mutate the config before constructing the TUI.
 func newTestState(t *testing.T) *session.State {
@@ -6437,5 +6504,94 @@ func TestDrillInDoesNothingWithoutARunningSubagent(t *testing.T) {
 	}
 	if _, ok := m.drilledInto(); ok {
 		t.Error("the view stack must stay empty")
+	}
+}
+
+func TestSDDPlanPickerShowsTaskCounts(t *testing.T) {
+	m := newTestModelInRepo(t)
+	writeTestPlan(t, m.state.WorkingDir, "add-retries.md", 3)
+
+	m.openSDDPlanPicker()
+
+	items := pickerItems(t, m)
+	if len(items) < 1 {
+		t.Fatal("no picker items")
+	}
+	if !strings.Contains(items[0].Detail, "3 tasks") {
+		t.Errorf("plan row must state its task count, got Detail = %q", items[0].Detail)
+	}
+}
+
+func TestSDDPlanPickerFlagsUnparseablePlans(t *testing.T) {
+	m := newTestModelInRepo(t)
+	writeRawTestPlan(t, m.state.WorkingDir, "broken.md", "# No tasks here\n")
+
+	m.openSDDPlanPicker()
+
+	items := pickerItems(t, m)
+	var found bool
+	for _, it := range items {
+		if strings.Contains(it.Label, "broken.md") {
+			found = true
+			if !strings.Contains(strings.ToLower(it.Detail), "no `## task") &&
+				!strings.Contains(strings.ToLower(it.Detail), "unreadable") {
+				t.Errorf("a broken plan must say why it cannot run, got Detail = %q", it.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Error("a malformed plan must still be listed so the user can fix it")
+	}
+}
+
+func TestSDDPlanPickerPinsResumableRunFirst(t *testing.T) {
+	m := newTestModelInRepo(t)
+	writeTestPlan(t, m.state.WorkingDir, "aaa-first-alphabetically.md", 2)
+	writeTestPlan(t, m.state.WorkingDir, "zzz-partly-done.md", 4)
+	markTestLedgerComplete(t, m.state.WorkingDir, "zzz-partly-done", 2)
+
+	m.openSDDPlanPicker()
+
+	items := pickerItems(t, m)
+	if len(items) == 0 {
+		t.Fatal("no picker items")
+	}
+	if !strings.Contains(items[0].Label, "Resume") {
+		t.Errorf("a resumable run must be the first item, got %q", items[0].Label)
+	}
+	if !strings.Contains(items[0].Label, "zzz-partly-done") {
+		t.Errorf("the resume row must name the plan, got %q", items[0].Label)
+	}
+	if !strings.Contains(items[0].Detail, "2/4") {
+		t.Errorf("the resume row must show progress, got Detail = %q", items[0].Detail)
+	}
+}
+
+func TestSDDPlanPickerEmptyStateOffersNoBrokenAction(t *testing.T) {
+	m := newTestModelInRepo(t) // no plans written
+
+	m.openSDDPlanPicker()
+
+	items := pickerItems(t, m)
+	for _, it := range items {
+		if it.Value == "generate" {
+			t.Fatal("the empty state must not offer a value that dispatches /sdd generate — " +
+				"ParsePlan fails on it and the user gets 'no such file'")
+		}
+	}
+	var sawScaffold, sawCustom bool
+	for _, it := range items {
+		if it.Value == sddScaffoldPlanValue {
+			sawScaffold = true
+		}
+		if it.Value == sddCustomPlanPathValue {
+			sawCustom = true
+		}
+	}
+	if !sawScaffold {
+		t.Error("the empty state must offer to scaffold a plan file")
+	}
+	if !sawCustom {
+		t.Error("the custom-path escape hatch must survive the empty state")
 	}
 }

@@ -85,6 +85,15 @@ func (m *Model) SetFilter(q string) {
 // FilterValue returns the current filter text.
 func (m *Model) FilterValue() string { return m.filter.Value() }
 
+// Items returns a copy of the picker's items, in the order they were
+// supplied. It exists so callers (and tests) can inspect the offered rows
+// without reaching into the unexported field.
+func (m *Model) Items() []Item {
+	out := make([]Item, len(m.items))
+	copy(out, m.items)
+	return out
+}
+
 // SetAllowCustom enables custom values: pressing Enter with a typed filter
 // text and no selection emits PickedMsg with the filter text.
 func (m *Model) SetAllowCustom(v bool) {

@@ -48,6 +48,7 @@ import (
 	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
+	"marshal/internal/sddplans"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -95,6 +96,11 @@ const (
 	// path..." item in the SDD plan picker. It is not a valid filesystem path,
 	// so it cannot collide with an auto-detected plan.
 	sddCustomPlanPathValue = "__sdd_custom_path__"
+
+	// sddScaffoldPlanValue is the picker value emitted by the "Write a starter
+	// plan" row. It is a sentinel, never a path: the handler writes a template
+	// into the plans directory rather than trying to run it.
+	sddScaffoldPlanValue = "__sdd_scaffold_plan__"
 )
 
 type Model struct {
@@ -1463,6 +1469,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case cmdName == "sdd-plan":
 			if pm.Value == sddCustomPlanPathValue {
 				m.openSDDCustomPlanPathPicker()
+				m.refreshViewport()
+				return m, nil
+			}
+			if pm.Value == sddScaffoldPlanValue {
+				m.scaffoldSDDPlan()
 				m.refreshViewport()
 				return m, nil
 			}
@@ -3301,21 +3312,55 @@ func (m *Model) cycleModel(forward bool) {
 	m.refreshViewport()
 }
 
-// openSDDPlanPicker reads the SDD plans directory, globs for *.md files,
-// and opens a picker for the user to choose a plan to run.
+// openSDDPlanPicker lists the plans a run can execute, with each plan's
+// task count and resume state resolved up front. A plan that will not parse
+// is listed with its error rather than hidden, and a partly-finished run is
+// pinned to the top as an explicit resume.
 func (m *Model) openSDDPlanPicker() {
-	plansDir := m.state.Config.SDD.PlansDir
+	candidates := sddplans.Discover(m.state.WorkingDir, m.state.Config.SDD.PlansDir)
+
 	var items []picker.Item
-	matches, _ := filepath.Glob(filepath.Join(m.state.WorkingDir, plansDir, "*.md"))
-	for _, path := range matches {
-		name := filepath.Base(path)
-		items = append(items, picker.Item{Label: name, Detail: path, Value: path})
+	// Resumable runs first: re-picking the plan is how a stopped run is
+	// continued, and that was previously undiscoverable.
+	for _, c := range candidates {
+		if !c.Resumable() {
+			continue
+		}
+		items = append(items, picker.Item{
+			Label:  fmt.Sprintf("Resume %s — task %d/%d", c.Slug, c.Done+1, c.Tasks),
+			Detail: fmt.Sprintf("%d/%d done · from the ledger", c.Done, c.Tasks),
+			Badge:  "resume",
+			Value:  c.Path,
+		})
 	}
-	if len(items) == 0 {
-		items = append(items, picker.Item{Label: "No plans found — generate one", Detail: "run the planner first", Value: "generate"})
+	for _, c := range candidates {
+		item := picker.Item{Label: c.Name, Value: c.Path}
+		switch {
+		case c.Err != nil:
+			item.Detail = c.Err.Error()
+			item.Badge = "unreadable"
+		case c.Resumable():
+			item.Detail = fmt.Sprintf("%d tasks · %d done", c.Tasks, c.Done)
+		default:
+			item.Detail = fmt.Sprintf("%d tasks", c.Tasks)
+		}
+		items = append(items, item)
 	}
-	items = append(items, picker.Item{Label: "Custom plan path...", Detail: "type or paste a path", Value: sddCustomPlanPathValue})
-	p := picker.New("Pick a plan", "SDD workflow", items)
+
+	if len(candidates) == 0 {
+		items = append(items, picker.Item{
+			Label:  "Write a starter plan",
+			Detail: "creates a template in " + m.state.Config.SDD.PlansDir,
+			Value:  sddScaffoldPlanValue,
+		})
+	}
+	items = append(items, picker.Item{
+		Label:  "Custom plan path...",
+		Detail: "type or paste a path",
+		Value:  sddCustomPlanPathValue,
+	})
+
+	p := picker.New("Pick a plan to run", "subagent-driven development", items)
 	p.SetAllowCustom(true)
 	m.dock.Open(p)
 	m.pickerCommand = "sdd-plan"

@@ -8,13 +8,21 @@ import (
 	"testing"
 )
 
+// testHookTimeoutMS is the budget for hook scripts that do trivial work
+// and are not themselves testing timeout behaviour. TimeoutMS is a
+// required field, so every such test has to name some value; sharing one
+// generous value keeps a loaded machine from failing a hook open and
+// turning an assertion about the hook's output into a flake.
+// TestHookTimeoutFailOpen sets its own deliberately tiny budget.
+const testHookTimeoutMS = 5000
+
 func TestPreToolUseBlockDecision(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "hook.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"decision\":\"block\",\"reason\":\"no patches\"}'\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "file.write_patch", Command: script, TimeoutMS: 5000}}})
+	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "file.write_patch", Command: script, TimeoutMS: testHookTimeoutMS}}})
 	out, err := r.RunPreToolUse(context.Background(), PreToolUseInput{ToolName: "file.write_patch", Args: json.RawMessage(`{"patch":"x"}`)})
 	if err != nil {
 		t.Fatalf("RunPreToolUse() error = %v", err)
@@ -31,7 +39,7 @@ func TestPreToolUseStable(t *testing.T) {
 		if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"decision\":\"block\",\"reason\":\"no patches\"}'\n"), 0755); err != nil {
 			t.Fatal(err)
 		}
-		r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "file.write_patch", Command: script, TimeoutMS: 5000}}})
+		r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "file.write_patch", Command: script, TimeoutMS: testHookTimeoutMS}}})
 		out, err := r.RunPreToolUse(context.Background(), PreToolUseInput{ToolName: "file.write_patch", Args: json.RawMessage(`{"patch":"x"}`)})
 		if err != nil {
 			t.Fatalf("iter %d: RunPreToolUse() error = %v", i, err)
@@ -48,7 +56,7 @@ func TestPreToolUseRewriteDecision(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"rewrite\":{\"command\":\"go test ./...\"}}'\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "shell.run", Command: script, TimeoutMS: 5000}}})
+	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "shell.run", Command: script, TimeoutMS: testHookTimeoutMS}}})
 	out, err := r.RunPreToolUse(context.Background(), PreToolUseInput{ToolName: "shell.run", Args: json.RawMessage(`{"command":"go test ./internal/..."}`)})
 	if err != nil {
 		t.Fatalf("RunPreToolUse() error = %v", err)
@@ -83,7 +91,7 @@ func TestHookScrubSecretEnv(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nif env | grep -qE 'MARSHAL_TEST_(SECRET_KEY|OPENAI_API_KEY)'; then\n  printf '%s\\n' '{\"decision\":\"block\",\"reason\":\"secret visible\"}'\nfi\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "shell.run", Command: script, TimeoutMS: 2000}}})
+	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "shell.run", Command: script, TimeoutMS: testHookTimeoutMS}}})
 	out, err := r.RunPreToolUse(context.Background(), PreToolUseInput{ToolName: "shell.run", Args: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("RunPreToolUse() error = %v", err)
@@ -100,7 +108,7 @@ func TestHookOutputCapPreventsOOM(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nyes 'x' | head -c 2097152\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "shell.run", Command: script, TimeoutMS: 5000}}})
+	r := NewRunner(Config{Entries: []HookEntry{{Event: EventPreToolUse, Matcher: "shell.run", Command: script, TimeoutMS: testHookTimeoutMS}}})
 	out, err := r.RunPreToolUse(context.Background(), PreToolUseInput{ToolName: "shell.run", Args: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("RunPreToolUse() error = %v", err)
@@ -119,7 +127,7 @@ func TestTurnEndContinuePropagated(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"continue\":true,\"message\":\"Check tests before final.\"}'\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	r := NewRunner(Config{Entries: []HookEntry{{Event: EventTurnEnd, Command: script, TimeoutMS: 1000}}})
+	r := NewRunner(Config{Entries: []HookEntry{{Event: EventTurnEnd, Command: script, TimeoutMS: testHookTimeoutMS}}})
 	out, err := r.RunTurnEnd(context.Background(), TurnEndInput{SessionID: "s1"})
 	if err != nil {
 		t.Fatalf("RunTurnEnd() error = %v", err)

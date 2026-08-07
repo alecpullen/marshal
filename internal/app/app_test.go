@@ -875,7 +875,7 @@ func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 	reg := registry.New()
 	pol := policy.NewEngine(&cfg, nil)
 	resolver := newRoutedProviderResolver(cfg, t.TempDir())
-	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, planPath)
+	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath)
 	if adapter == nil {
 		t.Fatal("buildPipelineController returned nil")
 	}

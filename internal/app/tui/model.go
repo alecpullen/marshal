@@ -35,6 +35,7 @@ import (
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
+	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/settings"
@@ -319,6 +320,11 @@ type Model struct {
 	// customAgentFactory builds a one-shot AgentRunner for a named custom
 	// agent. Wired from app.go; used by buildCustomAgentRunner for Run-now.
 	customAgentFactory CustomAgentRunnerFactory
+
+	// pendingModelOptions holds a config candidate saved while the runner
+	// or background jobs are active. It is flushed when the model becomes
+	// idle and applies via the configured reloader.
+	pendingModelOptions *pendingModelOptionsState
 
 	// toolRegistry is the live tool registry, used by the agents roster
 	// panel for tool denylist validation. Wired from app.go.
@@ -1309,6 +1315,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	case settings.BrowserClosedMsg:
+		m.dock.CloseNow()
+		m.refreshViewport()
+		return m, nil
+	case modeloptions.ChangedMsg:
+		cmd := m.handleModelOptionsChanged(msg)
+		m.refreshViewport()
+		return m, cmd
+	case modeloptions.ClosedMsg:
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
@@ -2906,22 +2920,24 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	m.updateViewportHeight()
 	m.refreshViewport()
-	return m, tickCmd()
+	flushCmd := m.flushPendingModelOptions()
+	return m, tea.Sequence(tickCmd(), flushCmd)
 }
 
 // handleJobCount handles a jobCountMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 	m.jobCount = msg.count
+	flushCmd := m.flushPendingModelOptions()
 	// Re-arm the pump: exactly one in-flight subscription at a time
 	// (F19 R2). Return nil if no broker is wired so the cmd chain
 	// terminates (this should not happen when the pump is sourced
 	// from Init, but keeps Update safe under tests that wire msgs
 	// directly).
 	if m.jobEvents == nil {
-		return m, nil
+		return m, flushCmd
 	}
-	return m, pumpJobEvents(m.jobEvents)
+	return m, tea.Sequence(pumpJobEvents(m.jobEvents), flushCmd)
 }
 
 // handleSteering handles a steeringMsg, shared by Update and

@@ -4553,7 +4553,7 @@ func newModelForConfigTest(t *testing.T) (m Model, workDir string, homeDir strin
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m = New(state, WithCommandRegistry(reg))
+	m = New(state, WithCommandRegistry(reg), WithWorkingDir(workDir))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return

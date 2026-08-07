@@ -329,6 +329,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "options",
+			Description: "Edit options for the active model",
+			Group:       groupModels,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "config",
 			Description: "Show current configuration summary",
 			Group:       groupSettings,

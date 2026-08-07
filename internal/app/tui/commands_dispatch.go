@@ -185,6 +185,11 @@ func init() {
 			m.refreshViewport()
 			return m, cmd
 		},
+		"options": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.openModelOptions()
+			m.refreshViewport()
+			return m, nil
+		},
 		"agents": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			m.openAgentsRoster(strings.TrimSpace(strings.Join(args, " ")))
 			m.refreshViewport()

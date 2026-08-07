@@ -117,6 +117,16 @@ func TestRegisterAll(t *testing.T) {
 	if len(cmds) < 10 {
 		t.Errorf("expected at least 10 commands, got %d", len(cmds))
 	}
+	optCmd, ok := cmdReg.Lookup("options")
+	if !ok {
+		t.Fatal("/options not registered")
+	}
+	if optCmd.Group != "Models & providers" {
+		t.Errorf("/options group = %q, want Models & providers", optCmd.Group)
+	}
+	if !optCmd.TUIOnly {
+		t.Error("/options should be TUIOnly")
+	}
 }
 
 func TestHelpCommandReturnsGroupedDoc(t *testing.T) {

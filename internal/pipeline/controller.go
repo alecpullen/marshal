@@ -164,7 +164,9 @@ func dispatchWithRetry[R any](ctx context.Context, c *Controller, taskN int, pha
 		if attempt == c.MaxDispatchRetries || !isTransientDispatchError(ctx, err) {
 			return zero, err
 		}
-		c.emit(taskN, 0, phase, fmt.Sprintf("retry %d/%d · %s", attempt+1, c.MaxDispatchRetries, shortErr(err)))
+		c.emitPayload(taskN, 0, phase,
+			fmt.Sprintf("retry %d/%d · %s", attempt+1, c.MaxDispatchRetries, shortErr(err)),
+			RetryPayload{Attempt: attempt + 1, MaxAttempts: c.MaxDispatchRetries, Err: shortErr(err)})
 		_ = c.Ledger.Note("Task %d: retry %d/%d after: %v", taskN, attempt+1, c.MaxDispatchRetries, err)
 		if sleepErr := c.Sleep(ctx, retryBackoff(attempt)); sleepErr != nil {
 			return zero, sleepErr
@@ -173,8 +175,15 @@ func dispatchWithRetry[R any](ctx context.Context, c *Controller, taskN int, pha
 	return zero, fmt.Errorf("dispatch retry budget exhausted")
 }
 
-// emit sends one progress event, tolerating a nil Observer.
+// emit sends one progress event with no payload, tolerating a nil Observer.
 func (c *Controller) emit(taskN, fixRound int, phase, detail string) {
+	c.emitPayload(taskN, fixRound, phase, detail, nil)
+}
+
+// emitPayload sends one progress event carrying detail data, tolerating a
+// nil Observer. payload is plain data; the app layer decides how to render
+// it (or ignores an unrecognised type).
+func (c *Controller) emitPayload(taskN, fixRound int, phase, detail string, payload any) {
 	if c.Observer == nil {
 		return
 	}
@@ -185,6 +194,7 @@ func (c *Controller) emit(taskN, fixRound int, phase, detail string) {
 		MaxFixRounds: c.MaxFixRounds,
 		Phase:        phase,
 		Detail:       detail,
+		Payload:      payload,
 	})
 }
 
@@ -256,6 +266,7 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 	}
 	if report.Status == StatusDoneWithConcerns && report.Concerns != "" {
 		_ = c.Ledger.Note("Task %d: implementer concern: %s", t.N, report.Concerns)
+		c.emitPayload(t.N, 0, PhaseImplementing, "", ConcernPayload{Text: report.Concerns})
 	}
 
 	// Gate, with fix rounds. Nothing is committed while the gate fails.
@@ -266,7 +277,9 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 			return taskResult{}, fmt.Errorf("pipeline: task %d gate: %w", t.N, err)
 		}
 		if res.Skipped {
-			_ = c.Ledger.Note("Task %d: gate skipped (no build or test command configured)", t.N)
+			const reason = "no build or test command configured"
+			_ = c.Ledger.Note("Task %d: gate skipped (%s)", t.N, reason)
+			c.emitPayload(t.N, round, PhaseVerifying, "skipped", GateSkippedPayload{Reason: reason})
 			break
 		}
 		if res.OK {
@@ -275,7 +288,12 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 		if round >= c.MaxFixRounds {
 			return taskResult{Report: report}, fmt.Errorf("pipeline: task %d still fails `%s` after %d fix rounds", t.N, res.FailedCommand, c.MaxFixRounds)
 		}
-		c.emit(t.N, round+1, PhaseFixing, res.FailedCommand)
+		c.emitPayload(t.N, round+1, PhaseFixing, res.FailedCommand, VerifyFailedPayload{
+			Command:   res.FailedCommand,
+			Output:    res.Output,
+			Round:     round + 1,
+			MaxRounds: c.MaxFixRounds,
+		})
 		fixPrompt, err := RenderFix(FixPrompt{
 			TaskN:      t.N,
 			BriefPath:  briefPath,
@@ -329,6 +347,11 @@ func (c *Controller) commit(t TaskSpec, report ImplementerReport) (string, error
 	if err != nil {
 		return "", fmt.Errorf("pipeline: task %d commit: %w", t.N, err)
 	}
+	subject := msg
+	if i := strings.IndexByte(subject, '\n'); i >= 0 {
+		subject = subject[:i]
+	}
+	c.emitPayload(t.N, 0, PhaseCommitting, "", CommitPayload{SHA: short(head), Subject: subject})
 	return head, nil
 }
 
@@ -421,6 +444,8 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 		for _, f := range review.Minors() {
 			_ = c.Ledger.RecordMinor(t.N, f.Text)
 		}
+		c.emitPayload(t.N, round, PhaseReviewing, "",
+			ReviewPayload{Findings: review.Findings, Clean: review.Clean()})
 		if review.Clean() {
 			return res, nil
 		}

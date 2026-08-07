@@ -526,3 +526,137 @@ func TestCleanupWorktreesNoWorktree(t *testing.T) {
 		t.Fatalf("no-worktree cleanup should be a no-op, got %v", err)
 	}
 }
+
+// recordingObserver captures every event a run emits so tests can assert on
+// payloads without a TUI.
+type recordingObserver struct{ events []Event }
+
+func (r *recordingObserver) Event(ev Event) { r.events = append(r.events, ev) }
+
+func (r *recordingObserver) payloads() []any {
+	var out []any
+	for _, ev := range r.events {
+		if ev.Payload != nil {
+			out = append(out, ev.Payload)
+		}
+	}
+	return out
+}
+
+func TestEmitPayloadCarriesDataThrough(t *testing.T) {
+	obs := &recordingObserver{}
+	c := &Controller{Observer: obs, Plan: &Plan{Tasks: []TaskSpec{{N: 1}}}, MaxFixRounds: 3}
+
+	c.emitPayload(1, 1, PhaseFixing, "go test ./...", VerifyFailedPayload{
+		Command: "go test ./...", Output: "FAIL", Round: 1, MaxRounds: 3,
+	})
+
+	if len(obs.events) != 1 {
+		t.Fatalf("got %d events, want 1", len(obs.events))
+	}
+	ev := obs.events[0]
+	if ev.TaskN != 1 || ev.Phase != PhaseFixing {
+		t.Errorf("event scalars = %d/%q, want 1/%q", ev.TaskN, ev.Phase, PhaseFixing)
+	}
+	p, ok := ev.Payload.(VerifyFailedPayload)
+	if !ok {
+		t.Fatalf("Payload = %T, want VerifyFailedPayload", ev.Payload)
+	}
+	if p.Output != "FAIL" {
+		t.Errorf("Output = %q, want FAIL", p.Output)
+	}
+}
+
+func TestEmitStillWorksWithoutPayload(t *testing.T) {
+	obs := &recordingObserver{}
+	c := &Controller{Observer: obs, Plan: &Plan{Tasks: []TaskSpec{{N: 1}}}}
+	c.emit(1, 0, PhaseImplementing, "")
+	if len(obs.events) != 1 {
+		t.Fatalf("got %d events, want 1", len(obs.events))
+	}
+	if obs.events[0].Payload != nil {
+		t.Errorf("bare emit must leave Payload nil, got %#v", obs.events[0].Payload)
+	}
+}
+
+func TestNilObserverToleratesPayloadEmit(t *testing.T) {
+	c := &Controller{Plan: &Plan{Tasks: []TaskSpec{{N: 1}}}}
+	c.emitPayload(1, 0, PhaseDone, "", CommitPayload{SHA: "abc1234"}) // must not panic
+}
+
+// newTestControllerWithFailingGate builds a controller over the shared
+// fake-git harness whose single gate command fails its first run (with out)
+// and passes every later run. obs receives the emitted events.
+func newTestControllerWithFailingGate(t *testing.T, obs Observer, cmd, out string) *Controller {
+	t.Helper()
+	d, _ := scriptedDispatch(t,
+		"STATUS: DONE\nTESTS: go test ./... — pass\n",           // task 1 implementer
+		"STATUS: DONE\nTESTS: go test ./... — pass after fix\n", // task 1 gate fixer
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",    // task 1 review
+		"STATUS: DONE\nTESTS: go test ./... — pass\n",           // task 2 implementer
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",    // task 2 review
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",    // branch review
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Observer = obs
+	c.Verifier = Verifier{Build: cmd, Runner: &flakyRunner{failFirst: true, failOut: out}}
+	return c
+}
+
+// newTestControllerWithSkippedGate builds a controller over the shared
+// fake-git harness whose gate has no build or test command, so every gate
+// run is skipped. obs receives the emitted events.
+func newTestControllerWithSkippedGate(t *testing.T, obs Observer) *Controller {
+	t.Helper()
+	d, _ := scriptedDispatch(t,
+		"STATUS: DONE\nTESTS: none\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"STATUS: DONE\nTESTS: none\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+		"SPEC: PASS\nQUALITY: APPROVED\nFINDINGS:\n- none\n",
+	)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Observer = obs
+	c.Verifier = Verifier{Runner: NewFakeCommandRunner()} // no commands -> skipped
+	return c
+}
+
+func TestRunEmitsVerifyFailurePayloadWithOutput(t *testing.T) {
+	// A gate that fails once then passes must emit exactly one
+	// VerifyFailedPayload carrying the failing command's real output.
+	obs := &recordingObserver{}
+	c := newTestControllerWithFailingGate(t, obs, "go test ./...", "--- FAIL: TestFoo\n  foo_test.go:9: boom")
+
+	_ = c.Run(t.Context())
+
+	var found *VerifyFailedPayload
+	for _, p := range obs.payloads() {
+		if v, ok := p.(VerifyFailedPayload); ok {
+			found = &v
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no VerifyFailedPayload emitted; the gate failure is invisible to the UI")
+	}
+	if !strings.Contains(found.Output, "foo_test.go:9: boom") {
+		t.Errorf("payload Output = %q, want the verifier's real output", found.Output)
+	}
+	if found.Command != "go test ./..." {
+		t.Errorf("Command = %q, want the failing command", found.Command)
+	}
+}
+
+func TestRunEmitsGateSkippedPayload(t *testing.T) {
+	obs := &recordingObserver{}
+	c := newTestControllerWithSkippedGate(t, obs)
+
+	_ = c.Run(t.Context())
+
+	for _, p := range obs.payloads() {
+		if _, ok := p.(GateSkippedPayload); ok {
+			return
+		}
+	}
+	t.Fatal("no GateSkippedPayload emitted; a skipped gate is indistinguishable from a pass")
+}

@@ -79,3 +79,51 @@ func TestDefaultVerifierDetectsGoModule(t *testing.T) {
 		t.Errorf("configured commands were overridden: %q/%q", v.Build, v.Test)
 	}
 }
+
+func TestResolveVerifyCommands(t *testing.T) {
+	dir := t.TempDir()
+	must := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// configured wins
+	got := ResolveVerifyCommands(dir, "make build", "make test")
+	if got.Build != "make build" || got.Test != "make test" || !got.Known {
+		t.Errorf("configured: %+v", got)
+	}
+
+	// go.mod → Go defaults
+	must("go.mod", "module x\n")
+	got = ResolveVerifyCommands(dir, "", "")
+	if got.Build != "go build ./..." || got.Test != "go test ./..." || !got.Known {
+		t.Errorf("go.mod: %+v", got)
+	}
+
+	// manifest-less → unknown, even with dominant go
+	os.Remove(filepath.Join(dir, "go.mod"))
+	must("a.go", "package a\n")
+	got = ResolveVerifyCommands(dir, "", "")
+	if got.Known {
+		t.Errorf("manifest-less go should be unknown: %+v", got)
+	}
+
+	// empty dir → unknown
+	got = ResolveVerifyCommands(t.TempDir(), "", "")
+	if got.Known || got.Build != "" || got.Test != "" {
+		t.Errorf("empty dir: %+v", got)
+	}
+}
+
+func TestResolveNodeManifestScripts(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"scripts":{"test":"jest"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ResolveVerifyCommands(dir, "", "")
+	if got.Test != "npm test" || got.Build != "" || !got.Known {
+		t.Errorf("test-only package.json: %+v", got)
+	}
+}

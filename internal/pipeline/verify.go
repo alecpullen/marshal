@@ -3,13 +3,17 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/shlex"
+
+	"marshal/internal/repo"
 )
 
 // CommandRunner is the seam for running verify commands. The real
@@ -92,19 +96,83 @@ func (v Verifier) Run(ctx context.Context, dir string) (VerifyResult, error) {
 	return VerifyResult{OK: true}, nil
 }
 
-// DefaultVerifier resolves the gate commands: configured values win, and
-// an unconfigured Go repository (one with a go.mod at its root) falls back
-// to the standard Go commands. Anything else yields empty commands, which
-// Run reports as Skipped.
-func DefaultVerifier(repoRoot, build, test string, timeout time.Duration) Verifier {
-	v := Verifier{Build: build, Test: test, Timeout: timeout, Runner: CLICommandRunner{}}
-	if v.Build == "" && v.Test == "" {
-		if _, err := os.Stat(filepath.Join(repoRoot, "go.mod")); err == nil {
-			v.Build = "go build ./..."
-			v.Test = "go test ./..."
-		}
+// ResolveResult is the outcome of resolving gate commands for a repo.
+type ResolveResult struct {
+	Build string
+	Test  string
+	// Known is true when at least one command was confidently resolved.
+	Known bool
+}
+
+// ResolveVerifyCommands resolves the build/test commands for a repo:
+// configured values win, then manifest detection, else unknown.
+func ResolveVerifyCommands(repoRoot, configuredBuild, configuredTest string) ResolveResult {
+	if configuredBuild != "" || configuredTest != "" {
+		return ResolveResult{Build: configuredBuild, Test: configuredTest, Known: true}
 	}
-	return v
+	m, found := repo.DetectManifest(repoRoot)
+	if !found {
+		// Manifest-less: no command is confidently known, even if a dominant
+		// language exists, because e.g. `go build ./...` needs go.mod. Prompt.
+		return ResolveResult{}
+	}
+	switch m.Language {
+	case "go":
+		return ResolveResult{Build: "go build ./...", Test: "go test ./...", Known: true}
+	case "rust":
+		return ResolveResult{Build: "cargo build", Test: "cargo test", Known: true}
+	case "java":
+		return ResolveResult{Build: "mvn compile", Test: "mvn test", Known: true}
+	case "node":
+		return resolveNodeManifest(repoRoot)
+	case "python":
+		return resolvePythonManifest(repoRoot)
+	}
+	return ResolveResult{}
+}
+
+// resolveNodeManifest sets commands only for scripts that exist in package.json.
+func resolveNodeManifest(repoRoot string) ResolveResult {
+	data, err := os.ReadFile(filepath.Join(repoRoot, "package.json"))
+	if err != nil {
+		return ResolveResult{}
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if json.Unmarshal(data, &pkg) != nil {
+		return ResolveResult{}
+	}
+	res := ResolveResult{}
+	if _, ok := pkg.Scripts["build"]; ok {
+		res.Build = "npm run build"
+	}
+	if _, ok := pkg.Scripts["test"]; ok {
+		res.Test = "npm test"
+	}
+	res.Known = res.Build != "" || res.Test != ""
+	return res
+}
+
+// resolvePythonManifest sets test only when pytest is present; build is not
+// confidently known from pyproject.toml, so test-only or unknown.
+func resolvePythonManifest(repoRoot string) ResolveResult {
+	data, err := os.ReadFile(filepath.Join(repoRoot, "pyproject.toml"))
+	if err != nil {
+		return ResolveResult{}
+	}
+	s := string(data)
+	if strings.Contains(s, "pytest") {
+		return ResolveResult{Test: "python -m pytest", Known: true}
+	}
+	return ResolveResult{}
+}
+
+// DefaultVerifier resolves the gate commands via ResolveVerifyCommands and
+// wraps them in a Verifier with the standard CLI runner.
+func DefaultVerifier(repoRoot, build, test string, timeout time.Duration) Verifier {
+	res := ResolveVerifyCommands(repoRoot, build, test)
+	return Verifier{Build: res.Build, Test: res.Test, Timeout: timeout, Runner: CLICommandRunner{}}
 }
 
 // FakeCommandRunner is the in-memory CommandRunner used by tests. Calls

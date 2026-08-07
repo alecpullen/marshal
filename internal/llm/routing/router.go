@@ -33,33 +33,13 @@ func (r *StaticRouter) Resolve(class string) (Route, error) {
 	return r.ResolveRole(roleForTaskClass(class))
 }
 
-// ResolveRole resolves a route for an explicit agent role, with the same
-// fallback chain Resolve uses: configured role preset → implementer
-// preset. The swarm orchestrator uses this to give each
-// role its own model preset (asymmetric local swarm, docs/07).
+// ResolveRole resolves a route for an explicit agent role using the
+// profile's inheritance chain: the role's own binding → the fast model (for
+// roles in FastRoles) → the implementer preset. The swarm orchestrator uses
+// this to give each role its own model preset (asymmetric local swarm,
+// docs/07).
 func (r *StaticRouter) ResolveRole(role AgentRole) (Route, error) {
-	route, err := r.resolveProfileRole(role)
-	if err == nil {
-		return route, nil
-	}
-	if !isNoConfiguredRoute(err) {
-		return Route{}, err
-	}
-	var fallbackErr error
-	if role != RoleImplementer && errors.Is(err, errRoleNotConfigured) {
-		fallback, fErr := r.resolveProfileRole(RoleImplementer)
-		fallbackErr = fErr
-		if fallbackErr == nil {
-			return fallback, nil
-		}
-		if !isNoConfiguredRoute(fallbackErr) {
-			return Route{}, fallbackErr
-		}
-	}
-	if fallbackErr != nil {
-		return Route{}, fallbackErr
-	}
-	return Route{}, err
+	return r.resolveProfileRole(role)
 }
 
 // ResolveEmbedding resolves the embedding provider+model from the active
@@ -96,14 +76,24 @@ func (r *StaticRouter) resolveProfileRole(role AgentRole) (Route, error) {
 	if !ok {
 		return Route{}, fmt.Errorf("%w: %s", ErrProfileNotFound, r.config.DefaultProfile)
 	}
-	binding, ok := profile.Roles[role]
-	if !ok || (binding.Preset == "" && binding.CustomAgent == "") {
-		return Route{}, fmt.Errorf("%w: %s role %s", errRoleNotConfigured, profile.Name, role)
+	binding, from, ok := profile.EffectiveBinding(role)
+	if !ok {
+		// The whole chain failed. Name the final fallback rung so the error
+		// points at what also wasn't found, matching the pre-fast-chain
+		// behavior where the implementer fallback error won.
+		errRole := role
+		if role != RoleImplementer && role != RoleEmbedding {
+			errRole = RoleImplementer
+		}
+		return Route{}, fmt.Errorf("%w: %s role %s", errRoleNotConfigured, profile.Name, errRole)
 	}
 	if binding.CustomAgent != "" {
-		return r.resolveAgentBinding(binding.CustomAgent, role, profile.Name)
+		return r.resolveAgentBinding(binding.CustomAgent, from, profile.Name)
 	}
-	return r.resolvePresetBinding(binding.Preset, role, profile.Name)
+	// The route reports the rung that supplied the binding: a fallback to
+	// the implementer preset surfaces as RoleImplementer (the pre-existing
+	// contract), and a fast-rung resolution surfaces as RoleFast.
+	return r.resolvePresetBinding(binding.Preset, from, profile.Name)
 }
 
 func (r *StaticRouter) resolvePresetBinding(presetName string, role AgentRole, profileName string) (Route, error) {

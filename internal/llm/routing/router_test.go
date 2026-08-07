@@ -747,3 +747,91 @@ func TestResolveRolePresetBindingUnchanged(t *testing.T) {
 		t.Fatalf("preset = %s, want qwen-reason", route.Preset.Model)
 	}
 }
+
+func fastChainProfile() AgentProfile {
+	return AgentProfile{
+		Name: "coding",
+		Roles: map[AgentRole]RoleBinding{
+			RoleImplementer: {Preset: "base"},
+			RoleFast:        {Preset: "cheap"},
+			RoleReviewer:    {Preset: "deep"},
+		},
+	}
+}
+
+func TestEffectiveBindingOwnBindingWins(t *testing.T) {
+	b, from, ok := fastChainProfile().EffectiveBinding(RoleReviewer)
+	if !ok || b.Preset != "deep" || from != RoleReviewer {
+		t.Fatalf("got (%+v, %v, %v), want deep/RoleReviewer/true", b, from, ok)
+	}
+}
+
+func TestEffectiveBindingFastRoleUsesFast(t *testing.T) {
+	b, from, ok := fastChainProfile().EffectiveBinding(RoleRouter)
+	if !ok || b.Preset != "cheap" || from != RoleFast {
+		t.Fatalf("got (%+v, %v, %v), want cheap/RoleFast/true", b, from, ok)
+	}
+}
+
+func TestEffectiveBindingNonFastRoleUsesImplementer(t *testing.T) {
+	b, from, ok := fastChainProfile().EffectiveBinding(RoleTester)
+	if !ok || b.Preset != "base" || from != RoleImplementer {
+		t.Fatalf("got (%+v, %v, %v), want base/RoleImplementer/true", b, from, ok)
+	}
+}
+
+func TestEffectiveBindingFastUnsetFallsToImplementer(t *testing.T) {
+	p := AgentProfile{Name: "p", Roles: map[AgentRole]RoleBinding{
+		RoleImplementer: {Preset: "base"},
+	}}
+	b, from, ok := p.EffectiveBinding(RoleRouter)
+	if !ok || b.Preset != "base" || from != RoleImplementer {
+		t.Fatalf("got (%+v, %v, %v), want base/RoleImplementer/true", b, from, ok)
+	}
+}
+
+func TestEffectiveBindingEmbeddingDoesNotInherit(t *testing.T) {
+	if _, _, ok := fastChainProfile().EffectiveBinding(RoleEmbedding); ok {
+		t.Fatal("RoleEmbedding must never inherit — a chat model cannot embed")
+	}
+}
+
+func TestEffectiveBindingNothingBound(t *testing.T) {
+	p := AgentProfile{Name: "p", Roles: map[AgentRole]RoleBinding{}}
+	if _, _, ok := p.EffectiveBinding(RoleTester); ok {
+		t.Fatal("expected ok=false when no rung is bound")
+	}
+}
+
+func TestFastRoleNotInAllRoles(t *testing.T) {
+	for _, r := range AllRoles {
+		if r == RoleFast {
+			t.Fatal("RoleFast must be excluded from AllRoles — nothing dispatches it")
+		}
+	}
+}
+
+func TestResolveRoleUsesFastRung(t *testing.T) {
+	router := NewStaticRouter(Config{
+		DefaultProfile: "coding",
+		RemoteAllowed:  true,
+		Presets: map[string]ModelPreset{
+			"base":  {Provider: "anthropic", Model: "big"},
+			"cheap": {Provider: "anthropic", Model: "small"},
+		},
+		Profiles: map[string]AgentProfile{"coding": {
+			Name: "coding",
+			Roles: map[AgentRole]RoleBinding{
+				RoleImplementer: {Preset: "base"},
+				RoleFast:        {Preset: "cheap"},
+			},
+		}},
+	})
+	route, err := router.ResolveRole(RoleTitle)
+	if err != nil {
+		t.Fatalf("ResolveRole: %v", err)
+	}
+	if route.Preset.Model != "small" {
+		t.Errorf("Model = %q, want small (via the fast rung)", route.Preset.Model)
+	}
+}

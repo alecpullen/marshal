@@ -25,7 +25,58 @@ const (
 	// onboarding/settings that enumerate AllRoles must not list it. Resolved
 	// via StaticRouter.ResolveEmbedding, not ResolveRole.
 	RoleEmbedding AgentRole = "embedding"
+
+	// RoleFast is a fallback source, not a dispatchable role: the low-stakes
+	// roles in FastRoles resolve through it before falling back to
+	// RoleImplementer. Excluded from AllRoles for the same reason
+	// RoleEmbedding is — nothing dispatches it directly.
+	RoleFast AgentRole = "fast"
 )
+
+// FastRoles are the low-stakes roles that resolve through RoleFast before
+// falling back to RoleImplementer. Setting a profile's fast model makes
+// these cheaper without forcing the user to bind each one.
+var FastRoles = map[AgentRole]bool{
+	RoleRouter:     true,
+	RoleTitle:      true,
+	RoleSummarizer: true,
+	RoleRepoScout:  true,
+}
+
+// EffectiveBinding resolves role through the profile's inheritance chain:
+// the role's own binding, then RoleFast for roles in FastRoles, then
+// RoleImplementer. from reports which rung supplied the binding, which is
+// what the settings screen renders as provenance. ok is false when no rung
+// is bound.
+//
+// RoleEmbedding is exempt: it has no fallback at all, because a chat model
+// cannot produce vectors.
+func (p AgentProfile) EffectiveBinding(role AgentRole) (RoleBinding, AgentRole, bool) {
+	bound := func(r AgentRole) (RoleBinding, bool) {
+		b, ok := p.Roles[r]
+		if !ok || (b.Preset == "" && b.CustomAgent == "") {
+			return RoleBinding{}, false
+		}
+		return b, true
+	}
+	if b, ok := bound(role); ok {
+		return b, role, true
+	}
+	if role == RoleEmbedding {
+		return RoleBinding{}, "", false
+	}
+	if FastRoles[role] {
+		if b, ok := bound(RoleFast); ok {
+			return b, RoleFast, true
+		}
+	}
+	if role != RoleImplementer {
+		if b, ok := bound(RoleImplementer); ok {
+			return b, RoleImplementer, true
+		}
+	}
+	return RoleBinding{}, "", false
+}
 
 // AllRoles lists every AgentRole in declaration order. Callers that need
 // to enumerate roles (onboarding, settings) iterate this instead of

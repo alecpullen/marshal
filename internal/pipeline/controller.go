@@ -26,24 +26,6 @@ const (
 	PhaseBlocked      = "blocked"
 )
 
-// Event is one progress update. The controller emits events; the app layer
-// maps them onto session state for the TUI. The pipeline package knows
-// nothing about the TUI.
-type Event struct {
-	TaskN        int
-	TotalTasks   int
-	FixRound     int
-	MaxFixRounds int
-	Phase        string
-	Detail       string
-}
-
-// Observer receives progress events. A nil Observer is valid — the
-// controller runs headless.
-type Observer interface {
-	Event(ev Event)
-}
-
 // ErrHumanGateRequired is returned by Run when the controller needs the
 // human to answer a subagent's question. The caller renders the question,
 // collects the answer, calls Answer, and calls Run again; the controller

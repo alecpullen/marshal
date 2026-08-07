@@ -134,3 +134,75 @@ func TestTesterViewTestRunIgnoresCommandOverride(t *testing.T) {
 		t.Fatalf("tester test.run args = %q, want {}", gotArgs)
 	}
 }
+
+func TestArtifactWriterViewFiltersTools(t *testing.T) {
+	src := New()
+	mustRegister := func(tool Tool) {
+		t.Helper()
+		if err := src.Register(tool); err != nil {
+			t.Fatalf("Register(%s): %v", tool.Name, err)
+		}
+	}
+	mustRegister(Tool{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler})
+	mustRegister(Tool{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler})
+	mustRegister(Tool{Name: "patch.apply", Description: "patch", Risk: RiskWorkspaceWrite, Handler: nopHandler})
+	mustRegister(Tool{Name: "shell.run", Description: "shell", Risk: RiskCommand, Handler: nopHandler})
+	mustRegister(Tool{Name: "fetch", Description: "net", Risk: RiskNetwork, Handler: nopHandler})
+
+	view := ArtifactWriterView(src, "@run")
+
+	if _, ok := view.Lookup("file.read"); !ok {
+		t.Error("ArtifactWriterView should include read-only tools")
+	}
+	if _, ok := view.Lookup("file.write_patch"); !ok {
+		t.Error("ArtifactWriterView should include file.write_patch")
+	}
+	if _, ok := view.Lookup("patch.apply"); ok {
+		t.Error("ArtifactWriterView must exclude other workspace-write tools")
+	}
+	if _, ok := view.Lookup("shell.run"); ok {
+		t.Error("ArtifactWriterView must exclude command tools")
+	}
+	if _, ok := view.Lookup("fetch"); ok {
+		t.Error("ArtifactWriterView must exclude network tools")
+	}
+	if got := len(view.List()); got != 2 {
+		t.Fatalf("view.List() has %d tools, want 2", got)
+	}
+	if got := len(src.List()); got != 5 {
+		t.Fatalf("source registry mutated: %d tools, want 5", got)
+	}
+}
+
+func TestArtifactWriterPatchGuardEnforcesAliasPrefix(t *testing.T) {
+	src := New()
+	if err := src.Register(Tool{Name: "file.write_patch", Description: "write", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
+		t.Fatalf("Register(file.write_patch): %v", err)
+	}
+
+	view := ArtifactWriterView(src, "@run")
+	tool, ok := view.Lookup("file.write_patch")
+	if !ok {
+		t.Fatal("file.write_patch missing from artifact-writer view")
+	}
+
+	allowed := []string{
+		`{"patch":"@run/task-1.md"}`,
+		`{"patch":"diff --git a/@run/task-1.md b/@run/task-1.md"}`,
+	}
+	for _, args := range allowed {
+		if _, err := tool.Handler(context.Background(), ToolCall{Name: "file.write_patch", Args: []byte(args)}); err != nil {
+			t.Errorf("patch %q should be allowed under alias prefix, got error: %v", args, err)
+		}
+	}
+
+	rejected := []string{
+		`{"patch":"internal/foo.go"}`,
+		`{"patch":"diff --git a/internal/foo.go b/internal/foo.go"}`,
+	}
+	for _, args := range rejected {
+		if _, err := tool.Handler(context.Background(), ToolCall{Name: "file.write_patch", Args: []byte(args)}); err == nil {
+			t.Errorf("patch %q should be rejected (not under alias prefix), got no error", args)
+		}
+	}
+}

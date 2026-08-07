@@ -40,3 +40,37 @@ func TestFinishSDDRunSuccessClearsError(t *testing.T) {
 		t.Errorf("Error = %q, want empty on success", p.Error)
 	}
 }
+
+func TestSDDProgressCarriesOutcomePaths(t *testing.T) {
+	s := newTestState()
+	s.SetSDDProgress(SDDProgress{
+		Branch:       "pipeline/add-retries",
+		BaseRef:      "main",
+		LedgerPath:   "/repo/.marshal/pipeline/add-retries/ledger.md",
+		ArtifactsDir: "/repo/.marshal/pipeline/add-retries",
+	})
+
+	p := s.SDDProgress()
+	if p.BaseRef != "main" {
+		t.Errorf("BaseRef = %q, want main — the diff needs a base to compare against", p.BaseRef)
+	}
+	if p.LedgerPath == "" || p.ArtifactsDir == "" {
+		t.Errorf("outcome paths lost: %#v", p)
+	}
+}
+
+func TestFinishSDDRunKeepsOutcomePaths(t *testing.T) {
+	s := newTestState()
+	s.SetSDDProgress(SDDProgress{
+		Branch: "pipeline/p", BaseRef: "main",
+		LedgerPath: "/l.md", ArtifactsDir: "/a",
+		TotalTasks: 3, DoneTasks: 3,
+	})
+
+	s.FinishSDDRun(true, time.Now(), nil)
+
+	p := s.SDDProgress()
+	if p.Branch == "" || p.BaseRef == "" || p.LedgerPath == "" || p.ArtifactsDir == "" {
+		t.Errorf("FinishSDDRun must keep the outcome reachable after the run ends: %#v", p)
+	}
+}

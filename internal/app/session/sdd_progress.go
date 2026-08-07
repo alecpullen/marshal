@@ -13,10 +13,17 @@ import (
 // the panel collapses to a one-line summary until the next user turn
 // calls ClearSDDProgress.
 type SDDProgress struct {
-	Active         bool
-	PlanName       string
-	PlanPath       string
-	Branch         string
+	Active   bool
+	PlanName string
+	PlanPath string
+	Branch   string
+	// BaseRef is the ref the run branched from — the left side of the
+	// branch diff. Without it a finished run cannot show what it changed.
+	BaseRef string
+	// LedgerPath and ArtifactsDir point at the run's durable record. They
+	// outlive the worktree, which is deleted on success.
+	LedgerPath     string
+	ArtifactsDir   string
 	Tasks          []string
 	TotalTasks     int
 	DoneTasks      int

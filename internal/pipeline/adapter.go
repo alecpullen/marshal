@@ -42,6 +42,9 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 		p.TotalTasks = len(a.c.Plan.Tasks)
 		p.MaxFixRounds = a.c.MaxFixRounds
 		p.StartedAt = time.Now()
+		p.BaseRef = a.c.TargetBranch
+		p.LedgerPath = a.c.Ledger.Path
+		p.ArtifactsDir = a.c.Paths.Dir
 		titles := make([]string, len(a.c.Plan.Tasks))
 		for i, t := range a.c.Plan.Tasks {
 			titles[i] = t.Title

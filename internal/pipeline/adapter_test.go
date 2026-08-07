@@ -31,6 +31,27 @@ func TestAdapterClearsProgressAfterRun(t *testing.T) {
 	}
 }
 
+func TestAdapterRecordsOutcomePathsAtRunStart(t *testing.T) {
+	d, _ := scriptedDispatch(t, implDone, reviewOK, implDone, reviewOK, reviewOK)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	a := NewControllerAdapter(c, st)
+
+	_ = a.Run(t.Context(), c.Plan.Path)
+
+	p := st.SDDProgress()
+	if p.LedgerPath == "" {
+		t.Error("LedgerPath must be recorded so a finished run can show its ledger")
+	}
+	if p.ArtifactsDir == "" {
+		t.Error("ArtifactsDir must be recorded so a failed run can point at its reports")
+	}
+	if p.BaseRef == "" {
+		t.Error("BaseRef must be recorded so the branch diff has a left side")
+	}
+}
+
 func TestAdapterKeepsProgressLiveAtGate(t *testing.T) {
 	d, _ := scriptedDispatch(t, implAsks, implDone, reviewOK, implDone, reviewOK, reviewOK)
 	c := testController(t, d, NewFakeCommandRunner())

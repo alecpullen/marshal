@@ -2108,3 +2108,33 @@ func TestAddMessageFinalWithUsageStoresUsage(t *testing.T) {
 		t.Fatalf("Usage = %q, want %q", messages[0].Usage, "12k prompt + 3k completion tokens")
 	}
 }
+
+func TestSDDGateCarriesTaskContext(t *testing.T) {
+	s := newTestState()
+	s.SetSDDGate(SDDGate{
+		TaskN:     3,
+		TaskTitle: "Add the retry helper",
+		Question:  "Should this reuse the existing backoff in internal/retry?",
+		Report:    "STATUS: NEEDS_CONTEXT\nQUESTION: Should this reuse...",
+	})
+
+	g := s.SDDGate()
+	if g.TaskTitle != "Add the retry helper" {
+		t.Errorf("TaskTitle = %q, want the asking task's title", g.TaskTitle)
+	}
+	if g.Report == "" {
+		t.Error("Report must carry the implementer's report so the user can see why")
+	}
+	if g.TaskN != 3 || g.Question == "" {
+		t.Errorf("pre-existing fields regressed: %#v", g)
+	}
+}
+
+func TestClearSDDGateClearsContextToo(t *testing.T) {
+	s := newTestState()
+	s.SetSDDGate(SDDGate{TaskN: 1, Question: "q", TaskTitle: "t", Report: "r"})
+	s.ClearSDDGate()
+	if g := s.SDDGate(); g.TaskTitle != "" || g.Report != "" || g.Question != "" {
+		t.Errorf("ClearSDDGate left residue: %#v", g)
+	}
+}

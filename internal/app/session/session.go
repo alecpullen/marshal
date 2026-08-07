@@ -280,10 +280,16 @@ type State struct {
 }
 
 // SDDGate is the open question a pipeline subagent raised. The controller
-// sets it; the TUI renders it and collects the human's typed answer.
+// sets it; the TUI renders it and collects the answer.
+//
+// TaskTitle and Report exist so the question can be answered in context: a
+// bare QUESTION line asks the user to adjudicate a decision whose shape
+// they cannot see. Report is the implementer's full report text.
 type SDDGate struct {
-	TaskN    int
-	Question string
+	TaskN     int
+	Question  string
+	TaskTitle string
+	Report    string
 }
 
 // GenerationInfo records where the live rollover generation begins.

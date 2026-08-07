@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -44,6 +46,7 @@ type ControllerOpts struct {
 	AutoEscalate       bool
 	Observer           Observer
 	TargetBranch       string
+	maxTokensCfg       int
 
 	// Sleep is the delay implementation used between dispatch retries.
 	// When nil, sleepCtx is used. Tests override this to avoid real time.
@@ -88,6 +91,20 @@ type Controller struct {
 	// nextTask is the plan task number to resume at.
 	nextTask int
 
+	// RunStore is the durable manifest/checkpoint store. When nil, the
+	// controller runs without checkpointing (used by tests and callers that
+	// opt out of crash recovery).
+	RunStore *RunStore
+
+	// runID, lastSeq, curAttempt, curFixRound, maxTokens carry the run's
+	// durable identity and progress counters across Run calls and crashes.
+	runID        string
+	lastSeq      int
+	curAttempt   int
+	curFixRound  int
+	maxTokens    int
+	maxTokensCfg int
+
 	UsageTokens int
 }
 
@@ -128,6 +145,7 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 		AutoEscalate:       opts.AutoEscalate,
 		Observer:           opts.Observer,
 		TargetBranch:       opts.TargetBranch,
+		maxTokensCfg:       opts.maxTokensCfg,
 	}, nil
 }
 
@@ -212,6 +230,57 @@ func (c *Controller) workDir() string {
 	return c.RepoRoot
 }
 
+// checkpoint appends one durable state transition to the run store. It is a
+// no-op when no run store is configured. extra lets the caller attach
+// transition-specific data (SHAs, gate questions, paths).
+func (c *Controller) checkpoint(phase string, taskN int, extra func(*Checkpoint)) {
+	if c.RunStore == nil {
+		return
+	}
+	cp := Checkpoint{
+		Seq:        c.nextSeq(),
+		RunID:      c.runID,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
+		Phase:      phase,
+		TaskN:      taskN,
+		Attempt:    c.curAttempt,
+		FixRound:   c.curFixRound,
+		TokensUsed: c.UsageTokens,
+		TokensMax:  c.maxTokens,
+	}
+	if extra != nil {
+		extra(&cp)
+	}
+	_ = c.RunStore.AppendCheckpoint(cp)
+}
+
+// nextSeq returns the next checkpoint sequence number, starting from the
+// last replayed value on a resumed run.
+func (c *Controller) nextSeq() int {
+	c.lastSeq++
+	return c.lastSeq
+}
+
+// planHash returns the hex SHA-256 of the plan file, used to detect a plan
+// that changed between a crashed run and its resume.
+func planHash(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ledgerHasTask reports whether the ledger already marks task n complete.
+func ledgerHasTask(l Ledger, n int) bool {
+	done, err := l.CompletedTasks()
+	if err != nil {
+		return false
+	}
+	return done[n]
+}
+
 // taskResult is one completed task's commit range and final report.
 type taskResult struct {
 	Base   string
@@ -257,6 +326,10 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 	}
 
 	c.emit(t.N, 0, PhaseImplementing, "")
+	c.checkpoint(PhaseImplementing, t.N, func(cp *Checkpoint) {
+		cp.BaseSHA = base
+		cp.BriefPath = briefPath
+	})
 	role := routing.RoleSDDImplementer
 	if c.escalated {
 		role = routing.RoleSDDReviewer
@@ -273,10 +346,18 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 		_ = c.Ledger.Note("Task %d: implementer concern: %s", t.N, report.Concerns)
 		c.emitPayload(t.N, 0, PhaseImplementing, "", ConcernPayload{Text: report.Concerns})
 	}
+	c.checkpoint("dispatch_finished", t.N, func(cp *Checkpoint) {
+		cp.BaseSHA = base
+		cp.ReportPath = c.Paths.Report(t.N)
+	})
 
 	// Gate, with fix rounds. Nothing is committed while the gate fails.
 	for round := 0; ; round++ {
 		c.emit(t.N, round, PhaseVerifying, "")
+		c.checkpoint(PhaseVerifying, t.N, func(cp *Checkpoint) {
+			cp.BaseSHA = base
+			cp.FixRound = round
+		})
 		res, err := c.Verifier.Run(ctx, dir)
 		if err != nil {
 			return taskResult{}, fmt.Errorf("pipeline: task %d gate: %w", t.N, err)
@@ -298,6 +379,10 @@ func (c *Controller) runTask(ctx context.Context, t TaskSpec) (taskResult, error
 			Output:    res.Output,
 			Round:     round + 1,
 			MaxRounds: c.MaxFixRounds,
+		})
+		c.checkpoint(PhaseFixing, t.N, func(cp *Checkpoint) {
+			cp.BaseSHA = base
+			cp.FixRound = round + 1
 		})
 		fixPrompt, err := RenderFix(FixPrompt{
 			TaskN:      t.N,
@@ -352,6 +437,9 @@ func (c *Controller) commit(t TaskSpec, report ImplementerReport) (string, error
 	if err != nil {
 		return "", fmt.Errorf("pipeline: task %d commit: %w", t.N, err)
 	}
+	c.checkpoint("commit_created", t.N, func(cp *Checkpoint) {
+		cp.HeadSHA = head
+	})
 	subject := msg
 	if i := strings.IndexByte(subject, '\n'); i >= 0 {
 		subject = subject[:i]
@@ -365,6 +453,9 @@ func (c *Controller) openGate(taskN int, question string) error {
 	c.pendingQuestion = question
 	c.nextTask = taskN
 	c.emit(taskN, 0, PhaseBlocked, question)
+	c.checkpoint(PhaseBlocked, taskN, func(cp *Checkpoint) {
+		cp.GateQuestion = question
+	})
 	_ = c.Ledger.Note("Task %d: gate opened: %s", taskN, question)
 	return ErrHumanGateRequired
 }
@@ -409,6 +500,10 @@ func (c *Controller) Answer(text string) {
 		}
 	}
 	_ = c.Ledger.Note("Task %d: gate answered: %s", c.nextTask, text)
+	c.checkpoint("gate_answered", c.nextTask, func(cp *Checkpoint) {
+		cp.GateQuestion = c.pendingQuestion
+		cp.GateAnswer = text
+	})
 	c.pendingAnswer = text
 	c.pendingQuestion = ""
 }
@@ -468,6 +563,11 @@ func (c *Controller) reviewTask(ctx context.Context, t TaskSpec, res taskResult)
 		if err != nil {
 			return res, fmt.Errorf("pipeline: task %d review: %w", t.N, err)
 		}
+		c.checkpoint("review_finished", t.N, func(cp *Checkpoint) {
+			cp.BaseSHA = res.Base
+			cp.HeadSHA = res.Head
+			cp.PackagePath = pkgPath
+		})
 		for _, f := range review.Minors() {
 			_ = c.Ledger.RecordMinor(t.N, f.Text)
 		}
@@ -540,9 +640,79 @@ func (c *Controller) Run(ctx context.Context) error {
 		c.Worktree = wt
 		_ = c.Ledger.Note("Run started on branch %s at %s", wt.Branch, wt.Path)
 	}
+	// Initialize run store if not already set (recovery sets it).
+	if c.RunStore == nil {
+		c.RunStore = NewRunStore(c.Paths)
+	}
+	// Create manifest on first run; skip if it already exists (resume).
+	if _, err := c.RunStore.Manifest(); err != nil {
+		planHash, _ := planHash(c.Plan.Path)
+		c.runID = fmt.Sprintf("run-%d", time.Now().UnixNano())
+		c.maxTokens = c.maxTokensCfg
+		if err := c.RunStore.CreateManifest(Manifest{
+			SchemaVersion:      1,
+			RunID:              c.runID,
+			PlanPath:           c.Plan.Path,
+			PlanHash:           planHash,
+			RepoRoot:           c.RepoRoot,
+			TargetBranch:       c.TargetBranch,
+			PipelineBranch:     c.Worktree.Branch,
+			BaseSHA:            c.Worktree.Base,
+			WorktreePath:       c.Worktree.Path,
+			CreatedAt:          time.Now().UTC().Format(time.RFC3339Nano),
+			MaxFixRounds:       c.MaxFixRounds,
+			MaxDispatchRetries: c.MaxDispatchRetries,
+			MaxTotalTokens:     c.maxTokens,
+		}); err != nil {
+			// Manifest already exists from a concurrent caller — read it.
+			m, _ := c.RunStore.Manifest()
+			c.runID = m.RunID
+			c.maxTokens = m.MaxTotalTokens
+		}
+	} else {
+		m, _ := c.RunStore.Manifest()
+		c.runID = m.RunID
+		c.maxTokens = m.MaxTotalTokens
+	}
+	c.checkpoint("run_started", 0, func(cp *Checkpoint) {
+		cp.BaseSHA = c.Worktree.Base
+	})
 	done, err := c.Ledger.CompletedTasks()
 	if err != nil {
 		return err
+	}
+	// Recovery: replay checkpoints and reconcile with Git.
+	if c.RunStore != nil {
+		cps, _ := c.RunStore.Replay()
+		var last Checkpoint
+		for _, cp := range cps {
+			if cp.Phase == "task_completed" && cp.TaskN > 0 {
+				// Validate the commit still exists on the branch.
+				if cp.HeadSHA != "" {
+					if head, err := c.Git.RevParse(c.workDir(), "HEAD"); err == nil && head == cp.HeadSHA {
+						done[cp.TaskN] = true
+						// Reconcile ledger if missing.
+						if !ledgerHasTask(c.Ledger, cp.TaskN) {
+							_ = c.Ledger.MarkComplete(cp.TaskN, cp.BaseSHA, cp.HeadSHA)
+						}
+					}
+				}
+			}
+			c.lastSeq = cp.Seq
+			last = cp
+		}
+		// A gate is restored only when the run actually stopped at it — the
+		// last checkpoint is a blocked gate. If the run progressed past the
+		// gate (the answer was given and a later checkpoint was written), the
+		// gate must not be re-opened.
+		if last.Phase == PhaseBlocked && last.GateQuestion != "" {
+			c.pendingQuestion = last.GateQuestion
+			c.nextTask = last.TaskN
+		}
+	}
+	// A restored human gate must be answered before any task runs.
+	if c.pendingQuestion != "" {
+		return ErrHumanGateRequired
 	}
 	for _, t := range c.Plan.Tasks {
 		select {
@@ -574,9 +744,17 @@ func (c *Controller) Run(ctx context.Context) error {
 		if err := c.Ledger.MarkComplete(t.N, res.Base, res.Head); err != nil {
 			return err
 		}
+		c.checkpoint("task_completed", t.N, func(cp *Checkpoint) {
+			cp.BaseSHA = res.Base
+			cp.HeadSHA = res.Head
+		})
 		c.emit(t.N, 0, PhaseDone, "")
 	}
-	return c.branchReview(ctx)
+	if err := c.branchReview(ctx); err != nil {
+		return err
+	}
+	c.checkpoint("run_finished", 0, nil)
+	return nil
 }
 
 // renderBranchReviewPrompt writes the review package and renders the branch
@@ -627,6 +805,7 @@ func (c *Controller) branchReview(ctx context.Context) error {
 	}
 	if review.Clean() {
 		_ = c.Ledger.Note("Branch review clean (%s)", rng)
+		c.checkpoint("branch_review_finished", 0, nil)
 		return nil
 	}
 
@@ -708,6 +887,7 @@ func (c *Controller) branchReview(ctx context.Context) error {
 	}
 	if review.Clean() {
 		_ = c.Ledger.Note("Branch review clean after one fix (%s)", rng)
+		c.checkpoint("branch_review_finished", 0, nil)
 		return nil
 	}
 	for _, f := range review.Blocking() {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/app/session"
 	"marshal/internal/worktree"
 )
 
@@ -158,5 +159,43 @@ func TestBranchReviewCarriesMinorRollup(t *testing.T) {
 	}
 	if !strings.Contains(c.Summary(), "magic number 100") {
 		t.Errorf("summary omits the open minor findings:\n%s", c.Summary())
+	}
+}
+
+// A run whose gate fails once then passes must leave a complete, ordered
+// trail in the session run log: the failure with its output, the retry
+// through fixing, the commit. This is the audit's F1/F6 acceptance test.
+func TestRunProducesACompleteEventTrail(t *testing.T) {
+	st := newAdapterTestState(t)
+	c := newTestControllerWithFailingGate(t, nil, "go test ./...", "--- FAIL: TestFoo\n  foo_test.go:9: boom")
+	a := NewControllerAdapter(c, st)
+
+	_ = a.Run(t.Context(), c.Plan.Path)
+
+	evs := st.RunEvents()
+	if len(evs) == 0 {
+		t.Fatal("a completed run produced no run events; the run was invisible")
+	}
+
+	var sawFailure, sawCommit bool
+	for _, ev := range evs {
+		switch ev.Kind {
+		case session.RunEventVerifyFailed:
+			sawFailure = true
+			if !strings.Contains(ev.Body, "foo_test.go:9: boom") {
+				t.Errorf("verify failure event lost its output: %q", ev.Body)
+			}
+		case session.RunEventCommit:
+			sawCommit = true
+			if ev.Title == "" {
+				t.Error("commit event has no SHA")
+			}
+		}
+	}
+	if !sawFailure {
+		t.Error("the failing gate produced no RunEventVerifyFailed")
+	}
+	if !sawCommit {
+		t.Error("the completed task produced no RunEventCommit")
 	}
 }

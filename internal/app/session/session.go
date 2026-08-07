@@ -70,6 +70,10 @@ const (
 	// place of that subagent's full tool log. Clicking it drills into the
 	// child session's live transcript.
 	KindSubagent
+	// KindRunEvent is one entry in a plan run's event log (a verify
+	// failure, a review finding, a commit). Rendered inline so it
+	// interleaves with the subagent cards it explains.
+	KindRunEvent
 )
 
 type TranscriptItem struct {
@@ -81,6 +85,8 @@ type TranscriptItem struct {
 	// Subagent is set when Kind == KindSubagent: the summary card for one
 	// registered subagent, rendered in place of its full tool log.
 	Subagent *SubagentView
+	// RunEvent is set when Kind == KindRunEvent.
+	RunEvent *RunEvent
 }
 
 type ActivityKind string
@@ -189,13 +195,13 @@ type State struct {
 	// when an assistant final message persists. Best-effort: failures are
 	// logged and do not abort the turn.
 	toolAuditThisTurn []db.ToolAuditEntry
-	swarmProgress   SwarmProgress
-	sddProgress     SDDProgress
-	sandbox         SandboxInfo
-	browser         BrowserInfo
-	trusted         bool
-	turnIndex       int
-	snapshotter     Snapshotter
+	swarmProgress     SwarmProgress
+	sddProgress       SDDProgress
+	sandbox           SandboxInfo
+	browser           BrowserInfo
+	trusted           bool
+	turnIndex         int
+	snapshotter       Snapshotter
 
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this
@@ -211,9 +217,12 @@ type State struct {
 	// lifecycle events so the TUI re-renders without polling.
 	subagents      []SubagentView
 	subagentBroker *pubsub.Broker[SubagentEvent]
-	turnUsage       turnUsage
-	title           string
-	titleSet        bool
+	// runEvents is the plan-run event log: verify failures, review
+	// findings, commits, retries. In-memory only, never persisted.
+	runEvents []RunEvent
+	turnUsage turnUsage
+	title     string
+	titleSet  bool
 
 	scratchpadConfig config.ScratchpadConfig
 
@@ -1163,6 +1172,15 @@ func (s *State) Transcript() []TranscriptItem {
 			Timestamp: v.StartedAt,
 			Kind:      KindSubagent,
 			Subagent:  &v,
+		})
+	}
+
+	for i := range s.runEvents {
+		ev := s.runEvents[i]
+		items = append(items, TranscriptItem{
+			Timestamp: ev.At,
+			Kind:      KindRunEvent,
+			RunEvent:  &ev,
 		})
 	}
 

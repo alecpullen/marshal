@@ -53,9 +53,9 @@ func (SDDSection) Render(d Data, width, maxRows int) []string {
 		if !d.SDD.Succeeded && d.SDD.Error != "" {
 			reason = " · " + d.SDD.Error
 		}
-		if !d.SDD.Succeeded {
-			hint = " — /sdd to resume"
-		}
+		// The rail is space-constrained: it points at the outcome panel for
+		// both outcomes and leaves the resume instruction to the outcome doc.
+		hint = " — /run for details"
 		line := base + reason + hint
 		if ansi.StringWidth(line) > width && hint != "" {
 			line = base + reason

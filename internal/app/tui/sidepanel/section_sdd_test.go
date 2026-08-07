@@ -153,8 +153,8 @@ func TestSDDSectionFinishedFailure(t *testing.T) {
 			EndedAt:    ended,
 		},
 	}
-	got := StripANSI(strings.Join((SDDSection{}).Render(d, 50, 12), "\n"))
-	want := " ✗ sdd stopped — 2/4 tasks · 12s — /sdd to resume"
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 60, 12), "\n"))
+	want := " ✗ sdd stopped — 2/4 tasks · 12s — /run for details"
 	if got != want {
 		t.Errorf("Render(finished failure) =\n  %q\nwant\n  %q", got, want)
 	}
@@ -176,7 +176,7 @@ func TestSDDSectionFinishedFailureWithReason(t *testing.T) {
 		},
 	}
 	got := StripANSI(strings.Join((SDDSection{}).Render(d, 80, 12), "\n"))
-	want := " ✗ sdd stopped — 2/4 tasks · 12s · transient timeout — /sdd to resume"
+	want := " ✗ sdd stopped — 2/4 tasks · 12s · transient timeout — /run for details"
 	if got != want {
 		t.Errorf("Render(finished failure with reason) =\n  %q\nwant\n  %q", got, want)
 	}
@@ -200,5 +200,20 @@ func TestSDDSectionFinishedFailureTruncatesHintFirst(t *testing.T) {
 	want := " ✗ sdd stopped — 2/4 tasks · 12s · transient timeout"
 	if got != want {
 		t.Errorf("Render(narrow finished failure) =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestRailFinishedLineMatchesPanelWording(t *testing.T) {
+	d := Data{SDD: session.SDDProgress{
+		Finished: true, Succeeded: false, DoneTasks: 2, TotalTasks: 4,
+		StartedAt: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
+		EndedAt:   time.Date(2026, 8, 7, 10, 0, 12, 0, time.UTC),
+	}}
+	got := StripANSI(strings.Join((SDDSection{}).Render(d, 80, 12), "\n"))
+	if strings.Contains(got, "/sdd to resume") {
+		t.Errorf("the rail must not claim bare /sdd resumes — it opens the picker:\n%s", got)
+	}
+	if !strings.Contains(got, "/run") {
+		t.Errorf("the rail must point at the outcome panel like the run panel does:\n%s", got)
 	}
 }

@@ -102,8 +102,8 @@ func TestRunPanelFinishedFailure(t *testing.T) {
 	if !strings.Contains(stripped, "✗") || !strings.Contains(stripped, "sdd stopped — 2/4 tasks · 12s") {
 		t.Errorf("collapsed failure line wrong:\n%s", stripped)
 	}
-	if !strings.Contains(stripped, "/sdd to resume") {
-		t.Errorf("failure line missing resume hint:\n%s", stripped)
+	if !strings.Contains(stripped, "/run for details") {
+		t.Errorf("failure line missing outcome-panel hint:\n%s", stripped)
 	}
 	if strings.Contains(out, "\x1b[48;") || strings.Contains(out, "\x1b[48m") {
 		t.Errorf("finished panel must not have a background color:\n%s", out)
@@ -116,7 +116,7 @@ func TestRunPanelFinishedFailureWithReason(t *testing.T) {
 	p.EndedAt = p.StartedAt.Add(12 * time.Second)
 	p.Error = "transient timeout"
 	out := ansi.Strip(renderRunPanel(p, "⠋", time.Unix(100, 0), 100, 100))
-	want := "sdd stopped — 2/4 tasks · 12s · transient timeout — /sdd to resume"
+	want := "sdd stopped — 2/4 tasks · 12s · transient timeout — /run for details · /sdd to resume"
 	if !strings.Contains(out, want) {
 		t.Errorf("failure line missing reason:\n%s\nwant %q", out, want)
 	}
@@ -174,6 +174,35 @@ func TestRunPanelNoLongerDuplicatesTheGate(t *testing.T) {
 	got := stripANSI(renderRunPanel(p, "⠋", time.Now(), 40, 100))
 	if strings.Contains(got, "Which timeout applies?") {
 		t.Errorf("the run panel must not repeat the gate question — the panel owns it now:\n%s", got)
+	}
+}
+
+func TestFinishedLineAdvertisesTheOutcomePanel(t *testing.T) {
+	p := session.SDDProgress{
+		Finished: true, Succeeded: true, DoneTasks: 4, TotalTasks: 4,
+		StartedAt: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
+		EndedAt:   time.Date(2026, 8, 7, 10, 23, 41, 0, time.UTC),
+	}
+	got := stripANSI(runPanelFinishedLine(p, 100))
+	if !strings.Contains(got, "/run") {
+		t.Errorf("a finished run must point at the outcome panel:\n%s", got)
+	}
+}
+
+func TestFinishedLineDropsHintBeforeReasonWhenNarrow(t *testing.T) {
+	p := session.SDDProgress{
+		Finished: true, Succeeded: false, DoneTasks: 2, TotalTasks: 4,
+		Error:     "task 3 still fails go test",
+		StartedAt: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
+		EndedAt:   time.Date(2026, 8, 7, 10, 0, 12, 0, time.UTC),
+	}
+	wide := stripANSI(runPanelFinishedLine(p, 100))
+	if !strings.Contains(wide, "task 3 still fails") || !strings.Contains(wide, "/run") {
+		t.Errorf("wide line must carry both reason and hint:\n%s", wide)
+	}
+	narrow := stripANSI(runPanelFinishedLine(p, 70))
+	if !strings.Contains(narrow, "task 3 still fails") {
+		t.Errorf("the reason must outlive the hint when space runs out:\n%s", narrow)
 	}
 }
 

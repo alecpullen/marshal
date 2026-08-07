@@ -144,8 +144,12 @@ func runPanelFinishedLine(p session.SDDProgress, width int) string {
 	if !p.Succeeded && p.Error != "" {
 		reason = " · " + p.Error
 	}
+	// Both outcomes get a route to the detail: a successful run's work is on
+	// a branch whose worktree has been removed, and a failed run's real
+	// explanation is in the ledger and the per-task reports.
+	hint = " — /run for details"
 	if !p.Succeeded {
-		hint = " — /sdd to resume"
+		hint = " — /run for details · /sdd to resume"
 	}
 	budget := max(width-3, 1)
 	label := base + reason + hint

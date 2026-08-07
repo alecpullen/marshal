@@ -9,6 +9,7 @@ import (
 	"marshal/internal/llm/catalog"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/retrieval"
@@ -124,21 +125,37 @@ func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Ro
 	}
 
 	// F12: resolve the model's context window, preferring explicit config on
-	// the preset, falling back to the curated catalog. The window is
-	// recorded on state and consumed by the per-turn effectiveTurnThreshold
-	// call below — resolveRoute no longer mutates r.MaxTurnContextTokens,
-	// so one small-model turn cannot poison later big-model turns.
-	window := route.Preset.ContextWindow
-	maxOut := route.Preset.MaxOutputTokens
-	if window == 0 {
-		window, maxOut = catalog.Lookup(route.Preset.Model)
-	}
+	// the preset, then the fetched limits table, then the curated local
+	// catalog. The window is recorded on state and consumed by the per-turn
+	// effectiveTurnThreshold call below — resolveRoute no longer mutates
+	// r.MaxTurnContextTokens, so one small-model turn cannot poison later
+	// big-model turns.
+	window, maxOut := r.resolveModelLimits(route.Preset)
 	// Bound the per-turn local (carried by the caller) so the state
 	// continues to reflect the known window for dashboards and rollovers.
 	route.Window = window
 	route.MaxOutput = maxOut
 	r.State.SetTurnContextWindow(window)
 	return turnProvider, turnModel, route
+}
+
+// resolveModelLimits resolves a preset's context window and max output
+// tokens. Explicit config always wins; then the fetched limits table, which
+// matches across provider naming variance; then the curated local catalog.
+// (0, 0) means unknown — the caller keeps its configured budget rather than
+// guessing.
+func (r *Runner) resolveModelLimits(preset routing.ModelPreset) (window, maxOutput int) {
+	if preset.ContextWindow != 0 {
+		return preset.ContextWindow, preset.MaxOutputTokens
+	}
+	if r.LimitsTable != nil {
+		if lim, kind := r.LimitsTable.Lookup(preset.Provider, preset.Model); kind != limits.MatchNone {
+			if lim.ContextWindow != 0 {
+				return lim.ContextWindow, lim.MaxOutputTokens
+			}
+		}
+	}
+	return catalog.Lookup(preset.Model)
 }
 
 // mergeMemories injects the project's current durable memories into the

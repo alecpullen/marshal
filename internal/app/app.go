@@ -31,6 +31,7 @@ import (
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/lsp"
@@ -558,6 +559,22 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	runner.ProjectID = projectID
 	runner.MetricsObserver = metricsRecorder(database, projectID, state.SessionID(), state.Logger())
 	runner.Pricing = pricing.Lookup(route.Preset)
+
+	// Give the runner the merged limit table so a preset with no explicit
+	// context_window still resolves a real window instead of falling
+	// straight through to the eleven-entry local catalog. Cache-only unless
+	// remote limit discovery is enabled; a missing cache leaves it nil and
+	// resolution degrades gracefully.
+	if dataDir != "" {
+		if cfg.Privacy.RemoteLimitDiscovery {
+			if t, err := limits.LoadTable(ctx, dataDir, limits.DefaultTTL); err == nil {
+				runner.LimitsTable = &t
+			}
+		} else if c, err := limits.Load(dataDir); err == nil && len(c.Table) > 0 {
+			t := limits.NewTable(c.Table)
+			runner.LimitsTable = &t
+		}
+	}
 
 	// Defensive: align runner mode with policy engine in case the runner
 	// ever copies the engine instead of sharing it.

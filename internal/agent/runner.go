@@ -16,6 +16,7 @@ import (
 	"marshal/internal/hooks"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
@@ -223,6 +224,12 @@ type Runner struct {
 	// app.go from the resolved route preset via pricing.Lookup. Zero value
 	// means local/unpriced (cost = 0).
 	Pricing pricing.ModelPricing
+
+	// LimitsTable is the merged OpenRouter/LiteLLM limit table used to
+	// resolve a preset's context window and max output when the preset does
+	// not state them. Nil means "not loaded" — resolution degrades to the
+	// local catalog. Set by app.go from the on-disk cache.
+	LimitsTable *limits.Table
 
 	// PlanFirst enables the legacy pre-loop planning round-trip. Default
 	// false: planning happens inside the loop like every mainstream agent

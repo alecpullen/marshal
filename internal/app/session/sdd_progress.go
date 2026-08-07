@@ -13,26 +13,26 @@ import (
 // the panel collapses to a one-line summary until the next user turn
 // calls ClearSDDProgress.
 type SDDProgress struct {
-	Active       bool
-	PlanName     string
-	PlanPath     string
-	Branch       string
-	Tasks        []string
-	TotalTasks   int
-	DoneTasks    int
-	CurrentTask  int
-	Phase        string
-	Detail       string
-	FixRound     int
-	MaxFixRounds int
-	TokensUsed   int
-	TokensMax    int
-	LastLedger   string
-	StartedAt    time.Time
-	Finished     bool
-	Succeeded    bool
-	EndedAt      time.Time
-	Error        string
+	Active         bool
+	PlanName       string
+	PlanPath       string
+	Branch         string
+	Tasks          []string
+	TotalTasks     int
+	DoneTasks      int
+	CurrentTask    int
+	Phase          string
+	PhaseStartedAt time.Time
+	Detail         string
+	FixRound       int
+	MaxFixRounds   int
+	TokensUsed     int
+	TokensMax      int
+	StartedAt      time.Time
+	Finished       bool
+	Succeeded      bool
+	EndedAt        time.Time
+	Error          string
 }
 
 func (s *State) SetSDDProgress(p SDDProgress) {

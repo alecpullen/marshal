@@ -80,7 +80,8 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 	return err
 }
 
-// Event mirrors one controller event into session state.
+// Event mirrors one controller event into session state: the scalars drive
+// the run panel, the payload becomes a durable entry in the run event log.
 func (a *ControllerAdapter) Event(ev Event) {
 	a.state.UpdateSDDProgress(func(p *session.SDDProgress) {
 		p.CurrentTask = ev.TaskN
@@ -89,12 +90,65 @@ func (a *ControllerAdapter) Event(ev Event) {
 		p.Detail = ev.Detail
 		p.FixRound = ev.FixRound
 		p.MaxFixRounds = ev.MaxFixRounds
+		if ev.Phase != p.Phase {
+			p.PhaseStartedAt = time.Now()
+		}
 		if ev.Phase == PhaseDone {
 			p.DoneTasks++
 		}
 	})
-	if lines, err := a.c.Ledger.Tail(1); err == nil && len(lines) == 1 {
-		a.state.UpdateSDDProgress(func(p *session.SDDProgress) { p.LastLedger = lines[0] })
+	a.recordRunEvents(ev)
+}
+
+// recordRunEvents flattens an event's payload into the session run log.
+// A nil or unrecognised payload records nothing — the log is best-effort
+// detail, never a source of errors.
+func (a *ControllerAdapter) recordRunEvents(ev Event) {
+	switch p := ev.Payload.(type) {
+	case VerifyFailedPayload:
+		a.state.AddRunEvent(session.RunEvent{
+			Kind:   session.RunEventVerifyFailed,
+			TaskN:  ev.TaskN,
+			Title:  p.Command,
+			Detail: fmt.Sprintf("fix round %d/%d", p.Round, p.MaxRounds),
+			Body:   p.Output,
+		})
+	case GateSkippedPayload:
+		a.state.AddRunEvent(session.RunEvent{
+			Kind:  session.RunEventGateSkipped,
+			TaskN: ev.TaskN,
+			Title: p.Reason,
+		})
+	case ReviewPayload:
+		if p.Clean {
+			a.state.AddRunEvent(session.RunEvent{
+				Kind: session.RunEventReview, TaskN: ev.TaskN, Detail: "clean",
+			})
+			return
+		}
+		for _, f := range p.Findings {
+			a.state.AddRunEvent(session.RunEvent{
+				Kind:     session.RunEventReview,
+				TaskN:    ev.TaskN,
+				Title:    f.Text,
+				Severity: string(f.Severity),
+			})
+		}
+	case CommitPayload:
+		a.state.AddRunEvent(session.RunEvent{
+			Kind: session.RunEventCommit, TaskN: ev.TaskN, Title: p.SHA, Detail: p.Subject,
+		})
+	case RetryPayload:
+		a.state.AddRunEvent(session.RunEvent{
+			Kind:   session.RunEventRetry,
+			TaskN:  ev.TaskN,
+			Title:  fmt.Sprintf("retry %d/%d", p.Attempt, p.MaxAttempts),
+			Detail: p.Err,
+		})
+	case ConcernPayload:
+		a.state.AddRunEvent(session.RunEvent{
+			Kind: session.RunEventConcern, TaskN: ev.TaskN, Title: p.Text,
+		})
 	}
 }
 

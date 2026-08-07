@@ -23,6 +23,9 @@ type Row struct {
 	Detail string
 	Badge  string
 	Err    string
+	// Warn is a non-blocking caution rendered under the row: something the
+	// user should see before starting, but not a reason to refuse.
+	Warn string
 }
 
 // StartMsg is emitted when the user presses Enter and no row has an error.
@@ -128,6 +131,9 @@ func (p *Panel) View(width, maxHeight int) string {
 		if r.Err != "" {
 			line += "\n" + errorStyle().Render("    "+r.Err)
 		}
+		if r.Warn != "" {
+			line += "\n" + warnStyle().Render("    "+glyph.Warning+" "+r.Warn)
+		}
 
 		rows = append(rows, line)
 	}
@@ -185,4 +191,11 @@ func errorStyle() lipgloss.Style {
 		return lipgloss.NewStyle()
 	}
 	return lipgloss.NewStyle().Foreground(theme.Current().StatusError)
+}
+
+func warnStyle() lipgloss.Style {
+	if isMono() {
+		return lipgloss.NewStyle()
+	}
+	return lipgloss.NewStyle().Foreground(theme.Current().StatusWarning)
 }

@@ -164,3 +164,28 @@ func TestViewTruncatesToHeightBudget(t *testing.T) {
 		t.Fatalf("view must not exceed height budget 5, got %d lines:\n%s", got, out)
 	}
 }
+
+func TestWarnRowRendersButDoesNotBlock(t *testing.T) {
+	p := New("Start run?", []Row{
+		{Title: "implementer", Detail: "ollama/qwen"},
+		{Title: "verify", Warn: "no build or test command configured"},
+	}, nil)
+
+	got := ansi.Strip(p.View(80, 20))
+	if !strings.Contains(got, "no build or test command configured") {
+		t.Errorf("warning text must render:\n%s", got)
+	}
+	if strings.Contains(got, "fix errors above") {
+		t.Errorf("a warning must not render the blocked banner:\n%s", got)
+	}
+	if p.blocked() {
+		t.Error("a warning row must not block the run")
+	}
+}
+
+func TestErrRowStillBlocks(t *testing.T) {
+	p := New("Start run?", []Row{{Title: "implementer", Err: "no model configured"}}, nil)
+	if !p.blocked() {
+		t.Error("an error row must still block")
+	}
+}

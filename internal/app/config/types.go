@@ -354,8 +354,8 @@ type AgentConfig struct {
 	PlanFirst                bool `toml:"plan_first"`
 	// HistoryBudgetTokens is an explicit ceiling for cross-turn history
 	// replay (the agent's "previous turn" budget). 0 = derive from
-	// model window via Runner.historyBudget (Task 5/B): window/8,
-	// clamped to [4000, 32000].
+	// model window via historyBudget: window/8, clamped to
+	// [4000, 128000].
 	HistoryBudgetTokens int `toml:"history_budget_tokens"`
 	// SubtaskIterations caps tool iterations for an ad-hoc agent.run child.
 	// The child gets a fresh Runner with this cap (defaults to 12 when zero).

@@ -12,13 +12,14 @@ func TestHistoryBudget_Adaptive(t *testing.T) {
 		{"128k window, no override -> 16000", 128000, 0, 16000},
 		{"32k window clamps to 4000", 32000, 0, 4000},
 		{"window <=32k clamps to 4000", 8000, 0, 4000},
-		{"1M window clamps to 32000", 1_000_000, 0, 32000},
+		{"1M window -> 125000", 1_000_000, 0, 125000},
 		{"explicit 9000 wins", 128000, 9000, 9000},
 		{"explicit larger than cap clamps via cap not used", 128000, 50000, 50000}, // explicit wins regardless
 		{"64k window -> 8000", 64000, 0, 8000},
 		{"200k window -> 25000", 200000, 0, 25000},
 		{"256k window -> 32000 (boundary)", 256000, 0, 32000},
-		{"257k window clamps to 32000", 257000, 0, 32000},
+		{"257k window -> 32125", 257000, 0, 32125},
+		{"2M window clamps to 128000", 2_000_000, 0, 128000},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -25,7 +25,7 @@ package agent
 func historyBudget(window, configured int) int {
 	const (
 		min = 4000
-		max = 32000
+		max = 128000
 	)
 	if configured > 0 {
 		return configured
@@ -33,7 +33,7 @@ func historyBudget(window, configured int) int {
 	if window <= 32000 {
 		return min
 	}
-	if window > 256000 {
+	if window > 1_024_000 {
 		return max
 	}
 	return window / 8

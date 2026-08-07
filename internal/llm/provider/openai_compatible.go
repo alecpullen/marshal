@@ -122,7 +122,7 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 	for _, m := range parsed.Data {
 		info := schema.ModelInfo{ID: m.ID, OwnedBy: m.OwnedBy}
 		if p.limitsTable != nil {
-			if lim, ok := p.limitsTable.Lookup(p.name, m.ID); ok {
+			if lim, kind := p.limitsTable.Lookup(p.name, m.ID); kind != limits.MatchNone {
 				info.ContextWindow = lim.ContextWindow
 				info.MaxOutputTokens = lim.MaxOutputTokens
 			}

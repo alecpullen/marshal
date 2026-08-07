@@ -15,6 +15,11 @@ const (
 	SourcePreset  LimitSource = "saved preset"
 	SourceEdited  LimitSource = "edited"
 	SourceUnknown LimitSource = "unknown"
+
+	// SourceVariant marks a figure inferred from a differently-named entry
+	// for what is probably the same model. Shown distinctly so the user can
+	// tell an inference from a fetched fact.
+	SourceVariant LimitSource = "similar model"
 )
 
 // ModelLimits is a model's context and output caps with per-field

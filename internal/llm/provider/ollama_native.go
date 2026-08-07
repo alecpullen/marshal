@@ -458,7 +458,7 @@ func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 	for _, m := range parsed.Models {
 		info := schema.ModelInfo{ID: m.Name, OwnedBy: "ollama"}
 		if p.limitsTable != nil {
-			if lim, ok := p.limitsTable.Lookup(p.name, m.Name); ok {
+			if lim, kind := p.limitsTable.Lookup(p.name, m.Name); kind != limits.MatchNone {
 				info.ContextWindow = lim.ContextWindow
 				info.MaxOutputTokens = lim.MaxOutputTokens
 			}

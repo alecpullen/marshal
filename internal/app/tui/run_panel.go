@@ -66,6 +66,13 @@ func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, w
 	text := fmt.Sprintf("task %d/%d", p.CurrentTask, p.TotalTasks)
 	if p.Phase != "" {
 		text += " · " + p.Phase
+		// Per-phase elapsed distinguishes a slow test suite from a hang;
+		// whole-run elapsed alone cannot.
+		if !p.PhaseStartedAt.IsZero() {
+			if d := now.Sub(p.PhaseStartedAt); d > 0 {
+				text += " " + formatElapsed(d)
+			}
+		}
 	}
 	if p.FixRound > 0 {
 		text += fmt.Sprintf(" · fix %d/%d", p.FixRound, p.MaxFixRounds)

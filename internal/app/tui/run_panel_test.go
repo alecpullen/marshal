@@ -157,3 +157,36 @@ func TestNextTurnClearsRunEvents(t *testing.T) {
 			"append to the first run's log", n)
 	}
 }
+
+func TestSummaryLineShowsPhaseElapsedAndTotal(t *testing.T) {
+	start := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	now := start.Add(18 * time.Minute)
+	p := session.SDDProgress{
+		Active: true, CurrentTask: 3, TotalTasks: 7,
+		Phase: "verifying", StartedAt: start,
+		PhaseStartedAt: now.Add(-2*time.Minute - 14*time.Second),
+	}
+	got := stripANSI(runPanelSummaryLine(p, "⠋", now, 100))
+
+	if !strings.Contains(got, "verifying 2m 14s") {
+		t.Errorf("summary must show how long the current phase has run:\n%s", got)
+	}
+	if !strings.Contains(got, "18m 0s") {
+		t.Errorf("summary must still show total elapsed:\n%s", got)
+	}
+}
+
+func TestSummaryLineOmitsPhaseElapsedWhenUnset(t *testing.T) {
+	start := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	p := session.SDDProgress{
+		Active: true, CurrentTask: 1, TotalTasks: 3,
+		Phase: "implementing", StartedAt: start,
+	}
+	got := stripANSI(runPanelSummaryLine(p, "⠋", start.Add(time.Minute), 100))
+	if !strings.Contains(got, "implementing") {
+		t.Errorf("phase must still render:\n%s", got)
+	}
+	if strings.Contains(got, "implementing 0s") {
+		t.Errorf("a zero PhaseStartedAt must not render a bogus 0s:\n%s", got)
+	}
+}

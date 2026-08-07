@@ -187,6 +187,16 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				rows := []Row{
 					{Text: "Messages", Detail: fmt.Sprintf("%d (%d chars)", len(msgs), totalChars)},
 				}
+				window, threshold, source := state.TurnBudget()
+				windowDetail := strutil.CompactTokens(window)
+				if window <= 0 {
+					windowDetail = "unknown — set context_window on the model preset"
+				}
+				rows = append(rows,
+					Row{Text: "Window", Detail: windowDetail},
+					Row{Text: "Turn budget", Detail: fmt.Sprintf("%s tokens (%s)",
+						strutil.CompactTokens(threshold), source)},
+				)
 				pack := state.ContextPack()
 				if pack.IsEmpty() {
 					rows = append(rows, Row{Text: "Pack", Detail: "not built yet"})

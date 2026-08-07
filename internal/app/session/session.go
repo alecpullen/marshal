@@ -360,8 +360,10 @@ func (s *State) SDDGate() SDDGate {
 }
 
 type turnUsage struct {
-	used   int
-	window int
+	used      int
+	window    int
+	threshold int
+	source    string
 }
 
 func (s *State) SetTurnUsage(used int) {
@@ -374,6 +376,23 @@ func (s *State) SetTurnContextWindow(window int) {
 	s.mu.Lock()
 	s.turnUsage.window = window
 	s.mu.Unlock()
+}
+
+// SetTurnBudget records the window and per-turn compaction threshold the
+// runner resolved for this turn, plus where the threshold came from
+// ("configured", "derived", or "fallback"). Surfaced by /context.
+func (s *State) SetTurnBudget(window, threshold int, source string) {
+	s.mu.Lock()
+	s.turnUsage.window = window
+	s.turnUsage.threshold = threshold
+	s.turnUsage.source = source
+	s.mu.Unlock()
+}
+
+func (s *State) TurnBudget() (window, threshold int, source string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnUsage.window, s.turnUsage.threshold, s.turnUsage.source
 }
 
 func (s *State) TurnUsage() (used, window int) {

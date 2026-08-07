@@ -1058,3 +1058,50 @@ func TestRunCommandIsRegistered(t *testing.T) {
 	}
 	t.Error("no /run command registered")
 }
+
+// contextRowsText joins every row of the /context panel so assertions can
+// look for a value without depending on which row carries it.
+func contextRowsText(t *testing.T, state *session.State) string {
+	t.Helper()
+	cmdReg := New()
+	RegisterAll(cmdReg, registry.New())
+	cmd, ok := cmdReg.Lookup("context")
+	if !ok {
+		t.Fatal("no /context command registered")
+	}
+	res := cmd.Handler(state, nil)
+	if res.Doc == nil {
+		t.Fatalf("/context should return a Doc, got %+v", res)
+	}
+	var b strings.Builder
+	for _, r := range res.Doc.Rows {
+		b.WriteString(r.Text)
+		b.WriteString(" ")
+		b.WriteString(r.Detail)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func TestContextPanelShowsResolvedBudget(t *testing.T) {
+	state := newTestState()
+	state.SetTurnBudget(256000, 185600, "derived")
+
+	// strutil.CompactTokens renders thousands as "<n>k".
+	joined := contextRowsText(t, state)
+	for _, want := range []string{"256k", "185k", "derived"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("context panel missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestContextPanelFlagsUnknownWindow(t *testing.T) {
+	state := newTestState()
+	state.SetTurnBudget(0, 60000, "fallback")
+
+	joined := contextRowsText(t, state)
+	if !strings.Contains(joined, "unknown") {
+		t.Fatalf("context panel should flag an unknown window:\n%s", joined)
+	}
+}

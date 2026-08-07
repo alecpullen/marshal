@@ -530,10 +530,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// applies regardless.
 		r.State.AddMessage(session.RoleSystem, "Could not resolve the model context window; using a conservative per-turn budget. Configure models with explicit context_window or add the model to the catalog for accurate thresholds.", session.ContentTypePlain)
 	}
+	budgetSource := thresholdSource(route.Window, r.MaxTurnContextTokens)
+	r.State.SetTurnBudget(route.Window, turnThreshold, budgetSource)
 	r.State.Logger().Info("turn context budget",
 		"window", route.Window,
 		"threshold", turnThreshold,
-		"source", thresholdSource(route.Window, r.MaxTurnContextTokens))
+		"source", budgetSource)
 	r.turnToolResultChars = deriveToolResultChars(turnThreshold)
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)

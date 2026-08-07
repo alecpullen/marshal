@@ -327,3 +327,68 @@ func TestAdapterStampsPhaseStartedAtOnPhaseChange(t *testing.T) {
 		t.Error("PhaseStartedAt reset even though the phase did not change")
 	}
 }
+
+func TestAdapterStampsTaskStartAndEnd(t *testing.T) {
+	st := newAdapterTestState(t)
+	a := &ControllerAdapter{state: st}
+	st.SetSDDProgress(session.SDDProgress{TotalTasks: 3, TaskTimings: make([]session.TaskTiming, 3)})
+
+	a.Event(Event{TaskN: 1, TotalTasks: 3, Phase: PhaseImplementing})
+	if st.SDDProgress().TaskTimings[0].StartedAt.IsZero() {
+		t.Fatal("the first event for a task must stamp StartedAt")
+	}
+	first := st.SDDProgress().TaskTimings[0].StartedAt
+
+	a.Event(Event{TaskN: 1, TotalTasks: 3, Phase: PhaseVerifying})
+	if got := st.SDDProgress().TaskTimings[0].StartedAt; !got.Equal(first) {
+		t.Error("a later event for the same task must not re-stamp StartedAt")
+	}
+	if !st.SDDProgress().TaskTimings[0].EndedAt.IsZero() {
+		t.Error("a task is not ended until PhaseDone")
+	}
+
+	a.Event(Event{TaskN: 1, TotalTasks: 3, Phase: PhaseDone})
+	if st.SDDProgress().TaskTimings[0].EndedAt.IsZero() {
+		t.Error("PhaseDone must stamp EndedAt")
+	}
+}
+
+func TestAdapterIgnoresBranchLevelTaskZero(t *testing.T) {
+	st := newAdapterTestState(t)
+	a := &ControllerAdapter{state: st}
+	st.SetSDDProgress(session.SDDProgress{TotalTasks: 2, TaskTimings: make([]session.TaskTiming, 2)})
+
+	// Branch review emits TaskN 0. An unguarded index would panic at -1.
+	a.Event(Event{TaskN: 0, TotalTasks: 2, Phase: PhaseBranchReview})
+
+	for i, tm := range st.SDDProgress().TaskTimings {
+		if !tm.StartedAt.IsZero() {
+			t.Errorf("timing %d was stamped by a branch-level event", i)
+		}
+	}
+}
+
+func TestAdapterIgnoresOutOfRangeTaskN(t *testing.T) {
+	st := newAdapterTestState(t)
+	a := &ControllerAdapter{state: st}
+	st.SetSDDProgress(session.SDDProgress{TotalTasks: 2, TaskTimings: make([]session.TaskTiming, 2)})
+
+	a.Event(Event{TaskN: 99, TotalTasks: 2, Phase: PhaseImplementing}) // must not panic or resize
+
+	if n := len(st.SDDProgress().TaskTimings); n != 2 {
+		t.Errorf("timings resized to %d; an out-of-range TaskN must record nothing", n)
+	}
+}
+
+func TestAdapterSizesTimingsAtRunStart(t *testing.T) {
+	st := newAdapterTestState(t)
+	d, _ := scriptedDispatch(t, implDone, reviewOK, implDone, reviewOK, reviewOK)
+	c := testController(t, d, NewFakeCommandRunner())
+	a := NewControllerAdapter(c, st)
+
+	_ = a.Run(t.Context(), c.Plan.Path)
+
+	if got, want := len(st.SDDProgress().TaskTimings), len(c.Plan.Tasks); got != want {
+		t.Errorf("got %d timings, want one per plan task (%d)", got, want)
+	}
+}

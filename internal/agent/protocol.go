@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,9 +44,35 @@ type ModelAction struct {
 }
 
 type actionEnvelope struct {
-	Rationale string          `json:"rationale"`
-	Action    actionPayload   `json:"action"`
-	Actions   []actionPayload `json:"actions,omitempty"`
+	Rationale string        `json:"rationale"`
+	Action    payloadOrList `json:"action"`
+	Actions   payloadOrList `json:"actions,omitempty"`
+}
+
+// payloadOrList accepts either a single action object or an array of them,
+// under either the "action" or "actions" key. Models routinely mix the two
+// forms up; the shape carries no information the key does not, so rejecting
+// a mismatch only costs a regeneration.
+type payloadOrList struct {
+	Items []actionPayload
+	List  bool // input was an array
+}
+
+func (p *payloadOrList) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	if trimmed[0] == '[' {
+		p.List = true
+		return json.Unmarshal(trimmed, &p.Items)
+	}
+	var one actionPayload
+	if err := json.Unmarshal(trimmed, &one); err != nil {
+		return err
+	}
+	p.Items = []actionPayload{one}
+	return nil
 }
 
 type actionPayload struct {
@@ -60,59 +87,130 @@ type actionPayload struct {
 // leading/trailing ```json fence, since local models frequently wrap JSON in
 // markdown even when told not to.
 func ParseAction(raw string) (ModelAction, error) {
-	jsonText, err := jsonextract.Extract(raw)
+	action, _, err := ParseActionRepairing(raw, nil)
+	return action, err
+}
+
+// ParseActionRepairing parses an envelope, healing deviations that have a
+// single unambiguous reading instead of forcing the model to regenerate.
+// knownTool reports whether a name is a registered tool; when nil, the
+// tool-name repair is skipped (no registry to verify against, and guessing
+// would be worse than the error).
+//
+// Repairs returns one human-readable note per healed deviation so the caller
+// can tell the model what it got wrong. An empty slice means the envelope was
+// already well-formed.
+func ParseActionRepairing(raw string, knownTool func(string) bool) (ModelAction, []string, error) {
+	var repairs []string
+
+	jsonText, jsonRepaired, err := jsonextract.ExtractRepairing(raw)
 	if err != nil {
 		if errors.Is(err, jsonextract.ErrNotFound) {
-			return ModelAction{}, ErrNoActionFound
+			return ModelAction{}, nil, ErrNoActionFound
 		}
-		return ModelAction{}, err
+		return ModelAction{}, nil, err
+	}
+	if jsonRepaired {
+		repairs = append(repairs, "the JSON envelope was unbalanced (missing or stray brackets) and had to be closed")
 	}
 
 	var envelope actionEnvelope
 	if err := json.Unmarshal([]byte(jsonText), &envelope); err != nil {
-		return ModelAction{}, fmt.Errorf("agent: malformed action JSON: %w", err)
+		return ModelAction{}, nil, fmt.Errorf("agent: malformed action JSON: %w", err)
 	}
 
-	if len(envelope.Actions) > 0 {
-		actions := make([]ModelAction, 0, len(envelope.Actions))
-		for _, p := range envelope.Actions {
-			ma, err := validatePayload(p)
+	// Either key may carry either shape. Prefer whichever is populated.
+	payloads, list := envelope.Actions.Items, envelope.Actions.List
+	key := "actions"
+	if len(payloads) == 0 {
+		payloads, list = envelope.Action.Items, envelope.Action.List
+		key = "action"
+	}
+	if len(payloads) == 0 {
+		return ModelAction{}, nil, fmt.Errorf("%w: %q", ErrUnknownActionType, "")
+	}
+	// batch decides which form the action takes. The "actions" array is the
+	// parallel form and carries a read-only restriction (F-SEC-11), so a
+	// one-element array must STAY a batch — collapsing it to a single action
+	// would route a write tool around that guard.
+	batch := key == "actions" && list
+	switch {
+	case key == "action" && list && len(payloads) > 1:
+		// More than one action can only mean the parallel form.
+		batch = true
+		repairs = append(repairs, `multiple actions were sent under "action"; use "actions" for parallel calls`)
+	case key == "action" && list:
+		repairs = append(repairs, `a single action was wrapped in an array under "action"; send the object directly`)
+	case key == "actions" && !list:
+		batch = true
+		repairs = append(repairs, `a single action was sent under "actions" as an object; use "action", or an array for parallel calls`)
+	}
+
+	if batch {
+		actions := make([]ModelAction, 0, len(payloads))
+		for _, p := range payloads {
+			ma, notes, err := validatePayload(p, knownTool)
 			if err != nil {
-				return ModelAction{}, err
+				return ModelAction{}, nil, err
 			}
+			repairs = append(repairs, notes...)
 			actions = append(actions, ma)
 		}
-		return ModelAction{Rationale: envelope.Rationale, Actions: actions}, nil
+		return ModelAction{Rationale: envelope.Rationale, Actions: actions}, repairs, nil
 	}
 
-	ma, err := validatePayload(envelope.Action)
+	ma, notes, err := validatePayload(payloads[0], knownTool)
 	if err != nil {
-		return ModelAction{}, err
+		return ModelAction{}, nil, err
 	}
+	repairs = append(repairs, notes...)
 	return ModelAction{
 		Rationale: envelope.Rationale,
 		Type:      ma.Type,
 		Tool:      ma.Tool,
 		Args:      ma.Args,
 		Content:   ma.Content,
-		Questions: envelope.Action.Questions,
-	}, nil
+		Questions: ma.Questions,
+	}, repairs, nil
 }
 
-func validatePayload(p actionPayload) (ModelAction, error) {
+func validatePayload(p actionPayload, knownTool func(string) bool) (ModelAction, []string, error) {
+	var repairs []string
 	switch p.Type {
 	case ActionAnswer, ActionToolCall, ActionPatch, ActionFinal, ActionAskUser, ActionQuestionAsk:
 	default:
-		return ModelAction{}, fmt.Errorf("%w: %q", ErrUnknownActionType, p.Type)
+		// Models reach for the tool name as the action type ("todo.write").
+		// Verified against the registry, so this cannot guess: an unknown
+		// name still errors.
+		if knownTool != nil && strings.TrimSpace(p.Tool) == "" && knownTool(string(p.Type)) {
+			repairs = append(repairs, fmt.Sprintf(
+				"%q is a tool name, not an action type; use {\"type\": \"tool_call\", \"tool\": %q}",
+				string(p.Type), string(p.Type)))
+			p.Tool = string(p.Type)
+			p.Type = ActionToolCall
+			break
+		}
+		return ModelAction{}, nil, fmt.Errorf("%w: %q", ErrUnknownActionType, p.Type)
 	}
 	if p.Type == ActionToolCall && strings.TrimSpace(p.Tool) == "" {
-		return ModelAction{}, ErrMissingTool
+		return ModelAction{}, nil, ErrMissingTool
 	}
 	if p.Type == ActionAskUser && strings.TrimSpace(p.Content) == "" {
-		return ModelAction{}, ErrMissingQuestion
+		return ModelAction{}, nil, ErrMissingQuestion
 	}
 	if p.Type == ActionQuestionAsk && len(p.Questions) == 0 {
-		return ModelAction{}, fmt.Errorf("agent: question.ask action requires at least one question")
+		return ModelAction{}, nil, fmt.Errorf("agent: question.ask action requires at least one question")
 	}
-	return ModelAction{Type: p.Type, Tool: p.Tool, Args: p.Args, Content: p.Content, Questions: p.Questions}, nil
+	return ModelAction{Type: p.Type, Tool: p.Tool, Args: p.Args, Content: p.Content, Questions: p.Questions}, repairs, nil
+}
+
+// knownTool reports whether name is a tool this runner can dispatch. Used to
+// verify the tool-name-as-action-type repair against reality rather than
+// guessing. A runner with no registry heals nothing.
+func (r *Runner) knownTool(name string) bool {
+	if r == nil || r.Registry == nil || name == "" {
+		return false
+	}
+	_, ok := r.Registry.Lookup(name)
+	return ok
 }

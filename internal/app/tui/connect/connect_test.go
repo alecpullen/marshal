@@ -1075,6 +1075,116 @@ func TestModelStepSubtitleNamesNoProviderInAllProvidersMode(t *testing.T) {
 	}
 }
 
+func TestProbeResultAttributesToMsgProviderInAllProvidersMode(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"kimi":   {Type: "openai_compatible", BaseURL: "https://api.moonshot.cn/v1"},
+			"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
+		}},
+		Discovered:       map[string][]schema.ModelInfo{},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+		ScopedProvider:   "kimi",
+	})
+	// Ollama's probe result arrives while the panel is scoped to kimi (the
+	// first sorted provider). It must land under "ollama", not clobber kimi.
+	updated, _ := m.Update(probe.ResultMsg{Provider: "ollama", Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	if got := updated.discovered["ollama"]; len(got) != 1 || got[0].ID != "qwen2.5-coder:7b" {
+		t.Errorf("discovered[ollama] = %v, want the probed model", got)
+	}
+	if got := updated.discovered["kimi"]; len(got) != 0 {
+		t.Errorf("discovered[kimi] = %v, want untouched by ollama's result", got)
+	}
+	if len(updated.models) != 0 {
+		t.Errorf("scoped models = %v, want unset in all-providers mode", updated.models)
+	}
+	if updated.providerName != "kimi" {
+		t.Errorf("providerName = %q, want still scoped to kimi", updated.providerName)
+	}
+}
+
+func TestProbeFailureInAllProvidersModeKeepsPickerAndNotesProvider(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"kimi":   {Type: "openai_compatible", BaseURL: "https://api.moonshot.cn/v1"},
+			"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
+		}},
+		Discovered:       map[string][]schema.ModelInfo{},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+		ScopedProvider:   "kimi",
+	})
+	updated, _ := m.Update(probe.ResultMsg{Provider: "kimi", Err: errors.New("401 unauthorized")})
+	if updated.step != stepPickModel {
+		t.Errorf("step = %v, want to stay on pickModel", updated.step)
+	}
+	if updated.err != "" {
+		t.Errorf("err = %q, want unset; failures are per-provider notes", updated.err)
+	}
+	if _, ok := updated.probeErrs["kimi"]; !ok {
+		t.Error("probeErrs should record kimi's failure")
+	}
+	if view := updated.View(80, 24); !strings.Contains(view, "probe failed") {
+		t.Errorf("picker view should note kimi's failed probe:\n%s", view)
+	}
+	// A later success clears the failure note.
+	updated, _ = updated.Update(probe.ResultMsg{Provider: "kimi", Models: []schema.ModelInfo{{ID: "kimi-k2"}}})
+	if _, ok := updated.probeErrs["kimi"]; ok {
+		t.Error("probeErrs should forget kimi after a successful probe")
+	}
+	if got := updated.discovered["kimi"]; len(got) != 1 || got[0].ID != "kimi-k2" {
+		t.Errorf("discovered[kimi] = %v, want the probed model", got)
+	}
+}
+
+func TestModelPickerKeepsUndiscoveredProviderVisible(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"ollama":       {Type: "ollama", BaseURL: "http://localhost:11434"},
+			"ollama cloud": {Type: "ollama", BaseURL: "https://ollama.com"},
+		}},
+		Discovered:       map[string][]schema.ModelInfo{"ollama": {{ID: "qwen2.5-coder:7b"}}},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+		ScopedProvider:   "ollama",
+	})
+	view := m.View(80, 24)
+	if !strings.Contains(view, "ollama cloud") {
+		t.Errorf("provider with no discovered models should still appear:\n%s", view)
+	}
+	if !strings.Contains(view, "remote discovery disabled") {
+		t.Errorf("remote provider gated by privacy should say why it is empty:\n%s", view)
+	}
+}
+
+func TestManualRowPickScopesToItsProvider(t *testing.T) {
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"kimi":   {Type: "openai_compatible", BaseURL: "https://api.moonshot.cn/v1"},
+			"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
+		}},
+		Discovered:       map[string][]schema.ModelInfo{"ollama": {{ID: "qwen2.5-coder:7b"}}},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+		ScopedProvider:   "kimi",
+	})
+	updated, _ := m.Update(picker.PickedMsg{Value: encodeModelValue("kimi", "__manual__")})
+	if updated.step != stepPickModel {
+		t.Errorf("step = %v, manual row should stay on the picker", updated.step)
+	}
+	if updated.providerName != "kimi" {
+		t.Errorf("providerName = %q, want scoped to kimi", updated.providerName)
+	}
+	// A typed-in id then binds to kimi, not the first sorted provider.
+	updated, _ = updated.Update(picker.PickedMsg{Value: "kimi-k2"})
+	if updated.modelChosen != "kimi-k2" {
+		t.Errorf("modelChosen = %q, want kimi-k2", updated.modelChosen)
+	}
+	if updated.providerName != "kimi" {
+		t.Errorf("providerName = %q, want kimi for the typed id", updated.providerName)
+	}
+}
+
 func TestEditingContextWindowMarksItEdited(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))

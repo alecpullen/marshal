@@ -109,6 +109,7 @@ type Model struct {
 	modelChosen    string
 	remoteEnabled  bool
 	allProviders   bool
+	probeErrs      map[string]error
 	dataDir        string
 	limits         ModelLimits
 	editingLimit   editingLimit
@@ -569,6 +570,16 @@ func buildModelPicker(m *Model, providerName string) *picker.Model {
 					candidates = templateModelsToInfo(tpl.Models)
 				}
 			}
+			if len(candidates) == 0 {
+				// Keep the provider visible even with nothing discovered, or
+				// it silently vanishes from the list. The note explains why.
+				items = append(items, picker.Item{
+					Label: "Enter model id manually", Detail: pn,
+					Badge: m.emptyProviderNote(pn), Group: pn,
+					Value: encodeModelValue(pn, "__manual__"),
+				})
+				continue
+			}
 			for _, mi := range candidates {
 				badge := "◉ discovered"
 				if _, ok := m.discovered[pn]; !ok || len(m.discovered[pn]) == 0 {
@@ -610,6 +621,21 @@ func buildModelPicker(m *Model, providerName string) *picker.Model {
 	return p
 }
 
+// emptyProviderNote explains why a configured provider has no model rows in
+// all-providers mode: its probe failed, the privacy gate skipped it, or it
+// simply returned nothing.
+func (m *Model) emptyProviderNote(providerName string) string {
+	if _, failed := m.probeErrs[providerName]; failed {
+		return "◯ probe failed — ^r retries"
+	}
+	if pc, ok := m.cfg.Providers[providerName]; ok &&
+		!probe.IsLocalhost(pc.BaseURL) &&
+		!m.cfg.Privacy.RemoteProvidersAllowed {
+		return "◯ remote discovery disabled (privacy.remote_providers)"
+	}
+	return "◯ no models discovered"
+}
+
 // templateModelsToInfo wraps a template's catalog model IDs in ModelInfo
 // records so the picker can treat catalog and discovered models uniformly.
 // Templates have no per-model limits, so all fields except ID are zero.
@@ -630,11 +656,20 @@ func badgeForTemplate(tpl provider.ProviderTemplate) string {
 
 func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 	if m.step == stepPickModel {
-		if value == "__manual__" {
+		// When AllProviders is set, the value is encoded with provider prefix.
+		p, mdl := decodeModelValue(value)
+		if mdl == "__manual__" {
+			// Scope a typed-in model id to this row's provider, then let the
+			// user enter the id via the picker's custom-value path.
+			if p != "" {
+				m.providerName = p
+				if pc, ok := m.cfg.Providers[p]; ok {
+					m.providerCfg = pc
+				}
+			}
 			return m, nil
 		}
-		// When AllProviders is set, the value is encoded with provider prefix.
-		if p, mdl := decodeModelValue(value); p != "" {
+		if p != "" {
 			m.providerName = p
 			if pc, ok := m.cfg.Providers[p]; ok {
 				m.providerCfg = pc
@@ -677,7 +712,22 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 }
 
 func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
+	name := msg.Provider
+	if name == "" {
+		name = m.providerName
+	}
 	if msg.Err != nil {
+		if m.allProviders {
+			// One provider's failure must not disturb the others; note it on
+			// that provider's picker rows instead of the (invisible) probing
+			// step's inline error.
+			if m.probeErrs == nil {
+				m.probeErrs = map[string]error{}
+			}
+			m.probeErrs[name] = msg.Err
+			m.rebuildModelPicker()
+			return m, nil
+		}
 		m.err = "✗ " + strutil.Truncate(msg.Err.Error(), 72, true)
 		if hint := probeHint(msg.Err); hint != "" {
 			m.err += "\n  ↳ " + hint
@@ -685,12 +735,33 @@ func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
 		m.footer = "[r] retry  [s] skip  [Esc] cancel"
 		return m, nil
 	}
-	m.models = msg.Models
+	delete(m.probeErrs, name)
 	if m.discovered != nil {
-		m.discovered[m.providerName] = msg.Models
+		m.discovered[name] = msg.Models
 	}
+	if m.allProviders {
+		// Results arrive interleaved across providers; the scoped m.models
+		// belongs to the single-provider flow only. Rebuild rows in place so
+		// the user's filter and position survive each delivery.
+		m.rebuildModelPicker()
+		return m, nil
+	}
+	m.models = msg.Models
 	_, advCmd := m.advanceToPickModel()
 	return m, advCmd
+}
+
+// rebuildModelPicker refreshes the model rows (e.g. after a probe result)
+// while preserving whatever the user has typed into the filter.
+func (m *Model) rebuildModelPicker() {
+	filter := ""
+	if m.picker != nil {
+		filter = m.picker.FilterValue()
+	}
+	m.picker = buildModelPicker(m, m.providerName)
+	if filter != "" {
+		m.picker.SetFilter(filter)
+	}
 }
 
 // probeHint maps common connection failures to a one-line remediation.

@@ -499,6 +499,11 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, widt
 			return ""
 		}
 		return renderSubagentCard(*item.Subagent, detailExpanded, width)
+	case session.KindRunEvent:
+		if item.RunEvent == nil {
+			return ""
+		}
+		return renderRunEvent(*item.RunEvent, detailExpanded, width)
 	}
 	return ""
 }

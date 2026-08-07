@@ -533,6 +533,9 @@ func renderSubagentCard(v session.SubagentView, expanded bool, width int) string
 	if v.ToolCalls > 0 {
 		head += dimSeparator + fmt.Sprintf("%d tool calls", v.ToolCalls)
 	}
+	if v.Status == session.SubagentRunning && v.CurrentTool != "" {
+		head += dimSeparator + v.CurrentTool
+	}
 	var dur string
 	if v.Status == session.SubagentRunning {
 		dur = formatElapsed(max(time.Since(v.StartedAt), 0))

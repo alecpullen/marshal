@@ -1167,6 +1167,8 @@ func (s *State) Transcript() []TranscriptItem {
 		if v.Child != nil {
 			v.ToolCalls = v.Child.CompletedToolCallCount()
 			s.subagents[i].ToolCalls = v.ToolCalls
+			v.CurrentTool = v.Child.CurrentToolLabel()
+			s.subagents[i].CurrentTool = v.CurrentTool
 		}
 		items = append(items, TranscriptItem{
 			Timestamp: v.StartedAt,

@@ -1104,3 +1104,32 @@ func TestDedentPreservesRelativeIndent(t *testing.T) {
 		t.Errorf("dedentMarkdown() altered a flush-left document: %q", got)
 	}
 }
+
+func TestRunningSubagentCardShowsCurrentTool(t *testing.T) {
+	v := session.SubagentView{
+		Label:       "sdd_implementer · task 3 — Add retry helper",
+		Status:      session.SubagentRunning,
+		ToolCalls:   9,
+		CurrentTool: "editing internal/retry/retry.go",
+		StartedAt:   time.Now().Add(-72 * time.Second),
+	}
+	got := stripANSI(renderSubagentCard(v, false, 100))
+	if !strings.Contains(got, "editing internal/retry/retry.go") {
+		t.Errorf("a running card must say what the subagent is doing, not just count calls:\n%s", got)
+	}
+}
+
+func TestFinishedSubagentCardOmitsCurrentTool(t *testing.T) {
+	v := session.SubagentView{
+		Label:       "sdd_implementer · task 3",
+		Status:      session.SubagentDone,
+		ToolCalls:   9,
+		CurrentTool: "editing internal/retry/retry.go",
+		StartedAt:   time.Now().Add(-2 * time.Minute),
+		EndedAt:     time.Now(),
+	}
+	got := stripANSI(renderSubagentCard(v, false, 100))
+	if strings.Contains(got, "editing") {
+		t.Errorf("a finished card must not claim in-flight work:\n%s", got)
+	}
+}

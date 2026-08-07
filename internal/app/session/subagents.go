@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +36,10 @@ type SubagentView struct {
 	// ToolCalls counts completed tool calls observed in the child transcript
 	// at card-render time; the TUI refreshes it while Status == Running.
 	ToolCalls int
+	// CurrentTool is the in-flight tool's display label while Status ==
+	// SubagentRunning, refreshed at card-render time like ToolCalls. Empty
+	// when the child is idle or finished.
+	CurrentTool string
 	// Summary is the subagent's final report, captured when it finishes so
 	// the completed card (and the drilled-in view header) can show it.
 	Summary string
@@ -132,6 +137,38 @@ func (s *State) CompletedToolCallCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.auditLog)
+}
+
+// CurrentToolLabel returns a concise, human-readable label for the tool this
+// session is currently running, or "" when idle. The parent uses it to show
+// what a running subagent is doing on its card. For file-edit tools the label
+// names the file being edited; other tools fall back to their display name.
+func (s *State) CurrentToolLabel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeToolCall == nil {
+		return ""
+	}
+	atc := *s.activeToolCall
+	switch atc.Name {
+	case "file.write_patch", "patch.apply":
+		if path := firstPatchPath(atc.Args); path != "" {
+			return "editing " + path
+		}
+	}
+	return atc.Name
+}
+
+// firstPatchPath extracts the first "File: <path>" line from a patch
+// proposal's args, used to name the file a file-edit tool is working on.
+func firstPatchPath(args string) string {
+	for _, line := range strings.Split(args, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "File:") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "File:"))
+		}
+	}
+	return ""
 }
 
 // SetSubagentBroker wires the broker RegisterSubagent/FinishSubagent publish

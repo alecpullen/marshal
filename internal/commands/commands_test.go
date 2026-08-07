@@ -1043,3 +1043,18 @@ func TestSDDCommandDescriptionExplainsItself(t *testing.T) {
 		t.Errorf("the description must say it commits, got %q", desc)
 	}
 }
+
+func TestRunCommandIsRegistered(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+	for _, c := range cmdReg.ListAll() {
+		if c.Name == "run" {
+			if c.Description == "" {
+				t.Error("/run needs a description")
+			}
+			return
+		}
+	}
+	t.Error("no /run command registered")
+}

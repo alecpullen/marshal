@@ -7,10 +7,12 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
+	"marshal/internal/worktree"
 )
 
 // tuiCommandEffects holds the interactive logic for commands registered
@@ -157,6 +159,12 @@ func init() {
 			}
 			m.pipelineRunner = runner
 			m.openRunPreflight("sdd", runner, planPath)
+			m.refreshViewport()
+			return m, nil
+		},
+		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			doc := runOutcomeDoc(m.state.SDDProgress(), worktree.CLIGitOps{}, m.state.WorkingDir, m.width)
+			m.dock.Open(docpanel.New(doc, m.state))
 			m.refreshViewport()
 			return m, nil
 		},

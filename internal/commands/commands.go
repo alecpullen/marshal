@@ -294,6 +294,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "run",
+			Description: "Show the last plan run: branch diff, ledger, and artifacts",
+			Group:       groupWorkflow,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "agents",
 			Description: "Configure the agent roster: roles, models, custom agents, swarm & SDD budgets",
 			Group:       groupWorkflow,

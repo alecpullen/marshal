@@ -22,6 +22,7 @@ import (
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
+	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/memory"
@@ -6778,5 +6779,33 @@ func TestStopMsgEndsTheRun(t *testing.T) {
 	}
 	if !sawStop {
 		t.Error("stopping must tell the user the run stopped and how to resume")
+	}
+}
+
+func TestRunCommandOpensTheOutcomePanel(t *testing.T) {
+	m := newTestModelInRepo(t)
+	m.state.SetSDDProgress(session.SDDProgress{
+		Finished: true, Succeeded: true, PlanName: "add-retries",
+		Branch: "pipeline/add-retries", BaseRef: "main",
+		TotalTasks: 3, DoneTasks: 3,
+	})
+
+	m2, _ := m.dispatchCommand("/run")
+	mm := asModel(t, m2)
+
+	if !mm.dock.IsOpen() {
+		t.Fatal("/run must open a panel")
+	}
+	if _, ok := mm.dock.Panel().(*docpanel.Panel); !ok {
+		t.Fatalf("dock holds %T, want *docpanel.Panel", mm.dock.Panel())
+	}
+}
+
+func TestRunCommandWithNoRunSaysSo(t *testing.T) {
+	m := newTestModelInRepo(t)
+	m2, _ := m.dispatchCommand("/run")
+	mm := asModel(t, m2)
+	if !mm.dock.IsOpen() {
+		t.Error("/run must still open a panel with no run recorded, explaining there is none")
 	}
 }

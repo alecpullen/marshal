@@ -1013,16 +1013,18 @@ func (s *State) scratchpadSnapshotLocked() []db.ScratchpadEntry {
 	for _, e := range s.scratchpad {
 		out = append(out, e)
 	}
-	// Sort newest first so callers get deterministic order. Stable sort keeps
-	// insertion order when Updated values are equal.
-	slices.SortStableFunc(out, func(a, b db.ScratchpadEntry) int {
+	// Sort newest first so callers get deterministic order. Entries come out
+	// of a map, so there is no insertion order for a stable sort to preserve:
+	// equal Updated values must be broken by key, or callers that truncate
+	// the projection (the context pack) drop a different entry each run.
+	slices.SortFunc(out, func(a, b db.ScratchpadEntry) int {
 		if a.Updated > b.Updated {
 			return -1
 		}
 		if a.Updated < b.Updated {
 			return 1
 		}
-		return 0
+		return strings.Compare(a.Key, b.Key)
 	})
 	return out
 }
@@ -1039,16 +1041,19 @@ func (s *State) enforceScratchpadBudgetLocked() {
 	for _, e := range s.scratchpad {
 		entries = append(entries, e)
 	}
-	// Stable sort keeps insertion order for equal Updated values so eviction
-	// is deterministic.
-	slices.SortStableFunc(entries, func(a, b db.ScratchpadEntry) int {
+	// Entries come out of a map, so there is no insertion order for a stable
+	// sort to preserve: equal Updated values must be broken by key or the
+	// eviction victim is random. This is the exact reverse of
+	// scratchpadSnapshotLocked's ordering, so "oldest" here always means the
+	// last entry a caller would see there.
+	slices.SortFunc(entries, func(a, b db.ScratchpadEntry) int {
 		if a.Updated < b.Updated {
 			return -1
 		}
 		if a.Updated > b.Updated {
 			return 1
 		}
-		return 0
+		return strings.Compare(b.Key, a.Key)
 	})
 
 	totalTokens := 0

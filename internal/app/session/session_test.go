@@ -1673,6 +1673,29 @@ func TestScratchpadMultipleEntries(t *testing.T) {
 	}
 }
 
+// Entries written under a frozen clock share an Updated timestamp, and
+// they come out of a map, so without a key tie-break the order is random
+// and callers that truncate (the context-pack projection) drop a
+// different entry on each run.
+func TestScratchpadEqualTimestampsOrderByKey(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+		for _, k := range []string{"delta", "bravo", "alpha", "charlie"} {
+			if err := s.SetScratchpadEntry(k, "content for "+k, "text"); err != nil {
+				t.Fatalf("SetScratchpadEntry(%q): %v", k, err)
+			}
+		}
+		var got []string
+		for _, e := range s.Scratchpad() {
+			got = append(got, e.Key)
+		}
+		want := []string{"alpha", "bravo", "charlie", "delta"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("Scratchpad() order = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestScratchpadSetRejectsEmptyContent(t *testing.T) {
 	s := newTestState()
 	err := s.SetScratchpadEntry("key", "", "text")

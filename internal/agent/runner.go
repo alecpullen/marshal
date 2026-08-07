@@ -334,17 +334,20 @@ type RunTaskFunc func(ctx context.Context, prompt string) (*Task, error)
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
 	return &Runner{
-		Provider:             p,
-		Registry:             reg,
-		Policy:               pol,
-		State:                state,
-		Model:                model,
-		Now:                  time.Now,
-		MaxToolIterations:    DefaultMaxToolIterations,
-		MaxRetries:           DefaultMaxRetries,
-		MaxParallelActions:   DefaultMaxParallelActions,
-		MaxToolResultChars:   DefaultMaxToolResultChars,
-		MaxTurnContextTokens: DefaultMaxTurnContextTokens,
+		Provider:           p,
+		Registry:           reg,
+		Policy:             pol,
+		State:              state,
+		Model:              model,
+		Now:                time.Now,
+		MaxToolIterations:  DefaultMaxToolIterations,
+		MaxRetries:         DefaultMaxRetries,
+		MaxParallelActions: DefaultMaxParallelActions,
+		MaxToolResultChars: DefaultMaxToolResultChars,
+		// 0 means "derive from the resolved model window" — see
+		// effectiveTurnThreshold. Seeding the default here made every turn
+		// look like an explicit user ceiling and left the derivation dead.
+		MaxTurnContextTokens: 0,
 		tracker:              newProgressTracker(),
 	}
 }
@@ -505,6 +508,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// applies regardless.
 		r.State.AddMessage(session.RoleSystem, "Could not resolve the model context window; using a conservative per-turn budget. Configure models with explicit context_window or add the model to the catalog for accurate thresholds.", session.ContentTypePlain)
 	}
+	r.State.Logger().Info("turn context budget",
+		"window", route.Window,
+		"threshold", turnThreshold,
+		"source", thresholdSource(route.Window, r.MaxTurnContextTokens))
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
 	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)

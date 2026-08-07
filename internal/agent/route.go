@@ -34,6 +34,8 @@ const minDerivedTurnTokens = 4000
 //   - configured == 0, window>0 : 0.85*window - maxOutput (model-derived)
 //   - configured == 0, window<=0: DefaultMaxTurnContextTokens (60000), the
 //     safety net for unknown models
+//   - the output reserve is capped at window/8 so a model whose advertised
+//     max output rivals its window still derives a usable budget
 //
 // usedFallback reports whether the window-unknown fallback fired (window
 // was <=0 with no configured override).
@@ -44,11 +46,33 @@ func (r *Runner) effectiveTurnThreshold(window int, maxOutput int, configured in
 	if window <= 0 {
 		return DefaultMaxTurnContextTokens, true
 	}
-	effective := int(float64(window)*0.85) - maxOutput
+	// Reserve room for the answer, but never more than an eighth of the
+	// window. Modern models advertise a max output that is a large
+	// fraction of the window (256k window against a 262k max output);
+	// subtracting it whole drives the budget negative and lands on the
+	// unknown-window fallback. The 0.85 factor already holds back 15%.
+	reserve := maxOutput
+	if limit := window / 8; reserve > limit {
+		reserve = limit
+	}
+	effective := int(float64(window)*0.85) - reserve
 	if effective < minDerivedTurnTokens {
 		effective = DefaultMaxTurnContextTokens
 	}
 	return effective, false
+}
+
+// thresholdSource labels where a turn's threshold came from, for the
+// per-turn budget log line and the /context panel.
+func thresholdSource(window, configured int) string {
+	switch {
+	case configured > 0:
+		return "configured"
+	case window > 0:
+		return "derived"
+	default:
+		return "fallback"
+	}
 }
 
 func (r *Runner) resolveRoute(task *Task) (provider.Provider, string, routing.Route) {

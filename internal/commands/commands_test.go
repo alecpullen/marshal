@@ -1021,3 +1021,25 @@ func TestListAllIncludesHiddenCommands(t *testing.T) {
 		t.Errorf("ListAll() (%d) should cover more commands than List() (%d)", got, want)
 	}
 }
+
+func TestSDDCommandDescriptionExplainsItself(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	RegisterAll(cmdReg, toolReg)
+
+	var desc string
+	for _, c := range cmdReg.ListAll() {
+		if c.Name == "sdd" {
+			desc = c.Description
+		}
+	}
+	if desc == "" {
+		t.Fatal("no /sdd command found")
+	}
+	if !strings.Contains(strings.ToLower(desc), "plan") {
+		t.Errorf("the description must say it runs a plan, got %q", desc)
+	}
+	if !strings.Contains(strings.ToLower(desc), "commit") {
+		t.Errorf("the description must say it commits, got %q", desc)
+	}
+}

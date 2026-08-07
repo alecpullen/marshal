@@ -127,6 +127,14 @@ func agentFrame(s *state) *frame {
 				return f
 			}(),
 			func() *field {
+				f := intField("agent.max_tool_result_chars", "Max tool result chars",
+					func() int { return s.cfg.Agent.MaxToolResultChars }, 0,
+					func(v int) { s.cfg.Agent.MaxToolResultChars = v })
+				f.TomlPath = "agent.max_tool_result_chars"
+				f.Desc = "chars per tool result before spilling to file (0 = derive from window)"
+				return f
+			}(),
+			func() *field {
 				f := intField("agent.subtask_iterations", "Subtask iterations",
 					func() int { return s.cfg.Agent.SubtaskIterations }, 0,
 					func(v int) { s.cfg.Agent.SubtaskIterations = v })

@@ -10,9 +10,23 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// spillPreviewChars is how much of an oversized tool output the model sees
-// inline before the pointer to the full file.
+// spillPreviewChars is the floor for how much of an oversized tool
+// output the model sees inline before the pointer to the full file. The
+// actual preview scales with the cap (previewChars).
 const spillPreviewChars = 2000
+
+// previewChars gives a quarter of the cap, never below the floor and
+// never past the end of the content.
+func previewChars(maxChars, contentLen int) int {
+	p := maxChars / 4
+	if p < spillPreviewChars {
+		p = spillPreviewChars
+	}
+	if p > contentLen {
+		p = contentLen
+	}
+	return p
+}
 
 // spillToolResult keeps oversized tool output reachable instead of
 // destroying it (kimi-code / opencode pattern): output above maxChars is
@@ -41,7 +55,8 @@ func spillToolResult(workDir, toolName string, result registry.ToolResult, maxCh
 
 	out := result
 	out.Summary = result.Summary + " [output spilled to file]"
-	out.Content = result.Content[:spillPreviewChars] + fmt.Sprintf(
+	preview := previewChars(maxChars, len(result.Content))
+	out.Content = result.Content[:preview] + fmt.Sprintf(
 		"\n\n[output truncated: %d chars total, preview above]\nfull_output_path: %s\nTo continue reading, use file.read on the full_output_path above (or on the original path) with start_line/end_line, or use file.page with the desired page number.",
 		len(result.Content), rel,
 	)

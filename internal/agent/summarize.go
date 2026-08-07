@@ -10,6 +10,25 @@ import (
 // DefaultMaxToolResultChars is a rough 4-char-per-token budget for 2000 tokens.
 const DefaultMaxToolResultChars = 8000
 
+// maxDerivedToolResultChars bounds the derived cap so a single tool
+// result cannot swallow a huge window's whole budget.
+const maxDerivedToolResultChars = 200000
+
+// deriveToolResultChars sizes one tool result at ~5% of the turn's token
+// budget. At the 4-chars-per-token estimate the runner uses throughout
+// (see estimateTokens), 5% of `threshold` tokens is threshold/5 chars.
+// Clamped to [DefaultMaxToolResultChars, maxDerivedToolResultChars].
+func deriveToolResultChars(threshold int) int {
+	chars := threshold / 5
+	if chars < DefaultMaxToolResultChars {
+		return DefaultMaxToolResultChars
+	}
+	if chars > maxDerivedToolResultChars {
+		return maxDerivedToolResultChars
+	}
+	return chars
+}
+
 // SummarizeToolResult applies per-tool line limits and an optional character
 // cap to tool output before it reaches the transcript. It preserves the
 // original Summary unless truncation occurs.

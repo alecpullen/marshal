@@ -316,6 +316,11 @@ type Runner struct {
 	// message in the current turn's wire transcript. -1 means no context-pack
 	// message is currently tracked. Reset at the start of each RunTask.
 	contextPackMsgIndex int
+	// turnToolResultChars is the tool-result character cap derived from
+	// this turn's context threshold. Per-turn state: reset at the top of
+	// RunTask. 0 means "not derived yet"; toolResultChars falls back to
+	// the package default.
+	turnToolResultChars int
 	// emittedSkills tracks which active skills already have their body on
 	// the current turn's wire transcript, so appendSkillBodies stays
 	// idempotent across loop iterations. Per-turn state: reset at the top
@@ -343,13 +348,30 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 		MaxToolIterations:  DefaultMaxToolIterations,
 		MaxRetries:         DefaultMaxRetries,
 		MaxParallelActions: DefaultMaxParallelActions,
-		MaxToolResultChars: DefaultMaxToolResultChars,
+		// 0 means "derive from this turn's context threshold" — see
+		// toolResultChars. Same reason as MaxTurnContextTokens above.
+		MaxToolResultChars: 0,
 		// 0 means "derive from the resolved model window" — see
 		// effectiveTurnThreshold. Seeding the default here made every turn
 		// look like an explicit user ceiling and left the derivation dead.
 		MaxTurnContextTokens: 0,
 		tracker:              newProgressTracker(),
 	}
+}
+
+// toolResultChars resolves the character cap for a single tool result:
+// an explicit user setting wins, then this turn's window-derived value,
+// then the package default. Never returns 0 — SummarizeToolResult reads
+// 0 as "skip the cap" while spillToolResult reads it as "use the
+// default", and the runner must not depend on either reading.
+func (r *Runner) toolResultChars() int {
+	if r.MaxToolResultChars > 0 {
+		return r.MaxToolResultChars
+	}
+	if r.turnToolResultChars > 0 {
+		return r.turnToolResultChars
+	}
+	return DefaultMaxToolResultChars
 }
 
 func (r *Runner) SetForceClass(class string) {
@@ -482,6 +504,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// skill body has been written to this turn's wire.
 	r.contextPackMsgIndex = -1
 	r.emittedSkills = nil
+	r.turnToolResultChars = 0
 
 	task := NewTask(goal, r.Now())
 	defer func() { r.emitMetrics(task) }()
@@ -512,6 +535,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		"window", route.Window,
 		"threshold", turnThreshold,
 		"source", thresholdSource(route.Window, r.MaxTurnContextTokens))
+	r.turnToolResultChars = deriveToolResultChars(turnThreshold)
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
 	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)

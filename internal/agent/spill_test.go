@@ -86,3 +86,35 @@ func TestSpillToolResultPointsAtReadableSpillFile(t *testing.T) {
 		t.Fatalf("spilled result missing path pointer:\n%s", out.Content)
 	}
 }
+
+func TestSpillPreviewScalesWithCap(t *testing.T) {
+	dir := t.TempDir()
+	big := registry.ToolResult{Summary: "read", Content: strings.Repeat("x", 100000)}
+
+	out := spillToolResult(dir, "file.read", big, 40000)
+	if !strings.HasPrefix(out.Content, strings.Repeat("x", 10000)) {
+		t.Fatal("preview shorter than maxChars/4")
+	}
+	if strings.HasPrefix(out.Content, strings.Repeat("x", 10001)) {
+		t.Fatal("preview longer than maxChars/4")
+	}
+
+	// Small caps keep the 2000-char floor.
+	out = spillToolResult(dir, "file.read", big, 8000)
+	if !strings.HasPrefix(out.Content, strings.Repeat("x", spillPreviewChars)) {
+		t.Fatalf("preview below the %d-char floor", spillPreviewChars)
+	}
+	if strings.HasPrefix(out.Content, strings.Repeat("x", spillPreviewChars+1)) {
+		t.Fatalf("preview above the %d-char floor for a small cap", spillPreviewChars)
+	}
+}
+
+// A cap below the preview floor must not slice past the content.
+func TestSpillPreviewNeverExceedsContent(t *testing.T) {
+	dir := t.TempDir()
+	res := registry.ToolResult{Summary: "read", Content: strings.Repeat("y", 900)}
+	out := spillToolResult(dir, "file.read", res, 500)
+	if len(out.Content) == 0 {
+		t.Fatal("empty spill content")
+	}
+}

@@ -4,10 +4,10 @@ import "testing"
 
 func TestHistoryBudget_Adaptive(t *testing.T) {
 	cases := []struct {
-		name        string
-		window      int
-		configured  int
-		want        int
+		name       string
+		window     int
+		configured int
+		want       int
 	}{
 		{"128k window, no override -> 16000", 128000, 0, 16000},
 		{"32k window clamps to 4000", 32000, 0, 4000},

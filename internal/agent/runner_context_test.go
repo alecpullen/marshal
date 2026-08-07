@@ -571,7 +571,7 @@ func TestRunSummarizesLargeToolResults(t *testing.T) {
 		Name: "demo.read",
 		Risk: registry.RiskReadOnly,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return registry.ToolResult{Summary: "big file", Content: strings.Repeat("x", DefaultMaxToolResultChars+100)}, nil
+			return registry.ToolResult{Summary: "big file", Content: strings.Repeat("x", deriveToolResultChars(DefaultMaxTurnContextTokens)+100)}, nil
 		},
 	}); err != nil {
 		t.Fatalf("Register: %v", err)

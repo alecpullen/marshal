@@ -341,13 +341,17 @@ type ProfileConfig struct {
 // Providers' Default() comment) — the app runs with the agent loop disabled
 // until a user configures both a [providers.<name>] entry and this section.
 type AgentConfig struct {
-	Provider                 string `toml:"provider"`
-	Model                    string `toml:"model"`
-	MaxToolIterations        int    `toml:"max_tool_iterations"`
-	MaxRetries               int    `toml:"max_retries"`
-	MaxTurnContextTokens     int    `toml:"max_turn_context_tokens"`
-	MaxStructuredOutputChars int    `toml:"max_structured_output_chars"`
-	PlanFirst                bool   `toml:"plan_first"`
+	Provider             string `toml:"provider"`
+	Model                string `toml:"model"`
+	MaxToolIterations    int    `toml:"max_tool_iterations"`
+	MaxRetries           int    `toml:"max_retries"`
+	MaxTurnContextTokens int    `toml:"max_turn_context_tokens"`
+	// MaxToolResultChars caps a single tool result's characters before it
+	// reaches the model. 0 = derive from the turn's context threshold
+	// (~5% of the token budget), which is what large-window models want.
+	MaxToolResultChars       int  `toml:"max_tool_result_chars"`
+	MaxStructuredOutputChars int  `toml:"max_structured_output_chars"`
+	PlanFirst                bool `toml:"plan_first"`
 	// HistoryBudgetTokens is an explicit ceiling for cross-turn history
 	// replay (the agent's "previous turn" budget). 0 = derive from
 	// model window via Runner.historyBudget (Task 5/B): window/8,

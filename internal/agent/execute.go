@@ -376,7 +376,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	}
 
 	summarized := SummarizeToolResult(toolName, result, 0) // per-tool line limits only; 0 keeps the default char cap out of play here
-	summarized = spillToolResult(r.State.WorkingDir, toolName, summarized, r.MaxToolResultChars)
+	summarized = spillToolResult(r.State.WorkingDir, toolName, summarized, r.toolResultChars())
 	if tool.Cacheable {
 		r.State.SetTurnToolResult(toolName, normalizedArgs, summarized)
 	}

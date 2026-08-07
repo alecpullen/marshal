@@ -625,6 +625,9 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	if cfg.Agent.MaxTurnContextTokens > 0 {
 		runner.MaxTurnContextTokens = cfg.Agent.MaxTurnContextTokens
 	}
+	if cfg.Agent.MaxToolResultChars > 0 {
+		runner.MaxToolResultChars = cfg.Agent.MaxToolResultChars
+	}
 	runner.PlanFirst = cfg.Agent.PlanFirst
 	if runner.ApprovalTimeout == 0 {
 		runner.ApprovalTimeout = agentApprovalTimeout
@@ -809,6 +812,9 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		}
 		if s.cfg.Agent.MaxTurnContextTokens > 0 {
 			r.MaxTurnContextTokens = s.cfg.Agent.MaxTurnContextTokens
+		}
+		if s.cfg.Agent.MaxToolResultChars > 0 {
+			r.MaxToolResultChars = s.cfg.Agent.MaxToolResultChars
 		}
 		r.PlanFirst = s.cfg.Agent.PlanFirst
 	}

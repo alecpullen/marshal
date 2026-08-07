@@ -52,3 +52,50 @@ func TestSummarizeToolResultLeavesSmallResultsUnchanged(t *testing.T) {
 		t.Fatalf("summary changed unexpectedly: %q", result.Summary)
 	}
 }
+
+func TestDeriveToolResultChars(t *testing.T) {
+	cases := []struct {
+		name      string
+		threshold int
+		want      int
+	}{
+		{"60k fallback threshold -> 12000", 60000, 12000},
+		{"minimax-m3 103219 -> 20643", 103219, 20643},
+		{"kimi k3-256k 185600 -> 37120", 185600, 37120},
+		{"deepseek 725000 -> 145000", 725000, 145000},
+		{"very large threshold clamps to 200000", 1_200_000, 200000},
+		{"tiny threshold clamps up to the default", 10000, DefaultMaxToolResultChars},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deriveToolResultChars(tc.threshold); got != tc.want {
+				t.Fatalf("deriveToolResultChars(%d) = %d, want %d", tc.threshold, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToolResultCharsPrefersExplicitOverDerived(t *testing.T) {
+	r := NewRunner(nil, nil, nil, newTestState(t), "m")
+
+	if got := r.toolResultChars(); got != DefaultMaxToolResultChars {
+		t.Fatalf("with nothing set, toolResultChars() = %d, want %d", got, DefaultMaxToolResultChars)
+	}
+
+	r.turnToolResultChars = 40000
+	if got := r.toolResultChars(); got != 40000 {
+		t.Fatalf("with a derived value, toolResultChars() = %d, want 40000", got)
+	}
+
+	r.MaxToolResultChars = 5000
+	if got := r.toolResultChars(); got != 5000 {
+		t.Fatalf("explicit config must win, toolResultChars() = %d, want 5000", got)
+	}
+}
+
+func TestNewRunnerLeavesToolResultCapUnset(t *testing.T) {
+	r := NewRunner(nil, nil, nil, newTestState(t), "m")
+	if r.MaxToolResultChars != 0 {
+		t.Fatalf("NewRunner seeded MaxToolResultChars = %d, want 0 (0 = derive)", r.MaxToolResultChars)
+	}
+}

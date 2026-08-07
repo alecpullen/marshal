@@ -1542,7 +1542,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dock.CloseNow()
 		m.state.ClearSDDGate()
 		m.state.AddMessage(session.RoleSystem,
-			"Plan run stopped. Run /sdd and pick the same plan to resume from the ledger.",
+			"Plan run stopped. "+sddResumeHint,
 			session.ContentTypePlain)
 		m.refreshViewport()
 		return m, nil

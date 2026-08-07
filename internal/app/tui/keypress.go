@@ -142,7 +142,10 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	case "ctrl+o":
 		m.openSettingsBrowser("")
 		return *m, nil, true
-	case "ctrl+i":
+	case "ctrl+f":
+		if !readlineShortcutAvailable() {
+			return *m, nil, false
+		}
 		// Drill into the most recently registered running subagent so
 		// inspecting live work does not require a mouse. Esc pops back.
 		if m.drillIntoLatestRunningSubagent() {

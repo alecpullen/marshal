@@ -302,7 +302,7 @@ func (m Model) footerHints() help.FooterHints {
 }
 
 // hasRunningSubagent reports whether any registered subagent is currently
-// running, which makes the Ctrl+I drill-in hint actionable.
+// running, which makes the Ctrl+F drill-in hint actionable.
 func (m Model) hasRunningSubagent() bool {
 	for _, v := range m.state.Subagents() {
 		if v.Status == session.SubagentRunning {

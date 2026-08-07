@@ -43,7 +43,7 @@ type FooterHints struct {
 	// caller retries with this set when the full cluster overflows, which
 	// makes the mouse hint the first thing shed rather than the last.
 	SuppressMouseHint bool
-	// RunActive is true when a subagent is running, so the Ctrl+I drill-in
+	// RunActive is true when a subagent is running, so the Ctrl+F drill-in
 	// hint is actionable.
 	RunActive bool
 }
@@ -89,7 +89,7 @@ func Footer(h FooterHints) string {
 			pair("Ctrl+X", "clear queue"),
 		)
 		if h.RunActive {
-			segs = append(segs, pair("Ctrl+I", "inspect agent"))
+			segs = append(segs, pair("Ctrl+F", "inspect agent"))
 		}
 	} else {
 		segs = append(segs,
